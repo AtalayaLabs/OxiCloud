@@ -168,7 +168,7 @@ fn file_attached_exists_sql(level: RefLevel, outer_hash_expr: &str) -> Option<St
 
 /// Every built-in blob-reference source, in one place.
 ///
-/// THE definition of "what references a blob". `DedupService::new` uses it
+/// THE definition of "what references a blob". `BlobHandler::new` uses it
 /// as its construction default and hands it to the consistency jobs via
 /// `reference_registry()`, so GC and the sweeps cannot disagree — and the
 /// golden tests that pin the generated SQL exercise the same set production

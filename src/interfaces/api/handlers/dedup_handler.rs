@@ -105,7 +105,7 @@ impl DedupHandler {
         auth_user: AuthUser,
         Path(hash): Path<String>,
     ) -> impl IntoResponse {
-        let dedup = &state.core.dedup_service;
+        let dedup = &state.core.blob_handler;
 
         // Validate hash format (BLAKE3 = 64 hex chars)
         if !is_valid_blob_hash(&hash) {
@@ -194,7 +194,7 @@ impl DedupHandler {
 
         let owned = state
             .core
-            .dedup_service
+            .blob_handler
             .user_owned_blob_references(&valid, &auth_user.id.to_string())
             .await;
 
@@ -229,7 +229,7 @@ impl DedupHandler {
         // route is registered at `admin_handler::admin_routes()`;
         // moving the URL to `/api/admin/dedup/stats` also declares
         // the admin intent up front.
-        let dedup = &state.core.dedup_service;
+        let dedup = &state.core.blob_handler;
         let stats = dedup.get_stats().await;
 
         // Calculate savings percentage
@@ -269,7 +269,7 @@ impl DedupHandler {
         auth_user: AuthUser,
         Path(hash): Path<String>,
     ) -> impl IntoResponse {
-        let dedup = &state.core.dedup_service;
+        let dedup = &state.core.blob_handler;
 
         // Validate hash format
         if !is_valid_blob_hash(&hash) {
@@ -346,7 +346,7 @@ impl DedupHandler {
         // `/api/admin/*` middleware layer — see the sibling
         // `get_stats_impl` comment. `auth_user` is kept so the
         // success-side audit line carries the caller id.
-        let dedup = &state.core.dedup_service;
+        let dedup = &state.core.blob_handler;
 
         // Verify integrity first
         match dedup.verify_integrity().await {

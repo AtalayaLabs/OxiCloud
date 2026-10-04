@@ -19,7 +19,7 @@
 //!        — cloning the ENTIRE policies DOM per drive-policy read. AFTER
 //!        deserializes from the borrow (`T::deserialize(&Value)`), no clone.
 //!
-//!   [U1] `dedup_service` (`store_loose_chunks` final registration + the ingest
+//!   [U1] `blob_handler` (`store_loose_chunks` final registration + the ingest
 //!        `run_rollback`) built `Vec<String>`/`Vec<i64>` by CLONING every hash
 //!        out of an owned, dead-after `Vec<(String,i64)>` purely to reshape for
 //!        `sync_blobs(&[String])` + the UNNEST bind. AFTER moves via

@@ -19,7 +19,7 @@ All cross-layer dependencies point **inward** via trait-based ports. The DI cont
 ## Storage Model: 100% Blob Storage
 
 - **File metadata** (name, folder, size, user, timestamps, trash status) → PostgreSQL (`storage.files`)
-- **File content** → content-addressed blobs via DedupService at `.blobs/{prefix}/{hash}.blob`
+- **File content** → content-addressed blobs via `BlobHandler` at `.blobs/{prefix}/{hash}.blob`
 - **Folder structure** → purely virtual, rows in `storage.folders` (no filesystem directories per user)
 - **Trash** → soft-delete flags on files/folders, exposed via `storage.trash_items` VIEW
 

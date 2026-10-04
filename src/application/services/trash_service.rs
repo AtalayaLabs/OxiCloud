@@ -28,7 +28,7 @@ use crate::domain::services::authorization::{Permission, Resource, Subject};
 use crate::infrastructure::repositories::pg::file_blob_write_repository::FileBlobWriteRepository;
 use crate::infrastructure::repositories::pg::folder_db_repository::FolderDbRepository;
 use crate::infrastructure::repositories::pg::trash_db_repository::TrashDbRepository;
-use crate::infrastructure::services::dedup_service::DedupService;
+use crate::infrastructure::services::blob_handler::BlobHandler;
 use crate::infrastructure::services::file_content_cache::FileContentCache;
 use crate::infrastructure::services::pg_acl_engine::PgAclEngine;
 
@@ -57,7 +57,7 @@ pub struct TrashService {
 
     /// Dedup service — garbage-collected after bulk trash empty to clean up
     /// orphaned blob files and thumbnails that the PG trigger cannot reach.
-    dedup_service: Arc<DedupService>,
+    blob_handler: Arc<BlobHandler>,
 
     /// Lifecycle hook dispatcher — fired on file permanently deleted.
     file_deleted_hook: Option<Arc<dyn FileLifecycleHook>>,
@@ -90,7 +90,7 @@ impl TrashService {
         trash_repository: Arc<TrashDbRepository>,
         file_write_port: Arc<FileBlobWriteRepository>,
         folder_storage_port: Arc<FolderDbRepository>,
-        dedup_service: Arc<DedupService>,
+        blob_handler: Arc<BlobHandler>,
         content_cache: Option<Arc<FileContentCache>>,
         authz: Arc<PgAclEngine>,
         drive_repo: Arc<crate::infrastructure::repositories::pg::DrivePgRepository>,
@@ -99,7 +99,7 @@ impl TrashService {
             trash_repository,
             file_write_port,
             folder_storage_port,
-            dedup_service,
+            blob_handler,
             file_deleted_hook: None,
             content_cache,
             authz,
@@ -846,7 +846,7 @@ impl TrashService {
         // whose ref_count reached 0, along with their blob-keyed
         // thumbnail files. Failure here is non-fatal — the rows are
         // gone in any case; the next GC pass mops up.
-        if let Err(e) = self.dedup_service.garbage_collect().await {
+        if let Err(e) = self.blob_handler.garbage_collect().await {
             warn!("clear_trash_in: garbage_collect failed: {:?}", e);
         }
 

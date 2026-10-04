@@ -1,6 +1,6 @@
 //! `backend_rechunk` — convert pre-CDC whole-file blobs into CDC chunks.
 //!
-//! The conversion itself is not new: `DedupService::rechunk_legacy_blobs` has
+//! The conversion itself is not new: `BlobHandler::rechunk_legacy_blobs` has
 //! always done it, spawned as a detached task at boot behind
 //! `OXICLOUD_LEGACY_RECHUNK`. What is new is that it is a *job*
 //! (`docs/plan/storage-consistency.md` §1a).
@@ -22,7 +22,7 @@ use crate::infrastructure::scheduler::{
     JobRegistry, JobRunArgs, JobStore, JobStoreProvider, Mutates, RecoverableJobHandler,
     RunOutcome, RunStatus, record_or_log,
 };
-use crate::infrastructure::services::dedup_service::DedupService;
+use crate::infrastructure::services::blob_handler::BlobHandler;
 use std::sync::Arc;
 
 /// Stable job name — also the admin URL fragment.
@@ -56,11 +56,11 @@ const PAGE_SIZE: i64 = 64;
 const MAX_CONSECUTIVE_FAILURES: u64 = 20;
 
 pub struct BackendRechunk {
-    dedup: Arc<DedupService>,
+    dedup: Arc<BlobHandler>,
 }
 
 impl BackendRechunk {
-    pub fn new(dedup: Arc<DedupService>) -> Self {
+    pub fn new(dedup: Arc<BlobHandler>) -> Self {
         Self { dedup }
     }
 

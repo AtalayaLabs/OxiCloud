@@ -49,7 +49,7 @@ use crate::infrastructure::scheduler::{
     JobRegistry, JobRunArgs, JobStore, JobStoreProvider, Mutates, RecoverableJobHandler,
     RunOutcome, RunStatus, record_or_log,
 };
-use crate::infrastructure::services::dedup_service::DedupService;
+use crate::infrastructure::services::blob_handler::BlobHandler;
 // The readback-then-unlink rule is shared, not copied: two versions of it
 // would be two chances to weaken one, and this is the check standing between
 // a migration and permanent loss.
@@ -71,12 +71,12 @@ const IMPORTED_UPLOADER: Uuid = Uuid::nil();
 
 pub struct ThumbAttachedImport {
     thumbnails_root: PathBuf,
-    dedup: Arc<DedupService>,
+    dedup: Arc<BlobHandler>,
     pool: Arc<PgPool>,
 }
 
 impl ThumbAttachedImport {
-    pub fn new(thumbnails_root: PathBuf, dedup: Arc<DedupService>, pool: Arc<PgPool>) -> Self {
+    pub fn new(thumbnails_root: PathBuf, dedup: Arc<BlobHandler>, pool: Arc<PgPool>) -> Self {
         Self {
             thumbnails_root,
             dedup,
@@ -371,7 +371,7 @@ impl RecoverableJobHandler for ThumbAttachedImport {
                     let path = self.thumbnails_root.join(&dir_name).join(&name);
                     match fs::read(&path).await {
                         Ok(data) => {
-                            use crate::infrastructure::services::dedup_service::AttachedBlobInsertOutcome;
+                            use crate::infrastructure::services::blob_handler::AttachedBlobInsertOutcome;
                             match self
                                 .dedup
                                 .store_attached_blob_if_absent(

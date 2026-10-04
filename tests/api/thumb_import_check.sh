@@ -295,7 +295,7 @@ log "re-run is a no-op: rows and refcounts unchanged."
 # ── 5c. store_attached_blob same-content guard (regression test) ─────────────
 #
 # The PUT /api/files/{id}/thumbnail/{size} endpoint calls
-# `dedup_service::store_attached_blob` directly — no pre-check like
+# `blob_handler::store_attached_blob` directly — no pre-check like
 # `thumb_attached_import_service` does. A same-content re-PUT is the
 # ONLY current public surface that exercises the ref-balance branch
 # added to `store_attached_blob` after the Sept-2026 manifest-drift

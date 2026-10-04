@@ -37,7 +37,7 @@ use oxicloud::domain::services::authorization::{Permission, Resource, Subject};
 use oxicloud::infrastructure::repositories::pg::{
     FileBlobReadRepository, FolderDbRepository, SubjectGroupPgRepository,
 };
-use oxicloud::infrastructure::services::dedup_service::DedupService;
+use oxicloud::infrastructure::services::blob_handler::BlobHandler;
 use oxicloud::infrastructure::services::local_blob_backend::LocalBlobBackend;
 use oxicloud::infrastructure::services::pg_acl_engine::PgAclEngine;
 use sqlx::PgPool;
@@ -221,7 +221,7 @@ fn fresh_engine(pool: &Arc<PgPool>) -> (Arc<PgAclEngine>, Arc<FileBlobReadReposi
     let backend = Arc::new(LocalBlobBackend::new(std::path::Path::new(
         "/tmp/bench-zipauthz-blobs",
     )));
-    let dedup = Arc::new(DedupService::new(backend, pool.clone(), pool.clone()));
+    let dedup = Arc::new(BlobHandler::new(backend, pool.clone(), pool.clone()));
     let file_repo = Arc::new(FileBlobReadRepository::new(
         pool.clone(),
         dedup,

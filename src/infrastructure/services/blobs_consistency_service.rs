@@ -94,14 +94,14 @@ const BATCH_SIZE: i64 = 200;
 /// long maintenance pause costs nothing (operator glances at the
 /// finding, sees it clear on the next run, moves on).
 const STALL_GRACE_SECS: i64 =
-    crate::infrastructure::services::dedup_service::DedupService::GC_ORPHAN_GRACE_SECS * 24;
+    crate::infrastructure::services::blob_handler::BlobHandler::GC_ORPHAN_GRACE_SECS * 24;
 
 pub struct BlobsConsistencyCheck {
     pool: Arc<PgPool>,
     /// The chunk-level page query, assembled once from the blob-reference
     /// registry so this recompute and `dedup_gc` agree on what "referenced"
     /// means. Built at construction rather than per page so the sweep runs a
-    /// fixed statement — same reasoning as `DedupService::manifest_reap_sql`.
+    /// fixed statement — same reasoning as `BlobHandler::manifest_reap_sql`.
     /// See `docs/plan/derived-blobs.md`.
     chunk_page_sql: String,
     /// Per-row repair UPDATE, built from the SAME registry as
@@ -121,7 +121,7 @@ pub struct BlobsConsistencyCheck {
 /// The chunk-level page query, with `actual_ref_count` summed from the
 /// registered reference sources.
 ///
-/// `storage.blobs.ref_count` semantics — the invariant `dedup_service`
+/// `storage.blobs.ref_count` semantics — the invariant `blob_handler`
 /// actually maintains:
 ///
 /// ```text
@@ -220,7 +220,7 @@ struct BlobRow {
     /// Wall-clock instant this row hit `ref_count = 0` and became
     /// eligible for GC. `NULL` for pre-migration rows or write-paths
     /// that never stamped it — those the GC treats as immediately
-    /// reap-able (see `dedup_service.rs` phase-2 predicate), so the
+    /// reap-able (see `blob_handler.rs` phase-2 predicate), so the
     /// stall check ignores them too: without a stamp we cannot say
     /// how long a row has been sitting.
     orphaned_at: Option<DateTime<Utc>>,

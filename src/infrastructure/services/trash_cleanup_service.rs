@@ -7,7 +7,7 @@ use crate::common::errors::Result;
 use crate::domain::repositories::trash_repository::TrashRepository;
 use crate::infrastructure::repositories::pg::trash_db_repository::TrashDbRepository;
 use crate::infrastructure::scheduler::{JobHandler, JobOutcome, JobRegistry, JobRunArgs, Mutates};
-use crate::infrastructure::services::dedup_service::DedupService;
+use crate::infrastructure::services::blob_handler::BlobHandler;
 use async_trait::async_trait;
 
 /// Service for automatic cleanup of expired items in the trash.
@@ -24,7 +24,7 @@ use async_trait::async_trait;
 /// empty their trash by hand.
 pub struct TrashCleanupService {
     trash_repository: Arc<TrashDbRepository>,
-    dedup_service: Arc<DedupService>,
+    blob_handler: Arc<BlobHandler>,
     cleanup_interval_hours: u64,
 }
 
@@ -33,12 +33,12 @@ impl TrashCleanupService {
 
     pub fn new(
         trash_repository: Arc<TrashDbRepository>,
-        dedup_service: Arc<DedupService>,
+        blob_handler: Arc<BlobHandler>,
         cleanup_interval_hours: u64,
     ) -> Self {
         Self {
             trash_repository,
-            dedup_service,
+            blob_handler,
             cleanup_interval_hours: cleanup_interval_hours.max(1), // Minimum 1 hour
         }
     }
@@ -72,7 +72,7 @@ impl TrashCleanupService {
     #[instrument(skip(self))]
     pub async fn start_cleanup_job(&self) {
         let trash_repository = self.trash_repository.clone();
-        let dedup_service = self.dedup_service.clone();
+        let blob_handler = self.blob_handler.clone();
         let interval_hours = self.cleanup_interval_hours;
 
         info!(
@@ -85,7 +85,7 @@ impl TrashCleanupService {
             let mut interval = time::interval(interval_duration);
 
             // First immediate execution
-            Self::cleanup_expired_items(trash_repository.clone(), dedup_service.clone())
+            Self::cleanup_expired_items(trash_repository.clone(), blob_handler.clone())
                 .await
                 .unwrap_or_else(|e| error!("Error in initial trash cleanup: {:?}", e));
 
@@ -94,7 +94,7 @@ impl TrashCleanupService {
                 debug!("Running scheduled trash cleanup task");
 
                 if let Err(e) =
-                    Self::cleanup_expired_items(trash_repository.clone(), dedup_service.clone())
+                    Self::cleanup_expired_items(trash_repository.clone(), blob_handler.clone())
                         .await
                 {
                     error!("Error in scheduled trash cleanup: {:?}", e);
@@ -106,10 +106,10 @@ impl TrashCleanupService {
     /// Bulk-delete all expired trash items in a single transaction, then
     /// garbage-collect every zero-reference manifest/blob (expired content
     /// plus aborted-upload orphans).
-    #[instrument(skip(trash_repository, dedup_service))]
+    #[instrument(skip(trash_repository, blob_handler))]
     async fn cleanup_expired_items(
         trash_repository: Arc<TrashDbRepository>,
-        dedup_service: Arc<DedupService>,
+        blob_handler: Arc<BlobHandler>,
     ) -> Result<()> {
         debug!("Starting bulk cleanup of expired trash items");
 
@@ -126,7 +126,7 @@ impl TrashCleanupService {
 
         // Runs on the maintenance pool; batched (500 rows/iteration) with
         // yield points, so it never starves request-path queries.
-        match dedup_service.garbage_collect().await {
+        match blob_handler.garbage_collect().await {
             Ok((0, _)) => debug!("Trash cleanup GC: nothing to collect"),
             Ok((items, bytes)) => {
                 info!("Trash cleanup GC: reclaimed {items} orphaned blobs ({bytes} bytes)");
@@ -145,7 +145,7 @@ impl TrashCleanupService {
         let (files, folders) = self.trash_repository.delete_expired_bulk().await?;
         // GC failure is non-fatal — the expiry itself succeeded. Report
         // reclaimed bytes when possible; log + swallow otherwise.
-        let (gc_items, gc_bytes) = match self.dedup_service.garbage_collect().await {
+        let (gc_items, gc_bytes) = match self.blob_handler.garbage_collect().await {
             Ok(pair) => pair,
             Err(e) => {
                 error!("Trash cleanup GC failed: {:?}", e);

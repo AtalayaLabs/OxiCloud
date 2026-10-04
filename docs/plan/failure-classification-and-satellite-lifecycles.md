@@ -474,7 +474,7 @@ of those chunks at `ref_count = 0` with `orphaned_at` set, so the GC can reclaim
 them — *"a backend file with no PG row would be invisible to it"*, which is correct
 and the whole reason the registration exists.
 
-**The INSERT is not gated on the sync result** (`dedup_service.rs:323`) — the sync
+**The INSERT is not gated on the sync result** (`blob_handler.rs:323`) — the sync
 failure is a `warn!` and the rows land regardless.
 
 Harmless where `sync_blobs` is a no-op (S3, Azure — a PUT is durable on return).

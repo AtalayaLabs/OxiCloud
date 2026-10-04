@@ -82,7 +82,7 @@ use crate::infrastructure::scheduler::{
     JobParam, JobRegistry, JobRunArgs, JobStore, JobStoreProvider, Mutates, RecoverableJobHandler,
     RunOutcome, RunStatus, record_or_log,
 };
-use crate::infrastructure::services::dedup_service::DedupService;
+use crate::infrastructure::services::blob_handler::BlobHandler;
 
 /// Kept at module scope so `parameters()` can return a `'static` slice.
 static PARAMETERS: [JobParam; 1] = [JobParam::boolean(
@@ -126,7 +126,7 @@ pub struct SatellitesConsistencyCheck {
     /// zero-reference blob to `backend_reclaim`. A second decrement
     /// written here would be a fourth refcount surface in a plan whose
     /// whole subject is that there are already too many.
-    dedup: Arc<DedupService>,
+    dedup: Arc<BlobHandler>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -154,7 +154,7 @@ struct AttachedRow {
 }
 
 impl SatellitesConsistencyCheck {
-    pub fn new(pool: Arc<PgPool>, dedup: Arc<DedupService>) -> Self {
+    pub fn new(pool: Arc<PgPool>, dedup: Arc<BlobHandler>) -> Self {
         Self { pool, dedup }
     }
 
@@ -774,7 +774,7 @@ mod tests {
                     .connect_lazy("postgres://invalid:5432/none")
                     .expect("lazy pool"),
             ),
-            Arc::new(DedupService::new_stub()),
+            Arc::new(BlobHandler::new_stub()),
         );
         assert_eq!(job.mutates(), Mutates::OnRepairOnly);
         assert!(
@@ -925,7 +925,7 @@ mod integration_tests {
         );
         let handler: Arc<dyn RecoverableJobHandler> = Arc::new(SatellitesConsistencyCheck::new(
             pool.clone(),
-            Arc::new(DedupService::new_for_test(pool.clone())),
+            Arc::new(BlobHandler::new_for_test(pool.clone())),
         ));
         let outcome =
             crate::infrastructure::scheduler::run_or_resume(handler, provider, args).await;

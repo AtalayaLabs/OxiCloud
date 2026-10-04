@@ -20,12 +20,12 @@ use crate::domain::entities::file::File;
 use crate::domain::services::path_service::{normalize_storage_name, normalize_storage_name_owned};
 
 use super::transaction_utils::retry_on_deadlock;
-use crate::infrastructure::services::dedup_service::DedupService;
+use crate::infrastructure::services::blob_handler::BlobHandler;
 
 /// File write repository backed by PostgreSQL metadata + blob storage.
 pub struct FileBlobWriteRepository {
     pool: Arc<PgPool>,
-    dedup: Arc<DedupService>,
+    dedup: Arc<BlobHandler>,
     /// Shared handle to `FileBlobReadRepository`'s file_id → blob_hash
     /// cache. Content swaps and hard deletes invalidate the mapping here
     /// so the read side can never serve a stale blob after a PUT update.
@@ -35,7 +35,7 @@ pub struct FileBlobWriteRepository {
 impl FileBlobWriteRepository {
     pub fn new(
         pool: Arc<PgPool>,
-        dedup: Arc<DedupService>,
+        dedup: Arc<BlobHandler>,
         hash_cache: Cache<String, String>,
     ) -> Self {
         Self {
@@ -48,7 +48,7 @@ impl FileBlobWriteRepository {
     /// Creates a stub instance for testing — never hits PG.
     #[cfg(test)]
     pub fn new_stub() -> Self {
-        use crate::infrastructure::services::dedup_service::DedupService;
+        use crate::infrastructure::services::blob_handler::BlobHandler;
         Self {
             pool: Arc::new(
                 sqlx::pool::PoolOptions::<sqlx::Postgres>::new()
@@ -56,7 +56,7 @@ impl FileBlobWriteRepository {
                     .connect_lazy("postgres://invalid:5432/none")
                     .unwrap(),
             ),
-            dedup: Arc::new(DedupService::new_stub()),
+            dedup: Arc::new(BlobHandler::new_stub()),
             hash_cache: Cache::builder().max_capacity(10_000).build(),
         }
     }

@@ -1,4 +1,18 @@
-//! Content-Addressable Storage with CDC Deduplication (PostgreSQL-backed)
+//! `BlobHandler` — reading and writing file content by hash.
+//!
+//! **This is the one way to touch file content.** Every service that
+//! needs bytes goes through here rather than taking an
+//! `Arc<dyn BlobStorageBackend>` of its own — see `src/AGENTS.md`. That
+//! is what the name is for: it was `DedupService` until 2026-10-04, which
+//! narrated *how* it works rather than *what it is*, and new service
+//! authors read "dedup" and did not realise this was the read path they
+//! were supposed to use.
+//!
+//! Deduplication is one internal strategy, alongside CDC chunking,
+//! ref-counting and GC — all documented below, and all still called
+//! "dedup" where that is what they mean.
+//!
+//! ## Content-addressable storage with CDC deduplication (PostgreSQL-backed)
 //!
 //! Implements sub-file deduplication using FastCDC (content-defined chunking).
 //! Files are split into variable-size chunks (64 KB – 1 MB, avg 256 KB)
@@ -133,7 +147,7 @@ mod refcount_audit_source {
     pub const STORE_ATTACHED_BLOB_REPLACE_RELEASE: &str = "store_attached_blob.replace_release";
 }
 
-/// Outcome of [`DedupService::store_attached_blob_if_absent`]. Split
+/// Outcome of [`BlobHandler::store_attached_blob_if_absent`]. Split
 /// so the caller (`thumb_attached_import_service`) can bump its
 /// `imported` vs `already` counters without a second query.
 #[derive(Debug, Clone)]
@@ -175,7 +189,7 @@ fn audit_ref_count(table: &'static str, hash: &str, delta: i32, source: &'static
 
 /// Everything a streaming chunk ingest learned about its byte stream.
 ///
-/// Produced by [`DedupService::ingest_chunks_from_stream`]. On success the
+/// Produced by [`BlobHandler::ingest_chunks_from_stream`]. On success the
 /// ingest session holds exactly ONE `storage.blobs.ref_count` reference per
 /// *distinct* chunk hash; the caller must either attach those references to
 /// a manifest or hand them back via `release_chunk_refs`.
@@ -414,7 +428,7 @@ impl Drop for IngestGuard {
 /// Immutable chunk map of one CDC blob (`storage.chunk_manifests` row,
 /// minus the mutable `ref_count`). Content-addressed: for a given
 /// `file_hash` the chunk list and total size never change, which is what
-/// makes [`DedupService::manifest_cached`] safe.
+/// makes [`BlobHandler::manifest_cached`] safe.
 pub struct ChunkManifest {
     pub chunk_hashes: Vec<String>,
     pub chunk_sizes: Vec<i64>,
@@ -608,7 +622,7 @@ async fn populate_integrity_blob_sizes<'a>(
 /// If no source contributes at [`RefLevel::Manifest`]. That is a wiring bug,
 /// and it must be loud: with no source, "nothing references it" is vacuously
 /// true for every row and this statement would delete every manifest in the
-/// database. `DedupService::new` always registers `FilesReferenceSource`, so
+/// database. `BlobHandler::new` always registers `FilesReferenceSource`, so
 /// the only way to reach this is to pass a deliberately empty registry.
 /// Build the chunk/blob reap statement (GC phase 2) from the registered
 /// reference sources.
@@ -720,7 +734,7 @@ fn manifest_reap_sql(registry: &BlobReferenceRegistry) -> String {
     )
 }
 
-pub struct DedupService {
+pub struct BlobHandler {
     /// Pluggable blob storage backend (local FS, S3, …).
     backend: Arc<dyn BlobStorageBackend>,
     /// PostgreSQL connection pool (dedup index in `storage.blobs`) — primary,
@@ -754,7 +768,7 @@ pub struct DedupService {
     blob_reap_sql: String,
 }
 
-impl DedupService {
+impl BlobHandler {
     /// Create a new dedup service backed by PostgreSQL.
     ///
     /// * `backend` — pluggable blob storage (local filesystem, S3, etc.).
@@ -4341,7 +4355,7 @@ pub struct RechunkedBlob {
     pub file_ids: Vec<uuid::Uuid>,
 }
 
-/// Outcome of a [`DedupService::rechunk_legacy_blobs`] sweep.
+/// Outcome of a [`BlobHandler::rechunk_legacy_blobs`] sweep.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct LegacyRechunkReport {
     /// Legacy blobs successfully converted to CDC manifests.
@@ -4354,7 +4368,7 @@ pub struct LegacyRechunkReport {
 
 // ─── Port implementation ─────────────────────────────────────────────────────
 
-impl DedupPort for DedupService {
+impl DedupPort for BlobHandler {
     async fn blob_exists(&self, hash: &str) -> bool {
         self.blob_exists(hash).await
     }
@@ -4403,7 +4417,7 @@ impl DedupPort for DedupService {
     }
 
     async fn hash_file(&self, path: &Path) -> Result<String, DomainError> {
-        DedupService::hash_file(path)
+        BlobHandler::hash_file(path)
             .await
             .map_err(DomainError::from)
     }
@@ -4433,7 +4447,7 @@ impl DedupPort for DedupService {
 /// and admin URLs (`POST /api/admin/jobs/dedup_gc/trigger`).
 pub const DEDUP_GC_JOB_NAME: &str = "dedup_gc";
 
-impl DedupService {
+impl BlobHandler {
     /// Register self with the periodic-job scheduler and return the
     /// same `Arc<Self>` for DI-style chaining. **On-demand only** —
     /// registered with `interval = None`. The periodic GC role
@@ -4457,7 +4471,7 @@ impl DedupService {
 }
 
 #[async_trait::async_trait]
-impl crate::infrastructure::scheduler::JobHandler for DedupService {
+impl crate::infrastructure::scheduler::JobHandler for BlobHandler {
     fn name(&self) -> &str {
         DEDUP_GC_JOB_NAME
     }
@@ -4558,7 +4572,7 @@ mod tests {
     /// `gc_reference_authority_integration_tests`.
     #[tokio::test]
     async fn manifest_reap_statement_is_stable() {
-        let sql = DedupService::new_stub().manifest_reap_sql;
+        let sql = BlobHandler::new_stub().manifest_reap_sql;
         let expected = r#"DELETE FROM storage.chunk_manifests
  WHERE ctid = ANY(
      SELECT ctid
@@ -4610,7 +4624,7 @@ mod tests {
     /// would reset the drain's backoff and un-park entries a human parked.
     #[tokio::test]
     async fn blob_reap_statement_is_stable() {
-        let sql = DedupService::new_stub().blob_reap_sql;
+        let sql = BlobHandler::new_stub().blob_reap_sql;
         let expected = r#"WITH reaped AS (
              DELETE FROM storage.blobs
                   WHERE ctid = ANY(
@@ -4871,7 +4885,7 @@ mod tests {
         let f = write_temp_file(&data).await;
 
         let (cdc_hash, _) = stream_cdc(&data, TEST_FRAME).await;
-        let standalone_hash = DedupService::hash_file(f.path()).await.unwrap();
+        let standalone_hash = BlobHandler::hash_file(f.path()).await.unwrap();
 
         assert_eq!(
             cdc_hash, standalone_hash,
@@ -5136,19 +5150,19 @@ mod rechunk_integration_tests {
     }
 
     /// Plain local backend in a fresh temp dir.
-    async fn local_svc(pool: &Arc<PgPool>, dir: &TempDir) -> DedupService {
+    async fn local_svc(pool: &Arc<PgPool>, dir: &TempDir) -> BlobHandler {
         let backend = Arc::new(LocalBlobBackend::new(&dir.path().join("blobs")));
         backend.initialize().await.expect("init backend");
-        DedupService::new(backend, pool.clone(), pool.clone())
+        BlobHandler::new(backend, pool.clone(), pool.clone())
     }
 
     /// AES-256-GCM-encrypted local backend in a fresh temp dir.
-    async fn encrypted_svc(pool: &Arc<PgPool>, dir: &TempDir) -> DedupService {
+    async fn encrypted_svc(pool: &Arc<PgPool>, dir: &TempDir) -> BlobHandler {
         let inner = Arc::new(LocalBlobBackend::new(&dir.path().join("blobs")));
         inner.initialize().await.expect("init backend");
         let key = EncryptedBlobBackend::generate_key();
         let backend = Arc::new(EncryptedBlobBackend::new_single_aes(inner, &key));
-        DedupService::new(backend, pool.clone(), pool.clone())
+        BlobHandler::new(backend, pool.clone(), pool.clone())
     }
 
     /// Non-trivial content of `len` bytes + a random 16-byte tail, so every
@@ -5172,7 +5186,7 @@ mod rechunk_integration_tests {
     /// Returns (hash, file row ids). When `corrupt_stored_bytes` is Some,
     /// the PHYSICAL content differs from the indexed hash.
     async fn seed_legacy(
-        svc: &DedupService,
+        svc: &BlobHandler,
         pool: &PgPool,
         dir: &TempDir,
         data: &[u8],
@@ -5259,7 +5273,7 @@ mod rechunk_integration_tests {
             .await;
     }
 
-    async fn collect(svc: &DedupService, hash: &str) -> Vec<u8> {
+    async fn collect(svc: &BlobHandler, hash: &str) -> Vec<u8> {
         let mut out = Vec::new();
         let mut stream = svc.read_blob_stream(hash).await.expect("stream");
         while let Some(chunk) = stream.next().await {
@@ -5451,7 +5465,7 @@ mod rechunk_integration_tests {
     //
     // Regression tests for the fix landed on `fix/services-use-blob-abstraction`:
     // audio_metadata_service, media_metadata_service, and face_indexing_service
-    // all read blob content via DedupService (`read_blob_bytes` /
+    // all read blob content via BlobHandler (`read_blob_bytes` /
     // `stream_blob_to_tempfile`), NOT the raw `BlobStorageBackend`. If someone
     // reverts a service to `backend.get_blob_stream(hash)`, this test fails
     // because `hash` is a chunk-manifest hash — the physical backend has no
@@ -5493,7 +5507,7 @@ mod rechunk_integration_tests {
 
     /// Encrypted backend variant — proves the wrapper stack (decryption
     /// on read) is honoured. Same regression class: if a service reads
-    /// raw ciphertext instead of going through DedupService, this fails.
+    /// raw ciphertext instead of going through BlobHandler, this fails.
     #[tokio::test]
     async fn stream_blob_to_tempfile_reads_cdc_chunked_encrypted() {
         let pool = test_pool().await;
@@ -5591,10 +5605,10 @@ mod delta_upload_integration_tests {
         .expect("auth.users + storage.drives must be seeded (init-test-schema.sh)")
     }
 
-    async fn local_svc(pool: &Arc<PgPool>, dir: &TempDir) -> DedupService {
+    async fn local_svc(pool: &Arc<PgPool>, dir: &TempDir) -> BlobHandler {
         let backend = Arc::new(LocalBlobBackend::new(&dir.path().join("blobs")));
         backend.initialize().await.expect("init backend");
-        DedupService::new(backend, pool.clone(), pool.clone())
+        BlobHandler::new(backend, pool.clone(), pool.clone())
     }
 
     /// Store `data` through the streaming path and give `user_id` a file
@@ -5611,7 +5625,7 @@ mod delta_upload_integration_tests {
     /// statements, causing CI-flaky `RowNotFound` panics in producers
     /// like `hash_chunk_sequence_recomputes_and_validates_sizes`.
     async fn seed_owned_content(
-        svc: &DedupService,
+        svc: &BlobHandler,
         pool: &PgPool,
         _user_id: Uuid,
         drive_id: Uuid,
@@ -5690,7 +5704,7 @@ mod delta_upload_integration_tests {
     /// Deliberately not a test-local "unlink then delete the row": that would
     /// pass while production diverged from it, and the whole point of the settle
     /// path is the re-verify and the row lock it does on the way.
-    async fn drain_one(svc: &DedupService, pool: &Arc<PgPool>, hash: &str) {
+    async fn drain_one(svc: &BlobHandler, pool: &Arc<PgPool>, hash: &str) {
         use crate::infrastructure::services::backend_reclaim_service::BackendReclaim;
         let reclaim = BackendReclaim::new(pool.clone(), svc.backend().clone());
         reclaim.settle_one(hash, None).await;
@@ -6259,7 +6273,7 @@ mod delta_upload_integration_tests {
 // bytes were reaped. Both copy paths now go through
 // `storage.add_blob_references`, but that fix relied on getting the counter
 // right, and there are two implementations of the reference contract
-// (`storage.add_blob_references` in SQL, `DedupService::add_reference` in
+// (`storage.add_blob_references` in SQL, `BlobHandler::add_reference` in
 // Rust) that must agree forever. Removing the counter's authority is what
 // makes a future disagreement a leak rather than data loss.
 //
@@ -6308,10 +6322,10 @@ mod gc_reference_authority_integration_tests {
             .expect("storage.drives must be seeded (init-test-schema.sh)")
     }
 
-    async fn local_svc(pool: &Arc<PgPool>, dir: &TempDir) -> DedupService {
+    async fn local_svc(pool: &Arc<PgPool>, dir: &TempDir) -> BlobHandler {
         let backend = Arc::new(LocalBlobBackend::new(&dir.path().join("blobs")));
         backend.initialize().await.expect("init backend");
-        DedupService::new(backend, pool.clone(), pool.clone())
+        BlobHandler::new(backend, pool.clone(), pool.clone())
     }
 
     /// Unique, poorly-compressible content of `len` bytes. The random tail
@@ -6335,7 +6349,7 @@ mod gc_reference_authority_integration_tests {
     ///
     /// Returns `(file_hash, chunk_hashes, file_id)`.
     async fn seed_referenced_cdc_blob(
-        svc: &DedupService,
+        svc: &BlobHandler,
         pool: &PgPool,
         drive_id: Uuid,
         data: &[u8],

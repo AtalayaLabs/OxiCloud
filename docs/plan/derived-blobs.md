@@ -22,7 +22,7 @@ that rotted.
 | prereq | state |
 |---|---|
 | 0 — `dedup_gc` manifest predicate must stop deleting derived blobs | **DONE** — `manifest_reap_sql(&registry)` builds the predicate from the registered sources; the union includes `content_derived_blobs` and `file_attached_blobs`, pinned by `manifest_reap_statement_is_stable` |
-| 1 — registry before the tables | **DONE** — `BlobReferenceSource` + `blob_reference_sources.rs`, with `default_reference_registry` wired in `DedupService` |
+| 1 — registry before the tables | **DONE** — `BlobReferenceSource` + `blob_reference_sources.rs`, with `default_reference_registry` wired in `BlobHandler` |
 | 2 — `chunk_manifests.ref_count` must become verified | **DONE** — `manifests_consistency_service` reconciles exactly the counter this plan said was "reconciled by **nothing**", reporting `manifest_refcount_mismatch` |
 
 **Delivered beyond those:** the tables (migration `20261018`), the write
@@ -68,8 +68,11 @@ blocking both JPEG thumbnails and the transcode import.
    makes no network call — so there are no HEADs to batch. The
    backend-versus-registry comparison lives in `backend_consistency`,
    which enumerates in bulk by construction.
-4. **The naming clarifications** (§ Naming clarifications) — `DedupService`
-   renaming and the overloaded `blob` scale. Cosmetic, unscheduled.
+4. **The second naming clarification only** (§ Naming clarifications §2) —
+   the overloaded `blob` scale. The `DedupService` → `BlobHandler` rename
+   landed 2026-10-04; what is left is the schema-level sweep
+   (`storage.blobs` → `storage.chunks` and friends), which carries its own
+   rule: travel with the schema, never ahead of it. Unscheduled.
 5. **Schema trim** — not yet revisited since the negative-row and
    satellite work changed which columns carry information.
 
@@ -531,7 +534,7 @@ on `content_derived_blobs`; the table comments.
 
 ### Write path — reuse `store_from_stream`, don't special-case CDC
 
-Derived blobs go through `DedupService::store_from_stream()`
+Derived blobs go through `BlobHandler::store_from_stream()`
 **unchanged**. An earlier draft of this plan proposed a dedicated
 single-chunk write path to avoid the manifest row; that was
 optimising the wrong thing. What it costs to reuse the standard
@@ -582,7 +585,7 @@ and the read side is compliant. The write side is the violation:
 
 There must be **no `if backend is local { .thumbnails/… } else { blob }`
 anywhere in the service.** `ThumbnailService` holds
-`Arc<DedupService>`, reads and writes through it, and never learns
+`Arc<BlobHandler>`, reads and writes through it, and never learns
 which backend it is sitting on. The local-vs-remote difference is
 expressed once, as decorator composition in `common/di.rs`:
 
@@ -870,7 +873,7 @@ invokes the function, so nothing compensates at the application layer.
 Derived from reading the SQL against the refcount contract, **not from
 a reproduction** — needs a test before anyone acts on it. Same root
 cause as prerequisite 2 below: the manifest counter is written by
-`dedup_service` and reconciled by nothing, so this has been invisible.
+`blob_handler` and reconciled by nothing, so this has been invisible.
 
 Related, much narrower: the single-file path calls `add_reference`
 *after* its CTE, best-effort with a warning on failure
@@ -1060,7 +1063,7 @@ pre-existing hole. Row 8 is the blocker:
 > counter drift from data loss to a space leak that the recompute then
 > reports.
 
-The zero-ref manifest sweep (`dedup_service.rs:2574`) is:
+The zero-ref manifest sweep (`blob_handler.rs`) is:
 
 ```sql
 DELETE FROM storage.chunk_manifests
@@ -1097,7 +1100,7 @@ registry-driven — the union of every source's manifest-level
    `refcount_mismatch` finding — a flood, and one an operator might
    "repair".
 2. **`chunk_manifests.ref_count` must become verified.** It is
-   currently maintained by `dedup_service` and reconciled by
+   currently maintained by `blob_handler` and reconciled by
    *nothing*: `blobs_consistency` only recomputes
    `storage.blobs.ref_count`, and the manifest-level integrity it
    defers to `files_consistency::chunk_missing` is a different check
@@ -1221,9 +1224,9 @@ on the thumbnail path, not a cache metric.
 If it does interfere, the fix that preserves the one-implementation
 rule is **two instances of `CachedBlobBackend` with separate
 budgets** — same type, same factory, different config — not a second
-cache type. Honest cost: `DedupService` would need a second backend
+cache type. Honest cost: `BlobHandler` would need a second backend
 handle plus a content-class selector, since derived blobs have
-manifests and must still be reassembled through `DedupService`. Ship
+manifests and must still be reassembled through `BlobHandler`. Ship
 the shared cache, measure, split only if the test says so. The knob
 would be `OXICLOUD_STORAGE_DERIVED_CACHE_MAX_SIZE` alongside the
 existing `OXICLOUD_STORAGE_CACHE_MAX_SIZE`.
@@ -1455,8 +1458,8 @@ negligible beside the decode. Note the sidecar *read* path must survive
 until the directories are empty regardless, so stopping the write early
 buys nothing.
 
-Cost to be aware of: `ThumbnailService` holds no `DedupService` — it is
-a per-call parameter (`dedup: Option<&DedupService>`) — so the
+Cost to be aware of: `ThumbnailService` holds no `BlobHandler` — it is
+a per-call parameter (`dedup: Option<&BlobHandler>`) — so the
 consolidation threads it through those paths, and
 `generate_and_persist` takes a `thumb_path` where it will need the
 `blob_hash` instead.
@@ -1497,7 +1500,7 @@ hardcoded SQL). New sources bolt on independently.
    invisible, and step 2 removes the `OR` that used to mask it.
 4. ~~`OXICLOUD_SPOOL_DIR`~~ — reduced to a docs change, or dropped;
    see the sidecar section.
-5. **`ThumbnailService` writes go through `DedupService`**. New
+5. **`ThumbnailService` writes go through `BlobHandler`**. New
    `storage.content_derived_blobs` table + `ContentDerivedReferenceSource`.
    Deletes `thumbnails_root`, `get_thumbnail_path`, and every
    filesystem call in the service. Fold the `content_derived_blobs` lookup
@@ -1574,7 +1577,7 @@ hardcoded SQL). New sources bolt on independently.
       sidecar-only, which is safe *only* because both are reachable
       solely through the `ThumbnailPort` impl and nothing holds a
       `dyn ThumbnailPort` — if either gains a real caller it must take a
-      `DedupService` first. See *Prerequisite: one persist function*.
+      `BlobHandler` first. See *Prerequisite: one persist function*.
    b. **`thumb_derived_import`** (shipped) and **`thumb_attached_import`**
       (shipped) — two jobs, not one, because the keying differs and that
       difference is the security boundary. A third, `transcode_import`,
@@ -1659,10 +1662,24 @@ hardcoded SQL). New sources bolt on independently.
       `opendir`/`readdir`/`closedir` — which matters if the fallback
       ever gates on it per read rather than once at boot. The only
       remaining release, and no data is at stake by then.
-11. **`DedupService` → `BlobHandler` rename** — decided, mechanical,
-    34 files. Standalone commit, `src/AGENTS.md` updated with it. Can
-    land at any point; last is easiest, since every earlier slice
-    would otherwise rebase across it.
+11. **`DedupService` → `BlobHandler` rename** — **DONE 2026-10-04**.
+    Decided, mechanical, 34 files. Standalone commit, `src/AGENTS.md`
+    updated with it. Can land at any point; last is easiest, since every
+    earlier slice would otherwise rebase across it.
+
+    As executed: 44 files in `src/`, plus 12 bench examples and three
+    test-script comments the original scoping did not count, and the
+    three `docs/architecture/` pages that named the type. `AGENTS.md`'s
+    canonical-read-path rule now points at `BlobHandler` — leaving it
+    would have aimed the rule that stops services taking
+    `Arc<dyn BlobStorageBackend>` directly at a type that no longer
+    exists.
+
+    The field `dedup_service` on `AppState`/`CoreServices` followed the
+    type, as the naming section recommends. The **bare local `dedup` did
+    not**: 443 occurrences, and `dedup` is also the name of the concept
+    the doc-comments are meant to keep describing. That is a separate
+    pass needing per-occurrence judgement, not a replace.
 
 12. **Document the two satellite tables** — `storage.content_derived_blobs`
     and `storage.file_attached_blobs`, with worked examples. **Not
@@ -1787,7 +1804,11 @@ read-side normalisation (2026-08-02). They're not code-breakers,
 but they cost every new implementor a mental round-trip, so
 they belong in the tier-2 sweep:
 
-### 1. `DedupService` name is implementation-shaped, not consumer-shaped
+### 1. `DedupService` name is implementation-shaped, not consumer-shaped — **DONE 2026-10-04**
+
+*Landed as step 11. The old name is kept throughout this subsection
+because it is the subject of the argument; everywhere else in this plan
+now says `BlobHandler`.*
 
 From a consumer's perspective the service is "the thing that
 reads and writes file content by hash." Deduplication is one
@@ -1807,8 +1828,30 @@ standalone commit so reviewers see "rename" independently from the
 substantive changes — it is the noisiest diff in this plan and the
 least interesting.
 
-**`src/AGENTS.md` must change in the same commit.** Lines 20-21 name
-`Arc<DedupService>` as *the* canonical read abstraction and list its
+**Re-measured 2026-10-04: 44 files, 288 occurrences.** The figure above
+is from 2026-08-16 and the code has grown ~38% past it; re-count before
+planning the work rather than trusting either number.
+
+**And the "mechanical" claim only covers half of it.** The type and the
+module path are unambiguous identifiers, so those are a safe sweep. The
+local variable is not: there are **443** bare `dedup` identifiers under
+`src/`, and `dedup` is also the name of the *concept* — which the
+paragraph below deliberately wants kept, since the doc-comments are
+supposed to go on describing deduplication as a strategy. A blind
+variable sweep would rewrite prose about dedup into prose about a
+handler. So the variable rename needs per-occurrence judgement and
+should be a second pass, not part of the same replace.
+
+**Sequencing, learned the hard way from the sentence above about
+rebasing:** "land it last" means *last relative to work in flight*, not
+last in this list. With an open PR on another branch, a 288-occurrence
+rename guarantees a conflict with every review fix that lands there.
+Wait for the queue to drain.
+
+**`src/AGENTS.md` must change in the same commit.** *(Done — it names
+`Arc<BlobHandler>` now, with a parenthetical recording the old name so a
+reader meeting "dedup" in older code knows what it was.)* Those lines named
+`Arc<DedupService>` as *the* canonical read abstraction and listed its
 methods; leaving them would point the rule at a type that no longer
 exists — and that rule is what stops new services from taking
 `Arc<dyn BlobStorageBackend>` directly. The local variable name

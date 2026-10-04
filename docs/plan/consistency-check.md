@@ -37,7 +37,7 @@ Each has invariants that can silently drift:
   the user actually uploaded (data loss).
 
 Today the only "consistency" primitives are targeted point solutions —
-`dedup_service` GC (orphan blob reap with 1 h grace), `storage_usage_service`
+`blob_handler` GC (orphan blob reap with 1 h grace), `storage_usage_service`
 reconciliation (rebuild `used_bytes` from `SUM(size)`), and the trash cleaner.
 None of them SURFACE inconsistencies for operators; they act blindly and
 best-effort. `tests/api/storage_cleanup_check.sh` polls with a 5 s window
@@ -762,7 +762,7 @@ count decreases by one per PR.
   `src/interfaces/api/handlers/admin_handler.rs::trigger_job` —
   same shape for the new endpoints (production surface, always-on,
   audit-logged; no feature-flag gate).
-- **Dedup GC's orphan-detection logic** (`dedup_service.rs`) — the
+- **Dedup GC's orphan-detection logic** (`blob_handler.rs`) — the
   algorithmic template for `BlobConsistencyCheck`'s orphan phase.
   Reference impl, not a callsite — the check needs its own two-pass
   discipline; GC currently reap-and-forgets.

@@ -7,7 +7,7 @@
 //! fails to reduce allocations — the round's roll-back rule encoded into the
 //! benchmark.
 //!
-//!   [D1] `DedupService::hash_chunk_sequence` (delta-commit verification) took
+//!   [D1] `BlobHandler::hash_chunk_sequence` (delta-commit verification) took
 //!        `chunks: &[(String, u64)]` and fed the backend stream via
 //!        `chunks.iter().cloned()` — re-allocating every chunk-hash String a
 //!        second time, on top of the owned `Vec` the caller already built with

@@ -2,7 +2,7 @@
 //!
 //! Isolates the ONE variable the local-backend change touches: the chunk
 //! read-ahead depth fed to `buffered(N)` when reassembling a CDC file on the
-//! download path (`DedupService::stream_chunks`). It rebuilds the *exact*
+//! download path (`BlobHandler::stream_chunks`). It rebuilds the *exact*
 //! production combinator —
 //!
 //!   `stream::iter(hashes).map(get_blob_stream).buffered(N).try_flatten()`

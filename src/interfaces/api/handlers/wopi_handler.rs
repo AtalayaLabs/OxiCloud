@@ -333,7 +333,7 @@ async fn put_file(
     let content_type = file.mime_type.clone();
     let ingested = match crate::interfaces::upload_ingest::ingest_body_to_cas(
         req.into_body(),
-        &state.app_state.core.dedup_service,
+        &state.app_state.core.blob_handler,
         &file.name,
         &content_type,
         usize::MAX,

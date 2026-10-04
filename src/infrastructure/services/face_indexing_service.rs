@@ -2,7 +2,7 @@
 //!
 //! On image upload it detects + embeds faces (off the request path, in a
 //! background task) and stores them. Mirrors `ThumbnailService`: reads the
-//! blob through `DedupService` (CDC-manifest lookup, wrapper-stack
+//! blob through `BlobHandler` (CDC-manifest lookup, wrapper-stack
 //! delegation, encryption transparency — the service sees none of that),
 //! is dedup-aware (identical uploads clone an existing file's faces
 //! instead of re-running inference), and is completely inert when no
@@ -21,7 +21,7 @@ use crate::application::ports::file_lifecycle::FileLifecycleHook;
 use crate::common::errors::DomainError;
 use crate::domain::entities::face::Face;
 use crate::infrastructure::repositories::pg::FacePgRepository;
-use crate::infrastructure::services::dedup_service::DedupService;
+use crate::infrastructure::services::blob_handler::BlobHandler;
 
 /// Minimum detector confidence for a face to be stored.
 const MIN_DET_SCORE: f32 = 0.6;
@@ -53,7 +53,7 @@ pub struct FaceIndexingService {
     /// CDC-aware blob reader. Same abstraction `thumbnail_service` uses —
     /// hides both the chunk-manifest concatenation and the underlying
     /// `BlobStorageBackend` wrapper stack.
-    dedup: Arc<DedupService>,
+    dedup: Arc<BlobHandler>,
     /// Bounds concurrent indexing tasks. The lifecycle hooks spawn one
     /// task per uploaded/copied image with no ceiling, so a bulk upload
     /// used to fan out N simultaneous full-image reads + decodes +
@@ -67,7 +67,7 @@ pub struct FaceIndexingService {
 impl FaceIndexingService {
     pub fn new(
         pool: Arc<PgPool>,
-        dedup: Arc<DedupService>,
+        dedup: Arc<BlobHandler>,
         analyzer: Arc<dyn FaceAnalyzerPort>,
     ) -> Self {
         let repo = Arc::new(FacePgRepository::new(pool.clone()));
@@ -188,7 +188,7 @@ async fn index_file(
     repo: &FacePgRepository,
     analyzer: &dyn FaceAnalyzerPort,
     file_id: Uuid,
-    dedup: &Arc<DedupService>,
+    dedup: &Arc<BlobHandler>,
     blob_hash: &str,
     reuse_dedup: bool,
 ) -> Result<(), DomainError> {
@@ -213,7 +213,7 @@ async fn index_file(
         // No peer found — fall through and analyze.
     }
 
-    // CDC-aware, backend-agnostic read: `DedupService` concatenates chunks
+    // CDC-aware, backend-agnostic read: `BlobHandler` concatenates chunks
     // for CDC files, delegates straight through for legacy whole-file
     // blobs, and inherits the backend wrapper stack (encryption, retry,
     // cache) transparently. Peak process-heap = image size, already

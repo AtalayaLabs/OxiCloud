@@ -234,7 +234,7 @@ fallback thumbnail and it is a third row, differing only in `variant`
 ## Lifecycle
 
 **References.** A positive `blob_hash` is a reference *holder* — it
-bumps `chunk_manifests.ref_count` through `DedupService::add_reference`,
+bumps `chunk_manifests.ref_count` through `BlobHandler::add_reference`,
 so `dedup_gc` cannot reap an artifact a satellite still points at. A
 negative row holds none. `source_hash` is a *dependent* reference and
 holds nothing.

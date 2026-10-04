@@ -14,13 +14,13 @@
 //!        `Vec::with_capacity(rows.len())` — the file-side sibling ROUND20 §I1
 //!        shipped, extended to the calendar/contact repos it deferred.
 //!
-//!   [R2] `DedupService::settle_batch` cloned every 64-char chunk hash into a
+//!   [R2] `BlobHandler::settle_batch` cloned every 64-char chunk hash into a
 //!        `Vec<String>` purely to `.bind()` it to the pin `UPDATE … = ANY($1)`.
 //!        AFTER binds a borrowed `Vec<&str>` — sqlx encodes `&[&str]` to
 //!        `text[]` identically (favorites_pg_repository.rs:271 already does
 //!        this), so the per-chunk hash `String` disappears.
 //!
-//!   [R3] `DedupService::store_loose_chunks` (the delta-upload sibling of the
+//!   [R3] `BlobHandler::store_loose_chunks` (the delta-upload sibling of the
 //!        ROUND17 §D2 ingest loop) kept an intra-request dedup `HashSet<String>`
 //!        and cloned the hex hash TWICE per frame (into `received` and into the
 //!        set). AFTER keys the set on the raw `[u8; 32]` BLAKE3 digest (`Copy`,

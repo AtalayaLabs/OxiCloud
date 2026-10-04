@@ -8,7 +8,7 @@
 # to distinguish which side is broken:
 #
 #   1. `storage.chunk_manifests.ref_count` — queried FIRST by
-#      `dedup_service::get_blob_metadata` (`dedup_service.rs`
+#      `blob_handler::get_blob_metadata` (`blob_handler.rs`
 #      :1543-1552). If a manifest row exists for the hash,
 #      the API returns THIS ref_count.
 #   2. `storage.blobs.ref_count` — legacy whole-file fallback,
@@ -63,7 +63,7 @@ log() { echo "[ref_count-diag] $*"; }
 log "─────────────────────────────────────────────────────────"
 log "refcount_cascade.hurl failed — running diagnostic."
 log "Shows blob.ref_count AND manifest.ref_count side by side —"
-log "the API queries manifest first (dedup_service.rs:1543), so"
+log "the API queries manifest first (blob_handler.rs:1543), so"
 log "if the two diverge, the API surface + auditor + on-disk"
 log "state all report different numbers. See script header."
 log "─────────────────────────────────────────────────────────"

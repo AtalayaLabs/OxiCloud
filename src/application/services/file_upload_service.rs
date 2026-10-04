@@ -12,7 +12,7 @@ use crate::common::errors::DomainError;
 use crate::domain::services::authorization::{Permission, Resource, Subject};
 use crate::infrastructure::repositories::pg::FileBlobReadRepository;
 use crate::infrastructure::repositories::pg::FileBlobWriteRepository;
-use crate::infrastructure::services::dedup_service::DedupService;
+use crate::infrastructure::services::blob_handler::BlobHandler;
 use crate::infrastructure::services::file_content_cache::FileContentCache;
 use crate::infrastructure::services::pg_acl_engine::PgAclEngine;
 use tracing::{Instrument, info, warn};
@@ -69,7 +69,7 @@ pub struct FileUploadService {
 /// ports: permission checks, the dedup index, and quota enforcement.
 struct InstantUploadDeps {
     authz: Arc<PgAclEngine>,
-    dedup: Arc<DedupService>,
+    dedup: Arc<BlobHandler>,
     quota: Arc<StorageUsageService>,
 }
 
@@ -138,7 +138,7 @@ impl FileUploadService {
     pub fn with_instant_upload(
         mut self,
         authz: Arc<PgAclEngine>,
-        dedup: Arc<DedupService>,
+        dedup: Arc<BlobHandler>,
         quota: Arc<StorageUsageService>,
     ) -> Self {
         self.authorization = Some(authz.clone());

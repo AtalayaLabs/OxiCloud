@@ -68,8 +68,8 @@ use crate::infrastructure::repositories::pg::{
     PlaylistItemPgRepository, PlaylistPgRepository, SessionPgRepository, UserPgRepository,
 };
 use crate::infrastructure::services::audio_metadata_service::AudioMetadataService;
+use crate::infrastructure::services::blob_handler::BlobHandler;
 use crate::infrastructure::services::chunked_upload_service::ChunkedUploadService;
-use crate::infrastructure::services::dedup_service::DedupService;
 use crate::infrastructure::services::ffmpeg_video_frame_service::{
     FfmpegVideoFrameService, NoopVideoFrameService,
 };
@@ -151,8 +151,8 @@ impl AppServiceFactory {
 
     /// Initializes the core system services.
     ///
-    /// Requires a `PgPool` because `DedupService` stores its index in PostgreSQL.
-    /// The `maintenance_pool` is given to `DedupService` for long-running
+    /// Requires a `PgPool` because `BlobHandler` stores its index in PostgreSQL.
+    /// The `maintenance_pool` is given to `BlobHandler` for long-running
     /// operations (verify_integrity, garbage_collect) so they cannot starve
     /// the primary pool.
     pub async fn create_core_services(
@@ -475,38 +475,38 @@ impl AppServiceFactory {
 
         // Blob lifecycle — thumbnail disk-file cleanup when blob ref_count hits zero.
         // ThumbnailService (not ThumbnailRefreshHook) is used here to avoid a circular
-        // Arc: DedupService→BlobLifecycleService→ThumbnailRefreshHook→DedupService.
+        // Arc: BlobHandler→BlobLifecycleService→ThumbnailRefreshHook→BlobHandler.
         let blob_lifecycle =
             Arc::new(BlobLifecycleService::new().with_hook(thumbnail_service.clone()));
 
         // Hold a clone of the fully-decorated blob backend for use by
         // `blobs_consistency` (physical-existence + bit-rot probes)
         // further down the DI chain. Must be captured BEFORE the
-        // `dedup_service` construction below because that call moves
-        // `blob_backend` into DedupService.
+        // `blob_handler` construction below because that call moves
+        // `blob_backend` into BlobHandler.
         let blob_backend_for_consistency = blob_backend.clone();
 
         // Deduplication service — PRIMARY blob storage engine (PostgreSQL-backed index)
-        let dedup_service = Arc::new(
-            crate::infrastructure::services::dedup_service::DedupService::new(
+        let blob_handler = Arc::new(
+            crate::infrastructure::services::blob_handler::BlobHandler::new(
                 blob_backend,
                 db_pool.clone(),
                 maintenance_pool.clone(),
             )
             .with_blob_lifecycle(blob_lifecycle),
         );
-        dedup_service.initialize().await?;
+        blob_handler.initialize().await?;
 
         // Hand the transcode service its derived tier.
         //
         // Deferred rather than injected at construction because that happens
-        // ~240 lines above this, before `DedupService` exists, and the
+        // ~240 lines above this, before `BlobHandler` exists, and the
         // retrieval path that needs the transcode service is wired earlier
         // still. Reordering DI to make the dependency a constructor argument
         // would move more than it is worth; the service treats a missing
         // handle as "local cache only", which is exactly its pre-derived-tier
         // behaviour.
-        image_transcode_service.attach_dedup(dedup_service.clone());
+        image_transcode_service.attach_dedup(blob_handler.clone());
 
         // One-time migration: re-chunk pre-CDC whole-file blobs into chunk
         // manifests so Range reads (and, with encryption, partial decrypts)
@@ -550,15 +550,15 @@ impl AppServiceFactory {
         );
 
         // Audio metadata service — created here so it can be wired into file_lifecycle.
-        let audio_metadata_service = self.create_audio_metadata_service(db_pool, &dedup_service);
+        let audio_metadata_service = self.create_audio_metadata_service(db_pool, &blob_handler);
 
         // Image/video capture-metadata service — extracts EXIF/container capture
         // dates so the Photos timeline groups by real capture time, not upload time.
-        let media_metadata_service = self.create_media_metadata_service(db_pool, &dedup_service);
+        let media_metadata_service = self.create_media_metadata_service(db_pool, &blob_handler);
 
         // ThumbnailRefreshHook: handles FileLifecycleHook events (create/update/delete).
         // Implemented on ThumbnailRefreshHook (not ThumbnailService) to avoid circular Arc:
-        //   DedupService → BlobLifecycleService → ThumbnailRefreshHook → DedupService.
+        //   BlobHandler → BlobLifecycleService → ThumbnailRefreshHook → BlobHandler.
         // Video frame extractor for thumbnails. Detect ffmpeg once at startup so
         // the choice (real extractor vs. no-op) is logged here instead of failing
         // per upload.
@@ -606,7 +606,7 @@ impl AppServiceFactory {
 
         let thumbnail_refresh_hook = Arc::new(ThumbnailRefreshHook::new(
             thumbnail_service.clone(),
-            dedup_service.clone(),
+            blob_handler.clone(),
             video_frame,
             video_max_bytes,
         ));
@@ -618,7 +618,7 @@ impl AppServiceFactory {
         }
         fls = fls.with_hook(media_metadata_service.clone());
         if self.config.features.enable_faces {
-            fls = fls.with_hook(self.create_face_indexing_service(db_pool, &dedup_service));
+            fls = fls.with_hook(self.create_face_indexing_service(db_pool, &blob_handler));
         }
         let file_lifecycle = Arc::new(fls);
 
@@ -646,7 +646,7 @@ impl AppServiceFactory {
             media_metadata_service,
             chunked_upload_service,
             image_transcode_service,
-            dedup_service,
+            blob_handler,
             zip_service: None, // Placeholder - replaced after app services init
             config: self.config.clone(),
             job_registry,
@@ -670,18 +670,18 @@ impl AppServiceFactory {
         let folder_repo_concrete = Arc::new(FolderDbRepository::new(db_pool.clone()));
         let folder_repository: Arc<FolderDbRepository> = folder_repo_concrete.clone();
 
-        // File repositories — PostgreSQL metadata + blob content via DedupService
+        // File repositories — PostgreSQL metadata + blob content via BlobHandler
         let file_read_repository: Arc<FileBlobReadRepository> =
             Arc::new(FileBlobReadRepository::new(
                 db_pool.clone(),
-                core.dedup_service.clone(),
+                core.blob_handler.clone(),
                 folder_repo_concrete.clone(),
             ));
 
         let file_write_repository: Arc<FileBlobWriteRepository> =
             Arc::new(FileBlobWriteRepository::new(
                 db_pool.clone(),
-                core.dedup_service.clone(),
+                core.blob_handler.clone(),
                 // Shared blob-hash cache: the write side invalidates entries
                 // on content swaps/deletes so reads never serve stale blobs.
                 file_read_repository.blob_hash_cache(),
@@ -708,7 +708,7 @@ impl AppServiceFactory {
         let file_metadata_repository = Arc::new(FileMetadataRepository::new(db_pool.clone()));
 
         tracing::info!(
-            "Repository services initialized with 100% blob storage model (PG metadata + DedupService blobs)"
+            "Repository services initialized with 100% blob storage model (PG metadata + BlobHandler blobs)"
         );
 
         RepositoryServices {
@@ -816,7 +816,7 @@ impl AppServiceFactory {
             .with_storage_usage_service(storage_usage.clone())
             .with_instant_upload(
                 authz.clone(),
-                core.dedup_service.clone(),
+                core.blob_handler.clone(),
                 storage_usage.clone(),
             )
             // Bus fan-out — every successful `upload_file_streaming`
@@ -833,7 +833,7 @@ impl AppServiceFactory {
         // store. Bounded by the same whole-file ceiling as byte uploads.
         let delta_upload_service = Arc::new(
             crate::application::services::delta_upload_service::DeltaUploadService::new(
-                core.dedup_service.clone(),
+                core.blob_handler.clone(),
                 file_upload_service.clone(),
                 repos.file_read_repository.clone(),
                 storage_usage.clone(),
@@ -1044,7 +1044,7 @@ impl AppServiceFactory {
     pub fn create_audio_metadata_service(
         &self,
         db_pool: &Arc<PgPool>,
-        dedup: &Arc<crate::infrastructure::services::dedup_service::DedupService>,
+        dedup: &Arc<crate::infrastructure::services::blob_handler::BlobHandler>,
     ) -> Option<Arc<AudioMetadataService>> {
         if !self.config.features.enable_music {
             tracing::info!("Audio metadata service is disabled (music feature disabled)");
@@ -1062,7 +1062,7 @@ impl AppServiceFactory {
     pub fn create_media_metadata_service(
         &self,
         db_pool: &Arc<PgPool>,
-        dedup: &Arc<crate::infrastructure::services::dedup_service::DedupService>,
+        dedup: &Arc<crate::infrastructure::services::blob_handler::BlobHandler>,
     ) -> Arc<MediaMetadataService> {
         Arc::new(MediaMetadataService::new(
             db_pool.clone(),
@@ -1098,7 +1098,7 @@ impl AppServiceFactory {
                 trash_repo.clone(),
                 repos.file_write_repository.clone(),
                 repos.folder_repository.clone(),
-                core.dedup_service.clone(),
+                core.blob_handler.clone(),
                 Some(core.file_content_cache.clone()),
                 authz.clone(),
                 drive_repo.clone(),
@@ -1122,7 +1122,7 @@ impl AppServiceFactory {
         // loud). See `docs/plan/job-registry.md` Part 1.
         let _ = Arc::new(TrashCleanupService::new(
             trash_repo.clone(),
-            core.dedup_service.clone(),
+            core.blob_handler.clone(),
             24, // Run cleanup every 24 hours
         ))
         .register(&core.job_registry)
@@ -1243,7 +1243,7 @@ impl AppServiceFactory {
     pub fn create_face_indexing_service(
         &self,
         db_pool: &Arc<PgPool>,
-        dedup: &Arc<crate::infrastructure::services::dedup_service::DedupService>,
+        dedup: &Arc<crate::infrastructure::services::blob_handler::BlobHandler>,
     ) -> Arc<crate::infrastructure::services::face_indexing_service::FaceIndexingService> {
         let analyzer = self.build_face_analyzer();
         Arc::new(
@@ -1486,7 +1486,7 @@ impl AppServiceFactory {
             Some((index, needs_reseed)) => {
                 ContentIndexWorker::new(
                     maintenance_pool.clone(),
-                    core.dedup_service.clone(),
+                    core.blob_handler.clone(),
                     index,
                     self.config.content_search.flush_interval_ms,
                     self.config.content_search.max_extract_file_bytes,
@@ -1517,7 +1517,7 @@ impl AppServiceFactory {
         let pool = Arc::new(pools.primary);
         let maintenance_pool = Arc::new(pools.maintenance);
 
-        // 1. Core services (PgPool needed for DedupService index)
+        // 1. Core services (PgPool needed for BlobHandler index)
         let core = self.create_core_services(&pool, &maintenance_pool).await?;
 
         // Register on-demand-only jobs whose owning service lives on
@@ -1525,11 +1525,7 @@ impl AppServiceFactory {
         // sweep already runs GC as its tail step, so a periodic dedup
         // schedule would double the work. The `register()` method
         // encapsulates the on-demand shape.
-        let _ = core
-            .dedup_service
-            .clone()
-            .register(&core.job_registry)
-            .await;
+        let _ = core.blob_handler.clone().register(&core.job_registry).await;
 
         // First recoverable-run tenant (`docs/plan/job-registry.md`
         // Part 2). Iterates `storage.drives` and reports each drive
@@ -1585,7 +1581,7 @@ impl AppServiceFactory {
         let _ = Arc::new(
             crate::infrastructure::services::manifests_consistency_service::ManifestsConsistencyCheck::new(
                 maintenance_pool.clone(),
-                core.dedup_service.reference_registry(),
+                core.blob_handler.reference_registry(),
             ),
         )
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
@@ -1603,7 +1599,7 @@ impl AppServiceFactory {
         let _ = Arc::new(
             crate::infrastructure::services::thumb_derived_import_service::ThumbDerivedImport::new(
                 std::path::Path::new(&self.storage_path).join(".thumbnails"),
-                core.dedup_service.clone(),
+                core.blob_handler.clone(),
             ),
         )
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
@@ -1620,7 +1616,7 @@ impl AppServiceFactory {
         let _ = Arc::new(
             crate::infrastructure::services::transcode_import_service::TranscodeImport::new(
                 std::path::Path::new(&self.storage_path).join(".transcoded"),
-                core.dedup_service.clone(),
+                core.blob_handler.clone(),
                 maintenance_pool.clone(),
             ),
         )
@@ -1641,7 +1637,7 @@ impl AppServiceFactory {
         let _ = Arc::new(
             crate::infrastructure::services::backend_reclaim_service::BackendReclaim::new(
                 maintenance_pool.clone(),
-                core.dedup_service.backend().clone(),
+                core.blob_handler.backend().clone(),
             ),
         )
         .register_recoverable_job(
@@ -1682,7 +1678,7 @@ impl AppServiceFactory {
         // can see rather than a grep over boot logs.
         let _ = Arc::new(
             crate::infrastructure::services::backend_rechunk_service::BackendRechunk::new(
-                core.dedup_service.clone(),
+                core.blob_handler.clone(),
             ),
         )
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
@@ -1710,7 +1706,7 @@ impl AppServiceFactory {
         let _ = Arc::new(
             crate::infrastructure::services::satellites_consistency_service::SatellitesConsistencyCheck::new(
                 maintenance_pool.clone(),
-                core.dedup_service.clone(),
+                core.blob_handler.clone(),
             ),
         )
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
@@ -1723,7 +1719,7 @@ impl AppServiceFactory {
         let _ = Arc::new(
             crate::infrastructure::services::thumb_attached_import_service::ThumbAttachedImport::new(
                 std::path::Path::new(&self.storage_path).join(".thumbnails"),
-                core.dedup_service.clone(),
+                core.blob_handler.clone(),
                 maintenance_pool.clone(),
             ),
         )
@@ -1761,8 +1757,8 @@ impl AppServiceFactory {
             crate::infrastructure::services::blobs_consistency_service::BlobsConsistencyCheck::new(
                 maintenance_pool.clone(),
                 // Same registry instance GC reaps from — see
-                // DedupService::reference_registry.
-                core.dedup_service.reference_registry(),
+                // BlobHandler::reference_registry.
+                core.blob_handler.reference_registry(),
             ),
         )
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
@@ -2821,7 +2817,7 @@ impl AppServiceFactory {
                 });
             let writer: Arc<dyn crate::application::ports::collab_ports::DocContentWriter> =
                 Arc::new(FileBlobDocContentWriter {
-                    dedup: app_state.core.dedup_service.clone(),
+                    dedup: app_state.core.blob_handler.clone(),
                     file_write: app_state.repositories.file_write_repository.clone(),
                     file_read: app_state.repositories.file_read_repository.clone(),
                     content_cache: app_state.core.file_content_cache.clone(),
@@ -3003,7 +2999,7 @@ impl AppServiceFactory {
             let storage_settings_svc = Arc::new(StorageSettingsService::new(
                 settings_repo.clone(),
                 self.config.storage.clone(),
-                app_state.core.dedup_service.clone(),
+                app_state.core.blob_handler.clone(),
                 app_state.core.config.storage_entries.clone(),
                 app_state.core.active_backend_name.clone(),
                 app_state.migration_readonly.clone(),
@@ -3620,7 +3616,7 @@ pub struct CoreServices {
     pub media_metadata_service: Arc<MediaMetadataService>,
     pub chunked_upload_service: Arc<ChunkedUploadService>,
     pub image_transcode_service: Arc<ImageTranscodeService>,
-    pub dedup_service: Arc<DedupService>,
+    pub blob_handler: Arc<BlobHandler>,
     pub zip_service: Option<Arc<ZipService>>,
     pub config: AppConfig,
     /// Periodic-job scheduler registry. Services that satisfy the
@@ -3639,7 +3635,7 @@ pub struct CoreServices {
     /// stack applied). Exposed here so tenants outside
     /// `create_core_services` — notably `blobs_consistency` in
     /// `build_app_state` — can probe `blob_exists()` / re-hash bytes
-    /// through the same stack DedupService uses.
+    /// through the same stack BlobHandler uses.
     ///
     /// Concretely this is the hot-swap wrapper coerced to
     /// `Arc<dyn ...>`; a migration cutover replaces the inner
@@ -4319,7 +4315,7 @@ impl crate::application::ports::collab_ports::DocContentReader for FileBlobDocCo
 /// already went into the CRDT with authorization at write time).
 ///
 /// **Pipeline** (same shape the upload path uses):
-///   1. `DedupService::store_from_stream(bytes)` → blob hash + size
+///   1. `BlobHandler::store_from_stream(bytes)` → blob hash + size
 ///      (dedup ref-counted; identical content is a no-op on disk).
 ///   2. `FileBlobWriteRepository::update_file_content_with_blob(
 ///        file_id, hash, size, None, caller_id, None)` → atomic swap;
@@ -4330,7 +4326,7 @@ impl crate::application::ports::collab_ports::DocContentReader for FileBlobDocCo
 ///   4. `FileLifecycleHook::on_file_updated(...)` — thumbnails,
 ///      search index, everything else that reacts to blob changes.
 struct FileBlobDocContentWriter {
-    dedup: Arc<crate::infrastructure::services::dedup_service::DedupService>,
+    dedup: Arc<crate::infrastructure::services::blob_handler::BlobHandler>,
     file_write: Arc<
         crate::infrastructure::repositories::pg::file_blob_write_repository::FileBlobWriteRepository,
     >,

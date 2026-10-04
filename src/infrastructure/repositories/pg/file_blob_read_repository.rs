@@ -43,7 +43,7 @@ use crate::application::ports::storage_ports::FileReadPort;
 use crate::common::errors::DomainError;
 use crate::domain::entities::file::File;
 use crate::domain::services::path_service::StoragePath;
-use crate::infrastructure::services::dedup_service::DedupService;
+use crate::infrastructure::services::blob_handler::BlobHandler;
 use uuid::Uuid;
 
 /// SQL `EXISTS (…)` predicate — true when the caller (bound to `$1`) has
@@ -188,7 +188,7 @@ fn bind_criteria_filters<'q, O>(
 /// File read repository backed by PostgreSQL metadata + blob storage.
 pub struct FileBlobReadRepository {
     pool: Arc<PgPool>,
-    dedup: Arc<DedupService>,
+    dedup: Arc<BlobHandler>,
     /// Lock-free cache: file_id → blob_hash.
     /// Populated by `get_file()` and `resolve_blob_hash()` (slow path).
     /// Entries persist until TTI expiry (30 s idle) or capacity eviction.
@@ -205,7 +205,7 @@ pub struct FileBlobReadRepository {
 impl FileBlobReadRepository {
     pub fn new(
         pool: Arc<PgPool>,
-        dedup: Arc<DedupService>,
+        dedup: Arc<BlobHandler>,
         _folder_repo: Arc<super::folder_db_repository::FolderDbRepository>,
     ) -> Self {
         Self {
@@ -405,7 +405,7 @@ impl FileBlobReadRepository {
     /// `subject_group_service`.
     #[cfg(any(test, integration_tests))]
     pub fn new_stub() -> Self {
-        use crate::infrastructure::services::dedup_service::DedupService;
+        use crate::infrastructure::services::blob_handler::BlobHandler;
         Self {
             pool: Arc::new(
                 sqlx::pool::PoolOptions::<sqlx::Postgres>::new()
@@ -413,7 +413,7 @@ impl FileBlobReadRepository {
                     .connect_lazy("postgres://invalid:5432/none")
                     .unwrap(),
             ),
-            dedup: Arc::new(DedupService::new_stub()),
+            dedup: Arc::new(BlobHandler::new_stub()),
             hash_cache: Cache::builder()
                 .max_capacity(10_000)
                 .time_to_idle(Duration::from_secs(30))
@@ -1616,7 +1616,7 @@ mod tests {
     /// Only the moka `hash_cache` is exercised — no SQL is executed.
     fn make_repo() -> FileBlobReadRepository {
         let _folder_repo = Arc::new(FolderDbRepository::new_stub());
-        let dedup: Arc<DedupService> = Arc::new(DedupService::new_stub());
+        let dedup: Arc<BlobHandler> = Arc::new(BlobHandler::new_stub());
         FileBlobReadRepository {
             pool: Arc::new(
                 sqlx::pool::PoolOptions::<sqlx::Postgres>::new()
@@ -1705,7 +1705,7 @@ mod tests {
                     .connect_lazy("postgres://invalid:5432/none")
                     .unwrap(),
             ),
-            dedup: Arc::new(DedupService::new_stub()),
+            dedup: Arc::new(BlobHandler::new_stub()),
             hash_cache: Cache::builder()
                 .max_capacity(2) // only 2 entries
                 .build(),

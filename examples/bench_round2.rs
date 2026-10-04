@@ -254,7 +254,7 @@ async fn section_ingest_overlap(url: &str) {
         "  (mode fixed per process by OXICLOUD_INGEST_OVERLAP — run twice; current = {})",
         std::env::var("OXICLOUD_INGEST_OVERLAP").unwrap_or_else(|_| "1/default".into())
     );
-    use oxicloud::infrastructure::services::dedup_service::DedupService;
+    use oxicloud::infrastructure::services::blob_handler::BlobHandler;
     use oxicloud::infrastructure::services::local_blob_backend::LocalBlobBackend;
 
     let pool = Arc::new(
@@ -268,7 +268,7 @@ async fn section_ingest_overlap(url: &str) {
     let backend = Arc::new(LocalBlobBackend::new(dir.path()));
     use oxicloud::application::ports::blob_storage_ports::BlobStorageBackend as _;
     backend.initialize().await.expect("init backend");
-    let svc = DedupService::new(backend, pool.clone(), pool.clone());
+    let svc = BlobHandler::new(backend, pool.clone(), pool.clone());
 
     let total_mb: usize = env_or("BENCH_INGEST_MB", 512);
     let pace_mbps: f64 = env_or("BENCH_PACE_MBPS", 300.0);

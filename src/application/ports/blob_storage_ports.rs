@@ -1,13 +1,13 @@
 //! Blob Storage Backend Port — abstracts raw byte I/O for content-addressable storage.
 //!
-//! This trait decouples `DedupService` from any specific storage medium.
+//! This trait decouples `BlobHandler` from any specific storage medium.
 //! Implementations include:
 //! - `LocalBlobBackend`  — local filesystem (default)
 //! - `S3BlobBackend`     — any S3-compatible service (AWS, Backblaze B2, MinIO, R2…)
 //!
-//! `DedupService` owns an `Arc<dyn BlobStorageBackend>` and delegates all
+//! `BlobHandler` owns an `Arc<dyn BlobStorageBackend>` and delegates all
 //! byte-level I/O through this trait, keeping BLAKE3 hashing, ref-counting
-//! and PostgreSQL index logic in `DedupService` itself.
+//! and PostgreSQL index logic in `BlobHandler` itself.
 
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
@@ -25,7 +25,7 @@ use crate::domain::errors::DomainError;
 /// is used by `backend_consistency` to skip freshly-created files
 /// still within the write grace window (avoids false-positive
 /// orphans during the durability-before-visibility window that
-/// `dedup_service` opens).
+/// `blob_handler` opens).
 #[derive(Debug, Clone)]
 pub struct BackendBlobEntry {
     pub hash: String,

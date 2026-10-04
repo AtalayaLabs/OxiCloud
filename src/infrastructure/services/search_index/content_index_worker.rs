@@ -35,7 +35,7 @@ use sqlx::PgPool;
 use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
-use crate::infrastructure::services::dedup_service::DedupService;
+use crate::infrastructure::services::blob_handler::BlobHandler;
 use crate::infrastructure::services::search_index::tantivy_content_index::{
     EXTRACTOR_VERSION, IndexDocRecord, TantivyContentIndex,
 };
@@ -63,7 +63,7 @@ const WORKER_RESTART_BACKOFF_SECS: u64 = 5;
 
 pub struct ContentIndexWorker {
     maintenance_pool: Arc<PgPool>,
-    dedup: Arc<DedupService>,
+    dedup: Arc<BlobHandler>,
     index: Arc<TantivyContentIndex>,
     interval_ms: u64,
     max_extract_file_bytes: u64,
@@ -73,7 +73,7 @@ pub struct ContentIndexWorker {
 impl ContentIndexWorker {
     pub fn new(
         maintenance_pool: Arc<PgPool>,
-        dedup: Arc<DedupService>,
+        dedup: Arc<BlobHandler>,
         index: Arc<TantivyContentIndex>,
         interval_ms: u64,
         max_extract_file_bytes: u64,

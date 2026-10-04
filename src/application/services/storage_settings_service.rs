@@ -16,7 +16,7 @@ use crate::common::errors::{DomainError, ErrorKind};
 use crate::domain::repositories::settings_repository::SettingsRepository;
 use crate::infrastructure::repositories::pg::SettingsPgRepository;
 use crate::infrastructure::services::azure_blob_backend::AzureBlobBackend;
-use crate::infrastructure::services::dedup_service::DedupService;
+use crate::infrastructure::services::blob_handler::BlobHandler;
 use crate::infrastructure::services::local_blob_backend::LocalBlobBackend;
 use crate::infrastructure::services::s3_blob_backend::S3BlobBackend;
 
@@ -26,7 +26,7 @@ use crate::infrastructure::services::s3_blob_backend::S3BlobBackend;
 pub struct StorageSettingsService {
     settings_repo: Arc<SettingsPgRepository>,
     env_storage_config: StorageConfig,
-    dedup_service: Arc<DedupService>,
+    blob_handler: Arc<BlobHandler>,
     /// Multi-entry snapshot from `AppConfig.storage_entries`. Populated
     /// at DI time; immutable per-process (env can only change on
     /// restart, per `docs/plan/storage-multi-entry.md`). Empty when
@@ -49,7 +49,7 @@ impl StorageSettingsService {
     pub fn new(
         settings_repo: Arc<SettingsPgRepository>,
         env_storage_config: StorageConfig,
-        dedup_service: Arc<DedupService>,
+        blob_handler: Arc<BlobHandler>,
         storage_entries: Vec<NamedStorageEntry>,
         active_entry_name: Arc<std::sync::RwLock<String>>,
         migration_readonly: Arc<AtomicBool>,
@@ -57,7 +57,7 @@ impl StorageSettingsService {
         Self {
             settings_repo,
             env_storage_config,
-            dedup_service,
+            blob_handler,
             storage_entries,
             active_entry_name,
             migration_readonly,
@@ -153,7 +153,7 @@ impl StorageSettingsService {
     /// Build a `BlobStorageBackend` matching the current *effective*
     /// storage config (DB + env-var overrides + defaults).
     ///
-    /// Distinct from `dedup_service.backend()`, which is the LIVE
+    /// Distinct from `blob_handler.backend()`, which is the LIVE
     /// backend the app booted with — this method reflects what the
     /// admin has configured *now* and typically resolves to a
     /// different backend during a migration (source = live, target =
@@ -246,8 +246,8 @@ impl StorageSettingsService {
     /// were retired — they duplicated `entries[]` and leaked stale
     /// admin_settings rows saved by the retired admin-panel form.
     pub async fn get_storage_settings(&self) -> Result<StorageSettingsDto, DomainError> {
-        let stats = self.dedup_service.get_stats().await;
-        let current_backend = self.dedup_service.backend().backend_type().to_string();
+        let stats = self.blob_handler.get_stats().await;
+        let current_backend = self.blob_handler.backend().backend_type().to_string();
 
         // Project the multi-entry view. `is_active` is name-compared
         // against the boot-selected `active_entry_name` (matches
@@ -476,7 +476,7 @@ impl StorageSettingsService {
                 // backend the app is running on. health_check() reports
                 // available_bytes via statfs; the round-trip validates
                 // disk write + read + delete permissions.
-                let backend = self.dedup_service.backend().clone();
+                let backend = self.blob_handler.backend().clone();
                 let status = backend.health_check().await?;
                 let mut out = StorageTestResultDto {
                     connected: status.connected,

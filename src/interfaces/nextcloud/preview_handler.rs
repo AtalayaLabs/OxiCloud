@@ -183,7 +183,7 @@ pub async fn handle_preview(
                 &blob_hash,
                 thumb_size.into(),
                 ThumbnailFormat::Jpeg,
-                Some(&state.core.dedup_service),
+                Some(&state.core.blob_handler),
             )
             .await
     );
@@ -222,7 +222,7 @@ pub async fn handle_preview(
             Some(&blob_hash),
             thumb_size.into(),
             ThumbnailFormat::Jpeg,
-            Some(&state.core.dedup_service),
+            Some(&state.core.blob_handler),
         )
         .await
     {
@@ -247,7 +247,7 @@ pub async fn handle_preview(
             &blob_hash,
             thumb_size.into(),
             ThumbnailFormat::Jpeg,
-            state.core.dedup_service.clone(),
+            state.core.blob_handler.clone(),
         )
         .await
     {

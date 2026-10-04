@@ -442,7 +442,7 @@ async fn handle_assemble(
     let filename = filename_from_path(&dest_subpath).to_string();
     let ingested = ingest_stream_to_cas(
         stream_from_files(chunk_paths),
-        &state.core.dedup_service,
+        &state.core.blob_handler,
         &filename,
         "application/octet-stream",
         usize::MAX,
@@ -486,7 +486,7 @@ async fn handle_assemble(
     {
         Ok(dto) => dto,
         Err(e) => {
-            discard_ingested(&state.core.dedup_service, &ingested).await;
+            discard_ingested(&state.core.blob_handler, &ingested).await;
             return Err(AppError::from(e));
         }
     };
