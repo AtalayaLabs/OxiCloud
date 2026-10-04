@@ -80,6 +80,7 @@ pub mod timeout_blob_backend;
 pub mod transcode_import_service;
 pub mod trash_cleanup_service;
 pub mod tree_etag_flush_service;
+pub mod uploads_cleanup_service;
 pub mod webdav_dead_property_store;
 pub mod webdav_lock_service;
 pub mod webhook_notification_sink;

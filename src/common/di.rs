@@ -1799,6 +1799,25 @@ impl AppServiceFactory {
         .register(&core.job_registry)
         .await;
 
+        // Expired chunked-upload sessions. Was an hourly `tokio::spawn`
+        // inside `ChunkedUploadService::new`, which left an operator
+        // watching the upload directory fill with no way to ask how many
+        // sessions were reaped, how many unlinks failed, or whether the
+        // loop was running — the same gap `backend_rechunk` was promoted
+        // out of. The session map is shared, not copied, so the job sees
+        // sessions created after this point.
+        {
+            let (sessions, temp_base_dir) = core.chunked_upload_service.cleanup_handles();
+            let _ = Arc::new(
+                crate::infrastructure::services::uploads_cleanup_service::UploadsCleanup::new(
+                    sessions,
+                    temp_base_dir,
+                ),
+            )
+            .register(&core.job_registry)
+            .await;
+        }
+
         // "Run all consistency checks" coordinator. Plain JobHandler
         // (not RecoverableJobHandler) — it dispatches, doesn't scan.
         // MUST register AFTER every `*_consistency` tenant so the
