@@ -10,8 +10,71 @@ OxiCloud exposes an admin API for runtime configuration, dashboard stats, and us
 | `PUT` | `/api/admin/settings/oidc` | Save OIDC settings |
 | `POST` | `/api/admin/settings/oidc/test` | Test provider connectivity |
 | `GET` | `/api/admin/settings/general` | Read general server settings |
+| `GET` | `/api/admin/notify/info` | Read the job-alerting policy: severity floor, wired channels, mail recipients |
 
 The OIDC runtime UI complements the base configuration described in [OIDC / SSO](/config/oidc) and the provider samples in [OIDC Config Examples](/config/oidc-config-examples).
+
+### Job alerting
+
+`GET /api/admin/notify/info` answers the question the other diagnostics
+cannot: *will I actually be told?* It reports `min_severity`, the channels
+that were **built** rather than merely configured, and the parsed mail
+recipients. The floor is the part worth reading — the shipped default
+admits only `data_loss`, so a healthy relay and a configured webhook can
+coexist with complete silence about drift, which looks exactly like a
+broken channel.
+
+The transports keep their own tests, and they test transports:
+`POST /api/admin/smtp/test` sends to an address you type in, and
+`POST /api/admin/webhook/test` posts a synthetic alert to the configured
+endpoint. Neither exercises the chain in between — the transition diff and
+the severity threshold — because both inject an alert past it.
+
+For that, trigger the **`notify_selftest`** job (admin jobs panel, or
+`POST /api/admin/jobs/notify_selftest/trigger`). It records one synthetic
+finding, so a real run drives the whole path: finding row → diff against
+the previous completed run → threshold → every configured channel.
+Read-only, on demand only, never scheduled. Parameters:
+
+| Parameter | Default | Meaning |
+| --- | --- | --- |
+| `severity` | `data_loss` | `data_loss`, `inconsistent` or `anomaly`. The default is the worst one so the test clears the default floor; anything milder would deliver nothing on a correctly configured instance, which reads as the failure being tested for. |
+| `kind` | `selftest_finding` | The finding kind. Alerts fire per kind and only on a change, so re-running with the same kind correctly sends nothing the second time. |
+| `findings` | `1` | How many to record. `0` records none, so the next run reports the previous kind as **cleared** — the way to exercise the resolution alert. |
+| `stall` | `0` | Stop with a retryable error for this many attempts before completing, as a backend outage would. Each subsequent trigger resumes the same run: with `stall=2` the first attempt alerts, the second is silent (same reason, already reported) and the third completes and sends the all-clear. |
+
+An unrecognised `severity` fails the run rather than recording a finding
+that would sit below every threshold.
+
+### Why a run that stopped is worth an alert of its own
+
+A run that gives up records two columns on `jobs.recoverable_runs`:
+`error_reason`, a stable key (`backend_unavailable`, `backend_timeout`,
+`job_failed`, `server_restart`), and `error_message`, the full error
+chain. Alerting fires on the presence of the former.
+
+The distinction that makes this work without special cases: **an
+operator pause records neither.** Both an operator pause and an
+environment failure land as `Paused` in `status`, so "stopped with a
+reason" is the only reliable discriminator — and it means a human
+clicking Pause never pages anyone.
+
+Worth knowing about these:
+
+- **Graded `anomaly`**, so the default `data_loss` floor does not
+  deliver them. The grade is deliberate: the severity scale measures how
+  bad the *data* is, and a stopped run makes no claim about data.
+  Labelling "I could not check" as `data_loss` would corrupt the signal
+  that has to stay trustworthy.
+- **Once per run, not once per attempt.** A paused run gets auto-resumed;
+  without de-duplication a backend down for a day would mail on every
+  resume, and a channel that repeats itself is one that gets muted.
+- **The all-clear is automatic.** When the run eventually completes,
+  whoever heard about the stall hears that it ended.
+
+`error_reason` is exposed on the run DTO and rendered in the jobs panel
+beside the message. Switch on it, never on `error_message`, which is
+prose and free to be reworded.
 
 ## Dashboard Endpoint
 

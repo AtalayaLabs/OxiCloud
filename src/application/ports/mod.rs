@@ -21,6 +21,7 @@ pub mod folder_ports;
 pub mod inbound;
 pub mod message_bus_ports;
 pub mod music_ports;
+pub mod notification_sink_ports;
 pub mod opaque_ports;
 pub mod outbound;
 pub mod plugin_ports;

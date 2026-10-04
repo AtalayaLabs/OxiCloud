@@ -240,6 +240,43 @@ jsonpath "$.error" == "run not found"
 
 
 # ─────────────────────────────────────────────────────────────
+# Step 4b-enrichment — The listing's per-job fields that come from
+# the DB rather than from scheduler memory: `last_run_status` and
+# `last_run_severity_counts`.
+#
+# Why this is worth a step of its own: the handler builds them with
+# one query over `jobs.recoverable_runs` + `jobs.run_findings`, and
+# on error it DEGRADES — the rows render without them. That is the
+# right behaviour for a momentarily unreachable jobs DB and a silent
+# disaster for a malformed query, which would hide every finding on
+# every row with nothing to notice. Nothing else covers the SQL.
+#
+# `folders_consistency` ran at Step 4b, so both fields must be
+# populated here.
+#
+# On the assertion forms — all three of the Hurl JSONPath sharp
+# edges apply:
+#   * `$..field contains` is the safe extraction (a `$[?(...)]`
+#     filter returns a scalar on a single match and "no value" on
+#     zero, breaking `count`/`nth`).
+#   * `== {}` is not a supported predicate value, so the empty-map
+#     case is pinned against the serialised body instead. serde_json
+#     emits `{}` with no inner whitespace.
+#
+# The fresh test DB has no folder-tree drift, so the expected value
+# is the empty map — which still proves the query ran: a SQL error
+# drops the key entirely and this fails.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/admin/jobs
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$..last_run_status" contains "Completed"
+body contains "\"last_run_severity_counts\":{}"
+
+
+# ─────────────────────────────────────────────────────────────
 # Step 4b2 — Trigger `files_consistency`. Third Part 2 recoverable
 #            tenant. Iterates `storage.files` and self-joins folder
 #            + blob. Same envelope shape as the earlier consistency

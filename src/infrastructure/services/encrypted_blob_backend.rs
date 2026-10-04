@@ -1010,13 +1010,58 @@ async fn frame_write(
 /// one chunk's worth up front on the first frame makes the common case a
 /// single allocation; legacy whole-file blobs beyond that fall back to
 /// normal doubling (benches/ROUND11.md §16: 9 → 1 allocs on a 1 MiB blob).
+/// Map a mid-body read failure to a `DomainError` that keeps its transience.
+///
+/// This used to be `internal_error(...)` unconditionally, which made every
+/// streaming failure read as PERMANENT to `is_transient()` — defeating the
+/// classification that `backend_rechunk`, `backend_reclaim` and the consistency
+/// jobs all branch on. A degraded provider then surfaced as `data_loss`.
+///
+/// The kind is also logged, because how much of this is reachable depends on the
+/// backend: `tokio::fs` yields real kinds, while the S3 path hands out
+/// `ByteStream::into_async_read()`, which may flatten everything to `Other`. If
+/// these lines show `Other` in practice, the mapping has to move into
+/// `s3_blob_backend` where the SDK error is still intact (plan Part A phase 2).
+fn classify_stream_read_error(e: std::io::Error) -> DomainError {
+    use std::io::ErrorKind as K;
+    let kind = e.kind();
+    let transient = matches!(
+        kind,
+        K::ConnectionReset
+            | K::ConnectionAborted
+            | K::BrokenPipe
+            | K::TimedOut
+            | K::Interrupted
+            | K::NotConnected
+            | K::WouldBlock
+    );
+    tracing::debug!(
+        target: "oxicloud::storage",
+        io_error_kind = ?kind,
+        transient,
+        "blob stream read failed"
+    );
+    // `UnexpectedEof` stays permanent deliberately: a truncated object and a
+    // dropped connection are indistinguishable here, and the compute paths
+    // disambiguate by re-reading (phase 1) rather than by guessing.
+    let message = format!("stream read: {e}");
+    // Keep the `io::Error` as the source rather than only its Display text. On S3
+    // the SDK error is reachable through it, which is the only way a caller can
+    // recover the HTTP status or tell a stall abort from a reset — `e.to_string()`
+    // alone is what produced findings saying nothing but "streaming error".
+    if transient {
+        DomainError::transient_backend("Encryption", message).with_source(e)
+    } else {
+        DomainError::internal_error("Encryption", message).with_source(e)
+    }
+}
+
 async fn collect_stream(stream: BlobStream) -> Result<Vec<u8>, DomainError> {
     use futures::StreamExt;
     let mut stream = stream;
     let mut buf = Vec::new();
     while let Some(chunk) = stream.next().await {
-        let bytes = chunk
-            .map_err(|e| DomainError::internal_error("Encryption", format!("stream read: {e}")))?;
+        let bytes = chunk.map_err(classify_stream_read_error)?;
         if buf.capacity() == 0 {
             buf.reserve(
                 (crate::infrastructure::services::dedup_service::CDC_MAX_CHUNK
@@ -1036,6 +1081,56 @@ mod tests {
     use crate::infrastructure::services::local_blob_backend::LocalBlobBackend;
     use tempfile::TempDir;
     use tokio::io::AsyncWriteExt;
+
+    /// The defect: this wrap used `internal_error` unconditionally, so a dropped
+    /// connection read as PERMANENT to `is_transient()` — and every caller that
+    /// branches on it (the consistency scans, `backend_rechunk`,
+    /// `backend_reclaim`) then treated a degraded provider as data loss.
+    #[test]
+    fn transport_failures_stay_transient() {
+        use std::io::ErrorKind as K;
+        for kind in [
+            K::ConnectionReset,
+            K::ConnectionAborted,
+            K::BrokenPipe,
+            K::TimedOut,
+            K::Interrupted,
+            K::NotConnected,
+            K::WouldBlock,
+        ] {
+            let e = classify_stream_read_error(std::io::Error::new(kind, "boom"));
+            assert!(e.is_transient(), "{kind:?} must classify as transient");
+        }
+    }
+
+    /// `UnexpectedEof` is deliberately NOT transient: a truncated object and a
+    /// dropped connection are indistinguishable here, so the compute paths settle
+    /// it by re-reading rather than by guessing. Flipping this to transient would
+    /// make a genuinely truncated object pause the scan forever instead of being
+    /// reported.
+    #[test]
+    fn ambiguous_and_real_failures_stay_permanent() {
+        use std::io::ErrorKind as K;
+        for kind in [K::UnexpectedEof, K::PermissionDenied, K::InvalidData] {
+            let e = classify_stream_read_error(std::io::Error::new(kind, "boom"));
+            assert!(!e.is_transient(), "{kind:?} must stay permanent");
+        }
+    }
+
+    /// The cause must survive, or a finding can only say "streaming error".
+    #[test]
+    fn the_io_error_is_kept_as_the_source() {
+        let e = classify_stream_read_error(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "peer hung up",
+        ));
+        let chain = crate::infrastructure::services::blob_diagnostics::error_chain(&e);
+        assert!(chain.len() >= 2, "expected a source layer, got {chain:?}");
+        assert!(
+            chain.last().unwrap().contains("peer hung up"),
+            "innermost layer lost: {chain:?}"
+        );
+    }
 
     #[tokio::test]
     async fn test_encrypt_decrypt_roundtrip() {

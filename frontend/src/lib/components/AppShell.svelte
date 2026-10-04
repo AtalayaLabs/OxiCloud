@@ -144,10 +144,13 @@
 				section: 'admin-storage'
 			},
 			{
-				href: '/admin/smtp',
-				label: t('admin.smtp', 'Email (SMTP)'),
-				icon: 'envelope',
-				section: 'admin-smtp'
+				// Was /admin/smtp. The page covers every outbound transport
+				// now — SMTP and webhook — so it is named for the question an
+				// operator arrives with rather than for one answer.
+				href: '/admin/notification',
+				label: t('admin.notifications', 'Notifications'),
+				icon: 'bell',
+				section: 'admin-notification'
 			},
 			{
 				href: '/admin/plugins',

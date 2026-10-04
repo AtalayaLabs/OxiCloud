@@ -23,6 +23,7 @@
 //! as a sibling module without changing anything here.
 
 mod engine;
+mod finding_notifier;
 mod handler;
 mod pg_job_store;
 mod recoverable;
@@ -30,6 +31,7 @@ mod registry;
 mod types;
 
 pub use engine::SchedulerEngine;
+pub use finding_notifier::FindingNotifier;
 pub use handler::JobHandler;
 pub use pg_job_store::{PgJobStore, PgJobStoreProvider};
 pub use recoverable::{
@@ -38,7 +40,7 @@ pub use recoverable::{
     RunSummary, derive_progress, record_or_log, run_or_resume,
 };
 pub use registry::{
-    JobEntry, JobRegistry, JobSummary, PausedRunBrief, RegisterError, StartupTrigger,
+    JobEntry, JobRegistry, JobSummary, PausedRunBrief, RegisterError, ScheduledVia, StartupTrigger,
 };
 pub use types::{
     ErrCause, JobOutcome, JobParam, JobParamDefault, JobParamType, JobParamValue, JobRunArgs,

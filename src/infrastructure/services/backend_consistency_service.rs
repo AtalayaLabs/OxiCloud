@@ -104,6 +104,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
+
+use crate::domain::errors::DomainError;
 use sqlx::PgPool;
 
 use crate::application::ports::blob_storage_ports::BlobStorageBackend;
@@ -741,9 +743,23 @@ impl RecoverableJobHandler for BackendConsistencyCheck {
                                 return RunOutcome::Paused { cursor: bytes };
                             }
                             verified_count += 1;
-                            finding_count += self
+                            match self
                                 .verify_bytes(store, verify_backend.as_ref(), &b.hash)
-                                .await;
+                                .await
+                            {
+                                VerifyOutcome::Clean => {}
+                                VerifyOutcome::Finding => finding_count += 1,
+                                // Pause at the PREVIOUS settled hash, not this
+                                // one: this blob was never concluded about, so the
+                                // resumed run must re-verify it rather than skip it.
+                                VerifyOutcome::Transient(e) => {
+                                    return RunOutcome::from_domain_error(
+                                        settled.as_ref().map(|h| h.as_bytes()),
+                                        "deep verify read",
+                                        &e,
+                                    );
+                                }
+                            }
                         }
                         settled = Some(b.hash.clone());
                         bi.next();
@@ -948,10 +964,28 @@ impl BackendConsistencyCheck {
         store: &dyn JobStore,
         backend: &dyn BlobStorageBackend,
         hash: &str,
-    ) -> u64 {
-        match recompute_hash(backend, hash).await {
+    ) -> VerifyOutcome {
+        // Re-read once before concluding anything.
+        //
+        // A mid-body failure escapes every retry decorator — `get_blob_stream`
+        // retries OPENING the stream, and the error arrives while consuming the
+        // body — so without this a single dropped connection is indistinguishable
+        // from corruption. A second read settles it: a truncated object fails
+        // identically, a transport blip does not. One extra read on the rare
+        // failure, against a job that already reads every object.
+        let mut outcome = recompute_hash(backend, hash).await;
+        if outcome.is_err() {
+            tracing::debug!(
+                target: "oxicloud::consistency",
+                hash = %hash,
+                "deep verify failed; re-reading once before concluding"
+            );
+            outcome = recompute_hash(backend, hash).await;
+        }
+
+        match outcome {
             // The bytes still hash to the key they are filed under.
-            Ok(computed) if computed == hash => 0,
+            Ok(computed) if computed == hash => VerifyOutcome::Clean,
             // Silent bit-rot. `computed_hash` is reported rather than a
             // bare "mismatch" because the value is diagnostic: a one-bit
             // flip, a truncation and a whole-object swap leave distinct
@@ -972,14 +1006,31 @@ impl BackendConsistencyCheck {
                     }),
                 )
                 .await;
-                1
+                VerifyOutcome::Finding
+            }
+            // Transient after a retry: the backend is degraded, not this object.
+            // Hand it back so the run PAUSES at its cursor instead of recording
+            // `data_loss` — and pause before writing anything, or the finding
+            // outlives the outage that caused it with nothing to retract it.
+            //
+            // Every later read would fail too, so continuing would emit one
+            // finding per remaining object.
+            Err(e) if e.is_transient() => {
+                tracing::warn!(
+                    target: "oxicloud::consistency",
+                    event = "backend_consistency.read_transient",
+                    run_id = %store.run_id(),
+                    hash = %hash,
+                    error = %e,
+                    "⏸️ blob read failed transiently after a retry — pausing the run"
+                );
+                VerifyOutcome::Transient(e)
             }
             // Bytes are there by key but cannot be read at all: decrypt
-            // failure (missing key), transport error, permissions. Same
-            // impact as corruption from a file's point of view — the
-            // content is inaccessible — but a different remedy, which is
-            // why it is a separate kind rather than folded into
-            // `blob_corrupted`. Operators triage on `error`.
+            // failure (missing key), permissions. Same impact as corruption
+            // from a file's point of view — the content is inaccessible — but a
+            // different remedy, which is why it is a separate kind rather than
+            // folded into `blob_corrupted`. Operators triage on `error`.
             Err(e) => {
                 let affected = affected_files(self.pool.as_ref(), hash).await;
                 record_or_log(
@@ -993,6 +1044,10 @@ impl BackendConsistencyCheck {
                         "backend":        backend.backend_type(),
                         "affected_files": affected,
                         "error":          e.to_string(),
+                        // The chain, not just the outermost message — the cause
+                        // is what distinguishes a missing key from a permissions
+                        // problem, and triage starts here.
+                        "error_chain":    crate::infrastructure::services::blob_diagnostics::error_chain(&e),
                     }),
                 )
                 .await;
@@ -1004,10 +1059,24 @@ impl BackendConsistencyCheck {
                     error = %e,
                     "🚨 blob unreadable in deep mode — recorded finding, continuing"
                 );
-                1
+                VerifyOutcome::Finding
             }
         }
     }
+}
+
+/// What a deep verify concluded about one blob.
+///
+/// Richer than a finding count because a transient failure must reach the caller
+/// as a decision — pause the run — rather than as a number it adds up.
+enum VerifyOutcome {
+    /// Bytes read and hashed to their key.
+    Clean,
+    /// A finding was recorded; keep scanning.
+    Finding,
+    /// Still transient after a retry — the backend is degraded. The caller
+    /// pauses; nothing was recorded.
+    Transient(DomainError),
 }
 
 /// Deep-mode helper — read the blob from the backend and recompute its

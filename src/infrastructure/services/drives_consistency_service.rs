@@ -679,7 +679,9 @@ mod integration_tests {
             crate::infrastructure::scheduler::PgJobStoreProvider::new(pool.clone()),
         );
         let opened = provider
-            .open_or_start("drives_consistency")
+            // Attended: this asserts the AlreadyActive path, which the
+            // unattended-resume gate does not touch.
+            .open_or_start("drives_consistency", false)
             .await
             .expect("open_or_start");
         match opened {

@@ -514,7 +514,7 @@ impl AppServiceFactory {
         // for that reason and not because deferring the sweep was wrong:
         // re-reading every blob on a metered backend is a real cost to want
         // control over, but a triggerable job is schedulable by definition and
-        // `OXICLOUD_STARTUP_JOBS` already decides what runs at boot. Two knobs
+        // `OXICLOUD_JOBS_STARTUP` already decides what runs at boot. Two knobs
         // for one decision is the defect.
         //
         // Warn while set rather than ignoring it, per the house deprecation
@@ -522,7 +522,7 @@ impl AppServiceFactory {
         // re-read would surprise exactly the operators who set it deliberately.
         // See `docs/plan/storage-consistency.md` §1b.
         // No spawned task any more: `backend_rechunk` is in the default
-        // `OXICLOUD_STARTUP_JOBS`, so the sweep still runs on every boot — but as
+        // `OXICLOUD_JOBS_STARTUP`, so the sweep still runs on every boot — but as
         // a job, with an admin trigger, run history, findings and a cursor.
         //
         // Running both would be wasteful rather than wrong (the manifest row is
@@ -534,7 +534,7 @@ impl AppServiceFactory {
                  major release. It still does what you set it for: `backend_rechunk` has been \
                  dropped from the default startup jobs, so pre-CDC whole-file blobs keep using \
                  the legacy read path and no egress is spent re-reading them at boot. To keep \
-                 that behaviour once the variable is gone, set OXICLOUD_STARTUP_JOBS explicitly \
+                 that behaviour once the variable is gone, set OXICLOUD_JOBS_STARTUP explicitly \
                  without `backend_rechunk`, and trigger the job from the admin panel when the \
                  egress is convenient."
             );
@@ -1683,6 +1683,18 @@ impl AppServiceFactory {
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
         .await;
 
+        // The alerting chain's own end-to-end check: records one synthetic
+        // finding so the transition diff, the severity threshold and every
+        // configured channel are all exercised by a real run. Read-only,
+        // on-demand only, and registered unconditionally — a CI-only path
+        // would not be the path production runs, which is the thing being
+        // verified.
+        let _ = Arc::new(
+            crate::infrastructure::services::notify_selftest_service::NotifySelftestJob::new(),
+        )
+        .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
+        .await;
+
         // Both satellite tables, checked for mappings whose Blob is gone.
         // Nothing else can: a row whose SOURCE was reaped still holds a valid
         // reference to a real artifact with a correct refcount, so every
@@ -1766,6 +1778,22 @@ impl AppServiceFactory {
             ),
         )
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
+        .await;
+
+        // Retention sweep over the scheduler's OWN tables. Registered
+        // here, after the tenants, because it is about their output
+        // rather than about storage.
+        //
+        // Scheduled by default — a weekly `consistency_batch` writes a run
+        // row per detector and a finding row per persisting problem, and
+        // until now nothing applied the 30-day window the admin purge
+        // button has always offered.
+        let _ = Arc::new(
+            crate::infrastructure::services::job_runs_cleanup_service::JobRunsCleanupService::new(
+                job_store_provider_dyn.clone(),
+            ),
+        )
+        .register(&core.job_registry)
         .await;
 
         // "Run all consistency checks" coordinator. Plain JobHandler
@@ -2528,6 +2556,8 @@ impl AppServiceFactory {
             )),
             email_sender: None,                   // populated below
             mock_email_sender: None,              // populated below
+            webhook_sink: None,                   // populated below
+            email_alert_sink: None,               // populated below
             magic_link_invite_service: None,      // populated below
             recipient_notification_service: None, // populated below alongside magic_link_invite_service
             notification_service: None,           // populated below (Slice E)
@@ -2603,6 +2633,46 @@ impl AppServiceFactory {
         let email_bundle = build_email_sender(&self.config.smtp);
         app_state.email_sender = email_bundle.sender;
         app_state.mock_email_sender = email_bundle.mock;
+
+        // Outbound webhook, built once and shared by every consumer (today
+        // the job notifier and the admin test endpoint).
+        //
+        // A set-but-unusable URL is fatal rather than a warning: an
+        // operator who configured alerting and got a server running
+        // without it would believe they are covered, and that belief is
+        // the whole point of the feature.
+        if let Some(url) = self.config.webhook.url.clone() {
+            match crate::infrastructure::services::webhook_notification_sink::WebhookNotificationSink::new(
+                url,
+                self.config.webhook.format,
+                self.config.webhook.target.clone(),
+            ) {
+                Ok(sink) => app_state.webhook_sink = Some(Arc::new(sink)),
+                Err(e) => panic!("OXICLOUD_WEBHOOK_URL is set but unusable: {e}"),
+            }
+        }
+
+        // Findings by mail. Fatal for the same reason the webhook is: a
+        // recipient was configured, so somebody is relying on being told.
+        // Mail alerting needs the SMTP transport, and asking for one
+        // without the other is a misconfiguration we can name at boot
+        // instead of at the first data-loss finding.
+        if !self.config.jobs_notify.email_to.is_empty() {
+            let Some(sender) = app_state.email_sender.clone() else {
+                panic!(
+                    "OXICLOUD_JOBS_NOTIFY_EMAIL_TO is set but SMTP is not \
+                     configured — set OXICLOUD_SMTP_HOST, or unset the \
+                     recipient list to disable mail alerting"
+                );
+            };
+            match crate::infrastructure::services::email_notification_sink::EmailNotificationSink::new(
+                sender,
+                self.config.jobs_notify.email_to.clone(),
+            ) {
+                Ok(sink) => app_state.email_alert_sink = Some(Arc::new(sink)),
+                Err(e) => panic!("OXICLOUD_JOBS_NOTIFY_EMAIL_TO is set but unusable: {e}"),
+            }
+        }
 
         // Magic-link invite orchestrator: only when SMTP wired AND the
         // user-lifecycle dispatcher exists (i.e. auth is enabled).
@@ -3279,7 +3349,7 @@ impl AppServiceFactory {
             registered
         );
 
-        // `OXICLOUD_STARTUP_JOBS` — dispatch each named job once, now.
+        // `OXICLOUD_JOBS_STARTUP` — dispatch each named job once, now.
         //
         // Exists for the migration jobs. Their scheduled ticks import but
         // never delete (`repair` defaults false, per no-silent-auto-repair),
@@ -3324,13 +3394,113 @@ impl AppServiceFactory {
         // `deep` are persisted to the run's `params` on the fresh open and
         // read back on resume — so editing the config mid-migration does
         // not retroactively change a run already in flight.
+        // Out-of-band alerting for recoverable runs. Installed on the
+        // registry rather than passed to each registration: the adapters
+        // hold a shared handle and read it at run time, so this is
+        // order-independent with respect to the registrations above.
+        {
+            // The same `Arc`s the test endpoints use — one configured
+            // transport per channel, not two that could disagree about
+            // whether it works.
+            //
+            // Both, when both are configured: a push channel to be told
+            // now and mail for the record is the pairing operators
+            // actually ask for, and nothing here needs a routing setting
+            // to express it — the channel set *is* what is configured.
+            let sinks: Vec<
+                Arc<dyn crate::application::ports::notification_sink_ports::NotificationSink>,
+            > = app_state
+                .webhook_sink
+                .iter()
+                .chain(app_state.email_alert_sink.iter())
+                .cloned()
+                .collect();
+            if !sinks.is_empty() {
+                let names: Vec<&str> = sinks.iter().map(|s| s.name()).collect();
+                tracing::info!(
+                    target: "oxicloud::scheduler",
+                    event = "notify.configured",
+                    sinks = ?names,
+                    min_severity = ?self.config.jobs_notify.min_severity,
+                    "job finding alerts enabled via {:?}",
+                    names,
+                );
+                app_state.core.job_registry.set_finding_notifier(Arc::new(
+                    crate::infrastructure::scheduler::FindingNotifier::new(
+                        sinks,
+                        self.config.jobs_notify.min_severity,
+                    ),
+                ));
+            }
+        }
+
+        // Apply `OXICLOUD_JOBS_SCHEDULED` over what the registration sites
+        // hardcoded. Here, rather than threaded into all 17 of them,
+        // because this is the first point at which every job is
+        // registered and the declarations are reachable — the same reason
+        // the startup-job validation below lives here.
+        //
+        // Runs before the supervisor starts, so no tick can observe a
+        // half-applied schedule.
+        for scheduled in &self.config.scheduled_jobs {
+            // Unknown name is fatal, matching OXICLOUD_JOBS_STARTUP. A
+            // typo'd job that silently never runs is exactly the state
+            // this configuration exists to escape, and it would look
+            // identical to a correctly disabled one.
+            let Some(declared) = app_state
+                .core
+                .job_registry
+                .parameters_of(&scheduled.name)
+                .await
+            else {
+                panic!(
+                    "OXICLOUD_JOBS_SCHEDULED names `{}`, which is not a registered job. \
+                     Check the spelling against GET /api/admin/jobs.",
+                    scheduled.name
+                );
+            };
+            // Typing happens here for the same reason as the startup
+            // list: config parsing kept the pairs untyped because the
+            // declaration did not exist yet. A `?deap=true` that parsed
+            // as nothing would schedule a shallow scan forever while the
+            // operator believed they had asked for a deep one.
+            let args = crate::infrastructure::scheduler::JobRunArgs::from_declared(
+                declared,
+                scheduled
+                    .raw_params
+                    .iter()
+                    .map(|(k, v)| (k.as_str(), v.as_str())),
+            )
+            .unwrap_or_else(|e| {
+                panic!("OXICLOUD_JOBS_SCHEDULED entry `{}`: {e}", scheduled.name);
+            });
+            app_state
+                .core
+                .job_registry
+                .set_schedule(&scheduled.name, scheduled.interval, args)
+                .await;
+            let cadence = match scheduled.interval {
+                Some(d) => format!("every {} s", d.as_secs()),
+                None => "on-demand".to_string(),
+            };
+            tracing::info!(
+                target: "oxicloud::scheduler",
+                event = "job.schedule_overridden",
+                job = %scheduled.name,
+                cadence = %cadence,
+                "job {} scheduled {} by configuration",
+                scheduled.name,
+                cadence,
+            );
+        }
+
         if !self.config.startup_jobs.is_empty() {
             let mut planned = Vec::with_capacity(self.config.startup_jobs.len());
             for job in &self.config.startup_jobs {
                 let Some(declared) = app_state.core.job_registry.parameters_of(&job.name).await
                 else {
                     panic!(
-                        "OXICLOUD_STARTUP_JOBS names `{}`, which is not a registered job. \
+                        "OXICLOUD_JOBS_STARTUP names `{}`, which is not a registered job. \
                          Check the spelling against GET /api/admin/jobs.",
                         job.name
                     );
@@ -3346,7 +3516,7 @@ impl AppServiceFactory {
                     job.raw_params.iter().map(|(k, v)| (k.as_str(), v.as_str())),
                 )
                 .unwrap_or_else(|e| {
-                    panic!("OXICLOUD_STARTUP_JOBS entry `{}`: {e}", job.name);
+                    panic!("OXICLOUD_JOBS_STARTUP entry `{}`: {e}", job.name);
                 });
                 planned.push((job.name.clone(), args));
             }
@@ -3372,7 +3542,7 @@ impl AppServiceFactory {
                         event = "job.startup_trigger",
                         job = %job_name,
                         params = %params_desc,
-                        "👮🏻‍♂️ dispatching `{job_name}` from OXICLOUD_STARTUP_JOBS ({params_desc})",
+                        "👮🏻‍♂️ dispatching `{job_name}` from OXICLOUD_JOBS_STARTUP ({params_desc})",
                     );
                     match registry.trigger(&job_name, &args).await {
                         // Debug, not info. The engine already logs every
@@ -3750,6 +3920,26 @@ pub struct AppState {
     /// must return 503 when this is `None` rather than silently dropping
     /// the message.
     pub email_sender: Option<Arc<dyn crate::application::ports::email_sender::EmailSender>>,
+    /// Outbound webhook, when `OXICLOUD_WEBHOOK_URL` is set. `None` means
+    /// no webhook is configured and `POST /api/admin/webhook/test` returns
+    /// 503, the same contract `email_sender` has.
+    ///
+    /// Held here rather than only inside the job notifier because a
+    /// webhook is a transport, not a jobs feature: the next thing that
+    /// wants to post somewhere should reuse this rather than configure a
+    /// second URL.
+    pub webhook_sink:
+        Option<Arc<dyn crate::application::ports::notification_sink_ports::NotificationSink>>,
+    /// Job findings by mail, when `OXICLOUD_JOBS_NOTIFY_EMAIL_TO` names at
+    /// least one recipient. `None` means mail alerting is off.
+    ///
+    /// Distinct from `email_sender`, which is the transport: this is the
+    /// configured *alerting* channel. Held here rather than only inside
+    /// the notifier so `GET /api/admin/notify/info` can report the
+    /// channel that was actually built, not the setting that asked for
+    /// one — the same call `/webhook/info` makes.
+    pub email_alert_sink:
+        Option<Arc<dyn crate::application::ports::notification_sink_ports::NotificationSink>>,
     /// Set alongside `email_sender` when the test harness flag
     /// `OXICLOUD_SMTP_MOCK=true` is on. Used by the
     /// `GET /api/admin/smtp/test/captured` test-only endpoint to look up

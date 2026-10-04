@@ -258,7 +258,7 @@ impl ThumbDerivedImport {
         // removed, not even that.
         // On-demand, NOT periodic.
         //
-        // `OXICLOUD_STARTUP_JOBS` runs this at boot in repair mode, and that
+        // `OXICLOUD_JOBS_STARTUP` runs this at boot in repair mode, and that
         // is the whole migration: nothing has written a sidecar since step
         // 10d2, so the tail cannot grow after startup. A daily tick could
         // only ever redo work the boot run already did — and it would do it

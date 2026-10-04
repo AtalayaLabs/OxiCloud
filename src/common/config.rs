@@ -2465,7 +2465,7 @@ pub struct GrantCleanupConfig {
 }
 
 /// One job to dispatch once at startup, parsed from an entry of
-/// `OXICLOUD_STARTUP_JOBS`.
+/// `OXICLOUD_JOBS_STARTUP`.
 ///
 /// **Why this exists.** Scheduled ticks deliberately never pass
 /// `repair` — a job that deletes on its default setting is the thing
@@ -2492,7 +2492,7 @@ pub struct StartupJob {
     pub raw_params: Vec<(String, String)>,
 }
 
-/// Parse one `OXICLOUD_STARTUP_JOBS` entry: `name`, or
+/// Parse one `OXICLOUD_JOBS_STARTUP` entry: `name`, or
 /// `name?repair=true&deep=true`.
 ///
 /// The query syntax is the one an operator already types at
@@ -2535,7 +2535,7 @@ fn parse_startup_job(raw: &str) -> Result<StartupJob, String> {
     })
 }
 
-/// What runs at boot when `OXICLOUD_STARTUP_JOBS` is unset.
+/// What runs at boot when `OXICLOUD_JOBS_STARTUP` is unset.
 ///
 /// **Both migration jobs, both in repair mode** — they import their
 /// sidecars and then delete them. Chosen deliberately: an operator who
@@ -2567,7 +2567,7 @@ fn parse_startup_job(raw: &str) -> Result<StartupJob, String> {
 /// action. A regression in the readback path would therefore be
 /// simultaneous and unrecoverable. Treat that code as load-bearing.
 ///
-/// Set `OXICLOUD_STARTUP_JOBS=` (empty) to disable startup jobs
+/// Set `OXICLOUD_JOBS_STARTUP=` (empty) to disable startup jobs
 /// entirely; any explicit value replaces this list rather than adding
 /// to it.
 /// `transcode_import` joins them for the same reason and on the same
@@ -2593,7 +2593,7 @@ const DEFAULT_STARTUP_JOBS: &str = "thumb_derived_import?repair=true,\
      transcode_import?repair=true,\
      backend_rechunk";
 
-/// Parse the whole `OXICLOUD_STARTUP_JOBS` value. Empty → no startup
+/// Parse the whole `OXICLOUD_JOBS_STARTUP` value. Empty → no startup
 /// jobs (an explicit opt-out); unset → [`DEFAULT_STARTUP_JOBS`].
 ///
 /// # Panics
@@ -2607,8 +2607,273 @@ fn parse_startup_jobs(raw: &str) -> Vec<StartupJob> {
         .filter(|s| !s.is_empty())
         .map(|entry| {
             parse_startup_job(entry).unwrap_or_else(|e| {
-                panic!("OXICLOUD_STARTUP_JOBS: {e}");
+                panic!("OXICLOUD_JOBS_STARTUP: {e}");
             })
+        })
+        .collect()
+}
+
+/// One entry of `OXICLOUD_JOBS_SCHEDULED`: a registered job, how often the
+/// supervisor fires it, and the parameters each tick runs with.
+///
+/// Sibling of [`StartupJob`], and deliberately a different thing: that
+/// one is a single dispatch at boot, this one is a cadence. The split
+/// matters because of what each may carry — see [`parse_scheduled_job`].
+#[derive(Debug, Clone)]
+pub struct ScheduledJob {
+    /// Registered job name — must match `JobHandler::name`.
+    pub name: String,
+    /// `None` — the `off` form: the supervisor never fires this job.
+    /// Manual triggering from the admin panel is unaffected, which is
+    /// what makes `off` a scheduling switch rather than a kill switch.
+    pub interval: Option<Duration>,
+    /// Untyped `key=value` pairs, validated against the job's declared
+    /// parameters once the registry exists (`di.rs`) — same two-stage
+    /// shape as [`StartupJob::raw_params`], for the same reason.
+    pub raw_params: Vec<(String, String)>,
+}
+
+/// Parse one interval: `30s`, `5m`, `24h`, `7d`, or `off`.
+///
+/// A bare `0` is also `off`, but `0h` and friends are refused: an
+/// interval of zero would spin the supervisor, and someone typing it
+/// means "disabled", which has a spelling.
+fn parse_schedule_interval(raw: &str, job: &str) -> Result<Option<Duration>, String> {
+    let s = raw.trim();
+    if s.eq_ignore_ascii_case("off") || s == "0" {
+        return Ok(None);
+    }
+    let unit = s
+        .chars()
+        .last()
+        .ok_or_else(|| format!("job `{job}`: empty interval (use `30s`, `24h`, `7d` or `off`)"))?;
+    let secs_per = match unit {
+        's' => 1,
+        'm' => 60,
+        'h' => 3600,
+        'd' => 86_400,
+        _ => {
+            return Err(format!(
+                "job `{job}`: interval `{s}` must end in s, m, h or d (or be `off`)"
+            ));
+        }
+    };
+    let value: u64 = s[..s.len() - unit.len_utf8()]
+        .parse()
+        .map_err(|_| format!("job `{job}`: `{s}` is not a number followed by s, m, h or d"))?;
+    if value == 0 {
+        return Err(format!(
+            "job `{job}`: a zero interval would never stop firing — use `off` to disable it"
+        ));
+    }
+    Ok(Some(Duration::from_secs(value * secs_per)))
+}
+
+/// Parse one `OXICLOUD_JOBS_SCHEDULED` entry: `name=interval`, or
+/// `name=interval?deep=true`.
+///
+/// **`repair` is refused here**, and that is the point of the function
+/// rather than an incidental check. A scheduled tick that repairs deletes
+/// on a cadence, with nobody consenting after the first time — the thing
+/// no-silent-auto-repair exists to prevent. The deliberate-operator-act
+/// spelling already exists and is a ONE-SHOT: `OXICLOUD_JOBS_STARTUP`.
+/// The error says so, because an operator who typed it here wants
+/// something, and silently dropping the flag would leave them believing
+/// the repair was scheduled.
+///
+/// Read-only parameters are allowed — `deep=true` costs money but
+/// changes nothing, and a weekly deep scan is a legitimate standing
+/// choice.
+fn parse_scheduled_job(raw: &str) -> Result<ScheduledJob, String> {
+    let raw = raw.trim();
+    let (name, rest) = raw
+        .split_once('=')
+        .ok_or_else(|| format!("`{raw}` is not name=interval"))?;
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(format!("`{raw}`: empty job name"));
+    }
+
+    let (interval_raw, query) = match rest.split_once('?') {
+        Some((i, q)) => (i, q),
+        None => (rest, ""),
+    };
+    let interval = parse_schedule_interval(interval_raw, name)?;
+
+    let mut raw_params = Vec::new();
+    for pair in query.split('&').filter(|p| !p.is_empty()) {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("`{pair}` is not key=value (job `{name}`)"))?;
+        if key.trim() == "repair" {
+            return Err(format!(
+                "job `{name}`: `repair` cannot be scheduled — a tick that repairs deletes \
+                 on a cadence with no operator behind it. Name the job in \
+                 OXICLOUD_JOBS_STARTUP instead, which runs it once, at boot, as a \
+                 deliberate act"
+            ));
+        }
+        raw_params.push((key.to_string(), value.to_string()));
+    }
+
+    Ok(ScheduledJob {
+        name: name.to_string(),
+        interval,
+        raw_params,
+    })
+}
+
+/// The outbound webhook transport — `OXICLOUD_WEBHOOK_*`.
+///
+/// Deliberately NOT scoped to jobs. This is a destination, in the same
+/// sense `OXICLOUD_SMTP_*` is: job findings are its first consumer, and
+/// whatever wants to post somewhere next should reuse it rather than
+/// introduce a second URL. What each feature chooses to *send* is that
+/// feature's own setting — see [`JobsNotifyConfig`].
+#[derive(Debug, Clone, Default)]
+pub struct WebhookConfig {
+    /// Endpoint. `None` — no webhook configured.
+    pub url: Option<String>,
+    /// Payload shape: `generic`, `slack`, `discord`, `teams`, `telegram`,
+    /// `ntfy`.
+    pub format: crate::infrastructure::services::webhook_notification_sink::WebhookFormat,
+    /// Recipient for the formats that carry it in the body rather than the
+    /// URL — a Telegram chat id, an ntfy topic.
+    pub target: Option<String>,
+}
+
+/// What job findings get sent out of band — the policy half, scoped to
+/// jobs because the severities are a findings concept.
+#[derive(Debug, Clone)]
+pub struct JobsNotifyConfig {
+    /// Lowest severity worth telling an operator about.
+    ///
+    /// Default `data_loss`. The strictest useful setting is the right
+    /// default because the failure mode of a notification channel is
+    /// being muted, and the fastest way to get muted is to fire on
+    /// something the operator judges routine. Widen with
+    /// `OXICLOUD_JOBS_NOTIFY_MIN_SEVERITY=inconsistent`.
+    pub min_severity: crate::application::ports::notification_sink_ports::NotifyThreshold,
+
+    /// Who gets findings by mail — `OXICLOUD_JOBS_NOTIFY_EMAIL_TO`,
+    /// comma-separated. Empty disables the channel.
+    ///
+    /// **An explicit recipient, deliberately, rather than reusing
+    /// `OXICLOUD_SMTP_*` as the switch.** SMTP is already configured on
+    /// nearly every instance for magic links and password resets, so
+    /// treating "SMTP works" as "and you now get data-loss mail" would
+    /// turn an unrelated setting into a subscription nobody asked for.
+    /// There is also no good implicit recipient: fanning out to every
+    /// admin account mails people who never opted in, and the operator
+    /// this feature exists for may have no account at all.
+    pub email_to: Vec<String>,
+}
+
+impl Default for JobsNotifyConfig {
+    fn default() -> Self {
+        use crate::application::ports::notification_sink_ports::{NotifyThreshold, Severity};
+        Self {
+            min_severity: NotifyThreshold::AtLeast(Severity::DataLoss),
+            email_to: Vec::new(),
+        }
+    }
+}
+
+/// Split and validate `OXICLOUD_JOBS_NOTIFY_EMAIL_TO`.
+///
+/// Rejects rather than drops a malformed entry: a typo'd address in a
+/// comma-separated list would otherwise leave a channel an operator
+/// believes in delivering to one of two people, and the one case it
+/// matters is the one nobody is watching.
+///
+/// The check is deliberately shallow — an `@` with something either side
+/// and no whitespace. Full RFC 5322 validation belongs to the SMTP server,
+/// which will reject what it dislikes; this only catches the typo class a
+/// human can see at a glance.
+///
+/// A dotless domain is accepted on purpose: `root@localhost` and
+/// `ops@mailhost` are ordinary addresses on a self-hosted box relaying
+/// locally, and rejecting them would fail exactly the deployment this
+/// product targets.
+fn parse_notify_emails(raw: &str) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for entry in raw.split(',') {
+        let addr = entry.trim();
+        if addr.is_empty() {
+            continue;
+        }
+        let shaped_like_an_address = match addr.split_once('@') {
+            Some((local, domain)) => {
+                !local.is_empty()
+                    && !domain.is_empty()
+                    && !domain.starts_with('.')
+                    && !domain.ends_with('.')
+                    && !domain.contains('@')
+            }
+            None => false,
+        };
+        if !shaped_like_an_address || addr.chars().any(char::is_whitespace) {
+            return Err(format!("`{addr}` is not an email address"));
+        }
+        out.push(addr.to_string());
+    }
+    Ok(out)
+}
+
+/// Cadences applied when `OXICLOUD_JOBS_SCHEDULED` is unset.
+///
+/// **Weekly, and the whole batch.** `consistency_batch` fans out to every
+/// `*_consistency` child in sequence, so one entry schedules all of them
+/// on a pool-friendly serial walk instead of seven jobs ticking at once.
+///
+/// Weekly rather than daily because the batch includes
+/// `backend_consistency`, which enumerates the bucket and costs real money
+/// on S3. A shallow weekly pass is the defensible default: `deep` and
+/// `repair` both default to `false`, so a scheduled run reads metadata and
+/// reports — it does not re-hash content and it does not delete.
+///
+/// An operator who does not want the bucket walk turns the batch off and
+/// names the detectors they do want — the cheap DB-only pair, daily:
+///
+/// ```text
+/// OXICLOUD_JOBS_SCHEDULED="consistency_batch=off,blobs_consistency=24h,satellites_consistency=24h"
+/// ```
+const DEFAULT_SCHEDULED_JOBS: &str = "consistency_batch=168h";
+
+/// Parse the whole `OXICLOUD_JOBS_SCHEDULED` value. Empty → nothing
+/// scheduled beyond what the code registers; unset → [`DEFAULT_SCHEDULED_JOBS`].
+///
+/// # Panics
+///
+/// On a malformed entry, a refused `repair`, or a **duplicate job name**.
+///
+/// Duplicates are an error rather than last-wins because a job has one
+/// run row — enforced by the `one_active_run_per_job` partial unique
+/// index — and one cursor. Two cadences for one name would share them:
+/// `backend_consistency=24h,backend_consistency=720h?deep=true` reads as
+/// "shallow daily plus deep monthly", but the deep run's pause cursor
+/// would be picked up by the next shallow tick. The way to get that is a
+/// second job registered under its own name, which also gets its own run
+/// history and findings.
+fn parse_scheduled_jobs(raw: &str) -> Vec<ScheduledJob> {
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    raw.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|entry| {
+            let job = parse_scheduled_job(entry).unwrap_or_else(|e| {
+                panic!("OXICLOUD_JOBS_SCHEDULED: {e}");
+            });
+            if !seen.insert(job.name.clone()) {
+                panic!(
+                    "OXICLOUD_JOBS_SCHEDULED names `{}` twice. A job has one run row and one \
+                     cursor, so two cadences would share them — a paused deep run would be \
+                     continued by the next shallow tick. Register a second job under its own \
+                     name if you need both.",
+                    job.name
+                );
+            }
+            job
         })
         .collect()
 }
@@ -2898,7 +3163,7 @@ pub struct AppConfig {
     /// metrics publicly.
     pub metrics_listen: Option<std::net::SocketAddr>,
     /// Jobs to dispatch once, in the background, after the scheduler is
-    /// ready. Env: `OXICLOUD_STARTUP_JOBS` — comma-separated, each entry
+    /// ready. Env: `OXICLOUD_JOBS_STARTUP` — comma-separated, each entry
     /// `name` or `name?repair=true`, mirroring the admin trigger URL.
     ///
     /// Empty by default. Intended for the migration jobs, whose
@@ -2908,6 +3173,23 @@ pub struct AppConfig {
     ///
     /// Dispatch is non-blocking — readiness never waits on a job.
     pub startup_jobs: Vec<StartupJob>,
+
+    /// Per-job cadences from `OXICLOUD_JOBS_SCHEDULED`, applied over what
+    /// the registration sites hardcode.
+    ///
+    /// Exists because every interval was a constant compiled into the
+    /// binary — an operator could neither slow down a sweep that was
+    /// costing them nor turn one off, and "a sweep will find it" was the
+    /// justification the storage design leaned on while nothing was
+    /// scheduled at all.
+    pub scheduled_jobs: Vec<ScheduledJob>,
+
+    /// Outbound webhook destination. See [`WebhookConfig`].
+    pub webhook: WebhookConfig,
+
+    /// Which job findings are worth sending there. See
+    /// [`JobsNotifyConfig`].
+    pub jobs_notify: JobsNotifyConfig,
     /// `OXICLOUD_REUSE_PORT` — set `SO_REUSEPORT` on the listener so
     /// several processes can bind the same port (rolling restarts).
     pub reuse_port: bool,
@@ -3119,6 +3401,9 @@ impl Default for AppConfig {
             faces: FacesConfig::default(),
             metrics_listen: None,
             startup_jobs: parse_startup_jobs(DEFAULT_STARTUP_JOBS),
+            scheduled_jobs: parse_scheduled_jobs(DEFAULT_SCHEDULED_JOBS),
+            webhook: WebhookConfig::default(),
+            jobs_notify: JobsNotifyConfig::default(),
             reuse_port: false,
             video_thumbnails: VideoThumbnailConfig::default(),
             runtime: RuntimeConfig::default(),
@@ -3187,9 +3472,30 @@ impl AppConfig {
         // that never runs, and the symptom ("the tier never drained")
         // surfaces months later with nothing pointing back at the config
         // line.
-        let startup_jobs_explicit = env::var("OXICLOUD_STARTUP_JOBS").is_ok();
-        if let Ok(raw) = env::var("OXICLOUD_STARTUP_JOBS") {
-            config.startup_jobs = parse_startup_jobs(&raw);
+        // `OXICLOUD_STARTUP_JOBS` is the pre-1.0 spelling, still read so an
+        // existing deployment keeps working across the rename into the
+        // `OXICLOUD_JOBS_*` family. Both set is a FATAL error rather than
+        // a precedence rule: this list can delete files, and an operator
+        // who left the old name in a compose file while adding the new one
+        // must not have to guess which list ran.
+        let new_name = env::var("OXICLOUD_JOBS_STARTUP").ok();
+        let old_name = env::var("OXICLOUD_STARTUP_JOBS").ok();
+        if new_name.is_some() && old_name.is_some() {
+            panic!(
+                "both OXICLOUD_JOBS_STARTUP and OXICLOUD_STARTUP_JOBS are set. \
+                 The second is the deprecated spelling of the first — remove it."
+            );
+        }
+        if old_name.is_some() {
+            tracing::warn!(
+                "OXICLOUD_STARTUP_JOBS is deprecated and will be removed in the next \
+                 major release — rename it to OXICLOUD_JOBS_STARTUP."
+            );
+        }
+        let startup_jobs_raw = new_name.or(old_name);
+        let startup_jobs_explicit = startup_jobs_raw.is_some();
+        if let Some(raw) = startup_jobs_raw.as_deref() {
+            config.startup_jobs = parse_startup_jobs(raw);
         }
 
         // `OXICLOUD_LEGACY_RECHUNK=false` still defers the re-chunk sweep while
@@ -3198,13 +3504,49 @@ impl AppConfig {
         // every legacy blob on a metered backend, which is a legitimate thing to
         // want and would be silently taken away by the move to a job.
         //
-        // Only the default is filtered. An explicit `OXICLOUD_STARTUP_JOBS` is a
+        // Only the default is filtered. An explicit `OXICLOUD_JOBS_STARTUP` is a
         // direct statement about what should run at boot, and second-guessing it
         // from another variable is how configuration becomes unpredictable — the
         // two settings are then contradictory and the more specific one wins.
         if !config.storage.legacy_rechunk_enabled && !startup_jobs_explicit {
             config.startup_jobs.retain(|j| j.name != "backend_rechunk");
         }
+
+        // Same fail-fast treatment as the startup list, and for a sharper
+        // reason: a schedule entry that silently fails to parse leaves the
+        // job on whatever the code hardcoded, so the panel shows a cadence
+        // and the operator believes their override took effect.
+        if let Ok(raw) = env::var("OXICLOUD_JOBS_SCHEDULED") {
+            config.scheduled_jobs = parse_scheduled_jobs(&raw);
+        }
+
+        // Alerting. Every one of these panics on a bad value rather than
+        // falling back, because both directions of a silent fallback are
+        // bad: resolving to "everything" pages someone for an anomaly, and
+        // resolving to "nothing" is indistinguishable from a healthy
+        // instance. An operator who typed it wants it.
+        if let Ok(raw) = env::var("OXICLOUD_JOBS_NOTIFY_MIN_SEVERITY") {
+            config.jobs_notify.min_severity =
+                crate::application::ports::notification_sink_ports::NotifyThreshold::parse(&raw)
+                    .unwrap_or_else(|e| panic!("OXICLOUD_JOBS_NOTIFY_MIN_SEVERITY: {e}"));
+        }
+        if let Ok(raw) = env::var("OXICLOUD_JOBS_NOTIFY_EMAIL_TO") {
+            config.jobs_notify.email_to = parse_notify_emails(&raw)
+                .unwrap_or_else(|e| panic!("OXICLOUD_JOBS_NOTIFY_EMAIL_TO: {e}"));
+        }
+        // The webhook transport is not jobs-scoped — see `WebhookConfig`.
+        config.webhook.url = non_empty_url(env::var("OXICLOUD_WEBHOOK_URL"));
+        if let Ok(raw) = env::var("OXICLOUD_WEBHOOK_FORMAT") {
+            config.webhook.format =
+                crate::infrastructure::services::webhook_notification_sink::WebhookFormat::parse(
+                    &raw,
+                )
+                .unwrap_or_else(|e| panic!("OXICLOUD_WEBHOOK_FORMAT: {e}"));
+        }
+        config.webhook.target = env::var("OXICLOUD_WEBHOOK_TARGET")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
 
         if let Ok(v) = env::var("OXICLOUD_REUSE_PORT") {
             config.reuse_port = v.eq_ignore_ascii_case("true") || v == "1";
@@ -4496,6 +4838,56 @@ mod tests {
         );
     }
 
+    #[test]
+    fn notify_emails_split_on_commas_and_tolerate_spacing() {
+        assert_eq!(
+            parse_notify_emails(" ops@example.com , backup@example.org ,"),
+            Ok(vec![
+                "ops@example.com".to_string(),
+                "backup@example.org".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn an_unset_or_empty_recipient_list_disables_the_channel() {
+        assert_eq!(parse_notify_emails(""), Ok(vec![]));
+        assert_eq!(parse_notify_emails("  , "), Ok(vec![]));
+    }
+
+    /// A typo'd entry must not silently reduce the list to the addresses
+    /// that happened to parse — a channel delivering to one of two people
+    /// is one an operator believes in more than it deserves.
+    #[test]
+    fn a_malformed_address_is_rejected_and_named() {
+        for bad in ["ops", "ops@.com", "@example.com", "a b@c.d", "a@b@c"] {
+            let Err(err) = parse_notify_emails(bad) else {
+                panic!("accepted `{bad}` as an email address");
+            };
+            assert!(err.contains(bad), "unhelpful message: {err}");
+        }
+        // And one bad entry rejects the whole list, rather than the good
+        // ones going through.
+        assert!(parse_notify_emails("ops@example.com,nope").is_err());
+    }
+
+    /// A self-hosted box relaying locally has no dot in its domain, and
+    /// `root@localhost` is the operator's real address there.
+    #[test]
+    fn a_dotless_domain_is_a_valid_local_recipient() {
+        assert_eq!(
+            parse_notify_emails("root@localhost"),
+            Ok(vec!["root@localhost".to_string()])
+        );
+    }
+
+    /// The default must be silent: mail alerting is opt-in through an
+    /// explicit recipient, never implied by SMTP being configured.
+    #[test]
+    fn mail_alerting_is_off_by_default() {
+        assert!(JobsNotifyConfig::default().email_to.is_empty());
+    }
+
     /// A thread count is an operator override: it must parse and be
     /// positive, or the CPU-derived default applies.
     #[test]
@@ -4653,6 +5045,96 @@ mod tests {
     fn startup_jobs_empty_value_is_the_opt_out() {
         assert!(parse_startup_jobs("").is_empty());
         assert!(parse_startup_jobs("  , ,").is_empty());
+    }
+
+    #[test]
+    fn scheduled_jobs_parses_units_and_params() {
+        let jobs = parse_scheduled_jobs(
+            "blobs_consistency=24h,backend_consistency=7d?deep=true,backend_reclaim=30s",
+        );
+        assert_eq!(jobs.len(), 3);
+        assert_eq!(jobs[0].interval, Some(Duration::from_secs(86_400)));
+        assert_eq!(jobs[1].interval, Some(Duration::from_secs(604_800)));
+        assert_eq!(jobs[1].raw_params, vec![("deep".into(), "true".into())]);
+        assert_eq!(jobs[2].interval, Some(Duration::from_secs(30)));
+    }
+
+    /// `off` un-schedules without un-registering: the job keeps its row
+    /// in the panel and its Run button. "Not on a timer" and "not
+    /// available" are different things.
+    #[test]
+    fn scheduled_jobs_off_means_on_demand_not_disabled() {
+        let jobs = parse_scheduled_jobs("consistency_batch=off,blobs_consistency=0");
+        assert_eq!(jobs.len(), 2);
+        assert!(jobs.iter().all(|j| j.interval.is_none()));
+    }
+
+    /// The refusal this parser exists for. A scheduled repair deletes on
+    /// a cadence with nobody consenting after the first time, and the
+    /// error has to point at the spelling that IS allowed — otherwise an
+    /// operator just removes the flag and believes repairs are running.
+    #[test]
+    #[should_panic(expected = "OXICLOUD_JOBS_STARTUP")]
+    fn scheduled_jobs_refuses_a_scheduled_repair() {
+        parse_scheduled_jobs("blobs_consistency=24h?repair=true");
+    }
+
+    /// One job, one run row (`one_active_run_per_job`), one cursor — so
+    /// two cadences for one name would share them, and a paused deep run
+    /// would be continued by the next shallow tick.
+    #[test]
+    #[should_panic(expected = "twice")]
+    fn scheduled_jobs_refuses_a_duplicate_job() {
+        parse_scheduled_jobs("backend_consistency=24h,backend_consistency=720h?deep=true");
+    }
+
+    /// Zero would never stop firing. Someone typing it means "disabled",
+    /// which has its own spelling.
+    #[test]
+    #[should_panic(expected = "use `off`")]
+    fn scheduled_jobs_refuses_a_zero_interval() {
+        parse_scheduled_jobs("blobs_consistency=0h");
+    }
+
+    #[test]
+    #[should_panic(expected = "must end in s, m, h or d")]
+    fn scheduled_jobs_refuses_a_unitless_interval() {
+        parse_scheduled_jobs("blobs_consistency=24");
+    }
+
+    #[test]
+    #[should_panic(expected = "not name=interval")]
+    fn scheduled_jobs_refuses_an_entry_without_an_interval() {
+        parse_scheduled_jobs("blobs_consistency");
+    }
+
+    /// The shipped default: one weekly entry that fans out to every
+    /// detector. Pinned because it is the line that decides whether an
+    /// upgraded instance starts walking an S3 bucket, and whoever changes
+    /// the cadence should have to change a test that says so.
+    #[test]
+    fn default_scheduled_jobs_sweeps_everything_weekly() {
+        let jobs = AppConfig::default().scheduled_jobs;
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].name, "consistency_batch");
+        assert_eq!(jobs[0].interval, Some(Duration::from_secs(7 * 86_400)));
+        assert!(
+            jobs[0].raw_params.is_empty(),
+            "a scheduled sweep runs on declared defaults — discovery-only, not deep"
+        );
+    }
+
+    /// The recipe an operator who does not want the bucket walk types.
+    /// It is the configuration issue #774 asks for, so it must stay
+    /// expressible in one line.
+    #[test]
+    fn the_db_only_recipe_is_one_line() {
+        let jobs = parse_scheduled_jobs(
+            "consistency_batch=off,blobs_consistency=24h,satellites_consistency=24h",
+        );
+        assert!(jobs[0].interval.is_none());
+        assert_eq!(jobs[1].interval, Some(Duration::from_secs(86_400)));
+        assert_eq!(jobs[2].interval, Some(Duration::from_secs(86_400)));
     }
 
     /// Both migration jobs drain themselves out of the box, deletion

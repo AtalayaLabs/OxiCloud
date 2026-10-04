@@ -124,6 +124,41 @@ impl RunStatus {
 pub const CANCEL_INTENT_PARAM: &str = "cancel_intent";
 pub const CANCEL_INTENT_TERMINATE: &str = "terminate";
 
+/// Written to `params.unattended_resume` when a run is opened fresh:
+/// may this run be continued by something with no human behind it?
+///
+/// **The name is a permission, and must stay one.** Absent reads as
+/// `false`, so a paused run written by a release that predates this key
+/// waits for an operator instead of being picked up by the next tick.
+/// Inverting the name to a prohibition (`no_auto_resume`) would make
+/// absent mean "resuming is fine" and silently auto-resume every
+/// pre-existing paused repair run on upgrade — the exact failure, caused
+/// by a rename.
+///
+/// Stored, not declared — see [`JobRunArgs::is_unattended`] for why a
+/// `JobParam` would let a caller grant itself the consent.
+pub const UNATTENDED_RESUME_PARAM: &str = "unattended_resume";
+
+/// `error_reason` for a terminal [`RunOutcome::Failed`].
+///
+/// The variant carries only prose, so there is no handler-supplied key to
+/// use. A single generic one still satisfies the rule the alerting path
+/// depends on — *every* run that stopped on an error has `error_reason`
+/// set — and a handler that wants something more specific can gain it
+/// additively without touching the other sixteen.
+pub const FAILED_REASON: &str = "job_failed";
+
+/// Per-run marker recording which `error_reason` was already alerted on.
+///
+/// Lives in the run's `params` (set once per reason, read on the next
+/// terminal write) so the de-duplication needs no second table and no
+/// cross-run query. A resumed run keeps the same row, so a backend that
+/// is down all week produces one message per *run*, not one per
+/// auto-resume — the same discipline the finding diff applies to a
+/// standing finding, for the same reason: the fastest way to get a
+/// channel muted is to repeat yourself.
+pub const NOTIFIED_ERROR_PARAM: &str = "notified_error_reason";
+
 // ─── Run outcome (handler → engine) ─────────────────────────────────────────
 
 /// What a [`RecoverableJobHandler`] returns from `run_resumable`.
@@ -161,9 +196,15 @@ pub enum RunOutcome {
     /// this is worth trying again later.
     ///
     /// Lands as `Paused` in the row, so resume works unchanged. What
-    /// differs is `error_message`: an operator has to be able to tell "I
-    /// paused this" from "the provider went down", and a paused run with
-    /// no explanation is an unexplained one.
+    /// differs is that `error_reason` and `error_message` are populated:
+    /// an operator has to be able to tell "I paused this" from "the
+    /// provider went down", and a paused run with no explanation is an
+    /// unexplained one.
+    ///
+    /// **An operator pause sets neither**, which is what makes
+    /// "`error_*` present" the discriminator the alerting path keys off
+    /// — no special-casing of outcome variants, and a human stopping a
+    /// job never pages anyone.
     ///
     /// Distinct from both neighbours, and the distinction is the point:
     ///
@@ -181,7 +222,15 @@ pub enum RunOutcome {
     /// "retry as if transient, then hand the decision to a human".
     PausedRetryable {
         cursor: Vec<u8>,
+        /// Stable machine-readable key — `backend_unavailable`,
+        /// `backend_timeout`. Lands in `error_reason`, becomes the alert's
+        /// `kind`, and is what a log filter or a mailbox rule matches on,
+        /// so it must not be reworded across releases. Same contract as
+        /// the `reason` field in an audit line.
         reason: String,
+        /// The full text, for a human: context plus the whole error
+        /// chain. Lands in `error_message`.
+        detail: String,
     },
     Failed {
         message: String,
@@ -265,7 +314,19 @@ impl RunOutcome {
         if err.is_transient() {
             RunOutcome::PausedRetryable {
                 cursor: cursor.map(<[u8]>::to_vec).unwrap_or_default(),
-                reason: format!("{context}: {err}"),
+                // The two transient kinds are not the same operational
+                // problem — one says the backend could not be reached at
+                // all, the other that it answered too slowly — and an
+                // operator checks different things for each. Keeping them
+                // distinct costs nothing and is the difference between
+                // "check DNS and credentials" and "check the backend's
+                // load".
+                reason: match err.kind {
+                    crate::domain::errors::ErrorKind::Timeout => "backend_timeout",
+                    _ => "backend_unavailable",
+                }
+                .to_string(),
+                detail: format!("{context}: {err}"),
             }
         } else {
             RunOutcome::Failed {
@@ -447,6 +508,48 @@ pub trait RecoverableJobHandler: Send + Sync {
     /// as discovery-only after a restart.
     fn parameters(&self) -> &'static [JobParam] {
         &[]
+    }
+
+    /// May a run started with `args` later be continued by something with
+    /// no human behind it — a periodic tick, a cron, a webhook?
+    ///
+    /// Evaluated ONCE, at fresh-run start, and persisted to
+    /// [`UNATTENDED_RESUME_PARAM`]. Recording it at the moment of consent
+    /// rather than recomputing it at resume time means a policy change
+    /// between releases cannot retroactively re-govern a run already in
+    /// flight, and an operator can see in the run detail why a paused job
+    /// is waiting for them.
+    ///
+    /// **The default keys on the `repair` and `deep` consents, not on
+    /// [`Mutates`].**
+    /// Mutation is the wrong signal: `backend_reclaim` is
+    /// `Mutates::Always` ("unlinking IS the job") and `backend_rechunk` is
+    /// `Mutates::Always` and ungated ("converting IS the job"). Both are
+    /// migrations or drains that must continue unattended — stopping
+    /// halfway to wait for a click is how the drain accumulated 29
+    /// unreclaimed blobs. Neither declares `repair`, so both get `true`
+    /// here with no code of their own, while every `OnRepairOnly` job
+    /// gets the safe answer automatically.
+    ///
+    /// **`deep` gates it for cost, not for consequence.** `repair` asks
+    /// for consent because the run deletes; `deep` asks because it
+    /// re-reads and re-hashes every object, which on a metered backend
+    /// costs real money — the reason `OXICLOUD_JOBS_SCHEDULED`'s own
+    /// documentation calls `backend_consistency` the judgement call. The
+    /// case that settles it is a flapping backend: the run pauses on a
+    /// transient failure, a tick resumes it, it re-reads, fails, and
+    /// pauses again — spending metered requests on a loop with nobody
+    /// watching. Finishing work an operator already asked for is fine;
+    /// re-attempting it indefinitely a week later is not the same thing.
+    ///
+    /// Override only for a job that knows better than these two rules.
+    fn unattended_resume_allowed(&self, args: &JobRunArgs) -> bool {
+        // `get_bool` on an undeclared parameter is `false`, so a job that
+        // declares neither is unaffected — only `backend_consistency` and
+        // `consistency_batch` declare `deep` today, and a future job that
+        // adds one gets the safe answer without anyone remembering to
+        // override this.
+        !args.get_bool("repair") && !args.get_bool("deep")
     }
 
     /// Long-running scan. See trait-level doc for the contract.
@@ -671,14 +774,22 @@ pub trait JobStore: Send + Sync {
     /// [`RunOutcome::PausedRetryable`]. Handler code MUST NOT call this.
     ///
     /// Writes `status = Paused` — so resume is the same operation — plus
-    /// `error_message = reason`. The reason is the whole point: without
-    /// it the panel cannot distinguish an operator pause from a provider
-    /// outage, and a paused migration holding `migration_readonly` looks
-    /// like someone forgot about it.
+    /// `error_reason` (the stable key) and `error_message` (the full
+    /// text). Those are the whole point: without them the panel cannot
+    /// distinguish an operator pause from a provider outage, and a paused
+    /// migration holding `migration_readonly` looks like someone forgot
+    /// about it.
+    ///
+    /// Two columns rather than one because they have different readers.
+    /// `error_message` is prose for a human and may be reworded freely;
+    /// `error_reason` is matched by log filters, mailbox rules and the
+    /// alert de-duplication, so it is a fixed vocabulary. Before this
+    /// split the key existed only as a literal inside a `tracing` call,
+    /// which meant nothing could key off it.
     ///
     /// Separate method rather than an extra argument on
     /// [`Self::mark_paused`] because the two carry different meaning and
-    /// only one of them writes `error_message`. A `reason: Option<&str>`
+    /// only one of them writes the error columns. A `reason: Option<&str>`
     /// parameter would let a caller write a Paused row with an
     /// error message and no error, which is the state this exists to
     /// distinguish from.
@@ -686,6 +797,7 @@ pub trait JobStore: Send + Sync {
         &self,
         cursor: Option<Vec<u8>>,
         reason: &str,
+        detail: &str,
     ) -> Result<(), DomainError>;
 
     /// Engine-only. Called by [`run_or_resume`] on
@@ -717,11 +829,23 @@ pub trait JobStoreProvider: Send + Sync {
     /// - Latest non-terminal row is `Running` or `CancelRequested`:
     ///   return [`OpenedRun::AlreadyActive`] — caller MUST NOT
     ///   dispatch a parallel run.
+    /// - Latest non-terminal row is `Paused`, `unattended` is true, and
+    ///   the row's [`UNATTENDED_RESUME_PARAM`] is not `true`: change
+    ///   NOTHING and return [`OpenedRun::DeclinedUnattended`].
+    ///
+    /// `unattended` — true when no human is behind this dispatch
+    /// ([`JobRunArgs::is_unattended`]). It only ever *withholds* a resume;
+    /// a fresh start is unaffected, so a scheduled job with no paused run
+    /// behaves exactly as before.
     ///
     /// A concurrent INSERT race is handled internally via the DB's
     /// partial unique index — the losing INSERT falls back to reading
     /// the winning row.
-    async fn open_or_start(&self, job_name: &str) -> Result<OpenedRun, DomainError>;
+    async fn open_or_start(
+        &self,
+        job_name: &str,
+        unattended: bool,
+    ) -> Result<OpenedRun, DomainError>;
 
     /// Boot-time crash recovery. Any row abandoned in `Running` or
     /// `CancelRequested` when the previous process died gets flipped
@@ -800,6 +924,36 @@ pub trait JobStoreProvider: Send + Sync {
         run_id: Uuid,
     ) -> Result<Vec<(String, u64)>, DomainError>;
 
+    /// Which finding KINDS a run recorded, with each kind's severity
+    /// and count: `(kind, severity, count)`.
+    ///
+    /// Distinct from [`Self::finding_severity_counts`], which aggregates
+    /// the other way. Notification works per kind because that is what an
+    /// operator acts on — "orphan_blob appeared" is a thing to do
+    /// something about, "3 inconsistent findings" is not.
+    async fn finding_kind_counts(
+        &self,
+        run_id: Uuid,
+    ) -> Result<Vec<(String, String, u64)>, DomainError>;
+
+    /// The same shape, for the most recent **completed** run of
+    /// `job_name` that started before `before_run_id` did. Empty when
+    /// there is no such run.
+    ///
+    /// This is the transition baseline, and it is deliberately derived
+    /// from history rather than from a separate alert-state table: the
+    /// findings already record what was true last time, and a second
+    /// store would be a second thing to keep in step.
+    ///
+    /// **Completed only.** A paused or failed run holds partial findings,
+    /// so diffing against one would report every kind it had not reached
+    /// yet as "cleared" — an all-clear for work that never ran.
+    async fn previous_completed_finding_kinds(
+        &self,
+        job_name: &str,
+        before_run_id: Uuid,
+    ) -> Result<Vec<(String, String, u64)>, DomainError>;
+
     /// Operator-triggered retention cleanup. DELETEs every
     /// TERMINAL run (`Completed`, `Failed`) whose `completed_at`
     /// is older than `retention_days` days ago. Findings drop
@@ -819,8 +973,12 @@ pub trait JobStoreProvider: Send + Sync {
     /// CASCADE; callers wanting the finding count separately
     /// should query it BEFORE calling this).
     ///
-    /// Powers `POST /api/admin/jobs/runs/purge`. Not periodic — the
-    /// operator decides when to reclaim space.
+    /// Powers the `job_runs_cleanup` job — nightly by default, and
+    /// triggerable on demand with an explicit window. It used to power a
+    /// bespoke `POST /api/admin/jobs/runs/purge` instead, which meant
+    /// nothing applied the retention window unless an operator
+    /// remembered to click: the same shape as the on-demand `dedup_gc`
+    /// that let 29 orphaned blobs accumulate.
     async fn purge_terminal_runs(&self, retention_days: i32) -> Result<u64, DomainError>;
 }
 
@@ -948,6 +1106,15 @@ pub struct RunSummary {
     pub cursor_hex: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
+    /// Stable key for why the run stopped — `backend_unavailable`,
+    /// `backend_timeout`, `job_failed`, `server_restart`.
+    ///
+    /// Distinct from `error_message`, which is prose for a human. This is
+    /// the half a client may switch on: the panel can render a chip per
+    /// cause, and "paused by an operator" is `None` here even though it
+    /// is also `Paused` in `status`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_reason: Option<String>,
     /// Present when the tenant reported a countable subject at run
     /// start (see [`RecoverableJobHandler::count_total`]). `None`
     /// tells the UI "hide the progress bar, show scanned_count as a
@@ -970,6 +1137,16 @@ pub enum OpenedRun {
     /// spawn a parallel dispatch. Returned to admin/trigger callers
     /// as `Ok { count: 0, extra: {"skipped": "already_running", …} }`.
     AlreadyActive { run_id: Uuid, status: RunStatus },
+    /// A `Paused` run exists, the caller is unattended, and the run was
+    /// opened under a consent that does not extend to being continued
+    /// without a human ([`UNATTENDED_RESUME_PARAM`] is not `true`).
+    ///
+    /// **The row is left exactly as it was** — still `Paused`, cursor and
+    /// `error_message` intact. That is why the decision belongs inside
+    /// `open_or_start` rather than after it: the resume path flips the row
+    /// to `Running` and clears `error_message`, so declining afterwards
+    /// would destroy the record of why it paused in the first place.
+    DeclinedUnattended { run_id: Uuid },
 }
 
 // ─── Engine glue ────────────────────────────────────────────────────────────
@@ -986,7 +1163,22 @@ pub async fn run_or_resume(
     provider: Arc<dyn JobStoreProvider>,
     args: &JobRunArgs,
 ) -> JobOutcome {
-    let opened = match provider.open_or_start(job.name()).await {
+    run_or_resume_with_notifier(job, provider, args, None).await
+}
+
+/// [`run_or_resume`] plus out-of-band alerting on what a completed run
+/// changed. Separate entry point so the ~15 existing callers (tests, and
+/// anything driving a run directly) keep the three-argument shape.
+pub async fn run_or_resume_with_notifier(
+    job: Arc<dyn RecoverableJobHandler>,
+    provider: Arc<dyn JobStoreProvider>,
+    args: &JobRunArgs,
+    notifier: Option<Arc<super::finding_notifier::FindingNotifier>>,
+) -> JobOutcome {
+    let opened = match provider
+        .open_or_start(job.name(), args.is_unattended())
+        .await
+    {
         Ok(o) => o,
         Err(e) => return JobOutcome::err(format!("open_or_start failed: {e}")),
     };
@@ -998,6 +1190,29 @@ pub async fn run_or_resume(
                     "skipped": "already_running",
                     "run_id": run_id.to_string(),
                     "status": status.as_str(),
+                }),
+            );
+        }
+        OpenedRun::DeclinedUnattended { run_id } => {
+            // Audited, not merely logged. A paused run that nothing picks
+            // up looks identical to a job that simply is not due, so
+            // without this line the stall is invisible — and the whole
+            // point of declining is that a human has to act.
+            tracing::info!(
+                target: "audit",
+                event = "job.unattended_resume_declined",
+                reason = "repair_consent_not_transferable",
+                job = %job.name(),
+                run_id = %run_id,
+                "👮🏻‍♂️ `{}` has a paused run that mutates; a scheduled tick will \
+                 not continue it — resume it from the admin panel",
+                job.name(),
+            );
+            return JobOutcome::ok_with(
+                0,
+                serde_json::json!({
+                    "skipped": "unattended_resume_declined",
+                    "run_id": run_id.to_string(),
                 }),
             );
         }
@@ -1059,6 +1274,38 @@ pub async fn run_or_resume(
         }
     };
 
+    // Stamp whether this run may later be continued with nobody watching.
+    //
+    // Fresh only, and AFTER the args are bound, because the policy reads
+    // the effective flags — `repair` resolved from the declaration, not
+    // whatever the caller happened to type. A resumed run keeps the answer
+    // recorded at its own start, which is the point: the consent is the one
+    // that was actually given.
+    //
+    // A write failure leaves the key absent, which reads as `false` — the
+    // run still completes, it just will not be auto-resumed. Erring toward
+    // "ask a human" is the safe direction, so this warns rather than fails.
+    if is_fresh {
+        let allowed = job.unattended_resume_allowed(&args);
+        if let Err(e) = store
+            .set_string_param(
+                UNATTENDED_RESUME_PARAM,
+                if allowed { "true" } else { "false" },
+            )
+            .await
+        {
+            tracing::warn!(
+                target: "oxicloud::scheduler",
+                event = "recoverable.unattended_resume_stamp_failed",
+                job = job.name(),
+                run_id = %run_id,
+                error = %e,
+                "could not record the unattended-resume policy; a pause will \
+                 wait for an operator"
+            );
+        }
+    }
+
     // Dispatch. Terminal writes to `jobs.recoverable_runs` happen
     // here (NOT in the handler) so the row always ends in a state
     // that matches what the handler returned.
@@ -1090,17 +1337,46 @@ pub async fn run_or_resume(
             }
             log_terminal_write_err("mark_completed", run_id, store.mark_completed().await);
             let stats = fetch_outcome_stats(&*provider, run_id).await;
-            JobOutcome::ok_with(
-                stats.finding_count,
-                serde_json::json!({
-                    "completed":         true,
-                    "run_id":            run_id.to_string(),
-                    "finding_count":     stats.finding_count,
-                    "scanned_count":     stats.scanned_count,
-                    "severity_counts":   stats.by_severity,
-                    "extra_stats":       serde_json::Value::Object(extra_stats),
-                }),
-            )
+            // Alert only from here — a COMPLETED run. A paused or failed
+            // run holds partial findings, so diffing one against a
+            // complete baseline would announce every kind it had not
+            // reached yet as resolved: an all-clear for work that never
+            // ran. `mark_completed` is already written, so the run is
+            // visible as finished whatever delivery does next.
+            let mut notify_failures = match notifier.as_ref() {
+                Some(n) => {
+                    n.notify_completed_run(&*provider, job.name(), run_id, stats.scanned_count)
+                        .await
+                }
+                None => 0,
+            };
+            // The other half of the error alert: this run stopped on an
+            // error at least once and has now finished, so whoever was
+            // told about it is owed the news that it ended. Driven by the
+            // marker the error alert left on this row, which is why it
+            // needs no cross-run query — and why a run that never failed
+            // says nothing here.
+            if let Some(n) = notifier.as_ref() {
+                notify_failures += n
+                    .notify_run_recovered(&*store, job.name(), run_id, stats.scanned_count)
+                    .await;
+            }
+            let mut extra = serde_json::json!({
+                "completed":         true,
+                "run_id":            run_id.to_string(),
+                "finding_count":     stats.finding_count,
+                "scanned_count":     stats.scanned_count,
+                "severity_counts":   stats.by_severity,
+                "extra_stats":       serde_json::Value::Object(extra_stats),
+            });
+            // Only when non-zero, so a healthy run's outcome stays as it
+            // was. A broken channel has to be visible somewhere other
+            // than the logs, or "we are being alerted" goes untested
+            // until the day it matters.
+            if notify_failures > 0 {
+                extra["notify_failures"] = serde_json::json!(notify_failures);
+            }
+            JobOutcome::ok_with(stats.finding_count, extra)
         }
         RunOutcome::Paused { cursor } => {
             // Read the intent stamped by `/api/admin/jobs/{name}/cancel`
@@ -1152,29 +1428,60 @@ pub async fn run_or_resume(
                 )
             }
         }
-        RunOutcome::PausedRetryable { cursor, reason } => {
+        RunOutcome::PausedRetryable {
+            cursor,
+            reason,
+            detail,
+        } => {
             let cursor_hex = hex::encode(&cursor);
             log_terminal_write_err(
                 "mark_paused_retryable",
                 run_id,
-                store.mark_paused_retryable(Some(cursor), &reason).await,
+                store
+                    .mark_paused_retryable(Some(cursor), &reason, &detail)
+                    .await,
             );
             // Audited, not merely logged. Writes are refused app-wide
             // while `backend_migration` holds `migration_readonly`, so a
             // run that stopped on a provider outage is an operational
             // event someone has to act on — and "why is the app
             // read-only" must be answerable afterwards.
+            //
+            // `reason` is the handler's key now, not a literal. It used to
+            // be hardcoded `"backend_unavailable"` here, which meant a
+            // timeout and a DNS failure logged identically and nothing
+            // downstream could tell them apart.
             tracing::info!(
                 target: "audit",
                 event = "job.paused_retryable",
-                reason = "backend_unavailable",
+                reason = %reason,
                 job = %job.name(),
                 run_id = %run_id,
                 cursor_hex = %cursor_hex,
-                detail = %reason,
-                "👮🏻‍♂️ `{}` paused after exhausting retries: {reason}",
+                detail = %detail,
+                "👮🏻‍♂️ `{}` paused after exhausting retries: {detail}",
                 job.name(),
             );
+            // Out-of-band alert. The row is already written, so delivery
+            // cannot cost the pause — and the row is also the only place
+            // this is recorded, because a resume clears `error_message`.
+            let notify_failures = match notifier {
+                Some(n) => {
+                    n.notify_run_error(
+                        &*store,
+                        job.name(),
+                        run_id,
+                        &reason,
+                        &detail,
+                        stats.scanned_count,
+                        // Resumable: that is what makes this variant
+                        // different from `Failed`, and the message says so.
+                        true,
+                    )
+                    .await
+                }
+                None => 0,
+            };
             // `ok`, not `err`: the run did not fail, it stopped and can
             // be resumed. Reporting it as an error would put a red job
             // in the panel that a Resume click fixes, which reads as a
@@ -1185,16 +1492,39 @@ pub async fn run_or_resume(
                     "paused":            true,
                     "retryable":         true,
                     "reason":            reason,
+                    "detail":            detail,
                     "run_id":            run_id.to_string(),
                     "cursor_hex":        cursor_hex,
                     "finding_count":     stats.finding_count,
                     "scanned_count":     stats.scanned_count,
                     "severity_counts":   stats.by_severity,
+                    "notify_failures":   notify_failures,
                 }),
             )
         }
         RunOutcome::Failed { message } => {
             log_terminal_write_err("mark_failed", run_id, store.mark_failed(&message).await);
+            // A terminal failure alerts for the same reason a retryable
+            // pause does — more so, in fact: nothing will retry it, so if
+            // nobody is told, nobody finds out until they next open the
+            // panel. `job_failed` is the key because the variant carries
+            // only prose; a handler wanting a specific one can gain it
+            // additively later.
+            if let Some(n) = notifier.as_ref() {
+                n.notify_run_error(
+                    &*store,
+                    job.name(),
+                    run_id,
+                    FAILED_REASON,
+                    &message,
+                    stats.scanned_count,
+                    // Terminal: nothing will retry it, and promising a
+                    // resume would be the most misleading thing the
+                    // message could say.
+                    false,
+                )
+                .await;
+            }
             JobOutcome::err(format!("{message} (run_id={run_id})"))
         }
     }
@@ -1316,15 +1646,30 @@ pub struct RecoverableAdapter {
     inner: Arc<dyn RecoverableJobHandler>,
     provider: Arc<dyn JobStoreProvider>,
     name: String,
+    /// Shared with the registry, read at RUN time rather than captured at
+    /// construction — so DI can wire notifications before or after the
+    /// jobs register and get the same result either way. Order-dependence
+    /// here would mean a deployment whose alerts silently never fire
+    /// because two lines in `di.rs` are the wrong way round.
+    notifier: Arc<std::sync::OnceLock<Arc<super::finding_notifier::FindingNotifier>>>,
 }
 
 impl RecoverableAdapter {
     pub fn new(inner: Arc<dyn RecoverableJobHandler>, provider: Arc<dyn JobStoreProvider>) -> Self {
+        Self::with_notifier(inner, provider, Arc::new(std::sync::OnceLock::new()))
+    }
+
+    pub fn with_notifier(
+        inner: Arc<dyn RecoverableJobHandler>,
+        provider: Arc<dyn JobStoreProvider>,
+        notifier: Arc<std::sync::OnceLock<Arc<super::finding_notifier::FindingNotifier>>>,
+    ) -> Self {
         let name = inner.name().to_string();
         Self {
             inner,
             provider,
             name,
+            notifier,
         }
     }
 }
@@ -1335,7 +1680,13 @@ impl JobHandler for RecoverableAdapter {
         &self.name
     }
     async fn run(&self, args: &JobRunArgs) -> JobOutcome {
-        run_or_resume(self.inner.clone(), self.provider.clone(), args).await
+        run_or_resume_with_notifier(
+            self.inner.clone(),
+            self.provider.clone(),
+            args,
+            self.notifier.get().cloned(),
+        )
+        .await
     }
     fn is_recoverable(&self) -> bool {
         // Every tenant registered through `register_recoverable_job` is
@@ -1358,7 +1709,7 @@ impl JobHandler for RecoverableAdapter {
     // then simply lost. `parameters` shipped that way for exactly one
     // boot: the default `&[]` made the trigger endpoint reject
     // `?repair=true` on the very jobs that declare it, and
-    // `OXICLOUD_STARTUP_JOBS` panicked at startup with "this job accepts
+    // `OXICLOUD_JOBS_STARTUP` panicked at startup with "this job accepts
     // none". Pinned by `adapter_forwards_tenant_metadata`.
     fn description(&self) -> &'static str {
         self.inner.description()
@@ -1398,7 +1749,11 @@ impl super::registry::JobRegistry {
         provider: Arc<dyn JobStoreProvider>,
         interval: Option<Duration>,
     ) {
-        let adapter = Arc::new(RecoverableAdapter::new(handler, provider));
+        let adapter = Arc::new(RecoverableAdapter::with_notifier(
+            handler,
+            provider,
+            self.finding_notifier_handle(),
+        ));
         self.register(adapter, interval, None).await;
     }
 }
@@ -1423,6 +1778,7 @@ mod tests {
         cursor: Option<Vec<u8>>,
         scanned_count: u64,
         error_message: Option<String>,
+        error_reason: Option<String>,
         findings: Vec<Finding>,
         progress_total: Option<u64>,
         progress_kind: Option<ProgressKind>,
@@ -1510,7 +1866,13 @@ mod tests {
             Ok(())
         }
         async fn mark_completed(&self) -> Result<(), DomainError> {
-            self.state.lock().unwrap().status = RunStatus::Completed;
+            let mut s = self.state.lock().unwrap();
+            s.status = RunStatus::Completed;
+            // Mirrors the PG store: success clears both error columns, or
+            // a run that stopped and then recovered keeps rendering as
+            // stopped. Carried into the double so a test can assert it.
+            s.error_reason = None;
+            s.error_message = None;
             Ok(())
         }
         async fn mark_paused(&self, cursor: Option<Vec<u8>>) -> Result<(), DomainError> {
@@ -1525,14 +1887,16 @@ mod tests {
             &self,
             cursor: Option<Vec<u8>>,
             reason: &str,
+            detail: &str,
         ) -> Result<(), DomainError> {
             let mut s = self.state.lock().unwrap();
             s.status = RunStatus::Paused;
-            // Both, deliberately: Paused so resume works, `error_message`
-            // so a test can assert the two pause shapes are
+            // All three, deliberately: Paused so resume works, plus both
+            // error columns so a test can assert the two pause shapes are
             // distinguishable — which is the whole reason the variant
             // exists.
-            s.error_message = Some(reason.to_string());
+            s.error_reason = Some(reason.to_string());
+            s.error_message = Some(detail.to_string());
             if let Some(c) = cursor {
                 s.cursor = Some(c);
             }
@@ -1582,6 +1946,7 @@ mod tests {
                     cursor: None,
                     scanned_count: 0,
                     error_message: None,
+                    error_reason: None,
                     findings: Vec::new(),
                     progress_total: None,
                     progress_kind: None,
@@ -1601,6 +1966,15 @@ mod tests {
             stores.last().map(|s| s.state.lock().unwrap().status)
         }
 
+        /// Test-only mutation — drop a stored param from the last run, to
+        /// stand in for a row written before that key existed.
+        fn forget_string_param(&self, key: &str) {
+            let stores = self.stores.lock().unwrap();
+            if let Some(s) = stores.last() {
+                s.state.lock().unwrap().string_params.remove(key);
+            }
+        }
+
         /// Test-only read — last-created run's cursor.
         fn last_cursor(&self) -> Option<Vec<u8>> {
             let stores = self.stores.lock().unwrap();
@@ -1618,17 +1992,45 @@ mod tests {
                 .last()
                 .and_then(|s| s.state.lock().unwrap().error_message.clone())
         }
+
+        /// Test-only read — last-created run's `error_reason`. The
+        /// matchable half: `error_message` is prose, this is the fixed
+        /// vocabulary that alerting and log filters key off.
+        fn last_error_reason(&self) -> Option<String> {
+            let stores = self.stores.lock().unwrap();
+            stores
+                .last()
+                .and_then(|s| s.state.lock().unwrap().error_reason.clone())
+        }
     }
 
     #[async_trait]
     impl JobStoreProvider for MemProvider {
-        async fn open_or_start(&self, _job_name: &str) -> Result<OpenedRun, DomainError> {
+        async fn open_or_start(
+            &self,
+            _job_name: &str,
+            unattended: bool,
+        ) -> Result<OpenedRun, DomainError> {
             let mut stores = self.stores.lock().unwrap();
             if let Some(store) = stores.last() {
                 let state = store.state.lock().unwrap();
                 if state.status.is_non_terminal() {
                     return match state.status {
                         RunStatus::Paused => {
+                            // Mirrors the PG gate, including its position:
+                            // decided before the row flips to Running, so a
+                            // test can assert the row was left alone.
+                            if unattended
+                                && state
+                                    .string_params
+                                    .get(UNATTENDED_RESUME_PARAM)
+                                    .map(String::as_str)
+                                    != Some("true")
+                            {
+                                return Ok(OpenedRun::DeclinedUnattended {
+                                    run_id: store.run_id(),
+                                });
+                            }
                             let cursor = state.cursor.clone().unwrap_or_default();
                             drop(state);
                             store.state.lock().unwrap().status = RunStatus::Running;
@@ -1652,6 +2054,7 @@ mod tests {
                     cursor: None,
                     scanned_count: 0,
                     error_message: None,
+                    error_reason: None,
                     findings: Vec::new(),
                     progress_total: None,
                     progress_kind: None,
@@ -1709,6 +2112,7 @@ mod tests {
                         params: serde_json::json!({}),
                         cursor_hex: state.cursor.as_ref().map(hex::encode),
                         error_message: state.error_message.clone(),
+                        error_reason: state.error_reason.clone(),
                         progress,
                     }
                 })
@@ -1737,6 +2141,7 @@ mod tests {
                     params: serde_json::json!({}),
                     cursor_hex: state.cursor.as_ref().map(hex::encode),
                     error_message: state.error_message.clone(),
+                    error_reason: state.error_reason.clone(),
                     progress,
                 }
             }))
@@ -1777,6 +2182,53 @@ mod tests {
                 *counts.entry(f.severity.clone()).or_default() += 1;
             }
             Ok(counts.into_iter().collect())
+        }
+
+        async fn finding_kind_counts(
+            &self,
+            run_id: Uuid,
+        ) -> Result<Vec<(String, String, u64)>, DomainError> {
+            let stores = self.stores.lock().unwrap();
+            let Some(store) = stores.iter().find(|s| s.run_id == run_id) else {
+                return Ok(Vec::new());
+            };
+            let state = store.state.lock().unwrap();
+            let mut counts: std::collections::BTreeMap<(String, String), u64> =
+                std::collections::BTreeMap::new();
+            for f in state.findings.iter() {
+                *counts
+                    .entry((f.kind.clone(), f.severity.clone()))
+                    .or_default() += 1;
+            }
+            Ok(counts
+                .into_iter()
+                .map(|((kind, sev), n)| (kind, sev, n))
+                .collect())
+        }
+
+        async fn previous_completed_finding_kinds(
+            &self,
+            _job_name: &str,
+            before_run_id: Uuid,
+        ) -> Result<Vec<(String, String, u64)>, DomainError> {
+            // Mirrors the PG semantics on the two things that matter: the
+            // nearest EARLIER run, and Completed only. `stores` is
+            // append-ordered, so "earlier" is "before it in the vec".
+            let (prev_run_id, _) = {
+                let stores = self.stores.lock().unwrap();
+                let Some(idx) = stores.iter().position(|s| s.run_id == before_run_id) else {
+                    return Ok(Vec::new());
+                };
+                let found = stores[..idx]
+                    .iter()
+                    .rev()
+                    .find(|s| s.state.lock().unwrap().status == RunStatus::Completed);
+                match found {
+                    Some(s) => (s.run_id, ()),
+                    None => return Ok(Vec::new()),
+                }
+            };
+            self.finding_kind_counts(prev_run_id).await
         }
 
         async fn purge_terminal_runs(&self, retention_days: i32) -> Result<u64, DomainError> {
@@ -1922,6 +2374,36 @@ mod tests {
         }
     }
 
+    /// Pauses like `PausingHandler`, but declares `repair` — so the
+    /// default unattended-resume policy has something to key on.
+    /// `Mutates::Always` deliberately: it stands in for the
+    /// `backend_reclaim` / `backend_rechunk` shape, where mutation is
+    /// unconditional and must NOT by itself block an unattended resume.
+    struct RepairablePausingHandler;
+    #[async_trait]
+    impl RecoverableJobHandler for RepairablePausingHandler {
+        fn name(&self) -> &str {
+            "repairable_pauser"
+        }
+        fn mutates(&self) -> Mutates {
+            Mutates::Always
+        }
+        fn parameters(&self) -> &'static [JobParam] {
+            const PARAMS: &[JobParam] = &[JobParam::boolean("repair", false, "test flag")];
+            PARAMS
+        }
+        async fn run_resumable(
+            &self,
+            _store: &dyn JobStore,
+            _args: &JobRunArgs,
+            _resume_cursor: Option<Vec<u8>>,
+        ) -> RunOutcome {
+            RunOutcome::Paused {
+                cursor: b"halfway".to_vec(),
+            }
+        }
+    }
+
     struct FailingHandler;
     #[async_trait]
     impl RecoverableJobHandler for FailingHandler {
@@ -2009,7 +2491,7 @@ mod tests {
         // added, and both traits having defaults meant it compiled
         // silently. The registry then saw `&[]`, so the trigger endpoint
         // rejected `?repair=true` on the jobs that declare it and
-        // `OXICLOUD_STARTUP_JOBS=thumb_derived_import?repair=true`
+        // `OXICLOUD_JOBS_STARTUP=thumb_derived_import?repair=true`
         // panicked at boot with "this job accepts none".
         assert_eq!(
             as_handler.parameters().len(),
@@ -2067,9 +2549,18 @@ mod tests {
         if let JobOutcome::Ok { extra, .. } = outcome {
             assert_eq!(extra["paused"], true);
             assert_eq!(extra["retryable"], true);
+            // Two fields, not one. `reason` is the stable key that
+            // filters, de-duplicates and becomes an alert's kind;
+            // `detail` is the prose a human reads. They used to be the
+            // same string — the full error text under the name `reason`
+            // — which is why nothing downstream could match on a cause.
+            assert_eq!(
+                extra["reason"], "backend_unavailable",
+                "the key must be the stable vocabulary, not the error text: {extra:?}"
+            );
             assert!(
-                extra["reason"].as_str().unwrap().contains("503"),
-                "the reason must reach the panel: {extra:?}"
+                extra["detail"].as_str().unwrap().contains("503"),
+                "the cause must still reach the panel: {extra:?}"
             );
         }
 
@@ -2081,6 +2572,15 @@ mod tests {
         );
         let msg = provider.last_error_message().expect("reason recorded");
         assert!(msg.contains("503"), "error_message names the cause: {msg}");
+        // The row carries the key too, which is what lets alerting fire
+        // on "stopped with an error" without inspecting outcome
+        // variants — and what tells this apart from an operator pause,
+        // since both are `Paused` in `status`.
+        assert_eq!(
+            provider.last_error_reason().as_deref(),
+            Some("backend_unavailable"),
+            "the row must record the stable key, not only the prose"
+        );
     }
 
     /// The control: a permanent fault still fails terminally. Without
@@ -2121,6 +2621,169 @@ mod tests {
         }
         assert_eq!(provider.last_status(), Some(RunStatus::Paused));
         assert_eq!(provider.last_cursor(), Some(b"halfway".to_vec()));
+    }
+
+    /// Build the args an operator's `?repair=true` trigger produces.
+    fn repair_args() -> JobRunArgs {
+        JobRunArgs::from_declared(RepairablePausingHandler.parameters(), [("repair", "true")])
+            .expect("declared param")
+    }
+
+    /// The scenario this guard exists for: an operator triggers a repair
+    /// run, the environment fails, the run lands Paused — and a week
+    /// later the periodic tick would have continued deleting with nobody
+    /// watching, on the strength of a consent given once.
+    #[tokio::test]
+    async fn a_scheduled_tick_will_not_continue_a_repair_run() {
+        let provider = Arc::new(MemProvider::new());
+        let provider_trait: Arc<dyn JobStoreProvider> = provider.clone();
+
+        // Operator-initiated repair run pauses.
+        run_or_resume(
+            Arc::new(RepairablePausingHandler),
+            provider_trait.clone(),
+            &repair_args(),
+        )
+        .await;
+        assert_eq!(provider.last_status(), Some(RunStatus::Paused));
+
+        // The tick declines, and says so rather than reporting a no-op.
+        let outcome = run_or_resume(
+            Arc::new(RepairablePausingHandler),
+            provider_trait,
+            &JobRunArgs::default().unattended(),
+        )
+        .await;
+        assert!(outcome.is_ok(), "declining is not a failure");
+        if let JobOutcome::Ok { extra, .. } = outcome {
+            assert_eq!(extra["skipped"], "unattended_resume_declined");
+        } else {
+            panic!("expected Ok");
+        }
+
+        // And the row is untouched — still Paused, cursor intact. A
+        // decline that flipped it to Running would strip `error_message`
+        // and lose why it paused.
+        assert_eq!(provider.last_status(), Some(RunStatus::Paused));
+        assert_eq!(provider.last_cursor(), Some(b"halfway".to_vec()));
+    }
+
+    /// The other half: declining must not strand the work. A human
+    /// clicking Resume IS the consent, so the same paused run continues.
+    #[tokio::test]
+    async fn an_operator_can_still_resume_what_the_tick_declined() {
+        let provider = Arc::new(MemProvider::new());
+        let provider_trait: Arc<dyn JobStoreProvider> = provider.clone();
+
+        run_or_resume(
+            Arc::new(RepairablePausingHandler),
+            provider_trait.clone(),
+            &repair_args(),
+        )
+        .await;
+        run_or_resume(
+            Arc::new(RepairablePausingHandler),
+            provider_trait.clone(),
+            &JobRunArgs::default().unattended(),
+        )
+        .await;
+
+        let seen = Arc::new(Mutex::new(None));
+        run_or_resume(
+            Arc::new(ResumeInspectHandler {
+                saw_cursor: seen.clone(),
+            }),
+            provider_trait,
+            // Attended — no `.unattended()`.
+            &JobRunArgs::default(),
+        )
+        .await;
+        assert_eq!(
+            seen.lock().unwrap().clone(),
+            Some(b"halfway".to_vec()),
+            "an operator resume must hand the cursor back"
+        );
+    }
+
+    /// Mutation is NOT the signal. `backend_reclaim` is `Mutates::Always`
+    /// and scheduled; blocking its resume would recreate the bug where
+    /// the drain accumulated 29 unreclaimed blobs. This handler is
+    /// `Mutates::Always` too, and without `repair` it must resume.
+    #[tokio::test]
+    async fn a_scheduled_tick_continues_a_mutating_run_that_was_not_a_repair() {
+        let provider = Arc::new(MemProvider::new());
+        let provider_trait: Arc<dyn JobStoreProvider> = provider.clone();
+
+        run_or_resume(
+            Arc::new(RepairablePausingHandler),
+            provider_trait.clone(),
+            // Default args — `repair` resolves to its declared `false`.
+            &JobRunArgs::default(),
+        )
+        .await;
+        assert_eq!(provider.last_status(), Some(RunStatus::Paused));
+
+        let seen = Arc::new(Mutex::new(None));
+        run_or_resume(
+            Arc::new(ResumeInspectHandler {
+                saw_cursor: seen.clone(),
+            }),
+            provider_trait,
+            &JobRunArgs::default().unattended(),
+        )
+        .await;
+        assert_eq!(
+            seen.lock().unwrap().clone(),
+            Some(b"halfway".to_vec()),
+            "an ordinary paused run must still auto-resume"
+        );
+    }
+
+    /// Absent reads as "not permitted". A run paused by a release that
+    /// predates the key has no stamp, and must wait for an operator
+    /// rather than being adopted by the first tick after an upgrade.
+    #[tokio::test]
+    async fn a_run_paused_before_the_key_existed_waits_for_a_human() {
+        let provider = Arc::new(MemProvider::new());
+        let provider_trait: Arc<dyn JobStoreProvider> = provider.clone();
+
+        run_or_resume(
+            Arc::new(PausingHandler),
+            provider_trait.clone(),
+            &JobRunArgs::default(),
+        )
+        .await;
+
+        // Simulate the pre-upgrade row: drop the stamp entirely.
+        provider.forget_string_param(UNATTENDED_RESUME_PARAM);
+
+        let outcome = run_or_resume(
+            Arc::new(PausingHandler),
+            provider_trait,
+            &JobRunArgs::default().unattended(),
+        )
+        .await;
+        if let JobOutcome::Ok { extra, .. } = outcome {
+            assert_eq!(extra["skipped"], "unattended_resume_declined");
+        } else {
+            panic!("expected Ok");
+        }
+    }
+
+    /// The policy itself, independent of any run: keyed on the `repair`
+    /// consent, not on `Mutates`.
+    #[test]
+    fn the_default_policy_keys_on_the_repair_consent() {
+        let h = RepairablePausingHandler;
+        assert_eq!(h.mutates(), Mutates::Always);
+        assert!(
+            h.unattended_resume_allowed(&JobRunArgs::default()),
+            "a mutating job with no repair flag must auto-resume"
+        );
+        assert!(
+            !h.unattended_resume_allowed(&repair_args()),
+            "a repair run must not auto-resume"
+        );
     }
 
     #[tokio::test]
@@ -2178,10 +2841,12 @@ mod tests {
     #[tokio::test]
     async fn checkpoint_counters_round_trip_through_stats() {
         let provider = Arc::new(MemProvider::new());
-        let store = provider.open_or_start("counter_job").await.unwrap();
+        let store = provider.open_or_start("counter_job", false).await.unwrap();
         let store: Arc<dyn JobStore> = match store {
             OpenedRun::Fresh { store: s } | OpenedRun::Resumed { store: s, .. } => s,
-            OpenedRun::AlreadyActive { .. } => panic!("fresh provider cannot be active"),
+            OpenedRun::AlreadyActive { .. } | OpenedRun::DeclinedUnattended { .. } => {
+                panic!("fresh provider cannot be active or declined")
+            }
         };
 
         // Absent keys read as 0, so a fresh run needs no special case.

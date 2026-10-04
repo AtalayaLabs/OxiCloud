@@ -304,6 +304,10 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 BUILD_TARGET="${BUILD_TARGET:-debug}"
 HELPER_BIN="$REPO_ROOT/target/$BUILD_TARGET/rt-hurl-helper"
 
+# ── Shared cargo-build wrapper (quiet on success, tailable while it runs) ────
+# shellcheck disable=SC1091
+source "$REPO_ROOT/tests/common/cargo_build.sh"
+
 # ── Env from test.env (base_url, admin username/password) ────────────────────
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/test.env"
@@ -328,10 +332,9 @@ die()  { printf '\033[1;31m[rt_bus_check FAIL]\033[0m %s\n' "$*" >&2; exit 1; }
 # Cargo incremental short-circuits in ~50 ms when nothing changed, so
 # the cost of the always-build is negligible; the cost of a stale binary
 # is a wild-goose chase.
-log "Building rt-hurl-helper ($BUILD_TARGET)..."
 case "$BUILD_TARGET" in
-  debug)   (cd "$REPO_ROOT" && cargo build           --features test_utils --bin rt-hurl-helper 2>&1 | tail -n 20) || die "rt-hurl-helper build failed" ;;
-  release) (cd "$REPO_ROOT" && cargo build --release --features test_utils --bin rt-hurl-helper 2>&1 | tail -n 20) || die "rt-hurl-helper build failed" ;;
+  debug)   cargo_build_logged "rt-hurl-helper (debug)"             --features test_utils --bin rt-hurl-helper || die "rt-hurl-helper build failed" ;;
+  release) cargo_build_logged "rt-hurl-helper (release)" --release --features test_utils --bin rt-hurl-helper || die "rt-hurl-helper build failed" ;;
 esac
 
 # ── curl wrappers ───────────────────────────────────────────────────────────
