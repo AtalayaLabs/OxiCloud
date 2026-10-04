@@ -8,6 +8,10 @@ second alert class the plan did not anticipate: a run that *stopped*
 (`error_reason` set) alerts too, verified against a live backend outage.
 **In-app is parked** — low priority, see § The shape. Part B's "needs a
 schedule" item is already satisfied by phase 5.
+**Part C is complete (2026-10-03/04)** — all three items. **Part B's
+interim arm is done**; its strategic half (the FK + decrement trigger)
+waits on fleet-wide CDC convergence, which is a release judgement rather
+than code.
 Parts B (satellites) and C (compensations) are untouched.
 Follow-up to
 `storage-consistency.md` (merged as PR #771), which fixed the *recording* half of
@@ -489,6 +493,21 @@ Fix: **insert only the hashes that synced.** The rest become row-less objects �
 orphans, which `backend_consistency` finds and `backend_reclaim` reclaims. Leak, not
 loss.
 
+**DONE 2026-10-03.** `sync_blobs` failing now returns before the INSERT, so none of
+the batch is registered. `sync_blobs` is all-or-nothing, so "only the ones that
+synced" and "none, on failure" are the same set here; per-hash granularity would
+need the backend trait to report per-object results and would buy nothing, since the
+rows exist only so the GC can find bytes that `backend_consistency` enumerates
+anyway. The failure is an audit line naming which job will find the residue. The
+cost, worth stating: reclamation now waits for a bucket walk rather than the next
+cheap DB sweep.
+
+Not covered by a test — proving the gate needs backend fault injection, and the
+`FaultyBlobBackend` harness this plan's § Verification calls for does not exist yet
+(only a comment in `cached_blob_backend.rs` anticipating it). Building it is its own
+piece and serves Verification item 1 too; deliberately not half-built to make one
+gate look covered.
+
 ## Chunked-upload cleanup: right answer, fragile reasons
 
 The audit filed the six `let _ = fs::remove_*` calls in `chunked_upload_service` as
@@ -514,6 +533,21 @@ the orphan-scan count somewhere to land.
 Promotion is mechanical now that `backend_rechunk` is the worked example:
 `Mutates::Always`, a real interval rather than a hand-rolled `tokio::time::interval`,
 and the per-session failures as findings instead of `warn!` lines.
+
+**DONE 2026-10-04** — `uploads_cleanup`, reporting `sessions_expired`,
+`orphan_dirs_removed`, `failures` and `sessions_live` on every run. Named for the
+`trash_cleanup` / `notifications_cleanup` / `job_runs_cleanup` family.
+
+A plain `JobHandler`, not recoverable, and the difference from `backend_rechunk` is
+the reason: that one resumes because it walks a DB cursor that survives a restart,
+while this walks an in-memory `DashMap` and a directory listing. No cursor to
+persist, and a half-finished pass is redone an hour later at no cost.
+
+**Deviation from the paragraph above:** the failures are an audited event with a
+stable `reason` plus a count on the run, not findings. Findings live in
+`jobs.run_findings`, which only the recoverable engine writes — so "as findings"
+would mean making the job recoverable for the sake of a row. Same information,
+reachable the same two ways.
 
 ### `sessions.remove()` happens before the unlink
 
@@ -551,6 +585,13 @@ intent had to live elsewhere, which is `storage.pending_actions`.
 
 Both items are small. They are in this plan because the pattern is now recognisable
 rather than because the symptoms are urgent.
+
+**DONE 2026-10-04**, exactly as written above. Three tests on the extracted
+`cleanup_once`, which needs no database: the happy path, `NotFound` settling the
+session, and a failed unlink retaining it. The failure is injected by pointing
+`temp_dir` at a regular **file** so `remove_dir_all` returns `NotADirectory` — the
+obvious permissions trick is useless in CI, which often runs as root where `chmod`
+does not prevent a removal.
 
 ## The rule for compensations
 
