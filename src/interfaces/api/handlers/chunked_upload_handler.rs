@@ -357,7 +357,7 @@ impl ChunkedUploadHandler {
     ) -> impl IntoResponse {
         let chunked_service = &state.core.chunked_upload_service;
         let upload_service = &state.applications.file_upload_service;
-        let dedup = &state.core.dedup_service;
+        let dedup = &state.core.blob_handler;
 
         // ── Parse the optional algorithm BEFORE completion so a bad
         //    `checksumalg` doesn't waste any work on a request we'll

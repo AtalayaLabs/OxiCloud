@@ -10,7 +10,7 @@ spawned by a service factory in `src/common/di.rs` at startup:
 | `TrashCleanupService` | every 24 h | Fixed interval, no per-run state |
 | `StorageUsageService::start_reconciliation_job` | every 600 s | Fixed interval, no per-run state |
 | `db_pool_monitor` | every N s | Fixed interval, no per-run state |
-| `dedup_service` GC | on demand + inline | Fixed interval, no per-run state |
+| `blob_handler` GC | on demand + inline | Fixed interval, no per-run state |
 | `GrantCleanupService` | every 24 h | Fixed interval, no per-run state |
 | `tree_etag_flush_job` | every ~500 ms | Fixed interval, no per-run state |
 | `content_index` worker | continuous | Fixed interval, no per-run state |
@@ -94,7 +94,7 @@ what decides.
 |---|---|---|
 | `TrashCleanupService` | Yes — "purge expired trash now" | Part 1 |
 | `StorageUsageService::start_reconciliation_job` | Yes — "recompute quotas now" | Part 1 |
-| `dedup_service` GC | Yes — already has `trigger-gc` | Part 1 |
+| `blob_handler` GC | Yes — already has `trigger-gc` | Part 1 |
 | `GrantCleanupService` | Yes — already has `trigger-grant-cleanup` | Part 1 |
 | `tree_etag_flush_job` | No — a "flush now" is meaningless (queue drains itself) | Core worker, unchanged |
 | `content_index` worker | No — continuous drain, no discrete invocation | Core worker, unchanged |
@@ -355,7 +355,7 @@ registry.register(
 // (piggybacks on trash cleanup for its main work; admin trigger for
 // operator-driven runs).
 registry.register(
-    Arc::clone(&dedup_service) as Arc<dyn JobHandler>,
+    Arc::clone(&blob_handler) as Arc<dyn JobHandler>,
     None,     // interval — no periodic tick
     None,     // timeout
 );

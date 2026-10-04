@@ -1,7 +1,7 @@
 //! Local Filesystem Blob Backend — stores blobs under `.blobs/{prefix}/{hash}.blob`.
 //!
 //! This is the default backend and a direct extraction of the filesystem I/O
-//! that previously lived inside `DedupService`.
+//! that previously lived inside `BlobHandler`.
 
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -263,7 +263,7 @@ pub struct LocalBlobBackend {
 /// read-ahead is the sweet spot for the *disk-bound* read paths — localhost/LAN
 /// downloads and, importantly, the internal blob reads that drain as fast as the
 /// disk delivers (thumbnail render, transcode, ZIP export, content extraction),
-/// all of which flow through `DedupService::stream_chunks`'s `buffered(N)`.
+/// all of which flow through `BlobHandler::stream_chunks`'s `buffered(N)`.
 ///
 /// Measured median throughput vs the old sequential `N=1`:
 ///   warm disk-bound  +11.8% (N=2)   cold disk-bound  +7.2% (N=2)

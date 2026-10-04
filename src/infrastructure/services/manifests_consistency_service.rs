@@ -4,7 +4,7 @@
 //! ### Why this exists
 //!
 //! There are **two** reference counters, and only one of them was ever
-//! verified. `DedupService::add_reference` bumps
+//! verified. `BlobHandler::add_reference` bumps
 //! `chunk_manifests.ref_count` first and only falls back to
 //! `storage.blobs.ref_count`, so a reference lands on whichever counter
 //! its hash names:

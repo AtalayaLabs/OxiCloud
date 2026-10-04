@@ -1,6 +1,6 @@
 //! S3 chunk-PUT benchmark — HEAD-before-PUT vs unconditional PUT.
 //!
-//! `DedupService::settle_batch` writes every NEW chunk of every upload via
+//! `BlobHandler::settle_batch` writes every NEW chunk of every upload via
 //! `put_blob_from_bytes_unsynced`. S3/Azure never overrode it, so the trait
 //! default routed it through `put_blob_from_bytes`, whose "idempotent" HEAD
 //! probe made every chunk write pay 2 request round-trips. Content-addressed

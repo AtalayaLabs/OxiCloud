@@ -969,7 +969,7 @@ async fn handle_put(
     let filename = filename_from_path(subpath).to_string();
     let ingested = ingest_body_to_cas(
         req.into_body(),
-        &state.core.dedup_service,
+        &state.core.blob_handler,
         &filename,
         &claimed_type,
         max_upload,
@@ -987,7 +987,7 @@ async fn handle_put(
             .check_storage_quota(session.user.id, ingested.size)
             .await
     {
-        discard_ingested(&state.core.dedup_service, &ingested).await;
+        discard_ingested(&state.core.blob_handler, &ingested).await;
         tracing::warn!(
             "⛔ NC WEBDAV PUT REJECTED (quota): user={}, file={}, size={}",
             session.user.id,
@@ -1206,7 +1206,7 @@ async fn handle_patch(
         prefix_segment,
         req.into_body(),
         suffix_segment,
-        &state.core.dedup_service,
+        &state.core.blob_handler,
         &filename,
         &claimed_type,
         PatchIngestBudget {

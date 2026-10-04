@@ -3,7 +3,7 @@
 //! Used by every upload surface (REST multipart, native WebDAV PUT,
 //! NextCloud PUT, chunked-upload assembly, WOPI PutFile) so none of them
 //! buffers the full body in RAM **or spools it to a temp file**. The bytes
-//! flow straight into [`DedupService::store_from_stream`], which chunks
+//! flow straight into [`BlobHandler::store_from_stream`], which chunks
 //! (FastCDC), hashes (BLAKE3) and dedup-checks them while they arrive —
 //! each uploaded byte touches the disk at most once, and not at all when
 //! the store already has its chunk.
@@ -34,7 +34,7 @@ use tokio_util::io::ReaderStream;
 use crate::application::ports::chunked_upload_ports::ChecksumAlg;
 use crate::application::ports::file_ports::StoredBlob;
 use crate::common::mime_detect::{MAGIC_BYTES_LEN, is_generic_mime, refine_content_type};
-use crate::infrastructure::services::dedup_service::DedupService;
+use crate::infrastructure::services::blob_handler::BlobHandler;
 use crate::interfaces::errors::AppError;
 
 /// Content stored in the chunk store by one upload ingest.
@@ -68,7 +68,7 @@ impl IngestedBlob {
 
 /// Hand back the blob reference taken by a successful ingest when the upload
 /// is rejected after the fact (quota exceeded, checksum mismatch, …).
-pub async fn discard_ingested(dedup: &DedupService, blob: &IngestedBlob) {
+pub async fn discard_ingested(dedup: &BlobHandler, blob: &IngestedBlob) {
     if let Err(e) = dedup.remove_reference(&blob.hash).await {
         tracing::warn!(
             "Failed to release blob reference of rejected upload {}: {e}",
@@ -130,7 +130,7 @@ struct IngestFlags {
 /// On error nothing stays referenced — the engine compensates internally.
 pub async fn ingest_stream_to_cas<S, E>(
     source: S,
-    dedup: &Arc<DedupService>,
+    dedup: &Arc<BlobHandler>,
     filename: &str,
     claimed_type: &str,
     max_bytes: usize,
@@ -254,7 +254,7 @@ where
 /// [`ingest_stream_to_cas`] for an HTTP request body.
 pub async fn ingest_body_to_cas(
     body: Body,
-    dedup: &Arc<DedupService>,
+    dedup: &Arc<BlobHandler>,
     filename: &str,
     claimed_type: &str,
     max_bytes: usize,
@@ -302,7 +302,7 @@ pub async fn ingest_range_patch_to_cas(
     prefix: RangeSegment,
     body: Body,
     suffix: RangeSegment,
-    dedup: &Arc<DedupService>,
+    dedup: &Arc<BlobHandler>,
     filename: &str,
     claimed_type: &str,
     budget: PatchIngestBudget,
@@ -627,7 +627,7 @@ mod tests {
         // 1 KiB body against a 100-byte cap: the adapter must abort the
         // stream before any flush, so the stub dedup service (which cannot
         // reach PG) is never asked to settle a batch.
-        let dedup = Arc::new(DedupService::new_stub());
+        let dedup = Arc::new(BlobHandler::new_stub());
         let source = stream::iter(vec![Ok::<_, std::io::Error>(Bytes::from(vec![0u8; 1024]))]);
 
         let result = ingest_stream_to_cas(
@@ -646,7 +646,7 @@ mod tests {
 
     #[tokio::test]
     async fn ingest_surfaces_source_errors_as_bad_request() {
-        let dedup = Arc::new(DedupService::new_stub());
+        let dedup = Arc::new(BlobHandler::new_stub());
         let source = stream::iter(vec![
             Ok::<_, std::io::Error>(Bytes::from_static(b"partial")),
             Err(std::io::Error::other("connection reset by peer")),
@@ -674,7 +674,7 @@ mod tests {
     /// panic) proves the stream layer survived.
     #[tokio::test]
     async fn ingest_short_stream_with_generic_mime_does_not_repoll_source() {
-        let dedup = Arc::new(DedupService::new_stub());
+        let dedup = Arc::new(BlobHandler::new_stub());
         let source = stream::unfold(false, |done| async move {
             if done {
                 None

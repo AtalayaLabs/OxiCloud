@@ -162,7 +162,7 @@ pub struct ImageTranscodeService {
     /// The derived tier, attached after construction.
     ///
     /// A constructor parameter would be cleaner but does not fit: DI builds
-    /// this service before `DedupService` exists, and reordering is worse
+    /// this service before `BlobHandler` exists, and reordering is worse
     /// than a one-shot — the transcode service is needed by the retrieval
     /// path, which is wired early. `ThumbnailService` met the same wall and
     /// took a per-call parameter instead; that does not work here because
@@ -172,7 +172,7 @@ pub struct ImageTranscodeService {
     ///
     /// `OnceLock` rather than a `Mutex`: set exactly once at boot, read on
     /// every request, never replaced.
-    dedup: OnceLock<Arc<crate::infrastructure::services::dedup_service::DedupService>>,
+    dedup: OnceLock<Arc<crate::infrastructure::services::blob_handler::BlobHandler>>,
     /// Whether `.transcoded/` still exists, probed once by
     /// [`Self::initialize`]. `false` short-circuits the local-cache reads
     /// without a syscall.
@@ -216,12 +216,12 @@ impl ImageTranscodeService {
         }
     }
 
-    /// Attach the derived tier. Called once from DI, after `DedupService`
+    /// Attach the derived tier. Called once from DI, after `BlobHandler`
     /// exists. Until then — and in tests that never call it — the service
     /// behaves exactly as before, reading and writing only its local cache.
     pub fn attach_dedup(
         &self,
-        dedup: Arc<crate::infrastructure::services::dedup_service::DedupService>,
+        dedup: Arc<crate::infrastructure::services::blob_handler::BlobHandler>,
     ) {
         if self.dedup.set(dedup).is_err() {
             tracing::warn!(

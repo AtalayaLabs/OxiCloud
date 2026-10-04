@@ -13,7 +13,7 @@
 //!    follows, or swept by the periodic GC if the client never returns.
 //! 3. `commit`: the server pins one reference per distinct chunk (only
 //!    chunks the caller owns or unreferenced orphans — see the security
-//!    notes in `dedup_service.rs`), **re-reads the proposed sequence and
+//!    notes in `blob_handler.rs`), **re-reads the proposed sequence and
 //!    recomputes the whole-file BLAKE3** (a declared hash is never
 //!    trusted: a forged manifest would poison future whole-file dedup
 //!    hits for other users), attaches the manifest with the same
@@ -43,7 +43,7 @@ use crate::common::errors::DomainError;
 use crate::common::mime_detect::{MAGIC_BYTES_LEN, refine_content_type};
 use crate::domain::services::authorization::{Permission, Resource, Subject};
 use crate::infrastructure::repositories::pg::FileBlobReadRepository;
-use crate::infrastructure::services::dedup_service::{CDC_MAX_CHUNK, DedupService};
+use crate::infrastructure::services::blob_handler::{BlobHandler, CDC_MAX_CHUNK};
 use crate::infrastructure::services::pg_acl_engine::PgAclEngine;
 
 // ── Wire DTOs ────────────────────────────────────────────────────────────────
@@ -155,7 +155,7 @@ pub enum DeltaCommitOutcome {
 /// (service layer), per the project's AuthZ rule; handlers only
 /// authenticate, rate-limit and translate the wire format.
 pub struct DeltaUploadService {
-    dedup: Arc<DedupService>,
+    dedup: Arc<BlobHandler>,
     uploads: Arc<FileUploadService>,
     file_read: Arc<FileBlobReadRepository>,
     quota: Arc<StorageUsageService>,
@@ -170,7 +170,7 @@ pub struct DeltaUploadService {
 impl DeltaUploadService {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        dedup: Arc<DedupService>,
+        dedup: Arc<BlobHandler>,
         uploads: Arc<FileUploadService>,
         file_read: Arc<FileBlobReadRepository>,
         quota: Arc<StorageUsageService>,
@@ -194,7 +194,7 @@ impl DeltaUploadService {
     /// fixed-size client chunkers.
     fn max_chunk_count(&self) -> usize {
         (self.max_total_size as usize
-            / crate::infrastructure::services::dedup_service::CDC_MIN_CHUNK)
+            / crate::infrastructure::services::blob_handler::CDC_MIN_CHUNK)
             .saturating_mul(2)
             .max(1024)
     }
@@ -615,7 +615,7 @@ impl DeltaUploadService {
     }
 
     /// Backend-recommended read-ahead depth for multi-chunk drains
-    /// (see `DedupService::read_prefetch`).
+    /// (see `BlobHandler::read_prefetch`).
     pub fn read_prefetch(&self) -> usize {
         self.dedup.read_prefetch()
     }

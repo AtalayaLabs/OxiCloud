@@ -12,7 +12,7 @@
 //!
 //! # Two levels, and why a source may span both
 //!
-//! [`DedupService::add_reference`] bumps `chunk_manifests.ref_count` first
+//! [`BlobHandler::add_reference`] bumps `chunk_manifests.ref_count` first
 //! and only falls back to `storage.blobs.ref_count`. So a reference lands
 //! on whichever counter its hash names, and the two must be recomputed
 //! separately — mixing them double-counts, systematically:

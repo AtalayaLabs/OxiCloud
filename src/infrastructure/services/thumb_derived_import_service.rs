@@ -44,7 +44,7 @@ use crate::infrastructure::scheduler::{
     JobRegistry, JobRunArgs, JobStore, JobStoreProvider, Mutates, RecoverableJobHandler,
     RunOutcome, RunStatus, record_or_log,
 };
-use crate::infrastructure::services::dedup_service::DedupService;
+use crate::infrastructure::services::blob_handler::BlobHandler;
 
 pub const THUMB_DERIVED_IMPORT_JOB_NAME: &str = "thumb_derived_import";
 
@@ -230,11 +230,11 @@ pub(crate) async fn teardown_if_drained(root: &std::path::Path, job: &str, run_i
 
 pub struct ThumbDerivedImport {
     thumbnails_root: PathBuf,
-    dedup: Arc<DedupService>,
+    dedup: Arc<BlobHandler>,
 }
 
 impl ThumbDerivedImport {
-    pub fn new(thumbnails_root: PathBuf, dedup: Arc<DedupService>) -> Self {
+    pub fn new(thumbnails_root: PathBuf, dedup: Arc<BlobHandler>) -> Self {
         Self {
             thumbnails_root,
             dedup,
@@ -324,7 +324,7 @@ impl ThumbDerivedImport {
     /// jobs delete a sidecar only after proving its replacement is readable,
     /// and two copies of that rule would be two chances to weaken one.
     pub(crate) async fn verify_and_unlink(
-        dedup: &DedupService,
+        dedup: &BlobHandler,
         job: &str,
         owner: &str,
         stored_hash: &str,

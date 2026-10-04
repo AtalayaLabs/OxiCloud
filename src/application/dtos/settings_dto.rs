@@ -263,7 +263,7 @@ pub struct StorageSettingsDto {
     // ── Current stats — pertain to the running process ──
     /// Backend type currently in use (`"local"` / `"s3"` / `"azure"`) —
     /// what the LIVE `blob_backend` is bound to, from
-    /// `dedup_service.backend().backend_type()`. Redundant with
+    /// `blob_handler.backend().backend_type()`. Redundant with
     /// `entries[i where is_active].backend` in multi-entry mode; kept
     /// because pre-boot / mid-migration inspection may still find it
     /// useful.

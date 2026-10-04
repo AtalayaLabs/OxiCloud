@@ -1,4 +1,4 @@
-/// Observer notified by [`DedupService`] when a blob is stored for the first
+/// Observer notified by [`BlobHandler`] when a blob is stored for the first
 /// time or permanently removed (ref_count reaches zero).
 ///
 /// Register with [`BlobLifecycleService`] during DI wiring; it fans out to all

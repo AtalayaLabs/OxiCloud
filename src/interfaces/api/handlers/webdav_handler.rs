@@ -1964,7 +1964,7 @@ async fn handle_put(
     let filename = crate::common::mime_detect::filename_from_path(&path).to_string();
     let ingested = upload_ingest::ingest_body_to_cas(
         req.into_body(),
-        &state.core.dedup_service,
+        &state.core.blob_handler,
         &filename,
         &content_type,
         max_upload,
@@ -1977,7 +1977,7 @@ async fn handle_put(
             .check_storage_quota(user.id, ingested.size)
             .await
     {
-        upload_ingest::discard_ingested(&state.core.dedup_service, &ingested).await;
+        upload_ingest::discard_ingested(&state.core.blob_handler, &ingested).await;
         tracing::warn!(
             "⛔ WEBDAV PUT REJECTED (quota): user={}, file={}, size={}",
             user.id,
@@ -2200,7 +2200,7 @@ pub(crate) async fn cas_write_patch(
             .check_storage_quota(caller_id, ingested.size)
             .await
     {
-        discard_ingested(&state.core.dedup_service, ingested).await;
+        discard_ingested(&state.core.blob_handler, ingested).await;
         tracing::warn!(
             "⛔ {} REJECTED (quota): user={}, file={}, size={}",
             log_prefix,
@@ -2392,7 +2392,7 @@ async fn handle_patch(
         prefix_segment,
         req.into_body(),
         suffix_segment,
-        &state.core.dedup_service,
+        &state.core.blob_handler,
         &filename,
         &content_type,
         upload_ingest::PatchIngestBudget {

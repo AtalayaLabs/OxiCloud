@@ -43,7 +43,7 @@ use crate::infrastructure::scheduler::{
     JobRegistry, JobRunArgs, JobStore, JobStoreProvider, Mutates, RecoverableJobHandler,
     RunOutcome, RunStatus, record_or_log,
 };
-use crate::infrastructure::services::dedup_service::DedupService;
+use crate::infrastructure::services::blob_handler::BlobHandler;
 use crate::infrastructure::services::thumb_derived_import_service::audit_sidecar_deleted;
 
 pub const TRANSCODE_IMPORT_JOB_NAME: &str = "transcode_import";
@@ -65,7 +65,7 @@ const BATCH_SIZE: usize = 100;
 pub struct TranscodeImport {
     /// `{storage_path}/.transcoded`, matching `ImageTranscodeService::new`.
     transcoded_root: PathBuf,
-    dedup: Arc<DedupService>,
+    dedup: Arc<BlobHandler>,
     /// Needed for the re-keying: file id → content hash. The thumbnail
     /// imports have no equivalent because their sidecars were already
     /// content-named.
@@ -73,7 +73,7 @@ pub struct TranscodeImport {
 }
 
 impl TranscodeImport {
-    pub fn new(transcoded_root: PathBuf, dedup: Arc<DedupService>, pool: Arc<PgPool>) -> Self {
+    pub fn new(transcoded_root: PathBuf, dedup: Arc<BlobHandler>, pool: Arc<PgPool>) -> Self {
         Self {
             transcoded_root,
             dedup,

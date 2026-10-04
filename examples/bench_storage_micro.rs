@@ -6,12 +6,12 @@
 //!     already-exists (dedup re-upload skip) arms.
 //! [2] CDC read prep — the old per-read deep clone of the cached manifest's
 //!     `Vec<String>` chunk-hash list vs the new index-over-`Arc` iteration
-//!     (structural replica of `DedupService::stream_chunks` before/after;
+//!     (structural replica of `BlobHandler::stream_chunks` before/after;
 //!     the production change is exactly this data-flow).
 //! [3] Manifest cache miss herd — the old `get → SELECT → insert` shape vs
 //!     the new fast-get + `try_get_with` single-flight, K concurrent cold
 //!     readers on one key over a real moka cache with a counted loader
-//!     (structural replica of `DedupService::manifest_cached`, sqlx swapped
+//!     (structural replica of `BlobHandler::manifest_cached`, sqlx swapped
 //!     for a latency-injected counted loader).
 //! [4] Chunk `Content-MD5` verification hex — 16× `format!("{b:02x}")` +
 //!     collect vs `common::fmt::hex_lower` (1 sized alloc).

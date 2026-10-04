@@ -775,8 +775,8 @@ impl DedupPort for StubDedupPort {
     ) -> Result<Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>, DomainError>
     {
         Err(DomainError::internal_error(
-            "DedupService",
-            "DedupService not initialized",
+            "BlobHandler",
+            "BlobHandler not initialized",
         ))
     }
 
@@ -788,15 +788,15 @@ impl DedupPort for StubDedupPort {
     ) -> Result<Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>, DomainError>
     {
         Err(DomainError::internal_error(
-            "DedupService",
-            "DedupService not initialized",
+            "BlobHandler",
+            "BlobHandler not initialized",
         ))
     }
 
     async fn blob_size(&self, _hash: &str) -> Result<u64, DomainError> {
         Err(DomainError::internal_error(
-            "DedupService",
-            "DedupService not initialized",
+            "BlobHandler",
+            "BlobHandler not initialized",
         ))
     }
 

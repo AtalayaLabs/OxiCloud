@@ -589,7 +589,7 @@ HTTP 200
 # adjusts counters (see migration `20261017000000_file_delete_
 # trigger_manifest_aware.sql`) — a SQL trigger can't invoke Rust
 # callbacks. Physical cleanup + hook firing lives in `dedup_gc`
-# Phase 1 (see `dedup_service.rs:2660-2772`), which picks up
+# Phase 1 (see `blob_handler.rs:2660-2772`), which picks up
 # manifests at ref_count <= 0 and calls
 # `fire_blob_hooks(file_hash)` per reap.
 #

@@ -28,7 +28,7 @@ use crate::application::ports::thumbnail_ports::{
 };
 use crate::application::ports::video_frame_ports::VideoFramePort;
 use crate::domain::errors::{DomainError, ErrorKind};
-use crate::infrastructure::services::dedup_service::DedupService;
+use crate::infrastructure::services::blob_handler::BlobHandler;
 
 /// Thumbnail sizes supported by the system
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -382,7 +382,7 @@ impl ThumbnailService {
         size: ThumbnailSize,
         format: ThumbnailFormat,
         bytes: &Bytes,
-        dedup: Option<&DedupService>,
+        dedup: Option<&BlobHandler>,
     ) {
         // Step 10d2: the sidecar write is GONE. The derived tier is the only
         // durable home for a rendered thumbnail now.
@@ -471,7 +471,7 @@ impl ThumbnailService {
                         // dual-writes.
                         //
                         // If this ever gains a real caller it must take a
-                        // `DedupService` first, or it reopens the gap
+                        // `BlobHandler` first, or it reopens the gap
                         // `persist_rendered` exists to close: sidecar-only
                         // output the import can never see, so the tail never
                         // empties.
@@ -543,7 +543,7 @@ impl ThumbnailService {
                     return Bytes::new();
                 };
                 // `None`: this entry point takes the original bytes directly
-                // and has no DedupService, so it persists sidecar-only. The
+                // and has no BlobHandler, so it persists sidecar-only. The
                 // gap is visible here rather than hidden as a missing write,
                 // and closing it means threading dedup in from its callers.
                 self.generate_and_persist(
@@ -582,7 +582,7 @@ impl ThumbnailService {
         blob_hash: &str,
         size: ThumbnailSize,
         format: ThumbnailFormat,
-        dedup: Arc<DedupService>,
+        dedup: Arc<BlobHandler>,
     ) -> Result<Bytes, ThumbnailError> {
         let cache_key = ThumbnailCacheKey::content(blob_hash, size, format);
 
@@ -657,7 +657,7 @@ impl ThumbnailService {
         size: ThumbnailSize,
         format: ThumbnailFormat,
         original_data: Bytes,
-        dedup: Option<&DedupService>,
+        dedup: Option<&BlobHandler>,
     ) -> Bytes {
         tracing::info!("🎨 Generating thumbnail: {} {:?}", file_id, size);
         match Self::generate_thumbnail_from_data(
@@ -737,7 +737,7 @@ impl ThumbnailService {
         blob_hash: &str,
         size: ThumbnailSize,
         format: ThumbnailFormat,
-        dedup: Option<&DedupService>,
+        dedup: Option<&BlobHandler>,
     ) -> String {
         if let Some(dedup) = dedup
             && let Some(attached) = dedup
@@ -761,7 +761,7 @@ impl ThumbnailService {
     /// one place. Returns `None` on a read fault rather than propagating: a
     /// missing satellite must degrade to the next tier, never break a gallery.
     async fn read_blob_to_bytes(
-        dedup: &DedupService,
+        dedup: &BlobHandler,
         blob_hash: &str,
         file_id: &str,
         size: ThumbnailSize,
@@ -797,7 +797,7 @@ impl ThumbnailService {
         // object (checked), and `DedupPort` uses native `async fn` so it is
         // not dyn-compatible anyway. `None` means sidecar-only — exactly
         // today's behaviour, which is what the port impl wants.
-        dedup: Option<&DedupService>,
+        dedup: Option<&BlobHandler>,
     ) -> Option<Bytes> {
         // A file-specific override beats anything derived from the content,
         // and that has to hold at EVERY tier — including RAM. Checking the
@@ -1414,7 +1414,7 @@ impl ThumbnailService {
                 // `get_thumbnail`: the path variant is reached only through
                 // the unused `ThumbnailPort` impl. The live upload path is
                 // `generate_all_sizes_background_from_blob`, which carries a
-                // `DedupService` and dual-writes. Give this one a real caller
+                // `BlobHandler` and dual-writes. Give this one a real caller
                 // and it needs one too.
                 self.persist_rendered(&blob_hash, size, ThumbnailFormat::Webp, &bytes, None)
                     .await;
@@ -1441,7 +1441,7 @@ impl ThumbnailService {
         self: Arc<Self>,
         file_id: String,
         blob_hash: String,
-        dedup: Arc<DedupService>,
+        dedup: Arc<BlobHandler>,
     ) {
         tokio::spawn(async move {
             tracing::info!("🖼️ Background thumbnail generation starting: {}", file_id);
@@ -1536,7 +1536,7 @@ impl ThumbnailService {
         file_id: &str,
         blob_hash: &str,
         source: Bytes,
-        dedup: Option<&DedupService>,
+        dedup: Option<&BlobHandler>,
     ) {
         let results = tokio::task::spawn_blocking(move || {
             Self::render_all_thumbnails_from_data(source.as_ref(), ThumbnailFormat::Webp)
@@ -1580,7 +1580,7 @@ impl ThumbnailService {
         self: Arc<Self>,
         file_id: String,
         blob_hash: String,
-        dedup: Arc<DedupService>,
+        dedup: Arc<BlobHandler>,
         video_frame: Arc<dyn VideoFramePort>,
         max_bytes: u64,
     ) {
@@ -1665,7 +1665,7 @@ impl ThumbnailService {
     /// on drop. Bounded memory: chunks are written straight to disk, never
     /// buffered whole.
     async fn stream_blob_to_temp(
-        dedup: &DedupService,
+        dedup: &BlobHandler,
         blob_hash: &str,
         max_bytes: u64,
         temp_dir: &Path,
@@ -1784,7 +1784,7 @@ impl ThumbnailService {
 /// during DI. Handles thumbnail generation, invalidation, and cleanup.
 pub struct ThumbnailRefreshHook {
     thumbnail: Arc<ThumbnailService>,
-    dedup: Arc<DedupService>,
+    dedup: Arc<BlobHandler>,
     /// Video frame extractor (ffmpeg, or a no-op when unavailable/disabled).
     video_frame: Arc<dyn VideoFramePort>,
     /// Max bytes streamed to a temp file for video frame extraction; larger
@@ -1795,7 +1795,7 @@ pub struct ThumbnailRefreshHook {
 impl ThumbnailRefreshHook {
     pub fn new(
         thumbnail: Arc<ThumbnailService>,
-        dedup: Arc<DedupService>,
+        dedup: Arc<BlobHandler>,
         video_frame: Arc<dyn VideoFramePort>,
         video_max_bytes: u64,
     ) -> Self {
@@ -1889,8 +1889,8 @@ impl crate::application::ports::file_lifecycle::FileLifecycleHook for ThumbnailR
 }
 
 // BlobLifecycleHook is implemented on ThumbnailService (not ThumbnailRefreshHook)
-// to avoid a circular Arc: DedupService→BlobLifecycleService→ThumbnailRefreshHook→DedupService.
-// ThumbnailService does not hold DedupService so no cycle exists.
+// to avoid a circular Arc: BlobHandler→BlobLifecycleService→ThumbnailRefreshHook→BlobHandler.
+// ThumbnailService does not hold BlobHandler so no cycle exists.
 
 // ─── BlobLifecycleHook ───────────────────────────────────────────────────────
 
@@ -1982,7 +1982,7 @@ impl ThumbnailPort for ThumbnailService {
         blob_hash: Option<&str>,
         size: PortThumbnailSize,
     ) -> Option<Bytes> {
-        // `None` — the abstract port has no DedupService handle, so it stays
+        // `None` — the abstract port has no BlobHandler handle, so it stays
         // sidecar-only. Callers wanting the tier-3 fallback use the concrete
         // method, which both handlers already do.
         self.get_cached_thumbnail(file_id, blob_hash, size.into(), ThumbnailFormat::Webp, None)

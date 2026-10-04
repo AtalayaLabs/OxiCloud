@@ -29,7 +29,7 @@ use crate::application::services::delta_upload_service::{
 };
 use crate::common::di::AppState;
 use crate::common::errors::DomainError;
-use crate::infrastructure::services::dedup_service::CDC_MAX_CHUNK;
+use crate::infrastructure::services::blob_handler::CDC_MAX_CHUNK;
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::AuthUser;
 use http_body_util::BodyStream;

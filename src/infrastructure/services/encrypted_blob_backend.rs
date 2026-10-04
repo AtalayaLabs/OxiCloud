@@ -54,14 +54,14 @@
 //! `NoKeyForBlob`) — never silent misread.
 //!
 //! **IMPORTANT**: BLAKE3 hashing is performed on the *plaintext* by
-//! `DedupService` before this layer sees the blob, so content-addressable
+//! `BlobHandler` before this layer sees the blob, so content-addressable
 //! dedup still works correctly.
 //!
 //! ## Runtime & memory characteristics
 //!
 //! GCM is all-or-nothing per blob: a blob can only be decrypted whole, so
 //! every read materializes the full plaintext.  This stays bounded because
-//! `DedupService` stores all new content as CDC chunks (≤ 1 MiB each) and
+//! `BlobHandler` stores all new content as CDC chunks (≤ 1 MiB each) and
 //! resolves Range requests to the overlapping chunks *before* calling this
 //! backend — an encrypted seek in a large video decrypts a handful of
 //! chunks, never the file.  The unbounded case is **legacy whole-file
@@ -1064,7 +1064,7 @@ async fn collect_stream(stream: BlobStream) -> Result<Vec<u8>, DomainError> {
         let bytes = chunk.map_err(classify_stream_read_error)?;
         if buf.capacity() == 0 {
             buf.reserve(
-                (crate::infrastructure::services::dedup_service::CDC_MAX_CHUNK
+                (crate::infrastructure::services::blob_handler::CDC_MAX_CHUNK
                     + NONCE_SIZE
                     + TAG_SIZE)
                     .max(bytes.len()),

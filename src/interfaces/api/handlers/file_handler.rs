@@ -293,7 +293,7 @@ impl FileHandler {
                 // MIME sniffing all happen while the bytes arrive; chunks
                 // the store already has never touch the disk. Size is
                 // capped globally by DefaultBodyLimit.
-                let dedup = &state.core.dedup_service;
+                let dedup = &state.core.blob_handler;
                 let source = upload_ingest::multipart_field_stream(field);
                 let ingested = match upload_ingest::ingest_stream_to_cas(
                     source,
@@ -537,7 +537,7 @@ impl FileHandler {
                     &blob_hash,
                     thumb_size.into(),
                     format,
-                    Some(&state.core.dedup_service),
+                    Some(&state.core.blob_handler),
                 )
                 .await
         );
@@ -566,7 +566,7 @@ impl FileHandler {
                 Some(&blob_hash),
                 thumb_size.into(),
                 format,
-                Some(&state.core.dedup_service),
+                Some(&state.core.blob_handler),
             )
             .await
         {
@@ -621,7 +621,7 @@ impl FileHandler {
                 Some(&blob_hash),
                 thumb_size.into(),
                 format,
-                Some(&state.core.dedup_service),
+                Some(&state.core.blob_handler),
             )
             .await
         {
@@ -653,7 +653,7 @@ impl FileHandler {
                     Some(&blob_hash),
                     thumb_size.into(),
                     ThumbnailFormat::Webp,
-                    Some(&state.core.dedup_service),
+                    Some(&state.core.blob_handler),
                 )
                 .await
             {
@@ -685,7 +685,7 @@ impl FileHandler {
                 &blob_hash,
                 thumb_size.into(),
                 format,
-                state.core.dedup_service.clone(),
+                state.core.blob_handler.clone(),
             )
             .await
         {
@@ -802,7 +802,7 @@ impl FileHandler {
         // operation that visibly worked.
         if let Err(e) = state
             .core
-            .dedup_service
+            .blob_handler
             .store_attached_blob(
                 &id,
                 "preview",

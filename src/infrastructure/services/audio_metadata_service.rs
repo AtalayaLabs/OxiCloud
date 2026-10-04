@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::application::ports::file_lifecycle::FileLifecycleHook;
 use crate::common::errors::DomainError;
-use crate::infrastructure::services::dedup_service::DedupService;
+use crate::infrastructure::services::blob_handler::BlobHandler;
 
 #[derive(Debug, FromRow)]
 pub struct AudioFileRow {
@@ -21,14 +21,14 @@ pub struct AudioMetadataService {
     /// CDC-aware blob reader. Same abstraction `thumbnail_service` uses —
     /// hides both the chunk-manifest concatenation and the underlying
     /// `BlobStorageBackend` wrapper stack.
-    dedup: Arc<DedupService>,
+    dedup: Arc<BlobHandler>,
     /// Tier-1 scratch directory for `stream_blob_to_tempfile`. Pulled
     /// from `AppConfig::temp_dir` (env `OXICLOUD_TEMP_DIR`) at DI time.
     temp_dir: PathBuf,
 }
 
 impl AudioMetadataService {
-    pub fn new(pool: Arc<PgPool>, dedup: Arc<DedupService>, temp_dir: PathBuf) -> Self {
+    pub fn new(pool: Arc<PgPool>, dedup: Arc<BlobHandler>, temp_dir: PathBuf) -> Self {
         Self {
             pool,
             dedup,

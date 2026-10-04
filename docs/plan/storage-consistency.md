@@ -107,10 +107,10 @@ bytes should stop existing.**
 
 ## The defect, in one paragraph
 
-`DedupService::garbage_collect_with_grace` deletes the registry rows for
+`BlobHandler::garbage_collect_with_grace` deletes the registry rows for
 reclaimable blobs in a single statement, and *then* unlinks the backing
 objects with a best-effort loop whose failure path is `tracing::warn!`
-(`dedup_service.rs:3601-3613`). The intent to delete is therefore recorded
+(`blob_handler.rs:3601-3613`). The intent to delete is therefore recorded
 nowhere durable. When the unlink fails — routine on a remote backend — the
 row is already gone, so `dedup_gc` can never see those bytes again: it
 reclaims *from the database*. They become permanently orphaned, discoverable
@@ -226,7 +226,7 @@ lasts". Every item below serves that sentence.
 ### 1. Finish the CDC migration — one content model, not two
 
 `remove_reference` still branches: CDC manifest path, then "legacy
-whole-file blob path" (`dedup_service.rs:2499-2514`). Every deletion,
+whole-file blob path" (`blob_handler.rs:2499-2514`). Every deletion,
 refcount and consistency concern is therefore written twice, and the two
 refcount surfaces (`storage.blobs.ref_count` and
 `storage.chunk_manifests.ref_count`) can disagree — a divergence already
@@ -235,7 +235,7 @@ tracked separately.
 Collapsing to manifests-with-chunks everywhere removes a class of dual-path
 bugs rather than fixing instances of it.
 
-**The migration already exists.** `DedupService::spawn_legacy_rechunk()`,
+**The migration already exists.** `BlobHandler::spawn_legacy_rechunk()`,
 launched from `di.rs:494` behind `OXICLOUD_LEGACY_RECHUNK` (default `true`),
 idempotent and incremental, a no-op via one `COUNT` once converged. So this
 item is not "write a migration" — it is **confirm convergence, then delete
@@ -243,7 +243,7 @@ the legacy path.**
 
 Note it re-reads and re-chunks rather than wrapping. A metadata-only wrap is
 possible and tempting — `file_hash` is `blake3(content)` (`file_hasher`
-accumulates the raw data, `dedup_service.rs:2085`), so a legacy blob `H`
+accumulates the raw data, `blob_handler.rs:2085`), so a legacy blob `H`
 could become `chunk_manifests(file_hash = H, chunk_hashes = [H])` with no
 file row rewritten and no bytes moved. It would unify the code model for
 free. It is still the wrong choice: a single-chunk manifest leaves Range
@@ -294,7 +294,7 @@ archaeological:
 ```
 
 Known sites from a first pass: the `remove_reference` legacy branch
-(`dedup_service.rs:2499-2514`), `blob_reference_sources.rs:40`,
+(`blob_handler.rs:2499-2514`), `blob_reference_sources.rs:40`,
 `files_consistency_service.rs:111`, and three in `encrypted_blob_backend.rs`
 where the unbounded-read case exists *only* for legacy blobs — that last
 group is the one that actually costs something, since it is why the decrypt
@@ -581,7 +581,7 @@ clear the bookkeeping is the only path that already does. Nothing else has any
 business clearing it.
 
 **`entry_name` is nullable — decided.** The plan originally specified
-`NOT NULL`, which cannot be implemented as written: `DedupService` holds a
+`NOT NULL`, which cannot be implemented as written: `BlobHandler` holds a
 hot-swappable backend stack (`AppState.blob_backend_hot_swap`) that a cutover
 replaces at runtime, and neither the stack nor its wrapper reports the entry
 it was built for, so there is no honest value to write at enqueue time.
@@ -713,8 +713,8 @@ than merely unlikely because it then simply waits.
 **The drain is concurrent, and the mechanism is `SKIP LOCKED`, not sharding.**
 Nothing about the design is inherently sequential, and the backends take
 parallel calls by construction — every layer is `&self` returning `BoxFut`, and
-`DedupService` already runs bounded windows in four places
-(`CHUNK_UPLOAD_CONCURRENCY = 8` at `dedup_service.rs:1408`, `VERIFY_CONCURRENCY = 16`
+`BlobHandler` already runs bounded windows in four places
+(`CHUNK_UPLOAD_CONCURRENCY = 8` at `blob_handler.rs:1408`, `VERIFY_CONCURRENCY = 16`
 and `VERIFY_MANIFEST_CONCURRENCY = 8` at `:3152`, plus a generic window helper
 at `:484`). Note in particular that **the very loop this plan is fixing is
 already concurrent**: the best-effort unlink at `:3611` sits inside
@@ -944,7 +944,7 @@ What happens today, from outside in:
   the client can distinguish "storage is down, retry later" from "your request
   was wrong" — which is what the `error_type` contract needs.
 * A multi-chunk CDC upload that dies partway does not strand invisible bytes:
-  `IngestGuard` (`dedup_service.rs:219`) releases the chunk pins it took and
+  `IngestGuard` (`blob_handler.rs:219`) releases the chunk pins it took and
   registers the chunks it did write as `storage.blobs` rows at `ref_count = 0`
   with `orphaned_at = now()`, precisely *"so the existing GC sweep can reclaim
   the bytes — a backend file with no PG row would be invisible to it"*
@@ -1044,7 +1044,7 @@ The scenario: chunk `H` is reaped — `storage.blobs` row deleted, bytes still
 on the backend, `pending_actions` row created. Before the drain runs, a user
 uploads a file (new or identical) that chunks to include `H`.
 
-What the uploader does today (`dedup_service.rs:289-307`): durability first,
+What the uploader does today (`blob_handler.rs:289-307`): durability first,
 then `INSERT … ON CONFLICT (hash) DO NOTHING` at `ref_count = 0`. The comment
 there already names our failure mode — "a backend file with no PG row would
 be invisible to it". So the uploader creates a fresh row for `H`, the manifest
@@ -1751,7 +1751,7 @@ someone* — the alerting that plan added keys off that column.
 *Acceptable — discoverable or recomputable* — and the subjection to item 1
 is **now satisfied**, so these are genuinely discoverable rather than
 aspirationally so:
-`remove_reference` failures at `dedup_service.rs:901`, `:989`, `:1105`, `:1311`
+`remove_reference` failures at `blob_handler.rs:901`, `:989`, `:1105`, `:1311`
 leave an over-count so the blob never reaches 0, which `blobs_consistency`
 recomputes and repairs. `IngestGuard`'s rollback still registers chunks at
 `ref_count = 0`, so GC finds them. Thumbnails and transcodes are pure functions of

@@ -2600,7 +2600,7 @@ mod cascade_hook_integration_tests {
     use crate::application::ports::file_lifecycle::FileLifecycleHook;
     use crate::infrastructure::repositories::pg::SubjectGroupPgRepository;
     use crate::infrastructure::repositories::pg::file_blob_read_repository::FileBlobReadRepository;
-    use crate::infrastructure::services::dedup_service::DedupService;
+    use crate::infrastructure::services::blob_handler::BlobHandler;
     use crate::infrastructure::services::local_blob_backend::LocalBlobBackend;
     use crate::integration_test_support::{ensure_clean_test_db, test_db_url};
     use sqlx::Row;
@@ -2689,7 +2689,7 @@ mod cascade_hook_integration_tests {
     ) -> Arc<PgAclEngine> {
         let backend = Arc::new(LocalBlobBackend::new(&dir.path().join("blobs")));
         backend.initialize().await.expect("init backend");
-        let dedup = Arc::new(DedupService::new(backend, pool.clone(), pool.clone()));
+        let dedup = Arc::new(BlobHandler::new(backend, pool.clone(), pool.clone()));
         let file_repo = Arc::new(FileBlobReadRepository::new(
             pool.clone(),
             dedup,

@@ -1096,7 +1096,7 @@ pub async fn get_dashboard_stats(
     // rendered in the dashboard's "Backend Storage" card next to
     // the user-quota panel. Same source `StorageSettingsDto` uses;
     // cheap aggregate over `storage.blobs`.
-    let dedup_stats = state.core.dedup_service.get_stats().await;
+    let dedup_stats = state.core.blob_handler.get_stats().await;
 
     let stats = DashboardStatsDto {
         server_version: env!("OXICLOUD_VERSION").to_string(),
