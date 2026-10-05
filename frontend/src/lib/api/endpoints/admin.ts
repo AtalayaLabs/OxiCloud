@@ -897,6 +897,77 @@ export function rotateStorageEntry(name: string): Promise<void> {
 	return mutate(`/api/admin/storage/entries/${encodeURIComponent(name)}/rotate`, 'POST', undefined);
 }
 
+// ── Backend write-lock (operator-driven External variant) ──
+//
+// One primitive, several reasons: the server-side gate can be held
+// by a migration, a backup, a key rotation, or an `External` lock
+// an operator engages for a restic / borg / filesystem snapshot
+// window. The admin UI only exposes the External variant for
+// acquire — the three other variants originate from their own
+// jobs — but release clears whichever variant is held, which is
+// the operator's escape hatch if a `backend_migration` ever
+// wedges.
+//
+// Backend: `src/interfaces/api/handlers/admin_handler.rs`
+// §"Backend write-lock — operator-driven External acquire/release"
+// and the `BackendWriteLockReason` enum shape over the wire.
+
+export type BackendWriteLockHolder =
+	| { kind: 'migration'; source: string; target: string }
+	| { kind: 'backup'; destination: string; started_at: string }
+	| { kind: 'rotation'; entry: string }
+	| {
+			kind: 'external';
+			admin_id: string;
+			label: string;
+			acquired_at: string;
+			expires_at: string;
+	  };
+
+export interface BackendWriteLockStatus {
+	is_held: boolean;
+	holder?: BackendWriteLockHolder;
+}
+
+/**
+ * Current holder of the global backend write-lock. `is_held = false`
+ * means user writes are allowed AND backend-writer jobs
+ * (`backend_reclaim`, `backend_rechunk`, `backend_rotate`,
+ * `*_import`, `satellites_consistency`) run on their normal
+ * cadence. `is_held = true` + a typed `holder` tells the UI which
+ * variant is engaged — the storage card renders a reason-specific
+ * row and (for `external`) a Release button.
+ */
+export function getBackendWriteLock(): Promise<BackendWriteLockStatus> {
+	return apiJson<BackendWriteLockStatus>('/api/admin/storage/write-lock', {
+		credentials: 'same-origin'
+	});
+}
+
+/**
+ * Engage the operator-driven External lock. `label` is required (a
+ * one-line explanation surfaced on the UI banner + audit trail);
+ * `expiresInSeconds` is optional and server-clamped to [60s, 24h].
+ * Caller re-reads status via [`getBackendWriteLock`] after this
+ * resolves (same pattern the migration controls use).
+ */
+export function acquireBackendWriteLock(label: string, expiresInSeconds?: number): Promise<void> {
+	return mutate('/api/admin/storage/write-lock', 'POST', {
+		label,
+		expires_in_seconds: expiresInSeconds
+	});
+}
+
+/**
+ * Release whichever variant currently holds the gate. Admin-only
+ * escape hatch; audit-logged with the previous holder's kind. Safe
+ * to call on a free gate — the server returns the same "not held"
+ * status.
+ */
+export function releaseBackendWriteLock(): Promise<void> {
+	return mutate('/api/admin/storage/write-lock', 'DELETE', undefined);
+}
+
 // verifyMigration + MigrationVerifyResult retired in slice 7 of
 // docs/plan/storage-multi-entry.md — the corresponding backend
 // endpoint's sample-based check is superseded by

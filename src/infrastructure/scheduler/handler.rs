@@ -143,4 +143,32 @@ pub trait JobHandler: Send + Sync {
     fn parameters(&self) -> &'static [JobParam] {
         &[]
     }
+
+    /// `true` iff this handler issues `PUT` / `DELETE` operations
+    /// against the storage backend (chunk writes, satellite migration,
+    /// re-encryption, orphan reclaim). The scheduler consults
+    /// [`crate::application::services::backend_write_gate::BackendWriteGate`]
+    /// in the dispatch prologue; a held gate defers the tick with a
+    /// `JobOutcome::Ok { extra.deferred_reason = "backend_write_locked" }`
+    /// recording and advances `next_run_at` by one interval, instead
+    /// of running the handler.
+    ///
+    /// Defaults to `false` — DB-only maintenance jobs (consistency,
+    /// cleanup, GC) are unaffected by the gate. Backend-writer jobs
+    /// override to `true`:
+    ///   - `backend_reclaim` (DELETE orphan objects)
+    ///   - `backend_rechunk` (PUT new chunks + DELETE old)
+    ///   - `backend_rotate` (PUT re-encrypted + DELETE old)
+    ///   - `thumb_attached_import`, `thumb_derived_import` (PUT satellites)
+    ///   - `transcode_import` (PUT transcoded derivatives)
+    ///   - `satellites_consistency` (now a writer after pass 3)
+    ///
+    /// `backend_migration` itself is deliberately NOT in this list —
+    /// it is the one that TAKES the gate, so the dispatch prologue
+    /// would recursively defer it against its own hold. The migration
+    /// service's `run_resumable` acquires the gate idempotently
+    /// (ignores already-held when it is the same reason).
+    fn is_backend_writer(&self) -> bool {
+        false
+    }
 }

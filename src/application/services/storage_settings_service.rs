@@ -42,6 +42,12 @@ pub struct StorageSettingsService {
     /// atomic as `AppState.migration_readonly`; changes made by the
     /// migration handler are visible without a DB round-trip.
     migration_readonly: Arc<AtomicBool>,
+    /// Typed-reason gate — same instance DI constructs and shares
+    /// with the migration service / AuthZ / scheduler. Read into the
+    /// admin DTO so the Storage tab can render the specific reason
+    /// (not just "writes refused") and the Release button for an
+    /// External hold.
+    backend_write_gate: Arc<crate::application::services::backend_write_gate::BackendWriteGate>,
 }
 
 impl StorageSettingsService {
@@ -53,6 +59,7 @@ impl StorageSettingsService {
         storage_entries: Vec<NamedStorageEntry>,
         active_entry_name: Arc<std::sync::RwLock<String>>,
         migration_readonly: Arc<AtomicBool>,
+        backend_write_gate: Arc<crate::application::services::backend_write_gate::BackendWriteGate>,
     ) -> Self {
         Self {
             settings_repo,
@@ -61,7 +68,16 @@ impl StorageSettingsService {
             storage_entries,
             active_entry_name,
             migration_readonly,
+            backend_write_gate,
         }
+    }
+
+    /// Current typed holder, for the admin GET and the dedicated
+    /// `GET /api/admin/storage/write-lock` endpoint.
+    pub fn write_lock_holder(
+        &self,
+    ) -> Option<crate::application::services::backend_write_gate::BackendWriteLockReason> {
+        self.backend_write_gate.held_by()
     }
 
     /// Apply environment variable overrides on top of a config.
@@ -306,6 +322,7 @@ impl StorageSettingsService {
             entries,
             active_entry_name,
             migration_readonly: self.migration_readonly.load(Ordering::Relaxed),
+            backend_write_lock: self.backend_write_gate.held_by(),
         })
     }
 

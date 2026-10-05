@@ -1055,6 +1055,20 @@ export interface ServerStatus {
 	readonly: boolean;
 	migration?: ServerStatusProgress;
 	rotation?: ServerStatusProgress;
+	/** Public-safe projection of the backend write-lock holder. When
+	 *  `readonly === true` AND the gate is actually held, this names
+	 *  the variant (`"migration" | "backup" | "rotation" | "external"`)
+	 *  and carries a server-formatted one-liner safe to render raw.
+	 *  The full typed holder (admin_id, expires_at, label text,
+	 *  source/target entry names) stays admin-only on
+	 *  `/api/admin/storage/write-lock`. */
+	holder?: ServerStatusHolder;
+}
+
+/** See [`ServerStatus.holder`]. */
+export interface ServerStatusHolder {
+	kind: 'migration' | 'backup' | 'rotation' | 'external';
+	display: string;
 }
 
 /** OPAQUE deployment mode, mirrored from `OXICLOUD_AUTH_OPAQUE_MODE`.

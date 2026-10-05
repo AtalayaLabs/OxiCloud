@@ -110,7 +110,8 @@ async fn run(registry: Arc<JobRegistry>) {
         // tick, so a paused run started under `?repair=true` must not be
         // continued here on the strength of a consent given once, weeks
         // ago, by someone who has since stopped looking.
-        let _ = dispatch(&name, entry, &scheduled_args.unattended(), bus).await;
+        let gate = registry.backend_write_gate_snapshot();
+        let _ = dispatch(&name, entry, &scheduled_args.unattended(), bus, gate).await;
     }
 }
 
@@ -137,6 +138,9 @@ pub(super) async fn dispatch(
     entry: Arc<JobEntry>,
     args: &JobRunArgs,
     bus: Option<std::sync::Arc<dyn crate::application::ports::message_bus_ports::MessageBus>>,
+    backend_write_gate: Option<
+        std::sync::Arc<crate::application::services::backend_write_gate::BackendWriteGate>,
+    >,
 ) -> JobOutcome {
     // Try to acquire the single-permit gate. `try_acquire` is
     // non-blocking — if held, we know the previous run is still
@@ -178,6 +182,54 @@ pub(super) async fn dispatch(
             return JobOutcome::ok_with(0, serde_json::json!({ "skipped": "already_running" }));
         }
     };
+
+    // Backend write-lock gate — defer the tick if this job writes to
+    // the storage backend AND the gate is currently held (by a
+    // migration, backup, rotation, or operator-driven External lock).
+    // Done AFTER permit acquisition so the single-permit invariant is
+    // never violated (a parallel tick arriving one millisecond after
+    // the gate is released still sees the held in-flight semaphore,
+    // not a race), and BEFORE handler spawn so no backend bytes move
+    // during the hold. A deferred run is recorded as a `JobOutcome::Ok`
+    // with `extra.deferred_reason`/`extra.deferred_holder` — the admin
+    // panel's run history can show it as "deferred" rather than "ok"
+    // or "err" (both would be wrong).
+    if entry.is_backend_writer
+        && let Some(gate) = backend_write_gate.as_ref()
+        && gate.is_held()
+    {
+        let holder = gate.held_by();
+        let holder_kind = holder.as_ref().map(|r| r.kind()).unwrap_or("unknown");
+        let holder_display = holder.as_ref().map(|r| r.display()).unwrap_or_default();
+        tracing::info!(
+            target: "audit",
+            event = "job.deferred",
+            reason = "backend_write_locked",
+            holder_kind = %holder_kind,
+            job = %name,
+            "⏸️  {name} deferred — backend write-lock held by {holder_kind}: {holder_display}"
+        );
+        advance_next_run(&entry);
+        // Record on the entry so the admin panel's `last_outcome`
+        // shows "deferred" with the holder reason.
+        let deferred = JobOutcome::ok_with(
+            0,
+            serde_json::json!({
+                "deferred": true,
+                "deferred_reason": "backend_write_locked",
+                "deferred_holder": holder_kind,
+                "deferred_display": holder_display,
+            }),
+        );
+        {
+            let mut state = entry.state.lock().expect("JobState mutex poisoned");
+            state.last_outcome = Some((Utc::now(), deferred.clone()));
+        }
+        // Permit drops at the end of this if-branch when `permit`
+        // goes out of scope.
+        drop(permit);
+        return deferred;
+    }
 
     // We hold the permit. Record run-start, spawn, await, translate.
     {
@@ -495,14 +547,14 @@ mod tests {
         // for ~200 ms.
         let entry_bg = entry.clone();
         let bg = tokio::spawn(async move {
-            dispatch("overrun", entry_bg, &JobRunArgs::default(), None).await
+            dispatch("overrun", entry_bg, &JobRunArgs::default(), None, None).await
         });
 
         // Give dispatch 1 time to grab the permit.
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         // Dispatch 2 should observe the permit taken and skip.
-        dispatch("overrun", entry.clone(), &JobRunArgs::default(), None).await;
+        dispatch("overrun", entry.clone(), &JobRunArgs::default(), None, None).await;
 
         // Only dispatch 1's handler should have actually run so far.
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -530,7 +582,7 @@ mod tests {
             .await;
         let entry = registry.get("slow").await.unwrap();
 
-        dispatch("slow", entry.clone(), &JobRunArgs::default(), None).await;
+        dispatch("slow", entry.clone(), &JobRunArgs::default(), None, None).await;
 
         // The timeout fired; last_outcome must be Err.
         let state = entry.state.lock().unwrap();

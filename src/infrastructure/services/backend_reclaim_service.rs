@@ -349,6 +349,14 @@ impl RecoverableJobHandler for BackendReclaim {
         None
     }
 
+    fn is_backend_writer(&self) -> bool {
+        // Issues DELETEs to the storage backend. During a migration /
+        // backup / rotation / External lock, a reclaim that deletes a
+        // hash behind the holder's cursor can corrupt the walk's
+        // view of the source — defer the tick instead.
+        true
+    }
+
     async fn count_total(&self) -> Option<u64> {
         match sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM storage.pending_actions

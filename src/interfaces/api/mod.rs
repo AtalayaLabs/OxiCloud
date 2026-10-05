@@ -262,6 +262,9 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         handlers::admin_handler::start_migration,
         handlers::admin_handler::pause_migration,
         handlers::admin_handler::resume_migration,
+        handlers::admin_handler::get_backend_write_lock,
+        handlers::admin_handler::acquire_backend_write_lock,
+        handlers::admin_handler::release_backend_write_lock,
         // handlers::admin_handler::verify_migration retired in
         // slice 7 — superseded by `blobs_consistency?storage=<name>`.
         handlers::admin_handler::generate_encryption_key,

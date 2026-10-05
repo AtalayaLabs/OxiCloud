@@ -104,6 +104,16 @@ pub fn admin_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/storage/migration/start", post(start_migration))
         .route("/storage/migration/pause", post(pause_migration))
         .route("/storage/migration/resume", post(resume_migration))
+        // Backend write-lock (operator-driven External variant) —
+        // see the handler docs. GET inspects, POST acquires, DELETE
+        // releases any variant (admin escape hatch for stuck
+        // migrations).
+        .route(
+            "/storage/write-lock",
+            get(get_backend_write_lock)
+                .post(acquire_backend_write_lock)
+                .delete(release_backend_write_lock),
+        )
         // K3 (storage-key-rotation): per-entry rotate trigger.
         // Normalises every blob on the named entry to its head-pair
         // format (legacy → v1, plaintext ↔ encrypted, old-key →
@@ -633,6 +643,248 @@ pub async fn resume_migration(
     // open. Refuses gracefully via RunOutcome::Failed if there is
     // no Paused row to resume.
     trigger_backend_migration(state, None).await
+}
+
+// ─── Backend write-lock — operator-driven External acquire/release ─────────
+//
+// The typed-reason gate from
+// `application::services::backend_write_gate` covers four variants:
+// `Migration`, `Backup`, `Rotation` (held by the job that owns the
+// operation), and `External` (held by an operator who needs OxiCloud
+// to quiesce while they run restic / borg / a filesystem snapshot).
+// These three endpoints expose the External variant to the admin
+// UI — one GET to inspect the holder, one POST to acquire, one
+// DELETE to release.
+//
+// Why operator-release can clear ANY holder (not just External):
+// the operator is the last-resort escape hatch for a stuck
+// `backend_migration` whose job row cannot be cancelled. The
+// alternative was editing admin_settings by hand. Audit-logged with
+// the previous holder's kind so the trail survives operator-driven
+// clears.
+
+/// GET /api/admin/storage/write-lock — current holder, or `None`.
+///
+/// Public contract: the response is a stable
+/// [`BackendWriteLockStatusDto`] carrying `is_held` + an optional
+/// `holder` (typed reason). Called by the admin UI on every
+/// Storage-tab visit, and by hurl tests to assert pre/post state.
+#[utoipa::path(
+    get,
+    path = "/api/admin/storage/write-lock",
+    responses(
+        (status = 200, body = crate::application::dtos::settings_dto::BackendWriteLockStatusDto, description = "Current backend-write-lock holder"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn get_backend_write_lock(
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, AppError> {
+    let holder = state.backend_write_gate.held_by();
+    Ok(Json(
+        crate::application::dtos::settings_dto::BackendWriteLockStatusDto {
+            is_held: holder.is_some(),
+            holder,
+        },
+    ))
+}
+
+/// POST /api/admin/storage/write-lock — engage the External lock.
+///
+/// Takes a one-line label the UI surfaces alongside the lock icon
+/// (e.g., "nightly restic to NAS"). Fails with 409 if any OTHER
+/// holder is already engaged — operator must release the current
+/// hold first via DELETE, which is audit-logged.
+#[utoipa::path(
+    post,
+    path = "/api/admin/storage/write-lock",
+    request_body(
+        content = crate::application::dtos::settings_dto::AcquireExternalLockDto,
+        description = "Label + optional auto-expiry"
+    ),
+    responses(
+        (status = 200, body = crate::application::dtos::settings_dto::BackendWriteLockStatusDto, description = "External lock engaged"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required"),
+        (status = 409, description = "Backend write-lock already held by another operation (migration/backup/rotation/external)")
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn acquire_backend_write_lock(
+    State(state): State<Arc<AppState>>,
+    auth_user: AuthUser,
+    Json(body): Json<crate::application::dtos::settings_dto::AcquireExternalLockDto>,
+) -> Result<impl IntoResponse, AppError> {
+    use crate::application::services::backend_write_gate::{
+        BackendWriteLockReason, EXTERNAL_LOCK_MAX_HOLD,
+    };
+
+    // Clamp the expiry to [60s, 24h]. Zero would defeat the lock;
+    // a week-long default would wedge writes if the operator's
+    // cron script dies.
+    let max_secs = EXTERNAL_LOCK_MAX_HOLD.num_seconds().max(0) as u64;
+    let expires_in = body
+        .expires_in_seconds
+        .unwrap_or(max_secs)
+        .clamp(60, 24 * 3600);
+    let now = chrono::Utc::now();
+    let reason = BackendWriteLockReason::External {
+        admin_id: auth_user.id,
+        label: body.label.clone(),
+        acquired_at: now,
+        expires_at: now + chrono::Duration::seconds(expires_in as i64),
+    };
+
+    if let Err(current) = state.backend_write_gate.try_acquire(reason.clone()) {
+        tracing::info!(
+            target: "audit",
+            event = "backend_write_lock.acquire_rejected",
+            reason = "already_held",
+            caller_id = %auth_user.id,
+            current_holder = %current.0.kind(),
+            "👮🏻‍♂️ external lock refused — backend write-lock already held by {}",
+            current.0.kind()
+        );
+        return Err(AppError::new(
+            StatusCode::CONFLICT,
+            format!(
+                "backend write-lock is already held by {} — release it first",
+                current.0.kind()
+            ),
+            "Conflict",
+        ));
+    }
+
+    // Persist bool + typed holder for restart survival.
+    if let Some(pool) = state.db_pool.as_ref() {
+        if let Err(e) = crate::infrastructure::services::entry_backend::persist_migration_readonly(
+            pool.as_ref(),
+            true,
+        )
+        .await
+        {
+            // Roll back the in-memory gate so a crash doesn't leave
+            // writes refused for a lock we failed to persist. The
+            // operator sees a 500 and can retry.
+            state.backend_write_gate.release();
+            tracing::warn!(
+                target: "audit",
+                event = "backend_write_lock.persist_bool_failed",
+                caller_id = %auth_user.id,
+                error = %e,
+            );
+            return Err(AppError::internal_error(format!(
+                "could not persist readonly flag: {e}"
+            )));
+        }
+        if let Err(e) =
+            crate::infrastructure::services::entry_backend::persist_backend_write_lock_holder(
+                pool.as_ref(),
+                Some(&reason),
+            )
+            .await
+        {
+            // Bool is set so writes stay refused; just a less
+            // informative reason on restart. Log and continue.
+            tracing::warn!(
+                target: "audit",
+                event = "backend_write_lock.persist_holder_failed",
+                caller_id = %auth_user.id,
+                error = %e,
+                "external hold engaged but typed holder write failed; a restart would \
+                 reseed as Migration(legacy)"
+            );
+        }
+    }
+    state
+        .migration_readonly
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+
+    tracing::info!(
+        target: "audit",
+        event = "backend_write_lock.acquired",
+        reason = "external",
+        caller_id = %auth_user.id,
+        label = %body.label,
+        expires_in_seconds = expires_in,
+        "👮🏻‍♂️ external backend write-lock engaged"
+    );
+
+    Ok(Json(
+        crate::application::dtos::settings_dto::BackendWriteLockStatusDto {
+            is_held: true,
+            holder: Some(reason),
+        },
+    ))
+}
+
+/// DELETE /api/admin/storage/write-lock — release the lock,
+/// whatever variant currently holds it.
+///
+/// Clears both the typed holder and the legacy bool, so writes
+/// resume AND backend-writer jobs stop deferring on the next tick.
+/// Audit-logged with the previous holder's kind for the trail.
+#[utoipa::path(
+    delete,
+    path = "/api/admin/storage/write-lock",
+    responses(
+        (status = 200, body = crate::application::dtos::settings_dto::BackendWriteLockStatusDto, description = "Lock released (or was already free)"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn release_backend_write_lock(
+    State(state): State<Arc<AppState>>,
+    auth_user: AuthUser,
+) -> Result<impl IntoResponse, AppError> {
+    let previous = state.backend_write_gate.release();
+    state
+        .migration_readonly
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+
+    if let Some(pool) = state.db_pool.as_ref() {
+        if let Err(e) = crate::infrastructure::services::entry_backend::persist_migration_readonly(
+            pool.as_ref(),
+            false,
+        )
+        .await
+        {
+            tracing::warn!(
+                target: "audit",
+                event = "backend_write_lock.release_persist_bool_failed",
+                caller_id = %auth_user.id,
+                error = %e,
+                "in-memory release OK but the DB bool persist failed; a restart will \
+                 reseed the gate until admin_settings is corrected"
+            );
+        }
+        let _ = crate::infrastructure::services::entry_backend::persist_backend_write_lock_holder(
+            pool.as_ref(),
+            None,
+        )
+        .await;
+    }
+
+    tracing::info!(
+        target: "audit",
+        event = "backend_write_lock.released",
+        caller_id = %auth_user.id,
+        previous_holder = ?previous.as_ref().map(|r| r.kind()),
+        "👮🏻‍♂️ backend write-lock released by admin"
+    );
+
+    Ok(Json(
+        crate::application::dtos::settings_dto::BackendWriteLockStatusDto {
+            is_held: false,
+            holder: None,
+        },
+    ))
 }
 
 // verify_migration endpoint retired (slice 7 of
@@ -3380,23 +3632,30 @@ pub async fn cancel_job(
                     .migration_readonly
                     .load(std::sync::atomic::Ordering::Relaxed)
             {
-                if let Some(pool) = state.db_pool.as_ref()
-                    && let Err(e) =
+                if let Some(pool) = state.db_pool.as_ref() {
+                    if let Err(e) =
                         crate::infrastructure::services::entry_backend::persist_migration_readonly(
                             pool.as_ref(),
                             false,
                         )
                         .await
-                {
-                    tracing::warn!(
-                        target: "oxicloud::migration",
-                        event = "storage.migration_readonly.release_persist_failed",
-                        run_id = %run_id,
-                        error = %e,
-                        "could not persist migration_readonly=false after cancelling a paused \
-                         migration; writes resume now but a restart will come up read-only"
-                    );
+                    {
+                        tracing::warn!(
+                            target: "oxicloud::migration",
+                            event = "storage.migration_readonly.release_persist_failed",
+                            run_id = %run_id,
+                            error = %e,
+                            "could not persist migration_readonly=false after cancelling a paused \
+                             migration; writes resume now but a restart will come up read-only"
+                        );
+                    }
+                    let _ = crate::infrastructure::services::entry_backend::persist_backend_write_lock_holder(
+                        pool.as_ref(),
+                        None,
+                    )
+                    .await;
                 }
+                state.backend_write_gate.release();
                 state
                     .migration_readonly
                     .store(false, std::sync::atomic::Ordering::Relaxed);

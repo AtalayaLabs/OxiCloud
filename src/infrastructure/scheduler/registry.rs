@@ -28,6 +28,17 @@ use super::types::{JobOutcome, JobParam, JobParamValue, JobRunArgs, Mutates};
 pub struct JobEntry {
     pub(super) handler: Arc<dyn JobHandler>,
     pub(super) timeout: Option<Duration>,
+    /// `true` = this job writes to the storage backend (PUT / DELETE
+    /// chunk objects, migrate satellites, re-encrypt blobs). The
+    /// scheduler's dispatch prologue consults
+    /// `JobRegistry::backend_write_gate` on every tick; a held gate
+    /// defers THIS job's tick to its next interval and records a
+    /// `JobOutcome::Ok` with `extra.deferred_reason = "backend_write_locked"`.
+    /// `false` = DB-only or local-cache maintenance; dispatches
+    /// unconditionally. Registered at `register(…, mutates = …)` time
+    /// via [`Mutates::backend`]; non-backend `Mutates` variants
+    /// default to `false`.
+    pub(super) is_backend_writer: bool,
     /// Single-permit gate enforcing the "one in-flight run per
     /// `job_name`" invariant. A tick that finds the permit taken
     /// emits `job.tick_skipped` and does not spawn.
@@ -93,6 +104,17 @@ pub struct JobRegistry {
     /// alternative, capturing at construction, makes two lines in `di.rs`
     /// silently decide whether a deployment is ever alerted.
     finding_notifier: Arc<std::sync::OnceLock<Arc<super::finding_notifier::FindingNotifier>>>,
+
+    /// Backend write-lock gate. Consulted by the dispatch prologue
+    /// for any job whose handler declares
+    /// [`JobHandler::is_backend_writer() == true`]. `None` =
+    /// gate not wired yet (unit tests exercise the registry without
+    /// one, which short-circuits the prologue to "proceed"). `Some(_)`
+    /// in a wired server — set by DI exactly once via
+    /// [`Self::set_backend_write_gate`].
+    backend_write_gate: std::sync::OnceLock<
+        Arc<crate::application::services::backend_write_gate::BackendWriteGate>,
+    >,
 }
 
 impl JobRegistry {
@@ -101,7 +123,30 @@ impl JobRegistry {
             entries: RwLock::new(HashMap::new()),
             message_bus: std::sync::OnceLock::new(),
             finding_notifier: Arc::new(std::sync::OnceLock::new()),
+            backend_write_gate: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Install the backend write-lock gate the dispatch prologue
+    /// consults for `is_backend_writer` jobs. Idempotent — a
+    /// second call is ignored (same contract as the message bus and
+    /// finding notifier). Set by DI once both the gate and the
+    /// registry exist.
+    pub fn set_backend_write_gate(
+        &self,
+        gate: Arc<crate::application::services::backend_write_gate::BackendWriteGate>,
+    ) -> bool {
+        self.backend_write_gate.set(gate).is_ok()
+    }
+
+    /// Current gate snapshot — the engine calls this at every dispatch
+    /// so a later `set_backend_write_gate` is visible to the loop.
+    /// `None` in unit tests (no gate wired) → dispatch proceeds
+    /// unconditionally.
+    pub(super) fn backend_write_gate_snapshot(
+        &self,
+    ) -> Option<Arc<crate::application::services::backend_write_gate::BackendWriteGate>> {
+        self.backend_write_gate.get().cloned()
     }
 
     /// Install the out-of-band notifier for recoverable runs. Idempotent;
@@ -208,9 +253,11 @@ impl JobRegistry {
             Utc::now()
                 + chrono::Duration::from_std(dur).unwrap_or_else(|_| chrono::Duration::seconds(0))
         });
+        let is_backend_writer = handler.is_backend_writer();
         let entry = Arc::new(JobEntry {
             handler,
             timeout,
+            is_backend_writer,
             in_flight: Semaphore::new(1),
             state: Mutex::new(JobState {
                 interval,
@@ -393,7 +440,12 @@ impl JobRegistry {
         // events publish on `Topic::Job(name)`. `Option::cloned()`
         // returns a fresh `Arc` clone (or None) — negligible.
         let bus = self.message_bus.get().cloned();
-        Some(super::engine::dispatch(name, entry, args, bus).await)
+        // The gate too — admin-triggered runs are gated by the same
+        // rule as periodic ticks. An operator who presses "Run now"
+        // on `backend_reclaim` while a migration is in progress sees
+        // the same `deferred` outcome instead of racing the walk.
+        let gate = self.backend_write_gate_snapshot();
+        Some(super::engine::dispatch(name, entry, args, bus, gate).await)
     }
 
     /// Wire the message bus. Called once from DI after both the

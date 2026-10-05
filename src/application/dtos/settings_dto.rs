@@ -366,6 +366,42 @@ pub struct StorageSettingsDto {
     /// restart. Frontend renders a banner on the storage tab when
     /// true.
     pub migration_readonly: bool,
+    /// Current backend write-lock holder, if any. `None` = writes
+    /// are allowed (migration_readonly is false in that case too);
+    /// `Some(_)` carries the typed reason so the admin UI can
+    /// render a reason-aware card ("Migrating to s3-east", "Backing
+    /// up to nightly-nas", "Manual: restic to NAS", etc.) and
+    /// surface the Release button for an External hold.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend_write_lock:
+        Option<crate::application::services::backend_write_gate::BackendWriteLockReason>,
+}
+
+/// Request body for `POST /api/admin/storage/write-lock` — the
+/// operator asks the server to engage the External lock variant on
+/// their behalf.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct AcquireExternalLockDto {
+    /// Human-readable one-line label shown in the UI banner and
+    /// audit log. Required; empty label falls back to a generic
+    /// "External maintenance in progress" caption.
+    pub label: String,
+    /// Optional override of the default 6-hour auto-expire. Clamped
+    /// server-side to `[60s, 24h]` so a typo doesn't wedge the
+    /// server for a week or a zero-second expiry defeats the lock
+    /// altogether.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_in_seconds: Option<u64>,
+}
+
+/// Response body for the backend-write-lock endpoints — current
+/// holder (if any), plus a stable `is_held` discriminator so the
+/// client doesn't need to re-check the Option.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct BackendWriteLockStatusDto {
+    pub is_held: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub holder: Option<crate::application::services::backend_write_gate::BackendWriteLockReason>,
 }
 
 /// Per-entry summary emitted in `StorageSettingsDto.entries`. Never

@@ -2523,6 +2523,118 @@
         "x-oxicloud-scope": "role:admin"
       }
     },
+    "/api/admin/storage/write-lock": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "GET /api/admin/storage/write-lock — current holder, or `None`.",
+        "description": "Public contract: the response is a stable\n[`BackendWriteLockStatusDto`] carrying `is_held` + an optional\n`holder` (typed reason). Called by the admin UI on every\nStorage-tab visit, and by hurl tests to assert pre/post state.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "operationId": "get_backend_write_lock",
+        "responses": {
+          "200": {
+            "description": "Current backend-write-lock holder",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackendWriteLockStatusDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Admin required"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-oxicloud-scope": "role:admin"
+      },
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "POST /api/admin/storage/write-lock — engage the External lock.",
+        "description": "Takes a one-line label the UI surfaces alongside the lock icon\n(e.g., \"nightly restic to NAS\"). Fails with 409 if any OTHER\nholder is already engaged — operator must release the current\nhold first via DELETE, which is audit-logged.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "operationId": "acquire_backend_write_lock",
+        "requestBody": {
+          "description": "Label + optional auto-expiry",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcquireExternalLockDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "External lock engaged",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackendWriteLockStatusDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Admin required"
+          },
+          "409": {
+            "description": "Backend write-lock already held by another operation (migration/backup/rotation/external)"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-oxicloud-scope": "role:admin"
+      },
+      "delete": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "DELETE /api/admin/storage/write-lock — release the lock,\nwhatever variant currently holds it.",
+        "description": "Clears both the typed holder and the legacy bool, so writes\nresume AND backend-writer jobs stop deferring on the next tick.\nAudit-logged with the previous holder's kind for the trail.\n\nRequires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "operationId": "release_backend_write_lock",
+        "responses": {
+          "200": {
+            "description": "Lock released (or was already free)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackendWriteLockStatusDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Admin required"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-oxicloud-scope": "role:admin"
+      }
+    },
     "/api/admin/transfer-ownership": {
       "post": {
         "tags": [
@@ -10341,6 +10453,28 @@
           "group"
         ]
       },
+      "AcquireExternalLockDto": {
+        "type": "object",
+        "description": "Request body for `POST /api/admin/storage/write-lock` — the\noperator asks the server to engage the External lock variant on\ntheir behalf.",
+        "required": [
+          "label"
+        ],
+        "properties": {
+          "expires_in_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Optional override of the default 6-hour auto-expire. Clamped\nserver-side to `[60s, 24h]` so a typo doesn't wedge the\nserver for a week or a zero-second expiry defeats the lock\naltogether.",
+            "minimum": 0
+          },
+          "label": {
+            "type": "string",
+            "description": "Human-readable one-line label shown in the UI banner and\naudit log. Required; empty label falls back to a generic\n\"External maintenance in progress\" caption."
+          }
+        }
+      },
       "AddDriveMemberDto": {
         "type": "object",
         "description": "Body for `POST /api/drives/{id}/members`.",
@@ -10830,6 +10964,133 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          }
+        }
+      },
+      "BackendWriteLockReason": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "`backend_migration` is draining content from one entry to\nanother. Must hold across pause — the hash-ordered cursor is\nonly valid while nothing writes. See the memory\n`project_migration_readonly_pause_semantics`.",
+            "required": [
+              "source",
+              "target",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "migration"
+                ]
+              },
+              "source": {
+                "type": "string"
+              },
+              "target": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "`backend_backup` (future job) is copying content out to a\nbackup target. May hold or release on pause depending on\nwhether the backup walks a frozen snapshot (release OK) or\nthe live source (must hold).",
+            "required": [
+              "destination",
+              "started_at",
+              "kind"
+            ],
+            "properties": {
+              "destination": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "backup"
+                ]
+              },
+              "started_at": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "`backend_rotate` is re-encrypting with a new key. Same\nhold/release call as backup.",
+            "required": [
+              "entry",
+              "kind"
+            ],
+            "properties": {
+              "entry": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "rotation"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Operator-driven lock for an external quiesce — `/admin/storage`\nUI, admin API. The `admin_id` identifies the user who holds\nthe lock; `label` is a free-form display string (\"nightly\nrestic to NAS\", \"manual S3 snapshot before rebalance\"). The\n`acquired_at` + `expires_at` pair prevents a forgotten lock\nfrom freezing writes forever if the operator's cron script\ndies — see [`EXTERNAL_LOCK_MAX_HOLD`].",
+            "required": [
+              "admin_id",
+              "label",
+              "acquired_at",
+              "expires_at",
+              "kind"
+            ],
+            "properties": {
+              "acquired_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "admin_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "expires_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "external"
+                ]
+              },
+              "label": {
+                "type": "string"
+              }
+            }
+          }
+        ],
+        "description": "Why the backend write-lock is held.\n\nOne variant per operation shape. The admin API's `External`\nvariant covers operator-driven quiesce (restic / borg / filesystem\nsnapshot) — anything OxiCloud itself doesn't know how to perform.\n\nSerialized as JSON into\n`admin_settings.storage.backend_write_lock_holder` for restart\nsurvival. A missing or malformed value is treated as \"not held\",\nnever as a wedge — a corrupt DB row must never block writes\nforever."
+      },
+      "BackendWriteLockStatusDto": {
+        "type": "object",
+        "description": "Response body for the backend-write-lock endpoints — current\nholder (if any), plus a stable `is_held` discriminator so the\nclient doesn't need to re-check the Option.",
+        "required": [
+          "is_held"
+        ],
+        "properties": {
+          "holder": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/BackendWriteLockReason"
+              }
+            ]
+          },
+          "is_held": {
+            "type": "boolean"
           }
         }
       },
@@ -15918,6 +16179,17 @@
           "active_entry_name": {
             "type": "string",
             "description": "Name of the entry the LIVE backend is currently bound to.\nPopulated as the boot-selected name (per\n`CoreServices.active_backend_name`). Empty string for the\nzero-entries legacy path (`\"legacy\"` sentinel)."
+          },
+          "backend_write_lock": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/BackendWriteLockReason",
+                "description": "Current backend write-lock holder, if any. `None` = writes\nare allowed (migration_readonly is false in that case too);\n`Some(_)` carries the typed reason so the admin UI can\nrender a reason-aware card (\"Migrating to s3-east\", \"Backing\nup to nightly-nas\", \"Manual: restic to NAS\", etc.) and\nsurface the Release button for an External hold."
+              }
+            ]
           },
           "current_backend": {
             "type": "string",

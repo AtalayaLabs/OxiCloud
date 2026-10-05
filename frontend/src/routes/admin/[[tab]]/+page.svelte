@@ -46,6 +46,10 @@
 		testOidc,
 		testStorage,
 		rotateStorageEntry,
+		getBackendWriteLock,
+		acquireBackendWriteLock,
+		releaseBackendWriteLock,
+		type BackendWriteLockStatus,
 		createExternalMount,
 		deleteExternalMount,
 		listExternalMounts,
@@ -757,6 +761,74 @@
 			await loadMigration();
 		} catch (e) {
 			reportError(e);
+		}
+	}
+
+	// ── Backend write-lock (operator-driven External variant) ──
+	// Lives on the Storage tab beside the migration controls — same
+	// gate underneath; the UI exposes "Lock / Unlock" so an admin
+	// running an external backup (restic / borg / snapshot) can tell
+	// OxiCloud to quiesce without starting a migration they don't
+	// want.
+	let writeLockStatus: BackendWriteLockStatus | null = $state(null);
+	let writeLockLabel = $state('');
+	let writeLockBusy = $state(false);
+	// Resolved display name for an External lock's `admin_id`.
+	// Lazily looked up via `getUserAdmin` (which caches per-id at
+	// module scope, so a card re-render doesn't re-fetch). `null`
+	// when the lookup fails or isn't applicable (non-External
+	// holder) — the template falls back to the raw UUID in that
+	// case, so the "who" is always visible even if the account
+	// row disappeared since the lock was engaged.
+	let writeLockHolderName: string | null = $state(null);
+	async function loadWriteLock() {
+		try {
+			writeLockStatus = await getBackendWriteLock();
+			// Resolve admin_id → username for the only variant that
+			// carries one. Fire-and-forget — the template renders the
+			// UUID in the meantime, swap in the username when it
+			// resolves. A rejected lookup leaves the UUID visible,
+			// which is still useful for cross-reference against the
+			// audit log.
+			writeLockHolderName = null;
+			if (writeLockStatus?.holder?.kind === 'external') {
+				const adminId = writeLockStatus.holder.admin_id;
+				try {
+					const full = await getUserAdmin(adminId);
+					writeLockHolderName = full?.user.username ?? null;
+				} catch {
+					writeLockHolderName = null;
+				}
+			}
+		} catch {
+			// Non-fatal — the card renders a loading placeholder; a
+			// transient 5xx shouldn't knock the whole tab out.
+			writeLockStatus = null;
+			writeLockHolderName = null;
+		}
+	}
+	async function doLockAcquire() {
+		if (!writeLockLabel.trim()) return;
+		writeLockBusy = true;
+		try {
+			await acquireBackendWriteLock(writeLockLabel.trim());
+			writeLockLabel = '';
+			await Promise.all([loadWriteLock(), loadStorage()]);
+		} catch (e) {
+			reportError(e);
+		} finally {
+			writeLockBusy = false;
+		}
+	}
+	async function doLockRelease() {
+		writeLockBusy = true;
+		try {
+			await releaseBackendWriteLock();
+			await Promise.all([loadWriteLock(), loadStorage()]);
+		} catch (e) {
+			reportError(e);
+		} finally {
+			writeLockBusy = false;
 		}
 	}
 
@@ -1990,6 +2062,7 @@
 		else if (tab === 'storage') {
 			void loadStorage();
 			void loadMigration();
+			void loadWriteLock();
 			// The "Storage cache" card on this tab reads live
 			// occupancy off the admin dashboard DTO (content_cache +
 			// backend_cache), which the dashboard tab also populates.
@@ -2618,6 +2691,117 @@
 		     The legacy form + related handlers/state live in git
 		     history; deleted here in one sweep.
 		     ══════════════════════════════════════════════════════════ -->
+		<!-- Section 0 — Backend write-lock card. Operator control for
+		     the typed-reason gate: the UI only exposes the External
+		     variant for acquire (migration / backup / rotation
+		     originate from their own jobs), but release clears
+		     whichever variant is held. Rendered FIRST on the tab
+		     because when writes are refused that's the one thing the
+		     operator needs to see on arrival; migration controls, cache
+		     state and entry details all come after. -->
+		{#if writeLockStatus}
+			<section
+				class="card storage-write-lock"
+				data-testid="admin-storage-write-lock"
+				aria-labelledby="admin-storage-write-lock-title"
+			>
+				<h2 id="admin-storage-write-lock-title">
+					{t('admin.storage_write_lock_title', 'Backend write-lock')}
+				</h2>
+				{#if writeLockStatus.is_held && writeLockStatus.holder}
+					{@const h = writeLockStatus.holder}
+					<p class="storage-write-lock__banner" role="status">
+						<strong>
+							{#if h.kind === 'migration'}
+								{t('admin.storage_write_lock_banner_migration', 'Migrating storage:')}
+								{h.source} → {h.target}
+							{:else if h.kind === 'backup'}
+								{t('admin.storage_write_lock_banner_backup', 'Backing up to')}
+								{h.destination}
+							{:else if h.kind === 'rotation'}
+								{t('admin.storage_write_lock_banner_rotation', 'Rotating storage key on')}
+								{h.entry}
+							{:else if h.kind === 'external'}
+								{t('admin.storage_write_lock_banner_external', 'Maintenance:')}
+								{h.label ||
+									t(
+										'admin.storage_write_lock_banner_external_default',
+										'External maintenance in progress'
+									)}
+							{/if}
+						</strong>
+					</p>
+					<p class="muted storage-write-lock__hint">
+						{t(
+							'admin.storage_write_lock_held_hint',
+							'User writes are refused and backend-writer jobs (reclaim, rechunk, rotate, imports, satellite repair) are deferring their ticks until the lock is released.'
+						)}
+					</p>
+					{#if h.kind === 'external'}
+						<p class="muted storage-write-lock__meta">
+							{t('admin.storage_write_lock_acquired_by', 'Acquired by')}
+							<strong>{writeLockHolderName ?? h.admin_id}</strong>
+							{t('admin.storage_write_lock_acquired_at', 'at')}
+							<time datetime={h.acquired_at}>{new Date(h.acquired_at).toLocaleString()}</time>
+						</p>
+						<p class="muted storage-write-lock__meta">
+							{t('admin.storage_write_lock_expires_at', 'Auto-expires at')}
+							<time datetime={h.expires_at}>{new Date(h.expires_at).toLocaleString()}</time>
+						</p>
+					{/if}
+					<div class="storage-write-lock__actions">
+						<button
+							type="button"
+							class="button button--secondary"
+							disabled={writeLockBusy}
+							onclick={doLockRelease}
+							data-testid="admin-storage-write-lock-release"
+						>
+							{t('admin.storage_write_lock_release', 'Release lock')}
+						</button>
+					</div>
+				{:else}
+					<p class="muted storage-write-lock__hint">
+						{t(
+							'admin.storage_write_lock_free_hint',
+							'Engage this before running an external backup (restic, borg, filesystem snapshot) or any out-of-band maintenance that reads the storage backend directly. OxiCloud refuses user writes AND defers its own backend-writer jobs until you release.'
+						)}
+					</p>
+					<form
+						class="storage-write-lock__form"
+						onsubmit={(e) => {
+							e.preventDefault();
+							void doLockAcquire();
+						}}
+					>
+						<label class="storage-write-lock__label">
+							<span>{t('admin.storage_write_lock_label_label', 'Reason')}</span>
+							<input
+								type="text"
+								bind:value={writeLockLabel}
+								placeholder={t(
+									'admin.storage_write_lock_label_placeholder',
+									'e.g. nightly restic to NAS'
+								)}
+								required
+								minlength="3"
+								maxlength="120"
+								data-testid="admin-storage-write-lock-label"
+							/>
+						</label>
+						<button
+							type="submit"
+							class="button button--primary"
+							disabled={writeLockBusy || !writeLockLabel.trim()}
+							data-testid="admin-storage-write-lock-acquire"
+						>
+							{t('admin.storage_write_lock_acquire', 'Lock backend')}
+						</button>
+					</form>
+				{/if}
+			</section>
+		{/if}
+
 		<!-- Section 1 — Content store: global DB blob stats,
 		     independent of any backend entry. Rendered first because
 		     it's the "what's actually in the system" answer;
@@ -5732,6 +5916,55 @@
 	.cutover-hint__readonly-body {
 		margin: 0;
 		color: var(--color-danger-text, var(--color-text));
+	}
+
+	.storage-write-lock {
+		margin-bottom: var(--space-4);
+	}
+
+	.storage-write-lock h2 {
+		margin: 0 0 var(--space-2);
+	}
+
+	.storage-write-lock__banner {
+		margin: 0 0 var(--space-2);
+		padding: var(--space-2) var(--space-3);
+		border-radius: var(--radius-md);
+		background: var(--color-warning-surface, var(--color-surface-subtle));
+		color: var(--color-warning-text, var(--color-text));
+		border-left: 3px solid var(--color-warning-border, var(--color-border));
+	}
+
+	.storage-write-lock__hint,
+	.storage-write-lock__meta {
+		margin: 0 0 var(--space-3);
+		font-size: var(--text-sm);
+	}
+
+	.storage-write-lock__form {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: end;
+		gap: var(--space-3);
+	}
+
+	.storage-write-lock__label {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-1);
+		flex: 1 1 20rem;
+	}
+
+	.storage-write-lock__label input {
+		padding: var(--space-2);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm);
+		background: var(--color-surface);
+		color: var(--color-text);
+	}
+
+	.storage-write-lock__actions {
+		margin-top: var(--space-2);
 	}
 
 	.storage-content-stats {

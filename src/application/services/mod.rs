@@ -1,6 +1,7 @@
 pub mod admin_settings_service;
 pub mod app_password_service;
 pub mod auth_application_service;
+pub mod backend_write_gate;
 pub mod batch_operations;
 pub mod blob_lifecycle_service;
 pub mod calendar_service;

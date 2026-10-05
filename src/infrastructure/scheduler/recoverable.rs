@@ -510,6 +510,18 @@ pub trait RecoverableJobHandler: Send + Sync {
         &[]
     }
 
+    /// See [`JobHandler::is_backend_writer`]. Default `false`;
+    /// backend-writer tenants (`backend_reclaim`, `backend_rechunk`,
+    /// `backend_rotate`, `*_import`, `satellites_consistency` once
+    /// its repair arm shipped) override to `true` so the scheduler
+    /// prologue defers their ticks while the write-lock gate is held.
+    ///
+    /// `backend_migration` is NOT a backend-writer in this sense — it
+    /// is the holder, not a deferral target. Leave at the default.
+    fn is_backend_writer(&self) -> bool {
+        false
+    }
+
     /// May a run started with `args` later be continued by something with
     /// no human behind it — a periodic tick, a cron, a webhook?
     ///
@@ -1722,6 +1734,9 @@ impl JobHandler for RecoverableAdapter {
     }
     fn parameters(&self) -> &'static [JobParam] {
         self.inner.parameters()
+    }
+    fn is_backend_writer(&self) -> bool {
+        self.inner.is_backend_writer()
     }
 }
 

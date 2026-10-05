@@ -62,6 +62,34 @@ pub struct HeaderPayload {
     /// banner instead of migration banner".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rotation: Option<ProgressHeader>,
+    /// Public-safe projection of the backend write-lock holder. One
+    /// of the four `BackendWriteLockReason` variants (migration /
+    /// backup / rotation / external) is engaged when `readonly =
+    /// true`; the FE banner picks its caption from `holder.display`
+    /// instead of guessing from the (optional) `migration` /
+    /// `rotation` progress sub-objects.
+    ///
+    /// Only `kind` + `display` are exposed here; `admin_id`,
+    /// `expires_at`, `source`/`target` details stay admin-only on
+    /// `/api/admin/storage/write-lock`. `display` is server-formatted
+    /// (`BackendWriteLockReason::display()`), so the operator's
+    /// free-form `label` on an External hold shows through unredacted —
+    /// same disclosure boundary the migration banner has today for
+    /// source/target entry names.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub holder: Option<HolderHeader>,
+}
+
+/// Public-safe lock-holder projection carried in the X-Server-Status
+/// header + `/api/config` body. See [`HeaderPayload::holder`].
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+pub struct HolderHeader {
+    /// Stable machine key — `"migration" | "backup" | "rotation" | "external"`.
+    /// Clients switch on this to pick an icon/colour per variant.
+    pub kind: String,
+    /// Human-readable one-liner, formatted server-side by
+    /// `BackendWriteLockReason::display()`. Safe to render raw.
+    pub display: String,
 }
 
 /// Shared progress shape used by both `migration` and `rotation`
@@ -117,11 +145,20 @@ pub fn build_header_payload(state: &AppState) -> HeaderPayload {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .as_ref()
         .map(ProgressHeader::from_snapshot);
+    // Project the typed holder down to its public-safe pair. Only
+    // populated when the gate is actually held — a free gate under
+    // a stale legacy bool would still send `readonly: true` with no
+    // holder, which is strictly more honest than fabricating one.
+    let holder = state.backend_write_gate.held_by().map(|r| HolderHeader {
+        kind: r.kind().to_string(),
+        display: r.display(),
+    });
 
     HeaderPayload {
         readonly,
         migration,
         rotation,
+        holder,
     }
 }
 
@@ -171,10 +208,22 @@ pub async fn server_status_middleware(
         } else {
             None
         };
+        // Only pull the typed holder when `readonly` fired —
+        // rotation-only state (no readonly) still means writes are
+        // allowed, so there is no gate holder to project.
+        let holder = if readonly {
+            state.backend_write_gate.held_by().map(|r| HolderHeader {
+                kind: r.kind().to_string(),
+                display: r.display(),
+            })
+        } else {
+            None
+        };
         HeaderPayload {
             readonly,
             migration,
             rotation,
+            holder,
         }
     };
 

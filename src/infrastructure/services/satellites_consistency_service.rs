@@ -333,6 +333,18 @@ impl RecoverableJobHandler for SatellitesConsistencyCheck {
         &PARAMETERS
     }
 
+    fn is_backend_writer(&self) -> bool {
+        // Under `?repair=true` this releases blob references, which
+        // routes orphaned derived blobs into `pending_actions` for
+        // `backend_reclaim` to delete. A plain discovery-only run
+        // doesn't touch the backend, so the deferral is a false
+        // positive on that path — accepted: a weekly discovery
+        // skipping one window during a migration is harmless, and
+        // gating on args would spread backend-write-lock logic into
+        // every job's handler. One rule per job.
+        true
+    }
+
     async fn count_total(&self) -> Option<u64> {
         sqlx::query_as::<_, (i64,)>(
             "SELECT (SELECT COUNT(*) FROM storage.content_derived_blobs)

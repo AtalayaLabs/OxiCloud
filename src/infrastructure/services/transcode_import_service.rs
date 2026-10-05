@@ -226,6 +226,12 @@ impl RecoverableJobHandler for TranscodeImport {
         PARAMS
     }
 
+    fn is_backend_writer(&self) -> bool {
+        // PUTs transcoded derivatives into the backend as satellites.
+        // Must not race the migration/backup/rotation cursor.
+        true
+    }
+
     async fn count_total(&self) -> Option<u64> {
         Some(Self::entry_names(&self.variant_dir()).await.len() as u64)
     }
