@@ -1563,7 +1563,7 @@
     "virtual_badge": "سامانه",
     "member_count_zero": "بدون عضو",
     "member_count_one": "۱ عضو",
-    "member_count_other": "{count} عضو",
+    "member_count_other": "{{count}} عضو",
     "delete_confirm_label": "نام گروه را برای تأیید وارد کنید:",
     "delete_confirm_mismatch": "نام گروه را دقیقاً برای تأیید وارد کنید.",
     "virtual_internal_name": "داخلی",

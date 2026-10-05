@@ -1563,7 +1563,7 @@
     "virtual_badge": "النظام",
     "member_count_zero": "لا يوجد أعضاء",
     "member_count_one": "عضو واحد",
-    "member_count_other": "{count} أعضاء",
+    "member_count_other": "{{count}} أعضاء",
     "delete_confirm_label": "اكتب اسم المجموعة للتأكيد:",
     "delete_confirm_mismatch": "اكتب اسم المجموعة كما هو للتأكيد.",
     "virtual_internal_name": "داخلي",

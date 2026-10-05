@@ -1563,7 +1563,7 @@
     "virtual_badge": "सिस्टम",
     "member_count_zero": "कोई सदस्य नहीं",
     "member_count_one": "1 सदस्य",
-    "member_count_other": "{count} सदस्य",
+    "member_count_other": "{{count}} सदस्य",
     "delete_confirm_label": "पुष्टि के लिए समूह का नाम लिखें:",
     "delete_confirm_mismatch": "पुष्टि के लिए समूह का नाम बिल्कुल वैसा ही लिखें।",
     "virtual_internal_name": "आंतरिक",

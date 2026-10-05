@@ -1563,7 +1563,7 @@
     "virtual_badge": "Systeem",
     "member_count_zero": "Geen leden",
     "member_count_one": "1 lid",
-    "member_count_other": "{count} leden",
+    "member_count_other": "{{count}} leden",
     "delete_confirm_label": "Typ de groepsnaam ter bevestiging:",
     "delete_confirm_mismatch": "Typ de groepsnaam exact om te bevestigen.",
     "virtual_internal_name": "Intern",

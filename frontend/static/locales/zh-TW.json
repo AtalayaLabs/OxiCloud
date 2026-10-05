@@ -1563,7 +1563,7 @@
     "virtual_badge": "系統",
     "member_count_zero": "無成員",
     "member_count_one": "1 個成員",
-    "member_count_other": "{count} 個成員",
+    "member_count_other": "{{count}} 個成員",
     "delete_confirm_label": "請輸入群組名稱以確認：",
     "delete_confirm_mismatch": "請準確輸入群組名稱以確認。",
     "virtual_internal_name": "內部",

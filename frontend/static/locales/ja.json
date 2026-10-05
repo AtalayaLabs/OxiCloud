@@ -1563,7 +1563,7 @@
     "virtual_badge": "システム",
     "member_count_zero": "メンバーなし",
     "member_count_one": "1 メンバー",
-    "member_count_other": "{count} メンバー",
+    "member_count_other": "{{count}} メンバー",
     "delete_confirm_label": "確認のためにグループ名を入力してください:",
     "delete_confirm_mismatch": "確認のためにグループ名を正確に入力してください。",
     "virtual_internal_name": "内部",

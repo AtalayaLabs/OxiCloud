@@ -1563,7 +1563,7 @@
     "virtual_badge": "Системная",
     "member_count_zero": "Нет участников",
     "member_count_one": "1 участник",
-    "member_count_other": "{count} участников",
+    "member_count_other": "{{count}} участников",
     "delete_confirm_label": "Введите имя группы для подтверждения:",
     "delete_confirm_mismatch": "Введите имя группы точно для подтверждения.",
     "virtual_internal_name": "Внутренние",
