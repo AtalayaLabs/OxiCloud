@@ -177,35 +177,50 @@ fn legacy_fallback(
     }
 }
 
-/// Persist the typed [`BackendWriteLockReason`] holder. `None`
-/// writes a SQL NULL (gate is free); `Some(reason)` serializes to
-/// JSON. Keep the legacy `MIGRATION_READONLY_KEY` bool in sync via
+/// Persist the typed [`BackendWriteLockReason`] holder. `Some(reason)`
+/// upserts the serialized JSON; `None` DELETEs the row entirely —
+/// `auth.admin_settings.value` is `NOT NULL`, so writing a SQL NULL
+/// here would silently fail the release path and leave a stale
+/// holder row that reseeds the gate on the next boot. The load
+/// function already treats row-absence as "gate is free", so a
+/// clean DELETE is semantically identical to "no holder" without
+/// the schema violation.
+///
+/// Keep the legacy `MIGRATION_READONLY_KEY` bool in sync via
 /// [`persist_migration_readonly`] — the AuthZ fast-path reader
 /// doesn't speak JSON yet and reseeds from the bool on reboot.
 pub async fn persist_backend_write_lock_holder(
     pool: &PgPool,
     holder: Option<&crate::application::services::backend_write_gate::BackendWriteLockReason>,
 ) -> Result<(), sqlx::Error> {
-    let payload = match holder {
-        Some(reason) => Some(serde_json::to_string(reason).map_err(|e| {
-            // sqlx::Error has no "serialization" variant; wrap in Protocol which
-            // the handler's error logging treats the same as any DB error.
-            sqlx::Error::Protocol(format!("serialize backend_write_lock_holder: {e}"))
-        })?),
-        None => None,
-    };
-    sqlx::query(
-        r#"
-        INSERT INTO auth.admin_settings (key, value, category, is_secret)
-             VALUES ($1, $2, 'storage', FALSE)
-        ON CONFLICT (key)
-        DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
-        "#,
-    )
-    .bind(BACKEND_WRITE_LOCK_HOLDER_KEY)
-    .bind(payload.as_deref())
-    .execute(pool)
-    .await?;
+    match holder {
+        Some(reason) => {
+            let payload = serde_json::to_string(reason).map_err(|e| {
+                // sqlx::Error has no "serialization" variant; wrap in Protocol
+                // which the handler's error logging treats the same as any DB
+                // error.
+                sqlx::Error::Protocol(format!("serialize backend_write_lock_holder: {e}"))
+            })?;
+            sqlx::query(
+                r#"
+                INSERT INTO auth.admin_settings (key, value, category, is_secret)
+                     VALUES ($1, $2, 'storage', FALSE)
+                ON CONFLICT (key)
+                DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+                "#,
+            )
+            .bind(BACKEND_WRITE_LOCK_HOLDER_KEY)
+            .bind(&payload)
+            .execute(pool)
+            .await?;
+        }
+        None => {
+            sqlx::query("DELETE FROM auth.admin_settings WHERE key = $1")
+                .bind(BACKEND_WRITE_LOCK_HOLDER_KEY)
+                .execute(pool)
+                .await?;
+        }
+    }
     Ok(())
 }
 

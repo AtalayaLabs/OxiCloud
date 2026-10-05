@@ -873,11 +873,28 @@ pub async fn release_backend_write_lock(
                  reseed the gate until admin_settings is corrected"
             );
         }
-        let _ = crate::infrastructure::services::entry_backend::persist_backend_write_lock_holder(
-            pool.as_ref(),
-            None,
-        )
-        .await;
+        if let Err(e) =
+            crate::infrastructure::services::entry_backend::persist_backend_write_lock_holder(
+                pool.as_ref(),
+                None,
+            )
+            .await
+        {
+            // Audit — not just a trace. The bool is already cleared
+            // so the AuthZ fast path is free, but a stale typed row
+            // would come back on the next boot and reseed the gate.
+            // Operator needs to see this.
+            tracing::warn!(
+                target: "audit",
+                event = "backend_write_lock.release_persist_holder_failed",
+                caller_id = %auth_user.id,
+                error = %e,
+                "in-memory release OK and bool cleared, but typed holder DELETE failed; \
+                 the next boot would reseed the gate — operator must clear the row \
+                 manually (DELETE FROM auth.admin_settings WHERE key = \
+                 'storage.backend_write_lock_holder')"
+            );
+        }
     }
 
     broadcast_server_status_change(&state);
