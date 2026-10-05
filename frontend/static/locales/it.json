@@ -1563,7 +1563,7 @@
     "virtual_badge": "Sistema",
     "member_count_zero": "Nessun membro",
     "member_count_one": "1 membro",
-    "member_count_other": "{count} membri",
+    "member_count_other": "{{count}} membri",
     "delete_confirm_label": "Digita il nome del gruppo per confermare:",
     "delete_confirm_mismatch": "Digita esattamente il nome del gruppo per confermare.",
     "virtual_internal_name": "Interno",

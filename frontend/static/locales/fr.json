@@ -1595,7 +1595,7 @@
     "virtual_badge": "Système",
     "member_count_zero": "Aucun membre",
     "member_count_one": "1 membre",
-    "member_count_other": "{count} membres",
+    "member_count_other": "{{count}} membres",
     "delete_confirm_label": "Tapez le nom du groupe pour confirmer :",
     "delete_confirm_mismatch": "Tapez le nom du groupe exactement pour confirmer.",
     "virtual_internal_name": "Interne",

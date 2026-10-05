@@ -1563,7 +1563,7 @@
     "virtual_badge": "系统",
     "member_count_zero": "无成员",
     "member_count_one": "1 个成员",
-    "member_count_other": "{count} 个成员",
+    "member_count_other": "{{count}} 个成员",
     "delete_confirm_label": "请输入群组名称以确认：",
     "delete_confirm_mismatch": "请准确输入群组名称以确认。",
     "virtual_internal_name": "内部",

@@ -1702,7 +1702,7 @@
     "virtual_badge": "System",
     "member_count_zero": "no members",
     "member_count_one": "1 member",
-    "member_count_other": "{count} members",
+    "member_count_other": "{{count}} members",
     "delete_confirm_label": "Type the group name to confirm:",
     "delete_confirm_mismatch": "Type the group name exactly to confirm.",
     "virtual_internal_name": "Internal",
