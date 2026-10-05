@@ -26,6 +26,7 @@
 	import BrandMark from '$lib/components/BrandMark.svelte';
 	import Banner from '$lib/components/Banner.svelte';
 	import { renderOpsBannerMarkdown } from '$lib/utils/opsBannerMarkdown';
+	import { adminAdvisories } from '$lib/stores/adminAdvisories.svelte';
 	// Deliberate: no `onMount` import for a localStorage-backed
 	// dismiss set. Ops banners are not user-dismissable — the server
 	// is the single source of truth for what's visible. If a banner
@@ -1272,6 +1273,34 @@
 				testid="ops-banner"
 			/>
 		{/each}
+		<!-- Admin-only advisories. Gated on `isAdminSection && isAdmin`
+		     — the flag is populated by the admin dashboard loader
+		     (`loadDashboard()` in /admin/[[tab]]/+page.svelte mirrors
+		     `storage_cache_recommended` into `adminAdvisories`), and
+		     this double guard means a non-admin whose session somehow
+		     carried a stale value doesn't see the banner, and an
+		     admin who navigated away from /admin stops seeing it
+		     too. Not a security surface — the advisory is purely a
+		     performance hint — but keeping it scoped to admin UX
+		     avoids confusing regular users with a config-env
+		     reference they can't act on. -->
+		{#if isAdminSection && isAdmin && adminAdvisories().cacheRecommended}
+			<Banner
+				severity="warning"
+				title={t('admin.storage_cache_recommended_title', 'Enable the local blob cache')}
+				body={t(
+					'admin.storage_cache_recommended_body',
+					'It is highly recommended to enable the local cache (SSD/NVMe location preferred).'
+				)}
+				progressLine={t(
+					'admin.storage_cache_recommended_howto',
+					'Set OXICLOUD_STORAGE_CACHE_ENABLED=true to enable it.'
+				)}
+				role="status"
+				testid="admin-cache-advisory"
+				ariaLabel={t('admin.storage_cache_recommended_title', 'Enable the local blob cache')}
+			/>
+		{/if}
 		{@render children()}
 	</div>
 </div>

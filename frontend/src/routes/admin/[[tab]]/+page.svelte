@@ -104,6 +104,7 @@
 	import AdminJobsPanel from '$lib/components/AdminJobsPanel.svelte';
 	import AdminDrivePoliciesPanel from '$lib/components/AdminDrivePoliciesPanel.svelte';
 	import Icon from '$lib/icons/Icon.svelte';
+	import { setCacheRecommended } from '$lib/stores/adminAdvisories.svelte';
 	import ActionMenu, { type ActionMenuItem } from '$lib/components/ActionMenu.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import OwnerAvatarStack from '$lib/components/OwnerAvatarStack.svelte';
@@ -455,6 +456,11 @@
 		dashboardError = null;
 		try {
 			dashboard = await getDashboard();
+			// Mirror the "enable local blob cache" advisory flag into
+			// the shared store so AppShell's global banner stack can
+			// render it. AppShell gates on `isAdminSection && isAdmin`
+			// — the flag only has visible effect on admin routes.
+			setCacheRecommended(dashboard.storage_cache_recommended === true);
 		} catch (e) {
 			dashboardError = errorMessage(e);
 		}
@@ -2344,32 +2350,23 @@
 	  `storage_cache_recommended` as (remote-backend) AND
 	  (OXICLOUD_STORAGE_CACHE_ENABLED=false); default-off on a
 	  remote backend lights this up until the operator opts in.
-	  Soft advisory (warn-card--warn), not --danger — this is a
+	  Soft advisory (warning severity), not critical — this is a
 	  performance hint, not a correctness problem. Guarded on
 	  `dashboard` being loaded; the tab-switch effect fires
 	  `loadDashboard()` on EVERY admin tab so this is reliably
 	  populated even for operators who never visited /admin itself.
+
+	  Admin-only visibility is enforced by file location: this
+	  component is `routes/admin/[[tab]]/+page.svelte`, so the
+	  SvelteKit router never mounts it on `/files`, `/photos`,
+	  etc. — no explicit guard needed.
 	-->
-	{#if dashboard?.storage_cache_recommended}
-		<div class="card warn-card warn-card--warn">
-			<Icon name="bolt" />
-			<div>
-				<strong>{t('admin.storage_cache_recommended_title', 'Enable the local blob cache')}</strong>
-				<p>
-					{t(
-						'admin.storage_cache_recommended_body',
-						'It is highly recommended to enable the local cache (SSD/NVMe location preferred).'
-					)}
-				</p>
-				<p>
-					{t(
-						'admin.storage_cache_recommended_howto',
-						'Set OXICLOUD_STORAGE_CACHE_ENABLED=true to enable it.'
-					)}
-				</p>
-			</div>
-		</div>
-	{/if}
+	<!-- Cache-recommended advisory moved out of this file to
+	     `AppShell`'s global banner stack — same visual family as
+	     readonly / rotation / ops banners. `loadDashboard()` above
+	     mirrors the flag via `setCacheRecommended`; AppShell reads
+	     from the `adminAdvisories` store, gated on
+	     `isAdminSection && isAdmin`. -->
 
 	{#if tab === 'dashboard'}
 		{#if dashboardError}
