@@ -1434,7 +1434,11 @@
     "ops_banner_add_locale_label": "Toe te voegen taal",
     "ops_banner_add_locale_confirm": "Toevoegen",
     "ops_banner_create": "Mededeling plaatsen",
-    "ops_banner_err_empty_body": "Minstens één taal moet inhoud hebben."
+    "ops_banner_err_empty_body": "Minstens één taal moet inhoud hebben.",
+    "notification_sink_missing_title": "Stel een notificatiekanaal in",
+    "notification_sink_missing_body": "Bevindingen uit taken hebben nergens om naartoe te gaan — niemand wordt gewaarschuwd als er iets misgaat. Stel ten minste één kanaal in.",
+    "notification_sink_missing_howto": "Zet ZOWEL OXICLOUD_JOBS_NOTIFY_EMAIL_TO (adressen gescheiden door komma’s) ALS OXICLOUD_SMTP_HOST, OF zet OXICLOUD_WEBHOOK_URL — en start opnieuw op.",
+    "storage_cache_recommended_body": "Het wordt sterk aanbevolen om de lokale cache in te schakelen bij gebruik van een extern backend (cache op SSD / NVMe heeft de voorkeur)."
   },
   "profile": {
     "page_title": "Profiel",

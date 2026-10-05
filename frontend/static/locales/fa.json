@@ -1416,7 +1416,11 @@
     "ops_banner_add_locale_label": "زبان برای افزودن",
     "ops_banner_add_locale_confirm": "افزودن",
     "ops_banner_create": "انتشار اطلاعیه",
-    "ops_banner_err_empty_body": "حداقل یک زبان باید محتوا داشته باشد."
+    "ops_banner_err_empty_body": "حداقل یک زبان باید محتوا داشته باشد.",
+    "notification_sink_missing_title": "یک مقصد اطلاع‌رسانی تنظیم کنید",
+    "notification_sink_missing_body": "یافته‌های خرابی کارها مقصدی ندارند — هنگام خرابی به هیچ‌کس اطلاع داده نمی‌شود. حداقل یک مقصد تنظیم کنید.",
+    "notification_sink_missing_howto": "OXICLOUD_JOBS_NOTIFY_EMAIL_TO (نشانی‌ها با کاما جدا) و OXICLOUD_SMTP_HOST را هر دو تنظیم کنید، یا OXICLOUD_WEBHOOK_URL را تنظیم کنید — سپس راه‌اندازی مجدد کنید.",
+    "storage_cache_recommended_body": "هنگام استفاده از بک‌اند راه‌دور به‌شدت توصیه می‌شود کش محلی را فعال کنید (ترجیحاً کش روی SSD / NVMe)."
   },
   "profile": {
     "page_title": "پروفایل",

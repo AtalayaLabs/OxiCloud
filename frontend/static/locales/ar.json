@@ -1434,7 +1434,11 @@
     "ops_banner_add_locale_label": "لغة لإضافتها",
     "ops_banner_add_locale_confirm": "إضافة",
     "ops_banner_create": "نشر الإعلان",
-    "ops_banner_err_empty_body": "يجب أن يكون لإحدى اللغات محتوى على الأقل."
+    "ops_banner_err_empty_body": "يجب أن يكون لإحدى اللغات محتوى على الأقل.",
+    "notification_sink_missing_title": "أعدّ وجهة للإشعارات",
+    "notification_sink_missing_body": "لا توجد وجهة لنتائج فشل المهام — لن يُعلَم أحد عند حدوث عطل. أعدّ وجهة واحدة على الأقل.",
+    "notification_sink_missing_howto": "عيّن معًا OXICLOUD_JOBS_NOTIFY_EMAIL_TO (عناوين مفصولة بفواصل) و OXICLOUD_SMTP_HOST، أو عيّن OXICLOUD_WEBHOOK_URL — ثم أعد التشغيل.",
+    "storage_cache_recommended_body": "يُنصح بشدة بتفعيل الذاكرة المحلية عند استخدام واجهة خلفية بعيدة (يفضَّل التخزين على SSD / NVMe)."
   },
   "profile": {
     "page_title": "الملف الشخصي",

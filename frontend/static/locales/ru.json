@@ -1434,7 +1434,11 @@
     "ops_banner_add_locale_label": "Язык для добавления",
     "ops_banner_add_locale_confirm": "Добавить",
     "ops_banner_create": "Опубликовать объявление",
-    "ops_banner_err_empty_body": "Нужно заполнить содержимое хотя бы на одном языке."
+    "ops_banner_err_empty_body": "Нужно заполнить содержимое хотя бы на одном языке.",
+    "notification_sink_missing_title": "Настройте канал уведомлений",
+    "notification_sink_missing_body": "Отчёты о проблемах в задачах некуда отправлять — никто не узнает о сбое. Настройте хотя бы один канал.",
+    "notification_sink_missing_howto": "Задайте ОБА параметра OXICLOUD_JOBS_NOTIFY_EMAIL_TO (адреса через запятую) И OXICLOUD_SMTP_HOST, ЛИБО задайте OXICLOUD_WEBHOOK_URL — затем перезапустите.",
+    "storage_cache_recommended_body": "Настоятельно рекомендуется включить локальный кэш при использовании удалённого бэкенда (предпочтительно кэш на SSD / NVMe)."
   },
   "profile": {
     "page_title": "Профиль",

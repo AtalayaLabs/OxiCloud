@@ -1290,7 +1290,7 @@
 				title={t('admin.storage_cache_recommended_title', 'Enable the local blob cache')}
 				body={t(
 					'admin.storage_cache_recommended_body',
-					'It is highly recommended to enable the local cache (SSD/NVMe location preferred).'
+					'It is highly recommended to enable the local cache when using a remote backend (cache to SSD / NVMe preferred).'
 				)}
 				progressLine={t(
 					'admin.storage_cache_recommended_howto',
@@ -1299,6 +1299,23 @@
 				role="status"
 				testid="admin-cache-advisory"
 				ariaLabel={t('admin.storage_cache_recommended_title', 'Enable the local blob cache')}
+			/>
+		{/if}
+		{#if isAdminSection && isAdmin && adminAdvisories().notificationSinkMissing}
+			<Banner
+				severity="warning"
+				title={t('admin.notification_sink_missing_title', 'Configure a notification sink')}
+				body={t(
+					'admin.notification_sink_missing_body',
+					'Job-failure findings have nowhere to go — nobody is notified when something breaks. Configure at least one sink.'
+				)}
+				progressLine={t(
+					'admin.notification_sink_missing_howto',
+					'Set BOTH OXICLOUD_JOBS_NOTIFY_EMAIL_TO (comma-separated addresses) AND OXICLOUD_SMTP_HOST, OR set OXICLOUD_WEBHOOK_URL — then restart.'
+				)}
+				role="status"
+				testid="admin-notification-sink-advisory"
+				ariaLabel={t('admin.notification_sink_missing_title', 'Configure a notification sink')}
 			/>
 		{/if}
 		{@render children()}

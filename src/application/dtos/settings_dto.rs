@@ -245,6 +245,19 @@ pub struct DashboardStatsDto {
     /// local-filesystem deployments (nothing to cache) and when the
     /// cache is already on.
     pub storage_cache_recommended: bool,
+    /// `true` when neither outbound alert path is usable:
+    /// * **Email** — needs BOTH `OXICLOUD_JOBS_NOTIFY_EMAIL_TO`
+    ///   (non-empty recipients) AND `OXICLOUD_SMTP_HOST`. Setting
+    ///   recipients without SMTP leaves alerts addressed but
+    ///   undeliverable, which this flag treats as "no sink".
+    /// * **Webhook** — `OXICLOUD_WEBHOOK_URL` is set.
+    ///
+    /// In that state, job-failure findings and lifecycle events
+    /// have nowhere to go — an operator who isn't watching
+    /// `/admin/jobs` would miss them entirely. The admin UI shows
+    /// a warning banner inviting them to set at least one. Flips
+    /// back to `false` as soon as either path is fully configured.
+    pub notification_sink_missing: bool,
     /// Current occupancy of the in-memory file-content cache (moka).
     /// Admin dashboard renders `size_bytes / max_bytes` as a capacity
     /// bar; combined with `oxicloud_content_cache_hits_total /

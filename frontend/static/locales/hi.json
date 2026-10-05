@@ -1434,7 +1434,11 @@
     "ops_banner_add_locale_label": "जोड़ने वाली भाषा",
     "ops_banner_add_locale_confirm": "जोड़ें",
     "ops_banner_create": "घोषणा पोस्ट करें",
-    "ops_banner_err_empty_body": "कम से कम एक भाषा में सामग्री होनी चाहिए।"
+    "ops_banner_err_empty_body": "कम से कम एक भाषा में सामग्री होनी चाहिए।",
+    "notification_sink_missing_title": "सूचना गंतव्य कॉन्फ़िगर करें",
+    "notification_sink_missing_body": "कार्य-विफलता निष्कर्षों के पास भेजने के लिए कोई जगह नहीं है — कुछ टूटने पर किसी को सूचित नहीं किया जाता। कम से कम एक गंतव्य कॉन्फ़िगर करें।",
+    "notification_sink_missing_howto": "OXICLOUD_JOBS_NOTIFY_EMAIL_TO (अल्पविराम से अलग किए पते) और OXICLOUD_SMTP_HOST दोनों सेट करें, या OXICLOUD_WEBHOOK_URL सेट करें — फिर पुनः प्रारंभ करें।",
+    "storage_cache_recommended_body": "दूरस्थ बैकएंड का उपयोग करते समय स्थानीय कैश सक्षम करने की दृढ़ता से अनुशंसा की जाती है (SSD / NVMe पर कैश को प्राथमिकता दें)।"
   },
   "profile": {
     "page_title": "प्रोफ़ाइल",

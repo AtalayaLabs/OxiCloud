@@ -1416,7 +1416,11 @@
     "ops_banner_add_locale_label": "要新增的語言",
     "ops_banner_add_locale_confirm": "新增",
     "ops_banner_create": "發布公告",
-    "ops_banner_err_empty_body": "至少一種語言必須填寫內容。"
+    "ops_banner_err_empty_body": "至少一種語言必須填寫內容。",
+    "notification_sink_missing_title": "設定通知接收端",
+    "notification_sink_missing_body": "任務故障發現無處可送 — 出錯時無人收到通知。請至少設定一個接收端。",
+    "notification_sink_missing_howto": "同時設定 OXICLOUD_JOBS_NOTIFY_EMAIL_TO (以逗號分隔的地址) 與 OXICLOUD_SMTP_HOST,或設定 OXICLOUD_WEBHOOK_URL,然後重新啟動。",
+    "storage_cache_recommended_body": "使用遠端後端時,強烈建議啟用本機快取 (建議快取至 SSD / NVMe)。"
   },
   "profile": {
     "page_title": "個人資料",

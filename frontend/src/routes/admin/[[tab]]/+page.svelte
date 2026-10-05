@@ -104,7 +104,10 @@
 	import AdminJobsPanel from '$lib/components/AdminJobsPanel.svelte';
 	import AdminDrivePoliciesPanel from '$lib/components/AdminDrivePoliciesPanel.svelte';
 	import Icon from '$lib/icons/Icon.svelte';
-	import { setCacheRecommended } from '$lib/stores/adminAdvisories.svelte';
+	import {
+		setCacheRecommended,
+		setNotificationSinkMissing
+	} from '$lib/stores/adminAdvisories.svelte';
 	import ActionMenu, { type ActionMenuItem } from '$lib/components/ActionMenu.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import OwnerAvatarStack from '$lib/components/OwnerAvatarStack.svelte';
@@ -456,11 +459,12 @@
 		dashboardError = null;
 		try {
 			dashboard = await getDashboard();
-			// Mirror the "enable local blob cache" advisory flag into
-			// the shared store so AppShell's global banner stack can
-			// render it. AppShell gates on `isAdminSection && isAdmin`
-			// — the flag only has visible effect on admin routes.
+			// Mirror the advisory flags into the shared store so
+			// AppShell's global banner stack can render them.
+			// AppShell gates each on `isAdminSection && isAdmin` —
+			// the flags only have visible effect on admin routes.
 			setCacheRecommended(dashboard.storage_cache_recommended === true);
+			setNotificationSinkMissing(dashboard.notification_sink_missing === true);
 		} catch (e) {
 			dashboardError = errorMessage(e);
 		}

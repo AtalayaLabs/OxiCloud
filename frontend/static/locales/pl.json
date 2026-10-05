@@ -1434,7 +1434,11 @@
     "ops_banner_add_locale_label": "Język do dodania",
     "ops_banner_add_locale_confirm": "Dodaj",
     "ops_banner_create": "Opublikuj komunikat",
-    "ops_banner_err_empty_body": "Przynajmniej jeden język musi mieć treść."
+    "ops_banner_err_empty_body": "Przynajmniej jeden język musi mieć treść.",
+    "notification_sink_missing_title": "Skonfiguruj odbiorcę powiadomień",
+    "notification_sink_missing_body": "Zgłoszenia o awariach zadań nie mają dokąd trafić — nikt nie zostanie powiadomiony, gdy coś się zepsuje. Skonfiguruj co najmniej jednego odbiorcę.",
+    "notification_sink_missing_howto": "Ustaw ZARÓWNO OXICLOUD_JOBS_NOTIFY_EMAIL_TO (adresy oddzielone przecinkami) JAK I OXICLOUD_SMTP_HOST, ALBO ustaw OXICLOUD_WEBHOOK_URL — i uruchom ponownie.",
+    "storage_cache_recommended_body": "Przy używaniu zdalnego zaplecza zdecydowanie zaleca się włączenie lokalnej pamięci podręcznej (najlepiej na SSD / NVMe)."
   },
   "profile": {
     "page_title": "Profil",

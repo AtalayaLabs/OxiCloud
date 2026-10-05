@@ -29,9 +29,19 @@ interface AdminAdvisoryState {
 	 *  cache is disabled (`OXICLOUD_STORAGE_CACHE_ENABLED=false`).
 	 *  Drives the "Enable the local blob cache" advisory banner. */
 	cacheRecommended: boolean;
+	/** `notification_sink_missing` from the dashboard DTO. True when
+	 *  the server has NEITHER `OXICLOUD_JOBS_NOTIFY_EMAIL_TO` nor
+	 *  `OXICLOUD_WEBHOOK_URL` configured — job-failure findings have
+	 *  nowhere to go and ops would miss them unless they're actively
+	 *  checking `/admin/jobs`. Drives the "configure a notification
+	 *  sink" advisory banner. */
+	notificationSinkMissing: boolean;
 }
 
-const state = $state<AdminAdvisoryState>({ cacheRecommended: false });
+const state = $state<AdminAdvisoryState>({
+	cacheRecommended: false,
+	notificationSinkMissing: false
+});
 
 /** Reactive accessor — subscribe from a Svelte component via
  *  `adminAdvisories()` inside a template or $derived. */
@@ -45,4 +55,9 @@ export function adminAdvisories(): AdminAdvisoryState {
  *  issuing a second `/api/admin/dashboard` request. */
 export function setCacheRecommended(value: boolean): void {
 	if (state.cacheRecommended !== value) state.cacheRecommended = value;
+}
+
+/** Mirror the `notification_sink_missing` flag — see field doc. */
+export function setNotificationSinkMissing(value: boolean): void {
+	if (state.notificationSinkMissing !== value) state.notificationSinkMissing = value;
 }

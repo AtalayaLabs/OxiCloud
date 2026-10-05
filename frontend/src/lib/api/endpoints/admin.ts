@@ -454,6 +454,13 @@ export interface AdminDashboard {
 	 *  `false` on local-filesystem deployments (nothing to cache) and
 	 *  when the cache is already on. */
 	storage_cache_recommended: boolean;
+	/** `true` when NEITHER `OXICLOUD_JOBS_NOTIFY_EMAIL_TO` nor
+	 *  `OXICLOUD_WEBHOOK_URL` is configured — job-failure findings
+	 *  would be invisible to anyone not actively watching
+	 *  `/admin/jobs`. The admin UI shows an advisory banner inviting
+	 *  the operator to set at least one. Flips to `false` the moment
+	 *  either env var is defined. */
+	notification_sink_missing: boolean;
 	/** Live occupancy of the moka in-memory file-content cache.
 	 *  Always present (the content cache runs unconditionally).
 	 *  Entries here are ASSEMBLED files (<10 MB each), NOT chunks —

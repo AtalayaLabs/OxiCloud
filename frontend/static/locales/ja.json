@@ -1434,7 +1434,11 @@
     "ops_banner_add_locale_label": "追加する言語",
     "ops_banner_add_locale_confirm": "追加",
     "ops_banner_create": "お知らせを投稿",
-    "ops_banner_err_empty_body": "少なくとも1つの言語に内容が必要です。"
+    "ops_banner_err_empty_body": "少なくとも1つの言語に内容が必要です。",
+    "notification_sink_missing_title": "通知先を設定してください",
+    "notification_sink_missing_body": "ジョブの不具合情報の送信先がありません — 何かが壊れても誰にも通知されません。少なくとも1つ設定してください。",
+    "notification_sink_missing_howto": "OXICLOUD_JOBS_NOTIFY_EMAIL_TO(カンマ区切りのアドレス)と OXICLOUD_SMTP_HOST を両方設定するか、または OXICLOUD_WEBHOOK_URL を設定して再起動してください。",
+    "storage_cache_recommended_body": "リモートバックエンドを使用する場合は、ローカルキャッシュの有効化を強く推奨します(SSD / NVMe へのキャッシュを推奨)。"
   },
   "profile": {
     "page_title": "プロフィール",

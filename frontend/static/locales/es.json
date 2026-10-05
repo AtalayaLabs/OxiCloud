@@ -1434,7 +1434,11 @@
     "ops_banner_add_locale_label": "Idioma a añadir",
     "ops_banner_add_locale_confirm": "Añadir",
     "ops_banner_create": "Publicar mensaje",
-    "ops_banner_err_empty_body": "Al menos un idioma debe tener contenido."
+    "ops_banner_err_empty_body": "Al menos un idioma debe tener contenido.",
+    "notification_sink_missing_title": "Configure un canal de notificaciones",
+    "notification_sink_missing_body": "Los hallazgos de las tareas no tienen a dónde ir — nadie se entera cuando algo falla. Configure al menos un canal.",
+    "notification_sink_missing_howto": "Defina AMBOS OXICLOUD_JOBS_NOTIFY_EMAIL_TO (direcciones separadas por comas) Y OXICLOUD_SMTP_HOST, O defina OXICLOUD_WEBHOOK_URL — y reinicie.",
+    "storage_cache_recommended_body": "Se recomienda encarecidamente habilitar la caché local al usar un backend remoto (preferiblemente caché en SSD / NVMe)."
   },
   "profile": {
     "page_title": "Perfil",

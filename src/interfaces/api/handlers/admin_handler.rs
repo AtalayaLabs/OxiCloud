@@ -1635,6 +1635,13 @@ pub async fn get_dashboard_stats(
                 });
             remote && !state.core.config.storage.cache.enabled
         },
+        // No notification sink configured — see
+        // [`compute_notification_sink_missing`] for the rule.
+        notification_sink_missing: compute_notification_sink_missing(
+            &state.core.config.jobs_notify.email_to,
+            state.core.config.smtp.is_enabled(),
+            state.core.config.webhook.url.as_deref(),
+        ),
         // Live cache occupancy for the admin "Storage cache" card.
         // Both snapshots are point-in-time; moka runs maintenance
         // lazily, so the backend-cache side flushes pending tasks
@@ -4305,9 +4312,82 @@ pub async fn get_notify_info(
 // against the SMTP mock, which is a better test than a button an operator
 // has to think to press.
 
+/// `notification_sink_missing` rule for the dashboard DTO.
+///
+/// Returns `true` when both outbound paths are effectively
+/// unavailable:
+///
+/// * **Email path** — needs BOTH `OXICLOUD_JOBS_NOTIFY_EMAIL_TO`
+///   (non-empty recipients) AND SMTP configured
+///   (`OXICLOUD_SMTP_HOST`). Setting `JOBS_NOTIFY_EMAIL_TO` without
+///   SMTP leaves findings addressed to recipients but no transport
+///   to carry them, so the banner must still fire — treating that
+///   half-configured state as "sink exists" would silently drop
+///   every alert.
+/// * **Webhook path** — `OXICLOUD_WEBHOOK_URL` set.
+///
+/// Banner fires only when BOTH paths are unavailable. Either one
+/// configured silences it.
+///
+/// Lifted out of the inline DTO expression so the truth-table
+/// branches get covered by [`tests::notification_sink_missing_rule`]
+/// — the hurl suite pins only one combination (all-set / banner
+/// off) because hurl can't flip env vars on a running server.
+fn compute_notification_sink_missing(
+    email_to: &[String],
+    smtp_enabled: bool,
+    webhook_url: Option<&str>,
+) -> bool {
+    let email_path_available = !email_to.is_empty() && smtp_enabled;
+    let webhook_path_available = webhook_url.is_some();
+    !email_path_available && !webhook_path_available
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Truth table for the `notification_sink_missing` flag. The
+    /// banner must light up ONLY when both outbound paths are
+    /// effectively unavailable. Specifically:
+    ///   * `OXICLOUD_JOBS_NOTIFY_EMAIL_TO` without SMTP is NOT
+    ///     a usable email path — the common misconfig of
+    ///     "address set, SMTP forgotten" still fires the banner.
+    ///   * Either path fully configured silences it.
+    #[test]
+    fn notification_sink_missing_rule() {
+        let one_email = &["ops@example.com".to_string()][..];
+        let webhook = Some("https://hooks.example.com/x");
+
+        // Neither path configured → banner fires.
+        assert!(compute_notification_sink_missing(&[], false, None));
+
+        // Email path HALF-configured (recipients but no SMTP) is
+        // STILL "no sink" — mail would be addressed but never
+        // leave the server. Banner fires.
+        assert!(compute_notification_sink_missing(one_email, false, None));
+
+        // Email path HALF-configured the other way (SMTP up but
+        // nobody to mail) — also no sink.
+        assert!(compute_notification_sink_missing(&[], true, None));
+
+        // Email path FULLY configured → silenced.
+        assert!(!compute_notification_sink_missing(one_email, true, None));
+
+        // Webhook alone → silenced regardless of email state.
+        assert!(!compute_notification_sink_missing(&[], false, webhook));
+        assert!(!compute_notification_sink_missing(
+            one_email, false, webhook
+        ));
+        assert!(!compute_notification_sink_missing(&[], true, webhook));
+        assert!(!compute_notification_sink_missing(one_email, true, webhook));
+
+        // Multiple emails — any non-empty counts as "recipients
+        // present"; still needs SMTP to actually silence.
+        let two_emails = &["a@x".to_string(), "b@x".to_string()][..];
+        assert!(compute_notification_sink_missing(two_emails, false, None));
+        assert!(!compute_notification_sink_missing(two_emails, true, None));
+    }
 
     /// The job-trigger query must extract from any URL shape, including
     /// one with no query string at all.

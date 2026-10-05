@@ -1416,7 +1416,11 @@
     "ops_banner_add_locale_label": "要添加的语言",
     "ops_banner_add_locale_confirm": "添加",
     "ops_banner_create": "发布公告",
-    "ops_banner_err_empty_body": "至少一种语言必须填写内容。"
+    "ops_banner_err_empty_body": "至少一种语言必须填写内容。",
+    "notification_sink_missing_title": "配置通知接收端",
+    "notification_sink_missing_body": "任务故障发现无处发送 — 出错时没有人会收到通知。请至少配置一个接收端。",
+    "notification_sink_missing_howto": "同时设置 OXICLOUD_JOBS_NOTIFY_EMAIL_TO (以逗号分隔的地址) 与 OXICLOUD_SMTP_HOST,或设置 OXICLOUD_WEBHOOK_URL,然后重启。",
+    "storage_cache_recommended_body": "使用远程后端时,强烈建议启用本地缓存 (建议缓存到 SSD / NVMe)。"
   },
   "profile": {
     "page_title": "个人资料",

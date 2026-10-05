@@ -1434,7 +1434,11 @@
     "ops_banner_add_locale_label": "추가할 언어",
     "ops_banner_add_locale_confirm": "추가",
     "ops_banner_create": "공지 게시",
-    "ops_banner_err_empty_body": "최소 한 개 언어에 내용이 있어야 합니다."
+    "ops_banner_err_empty_body": "최소 한 개 언어에 내용이 있어야 합니다.",
+    "notification_sink_missing_title": "알림 수신처를 설정하세요",
+    "notification_sink_missing_body": "작업 오류 발견 사항을 보낼 곳이 없습니다 — 문제가 생겨도 아무도 알지 못합니다. 하나 이상 설정하세요.",
+    "notification_sink_missing_howto": "OXICLOUD_JOBS_NOTIFY_EMAIL_TO(쉼표로 구분된 주소)와 OXICLOUD_SMTP_HOST를 모두 설정하거나, OXICLOUD_WEBHOOK_URL을 설정한 뒤 재시작하세요.",
+    "storage_cache_recommended_body": "원격 백엔드를 사용할 때는 로컬 캐시 활성화를 강력히 권장합니다(SSD / NVMe에 캐시 권장)."
   },
   "profile": {
     "page_title": "프로필",

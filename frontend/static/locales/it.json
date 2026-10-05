@@ -1434,7 +1434,11 @@
     "ops_banner_add_locale_label": "Lingua da aggiungere",
     "ops_banner_add_locale_confirm": "Aggiungi",
     "ops_banner_create": "Pubblica avviso",
-    "ops_banner_err_empty_body": "Almeno una lingua deve avere contenuto."
+    "ops_banner_err_empty_body": "Almeno una lingua deve avere contenuto.",
+    "notification_sink_missing_title": "Configura una destinazione per le notifiche",
+    "notification_sink_missing_body": "Le anomalie rilevate dalle attività non hanno dove andare — nessuno viene avvisato quando qualcosa si rompe. Configura almeno una destinazione.",
+    "notification_sink_missing_howto": "Imposta SIA OXICLOUD_JOBS_NOTIFY_EMAIL_TO (indirizzi separati da virgole) SIA OXICLOUD_SMTP_HOST, OPPURE imposta OXICLOUD_WEBHOOK_URL — poi riavvia.",
+    "storage_cache_recommended_body": "Si consiglia vivamente di abilitare la cache locale quando si usa un backend remoto (cache su SSD / NVMe preferita)."
   },
   "profile": {
     "page_title": "Profilo",
