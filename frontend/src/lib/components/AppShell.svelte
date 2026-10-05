@@ -153,6 +153,17 @@
 				section: 'admin-notification'
 			},
 			{
+				// Runtime-state controls: backend write-lock,
+				// metadata re-extract backfills, future ops banners.
+				// Separated from /admin/dashboard (monitoring, read)
+				// so "what I'm doing to the server right now" has one
+				// home.
+				href: '/admin/maintenance',
+				label: t('admin.maintenance_tab', 'Maintenance'),
+				icon: 'cog',
+				section: 'admin-maintenance'
+			},
+			{
 				href: '/admin/plugins',
 				label: t('admin.plugins', 'Plugins'),
 				icon: 'layer-group',
