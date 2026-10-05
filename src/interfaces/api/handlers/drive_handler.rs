@@ -469,7 +469,7 @@ where
     params(("id" = Uuid, Path, description = "Drive UUID")),
     request_body = UpdateDrivePoliciesDto,
     responses(
-        (status = 200, description = "Policies merged"),
+        (status = 200, body = Object, description = "Policies merged"),
         (status = 404, description = "Drive not found OR caller is not OxiCloud admin"),
     ),
     security(("bearerAuth" = [])),
@@ -620,7 +620,7 @@ pub struct UpdateDriveQuotaDto {
     params(("id" = Uuid, Path, description = "Drive UUID")),
     request_body = UpdateDriveQuotaDto,
     responses(
-        (status = 200, description = "Quota updated"),
+        (status = 200, body = Object, description = "Quota updated"),
         (status = 400, description = "Personal drive — quota is envelope-managed via the owner user"),
         (status = 404, description = "Drive not found OR caller is not OxiCloud admin"),
     ),

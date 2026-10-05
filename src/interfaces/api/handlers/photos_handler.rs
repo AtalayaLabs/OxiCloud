@@ -27,7 +27,7 @@ pub struct PhotosQueryParams {
 /// dimensions (from EXIF/metadata), flattened into the same JSON shape so
 /// the gallery can lay tiles out at their true aspect ratio without a
 /// second per-file metadata round-trip.
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 struct PhotoDto {
     #[serde(flatten)]
     file: FileDto,
@@ -50,7 +50,7 @@ struct PhotoDto {
         ("limit" = Option<i64>, Query, description = "Max items to return (default 200, max 500)")
     ),
     responses(
-        (status = 200, description = "List of media files sorted by capture date"),
+        (status = 200, body = Vec<PhotoDto>, description = "List of media files sorted by capture date"),
         (status = 401, description = "Unauthorized"),
         (status = 500, description = "Internal server error")
     ),
@@ -182,7 +182,14 @@ pub struct GeoQueryParams {
         ("zoom" = Option<u8>, Query, description = "Map zoom level (0-20), controls cluster size")
     ),
     responses(
-        (status = 200, description = "Geotagged photos aggregated into map clusters"),
+        (
+            status = 200,
+            body = [crate::application::dtos::geo_dto::GeoCluster],
+            description = "Geotagged photos aggregated into map clusters. Flat array; each \
+                           entry is one aggregation cell carrying its centroid (lng/lat), the \
+                           number of photos in the cell, and one representative sample_file_id \
+                           usable as the cluster thumbnail."
+        ),
         (status = 400, description = "Invalid bounding box"),
         (status = 401, description = "Unauthorized")
     ),

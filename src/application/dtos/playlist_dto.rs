@@ -144,13 +144,13 @@ pub struct SharePlaylistDto {
     pub can_write: Option<bool>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct PlaylistShareInfoDto {
     pub user_id: String,
     pub can_write: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct AudioMetadataDto {
     pub file_id: String,
     pub title: Option<String>,

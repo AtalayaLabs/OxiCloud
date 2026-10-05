@@ -432,7 +432,7 @@ pub async fn list_members(
     params(("id" = Uuid, Path, description = "Group ID")),
     request_body = AddSubjectGroupMemberRequest,
     responses(
-        (status = 201, description = "Member added"),
+        (status = 201, body = Object, description = "Member added"),
         (status = 400, description = "Invalid request, cycle would be created, or depth limit exceeded"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required, or virtual group"),

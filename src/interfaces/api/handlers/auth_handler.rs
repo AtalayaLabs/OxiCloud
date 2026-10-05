@@ -105,7 +105,7 @@ pub fn setup_route() -> Router<Arc<AppState>> {
     path = "/api/auth/register",
     request_body = RegisterDto,
     responses(
-        (status = 200, description = "Uniform registration response (SMTP configured, anti-enumeration mode)"),
+        (status = 200, body = Object, description = "Uniform registration response (SMTP configured, anti-enumeration mode)"),
         (status = 201, description = "User registered successfully (SMTP not configured)", body = PublicUserDto),
         (status = 400, description = "Validation error (malformed request body)"),
         (status = 403, description = "Registration disabled (admin setting or OIDC-only mode)"),
@@ -682,7 +682,7 @@ pub struct UpdateUserImageDto {
     path = "/api/auth/change-password",
     request_body = ChangePasswordDto,
     responses(
-        (status = 200, description = "Password changed successfully"),
+        (status = 200, body = Object, description = "Password changed successfully"),
         (status = 400, description = "New password does not meet requirements"),
         (status = 401, description = "Not authenticated or current password incorrect"),
     ),
@@ -1018,7 +1018,7 @@ pub async fn update_user_image(
     request_body(content = inline(RefreshTokenDto),
         description = "Optional — omit when using the HttpOnly cookie"),
     responses(
-        (status = 200, description = "Logged out, auth cookies cleared"),
+        (status = 200, body = Object, description = "Logged out, auth cookies cleared"),
         (status = 401, description = "Not authenticated or refresh token missing"),
     ),
     security(("bearerAuth" = [])),
@@ -1096,7 +1096,7 @@ pub struct DpopBindDto {
     path = "/api/auth/dpop/bind",
     request_body = DpopBindDto,
     responses(
-        (status = 200, description = "Thumbprint bound"),
+        (status = 200, body = Object, description = "Thumbprint bound"),
         (status = 400, description = "Malformed thumbprint"),
         (status = 401, description = "Not authenticated"),
         (status = 409, description = "Session already bound"),
@@ -1160,7 +1160,7 @@ pub async fn dpop_bind(
         description = "Form-encoded body with a single `logout_token` field (the signed JWT from the IdP)",
     ),
     responses(
-        (status = 200, description = "Logout notification accepted (0 or more sessions revoked)"),
+        (status = 200, body = Object, description = "Logout notification accepted (0 or more sessions revoked)"),
         (status = 400, description = "logout_token missing, malformed, or failed validation"),
         (status = 503, description = "OIDC not configured on this deployment"),
     ),
@@ -1590,7 +1590,7 @@ pub async fn oidc_link_start(
     post,
     path = "/api/auth/oidc/unlink",
     responses(
-        (status = 200, description = "OIDC identity unlinked (or was already unlinked)"),
+        (status = 200, body = Object, description = "OIDC identity unlinked (or was already unlinked)"),
         (status = 401, description = "Not authenticated"),
         (status = 403, description = "Refused — user has no other credential and would be locked out"),
     ),
@@ -1925,7 +1925,7 @@ pub struct SendMagicLinkDto {
     path = "/api/auth/magic-link/send",
     request_body = SendMagicLinkDto,
     responses(
-        (status = 200, description = "Uniform 'if an account exists, a link will be sent' response"),
+        (status = 200, body = Object, description = "Uniform 'if an account exists, a link will be sent' response"),
         (status = 503, description = "Magic-link / SMTP is not configured on this server"),
     ),
     tag = "auth",

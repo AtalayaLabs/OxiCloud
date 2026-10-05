@@ -1730,8 +1730,8 @@ pub async fn create_file_by_hash(
         ("inline" = Option<bool>, Query, description = "Content-Disposition: inline"),
     ),
     responses(
-        (status = 200, description = "File content"),
-        (status = 206, description = "Partial content (Range request)"),
+        (status = 200, content_type = "application/octet-stream", description = "File content (Content-Type on the actual response reflects the file's own mime type)"),
+        (status = 206, content_type = "application/octet-stream", description = "Partial content (Range request) — same byte stream as the 200, scoped to the requested byte range. `Content-Type` on the actual response reflects the file's own mime type."),
         (status = 304, description = "Not modified"),
         (status = 404, description = "File not found"),
     ),
@@ -1759,7 +1759,7 @@ pub async fn download_file(
         ("size" = String, Path, description = "Thumbnail size: icon | preview | large"),
     ),
     responses(
-        (status = 200, description = "Thumbnail image (image/jpeg or image/webp)"),
+        (status = 200, content_type = "image/webp", description = "Thumbnail image (image/jpeg or image/webp)"),
         (status = 204, description = "No thumbnail available for this file type"),
         (status = 304, description = "Not modified"),
         (status = 404, description = "File not found"),
@@ -1813,7 +1813,7 @@ pub async fn get_thumbnail(
     ),
     request_body(content_type = "application/octet-stream", description = "Raw image bytes (max 512 KB)"),
     responses(
-        (status = 201, description = "Thumbnail stored"),
+        (status = 201, body = Object, description = "Thumbnail stored"),
         (status = 400, description = "Invalid image or size too large"),
         (status = 404, description = "File not found"),
     ),
@@ -1834,7 +1834,7 @@ pub async fn upload_thumbnail(
     path = "/api/files/{id}/metadata",
     params(("id" = String, Path, description = "File ID")),
     responses(
-        (status = 200, description = "File metadata (EXIF, dimensions, duration, etc.)"),
+        (status = 200, body = Object, description = "File metadata (EXIF, dimensions, duration, etc.)"),
         (status = 404, description = "File not found"),
     ),
     security(("bearerAuth" = [])),

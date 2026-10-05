@@ -247,7 +247,7 @@ fn user_to_contact(user: PublicUserDto) -> ContactDto {
     get,
     path = "/api/address-books",
     responses(
-        (status = 200, description = "List of address books"),
+        (status = 200, body = Vec<AddressBookResponse>, description = "List of address books"),
         (status = 500, description = "Internal server error"),
     ),
     security(("bearerAuth" = [])),
@@ -475,7 +475,7 @@ pub async fn delete_address_book(
         ("offset"  = Option<i64>, Query, description = "Pagination offset (omit for none; system book defaults to 0)"),
     ),
     responses(
-        (status = 200, description = "List of contacts"),
+        (status = 200, body = Vec<ContactDto>, description = "List of contacts"),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Address book not found"),
     ),
@@ -543,7 +543,7 @@ pub async fn list_contacts(
     path = "/api/address-books/{book_id}/contacts",
     params(("book_id" = String, Path, description = "Address book UUID")),
     responses(
-        (status = 201, description = "Contact created"),
+        (status = 201, body = ContactDto, description = "Contact created"),
         (status = 400, description = "Invalid input"),
         (status = 403, description = "Access denied or read-only book"),
         (status = 404, description = "Address book not found"),
@@ -599,7 +599,7 @@ pub async fn create_contact(
         ("contact_id" = String, Path, description = "Contact UUID"),
     ),
     responses(
-        (status = 200, description = "Contact details"),
+        (status = 200, body = ContactDto, description = "Contact details"),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Contact not found"),
     ),
@@ -670,7 +670,7 @@ pub async fn get_contact(
         ("contact_id" = String, Path, description = "Contact UUID"),
     ),
     responses(
-        (status = 200, description = "Contact updated"),
+        (status = 200, body = ContactDto, description = "Contact updated"),
         (status = 400, description = "Invalid input"),
         (status = 403, description = "Access denied or read-only book"),
         (status = 404, description = "Contact not found"),
@@ -814,7 +814,7 @@ pub async fn delete_contact(
     path = "/api/address-books/{book_id}/groups",
     params(("book_id" = String, Path, description = "Address book UUID or \"system\"")),
     responses(
-        (status = 200, description = "List of contact groups"),
+        (status = 200, body = Vec<ContactGroupDto>, description = "List of contact groups"),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Address book not found"),
     ),
@@ -848,7 +848,7 @@ pub async fn list_groups(
     path = "/api/address-books/{book_id}/groups",
     params(("book_id" = String, Path, description = "Address book UUID")),
     responses(
-        (status = 201, description = "Group created"),
+        (status = 201, body = ContactGroupDto, description = "Group created"),
         (status = 403, description = "Access denied or read-only book"),
         (status = 404, description = "Address book not found"),
     ),
@@ -887,7 +887,7 @@ pub async fn create_group(
         ("group_id" = String, Path, description = "Group UUID"),
     ),
     responses(
-        (status = 200, description = "Group details"),
+        (status = 200, body = ContactGroupDto, description = "Group details"),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Group not found"),
     ),
@@ -928,7 +928,7 @@ pub async fn get_group(
         ("group_id" = String, Path, description = "Group UUID"),
     ),
     responses(
-        (status = 200, description = "Group updated"),
+        (status = 200, body = ContactGroupDto, description = "Group updated"),
         (status = 403, description = "Access denied or read-only book"),
         (status = 404, description = "Group not found"),
     ),
@@ -1005,7 +1005,7 @@ pub async fn delete_group(
         ("group_id" = String, Path, description = "Group UUID"),
     ),
     responses(
-        (status = 200, description = "Contacts in the group"),
+        (status = 200, body = Vec<ContactDto>, description = "Contacts in the group"),
         (status = 403, description = "Access denied"),
         (status = 404, description = "Group not found"),
     ),

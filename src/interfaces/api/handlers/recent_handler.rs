@@ -32,7 +32,7 @@ use uuid::Uuid;
         ("item_id" = String, Path, description = "Item ID")
     ),
     responses(
-        (status = 200, description = "Access recorded"),
+        (status = 200, body = Object, description = "Access recorded"),
         (status = 400, description = "Invalid item type")
     ),
     security(("bearerAuth" = [])),
@@ -88,7 +88,7 @@ pub async fn record_item_access(
         ("item_id" = String, Path, description = "Item ID")
     ),
     responses(
-        (status = 200, description = "Item removed from recents"),
+        (status = 200, body = Object, description = "Item removed from recents"),
         (status = 404, description = "Item not in recents")
     ),
     security(("bearerAuth" = [])),
@@ -139,7 +139,7 @@ pub async fn remove_from_recent(
     delete,
     path = "/api/recent/clear",
     responses(
-        (status = 200, description = "Recent items cleared")
+        (status = 200, body = Object, description = "Recent items cleared")
     ),
     security(("bearerAuth" = [])),
     tag = "recent"
