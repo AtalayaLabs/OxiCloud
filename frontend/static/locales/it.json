@@ -217,7 +217,14 @@
     "add": "Aggiungi",
     "apply": "Applica",
     "clear": "Svuota",
-    "remove": "Rimuovi"
+    "remove": "Rimuovi",
+    "on": "Attivato",
+    "off": "Disattivato",
+    "refresh": "Aggiorna",
+    "new_document_text": "Nuovo documento di testo",
+    "new_document_spreadsheet": "Nuovo foglio di calcolo",
+    "new_document_presentation": "Nuova presentazione",
+    "new_text_file": "Nuovo file di testo"
   },
   "user_menu": {
     "appearance": "Aspetto",
@@ -333,7 +340,15 @@
     "policy_expiry_too_far": "Questa unità limita i link pubblici al {{date}}.",
     "add": "Aggiungi",
     "adding": "Aggiunta…",
-    "clear_selection": "Scegli un’altra persona"
+    "clear_selection": "Scegli un’altra persona",
+    "preview": "Anteprima",
+    "the_drive": "l'unità",
+    "none_direct": "Nessun link pubblico su questo elemento stesso.",
+    "inherited_links_title": "Raggiungibile anche tramite un link pubblico",
+    "inherited_link_on_drive_title": "Questo link si trova nell’unità «{{name}}»",
+    "inherited_link_manage": "Apri «{{name}}» per gestire o rimuovere questo link",
+    "inherited_from_folder_title": "Ereditato dalla cartella «{{name}}» — aprila per modificare",
+    "inherited_from_drive_title": "Ereditato dall’unità «{{name}}» — modificalo nelle impostazioni dell’unità"
   },
   "share_dialogTitle": "Link di condivisione",
   "share_linkLabel": "Link di condivisione:",
@@ -527,7 +542,15 @@
     "upload_failed": "Caricamento non riuscito",
     "uploading": "Caricamento…",
     "uploading_file": "Caricamento {{name}}...",
-    "uploading_n": "Caricamento di {{done}}/{{total}} file…"
+    "uploading_n": "Caricamento di {{done}}/{{total}} file…",
+    "upload_folder_not_ready": "La cartella si sta ancora caricando — riprova tra un attimo.",
+    "new_document": "Nuovo documento",
+    "new_document_prompt": "Nome del documento",
+    "new_text_file": "Nuovo file di testo",
+    "new_text_file_prompt": "Nome del file (es. notes.md)",
+    "new_text_file_hint": "Includi l'estensione nel nome del file (es. .md, .txt, .c, .py, .rs).",
+    "new_text_file_binary_ext_title": "Estensione non testuale",
+    "new_text_file_binary_ext_message": "«{{name}}» non sembra un file di testo. L'editor lo aprirà come testo — di solito questo danneggia i formati binari. Continuare comunque?"
   },
   "dialogs": {
     "rename_folder": "Rinomina cartella",
@@ -594,7 +617,12 @@
     "group_virtual_immutable": "Il gruppo «Internal» è gestito dal sistema e non può essere modificato.",
     "group_not_found": "Gruppo non trovato.",
     "group_name_taken": "Un gruppo con questo nome esiste già.",
-    "forbidden": "Impossibile caricare i file"
+    "forbidden": "Impossibile caricare i file",
+    "quota_exceeded": "Spazio insufficiente. Libera dello spazio o chiedi a un amministratore di aumentare la quota.",
+    "access_denied": "Non hai l'autorizzazione per farlo.",
+    "not_found": "Questo elemento non esiste più.",
+    "conflict": "Esiste già un elemento con quel nome.",
+    "transient_backend": "Lo storage è temporaneamente non disponibile. Riprova."
   },
   "breadcrumb": {
     "home": "Home",
@@ -604,7 +632,8 @@
       "shared_drive": "Unità condivisa: {{name}}",
       "direct_share": "Condiviso con te",
       "token": "Tramite link condiviso"
-    }
+    },
+    "share_folder": "Condividi cartella: {{name}}"
   },
   "trash": {
     "empty_trash": "Svuota il cestino",
@@ -1311,7 +1340,21 @@
       "title": "Attività in background",
       "hint": "Questa sezione riguarda le attività interne in background: attività periodiche e su richiesta. I controlli di coerenza sono sicuri da eseguire in qualsiasi momento — sono di sola lettura.",
       "none_registered": "Nessuna attività in background registrata.",
-      "purge_title": "Elimina cronologia attività precedenti"
+      "purge_title": "Elimina cronologia attività precedenti",
+      "run_repair": "Ripara i ref_counts",
+      "run_repair_hint": "Corregge eventuali ref_count fuori sincrono (blob + manifest) trovati dall’audit. Sicuro per i contenuti — cambiano solo i contatori, non i dati.",
+      "run_repair_confirm_title_scoped": "Eseguire {{name}} in modalità riparazione?",
+      "run_mutating_confirm_title": "Eseguire {{name}}?",
+      "run_mutating_confirm_body": "Questa attività modifica lo stato memorizzato quando viene eseguita.",
+      "mutates_never": "sola lettura",
+      "mutates_on_repair_only": "sola lettura tranne in riparazione",
+      "startup": "all'avvio",
+      "startup_repair": "all'avvio · riparazione",
+      "startup_tooltip": "Configurato in OXICLOUD_STARTUP_JOBS per essere eseguito a ogni avvio.",
+      "startup_repair_tooltip": "Configurato in OXICLOUD_STARTUP_JOBS per essere eseguito in modalità riparazione a ogni avvio.",
+      "run_variants_menu": "Menu varianti d'esecuzione",
+      "run_repair_confirm": "Ripara",
+      "triggered_ok_repair": "{{name}}: {{n}} contatore/i riparato/i"
     },
     "oidc": "OIDC / SSO",
     "oidc_discover": "Prova / scopri",
@@ -1346,7 +1389,11 @@
         "oidc": "SSO",
         "device": "Dispositivo",
         "unknown": "Sconosciuto"
-      }
+      },
+      "online": "online",
+      "idle": "inattivo",
+      "presence_online_tooltip": "Online — ultima volta {{ago}}",
+      "presence_idle_tooltip": "Inattivo — ultima volta {{ago}}"
     },
     "storage_backend_audit_triggered": "backend_consistency attivato per `{{name}}` — seguilo nella scheda Attività in background.",
     "drive_policies": {
@@ -1438,7 +1485,55 @@
     "notification_sink_missing_title": "Configura una destinazione per le notifiche",
     "notification_sink_missing_body": "Le anomalie rilevate dalle attività non hanno dove andare — nessuno viene avvisato quando qualcosa si rompe. Configura almeno una destinazione.",
     "notification_sink_missing_howto": "Imposta SIA OXICLOUD_JOBS_NOTIFY_EMAIL_TO (indirizzi separati da virgole) SIA OXICLOUD_SMTP_HOST, OPPURE imposta OXICLOUD_WEBHOOK_URL — poi riavvia.",
-    "storage_cache_recommended_body": "Si consiglia vivamente di abilitare la cache locale quando si usa un backend remoto (cache su SSD / NVMe preferita)."
+    "storage_cache_recommended_body": "Si consiglia vivamente di abilitare la cache locale quando si usa un backend remoto (cache su SSD / NVMe preferita).",
+    "oxicloud_version": "Versione OxiCloud",
+    "storage_cache_recommended_title": "Attiva la cache locale dei blob",
+    "storage_cache_recommended_howto": "Imposta OXICLOUD_STORAGE_CACHE_ENABLED=true per attivarlo.",
+    "section_cache": "Cache di archiviazione",
+    "cache_memory": "Memoria (moka)",
+    "cache_memory_files": "Memoria (moka) · Cache file",
+    "cache_memory_thumbnails": "Memoria (moka) · Cache miniature",
+    "cache_disk": "Disco (.blob-cache)",
+    "cache_disk_unified": "Cache su disco (File + Satelliti)",
+    "cache_disk_hint": "Un unico livello su disco condiviso dai chunk dei file sorgente e da tutti i blob derivati (miniature, transcodifiche). Un solo miss per blob freddo, qualunque sia la causa.",
+    "cache_disk_disabled_hint": "Si consiglia vivamente di abilitare la cache locale (preferibilmente su SSD / NVMe).",
+    "cache_disk_disabled_howto": "Imposta OXICLOUD_STORAGE_CACHE_ENABLED=true per attivarlo.",
+    "cache_chunks": "chunk",
+    "cache_files": "file",
+    "cache_thumbnails": "miniature",
+    "cache_disabled": "Disattivato",
+    "cache_not_applicable": "Non applicabile",
+    "cache_disk_local_hint": "Lo storage di backend è sul filesystem locale — una cache su disco davanti duplicherebbe solo byte sullo stesso disco. Nulla da attivare.",
+    "cache_disk_location": "Posizione",
+    "external_users": "Esterno",
+    "external_users_tooltip": "Account solo-grant — magic-link, solo OIDC, destinatari OCM",
+    "online_users": "Utenti online",
+    "online_users_tooltip": "Utenti distinti con una sessione attiva negli ultimi 5 minuti",
+    "online_sessions": "Sessioni online",
+    "online_sessions_tooltip": "Sessioni non revocate attive negli ultimi 5 minuti — gli utenti multi-dispositivo ne contribuiscono più di una",
+    "section_accounts": "Account utente",
+    "section_activity": "Attività in diretta",
+    "section_system": "Sistema",
+    "live": "in diretta",
+    "live_tooltip": "Riflette le sessioni attive negli ultimi 5 minuti",
+    "user_actions": "Azioni per {{name}}",
+    "make_admin": "Rendi amministratore",
+    "make_user": "Rendi utente normale",
+    "hint_not_own_role": "Non puoi cambiare il tuo ruolo",
+    "hint_not_own_account": "Non puoi disattivare il tuo account",
+    "hint_not_own_account_delete": "Non puoi eliminare il tuo account",
+    "transfer_ownership_title": "Trasferisci proprietà",
+    "confirm_transfer_ownership": "Trasferire la proprietà del server a {{name}}? Verrai declassato ad amministratore e solo questa persona potrà ritrasferirla.",
+    "owner_protected_title": "Il proprietario del server non può essere disattivato",
+    "owner_protected_delete_title": "Il proprietario del server non può essere eliminato",
+    "quota_usage": "Utilizzo quota",
+    "quota_usage_hint": "Dimensioni logiche dei file prima della deduplicazione. Include i file nel cestino fino all’eliminazione definitiva.",
+    "quota_personal": "Unità personali",
+    "backend_storage": "Storage di backend",
+    "backend_stored": "Memorizzato",
+    "backend_dedup_ratio": "Rapporto di deduplicazione",
+    "backend_referenced": "Riferito",
+    "backend_referenced_hint": "Somma dei riferimenti ai blob (dimensione × ref_count). Può superare il totale del disco perché miniature, asset derivati e blob in attesa di garbage collection mantengono ancora riferimenti."
   },
   "profile": {
     "page_title": "Profilo",
@@ -1980,5 +2075,19 @@
   },
   "sortdir": {
     "title": "Direzione dell'ordinamento"
+  },
+  "collab": {
+    "conflict": {
+      "title": "Questo file è stato modificato da un'altra persona",
+      "body": "Le tue modifiche non salvate non sono state salvate in {{name}}, quindi sono state conservate in un file separato:",
+      "save_failed": "Le tue modifiche non salvate NON sono state salvate automaticamente. Esistono solo in questo editor — copiale in un luogo sicuro prima di lasciare questa pagina.",
+      "deleted": "{{name}} eliminato.",
+      "open_copy": "Apri la mia copia salvata",
+      "delete_copy": "Elimina la mia copia salvata",
+      "open_current": "Scarta ciò che è sullo schermo e apri la versione aggiornata di {{name}}"
+    }
+  },
+  "sidebar": {
+    "oxicloud_version": "OxiCloud"
   }
 }

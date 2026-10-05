@@ -217,7 +217,14 @@
     "add": "जोड़ें",
     "apply": "लागू करें",
     "clear": "साफ़ करें",
-    "remove": "हटाएँ"
+    "remove": "हटाएँ",
+    "on": "चालू",
+    "off": "बंद",
+    "refresh": "ताज़ा करें",
+    "new_document_text": "नया पाठ दस्तावेज़",
+    "new_document_spreadsheet": "नई स्प्रेडशीट",
+    "new_document_presentation": "नई प्रस्तुति",
+    "new_text_file": "नई पाठ फ़ाइल"
   },
   "user_menu": {
     "appearance": "दिखावट",
@@ -333,7 +340,15 @@
     "policy_expiry_too_far": "यह ड्राइव सार्वजनिक लिंक को {{date}} तक सीमित करती है।",
     "add": "जोड़ें",
     "adding": "जोड़ा जा रहा है…",
-    "clear_selection": "किसी और को चुनें"
+    "clear_selection": "किसी और को चुनें",
+    "preview": "पूर्वावलोकन",
+    "the_drive": "यह ड्राइव",
+    "none_direct": "इस आइटम पर कोई सीधा सार्वजनिक लिंक नहीं है।",
+    "inherited_links_title": "सार्वजनिक लिंक के माध्यम से भी पहुँचा जा सकता है",
+    "inherited_link_on_drive_title": "यह लिंक ड्राइव \"{{name}}\" पर है",
+    "inherited_link_manage": "इस लिंक को प्रबंधित या हटाने के लिए \"{{name}}\" खोलें",
+    "inherited_from_folder_title": "फ़ोल्डर \"{{name}}\" से विरासत में प्राप्त — बदलने के लिए उसे खोलें",
+    "inherited_from_drive_title": "ड्राइव \"{{name}}\" से विरासत में प्राप्त — ड्राइव सेटिंग में बदलें"
   },
   "share_dialogTitle": "शेयर लिंक",
   "share_linkLabel": "शेयर लिंक:",
@@ -527,7 +542,15 @@
     "upload_failed": "अपलोड विफल रहा",
     "uploading": "अपलोड हो रहा है...",
     "uploading_file": "अपलोड हो रहा है {{name}}…",
-    "uploading_n": "{{done}}/{{total}} फ़ाइलें अपलोड हो रही हैं…"
+    "uploading_n": "{{done}}/{{total}} फ़ाइलें अपलोड हो रही हैं…",
+    "upload_folder_not_ready": "फ़ोल्डर अभी भी लोड हो रहा है — कृपया थोड़ी देर में फिर कोशिश करें।",
+    "new_document": "नया दस्तावेज़",
+    "new_document_prompt": "दस्तावेज़ का नाम",
+    "new_text_file": "नई पाठ फ़ाइल",
+    "new_text_file_prompt": "फ़ाइल का नाम (उदा. notes.md)",
+    "new_text_file_hint": "फ़ाइल नाम में एक्सटेंशन शामिल करें (उदा. .md, .txt, .c, .py, .rs)।",
+    "new_text_file_binary_ext_title": "गैर-पाठ एक्सटेंशन",
+    "new_text_file_binary_ext_message": "\"{{name}}\" एक पाठ फ़ाइल नहीं लगती। संपादक इसे पाठ के रूप में खोलेगा — यह आमतौर पर बाइनरी फ़ॉर्मेट को खराब कर देता है। फिर भी जारी रखें?"
   },
   "dialogs": {
     "rename_folder": "फ़ोल्डर का नाम बदलें",
@@ -594,7 +617,12 @@
     "group_virtual_immutable": "«Internal» समूह सिस्टम द्वारा प्रबंधित है और इसे संशोधित नहीं किया जा सकता।",
     "group_not_found": "समूह नहीं मिला।",
     "group_name_taken": "इस नाम का एक समूह पहले से मौजूद है।",
-    "forbidden": "फ़ाइलें लोड नहीं हो सकीं"
+    "forbidden": "फ़ाइलें लोड नहीं हो सकीं",
+    "quota_exceeded": "पर्याप्त स्थान नहीं है। कुछ स्थान खाली करें या व्यवस्थापक से कोटा बढ़ाने को कहें।",
+    "access_denied": "आपके पास ऐसा करने की अनुमति नहीं है।",
+    "not_found": "वह आइटम अब मौजूद नहीं है।",
+    "conflict": "उस नाम का आइटम पहले से मौजूद है।",
+    "transient_backend": "स्टोरेज अस्थायी रूप से अनुपलब्ध है। पुनः प्रयास करें।"
   },
   "breadcrumb": {
     "home": "होम",
@@ -604,7 +632,8 @@
       "shared_drive": "साझा ड्राइव: {{name}}",
       "direct_share": "आपके साथ साझा किया गया",
       "token": "साझा लिंक के माध्यम से"
-    }
+    },
+    "share_folder": "फ़ोल्डर साझा करें: {{name}}"
   },
   "trash": {
     "empty_trash": "रद्दी खाली करें",
@@ -1311,7 +1340,21 @@
       "title": "बैकग्राउंड टास्क",
       "hint": "यह अनुभाग आंतरिक बैकग्राउंड टास्क से संबंधित है: आवधिक + ऑन-डिमांड टास्क। संगति जाँच किसी भी समय सुरक्षित रूप से चलाई जा सकती हैं — वे केवल-पढ़ने के लिए हैं।",
       "none_registered": "कोई बैकग्राउंड टास्क पंजीकृत नहीं है।",
-      "purge_title": "पुराने टास्क इतिहास को साफ़ करें"
+      "purge_title": "पुराने टास्क इतिहास को साफ़ करें",
+      "run_repair": "ref_counts की मरम्मत",
+      "run_repair_hint": "ऑडिट से मिले किसी भी असंगत ref_count (blobs + manifests) को ठीक करता है। कंटेंट-सुरक्षित — केवल काउंटर बदलते हैं, डेटा नहीं।",
+      "run_repair_confirm_title_scoped": "क्या {{name}} को रिपेयर मोड में चलाएँ?",
+      "run_mutating_confirm_title": "क्या {{name}} चलाएँ?",
+      "run_mutating_confirm_body": "यह कार्य चलाने पर संग्रहीत स्थिति को बदलता है।",
+      "mutates_never": "केवल पढ़ने योग्य",
+      "mutates_on_repair_only": "मरम्मत को छोड़कर केवल पढ़ने योग्य",
+      "startup": "बूट पर",
+      "startup_repair": "बूट पर · मरम्मत",
+      "startup_tooltip": "हर बूट पर चलाने के लिए OXICLOUD_STARTUP_JOBS में कॉन्फ़िगर किया गया है।",
+      "startup_repair_tooltip": "हर बूट पर रिपेयर मोड में चलाने के लिए OXICLOUD_STARTUP_JOBS में कॉन्फ़िगर किया गया है।",
+      "run_variants_menu": "रन विकल्प मेनू",
+      "run_repair_confirm": "मरम्मत करें",
+      "triggered_ok_repair": "{{name}}: {{n}} काउंटर मरम्मत किए गए"
     },
     "oidc": "OIDC / SSO",
     "oidc_discover": "परीक्षण / खोज",
@@ -1346,7 +1389,11 @@
         "oidc": "SSO",
         "device": "डिवाइस",
         "unknown": "अज्ञात"
-      }
+      },
+      "online": "ऑनलाइन",
+      "idle": "निष्क्रिय",
+      "presence_online_tooltip": "ऑनलाइन — अंतिम बार {{ago}}",
+      "presence_idle_tooltip": "निष्क्रिय — अंतिम बार {{ago}}"
     },
     "storage_backend_audit_triggered": "backend_consistency `{{name}}` के लिए ट्रिगर हुआ — इसे बैकग्राउंड टास्क टैब पर देखें।",
     "drive_policies": {
@@ -1438,7 +1485,55 @@
     "notification_sink_missing_title": "सूचना गंतव्य कॉन्फ़िगर करें",
     "notification_sink_missing_body": "कार्य-विफलता निष्कर्षों के पास भेजने के लिए कोई जगह नहीं है — कुछ टूटने पर किसी को सूचित नहीं किया जाता। कम से कम एक गंतव्य कॉन्फ़िगर करें।",
     "notification_sink_missing_howto": "OXICLOUD_JOBS_NOTIFY_EMAIL_TO (अल्पविराम से अलग किए पते) और OXICLOUD_SMTP_HOST दोनों सेट करें, या OXICLOUD_WEBHOOK_URL सेट करें — फिर पुनः प्रारंभ करें।",
-    "storage_cache_recommended_body": "दूरस्थ बैकएंड का उपयोग करते समय स्थानीय कैश सक्षम करने की दृढ़ता से अनुशंसा की जाती है (SSD / NVMe पर कैश को प्राथमिकता दें)।"
+    "storage_cache_recommended_body": "दूरस्थ बैकएंड का उपयोग करते समय स्थानीय कैश सक्षम करने की दृढ़ता से अनुशंसा की जाती है (SSD / NVMe पर कैश को प्राथमिकता दें)।",
+    "oxicloud_version": "OxiCloud संस्करण",
+    "storage_cache_recommended_title": "स्थानीय blob कैश सक्षम करें",
+    "storage_cache_recommended_howto": "सक्षम करने के लिए OXICLOUD_STORAGE_CACHE_ENABLED=true सेट करें।",
+    "section_cache": "स्टोरेज कैश",
+    "cache_memory": "मेमोरी (moka)",
+    "cache_memory_files": "मेमोरी (moka) · फ़ाइल कैश",
+    "cache_memory_thumbnails": "मेमोरी (moka) · थंबनेल कैश",
+    "cache_disk": "डिस्क (.blob-cache)",
+    "cache_disk_unified": "डिस्क कैश (फ़ाइलें + सैटेलाइट)",
+    "cache_disk_hint": "एकल ऑन-डिस्क स्तर जो स्रोत फ़ाइल चंक और सभी व्युत्पन्न blob (थंबनेल, ट्रांसकोड) साझा करते हैं। कोल्ड blob के लिए ट्रिगर कोई भी हो, एक ही miss होता है।",
+    "cache_disk_disabled_hint": "स्थानीय कैश सक्षम करने की दृढ़ता से अनुशंसा की जाती है (SSD / NVMe स्थान को प्राथमिकता दें)।",
+    "cache_disk_disabled_howto": "सक्षम करने के लिए OXICLOUD_STORAGE_CACHE_ENABLED=true सेट करें।",
+    "cache_chunks": "चंक",
+    "cache_files": "फ़ाइलें",
+    "cache_thumbnails": "थंबनेल",
+    "cache_disabled": "अक्षम",
+    "cache_not_applicable": "लागू नहीं",
+    "cache_disk_local_hint": "बैकएंड स्टोरेज स्थानीय फ़ाइल सिस्टम पर है — उसके आगे डिस्क कैश रखने से केवल उसी डिस्क पर बाइट्स का दोहराव होगा। कुछ भी सक्षम करने की आवश्यकता नहीं।",
+    "cache_disk_location": "स्थान",
+    "external_users": "बाहरी",
+    "external_users_tooltip": "केवल-ग्रांट खाते — magic-link, केवल-OIDC, OCM प्राप्तकर्ता",
+    "online_users": "ऑनलाइन उपयोगकर्ता",
+    "online_users_tooltip": "पिछले 5 मिनट में सक्रिय सत्र वाले विशिष्ट उपयोगकर्ता",
+    "online_sessions": "ऑनलाइन सत्र",
+    "online_sessions_tooltip": "पिछले 5 मिनट में सक्रिय, निरस्त न किए गए सत्र — मल्टी-डिवाइस उपयोगकर्ता एक से अधिक योगदान देते हैं",
+    "section_accounts": "उपयोगकर्ता खाते",
+    "section_activity": "लाइव गतिविधि",
+    "section_system": "सिस्टम",
+    "live": "लाइव",
+    "live_tooltip": "पिछले 5 मिनट में सक्रिय सत्रों को दर्शाता है",
+    "user_actions": "{{name}} के लिए क्रियाएँ",
+    "make_admin": "व्यवस्थापक बनाएँ",
+    "make_user": "सामान्य उपयोगकर्ता बनाएँ",
+    "hint_not_own_role": "आप अपनी स्वयं की भूमिका नहीं बदल सकते",
+    "hint_not_own_account": "आप अपना स्वयं का खाता निष्क्रिय नहीं कर सकते",
+    "hint_not_own_account_delete": "आप अपना स्वयं का खाता हटा नहीं सकते",
+    "transfer_ownership_title": "स्वामित्व हस्तांतरण",
+    "confirm_transfer_ownership": "{{name}} को सर्वर स्वामित्व हस्तांतरित करें? आपको व्यवस्थापक पर अवनत कर दिया जाएगा, और केवल वे ही इसे वापस हस्तांतरित कर सकेंगे।",
+    "owner_protected_title": "सर्वर स्वामी को निष्क्रिय नहीं किया जा सकता",
+    "owner_protected_delete_title": "सर्वर स्वामी को हटाया नहीं जा सकता",
+    "quota_usage": "कोटा उपयोग",
+    "quota_usage_hint": "डिडुप्लिकेशन से पहले लॉजिकल फ़ाइल आकार। स्थायी विलोपन तक ट्रैश में मौजूद फ़ाइलों को शामिल करता है।",
+    "quota_personal": "व्यक्तिगत ड्राइव",
+    "backend_storage": "बैकएंड स्टोरेज",
+    "backend_stored": "संग्रहीत",
+    "backend_dedup_ratio": "डिडुप्लिकेशन अनुपात",
+    "backend_referenced": "संदर्भित",
+    "backend_referenced_hint": "blob संदर्भों का योग (आकार × ref_count)। डिस्क कुल से अधिक हो सकता है क्योंकि थंबनेल, व्युत्पन्न एसेट, और गार्बेज-कलेक्शन के लंबित blob अभी भी संदर्भ रखते हैं।"
   },
   "profile": {
     "page_title": "प्रोफ़ाइल",
@@ -1980,5 +2075,19 @@
   },
   "sortdir": {
     "title": "दिशा क्रमबद्ध करें"
+  },
+  "collab": {
+    "conflict": {
+      "title": "यह फ़ाइल किसी और ने बदल दी है",
+      "body": "आपके असहेजे गए परिवर्तन {{name}} में सहेजे नहीं जा सके, इसलिए उन्हें एक अलग फ़ाइल में रखा गया है:",
+      "save_failed": "आपके असहेजे गए परिवर्तन स्वचालित रूप से सहेजे नहीं जा सके। वे केवल इस संपादक में मौजूद हैं — इस पृष्ठ को छोड़ने से पहले उन्हें किसी सुरक्षित स्थान पर कॉपी करें।",
+      "deleted": "{{name}} हटाया गया।",
+      "open_copy": "मेरी सहेजी गई प्रतिलिपि खोलें",
+      "delete_copy": "मेरी सहेजी गई प्रतिलिपि हटाएँ",
+      "open_current": "स्क्रीन पर जो है उसे छोड़ें और अपडेट किया गया {{name}} खोलें"
+    }
+  },
+  "sidebar": {
+    "oxicloud_version": "OxiCloud"
   }
 }

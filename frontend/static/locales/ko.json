@@ -217,7 +217,14 @@
     "add": "추가",
     "apply": "적용",
     "clear": "지우기",
-    "remove": "제거"
+    "remove": "제거",
+    "on": "켜짐",
+    "off": "꺼짐",
+    "refresh": "새로고침",
+    "new_document_text": "새 텍스트 문서",
+    "new_document_spreadsheet": "새 스프레드시트",
+    "new_document_presentation": "새 프레젠테이션",
+    "new_text_file": "새 텍스트 파일"
   },
   "user_menu": {
     "appearance": "외관",
@@ -333,7 +340,15 @@
     "policy_expiry_too_far": "이 드라이브의 공유 링크 한도는 {{date}}입니다.",
     "add": "추가",
     "adding": "추가 중…",
-    "clear_selection": "다른 사람 선택"
+    "clear_selection": "다른 사람 선택",
+    "preview": "미리보기",
+    "the_drive": "드라이브",
+    "none_direct": "이 항목 자체에는 공개 링크가 없습니다.",
+    "inherited_links_title": "공개 링크로도 접근 가능",
+    "inherited_link_on_drive_title": "이 링크는 \"{{name}}\" 드라이브에 있습니다",
+    "inherited_link_manage": "\"{{name}}\"을(를) 열어 이 링크를 관리하거나 삭제하세요",
+    "inherited_from_folder_title": "폴더 \"{{name}}\"에서 상속됨 — 변경하려면 해당 폴더를 여세요",
+    "inherited_from_drive_title": "드라이브 \"{{name}}\"에서 상속됨 — 드라이브 설정에서 변경하세요"
   },
   "share_dialogTitle": "공유 링크",
   "share_linkLabel": "공유 링크:",
@@ -527,7 +542,15 @@
     "rename_dotfile_hidden": "\"{{name}}\"(으)로 이름이 변경되었습니다 — 이제 설정에 따라 숨겨졌습니다.",
     "new_folder_dotfile_hidden": "폴더 \"{{name}}\"을(를) 생성했습니다 — 설정에 따라 숨겨졌습니다.",
     "dotfiles_hidden_toast": "숨겨진 파일 숨김",
-    "dotfiles_shown_toast": "숨겨진 파일 표시"
+    "dotfiles_shown_toast": "숨겨진 파일 표시",
+    "upload_folder_not_ready": "폴더가 아직 로드 중입니다 — 잠시 후 다시 시도하세요.",
+    "new_document": "새 문서",
+    "new_document_prompt": "문서 이름",
+    "new_text_file": "새 텍스트 파일",
+    "new_text_file_prompt": "파일 이름 (예: notes.md)",
+    "new_text_file_hint": "파일 이름에 확장자를 포함하세요 (예: .md, .txt, .c, .py, .rs).",
+    "new_text_file_binary_ext_title": "비텍스트 확장자",
+    "new_text_file_binary_ext_message": "\"{{name}}\"은(는) 텍스트 파일이 아닌 것 같습니다. 편집기가 텍스트로 열며 — 바이너리 형식은 보통 이렇게 하면 망가집니다. 계속하시겠습니까?"
   },
   "dialogs": {
     "rename_folder": "폴더 이름 변경",
@@ -594,7 +617,12 @@
     "group_virtual_immutable": "«Internal» 그룹은 시스템이 관리하며 수정할 수 없습니다.",
     "group_not_found": "그룹을 찾을 수 없습니다.",
     "group_name_taken": "이 이름의 그룹이 이미 존재합니다.",
-    "forbidden": "파일을 불러올 수 없습니다"
+    "forbidden": "파일을 불러올 수 없습니다",
+    "quota_exceeded": "공간이 부족합니다. 공간을 확보하거나 관리자에게 할당량 증설을 요청하세요.",
+    "access_denied": "해당 작업을 수행할 권한이 없습니다.",
+    "not_found": "해당 항목이 더 이상 존재하지 않습니다.",
+    "conflict": "같은 이름의 항목이 이미 있습니다.",
+    "transient_backend": "스토리지를 일시적으로 사용할 수 없습니다. 다시 시도하세요."
   },
   "breadcrumb": {
     "home": "홈",
@@ -604,7 +632,8 @@
       "shared_drive": "공유 드라이브: {{name}}",
       "direct_share": "내게 공유됨",
       "token": "공유 링크로"
-    }
+    },
+    "share_folder": "폴더 공유: {{name}}"
   },
   "trash": {
     "empty_trash": "휴지통 비우기",
@@ -1028,7 +1057,11 @@
         "oidc": "SSO",
         "device": "장치",
         "unknown": "알 수 없음"
-      }
+      },
+      "online": "온라인",
+      "idle": "유휴",
+      "presence_online_tooltip": "온라인 — 마지막 활동 {{ago}}",
+      "presence_idle_tooltip": "유휴 — 마지막 활동 {{ago}}"
     },
     "smtp_fail": "전송 실패.",
     "smtp_send": "보내기",
@@ -1346,7 +1379,21 @@
       "title": "백그라운드 작업",
       "hint": "이 섹션은 내부 백그라운드 작업(주기적 + 온디맨드)과 관련이 있습니다. 일관성 검사는 언제든지 안전하게 실행할 수 있습니다 — 읽기 전용입니다.",
       "none_registered": "등록된 백그라운드 작업이 없습니다.",
-      "purge_title": "이전 작업 기록 삭제"
+      "purge_title": "이전 작업 기록 삭제",
+      "run_repair": "ref_counts 복구",
+      "run_repair_hint": "감사가 발견한 어긋난 ref_count(blob + manifest)를 보정합니다. 콘텐츠는 안전 — 카운터만 변경되고 데이터는 변경되지 않습니다.",
+      "run_repair_confirm_title_scoped": "{{name}}을(를) 복구 모드로 실행하시겠습니까?",
+      "run_mutating_confirm_title": "{{name}}을(를) 실행하시겠습니까?",
+      "run_mutating_confirm_body": "이 작업은 실행 중 저장된 상태를 변경합니다.",
+      "mutates_never": "읽기 전용",
+      "mutates_on_repair_only": "복구할 때만 변경",
+      "startup": "부팅 시",
+      "startup_repair": "부팅 시 · 복구",
+      "startup_tooltip": "매 부팅마다 실행되도록 OXICLOUD_STARTUP_JOBS에 구성되어 있습니다.",
+      "startup_repair_tooltip": "매 부팅마다 복구 모드로 실행되도록 OXICLOUD_STARTUP_JOBS에 구성되어 있습니다.",
+      "run_variants_menu": "실행 옵션 메뉴",
+      "run_repair_confirm": "복구",
+      "triggered_ok_repair": "{{name}}: {{n}}개 카운터 복구"
     },
     "storage_backend_audit_triggered": "backend_consistency이(가) `{{name}}`에 대해 트리거되었습니다 — 백그라운드 작업 탭에서 확인하세요.",
     "drive_policies": {
@@ -1438,7 +1485,55 @@
     "notification_sink_missing_title": "알림 수신처를 설정하세요",
     "notification_sink_missing_body": "작업 오류 발견 사항을 보낼 곳이 없습니다 — 문제가 생겨도 아무도 알지 못합니다. 하나 이상 설정하세요.",
     "notification_sink_missing_howto": "OXICLOUD_JOBS_NOTIFY_EMAIL_TO(쉼표로 구분된 주소)와 OXICLOUD_SMTP_HOST를 모두 설정하거나, OXICLOUD_WEBHOOK_URL을 설정한 뒤 재시작하세요.",
-    "storage_cache_recommended_body": "원격 백엔드를 사용할 때는 로컬 캐시 활성화를 강력히 권장합니다(SSD / NVMe에 캐시 권장)."
+    "storage_cache_recommended_body": "원격 백엔드를 사용할 때는 로컬 캐시 활성화를 강력히 권장합니다(SSD / NVMe에 캐시 권장).",
+    "oxicloud_version": "OxiCloud 버전",
+    "storage_cache_recommended_title": "로컬 blob 캐시 활성화",
+    "storage_cache_recommended_howto": "활성화하려면 OXICLOUD_STORAGE_CACHE_ENABLED=true로 설정하세요.",
+    "section_cache": "스토리지 캐시",
+    "cache_memory": "메모리 (moka)",
+    "cache_memory_files": "메모리 (moka) · 파일 캐시",
+    "cache_memory_thumbnails": "메모리 (moka) · 썸네일 캐시",
+    "cache_disk": "디스크 (.blob-cache)",
+    "cache_disk_unified": "디스크 캐시 (파일 + 위성)",
+    "cache_disk_hint": "소스 파일 청크와 모든 파생 blob(썸네일, 트랜스코드)이 공유하는 단일 디스크 계층. 콜드 blob 하나당 트리거와 무관하게 1회만 미스가 발생합니다.",
+    "cache_disk_disabled_hint": "로컬 캐시 활성화를 강력히 권장합니다 (SSD / NVMe 위치 권장).",
+    "cache_disk_disabled_howto": "활성화하려면 OXICLOUD_STORAGE_CACHE_ENABLED=true로 설정하세요.",
+    "cache_chunks": "청크",
+    "cache_files": "파일",
+    "cache_thumbnails": "썸네일",
+    "cache_disabled": "비활성화됨",
+    "cache_not_applicable": "해당 없음",
+    "cache_disk_local_hint": "백엔드 저장소는 로컬 파일 시스템에 있습니다 — 그 앞단에 디스크 캐시를 두면 같은 디스크에서 바이트가 중복될 뿐입니다. 활성화할 것 없음.",
+    "cache_disk_location": "위치",
+    "external_users": "외부",
+    "external_users_tooltip": "grant 전용 계정 — magic-link, OIDC 전용, OCM 수신자",
+    "online_users": "온라인 사용자",
+    "online_users_tooltip": "최근 5분 이내 활성 세션이 있는 고유 사용자",
+    "online_sessions": "온라인 세션",
+    "online_sessions_tooltip": "최근 5분 이내 활성이며 취소되지 않은 세션 — 멀티 디바이스 사용자는 하나 이상 기여합니다",
+    "section_accounts": "사용자 계정",
+    "section_activity": "실시간 활동",
+    "section_system": "시스템",
+    "live": "실시간",
+    "live_tooltip": "최근 5분 이내 활성 세션을 반영합니다",
+    "user_actions": "{{name}}의 작업",
+    "make_admin": "관리자로 지정",
+    "make_user": "일반 사용자로 지정",
+    "hint_not_own_role": "본인 역할은 변경할 수 없습니다",
+    "hint_not_own_account": "본인 계정을 비활성화할 수 없습니다",
+    "hint_not_own_account_delete": "본인 계정을 삭제할 수 없습니다",
+    "transfer_ownership_title": "소유권 이전",
+    "confirm_transfer_ownership": "서버 소유권을 {{name}}에게 이전하시겠습니까? 귀하는 관리자로 강등되며, 그 사람만이 다시 이전할 수 있습니다.",
+    "owner_protected_title": "서버 소유자는 비활성화할 수 없습니다",
+    "owner_protected_delete_title": "서버 소유자는 삭제할 수 없습니다",
+    "quota_usage": "할당량 사용",
+    "quota_usage_hint": "중복 제거 이전의 논리적 파일 크기. 영구 삭제 전까지 휴지통의 파일을 포함합니다.",
+    "quota_personal": "개인 드라이브",
+    "backend_storage": "백엔드 스토리지",
+    "backend_stored": "저장됨",
+    "backend_dedup_ratio": "중복 제거 비율",
+    "backend_referenced": "참조됨",
+    "backend_referenced_hint": "blob 참조의 합계(크기 × ref_count). 썸네일, 파생 자산, GC 대기 중인 blob이 여전히 참조를 유지하므로 디스크 총용량을 초과할 수 있습니다."
   },
   "profile": {
     "page_title": "프로필",
@@ -1980,5 +2075,19 @@
     "location": "위치",
     "wrong_drop_zone_msg": "업로드는 파일 섹션에서만 작동합니다. 파일 섹션을 열고 거기에 놓아 주세요.",
     "wrong_drop_zone_action": "파일로 이동"
+  },
+  "collab": {
+    "conflict": {
+      "title": "이 파일은 다른 사람이 수정했습니다",
+      "body": "저장되지 않은 변경 사항을 {{name}}에 저장할 수 없어 별도의 파일로 보관했습니다:",
+      "save_failed": "저장되지 않은 변경 사항을 자동으로 저장할 수 없었습니다. 이 편집기 안에만 존재합니다 — 이 페이지를 떠나기 전에 안전한 곳에 복사하세요.",
+      "deleted": "{{name}}을(를) 삭제했습니다.",
+      "open_copy": "저장한 복사본 열기",
+      "delete_copy": "저장한 복사본 삭제",
+      "open_current": "화면의 내용을 버리고 업데이트된 {{name}} 열기"
+    }
+  },
+  "sidebar": {
+    "oxicloud_version": "OxiCloud"
   }
 }

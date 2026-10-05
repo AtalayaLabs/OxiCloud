@@ -217,7 +217,14 @@
     "add": "追加",
     "apply": "適用",
     "clear": "クリア",
-    "remove": "削除"
+    "remove": "削除",
+    "on": "オン",
+    "off": "オフ",
+    "refresh": "更新",
+    "new_document_text": "新規テキスト文書",
+    "new_document_spreadsheet": "新規スプレッドシート",
+    "new_document_presentation": "新規プレゼンテーション",
+    "new_text_file": "新規テキストファイル"
   },
   "user_menu": {
     "appearance": "外観",
@@ -333,7 +340,15 @@
     "policy_expiry_too_far": "このドライブの公開リンクの上限は {{date}} です。",
     "add": "追加",
     "adding": "追加中…",
-    "clear_selection": "別の相手を選ぶ"
+    "clear_selection": "別の相手を選ぶ",
+    "preview": "プレビュー",
+    "the_drive": "ドライブ",
+    "none_direct": "このアイテム自体には公開リンクはありません。",
+    "inherited_links_title": "公開リンク経由でもアクセス可能",
+    "inherited_link_on_drive_title": "このリンクはドライブ「{{name}}」にあります",
+    "inherited_link_manage": "「{{name}}」を開いてこのリンクを管理または削除します",
+    "inherited_from_folder_title": "フォルダ「{{name}}」から継承 — 変更するにはそこを開いてください",
+    "inherited_from_drive_title": "ドライブ「{{name}}」から継承 — ドライブ設定で変更してください"
   },
   "share_dialogTitle": "共有リンク",
   "share_linkLabel": "共有リンク:",
@@ -527,7 +542,15 @@
     "upload_failed": "アップロードに失敗しました",
     "uploading": "アップロード中…",
     "uploading_file": "{{name}} をアップロード中…",
-    "uploading_n": "{{done}}/{{total}} ファイルをアップロード中…"
+    "uploading_n": "{{done}}/{{total}} ファイルをアップロード中…",
+    "upload_folder_not_ready": "フォルダはまだ読み込み中です — 少し待ってから再度お試しください。",
+    "new_document": "新規ドキュメント",
+    "new_document_prompt": "ドキュメント名",
+    "new_text_file": "新規テキストファイル",
+    "new_text_file_prompt": "ファイル名 (例: notes.md)",
+    "new_text_file_hint": "ファイル名に拡張子を含めてください (例: .md, .txt, .c, .py, .rs)。",
+    "new_text_file_binary_ext_title": "非テキスト拡張子",
+    "new_text_file_binary_ext_message": "「{{name}}」はテキストファイルではないようです。エディターはテキストとして開きます — 通常、バイナリ形式はこれで壊れます。それでも続行しますか?"
   },
   "dialogs": {
     "rename_folder": "フォルダ名を変更",
@@ -594,7 +617,12 @@
     "group_virtual_immutable": "「Internal」グループはシステム管理であり、変更できません。",
     "group_not_found": "グループが見つかりません。",
     "group_name_taken": "この名前のグループはすでに存在します。",
-    "forbidden": "ファイルをロードできませんでした"
+    "forbidden": "ファイルをロードできませんでした",
+    "quota_exceeded": "容量が不足しています。空き容量を増やすか、管理者に上限引き上げを依頼してください。",
+    "access_denied": "その操作を行う権限がありません。",
+    "not_found": "このアイテムは存在しません。",
+    "conflict": "その名前のアイテムは既に存在します。",
+    "transient_backend": "ストレージが一時的に利用できません。再試行してください。"
   },
   "breadcrumb": {
     "home": "ホーム",
@@ -604,7 +632,8 @@
       "shared_drive": "共有ドライブ: {{name}}",
       "direct_share": "あなたに共有されました",
       "token": "共有リンク経由"
-    }
+    },
+    "share_folder": "フォルダを共有: {{name}}"
   },
   "trash": {
     "empty_trash": "ゴミ箱を空にする",
@@ -1311,7 +1340,21 @@
       "title": "バックグラウンドタスク",
       "hint": "このセクションは内部のバックグラウンドタスク（定期的およびオンデマンド）に関するものです。整合性チェックはいつでも安全に実行できます — 読み取り専用です。",
       "none_registered": "登録されているバックグラウンドタスクはありません。",
-      "purge_title": "古いタスク履歴を削除"
+      "purge_title": "古いタスク履歴を削除",
+      "run_repair": "ref_counts を修復",
+      "run_repair_hint": "監査が検出したズレた ref_count (blob + manifest) を修正します。コンテンツには影響なし — カウンターのみを変更し、データは変更しません。",
+      "run_repair_confirm_title_scoped": "{{name}} を修復モードで実行しますか?",
+      "run_mutating_confirm_title": "{{name}} を実行しますか?",
+      "run_mutating_confirm_body": "このジョブは実行時に保存された状態を変更します。",
+      "mutates_never": "読み取り専用",
+      "mutates_on_repair_only": "修復時以外は読み取り専用",
+      "startup": "起動時",
+      "startup_repair": "起動時 · 修復",
+      "startup_tooltip": "OXICLOUD_STARTUP_JOBS により起動のたびに実行するよう設定されています。",
+      "startup_repair_tooltip": "OXICLOUD_STARTUP_JOBS により起動のたびに修復モードで実行するよう設定されています。",
+      "run_variants_menu": "実行バリアントメニュー",
+      "run_repair_confirm": "修復",
+      "triggered_ok_repair": "{{name}}: {{n}} 件のカウンターを修復"
     },
     "oidc": "OIDC / SSO",
     "oidc_discover": "テスト / 検出",
@@ -1346,7 +1389,11 @@
         "oidc": "SSO",
         "device": "デバイス",
         "unknown": "不明"
-      }
+      },
+      "online": "オンライン",
+      "idle": "アイドル",
+      "presence_online_tooltip": "オンライン — 最終アクセス {{ago}}",
+      "presence_idle_tooltip": "アイドル — 最終アクセス {{ago}}"
     },
     "storage_backend_audit_triggered": "backend_consistency が `{{name}}` に対して開始されました — バックグラウンドタスクタブで確認してください。",
     "drive_policies": {
@@ -1438,7 +1485,55 @@
     "notification_sink_missing_title": "通知先を設定してください",
     "notification_sink_missing_body": "ジョブの不具合情報の送信先がありません — 何かが壊れても誰にも通知されません。少なくとも1つ設定してください。",
     "notification_sink_missing_howto": "OXICLOUD_JOBS_NOTIFY_EMAIL_TO(カンマ区切りのアドレス)と OXICLOUD_SMTP_HOST を両方設定するか、または OXICLOUD_WEBHOOK_URL を設定して再起動してください。",
-    "storage_cache_recommended_body": "リモートバックエンドを使用する場合は、ローカルキャッシュの有効化を強く推奨します(SSD / NVMe へのキャッシュを推奨)。"
+    "storage_cache_recommended_body": "リモートバックエンドを使用する場合は、ローカルキャッシュの有効化を強く推奨します(SSD / NVMe へのキャッシュを推奨)。",
+    "oxicloud_version": "OxiCloud バージョン",
+    "storage_cache_recommended_title": "ローカル blob キャッシュを有効化",
+    "storage_cache_recommended_howto": "有効化するには OXICLOUD_STORAGE_CACHE_ENABLED=true を設定してください。",
+    "section_cache": "ストレージキャッシュ",
+    "cache_memory": "メモリ (moka)",
+    "cache_memory_files": "メモリ (moka) · ファイルキャッシュ",
+    "cache_memory_thumbnails": "メモリ (moka) · サムネイルキャッシュ",
+    "cache_disk": "ディスク (.blob-cache)",
+    "cache_disk_unified": "ディスクキャッシュ (ファイル + サテライト)",
+    "cache_disk_hint": "ソースファイルのチャンクと派生 blob (サムネイル、トランスコード) を共有する単一のオンディスク層。コールド blob 1 つにつき 1 回のミスだけで、トリガーに関係なく共通です。",
+    "cache_disk_disabled_hint": "ローカルキャッシュの有効化を強く推奨します(SSD / NVMe を推奨)。",
+    "cache_disk_disabled_howto": "有効化するには OXICLOUD_STORAGE_CACHE_ENABLED=true を設定してください。",
+    "cache_chunks": "チャンク",
+    "cache_files": "ファイル",
+    "cache_thumbnails": "サムネイル",
+    "cache_disabled": "無効",
+    "cache_not_applicable": "該当なし",
+    "cache_disk_local_hint": "バックエンドストレージはローカルファイルシステム上です — その前段にディスクキャッシュを置いても同じディスク上でバイトが重複するだけです。有効化する必要はありません。",
+    "cache_disk_location": "保存場所",
+    "external_users": "外部",
+    "external_users_tooltip": "grant 専用アカウント — magic-link、OIDC のみ、OCM 受信者",
+    "online_users": "オンラインユーザー",
+    "online_users_tooltip": "直近 5 分間にアクティブなセッションを持つユニークユーザー",
+    "online_sessions": "オンラインセッション",
+    "online_sessions_tooltip": "直近 5 分でアクティブな未取消セッション — 複数端末利用者はそれぞれカウントされます",
+    "section_accounts": "ユーザーアカウント",
+    "section_activity": "ライブアクティビティ",
+    "section_system": "システム",
+    "live": "ライブ",
+    "live_tooltip": "直近 5 分間にアクティブだったセッションを反映します",
+    "user_actions": "{{name}} のアクション",
+    "make_admin": "管理者にする",
+    "make_user": "一般ユーザーにする",
+    "hint_not_own_role": "自分の役割は変更できません",
+    "hint_not_own_account": "自分のアカウントを無効化できません",
+    "hint_not_own_account_delete": "自分のアカウントを削除できません",
+    "transfer_ownership_title": "所有権を譲渡",
+    "confirm_transfer_ownership": "サーバーの所有権を {{name}} に譲渡しますか? あなたは管理者に降格され、再譲渡はその人のみが可能です。",
+    "owner_protected_title": "サーバーのオーナーは無効化できません",
+    "owner_protected_delete_title": "サーバーのオーナーは削除できません",
+    "quota_usage": "クォータ使用量",
+    "quota_usage_hint": "重複排除前の論理ファイルサイズ。完全削除までゴミ箱のファイルも含みます。",
+    "quota_personal": "個人ドライブ",
+    "backend_storage": "バックエンドストレージ",
+    "backend_stored": "保存済み",
+    "backend_dedup_ratio": "重複排除比",
+    "backend_referenced": "参照済み",
+    "backend_referenced_hint": "blob 参照の合計 (サイズ × ref_count)。サムネイル、派生アセット、GC 待ちの blob がまだ参照を保持しているため、ドライブの合計を超えることがあります。"
   },
   "profile": {
     "page_title": "プロフィール",
@@ -1980,5 +2075,19 @@
   },
   "sortdir": {
     "title": "ソート方向"
+  },
+  "collab": {
+    "conflict": {
+      "title": "このファイルは他のユーザーによって変更されました",
+      "body": "保存されていない変更を {{name}} に保存できなかったため、別のファイルに保存しました:",
+      "save_failed": "保存されていない変更を自動的に保存できませんでした。このエディター内にしか存在しません — このページを離れる前に安全な場所にコピーしてください。",
+      "deleted": "{{name}} を削除しました。",
+      "open_copy": "保存したコピーを開く",
+      "delete_copy": "保存したコピーを削除",
+      "open_current": "画面の内容を破棄して更新された {{name}} を開く"
+    }
+  },
+  "sidebar": {
+    "oxicloud_version": "OxiCloud"
   }
 }

@@ -217,7 +217,14 @@
     "add": "Dodaj",
     "apply": "Zastosuj",
     "clear": "Wyczyść",
-    "remove": "Usuń"
+    "remove": "Usuń",
+    "on": "Włączone",
+    "off": "Wyłączone",
+    "refresh": "Odśwież",
+    "new_document_text": "Nowy dokument tekstowy",
+    "new_document_spreadsheet": "Nowy arkusz kalkulacyjny",
+    "new_document_presentation": "Nowa prezentacja",
+    "new_text_file": "Nowy plik tekstowy"
   },
   "user_menu": {
     "appearance": "Wygląd",
@@ -333,7 +340,15 @@
     "policy_expiry_too_far": "Ten dysk ogranicza linki publiczne do {{date}}.",
     "add": "Dodaj",
     "adding": "Dodawanie…",
-    "clear_selection": "Wybierz kogoś innego"
+    "clear_selection": "Wybierz kogoś innego",
+    "preview": "Podgląd",
+    "the_drive": "dysk",
+    "none_direct": "Ten element nie ma własnego publicznego linku.",
+    "inherited_links_title": "Dostępne również przez publiczny link",
+    "inherited_link_on_drive_title": "Ten link znajduje się na dysku „{{name}}\"",
+    "inherited_link_manage": "Otwórz „{{name}}\", aby zarządzać tym linkiem lub go usunąć",
+    "inherited_from_folder_title": "Dziedziczone z folderu „{{name}}\" — otwórz go, aby to zmienić",
+    "inherited_from_drive_title": "Dziedziczone z dysku „{{name}}\" — zmień w ustawieniach dysku"
   },
   "share_dialogTitle": "Link udostępniania",
   "share_linkLabel": "Link udostępniania:",
@@ -527,7 +542,15 @@
     "upload_failed": "Przesyłanie nie powiodło się",
     "uploading": "Przesyłanie…",
     "uploading_file": "Przesyłanie {{name}}…",
-    "uploading_n": "Przesyłanie {{done}}/{{total}} plików…"
+    "uploading_n": "Przesyłanie {{done}}/{{total}} plików…",
+    "upload_folder_not_ready": "Folder jeszcze się ładuje — spróbuj ponownie za chwilę.",
+    "new_document": "Nowy dokument",
+    "new_document_prompt": "Nazwa dokumentu",
+    "new_text_file": "Nowy plik tekstowy",
+    "new_text_file_prompt": "Nazwa pliku (np. notes.md)",
+    "new_text_file_hint": "Podaj rozszerzenie w nazwie pliku (np. .md, .txt, .c, .py, .rs).",
+    "new_text_file_binary_ext_title": "Rozszerzenie nietekstowe",
+    "new_text_file_binary_ext_message": "„{{name}}\" nie wygląda jak plik tekstowy. Edytor otworzy go jako tekst — zwykle psuje to formaty binarne. Mimo to kontynuować?"
   },
   "dialogs": {
     "rename_folder": "Zmień nazwę folderu",
@@ -594,7 +617,12 @@
     "group_virtual_immutable": "Grupa „Internal” jest zarządzana przez system i nie może być modyfikowana.",
     "group_not_found": "Grupa nie znaleziona.",
     "group_name_taken": "Grupa o tej nazwie już istnieje.",
-    "forbidden": "Nie udało się załadować plików"
+    "forbidden": "Nie udało się załadować plików",
+    "quota_exceeded": "Za mało miejsca. Zwolnij trochę lub poproś administratora o zwiększenie limitu.",
+    "access_denied": "Nie masz uprawnień, aby to zrobić.",
+    "not_found": "Ten element już nie istnieje.",
+    "conflict": "Element o tej nazwie już istnieje.",
+    "transient_backend": "Pamięć masowa jest chwilowo niedostępna. Spróbuj ponownie."
   },
   "breadcrumb": {
     "home": "Strona główna",
@@ -604,7 +632,8 @@
       "shared_drive": "Dysk współdzielony: {{name}}",
       "direct_share": "Udostępniono Tobie",
       "token": "Przez udostępniony link"
-    }
+    },
+    "share_folder": "Udostępnij folder: {{name}}"
   },
   "trash": {
     "empty_trash": "Opróżnij kosz",
@@ -1311,7 +1340,21 @@
       "title": "Zadania w tle",
       "hint": "Ta sekcja dotyczy wewnętrznych zadań w tle: zadań okresowych i na żądanie. Kontrole spójności można bezpiecznie uruchamiać w dowolnym momencie — są tylko do odczytu.",
       "none_registered": "Brak zarejestrowanych zadań w tle.",
-      "purge_title": "Usuń starą historię zadań"
+      "purge_title": "Usuń starą historię zadań",
+      "run_repair": "Napraw ref_counts",
+      "run_repair_hint": "Poprawia wszelkie rozbieżne ref_count (bloby + manifesty) znalezione przez audyt. Bezpieczne dla zawartości — zmieniają się tylko liczniki, nie dane.",
+      "run_repair_confirm_title_scoped": "Uruchomić {{name}} w trybie naprawy?",
+      "run_mutating_confirm_title": "Uruchomić {{name}}?",
+      "run_mutating_confirm_body": "To zadanie zmienia zapisany stan podczas działania.",
+      "mutates_never": "tylko do odczytu",
+      "mutates_on_repair_only": "tylko do odczytu, chyba że naprawa",
+      "startup": "przy starcie",
+      "startup_repair": "przy starcie · naprawa",
+      "startup_tooltip": "Skonfigurowane w OXICLOUD_STARTUP_JOBS do uruchomienia przy każdym starcie.",
+      "startup_repair_tooltip": "Skonfigurowane w OXICLOUD_STARTUP_JOBS do uruchomienia w trybie naprawy przy każdym starcie.",
+      "run_variants_menu": "Menu wariantów uruchomienia",
+      "run_repair_confirm": "Napraw",
+      "triggered_ok_repair": "{{name}}: naprawiono liczników: {{n}}"
     },
     "oidc": "OIDC / SSO",
     "oidc_discover": "Testuj / wykryj",
@@ -1346,7 +1389,11 @@
         "oidc": "SSO",
         "device": "Urządzenie",
         "unknown": "Nieznane"
-      }
+      },
+      "online": "online",
+      "idle": "bezczynny",
+      "presence_online_tooltip": "Online — ostatnio widziany {{ago}}",
+      "presence_idle_tooltip": "Bezczynny — ostatnio widziany {{ago}}"
     },
     "storage_backend_audit_triggered": "backend_consistency uruchomiony dla `{{name}}` — obserwuj to na karcie Zadania w tle.",
     "drive_policies": {
@@ -1438,7 +1485,55 @@
     "notification_sink_missing_title": "Skonfiguruj odbiorcę powiadomień",
     "notification_sink_missing_body": "Zgłoszenia o awariach zadań nie mają dokąd trafić — nikt nie zostanie powiadomiony, gdy coś się zepsuje. Skonfiguruj co najmniej jednego odbiorcę.",
     "notification_sink_missing_howto": "Ustaw ZARÓWNO OXICLOUD_JOBS_NOTIFY_EMAIL_TO (adresy oddzielone przecinkami) JAK I OXICLOUD_SMTP_HOST, ALBO ustaw OXICLOUD_WEBHOOK_URL — i uruchom ponownie.",
-    "storage_cache_recommended_body": "Przy używaniu zdalnego zaplecza zdecydowanie zaleca się włączenie lokalnej pamięci podręcznej (najlepiej na SSD / NVMe)."
+    "storage_cache_recommended_body": "Przy używaniu zdalnego zaplecza zdecydowanie zaleca się włączenie lokalnej pamięci podręcznej (najlepiej na SSD / NVMe).",
+    "oxicloud_version": "Wersja OxiCloud",
+    "storage_cache_recommended_title": "Włącz lokalną pamięć podręczną blobów",
+    "storage_cache_recommended_howto": "Ustaw OXICLOUD_STORAGE_CACHE_ENABLED=true, aby włączyć.",
+    "section_cache": "Pamięć podręczna pamięci masowej",
+    "cache_memory": "Pamięć (moka)",
+    "cache_memory_files": "Pamięć (moka) · Pamięć podręczna plików",
+    "cache_memory_thumbnails": "Pamięć (moka) · Pamięć podręczna miniatur",
+    "cache_disk": "Dysk (.blob-cache)",
+    "cache_disk_unified": "Pamięć podręczna dysku (Pliki + Satelity)",
+    "cache_disk_hint": "Jedna warstwa dyskowa współdzielona przez fragmenty plików źródłowych i wszystkie pochodne bloby (miniatury, transkodowania). Jeden miss na zimny blob niezależnie od tego, co go wywołało.",
+    "cache_disk_disabled_hint": "Zdecydowanie zalecamy włączenie lokalnej pamięci podręcznej (najlepiej na SSD / NVMe).",
+    "cache_disk_disabled_howto": "Ustaw OXICLOUD_STORAGE_CACHE_ENABLED=true, aby włączyć.",
+    "cache_chunks": "fragmenty",
+    "cache_files": "pliki",
+    "cache_thumbnails": "miniatury",
+    "cache_disabled": "Wyłączone",
+    "cache_not_applicable": "Nie dotyczy",
+    "cache_disk_local_hint": "Pamięć zaplecza znajduje się na lokalnym systemie plików — pamięć podręczna dysku przed nim tylko zdublowałaby bajty na tym samym dysku. Nic do włączenia.",
+    "cache_disk_location": "Lokalizacja",
+    "external_users": "Zewnętrzne",
+    "external_users_tooltip": "Konta tylko-grant — magic-link, tylko OIDC, odbiorcy OCM",
+    "online_users": "Użytkownicy online",
+    "online_users_tooltip": "Unikalni użytkownicy z aktywną sesją w ciągu ostatnich 5 minut",
+    "online_sessions": "Sesje online",
+    "online_sessions_tooltip": "Nieodwołane sesje aktywne w ciągu ostatnich 5 minut — użytkownicy wielourządzeniowi wnoszą więcej niż jedną",
+    "section_accounts": "Konta użytkowników",
+    "section_activity": "Aktywność na żywo",
+    "section_system": "System",
+    "live": "na żywo",
+    "live_tooltip": "Odzwierciedla sesje aktywne w ciągu ostatnich 5 minut",
+    "user_actions": "Akcje dla {{name}}",
+    "make_admin": "Nadaj uprawnienia administratora",
+    "make_user": "Ustaw jako zwykły użytkownik",
+    "hint_not_own_role": "Nie możesz zmienić własnej roli",
+    "hint_not_own_account": "Nie możesz dezaktywować własnego konta",
+    "hint_not_own_account_delete": "Nie możesz usunąć własnego konta",
+    "transfer_ownership_title": "Przenieś własność",
+    "confirm_transfer_ownership": "Przenieść własność serwera na {{name}}? Zostaniesz zdegradowany do administratora, a tylko ta osoba będzie mogła przenieść ją z powrotem.",
+    "owner_protected_title": "Właściciela serwera nie można dezaktywować",
+    "owner_protected_delete_title": "Właściciela serwera nie można usunąć",
+    "quota_usage": "Wykorzystanie limitu",
+    "quota_usage_hint": "Logiczne rozmiary plików przed deduplikacją. Obejmuje pliki w koszu do trwałego usunięcia.",
+    "quota_personal": "Dyski osobiste",
+    "backend_storage": "Pamięć zaplecza",
+    "backend_stored": "Zapisane",
+    "backend_dedup_ratio": "Współczynnik deduplikacji",
+    "backend_referenced": "Odwołane",
+    "backend_referenced_hint": "Suma odwołań do blobów (rozmiar × ref_count). Może przekroczyć sumaryczną pojemność dysku, ponieważ miniatury, pochodne zasoby i bloby czekające na odśmiecanie wciąż utrzymują odwołania."
   },
   "profile": {
     "page_title": "Profil",
@@ -1980,5 +2075,19 @@
   },
   "sortdir": {
     "title": "Kierunek sortowania"
+  },
+  "collab": {
+    "conflict": {
+      "title": "Ten plik został zmieniony przez kogoś innego",
+      "body": "Twoich niezapisanych zmian nie udało się zapisać w {{name}}, więc zostały zachowane w osobnym pliku:",
+      "save_failed": "Twoich niezapisanych zmian NIE udało się zapisać automatycznie. Istnieją tylko w tym edytorze — skopiuj je w bezpieczne miejsce przed opuszczeniem tej strony.",
+      "deleted": "Usunięto {{name}}.",
+      "open_copy": "Otwórz moją zapisaną kopię",
+      "delete_copy": "Usuń moją zapisaną kopię",
+      "open_current": "Odrzuć to, co jest na ekranie, i otwórz zaktualizowany {{name}}"
+    }
+  },
+  "sidebar": {
+    "oxicloud_version": "OxiCloud"
   }
 }

@@ -217,7 +217,14 @@
     "add": "新增",
     "apply": "套用",
     "clear": "清除",
-    "remove": "移除"
+    "remove": "移除",
+    "on": "開啟",
+    "off": "關閉",
+    "refresh": "重新整理",
+    "new_document_text": "新增文字文件",
+    "new_document_spreadsheet": "新增試算表",
+    "new_document_presentation": "新增簡報",
+    "new_text_file": "新增文字檔案"
   },
   "user_menu": {
     "appearance": "外觀",
@@ -333,7 +340,15 @@
     "policy_expiry_too_far": "此雲端硬碟的公開連結最晚可至 {{date}}。",
     "add": "新增",
     "adding": "正在新增…",
-    "clear_selection": "選擇其他人"
+    "clear_selection": "選擇其他人",
+    "preview": "預覽",
+    "the_drive": "該磁碟機",
+    "none_direct": "此項目本身沒有公開連結。",
+    "inherited_links_title": "也可透過公開連結存取",
+    "inherited_link_on_drive_title": "此連結位於磁碟機「{{name}}」",
+    "inherited_link_manage": "開啟「{{name}}」以管理或移除此連結",
+    "inherited_from_folder_title": "繼承自資料夾「{{name}}」— 開啟它以變更此設定",
+    "inherited_from_drive_title": "繼承自磁碟機「{{name}}」— 在磁碟機設定中變更"
   },
   "share_dialogTitle": "共享連結",
   "share_linkLabel": "共享連結：",
@@ -527,7 +542,15 @@
     "upload_failed": "上傳失敗",
     "uploading": "正在上傳...",
     "uploading_file": "正在上傳{{name}}...",
-    "uploading_n": "正在上傳 {{done}}/{{total}} 個檔案…"
+    "uploading_n": "正在上傳 {{done}}/{{total}} 個檔案…",
+    "upload_folder_not_ready": "資料夾仍在載入中 — 請稍後再試。",
+    "new_document": "新增文件",
+    "new_document_prompt": "文件名稱",
+    "new_text_file": "新增文字檔案",
+    "new_text_file_prompt": "檔案名稱 (例如 notes.md)",
+    "new_text_file_hint": "請在檔案名稱中包含副檔名 (例如 .md、.txt、.c、.py、.rs)。",
+    "new_text_file_binary_ext_title": "非文字副檔名",
+    "new_text_file_binary_ext_message": "「{{name}}」看起來不像文字檔案。編輯器會以文字方式開啟 — 這通常會破壞二進位格式。仍要繼續嗎?"
   },
   "dialogs": {
     "rename_folder": "重新命名資料夾",
@@ -594,7 +617,12 @@
     "group_virtual_immutable": "「Internal」群組由系統管理，無法修改。",
     "group_not_found": "找不到群組。",
     "group_name_taken": "已存在同名群組。",
-    "forbidden": "無法載入文件"
+    "forbidden": "無法載入文件",
+    "quota_exceeded": "空間不足。請清理空間或聯絡管理員提高配額。",
+    "access_denied": "您沒有執行此操作的權限。",
+    "not_found": "該項目不再存在。",
+    "conflict": "已存在同名項目。",
+    "transient_backend": "儲存暫時無法使用,請稍後重試。"
   },
   "breadcrumb": {
     "home": "主頁",
@@ -604,7 +632,8 @@
       "shared_drive": "共用雲端硬碟：{{name}}",
       "direct_share": "已分享給您",
       "token": "透過分享連結"
-    }
+    },
+    "share_folder": "分享資料夾:{{name}}"
   },
   "trash": {
     "empty_trash": "清空回收站",
@@ -1293,7 +1322,21 @@
       "title": "背景工作",
       "hint": "本節涉及內部背景工作:定期和按需工作。一致性檢查隨時可以安全執行 — 它們是唯讀的。",
       "none_registered": "未註冊背景工作。",
-      "purge_title": "清除舊工作歷史"
+      "purge_title": "清除舊工作歷史",
+      "run_repair": "修復 ref_counts",
+      "run_repair_hint": "修正稽核發現的所有偏移 ref_count (blobs + manifests)。內容安全 — 只改計數,不改資料。",
+      "run_repair_confirm_title_scoped": "以修復模式執行 {{name}}?",
+      "run_mutating_confirm_title": "執行 {{name}}?",
+      "run_mutating_confirm_body": "此任務執行時會修改已儲存的狀態。",
+      "mutates_never": "唯讀",
+      "mutates_on_repair_only": "僅修復時寫入",
+      "startup": "啟動時",
+      "startup_repair": "啟動時 · 修復",
+      "startup_tooltip": "在 OXICLOUD_STARTUP_JOBS 中設定為每次啟動時執行。",
+      "startup_repair_tooltip": "在 OXICLOUD_STARTUP_JOBS 中設定為每次啟動時以修復模式執行。",
+      "run_variants_menu": "執行方式選單",
+      "run_repair_confirm": "修復",
+      "triggered_ok_repair": "{{name}}:已修復 {{n}} 個計數器"
     },
     "oidc": "OIDC / SSO",
     "oidc_discover": "測試 / 探索",
@@ -1328,7 +1371,11 @@
         "oidc": "SSO",
         "device": "裝置",
         "unknown": "未知"
-      }
+      },
+      "online": "上線",
+      "idle": "閒置",
+      "presence_online_tooltip": "上線 — 最後出現 {{ago}}",
+      "presence_idle_tooltip": "閒置 — 最後出現 {{ago}}"
     },
     "storage_backend_audit_triggered": "backend_consistency 已為 `{{name}}` 觸發 — 在背景工作標籤頁查看。",
     "drive_policies": {
@@ -1420,7 +1467,55 @@
     "notification_sink_missing_title": "設定通知接收端",
     "notification_sink_missing_body": "任務故障發現無處可送 — 出錯時無人收到通知。請至少設定一個接收端。",
     "notification_sink_missing_howto": "同時設定 OXICLOUD_JOBS_NOTIFY_EMAIL_TO (以逗號分隔的地址) 與 OXICLOUD_SMTP_HOST,或設定 OXICLOUD_WEBHOOK_URL,然後重新啟動。",
-    "storage_cache_recommended_body": "使用遠端後端時,強烈建議啟用本機快取 (建議快取至 SSD / NVMe)。"
+    "storage_cache_recommended_body": "使用遠端後端時,強烈建議啟用本機快取 (建議快取至 SSD / NVMe)。",
+    "oxicloud_version": "OxiCloud 版本",
+    "storage_cache_recommended_title": "啟用本機 blob 快取",
+    "storage_cache_recommended_howto": "設定 OXICLOUD_STORAGE_CACHE_ENABLED=true 以啟用。",
+    "section_cache": "儲存快取",
+    "cache_memory": "記憶體 (moka)",
+    "cache_memory_files": "記憶體 (moka) · 檔案快取",
+    "cache_memory_thumbnails": "記憶體 (moka) · 縮圖快取",
+    "cache_disk": "磁碟 (.blob-cache)",
+    "cache_disk_unified": "磁碟快取 (檔案 + 衛星)",
+    "cache_disk_hint": "單一磁碟層,來源檔案分片與所有衍生 blob (縮圖、轉碼) 共用。無論由什麼觸發,每個冷 blob 只有一次 miss。",
+    "cache_disk_disabled_hint": "強烈建議啟用本機快取 (建議使用 SSD / NVMe 位置)。",
+    "cache_disk_disabled_howto": "設定 OXICLOUD_STORAGE_CACHE_ENABLED=true 以啟用。",
+    "cache_chunks": "分片",
+    "cache_files": "檔案",
+    "cache_thumbnails": "縮圖",
+    "cache_disabled": "已停用",
+    "cache_not_applicable": "不適用",
+    "cache_disk_local_hint": "後端儲存位於本機檔案系統 — 在其前方放置磁碟快取只會在同一顆磁碟上複製位元組。無需啟用。",
+    "cache_disk_location": "位置",
+    "external_users": "外部",
+    "external_users_tooltip": "僅授予帳戶 — magic-link、僅 OIDC、OCM 接收者",
+    "online_users": "上線使用者",
+    "online_users_tooltip": "最近 5 分鐘內有活動工作階段的獨立使用者",
+    "online_sessions": "上線工作階段",
+    "online_sessions_tooltip": "最近 5 分鐘內未撤銷且活躍的工作階段 — 多裝置使用者會貢獻多個",
+    "section_accounts": "使用者帳戶",
+    "section_activity": "即時活動",
+    "section_system": "系統",
+    "live": "即時",
+    "live_tooltip": "反映最近 5 分鐘內處於活動狀態的工作階段",
+    "user_actions": "{{name}} 的操作",
+    "make_admin": "設為管理員",
+    "make_user": "設為一般使用者",
+    "hint_not_own_role": "不能變更自己的角色",
+    "hint_not_own_account": "不能停用自己的帳戶",
+    "hint_not_own_account_delete": "不能刪除自己的帳戶",
+    "transfer_ownership_title": "轉讓所有權",
+    "confirm_transfer_ownership": "將伺服器所有權轉讓給 {{name}}?您將被降級為管理員,只有對方可以再轉讓回來。",
+    "owner_protected_title": "不能停用伺服器擁有者",
+    "owner_protected_delete_title": "不能刪除伺服器擁有者",
+    "quota_usage": "配額使用",
+    "quota_usage_hint": "去重前的邏輯檔案大小。包含資源回收桶中的檔案,直到被永久刪除。",
+    "quota_personal": "個人磁碟機",
+    "backend_storage": "後端儲存",
+    "backend_stored": "已儲存",
+    "backend_dedup_ratio": "去重比率",
+    "backend_referenced": "已參照",
+    "backend_referenced_hint": "blob 參照之和 (大小 × ref_count)。可能超過磁碟總量,因為縮圖、衍生資源以及等待垃圾回收的 blob 仍持有參照。"
   },
   "profile": {
     "page_title": "個人資料",
@@ -1980,5 +2075,19 @@
   },
   "sortdir": {
     "title": "排序方向"
+  },
+  "collab": {
+    "conflict": {
+      "title": "此檔案已被他人修改",
+      "body": "您未儲存的變更無法儲存到 {{name}},因此已保留在獨立的檔案中:",
+      "save_failed": "您未儲存的變更無法自動儲存。它們僅存在於此編輯器中 — 在離開此頁面之前請複製到安全位置。",
+      "deleted": "已刪除 {{name}}。",
+      "open_copy": "開啟我儲存的副本",
+      "delete_copy": "刪除我儲存的副本",
+      "open_current": "捨棄螢幕上的內容並開啟更新後的 {{name}}"
+    }
+  },
+  "sidebar": {
+    "oxicloud_version": "OxiCloud"
   }
 }

@@ -12159,6 +12159,7 @@
           "users_over_quota",
           "registration_enabled",
           "storage_cache_recommended",
+          "notification_sink_missing",
           "content_cache",
           "thumbnail_cache"
         ],
@@ -12209,6 +12210,10 @@
             "type": "integer",
             "format": "int64",
             "description": "Grant-only accounts (magic-link / OIDC-only / OCM recipients).\nFiltered out of `total_users` / `active_users` since those\ncolumns count operational seats (see the SELECT comment). Here\nas its own metric because operators of external-heavy\ndeployments (public shares, invited-collab shops) need to see\nthe invited population at a glance."
+          },
+          "notification_sink_missing": {
+            "type": "boolean",
+            "description": "`true` when neither outbound alert path is usable:\n* **Email** — needs BOTH `OXICLOUD_JOBS_NOTIFY_EMAIL_TO`\n  (non-empty recipients) AND `OXICLOUD_SMTP_HOST`. Setting\n  recipients without SMTP leaves alerts addressed but\n  undeliverable, which this flag treats as \"no sink\".\n* **Webhook** — `OXICLOUD_WEBHOOK_URL` is set.\n\nIn that state, job-failure findings and lifecycle events\nhave nowhere to go — an operator who isn't watching\n`/admin/jobs` would miss them entirely. The admin UI shows\na warning banner inviting them to set at least one. Flips\nback to `false` as soon as either path is fully configured."
           },
           "oidc_configured": {
             "type": "boolean"

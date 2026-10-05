@@ -217,7 +217,14 @@
     "add": "Ajouter",
     "apply": "Appliquer",
     "clear": "Effacer",
-    "remove": "Supprimer"
+    "remove": "Supprimer",
+    "on": "Activé",
+    "off": "Désactivé",
+    "refresh": "Actualiser",
+    "new_document_text": "Nouveau document texte",
+    "new_document_spreadsheet": "Nouveau tableur",
+    "new_document_presentation": "Nouvelle présentation",
+    "new_text_file": "Nouveau fichier texte"
   },
   "user_menu": {
     "appearance": "Apparence",
@@ -333,7 +340,15 @@
     "policy_expiry_too_far": "Ce Disque limite les liens publics au {{date}}.",
     "add": "Ajouter",
     "adding": "Ajout…",
-    "clear_selection": "Choisir quelqu’un d’autre"
+    "clear_selection": "Choisir quelqu’un d’autre",
+    "preview": "Aperçu",
+    "the_drive": "le lecteur",
+    "none_direct": "Aucun lien public sur cet élément lui-même.",
+    "inherited_links_title": "Également accessible via un lien public",
+    "inherited_link_on_drive_title": "Ce lien se trouve sur le lecteur « {{name}} »",
+    "inherited_link_manage": "Ouvrez « {{name}} » pour gérer ou supprimer ce lien",
+    "inherited_from_folder_title": "Hérité du dossier « {{name}} » — ouvrez-le pour le modifier",
+    "inherited_from_drive_title": "Hérité du lecteur « {{name}} » — modifiez-le dans les paramètres du lecteur"
   },
   "share_dialogTitle": "Lien de partage",
   "share_linkLabel": "Lien partagé :",
@@ -528,7 +543,14 @@
     "upload_failed": "Échec du téléchargement",
     "uploading": "Téléchargement…",
     "uploading_file": "Téléchargement {{name}}…",
-    "uploading_n": "Téléversement de {{done}}/{{total}} fichiers…"
+    "uploading_n": "Téléversement de {{done}}/{{total}} fichiers…",
+    "new_document": "Nouveau document",
+    "new_document_prompt": "Nom du document",
+    "new_text_file": "Nouveau fichier texte",
+    "new_text_file_prompt": "Nom du fichier (ex. notes.md)",
+    "new_text_file_hint": "Incluez l'extension dans le nom du fichier (ex. .md, .txt, .c, .py, .rs).",
+    "new_text_file_binary_ext_title": "Extension non textuelle",
+    "new_text_file_binary_ext_message": "« {{name}} » ne ressemble pas à un fichier texte. L'éditeur l'ouvrira comme du texte — cela endommage généralement les formats binaires. Continuer quand même ?"
   },
   "dialogs": {
     "rename_folder": "Renommer le dossier",
@@ -595,7 +617,12 @@
     "group_virtual_immutable": "Le groupe « Internal » est géré par le système et ne peut pas être modifié.",
     "group_not_found": "Groupe introuvable.",
     "group_name_taken": "Un groupe portant ce nom existe déjà.",
-    "forbidden": "Impossible de charger les fichiers"
+    "forbidden": "Impossible de charger les fichiers",
+    "quota_exceeded": "Espace insuffisant. Libérez de la place ou demandez à un administrateur d'augmenter le quota.",
+    "access_denied": "Vous n'avez pas la permission de faire cela.",
+    "not_found": "Cet élément n'existe plus.",
+    "conflict": "Un élément portant ce nom existe déjà.",
+    "transient_backend": "Le stockage est momentanément indisponible. Réessayez."
   },
   "breadcrumb": {
     "home": "Accueil",
@@ -605,7 +632,8 @@
       "shared_drive": "Disque partagé : {{name}}",
       "direct_share": "Partagé avec vous",
       "token": "Via un lien partagé"
-    }
+    },
+    "share_folder": "Partager le dossier : {{name}}"
   },
   "trash": {
     "empty_trash": "Vider la corbeille",
@@ -1269,9 +1297,6 @@
       "run_deep_hint": "Exécute également des variantes lentes (re-hachage de blob, détection bitrot).",
       "run_repair": "Réparer les compteurs",
       "run_repair_hint": "Corrige les compteurs de références (blobs + manifestes) désynchronisés détectés par l'audit. Sûr pour les données — seuls les compteurs changent, pas le contenu.",
-      "run_repair_confirm_title": "Réparer les compteurs de références ?",
-      "run_repair_confirm_body": "Lance l'audit sur chaque blob et manifeste, puis applique un UPDATE correctif à chaque compteur qui ne correspond pas au nombre réel de références. Sans risque pour les données : seuls les compteurs changent ; le contenu des blobs et les enregistrements de fichiers ne sont pas touchés. Vous pouvez exécuter cela à tout moment ; un passage en lecture seule s'exécute d'abord pour visualiser l'écart avant que la réparation ne l'écrase.",
-      "run_repair_confirm_body_scoped": "Lance {{name}} et applique un UPDATE correctif à chaque compteur qui ne correspond pas au nombre réel de références. Sans risque pour les données : seuls les compteurs changent ; le contenu et les enregistrements de fichiers ne sont pas touchés.",
       "run_variants_menu": "Menu des variantes d'exécution",
       "run_repair_confirm": "Réparer",
       "triggered_ok_repair": "{{name}} : {{n}} compteur(s) réparé(s)",
@@ -1339,7 +1364,16 @@
       "title": "Tâches en arrière-plan",
       "hint": "Cette section concerne les tâches internes en arrière-plan : tâches périodiques et à la demande. Les contrôles de cohérence peuvent être exécutés à tout moment — ils sont en lecture seule.",
       "none_registered": "Aucune tâche en arrière-plan enregistrée.",
-      "purge_title": "Purger l’ancien historique des tâches"
+      "purge_title": "Purger l’ancien historique des tâches",
+      "run_repair_confirm_title_scoped": "Lancer {{name}} en mode réparation ?",
+      "run_mutating_confirm_title": "Lancer {{name}} ?",
+      "run_mutating_confirm_body": "Cette tâche modifie l’état stocké lorsqu’elle s’exécute.",
+      "mutates_never": "lecture seule",
+      "mutates_on_repair_only": "lecture seule sauf réparation",
+      "startup": "au démarrage",
+      "startup_repair": "au démarrage · réparation",
+      "startup_tooltip": "Configuré dans OXICLOUD_STARTUP_JOBS pour s’exécuter à chaque démarrage.",
+      "startup_repair_tooltip": "Configuré dans OXICLOUD_STARTUP_JOBS pour s’exécuter en mode réparation à chaque démarrage."
     },
     "oidc": "OIDC / SSO",
     "oidc_discover": "Tester / découvrir",
@@ -1470,7 +1504,36 @@
     "notification_sink_missing_title": "Configurer une destination de notifications",
     "notification_sink_missing_body": "Les problèmes détectés par les tâches n’ont nulle part où aller — personne n’est averti en cas de défaillance. Configurez au moins une destination.",
     "notification_sink_missing_howto": "Définissez À LA FOIS OXICLOUD_JOBS_NOTIFY_EMAIL_TO (adresses séparées par des virgules) ET OXICLOUD_SMTP_HOST, OU définissez OXICLOUD_WEBHOOK_URL — puis redémarrez.",
-    "storage_cache_recommended_body": "Il est fortement recommandé d’activer le cache local lors de l’utilisation d’un backend distant (préférer un cache sur SSD / NVMe)."
+    "storage_cache_recommended_body": "Il est fortement recommandé d’activer le cache local lors de l’utilisation d’un backend distant (préférer un cache sur SSD / NVMe).",
+    "oxicloud_version": "Version OxiCloud",
+    "storage_cache_recommended_title": "Activer le cache local des blobs",
+    "storage_cache_recommended_howto": "Définissez OXICLOUD_STORAGE_CACHE_ENABLED=true pour activer.",
+    "section_cache": "Cache de stockage",
+    "cache_memory": "Mémoire (moka)",
+    "cache_memory_files": "Mémoire (moka) · Cache de fichiers",
+    "cache_memory_thumbnails": "Mémoire (moka) · Cache de vignettes",
+    "cache_disk": "Disque (.blob-cache)",
+    "cache_disk_unified": "Cache disque (Fichiers + Satellites)",
+    "cache_disk_hint": "Niveau unique sur disque partagé par les chunks de fichiers source et par tous les blobs dérivés (vignettes, transcodages). Un seul miss par blob froid, quel que soit le déclencheur.",
+    "cache_disk_disabled_hint": "Il est fortement recommandé d’activer le cache local (de préférence sur SSD / NVMe).",
+    "cache_disk_disabled_howto": "Définissez OXICLOUD_STORAGE_CACHE_ENABLED=true pour activer.",
+    "cache_chunks": "chunks",
+    "cache_files": "fichiers",
+    "cache_thumbnails": "vignettes",
+    "cache_disabled": "Désactivé",
+    "cache_not_applicable": "Non applicable",
+    "cache_disk_local_hint": "Le stockage backend est sur le système de fichiers local — un cache disque devant lui ne ferait que dupliquer les octets sur le même disque. Rien à activer.",
+    "cache_disk_location": "Emplacement",
+    "user_actions": "Actions pour {{name}}",
+    "make_admin": "Rendre administrateur",
+    "make_user": "Rendre utilisateur standard",
+    "hint_not_own_role": "Vous ne pouvez pas changer votre propre rôle",
+    "hint_not_own_account": "Vous ne pouvez pas désactiver votre propre compte",
+    "hint_not_own_account_delete": "Vous ne pouvez pas supprimer votre propre compte",
+    "transfer_ownership_title": "Transférer la propriété",
+    "confirm_transfer_ownership": "Transférer la propriété du serveur à {{name}} ? Vous serez rétrogradé administrateur, et seule cette personne pourra la retransférer.",
+    "owner_protected_title": "Le propriétaire du serveur ne peut pas être désactivé",
+    "owner_protected_delete_title": "Le propriétaire du serveur ne peut pas être supprimé"
   },
   "profile": {
     "page_title": "Profil",
@@ -2012,5 +2075,19 @@
   },
   "sortdir": {
     "title": "Sens de tri"
+  },
+  "collab": {
+    "conflict": {
+      "title": "Ce fichier a été modifié par quelqu'un d'autre",
+      "body": "Vos modifications non enregistrées n'ont pas pu être enregistrées dans {{name}}, elles ont donc été conservées dans un fichier séparé :",
+      "save_failed": "Vos modifications non enregistrées n'ont PAS pu être enregistrées automatiquement. Elles n'existent que dans cet éditeur — copiez-les en lieu sûr avant de quitter cette page.",
+      "deleted": "{{name}} supprimé.",
+      "open_copy": "Ouvrir ma copie sauvegardée",
+      "delete_copy": "Supprimer ma copie sauvegardée",
+      "open_current": "Abandonner ce qui est à l'écran et ouvrir la version mise à jour de {{name}}"
+    }
+  },
+  "sidebar": {
+    "oxicloud_version": "OxiCloud"
   }
 }

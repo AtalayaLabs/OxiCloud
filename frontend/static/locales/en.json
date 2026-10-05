@@ -1574,7 +1574,15 @@
       "triggered_err": "{{name}} failed: {{message}}",
       "cancel_requested": "Cancel requested — {{name}} will pause at the next safe boundary",
       "cancel_noop": "Nothing to cancel — {{name}} is not running"
-    }
+    },
+    "quota_usage": "Quota usage",
+    "quota_usage_hint": "Pre-dedup, logical file sizes. Includes trashed files until permanent deletion.",
+    "quota_personal": "Personal drives",
+    "backend_storage": "Backend storage",
+    "backend_stored": "Stored",
+    "backend_dedup_ratio": "Dedup ratio",
+    "backend_referenced": "Referenced",
+    "backend_referenced_hint": "Sum of blob references (size × ref_count). Can exceed the drive total because thumbnails, derived assets, and blobs pending garbage collection still hold references."
   },
   "profile": {
     "page_title": "Profile",

@@ -217,7 +217,14 @@
     "add": "Toevoegen",
     "apply": "Toepassen",
     "clear": "Wissen",
-    "remove": "Verwijderen"
+    "remove": "Verwijderen",
+    "on": "Aan",
+    "off": "Uit",
+    "refresh": "Vernieuwen",
+    "new_document_text": "Nieuw tekstdocument",
+    "new_document_spreadsheet": "Nieuw rekenblad",
+    "new_document_presentation": "Nieuwe presentatie",
+    "new_text_file": "Nieuw tekstbestand"
   },
   "user_menu": {
     "appearance": "Weergave",
@@ -333,7 +340,15 @@
     "policy_expiry_too_far": "Deze schijf beperkt openbare links tot {{date}}.",
     "add": "Toevoegen",
     "adding": "Toevoegen…",
-    "clear_selection": "Iemand anders kiezen"
+    "clear_selection": "Iemand anders kiezen",
+    "preview": "Voorbeeld",
+    "the_drive": "de schijf",
+    "none_direct": "Geen openbare link op dit item zelf.",
+    "inherited_links_title": "Ook bereikbaar via een openbare link",
+    "inherited_link_on_drive_title": "Deze link staat op schijf \"{{name}}\"",
+    "inherited_link_manage": "Open \"{{name}}\" om deze link te beheren of te verwijderen",
+    "inherited_from_folder_title": "Overgenomen van map \"{{name}}\" — open deze om dit te wijzigen",
+    "inherited_from_drive_title": "Overgenomen van schijf \"{{name}}\" — wijzig in de schijfinstellingen"
   },
   "share_dialogTitle": "Deellink",
   "share_linkLabel": "Deellink:",
@@ -527,7 +542,15 @@
     "upload_failed": "Uploaden mislukt",
     "uploading": "Uploaden…",
     "uploading_file": "Uploaden {{name}}…",
-    "uploading_n": "{{done}}/{{total}} bestanden uploaden…"
+    "uploading_n": "{{done}}/{{total}} bestanden uploaden…",
+    "upload_folder_not_ready": "Map wordt nog geladen — probeer het zo meteen opnieuw.",
+    "new_document": "Nieuw document",
+    "new_document_prompt": "Documentnaam",
+    "new_text_file": "Nieuw tekstbestand",
+    "new_text_file_prompt": "Bestandsnaam (bv. notes.md)",
+    "new_text_file_hint": "Zet de extensie in de bestandsnaam (bv. .md, .txt, .c, .py, .rs).",
+    "new_text_file_binary_ext_title": "Niet-tekst-extensie",
+    "new_text_file_binary_ext_message": "\"{{name}}\" lijkt geen tekstbestand. De editor opent het als tekst — dat beschadigt doorgaans binaire formaten. Toch doorgaan?"
   },
   "dialogs": {
     "rename_folder": "Map hernoemen",
@@ -594,7 +617,12 @@
     "group_virtual_immutable": "De groep 'Internal' wordt door het systeem beheerd en kan niet worden gewijzigd.",
     "group_not_found": "Groep niet gevonden.",
     "group_name_taken": "Er bestaat al een groep met deze naam.",
-    "forbidden": "Kan bestanden niet laden"
+    "forbidden": "Kan bestanden niet laden",
+    "quota_exceeded": "Niet genoeg ruimte. Maak ruimte vrij of vraag een beheerder om de quota te verhogen.",
+    "access_denied": "Je hebt geen toestemming om dat te doen.",
+    "not_found": "Dit item bestaat niet meer.",
+    "conflict": "Er bestaat al een item met die naam.",
+    "transient_backend": "Opslag is tijdelijk niet beschikbaar. Probeer het opnieuw."
   },
   "breadcrumb": {
     "home": "Start",
@@ -604,7 +632,8 @@
       "shared_drive": "Gedeelde schijf: {{name}}",
       "direct_share": "Met u gedeeld",
       "token": "Via gedeelde link"
-    }
+    },
+    "share_folder": "Map delen: {{name}}"
   },
   "trash": {
     "empty_trash": "Prullenbak legen",
@@ -1311,7 +1340,21 @@
       "title": "Achtergrondtaken",
       "hint": "Deze sectie betreft interne achtergrondtaken: periodieke en on-demand taken. Consistentiecontroles kunnen op elk moment veilig worden uitgevoerd — ze zijn alleen-lezen.",
       "none_registered": "Geen achtergrondtaken geregistreerd.",
-      "purge_title": "Oude taakgeschiedenis wissen"
+      "purge_title": "Oude taakgeschiedenis wissen",
+      "run_repair": "ref_counts repareren",
+      "run_repair_hint": "Corrigeert gedriftete ref_counts (blobs + manifests) die de audit vindt. Inhoudveilig — alleen tellers wijzigen, geen gegevens.",
+      "run_repair_confirm_title_scoped": "{{name}} in reparatiemodus uitvoeren?",
+      "run_mutating_confirm_title": "{{name}} uitvoeren?",
+      "run_mutating_confirm_body": "Deze taak wijzigt opgeslagen status wanneer deze draait.",
+      "mutates_never": "alleen-lezen",
+      "mutates_on_repair_only": "alleen-lezen tenzij gerepareerd",
+      "startup": "bij opstart",
+      "startup_repair": "bij opstart · reparatie",
+      "startup_tooltip": "Geconfigureerd in OXICLOUD_STARTUP_JOBS om bij elke opstart te draaien.",
+      "startup_repair_tooltip": "Geconfigureerd in OXICLOUD_STARTUP_JOBS om bij elke opstart in reparatiemodus te draaien.",
+      "run_variants_menu": "Menu uitvoervarianten",
+      "run_repair_confirm": "Repareren",
+      "triggered_ok_repair": "{{name}}: {{n}} teller(s) hersteld"
     },
     "oidc": "OIDC / SSO",
     "oidc_discover": "Testen / ontdekken",
@@ -1346,7 +1389,11 @@
         "oidc": "SSO",
         "device": "Apparaat",
         "unknown": "Onbekend"
-      }
+      },
+      "online": "online",
+      "idle": "inactief",
+      "presence_online_tooltip": "Online — laatst gezien {{ago}}",
+      "presence_idle_tooltip": "Inactief — laatst gezien {{ago}}"
     },
     "storage_backend_audit_triggered": "backend_consistency geactiveerd voor `{{name}}` — volg het op het tabblad Achtergrondtaken.",
     "drive_policies": {
@@ -1438,7 +1485,55 @@
     "notification_sink_missing_title": "Stel een notificatiekanaal in",
     "notification_sink_missing_body": "Bevindingen uit taken hebben nergens om naartoe te gaan — niemand wordt gewaarschuwd als er iets misgaat. Stel ten minste één kanaal in.",
     "notification_sink_missing_howto": "Zet ZOWEL OXICLOUD_JOBS_NOTIFY_EMAIL_TO (adressen gescheiden door komma’s) ALS OXICLOUD_SMTP_HOST, OF zet OXICLOUD_WEBHOOK_URL — en start opnieuw op.",
-    "storage_cache_recommended_body": "Het wordt sterk aanbevolen om de lokale cache in te schakelen bij gebruik van een extern backend (cache op SSD / NVMe heeft de voorkeur)."
+    "storage_cache_recommended_body": "Het wordt sterk aanbevolen om de lokale cache in te schakelen bij gebruik van een extern backend (cache op SSD / NVMe heeft de voorkeur).",
+    "oxicloud_version": "OxiCloud-versie",
+    "storage_cache_recommended_title": "Lokale blob-cache inschakelen",
+    "storage_cache_recommended_howto": "Zet OXICLOUD_STORAGE_CACHE_ENABLED=true om in te schakelen.",
+    "section_cache": "Opslagcache",
+    "cache_memory": "Geheugen (moka)",
+    "cache_memory_files": "Geheugen (moka) · Bestandscache",
+    "cache_memory_thumbnails": "Geheugen (moka) · Miniatuurcache",
+    "cache_disk": "Schijf (.blob-cache)",
+    "cache_disk_unified": "Schijfcache (Bestanden + Satellieten)",
+    "cache_disk_hint": "Eén schijflaag die zowel bronbestandchunks als alle afgeleide blobs (miniaturen, transcoderingen) deelt. Eén miss per koud blob, ongeacht de aanleiding.",
+    "cache_disk_disabled_hint": "Het wordt sterk aanbevolen om de lokale cache in te schakelen (bij voorkeur op SSD / NVMe).",
+    "cache_disk_disabled_howto": "Zet OXICLOUD_STORAGE_CACHE_ENABLED=true om in te schakelen.",
+    "cache_chunks": "chunks",
+    "cache_files": "bestanden",
+    "cache_thumbnails": "miniaturen",
+    "cache_disabled": "Uitgeschakeld",
+    "cache_not_applicable": "Niet van toepassing",
+    "cache_disk_local_hint": "Backend-opslag staat op het lokale bestandssysteem — een schijfcache ervóór zou alleen bytes op dezelfde schijf dupliceren. Niets te activeren.",
+    "cache_disk_location": "Locatie",
+    "external_users": "Extern",
+    "external_users_tooltip": "Alleen-grant accounts — magic-link, enkel OIDC, OCM-ontvangers",
+    "online_users": "Online gebruikers",
+    "online_users_tooltip": "Unieke gebruikers met een actieve sessie in de laatste 5 minuten",
+    "online_sessions": "Online sessies",
+    "online_sessions_tooltip": "Niet-ingetrokken sessies actief in de laatste 5 minuten — gebruikers met meerdere apparaten dragen er meer dan één bij",
+    "section_accounts": "Gebruikersaccounts",
+    "section_activity": "Live-activiteit",
+    "section_system": "Systeem",
+    "live": "live",
+    "live_tooltip": "Weerspiegelt sessies die in de laatste 5 minuten actief waren",
+    "user_actions": "Acties voor {{name}}",
+    "make_admin": "Beheerder maken",
+    "make_user": "Normale gebruiker maken",
+    "hint_not_own_role": "Je kunt je eigen rol niet wijzigen",
+    "hint_not_own_account": "Je kunt je eigen account niet deactiveren",
+    "hint_not_own_account_delete": "Je kunt je eigen account niet verwijderen",
+    "transfer_ownership_title": "Eigenaarschap overdragen",
+    "confirm_transfer_ownership": "Server-eigenaarschap overdragen aan {{name}}? Je wordt gedegradeerd tot beheerder, en alleen die persoon kan het terug overdragen.",
+    "owner_protected_title": "De eigenaar van de server kan niet worden gedeactiveerd",
+    "owner_protected_delete_title": "De eigenaar van de server kan niet worden verwijderd",
+    "quota_usage": "Quotagebruik",
+    "quota_usage_hint": "Logische bestandsgroottes vóór deduplicatie. Omvat bestanden in de prullenbak tot permanente verwijdering.",
+    "quota_personal": "Persoonlijke schijven",
+    "backend_storage": "Backend-opslag",
+    "backend_stored": "Opgeslagen",
+    "backend_dedup_ratio": "Deduplicatieverhouding",
+    "backend_referenced": "Gerefereerd",
+    "backend_referenced_hint": "Som van blob-referenties (grootte × ref_count). Kan het schijftotaal overschrijden omdat miniaturen, afgeleide assets en nog-op-GC-wachtende blobs nog referenties houden."
   },
   "profile": {
     "page_title": "Profiel",
@@ -1980,5 +2075,19 @@
   },
   "sortdir": {
     "title": "Sorteer richting"
+  },
+  "collab": {
+    "conflict": {
+      "title": "Dit bestand is door iemand anders gewijzigd",
+      "body": "Je niet-opgeslagen wijzigingen konden niet in {{name}} worden opgeslagen en zijn in een apart bestand bewaard:",
+      "save_failed": "Je niet-opgeslagen wijzigingen konden NIET automatisch worden opgeslagen. Ze bestaan alleen in deze editor — kopieer ze naar een veilige plek voordat je deze pagina verlaat.",
+      "deleted": "{{name}} verwijderd.",
+      "open_copy": "Mijn opgeslagen kopie openen",
+      "delete_copy": "Mijn opgeslagen kopie verwijderen",
+      "open_current": "Verwerp wat op het scherm staat en open de bijgewerkte {{name}}"
+    }
+  },
+  "sidebar": {
+    "oxicloud_version": "OxiCloud"
   }
 }

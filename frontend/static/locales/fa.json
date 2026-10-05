@@ -217,7 +217,14 @@
     "add": "افزودن",
     "apply": "اعمال",
     "clear": "پاک کردن",
-    "remove": "حذف"
+    "remove": "حذف",
+    "on": "روشن",
+    "off": "خاموش",
+    "refresh": "به‌روزرسانی",
+    "new_document_text": "سند متنی جدید",
+    "new_document_spreadsheet": "صفحهٔ گستردهٔ جدید",
+    "new_document_presentation": "ارائهٔ جدید",
+    "new_text_file": "فایل متنی جدید"
   },
   "user_menu": {
     "appearance": "ظاهر",
@@ -333,7 +340,15 @@
     "policy_expiry_too_far": "این دیسک پیوندهای عمومی را تا {{date}} محدود می‌کند.",
     "add": "افزودن",
     "adding": "در حال افزودن…",
-    "clear_selection": "انتخاب شخص دیگر"
+    "clear_selection": "انتخاب شخص دیگر",
+    "preview": "پیش‌نمایش",
+    "the_drive": "درایو",
+    "none_direct": "روی خود این آیتم لینک عمومی وجود ندارد.",
+    "inherited_links_title": "از طریق لینک عمومی هم قابل دسترسی است",
+    "inherited_link_on_drive_title": "این لینک روی درایو «{{name}}» قرار دارد",
+    "inherited_link_manage": "«{{name}}» را باز کنید تا این لینک را مدیریت یا حذف کنید",
+    "inherited_from_folder_title": "به ارث برده‌شده از پوشهٔ «{{name}}» — برای تغییر، آن را باز کنید",
+    "inherited_from_drive_title": "به ارث برده‌شده از درایو «{{name}}» — در تنظیمات درایو تغییر دهید"
   },
   "share_dialogTitle": "پیوند هم‌رسانی",
   "share_linkLabel": "پیوند هم‌رسانی:",
@@ -527,7 +542,15 @@
     "upload_failed": "آپلود انجام نشد",
     "uploading": "در حال آپلود…",
     "uploading_file": "در حال بارگذاری {{name}}…",
-    "uploading_n": "در حال بارگذاری {{done}}/{{total}} فایل…"
+    "uploading_n": "در حال بارگذاری {{done}}/{{total}} فایل…",
+    "upload_folder_not_ready": "پوشه هنوز در حال بارگذاری است — لطفاً کمی بعد دوباره تلاش کنید.",
+    "new_document": "سند جدید",
+    "new_document_prompt": "نام سند",
+    "new_text_file": "فایل متنی جدید",
+    "new_text_file_prompt": "نام فایل (مثلاً notes.md)",
+    "new_text_file_hint": "پسوند را در نام فایل بگنجانید (مثلاً .md، .txt، .c، .py، .rs).",
+    "new_text_file_binary_ext_title": "پسوند غیرمتنی",
+    "new_text_file_binary_ext_message": "«{{name}}» شبیه فایل متنی نیست. ویرایشگر آن را به صورت متن باز می‌کند — این معمولاً فرمت‌های دودویی را خراب می‌کند. با این حال ادامه می‌دهید؟"
   },
   "dialogs": {
     "rename_folder": "تغییر نام پوشه",
@@ -594,7 +617,12 @@
     "group_virtual_immutable": "گروه «Internal» توسط سامانه مدیریت می‌شود و قابل تغییر نیست.",
     "group_not_found": "گروه پیدا نشد.",
     "group_name_taken": "گروهی با این نام پیش‌از این وجود دارد.",
-    "forbidden": "فایل ها بارگیری نشد"
+    "forbidden": "فایل ها بارگیری نشد",
+    "quota_exceeded": "فضا کافی نیست. مقداری فضا آزاد کنید یا از مدیر بخواهید سهمیه را افزایش دهد.",
+    "access_denied": "شما اجازهٔ انجام این کار را ندارید.",
+    "not_found": "این آیتم دیگر وجود ندارد.",
+    "conflict": "آیتمی با این نام از قبل وجود دارد.",
+    "transient_backend": "ذخیره‌سازی موقتاً در دسترس نیست. دوباره تلاش کنید."
   },
   "breadcrumb": {
     "home": "صفحه اصلی",
@@ -604,7 +632,8 @@
       "shared_drive": "درایو اشتراکی: {{name}}",
       "direct_share": "با شما به اشتراک گذاشته شده",
       "token": "از طریق پیوند اشتراکی"
-    }
+    },
+    "share_folder": "اشتراک پوشه: {{name}}"
   },
   "trash": {
     "empty_trash": "خالی کردن سطل زباله",
@@ -1293,7 +1322,21 @@
       "title": "کارهای پس‌زمینه",
       "hint": "این بخش به کارهای داخلی پس‌زمینه مربوط می‌شود: کارهای دوره‌ای و بر اساس تقاضا. بررسی‌های سازگاری در هر زمان به‌طور ایمن قابل اجرا هستند — فقط خواندنی هستند.",
       "none_registered": "هیچ کار پس‌زمینه‌ای ثبت نشده است.",
-      "purge_title": "پاک کردن تاریخچه کارهای قدیمی"
+      "purge_title": "پاک کردن تاریخچه کارهای قدیمی",
+      "run_repair": "ترمیم ref_counts",
+      "run_repair_hint": "هر ref_countِ منحرف (blobها + manifestها) را که ممیزی یافته است اصلاح می‌کند. برای محتوا امن است — فقط شمارنده‌ها تغییر می‌کنند، نه داده‌ها.",
+      "run_repair_confirm_title_scoped": "{{name}} در حالت ترمیم اجرا شود؟",
+      "run_mutating_confirm_title": "{{name}} اجرا شود؟",
+      "run_mutating_confirm_body": "این کار هنگام اجرا وضعیت ذخیره‌شده را تغییر می‌دهد.",
+      "mutates_never": "فقط-خواندنی",
+      "mutates_on_repair_only": "فقط-خواندنی مگر در حالت ترمیم",
+      "startup": "در بوت",
+      "startup_repair": "در بوت · ترمیم",
+      "startup_tooltip": "در OXICLOUD_STARTUP_JOBS برای اجرا در هر بوت پیکربندی شده است.",
+      "startup_repair_tooltip": "در OXICLOUD_STARTUP_JOBS برای اجرا در حالت ترمیم در هر بوت پیکربندی شده است.",
+      "run_variants_menu": "منوی حالت‌های اجرا",
+      "run_repair_confirm": "ترمیم",
+      "triggered_ok_repair": "{{name}}: {{n}} شمارنده ترمیم شد"
     },
     "oidc": "OIDC / SSO",
     "oidc_discover": "آزمایش / کشف",
@@ -1328,7 +1371,11 @@
         "oidc": "SSO",
         "device": "دستگاه",
         "unknown": "ناشناخته"
-      }
+      },
+      "online": "آنلاین",
+      "idle": "بی‌کار",
+      "presence_online_tooltip": "آنلاین — آخرین حضور {{ago}}",
+      "presence_idle_tooltip": "بی‌کار — آخرین حضور {{ago}}"
     },
     "storage_backend_audit_triggered": "backend_consistency برای `{{name}}` راه‌اندازی شد — در تب کارهای پس‌زمینه پیگیری کنید.",
     "drive_policies": {
@@ -1420,7 +1467,55 @@
     "notification_sink_missing_title": "یک مقصد اطلاع‌رسانی تنظیم کنید",
     "notification_sink_missing_body": "یافته‌های خرابی کارها مقصدی ندارند — هنگام خرابی به هیچ‌کس اطلاع داده نمی‌شود. حداقل یک مقصد تنظیم کنید.",
     "notification_sink_missing_howto": "OXICLOUD_JOBS_NOTIFY_EMAIL_TO (نشانی‌ها با کاما جدا) و OXICLOUD_SMTP_HOST را هر دو تنظیم کنید، یا OXICLOUD_WEBHOOK_URL را تنظیم کنید — سپس راه‌اندازی مجدد کنید.",
-    "storage_cache_recommended_body": "هنگام استفاده از بک‌اند راه‌دور به‌شدت توصیه می‌شود کش محلی را فعال کنید (ترجیحاً کش روی SSD / NVMe)."
+    "storage_cache_recommended_body": "هنگام استفاده از بک‌اند راه‌دور به‌شدت توصیه می‌شود کش محلی را فعال کنید (ترجیحاً کش روی SSD / NVMe).",
+    "oxicloud_version": "نسخهٔ OxiCloud",
+    "storage_cache_recommended_title": "فعال‌سازی کش محلی blobها",
+    "storage_cache_recommended_howto": "برای فعال‌سازی OXICLOUD_STORAGE_CACHE_ENABLED=true را تنظیم کنید.",
+    "section_cache": "کش ذخیره‌سازی",
+    "cache_memory": "حافظه (moka)",
+    "cache_memory_files": "حافظه (moka) · کش فایل‌ها",
+    "cache_memory_thumbnails": "حافظه (moka) · کش بندانگشتی‌ها",
+    "cache_disk": "دیسک (.blob-cache)",
+    "cache_disk_unified": "کش دیسک (فایل‌ها + ماهواره‌ها)",
+    "cache_disk_hint": "یک لایهٔ دیسک واحد که میان chunkهای فایل‌های منبع و همهٔ blobهای مشتق (بندانگشتی، ترنس‌کد) مشترک است. برای هر blob سرد تنها یک miss رخ می‌دهد، مهم نیست چه چیزی آن را فراخوانده.",
+    "cache_disk_disabled_hint": "به‌شدت توصیه می‌شود کش محلی را فعال کنید (ترجیحاً روی SSD / NVMe).",
+    "cache_disk_disabled_howto": "برای فعال‌سازی OXICLOUD_STORAGE_CACHE_ENABLED=true را تنظیم کنید.",
+    "cache_chunks": "chunks",
+    "cache_files": "فایل‌ها",
+    "cache_thumbnails": "بندانگشتی‌ها",
+    "cache_disabled": "غیرفعال",
+    "cache_not_applicable": "ناپذیر",
+    "cache_disk_local_hint": "ذخیره‌سازی بک‌اند روی سیستم فایل محلی است — کش دیسک پیش از آن فقط بایت‌ها را روی همان دیسک تکرار می‌کند. چیزی برای فعال‌سازی نیست.",
+    "cache_disk_location": "مکان",
+    "external_users": "خارجی",
+    "external_users_tooltip": "حساب‌های فقط-grant — magic-link، فقط OIDC، گیرندگان OCM",
+    "online_users": "کاربران آنلاین",
+    "online_users_tooltip": "کاربران یکتا با نشست فعال در ۵ دقیقهٔ گذشته",
+    "online_sessions": "نشست‌های آنلاین",
+    "online_sessions_tooltip": "نشست‌های لغو‌نشده و فعال در ۵ دقیقهٔ گذشته — کاربر چنددستگاهی بیش از یکی را به ارمغان می‌آورد",
+    "section_accounts": "حساب‌های کاربری",
+    "section_activity": "فعالیت زنده",
+    "section_system": "سیستم",
+    "live": "زنده",
+    "live_tooltip": "نشست‌های فعال در ۵ دقیقهٔ گذشته را نشان می‌دهد",
+    "user_actions": "اقدامات برای {{name}}",
+    "make_admin": "ارتقا به مدیر",
+    "make_user": "تغییر به کاربر معمولی",
+    "hint_not_own_role": "نمی‌توانید نقش خود را تغییر دهید",
+    "hint_not_own_account": "نمی‌توانید حساب خود را غیرفعال کنید",
+    "hint_not_own_account_delete": "نمی‌توانید حساب خود را حذف کنید",
+    "transfer_ownership_title": "انتقال مالکیت",
+    "confirm_transfer_ownership": "مالکیت سرور به {{name}} منتقل شود؟ شما به مدیر تنزل خواهید یافت و تنها همان شخص می‌تواند آن را دوباره منتقل کند.",
+    "owner_protected_title": "مالک سرور را نمی‌توان غیرفعال کرد",
+    "owner_protected_delete_title": "مالک سرور را نمی‌توان حذف کرد",
+    "quota_usage": "میزان مصرف سهمیه",
+    "quota_usage_hint": "اندازهٔ منطقی فایل‌ها پیش از حذف تکرار. فایل‌های داخل سطل زباله را تا حذف دائمی شامل می‌شود.",
+    "quota_personal": "درایوهای شخصی",
+    "backend_storage": "ذخیره‌سازی بک‌اند",
+    "backend_stored": "ذخیره‌شده",
+    "backend_dedup_ratio": "نسبت حذف تکرار",
+    "backend_referenced": "ارجاع‌داده‌شده",
+    "backend_referenced_hint": "مجموع ارجاع‌های blobها (اندازه × ref_count). ممکن است از کل درایو فراتر رود، چون بندانگشتی‌ها، دارایی‌های مشتق و blobهای در انتظار پاکسازی هنوز ارجاعاتی را نگه می‌دارند."
   },
   "profile": {
     "page_title": "پروفایل",
@@ -1980,5 +2075,19 @@
   },
   "sortdir": {
     "title": "جهت مرتب سازی"
+  },
+  "collab": {
+    "conflict": {
+      "title": "این فایل توسط شخص دیگری تغییر یافته است",
+      "body": "تغییرات ذخیره‌نشدهٔ شما در {{name}} ذخیره نشد، بنابراین در یک فایل جداگانه نگه‌داری شد:",
+      "save_failed": "تغییرات ذخیره‌نشدهٔ شما به‌طور خودکار ذخیره نشد. آنها فقط در این ویرایشگر وجود دارند — قبل از ترک این صفحه، آنها را در جایی امن کپی کنید.",
+      "deleted": "{{name}} حذف شد.",
+      "open_copy": "بازکردن نسخهٔ ذخیره‌شدهٔ من",
+      "delete_copy": "حذف نسخهٔ ذخیره‌شدهٔ من",
+      "open_current": "دور انداختن محتوای صفحه و باز کردن نسخهٔ به‌روز {{name}}"
+    }
+  },
+  "sidebar": {
+    "oxicloud_version": "OxiCloud"
   }
 }
