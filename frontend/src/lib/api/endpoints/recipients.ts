@@ -131,7 +131,10 @@ async function loadGroups(): Promise<Map<string, string>> {
 
 /** Preload the user + group caches so grant rows can show names. */
 export async function ensureResolvers(): Promise<void> {
-	await Promise.all([systemContacts(), loadGroups()]);
+	// `include_self` because this warms the id→label index, not the share
+	// picker: a member list has to render the caller's own name, and the
+	// default directory omits them.
+	await Promise.all([systemContacts(true), loadGroups()]);
 }
 
 // O(1) id→contact index over `contactCache`, built once per cache identity.
@@ -140,12 +143,23 @@ export async function ensureResolvers(): Promise<void> {
 // O(rows × directory size).
 let contactById: Map<string, Contact> | null = null;
 let contactByIdSource: Contact[] | null = null;
+let contactByIdSourceWithSelf: Contact[] | null = null;
 
+// Indexes the union of both directory variants, so resolution doesn't depend
+// on which one a page happened to load first. Whichever is missing contributes
+// nothing; the caller only ever appears in the `include_self` variant.
 function contactIndex(): Map<string, Contact> | null {
-	if (!contactCache) return null;
-	if (!contactById || contactByIdSource !== contactCache) {
-		contactById = new Map(contactCache.map((c) => [c.id, c]));
+	if (!contactCache && !contactCacheWithSelf) return null;
+	if (
+		!contactById ||
+		contactByIdSource !== contactCache ||
+		contactByIdSourceWithSelf !== contactCacheWithSelf
+	) {
+		contactById = new Map(
+			[...(contactCache ?? []), ...(contactCacheWithSelf ?? [])].map((c) => [c.id, c])
+		);
 		contactByIdSource = contactCache;
+		contactByIdSourceWithSelf = contactCacheWithSelf;
 	}
 	return contactById;
 }
