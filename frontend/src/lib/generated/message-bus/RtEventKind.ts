@@ -10,6 +10,7 @@ enum RtEventKind {
 	NOTIFICATION_RECEIVED = 'notification_received',
 	JOB_RUN_STARTED = 'job_run_started',
 	JOB_RUN_PROGRESS = 'job_run_progress',
-	JOB_RUN_ENDED = 'job_run_ended'
+	JOB_RUN_ENDED = 'job_run_ended',
+	SERVER_STATUS_CHANGED = 'server_status_changed'
 }
 export type { RtEventKind as default };

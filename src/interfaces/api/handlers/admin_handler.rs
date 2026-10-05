@@ -114,6 +114,14 @@ pub fn admin_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
                 .post(acquire_backend_write_lock)
                 .delete(release_backend_write_lock),
         )
+        // Operator-driven banner messages — CRUD on the list +
+        // per-id update/delete. See the handler docs on each
+        // function.
+        .route("/banners", get(list_ops_banners).post(create_ops_banner))
+        .route(
+            "/banners/{id}",
+            axum::routing::put(update_ops_banner).delete(delete_ops_banner),
+        )
         // K3 (storage-key-rotation): per-entry rotate trigger.
         // Normalises every blob on the named entry to its head-pair
         // format (legacy → v1, plaintext ↔ encrypted, old-key →
@@ -804,6 +812,7 @@ pub async fn acquire_backend_write_lock(
         .migration_readonly
         .store(true, std::sync::atomic::Ordering::Relaxed);
 
+    broadcast_server_status_change(&state);
     tracing::info!(
         target: "audit",
         event = "backend_write_lock.acquired",
@@ -871,6 +880,7 @@ pub async fn release_backend_write_lock(
         .await;
     }
 
+    broadcast_server_status_change(&state);
     tracing::info!(
         target: "audit",
         event = "backend_write_lock.released",
@@ -885,6 +895,219 @@ pub async fn release_backend_write_lock(
             holder: None,
         },
     ))
+}
+
+// ─── Ops banners — operator-driven announcements ────────────────────────────
+//
+// CRUD surface for the `/admin/maintenance` banner editor. Audit-logged
+// on every mutation; the message bus broadcasts `OpsBannerChanged` on
+// `Topic::ServerStatus` so open client tabs refresh their banner store
+// within ~1s instead of on their next natural API call. The
+// version-diff fallback on X-Server-Status covers the WS-down /
+// reconnect-window cases.
+//
+// Note on ordering vs permissions: this surface is admin-only (gated
+// by the `/api/admin/*` middleware layer, not inline), and inputs are
+// validated by [`OpsBannerService`] against hard caps on count /
+// locale count / body size. 400s are mapped from service errors with
+// a stable `error_type` discriminator the SPA can switch on.
+
+/// GET /api/admin/banners — full list, including `starts_at > now`
+/// entries not yet visible to users. Admin inspects what they've
+/// scheduled; the public endpoint filters.
+#[utoipa::path(
+    get,
+    path = "/api/admin/banners",
+    responses(
+        (status = 200, body = Vec<crate::application::services::ops_banner_service::OpsBanner>, description = "Full admin-side banner list — includes scheduled-but-not-yet-visible entries"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn list_ops_banners(
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, AppError> {
+    Ok(Json(state.ops_banner_service.list_all()))
+}
+
+/// POST /api/admin/banners — create a new banner.
+#[utoipa::path(
+    post,
+    path = "/api/admin/banners",
+    request_body = crate::application::services::ops_banner_service::OpsBannerInput,
+    responses(
+        (status = 201, body = crate::application::services::ops_banner_service::OpsBanner, description = "Banner created"),
+        (status = 400, description = "Validation error (empty body, oversized body, invalid locale, …)"),
+        (status = 409, description = "Banner cap reached — delete one before creating another"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn create_ops_banner(
+    State(state): State<Arc<AppState>>,
+    auth_user: AuthUser,
+    Json(input): Json<crate::application::services::ops_banner_service::OpsBannerInput>,
+) -> Result<impl IntoResponse, AppError> {
+    let banner = state
+        .ops_banner_service
+        .create(input, auth_user.id)
+        .await
+        .map_err(map_banner_error)?;
+    broadcast_server_status_change(&state);
+    tracing::info!(
+        target: "audit",
+        event = "ops_banner.created",
+        caller_id = %auth_user.id,
+        banner_id = %banner.id,
+        severity = ?banner.severity,
+        locales_count = banner.body.len(),
+        "👮🏻‍♂️ ops banner created"
+    );
+    Ok((StatusCode::CREATED, Json(banner)))
+}
+
+/// PUT /api/admin/banners/{id} — full-replacement update of
+/// severity/body/starts_at. `id` + `created_by` + `created_at` stay.
+#[utoipa::path(
+    put,
+    path = "/api/admin/banners/{id}",
+    params(("id" = String, Path, description = "Banner UUID")),
+    request_body = crate::application::services::ops_banner_service::OpsBannerInput,
+    responses(
+        (status = 200, body = crate::application::services::ops_banner_service::OpsBanner, description = "Banner updated"),
+        (status = 400, description = "Validation error"),
+        (status = 404, description = "Banner not found"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn update_ops_banner(
+    State(state): State<Arc<AppState>>,
+    auth_user: AuthUser,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(input): Json<crate::application::services::ops_banner_service::OpsBannerInput>,
+) -> Result<impl IntoResponse, AppError> {
+    let uuid = Uuid::parse_str(&id).map_err(|_| {
+        AppError::new(
+            StatusCode::NOT_FOUND,
+            "banner not found".to_string(),
+            "NotFound",
+        )
+    })?;
+    let banner = state
+        .ops_banner_service
+        .update(uuid, input)
+        .await
+        .map_err(map_banner_error)?;
+    broadcast_server_status_change(&state);
+    tracing::info!(
+        target: "audit",
+        event = "ops_banner.updated",
+        caller_id = %auth_user.id,
+        banner_id = %banner.id,
+        severity = ?banner.severity,
+        locales_count = banner.body.len(),
+        "👮🏻‍♂️ ops banner updated"
+    );
+    Ok(Json(banner))
+}
+
+/// DELETE /api/admin/banners/{id} — remove one banner.
+#[utoipa::path(
+    delete,
+    path = "/api/admin/banners/{id}",
+    params(("id" = String, Path, description = "Banner UUID")),
+    responses(
+        (status = 204, description = "Banner deleted"),
+        (status = 404, description = "Banner not found"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn delete_ops_banner(
+    State(state): State<Arc<AppState>>,
+    auth_user: AuthUser,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    let uuid = Uuid::parse_str(&id).map_err(|_| {
+        AppError::new(
+            StatusCode::NOT_FOUND,
+            "banner not found".to_string(),
+            "NotFound",
+        )
+    })?;
+    state
+        .ops_banner_service
+        .delete(uuid)
+        .await
+        .map_err(map_banner_error)?;
+    broadcast_server_status_change(&state);
+    tracing::info!(
+        target: "audit",
+        event = "ops_banner.deleted",
+        caller_id = %auth_user.id,
+        banner_id = %uuid,
+        "👮🏻‍♂️ ops banner deleted"
+    );
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Map a service-layer validation / IO error to an HTTP response.
+/// One place so every mutating endpoint uses the same discriminator
+/// strings — the FE switches on `error_type`.
+fn map_banner_error(
+    e: crate::application::services::ops_banner_service::OpsBannerError,
+) -> AppError {
+    use crate::application::services::ops_banner_service::OpsBannerError;
+    match e {
+        OpsBannerError::CapReached => {
+            AppError::new(StatusCode::CONFLICT, e.to_string(), "Conflict")
+        }
+        OpsBannerError::NotFound => AppError::new(StatusCode::NOT_FOUND, e.to_string(), "NotFound"),
+        OpsBannerError::EmptyBody
+        | OpsBannerError::TooManyLocales
+        | OpsBannerError::BodyTooLong { .. }
+        | OpsBannerError::InvalidLocale { .. }
+        | OpsBannerError::ExpiresBeforeStart => {
+            AppError::new(StatusCode::BAD_REQUEST, e.to_string(), "BadRequest")
+        }
+        OpsBannerError::Internal(msg) => AppError::internal_error(msg),
+    }
+}
+
+/// Publish the new `banners_version` on the server-status bus topic
+/// so every connected client refreshes. Silent no-op when the bus
+/// isn't configured (`OXICLOUD_MESSAGEBUS_ENABLE=false`) — the
+/// FE's X-Server-Status version-diff fallback covers it.
+/// Broadcast a `ServerStatusChanged` event on the WS message bus so
+/// every connected session refetches `/api/config` within ~1s. The
+/// `version` hash covers EVERY axis the server-status payload
+/// carries (readonly, holder, migration/rotation progress,
+/// banners), so a single call site is correct for ops banners,
+/// write-lock acquire/release, migration engage/release — any
+/// state transition the FE might care about.
+///
+/// WS-down / reconnect-window gracefully degrades to the X-Server-
+/// Status header-diff path (same code path), so this is purely a
+/// latency optimisation.
+fn broadcast_server_status_change(state: &Arc<AppState>) {
+    use crate::application::ports::message_bus_ports::{MessageBus, MessageBusEvent, Topic};
+    use crate::interfaces::middleware::server_status::compute_server_status_version;
+    let bus: &dyn MessageBus = state.bus.as_ref();
+    bus.publish(
+        &Topic::ServerStatus,
+        MessageBusEvent::ServerStatusChanged {
+            version: compute_server_status_version(state),
+        },
+    );
 }
 
 // verify_migration endpoint retired (slice 7 of

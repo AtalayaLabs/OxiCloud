@@ -78,6 +78,31 @@ pub struct HeaderPayload {
     /// source/target entry names.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub holder: Option<HolderHeader>,
+
+    /// Short hash of the current `ops_banner_service` list. Carried
+    /// on the X-Server-Status header on every API response — the
+    /// FE compares against its cached version and, on diff, refetches
+    /// `/api/config` to pick up `banners`. Kept to 16 hex chars so
+    /// the header stays small on every request.
+    ///
+    /// Only serialized when at least one banner is live (either
+    /// scheduled or visible). An empty list means "no banners
+    /// anywhere" and the field is omitted — one less thing on the
+    /// wire for the common case.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub banners_version: Option<String>,
+
+    /// Public-filtered list of operator-authored banners (entries
+    /// whose `starts_at` is in the past or absent). Full objects —
+    /// severity + body-per-locale + optional starts_at.
+    ///
+    /// ONLY populated in the `/api/config` body (via
+    /// [`build_header_payload`]) — the X-Server-Status response
+    /// header carries just `banners_version` because an admin
+    /// could post a banner with 10 locale translations and we
+    /// should not re-ship that on every API response.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub banners: Option<Vec<crate::application::services::ops_banner_service::OpsBanner>>,
 }
 
 /// Public-safe lock-holder projection carried in the X-Server-Status
@@ -149,17 +174,52 @@ pub fn build_header_payload(state: &AppState) -> HeaderPayload {
     // populated when the gate is actually held — a free gate under
     // a stale legacy bool would still send `readonly: true` with no
     // holder, which is strictly more honest than fabricating one.
+    // Project to the PUBLIC display — strips the operator-authored
+    // label from an External hold so the generic payload every
+    // authenticated user sees via /api/config doesn't leak internal
+    // ops notes. The full typed holder (with raw label) stays on the
+    // admin-only `/api/admin/storage/write-lock` surface.
     let holder = state.backend_write_gate.held_by().map(|r| HolderHeader {
         kind: r.kind().to_string(),
-        display: r.display(),
+        display: r.public_display(),
     });
+    // Banner state. Admin API mutations bump the version via the
+    // service's write-side commit; the FE compares versions and
+    // refetches `/api/config` on diff. `banners` here is the
+    // public-filtered list (ops authored, `starts_at <= now`).
+    let banners_list = state.ops_banner_service.list_public();
+    let (banners_version, banners) = if banners_list.is_empty() {
+        (None, None)
+    } else {
+        (Some(state.ops_banner_service.version()), Some(banners_list))
+    };
 
     HeaderPayload {
         readonly,
         migration,
         rotation,
         holder,
+        banners_version,
+        banners,
     }
+}
+
+/// Short hash of the current server-status payload. Carried on the
+/// `MessageBusEvent::ServerStatusChanged { version }` push so FE
+/// clients can compare against their last-seen value and refetch
+/// `/api/config` only on a real diff.
+///
+/// Hashes the entire [`HeaderPayload`] by serializing it to JSON and
+/// taking the first 16 hex chars of its BLAKE3. The payload shape is
+/// stable JSON (BTreeMap-serialized banners, deterministic field
+/// order), so the same observable state always hashes the same.
+/// Collision risk at 2^-64 — comfortably below "false negative on a
+/// genuine change" being noticeable.
+pub fn compute_server_status_version(state: &AppState) -> String {
+    let payload = build_header_payload(state);
+    let bytes = serde_json::to_vec(&payload).unwrap_or_default();
+    let full = blake3::hash(&bytes).to_hex().to_string();
+    full[..16].to_string()
 }
 
 pub async fn server_status_middleware(
@@ -177,10 +237,27 @@ pub async fn server_status_middleware(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .is_some();
 
+    // Banner presence check. Any live banner (including scheduled)
+    // means we have a version to stamp.
+    let any_banner = !state.ops_banner_service.list_all().is_empty();
+
     let mut response = next.run(request).await;
-    if !readonly && !rotation_active {
-        return response;
-    }
+
+    // Stamp the header on EVERY response — even when nothing is
+    // going on server-side. The payload is ~20 bytes
+    // (`{"readonly":false}`) and the ~1µs cost is negligible against
+    // the surrounding request work.
+    //
+    // Why we don't early-return any more: the FE relies on header
+    // ABSENCE to mean "response path outside the middleware stack"
+    // (/api/auth/*, /api/wopi/*, etc., all nested outside the layer
+    // per `create_api_routes`). The previous "early-return on empty
+    // state" rule collided with that signal: a middleware response
+    // with nothing-happening looked identical to an auth response
+    // that never saw the middleware, and the FE wiped its banner
+    // store on an unrelated `PATCH /api/auth/me/profile`. Stamping
+    // the header unconditionally restores the invariant "header
+    // present ⇔ this response went through the status middleware".
 
     // Cold path — build the payload from whichever snapshots are
     // active. `readonly:true` fires the migration banner even if
@@ -219,11 +296,21 @@ pub async fn server_status_middleware(
         } else {
             None
         };
+        // Header-only variant — carries the version hash so the FE
+        // knows when to refetch, but never the full banner list.
+        // The list lives on `/api/config` body only.
+        let banners_version = if any_banner {
+            Some(state.ops_banner_service.version())
+        } else {
+            None
+        };
         HeaderPayload {
             readonly,
             migration,
             rotation,
             holder,
+            banners_version,
+            banners: None,
         }
     };
 

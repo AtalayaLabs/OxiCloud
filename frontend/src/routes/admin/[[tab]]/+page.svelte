@@ -50,6 +50,10 @@
 		acquireBackendWriteLock,
 		releaseBackendWriteLock,
 		type BackendWriteLockStatus,
+		listOpsBanners,
+		createOpsBanner,
+		deleteOpsBanner,
+		type OpsBannerInput,
 		createExternalMount,
 		deleteExternalMount,
 		listExternalMounts,
@@ -85,7 +89,14 @@
 		searchRecipients,
 		type Recipient
 	} from '$lib/api/endpoints/recipients';
-	import type { FullUser, Drive, DriveMember, SessionSummary, User } from '$lib/api/types';
+	import type {
+		FullUser,
+		Drive,
+		DriveMember,
+		SessionSummary,
+		User,
+		OpsBanner
+	} from '$lib/api/types';
 	import { shortUserAgent } from '$lib/utils/userAgent';
 	import { triggerJob } from '$lib/api/endpoints/adminJobs';
 	import { serverConfig } from '$lib/stores/serverConfig.svelte';
@@ -99,7 +110,7 @@
 	import DrivePoliciesModal from '$lib/components/DrivePoliciesModal.svelte';
 	import QuotaEditor from '$lib/components/QuotaEditor.svelte';
 	import UserVignette from '$lib/components/UserVignette.svelte';
-	import { t } from '$lib/i18n/index.svelte';
+	import { t, LANGUAGES } from '$lib/i18n/index.svelte';
 	import { session } from '$lib/stores/session.svelte';
 	import { drives as drivesStore } from '$lib/stores/drives.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
@@ -1225,6 +1236,133 @@
 		}
 	}
 
+	// ── Ops banners ──────────────────────────────────────────────
+	// Admin list + create form. Edit MVP is "delete and recreate" —
+	// an operator who wants to tweak severity on a live banner that
+	// users have dismissed can post a fresh row (new id ⇒ un-dismisses
+	// everyone) instead of discovering a stale dismissal in the
+	// field. Add inline edit later if operators actually ask.
+	let banners: OpsBanner[] = $state([]);
+	let bannersBusy = $state(false);
+	let bannersError: string | null = $state(null);
+	// Form state. Severity + starts_at are scalar; the body is a
+	// dynamic list of {locale, text} slots so an operator can add as
+	// many translations as they want (backend caps at
+	// MAX_LOCALES_PER_BANNER = 20). Default slots:
+	//   [0] "en" — the canonical fallback; always present, cannot
+	//       be removed from the UI.
+	//   [1] admin's `preferred_locale` if different from `en`, or
+	//       `fr` as a sensible default.
+	// Operators stack more via a locale-picker select rendered when
+	// `+ Add language` is clicked.
+	let newBannerSeverity: 'warning' | 'notification' = $state('warning');
+	let newBannerStartsAt = $state('');
+	let newBannerExpiresAt = $state('');
+	/** Compute the default second-slot locale. Called once at form
+	 *  init (not reactive) so it doesn't jump around if the admin
+	 *  changes their locale while the form is open. */
+	function defaultSecondLocale(): string {
+		const pref = session.me?.full.preferred_locale ?? '';
+		const bare = pref.split('-')[0];
+		if (bare && bare !== 'en') return bare;
+		return 'fr';
+	}
+	let newBannerBodies: Array<{ locale: string; text: string }> = $state([
+		{ locale: 'en', text: '' },
+		{ locale: defaultSecondLocale(), text: '' }
+	]);
+	/** Open-slot picker — when the admin clicks "+ Add language",
+	 *  this flips to a select showing the locales not yet in the
+	 *  list. `null` = picker closed. */
+	let addingLocale: string | null = $state(null);
+	/** Locale codes still available to add — excludes anything
+	 *  already in `newBannerBodies`. Derived so the picker auto-
+	 *  updates on add/remove. */
+	const availableLocalesToAdd = $derived(
+		LANGUAGES.filter((l) => !newBannerBodies.some((b) => b.locale === l.code))
+	);
+	function openAddLanguage() {
+		const first = availableLocalesToAdd[0];
+		if (first) addingLocale = first.code;
+	}
+	function confirmAddLanguage() {
+		if (!addingLocale) return;
+		newBannerBodies = [...newBannerBodies, { locale: addingLocale, text: '' }];
+		addingLocale = null;
+	}
+	function removeLanguageAt(idx: number) {
+		// "en" at index 0 cannot be removed — it's the canonical
+		// fallback the server's locale-pick function and the FE
+		// renderer both fall back to.
+		if (idx <= 0) return;
+		newBannerBodies = newBannerBodies.filter((_, i) => i !== idx);
+	}
+	function resetBannerForm() {
+		newBannerSeverity = 'warning';
+		newBannerBodies = [
+			{ locale: 'en', text: '' },
+			{ locale: defaultSecondLocale(), text: '' }
+		];
+		newBannerStartsAt = '';
+		newBannerExpiresAt = '';
+		addingLocale = null;
+	}
+	async function loadBanners() {
+		try {
+			banners = await listOpsBanners();
+			bannersError = null;
+		} catch (e) {
+			bannersError = e instanceof Error ? e.message : String(e);
+			banners = [];
+		}
+	}
+	async function submitBanner(e: Event) {
+		e.preventDefault();
+		const body: Record<string, string> = {};
+		for (const row of newBannerBodies) {
+			const trimmed = row.text.trim();
+			if (trimmed) body[row.locale] = trimmed;
+		}
+		if (Object.keys(body).length === 0) {
+			bannersError = t('admin.ops_banner_err_empty_body', 'At least one locale body is required.');
+			return;
+		}
+		bannersBusy = true;
+		try {
+			const input: OpsBannerInput = {
+				severity: newBannerSeverity,
+				body,
+				// The datetime-local input gives ISO-ish strings without
+				// zone info. Convert to full ISO 8601 UTC so the server
+				// `DateTime<Utc>` deserialize accepts it; a bare
+				// `YYYY-MM-DDTHH:MM` would 400.
+				starts_at: newBannerStartsAt ? new Date(newBannerStartsAt).toISOString() : null,
+				expires_at: newBannerExpiresAt ? new Date(newBannerExpiresAt).toISOString() : null
+			};
+			await createOpsBanner(input);
+			// Reset the form, re-fetch the list.
+			resetBannerForm();
+			bannersError = null;
+			await loadBanners();
+		} catch (err) {
+			bannersError = err instanceof Error ? err.message : String(err);
+		} finally {
+			bannersBusy = false;
+		}
+	}
+	async function removeBanner(id: string) {
+		bannersBusy = true;
+		try {
+			await deleteOpsBanner(id);
+			bannersError = null;
+			await loadBanners();
+		} catch (err) {
+			bannersError = err instanceof Error ? err.message : String(err);
+		} finally {
+			bannersBusy = false;
+		}
+	}
+
 	// `consistency_batch` trigger — aggregate run of every registered
 	// `*_consistency` detector (blobs / drives / files / folders /
 	// manifests / drive_policies / satellites / backend). Dispatches
@@ -2134,10 +2272,11 @@
 		} else if (tab === 'maintenance') {
 			// New home for the backend write-lock (moved from
 			// /admin/storage) + the metadata re-extract buttons
-			// (moved from /admin/dashboard). loadWriteLock is the
-			// only async pull — reextract state is purely local
-			// until the operator clicks a button.
+			// (moved from /admin/dashboard). loadWriteLock +
+			// loadBanners are the async pulls; reextract state
+			// is purely local until the operator clicks a button.
 			void loadWriteLock();
+			void loadBanners();
 		} else if (tab === 'notification') {
 			void loadSmtp();
 			void loadWebhook();
@@ -3440,7 +3579,13 @@
 						}}
 					>
 						<label class="storage-write-lock__label">
-							<span>{t('admin.storage_write_lock_label_label', 'Reason')}</span>
+							<span>
+								{t('admin.storage_write_lock_label_label', 'Reason')}
+								<span class="muted">
+									—
+									{t('admin.storage_write_lock_label_hint', 'ops-only, not shown to end users')}
+								</span>
+							</span>
 							<input
 								type="text"
 								bind:value={writeLockLabel}
@@ -3466,6 +3611,238 @@
 				{/if}
 			</section>
 		{/if}
+
+		<!-- Ops banners — operator-authored announcements shown to
+		     every connected session. CRUD; the backend broadcasts
+		     changes over the message bus so open tabs re-render
+		     within ~1s instead of waiting for a natural API call.
+		     Severity picks the colour (warning / notification);
+		     body is markdown with bold / italic / inline code /
+		     links / line breaks supported — tables + HTML stripped
+		     at render time. -->
+		<section
+			class="card ops-banner-editor"
+			data-testid="admin-ops-banners"
+			aria-labelledby="admin-ops-banners-title"
+		>
+			<h2 id="admin-ops-banners-title">
+				{t('admin.ops_banners_title', 'Banner messages')}
+			</h2>
+			<p class="muted ops-banner-editor__hint">
+				{t(
+					'admin.ops_banners_hint',
+					'Operator-authored announcements shown to every connected session. Supports markdown (bold, italic, inline code, links) and up to two locales (en + fr).'
+				)}
+			</p>
+			{#if bannersError}
+				<p class="alert alert--warn ops-banner-editor__error" role="alert">
+					{bannersError}
+				</p>
+			{/if}
+			<!-- Active banner list — deletion is immediate; there is
+			     no soft-delete / history (the audit log is the trail).
+			     Shown as a compact table so operators can scan what's
+			     live at a glance. -->
+			{#if banners.length === 0}
+				<p class="muted ops-banner-editor__empty">
+					{t('admin.ops_banners_empty', 'No banners posted.')}
+				</p>
+			{:else}
+				<ul class="ops-banner-editor__list">
+					{#each banners as banner (banner.id)}
+						<li class="ops-banner-editor__row">
+							<div class="ops-banner-editor__row-head">
+								<span
+									class="ops-banner-editor__severity ops-banner-editor__severity--{banner.severity}"
+								>
+									{banner.severity === 'warning'
+										? t('admin.ops_banner_severity_warning', 'Warning')
+										: t('admin.ops_banner_severity_notification', 'Notification')}
+								</span>
+								{#if banner.starts_at}
+									{@const scheduled = new Date(banner.starts_at) > new Date()}
+									<span class="muted ops-banner-editor__scheduled">
+										{scheduled
+											? t('admin.ops_banner_scheduled_future', 'Scheduled for')
+											: t('admin.ops_banner_scheduled_past', 'Visible since')}
+										<time datetime={banner.starts_at}
+											>{new Date(banner.starts_at).toLocaleString()}</time
+										>
+									</span>
+								{/if}
+								{#if banner.expires_at}
+									{@const expired = new Date(banner.expires_at) <= new Date()}
+									<span class="muted ops-banner-editor__scheduled">
+										{expired
+											? t('admin.ops_banner_expired_at', 'Expired')
+											: t('admin.ops_banner_expires_at_row', 'Auto-hides')}
+										<time datetime={banner.expires_at}
+											>{new Date(banner.expires_at).toLocaleString()}</time
+										>
+									</span>
+								{/if}
+								<button
+									type="button"
+									class="btn btn-link ops-banner-editor__delete"
+									disabled={bannersBusy}
+									onclick={() => void removeBanner(banner.id)}
+									data-testid="admin-ops-banner-delete"
+								>
+									{t('admin.ops_banner_delete', 'Delete')}
+								</button>
+							</div>
+							<div class="ops-banner-editor__row-bodies">
+								{#each Object.entries(banner.body) as [locale, text] (locale)}
+									<div class="ops-banner-editor__body">
+										<span class="muted ops-banner-editor__locale">{locale}</span>
+										<pre class="ops-banner-editor__source">{text}</pre>
+									</div>
+								{/each}
+							</div>
+						</li>
+					{/each}
+				</ul>
+			{/if}
+
+			<!-- New banner form. Severity + at least one locale body +
+			     optional starts_at. Backend validates + enforces the
+			     caps (10 banners, 2048 bytes per locale body). -->
+			<form class="ops-banner-editor__form" onsubmit={submitBanner}>
+				<h3>{t('admin.ops_banner_new_title', 'New banner')}</h3>
+				<div class="ops-banner-editor__row-controls">
+					<label class="ops-banner-editor__field">
+						<span>{t('admin.ops_banner_severity_label', 'Severity')}</span>
+						<select bind:value={newBannerSeverity} data-testid="admin-ops-banner-severity">
+							<option value="warning">{t('admin.ops_banner_severity_warning', 'Warning')}</option>
+							<option value="notification"
+								>{t('admin.ops_banner_severity_notification', 'Notification')}</option
+							>
+						</select>
+					</label>
+					<label class="ops-banner-editor__field">
+						<span>{t('admin.ops_banner_starts_at_label', 'Visible from (optional)')}</span>
+						<input
+							type="datetime-local"
+							bind:value={newBannerStartsAt}
+							data-testid="admin-ops-banner-starts-at"
+						/>
+					</label>
+					<label class="ops-banner-editor__field">
+						<span>
+							{t('admin.ops_banner_expires_at_label', 'Auto-hide after (optional)')}
+						</span>
+						<input
+							type="datetime-local"
+							bind:value={newBannerExpiresAt}
+							data-testid="admin-ops-banner-expires-at"
+						/>
+					</label>
+				</div>
+				<!-- Localised body slots. `en` at index 0 is required
+				     (fallback for every viewer); subsequent slots can
+				     be removed. Operators stack more via the picker
+				     at the bottom of the list. -->
+				{#each newBannerBodies as row, idx (row.locale)}
+					{@const meta = LANGUAGES.find((l) => l.code === row.locale)}
+					<label class="ops-banner-editor__field ops-banner-editor__field--wide">
+						<span class="ops-banner-editor__locale-header">
+							<span class="ops-banner-editor__locale-label">
+								{#if meta}{meta.flag} {meta.name}{:else}{row.locale}{/if}
+								<span class="muted">({row.locale})</span>
+								{#if idx === 0}
+									<span class="muted">
+										— {t('admin.ops_banner_locale_required', 'required fallback')}
+									</span>
+								{/if}
+							</span>
+							{#if idx > 0}
+								<button
+									type="button"
+									class="btn btn-link ops-banner-editor__remove-locale"
+									onclick={() => removeLanguageAt(idx)}
+									aria-label={t('admin.ops_banner_remove_locale', 'Remove this language')}
+								>
+									{t('admin.ops_banner_remove_locale_label', 'Remove')}
+								</button>
+							{/if}
+						</span>
+						<textarea
+							bind:value={newBannerBodies[idx].text}
+							rows="3"
+							maxlength="2048"
+							placeholder={idx === 0
+								? t(
+										'admin.ops_banner_body_placeholder',
+										'Markdown — e.g. **Scheduled maintenance** Thursday at 22:00 UTC.'
+									)
+								: ''}
+							data-testid="admin-ops-banner-body-{row.locale}"></textarea>
+					</label>
+				{/each}
+
+				<!-- Add-language affordance. Collapsed by default so
+				     the form stays compact; opens to a select of the
+				     remaining locales + a confirm button. Disabled
+				     when every locale is already in the list (the
+				     backend's MAX_LOCALES_PER_BANNER = 20 cap also
+				     stops it, but running out of unused locales is
+				     the practical limit). -->
+				<div class="ops-banner-editor__add-language">
+					{#if addingLocale !== null}
+						<label class="ops-banner-editor__field">
+							<span>
+								{t('admin.ops_banner_add_locale_label', 'Language to add')}
+							</span>
+							<select bind:value={addingLocale} data-testid="admin-ops-banner-add-locale-select">
+								{#each availableLocalesToAdd as lang (lang.code)}
+									<option value={lang.code}>
+										{lang.flag}
+										{lang.name} ({lang.code})
+									</option>
+								{/each}
+							</select>
+						</label>
+						<div class="ops-banner-editor__add-language-actions">
+							<button
+								type="button"
+								class="btn btn-secondary"
+								onclick={confirmAddLanguage}
+								disabled={availableLocalesToAdd.length === 0}
+								data-testid="admin-ops-banner-add-locale-confirm"
+							>
+								{t('admin.ops_banner_add_locale_confirm', 'Add')}
+							</button>
+							<button type="button" class="btn btn-link" onclick={() => (addingLocale = null)}>
+								{t('admin.cancel', 'Cancel')}
+							</button>
+						</div>
+					{:else}
+						<button
+							type="button"
+							class="btn btn-link"
+							onclick={openAddLanguage}
+							disabled={availableLocalesToAdd.length === 0}
+							data-testid="admin-ops-banner-add-locale"
+						>
+							+ {t('admin.ops_banner_add_locale', 'Add another language')}
+						</button>
+					{/if}
+				</div>
+
+				<div class="ops-banner-editor__actions">
+					<button
+						type="submit"
+						class="btn btn-primary"
+						disabled={bannersBusy || newBannerBodies.every((b) => !b.text.trim())}
+						data-testid="admin-ops-banner-create"
+					>
+						{bannersBusy
+							? t('admin.saving', 'Saving…')
+							: t('admin.ops_banner_create', 'Post banner')}
+					</button>
+				</div>
+			</form>
+		</section>
 
 		<!-- Metadata re-extract — moved from /admin/dashboard. State
 		     + handlers (audioBusy, photoBusy, runAudioReindex,
@@ -3535,7 +3912,7 @@
 					onclick={runConsistencyBatch}
 					data-testid="admin-run-consistency-batch"
 				>
-					<Icon name="shield-alt" />
+					<Icon name="heart-circle-check" />
 					{consistencyBatchBusy
 						? t('admin.running', 'Running…')
 						: t('admin.run_consistency_batch', 'Run consistency sweep')}
@@ -6036,6 +6413,174 @@
 	.cutover-hint__readonly-body {
 		margin: 0;
 		color: var(--color-danger-text, var(--color-text));
+	}
+
+	.ops-banner-editor {
+		margin-bottom: var(--space-4);
+	}
+
+	.ops-banner-editor h2 {
+		margin: 0 0 var(--space-2);
+	}
+
+	.ops-banner-editor__hint,
+	.ops-banner-editor__empty {
+		margin: 0 0 var(--space-3);
+		font-size: var(--text-sm);
+	}
+
+	.ops-banner-editor__error {
+		margin: 0 0 var(--space-3);
+	}
+
+	.ops-banner-editor__list {
+		list-style: none;
+		margin: 0 0 var(--space-4);
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+	}
+
+	.ops-banner-editor__row {
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+		padding: var(--space-2) var(--space-3);
+		background: var(--color-surface);
+	}
+
+	.ops-banner-editor__row-head {
+		display: flex;
+		align-items: center;
+		gap: var(--space-3);
+		margin-bottom: var(--space-2);
+	}
+
+	.ops-banner-editor__severity {
+		font-size: var(--text-xs);
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		padding: 0 var(--space-2);
+		border-radius: var(--radius-sm);
+		font-weight: 600;
+	}
+
+	.ops-banner-editor__severity--warning {
+		background: var(--color-warning-surface, var(--color-surface-subtle));
+		color: var(--color-warning-text, var(--color-text));
+	}
+
+	.ops-banner-editor__severity--notification {
+		background: var(--color-info-surface, var(--color-surface-subtle));
+		color: var(--color-info-text, var(--color-text));
+	}
+
+	.ops-banner-editor__scheduled {
+		font-size: var(--text-xs);
+	}
+
+	.ops-banner-editor__delete {
+		margin-left: auto;
+	}
+
+	.ops-banner-editor__body {
+		display: flex;
+		gap: var(--space-2);
+		align-items: flex-start;
+		font-size: var(--text-sm);
+	}
+
+	.ops-banner-editor__locale {
+		font-family: var(--font-mono, monospace);
+		font-size: var(--text-xs);
+		min-width: 2.5rem;
+	}
+
+	.ops-banner-editor__source {
+		margin: 0;
+		font-family: var(--font-mono, monospace);
+		font-size: var(--text-xs);
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+	}
+
+	.ops-banner-editor__form {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-3);
+		border-top: 1px solid var(--color-border);
+		padding-top: var(--space-3);
+	}
+
+	.ops-banner-editor__form h3 {
+		margin: 0;
+		font-size: var(--text-base);
+	}
+
+	.ops-banner-editor__row-controls {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-3);
+	}
+
+	.ops-banner-editor__field {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-1);
+		min-width: 10rem;
+	}
+
+	.ops-banner-editor__field--wide {
+		width: 100%;
+	}
+
+	.ops-banner-editor__field select,
+	.ops-banner-editor__field input,
+	.ops-banner-editor__field textarea {
+		padding: var(--space-2);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm);
+		background: var(--color-surface);
+		color: var(--color-text);
+		font-family: inherit;
+	}
+
+	.ops-banner-editor__field textarea {
+		font-family: var(--font-mono, monospace);
+		font-size: var(--text-sm);
+	}
+
+	.ops-banner-editor__actions {
+		margin-top: var(--space-2);
+	}
+
+	.ops-banner-editor__locale-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--space-2);
+	}
+
+	.ops-banner-editor__locale-label {
+		display: inline-flex;
+		gap: var(--space-1);
+		align-items: baseline;
+		font-size: var(--text-sm);
+	}
+
+	.ops-banner-editor__remove-locale {
+		font-size: var(--text-xs);
+	}
+
+	.ops-banner-editor__add-language {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+	}
+
+	.ops-banner-editor__add-language-actions {
+		display: flex;
+		gap: var(--space-2);
 	}
 
 	.storage-write-lock {

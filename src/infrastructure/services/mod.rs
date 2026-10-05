@@ -53,6 +53,7 @@ pub mod oidc_service;
 pub mod onnx_face_analyzer;
 pub mod opaque_login_exchange;
 pub mod opaque_service;
+pub mod ops_banner_expiry_service;
 pub mod password_hasher;
 pub mod path_resolver_service;
 pub mod path_service;

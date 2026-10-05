@@ -648,6 +648,7 @@ fn components() -> Value {
             "JobRunStartedData": job_run_started_schema(),
             "JobRunProgressData": job_run_progress_schema(),
             "JobRunEndedData": job_run_ended_schema(),
+            "ServerStatusChangedData": server_status_changed_schema(),
 
             // ── Collab ─────────────────────────────────────────────
             "RtCollabFlushRequestBody":  rpc_request_schema("rt.collab_flush", Some(ref_schema("RtCollabFlushParams"))),
@@ -936,6 +937,7 @@ fn event_kind_schema() -> Value {
             "folder_created", "folder_renamed", "folder_moved", "folder_deleted",
             "notification_received",
             "job_run_started", "job_run_progress", "job_run_ended",
+            "server_status_changed",
         ],
     })
 }
@@ -956,6 +958,7 @@ fn event_data_union_schema() -> Value {
             ref_schema("JobRunStartedData"),
             ref_schema("JobRunProgressData"),
             ref_schema("JobRunEndedData"),
+            ref_schema("ServerStatusChangedData"),
         ]
     })
 }
@@ -1135,6 +1138,17 @@ fn job_run_ended_schema() -> Value {
             "success":  { "type": "boolean" },
             "reason":   { "type": ["string", "null"] },
             "ended_at": { "type": "string", "format": "date-time" },
+        }
+    })
+}
+
+fn server_status_changed_schema() -> Value {
+    json!({
+        "type": "object",
+        "description": "Something about server-wide status changed — ops banners, backend write-lock holder, migration/rotation state, future global flags. Carries only a short `version` hash that the FE compares against its last-seen value and refetches `/api/config` on mismatch. One event for every axis; a new axis gets a new field on the HeaderPayload and a new fire site that bumps the same `version`, no new event variant. WS-down / reconnect-window cases degrade cleanly to the X-Server-Status header-diff path on the FE.",
+        "required": ["version"],
+        "properties": {
+            "version": { "type": "string" },
         }
     })
 }

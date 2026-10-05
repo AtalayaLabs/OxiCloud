@@ -866,6 +866,191 @@
         ]
       }
     },
+    "/api/admin/banners": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "GET /api/admin/banners — full list, including `starts_at > now`\nentries not yet visible to users. Admin inspects what they've\nscheduled; the public endpoint filters.",
+        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "operationId": "list_ops_banners",
+        "responses": {
+          "200": {
+            "description": "Full admin-side banner list — includes scheduled-but-not-yet-visible entries",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OpsBanner"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Admin required"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-oxicloud-scope": "role:admin"
+      },
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "POST /api/admin/banners — create a new banner.",
+        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "operationId": "create_ops_banner",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpsBannerInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Banner created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpsBanner"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error (empty body, oversized body, invalid locale, …)"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Admin required"
+          },
+          "409": {
+            "description": "Banner cap reached — delete one before creating another"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-oxicloud-scope": "role:admin"
+      }
+    },
+    "/api/admin/banners/{id}": {
+      "put": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "PUT /api/admin/banners/{id} — full-replacement update of\nseverity/body/starts_at. `id` + `created_by` + `created_at` stay.",
+        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "operationId": "update_ops_banner",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Banner UUID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpsBannerInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Banner updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpsBanner"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Admin required"
+          },
+          "404": {
+            "description": "Banner not found"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-oxicloud-scope": "role:admin"
+      },
+      "delete": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "DELETE /api/admin/banners/{id} — remove one banner.",
+        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "operationId": "delete_ops_banner",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Banner UUID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Banner deleted"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Admin required"
+          },
+          "404": {
+            "description": "Banner not found"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-oxicloud-scope": "role:admin"
+      }
+    },
     "/api/admin/dashboard": {
       "get": {
         "tags": [
@@ -13432,6 +13617,34 @@
           "readonly"
         ],
         "properties": {
+          "banners": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/OpsBanner"
+            },
+            "description": "Public-filtered list of operator-authored banners (entries\nwhose `starts_at` is in the past or absent). Full objects —\nseverity + body-per-locale + optional starts_at.\n\nONLY populated in the `/api/config` body (via\n[`build_header_payload`]) — the X-Server-Status response\nheader carries just `banners_version` because an admin\ncould post a banner with 10 locale translations and we\nshould not re-ship that on every API response."
+          },
+          "banners_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Short hash of the current `ops_banner_service` list. Carried\non the X-Server-Status header on every API response — the\nFE compares against its cached version and, on diff, refetches\n`/api/config` to pick up `banners`. Kept to 16 hex chars so\nthe header stays small on every request.\n\nOnly serialized when at least one banner is live (either\nscheduled or visible). An empty list means \"no banners\nanywhere\" and the field is omitted — one less thing on the\nwire for the common case."
+          },
+          "holder": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/HolderHeader",
+                "description": "Public-safe projection of the backend write-lock holder. One\nof the four `BackendWriteLockReason` variants (migration /\nbackup / rotation / external) is engaged when `readonly =\ntrue`; the FE banner picks its caption from `holder.display`\ninstead of guessing from the (optional) `migration` /\n`rotation` progress sub-objects.\n\nOnly `kind` + `display` are exposed here; `admin_id`,\n`expires_at`, `source`/`target` details stay admin-only on\n`/api/admin/storage/write-lock`. `display` is server-formatted\n(`BackendWriteLockReason::display()`), so the operator's\nfree-form `label` on an External hold shows through unredacted —\nsame disclosure boundary the migration banner has today for\nsource/target entry names."
+              }
+            ]
+          },
           "migration": {
             "oneOf": [
               {
@@ -13455,6 +13668,24 @@
                 "description": "K3: independent of `readonly` — rotation does NOT engage the\napp-wide read-only flag, so the frontend needs a distinct\nsignal to know \"rotation is running, show the rotation\nbanner instead of migration banner\"."
               }
             ]
+          }
+        }
+      },
+      "HolderHeader": {
+        "type": "object",
+        "description": "Public-safe lock-holder projection carried in the X-Server-Status\nheader + `/api/config` body. See [`HeaderPayload::holder`].",
+        "required": [
+          "kind",
+          "display"
+        ],
+        "properties": {
+          "display": {
+            "type": "string",
+            "description": "Human-readable one-liner, formatted server-side by\n`BackendWriteLockReason::display()`. Safe to render raw."
+          },
+          "kind": {
+            "type": "string",
+            "description": "Stable machine key — `\"migration\" | \"backup\" | \"rotation\" | \"external\"`.\nClients switch on this to pick an icon/colour per variant."
           }
         }
       },
@@ -14134,6 +14365,105 @@
             "type": "string"
           }
         }
+      },
+      "OpsBanner": {
+        "type": "object",
+        "description": "One banner as the operator wrote it.\n\n`body` holds raw markdown per locale, UTF-8. Sanitization happens\nat render time (FE), not at store time — the operator who\ncomposed it must be able to edit the exact same text back. A\nserver-side sanitizer regression that lands later re-renders\nevery live banner safely without touching the data.",
+        "required": [
+          "id",
+          "severity",
+          "body",
+          "created_by",
+          "created_at"
+        ],
+        "properties": {
+          "body": {
+            "type": "object",
+            "description": "Locale code → markdown body. `BTreeMap` so JSON serialization\nis deterministic (critical for `banners_version` hashing).\nMinimum one entry; `\"en\"` is the canonical fallback when the\nviewer's `preferred_locale` is missing — hard-coded, not\n`locale.split('-')[0]`, so the behaviour is predictable.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_by": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "`Some(_)` → the banner stops being visible on the public wire\nonce `now >= expires_at`. `None` → stays until the operator\ndeletes it explicitly. Pairs with `starts_at` to cover the\n\"scheduled maintenance window\" case: operator posts the\nbanner once with `starts_at = Thursday 20:00` + `expires_at\n= Thursday 23:00` and the server handles both visibility\ntransitions without a manual delete.\n\nAn expired banner stays on the ADMIN list until the next\nwrite to the collection (any create / update / delete), at\nwhich point `prune_expired` cleans it up. That keeps the\nadmin surface honest without needing a periodic job."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "severity": {
+            "$ref": "#/components/schemas/OpsBannerSeverity"
+          },
+          "starts_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "`Some(_)` → the banner is configured but only visible on the\npublic wire once `now >= starts_at`. `None` → effective\nimmediately. Admin always sees everything."
+          }
+        }
+      },
+      "OpsBannerInput": {
+        "type": "object",
+        "description": "Input the admin handlers pass to the service for create / update.\nDoesn't carry `id` / `created_by` / `created_at` — those are\nserver-assigned on create (and preserved on update).",
+        "required": [
+          "severity",
+          "body"
+        ],
+        "properties": {
+          "body": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Optional auto-hide timestamp. See the field doc on\n[`OpsBanner::expires_at`]."
+          },
+          "severity": {
+            "$ref": "#/components/schemas/OpsBannerSeverity"
+          },
+          "starts_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
+      "OpsBannerSeverity": {
+        "type": "string",
+        "description": "Severity axis. Two variants on purpose — operators need \"I'm\nwarning you about something\" vs \"I'm telling you about something\",\nand the UI picks a colour/icon pair accordingly. A third severity\n(`Error`? `Critical`?) is a legitimate future addition; the enum\nis `#[non_exhaustive]` so adding one is additive.",
+        "enum": [
+          "warning",
+          "notification"
+        ]
       },
       "OutgoingResourceGrantDto": {
         "type": "object",

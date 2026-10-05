@@ -1,6 +1,15 @@
 <script lang="ts">
 	import { appPath } from '$lib/utils/appPath';
-	import type { Snippet } from 'svelte';
+	import { onMount, type Snippet } from 'svelte';
+	import { messageBus } from '$lib/message-bus/client.svelte';
+	import { refetchServerStatusConfig } from '$lib/stores/serverStatus.svelte';
+	import log from 'loglevel';
+	// Logger for the server-status realtime push + refetch path.
+	// Silent by default; operators enable with
+	// `oxi.setLogLevel('oxi:server-status', 'debug')` in devtools to
+	// trace whether the subscribe fired, whether rt.event arrived,
+	// and what /api/config returned on refetch.
+	const ssLog = log.getLogger('oxi:server-status');
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
@@ -15,7 +24,14 @@
 	import { lazyComponent } from '$lib/composables/lazyComponent.svelte';
 	import DrivePicker from '$lib/components/DrivePicker.svelte';
 	import BrandMark from '$lib/components/BrandMark.svelte';
-	import ReadOnlyBanner from '$lib/components/ReadOnlyBanner.svelte';
+	import Banner from '$lib/components/Banner.svelte';
+	import { renderOpsBannerMarkdown } from '$lib/utils/opsBannerMarkdown';
+	// Deliberate: no `onMount` import for a localStorage-backed
+	// dismiss set. Ops banners are not user-dismissable — the server
+	// is the single source of truth for what's visible. If a banner
+	// is naggy, the operator deletes it, and that change propagates
+	// to every open tab via the message-bus push + version-diff
+	// refetch. No client-side per-user state → no stale-id leak.
 	import Icon from '$lib/icons/Icon.svelte';
 	import { dateTimeFormatFor, iconNameFromClass } from '$lib/utils/display';
 	import { userInitials, avatarColorIndex } from '$lib/utils/avatar';
@@ -180,6 +196,55 @@
 	});
 
 	const isAdmin = $derived(isAtLeastAdmin(session.user?.role));
+
+	// ── Server-status realtime push ──
+	// Subscribe to `Topic::ServerStatus` so admin-posted banner
+	// changes land within ~1s instead of waiting for this tab's
+	// next natural API call to pick up the version-diff on
+	// X-Server-Status. Falls back cleanly when the message bus is
+	// disabled (`OXICLOUD_MESSAGEBUS_ENABLE=false`): the header-diff
+	// path still works, just with per-tab-action latency.
+	//
+	// Subscribe is Public-authz'd (any session), so no per-user
+	// predicate here. One refcount for the whole page session; the
+	// release handle fires on component destroy.
+	onMount(() => {
+		if (!serverConfig.features.message_bus) {
+			ssLog.debug('bus disabled server-side; skipping subscribe');
+			return;
+		}
+		ssLog.debug('subscribing to server:status');
+		const release = messageBus.subscribe('server:status', (params) => {
+			ssLog.debug('rt.event received', params);
+			if (params.event === 'server_status_changed') {
+				// Push just signals "something changed, go look".
+				// The actual banner bodies / write-lock holder /
+				// migration progress all come from `/api/config`
+				// via the same code path the header-diff fallback
+				// uses — one source of truth for the full state.
+				void refetchServerStatusConfig();
+			}
+		});
+		return () => release();
+	});
+
+	/** Pick the body for the viewer's locale. Hard-coded fallback
+	 *  chain: preferred_locale → bare language subtag → `en` →
+	 *  first available key. */
+	function pickOpsBannerBody(banner: { body: Record<string, string> }): string {
+		const preferred = session.me?.full.preferred_locale;
+		const prefs = [preferred, preferred?.split('-')[0], 'en'].filter(
+			(v): v is string => typeof v === 'string' && v.length > 0
+		);
+		for (const key of prefs) {
+			const hit = banner.body[key];
+			if (typeof hit === 'string' && hit.length > 0) return hit;
+		}
+		for (const [, text] of Object.entries(banner.body)) {
+			if (text) return text;
+		}
+		return '';
+	}
 
 	// Any URL under /admin swaps the sidebar to admin mode. Uses
 	// startsWith so a trailing slash / query params / hash don't
@@ -1147,20 +1212,66 @@
 		     available. Disappears automatically on the next API
 		     round-trip after the server clears the flag.
 
-		     Reuses `ReadOnlyBanner` (same component that renders a
-		     drive-frozen notice) with `variant="maintenance"` so the
-		     two banners are visually indistinguishable — just
-		     different copy. -->
+		     Uses the shared `Banner` primitive — same component the
+		     drive-frozen banner and the operator-authored announcements
+		     render through, so every banner reads as the same visual
+		     family. -->
 		{#if serverStatus().readonly}
-			<ReadOnlyBanner variant="maintenance" progress={serverStatus().migration} />
+			<Banner
+				severity="warning"
+				icon="lock"
+				title={t('server_status.readonly_title', 'Server maintenance in progress')}
+				body={serverStatus().migration
+					? undefined
+					: t(
+							'server_status.readonly_body',
+							'Uploads, renames, deletes, and shares are refused temporarily. Reads and downloads work as normal.'
+						)}
+				progress={serverStatus().migration}
+				role="alert"
+				testid="server-status-banner"
+				ariaLabel={t('server_status.readonly_banner_aria', 'Server maintenance in progress')}
+			/>
 		{:else if serverStatus().rotation}
 			<!-- K4 storage-key-rotation: rotation is running but
 			     `readonly` is false — writes continue as normal.
-			     Distinct banner variant so the copy reads
-			     "background maintenance" rather than "server
-			     frozen". -->
-			<ReadOnlyBanner variant="rotating" progress={serverStatus().rotation} />
+			     Distinct variant styling (info, not warning) so the
+			     copy reads "background maintenance" rather than
+			     "server frozen". -->
+			<Banner
+				severity="info"
+				icon="key"
+				title={t('server_status.rotating_title', 'Storage key rotation in progress')}
+				body={serverStatus().rotation
+					? undefined
+					: t(
+							'server_status.rotating_body',
+							'A background key rotation is normalising storage. All operations continue normally.'
+						)}
+				progress={serverStatus().rotation}
+				role="status"
+				testid="server-status-rotating-banner"
+				ariaLabel={t('server_status.rotating_banner_aria', 'Storage key rotation in progress')}
+			/>
 		{/if}
+		<!-- Operator-authored banners — rendered BELOW the system
+		     banner so write-refusal state (which is the one thing
+		     users must see) stays top-of-page. Each entry picks the
+		     viewer's locale body and renders via the sanitizing
+		     markdown util.
+		     Deliberately NOT dismissable: the server is the single
+		     source of truth for "what's visible", operator deletes a
+		     row when it's no longer relevant, and the message-bus
+		     push propagates the removal within ~1s. See the memo
+		     above on `renderOpsBannerMarkdown` import. -->
+		{#each serverStatus().banners ?? [] as banner (banner.id)}
+			<Banner
+				severity={banner.severity}
+				html={renderOpsBannerMarkdown(pickOpsBannerBody(banner))}
+				role={banner.severity === 'warning' ? 'alert' : 'status'}
+				testid="ops-banner"
+			/>
+		{/each}
 		{@render children()}
 	</div>
 </div>

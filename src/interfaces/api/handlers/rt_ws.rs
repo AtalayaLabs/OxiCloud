@@ -1090,6 +1090,13 @@ async fn handle_subscribe(
                 );
             }
         }
+        AuthzCheck::Public => {
+            // Class 4 — public. Any authenticated session may
+            // subscribe. The payload the topic carries is already
+            // exposed on `/api/config` without authentication, so
+            // the subscribe gate adds no secret and needs none.
+            // Nothing to check.
+        }
     }
 
     // AuthZ passed — install the subscription and spawn a reader task

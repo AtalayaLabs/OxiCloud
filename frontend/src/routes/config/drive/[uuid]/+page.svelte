@@ -11,7 +11,7 @@
 	import { ui } from '$lib/stores/ui.svelte';
 	import type { Drive, DriveMember, DriveRole, DrivePoliciesPartial } from '$lib/api/types';
 	import PolicyList from '$lib/components/PolicyList.svelte';
-	import ReadOnlyBanner from '$lib/components/ReadOnlyBanner.svelte';
+	import Banner from '$lib/components/Banner.svelte';
 	import ShareDialog from '$lib/components/ShareDialog.svelte';
 	import UserVignette from '$lib/components/UserVignette.svelte';
 	import GroupVignette from '$lib/components/GroupVignette.svelte';
@@ -279,7 +279,18 @@
 		</div>
 
 		{#if drivePoliciesView.read_only}
-			<ReadOnlyBanner />
+			<Banner
+				severity="info"
+				icon="lock"
+				title={t('drive.read_only_banner.title', 'This drive is read-only')}
+				body={t(
+					'drive.read_only_banner.body',
+					'Uploads, edits, deletes, renames, sharing and membership changes are refused. Reads and downloads keep working. Contact an administrator to un-freeze the drive.'
+				)}
+				role="status"
+				testid="read-only-banner"
+				ariaLabel={t('drive.read_only_banner.aria', 'This drive is read-only')}
+			/>
 		{/if}
 
 		<div class="card">

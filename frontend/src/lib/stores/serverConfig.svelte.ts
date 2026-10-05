@@ -91,6 +91,14 @@ class ServerConfigStore {
 			this.features = cfg.features;
 			this.auth = cfg.auth ?? { ...DEFAULT_AUTH };
 			this.serverStatus = cfg.server_status;
+			// Mirror the banner slice into the live-status store so
+			// the AppShell's banner stack renders from day one of the
+			// SPA boot, without waiting for a header-driven
+			// version-diff refetch to happen. Also seeds
+			// `banners_version` so the first header carrying the same
+			// version doesn't trigger a redundant refetch.
+			const { hydrateBanners } = await import('$lib/stores/serverStatus.svelte');
+			hydrateBanners(cfg.server_status.banners, cfg.server_status.banners_version);
 			cfgLog.debug('server config loaded', {
 				version: cfg.version,
 				message_bus: cfg.features.message_bus,

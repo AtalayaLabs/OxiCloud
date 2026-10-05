@@ -103,9 +103,16 @@ impl BackendWriteLockReason {
         }
     }
 
-    /// Human-readable one-line summary for the server-status
-    /// banner. Keep terse — this renders inline next to a lock
-    /// icon on every page.
+    /// Human-readable one-line summary — ADMIN-FACING only. Includes
+    /// operator-authored context (`label` on External, entry names
+    /// on Migration/Rotation/Backup). Used by the admin UI's
+    /// backend-write-lock card where the operator who engaged the
+    /// lock wants to see the exact text they typed.
+    ///
+    /// For the public wire (X-Server-Status, /api/config), use
+    /// [`Self::public_display`] instead — that redacts the raw
+    /// label to a generic string so end-users don't see internal
+    /// operator notes like "nightly restic to NAS /mnt/backup".
     pub fn display(&self) -> String {
         match self {
             Self::Migration { source, target } => {
@@ -120,6 +127,20 @@ impl BackendWriteLockReason {
                     format!("Maintenance: {label}")
                 }
             }
+        }
+    }
+
+    /// Public-facing one-line summary. SAME as [`Self::display`]
+    /// for Migration / Backup / Rotation (the entry names there
+    /// are already public — they appear in `/api/admin/storage`
+    /// listings and the migration UI). For `External`, redacts
+    /// the operator-authored `label` to a generic string: the
+    /// label is operator notes, not user-facing context, and
+    /// `/api/config` is served to every authenticated user.
+    pub fn public_display(&self) -> String {
+        match self {
+            Self::External { .. } => "External maintenance in progress".to_string(),
+            _ => self.display(),
         }
     }
 }

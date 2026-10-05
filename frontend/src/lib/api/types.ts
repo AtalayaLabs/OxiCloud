@@ -1063,6 +1063,41 @@ export interface ServerStatus {
 	 *  source/target entry names) stays admin-only on
 	 *  `/api/admin/storage/write-lock`. */
 	holder?: ServerStatusHolder;
+	/** Short hash of the operator-authored banner list. Carried on
+	 *  the `X-Server-Status` header on every API response; the FE
+	 *  version-diff pattern refetches `/api/config` on change to
+	 *  pick up the full `banners` list. Absent when no banners are
+	 *  live. */
+	banners_version?: string;
+	/** Full public-filtered banner list — only populated on
+	 *  `/api/config.server_status` (boot hydration + explicit
+	 *  refetch), never on the `X-Server-Status` response header. */
+	banners?: OpsBanner[];
+}
+
+/** One operator-authored banner. Severity drives the visual
+ *  variant (warning / notification). `body` holds raw markdown
+ *  per locale; the FE picks the viewer's preferred_locale with
+ *  `en` as the hard-coded fallback. */
+export interface OpsBanner {
+	id: string;
+	severity: 'warning' | 'notification';
+	body: Record<string, string>;
+	/** `undefined` when effective immediately. `Some(ISO 8601)`
+	 *  when the operator scheduled the banner for a future time —
+	 *  the server-side filter hides it on the public wire until
+	 *  that time arrives, so a value here means "visible soon".
+	 *  Admin surface shows it regardless. */
+	starts_at?: string;
+	/** `undefined` → stays until the operator deletes it.
+	 *  `Some(ISO 8601)` → auto-hides from the public wire once
+	 *  reached, and the periodic `ops_banner_expiry` job removes
+	 *  it from storage on its next tick (every ~10 min). Admin
+	 *  surface still shows it until the job sweeps so the operator
+	 *  can see "I posted a banner that expired an hour ago". */
+	expires_at?: string;
+	created_by: string;
+	created_at: string;
 }
 
 /** See [`ServerStatus.holder`]. */

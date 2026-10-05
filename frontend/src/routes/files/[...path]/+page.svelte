@@ -51,7 +51,7 @@
 	import { preferences } from '$lib/stores/preferences.svelte';
 	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import type { FileItem, FolderItem, ItemType } from '$lib/api/types';
-	import ReadOnlyBanner from '$lib/components/ReadOnlyBanner.svelte';
+	import Banner from '$lib/components/Banner.svelte';
 	import FolderBreadcrumb from '$lib/components/FolderBreadcrumb.svelte';
 	import ResourceList, {
 		isFile,
@@ -2185,7 +2185,24 @@
 	     a `drive_id` for a frozen drive, or (empty folder fallback) the
 	     URL's leading segment resolves to one. -->
 	{#if currentDrive?.policies?.read_only}
-		<ReadOnlyBanner driveName={currentDrive.name} />
+		<Banner
+			severity="info"
+			icon="lock"
+			title={currentDrive.name
+				? t(
+						'drive.read_only_banner.title_named',
+						{ name: currentDrive.name },
+						'Drive "{{name}}" is read-only'
+					)
+				: t('drive.read_only_banner.title', 'This drive is read-only')}
+			body={t(
+				'drive.read_only_banner.body',
+				'Uploads, edits, deletes, renames, sharing and membership changes are refused. Reads and downloads keep working. Contact an administrator to un-freeze the drive.'
+			)}
+			role="status"
+			testid="read-only-banner"
+			ariaLabel={t('drive.read_only_banner.aria', 'This drive is read-only')}
+		/>
 	{/if}
 
 	<!-- Hidden upload inputs stay mounted even while the batch bar is shown.

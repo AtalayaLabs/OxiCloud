@@ -968,6 +968,87 @@ export function releaseBackendWriteLock(): Promise<void> {
 	return mutate('/api/admin/storage/write-lock', 'DELETE', undefined);
 }
 
+// ── Ops banners ──────────────────────────────────────────────────
+//
+// Admin CRUD surface for the operator-authored banner messages that
+// appear across every connected user's session. The public read
+// path goes through `/api/config.server_status.banners` (hydrated
+// at boot, refetched on `banners_version` diff from the
+// X-Server-Status header or the WS push); these wrappers only cover
+// the admin edit side.
+
+import type { OpsBanner } from '$lib/api/types';
+
+/** Payload for create / update — the server assigns id /
+ *  created_by / created_at on create, and preserves them on
+ *  update. */
+export interface OpsBannerInput {
+	severity: 'warning' | 'notification';
+	body: Record<string, string>;
+	starts_at?: string | null;
+	/** Optional auto-hide timestamp. Must be strictly after
+	 *  `starts_at` (or `now` if `starts_at` is unset). The server
+	 *  rejects an earlier `expires_at` with 400 — surfaces the typo
+	 *  rather than silently creating a dead banner. */
+	expires_at?: string | null;
+}
+
+/**
+ * `GET /api/admin/banners` — full admin list including
+ * scheduled-but-not-yet-visible entries. The public endpoint on
+ * `/api/config` filters those out so the admin UI can show
+ * "scheduled: visible from 2026-10-16 20:00".
+ */
+export function listOpsBanners(): Promise<OpsBanner[]> {
+	return apiJson<OpsBanner[]>('/api/admin/banners', { credentials: 'same-origin' });
+}
+
+/**
+ * `POST /api/admin/banners` — create a new banner. Rejects with
+ * 409 if the server-side cap (10 banners) is reached, 400 on
+ * validation failure (empty body, body > 2048 bytes, invalid
+ * locale key).
+ */
+export async function createOpsBanner(input: OpsBannerInput): Promise<OpsBanner> {
+	const res = await apiFetch('/api/admin/banners', {
+		method: 'POST',
+		credentials: 'same-origin',
+		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
+		body: JSON.stringify(input)
+	});
+	if (!res.ok) {
+		const e = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
+		throw new Error(e.message || e.error || `create banner failed: ${res.status}`);
+	}
+	return (await res.json()) as OpsBanner;
+}
+
+/**
+ * `PUT /api/admin/banners/{id}` — full-replacement update. `id`,
+ * `created_by`, `created_at` stay. Severity change on an existing
+ * id does NOT un-dismiss users who already dismissed; the design
+ * note on the backend's `update` recommends DELETE + create for
+ * that case.
+ */
+export async function updateOpsBanner(id: string, input: OpsBannerInput): Promise<OpsBanner> {
+	const res = await apiFetch(`/api/admin/banners/${encodeURIComponent(id)}`, {
+		method: 'PUT',
+		credentials: 'same-origin',
+		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
+		body: JSON.stringify(input)
+	});
+	if (!res.ok) {
+		const e = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
+		throw new Error(e.message || e.error || `update banner failed: ${res.status}`);
+	}
+	return (await res.json()) as OpsBanner;
+}
+
+/** `DELETE /api/admin/banners/{id}` — remove one banner. */
+export function deleteOpsBanner(id: string): Promise<void> {
+	return mutate(`/api/admin/banners/${encodeURIComponent(id)}`, 'DELETE', undefined);
+}
+
 // verifyMigration + MigrationVerifyResult retired in slice 7 of
 // docs/plan/storage-multi-entry.md — the corresponding backend
 // endpoint's sample-based check is superseded by

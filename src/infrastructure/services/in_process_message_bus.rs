@@ -203,6 +203,7 @@ fn event_kind(event: &MessageBusEvent) -> &'static str {
         MessageBusEvent::JobRunStarted { .. } => "job_run_started",
         MessageBusEvent::JobRunProgress { .. } => "job_run_progress",
         MessageBusEvent::JobRunEnded { .. } => "job_run_ended",
+        MessageBusEvent::ServerStatusChanged { .. } => "server_status_changed",
     }
 }
 
