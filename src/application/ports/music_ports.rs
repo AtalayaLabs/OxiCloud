@@ -109,17 +109,6 @@ pub trait MusicStoragePort: Send + Sync {
     /// out silently; ordering is not guaranteed.
     async fn get_playlists_by_ids(&self, ids: &[Uuid]) -> Result<Vec<PlaylistDto>, DomainError>;
 
-    async fn list_playlists_by_owner(
-        &self,
-        owner_id: Uuid,
-    ) -> Result<Vec<PlaylistDto>, DomainError>;
-
-    async fn list_shared_with_user(&self, user_id: Uuid) -> Result<Vec<PlaylistDto>, DomainError>;
-
-    async fn user_has_access(&self, playlist_id: &str, user_id: Uuid) -> Result<bool, DomainError>;
-
-    async fn user_can_write(&self, playlist_id: &str, user_id: Uuid) -> Result<bool, DomainError>;
-
     async fn add_tracks(
         &self,
         playlist_id: &Uuid,
@@ -138,17 +127,6 @@ pub trait MusicStoragePort: Send + Sync {
         &self,
         playlist_id: &Uuid,
     ) -> Result<Vec<PlaylistItemDto>, DomainError>;
-
-    async fn share_playlist(
-        &self,
-        playlist_id: &Uuid,
-        user_id: Uuid,
-        can_write: bool,
-    ) -> Result<(), DomainError>;
-
-    async fn remove_share(&self, playlist_id: &Uuid, user_id: Uuid) -> Result<(), DomainError>;
-
-    async fn get_shares(&self, playlist_id: &Uuid) -> Result<Vec<(Uuid, bool)>, DomainError>;
 
     async fn get_audio_metadata(
         &self,

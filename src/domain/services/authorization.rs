@@ -119,9 +119,9 @@ pub enum Resource {
     AddressBook(Uuid),
     /// A music playlist. Same shape as `Calendar`/`AddressBook` —
     /// `storage.role_grants` with `resource_type='playlist'` replaces
-    /// the pre-Round-3 dedicated `music.playlist_shares` table and the
+    /// the pre-Round-3 dedicated `audio.playlist_shares` table and the
     /// bespoke `user_has_access` / `user_can_write` helpers on
-    /// `MusicStorageAdapter`.
+    /// `MusicStorageAdapter` — all three now removed.
     Playlist(Uuid),
 }
 

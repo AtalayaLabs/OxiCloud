@@ -21,8 +21,9 @@ use crate::infrastructure::services::pg_acl_engine::PgAclEngine;
 ///
 /// Ownership + sharing live entirely in `storage.role_grants`
 /// (`resource_type='playlist'`). `audio.playlists.owner_id` stays for
-/// provenance and legacy queries; `audio.playlist_shares` is
-/// backfilled and slated for removal in a follow-up migration.
+/// provenance and legacy queries. The legacy `audio.playlist_shares`
+/// table is gone — backfilled into `role_grants` on 2026-09-10 and
+/// dropped once its last (unreachable) repository methods went with it.
 pub struct MusicService {
     storage: Arc<MusicStorageAdapter>,
     /// ReBAC engine — every user-facing method calls `authz.require`

@@ -17,32 +17,6 @@ pub trait PlaylistRepository: Send + Sync + 'static {
     /// round-trip for a page of grant-derived ids. Missing ids drop
     /// out; ordering is not guaranteed.
     async fn find_playlists_by_ids(&self, ids: &[Uuid]) -> PlaylistRepositoryResult<Vec<Playlist>>;
-
-    async fn list_playlists_by_owner(
-        &self,
-        owner_id: Uuid,
-    ) -> PlaylistRepositoryResult<Vec<Playlist>>;
-
-    async fn list_shared_with_user(&self, user_id: Uuid)
-    -> PlaylistRepositoryResult<Vec<Playlist>>;
-
-    async fn user_has_access(
-        &self,
-        playlist_id: &Uuid,
-        user_id: Uuid,
-    ) -> PlaylistRepositoryResult<bool>;
-
-    async fn share_playlist(
-        &self,
-        playlist_id: &Uuid,
-        user_id: Uuid,
-        can_write: bool,
-    ) -> PlaylistRepositoryResult<()>;
-
-    async fn remove_share(&self, playlist_id: &Uuid, user_id: Uuid)
-    -> PlaylistRepositoryResult<()>;
-
-    async fn get_shares(&self, playlist_id: &Uuid) -> PlaylistRepositoryResult<Vec<(Uuid, bool)>>;
 }
 
 pub type PlaylistItemRepositoryResult<T> = Result<T, DomainError>;

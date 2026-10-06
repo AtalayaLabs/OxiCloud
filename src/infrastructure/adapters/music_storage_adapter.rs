@@ -97,66 +97,6 @@ impl MusicStoragePort for MusicStorageAdapter {
         Ok(playlists.into_iter().map(PlaylistDto::from).collect())
     }
 
-    async fn list_playlists_by_owner(
-        &self,
-        owner_id: Uuid,
-    ) -> Result<Vec<PlaylistDto>, DomainError> {
-        let playlists = self
-            .playlist_repository
-            .list_playlists_by_owner(owner_id)
-            .await?;
-        let mut result = Vec::new();
-        for playlist in playlists {
-            let dto = PlaylistDto::from(playlist);
-            let track_count = self
-                .get_track_count(&uuid::Uuid::parse_str(&dto.id).unwrap())
-                .await?;
-            result.push(dto.with_track_info(track_count, 0));
-        }
-        Ok(result)
-    }
-
-    async fn list_shared_with_user(&self, user_id: Uuid) -> Result<Vec<PlaylistDto>, DomainError> {
-        let playlists = self
-            .playlist_repository
-            .list_shared_with_user(user_id)
-            .await?;
-        let mut result = Vec::new();
-        for playlist in playlists {
-            let dto = PlaylistDto::from(playlist);
-            let track_count = self
-                .get_track_count(&uuid::Uuid::parse_str(&dto.id).unwrap())
-                .await?;
-            result.push(dto.with_track_info(track_count, 0));
-        }
-        Ok(result)
-    }
-
-    async fn user_has_access(&self, playlist_id: &str, user_id: Uuid) -> Result<bool, DomainError> {
-        let uuid = Uuid::parse_str(playlist_id).map_err(|_| {
-            DomainError::new(ErrorKind::InvalidInput, "Playlist", "Invalid playlist ID")
-        })?;
-        self.playlist_repository
-            .user_has_access(&uuid, user_id)
-            .await
-    }
-
-    async fn user_can_write(&self, playlist_id: &str, user_id: Uuid) -> Result<bool, DomainError> {
-        let uuid = Uuid::parse_str(playlist_id).map_err(|_| {
-            DomainError::new(ErrorKind::InvalidInput, "Playlist", "Invalid playlist ID")
-        })?;
-
-        let playlist = self.playlist_repository.find_playlist_by_id(&uuid).await?;
-        if playlist.owner_id() == &user_id {
-            return Ok(true);
-        }
-
-        let shares = self.playlist_repository.get_shares(&uuid).await?;
-        Ok(shares
-            .iter()
-            .any(|(uid, can_write)| uid == &user_id && *can_write))
-    }
-
     async fn add_tracks(
         &self,
         playlist_id: &Uuid,
@@ -226,27 +166,6 @@ impl MusicStoragePort for MusicStorageAdapter {
         Ok(items)
     }
 
-    async fn share_playlist(
-        &self,
-        playlist_id: &Uuid,
-        user_id: Uuid,
-        can_write: bool,
-    ) -> Result<(), DomainError> {
-        self.playlist_repository
-            .share_playlist(playlist_id, user_id, can_write)
-            .await
-    }
-
-    async fn remove_share(&self, playlist_id: &Uuid, user_id: Uuid) -> Result<(), DomainError> {
-        self.playlist_repository
-            .remove_share(playlist_id, user_id)
-            .await
-    }
-
-    async fn get_shares(&self, playlist_id: &Uuid) -> Result<Vec<(Uuid, bool)>, DomainError> {
-        self.playlist_repository.get_shares(playlist_id).await
-    }
-
     async fn get_audio_metadata(
         &self,
         file_id: &Uuid,
@@ -260,19 +179,5 @@ impl MusicStoragePort for MusicStorageAdapter {
             Ok(None) => Ok(None),
             Err(e) => Err(e),
         }
-    }
-}
-
-impl MusicStorageAdapter {
-    async fn get_track_count(&self, playlist_id: &Uuid) -> Result<i64, DomainError> {
-        let count: (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM audio.playlist_items WHERE playlist_id = $1")
-                .bind(playlist_id)
-                .fetch_one(self.playlist_repository.pool())
-                .await
-                .map_err(|e| {
-                    DomainError::database_error(format!("Failed to get track count: {}", e))
-                })?;
-        Ok(count.0)
     }
 }
