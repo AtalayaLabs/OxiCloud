@@ -9,7 +9,6 @@ pub struct AddressBookDto {
     pub owner_id: String,
     pub description: Option<String>,
     pub color: Option<String>,
-    pub is_public: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -22,7 +21,6 @@ impl Default for AddressBookDto {
             owner_id: "default".to_string(),
             description: None,
             color: None,
-            is_public: false,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
@@ -40,7 +38,6 @@ impl From<AddressBook> for AddressBookDto {
             owner_id: p.owner_id,
             description: p.description,
             color: p.color,
-            is_public: p.is_public,
             created_at: p.created_at,
             updated_at: p.updated_at,
         }
@@ -53,7 +50,6 @@ pub struct CreateAddressBookDto {
     pub owner_id: String,
     pub description: Option<String>,
     pub color: Option<String>,
-    pub is_public: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,6 +57,5 @@ pub struct UpdateAddressBookDto {
     pub name: Option<String>,
     pub description: Option<String>,
     pub color: Option<String>,
-    pub is_public: Option<bool>,
     pub user_id: String, // Current user making the update
 }

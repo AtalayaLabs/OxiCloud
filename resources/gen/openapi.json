@@ -10417,7 +10417,6 @@
           "id",
           "name",
           "owner_id",
-          "is_public",
           "is_readonly",
           "is_system",
           "created_at",
@@ -10442,9 +10441,6 @@
           },
           "id": {
             "type": "string"
-          },
-          "is_public": {
-            "type": "boolean"
           },
           "is_readonly": {
             "type": "boolean"
@@ -11322,12 +11318,6 @@
           "description": {
             "type": [
               "string",
-              "null"
-            ]
-          },
-          "is_public": {
-            "type": [
-              "boolean",
               "null"
             ]
           },
@@ -16288,12 +16278,6 @@
           "description": {
             "type": [
               "string",
-              "null"
-            ]
-          },
-          "is_public": {
-            "type": [
-              "boolean",
               "null"
             ]
           },

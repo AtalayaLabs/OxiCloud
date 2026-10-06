@@ -43,7 +43,6 @@ pub trait ContactStoragePort: Send + Sync + 'static {
     /// out silently; ordering is not guaranteed.
     async fn get_address_books_by_ids(&self, ids: &[Uuid])
     -> Result<Vec<AddressBook>, DomainError>;
-    async fn get_public_address_books(&self) -> Result<Vec<AddressBook>, DomainError>;
 
     // ── Contacts ─────────────────────────────────────────────────
     async fn create_contact(&self, contact: Contact) -> Result<Contact, DomainError>;
@@ -140,7 +139,6 @@ pub trait AddressBookUseCase: Send + Sync + 'static {
         &self,
         user_id: Uuid,
     ) -> Result<Vec<AddressBookDto>, DomainError>;
-    async fn list_public_address_books(&self) -> Result<Vec<AddressBookDto>, DomainError>;
 }
 
 pub trait ContactUseCase: Send + Sync + 'static {

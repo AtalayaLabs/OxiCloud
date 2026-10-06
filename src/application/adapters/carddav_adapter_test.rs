@@ -18,7 +18,6 @@ mod tests {
             owner_id: "user-001".to_string(),
             description: Some("Personal address book".to_string()),
             color: Some("#00FF00".to_string()),
-            is_public: false,
             created_at: Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap(),
             updated_at: Utc.with_ymd_and_hms(2025, 1, 15, 12, 0, 0).unwrap(),
         }

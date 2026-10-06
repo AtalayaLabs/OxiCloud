@@ -52,9 +52,9 @@ impl AddressBookRepository for AddressBookPgRepository {
         let normalized_name = normalize_storage_name(address_book.name());
         let row = sqlx::query(
             r#"
-            INSERT INTO carddav.address_books (id, name, owner_id, description, color, is_public, created_at, updated_at)
-            VALUES ($1, $2, $3::uuid, $4, $5, $6, $7, $8)
-            RETURNING id, name, owner_id, description, color, is_public, created_at, updated_at
+            INSERT INTO carddav.address_books (id, name, owner_id, description, color, created_at, updated_at)
+            VALUES ($1, $2, $3::uuid, $4, $5, $6, $7)
+            RETURNING id, name, owner_id, description, color, created_at, updated_at
             "#
         )
         .bind(address_book.id())
@@ -62,7 +62,6 @@ impl AddressBookRepository for AddressBookPgRepository {
         .bind(address_book.owner_id())
         .bind(address_book.description())
         .bind(address_book.color())
-        .bind(address_book.is_public())
         .bind(address_book.created_at())
         .bind(address_book.updated_at())
         .fetch_one(&*self.pool)
@@ -76,7 +75,6 @@ impl AddressBookRepository for AddressBookPgRepository {
             owner_id.to_string(),
             row.get("description"),
             row.get("color"),
-            row.get("is_public"),
             row.get("created_at"),
             row.get("updated_at"),
         ))
@@ -92,15 +90,14 @@ impl AddressBookRepository for AddressBookPgRepository {
         let row = sqlx::query(
             r#"
             UPDATE carddav.address_books
-            SET name = $1, description = $2, color = $3, is_public = $4, updated_at = $5
-            WHERE id = $6
-            RETURNING id, name, owner_id, description, color, is_public, created_at, updated_at
+            SET name = $1, description = $2, color = $3, updated_at = $4
+            WHERE id = $5
+            RETURNING id, name, owner_id, description, color, created_at, updated_at
             "#,
         )
         .bind(&normalized_name)
         .bind(address_book.description())
         .bind(address_book.color())
-        .bind(address_book.is_public())
         .bind(now)
         .bind(address_book.id())
         .fetch_one(&*self.pool)
@@ -116,7 +113,6 @@ impl AddressBookRepository for AddressBookPgRepository {
             owner_id.to_string(),
             row.get("description"),
             row.get("color"),
-            row.get("is_public"),
             row.get("created_at"),
             row.get("updated_at"),
         ))
@@ -148,7 +144,7 @@ impl AddressBookRepository for AddressBookPgRepository {
         }
         let rows = sqlx::query(
             r#"
-            SELECT id, name, owner_id, description, color, is_public, created_at, updated_at
+            SELECT id, name, owner_id, description, color, created_at, updated_at
             FROM carddav.address_books
             WHERE id = ANY($1)
             "#,
@@ -170,7 +166,6 @@ impl AddressBookRepository for AddressBookPgRepository {
                     owner_id.to_string(),
                     row.get("description"),
                     row.get("color"),
-                    row.get("is_public"),
                     row.get("created_at"),
                     row.get("updated_at"),
                 )
@@ -184,7 +179,7 @@ impl AddressBookRepository for AddressBookPgRepository {
     ) -> AddressBookRepositoryResult<Option<AddressBook>> {
         let maybe_row = sqlx::query(
             r#"
-            SELECT id, name, owner_id, description, color, is_public, created_at, updated_at
+            SELECT id, name, owner_id, description, color, created_at, updated_at
             FROM carddav.address_books
             WHERE id = $1
             "#,
@@ -204,7 +199,6 @@ impl AddressBookRepository for AddressBookPgRepository {
                 owner_id.to_string(),
                 row.get("description"),
                 row.get("color"),
-                row.get("is_public"),
                 row.get("created_at"),
                 row.get("updated_at"),
             )
@@ -219,7 +213,7 @@ impl AddressBookRepository for AddressBookPgRepository {
     ) -> AddressBookRepositoryResult<Vec<AddressBook>> {
         let rows = sqlx::query(
             r#"
-            SELECT id, name, owner_id, description, color, is_public, created_at, updated_at
+            SELECT id, name, owner_id, description, color, created_at, updated_at
             FROM carddav.address_books
             WHERE owner_id = $1
             ORDER BY name
@@ -242,42 +236,6 @@ impl AddressBookRepository for AddressBookPgRepository {
                     owner_id.to_string(),
                     row.get("description"),
                     row.get("color"),
-                    row.get("is_public"),
-                    row.get("created_at"),
-                    row.get("updated_at"),
-                )
-            })
-            .collect();
-
-        Ok(result)
-    }
-
-    async fn get_public_address_books(&self) -> AddressBookRepositoryResult<Vec<AddressBook>> {
-        let rows = sqlx::query(
-            r#"
-            SELECT id, name, owner_id, description, color, is_public, created_at, updated_at
-            FROM carddav.address_books
-            WHERE is_public = true
-            ORDER BY name
-            "#,
-        )
-        .fetch_all(&*self.pool)
-        .await
-        .map_err(|e| {
-            DomainError::database_error(format!("Failed to get public address books: {}", e))
-        })?;
-
-        let result = rows
-            .into_iter()
-            .map(|row| {
-                let owner_id: Uuid = row.get("owner_id");
-                AddressBook::from_raw(
-                    row.get("id"),
-                    row.get("name"),
-                    owner_id.to_string(),
-                    row.get("description"),
-                    row.get("color"),
-                    row.get("is_public"),
                     row.get("created_at"),
                     row.get("updated_at"),
                 )

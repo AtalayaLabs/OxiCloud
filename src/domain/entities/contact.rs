@@ -8,7 +8,6 @@ pub struct AddressBook {
     owner_id: String,
     description: Option<String>,
     color: Option<String>,
-    is_public: bool,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -23,7 +22,6 @@ pub struct AddressBookParts {
     pub owner_id: String,
     pub description: Option<String>,
     pub color: Option<String>,
-    pub is_public: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -38,7 +36,6 @@ impl AddressBook {
             owner_id,
             description,
             color,
-            is_public,
             created_at,
             updated_at,
         } = self;
@@ -48,7 +45,6 @@ impl AddressBook {
             owner_id,
             description,
             color,
-            is_public,
             created_at,
             updated_at,
         }
@@ -62,7 +58,6 @@ impl AddressBook {
         owner_id: String,
         description: Option<String>,
         color: Option<String>,
-        is_public: bool,
     ) -> Self {
         let now = Utc::now();
         Self {
@@ -71,7 +66,6 @@ impl AddressBook {
             owner_id,
             description,
             color,
-            is_public,
             created_at: now,
             updated_at: now,
         }
@@ -84,7 +78,6 @@ impl AddressBook {
         owner_id: String,
         description: Option<String>,
         color: Option<String>,
-        is_public: bool,
         created_at: DateTime<Utc>,
         updated_at: DateTime<Utc>,
     ) -> Self {
@@ -94,7 +87,6 @@ impl AddressBook {
             owner_id,
             description,
             color,
-            is_public,
             created_at,
             updated_at,
         }
@@ -116,9 +108,6 @@ impl AddressBook {
     pub fn color(&self) -> Option<&str> {
         self.color.as_deref()
     }
-    pub fn is_public(&self) -> bool {
-        self.is_public
-    }
     pub fn created_at(&self) -> &DateTime<Utc> {
         &self.created_at
     }
@@ -139,10 +128,6 @@ impl AddressBook {
         self.color = color;
         self.updated_at = Utc::now();
     }
-    pub fn set_is_public(&mut self, is_public: bool) {
-        self.is_public = is_public;
-        self.updated_at = Utc::now();
-    }
     pub fn set_updated_at(&mut self, updated_at: DateTime<Utc>) {
         self.updated_at = updated_at;
     }
@@ -155,7 +140,6 @@ impl Default for AddressBook {
             "default".to_string(),
             None,
             None,
-            false,
         )
     }
 }
