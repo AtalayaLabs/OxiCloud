@@ -150,18 +150,6 @@ impl CalendarStoragePort for CalendarStorageAdapter {
         Ok(calendars.into_iter().map(CalendarDto::from).collect())
     }
 
-    async fn list_public_calendars(
-        &self,
-        limit: i64,
-        offset: i64,
-    ) -> Result<Vec<CalendarDto>, DomainError> {
-        let calendars = self
-            .calendar_repository
-            .list_public_calendars(limit, offset)
-            .await?;
-        Ok(calendars.into_iter().map(CalendarDto::from).collect())
-    }
-
     // Calendar properties
 
     async fn set_calendar_property(

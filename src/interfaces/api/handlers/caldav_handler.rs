@@ -1067,7 +1067,6 @@ async fn handle_mkcalendar(
         name,
         description,
         color,
-        is_public: Some(false),
     };
 
     // See the comment above create_event_from_ical for why this uses
@@ -1359,7 +1358,6 @@ async fn handle_proppatch(
         name: None,
         description: None,
         color: None,
-        is_public: None,
     };
 
     for op in &ops {
