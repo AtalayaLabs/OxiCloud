@@ -503,6 +503,7 @@ fn folder_dto_from_search(
         // these; safe default.
         is_favorite: false,
         is_shared: false,
+        mount: None,
     }
 }
 

@@ -261,6 +261,11 @@ impl DomainError {
         }
     }
 
+    /// Creates a conflict error (request contradicts current state; HTTP 409)
+    pub fn conflict<S: Into<String>>(entity_type: &'static str, message: S) -> Self {
+        Self::new(ErrorKind::Conflict, entity_type, message)
+    }
+
     /// Creates a precondition-failed error (RFC 7232 / CAS mismatch)
     pub fn precondition_failed<S: Into<String>>(entity_type: &'static str, message: S) -> Self {
         Self {
@@ -379,6 +384,13 @@ impl From<uuid::Error> for DomainError {
 #[cfg(test)]
 mod transient_tests {
     use super::*;
+
+    #[test]
+    fn conflict_constructor_sets_conflict_kind() {
+        let e = DomainError::conflict("ShareMount", "cannot be shared");
+        assert_eq!(e.kind, ErrorKind::Conflict);
+        assert_eq!(e.entity_type, "ShareMount");
+    }
 
     /// The retry decorator and the job engine both branch on this, so
     /// the set has to be deliberate rather than incidental.

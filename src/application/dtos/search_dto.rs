@@ -664,6 +664,7 @@ fn append_folders(items: &mut Vec<SearchResourceItem>, folders: Vec<SearchFolder
             updated_by: f.updated_by,
             is_favorite: f.is_favorite,
             is_shared: f.is_shared,
+            mount: None,
         };
         items.push(SearchResourceItem {
             resource_type: ResourceTypeDto::Folder,

@@ -2436,6 +2436,7 @@ mod tests {
             // Nextcloud DAV surfaces don't render the SPA badges.
             is_favorite: false,
             is_shared: false,
+            mount: None,
         }
     }
 

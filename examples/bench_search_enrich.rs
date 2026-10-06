@@ -301,6 +301,7 @@ fn folder_dtos(n: usize) -> Vec<FolderDto> {
             updated_by: None,
             is_favorite: false,
             is_shared: false,
+            mount: None,
         })
         .collect()
 }

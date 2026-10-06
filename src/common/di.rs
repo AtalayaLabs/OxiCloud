@@ -741,6 +741,9 @@ impl AppServiceFactory {
             Arc<dyn crate::application::ports::resource_access_hook::ResourceAccessHook>,
         >,
         bus: &Arc<crate::infrastructure::services::in_process_message_bus::InProcessMessageBus>,
+        share_mount_service: Option<
+            Arc<crate::application::services::share_mount_service::ShareMountService>,
+        >,
     ) -> ApplicationServices {
         // Upcast the concrete bus once — service builders take the
         // trait object so the wire remains stable across future bus
@@ -749,8 +752,8 @@ impl AppServiceFactory {
             bus.clone();
 
         // Main services
-        let folder_service = Arc::new(
-            FolderService::new(
+        let folder_service = {
+            let svc = FolderService::new(
                 repos.folder_repository.clone(),
                 authz.clone(),
                 // Same dispatcher TrashService uses, so the cascade hook in
@@ -771,8 +774,12 @@ impl AppServiceFactory {
             .with_storage_usage(storage_usage.clone())
             // Bus fan-out on `create_folder_with_perms` — the
             // parent-folder subscribers see new sub-folders live.
-            .with_message_bus(bus_trait.clone()),
-        );
+            .with_message_bus(bus_trait.clone());
+            Arc::new(match &share_mount_service {
+                Some(sm) => svc.with_share_mounts(sm.clone()),
+                None => svc,
+            })
+        };
 
         // Built before the upload/management services so the plugin lifecycle
         // bridge (which looks file metadata up by id) can be wired into the
@@ -870,6 +877,9 @@ impl AppServiceFactory {
             .with_message_bus(bus_trait.clone());
             if let Some(hook) = resource_access_hook.clone() {
                 svc = svc.with_resource_access_hook(hook);
+            }
+            if let Some(sm) = &share_mount_service {
+                svc = svc.with_share_mounts(sm.clone());
             }
             svc
         });
@@ -1079,6 +1089,9 @@ impl AppServiceFactory {
         authz: &Arc<PgAclEngine>,
         drive_repo: &Arc<crate::infrastructure::repositories::pg::DrivePgRepository>,
         bus: &Arc<crate::infrastructure::services::in_process_message_bus::InProcessMessageBus>,
+        share_mount_service: Option<
+            Arc<crate::application::services::share_mount_service::ShareMountService>,
+        >,
     ) -> Option<Arc<TrashService>> {
         if !self.config.features.enable_trash {
             tracing::info!("Trash service is disabled in configuration");
@@ -1093,19 +1106,21 @@ impl AppServiceFactory {
         // `create_application_services`.
         let bus_trait: Arc<dyn crate::application::ports::message_bus_ports::MessageBus> =
             bus.clone();
-        let service = Arc::new(
-            TrashService::new(
-                trash_repo.clone(),
-                repos.file_write_repository.clone(),
-                repos.folder_repository.clone(),
-                core.blob_handler.clone(),
-                Some(core.file_content_cache.clone()),
-                authz.clone(),
-                drive_repo.clone(),
-            )
-            .with_file_deleted_hook(core.file_lifecycle.clone())
-            .with_message_bus(bus_trait),
-        );
+        let service = TrashService::new(
+            trash_repo.clone(),
+            repos.file_write_repository.clone(),
+            repos.folder_repository.clone(),
+            core.blob_handler.clone(),
+            Some(core.file_content_cache.clone()),
+            authz.clone(),
+            drive_repo.clone(),
+        )
+        .with_file_deleted_hook(core.file_lifecycle.clone())
+        .with_message_bus(bus_trait);
+        let service = Arc::new(match share_mount_service {
+            Some(svc) => service.with_share_mounts(svc),
+            None => service,
+        });
 
         // Initialize cleanup service (bulk-deletes expired items in 2 SQL
         // queries, then GCs zero-reference blobs — including chunks orphaned
@@ -1142,6 +1157,9 @@ impl AppServiceFactory {
         authorization: &Arc<crate::infrastructure::services::pg_acl_engine::PgAclEngine>,
         drive_repo: &Arc<crate::infrastructure::repositories::pg::DrivePgRepository>,
         search_service: Option<Arc<SearchService>>,
+        share_mount_service: Option<
+            Arc<crate::application::services::share_mount_service::ShareMountService>,
+        >,
     ) -> Option<Arc<ShareService>> {
         if !self.config.features.enable_file_sharing {
             tracing::info!("File sharing service is disabled in configuration");
@@ -1159,7 +1177,7 @@ impl AppServiceFactory {
             ),
         );
 
-        let service = Arc::new(ShareService::new(
+        let service = ShareService::new(
             Arc::new(self.config.clone()),
             share_repository,
             repos.file_read_repository.clone(),
@@ -1171,7 +1189,11 @@ impl AppServiceFactory {
             // create/delete of a share drops the sharer's cached search
             // pages (2026-07-26). `None` when search is disabled.
             search_service.clone(),
-        ));
+        );
+        let service = Arc::new(match share_mount_service {
+            Some(sm) => service.with_share_mounts(sm),
+            None => service,
+        });
 
         tracing::info!("File sharing service initialized");
         Some(service)
@@ -1939,9 +1961,39 @@ impl AppServiceFactory {
             crate::infrastructure::services::rt_ticket_store::RtTicketStore::new();
         let _reaper = Arc::clone(&rt_ticket_store).spawn_reaper();
 
+        // Share mounts (docs/plan/share-mounts.md). Group expansion is
+        // attached once the group service exists (OnceLock setter below).
+        let share_mount_service: Option<
+            Arc<crate::application::services::share_mount_service::ShareMountService>,
+        > = if self.config.features.enable_share_mounts {
+            Some(Arc::new(
+                crate::application::services::share_mount_service::ShareMountService::new(
+                    Arc::new(
+                        crate::infrastructure::repositories::pg::ShareMountPgRepository::new(
+                            pool.clone(),
+                        ),
+                    ),
+                    drive_repo.clone(),
+                    authorization.clone(),
+                    repos.folder_repository.clone(),
+                    self.config.features.share_mount_folder.clone(),
+                ),
+            ))
+        } else {
+            tracing::info!("Share mounts are disabled in configuration");
+            None
+        };
+
         // 3b. Trash service (needed before application services)
         let trash_service = self
-            .create_trash_service(&repos, &core, &authorization, &drive_repo, &bus)
+            .create_trash_service(
+                &repos,
+                &core,
+                &authorization,
+                &drive_repo,
+                &bus,
+                share_mount_service.clone(),
+            )
             .await;
 
         // 3c. Storage usage / quota service (needed by the instant-upload
@@ -2003,6 +2055,7 @@ impl AppServiceFactory {
             mount_router.clone(),
             Some(resource_access_hook.clone()),
             &bus,
+            share_mount_service.clone(),
         );
 
         // 5. Share service
@@ -2012,6 +2065,7 @@ impl AppServiceFactory {
             &authorization,
             &drive_repo,
             apps.search_service.clone(),
+            share_mount_service.clone(),
         );
         apps.share_service = share_service.clone();
 
@@ -2237,6 +2291,13 @@ impl AppServiceFactory {
                 user_lifecycle_builder = user_lifecycle_builder.with_hook(Arc::new(
                     crate::application::adapters::plugin_user_lifecycle_hook::PluginUserLifecycleHook::new(
                         dispatch.clone(),
+                    ),
+                ));
+            }
+            if let Some(svc) = &share_mount_service {
+                user_lifecycle_builder = user_lifecycle_builder.with_hook(Arc::new(
+                    crate::application::services::share_mount_service::ShareMountLoginHook(
+                        svc.clone(),
                     ),
                 ));
             }
@@ -2500,6 +2561,7 @@ impl AppServiceFactory {
             db_pool: Some(pool.clone()),
             maintenance_pool: Some(maintenance_pool),
             mount_router,
+            share_mount_service: share_mount_service.clone(),
             bus,
             rt_ticket_store,
             active_ws_sessions: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -2546,37 +2608,47 @@ impl AppServiceFactory {
             migration_progress: Arc::new(std::sync::RwLock::new(None)),
             rotation_progress: Arc::new(std::sync::RwLock::new(None)),
             drive_repo: drive_repo.clone(),
-            drive_management_service: Arc::new(
-                crate::application::services::drive_management_service::DriveManagementService::new(
-                    drive_repo.clone(),
-                    authorization.clone(),
-                    subject_group_repo.clone(),
-                    Arc::new(
-                        crate::infrastructure::repositories::pg::UserPgRepository::new(
-                            pool.clone(),
+            drive_management_service: {
+                let svc =
+                    crate::application::services::drive_management_service::DriveManagementService::new(
+                        drive_repo.clone(),
+                        authorization.clone(),
+                        subject_group_repo.clone(),
+                        Arc::new(
+                            crate::infrastructure::repositories::pg::UserPgRepository::new(
+                                pool.clone(),
+                            ),
                         ),
-                    ),
-                ),
-            ),
+                    );
+                Arc::new(match &share_mount_service {
+                    Some(sm) => svc.with_share_mounts(sm.clone()),
+                    None => svc,
+                })
+            },
             drive_policy_defaults_service: Arc::new(
                 crate::application::services::drive_policy_defaults_service::DrivePolicyDefaultsService::new(
                     drive_repo.clone(),
                     authorization.clone(),
                 ),
             ),
-            subject_group_service: Some(Arc::new(
-                crate::application::services::subject_group_service::SubjectGroupService::new(
-                    subject_group_repo.clone(),
-                    pool.clone(),
-                    Arc::new(
-                        crate::infrastructure::repositories::pg::UserPgRepository::new(
-                            pool.clone(),
+            subject_group_service: {
+                let svc =
+                    crate::application::services::subject_group_service::SubjectGroupService::new(
+                        subject_group_repo.clone(),
+                        pool.clone(),
+                        Arc::new(
+                            crate::infrastructure::repositories::pg::UserPgRepository::new(
+                                pool.clone(),
+                            ),
                         ),
-                    ),
-                    authorization.clone(),
-                    drive_repo.clone(),
-                ),
-            )),
+                        authorization.clone(),
+                        drive_repo.clone(),
+                    );
+                Some(Arc::new(match &share_mount_service {
+                    Some(sm) => svc.with_share_mounts(sm.clone()),
+                    None => svc,
+                }))
+            },
             email_sender: None,                   // populated below
             mock_email_sender: None,              // populated below
             webhook_sink: None,                   // populated below
@@ -2653,6 +2725,12 @@ impl AppServiceFactory {
             // late-registered jobs.
             scheduler_engine: None,
         };
+        if let (Some(sm), Some(sgs)) = (
+            app_state.share_mount_service.as_ref(),
+            app_state.subject_group_service.as_ref(),
+        ) {
+            sm.set_group_service(sgs.clone());
+        }
         let email_bundle = build_email_sender(&self.config.smtp);
         app_state.email_sender = email_bundle.sender;
         app_state.mock_email_sender = email_bundle.mock;
@@ -3754,6 +3832,9 @@ pub struct AppState {
     /// that routes every id to native handling. Handlers consult this before
     /// parsing an id as a UUID, then call the matching service-layer mount
     /// method (which still owns the authorization check).
+    /// Share mount points (docs/plan/share-mounts.md); `None` when disabled.
+    pub share_mount_service:
+        Option<Arc<crate::application::services::share_mount_service::ShareMountService>>,
     pub mount_router:
         Arc<crate::application::services::external_mount_router::MountRouter>,
     /// Message bus. Always present — an empty bus (no

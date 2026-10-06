@@ -224,6 +224,7 @@ pub async fn list_favorites_resources(
                             // `TRUE AS is_favorite` unconditionally.
                             is_favorite: row.is_favorite,
                             is_shared: row.is_shared,
+                            mount: None,
                         };
                         FavoritesResourceItemDto {
                             resource_type: ResourceTypeDto::Folder,

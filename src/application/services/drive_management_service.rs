@@ -36,6 +36,8 @@ use crate::infrastructure::services::pg_acl_engine::PgAclEngine;
 pub struct DriveManagementService {
     drive_repo: Arc<DrivePgRepository>,
     authz: Arc<PgAclEngine>,
+    /// Share mounts follow membership changes (docs/plan/share-mounts.md § Lifecycle).
+    share_mounts: Option<Arc<crate::application::services::share_mount_service::ShareMountService>>,
     /// Needed to validate that a Group owner subject is non-empty at
     /// create-drive time — refusing creation with an empty group avoids
     /// constructing an orphan-owned drive (the "drive must always have
@@ -58,9 +60,18 @@ impl DriveManagementService {
         Self {
             drive_repo,
             authz,
+            share_mounts: None,
             group_repo,
             user_repo,
         }
+    }
+
+    pub fn with_share_mounts(
+        mut self,
+        svc: Arc<crate::application::services::share_mount_service::ShareMountService>,
+    ) -> Self {
+        self.share_mounts = Some(svc);
+        self
     }
 
     /// `POST /api/drives` — create a shared drive owned by a group.
@@ -289,6 +300,11 @@ impl DriveManagementService {
             expires_at = ?expires_at,
             "🤝 drive member added",
         );
+        if let Some(svc) = &self.share_mounts
+            && let Err(e) = svc.on_drive_member_set(subject, drive_id).await
+        {
+            tracing::warn!("share mount reconcile after member add failed: {e}");
+        }
         Ok(grant)
     }
 
@@ -363,6 +379,11 @@ impl DriveManagementService {
             by = %caller_id,
             "👋 drive member removed",
         );
+        if let Some(svc) = &self.share_mounts
+            && let Err(e) = svc.on_subject_revoked(subject).await
+        {
+            tracing::warn!("share mount reconcile after member removal failed: {e}");
+        }
         Ok(())
     }
 

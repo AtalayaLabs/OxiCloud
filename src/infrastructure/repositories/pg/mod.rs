@@ -31,6 +31,7 @@ mod user_pg_repository;
 pub mod file_blob_read_repository;
 pub mod file_blob_write_repository;
 pub mod folder_db_repository;
+pub mod share_mount_pg_repository;
 pub mod trash_db_repository;
 
 pub use address_book_pg_repository::AddressBookPgRepository;
@@ -61,6 +62,7 @@ pub use playlist_pg_repository::{
 pub use recent_items_pg_repository::RecentItemsPgRepository;
 pub use session_pg_repository::SessionPgRepository;
 pub use settings_pg_repository::SettingsPgRepository;
+pub use share_mount_pg_repository::{MountKind, MountRow, ShareMountPgRepository};
 pub use share_pg_repository::SharePgRepository;
 pub use subject_group_pg_repository::SubjectGroupPgRepository;
 pub use trash_db_repository::TrashDbRepository;

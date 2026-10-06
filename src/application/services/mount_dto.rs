@@ -72,6 +72,7 @@ pub fn mount_folder_dto(cfg: &MountConfig, parent_id: &str, stat: &MountStat) ->
         // are always false — they can't be favorited or grant-listed.
         is_favorite: false,
         is_shared: false,
+        mount: None,
     }
 }
 
@@ -95,6 +96,7 @@ pub fn mount_entry_folder_dto(cfg: &MountConfig, parent_id: &str, entry: &MountE
         updated_by: Some(cfg.owner_id),
         is_favorite: false,
         is_shared: false,
+        mount: None,
     }
 }
 
