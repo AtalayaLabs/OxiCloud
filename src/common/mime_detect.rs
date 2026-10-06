@@ -1,10 +1,21 @@
 //! MIME type detection using magic bytes (infer) + extension fallback (mime_guess).
 //!
-//! Priority order:
-//! 1. If the claimed Content-Type is specific (not `application/octet-stream`), trust it.
-//! 2. Read first bytes of the file and detect via magic bytes (`infer` crate).
-//! 3. Fall back to extension-based detection (`mime_guess`).
-//! 4. If nothing matches, return the original claimed type.
+//! Priority order — **content first**:
+//! 1. Magic bytes (`infer`) on the first [`MAGIC_BYTES_LEN`] bytes. A fact
+//!    about the content, so it outranks anything the uploader asserts.
+//! 2. The claimed Content-Type, if specific (not `application/octet-stream`).
+//! 3. Extension-based detection (`mime_guess`).
+//! 4. The original claimed type, verbatim.
+//!
+//! Steps 2 and 3 are both guesses by whoever uploaded the file; the claim
+//! is ranked higher because the extension is the worse oracle precisely
+//! where they disagree (`.ts` → `video/mp2t`).
+//!
+//! The claim used to come *first*, which meant magic bytes only ran for
+//! clients that sent nothing — so a client could name any type it liked
+//! and have it stored and later served back. Content-type is a security
+//! decision on the download path, not just a display hint, so the
+//! untrusted assertion must not outrank the bytes.
 //!
 //! Performance: < 1µs for the `infer` check (reads only header bytes, no allocation).
 
@@ -36,23 +47,32 @@ pub fn is_generic_mime(claimed: &str) -> bool {
 /// * `filename` — original filename (used for extension fallback)
 /// * `claimed` — the Content-Type sent by the client
 pub fn refine_content_type(buf: &[u8], filename: &str, claimed: &str) -> String {
-    // If the client sent a specific type (not generic), trust it
-    if !is_generic_mime(claimed) {
-        return claimed.to_string();
-    }
-
-    // 1. Try magic bytes detection
+    // 1. Magic bytes win. This is a fact about the content; the other two
+    //    candidates are assertions by whoever uploaded it. `infer` only
+    //    answers on a real signature match, so a `Some` here is
+    //    high-confidence and outranks both the claim and the extension.
     if let Some(kind) = infer::get(buf) {
         return kind.mime_type().to_string();
     }
 
-    // 2. Try extension-based detection
+    // 2. A specific claim beats the extension. `infer` carries no
+    //    signatures for text-shaped formats — plain text, CSV, SVG, m3u —
+    //    so silence is the normal case for a large slice of real uploads,
+    //    not a red flag. Between the remaining two guesses the claim is
+    //    the better one: the extension is the worse oracle in exactly the
+    //    ambiguous cases (`.ts` is TypeScript far more often than it is an
+    //    MPEG transport stream, but `mime_guess` says `video/mp2t`).
+    if !is_generic_mime(claimed) {
+        return claimed.to_string();
+    }
+
+    // 3. Extension, when the client told us nothing usable.
     let guess = mime_guess::from_path(filename);
     if let Some(mime) = guess.first() {
         return mime.to_string();
     }
 
-    // 3. Fall back to claimed type
+    // 4. Give the claim back verbatim (generic or empty).
     claimed.to_string()
 }
 
@@ -77,15 +97,14 @@ pub async fn refine_content_type_from_file(
     filename: &str,
     claimed: &str,
 ) -> String {
-    // Fast path: if the client gave us a specific type, trust it
-    if !claimed.is_empty()
-        && claimed != "application/octet-stream"
-        && claimed != "binary/octet-stream"
-    {
-        return claimed.to_string();
-    }
-
-    // Read only the first bytes needed for magic detection (not the whole file).
+    // No trust-the-claim fast path: the magic bytes are the point. This
+    // used to return early on any specific `claimed`, which meant the
+    // sniffer only ever ran for clients that declined to guess — the
+    // opposite of what it is for. (It also carried its own inlined copy
+    // of the `is_generic_mime` test, so the rule lived in two places and
+    // could drift.)
+    //
+    // Reads only the first bytes needed for magic detection, not the file.
     match tokio::fs::File::open(temp_path).await {
         Ok(mut file) => {
             let mut buf = vec![0u8; MAGIC_BYTES_LEN];
@@ -98,12 +117,10 @@ pub async fn refine_content_type_from_file(
                 temp_path.display(),
                 e
             );
-            // Fall back to extension
-            let guess = mime_guess::from_path(filename);
-            if let Some(mime) = guess.first() {
-                return mime.to_string();
-            }
-            claimed.to_string()
+            // Unreadable temp file — fall through with no magic. Routed
+            // back through `refine_content_type` rather than reimplemented
+            // so the claim-vs-extension precedence stays defined once.
+            refine_content_type(&[], filename, claimed)
         }
     }
 }
@@ -179,6 +196,94 @@ pub fn zip_entry_compression(mime: &str) -> async_zip::Compression {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── refine_content_type precedence ──────────────────────────
+    //
+    // The order is load-bearing, so each rank gets a test that fails if
+    // the ranks are swapped back.
+
+    /// 8-byte PNG signature — enough for `infer` to match.
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n";
+
+    #[test]
+    fn magic_bytes_beat_a_specific_but_wrong_claim() {
+        // THE case this ordering exists for. A client uploading PNG bytes
+        // under `text/html` previously had that stored verbatim and served
+        // back on download; now the bytes decide.
+        assert_eq!(
+            refine_content_type(PNG, "avatar.png", "text/html"),
+            "image/png"
+        );
+        // Lying about the extension as well changes nothing.
+        assert_eq!(
+            refine_content_type(PNG, "page.html", "text/html"),
+            "image/png"
+        );
+    }
+
+    #[test]
+    fn magic_bytes_beat_the_extension() {
+        assert_eq!(
+            refine_content_type(PNG, "notes.txt", "application/octet-stream"),
+            "image/png"
+        );
+    }
+
+    #[test]
+    fn audio_is_identified_from_content_not_from_the_name() {
+        // Relevant to any future "is this really audio?" gate: an ID3v2
+        // header is recognised whatever the file is called or claimed.
+        let mp3 = b"ID3\x04\x00\x00\x00\x00\x00\x00rest-of-file";
+        assert_eq!(
+            refine_content_type(mp3, "track.bin", "application/octet-stream"),
+            "audio/mpeg"
+        );
+    }
+
+    #[test]
+    fn without_magic_a_specific_claim_beats_the_extension() {
+        // `infer` has no signature for text-shaped content, so this is the
+        // common case, not an edge one. The claim is preferred because the
+        // extension is the worse oracle exactly here: `mime_guess` maps
+        // `.ts` to `video/mp2t`, which is wrong for most real `.ts` files.
+        assert_eq!(
+            refine_content_type(b"export const x = 1;\n", "app.ts", "text/typescript"),
+            "text/typescript"
+        );
+    }
+
+    #[test]
+    fn without_magic_or_a_claim_the_extension_decides() {
+        let got = refine_content_type(
+            b"col_a,col_b\n1,2\n",
+            "data.csv",
+            "application/octet-stream",
+        );
+        assert!(
+            got.starts_with("text/csv"),
+            "expected a text/csv guess from the extension, got {got}"
+        );
+    }
+
+    #[test]
+    fn with_nothing_to_go_on_the_claim_is_returned_verbatim() {
+        assert_eq!(refine_content_type(&[], "no-extension", ""), "");
+        assert_eq!(
+            refine_content_type(&[], "no-extension", "application/octet-stream"),
+            "application/octet-stream"
+        );
+    }
+
+    #[test]
+    fn empty_buffer_does_not_panic_or_match() {
+        // The ingest hands an empty slice whenever the body is empty; the
+        // matchers are all length-guarded, but assert it rather than trust it.
+        assert_eq!(
+            refine_content_type(&[], "x.png", "application/octet-stream"),
+            "image/png",
+            "no magic available, so the extension should decide"
+        );
+    }
 
     // ── is_precompressed_mime ───────────────────────────────────
 

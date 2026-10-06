@@ -33,7 +33,7 @@ use tokio_util::io::ReaderStream;
 
 use crate::application::ports::chunked_upload_ports::ChecksumAlg;
 use crate::application::ports::file_ports::StoredBlob;
-use crate::common::mime_detect::{MAGIC_BYTES_LEN, is_generic_mime, refine_content_type};
+use crate::common::mime_detect::{MAGIC_BYTES_LEN, refine_content_type};
 use crate::infrastructure::services::blob_handler::BlobHandler;
 use crate::interfaces::errors::AppError;
 
@@ -177,9 +177,26 @@ where
     // as used for multipart fields) panic on a post-None poll.
     let mut counted = Box::pin(counted.fuse());
 
-    // ── In-flight MIME sniff (only when the claimed type is generic) ──
+    // ── In-flight MIME sniff — ALWAYS, whatever the client claimed ────
+    //
+    // This used to peek only when `claimed_type` was generic, so a client
+    // that stated a type confidently was believed outright and the
+    // sniffer never ran. That made the stored content-type an
+    // attacker-choosable field on every upload surface, and it is not
+    // only a display hint: it comes back as `Content-Type` on download.
+    //
+    // Every byte path converges here — REST single and chunked uploads,
+    // NextCloud chunked assembly, both WebDAV PUTs and the WebDAV range
+    // PATCH all reach this function through `ingest_body_to_cas` /
+    // `ingest_range_patch_to_cas` — so this is the one place that has to
+    // be right.
+    //
+    // Cost: up to MAGIC_BYTES_LEN (8 KiB) is now buffered on every
+    // upload rather than only on generic ones, and handed straight back
+    // to the stream below. The peek is bounded, so a large upload pays
+    // exactly the same 8 KiB as a small one.
     let mut head: Vec<Result<Bytes, std::io::Error>> = Vec::new();
-    let content_type = if is_generic_mime(claimed_type) {
+    let content_type = {
         let mut head_len = 0usize;
         while head_len < MAGIC_BYTES_LEN {
             match counted.next().await {
@@ -203,8 +220,6 @@ where
             }
         }
         refine_content_type(&magic, filename, claimed_type)
-    } else {
-        claimed_type.to_string()
     };
 
     // ── Store: peeked head + remainder, one continuous stream ────
