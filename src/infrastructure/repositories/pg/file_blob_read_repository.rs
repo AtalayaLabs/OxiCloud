@@ -554,37 +554,20 @@ impl FileBlobReadRepository {
         } else {
             "AND $2::timestamptz IS NULL"
         };
-        // `accessible` collects every drive the caller can see on the
-        // photo axis. The grant lookup is wrapped in `EXISTS` so a
-        // drive the caller reaches through MORE than one grant row
-        // (e.g. a direct `user` grant AND a `group` grant via group
-        // membership on the same drive) collapses to a single row.
-        //
-        // The earlier shape `JOIN storage.role_grants … WHERE (user
-        // OR group)` was a cross-product: one accessible-row per
-        // matching grant. Downstream `CROSS JOIN LATERAL (…files
-        // … LIMIT $3)` then probed the same drive once per duplicate,
-        // and the top-N select fanned every photo in that drive
-        // into N copies — which froze the Photos virtualized grid
-        // with `each_key_duplicate` the first time a user ended up
-        // with overlapping grants. `EXISTS` reads the same grants,
-        // short-circuits at the first match, and keeps the one-row-
-        // per-drive shape the LATERAL probe assumes.
+        // `accessible` wraps `storage.caller_accessible_drives` (migration
+        // `20261101000001_caller_accessible_drives_function.sql`) so the
+        // one-row-per-drive invariant lives in one place for every drive-
+        // enumeration listing — Photos, Places, and future shapes. The
+        // function returns `(drive_id uuid)`; we alias it to `id` here so
+        // the downstream `a.id` references stay unchanged. `MATERIALIZED`
+        // keeps the small drive set in a hash table before the lateral
+        // probe, so repeated reads inside the loop don't re-invoke the
+        // function per iteration.
         let sql = format!(
             r#"
             WITH accessible AS MATERIALIZED (
-                SELECT d.id
-                  FROM storage.drives_effective d
-                 WHERE EXISTS (
-                         SELECT 1 FROM storage.role_grants g
-                          WHERE g.resource_type = 'drive'
-                            AND g.resource_id   = d.id
-                            AND ( (g.subject_type = 'user'  AND g.subject_id = $1)
-                               OR (g.subject_type = 'group' AND g.subject_id IN
-                                       (SELECT storage.caller_group_ids($1))) )
-                            AND (g.expires_at IS NULL OR g.expires_at > NOW())
-                       )
-                   AND (d.effective_policies->>'include_in_photo_index')::boolean = true
+                SELECT drive_id AS id
+                  FROM storage.caller_accessible_drives($1, 'include_in_photo_index')
             )
             SELECT top.id, top.name, top.folder_id, fo.path,
                    top.size, top.mime_type,
@@ -701,18 +684,12 @@ impl FileBlobReadRepository {
               FROM storage.file_metadata fm
               JOIN storage.files fi ON fi.id = fm.file_id
              WHERE fi.drive_id IN (
-                     SELECT d.id
-                       FROM storage.drives_effective d
-                       JOIN storage.role_grants g
-                         ON g.resource_type = 'drive'
-                        AND g.resource_id   = d.id
-                      WHERE (
-                              (g.subject_type = 'user'  AND g.subject_id = $1)
-                           OR (g.subject_type = 'group' AND g.subject_id IN
-                                   (SELECT storage.caller_group_ids($1)))
-                            )
-                        AND (g.expires_at IS NULL OR g.expires_at > NOW())
-                        AND (d.effective_policies->>'include_in_photo_index')::boolean = true
+                     -- Same `storage.caller_accessible_drives` the Photos
+                     -- timeline runs through — the two surfaces MUST agree
+                     -- on drive scope, so sharing the function makes the
+                     -- invariant explicit rather than copy-pasted.
+                     SELECT drive_id
+                       FROM storage.caller_accessible_drives($1, 'include_in_photo_index')
                    )
                AND NOT fi.is_trashed
                AND fm.latitude IS NOT NULL
