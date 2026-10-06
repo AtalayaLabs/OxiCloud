@@ -11562,12 +11562,6 @@
               "null"
             ]
           },
-          "is_public": {
-            "type": [
-              "boolean",
-              "null"
-            ]
-          },
           "name": {
             "type": "string"
           }
@@ -14118,7 +14112,6 @@
           "id",
           "name",
           "owner_id",
-          "is_public",
           "created_at",
           "updated_at"
         ],
@@ -14141,9 +14134,6 @@
           },
           "id": {
             "type": "string"
-          },
-          "is_public": {
-            "type": "boolean"
           },
           "name": {
             "type": "string"
@@ -16543,12 +16533,6 @@
           "description": {
             "type": [
               "string",
-              "null"
-            ]
-          },
-          "is_public": {
-            "type": [
-              "boolean",
               "null"
             ]
           },

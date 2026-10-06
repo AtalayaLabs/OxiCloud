@@ -175,13 +175,11 @@ impl MusicUseCase for MusicService {
             Some(p) => p,
             None => return Err(DomainError::not_found("Playlist", playlist_id)),
         };
-        // Public-playlist bypass: anonymous-ish read. `check` returns
-        // bool (no throw); combine with the public flag before
-        // deciding.
-        let allowed = playlist.is_public
-            || self
-                .has_playlist_perm(playlist_id, user_id, Permission::Read)
-                .await?;
+        // `check` returns bool rather than throwing, so the refusal is
+        // shaped here.
+        let allowed = self
+            .has_playlist_perm(playlist_id, user_id, Permission::Read)
+            .await?;
         if !allowed {
             return Err(DomainError::not_found("Playlist", playlist_id));
         }
@@ -194,9 +192,6 @@ impl MusicUseCase for MusicService {
         user_id: Uuid,
     ) -> Result<Vec<PlaylistDto>, DomainError> {
         let include_shared = query.include_shared.unwrap_or(true);
-        let include_public = query.include_public.unwrap_or(false);
-        let limit = query.limit.unwrap_or(100);
-        let offset = query.offset.unwrap_or(0);
 
         // Post-Round-3 semantics: playlists the caller has any grant
         // on come from `list_incoming_grants` — one union of owned +
@@ -228,22 +223,13 @@ impl MusicUseCase for MusicService {
         // the result set silently, as before.
         let user_str = user_id.to_string();
         let ids: Vec<Uuid> = playlist_ids.drain().collect();
-        let mut playlists: Vec<PlaylistDto> = self
+        let playlists: Vec<PlaylistDto> = self
             .storage
             .get_playlists_by_ids(&ids)
             .await?
             .into_iter()
             .filter(|p| include_shared || p.owner_id == user_str)
             .collect();
-
-        if include_public {
-            let public = self.storage.list_public_playlists(limit, offset).await?;
-            for p in public {
-                if !playlists.iter().any(|pl: &PlaylistDto| pl.id == p.id) {
-                    playlists.push(p);
-                }
-            }
-        }
 
         Ok(playlists)
     }
@@ -340,18 +326,15 @@ impl MusicUseCase for MusicService {
         let playlist_uuid = Uuid::parse_str(playlist_id).map_err(|_| {
             DomainError::new(ErrorKind::InvalidInput, "Playlist", "Invalid playlist ID")
         })?;
-        // Public-playlist bypass mirrors `get_playlist`: readers of a
-        // public playlist can see its tracks. Fetch the playlist row
-        // to inspect `is_public` before deciding.
-        let playlist = self
-            .storage
+        // Existence first: a playlist that does not exist must refuse
+        // before the permission lookup gets a say.
+        self.storage
             .get_playlist(playlist_id)
             .await?
             .ok_or_else(|| DomainError::not_found("Playlist", playlist_id))?;
-        let allowed = playlist.is_public
-            || self
-                .has_playlist_perm(playlist_id, user_id, Permission::Read)
-                .await?;
+        let allowed = self
+            .has_playlist_perm(playlist_id, user_id, Permission::Read)
+            .await?;
         if !allowed {
             return Err(DomainError::not_found("Playlist", playlist_id));
         }
@@ -364,14 +347,18 @@ impl MusicUseCase for MusicService {
         // enriched listing joins `storage.files` and `audio.file_metadata`
         // with no owner predicate, so every row carries a file's name,
         // size, MIME type and tags — which previously reached anyone who
-        // could see the playlist, including everyone when `is_public`.
+        // could see the playlist — at one point every user, back when a
+        // playlist could be flagged public.
         //
-        // **A public playlist does not confer read access to its tracks**
-        // (decided 2026-10-06). Public means "you may see that this
-        // playlist exists and what it is"; whether you may see a given
-        // track is still that file's own grant. The alternative — public
-        // implies readable — would have made adding a track an act of
-        // sharing someone else's file.
+        // **Access to a playlist is not access to its tracks** (decided
+        // 2026-10-06). Seeing a playlist means "you may see that it
+        // exists and what it is"; whether you may see a given track is
+        // still that file's own grant. The alternative would have made
+        // adding a track an act of sharing someone else's file.
+        //
+        // This keys on the VIEWER, not on how they reached the playlist,
+        // so owner and grantee each see exactly the files they could
+        // already read.
         //
         // Filtering at read time rather than trusting the write-time check
         // is what makes this hold over time: a file readable when it was

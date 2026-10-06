@@ -9,7 +9,6 @@ export interface Playlist {
 	name: string;
 	description: string | null;
 	owner_id: string;
-	is_public: boolean;
 	cover_file_id: string | null;
 	track_count: number;
 	total_duration_secs: number;
@@ -42,7 +41,6 @@ export interface MusicShare {
 export interface PlaylistUpdate {
 	name?: string;
 	description?: string | null;
-	is_public?: boolean;
 	cover_file_id?: string | null;
 }
 

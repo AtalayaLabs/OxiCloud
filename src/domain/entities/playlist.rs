@@ -9,7 +9,6 @@ pub struct Playlist {
     name: String,
     description: Option<String>,
     owner_id: Uuid,
-    is_public: bool,
     cover_file_id: Option<Uuid>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
@@ -32,7 +31,6 @@ impl Playlist {
             name,
             description,
             owner_id,
-            is_public: false,
             cover_file_id: None,
             created_at: now,
             updated_at: now,
@@ -45,7 +43,6 @@ impl Playlist {
         name: String,
         description: Option<String>,
         owner_id: Uuid,
-        is_public: bool,
         cover_file_id: Option<Uuid>,
         created_at: DateTime<Utc>,
         updated_at: DateTime<Utc>,
@@ -63,7 +60,6 @@ impl Playlist {
             name,
             description,
             owner_id,
-            is_public,
             cover_file_id,
             created_at,
             updated_at,
@@ -84,10 +80,6 @@ impl Playlist {
 
     pub fn owner_id(&self) -> &Uuid {
         &self.owner_id
-    }
-
-    pub fn is_public(&self) -> bool {
-        self.is_public
     }
 
     pub fn cover_file_id(&self) -> Option<&Uuid> {
@@ -117,11 +109,6 @@ impl Playlist {
 
     pub fn update_description(&mut self, description: Option<String>) {
         self.description = description;
-        self.updated_at = Utc::now();
-    }
-
-    pub fn set_public(&mut self, is_public: bool) {
-        self.is_public = is_public;
         self.updated_at = Utc::now();
     }
 
@@ -422,7 +409,6 @@ mod tests {
         assert!(playlist.is_ok());
         let playlist = playlist.unwrap();
         assert_eq!(playlist.name(), "My Playlist");
-        assert!(!playlist.is_public());
     }
 
     #[test]

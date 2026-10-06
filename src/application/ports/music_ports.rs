@@ -116,12 +116,6 @@ pub trait MusicStoragePort: Send + Sync {
 
     async fn list_shared_with_user(&self, user_id: Uuid) -> Result<Vec<PlaylistDto>, DomainError>;
 
-    async fn list_public_playlists(
-        &self,
-        limit: i64,
-        offset: i64,
-    ) -> Result<Vec<PlaylistDto>, DomainError>;
-
     async fn user_has_access(&self, playlist_id: &str, user_id: Uuid) -> Result<bool, DomainError>;
 
     async fn user_can_write(&self, playlist_id: &str, user_id: Uuid) -> Result<bool, DomainError>;

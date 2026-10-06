@@ -23,12 +23,6 @@ pub trait PlaylistRepository: Send + Sync + 'static {
         owner_id: Uuid,
     ) -> PlaylistRepositoryResult<Vec<Playlist>>;
 
-    async fn list_public_playlists(
-        &self,
-        limit: i64,
-        offset: i64,
-    ) -> PlaylistRepositoryResult<Vec<Playlist>>;
-
     async fn list_shared_with_user(&self, user_id: Uuid)
     -> PlaylistRepositoryResult<Vec<Playlist>>;
 

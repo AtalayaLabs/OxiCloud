@@ -62,9 +62,6 @@ impl MusicStoragePort for MusicStorageAdapter {
         if let Some(description) = dto.description {
             playlist.update_description(Some(description));
         }
-        if let Some(is_public) = dto.is_public {
-            playlist.set_public(is_public);
-        }
         if let Some(cover_file_id) = dto.cover_file_id {
             let cover_uuid = Uuid::parse_str(&cover_file_id).map_err(|_| {
                 DomainError::new(ErrorKind::InvalidInput, "Playlist", "Invalid cover file ID")
@@ -133,25 +130,6 @@ impl MusicStoragePort for MusicStorageAdapter {
             result.push(dto.with_track_info(track_count, 0));
         }
         Ok(result)
-    }
-
-    async fn list_public_playlists(
-        &self,
-        limit: i64,
-        offset: i64,
-    ) -> Result<Vec<PlaylistDto>, DomainError> {
-        // One `LEFT JOIN … GROUP BY` instead of 1 listing + N per-playlist
-        // `COUNT(*)` round-trips (up to 101 at limit=100) — benches/ROUND25.md §Q1.
-        let playlists = self
-            .playlist_repository
-            .list_public_playlists_with_counts(limit, offset)
-            .await?;
-        Ok(playlists
-            .into_iter()
-            .map(|(playlist, track_count)| {
-                PlaylistDto::from(playlist).with_track_info(track_count, 0)
-            })
-            .collect())
     }
 
     async fn user_has_access(&self, playlist_id: &str, user_id: Uuid) -> Result<bool, DomainError> {
