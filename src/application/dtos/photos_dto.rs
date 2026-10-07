@@ -81,6 +81,13 @@ pub enum PhotoKind {
 pub struct PhotosFilter {
     pub kind: PhotoKind,
     pub drive_id: Option<Uuid>,
+    /// Narrow the listing to the caller's favourited rows only.
+    /// Default `false` keeps the pre-filter behaviour (every row the
+    /// caller can see). The same `auth.user_favorites` EXISTS the
+    /// per-row `is_favorite` column reads from is reused as a WHERE
+    /// clause on the inner lateral — one subquery feeds both the
+    /// projection and the filter.
+    pub favorite_only: bool,
 }
 
 /// Opaque keyset cursor for `GET /api/photos/resources`.
@@ -126,6 +133,15 @@ pub struct PhotosCursor {
     /// pages were already cross-drive.
     #[serde(default)]
     pub drive_id: Option<Uuid>,
+    /// Favourite-only filter the page was issued under. Encoded for
+    /// the same reason as `kind` and `drive_id`: a cursor from the
+    /// favourites-only view can't be reused against the full feed
+    /// (or vice versa) — the row sets diverge arbitrarily and
+    /// pagination would skip or re-emit. `#[serde(default)]` lets
+    /// §1-era cursors decode as `false`, matching the handler's
+    /// default when the request omits the filter.
+    #[serde(default)]
+    pub favorite_only: bool,
     /// Full-precision timestamp of the last-returned item's sort column.
     pub sort_value: DateTime<Utc>,
     /// Tie-breaker — the last-returned item's `file_id`.

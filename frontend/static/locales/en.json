@@ -131,6 +131,9 @@
     "filter_kind": "Media type",
     "filter_drive": "Drive",
     "all_drives": "All drives",
+    "filter_favorite": "Favourites only",
+    "filter_favorite_on": "Showing favourites only — click to show all",
+    "filter_favorite_off": "Show favourites only",
     "kind": {
       "all": "All",
       "photo": "Photos",

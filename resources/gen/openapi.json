@@ -8474,64 +8474,6 @@
         }
       }
     },
-    "/api/photos": {
-      "get": {
-        "tags": [
-          "photos"
-        ],
-        "summary": "Lists all image/video files for the authenticated user, sorted by\ncapture date (EXIF DateTimeOriginal) falling back to upload date.",
-        "description": "Supports cursor-based pagination via the `before` parameter.\nThe `X-Next-Cursor` response header contains the cursor for the next page.",
-        "operationId": "list_photos",
-        "parameters": [
-          {
-            "name": "before",
-            "in": "query",
-            "description": "Cursor: only return items with sort_date before this epoch value",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "format": "int64"
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "description": "Max items to return (default 200, max 500)",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "format": "int64"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "List of media files sorted by capture date",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/PhotoDto"
-                  }
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthorized"
-          },
-          "500": {
-            "description": "Internal server error"
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      }
-    },
     "/api/photos/geo": {
       "get": {
         "tags": [
@@ -8580,6 +8522,124 @@
           },
           "401": {
             "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/photos/resources": {
+      "get": {
+        "tags": [
+          "photos"
+        ],
+        "summary": "`GET /api/photos/resources` — normalized photos listing (§1 of\n`docs/plan/photos-resources-migration.md`).",
+        "description": "Returns the standard `CursorListResponse` envelope every other\n`/resources` endpoint uses, with photo-specific signals\n(`width`, `height`, `sort_date`, `captured_at`, `orientation`,\n`has_gps`) at the item level — siblings to `resource` — so\n`FileDto` stays shape-identical to every other file-listing\nendpoint. Compare `GET /api/photos` which flattens everything\ninto a bare array and is slated for removal in §4.\n\nOn a bad cursor (undecodable base64, mismatched `order_by`) the\nhandler returns 400; invalid payloads must fail loud rather than\npaginate across axes.",
+        "operationId": "list_photos_resources",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Max items to return (1-200, default 50).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque cursor from a previous response. Absent on page 1.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "order_by",
+            "in": "query",
+            "description": "Sort axis. `captured_at` (default) orders by\n`COALESCE(captured_at, created_at)`; `created_at` is reserved\nfor §3 and refused today with 400.",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/PhotoOrderBy"
+                }
+              ]
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "description": "Narrow to one media family (§6). `photo` matches `image/%`,\n`video` matches `video/%`, `all` (default) keeps both\ninterleaved — the pre-filter behaviour.",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/PhotoKind"
+                }
+              ]
+            }
+          },
+          {
+            "name": "drive_id",
+            "in": "query",
+            "description": "Restrict the listing to one accessible drive (§6b). Omit for\nthe cross-drive feed. A `drive_id` the caller cannot see\nreturns an empty page (same anti-enum shape as a drive with\nno photos) — no 403/404 disclosure difference.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "favorite_only",
+            "in": "query",
+            "description": "Narrow to the caller's favourited rows only. Omit (or send\n`false`) for the full feed; `true` filters via the same\n`auth.user_favorites` EXISTS the `is_favorite` projection\nalready runs on every row.",
+            "required": false,
+            "schema": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Page of media files with photo-level signals",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid cursor or unsupported order_by"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "description": "Internal server error"
           }
         },
         "security": [
@@ -12997,15 +13057,6 @@
             "type": "string",
             "description": "Human-readable formatted size (e.g. \"3.27 MB\")"
           },
-          "sort_date": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "description": "Sort date for Photos timeline — COALESCE(EXIF captured_at, created_at).\nOnly populated by the /api/photos endpoint.",
-            "minimum": 0
-          },
           "updated_by": {
             "type": [
               "string",
@@ -14662,35 +14713,6 @@
             "type": "string"
           }
         }
-      },
-      "PhotoDto": {
-        "allOf": [
-          {
-            "$ref": "#/components/schemas/FileDto"
-          },
-          {
-            "type": "object",
-            "properties": {
-              "height": {
-                "type": [
-                  "integer",
-                  "null"
-                ],
-                "format": "int32",
-                "minimum": 0
-              },
-              "width": {
-                "type": [
-                  "integer",
-                  "null"
-                ],
-                "format": "int32",
-                "minimum": 0
-              }
-            }
-          }
-        ],
-        "description": "Photos-timeline item: a `FileDto` plus the image's original pixel\ndimensions (from EXIF/metadata), flattened into the same JSON shape so\nthe gallery can lay tiles out at their true aspect ratio without a\nsecond per-file metadata round-trip."
       },
       "PlaylistDto": {
         "type": "object",

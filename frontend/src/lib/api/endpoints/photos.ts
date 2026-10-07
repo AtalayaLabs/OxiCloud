@@ -109,6 +109,8 @@ export interface FetchPhotosOptions {
 	kind?: PhotosKind;
 	/** Restrict to a single drive the caller can access. Absent → cross-drive view. */
 	driveId?: string | null;
+	/** Narrow to the caller's favourited rows only. `false`/omitted keeps the full feed. */
+	favoriteOnly?: boolean;
 }
 
 /**
@@ -134,6 +136,7 @@ export async function fetchPhotos(limit = 60, opts: FetchPhotosOptions = {}): Pr
 	if (opts.cursor) q.set('cursor', opts.cursor);
 	if (opts.kind && opts.kind !== 'all') q.set('kind', opts.kind);
 	if (opts.driveId) q.set('drive_id', opts.driveId);
+	if (opts.favoriteOnly) q.set('favorite_only', 'true');
 	const res = await apiFetch(`/api/photos/resources?${q}`, { credentials: 'same-origin' });
 	if (!res.ok) throw new Error(`photos failed: ${res.status}`);
 	const envelope = (await res.json()) as PhotosEnvelope;

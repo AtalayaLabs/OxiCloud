@@ -480,6 +480,75 @@ jsonpath "$.message"    contains "kind"
 
 
 # ─────────────────────────────────────────────────────────────
+# Step 8c — ?favorite_only=true filter. Alice's drive has at
+#          least two photos (step 4 + step 5); favourite BOTH so
+#          `limit=1` overfetches and produces a cursor (`limit=1`
+#          with only one favourited row would land on the last
+#          page immediately — `next_cursor` is omitted on the
+#          last page, so there would be nothing to feed into the
+#          axis-mismatch check below).
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/favorites/file/{{photo_file_id}}
+Authorization: Bearer {{alice_token_again}}
+
+HTTP *
+
+
+POST {{base_url}}/api/favorites/file/{{photo_file_id_2}}
+Authorization: Bearer {{alice_token_again}}
+
+HTTP *
+
+
+GET {{base_url}}/api/photos/resources?limit=50&favorite_only=true
+Authorization: Bearer {{alice_token_again}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.items" count == 2
+jsonpath "$.items[*].resource.id" contains "{{photo_file_id}}"
+jsonpath "$.items[*].resource.id" contains "{{photo_file_id_2}}"
+
+
+# Cursor axis mismatch — a cursor minted with favorite_only=true
+# must 400 against a request that drops the flag. Grab a cursor
+# from a limit=1 page (two favourites → page 1 has 1 item + a
+# next_cursor) and reuse it against the default feed → 400 with
+# "favorite_only" in the message.
+GET {{base_url}}/api/photos/resources?limit=1&favorite_only=true
+Authorization: Bearer {{alice_token_again}}
+
+HTTP 200
+[Captures]
+favorite_only_cursor: jsonpath "$.next_cursor"
+[Asserts]
+jsonpath "$.next_cursor" exists
+
+
+GET {{base_url}}/api/photos/resources?limit=1&cursor={{favorite_only_cursor}}
+Authorization: Bearer {{alice_token_again}}
+
+HTTP 400
+[Asserts]
+jsonpath "$.error_type" == "bad_request"
+jsonpath "$.message"    contains "favorite_only"
+
+
+# Cleanup — un-favourite both so later scenarios/suites don't see
+# the starred rows and poison their favourites assertions.
+DELETE {{base_url}}/api/favorites/file/{{photo_file_id}}
+Authorization: Bearer {{alice_token_again}}
+
+HTTP *
+
+
+DELETE {{base_url}}/api/favorites/file/{{photo_file_id_2}}
+Authorization: Bearer {{alice_token_again}}
+
+HTTP *
+
+
+# ─────────────────────────────────────────────────────────────
 # Step 9 — Teardown. Hurl shares one DB; leaving the overlap
 #          fixture around would poison later photo-count
 #          assertions (same rule as the §0 regression test).

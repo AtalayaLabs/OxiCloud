@@ -584,6 +584,22 @@ impl FileBlobReadRepository {
             PhotoKind::Video => "AND fi.mime_type LIKE 'video/%'",
             PhotoKind::All => "AND (fi.mime_type LIKE 'image/%' OR fi.mime_type LIKE 'video/%')",
         };
+        // Favourite-only filter: same EXISTS subquery the top-level
+        // SELECT already runs for the `is_favorite` projection,
+        // pushed into the LATERAL WHERE when the caller asks for
+        // favourites only. Interpolated (not bound) so the planner
+        // can short-circuit the empty-branch at parse time when
+        // `favorite_only = false`.
+        let favorite_pred = if filter.favorite_only {
+            "AND EXISTS (
+                SELECT 1 FROM auth.user_favorites uf
+                 WHERE uf.user_id   = $1
+                   AND uf.item_id   = fi.id::text
+                   AND uf.item_type = 'file'
+             )"
+        } else {
+            ""
+        };
         // SELECT column aliases align with `MediaResourceDbRow`'s field
         // names so `sqlx::FromRow` can deserialise by name — critical
         // because tuple `FromRow` tops out at arity 16 and this row has
@@ -644,6 +660,7 @@ impl FileBlobReadRepository {
                      WHERE fi.drive_id = a.id
                        AND NOT fi.is_trashed
                        {kind_pred}
+                       {favorite_pred}
                        {cursor_pred}
                      ORDER BY fi.media_sort_date DESC, fi.id DESC
                      LIMIT $4

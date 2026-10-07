@@ -15,10 +15,10 @@ use crate::application::dtos::grant_dto::{ResourceContentDto, ResourceTypeDto};
 use crate::application::dtos::photos_dto::{
     PhotoKind, PhotoOrderBy, PhotoResourceItemDto, PhotosCursor, PhotosFilter, PhotosResourcesDto,
 };
-use uuid::Uuid;
 use crate::common::di::AppState;
 use crate::interfaces::api::etag::{if_none_match_matches, not_modified, with_cache_headers};
 use crate::interfaces::middleware::auth::AuthUser;
+use uuid::Uuid;
 
 // §4 of docs/plan/photos-resources-migration.md hard-cut the legacy
 // `GET /api/photos` route in favour of `/api/photos/resources`. The
@@ -52,6 +52,11 @@ pub struct PhotosResourcesQueryParams {
     /// returns an empty page (same anti-enum shape as a drive with
     /// no photos) — no 403/404 disclosure difference.
     pub drive_id: Option<Uuid>,
+    /// Narrow to the caller's favourited rows only. Omit (or send
+    /// `false`) for the full feed; `true` filters via the same
+    /// `auth.user_favorites` EXISTS the `is_favorite` projection
+    /// already runs on every row.
+    pub favorite_only: Option<bool>,
 }
 
 fn default_limit() -> u32 {
@@ -97,6 +102,7 @@ pub async fn list_photos_resources(
     let requested_filter = PhotosFilter {
         kind: params.kind.unwrap_or_default(),
         drive_id: params.drive_id,
+        favorite_only: params.favorite_only.unwrap_or(false),
     };
 
     // §3 reserves `order_by=created_at`; today the only accepted axis
@@ -128,7 +134,8 @@ pub async fn list_photos_resources(
             Some(c)
                 if c.order_by == requested_order
                     && c.kind == requested_filter.kind
-                    && c.drive_id == requested_filter.drive_id =>
+                    && c.drive_id == requested_filter.drive_id
+                    && c.favorite_only == requested_filter.favorite_only =>
             {
                 Some(c)
             }
@@ -137,8 +144,10 @@ pub async fn list_photos_resources(
                     "order_by"
                 } else if c.kind != requested_filter.kind {
                     "kind"
-                } else {
+                } else if c.drive_id != requested_filter.drive_id {
                     "drive_id"
+                } else {
+                    "favorite_only"
                 };
                 return (
                     StatusCode::BAD_REQUEST,
@@ -220,6 +229,7 @@ pub async fn list_photos_resources(
                 order_by: requested_order,
                 kind: requested_filter.kind,
                 drive_id: requested_filter.drive_id,
+                favorite_only: requested_filter.favorite_only,
                 sort_value: r.sort_date_ts,
                 file_id: r.file.id().parse().unwrap_or_default(),
             }

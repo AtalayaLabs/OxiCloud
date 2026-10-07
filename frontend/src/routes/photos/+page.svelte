@@ -61,6 +61,7 @@
 	const GROUP_KEY = 'oxi-photos-group';
 	const KIND_KEY = 'oxi-photos-kind';
 	const DRIVE_KEY = 'oxi-photos-drive';
+	const FAVORITE_KEY = 'oxi-photos-favorite-only';
 	let groupMode = $state<GroupMode>('month');
 	/**
 	 * §6 — media-kind filter. Backed by `?kind=` on the server;
@@ -75,6 +76,13 @@
 	 * timeline anyway, so picking one would land on an empty view.
 	 */
 	let driveFilter = $state<string | null>(null);
+	/**
+	 * Toggle for the "favourites only" filter — passes
+	 * `?favorite_only=true` to the server when on. Default off keeps
+	 * the full feed. Reset-and-reload fires on flip since the server
+	 * returns 400 if a cursor is reused across filter axes.
+	 */
+	let favoriteFilter = $state(false);
 	/**
 	 * Drives the dropdown lists. Loaded once on mount; filtered to
 	 * entries whose typed policy bag has `include_in_photo_index`
@@ -186,7 +194,8 @@
 			const page = await fetchPhotos(60, {
 				cursor,
 				kind: kindFilter,
-				driveId: driveFilter
+				driveId: driveFilter,
+				favoriteOnly: favoriteFilter
 			});
 			items = [...items, ...page.items];
 			cursor = page.nextCursor;
@@ -236,6 +245,15 @@
 		if (typeof localStorage !== 'undefined') {
 			if (id) localStorage.setItem(DRIVE_KEY, id);
 			else localStorage.removeItem(DRIVE_KEY);
+		}
+		resetAndReload();
+	}
+
+	function toggleFavoriteFilter() {
+		favoriteFilter = !favoriteFilter;
+		if (typeof localStorage !== 'undefined') {
+			if (favoriteFilter) localStorage.setItem(FAVORITE_KEY, 'true');
+			else localStorage.removeItem(FAVORITE_KEY);
 		}
 		resetAndReload();
 	}
@@ -319,6 +337,8 @@
 		const savedKind = typeof localStorage !== 'undefined' ? localStorage.getItem(KIND_KEY) : null;
 		if (savedKind === 'all' || savedKind === 'photo' || savedKind === 'video')
 			kindFilter = savedKind;
+		if (typeof localStorage !== 'undefined' && localStorage.getItem(FAVORITE_KEY) === 'true')
+			favoriteFilter = true;
 		const savedDrive = typeof localStorage !== 'undefined' ? localStorage.getItem(DRIVE_KEY) : null;
 		// Restored unconditionally — if the drive is since gone (deleted,
 		// policy flipped off), the server returns an empty page via the
@@ -415,21 +435,33 @@
 			<button
 				class="seg__btn"
 				class:active={kindFilter === 'all'}
+				title={t('photos.kind.all', 'All')}
+				aria-label={t('photos.kind.all', 'All')}
 				data-testid="photos-kind-all-btn"
-				onclick={() => setKindFilter('all')}>{t('photos.kind.all', 'All')}</button
+				onclick={() => setKindFilter('all')}
 			>
+				<Icon name="images" />
+			</button>
 			<button
 				class="seg__btn"
 				class:active={kindFilter === 'photo'}
+				title={t('photos.kind.photo', 'Photos')}
+				aria-label={t('photos.kind.photo', 'Photos')}
 				data-testid="photos-kind-photo-btn"
-				onclick={() => setKindFilter('photo')}>{t('photos.kind.photo', 'Photos')}</button
+				onclick={() => setKindFilter('photo')}
 			>
+				<Icon name="image" />
+			</button>
 			<button
 				class="seg__btn"
 				class:active={kindFilter === 'video'}
+				title={t('photos.kind.video', 'Videos')}
+				aria-label={t('photos.kind.video', 'Videos')}
 				data-testid="photos-kind-video-btn"
-				onclick={() => setKindFilter('video')}>{t('photos.kind.video', 'Videos')}</button
+				onclick={() => setKindFilter('video')}
 			>
+				<Icon name="video" />
+			</button>
 		</div>
 		{#if availableDrives.length > 0}
 			<!-- Drive filter — uses the shared `.group-by-selector`
@@ -492,6 +524,26 @@
 				{/if}
 			</div>
 		{/if}
+		<!-- Favourites-only toggle. Same `.toggle-btn` pattern as the
+		     dotfile eye on DisplayModeControls, with a `.favorite-btn`
+		     modifier that opts OUT of the shared active-state
+		     background change — the only visible toggle signal is
+		     the star's fill colour (grey → gold), matching the
+		     favorite-star treatment on the file list. -->
+		<button
+			type="button"
+			class="toggle-btn favorite-btn"
+			class:active={favoriteFilter}
+			title={favoriteFilter
+				? t('photos.filter_favorite_on', 'Showing favourites only — click to show all')
+				: t('photos.filter_favorite_off', 'Show favourites only')}
+			aria-label={t('photos.filter_favorite', 'Favourites only')}
+			aria-pressed={favoriteFilter}
+			data-testid="photos-favorite-filter-btn"
+			onclick={toggleFavoriteFilter}
+		>
+			<Icon name="star" />
+		</button>
 	</div>
 
 	{#if selected.size > 0}
@@ -562,7 +614,17 @@
 	{/if}
 
 	<div bind:this={sentinel} class="sentinel" aria-hidden="true"></div>
-	{#if loading}<p class="status">{t('common.loading', 'Loading…')}</p>{/if}
+	<!-- Loading indicator hidden for the first ~1s via a CSS animation
+	     delay (feedback_ui_css_first: no JS setTimeout for visual
+	     timing). The element always mounts while `loading` is true;
+	     a sub-second fetch unmounts before the delay elapses, so the
+	     indicator never fades in and the filter flip renders cleanly
+	     with no flash. Longer requests surface the status normally. -->
+	{#if loading}
+		<p class="status status--delayed" role="status" aria-live="polite">
+			{t('common.loading', 'Loading…')}
+		</p>
+	{/if}
 
 	{#if photoLightbox.component}
 		{@const PhotoLightbox = photoLightbox.component}
@@ -658,7 +720,10 @@
 	.photos-toolbar {
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
+		/* Group every control to the trailing edge — same cluster
+		   placement as `DisplayModeControls` renders inside the
+		   `/files` ActionBar `end` snippet. */
+		justify-content: flex-end;
 		gap: var(--space-3);
 		padding: var(--space-3) 1rem 0;
 	}
@@ -671,9 +736,20 @@
 	}
 
 	.seg__btn {
-		display: grid;
-		place-items: center;
-		padding: var(--space-2) var(--space-3);
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		/* `gap` spaces an optional icon from its label without
+		   requiring every button to carry both — group-by buttons
+		   are text-only, kind-filter buttons are icon-only, and
+		   both lay out correctly with the same base rules. */
+		gap: var(--space-2);
+		/* Pin the row height to `.toggle-btn` (32 px in
+		   `styles/ported/buttons.css`) so the segmented controls
+		   sit flush with the dropdown trigger + favourites toggle.
+		   Padding stays for the icon's horizontal breathing room. */
+		height: 32px;
+		padding: 0 var(--space-3);
 		border: none;
 		background: var(--color-bg-surface);
 		color: var(--color-text-muted);
@@ -693,6 +769,27 @@
 	   for the outside-click dismiss listener in the parent script. */
 	.drive-filter {
 		position: relative;
+	}
+
+	/* Favourites-only toggle: inherit the base `.toggle-btn` sizing
+	   / border radius from `styles/ported/buttons.css` but pin a
+	   visible background at rest in BOTH states so the only toggle
+	   signal is the star's fill colour (grey → gold) — matches the
+	   favorite-star treatment on the file list. The shared
+	   `.toggle-btn.active` would otherwise shift the background and
+	   add a shadow, which reads as a different kind of state tell. */
+	.favorite-btn,
+	.favorite-btn.active {
+		background-color: var(--color-border);
+		box-shadow: none;
+	}
+
+	.favorite-btn.active {
+		color: var(--color-star-text-hover);
+	}
+
+	.favorite-btn.active:hover {
+		color: var(--color-star-text-hover);
 	}
 
 	.batch-bar {
@@ -832,6 +929,24 @@
 		text-align: center;
 		color: var(--color-text-muted);
 		padding: 2rem 0;
+	}
+
+	/* CSS-first timing: the loading paragraph mounts with opacity:0
+	   and only fades in after a 1s delay, so a sub-second fetch
+	   (the common filter-flip case) unmounts before the keyframe
+	   starts and the indicator is never visible. Longer requests —
+	   the ones a user actually waits on — reveal normally. See
+	   `feedback_ui_css_first` for why this is pure CSS rather than
+	   a JS setTimeout. */
+	.status--delayed {
+		opacity: 0;
+		animation: delayed-fade-in 150ms ease-out 1s forwards;
+	}
+
+	@keyframes delayed-fade-in {
+		to {
+			opacity: 1;
+		}
 	}
 
 	.status--error {
