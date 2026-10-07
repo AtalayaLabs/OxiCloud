@@ -128,6 +128,14 @@
     "trashed": "{{n}} moved to trash.",
     "layout_square": "Grid",
     "layout_justified": "Justified",
+    "filter_kind": "Media type",
+    "filter_drive": "Drive",
+    "all_drives": "All drives",
+    "kind": {
+      "all": "All",
+      "photo": "Photos",
+      "video": "Videos"
+    },
     "tab_moments": "Moments",
     "tab_places": "Places",
     "tab_people": "People",

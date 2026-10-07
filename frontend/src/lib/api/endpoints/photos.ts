@@ -94,6 +94,23 @@ export async function fetchPhotosGeo(bbox: string, zoom: number): Promise<GeoClu
 /** Backend `MAX_BATCH_SIZE` — chunk larger selections into separate requests. */
 const BATCH_CHUNK_SIZE = 1000;
 
+/** Media-kind filter on the Photos timeline. `'all'` is the default
+ *  (both image AND video rows); `'photo'` / `'video'` narrow to one
+ *  mime family. Omits the query param on `'all'` so the URL stays
+ *  short on the default view. */
+export type PhotosKind = 'all' | 'photo' | 'video';
+
+/** Optional filter / cursor knobs on {@link fetchPhotos}. All default
+ *  to "no filter"; the resulting URL omits every absent param. */
+export interface FetchPhotosOptions {
+	/** Opaque cursor from a prior response. Absent for page 1. */
+	cursor?: string | null;
+	/** Narrow to photos or videos. `'all'` (default) keeps both. */
+	kind?: PhotosKind;
+	/** Restrict to a single drive the caller can access. Absent → cross-drive view. */
+	driveId?: string | null;
+}
+
 /**
  * Fetch one page of the photo timeline from `/api/photos/resources` — the
  * normalized `CursorListResponse<PhotoResourceItemDto>` envelope that
@@ -107,13 +124,17 @@ const BATCH_CHUNK_SIZE = 1000;
  * cursor comes from the `next_cursor` body field (omitted on the last page,
  * `undefined` in the parsed envelope) rather than a response header.
  *
- * `cursor` is the opaque string from a prior response; `undefined` or `null`
- * requests page 1.
+ * Filter knobs (§6 / §6b) ride in {@link FetchPhotosOptions}. A cursor
+ * MUST be reused against the same filter combo that minted it — the server
+ * returns 400 on mismatch, which the caller should treat as a signal to
+ * reset pagination (page 1 with the new filter set) rather than retry.
  */
-export async function fetchPhotos(limit = 60, cursor?: string | null): Promise<PhotoPage> {
-	let url = `/api/photos/resources?limit=${limit}`;
-	if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
-	const res = await apiFetch(url, { credentials: 'same-origin' });
+export async function fetchPhotos(limit = 60, opts: FetchPhotosOptions = {}): Promise<PhotoPage> {
+	const q = new URLSearchParams({ limit: String(limit) });
+	if (opts.cursor) q.set('cursor', opts.cursor);
+	if (opts.kind && opts.kind !== 'all') q.set('kind', opts.kind);
+	if (opts.driveId) q.set('drive_id', opts.driveId);
+	const res = await apiFetch(`/api/photos/resources?${q}`, { credentials: 'same-origin' });
 	if (!res.ok) throw new Error(`photos failed: ${res.status}`);
 	const envelope = (await res.json()) as PhotosEnvelope;
 	const items: PhotoItem[] = (envelope.items ?? []).map((row) => ({

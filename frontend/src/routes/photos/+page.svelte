@@ -6,9 +6,17 @@
 	import { useSelection } from '$lib/composables/useSelection.svelte';
 	import { errorToast } from '$lib/utils/errors';
 	import { onMount } from 'svelte';
-	import { batchTrash, fetchPhotos, type PhotoItem } from '$lib/api/endpoints/photos';
+	import {
+		batchTrash,
+		fetchPhotos,
+		type PhotoItem,
+		type PhotosKind
+	} from '$lib/api/endpoints/photos';
 	import { peopleEnabled } from '$lib/api/endpoints/people';
 	import { fileDownloadUrl, fileThumbnailUrl } from '$lib/api/endpoints/files';
+	import { listDrives } from '$lib/api/endpoints/drives';
+	import { driveIcon } from '$lib/stores/drives.svelte';
+	import type { Drive } from '$lib/api/types';
 	import Icon from '$lib/icons/Icon.svelte';
 	import { confirmDialog } from '$lib/stores/dialogs.svelte';
 	import { preferences } from '$lib/stores/preferences.svelte';
@@ -17,12 +25,7 @@
 	import { filterDotfiles } from '$lib/utils/dotfileFilter';
 	import { dateTimeFormatFor } from '$lib/utils/display';
 	import { isVideo, photoTimestamp } from '$lib/utils/media';
-	import {
-		PhotoTimeline,
-		type GroupMode,
-		type LayoutMode,
-		type PhotoRow
-	} from '$lib/utils/photoTimeline';
+	import { PhotoTimeline, type GroupMode, type PhotoRow } from '$lib/utils/photoTimeline';
 
 	type Tab = 'moments' | 'places' | 'people';
 	let tab = $state<Tab>('moments');
@@ -56,9 +59,60 @@
 	let gridWidth = $state(0);
 
 	const GROUP_KEY = 'oxi-photos-group';
-	const LAYOUT_KEY = 'oxi-photos-layout';
+	const KIND_KEY = 'oxi-photos-kind';
+	const DRIVE_KEY = 'oxi-photos-drive';
 	let groupMode = $state<GroupMode>('month');
-	let layoutMode = $state<LayoutMode>('square');
+	/**
+	 * §6 — media-kind filter. Backed by `?kind=` on the server;
+	 * `'all'` sends no query param so the default URL stays short.
+	 */
+	let kindFilter = $state<PhotosKind>('all');
+	/**
+	 * §6b — drive-scope filter. `null` is the cross-drive feed; a
+	 * uuid restricts to that drive. The drive-select dropdown lists
+	 * only drives with `policies.include_in_photo_index === true`
+	 * — otherwise the uploaded content never shows up in the
+	 * timeline anyway, so picking one would land on an empty view.
+	 */
+	let driveFilter = $state<string | null>(null);
+	/**
+	 * Drives the dropdown lists. Loaded once on mount; filtered to
+	 * entries whose typed policy bag has `include_in_photo_index`
+	 * set true (the server-side eligibility rule for the photo
+	 * axis).
+	 */
+	let availableDrives = $state<Drive[]>([]);
+	/** Dropdown open/close for the drive-filter trigger. Matches the
+	 *  pattern used by `DisplayModeControls` and the /shared kind
+	 *  filter — same `.group-by-selector` CSS classes in
+	 *  `styles/ported/buttons.css`. */
+	let driveFilterOpen = $state(false);
+	/** Current label shown on the dropdown trigger — the chosen drive's
+	 *  name, or "All drives" when the filter is off. */
+	const driveFilterLabel = $derived(
+		driveFilter
+			? (availableDrives.find((d) => d.id === driveFilter)?.name ??
+					t('photos.all_drives', 'All drives'))
+			: t('photos.all_drives', 'All drives')
+	);
+	/** Icon on the trigger button — mirrors the active drive's icon
+	 *  when scoped, falls back to the generic `hdd` glyph in the
+	 *  cross-drive view. */
+	const driveFilterIcon = $derived.by(() => {
+		if (!driveFilter) return 'hdd';
+		const d = availableDrives.find((x) => x.id === driveFilter);
+		return d ? driveIcon(d) : 'hdd';
+	});
+	// Close the drive-filter dropdown on an outside click. Same
+	// mechanism DisplayModeControls uses for the group-by menu.
+	$effect(() => {
+		if (!driveFilterOpen) return;
+		const onDown = (e: MouseEvent) => {
+			if (!(e.target as HTMLElement).closest('.drive-filter')) driveFilterOpen = false;
+		};
+		window.addEventListener('pointerdown', onDown);
+		return () => window.removeEventListener('pointerdown', onDown);
+	});
 	const selected = useSelection();
 	let lightbox = $state(-1); // index into `items`, -1 = closed
 
@@ -112,7 +166,11 @@
 	const photoRows = $derived.by<PhotoRow[]>(() =>
 		timeline.sync(visibleItems, {
 			groupMode,
-			layoutMode,
+			// Pinned to `'square'` since the per-user layout toggle was
+			// retired alongside the §6 filter wiring; keeping the util
+			// signature intact means the justified-packing code stays
+			// available if a future preference brings it back.
+			layoutMode: 'square',
 			width: gridWidth,
 			mobile: isMobile,
 			timestampOf: photoTimestamp,
@@ -125,7 +183,11 @@
 		loading = true;
 		error = null;
 		try {
-			const page = await fetchPhotos(60, cursor);
+			const page = await fetchPhotos(60, {
+				cursor,
+				kind: kindFilter,
+				driveId: driveFilter
+			});
 			items = [...items, ...page.items];
 			cursor = page.nextCursor;
 			if (!page.nextCursor) exhausted = true;
@@ -143,10 +205,39 @@
 		if (typeof localStorage !== 'undefined') localStorage.setItem(GROUP_KEY, m);
 	}
 
-	function setLayoutMode(m: LayoutMode) {
-		if (layoutMode === m) return;
-		layoutMode = m;
-		if (typeof localStorage !== 'undefined') localStorage.setItem(LAYOUT_KEY, m);
+	/**
+	 * Called on every filter change (`kindFilter`, `driveFilter`).
+	 * Pagination state keys off the server-issued cursor, and the
+	 * server returns 400 if a cursor is reused across a filter flip
+	 * — so flipping either filter MUST reset `items` / `cursor` /
+	 * `exhausted` and refetch from page 1. Selection also clears:
+	 * a photo selected under one filter may not exist in the next
+	 * view, and the batch bar would otherwise refer to invisible
+	 * ids.
+	 */
+	function resetAndReload() {
+		items = [];
+		cursor = null;
+		exhausted = false;
+		selected.clear();
+		void loadMore();
+	}
+
+	function setKindFilter(k: PhotosKind) {
+		if (kindFilter === k) return;
+		kindFilter = k;
+		if (typeof localStorage !== 'undefined') localStorage.setItem(KIND_KEY, k);
+		resetAndReload();
+	}
+
+	function setDriveFilter(id: string | null) {
+		if (driveFilter === id) return;
+		driveFilter = id;
+		if (typeof localStorage !== 'undefined') {
+			if (id) localStorage.setItem(DRIVE_KEY, id);
+			else localStorage.removeItem(DRIVE_KEY);
+		}
+		resetAndReload();
 	}
 
 	/** A plain tile click toggles selection once anything is selected, else opens the lightbox. */
@@ -225,9 +316,36 @@
 		const savedGroup = typeof localStorage !== 'undefined' ? localStorage.getItem(GROUP_KEY) : null;
 		if (savedGroup === 'day' || savedGroup === 'month' || savedGroup === 'year')
 			groupMode = savedGroup;
-		const savedLayout =
-			typeof localStorage !== 'undefined' ? localStorage.getItem(LAYOUT_KEY) : null;
-		if (savedLayout === 'square' || savedLayout === 'justified') layoutMode = savedLayout;
+		const savedKind = typeof localStorage !== 'undefined' ? localStorage.getItem(KIND_KEY) : null;
+		if (savedKind === 'all' || savedKind === 'photo' || savedKind === 'video')
+			kindFilter = savedKind;
+		const savedDrive = typeof localStorage !== 'undefined' ? localStorage.getItem(DRIVE_KEY) : null;
+		// Restored unconditionally — if the drive is since gone (deleted,
+		// policy flipped off), the server returns an empty page via the
+		// anti-enum path and the dropdown will drop the stale entry once
+		// the drives load lands below.
+		if (savedDrive) driveFilter = savedDrive;
+		// Hydrate the drive-selector list. Filter to drives that opt into
+		// the photo axis — picking a non-opted-in drive would always land
+		// on an empty view, so there is no point surfacing them. Failure
+		// is non-fatal: the dropdown stays empty, the cross-drive feed
+		// still works.
+		void listDrives()
+			.then((drives) => {
+				availableDrives = drives.filter(
+					(d) =>
+						(d.policies as { include_in_photo_index?: boolean })?.include_in_photo_index === true
+				);
+				// If a restored `driveFilter` isn't in the eligible set,
+				// drop back to the cross-drive view silently.
+				if (driveFilter && !availableDrives.some((d) => d.id === driveFilter)) {
+					driveFilter = null;
+					if (typeof localStorage !== 'undefined') localStorage.removeItem(DRIVE_KEY);
+				}
+			})
+			.catch(() => {
+				/* intentional: dropdown stays empty, cross-drive feed still works */
+			});
 		void loadMore();
 		void peopleEnabled().then((ok) => (peopleAvailable = ok));
 		if (!sentinel) return;
@@ -293,24 +411,87 @@
 				</button>
 			{/each}
 		</div>
-		<div class="seg" role="group" aria-label={t('photos.layout_square', 'Layout')}>
+		<div class="seg" role="group" aria-label={t('photos.filter_kind', 'Media type')}>
 			<button
 				class="seg__btn"
-				class:active={layoutMode === 'square'}
-				title={t('photos.layout_square', 'Grid')}
-				aria-label={t('photos.layout_square', 'Grid')}
-				data-testid="photos-layout-square-btn"
-				onclick={() => setLayoutMode('square')}><Icon name="th" /></button
+				class:active={kindFilter === 'all'}
+				data-testid="photos-kind-all-btn"
+				onclick={() => setKindFilter('all')}>{t('photos.kind.all', 'All')}</button
 			>
 			<button
 				class="seg__btn"
-				class:active={layoutMode === 'justified'}
-				title={t('photos.layout_justified', 'Justified')}
-				aria-label={t('photos.layout_justified', 'Justified')}
-				data-testid="photos-layout-justified-btn"
-				onclick={() => setLayoutMode('justified')}><Icon name="layer-group" /></button
+				class:active={kindFilter === 'photo'}
+				data-testid="photos-kind-photo-btn"
+				onclick={() => setKindFilter('photo')}>{t('photos.kind.photo', 'Photos')}</button
+			>
+			<button
+				class="seg__btn"
+				class:active={kindFilter === 'video'}
+				data-testid="photos-kind-video-btn"
+				onclick={() => setKindFilter('video')}>{t('photos.kind.video', 'Videos')}</button
 			>
 		</div>
+		{#if availableDrives.length > 0}
+			<!-- Drive filter — uses the shared `.group-by-selector`
+			     dropdown classes (styles/ported/buttons.css) so photos,
+			     /shared, and every `DisplayModeControls` consumer share
+			     the same trigger-button + popup pattern. -->
+			<div class="group-by-selector drive-filter" data-testid="photos-drive-filter">
+				<button
+					type="button"
+					class="toggle-btn group-by-btn active"
+					title={t('photos.filter_drive', 'Drive')}
+					aria-haspopup="true"
+					aria-expanded={driveFilterOpen}
+					data-testid="photos-drive-filter-btn"
+					onclick={(e) => {
+						e.stopPropagation();
+						driveFilterOpen = !driveFilterOpen;
+					}}
+				>
+					<Icon name={driveFilterIcon} />
+					<span class="group-by-label">{driveFilterLabel}</span>
+				</button>
+				{#if driveFilterOpen}
+					<div
+						class="group-by-menu"
+						role="menu"
+						tabindex="-1"
+						onclick={(e) => e.stopPropagation()}
+						onkeydown={(e) => e.key === 'Escape' && (driveFilterOpen = false)}
+					>
+						<button
+							type="button"
+							class="group-by-option"
+							class:active={driveFilter === null}
+							data-testid="photos-drive-filter-all"
+							onclick={() => {
+								setDriveFilter(null);
+								driveFilterOpen = false;
+							}}
+						>
+							<Icon name="hdd" />
+							{t('photos.all_drives', 'All drives')}
+						</button>
+						{#each availableDrives as drive (drive.id)}
+							<button
+								type="button"
+								class="group-by-option"
+								class:active={driveFilter === drive.id}
+								data-testid={`photos-drive-filter-${drive.id}`}
+								onclick={() => {
+									setDriveFilter(drive.id);
+									driveFilterOpen = false;
+								}}
+							>
+								<Icon name={driveIcon(drive)} />
+								{drive.name}
+							</button>
+						{/each}
+					</div>
+				{/if}
+			</div>
+		{/if}
 	</div>
 
 	{#if selected.size > 0}
@@ -503,6 +684,15 @@
 	.seg__btn.active {
 		background: var(--color-accent);
 		color: var(--color-on-accent);
+	}
+
+	/* §6b drive-scope dropdown. All visual weight comes from the
+	   shared `.group-by-selector` / `.group-by-btn` / `.group-by-menu`
+	   / `.group-by-option` classes in `styles/ported/buttons.css`;
+	   the `.drive-filter` modifier exists only as a selector hook
+	   for the outside-click dismiss listener in the parent script. */
+	.drive-filter {
+		position: relative;
 	}
 
 	.batch-bar {
