@@ -886,20 +886,21 @@ HTTP 200
 # `PersonalDriveLifecycleHook` + backfill migration
 # (20260901000000_default_personal_photo_music_flags.sql). Non-
 # default drives (shared, secondary personals) start opted-out
-# and only surface in `/api/photos` after an admin flips the
-# flag on via PATCH.
+# and only surface in `/api/photos/resources` after an admin
+# flips the flag on via PATCH.
 #
 # Coverage:
 #   a. Upload a PNG into dp_owner's default Personal drive →
-#      surfaces in `/api/photos` (default-personal auto-opted in).
+#      surfaces (default-personal auto-opted in).
 #   b. Upload a PNG into the shared drive → does NOT surface
 #      (flag omitted).
 #   c. Admin flips `include_in_photo_index=true` on the shared
-#      drive → the shared-drive PNG surfaces in `/api/photos`.
+#      drive → the shared-drive PNG surfaces.
 #
-# `/api/photos` returns a flat array of PhotoDto — each carries
-# the file's `id`. Assertions use `jsonpath "$[*].id" contains
-# "…"` to sidestep the single-match filter quirks
+# `/api/photos/resources` returns the standard `CursorListResponse`
+# envelope — each item carries the file as `.resource` plus
+# photo-level signals. Assertions walk `$.items[*].resource.id`
+# with `contains` to sidestep the single-match filter quirks
 # (feedback_hurl_jsonpath_filter_empty).
 # ─────────────────────────────────────────────────────────────
 POST {{base_url}}/api/files/upload
@@ -914,12 +915,12 @@ personal_photo_id: jsonpath "$.id"
 
 
 # Baseline — personal-drive photo is visible in the timeline.
-GET {{base_url}}/api/photos
+GET {{base_url}}/api/photos/resources
 Authorization: Bearer {{owner_token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$[*].id" contains "{{personal_photo_id}}"
+jsonpath "$.items[*].resource.id" contains "{{personal_photo_id}}"
 
 
 # Upload a PNG into the SHARED drive's root. dp_owner is Owner
@@ -936,14 +937,14 @@ shared_photo_id: jsonpath "$.id"
 
 
 # Shared drive is NOT opted-in yet — the shared photo must be
-# absent from `/api/photos`. The personal photo stays visible.
-GET {{base_url}}/api/photos
+# absent. The personal photo stays visible.
+GET {{base_url}}/api/photos/resources
 Authorization: Bearer {{owner_token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$[*].id" not contains "{{shared_photo_id}}"
-jsonpath "$[*].id" contains "{{personal_photo_id}}"
+jsonpath "$.items[*].resource.id" not contains "{{shared_photo_id}}"
+jsonpath "$.items[*].resource.id" contains "{{personal_photo_id}}"
 
 
 # Flip `include_in_photo_index=true` on the shared drive.
@@ -959,16 +960,15 @@ HTTP 200
 jsonpath "$.include_in_photo_index" == true
 
 
-# Shared-drive photo now surfaces in `/api/photos`. Personal
-# photo remains visible — no regression on the always-in-scope
-# default drive.
-GET {{base_url}}/api/photos
+# Shared-drive photo now surfaces. Personal photo remains
+# visible — no regression on the always-in-scope default drive.
+GET {{base_url}}/api/photos/resources
 Authorization: Bearer {{owner_token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$[*].id" contains "{{shared_photo_id}}"
-jsonpath "$[*].id" contains "{{personal_photo_id}}"
+jsonpath "$.items[*].resource.id" contains "{{shared_photo_id}}"
+jsonpath "$.items[*].resource.id" contains "{{personal_photo_id}}"
 
 
 # Cleanup — both photos so the shared-drive delete below finds
