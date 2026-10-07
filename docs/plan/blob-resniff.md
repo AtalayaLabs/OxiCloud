@@ -496,9 +496,40 @@ a capped `file_ids`. Three kinds:
 
 | kind | severity |
 |---|---|
-| `mime_type_mismatch` | `inconsistent` |
+| `mime_type_mismatch` | **`anomaly`** — informational |
 | `blob_head_unreadable` | `anomaly` |
 | `rederive_failed` | `anomaly` |
+
+⚠ **A changed mime type is INFORMATIONAL, not an inconsistency.** All three
+kinds are `anomaly`, which is what "informational" means in this codebase —
+`record_finding`'s own doc says `anomaly` is *"surprising state worth
+surfacing, no known impact… the level the admin panel labels 'notices'; there
+is no separate `notice` severity"*, and `finding_severity_counts` renders
+`data_loss + inconsistent > 0` as an actionable amber/red pill versus
+`anomaly`-only as a neutral notice.
+
+An earlier draft had `mime_type_mismatch` at `inconsistent`. That would be
+wrong twice:
+
+1. **It is not an inconsistency.** Nothing is unreachable and no counter
+   disagrees with reality — the stored type was simply derived under an older
+   rule or from a client's claim, and the job has now derived a better one.
+   The *content* was never in doubt.
+2. **It would page people.** `FindingNotifier` alerts on per-kind
+   transitions gated by `NotifyThreshold::admits(severity)`, so at
+   `inconsistent` the first run over a real corpus — which is expected to
+   correct a great many types at once, that being the point — would fire
+   alerts at every configured sink. A job whose normal successful outcome
+   generates alerts trains operators to ignore the channel.
+
+Corrections are reported in `detail.corrected` rather than by promoting the
+severity, which is the convention the trait doc states explicitly: *"a job
+that acted on what it found says so in `detail` rather than in a fourth
+severity"*.
+
+If a genuine `Severity::Info` is ever added below `anomaly`, this kind is the
+first candidate to move — it is the clearest case of "worth reading, never
+worth waking anyone".
 
 One kind covers found-and-fixed and found-and-not; `detail.corrected`
 distinguishes them (precedent: `detail.removed` in drive_policies).
