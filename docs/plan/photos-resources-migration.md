@@ -21,6 +21,7 @@ resources family for free.
 | §6b `?drive_id=<uuid>` filter + supporting composite index on the photo listing | **TODO** |
 | §7 Facet-filter axis — `?person_id=` now, `?keyword=` and `?location=` later | **PROPOSAL** |
 | §8 Realtime push for new photos via message bus | **DEFERRED** |
+| §9 Dedup `/api/photos/resources` rows by `content_hash` server-side | **PROPOSAL** |
 
 ---
 
@@ -1082,6 +1083,104 @@ revalidation path is the shipping answer.
 
 ---
 
+## §9 — Dedup `/api/photos/resources` rows by `content_hash` — PROPOSAL
+
+### Why
+
+Observed 2026-10-08 on a live gallery: a user who copied the same
+image into N folders — or ran a bulk import that fanned the same
+blob across folders / drives — sees it N times on the Photos tab.
+In one test case a user with ~5000 file rows pointing at a single
+blob saw 5000 near-identical tiles. The server returns one row per
+file-record, which is the right semantic for every other listing
+(the Files view, trash, favourites, share surface) — a user who
+organised two copies of a photo into two folders cares about both
+rows. For a photo gallery whose unit is "a captured moment", not
+"a storage row", the N-copies display is noise.
+
+### What
+
+Collapse the `/api/photos/resources` row set at the SQL layer so
+each `content_hash` surfaces exactly one representative. The
+natural shape is `DISTINCT ON (fi.blob_hash)` on the inner lateral
+probe, ordered by `media_sort_date DESC, fi.id DESC` so the row
+that wins is the newest copy — same semantic a client-side
+first-occurrence-wins pass would pick, pinned at the server.
+
+Cursor + ETag integrity: `PhotosCursor` already keys off
+`(sort_value, file_id)` and the ORDER BY on this query is already
+`(media_sort_date DESC, id DESC)`, so DISTINCT ON preserves a
+valid keyset position. The weak ETag's `row_count` + `next_cursor`
++ `fresh_signal` all compute off the deduped row set naturally —
+no formula change.
+
+### Scope ambiguity worth resolving before implementation
+
+- **Cross-drive dedup.** A blob visible via grants on two drives
+  (personal + shared) — collapse into one tile, or show one per
+  drive? Two defensible readings:
+  - *One moment, one tile* → fully-global DISTINCT. Matches
+    iCloud / Google Photos. Hides provenance.
+  - *One moment per visibility scope* → DISTINCT within drive but
+    not across. The shared drive's copy and the personal copy
+    both show, with their own `drive_id`. Clicking either goes
+    to its grant-scoped lightbox.
+  Default proposal: *within-drive dedup, keep across drives.*
+  Covers the common case (user organised a photo into folders in
+  one drive) without hiding cross-drive copies the user might
+  legitimately want to interact with. Revisit when the first
+  cross-drive-copy complaint arrives.
+
+- **Lightbox + delete UX.** If the gallery shows one of N copies
+  and the user deletes it, the next pagination refresh promotes
+  a sibling. The user watches the photo "come back". Needs a
+  story: either a one-click "delete every copy of this blob"
+  (which honours per-file grants) or a UI tell that explains
+  "there are N copies — [manage]". Can land after §9 ships (not
+  blocking), but worth flagging in the shipping release notes
+  so users aren't surprised.
+
+### Follow-up — FE cleanup
+
+The current FE has NO client-side dedup (reverted in `ebb15488`
+after discussion). Once §9 ships server-side, there is nothing
+to delete on the FE; the gallery is correct by construction.
+
+### Test matrix — regression hurl REQUIRED on shipping
+
+Shipping §9 MUST land with a hurl scenario on
+`photos_resources.hurl` that pins the invariant:
+
+1. Upload one JPEG into a drive's root folder → capture its
+   `file_id` + `content_hash`.
+2. Copy the file into a sibling folder (or re-upload the same
+   fixture at a second path — content-addressing dedupes at the
+   blob layer, each upload produces a distinct file row).
+3. `GET /api/photos/resources?limit=50` as the owner.
+4. Assert `jsonpath "$.items" count == 1` AND the surviving
+   `$.items[0].resource.id` matches ONE of the two file ids
+   (not both).
+
+Plus a cross-drive sibling scenario once the within-vs-across
+policy is pinned:
+
+5. Upload the same fixture to two drives the caller sees
+   (personal + a shared drive opted into the photo index).
+6. `GET /api/photos/resources?limit=50` → assert
+   `count == 2` under within-drive dedup (the two copies share
+   content but live in different scopes) OR `count == 1` under
+   fully-global dedup. Mismatch → policy regression.
+
+### Why PROPOSAL
+
+The user-facing need is confirmed. The design has one real open
+question (cross-drive policy) that wants an explicit answer
+before the SQL lands — picking it after shipping would risk a
+visible behaviour change on the gallery. §9 lands on the
+roadmap once that policy is chosen.
+
+---
+
 ## Priority
 
 0. **Hotfix** before anything else — the inline `accessible` CTE in
@@ -1118,3 +1217,10 @@ revalidation path is the shipping answer.
 8. **§8 — DEFERRED.** Not scheduled. Captured for shape only; a
    future "watching listings go stale" demand across more than
    one `/resources` endpoint earns the message-bus axis.
+9. **§9 — PROPOSAL.** Dedup by `content_hash` server-side.
+   Confirmed user-visible need (gallery with N file-rows on one
+   blob reads as noise, not inventory). Blocked only on the
+   within-drive-vs-cross-drive policy call; once that's named,
+   this is a `DISTINCT ON (blob_hash)` SQL change on
+   `list_media_resources` + the hurl regression test the §9
+   section mandates.
