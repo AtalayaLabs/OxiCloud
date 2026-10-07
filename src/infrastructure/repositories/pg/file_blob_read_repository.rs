@@ -29,6 +29,72 @@ type MediaFileRow = (
     Option<i32>,    // height
 );
 
+/// Row shape returned by `list_media_resources` — superset of
+/// [`MediaFileRow`] carrying the three photo-specific signals the
+/// normalized `/api/photos/resources` envelope exposes at the item
+/// level (`captured_at`, `orientation`, `has_gps`). Named-field
+/// [`sqlx::FromRow`] rather than a tuple because sqlx only impls
+/// `FromRow` for tuples up to arity 16 and this row has 19 columns.
+/// Parallel `type MediaFileRow` tuple lives on so the legacy
+/// `list_media_files` path keeps compiling until §4 of
+/// `docs/plan/photos-resources-migration.md` deletes it.
+#[derive(sqlx::FromRow)]
+struct MediaResourceDbRow {
+    id: Uuid,
+    name: String,
+    folder_id: Option<Uuid>,
+    folder_path: Option<String>,
+    size: i64,
+    mime_type: String,
+    created_at: i64,
+    updated_at: i64,
+    blob_hash: String,
+    created_by: Option<Uuid>,
+    updated_by: Option<Uuid>,
+    is_favorite: bool,
+    is_shared: bool,
+    /// Epoch seconds of the chosen sort axis — client-facing precision.
+    sort_date: i64,
+    /// Full-precision `timestamptz` of the chosen sort axis — the
+    /// opaque cursor keys off this value so the WHERE predicate can
+    /// compare at column fidelity. Carrying only `sort_date` (seconds)
+    /// drops rows that landed inside the same wall-clock second as
+    /// the page boundary.
+    sort_date_ts: chrono::DateTime<chrono::Utc>,
+    width: Option<i32>,
+    height: Option<i32>,
+    /// Raw EXIF capture time, epoch seconds, nullable.
+    captured_at: Option<i64>,
+    /// EXIF TIFF orientation (1-8), nullable.
+    orientation: Option<i16>,
+    /// `latitude IS NOT NULL AND longitude IS NOT NULL`.
+    has_gps: bool,
+}
+
+/// Structured row returned by [`FileBlobReadRepository::list_media_resources`].
+/// One struct per row so adding photo-level signals downstream does not
+/// balloon the parallel-vector pattern [`list_media_files`] still uses.
+pub struct MediaResourceRow {
+    pub file: File,
+    /// Sort axis value for this row, epoch seconds. Matches
+    /// `storage.files.media_sort_date` on the `CapturedAt` axis;
+    /// equal to `created_at` on the `CreatedAt` axis (reserved for §3).
+    pub sort_date: i64,
+    /// Full-precision timestamp of the chosen sort axis — the
+    /// handler uses this to build the opaque keyset cursor so the
+    /// WHERE predicate on the next page compares at column fidelity
+    /// (microsecond, not the truncated second `sort_date` exposes to
+    /// clients).
+    pub sort_date_ts: chrono::DateTime<chrono::Utc>,
+    pub captured_at: Option<i64>,
+    pub orientation: Option<i16>,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub has_gps: bool,
+    pub is_favorite: bool,
+    pub is_shared: bool,
+}
+
 use bytes::Bytes;
 use futures::{Stream, TryStreamExt};
 use moka::sync::Cache;
@@ -650,6 +716,160 @@ impl FileBlobReadRepository {
         }
 
         Ok((files, sort_dates, dims, flags))
+    }
+
+    /// Drive-scoped media listing for the normalized
+    /// `/api/photos/resources` envelope (§1 of
+    /// `docs/plan/photos-resources-migration.md`). Returns the same
+    /// drive-visibility semantics as [`Self::list_media_files`] (one
+    /// row per accessible drive via
+    /// [`storage.caller_accessible_drives`]) plus three photo-level
+    /// signals the new envelope promotes to the item layer:
+    /// `captured_at`, `orientation`, `has_gps`.
+    ///
+    /// `cursor` is the opaque keyset position decoded by the handler;
+    /// `None` means "page 1". The predicate pairs `(media_sort_date,
+    /// id)` so pages at the same `media_sort_date` second never skip
+    /// or re-emit rows — the id tie-break stays within the row-value
+    /// comparison. The index
+    /// `idx_files_media_timeline_by_drive (drive_id, media_sort_date
+    /// DESC)` bounds the scan on `media_sort_date`; the id predicate
+    /// applies on the boundary slice only.
+    ///
+    /// Callers must pass `limit + 1` and consume the extra row to
+    /// detect "another page exists" — same over-fetch convention as
+    /// [`CursorListResponse::from_oversized`] uses on the favorites
+    /// and recents listings.
+    pub async fn list_media_resources(
+        &self,
+        caller_id: Uuid,
+        cursor: Option<&crate::application::dtos::photos_dto::PhotosCursor>,
+        limit: i64,
+    ) -> Result<Vec<MediaResourceRow>, DomainError> {
+        // Decompose the opaque cursor into (ts, id). `None` → no
+        // keyset bound at all; the predicate collapses to `$2::timestamptz
+        // IS NULL` so the planner still gets a single prepared-statement
+        // shape across cursored and uncursored calls. The cursor carries
+        // a full-precision `DateTime<Utc>` (not epoch seconds) so the
+        // comparison matches `storage.files.media_sort_date` at
+        // microsecond fidelity — truncating to seconds silently drops
+        // rows at the page boundary.
+        let cursor_ts = cursor.map(|c| c.sort_value);
+        let cursor_id = cursor.map(|c| c.file_id);
+        let cursor_pred = if cursor_ts.is_some() {
+            // Row-value comparison on (media_sort_date, id): the primary
+            // bound uses the composite partial index, and ties at the
+            // exact second resolve via `fi.id < $3`. `<` on both halves
+            // matches ORDER BY DESC on both halves.
+            "AND (fi.media_sort_date < $2
+               OR (fi.media_sort_date = $2 AND fi.id < $3::uuid))"
+        } else {
+            "AND $2::timestamptz IS NULL"
+        };
+        // SELECT column aliases align with `MediaResourceDbRow`'s field
+        // names so `sqlx::FromRow` can deserialise by name — critical
+        // because tuple `FromRow` tops out at arity 16 and this row has
+        // 19 fields. Keep the alias ↔ field names in lockstep when
+        // adding future photo signals.
+        let sql = format!(
+            r#"
+            WITH accessible AS MATERIALIZED (
+                SELECT drive_id AS id
+                  FROM storage.caller_accessible_drives($1, 'include_in_photo_index')
+            )
+            SELECT top.id                                     AS id,
+                   top.name                                   AS name,
+                   top.folder_id                              AS folder_id,
+                   fo.path                                    AS folder_path,
+                   top.size                                   AS size,
+                   top.mime_type                              AS mime_type,
+                   EXTRACT(EPOCH FROM top.created_at)::bigint AS created_at,
+                   EXTRACT(EPOCH FROM top.updated_at)::bigint AS updated_at,
+                   top.blob_hash                              AS blob_hash,
+                   top.created_by                             AS created_by,
+                   top.updated_by                             AS updated_by,
+                   EXISTS (
+                       SELECT 1 FROM auth.user_favorites uf
+                        WHERE uf.user_id   = $1
+                          AND uf.item_id   = top.id::text
+                          AND uf.item_type = 'file'
+                   )                                          AS is_favorite,
+                   EXISTS (
+                       SELECT 1 FROM storage.role_grants g
+                        WHERE g.resource_id   = top.id
+                          AND g.resource_type = 'file'
+                   )                                          AS is_shared,
+                   EXTRACT(EPOCH FROM top.media_sort_date)::bigint AS sort_date,
+                   top.media_sort_date                        AS sort_date_ts,
+                   fm.width                                   AS width,
+                   fm.height                                  AS height,
+                   CASE
+                       WHEN fm.captured_at IS NULL THEN NULL
+                       ELSE EXTRACT(EPOCH FROM fm.captured_at)::bigint
+                   END                                        AS captured_at,
+                   fm.orientation                             AS orientation,
+                   (fm.latitude IS NOT NULL AND fm.longitude IS NOT NULL) AS has_gps
+              FROM (
+                SELECT fi.*
+                  FROM accessible a
+                 CROSS JOIN LATERAL (
+                    SELECT fi.*
+                      FROM storage.files fi
+                     WHERE fi.drive_id = a.id
+                       AND NOT fi.is_trashed
+                       AND (fi.mime_type LIKE 'image/%' OR fi.mime_type LIKE 'video/%')
+                       {cursor_pred}
+                     ORDER BY fi.media_sort_date DESC, fi.id DESC
+                     LIMIT $4
+                 ) fi
+                 ORDER BY fi.media_sort_date DESC, fi.id DESC
+                 LIMIT $4
+              ) top
+              LEFT JOIN storage.folders fo ON fo.id = top.folder_id
+              LEFT JOIN storage.file_metadata fm ON fm.file_id = top.id
+             ORDER BY top.media_sort_date DESC, top.id DESC
+            "#,
+        );
+        let rows: Vec<MediaResourceDbRow> = sqlx::query_as(&sql)
+            .bind(caller_id)
+            .bind(cursor_ts)
+            .bind(cursor_id)
+            .bind(limit)
+            .fetch_all(self.pool.as_ref())
+            .await
+            .map_err(|e| {
+                DomainError::internal_error("FileBlobRead", format!("list_media_resources: {e}"))
+            })?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for r in rows {
+            let file = Self::row_to_file(
+                r.id,
+                r.name,
+                r.folder_id,
+                r.folder_path,
+                r.size,
+                r.mime_type,
+                r.created_at,
+                r.updated_at,
+                r.blob_hash,
+                r.created_by,
+                r.updated_by,
+            )?;
+            out.push(MediaResourceRow {
+                file,
+                sort_date: r.sort_date,
+                sort_date_ts: r.sort_date_ts,
+                captured_at: r.captured_at,
+                orientation: r.orientation,
+                width: r.width,
+                height: r.height,
+                has_gps: r.has_gps,
+                is_favorite: r.is_favorite,
+                is_shared: r.is_shared,
+            });
+        }
+        Ok(out)
     }
 
     /// Aggregate the caller's geotagged photos into grid cells of side `cell`
