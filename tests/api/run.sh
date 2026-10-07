@@ -320,8 +320,6 @@ HURL_FILES=( \
   "$API_DIR/nc_avatar_preview.hurl" \
   "$API_DIR/files-folders.hurl" \
   "$API_DIR/folder_ancestors.hurl" \
-  "$API_DIR/photos_etag.hurl" \
-  "$API_DIR/photos_multigrant_dedup.hurl" \
   "$API_DIR/photos_resources.hurl" \
   "$API_DIR/favorites.hurl" \
   "$API_DIR/trash.hurl" \

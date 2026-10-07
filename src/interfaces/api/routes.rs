@@ -483,12 +483,8 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     {
         use crate::interfaces::api::handlers::photos_handler;
 
-        let mut photos_router = Router::new()
-            .route("/", get(photos_handler::list_photos))
-            .route(
-                "/resources",
-                get(photos_handler::list_photos_resources),
-            );
+        let mut photos_router =
+            Router::new().route("/resources", get(photos_handler::list_photos_resources));
         if app_state.places_service.is_some() {
             photos_router = photos_router.route("/geo", get(photos_handler::list_photos_geo));
         }

@@ -1,11 +1,10 @@
 use axum::{
     Json,
-    body::Body,
     extract::{Query, State},
-    http::{Response, StatusCode, header},
+    http::StatusCode,
     response::IntoResponse,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::sync::Arc;
 use tracing::{error, info};
 
@@ -19,153 +18,12 @@ use crate::application::dtos::photos_dto::{
 use crate::common::di::AppState;
 use crate::interfaces::middleware::auth::AuthUser;
 
-/// Query parameters for the photos timeline endpoint.
-#[derive(Deserialize)]
-pub struct PhotosQueryParams {
-    /// Cursor: only return items with sort_date < this value (epoch seconds).
-    pub before: Option<i64>,
-    /// Max items to return (default 200, max 500).
-    pub limit: Option<i64>,
-}
-
-/// Photos-timeline item: a `FileDto` plus the image's original pixel
-/// dimensions (from EXIF/metadata), flattened into the same JSON shape so
-/// the gallery can lay tiles out at their true aspect ratio without a
-/// second per-file metadata round-trip.
-#[derive(Serialize, utoipa::ToSchema)]
-struct PhotoDto {
-    #[serde(flatten)]
-    file: FileDto,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    width: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    height: Option<u32>,
-}
-
-/// Lists all image/video files for the authenticated user, sorted by
-/// capture date (EXIF DateTimeOriginal) falling back to upload date.
-///
-/// Supports cursor-based pagination via the `before` parameter.
-/// The `X-Next-Cursor` response header contains the cursor for the next page.
-#[utoipa::path(
-    get,
-    path = "/api/photos",
-    params(
-        ("before" = Option<i64>, Query, description = "Cursor: only return items with sort_date before this epoch value"),
-        ("limit" = Option<i64>, Query, description = "Max items to return (default 200, max 500)")
-    ),
-    responses(
-        (status = 200, body = Vec<PhotoDto>, description = "List of media files sorted by capture date"),
-        (status = 401, description = "Unauthorized"),
-        (status = 500, description = "Internal server error")
-    ),
-    security(("bearerAuth" = [])),
-    tag = "photos"
-)]
-pub async fn list_photos(
-    State(state): State<Arc<AppState>>,
-    auth_user: AuthUser,
-    Query(params): Query<PhotosQueryParams>,
-    req: axum::extract::Request,
-) -> impl IntoResponse {
-    // Borrow headers (`req.headers()`) instead of cloning the whole request
-    // header table via the `HeaderMap` extractor to read one If-None-Match — the
-    // gallery open + every pagination page hit this (benches/ROUND22.md §H1).
-    let caller_id = auth_user.id;
-    let limit = params.limit.unwrap_or(200).clamp(1, 500);
-
-    let file_read = &state.repositories.file_read_repository;
-
-    match file_read
-        .list_media_files(caller_id, params.before, limit)
-        .await
-    {
-        Ok((files, sort_dates, dims, flags)) => {
-            // Lightweight revalidation ETag: page identity (cursor + limit) plus a
-            // freshness signal (max modified_at + row count over the page),
-            // mirroring the file-list endpoint. With `Cache-Control: no-cache` the
-            // browser always revalidates with If-None-Match, so a "navigate away
-            // and back" to an unchanged gallery returns an empty 304 instead of
-            // rebuilding 500 DTOs + reserializing + reshipping the whole body.
-            let max_mod = files.iter().map(|f| f.modified_at()).max().unwrap_or(0);
-            let count = files.len();
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            std::hash::Hash::hash(&params.before, &mut hasher);
-            std::hash::Hash::hash(&limit, &mut hasher);
-            std::hash::Hash::hash(&max_mod, &mut hasher);
-            std::hash::Hash::hash(&count, &mut hasher);
-            let etag = format!("\"{:x}\"", std::hash::Hasher::finish(&hasher));
-
-            if let Some(inm) = req.headers().get(header::IF_NONE_MATCH)
-                && let Ok(client_etag) = inm.to_str()
-                && client_etag == etag
-            {
-                return Response::builder()
-                    .status(StatusCode::NOT_MODIFIED)
-                    .header(header::ETAG, &etag)
-                    .header(header::CACHE_CONTROL, "private, no-cache")
-                    .body(Body::empty())
-                    .unwrap()
-                    .into_response();
-            }
-
-            info!("Photos: returned {} media files for user", count);
-
-            // Convert to DTOs with sort_date + pixel dimensions + inline
-            // caller flags populated. `list_media_files` computes
-            // `is_favorite` / `is_shared` via two per-row `EXISTS`
-            // columns in its SELECT — the same pattern the four
-            // `list_resources_paged` repos use — so this stays a
-            // single round trip regardless of page size.
-            let dtos: Vec<PhotoDto> = files
-                .into_iter()
-                .zip(sort_dates.iter())
-                .zip(dims.iter())
-                .zip(flags.iter())
-                .map(|(((file, &sd), &(w, h)), &(is_fav, is_shr))| {
-                    let mut dto = FileDto::from(file);
-                    dto.sort_date = Some(sd as u64);
-                    dto.is_favorite = is_fav;
-                    dto.is_shared = is_shr;
-                    PhotoDto {
-                        file: dto,
-                        width: w.map(|v| v.max(0) as u32),
-                        height: h.map(|v| v.max(0) as u32),
-                    }
-                })
-                .collect();
-
-            // Pre-sized serialization (benches/ROUND12.md §M1).
-            let mut response = crate::interfaces::api::sized_json::sized_json(
-                64 + dtos.len() * crate::interfaces::api::sized_json::EST_WRAPPED_ROW_BYTES,
-                &dtos,
-            );
-            {
-                let h = response.headers_mut();
-                h.insert(header::ETAG, header::HeaderValue::from_str(&etag).unwrap());
-                h.insert(
-                    header::CACHE_CONTROL,
-                    header::HeaderValue::from_static("private, no-cache"),
-                );
-                if let Some(&last_sd) = sort_dates.last() {
-                    h.insert("X-Next-Cursor", last_sd.to_string().parse().unwrap());
-                }
-            }
-
-            response
-        }
-        Err(err) => {
-            error!("Error listing photos: {}", err);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": format!("Failed to list photos: {}", err)
-                })),
-            )
-                .into_response()
-        }
-    }
-}
+// §4 of docs/plan/photos-resources-migration.md hard-cut the legacy
+// `GET /api/photos` route in favour of `/api/photos/resources`. The
+// old `PhotoDto`, `PhotosQueryParams`, and `list_photos` handler
+// were removed together with `FileDto::sort_date` — the field was
+// only ever populated by this endpoint, and the new envelope carries
+// `sort_date` at the item level alongside the other photo signals.
 
 /// Query parameters for `GET /api/photos/resources` — the normalized
 /// envelope endpoint. Deliberately NOT re-using the opaque base64 cursor

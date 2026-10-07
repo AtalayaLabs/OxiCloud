@@ -4,17 +4,49 @@ import { getCsrfHeaders } from '$lib/api/csrf';
 import type { FileItem } from '$lib/api/types';
 
 /**
- * A timeline photo/video. Extends {@link FileItem} with the pixel dimensions the
- * list endpoint returns, used by the justified (aspect-preserving) grid layout.
+ * A timeline photo/video. The `/api/photos/resources` envelope carries file
+ * fields at `.resource.*` (as every other `/resources` endpoint does), but
+ * the SPA's photos code — grid layout, lightbox, selection — reads
+ * `.id`/`.name`/`.width`/`.height`/`.sort_date` directly, so {@link fetchPhotos}
+ * flattens the envelope item: file fields spread onto the top level, plus the
+ * item-level signals (`width`, `height`, `sort_date`, `captured_at`,
+ * `orientation`, `has_gps`) that live outside `resource` on the wire. Keeps
+ * every consumer unchanged across the §4 cutover from `/api/photos` → `/api/photos/resources`.
  */
 export interface PhotoItem extends FileItem {
 	width?: number;
 	height?: number;
+	/** Always present on the envelope — epoch seconds; the item's sort axis value. */
+	sort_date: number;
+	/** Raw EXIF `DateTimeOriginal`, epoch seconds. Absent when the file carries no EXIF date. */
+	captured_at?: number;
+	/** Raw EXIF orientation (TIFF 1-8). Absent when the file carries no orientation tag. */
+	orientation?: number;
+	/** `true` when the file has both lat AND lng. Raw coordinates stay off the listing. */
+	has_gps: boolean;
 }
 
 export interface PhotoPage {
 	items: PhotoItem[];
 	nextCursor: string | null;
+}
+
+/** One row of the `/api/photos/resources` envelope — item-level fields + nested `resource`. */
+interface PhotoEnvelopeItem {
+	resource_type: 'file';
+	resource: FileItem;
+	width?: number;
+	height?: number;
+	sort_date: number;
+	captured_at?: number;
+	orientation?: number;
+	has_gps: boolean;
+}
+
+interface PhotosEnvelope {
+	items: PhotoEnvelopeItem[];
+	/** Omitted when this is the last page (not `null`). */
+	next_cursor?: string;
 }
 
 /** EXIF metadata returned by `/api/files/{id}/metadata` (subset used by the lightbox). */
@@ -63,20 +95,39 @@ export async function fetchPhotosGeo(bbox: string, zoom: number): Promise<GeoClu
 const BATCH_CHUNK_SIZE = 1000;
 
 /**
- * Fetch one page of the photo timeline. The next-page cursor is returned in the
- * `X-Next-Cursor` response header; the page is the last one when fewer than
- * `limit` items come back.
+ * Fetch one page of the photo timeline from `/api/photos/resources` — the
+ * normalized `CursorListResponse<PhotoResourceItemDto>` envelope that
+ * replaced the bare-array `/api/photos` endpoint in §4 of
+ * `docs/plan/photos-resources-migration.md`.
+ *
+ * The envelope's items have the file at `.resource` and the photo-level
+ * signals as siblings. We flatten them into {@link PhotoItem} so the SPA's
+ * grid, lightbox, and selection paths read `.id`/`.name`/`.width`/`.height`
+ * directly — the cutover is transparent to every consumer. The next-page
+ * cursor comes from the `next_cursor` body field (omitted on the last page,
+ * `undefined` in the parsed envelope) rather than a response header.
+ *
+ * `cursor` is the opaque string from a prior response; `undefined` or `null`
+ * requests page 1.
  */
-export async function fetchPhotos(limit = 60, before?: string | null): Promise<PhotoPage> {
-	let url = `/api/photos?limit=${limit}`;
-	if (before) url += `&before=${encodeURIComponent(before)}`;
+export async function fetchPhotos(limit = 60, cursor?: string | null): Promise<PhotoPage> {
+	let url = `/api/photos/resources?limit=${limit}`;
+	if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
 	const res = await apiFetch(url, { credentials: 'same-origin' });
 	if (!res.ok) throw new Error(`photos failed: ${res.status}`);
-	const items = (await res.json()) as PhotoItem[];
-	const cursor = res.headers.get('X-Next-Cursor');
+	const envelope = (await res.json()) as PhotosEnvelope;
+	const items: PhotoItem[] = (envelope.items ?? []).map((row) => ({
+		...row.resource,
+		width: row.width,
+		height: row.height,
+		sort_date: row.sort_date,
+		captured_at: row.captured_at,
+		orientation: row.orientation,
+		has_gps: row.has_gps
+	}));
 	return {
-		items: items ?? [],
-		nextCursor: cursor && items && items.length >= limit ? cursor : null
+		items,
+		nextCursor: envelope.next_cursor ?? null
 	};
 }
 

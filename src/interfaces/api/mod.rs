@@ -173,7 +173,7 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         handlers::notifications_handler::mark_all_read,
         handlers::notifications_handler::delete_notification,
         // Photos handler (free function)
-        handlers::photos_handler::list_photos,
+        handlers::photos_handler::list_photos_resources,
         handlers::photos_handler::list_photos_geo,
         // People / face-clustering handlers — mounted only when
         // `OXICLOUD_ENABLE_FACES` is on; each handler is defensive

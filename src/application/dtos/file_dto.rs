@@ -52,11 +52,6 @@ pub struct FileDto {
     /// Human-readable formatted size (e.g. "3.27 MB")
     pub size_formatted: String,
 
-    /// Sort date for Photos timeline — COALESCE(EXIF captured_at, created_at).
-    /// Only populated by the /api/photos endpoint.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sort_date: Option<u64>,
-
     /// Raw BLAKE3 content hash. Populated from `File::content_hash()`.
     /// Exposed in REST JSON so API consumers can use it for
     /// content-addressable URLs, dedup verification, and integrity
@@ -146,7 +141,6 @@ impl From<File> for FileDto {
             icon_special_class,
             category,
             size_formatted,
-            sort_date: None,
             content_hash: parts.blob_hash,
             etag,
             created_by: parts.created_by,
@@ -223,7 +217,6 @@ impl FileDto {
             size_formatted: "0 Bytes".to_string(),
             content_hash: String::new(),
             etag: String::new(),
-            sort_date: None,
             created_by: None,
             updated_by: None,
             is_favorite: false,

@@ -20,8 +20,9 @@ use serde::Serialize;
 /// Serialized size estimate for one file/folder row (FileDto ≈ 380 B).
 pub const EST_ROW_BYTES: usize = 384;
 
-/// Serialized size estimate for one wrapped resource row (PhotoDto /
-/// FolderResourcesDto items carry a FileDto plus wrapper fields).
+/// Serialized size estimate for one wrapped resource row
+/// (FolderResourcesDto / PhotoResourceItemDto items carry a FileDto
+/// plus wrapper fields).
 pub const EST_WRAPPED_ROW_BYTES: usize = 448;
 
 /// Serialize `value` into a single pre-sized buffer and wrap it as an

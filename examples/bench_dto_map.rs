@@ -149,7 +149,6 @@ mod before {
             icon_special_class,
             category,
             size_formatted,
-            sort_date: None,
             content_hash,
             etag,
             created_by: parts.created_by,
@@ -401,7 +400,6 @@ fn diff_file(i: usize, b: &FileDto, a: &FileDto, diffs: &mut u64) {
     cmp_field!(*diffs, i, "file", b, a, icon_special_class);
     cmp_field!(*diffs, i, "file", b, a, category);
     cmp_field!(*diffs, i, "file", b, a, size_formatted);
-    cmp_field!(*diffs, i, "file", b, a, sort_date);
     cmp_field!(*diffs, i, "file", b, a, content_hash);
     cmp_field!(*diffs, i, "file", b, a, etag);
     cmp_field!(*diffs, i, "file", b, a, created_by);

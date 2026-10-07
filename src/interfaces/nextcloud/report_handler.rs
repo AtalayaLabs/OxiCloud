@@ -456,7 +456,6 @@ fn file_dto_from_search(fr: &crate::application::dtos::search_dto::SearchFileRes
         icon_special_class: fr.icon_special_class.clone(),
         category: fr.category.clone(),
         size_formatted: format_file_size(fr.size),
-        sort_date: None,
         content_hash: fr.blob_hash.clone(),
         etag,
         // §14 provenance not selected by the search result DTO.

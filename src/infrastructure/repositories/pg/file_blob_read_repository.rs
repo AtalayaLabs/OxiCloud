@@ -7,37 +7,15 @@
 //! File paths are resolved by JOINing with `storage.folders.path` (the
 //! materialized path column), so no recursive CTEs or N+1 queries are needed.
 
-/// Row shape returned by media-file queries (avoids `clippy::type_complexity`).
-/// Post-D7-step-6: `storage.files.user_id` dropped, so it's no
-/// longer projected.
-type MediaFileRow = (
-    Uuid,           // id (binary decode; benches/ROUND6.md §10)
-    String,         // name
-    Option<Uuid>,   // folder_id
-    Option<String>, // folder path
-    i64,            // size
-    String,         // mime_type
-    i64,            // created_at
-    i64,            // updated_at
-    String,         // blob_hash
-    Option<Uuid>,   // created_by (§14 provenance)
-    Option<Uuid>,   // updated_by (§14 provenance)
-    bool,           // is_favorite (caller-scoped EXISTS on user_favorites)
-    bool,           // is_shared   (resource-scoped EXISTS on role_grants)
-    i64,            // sort_date
-    Option<i32>,    // width
-    Option<i32>,    // height
-);
-
-/// Row shape returned by `list_media_resources` — superset of
-/// [`MediaFileRow`] carrying the three photo-specific signals the
-/// normalized `/api/photos/resources` envelope exposes at the item
-/// level (`captured_at`, `orientation`, `has_gps`). Named-field
-/// [`sqlx::FromRow`] rather than a tuple because sqlx only impls
-/// `FromRow` for tuples up to arity 16 and this row has 19 columns.
-/// Parallel `type MediaFileRow` tuple lives on so the legacy
-/// `list_media_files` path keeps compiling until §4 of
-/// `docs/plan/photos-resources-migration.md` deletes it.
+/// Row shape returned by `list_media_resources` — carries the file
+/// columns plus the photo-specific signals the
+/// `/api/photos/resources` envelope exposes at the item level
+/// (`captured_at`, `orientation`, `has_gps`), plus the raw timestamp
+/// used to build the opaque keyset cursor at column fidelity.
+///
+/// Named-field [`sqlx::FromRow`] rather than a tuple because sqlx
+/// only impls `FromRow` for tuples up to arity 16 and this row has
+/// 20 columns.
 #[derive(sqlx::FromRow)]
 struct MediaResourceDbRow {
     id: Uuid,
@@ -544,178 +522,6 @@ impl FileBlobReadRepository {
 
         self.hash_cache.insert(file_id.to_owned(), hash.clone());
         Ok(hash)
-    }
-
-    /// Lists all image/video files for a user, sorted by capture date (EXIF) or
-    /// creation date, with cursor-based pagination for the Photos timeline.
-    ///
-    /// Returns `(Vec<File>, Vec<i64>)` where the second vec contains the
-    /// `sort_date` epoch for each file (used as pagination cursor).
-    ///
-    /// Uses the denormalised `media_sort_date` column (synced from
-    /// `file_metadata.captured_at` by trigger). The accessible drive ids
-    /// are materialised once, then a `CROSS JOIN LATERAL (… ORDER BY
-    /// media_sort_date DESC LIMIT k)` per drive turns the partial covering
-    /// index `idx_files_media_timeline_by_drive` (migration 20260901000001,
-    /// `(drive_id, media_sort_date DESC)` filtered on non-trashed
-    /// image/video rows) into one BOUNDED index scan per drive; the outer
-    /// merge sorts `drives × k` rows. The folders / file_metadata joins sit
-    /// outside the top-N so only the k emitted rows pay them.
-    ///
-    /// The previous shape put the joins and the global `ORDER BY … LIMIT`
-    /// above a `drive_id IN (…)` nested loop — Postgres fed EVERY media row
-    /// through the join into a top-N heapsort, scanning the timeline index
-    /// to exhaustion on every page: O(library) per page, 97 ms on a
-    /// 50k-photo library vs 1.6 ms for this shape (55.7x,
-    /// benches/PHOTOS-TIMELINE.md).
-    ///
-    /// Scope (`docs/plan/drive.md` §15): drives with
-    /// `policies.include_in_photo_index = true` where the caller has a
-    /// direct grant (`subject_type = 'user'`) OR a grant on a group they
-    /// belong to transitively. Group membership is expanded inline by the
-    /// `storage.caller_group_ids(caller)` SQL function (migration
-    /// `20260901000002_caller_group_ids_function.sql`) — no ceremony at
-    /// the handler layer, no cross-space ambiguity from the earlier
-    /// parallel-arrays pattern.
-    ///
-    /// Default personal drives always match because the flag is
-    /// materialised to `true` at drive creation (see
-    /// `DriveRepository::create_personal_drive_atomic` + the backfill
-    /// migration `20260901000000_default_personal_photo_music_flags.sql`)
-    /// — no per-kind carve-out needed. Non-default drives (secondary
-    /// personals, shared drives) surface here only after their owner
-    /// flips the flag on via the admin "Manage policies" modal.
-    pub async fn list_media_files(
-        &self,
-        caller_id: Uuid,
-        before: Option<i64>,
-        limit: i64,
-    ) -> Result<
-        (
-            Vec<File>,
-            Vec<i64>,
-            Vec<(Option<i32>, Option<i32>)>,
-            // Per-row caller flags (is_favorite, is_shared). Aligned
-            // with `files` — zip 1:1. Kept parallel to `sort_dates` /
-            // `dims` instead of on the File entity so the domain
-            // stays caller-agnostic.
-            Vec<(bool, bool)>,
-        ),
-        DomainError,
-    > {
-        // Sargable keyset cursor: compare the RAW `media_sort_date` column
-        // against a timestamptz bind so the planner can use the cursor as
-        // an index boundary condition on `idx_files_media_timeline_by_drive`.
-        // The old shape wrapped the column in `EXTRACT(EPOCH …)::bigint`
-        // (plus an `IS NULL OR` disjunction), which degraded the cursor to
-        // a per-row Filter: page k re-read and discarded all k·limit rows
-        // already scrolled past (benches/PHOTOS-CURSOR.md). Since `before`
-        // is whole seconds, `media_sort_date < to_timestamp(before)` admits
-        // exactly the same rows as the old truncated comparison. The
-        // predicate is emitted only when a cursor exists — a bound
-        // disjunction would block the index condition under generic plans.
-        let cursor_ts = before.and_then(|s| chrono::DateTime::from_timestamp(s, 0));
-        let cursor_pred = if cursor_ts.is_some() {
-            "AND fi.media_sort_date < $2"
-        } else {
-            "AND $2::timestamptz IS NULL"
-        };
-        // `accessible` wraps `storage.caller_accessible_drives` (migration
-        // `20261101000001_caller_accessible_drives_function.sql`) so the
-        // one-row-per-drive invariant lives in one place for every drive-
-        // enumeration listing — Photos, Places, and future shapes. The
-        // function returns `(drive_id uuid)`; we alias it to `id` here so
-        // the downstream `a.id` references stay unchanged. `MATERIALIZED`
-        // keeps the small drive set in a hash table before the lateral
-        // probe, so repeated reads inside the loop don't re-invoke the
-        // function per iteration.
-        let sql = format!(
-            r#"
-            WITH accessible AS MATERIALIZED (
-                SELECT drive_id AS id
-                  FROM storage.caller_accessible_drives($1, 'include_in_photo_index')
-            )
-            SELECT top.id, top.name, top.folder_id, fo.path,
-                   top.size, top.mime_type,
-                   EXTRACT(EPOCH FROM top.created_at)::bigint,
-                   EXTRACT(EPOCH FROM top.updated_at)::bigint,
-                   top.blob_hash,
-                   top.created_by, top.updated_by,
-                   EXISTS (
-                       SELECT 1 FROM auth.user_favorites uf
-                        WHERE uf.user_id   = $1
-                          AND uf.item_id   = top.id::text
-                          AND uf.item_type = 'file'
-                   ) AS is_favorite,
-                   EXISTS (
-                       SELECT 1 FROM storage.role_grants g
-                        WHERE g.resource_id   = top.id
-                          AND g.resource_type = 'file'
-                   ) AS is_shared,
-                   EXTRACT(EPOCH FROM top.media_sort_date)::bigint AS sort_date,
-                   fm.width, fm.height
-              FROM (
-                SELECT fi.*
-                  FROM accessible a
-                 CROSS JOIN LATERAL (
-                    SELECT fi.*
-                      FROM storage.files fi
-                     WHERE fi.drive_id = a.id
-                       AND NOT fi.is_trashed
-                       AND (fi.mime_type LIKE 'image/%' OR fi.mime_type LIKE 'video/%')
-                       {cursor_pred}
-                     ORDER BY fi.media_sort_date DESC
-                     LIMIT $3
-                 ) fi
-                 ORDER BY fi.media_sort_date DESC
-                 LIMIT $3
-              ) top
-              LEFT JOIN storage.folders fo ON fo.id = top.folder_id
-              LEFT JOIN storage.file_metadata fm ON fm.file_id = top.id
-             ORDER BY top.media_sort_date DESC
-            "#,
-        );
-        let rows: Vec<MediaFileRow> = sqlx::query_as(&sql)
-            .bind(caller_id)
-            .bind(cursor_ts)
-            .bind(limit)
-            .fetch_all(self.pool.as_ref())
-            .await
-            .map_err(|e| DomainError::internal_error("FileBlobRead", format!("list_media: {e}")))?;
-
-        let mut files = Vec::with_capacity(rows.len());
-        let mut sort_dates = Vec::with_capacity(rows.len());
-        let mut dims = Vec::with_capacity(rows.len());
-        let mut flags = Vec::with_capacity(rows.len());
-
-        for (
-            id,
-            name,
-            fid,
-            fpath,
-            size,
-            mime,
-            ca,
-            ma,
-            blob_hash,
-            cb,
-            ub,
-            is_fav,
-            is_shr,
-            sd,
-            w,
-            h,
-        ) in rows
-        {
-            files.push(Self::row_to_file(
-                id, name, fid, fpath, size, mime, ca, ma, blob_hash, cb, ub,
-            )?);
-            sort_dates.push(sd);
-            dims.push((w, h));
-            flags.push((is_fav, is_shr));
-        }
-
-        Ok((files, sort_dates, dims, flags))
     }
 
     /// Drive-scoped media listing for the normalized

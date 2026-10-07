@@ -87,7 +87,16 @@ export interface FileItem {
 	path: string;
 	size: number;
 	size_formatted: string;
-	sort_date: number;
+	/**
+	 * Deprecated — `sort_date` moved to the item-level envelope on
+	 * `/api/photos/resources` (§1 of
+	 * `docs/plan/photos-resources-migration.md`). The field was only
+	 * ever populated by the legacy `/api/photos` route, which §4
+	 * removed. Kept optional so test fixtures that still spell
+	 * `sort_date: 0` compile unchanged; delete it the next time this
+	 * interface is touched for an unrelated reason.
+	 */
+	sort_date?: number;
 	etag: string;
 	content_hash: string;
 	/** See `FolderItem.is_favorite` — same wire contract. */

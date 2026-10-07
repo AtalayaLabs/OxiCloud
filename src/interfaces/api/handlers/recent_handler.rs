@@ -282,7 +282,6 @@ pub async fn list_recent_resources(
                             icon_special_class,
                             category,
                             size_formatted: format_file_size(size_bytes),
-                            sort_date: None,
                             content_hash,
                             etag,
                             created_by: row.created_by,
