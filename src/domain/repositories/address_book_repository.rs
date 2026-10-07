@@ -44,5 +44,4 @@ pub trait AddressBookRepository: Send + Sync + 'static {
         &self,
         owner_id: Uuid,
     ) -> AddressBookRepositoryResult<Vec<AddressBook>>;
-    async fn get_public_address_books(&self) -> AddressBookRepositoryResult<Vec<AddressBook>>;
 }

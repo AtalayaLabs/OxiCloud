@@ -50,9 +50,9 @@ impl CalendarRepository for CalendarPgRepository {
         let normalized_name = normalize_storage_name(calendar.name());
         let row = sqlx::query(
             r#"
-            INSERT INTO caldav.calendars (id, name, owner_id, description, color, is_public, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            RETURNING id, name, owner_id, description, color, is_public, created_at, updated_at
+            INSERT INTO caldav.calendars (id, name, owner_id, description, color, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            RETURNING id, name, owner_id, description, color, created_at, updated_at
             "#
         )
         .bind(calendar.id())
@@ -60,7 +60,6 @@ impl CalendarRepository for CalendarPgRepository {
         .bind(calendar.owner_id())
         .bind(calendar.description())
         .bind(calendar.color())
-        .bind(false) // is_public doesn't exist as a field
         .bind(calendar.created_at())
         .bind(calendar.updated_at())
         .fetch_one(&*self.pool)
@@ -91,15 +90,14 @@ impl CalendarRepository for CalendarPgRepository {
         let row = sqlx::query(
             r#"
             UPDATE caldav.calendars
-            SET name = $1, description = $2, color = $3, is_public = $4, updated_at = $5
-            WHERE id = $6
-            RETURNING id, name, owner_id, description, color, is_public, created_at, updated_at
+            SET name = $1, description = $2, color = $3, updated_at = $4
+            WHERE id = $5
+            RETURNING id, name, owner_id, description, color, created_at, updated_at
             "#,
         )
         .bind(&normalized_name)
         .bind(calendar.description())
         .bind(calendar.color())
-        .bind(false) // is_public doesn't exist as a field
         .bind(now)
         .bind(calendar.id())
         .fetch_one(&*self.pool)
@@ -141,7 +139,7 @@ impl CalendarRepository for CalendarPgRepository {
     async fn find_calendar_by_id(&self, id: &Uuid) -> CalendarRepositoryResult<Calendar> {
         let row = sqlx::query(
             r#"
-            SELECT id, name, owner_id, description, color, is_public, created_at, updated_at
+            SELECT id, name, owner_id, description, color, created_at, updated_at
             FROM caldav.calendars
             WHERE id = $1
             "#,
@@ -174,7 +172,7 @@ impl CalendarRepository for CalendarPgRepository {
         }
         let rows = sqlx::query(
             r#"
-            SELECT id, name, owner_id, description, color, is_public, created_at, updated_at
+            SELECT id, name, owner_id, description, color, created_at, updated_at
             FROM caldav.calendars
             WHERE id = ANY($1)
             "#,
@@ -210,7 +208,7 @@ impl CalendarRepository for CalendarPgRepository {
     ) -> CalendarRepositoryResult<Vec<Calendar>> {
         let rows = sqlx::query(
             r#"
-            SELECT id, name, owner_id, description, color, is_public, created_at, updated_at
+            SELECT id, name, owner_id, description, color, created_at, updated_at
             FROM caldav.calendars
             WHERE owner_id = $1
             ORDER BY name
@@ -250,7 +248,7 @@ impl CalendarRepository for CalendarPgRepository {
     ) -> CalendarRepositoryResult<Calendar> {
         let row = sqlx::query(
             r#"
-            SELECT id, name, owner_id, description, color, is_public, created_at, updated_at
+            SELECT id, name, owner_id, description, color, created_at, updated_at
             FROM caldav.calendars
             WHERE name = $1 AND owner_id = $2
             "#,
@@ -280,48 +278,6 @@ impl CalendarRepository for CalendarPgRepository {
         })?;
 
         Ok(calendar)
-    }
-
-    async fn list_public_calendars(
-        &self,
-        limit: i64,
-        offset: i64,
-    ) -> CalendarRepositoryResult<Vec<Calendar>> {
-        let rows = sqlx::query(
-            r#"
-            SELECT id, name, owner_id, description, color, is_public, created_at, updated_at
-            FROM caldav.calendars
-            WHERE is_public = true
-            ORDER BY name
-            LIMIT $1 OFFSET $2
-            "#,
-        )
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&*self.pool)
-        .await
-        .map_err(|e| {
-            DomainError::database_error(format!("Failed to get public calendars: {}", e))
-        })?;
-
-        let mut calendars = Vec::with_capacity(rows.len());
-        for row in rows {
-            let calendar = Calendar::with_id(
-                row.get("id"),
-                row.get("name"),
-                row.get("owner_id"),
-                row.get("description"),
-                row.get("color"),
-                row.get("created_at"),
-                row.get("updated_at"),
-            )
-            .map_err(|e| {
-                DomainError::database_error(format!("Failed to create calendar object: {}", e))
-            })?;
-            calendars.push(calendar);
-        }
-
-        Ok(calendars)
     }
 
     async fn get_calendar_property(

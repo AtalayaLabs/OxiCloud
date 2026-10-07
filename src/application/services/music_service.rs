@@ -21,8 +21,9 @@ use crate::infrastructure::services::pg_acl_engine::PgAclEngine;
 ///
 /// Ownership + sharing live entirely in `storage.role_grants`
 /// (`resource_type='playlist'`). `audio.playlists.owner_id` stays for
-/// provenance and legacy queries; `audio.playlist_shares` is
-/// backfilled and slated for removal in a follow-up migration.
+/// provenance and legacy queries. The legacy `audio.playlist_shares`
+/// table is gone — backfilled into `role_grants` on 2026-09-10 and
+/// dropped once its last (unreachable) repository methods went with it.
 pub struct MusicService {
     storage: Arc<MusicStorageAdapter>,
     /// ReBAC engine — every user-facing method calls `authz.require`
@@ -119,6 +120,33 @@ impl MusicUseCase for MusicService {
     ) -> Result<PlaylistDto, DomainError> {
         self.require_playlist_perm(playlist_id, user_id, Permission::Update)
             .await?;
+
+        // Same rule as `add_tracks`, for the other caller-supplied file
+        // reference on this resource: permission on the playlist is not
+        // permission on a file it points at.
+        //
+        // This one does not disclose anything *today* — the DTO returns
+        // the bare id, which whoever set it already knew, and rendering
+        // the image goes through the file endpoint's own `Read` check, so
+        // a sharee gets a 404 rather than the owner's cover. It is
+        // checked anyway because it is one enriched join away from being
+        // the IDOR this commit's sibling fixed: the track leak existed
+        // precisely because a join onto `storage.files` was added to a
+        // reference nobody had validated. Closing the class is cheaper
+        // than re-finding the instance.
+        if let Some(cover) = dto.cover_file_id.as_deref() {
+            let cover_uuid = Uuid::parse_str(cover).map_err(|_| {
+                DomainError::new(ErrorKind::InvalidInput, "Playlist", "Invalid cover file ID")
+            })?;
+            self.authz
+                .require(
+                    Subject::User(user_id),
+                    Permission::Read,
+                    Resource::File(cover_uuid),
+                )
+                .await?;
+        }
+
         self.storage.update_playlist(playlist_id, dto).await
     }
 
@@ -148,13 +176,11 @@ impl MusicUseCase for MusicService {
             Some(p) => p,
             None => return Err(DomainError::not_found("Playlist", playlist_id)),
         };
-        // Public-playlist bypass: anonymous-ish read. `check` returns
-        // bool (no throw); combine with the public flag before
-        // deciding.
-        let allowed = playlist.is_public
-            || self
-                .has_playlist_perm(playlist_id, user_id, Permission::Read)
-                .await?;
+        // `check` returns bool rather than throwing, so the refusal is
+        // shaped here.
+        let allowed = self
+            .has_playlist_perm(playlist_id, user_id, Permission::Read)
+            .await?;
         if !allowed {
             return Err(DomainError::not_found("Playlist", playlist_id));
         }
@@ -167,9 +193,6 @@ impl MusicUseCase for MusicService {
         user_id: Uuid,
     ) -> Result<Vec<PlaylistDto>, DomainError> {
         let include_shared = query.include_shared.unwrap_or(true);
-        let include_public = query.include_public.unwrap_or(false);
-        let limit = query.limit.unwrap_or(100);
-        let offset = query.offset.unwrap_or(0);
 
         // Post-Round-3 semantics: playlists the caller has any grant
         // on come from `list_incoming_grants` — one union of owned +
@@ -201,22 +224,13 @@ impl MusicUseCase for MusicService {
         // the result set silently, as before.
         let user_str = user_id.to_string();
         let ids: Vec<Uuid> = playlist_ids.drain().collect();
-        let mut playlists: Vec<PlaylistDto> = self
+        let playlists: Vec<PlaylistDto> = self
             .storage
             .get_playlists_by_ids(&ids)
             .await?
             .into_iter()
             .filter(|p| include_shared || p.owner_id == user_str)
             .collect();
-
-        if include_public {
-            let public = self.storage.list_public_playlists(limit, offset).await?;
-            for p in public {
-                if !playlists.iter().any(|pl: &PlaylistDto| pl.id == p.id) {
-                    playlists.push(p);
-                }
-            }
-        }
 
         Ok(playlists)
     }
@@ -236,6 +250,37 @@ impl MusicUseCase for MusicService {
         let file_ids = file_ids.map_err(|_| {
             DomainError::new(ErrorKind::InvalidInput, "Playlist", "Invalid file ID")
         })?;
+
+        // AuthZ pre-write: the caller must be able to READ every file they
+        // are adding. Permission on the playlist says they may edit THEIR
+        // OWN list; it says nothing about the files they are naming, and
+        // those ids come straight from the request body.
+        //
+        // Without this a caller created a playlist, added a victim's file
+        // id, and listed the tracks to read that file's name, size, MIME
+        // type and audio tags — a file they hold no grant on. Exactly the
+        // IDOR `get_audio_metadata` already guards against; this is the
+        // same check on the write side.
+        //
+        // The read side filters too, and that is the load-bearing half —
+        // a file readable today can be un-shared tomorrow, which no
+        // write-time check can anticipate. This one exists so the caller
+        // gets a clean refusal instead of silently adding a row that
+        // nobody will ever be shown.
+        //
+        // Batched: a playlist add can carry hundreds of ids, and
+        // `check_files_read_batch` resolves them in one query instead of
+        // one round trip each.
+        let readable = self
+            .authz
+            .check_files_read_batch(Subject::User(user_id), &file_ids)
+            .await?;
+        if readable.len() != file_ids.len() {
+            // 404, not 403, and deliberately without naming which id
+            // failed: the denial must not become the existence oracle the
+            // listing used to be.
+            return Err(DomainError::not_found("File", "one or more track files"));
+        }
 
         self.storage.add_tracks(&playlist_uuid, &file_ids).await
     }
@@ -282,22 +327,61 @@ impl MusicUseCase for MusicService {
         let playlist_uuid = Uuid::parse_str(playlist_id).map_err(|_| {
             DomainError::new(ErrorKind::InvalidInput, "Playlist", "Invalid playlist ID")
         })?;
-        // Public-playlist bypass mirrors `get_playlist`: readers of a
-        // public playlist can see its tracks. Fetch the playlist row
-        // to inspect `is_public` before deciding.
-        let playlist = self
-            .storage
+        // Existence first: a playlist that does not exist must refuse
+        // before the permission lookup gets a say.
+        self.storage
             .get_playlist(playlist_id)
             .await?
             .ok_or_else(|| DomainError::not_found("Playlist", playlist_id))?;
-        let allowed = playlist.is_public
-            || self
-                .has_playlist_perm(playlist_id, user_id, Permission::Read)
-                .await?;
+        let allowed = self
+            .has_playlist_perm(playlist_id, user_id, Permission::Read)
+            .await?;
         if !allowed {
             return Err(DomainError::not_found("Playlist", playlist_id));
         }
-        self.storage.list_playlist_tracks(&playlist_uuid).await
+        let tracks = self.storage.list_playlist_tracks(&playlist_uuid).await?;
+
+        // Per-viewer filter, and this is the guarantee the write-side check
+        // cannot provide.
+        //
+        // Permission on the PLAYLIST is not permission on its FILES. The
+        // enriched listing joins `storage.files` and `audio.file_metadata`
+        // with no owner predicate, so every row carries a file's name,
+        // size, MIME type and tags — which previously reached anyone who
+        // could see the playlist — at one point every user, back when a
+        // playlist could be flagged public.
+        //
+        // **Access to a playlist is not access to its tracks** (decided
+        // 2026-10-06). Seeing a playlist means "you may see that it
+        // exists and what it is"; whether you may see a given track is
+        // still that file's own grant. The alternative would have made
+        // adding a track an act of sharing someone else's file.
+        //
+        // This keys on the VIEWER, not on how they reached the playlist,
+        // so owner and grantee each see exactly the files they could
+        // already read.
+        //
+        // Filtering at read time rather than trusting the write-time check
+        // is what makes this hold over time: a file readable when it was
+        // added can be un-shared afterwards, and the row would otherwise
+        // keep disclosing it forever.
+        //
+        // Silent, not an error: different viewers legitimately see
+        // different subsets of a shared playlist, and refusing the whole
+        // listing because one track is private would make a shared
+        // playlist unusable.
+        let ids: Vec<Uuid> = tracks
+            .iter()
+            .filter_map(|t| Uuid::parse_str(&t.file_id).ok())
+            .collect();
+        let readable = self
+            .authz
+            .check_files_read_batch(Subject::User(user_id), &ids)
+            .await?;
+        Ok(tracks
+            .into_iter()
+            .filter(|t| Uuid::parse_str(&t.file_id).is_ok_and(|id| readable.contains(&id)))
+            .collect())
     }
 
     async fn share_playlist(

@@ -172,24 +172,6 @@
 		}
 	}
 
-	async function onTogglePublic() {
-		if (!current) return;
-		const next = !current.is_public;
-		try {
-			await updatePlaylist(current.id, { is_public: next });
-			current.is_public = next;
-			playlists = playlists.map((p) => (p.id === current!.id ? { ...p, is_public: next } : p));
-			ui.notify(
-				next
-					? t('music.now_public', 'Playlist is now public.')
-					: t('music.now_private', 'Playlist is now private.'),
-				'success'
-			);
-		} catch (e) {
-			errorToast(e);
-		}
-	}
-
 	function onDragStart(i: number) {
 		dragIndex = i;
 	}
@@ -591,11 +573,6 @@
 									{t('music.track_count', { n: current.track_count }, '{{n}} tracks')}
 									{#if current.description}· {current.description}{/if}
 								</p>
-								{#if current.is_public}
-									<span class="music-public-badge">
-										<Icon name="globe" /> <span>{t('music.public', 'Public')}</span>
-									</span>
-								{/if}
 							</div>
 						</div>
 
@@ -653,20 +630,6 @@
 								aria-label={t('music.manage_shares', 'Manage shares')}
 							>
 								<Icon name="users" />
-							</button>
-							<button
-								class="btn btn-secondary"
-								class:active={current.is_public}
-								data-testid="music-toggle-public-btn"
-								onclick={onTogglePublic}
-								title={current.is_public
-									? t('music.make_private', 'Make private')
-									: t('music.make_public', 'Make public')}
-								aria-label={current.is_public
-									? t('music.make_private', 'Make private')
-									: t('music.make_public', 'Make public')}
-							>
-								<Icon name="globe" />
 							</button>
 							<button
 								class="btn btn-secondary"

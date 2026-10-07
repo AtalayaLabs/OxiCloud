@@ -86,6 +86,21 @@ impl CalendarService {
             .await
     }
 
+    /// A missing calendar must refuse before the permission lookup gets
+    /// a say. The engine would answer "no grant" for an id that never
+    /// existed — the same refusal for a different reason — but the two
+    /// are worth keeping apart, and this fetch is what the public-flag
+    /// read used to ride along on.
+    ///
+    /// Kept as its own step rather than folded into `has_calendar_perm`
+    /// because the error *subject* differs by caller: an event lookup
+    /// reports the event it was asked for, a calendar lookup the
+    /// calendar.
+    async fn require_calendar_exists(&self, calendar_id: &str) -> Result<(), DomainError> {
+        self.calendar_storage.get_calendar(calendar_id).await?;
+        Ok(())
+    }
+
     /// The caller's access level on a calendar they are already known
     /// to see. Walks [`CalendarAccess::GATES`] strongest first against
     /// the engine, so an Owner costs one (cached) check and the
@@ -184,13 +199,11 @@ impl CalendarUseCase for CalendarService {
         user_id: Uuid,
     ) -> Result<CalendarDto, DomainError> {
         let calendar = self.calendar_storage.get_calendar(calendar_id).await?;
-        // Public-calendar bypass: anonymous-ish read. `check` returns
-        // bool (no throw); combine with the public flag before
-        // deciding.
-        let allowed = calendar.is_public
-            || self
-                .has_calendar_perm(calendar_id, user_id, Permission::Read)
-                .await?;
+        // `check` returns bool rather than throwing, so the refusal is
+        // shaped here.
+        let allowed = self
+            .has_calendar_perm(calendar_id, user_id, Permission::Read)
+            .await?;
         if !allowed {
             return Err(DomainError::not_found("Calendar", calendar_id));
         }
@@ -260,20 +273,6 @@ impl CalendarUseCase for CalendarService {
                 Some(AccessibleCalendar { calendar, access })
             })
             .collect())
-    }
-
-    async fn list_public_calendars(
-        &self,
-        limit: Option<i64>,
-        offset: Option<i64>,
-    ) -> Result<Vec<CalendarDto>, DomainError> {
-        // No caller gate: public listing by definition. Storage
-        // filters on `is_public = true`.
-        let limit = limit.unwrap_or(100);
-        let offset = offset.unwrap_or(0);
-        self.calendar_storage
-            .list_public_calendars(limit, offset)
-            .await
     }
 
     async fn create_event(
@@ -374,15 +373,10 @@ impl CalendarUseCase for CalendarService {
         user_id: Uuid,
     ) -> Result<CalendarEventDto, DomainError> {
         let event = self.calendar_storage.get_event(event_id).await?;
-        let calendar = self
-            .calendar_storage
-            .get_calendar(&event.calendar_id)
+        self.require_calendar_exists(&event.calendar_id).await?;
+        let allowed = self
+            .has_calendar_perm(&event.calendar_id, user_id, Permission::Read)
             .await?;
-        // Same public-calendar bypass as `get_calendar`.
-        let allowed = calendar.is_public
-            || self
-                .has_calendar_perm(&event.calendar_id, user_id, Permission::Read)
-                .await?;
         if !allowed {
             return Err(DomainError::not_found("Event", event_id));
         }
@@ -395,11 +389,10 @@ impl CalendarUseCase for CalendarService {
         ical_uid: &str,
         user_id: Uuid,
     ) -> Result<Option<CalendarEventDto>, DomainError> {
-        let calendar = self.calendar_storage.get_calendar(calendar_id).await?;
-        let allowed = calendar.is_public
-            || self
-                .has_calendar_perm(calendar_id, user_id, Permission::Read)
-                .await?;
+        self.require_calendar_exists(calendar_id).await?;
+        let allowed = self
+            .has_calendar_perm(calendar_id, user_id, Permission::Read)
+            .await?;
         if !allowed {
             return Err(DomainError::not_found("Calendar", calendar_id));
         }
@@ -414,11 +407,10 @@ impl CalendarUseCase for CalendarService {
         ical_uids: &[String],
         user_id: Uuid,
     ) -> Result<Vec<CalendarEventDto>, DomainError> {
-        let calendar = self.calendar_storage.get_calendar(calendar_id).await?;
-        let allowed = calendar.is_public
-            || self
-                .has_calendar_perm(calendar_id, user_id, Permission::Read)
-                .await?;
+        self.require_calendar_exists(calendar_id).await?;
+        let allowed = self
+            .has_calendar_perm(calendar_id, user_id, Permission::Read)
+            .await?;
         if !allowed {
             return Err(DomainError::not_found("Calendar", calendar_id));
         }
@@ -437,11 +429,10 @@ impl CalendarUseCase for CalendarService {
         offset: Option<i64>,
         user_id: Uuid,
     ) -> Result<Vec<CalendarEventDto>, DomainError> {
-        let calendar = self.calendar_storage.get_calendar(calendar_id).await?;
-        let allowed = calendar.is_public
-            || self
-                .has_calendar_perm(calendar_id, user_id, Permission::Read)
-                .await?;
+        self.require_calendar_exists(calendar_id).await?;
+        let allowed = self
+            .has_calendar_perm(calendar_id, user_id, Permission::Read)
+            .await?;
         if !allowed {
             return Err(DomainError::not_found("Calendar", calendar_id));
         }
@@ -469,11 +460,10 @@ impl CalendarUseCase for CalendarService {
         // Same Read gate as `list_events`, checked ONCE before the
         // cursor opens — the stream itself carries no further authz
         // (single request, same caller, same resource).
-        let calendar = self.calendar_storage.get_calendar(calendar_id).await?;
-        let allowed = calendar.is_public
-            || self
-                .has_calendar_perm(calendar_id, user_id, Permission::Read)
-                .await?;
+        self.require_calendar_exists(calendar_id).await?;
+        let allowed = self
+            .has_calendar_perm(calendar_id, user_id, Permission::Read)
+            .await?;
         if !allowed {
             return Err(DomainError::not_found("Calendar", calendar_id));
         }
@@ -487,11 +477,10 @@ impl CalendarUseCase for CalendarService {
         end: DateTime<Utc>,
         user_id: Uuid,
     ) -> Result<Vec<CalendarEventDto>, DomainError> {
-        let calendar = self.calendar_storage.get_calendar(calendar_id).await?;
-        let allowed = calendar.is_public
-            || self
-                .has_calendar_perm(calendar_id, user_id, Permission::Read)
-                .await?;
+        self.require_calendar_exists(calendar_id).await?;
+        let allowed = self
+            .has_calendar_perm(calendar_id, user_id, Permission::Read)
+            .await?;
         if !allowed {
             return Err(DomainError::not_found("Calendar", calendar_id));
         }
@@ -510,11 +499,10 @@ impl CalendarUseCase for CalendarService {
         ical_uid: &str,
         user_id: Uuid,
     ) -> Result<Option<CalendarTodoDto>, DomainError> {
-        let calendar = self.calendar_storage.get_calendar(calendar_id).await?;
-        let allowed = calendar.is_public
-            || self
-                .has_calendar_perm(calendar_id, user_id, Permission::Read)
-                .await?;
+        self.require_calendar_exists(calendar_id).await?;
+        let allowed = self
+            .has_calendar_perm(calendar_id, user_id, Permission::Read)
+            .await?;
         if !allowed {
             return Err(DomainError::not_found("Calendar", calendar_id));
         }
@@ -529,11 +517,10 @@ impl CalendarUseCase for CalendarService {
         ical_uids: &[String],
         user_id: Uuid,
     ) -> Result<Vec<CalendarTodoDto>, DomainError> {
-        let calendar = self.calendar_storage.get_calendar(calendar_id).await?;
-        let allowed = calendar.is_public
-            || self
-                .has_calendar_perm(calendar_id, user_id, Permission::Read)
-                .await?;
+        self.require_calendar_exists(calendar_id).await?;
+        let allowed = self
+            .has_calendar_perm(calendar_id, user_id, Permission::Read)
+            .await?;
         if !allowed {
             return Err(DomainError::not_found("Calendar", calendar_id));
         }
@@ -552,11 +539,10 @@ impl CalendarUseCase for CalendarService {
         end: DateTime<Utc>,
         user_id: Uuid,
     ) -> Result<Vec<CalendarTodoDto>, DomainError> {
-        let calendar = self.calendar_storage.get_calendar(calendar_id).await?;
-        let allowed = calendar.is_public
-            || self
-                .has_calendar_perm(calendar_id, user_id, Permission::Read)
-                .await?;
+        self.require_calendar_exists(calendar_id).await?;
+        let allowed = self
+            .has_calendar_perm(calendar_id, user_id, Permission::Read)
+            .await?;
         if !allowed {
             return Err(DomainError::not_found("Calendar", calendar_id));
         }
@@ -576,11 +562,10 @@ impl CalendarUseCase for CalendarService {
         // Same Read gate as `get_todos_in_range`, checked ONCE before
         // the cursor opens — the stream itself carries no further
         // authz (single request, same caller, same resource).
-        let calendar = self.calendar_storage.get_calendar(calendar_id).await?;
-        let allowed = calendar.is_public
-            || self
-                .has_calendar_perm(calendar_id, user_id, Permission::Read)
-                .await?;
+        self.require_calendar_exists(calendar_id).await?;
+        let allowed = self
+            .has_calendar_perm(calendar_id, user_id, Permission::Read)
+            .await?;
         if !allowed {
             return Err(DomainError::not_found("Calendar", calendar_id));
         }
@@ -606,11 +591,10 @@ impl CalendarUseCase for CalendarService {
         // — what the handlers did — fetched the calendar and evaluated
         // the permission twice for a single resource, and left two
         // copies of the rule to keep in agreement.
-        let calendar = self.calendar_storage.get_calendar(calendar_id).await?;
-        let allowed = calendar.is_public
-            || self
-                .has_calendar_perm(calendar_id, user_id, Permission::Read)
-                .await?;
+        self.require_calendar_exists(calendar_id).await?;
+        let allowed = self
+            .has_calendar_perm(calendar_id, user_id, Permission::Read)
+            .await?;
         if !allowed {
             // NotFound, not AccessDenied: a caller must not learn that a
             // calendar exists by the shape of the refusal.
@@ -744,7 +728,6 @@ impl DefaultCalendarLifecycleHook {
             name: self.default_name.clone(),
             description: None,
             color: None,
-            is_public: Some(false),
         };
         let created = self
             .calendar_storage

@@ -9,7 +9,6 @@ pub struct PlaylistDto {
     pub name: String,
     pub description: Option<String>,
     pub owner_id: String,
-    pub is_public: bool,
     pub cover_file_id: Option<String>,
     pub track_count: Option<i64>,
     pub total_duration_secs: Option<i32>,
@@ -24,7 +23,6 @@ impl Default for PlaylistDto {
             name: String::new(),
             description: None,
             owner_id: String::new(),
-            is_public: false,
             cover_file_id: None,
             track_count: None,
             total_duration_secs: None,
@@ -41,7 +39,6 @@ impl From<Playlist> for PlaylistDto {
             name: playlist.name().to_string(),
             description: playlist.description().map(|s| s.to_string()),
             owner_id: playlist.owner_id().to_string(),
-            is_public: playlist.is_public(),
             cover_file_id: playlist.cover_file_id().map(|s| s.to_string()),
             track_count: None,
             total_duration_secs: None,
@@ -117,14 +114,12 @@ impl From<PlaylistItem> for PlaylistItemDto {
 pub struct CreatePlaylistDto {
     pub name: String,
     pub description: Option<String>,
-    pub is_public: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct UpdatePlaylistDto {
     pub name: Option<String>,
     pub description: Option<String>,
-    pub is_public: Option<bool>,
     pub cover_file_id: Option<String>,
 }
 
@@ -219,7 +214,11 @@ impl From<AudioFileMetadata> for AudioMetadataDto {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PlaylistQueryDto {
     pub include_shared: Option<bool>,
-    pub include_public: Option<bool>,
+    /// Accepted but not applied: the listing is derived from the
+    /// caller's grants and returns all of them. These only ever
+    /// paginated the public subset, which no longer exists. Left in
+    /// place so existing callers don't start failing on an unknown
+    /// field — see the commit removing `is_public`.
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }

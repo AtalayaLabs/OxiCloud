@@ -13,7 +13,6 @@ pub struct CalendarDto {
     pub owner_id: String,
     pub description: Option<String>,
     pub color: Option<String>,
-    pub is_public: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub custom_properties: HashMap<String, String>,
@@ -27,7 +26,6 @@ impl Default for CalendarDto {
             owner_id: String::new(),
             description: None,
             color: None,
-            is_public: false,
             created_at: Utc::now(),
             updated_at: Utc::now(),
             custom_properties: HashMap::new(),
@@ -47,7 +45,6 @@ impl From<Calendar> for CalendarDto {
             owner_id: p.owner_id.to_string(),
             description: p.description,
             color: p.color,
-            is_public: false, // This needs to be set separately as it's not part of the domain entity
             created_at: p.created_at,
             updated_at: p.updated_at,
             custom_properties: p.custom_properties,
@@ -61,7 +58,6 @@ pub struct CreateCalendarDto {
     pub name: String,
     pub description: Option<String>,
     pub color: Option<String>,
-    pub is_public: Option<bool>,
 }
 
 /// DTO for calendar update
@@ -70,7 +66,6 @@ pub struct UpdateCalendarDto {
     pub name: Option<String>,
     pub description: Option<String>,
     pub color: Option<String>,
-    pub is_public: Option<bool>,
 }
 
 /// DTO for calendar sharing

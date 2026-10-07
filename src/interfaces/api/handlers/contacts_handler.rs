@@ -42,7 +42,6 @@ pub struct AddressBookResponse {
     pub owner_id: String,
     pub description: Option<String>,
     pub color: Option<String>,
-    pub is_public: bool,
     pub is_readonly: bool,
     pub is_system: bool,
     pub created_at: DateTime<Utc>,
@@ -55,7 +54,6 @@ pub struct CreateAddressBookRequest {
     pub name: String,
     pub description: Option<String>,
     pub color: Option<String>,
-    pub is_public: Option<bool>,
 }
 
 /// Request body for updating an address book.
@@ -64,7 +62,6 @@ pub struct UpdateAddressBookRequest {
     pub name: Option<String>,
     pub description: Option<String>,
     pub color: Option<String>,
-    pub is_public: Option<bool>,
 }
 
 /// Request body for creating a contact.
@@ -274,7 +271,6 @@ pub async fn list_address_books(
                         owner_id: b.owner_id,
                         description: b.description,
                         color: b.color,
-                        is_public: b.is_public,
                         is_readonly,
                         is_system: false,
                         created_at: b.created_at,
@@ -306,7 +302,6 @@ pub async fn list_address_books(
                     owner_id: "system".to_string(),
                     description: Some("All users registered on this OxiCloud instance".to_string()),
                     color: None,
-                    is_public: false,
                     is_readonly: true,
                     is_system: true,
                     created_at: now,
@@ -347,7 +342,6 @@ pub async fn create_address_book(
         owner_id: auth_user.id.to_string(),
         description: body.description,
         color: body.color,
-        is_public: body.is_public,
     };
     match state.contact_service.create_address_book(dto).await {
         Ok(book) => {
@@ -357,7 +351,6 @@ pub async fn create_address_book(
                 owner_id: book.owner_id,
                 description: book.description,
                 color: book.color,
-                is_public: book.is_public,
                 is_readonly: false,
                 is_system: false,
                 created_at: book.created_at,
@@ -398,7 +391,6 @@ pub async fn update_address_book(
         name: body.name,
         description: body.description,
         color: body.color,
-        is_public: body.is_public,
         user_id: auth_user.id.to_string(),
     };
     match state
@@ -413,7 +405,6 @@ pub async fn update_address_book(
                 owner_id: book.owner_id.clone(),
                 description: book.description,
                 color: book.color,
-                is_public: book.is_public,
                 is_readonly: book.owner_id != auth_user.id.to_string(),
                 is_system: false,
                 created_at: book.created_at,

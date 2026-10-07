@@ -48,13 +48,6 @@ pub trait CalendarRepository: Send + Sync + 'static {
         owner_id: Uuid,
     ) -> CalendarRepositoryResult<Calendar>;
 
-    /// List public calendars
-    async fn list_public_calendars(
-        &self,
-        limit: i64,
-        offset: i64,
-    ) -> CalendarRepositoryResult<Vec<Calendar>>;
-
     /// Gets a custom property for a calendar
     async fn get_calendar_property(
         &self,

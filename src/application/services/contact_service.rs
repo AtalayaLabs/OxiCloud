@@ -76,33 +76,21 @@ impl ContactService {
             .ok_or_else(|| DomainError::not_found("Address book", "not found"))
     }
 
-    /// Read gate with the public-address-book bypass: any
-    /// authenticated OxiCloud user can Read a book marked
-    /// `is_public = true`, matching the pre-Round-3 behaviour and
-    /// the calendar `is_public` semantics. Write paths never use
-    /// this bypass — they go through `require_address_book_perm`
-    /// with `Update` / `Delete` / `Create` directly.
-    async fn require_address_book_read_or_public(
+    /// Read gate for a book and everything inside it (contacts,
+    /// groups, memberships). Its own name because thirteen call sites
+    /// want exactly this and spelling out `Permission::Read` at each
+    /// would invite one of them to drift.
+    ///
+    /// This used to carry a bypass: a book flagged `is_public` was
+    /// readable by every authenticated user, grant or not. The flag is
+    /// gone, so the grant is the only answer.
+    async fn require_address_book_read(
         &self,
         address_book_id: &Uuid,
         caller_id: &Uuid,
     ) -> Result<AddressBook, DomainError> {
-        let book = self
-            .contact_storage
-            .get_address_book_by_id(address_book_id)
-            .await?
-            .ok_or_else(|| DomainError::not_found("Address book", "not found"))?;
-        if book.is_public() {
-            return Ok(book);
-        }
-        self.authz
-            .require(
-                Subject::User(*caller_id),
-                Permission::Read,
-                Resource::AddressBook(*address_book_id),
-            )
-            .await?;
-        Ok(book)
+        self.require_address_book_perm(address_book_id, caller_id, Permission::Read)
+            .await
     }
 
     // Associated function (no `&self`) so tests in this module
@@ -380,13 +368,7 @@ impl AddressBookUseCase for ContactService {
         // parse maps to InvalidInput.
         let owner_id = Uuid::parse_str(&dto.owner_id)
             .map_err(|_| DomainError::validation_error("Invalid owner ID format"))?;
-        let address_book = AddressBook::new(
-            dto.name,
-            dto.owner_id,
-            dto.description,
-            dto.color,
-            dto.is_public.unwrap_or(false),
-        );
+        let address_book = AddressBook::new(dto.name, dto.owner_id, dto.description, dto.color);
 
         let created_address_book = self
             .contact_storage
@@ -439,7 +421,6 @@ impl AddressBookUseCase for ContactService {
             update
                 .color
                 .or_else(|| address_book.color().map(|s| s.to_string())),
-            update.is_public.unwrap_or(address_book.is_public()),
             *address_book.created_at(),
             Utc::now(),
         );
@@ -486,9 +467,7 @@ impl AddressBookUseCase for ContactService {
         let id = Uuid::parse_str(address_book_id)
             .map_err(|_| DomainError::validation_error("Invalid address book ID format"))?;
 
-        let address_book = self
-            .require_address_book_read_or_public(&id, &user_id)
-            .await?;
+        let address_book = self.require_address_book_read(&id, &user_id).await?;
         Ok(AddressBookDto::from(address_book))
     }
 
@@ -529,29 +508,10 @@ impl AddressBookUseCase for ContactService {
             address_book_map.insert(*book.id(), book);
         }
 
-        // Public address books surface for every authenticated caller
-        // — same "internal-Read-for-everyone" semantics as
-        // `is_public` on calendars.
-        let public_address_books = self.contact_storage.get_public_address_books().await?;
-        for book in public_address_books {
-            if !address_book_map.contains_key(book.id()) {
-                address_book_map.insert(*book.id(), book);
-            }
-        }
-
         Ok(address_book_map
             .into_values()
             .map(AddressBookDto::from)
             .collect())
-    }
-
-    async fn list_public_address_books(&self) -> Result<Vec<AddressBookDto>, DomainError> {
-        let address_books = self.contact_storage.get_public_address_books().await?;
-        let dtos: Vec<AddressBookDto> = address_books
-            .into_iter()
-            .map(AddressBookDto::from)
-            .collect();
-        Ok(dtos)
     }
 }
 
@@ -821,7 +781,7 @@ impl ContactUseCase for ContactService {
             .ok_or_else(|| DomainError::not_found("Contact", "not found"))?;
 
         // Check if user has access to the address book
-        self.require_address_book_read_or_public(contact.address_book_id(), &user_id)
+        self.require_address_book_read(contact.address_book_id(), &user_id)
             .await?;
 
         Ok(ContactDto::from(contact))
@@ -837,8 +797,7 @@ impl ContactUseCase for ContactService {
             .map_err(|_| DomainError::validation_error("Invalid address book ID format"))?;
 
         // Check if user has access to the address book
-        self.require_address_book_read_or_public(&id, &user_id)
-            .await?;
+        self.require_address_book_read(&id, &user_id).await?;
 
         let contact = self.contact_storage.get_contact_by_uid(&id, uid).await?;
         Ok(contact.map(ContactDto::from))
@@ -854,8 +813,7 @@ impl ContactUseCase for ContactService {
             .map_err(|_| DomainError::validation_error("Invalid address book ID format"))?;
 
         // Check if user has access to the address book
-        self.require_address_book_read_or_public(&id, &user_id)
-            .await?;
+        self.require_address_book_read(&id, &user_id).await?;
 
         if uids.is_empty() {
             return Ok(Vec::new());
@@ -875,8 +833,7 @@ impl ContactUseCase for ContactService {
         let id = Uuid::parse_str(address_book_id)
             .map_err(|_| DomainError::validation_error("Invalid address book ID format"))?;
         // Same Read gate as `list_contacts`, once, before the cursor.
-        self.require_address_book_read_or_public(&id, &user_id)
-            .await?;
+        self.require_address_book_read(&id, &user_id).await?;
         Ok(Box::pin(
             self.contact_storage
                 .stream_contacts_by_book(id)
@@ -895,8 +852,7 @@ impl ContactUseCase for ContactService {
             .map_err(|_| DomainError::validation_error("Invalid address book ID format"))?;
 
         // Check if user has access to the address book
-        self.require_address_book_read_or_public(&id, &user_id)
-            .await?;
+        self.require_address_book_read(&id, &user_id).await?;
 
         // Get contacts
         let contacts = if limit.is_some() || offset.is_some() {
@@ -925,8 +881,7 @@ impl ContactUseCase for ContactService {
             .map_err(|_| DomainError::validation_error("Invalid address book ID format"))?;
 
         // Check if user has access to the address book
-        self.require_address_book_read_or_public(&id, &user_id)
-            .await?;
+        self.require_address_book_read(&id, &user_id).await?;
 
         // Search contacts
         let contacts = self.contact_storage.search_contacts(&id, query).await?;
@@ -1027,7 +982,7 @@ impl ContactUseCase for ContactService {
             .ok_or_else(|| DomainError::not_found("Contact group", "not found"))?;
 
         // Check if user has access to the address book
-        self.require_address_book_read_or_public(group.address_book_id(), &user_id)
+        self.require_address_book_read(group.address_book_id(), &user_id)
             .await?;
 
         // Count-only read: the summary DTO never looks at the contacts, so
@@ -1049,8 +1004,7 @@ impl ContactUseCase for ContactService {
             .map_err(|_| DomainError::validation_error("Invalid address book ID format"))?;
 
         // Check if user has access to the address book
-        self.require_address_book_read_or_public(&id, &user_id)
-            .await?;
+        self.require_address_book_read(&id, &user_id).await?;
 
         // Get groups
         let groups = self.contact_storage.get_groups_by_address_book(&id).await?;
@@ -1133,7 +1087,7 @@ impl ContactUseCase for ContactService {
             .ok_or_else(|| DomainError::not_found("Contact group", "not found"))?;
 
         // Check if user has access to the address book
-        self.require_address_book_read_or_public(group.address_book_id(), &user_id)
+        self.require_address_book_read(group.address_book_id(), &user_id)
             .await?;
 
         // Get contacts in group
@@ -1159,7 +1113,7 @@ impl ContactUseCase for ContactService {
             .ok_or_else(|| DomainError::not_found("Contact", "not found"))?;
 
         // Check if user has access to the address book
-        self.require_address_book_read_or_public(contact.address_book_id(), &user_id)
+        self.require_address_book_read(contact.address_book_id(), &user_id)
             .await?;
 
         // Get groups for contact
@@ -1185,7 +1139,7 @@ impl ContactUseCase for ContactService {
             .ok_or_else(|| DomainError::not_found("Contact", "not found"))?;
 
         // Check if user has access to the address book
-        self.require_address_book_read_or_public(contact.address_book_id(), &user_id)
+        self.require_address_book_read(contact.address_book_id(), &user_id)
             .await?;
 
         // Return the vCard data
@@ -1201,8 +1155,7 @@ impl ContactUseCase for ContactService {
             .map_err(|_| DomainError::validation_error("Invalid address book ID format"))?;
 
         // Check if user has access to the address book
-        self.require_address_book_read_or_public(&id, &user_id)
-            .await?;
+        self.require_address_book_read(&id, &user_id).await?;
 
         // Get all contacts in the address book
         let contacts = self
@@ -1302,13 +1255,8 @@ impl DefaultAddressBookLifecycleHook {
         // directly (no dedicated storage-adapter method), so we do the
         // same here: build the `AddressBook` domain type, persist via
         // the storage port, then seed the Owner role_grant.
-        let address_book = AddressBook::new(
-            self.default_name.clone(),
-            user.id().to_string(),
-            None,
-            None,
-            false,
-        );
+        let address_book =
+            AddressBook::new(self.default_name.clone(), user.id().to_string(), None, None);
         let created = self
             .contact_storage
             .create_address_book(address_book)

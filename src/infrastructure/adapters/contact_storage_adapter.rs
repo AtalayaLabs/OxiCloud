@@ -93,12 +93,6 @@ impl ContactStoragePort for ContactStorageAdapter {
             .await
     }
 
-    async fn get_public_address_books(&self) -> Result<Vec<AddressBook>, DomainError> {
-        self.address_book_repository
-            .get_public_address_books()
-            .await
-    }
-
     // ── Contacts ─────────────────────────────────────────────────
 
     async fn create_contact(&self, contact: Contact) -> Result<Contact, DomainError> {

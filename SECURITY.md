@@ -103,6 +103,31 @@ report, or say if you'd rather stay anonymous.
 
 Coordinated disclosures we've received and resolved:
 
+- **2026-10-06** — Cross-user IDOR in playlist tracks. `add_tracks`
+  checked only `Permission::Update` on the playlist and then accepted
+  caller-supplied file ids verbatim, while the enriched track listing
+  joined `storage.files` and `audio.file_metadata` with no owner
+  predicate. Any authenticated user could therefore add another user's
+  file to a playlist they owned and read back its name, size, MIME type
+  and audio tags — and, because no check required the id to exist or to
+  be audio, probe arbitrary UUIDs for existence. Setting the playlist
+  `is_public` widened the disclosure to every account on the instance.
+  Metadata only: there is no playlist-scoped stream or download, so file
+  *content* was never exposed. Fixed by filtering the listing per viewer
+  through `check_files_read_batch` — the load-bearing half, since a file
+  readable when it was added can be un-shared later — plus a write-time
+  refusal in `add_tracks`, and the same check on `cover_file_id`, which
+  was one enriched join away from being the identical bug. In the same
+  pass the `is_public` flag was removed outright from playlists, address
+  books and calendars: "readable by every account" is not a sharing
+  scope, and it was a second authorization surface sitting beside the
+  grant table. Reported by **Hideaki Takahashi**
+  ([@Koukyosyumei](https://github.com/Koukyosyumei)) as a code-review
+  finding, located with
+  [h5i](https://github.com/h5i-dev/h5i); the report named the
+  commit it was confirmed against and identified all four links in the
+  chain, which is why triage took reading rather than guessing.
+
 - **2026-09-05** — Timing side-channel in WebDAV lock-token comparison
   (`evaluate_if_header` in `src/interfaces/api/handlers/webdav_handler.rs`
   used plain `==` on state-tokens, byte-wise with early exit). Fixed by

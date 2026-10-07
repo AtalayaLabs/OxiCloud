@@ -693,7 +693,6 @@ async fn handle_mkcol(
         owner_id: user.id.to_string(),
         description,
         color,
-        is_public: Some(false),
     };
 
     // See the comment on the vCard PUT path — kind-aware error mapping
@@ -943,7 +942,6 @@ async fn handle_proppatch(
         name: None,
         description: None,
         color: None,
-        is_public: None,
         user_id: user.id.to_string(),
     };
 

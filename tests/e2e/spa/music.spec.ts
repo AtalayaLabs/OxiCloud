@@ -39,8 +39,6 @@ test('playlist lifecycle: create, toggle public, rename, delete', async ({ page 
   await page.getByTestId(name).click();
   await expect(page.getByTestId('music-rename-playlist-btn')).toBeVisible({ timeout: 15_000 });
 
-  await page.getByTestId('music-toggle-public-btn').click().catch(() => {});
-
   await page.getByTestId('music-rename-playlist-btn').click();
   await page.getByTestId('dialog-host-prompt-input').fill(renamed);
   await page.getByTestId('dialog-host-submit-btn').click();

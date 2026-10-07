@@ -35,7 +35,7 @@ token: jsonpath "$.access_token"
 POST {{base_url}}/api/address-books
 Authorization: Bearer {{token}}
 Content-Type: application/json
-{ "name": "param-encoding-test", "description": "", "is_public": false }
+{ "name": "param-encoding-test", "description": "" }
 
 HTTP 201
 [Captures]

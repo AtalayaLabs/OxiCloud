@@ -16,25 +16,9 @@ struct PlaylistRow {
     name: String,
     description: Option<String>,
     owner_id: Uuid,
-    is_public: bool,
     cover_file_id: Option<Uuid>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
-}
-
-/// A public playlist row carrying its aggregated track count, produced by the
-/// single `LEFT JOIN … GROUP BY` that replaces the per-playlist `COUNT(*)` N+1.
-#[derive(FromRow)]
-struct PublicPlaylistCountRow {
-    id: Uuid,
-    name: String,
-    description: Option<String>,
-    owner_id: Uuid,
-    is_public: bool,
-    cover_file_id: Option<Uuid>,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
-    track_count: i64,
 }
 
 #[derive(FromRow)]
@@ -94,68 +78,21 @@ impl PlaylistPgRepository {
     pub fn pool(&self) -> &PgPool {
         &self.pool
     }
-
-    /// Public playlists together with their track counts in a **single**
-    /// round-trip. Replaces the adapter's 1 + N shape (one listing SELECT then
-    /// one `SELECT COUNT(*) FROM audio.playlist_items` per returned playlist —
-    /// up to 101 round-trips at `limit = 100`) with one `LEFT JOIN … GROUP BY`,
-    /// backed by `idx_playlist_items_playlist_id` (benches/ROUND25.md §Q1).
-    pub async fn list_public_playlists_with_counts(
-        &self,
-        limit: i64,
-        offset: i64,
-    ) -> PlaylistRepositoryResult<Vec<(Playlist, i64)>> {
-        let rows = sqlx::query_as::<_, PublicPlaylistCountRow>(
-            "SELECT p.id, p.name, p.description, p.owner_id, p.is_public, p.cover_file_id, \
-                    p.created_at, p.updated_at, COUNT(pi.id) AS track_count \
-             FROM audio.playlists p \
-             LEFT JOIN audio.playlist_items pi ON pi.playlist_id = p.id \
-             WHERE p.is_public = TRUE \
-             GROUP BY p.id \
-             ORDER BY p.updated_at DESC LIMIT $1 OFFSET $2",
-        )
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&*self.pool)
-        .await
-        .map_err(|e| {
-            DomainError::database_error(format!("Failed to list public playlists: {}", e))
-        })?;
-
-        rows.into_iter()
-            .map(|row| {
-                let track_count = row.track_count;
-                Playlist::with_id(
-                    row.id,
-                    row.name,
-                    row.description,
-                    row.owner_id,
-                    row.is_public,
-                    row.cover_file_id,
-                    row.created_at,
-                    row.updated_at,
-                )
-                .map(|p| (p, track_count))
-                .map_err(|e| DomainError::new(ErrorKind::InternalError, "Playlist", e.to_string()))
-            })
-            .collect()
-    }
 }
 
 impl PlaylistRepository for PlaylistPgRepository {
     async fn create_playlist(&self, playlist: Playlist) -> PlaylistRepositoryResult<Playlist> {
         let row = sqlx::query_as::<_, PlaylistRow>(
             r#"
-            INSERT INTO audio.playlists (id, name, description, owner_id, is_public, cover_file_id, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            RETURNING id, name, description, owner_id, is_public, cover_file_id, created_at, updated_at
+            INSERT INTO audio.playlists (id, name, description, owner_id, cover_file_id, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            RETURNING id, name, description, owner_id, cover_file_id, created_at, updated_at
             "#,
         )
         .bind(playlist.id())
         .bind(playlist.name())
         .bind(playlist.description())
         .bind(playlist.owner_id())
-        .bind(playlist.is_public())
         .bind(playlist.cover_file_id())
         .bind(playlist.created_at())
         .bind(playlist.updated_at())
@@ -168,7 +105,6 @@ impl PlaylistRepository for PlaylistPgRepository {
             row.name,
             row.description,
             row.owner_id,
-            row.is_public,
             row.cover_file_id,
             row.created_at,
             row.updated_at,
@@ -180,15 +116,14 @@ impl PlaylistRepository for PlaylistPgRepository {
         let row = sqlx::query_as::<_, PlaylistRow>(
             r#"
             UPDATE audio.playlists
-            SET name = $2, description = $3, is_public = $4, cover_file_id = $5, updated_at = NOW()
+            SET name = $2, description = $3, cover_file_id = $4, updated_at = NOW()
             WHERE id = $1
-            RETURNING id, name, description, owner_id, is_public, cover_file_id, created_at, updated_at
+            RETURNING id, name, description, owner_id, cover_file_id, created_at, updated_at
             "#,
         )
         .bind(playlist.id())
         .bind(playlist.name())
         .bind(playlist.description())
-        .bind(playlist.is_public())
         .bind(playlist.cover_file_id())
         .fetch_one(&*self.pool)
         .await
@@ -199,7 +134,6 @@ impl PlaylistRepository for PlaylistPgRepository {
             row.name,
             row.description,
             row.owner_id,
-            row.is_public,
             row.cover_file_id,
             row.created_at,
             row.updated_at,
@@ -220,7 +154,7 @@ impl PlaylistRepository for PlaylistPgRepository {
 
     async fn find_playlist_by_id(&self, id: &Uuid) -> PlaylistRepositoryResult<Playlist> {
         let row = sqlx::query_as::<_, PlaylistRow>(
-            "SELECT id, name, description, owner_id, is_public, cover_file_id, created_at, updated_at FROM audio.playlists WHERE id = $1",
+            "SELECT id, name, description, owner_id, cover_file_id, created_at, updated_at FROM audio.playlists WHERE id = $1",
         )
         .bind(id)
         .fetch_optional(&*self.pool)
@@ -233,7 +167,6 @@ impl PlaylistRepository for PlaylistPgRepository {
             row.name,
             row.description,
             row.owner_id,
-            row.is_public,
             row.cover_file_id,
             row.created_at,
             row.updated_at,
@@ -246,7 +179,7 @@ impl PlaylistRepository for PlaylistPgRepository {
             return Ok(Vec::new());
         }
         let rows = sqlx::query_as::<_, PlaylistRow>(
-            "SELECT id, name, description, owner_id, is_public, cover_file_id, created_at, updated_at FROM audio.playlists WHERE id = ANY($1)",
+            "SELECT id, name, description, owner_id, cover_file_id, created_at, updated_at FROM audio.playlists WHERE id = ANY($1)",
         )
         .bind(ids)
         .fetch_all(&*self.pool)
@@ -260,7 +193,6 @@ impl PlaylistRepository for PlaylistPgRepository {
                     row.name,
                     row.description,
                     row.owner_id,
-                    row.is_public,
                     row.cover_file_id,
                     row.created_at,
                     row.updated_at,
@@ -268,179 +200,6 @@ impl PlaylistRepository for PlaylistPgRepository {
                 .map_err(|e| DomainError::new(ErrorKind::InternalError, "Playlist", e.to_string()))
             })
             .collect()
-    }
-
-    async fn list_playlists_by_owner(
-        &self,
-        owner_id: Uuid,
-    ) -> PlaylistRepositoryResult<Vec<Playlist>> {
-        let rows = sqlx::query_as::<_, PlaylistRow>(
-            "SELECT id, name, description, owner_id, is_public, cover_file_id, created_at, updated_at FROM audio.playlists WHERE owner_id = $1 ORDER BY updated_at DESC",
-        )
-        .bind(owner_id)
-        .fetch_all(&*self.pool)
-        .await
-        .map_err(|e| DomainError::database_error(format!("Failed to list playlists: {}", e)))?;
-
-        rows.into_iter()
-            .map(|row| {
-                Playlist::with_id(
-                    row.id,
-                    row.name,
-                    row.description,
-                    row.owner_id,
-                    row.is_public,
-                    row.cover_file_id,
-                    row.created_at,
-                    row.updated_at,
-                )
-                .map_err(|e| DomainError::new(ErrorKind::InternalError, "Playlist", e.to_string()))
-            })
-            .collect()
-    }
-
-    async fn list_public_playlists(
-        &self,
-        limit: i64,
-        offset: i64,
-    ) -> PlaylistRepositoryResult<Vec<Playlist>> {
-        let rows = sqlx::query_as::<_, PlaylistRow>(
-            "SELECT id, name, description, owner_id, is_public, cover_file_id, created_at, updated_at FROM audio.playlists WHERE is_public = TRUE ORDER BY updated_at DESC LIMIT $1 OFFSET $2",
-        )
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&*self.pool)
-        .await
-        .map_err(|e| DomainError::database_error(format!("Failed to list public playlists: {}", e)))?;
-
-        rows.into_iter()
-            .map(|row| {
-                Playlist::with_id(
-                    row.id,
-                    row.name,
-                    row.description,
-                    row.owner_id,
-                    row.is_public,
-                    row.cover_file_id,
-                    row.created_at,
-                    row.updated_at,
-                )
-                .map_err(|e| DomainError::new(ErrorKind::InternalError, "Playlist", e.to_string()))
-            })
-            .collect()
-    }
-
-    async fn list_shared_with_user(
-        &self,
-        user_id: Uuid,
-    ) -> PlaylistRepositoryResult<Vec<Playlist>> {
-        let rows = sqlx::query_as::<_, PlaylistRow>(
-            r#"
-            SELECT p.id, p.name, p.description, p.owner_id, p.is_public, p.cover_file_id, p.created_at, p.updated_at
-            FROM audio.playlists p
-            JOIN audio.playlist_shares ps ON p.id = ps.playlist_id
-            WHERE ps.user_id = $1
-            ORDER BY p.updated_at DESC
-            "#,
-        )
-        .bind(user_id)
-        .fetch_all(&*self.pool)
-        .await
-        .map_err(|e| DomainError::database_error(format!("Failed to list shared playlists: {}", e)))?;
-
-        rows.into_iter()
-            .map(|row| {
-                Playlist::with_id(
-                    row.id,
-                    row.name,
-                    row.description,
-                    row.owner_id,
-                    row.is_public,
-                    row.cover_file_id,
-                    row.created_at,
-                    row.updated_at,
-                )
-                .map_err(|e| DomainError::new(ErrorKind::InternalError, "Playlist", e.to_string()))
-            })
-            .collect()
-    }
-
-    async fn user_has_access(
-        &self,
-        playlist_id: &Uuid,
-        user_id: Uuid,
-    ) -> PlaylistRepositoryResult<bool> {
-        let row = sqlx::query_scalar::<_, bool>(
-            r#"
-            SELECT EXISTS(
-                SELECT 1 FROM audio.playlists p
-                WHERE p.id = $1 AND (p.owner_id = $2 OR p.is_public = TRUE)
-                UNION
-                SELECT 1 FROM audio.playlist_shares ps
-                WHERE ps.playlist_id = $1 AND ps.user_id = $2
-            )
-            "#,
-        )
-        .bind(playlist_id)
-        .bind(user_id)
-        .fetch_one(&*self.pool)
-        .await
-        .map_err(|e| {
-            DomainError::database_error(format!("Failed to check playlist access: {}", e))
-        })?;
-
-        Ok(row)
-    }
-
-    async fn share_playlist(
-        &self,
-        playlist_id: &Uuid,
-        user_id: Uuid,
-        can_write: bool,
-    ) -> PlaylistRepositoryResult<()> {
-        sqlx::query(
-            r#"
-            INSERT INTO audio.playlist_shares (playlist_id, user_id, can_write)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (playlist_id, user_id) DO UPDATE SET can_write = $3
-            "#,
-        )
-        .bind(playlist_id)
-        .bind(user_id)
-        .bind(can_write)
-        .execute(&*self.pool)
-        .await
-        .map_err(|e| DomainError::database_error(format!("Failed to share playlist: {}", e)))?;
-        Ok(())
-    }
-
-    async fn remove_share(
-        &self,
-        playlist_id: &Uuid,
-        user_id: Uuid,
-    ) -> PlaylistRepositoryResult<()> {
-        sqlx::query("DELETE FROM audio.playlist_shares WHERE playlist_id = $1 AND user_id = $2")
-            .bind(playlist_id)
-            .bind(user_id)
-            .execute(&*self.pool)
-            .await
-            .map_err(|e| {
-                DomainError::database_error(format!("Failed to remove playlist share: {}", e))
-            })?;
-        Ok(())
-    }
-
-    async fn get_shares(&self, playlist_id: &Uuid) -> PlaylistRepositoryResult<Vec<(Uuid, bool)>> {
-        let rows = sqlx::query_as::<_, (Uuid, bool)>(
-            "SELECT user_id, can_write FROM audio.playlist_shares WHERE playlist_id = $1",
-        )
-        .bind(playlist_id)
-        .fetch_all(&*self.pool)
-        .await
-        .map_err(|e| {
-            DomainError::database_error(format!("Failed to get playlist shares: {}", e))
-        })?;
-        Ok(rows)
     }
 }
 

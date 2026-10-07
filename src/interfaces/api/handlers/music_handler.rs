@@ -89,12 +89,6 @@ pub async fn list_playlists(
     }
 }
 
-#[derive(Debug, Deserialize)]
-pub struct IncludeSharedQuery {
-    pub include_shared: Option<bool>,
-    pub include_public: Option<bool>,
-}
-
 #[utoipa::path(
     put,
     path = "/api/playlists/{playlist_id}",

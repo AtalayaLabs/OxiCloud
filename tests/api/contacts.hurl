@@ -52,8 +52,7 @@ Authorization: Bearer {{token}}
 Content-Type: application/json
 {
   "name": "Personal",
-  "description": "Personal address book created by Hurl tests",
-  "is_public": false
+  "description": "Personal address book created by Hurl tests"
 }
 
 HTTP 201
@@ -63,7 +62,7 @@ book_id: jsonpath "$.id"
 jsonpath "$.id" isString
 jsonpath "$.name" == "Personal"
 jsonpath "$.description" == "Personal address book created by Hurl tests"
-jsonpath "$.is_public" == false
+jsonpath "$.is_public" not exists
 jsonpath "$.is_system" == false
 jsonpath "$.is_readonly" == false
 
@@ -310,8 +309,7 @@ Authorization: Bearer {{token}}
 Content-Type: application/json
 {
   "name": "Round3 Share Book",
-  "description": "Book for the multi-user share regression",
-  "is_public": false
+  "description": "Book for the multi-user share regression"
 }
 
 HTTP 201

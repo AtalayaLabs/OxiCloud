@@ -201,6 +201,7 @@ was attached to, never by content.
 | transcode | `f(blob bytes, target)` | ✅ |
 | extracted text | `f(blob bytes)` | ✅ — `storage.blob_extracted_text` |
 | face vectors | `f(blob bytes)` | ✅ — `faces.faces` |
+| audio tags (ID3/Vorbis) | `f(blob bytes)` | ✅ in principle — but `audio.file_metadata` is **file**-keyed today. See the TODO below |
 | client-uploaded preview | `f(user's choice)` | ❌ **must be file-keyed** — `storage.file_attached_blobs`, see below |
 
 This isn't a new pattern: `storage.blob_extracted_text` already
@@ -1931,6 +1932,84 @@ an alias period or an explicit release note.
 Scope for this rename: ~23 files touch the SQL, plus a migration
 for the table rename. Not free. Ship AFTER the tier-2 write-side
 lands so we don't stack schema changes.
+
+## TODO — `audio.file_metadata` is keyed to the file, not the content
+
+Found 2026-10-06 while tracing playlist authorization. Not scheduled;
+recorded here because this doc owns the content-vs-file keying rule and
+this table predates it.
+
+`audio.file_metadata` (ID3 / Vorbis tags: title, artist, album, genre,
+track number, duration, bitrate, …) is keyed `file_id UUID PRIMARY KEY
+REFERENCES storage.files(id) ON DELETE CASCADE`. By the Keying rule
+above it is `f(blob bytes)` — the same class as
+`storage.blob_extracted_text` and `faces.faces`, both of which chose
+content-keying for exactly this reason. The Non-goals entry below
+already names `duration` as content-derived. So the convention was
+settled before this table was written; it just never got applied to it.
+
+**The giveaway is a function that exists only to compensate.**
+`AudioMetadataService::clone_from_source_background` is an
+`INSERT … SELECT … FROM audio.file_metadata WHERE file_id = $2` whose
+whole job is copying a row to a new file that shares the same blob, with
+`FileLifecycleHook::on_file_created` branching on `is_new_blob` to
+choose clone-vs-extract. Content-keyed, the row is already there: the
+function, the branch and the `tokio::spawn` all delete. Compare
+`ThumbnailRefreshHook::on_file_created`, which returns early when
+`!is_new_blob` — that early return is what this table can't have.
+
+What file-keying costs today:
+
+- **N identical rows** for N copies of one song, re-inserted per copy.
+- **Re-extraction after delete + re-upload.** `ON DELETE CASCADE` drops
+  the row, so identical bytes get streamed to a tempfile and re-parsed
+  even when another file still holds the blob.
+- **A code path that shouldn't exist** (the clone branch above).
+
+### Security check — reuse across users is safe, with one forward constraint
+
+Asked explicitly: if user A has already uploaded a song, user B's upload
+reuses A's metadata row. Is that a leak?
+
+**No, and for the reason the Keying rule already states.** Tag parsing is
+a deterministic pure function of the source bytes, so the row B reads is
+byte-for-byte what B would have produced by parsing their own copy.
+Nothing crosses the dedup boundary that B did not already hold — the
+doc's own phrasing for thumbnails applies verbatim: *"any user uploading
+identical bytes derives identical output — nothing to poison."*
+
+This is the benign half of the hazard the Non-goals k/v entry describes.
+That entry warns about a content-keyed datum that *encodes another
+user's input*; tags encode no user input at all, only the file's bytes.
+
+Two things to keep true, though:
+
+1. **No enumeration gain.** Content-keying adds no new existence oracle
+   here: blob dedup already makes "someone holds identical content"
+   observable (`is_new_blob = false` short-circuits the upload path),
+   and `blob_extracted_text` / `faces.faces` already carry the same
+   property. Re-keying inherits the existing dedup anti-enumeration
+   posture rather than widening it — cf. `project_d7_policy_calls`.
+2. **⚠ If user-editable tags are ever added, they must NOT go in the
+   content-keyed table.** Today the only write surfaces are the
+   lifecycle hook and the admin-only `POST /admin/audio/metadata/reextract`
+   — verified, there is no per-user tag editing. The moment a user can
+   correct an artist name, that value is `f(user's choice)`, which by
+   the Keying rule belongs in a **file**-keyed table, and content-keying
+   it would publish one tenant's edit to every other holder of the same
+   bytes *and* let a crafted edit poison their library. Split it the way
+   client-uploaded thumbnails are split: derived tags content-keyed,
+   user overrides file-keyed, reader prefers the override.
+
+### Work, if picked up
+
+| | |
+|---|---|
+| Migration | new table keyed on `source_hash`, backfilled through `storage.files.blob_hash` (indexed: `idx_files_blob_hash`), old table dropped |
+| Writers | `extract_and_save` keys on hash; **delete** `clone_from_source_background` and the `is_new_blob` branch |
+| Readers | two — `get_audio_metadata`, and the enriched playlist listing's `LEFT JOIN`, which joins via `pi.file_id → files.blob_hash` |
+| Lifecycle | **the careful part.** Like `content_derived_blobs`, rows become a dependent reference holding no ref_count, so they need the same reap hook in `dedup_gc` / `manifests_consistency`. Without it the rows leak after the source blob is reaped — the exact failure class the satellites plan exists to prevent |
+| Bonus | `AudioMetadataPgRepository::{create_or_update, delete, list_by_artist, list_by_album, list_by_genre}` are already dead — no callers, because the service does its own SQL against the pool. So there is no browse-by-artist/album/genre feature, and all four `idx_audio_metadata_{artist,album,genre,year}` indexes are maintained on every write for reads nobody performs. `year` is the starkest: no query references it even in the dead code |
 
 ## Non-goals
 

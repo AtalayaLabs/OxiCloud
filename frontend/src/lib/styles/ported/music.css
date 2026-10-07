@@ -1114,26 +1114,6 @@
     opacity: 1;
 }
 
-/* ========== Public badge ========== */
-.music-public-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-1);
-    padding: var(--space-0-5) var(--space-2);
-    font-size: 0.72rem;
-    background: var(--color-music-public-bg);
-    color: var(--color-text);
-    border-radius: var(--radius-2xl);
-    margin-top: var(--space-1);
-}
-.music-public-badge.hidden {
-    display: none;
-}
-#music-toggle-public-btn.active {
-    color: var(--color-text);
-    background: var(--color-item-active);
-}
-
 /* ========== Shares management dialog ========== */
 .music-shares-overlay {
     position: fixed;

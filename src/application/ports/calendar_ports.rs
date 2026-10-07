@@ -108,11 +108,6 @@ pub trait CalendarStoragePort: Send + Sync + 'static {
         &self,
         owner_id: Uuid,
     ) -> Result<Vec<CalendarDto>, DomainError>;
-    async fn list_public_calendars(
-        &self,
-        limit: i64,
-        offset: i64,
-    ) -> Result<Vec<CalendarDto>, DomainError>;
     // Calendar properties
     async fn set_calendar_property(
         &self,
@@ -287,11 +282,6 @@ pub trait CalendarUseCase: Send + Sync + 'static {
         &self,
         user_id: Uuid,
     ) -> Result<Vec<AccessibleCalendar>, DomainError>;
-    async fn list_public_calendars(
-        &self,
-        limit: Option<i64>,
-        offset: Option<i64>,
-    ) -> Result<Vec<CalendarDto>, DomainError>;
 
     // Event operations
     async fn create_event(

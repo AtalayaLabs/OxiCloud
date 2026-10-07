@@ -42,7 +42,6 @@ const playlist = {
 	name: 'Roadtrip',
 	description: 'songs',
 	owner_id: 'me',
-	is_public: false,
 	cover_file_id: null,
 	track_count: 1,
 	total_duration_secs: 180,
