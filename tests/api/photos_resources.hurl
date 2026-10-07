@@ -145,6 +145,63 @@ jsonpath "$.items" isCollection
 
 
 # ─────────────────────────────────────────────────────────────
+# Step 4c — ETag varies across filter axes (regression for §6
+#          and §6b). The `weak_etag` hash takes `(cursor, limit,
+#          fresh_signal, row_count, next_cursor)`; filter axes
+#          are not named directly in the hash, so correctness
+#          relies on `fresh_signal`/`row_count`/`next_cursor`
+#          differing across filter combinations. Pin that so a
+#          future refactor can't quietly make an If-None-Match
+#          from one URL false-304 against a differently-filtered
+#          URL (which would show the viewer the wrong page's
+#          cached body).
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/photos/resources?limit=50&kind=photo
+Authorization: Bearer {{alice_token}}
+
+HTTP 200
+[Captures]
+etag_kind_photo: header "ETag"
+[Asserts]
+header "ETag" exists
+
+
+GET {{base_url}}/api/photos/resources?limit=50&kind=video
+Authorization: Bearer {{alice_token}}
+
+HTTP 200
+[Captures]
+etag_kind_video: header "ETag"
+[Asserts]
+header "ETag" exists
+# The two filtered URLs cover disjoint content (fixtures have 0
+# videos, ≥1 photo) and must therefore surface distinct ETags —
+# their equality would mean the server collapsed two different
+# page bodies to one revalidation key, which is the false-304
+# bug this test exists to prevent.
+header "ETag" != "{{etag_kind_photo}}"
+
+
+# Revalidation stays correct per URL: the photo ETag matches
+# itself (304) but is treated as stale against the video URL
+# (200 with the video body — zero items).
+GET {{base_url}}/api/photos/resources?limit=50&kind=photo
+Authorization: Bearer {{alice_token}}
+If-None-Match: {{etag_kind_photo}}
+
+HTTP 304
+
+
+GET {{base_url}}/api/photos/resources?limit=50&kind=video
+Authorization: Bearer {{alice_token}}
+If-None-Match: {{etag_kind_photo}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.items" count == 0
+
+
+# ─────────────────────────────────────────────────────────────
 # Step 5 — Pagination (scenario 4 abbreviated). Needs ≥ 2 photos
 #          for `limit=1` to produce an over-fetch — the suite's
 #          DB may be fresh with only the step-4 upload on alice's
@@ -333,6 +390,93 @@ HTTP 200
 [Asserts]
 jsonpath "$.items"              count == 1
 jsonpath "$.items[0].resource.id" == "{{shared_photo_id}}"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 8b — §6 `?kind=` filter + §6b `?drive_id=` filter.
+#          Reuse mia's single-visible-photo fixture — predictable
+#          counts.
+#            * ?kind=photo        → her 1 image row stays
+#            * ?kind=video        → zero (no videos in the fixture)
+#            * ?drive_id=<drive>  → her 1 row scoped to that drive
+#            * ?drive_id=<nil>    → empty (invisible drive = anti-enum)
+#            * compose            → ?drive_id=<drive>&kind=video → zero
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/photos/resources?limit=50&kind=photo
+Authorization: Bearer {{mia_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.items" count == 1
+jsonpath "$.items[0].resource.id" == "{{shared_photo_id}}"
+
+
+GET {{base_url}}/api/photos/resources?limit=50&kind=video
+Authorization: Bearer {{mia_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.items" count == 0
+
+
+GET {{base_url}}/api/photos/resources?limit=50&drive_id={{drive_id}}
+Authorization: Bearer {{mia_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.items" count == 1
+jsonpath "$.items[0].resource.id" == "{{shared_photo_id}}"
+
+
+# Anti-enum: a drive_id mia cannot see (fully random uuid) returns
+# the same empty-page shape as a drive she CAN see that has no
+# photos. No 403/404 disclosure difference.
+GET {{base_url}}/api/photos/resources?limit=50&drive_id=00000000-0000-0000-0000-000000000000
+Authorization: Bearer {{mia_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.items" count == 0
+
+
+# Compose both axes: drive_id scopes to the shared drive AND
+# kind=video excludes all image rows → 0 items. Validates the
+# predicates stack cleanly (not an either/or).
+GET {{base_url}}/api/photos/resources?limit=50&drive_id={{drive_id}}&kind=video
+Authorization: Bearer {{mia_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.items" count == 0
+
+
+# Cursor axis mismatch — grab a cursor against kind=photo (limit=1
+# forces an over-fetch on alice's personal drive which has ≥2
+# photo rows now), then try to reuse it under kind=video.
+POST {{base_url}}/api/auth/login
+Content-Type: application/json
+{ "username": "{{username}}", "password": "{{password}}" }
+
+HTTP 200
+[Captures]
+alice_token_again: jsonpath "$.access_token"
+
+
+GET {{base_url}}/api/photos/resources?limit=1&kind=photo
+Authorization: Bearer {{alice_token_again}}
+
+HTTP 200
+[Captures]
+kind_scoped_cursor: jsonpath "$.next_cursor"
+
+
+GET {{base_url}}/api/photos/resources?limit=1&kind=video&cursor={{kind_scoped_cursor}}
+Authorization: Bearer {{alice_token_again}}
+
+HTTP 400
+[Asserts]
+jsonpath "$.error_type" == "bad_request"
+jsonpath "$.message"    contains "kind"
 
 
 # ─────────────────────────────────────────────────────────────

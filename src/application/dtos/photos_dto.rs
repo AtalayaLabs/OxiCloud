@@ -45,6 +45,44 @@ pub enum PhotoOrderBy {
     CreatedAt,
 }
 
+/// Media-kind filter for `GET /api/photos/resources` (§6).
+///
+/// Default `All` preserves the pre-filter behaviour — both image and
+/// video rows interleaved — so a client that never sends `?kind=` is
+/// unaffected. `Photo` and `Video` narrow to one mime family at the
+/// SQL layer; a client that wants a dedicated "Videos" tab stops
+/// pulling and discarding video rows on the way to the next
+/// `?limit=` worth of photos.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PhotoKind {
+    /// Default — both `image/*` and `video/*` rows. Matches the
+    /// partial covering index exactly.
+    #[default]
+    All,
+    /// `mime_type LIKE 'image/%'` only.
+    Photo,
+    /// `mime_type LIKE 'video/%'` only.
+    Video,
+}
+
+/// Filter axes passed from the handler to the repository. Both
+/// knobs opt into opt-in behaviour: `kind = All` + `drive_id = None`
+/// matches today's cross-drive feed verbatim.
+///
+/// `drive_id` carries the caller's requested restriction when
+/// present. The repo pre-filters the `accessible` CTE down to the
+/// matching drive, which naturally yields the empty page for a
+/// drive the caller cannot see — same anti-enum shape as every
+/// other OxiCloud listing on an invisible resource (no 403/404
+/// disclosure difference between "drive exists but you can't see
+/// it" and "drive doesn't exist").
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PhotosFilter {
+    pub kind: PhotoKind,
+    pub drive_id: Option<Uuid>,
+}
+
 /// Opaque keyset cursor for `GET /api/photos/resources`.
 ///
 /// Serialised as URL-safe base64url (`PageCursor` default impl). The
@@ -72,6 +110,22 @@ pub enum PhotoOrderBy {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PhotosCursor {
     pub order_by: PhotoOrderBy,
+    /// Media-kind filter the page was issued under (§6). Encoded so
+    /// a cursor from `?kind=photo` can't be reused against
+    /// `?kind=video` — mismatch → 400. `#[serde(default)]` lets
+    /// old-shape cursors from §1 (before this field existed) still
+    /// decode as `PhotoKind::All` — correct for the cross-drive +
+    /// all-media default the handler accepts without `?kind=`.
+    #[serde(default)]
+    pub kind: PhotoKind,
+    /// Drive-scope filter the page was issued under (§6b). Encoded
+    /// for the same round-trip-stability reason; a cursor from
+    /// `?drive_id=A` can't be reused against `?drive_id=B` or the
+    /// cross-drive view (`drive_id = None`). `#[serde(default)]`
+    /// keeps §1 cursors readable as `None` — correct, since those
+    /// pages were already cross-drive.
+    #[serde(default)]
+    pub drive_id: Option<Uuid>,
     /// Full-precision timestamp of the last-returned item's sort column.
     pub sort_value: DateTime<Utc>,
     /// Tie-breaker — the last-returned item's `file_id`.

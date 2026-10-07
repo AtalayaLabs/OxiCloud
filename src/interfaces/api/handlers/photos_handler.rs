@@ -13,8 +13,9 @@ use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::geo_dto::GeoBounds;
 use crate::application::dtos::grant_dto::{ResourceContentDto, ResourceTypeDto};
 use crate::application::dtos::photos_dto::{
-    PhotoOrderBy, PhotoResourceItemDto, PhotosCursor, PhotosResourcesDto,
+    PhotoKind, PhotoOrderBy, PhotoResourceItemDto, PhotosCursor, PhotosFilter, PhotosResourcesDto,
 };
+use uuid::Uuid;
 use crate::common::di::AppState;
 use crate::interfaces::api::etag::{if_none_match_matches, not_modified, with_cache_headers};
 use crate::interfaces::middleware::auth::AuthUser;
@@ -42,6 +43,15 @@ pub struct PhotosResourcesQueryParams {
     /// `COALESCE(captured_at, created_at)`; `created_at` is reserved
     /// for §3 and refused today with 400.
     pub order_by: Option<PhotoOrderBy>,
+    /// Narrow to one media family (§6). `photo` matches `image/%`,
+    /// `video` matches `video/%`, `all` (default) keeps both
+    /// interleaved — the pre-filter behaviour.
+    pub kind: Option<PhotoKind>,
+    /// Restrict the listing to one accessible drive (§6b). Omit for
+    /// the cross-drive feed. A `drive_id` the caller cannot see
+    /// returns an empty page (same anti-enum shape as a drive with
+    /// no photos) — no 403/404 disclosure difference.
+    pub drive_id: Option<Uuid>,
 }
 
 fn default_limit() -> u32 {
@@ -84,6 +94,10 @@ pub async fn list_photos_resources(
     let caller_id = auth_user.id;
     let limit = params.limit.clamp(1, 200) as i64;
     let requested_order = params.order_by.unwrap_or_default();
+    let requested_filter = PhotosFilter {
+        kind: params.kind.unwrap_or_default(),
+        drive_id: params.drive_id,
+    };
 
     // §3 reserves `order_by=created_at`; today the only accepted axis
     // is `captured_at` (the default). Reject other values with 400
@@ -103,18 +117,34 @@ pub async fn list_photos_resources(
 
     // Decode the opaque cursor. An undecodable string yields 400
     // (not "start from the top") so pagination can't drift silently
-    // on a mangled cursor. A cursor whose `order_by` disagrees with
-    // the request fails the same way — same rule as §3 later.
+    // on a mangled cursor. A cursor whose `order_by`, `kind`, or
+    // `drive_id` disagrees with the request fails the same way —
+    // §3 / §6 / §6b all share the "cursor must match the axes the
+    // request names" rule so pagination can't drift across a filter
+    // flip mid-scroll.
     let decoded = match params.cursor.as_deref() {
         None => None,
         Some(raw) => match PhotosCursor::decode(raw) {
-            Some(c) if c.order_by == requested_order => Some(c),
-            Some(_) => {
+            Some(c)
+                if c.order_by == requested_order
+                    && c.kind == requested_filter.kind
+                    && c.drive_id == requested_filter.drive_id =>
+            {
+                Some(c)
+            }
+            Some(c) => {
+                let axis = if c.order_by != requested_order {
+                    "order_by"
+                } else if c.kind != requested_filter.kind {
+                    "kind"
+                } else {
+                    "drive_id"
+                };
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(serde_json::json!({
                         "error_type": "bad_request",
-                        "message": "cursor was issued against a different order_by axis"
+                        "message": format!("cursor was issued against a different {axis} axis"),
                     })),
                 )
                     .into_response();
@@ -139,7 +169,7 @@ pub async fn list_photos_resources(
     // `CursorListResponse::from_oversized` uses on favorites and
     // recents.
     let rows = match file_read
-        .list_media_resources(caller_id, decoded.as_ref(), limit + 1)
+        .list_media_resources(caller_id, decoded.as_ref(), requested_filter, limit + 1)
         .await
     {
         Ok(r) => r,
@@ -188,6 +218,8 @@ pub async fn list_photos_resources(
             // same wall-clock second.
             PhotosCursor {
                 order_by: requested_order,
+                kind: requested_filter.kind,
+                drive_id: requested_filter.drive_id,
                 sort_value: r.sort_date_ts,
                 file_id: r.file.id().parse().unwrap_or_default(),
             }

@@ -550,8 +550,10 @@ impl FileBlobReadRepository {
         &self,
         caller_id: Uuid,
         cursor: Option<&crate::application::dtos::photos_dto::PhotosCursor>,
+        filter: crate::application::dtos::photos_dto::PhotosFilter,
         limit: i64,
     ) -> Result<Vec<MediaResourceRow>, DomainError> {
+        use crate::application::dtos::photos_dto::PhotoKind;
         // Decompose the opaque cursor into (ts, id). `None` → no
         // keyset bound at all; the predicate collapses to `$2::timestamptz
         // IS NULL` so the planner still gets a single prepared-statement
@@ -572,16 +574,34 @@ impl FileBlobReadRepository {
         } else {
             "AND $2::timestamptz IS NULL"
         };
+        // §6 — kind filter interpolated as a predicate string rather
+        // than a bound CASE WHEN: Postgres can then use the partial
+        // covering index on `(drive_id, media_sort_date DESC)` under
+        // whichever branch and apply the mime narrowing on scanned
+        // rows (the partial index already carries both mime families).
+        let kind_pred = match filter.kind {
+            PhotoKind::Photo => "AND fi.mime_type LIKE 'image/%'",
+            PhotoKind::Video => "AND fi.mime_type LIKE 'video/%'",
+            PhotoKind::All => "AND (fi.mime_type LIKE 'image/%' OR fi.mime_type LIKE 'video/%')",
+        };
         // SELECT column aliases align with `MediaResourceDbRow`'s field
         // names so `sqlx::FromRow` can deserialise by name — critical
         // because tuple `FromRow` tops out at arity 16 and this row has
         // 19 fields. Keep the alias ↔ field names in lockstep when
         // adding future photo signals.
+        // §6b — drive-scope filter: pre-restrict the accessible CTE
+        // to the requested drive. If `$5` is NULL, the predicate is
+        // a no-op (cross-drive view). If `$5` is non-null and names
+        // an accessible drive, `accessible` collapses to that one
+        // row. If `$5` is non-null and NOT in accessible, the CTE
+        // is empty → LATERAL yields no rows → anti-enum: the
+        // caller sees the same shape as a drive with no photos.
         let sql = format!(
             r#"
             WITH accessible AS MATERIALIZED (
                 SELECT drive_id AS id
                   FROM storage.caller_accessible_drives($1, 'include_in_photo_index')
+                 WHERE $5::uuid IS NULL OR drive_id = $5::uuid
             )
             SELECT top.id                                     AS id,
                    top.name                                   AS name,
@@ -623,7 +643,7 @@ impl FileBlobReadRepository {
                       FROM storage.files fi
                      WHERE fi.drive_id = a.id
                        AND NOT fi.is_trashed
-                       AND (fi.mime_type LIKE 'image/%' OR fi.mime_type LIKE 'video/%')
+                       {kind_pred}
                        {cursor_pred}
                      ORDER BY fi.media_sort_date DESC, fi.id DESC
                      LIMIT $4
@@ -641,6 +661,7 @@ impl FileBlobReadRepository {
             .bind(cursor_ts)
             .bind(cursor_id)
             .bind(limit)
+            .bind(filter.drive_id)
             .fetch_all(self.pool.as_ref())
             .await
             .map_err(|e| {
