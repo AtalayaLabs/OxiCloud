@@ -644,6 +644,60 @@ mod tests {
         assert_eq!(refine_content_type(&txt, "hello.txt", ""), "text/plain");
     }
 
+    /// Phone-camera formats, synthesised from their ISO-BMFF `ftyp` box.
+    ///
+    /// HEIC is the iPhone default and MOV its video companion, so between
+    /// them they are a large share of what a real deployment ingests.
+    /// Synthesised rather than fixtured: `is_isobmff` needs only a length,
+    /// the `ftyp` tag and a brand, so the whole case fits in a constant and
+    /// costs the repo nothing. (Real `.heic` / `.mov` / `.mp3` samples do
+    /// exist under `tests/fixtures/mime-types/`, but that directory is
+    /// gitignored — a test depending on it would pass here and fail on a
+    /// fresh clone.)
+    #[test]
+    fn phone_camera_formats_are_detected() {
+        // 0x18 = 24 bytes total: length, "ftyp", major brand, minor
+        // version, then two compatible brands.
+        let heic = b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00mif1heic";
+        assert_eq!(
+            refine_content_type(heic, "IMG_1034.heic", "application/octet-stream"),
+            "image/heif",
+            "an iPhone photo must be recognised from its brand"
+        );
+        // ⚠ Note what this does NOT do: the `.heic` extension says
+        // `image/heic`, but `image/heif` is not an envelope, so no
+        // narrowing fires and the detected spelling stands. That is one of
+        // the parent-type residuals measured against the Tika corpus — it
+        // needs a type hierarchy, not a whitelist entry. Pinned so the
+        // behaviour is deliberate rather than surprising.
+        assert_eq!(
+            refine_content_type(heic, "IMG_1034.heic", "image/heic"),
+            "image/heif"
+        );
+
+        let mov = b"\x00\x00\x00\x14ftypqt  \x00\x00\x00\x00";
+        assert_eq!(
+            refine_content_type(mov, "IMG_1035.mov", "application/octet-stream"),
+            "video/quicktime"
+        );
+    }
+
+    #[test]
+    fn mp3_is_detected_with_or_without_id3() {
+        // Tagged: an ID3v2 header. This is what a tagged music file looks
+        // like, and the one the audio-metadata extractor then parses.
+        assert_eq!(
+            refine_content_type(b"ID3\x04\x00\x00\x00\x00\x00\x00body", "track.mp3", ""),
+            "audio/mpeg"
+        );
+        // Untagged: a bare MPEG frame sync. Plenty of real files have no
+        // ID3 at all, and they must still reach `is_audio_file`.
+        assert_eq!(
+            refine_content_type(b"\xFF\xFB\x90\x64\x00\x00\x00\x00", "track.mp3", ""),
+            "audio/mpeg"
+        );
+    }
+
     /// The gates those types feed, asserted against the same strings.
     ///
     /// A prefix test looks too trivial to test until `infer` returns
