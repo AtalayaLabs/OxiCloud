@@ -2,7 +2,10 @@
 //!
 //! Priority order — **content first**:
 //! 1. Magic bytes (`infer`) on the first [`MAGIC_BYTES_LEN`] bytes. A fact
-//!    about the content, so it outranks anything the uploader asserts.
+//!    about the content, so it outranks anything the uploader asserts —
+//!    except when the signature describes only the *envelope*, in which
+//!    case the claim or the extension may narrow it. See
+//!    [`generic_envelope`] for which detections those are and why.
 //! 2. The claimed Content-Type, if specific (not `application/octet-stream`).
 //! 3. Extension-based detection (`mime_guess`).
 //! 4. The original claimed type, verbatim.
@@ -37,6 +40,86 @@ pub fn is_generic_mime(claimed: &str) -> bool {
     claimed.is_empty() || claimed == "application/octet-stream" || claimed == "binary/octet-stream"
 }
 
+/// Detections that describe the **envelope** rather than the content.
+///
+/// `infer` matches on leading bytes, and several formats share their first
+/// bytes with a more generic one that is simultaneously correct and useless:
+///
+/// * a `.docx` / `.xlsx` / `.odt` / `.epub` **is** a ZIP. `infer` tries to
+///   look inside (`matchers/doc.rs::check_msooml` walks the local file
+///   headers), but that only works while the discriminating entry falls
+///   inside the bytes we peeked — an oversized `[Content_Types].xml` or a
+///   padded archive pushes it out of reach and the answer degrades to
+///   `application/zip`.
+/// * an `.svg` **is** XML, and `infer` has no SVG matcher at all, so every
+///   SVG degrades to `text/xml`.
+///
+/// Storing the envelope loses real information: `mime_type` is served back
+/// as `Content-Type`, gates thumbnailing and metadata extraction, and is what
+/// a WebDAV client reads from `getcontenttype`. An SVG stored as `text/xml`
+/// stops being an image everywhere at once.
+///
+/// Deliberately NOT here:
+///
+/// * `text/x-shellscript` — `matchers/text.rs::is_shellscript` is just
+///   `buf[..2] == b"#!"`, so every `#!/usr/bin/env python3` is "a shell
+///   script". Wrong, but same top-level category and no effect on the wire
+///   or on server-side derivation: picking the highlighter from the
+///   extension is the frontend's job.
+/// * `text/html` — knowing something is HTML is security-relevant on the
+///   download path. That detection should stand, not be talked out of.
+/// * plain source code (`.c`, `.rs`, `.cpp`, …) — `infer` has no signature,
+///   returns `None`, and the claim/extension path below handles it exactly
+///   as it always did.
+fn generic_envelope(detected: &str) -> bool {
+    matches!(
+        detected,
+        "application/zip"
+            | "application/x-tar"
+            | "application/gzip"
+            | "application/x-ole-storage"
+            | "text/xml"
+    )
+}
+
+/// Whether `candidate` is a known specialisation of `generic` — a format
+/// that genuinely IS that envelope while saying something more useful.
+///
+/// This is the security-load-bearing half of the carve-out. It is a
+/// whitelist of *narrowings*, never an escape hatch: the bytes have already
+/// proved the envelope, so the only thing a claim or an extension can do
+/// here is name which flavour of that envelope it is. `text/html` does not
+/// specialise `application/zip`, so no claim can turn zip bytes into markup.
+fn specialises(candidate: &str, generic: &str) -> bool {
+    // Strip any `; charset=…` parameter before comparing.
+    let c = candidate.split(';').next().unwrap_or(candidate).trim();
+    match generic {
+        "application/zip" => {
+            // `+zip` structured suffix (epub, and anything future), plus the
+            // two office families, which predate the suffix convention.
+            c.ends_with("+zip")
+                || c.starts_with("application/vnd.openxmlformats-officedocument")
+                || c.starts_with("application/vnd.oasis.opendocument")
+                || matches!(
+                    c,
+                    "application/java-archive" | "application/vnd.android.package-archive"
+                )
+        }
+        // `image/svg+xml`, and any other `+xml` structured suffix.
+        "text/xml" => c.ends_with("+xml"),
+        // Legacy OLE2 compound documents, when the CLSID was not recognised.
+        "application/x-ole-storage" => matches!(
+            c,
+            "application/msword" | "application/vnd.ms-excel" | "application/vnd.ms-powerpoint"
+        ),
+        // tar and gzip have no narrowing worth preferring — `.tar.gz` maps
+        // straight back to `application/gzip`. Listed as envelopes anyway so
+        // the set reads as "what infer can emit generically", not "what we
+        // happened to handle".
+        _ => false,
+    }
+}
+
 /// Refine a claimed MIME type using magic bytes and filename extension.
 ///
 /// This is a synchronous function — the caller should already have the first
@@ -51,13 +134,34 @@ pub fn refine_content_type(buf: &[u8], filename: &str, claimed: &str) -> String 
     //    candidates are assertions by whoever uploaded it. `infer` only
     //    answers on a real signature match, so a `Some` here is
     //    high-confidence and outranks both the claim and the extension.
+    //
+    //    …with one carve-out: some signatures describe the ENVELOPE, not
+    //    the content. See `generic_envelope`.
     if let Some(kind) = infer::get(buf) {
-        return kind.mime_type().to_string();
+        let detected = kind.mime_type();
+        if generic_envelope(detected) {
+            // The claim first, then the extension — but only a candidate
+            // that genuinely IS this envelope. A client cannot use this to
+            // smuggle an unrelated type past the sniffer: the bytes have
+            // already proved the envelope, and the claim may only narrow
+            // *within* it.
+            if specialises(claimed, detected) {
+                return claimed.to_string();
+            }
+            if let Some(guess) = mime_guess::from_path(filename).first() {
+                let guess = guess.to_string();
+                if specialises(&guess, detected) {
+                    return guess;
+                }
+            }
+        }
+        return detected.to_string();
     }
 
     // 2. A specific claim beats the extension. `infer` carries no
-    //    signatures for text-shaped formats — plain text, CSV, SVG, m3u —
-    //    so silence is the normal case for a large slice of real uploads,
+    //    signatures for most text-shaped formats — plain text, CSV, m3u,
+    //    and every source language — so silence is the normal case for a
+    //    large slice of real uploads,
     //    not a red flag. Between the remaining two guesses the claim is
     //    the better one: the extension is the worse oracle in exactly the
     //    ambiguous cases (`.ts` is TypeScript far more often than it is an
@@ -271,6 +375,171 @@ mod tests {
         assert_eq!(
             refine_content_type(&[], "no-extension", "application/octet-stream"),
             "application/octet-stream"
+        );
+    }
+
+    // ── envelope detections defer to a narrowing ────────────────
+    //
+    // Regression locks for the carve-out in `generic_envelope`. Each case
+    // below broke, or would have broken, when magic bytes were promoted
+    // above the claim.
+
+    /// Minimal ZIP local-file-header signature. Enough for `infer::is_zip`,
+    /// and deliberately WITHOUT a `word/` entry — that is the case where
+    /// OOXML detection degrades to `application/zip`, which is exactly the
+    /// state this carve-out exists for.
+    const ZIP: &[u8] = b"PK\x03\x04\x14\x00\x00\x00\x08\x00";
+
+    const SVG: &[u8] = br#"<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"></svg>"#;
+
+    #[test]
+    fn zip_envelope_defers_to_an_ooxml_claim() {
+        // The regression: a browser DOES send the real OOXML type for a
+        // .docx. Before magic-first that claim was kept; after, `is_zip`
+        // outranked it and the file was stored as a bare archive.
+        assert_eq!(
+            refine_content_type(
+                ZIP,
+                "report.docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            ),
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        );
+    }
+
+    #[test]
+    fn zip_envelope_defers_to_the_extension_when_the_client_says_nothing() {
+        for (name, expected) in [
+            (
+                "report.docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ),
+            (
+                "sheet.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ),
+            (
+                "deck.pptx",
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            ),
+            ("notes.odt", "application/vnd.oasis.opendocument.text"),
+            ("book.epub", "application/epub+zip"),
+        ] {
+            assert_eq!(
+                refine_content_type(ZIP, name, "application/octet-stream"),
+                expected,
+                "{name} should narrow the zip envelope"
+            );
+        }
+    }
+
+    #[test]
+    fn svg_is_an_image_not_xml() {
+        // `infer` has no SVG matcher, so every SVG hits `is_xml` and comes
+        // back `text/xml`. Stored that way it stops being an image: no
+        // thumbnail, absent from the photos grid, wrong Content-Type.
+        assert_eq!(
+            refine_content_type(SVG, "logo.svg", "image/svg+xml"),
+            "image/svg+xml"
+        );
+        assert_eq!(
+            refine_content_type(SVG, "logo.svg", "application/octet-stream"),
+            "image/svg+xml"
+        );
+    }
+
+    #[test]
+    fn a_plain_archive_stays_an_archive() {
+        // The inverse, and the whole reason the rule is a whitelist of
+        // narrowings rather than "the extension wins for containers".
+        assert_eq!(
+            refine_content_type(ZIP, "backup.zip", "application/zip"),
+            "application/zip"
+        );
+        assert_eq!(
+            refine_content_type(ZIP, "backup.zip", "application/octet-stream"),
+            "application/zip"
+        );
+        assert_eq!(
+            refine_content_type(ZIP, "archive", "application/octet-stream"),
+            "application/zip",
+            "nothing to narrow with"
+        );
+    }
+
+    #[test]
+    fn a_real_xml_file_stays_xml() {
+        let xml = br#"<?xml version="1.0"?><note><to>you</to></note>"#;
+        assert_eq!(
+            refine_content_type(xml, "data.xml", "application/octet-stream"),
+            "text/xml"
+        );
+    }
+
+    #[test]
+    fn the_narrowing_cannot_smuggle_an_unrelated_type() {
+        // ⚠ The security property. `specialises` is a whitelist: a claim may
+        // only name a flavour of the envelope the BYTES already proved. If
+        // this ever starts returning text/html, the magic-first fix has been
+        // undone and a crafted upload can choose how it is served.
+        assert_eq!(
+            refine_content_type(ZIP, "payload.zip", "text/html"),
+            "application/zip"
+        );
+        assert_eq!(
+            refine_content_type(SVG, "page.xml", "text/html"),
+            "text/xml"
+        );
+    }
+
+    #[test]
+    fn non_envelope_detections_never_defer_to_the_extension() {
+        // ⚠ The other half of that property. PNG is not an envelope, so the
+        // filename gets no say — otherwise the carve-out would hand the
+        // extension back the authority the magic-first change took from the
+        // claim, and `evil.docx` full of PNG bytes would be served as a
+        // document.
+        let png = b"\x89PNG\r\n\x1a\n";
+        assert_eq!(
+            refine_content_type(png, "evil.docx", "text/html"),
+            "image/png"
+        );
+        assert_eq!(
+            refine_content_type(png, "evil.svg", "image/svg+xml"),
+            "image/png"
+        );
+    }
+
+    #[test]
+    fn source_code_is_untouched_by_all_of_this() {
+        // `infer` has no signature for C/C++/Rust/Go, so the claim and then
+        // the extension decide exactly as before magic-first. Named as a
+        // test because "did we break source files?" is the first question
+        // anyone asks about a content sniffer.
+        assert_eq!(
+            refine_content_type(
+                b"fn main() { println!(\"hi\"); }\n",
+                "main.rs",
+                "text/x-rust"
+            ),
+            "text/x-rust"
+        );
+        assert_eq!(
+            refine_content_type(b"#include <stdio.h>\nint main(){}\n", "a.c", "text/x-c"),
+            "text/x-c"
+        );
+    }
+
+    #[test]
+    fn a_shebang_is_left_to_infer_deliberately() {
+        // `is_shellscript` is `buf[..2] == b"#!"`, so a Python script reads
+        // as a shell script. Not corrected here: same top-level category, no
+        // effect on the wire or on server-side derivation, and picking the
+        // highlighter from the extension is the frontend's job. Asserted so
+        // the choice is visible rather than accidental.
+        assert_eq!(
+            refine_content_type(b"#!/usr/bin/env python3\nprint(1)\n", "tool.py", ""),
+            "text/x-shellscript"
         );
     }
 

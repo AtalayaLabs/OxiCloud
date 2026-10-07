@@ -342,6 +342,67 @@ if [[ ! -s "$OVER_CAP_FIXTURE" ]]; then
   dd if=/dev/zero of="$OVER_CAP_FIXTURE" bs=1024 count=5120 status=none
 fi
 
+# upload_mime_sniffing.hurl needs real ZIP-family archives. Generated
+# rather than committed for the same reason as above, and because the
+# interesting one has to be built to a precise shape (see below).
+SNIFF_FIXTURE="$REPO_ROOT/tests/fixtures/sniff-padded.docx"
+if [[ ! -s "$SNIFF_FIXTURE" ]]; then
+  log "Generating MIME-sniffing archive fixtures → $REPO_ROOT/tests/fixtures/sniff-*"
+  python3 - "$REPO_ROOT/tests/fixtures" <<'PYEOF'
+import sys, zipfile
+from pathlib import Path
+
+out = Path(sys.argv[1])
+out.mkdir(parents=True, exist_ok=True)
+
+# ── sniff-padded.docx — the case the carve-out exists for ──────────────
+#
+# A .docx IS a zip. `infer` tries to look inside: check_msooml walks the
+# local file headers looking for a `word/` entry. That works only while
+# the entry falls inside the bytes we peeked (MAGIC_BYTES_LEN = 8 KiB).
+#
+# This archive is a VALID docx whose [Content_Types].xml is padded past
+# that window with ZIP_STORED (deflate would squash the padding back to
+# nothing and defeat the point), so `word/document.xml` lands beyond the
+# peek and detection degrades to application/zip. Without the
+# generic-envelope carve-out in common/mime_detect.rs the server stores
+# it as a bare archive.
+z = zipfile.ZipFile(out / "sniff-padded.docx", "w", zipfile.ZIP_DEFLATED)
+z.writestr(
+    zipfile.ZipInfo("[Content_Types].xml"),
+    '<?xml version="1.0"?><Types xmlns="x">' + " " * 20000 + "</Types>",
+    compress_type=zipfile.ZIP_STORED,
+)
+z.writestr("_rels/.rels", '<?xml version="1.0"?><Relationships/>')
+z.writestr("word/document.xml", '<?xml version="1.0"?><document/>')
+z.close()
+
+# ── sniff-plain.zip — the inverse. Must STAY application/zip ──────────
+z = zipfile.ZipFile(out / "sniff-plain.zip", "w", zipfile.ZIP_DEFLATED)
+z.writestr("readme.txt", "just an archive\n")
+z.close()
+
+# ── sniff-book.epub — mimetype first and STORED, per the EPUB spec,
+# which exists precisely so sniffers can read it. infer should get this
+# one unaided; the assertion guards the day it cannot.
+z = zipfile.ZipFile(out / "sniff-book.epub", "w", zipfile.ZIP_DEFLATED)
+z.writestr(
+    zipfile.ZipInfo("mimetype"), "application/epub+zip",
+    compress_type=zipfile.ZIP_STORED,
+)
+z.writestr("META-INF/container.xml", '<?xml version="1.0"?><container/>')
+z.close()
+
+# ── sniff-logo.svg — starts with <?xml, so infer answers text/xml.
+# There is no SVG matcher in infer at all.
+(out / "sniff-logo.svg").write_text(
+    '<?xml version="1.0" encoding="UTF-8"?>\n'
+    '<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4">'
+    '<rect width="4" height="4" fill="#0a0"/></svg>\n'
+)
+PYEOF
+fi
+
 # ── 4. Run Hurl tests ─────────────────────────────────────────────────────────
 
 log "Running Hurl tests..."
@@ -412,6 +473,7 @@ HURL_FILES=( \
   "$API_DIR/transcode_cache.hurl" \
   "$API_DIR/cache_header.hurl" \
   "$API_DIR/broken_pdf_resilience.hurl" \
+  "$API_DIR/upload_mime_sniffing.hurl" \
   "$API_DIR/transcode_import.hurl" \
   "$API_DIR/dedup_admin_gate.hurl" \
   "$API_DIR/admin_jobs.hurl" \

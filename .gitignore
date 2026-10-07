@@ -132,6 +132,10 @@ tests/caldav/server.log
 # Test fixtures generated on-the-fly by tests/api/run.sh
 tests/fixtures/chunk-over-cap-*.bin
 tests/fixtures/rechunk-legacy-*.bin
+tests/fixtures/sniff-*.docx
+tests/fixtures/sniff-*.epub
+tests/fixtures/sniff-*.zip
+tests/fixtures/sniff-*.svg
 wasm/oxicloud-hash/target/
 
 # devenv / direnv
