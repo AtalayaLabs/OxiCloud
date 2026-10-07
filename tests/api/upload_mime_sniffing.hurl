@@ -89,13 +89,35 @@ docx_id: jsonpath "$.id"
 jsonpath "$.mime_type" == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
-# It must survive the round trip, not just the create response.
+# It must survive the round trip — and this is the assertion that
+# actually matters, because it checks the stored type on the WIRE.
+#
+# `mime_type` is not merely a label: `download_file` sets it as the
+# response `Content-Type` (`file_handler.rs:1025`), which is what decides
+# whether a browser renders or downloads the bytes. Asserting the header
+# therefore tests the security-relevant property directly, rather than a
+# JSON field that happens to agree with it.
+#
+# Two dead ends, recorded so nobody retries them:
+#   * `GET /api/files/{id}` with a jsonpath assert — that endpoint
+#     STREAMS THE CONTENT, so the assert runs against docx bytes and
+#     fails with "could not decode response body with charset 'UTF-8'".
+#   * `GET /api/files/{id}/metadata` — that is the EXIF/media metadata
+#     (`storage.file_metadata`: captured_at, GPS, camera, dimensions).
+#     It carries no `mime_type` at all, hence `actual: none`. There is no
+#     single-file endpoint that returns it as JSON; the listing
+#     (`GET /api/files?folder_id=…`) is the only JSON surface, as
+#     files-folders.hurl uses.
+#
+# `contains` rather than `==`: the header may carry a `; charset=…`
+# parameter, and the OOXML type is 71 characters. The exact string is
+# asserted once above, where it documents the expectation.
 GET {{base_url}}/api/files/{{docx_id}}
 Authorization: Bearer {{token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.mime_type" == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+header "Content-Type" contains "wordprocessingml.document"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -110,7 +132,7 @@ file: file,fixtures/sniff-padded.docx; application/octet-stream
 
 HTTP 201
 [Asserts]
-jsonpath "$.mime_type" == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+jsonpath "$.mime_type" endsWith "wordprocessingml.document"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -181,6 +203,18 @@ file: file,fixtures/sniff-logo.svg; application/octet-stream
 HTTP 201
 [Asserts]
 jsonpath "$.mime_type" == "image/svg+xml"
+
+
+# On the wire too. This is the case where the served type matters most:
+# stored as `text/xml` an SVG is not an image to anything downstream —
+# no thumbnail, no tile in the photos grid, and a `Content-Type` that
+# tells the browser it is a document rather than a picture.
+GET {{base_url}}/api/files/{{svg_id}}
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+header "Content-Type" contains "image/svg+xml"
 
 
 # ─────────────────────────────────────────────────────────────
