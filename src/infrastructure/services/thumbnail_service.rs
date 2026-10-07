@@ -331,6 +331,21 @@ impl ThumbnailService {
     }
 
     /// Check if a file is an image that can have thumbnails
+    /// Whether a thumbnail can be rendered for this type.
+    ///
+    /// This list is not a policy choice — it mirrors the decoders actually
+    /// compiled in: `image = { features = ["jpeg", "png", "gif", "webp"] }`
+    /// in `Cargo.toml`. Keep the two in step; widening this alone turns a
+    /// clean skip into a decode error.
+    ///
+    /// **HEIF/HEIC and AVIF are absent deliberately.** The `image` crate
+    /// has no decoder for either, so iPhone photos get no thumbnail and no
+    /// tile in the Photos grid. Their EXIF *does* work — nom-exif parses
+    /// HEIF, so capture date and GPS come through — so the file is not
+    /// invisible, just un-previewed. Deferred pending a **pure-Rust**
+    /// decoder; `libheif-rs` was declined (C toolchain + LGPL). Full
+    /// reasoning and the two rejected alternatives:
+    /// `docs/plan/Photos-People-Places.md` §0.6.
     pub fn is_supported_image(mime_type: &str) -> bool {
         matches!(
             mime_type,
