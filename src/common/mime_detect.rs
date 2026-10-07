@@ -602,6 +602,70 @@ mod tests {
         );
     }
 
+    /// The everyday types, against real committed fixtures.
+    ///
+    /// Everything else in this module tests synthesised byte sequences,
+    /// which is right for edge cases but proves nothing about the files
+    /// people actually store. These are real images, a real H.264 video,
+    /// a real PDF and a real WAV already in the repo for other suites.
+    ///
+    /// Video and audio earn their place here beyond tidiness: the stored
+    /// type is a GATE on derived content.
+    /// `ThumbnailRefreshHook::on_file_created` consults
+    /// `is_supported_video(content_type)`, `AudioMetadataService` consults
+    /// `is_audio_file(content_type)`, and `MediaMetadataService::handles()`
+    /// gates on the image/video prefixes. Get the type wrong and those
+    /// features do not fail — they silently never run, which is the
+    /// failure mode nobody notices until a user asks why their music has
+    /// no titles.
+    ///
+    /// Reads only `MAGIC_BYTES_LEN`, so the 2.7 MB video costs nothing.
+    #[test]
+    fn everyday_types_from_real_fixtures() {
+        // `claimed` is empty on purpose: this asserts what the BYTES say,
+        // with no help from a client.
+        for (path, expected) in [
+            ("tests/fixtures/green-image.png", "image/png"),
+            ("tests/fixtures/dedup-test.jpg", "image/jpeg"),
+            ("tests/fixtures/oxicloud-logo.jpg", "image/jpeg"),
+            ("tests/fixtures/free_video_over_1MB.mp4", "video/mp4"),
+            ("tests/fixtures/broken.pdf", "application/pdf"),
+            ("tests/e2e/fixtures/tone.wav", "audio/x-wav"),
+        ] {
+            let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("{path}: {e}"));
+            let head = &bytes[..bytes.len().min(MAGIC_BYTES_LEN)];
+            let name = Path::new(path).file_name().unwrap().to_str().unwrap();
+            assert_eq!(refine_content_type(head, name, ""), expected, "{path}");
+        }
+
+        // Plain text has no signature, so the extension carries it — the
+        // single most common upload on any deployment.
+        let txt = std::fs::read("tests/fixtures/hello.txt").expect("hello.txt");
+        assert_eq!(refine_content_type(&txt, "hello.txt", ""), "text/plain");
+    }
+
+    /// The gates those types feed, asserted against the same strings.
+    ///
+    /// A prefix test looks too trivial to test until `infer` returns
+    /// `audio/x-wav` rather than `audio/wav` and someone has written
+    /// `== "audio/mpeg"` somewhere. This pins that the x- forms still
+    /// satisfy the predicates the lifecycle hooks use.
+    #[test]
+    fn everyday_types_satisfy_the_derivation_gates() {
+        for audio in ["audio/x-wav", "audio/mpeg", "audio/x-flac", "audio/mp4"] {
+            assert!(
+                audio.starts_with("audio/"),
+                "{audio} must pass AudioMetadataService::is_audio_file"
+            );
+        }
+        for visual in ["image/png", "image/jpeg", "video/mp4", "image/heif"] {
+            assert!(
+                visual.starts_with("image/") || visual.starts_with("video/"),
+                "{visual} must pass MediaMetadataService::handles"
+            );
+        }
+    }
+
     /// Audit `refine_content_type` against a real-world corpus.
     ///
     /// `#[ignore]`d and opt-in: it needs Apache Tika's `test-documents`
