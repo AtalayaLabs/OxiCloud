@@ -223,6 +223,35 @@ from "skipped" to "decode error". `image/avif` is absent for the same reason.
   when a maintained crate can decode HEIF/HEIC stills (the AVIF side is
   closer than HEIC's HEVC-in-HEIF).
 
+##### Candidates evaluated
+
+**`heic` (imazen/heic) — rejected 2026-10-07 on licence.**
+`AGPL-3.0-only OR LicenseRef-Imazen-Commercial`. AGPL is disqualifying
+per AGENTS.md, and worse than GPL for this project specifically: §13
+triggers on *network interaction*, which is what a self-hosted server
+serving thumbnails over HTTP does. The commercial option (they advertise
+$1 startup licences) does not rescue it — OxiCloud is self-hosted, so
+**every operator** would need their own licence, which is exactly the
+"no feature gated behind a licence key" prohibition, pushed onto users.
+
+Worth knowing it is otherwise the strongest candidate seen, so nobody
+re-evaluates it hoping the terms changed without checking: pure Rust,
+`#![forbid(unsafe_code)]`, FFI isolated in optional subcrates, and it
+decodes **HEVC-in-HEIF natively** — the hard part that other pure-Rust
+efforts skip in favour of AVIF only. 49/49 conformance vectors.
+
+Even setting licence aside it would be early for us: 0.1.6, first
+released 2026-03-29, 0.2.0 yanked, 12 GitHub stars and a single vendor.
+118/162 HEIF corpus files decode (~27% fail), HEVC **I-frames only**,
+and no PQ/HLG EOTF — "callers handle tone-mapping", which modern iPhones
+need since they shoot HDR HEIC.
+
+Re-check criteria for any future candidate, in order: (1) licence
+MIT/Apache/BSD-compatible — not AGPL, not dual-commercial; (2) no C
+toolchain in the default build; (3) decodes HEVC-in-HEIF stills, not
+just AVIF; (4) handles HDR transfer functions or we accept writing
+tone-mapping.
+
 Until then: no code change, and `is_supported_image` carries a pointer
 here so the next reader finds the decision rather than re-deriving it.
 
