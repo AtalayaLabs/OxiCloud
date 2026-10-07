@@ -117,13 +117,23 @@ pub struct BackendMigrationService {
     /// own `_ROOT_DIR`. Same fallback rule as boot
     /// (`build_entry_backend`).
     storage_path_fallback: PathBuf,
-    /// Shared `AppState.migration_readonly` handle. Handler flips
-    /// this atomic (and persists to DB) at run start once all
-    /// guards pass, so writes across the whole app get refused by
-    /// the AuthZ short-circuit for the duration of the copy. On
-    /// `RunOutcome::Completed`, the handler hot-swaps the runtime
-    /// backend + clears this flag in one step — no restart.
+    /// Shared `AppState.migration_readonly` handle — the AuthZ
+    /// fast-path mirror of the typed gate below. Kept here only so
+    /// legacy call sites (the admin cancel path's clear-check in
+    /// `admin_handler.rs`) can still read the atomic directly.
+    /// Writes to it flow EXCLUSIVELY through `backend_write_gate`;
+    /// callers that previously `.store(true)` or `.store(false)` on
+    /// this atomic now call the gate's `try_acquire(Migration{..})`
+    /// or `release()`.
     migration_readonly: Arc<AtomicBool>,
+    /// Typed-reason gate. The migration service holds this with
+    /// `BackendWriteLockReason::Migration { source, target }` from
+    /// engage to terminal release. One-shot: a second migration
+    /// cannot start while the gate is held (not even by a different
+    /// holder kind), returning the current reason to the admin
+    /// endpoint so the operator sees "already locked by External" /
+    /// "already locked by Rotation" in the 409.
+    backend_write_gate: Arc<crate::application::services::backend_write_gate::BackendWriteGate>,
     /// Typed handle to the runtime blob-backend wrapper. The
     /// migration handler calls `.swap()` on this at cutover so
     /// subsequent user writes go to the target entry without a
@@ -149,6 +159,7 @@ impl BackendMigrationService {
         storage_entries: Vec<NamedStorageEntry>,
         storage_path_fallback: PathBuf,
         migration_readonly: Arc<AtomicBool>,
+        backend_write_gate: Arc<crate::application::services::backend_write_gate::BackendWriteGate>,
         blob_backend_hot_swap: Arc<
             crate::infrastructure::services::swappable_blob_backend::SwappableBlobBackend,
         >,
@@ -163,6 +174,7 @@ impl BackendMigrationService {
             storage_entries,
             storage_path_fallback,
             migration_readonly,
+            backend_write_gate,
             blob_backend_hot_swap,
             migration_progress,
         }
@@ -459,26 +471,77 @@ impl RecoverableJobHandler for BackendMigrationService {
             return RunOutcome::from_domain_error(None, "target backend init", &e);
         }
 
-        // All guards passed. Engage server-wide read-only mode for
+        // All guards passed. Engage the backend write-lock gate for
         // the duration of the copy so new writes can't create blobs
-        // the migration walk has already stepped past. Both DB and
-        // in-memory atomic get flipped in lock-step. Idempotent under
-        // resume — the row is already `true` from the original open
-        // (survived a restart via slice 4's boot seed), but rewriting
-        // it doesn't hurt.
+        // the migration walk has already stepped past, AND the
+        // backend-writer jobs (reclaim/rechunk/*_import/etc.) defer
+        // their next tick instead of racing the walk. Both the DB
+        // bool AND the typed holder row get written in lock-step with
+        // the in-memory gate.
+        //
+        // Idempotent under resume — the gate may already be held
+        // with the same reason from the original open (survived a
+        // restart via the boot seed). `try_acquire` fails on
+        // already-held, so we first check for exact-reason
+        // self-held and skip the engage in that case; a different
+        // holder (`External` lock from the admin UI) returns 409 —
+        // operator must release it first.
         //
         // A DB persist failure aborts before any copy — we won't
-        // silently proceed with writes-allowed. If the atomic write
+        // silently proceed with writes-allowed. If the gate write
         // succeeded but DB failed we'd still have writes-off in this
         // process, but a restart mid-migration would lose it. Fail
         // early instead so operators see the actual DB problem.
-        if let Err(e) = persist_migration_readonly(self.pool.as_ref(), true).await {
+        use crate::application::services::backend_write_gate::BackendWriteLockReason;
+        let want = BackendWriteLockReason::Migration {
+            source: active_backend_name.clone(),
+            target: target_name.clone(),
+        };
+        let already_self_held = matches!(
+            self.backend_write_gate.held_by(),
+            Some(BackendWriteLockReason::Migration { source, target })
+                if source == active_backend_name && target == target_name
+        );
+        if !already_self_held && let Err(e) = self.backend_write_gate.try_acquire(want.clone()) {
             return RunOutcome::Failed {
                 message: format!(
-                    "engage migration_readonly (persist): {e} — refusing to copy without the \
-                     write freeze in place"
+                    "cannot engage migration readonly: backend write-lock already \
+                     held by {} — release it before starting a migration",
+                    e.0.kind()
                 ),
             };
+        }
+        if let Err(e) = persist_migration_readonly(self.pool.as_ref(), true).await {
+            // Roll back the in-memory gate so the two don't drift.
+            self.backend_write_gate.release();
+            return RunOutcome::Failed {
+                message: format!(
+                    "engage migration_readonly (persist bool): {e} — refusing to copy without \
+                     the write freeze in place"
+                ),
+            };
+        }
+        if let Err(e) =
+            crate::infrastructure::services::entry_backend::persist_backend_write_lock_holder(
+                self.pool.as_ref(),
+                Some(&want),
+            )
+            .await
+        {
+            // Bool persisted but typed holder didn't. The AuthZ
+            // short-circuit works off the bool so writes are still
+            // refused, but a restart loses the specific "which
+            // migration" reason and falls back to legacy. Log and
+            // continue — the correctness invariant (writes refused)
+            // holds, only the operator UX degrades.
+            tracing::warn!(
+                target: "audit",
+                event = "storage.backend_write_lock.holder_persist_failed",
+                error = %e,
+                reason = "migration",
+                "typed holder write failed after bool succeeded; a restart would reseed as \
+                 Migration(legacy) instead of the real pair"
+            );
         }
         self.migration_readonly.store(true, Ordering::Relaxed);
         tracing::info!(
@@ -1045,6 +1108,24 @@ impl BackendMigrationService {
                  admin_settings is corrected"
             );
         }
+        if let Err(e) =
+            crate::infrastructure::services::entry_backend::persist_backend_write_lock_holder(
+                self.pool.as_ref(),
+                None,
+            )
+            .await
+        {
+            tracing::warn!(
+                target: "oxicloud::migration",
+                event = "storage.backend_write_lock.release_persist_failed",
+                run_id = %store.run_id(),
+                error = %e,
+                "typed holder NULL persist failed on terminal cancel; the bool was cleared \
+                 so writes resume this process, but a restart will reseed the gate until \
+                 admin_settings is corrected"
+            );
+        }
+        self.backend_write_gate.release();
         self.migration_readonly.store(false, Ordering::Relaxed);
         tracing::info!(
             target: "audit",
@@ -1115,6 +1196,13 @@ impl BackendMigrationService {
             let readonly_persisted = persist_migration_readonly(self.pool.as_ref(), false)
                 .await
                 .is_ok();
+            let _ =
+                crate::infrastructure::services::entry_backend::persist_backend_write_lock_holder(
+                    self.pool.as_ref(),
+                    None,
+                )
+                .await;
+            self.backend_write_gate.release();
             self.migration_readonly.store(false, Ordering::Relaxed);
             {
                 let mut guard = self
@@ -1187,6 +1275,12 @@ impl BackendMigrationService {
         let readonly_persisted = persist_migration_readonly(self.pool.as_ref(), false)
             .await
             .is_ok();
+        let _ = crate::infrastructure::services::entry_backend::persist_backend_write_lock_holder(
+            self.pool.as_ref(),
+            None,
+        )
+        .await;
+        self.backend_write_gate.release();
         self.migration_readonly.store(false, Ordering::Relaxed);
         // Clear the shared progress snapshot so the server-status
         // header stops emitting on subsequent requests. Guard held

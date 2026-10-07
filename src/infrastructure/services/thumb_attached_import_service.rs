@@ -196,6 +196,13 @@ impl RecoverableJobHandler for ThumbAttachedImport {
         PARAMS
     }
 
+    fn is_backend_writer(&self) -> bool {
+        // PUTs attached-blob satellite thumbnails into the backend.
+        // Defer while any migration / backup / rotation / External
+        // lock is in place.
+        true
+    }
+
     async fn count_total(&self) -> Option<u64> {
         let mut total = 0u64;
         for size in ThumbnailSize::all() {

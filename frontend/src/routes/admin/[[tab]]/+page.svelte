@@ -46,6 +46,14 @@
 		testOidc,
 		testStorage,
 		rotateStorageEntry,
+		getBackendWriteLock,
+		acquireBackendWriteLock,
+		releaseBackendWriteLock,
+		type BackendWriteLockStatus,
+		listOpsBanners,
+		createOpsBanner,
+		deleteOpsBanner,
+		type OpsBannerInput,
 		createExternalMount,
 		deleteExternalMount,
 		listExternalMounts,
@@ -81,7 +89,14 @@
 		searchRecipients,
 		type Recipient
 	} from '$lib/api/endpoints/recipients';
-	import type { FullUser, Drive, DriveMember, SessionSummary, User } from '$lib/api/types';
+	import type {
+		FullUser,
+		Drive,
+		DriveMember,
+		SessionSummary,
+		User,
+		OpsBanner
+	} from '$lib/api/types';
 	import { shortUserAgent } from '$lib/utils/userAgent';
 	import { triggerJob } from '$lib/api/endpoints/adminJobs';
 	import { serverConfig } from '$lib/stores/serverConfig.svelte';
@@ -89,13 +104,17 @@
 	import AdminJobsPanel from '$lib/components/AdminJobsPanel.svelte';
 	import AdminDrivePoliciesPanel from '$lib/components/AdminDrivePoliciesPanel.svelte';
 	import Icon from '$lib/icons/Icon.svelte';
+	import {
+		setCacheRecommended,
+		setNotificationSinkMissing
+	} from '$lib/stores/adminAdvisories.svelte';
 	import ActionMenu, { type ActionMenuItem } from '$lib/components/ActionMenu.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import OwnerAvatarStack from '$lib/components/OwnerAvatarStack.svelte';
 	import DrivePoliciesModal from '$lib/components/DrivePoliciesModal.svelte';
 	import QuotaEditor from '$lib/components/QuotaEditor.svelte';
 	import UserVignette from '$lib/components/UserVignette.svelte';
-	import { t } from '$lib/i18n/index.svelte';
+	import { t, LANGUAGES } from '$lib/i18n/index.svelte';
 	import { session } from '$lib/stores/session.svelte';
 	import { drives as drivesStore } from '$lib/stores/drives.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
@@ -204,6 +223,13 @@
 		// Was 'smtp'. Renamed when the webhook joined it: the page is about
 		// every way the instance reaches someone, not one transport.
 		| 'notification'
+		// Runtime-state controls grouped: the backend write-lock
+		// (moved from /admin/storage), the metadata re-extract
+		// backfills (moved from /admin/dashboard), and future ops
+		// banners / scheduled downtime windows. "Operations I'm
+		// doing to the server right now" — distinct from "state the
+		// server is in", which is where /admin/dashboard reads.
+		| 'maintenance'
 		| 'jobs';
 
 	const VALID_TABS: readonly Tab[] = [
@@ -217,6 +243,7 @@
 		'oidc',
 		'storage',
 		'notification',
+		'maintenance',
 		'jobs'
 	];
 
@@ -298,6 +325,8 @@
 				return t('admin.storage_tab', 'Storage');
 			case 'notification':
 				return t('admin.notifications', 'Notifications');
+			case 'maintenance':
+				return t('admin.maintenance_tab', 'Maintenance');
 			case 'jobs':
 				return t('admin.jobs.tab', 'Background tasks');
 		}
@@ -430,6 +459,12 @@
 		dashboardError = null;
 		try {
 			dashboard = await getDashboard();
+			// Mirror the advisory flags into the shared store so
+			// AppShell's global banner stack can render them.
+			// AppShell gates each on `isAdminSection && isAdmin` —
+			// the flags only have visible effect on admin routes.
+			setCacheRecommended(dashboard.storage_cache_recommended === true);
+			setNotificationSinkMissing(dashboard.notification_sink_missing === true);
 		} catch (e) {
 			dashboardError = errorMessage(e);
 		}
@@ -757,6 +792,74 @@
 			await loadMigration();
 		} catch (e) {
 			reportError(e);
+		}
+	}
+
+	// ── Backend write-lock (operator-driven External variant) ──
+	// Lives on the Storage tab beside the migration controls — same
+	// gate underneath; the UI exposes "Lock / Unlock" so an admin
+	// running an external backup (restic / borg / snapshot) can tell
+	// OxiCloud to quiesce without starting a migration they don't
+	// want.
+	let writeLockStatus: BackendWriteLockStatus | null = $state(null);
+	let writeLockLabel = $state('');
+	let writeLockBusy = $state(false);
+	// Resolved display name for an External lock's `admin_id`.
+	// Lazily looked up via `getUserAdmin` (which caches per-id at
+	// module scope, so a card re-render doesn't re-fetch). `null`
+	// when the lookup fails or isn't applicable (non-External
+	// holder) — the template falls back to the raw UUID in that
+	// case, so the "who" is always visible even if the account
+	// row disappeared since the lock was engaged.
+	let writeLockHolderName: string | null = $state(null);
+	async function loadWriteLock() {
+		try {
+			writeLockStatus = await getBackendWriteLock();
+			// Resolve admin_id → username for the only variant that
+			// carries one. Fire-and-forget — the template renders the
+			// UUID in the meantime, swap in the username when it
+			// resolves. A rejected lookup leaves the UUID visible,
+			// which is still useful for cross-reference against the
+			// audit log.
+			writeLockHolderName = null;
+			if (writeLockStatus?.holder?.kind === 'external') {
+				const adminId = writeLockStatus.holder.admin_id;
+				try {
+					const full = await getUserAdmin(adminId);
+					writeLockHolderName = full?.user.username ?? null;
+				} catch {
+					writeLockHolderName = null;
+				}
+			}
+		} catch {
+			// Non-fatal — the card renders a loading placeholder; a
+			// transient 5xx shouldn't knock the whole tab out.
+			writeLockStatus = null;
+			writeLockHolderName = null;
+		}
+	}
+	async function doLockAcquire() {
+		if (!writeLockLabel.trim()) return;
+		writeLockBusy = true;
+		try {
+			await acquireBackendWriteLock(writeLockLabel.trim());
+			writeLockLabel = '';
+			await Promise.all([loadWriteLock(), loadStorage()]);
+		} catch (e) {
+			reportError(e);
+		} finally {
+			writeLockBusy = false;
+		}
+	}
+	async function doLockRelease() {
+		writeLockBusy = true;
+		try {
+			await releaseBackendWriteLock();
+			await Promise.all([loadWriteLock(), loadStorage()]);
+		} catch (e) {
+			reportError(e);
+		} finally {
+			writeLockBusy = false;
 		}
 	}
 
@@ -1140,6 +1243,185 @@
 			reportError(e);
 		} finally {
 			audioBusy = false;
+		}
+	}
+
+	// ── Ops banners ──────────────────────────────────────────────
+	// Admin list + create form. Edit MVP is "delete and recreate" —
+	// an operator who wants to tweak severity on a live banner that
+	// users have dismissed can post a fresh row (new id ⇒ un-dismisses
+	// everyone) instead of discovering a stale dismissal in the
+	// field. Add inline edit later if operators actually ask.
+	let banners: OpsBanner[] = $state([]);
+	let bannersBusy = $state(false);
+	let bannersError: string | null = $state(null);
+	// Form state. Severity + starts_at are scalar; the body is a
+	// dynamic list of {locale, text} slots so an operator can add as
+	// many translations as they want (backend caps at
+	// MAX_LOCALES_PER_BANNER = 20). Default slots:
+	//   [0] "en" — the canonical fallback; always present, cannot
+	//       be removed from the UI.
+	//   [1] admin's `preferred_locale` if different from `en`, or
+	//       `fr` as a sensible default.
+	// Operators stack more via a locale-picker select rendered when
+	// `+ Add language` is clicked.
+	let newBannerSeverity: 'warning' | 'notification' = $state('warning');
+	let newBannerStartsAt = $state('');
+	let newBannerExpiresAt = $state('');
+	/** Compute the default second-slot locale. Called once at form
+	 *  init (not reactive) so it doesn't jump around if the admin
+	 *  changes their locale while the form is open. */
+	function defaultSecondLocale(): string {
+		const pref = session.me?.full.preferred_locale ?? '';
+		const bare = pref.split('-')[0];
+		if (bare && bare !== 'en') return bare;
+		return 'fr';
+	}
+	let newBannerBodies: Array<{ locale: string; text: string }> = $state([
+		{ locale: 'en', text: '' },
+		{ locale: defaultSecondLocale(), text: '' }
+	]);
+	/** Open-slot picker — when the admin clicks "+ Add language",
+	 *  this flips to a select showing the locales not yet in the
+	 *  list. `null` = picker closed. */
+	let addingLocale: string | null = $state(null);
+	/** Locale codes still available to add — excludes anything
+	 *  already in `newBannerBodies`. Derived so the picker auto-
+	 *  updates on add/remove. */
+	const availableLocalesToAdd = $derived(
+		LANGUAGES.filter((l) => !newBannerBodies.some((b) => b.locale === l.code))
+	);
+	function openAddLanguage() {
+		const first = availableLocalesToAdd[0];
+		if (first) addingLocale = first.code;
+	}
+	function confirmAddLanguage() {
+		if (!addingLocale) return;
+		newBannerBodies = [...newBannerBodies, { locale: addingLocale, text: '' }];
+		addingLocale = null;
+	}
+	function removeLanguageAt(idx: number) {
+		// "en" at index 0 cannot be removed — it's the canonical
+		// fallback the server's locale-pick function and the FE
+		// renderer both fall back to.
+		if (idx <= 0) return;
+		newBannerBodies = newBannerBodies.filter((_, i) => i !== idx);
+	}
+	function resetBannerForm() {
+		newBannerSeverity = 'warning';
+		newBannerBodies = [
+			{ locale: 'en', text: '' },
+			{ locale: defaultSecondLocale(), text: '' }
+		];
+		newBannerStartsAt = '';
+		newBannerExpiresAt = '';
+		addingLocale = null;
+	}
+	async function loadBanners() {
+		try {
+			banners = await listOpsBanners();
+			bannersError = null;
+		} catch (e) {
+			bannersError = e instanceof Error ? e.message : String(e);
+			banners = [];
+		}
+	}
+	async function submitBanner(e: Event) {
+		e.preventDefault();
+		const body: Record<string, string> = {};
+		for (const row of newBannerBodies) {
+			const trimmed = row.text.trim();
+			if (trimmed) body[row.locale] = trimmed;
+		}
+		if (Object.keys(body).length === 0) {
+			bannersError = t('admin.ops_banner_err_empty_body', 'At least one locale body is required.');
+			return;
+		}
+		bannersBusy = true;
+		try {
+			const input: OpsBannerInput = {
+				severity: newBannerSeverity,
+				body,
+				// The datetime-local input gives ISO-ish strings without
+				// zone info. Convert to full ISO 8601 UTC so the server
+				// `DateTime<Utc>` deserialize accepts it; a bare
+				// `YYYY-MM-DDTHH:MM` would 400.
+				starts_at: newBannerStartsAt ? new Date(newBannerStartsAt).toISOString() : null,
+				expires_at: newBannerExpiresAt ? new Date(newBannerExpiresAt).toISOString() : null
+			};
+			await createOpsBanner(input);
+			// Reset the form, re-fetch the list.
+			resetBannerForm();
+			bannersError = null;
+			await loadBanners();
+		} catch (err) {
+			bannersError = err instanceof Error ? err.message : String(err);
+		} finally {
+			bannersBusy = false;
+		}
+	}
+	async function removeBanner(id: string) {
+		bannersBusy = true;
+		try {
+			await deleteOpsBanner(id);
+			bannersError = null;
+			await loadBanners();
+		} catch (err) {
+			bannersError = err instanceof Error ? err.message : String(err);
+		} finally {
+			bannersBusy = false;
+		}
+	}
+
+	// `consistency_batch` trigger — aggregate run of every registered
+	// `*_consistency` detector (blobs / drives / files / folders /
+	// manifests / drive_policies / satellites / backend). Dispatches
+	// synchronously, returns the aggregate outcome; the per-detector
+	// detail lives under `outcome.extra.per_check` on the response.
+	// Keep this UI slim: dispatch + summary + link to /admin/jobs
+	// where the full run history and findings drawer already lives.
+	let consistencyBatchBusy = $state(false);
+	let consistencyBatchResult = $state<{ ok: boolean; message: string } | null>(null);
+	async function runConsistencyBatch() {
+		consistencyBatchBusy = true;
+		consistencyBatchResult = null;
+		try {
+			const res = await triggerJob('consistency_batch');
+			if (!res.outcome) {
+				// Detached-dispatch envelope — not expected for this
+				// job (consistency_batch is synchronous), but render
+				// something rather than an empty string if the
+				// contract ever changes.
+				consistencyBatchResult = {
+					ok: res.ok ?? true,
+					message: t(
+						'admin.consistency_batch_dispatched',
+						'Dispatched. See the Jobs tab for details.'
+					)
+				};
+			} else if (res.outcome.outcome === 'ok') {
+				const count = res.outcome.count ?? 0;
+				consistencyBatchResult = {
+					ok: true,
+					message: t(
+						'admin.consistency_batch_ok',
+						{ count },
+						'Ran · {{count}} findings recorded. See the Jobs tab for per-check details.'
+					)
+				};
+			} else {
+				consistencyBatchResult = {
+					ok: false,
+					message: res.outcome.message || t('admin.consistency_batch_err', 'Run failed.')
+				};
+			}
+		} catch (e) {
+			consistencyBatchResult = {
+				ok: false,
+				message: e instanceof Error ? e.message : String(e)
+			};
+		} finally {
+			consistencyBatchBusy = false;
 		}
 	}
 
@@ -1962,6 +2244,7 @@
 		oidc: false,
 		storage: false,
 		notification: false,
+		maintenance: false,
 		jobs: false
 	});
 
@@ -1996,6 +2279,14 @@
 			// Load it here too so hitting /admin/storage directly
 			// shows the card without a prior dashboard visit.
 			void loadDashboard();
+		} else if (tab === 'maintenance') {
+			// New home for the backend write-lock (moved from
+			// /admin/storage) + the metadata re-extract buttons
+			// (moved from /admin/dashboard). loadWriteLock +
+			// loadBanners are the async pulls; reextract state
+			// is purely local until the operator clicks a button.
+			void loadWriteLock();
+			void loadBanners();
 		} else if (tab === 'notification') {
 			void loadSmtp();
 			void loadWebhook();
@@ -2063,32 +2354,23 @@
 	  `storage_cache_recommended` as (remote-backend) AND
 	  (OXICLOUD_STORAGE_CACHE_ENABLED=false); default-off on a
 	  remote backend lights this up until the operator opts in.
-	  Soft advisory (warn-card--warn), not --danger — this is a
+	  Soft advisory (warning severity), not critical — this is a
 	  performance hint, not a correctness problem. Guarded on
 	  `dashboard` being loaded; the tab-switch effect fires
 	  `loadDashboard()` on EVERY admin tab so this is reliably
 	  populated even for operators who never visited /admin itself.
+
+	  Admin-only visibility is enforced by file location: this
+	  component is `routes/admin/[[tab]]/+page.svelte`, so the
+	  SvelteKit router never mounts it on `/files`, `/photos`,
+	  etc. — no explicit guard needed.
 	-->
-	{#if dashboard?.storage_cache_recommended}
-		<div class="card warn-card warn-card--warn">
-			<Icon name="bolt" />
-			<div>
-				<strong>{t('admin.storage_cache_recommended_title', 'Enable the local blob cache')}</strong>
-				<p>
-					{t(
-						'admin.storage_cache_recommended_body',
-						'It is highly recommended to enable the local cache (SSD/NVMe location preferred).'
-					)}
-				</p>
-				<p>
-					{t(
-						'admin.storage_cache_recommended_howto',
-						'Set OXICLOUD_STORAGE_CACHE_ENABLED=true to enable it.'
-					)}
-				</p>
-			</div>
-		</div>
-	{/if}
+	<!-- Cache-recommended advisory moved out of this file to
+	     `AppShell`'s global banner stack — same visual family as
+	     readonly / rotation / ops banners. `loadDashboard()` above
+	     mirrors the flag via `setCacheRecommended`; AppShell reads
+	     from the `adminAdvisories` store, gated on
+	     `isAdminSection && isAdmin`. -->
 
 	{#if tab === 'dashboard'}
 		{#if dashboardError}
@@ -2376,57 +2658,11 @@
 				</div>
 			{/if}
 
-			<div class="card">
-				<h2>{t('admin.maintenance', 'Maintenance')}</h2>
-				<p class="muted">
-					{t(
-						'admin.maintenance_hint',
-						'Re-scan existing files to backfill metadata. Safe to re-run; processes the whole library and may take a while.'
-					)}
-				</p>
-				<div class="maint-row">
-					<button class="btn btn-secondary" disabled={audioBusy} onclick={runAudioReindex}>
-						<Icon name="music" />
-						{audioBusy
-							? t('admin.running', 'Running…')
-							: t('admin.reextract_audio', 'Re-extract audio metadata')}
-					</button>
-					{#if audioResult}
-						<span class="muted maint-result">
-							{t(
-								'admin.reextract_done',
-								{
-									processed: audioResult.processed,
-									total: audioResult.total,
-									failed: audioResult.failed
-								},
-								'{{processed}}/{{total}} processed · {{failed}} failed'
-							)}
-						</span>
-					{/if}
-				</div>
-				<div class="maint-row">
-					<button class="btn btn-secondary" disabled={photoBusy} onclick={runPhotoReindex}>
-						<Icon name="images" />
-						{photoBusy
-							? t('admin.running', 'Running…')
-							: t('admin.reextract_photos', 'Re-extract photo & video capture dates')}
-					</button>
-					{#if photoResult}
-						<span class="muted maint-result">
-							{t(
-								'admin.reextract_done',
-								{
-									processed: photoResult.processed,
-									total: photoResult.total,
-									failed: photoResult.failed
-								},
-								'{{processed}}/{{total}} processed · {{failed}} failed'
-							)}
-						</span>
-					{/if}
-				</div>
-			</div>
+			<!-- The dashboard "Maintenance" card (audio + photo
+			     re-extract) moved to /admin/maintenance alongside
+			     the backend write-lock. Keep this comment as the
+			     breadcrumb for anyone grepping for the old
+			     location. -->
 		{/if}
 	{:else if tab === 'oidc'}
 		<div class="card">
@@ -2618,6 +2854,7 @@
 		     The legacy form + related handlers/state live in git
 		     history; deleted here in one sweep.
 		     ══════════════════════════════════════════════════════════ -->
+
 		<!-- Section 1 — Content store: global DB blob stats,
 		     independent of any backend entry. Rendered first because
 		     it's the "what's actually in the system" answer;
@@ -3242,6 +3479,451 @@
 					)}
 				</p>
 			{/if}
+		</div>
+	{:else if tab === 'maintenance'}
+		<!-- ══════════════════════════════════════════════════════════════
+		     MAINTENANCE TAB — operator-driven runtime state changes.
+
+		     Home for things an operator DOES to the running server
+		     (as opposed to Dashboard, which reports what the server
+		     IS doing on its own). Currently covers:
+
+		       • Backend write-lock — moved here from /admin/storage.
+		         "Lock before an external backup / snapshot" is a
+		         runtime operation, not a storage-layer concern.
+		       • Metadata re-extract backfills — moved here from
+		         /admin/dashboard. Scanning the whole library takes
+		         real time; grouping with other long-running ops
+		         keeps dashboard focused on monitoring.
+
+		     Future inhabitants: ops banners (announcements /
+		     scheduled downtime notices), scheduled read-only
+		     windows, planned-shutdown countdowns.
+		     ══════════════════════════════════════════════════════════ -->
+
+		<!-- Backend write-lock card — same component as before, same
+		     API, same test IDs. Only the physical location of the
+		     card changed. -->
+		{#if writeLockStatus}
+			<section
+				class="card storage-write-lock"
+				data-testid="admin-storage-write-lock"
+				aria-labelledby="admin-storage-write-lock-title"
+			>
+				<h2 id="admin-storage-write-lock-title">
+					{t('admin.storage_write_lock_title', 'Backend write-lock')}
+				</h2>
+				{#if writeLockStatus.is_held && writeLockStatus.holder}
+					{@const h = writeLockStatus.holder}
+					<p class="storage-write-lock__banner" role="status">
+						<strong>
+							{#if h.kind === 'migration'}
+								{t('admin.storage_write_lock_banner_migration', 'Migrating storage:')}
+								{h.source} → {h.target}
+							{:else if h.kind === 'backup'}
+								{t('admin.storage_write_lock_banner_backup', 'Backing up to')}
+								{h.destination}
+							{:else if h.kind === 'rotation'}
+								{t('admin.storage_write_lock_banner_rotation', 'Rotating storage key on')}
+								{h.entry}
+							{:else if h.kind === 'external'}
+								{t('admin.storage_write_lock_banner_external', 'Maintenance:')}
+								{h.label ||
+									t(
+										'admin.storage_write_lock_banner_external_default',
+										'External maintenance in progress'
+									)}
+							{/if}
+						</strong>
+					</p>
+					<p class="muted storage-write-lock__hint">
+						{t(
+							'admin.storage_write_lock_held_hint',
+							'User writes are refused and backend-writer jobs (reclaim, rechunk, rotate, imports, satellite repair) are deferring their ticks until the lock is released.'
+						)}
+					</p>
+					{#if h.kind === 'external'}
+						<p class="muted storage-write-lock__meta">
+							{t('admin.storage_write_lock_acquired_by', 'Acquired by')}
+							<strong>{writeLockHolderName ?? h.admin_id}</strong>
+							{t('admin.storage_write_lock_acquired_at', 'at')}
+							<time datetime={h.acquired_at}>{new Date(h.acquired_at).toLocaleString()}</time>
+						</p>
+						<p class="muted storage-write-lock__meta">
+							{t('admin.storage_write_lock_expires_at', 'Auto-expires at')}
+							<time datetime={h.expires_at}>{new Date(h.expires_at).toLocaleString()}</time>
+						</p>
+					{/if}
+					<div class="storage-write-lock__actions">
+						<button
+							type="button"
+							class="button button--secondary"
+							disabled={writeLockBusy}
+							onclick={doLockRelease}
+							data-testid="admin-storage-write-lock-release"
+						>
+							{t('admin.storage_write_lock_release', 'Release lock')}
+						</button>
+					</div>
+				{:else}
+					<p class="muted storage-write-lock__hint">
+						{t(
+							'admin.storage_write_lock_free_hint',
+							'Engage this before running an external backup (restic, borg, filesystem snapshot) or any out-of-band maintenance that reads the storage backend directly. OxiCloud refuses user writes AND defers its own backend-writer jobs until you release.'
+						)}
+					</p>
+					<form
+						class="storage-write-lock__form"
+						onsubmit={(e) => {
+							e.preventDefault();
+							void doLockAcquire();
+						}}
+					>
+						<label class="storage-write-lock__label">
+							<span>
+								{t('admin.storage_write_lock_label_label', 'Reason')}
+								<span class="muted">
+									—
+									{t('admin.storage_write_lock_label_hint', 'ops-only, not shown to end users')}
+								</span>
+							</span>
+							<input
+								type="text"
+								bind:value={writeLockLabel}
+								placeholder={t(
+									'admin.storage_write_lock_label_placeholder',
+									'e.g. nightly restic to NAS'
+								)}
+								required
+								minlength="3"
+								maxlength="120"
+								data-testid="admin-storage-write-lock-label"
+							/>
+						</label>
+						<button
+							type="submit"
+							class="button button--primary"
+							disabled={writeLockBusy || !writeLockLabel.trim()}
+							data-testid="admin-storage-write-lock-acquire"
+						>
+							{t('admin.storage_write_lock_acquire', 'Lock backend')}
+						</button>
+					</form>
+				{/if}
+			</section>
+		{/if}
+
+		<!-- Ops banners — operator-authored announcements shown to
+		     every connected session. CRUD; the backend broadcasts
+		     changes over the message bus so open tabs re-render
+		     within ~1s instead of waiting for a natural API call.
+		     Severity picks the colour (warning / notification);
+		     body is markdown with bold / italic / inline code /
+		     links / line breaks supported — tables + HTML stripped
+		     at render time. -->
+		<section
+			class="card ops-banner-editor"
+			data-testid="admin-ops-banners"
+			aria-labelledby="admin-ops-banners-title"
+		>
+			<h2 id="admin-ops-banners-title">
+				{t('admin.ops_banners_title', 'Banner messages')}
+			</h2>
+			<p class="muted ops-banner-editor__hint">
+				{t(
+					'admin.ops_banners_hint',
+					'Operator-authored announcements shown to every connected session. Supports markdown (bold, italic, inline code, links) and up to two locales (en + fr).'
+				)}
+			</p>
+			{#if bannersError}
+				<p class="alert alert--warn ops-banner-editor__error" role="alert">
+					{bannersError}
+				</p>
+			{/if}
+			<!-- Active banner list — deletion is immediate; there is
+			     no soft-delete / history (the audit log is the trail).
+			     Shown as a compact table so operators can scan what's
+			     live at a glance. -->
+			{#if banners.length === 0}
+				<p class="muted ops-banner-editor__empty">
+					{t('admin.ops_banners_empty', 'No banners posted.')}
+				</p>
+			{:else}
+				<ul class="ops-banner-editor__list">
+					{#each banners as banner (banner.id)}
+						<li class="ops-banner-editor__row">
+							<div class="ops-banner-editor__row-head">
+								<span
+									class="ops-banner-editor__severity ops-banner-editor__severity--{banner.severity}"
+								>
+									{banner.severity === 'warning'
+										? t('admin.ops_banner_severity_warning', 'Warning')
+										: t('admin.ops_banner_severity_notification', 'Notification')}
+								</span>
+								{#if banner.starts_at}
+									{@const scheduled = new Date(banner.starts_at) > new Date()}
+									<span class="muted ops-banner-editor__scheduled">
+										{scheduled
+											? t('admin.ops_banner_scheduled_future', 'Scheduled for')
+											: t('admin.ops_banner_scheduled_past', 'Visible since')}
+										<time datetime={banner.starts_at}
+											>{new Date(banner.starts_at).toLocaleString()}</time
+										>
+									</span>
+								{/if}
+								{#if banner.expires_at}
+									{@const expired = new Date(banner.expires_at) <= new Date()}
+									<span class="muted ops-banner-editor__scheduled">
+										{expired
+											? t('admin.ops_banner_expired_at', 'Expired')
+											: t('admin.ops_banner_expires_at_row', 'Auto-hides')}
+										<time datetime={banner.expires_at}
+											>{new Date(banner.expires_at).toLocaleString()}</time
+										>
+									</span>
+								{/if}
+								<button
+									type="button"
+									class="btn btn-link ops-banner-editor__delete"
+									disabled={bannersBusy}
+									onclick={() => void removeBanner(banner.id)}
+									data-testid="admin-ops-banner-delete"
+								>
+									{t('admin.ops_banner_delete', 'Delete')}
+								</button>
+							</div>
+							<div class="ops-banner-editor__row-bodies">
+								{#each Object.entries(banner.body) as [locale, text] (locale)}
+									<div class="ops-banner-editor__body">
+										<span class="muted ops-banner-editor__locale">{locale}</span>
+										<pre class="ops-banner-editor__source">{text}</pre>
+									</div>
+								{/each}
+							</div>
+						</li>
+					{/each}
+				</ul>
+			{/if}
+
+			<!-- New banner form. Severity + at least one locale body +
+			     optional starts_at. Backend validates + enforces the
+			     caps (10 banners, 2048 bytes per locale body). -->
+			<form class="ops-banner-editor__form" onsubmit={submitBanner}>
+				<h3>{t('admin.ops_banner_new_title', 'New banner')}</h3>
+				<div class="ops-banner-editor__row-controls">
+					<label class="ops-banner-editor__field">
+						<span>{t('admin.ops_banner_severity_label', 'Severity')}</span>
+						<select bind:value={newBannerSeverity} data-testid="admin-ops-banner-severity">
+							<option value="warning">{t('admin.ops_banner_severity_warning', 'Warning')}</option>
+							<option value="notification"
+								>{t('admin.ops_banner_severity_notification', 'Notification')}</option
+							>
+						</select>
+					</label>
+					<label class="ops-banner-editor__field">
+						<span>{t('admin.ops_banner_starts_at_label', 'Visible from (optional)')}</span>
+						<input
+							type="datetime-local"
+							bind:value={newBannerStartsAt}
+							data-testid="admin-ops-banner-starts-at"
+						/>
+					</label>
+					<label class="ops-banner-editor__field">
+						<span>
+							{t('admin.ops_banner_expires_at_label', 'Auto-hide after (optional)')}
+						</span>
+						<input
+							type="datetime-local"
+							bind:value={newBannerExpiresAt}
+							data-testid="admin-ops-banner-expires-at"
+						/>
+					</label>
+				</div>
+				<!-- Localised body slots. `en` at index 0 is required
+				     (fallback for every viewer); subsequent slots can
+				     be removed. Operators stack more via the picker
+				     at the bottom of the list. -->
+				{#each newBannerBodies as row, idx (row.locale)}
+					{@const meta = LANGUAGES.find((l) => l.code === row.locale)}
+					<label class="ops-banner-editor__field ops-banner-editor__field--wide">
+						<span class="ops-banner-editor__locale-header">
+							<span class="ops-banner-editor__locale-label">
+								{#if meta}{meta.flag} {meta.name}{:else}{row.locale}{/if}
+								<span class="muted">({row.locale})</span>
+								{#if idx === 0}
+									<span class="muted">
+										— {t('admin.ops_banner_locale_required', 'required fallback')}
+									</span>
+								{/if}
+							</span>
+							{#if idx > 0}
+								<button
+									type="button"
+									class="btn btn-link ops-banner-editor__remove-locale"
+									onclick={() => removeLanguageAt(idx)}
+									aria-label={t('admin.ops_banner_remove_locale', 'Remove this language')}
+								>
+									{t('admin.ops_banner_remove_locale_label', 'Remove')}
+								</button>
+							{/if}
+						</span>
+						<textarea
+							bind:value={newBannerBodies[idx].text}
+							rows="3"
+							maxlength="2048"
+							placeholder={idx === 0
+								? t(
+										'admin.ops_banner_body_placeholder',
+										'Markdown — e.g. **Scheduled maintenance** Thursday at 22:00 UTC.'
+									)
+								: ''}
+							data-testid="admin-ops-banner-body-{row.locale}"></textarea>
+					</label>
+				{/each}
+
+				<!-- Add-language affordance. Collapsed by default so
+				     the form stays compact; opens to a select of the
+				     remaining locales + a confirm button. Disabled
+				     when every locale is already in the list (the
+				     backend's MAX_LOCALES_PER_BANNER = 20 cap also
+				     stops it, but running out of unused locales is
+				     the practical limit). -->
+				<div class="ops-banner-editor__add-language">
+					{#if addingLocale !== null}
+						<label class="ops-banner-editor__field">
+							<span>
+								{t('admin.ops_banner_add_locale_label', 'Language to add')}
+							</span>
+							<select bind:value={addingLocale} data-testid="admin-ops-banner-add-locale-select">
+								{#each availableLocalesToAdd as lang (lang.code)}
+									<option value={lang.code}>
+										{lang.flag}
+										{lang.name} ({lang.code})
+									</option>
+								{/each}
+							</select>
+						</label>
+						<div class="ops-banner-editor__add-language-actions">
+							<button
+								type="button"
+								class="btn btn-secondary"
+								onclick={confirmAddLanguage}
+								disabled={availableLocalesToAdd.length === 0}
+								data-testid="admin-ops-banner-add-locale-confirm"
+							>
+								{t('admin.ops_banner_add_locale_confirm', 'Add')}
+							</button>
+							<button type="button" class="btn btn-link" onclick={() => (addingLocale = null)}>
+								{t('admin.cancel', 'Cancel')}
+							</button>
+						</div>
+					{:else}
+						<button
+							type="button"
+							class="btn btn-link"
+							onclick={openAddLanguage}
+							disabled={availableLocalesToAdd.length === 0}
+							data-testid="admin-ops-banner-add-locale"
+						>
+							+ {t('admin.ops_banner_add_locale', 'Add another language')}
+						</button>
+					{/if}
+				</div>
+
+				<div class="ops-banner-editor__actions">
+					<button
+						type="submit"
+						class="btn btn-primary"
+						disabled={bannersBusy || newBannerBodies.every((b) => !b.text.trim())}
+						data-testid="admin-ops-banner-create"
+					>
+						{bannersBusy
+							? t('admin.saving', 'Saving…')
+							: t('admin.ops_banner_create', 'Post banner')}
+					</button>
+				</div>
+			</form>
+		</section>
+
+		<!-- Metadata re-extract — moved from /admin/dashboard. State
+		     + handlers (audioBusy, photoBusy, runAudioReindex,
+		     runPhotoReindex) are unchanged; only the location is.
+		     Dashboard still shows the dashboard DTO summary; this is
+		     where the TRIGGER lives. -->
+		<div class="card">
+			<h2>{t('admin.maintenance', 'Maintenance')}</h2>
+			<p class="muted">
+				{t(
+					'admin.maintenance_hint',
+					'Re-scan existing files to backfill metadata. Safe to re-run; processes the whole library and may take a while.'
+				)}
+			</p>
+			<div class="maint-row">
+				<button class="btn btn-secondary" disabled={audioBusy} onclick={runAudioReindex}>
+					<Icon name="music" />
+					{audioBusy
+						? t('admin.running', 'Running…')
+						: t('admin.reextract_audio', 'Re-extract audio metadata')}
+				</button>
+				{#if audioResult}
+					<span class="muted maint-result">
+						{t(
+							'admin.reextract_done',
+							{
+								processed: audioResult.processed,
+								total: audioResult.total,
+								failed: audioResult.failed
+							},
+							'{{processed}}/{{total}} processed · {{failed}} failed'
+						)}
+					</span>
+				{/if}
+			</div>
+			<div class="maint-row">
+				<button class="btn btn-secondary" disabled={photoBusy} onclick={runPhotoReindex}>
+					<Icon name="images" />
+					{photoBusy
+						? t('admin.running', 'Running…')
+						: t('admin.reextract_photos', 'Re-extract photo & video capture dates')}
+				</button>
+				{#if photoResult}
+					<span class="muted maint-result">
+						{t(
+							'admin.reextract_done',
+							{
+								processed: photoResult.processed,
+								total: photoResult.total,
+								failed: photoResult.failed
+							},
+							'{{processed}}/{{total}} processed · {{failed}} failed'
+						)}
+					</span>
+				{/if}
+			</div>
+			<!-- consistency_batch trigger — the one-click button for
+			     "sweep every *_consistency detector once". Full
+			     per-check breakdown + run history + findings drawer
+			     live on /admin/jobs/consistency_batch; this is just
+			     the convenience trigger an operator reaches for
+			     during routine maintenance. -->
+			<div class="maint-row">
+				<button
+					class="btn btn-secondary"
+					disabled={consistencyBatchBusy}
+					onclick={runConsistencyBatch}
+					data-testid="admin-run-consistency-batch"
+				>
+					<Icon name="heart-circle-check" />
+					{consistencyBatchBusy
+						? t('admin.running', 'Running…')
+						: t('admin.run_consistency_batch', 'Run consistency sweep')}
+				</button>
+				{#if consistencyBatchResult}
+					<span class="muted maint-result" class:maint-result--err={!consistencyBatchResult.ok}>
+						{consistencyBatchResult.message}
+					</span>
+				{/if}
+			</div>
 		</div>
 	{:else if tab === 'notification'}
 		<!-- First, because it governs both transports below: a configured
@@ -5732,6 +6414,223 @@
 	.cutover-hint__readonly-body {
 		margin: 0;
 		color: var(--color-danger-text, var(--color-text));
+	}
+
+	.ops-banner-editor {
+		margin-bottom: var(--space-4);
+	}
+
+	.ops-banner-editor h2 {
+		margin: 0 0 var(--space-2);
+	}
+
+	.ops-banner-editor__hint,
+	.ops-banner-editor__empty {
+		margin: 0 0 var(--space-3);
+		font-size: var(--text-sm);
+	}
+
+	.ops-banner-editor__error {
+		margin: 0 0 var(--space-3);
+	}
+
+	.ops-banner-editor__list {
+		list-style: none;
+		margin: 0 0 var(--space-4);
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+	}
+
+	.ops-banner-editor__row {
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+		padding: var(--space-2) var(--space-3);
+		background: var(--color-surface);
+	}
+
+	.ops-banner-editor__row-head {
+		display: flex;
+		align-items: center;
+		gap: var(--space-3);
+		margin-bottom: var(--space-2);
+	}
+
+	.ops-banner-editor__severity {
+		font-size: var(--text-xs);
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		padding: 0 var(--space-2);
+		border-radius: var(--radius-sm);
+		font-weight: 600;
+	}
+
+	.ops-banner-editor__severity--warning {
+		background: var(--color-warning-surface, var(--color-surface-subtle));
+		color: var(--color-warning-text, var(--color-text));
+	}
+
+	.ops-banner-editor__severity--notification {
+		background: var(--color-info-surface, var(--color-surface-subtle));
+		color: var(--color-info-text, var(--color-text));
+	}
+
+	.ops-banner-editor__scheduled {
+		font-size: var(--text-xs);
+	}
+
+	.ops-banner-editor__delete {
+		margin-left: auto;
+	}
+
+	.ops-banner-editor__body {
+		display: flex;
+		gap: var(--space-2);
+		align-items: flex-start;
+		font-size: var(--text-sm);
+	}
+
+	.ops-banner-editor__locale {
+		font-family: var(--font-mono, monospace);
+		font-size: var(--text-xs);
+		min-width: 2.5rem;
+	}
+
+	.ops-banner-editor__source {
+		margin: 0;
+		font-family: var(--font-mono, monospace);
+		font-size: var(--text-xs);
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+	}
+
+	.ops-banner-editor__form {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-3);
+		border-top: 1px solid var(--color-border);
+		padding-top: var(--space-3);
+	}
+
+	.ops-banner-editor__form h3 {
+		margin: 0;
+		font-size: var(--text-base);
+	}
+
+	.ops-banner-editor__row-controls {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-3);
+	}
+
+	.ops-banner-editor__field {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-1);
+		min-width: 10rem;
+	}
+
+	.ops-banner-editor__field--wide {
+		width: 100%;
+	}
+
+	.ops-banner-editor__field select,
+	.ops-banner-editor__field input,
+	.ops-banner-editor__field textarea {
+		padding: var(--space-2);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm);
+		background: var(--color-surface);
+		color: var(--color-text);
+		font-family: inherit;
+	}
+
+	.ops-banner-editor__field textarea {
+		font-family: var(--font-mono, monospace);
+		font-size: var(--text-sm);
+	}
+
+	.ops-banner-editor__actions {
+		margin-top: var(--space-2);
+	}
+
+	.ops-banner-editor__locale-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--space-2);
+	}
+
+	.ops-banner-editor__locale-label {
+		display: inline-flex;
+		gap: var(--space-1);
+		align-items: baseline;
+		font-size: var(--text-sm);
+	}
+
+	.ops-banner-editor__remove-locale {
+		font-size: var(--text-xs);
+	}
+
+	.ops-banner-editor__add-language {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+	}
+
+	.ops-banner-editor__add-language-actions {
+		display: flex;
+		gap: var(--space-2);
+	}
+
+	.storage-write-lock {
+		margin-bottom: var(--space-4);
+	}
+
+	.storage-write-lock h2 {
+		margin: 0 0 var(--space-2);
+	}
+
+	.storage-write-lock__banner {
+		margin: 0 0 var(--space-2);
+		padding: var(--space-2) var(--space-3);
+		border-radius: var(--radius-md);
+		background: var(--color-warning-surface, var(--color-surface-subtle));
+		color: var(--color-warning-text, var(--color-text));
+		border-left: 3px solid var(--color-warning-border, var(--color-border));
+	}
+
+	.storage-write-lock__hint,
+	.storage-write-lock__meta {
+		margin: 0 0 var(--space-3);
+		font-size: var(--text-sm);
+	}
+
+	.storage-write-lock__form {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: end;
+		gap: var(--space-3);
+	}
+
+	.storage-write-lock__label {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-1);
+		flex: 1 1 20rem;
+	}
+
+	.storage-write-lock__label input {
+		padding: var(--space-2);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm);
+		background: var(--color-surface);
+		color: var(--color-text);
+	}
+
+	.storage-write-lock__actions {
+		margin-top: var(--space-2);
 	}
 
 	.storage-content-stats {

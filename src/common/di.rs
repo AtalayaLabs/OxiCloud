@@ -1848,24 +1848,63 @@ impl AppServiceFactory {
         let subject_group_repo = Arc::new(
             crate::infrastructure::repositories::pg::SubjectGroupPgRepository::new(pool.clone()),
         );
-        // Migration-readonly atomic. Seeded from
-        // `admin_settings.storage.migration_readonly` so the flag
-        // survives restart (an operator won't see writes accidentally
-        // re-enabled between a crash mid-migration and the retrigger).
-        // Shared with the AuthZ engine so it can short-circuit write
-        // permissions without a per-check DB round-trip. The boot
-        // clear rule (§Read-only mode) runs after this seeding, after
-        // the boot recovery sweep — enough for the runtime state
-        // machine to decide whether to keep or clear.
-        let migration_readonly = Arc::new(std::sync::atomic::AtomicBool::new(
-            crate::infrastructure::services::entry_backend::load_migration_readonly(&pool).await,
-        ));
-        if migration_readonly.load(std::sync::atomic::Ordering::Relaxed) {
+        // Backend write-lock gate. Typed-reason primitive that
+        // supersedes the single-purpose `migration_readonly` atomic
+        // of the previous design — one gate, several holders
+        // (migration, backup, rotation, operator-driven external).
+        // Seeded in order of specificity:
+        //   1. the typed holder row carries the full reason across
+        //      restart (what, who, when);
+        //   2. the legacy `migration_readonly` bool is the fallback
+        //      for pre-upgrade state (coarse "Migration(legacy)").
+        // The gate exposes an `AtomicBool` handle that the AuthZ
+        // engine and the server-status middleware keep reading on
+        // the hot path — no `RwLock` on every mutating permission
+        // check. Writes to that atomic flow EXCLUSIVELY through the
+        // gate's acquire/release methods now; nobody flips it
+        // directly any more. The boot clear rule (§Read-only mode)
+        // runs after this seeding, after the boot recovery sweep —
+        // enough for the runtime state machine to decide whether
+        // to keep or clear.
+        let legacy_migration_readonly =
+            crate::infrastructure::services::entry_backend::load_migration_readonly(&pool).await;
+        let typed_holder =
+            crate::infrastructure::services::entry_backend::load_backend_write_lock_holder(
+                &pool,
+                legacy_migration_readonly,
+            )
+            .await;
+        let backend_write_gate = Arc::new(
+            crate::application::services::backend_write_gate::BackendWriteGate::new_seeded(
+                typed_holder.clone(),
+            ),
+        );
+        // Fast-path handle = the gate's internal atomic. Every reader
+        // that previously held `Arc<AtomicBool>` directly (AuthZ,
+        // server-status) now holds this handle instead — same type,
+        // same `.load(Relaxed)` call, zero behavioural change.
+        let migration_readonly = backend_write_gate.fast_path_handle();
+        // Ops banner service — seeded from the persisted JSONB row.
+        // One banner service per process; `AppState` holds the Arc.
+        // Boot-time load is cheap (one SELECT, bounded JSON).
+        let initial_banners =
+            crate::application::services::ops_banner_service::load_ops_banners(&pool).await;
+        let ops_banner_service = Arc::new(
+            crate::application::services::ops_banner_service::OpsBannerService::new(
+                initial_banners,
+                pool.clone(),
+            ),
+        );
+
+        if backend_write_gate.is_held() {
+            let reason = backend_write_gate.held_by();
             tracing::warn!(
                 target: "oxicloud::scheduler",
-                event = "storage.migration_readonly.loaded_true_at_boot",
-                "Server booted with migration_readonly=true — writes will be refused by AuthZ \
-                 until the flag is cleared (either by the boot-clear rule or via the admin \
+                event = "storage.backend_write_lock.loaded_held_at_boot",
+                reason = ?reason.as_ref().map(|r| r.kind()),
+                "Server booted with the backend write-lock held — writes will be refused by \
+                 AuthZ and backend-writer jobs will defer until the gate is released (either \
+                 by the boot-clear rule, by the holding operation completing, or via the admin \
                  storage tab)."
             );
         }
@@ -1928,6 +1967,8 @@ impl AppServiceFactory {
         let bus_for_jobs: Arc<dyn crate::application::ports::message_bus_ports::MessageBus> =
             bus.clone();
         core.job_registry.set_message_bus(bus_for_jobs);
+        core.job_registry
+            .set_backend_write_gate(backend_write_gate.clone());
 
         // WebSocket ticket store — see `rt_ticket_store` module doc for
         // why this exists (DPoP-bound sessions can't be re-proofed on
@@ -2543,6 +2584,8 @@ impl AppServiceFactory {
                 crate::infrastructure::services::webdav_dead_property_store::create_dead_property_store(pool.clone()),
             authorization: authorization.clone(),
             migration_readonly: migration_readonly.clone(),
+            backend_write_gate: backend_write_gate.clone(),
+            ops_banner_service: ops_banner_service.clone(),
             migration_progress: Arc::new(std::sync::RwLock::new(None)),
             rotation_progress: Arc::new(std::sync::RwLock::new(None)),
             drive_repo: drive_repo.clone(),
@@ -2789,6 +2832,19 @@ impl AppServiceFactory {
         .await;
         }
 
+        // Ops banner expiry sweep. Removes banners whose
+        // `expires_at` has passed; fires every 10 minutes. Lives
+        // outside the notifications gate because banner expiry has
+        // no dependency on the notification subsystem — it's an
+        // admin-authored feature with its own storage.
+        let _ = Arc::new(
+            crate::infrastructure::services::ops_banner_expiry_service::OpsBannerExpiryService::new(
+                app_state.ops_banner_service.clone(),
+            ),
+        )
+        .register(&app_state.core.job_registry)
+        .await;
+
         // 9a-collab. Collab-doc session pool (Yjs over the bus).
         // Feature-gated by `OXICLOUD_ENABLE_MARKDOWN_COLLAB` AND
         // `OXICLOUD_MESSAGEBUS_ENABLE` — collab bytes ride the bus WS
@@ -3003,6 +3059,7 @@ impl AppServiceFactory {
                 app_state.core.config.storage_entries.clone(),
                 app_state.core.active_backend_name.clone(),
                 app_state.migration_readonly.clone(),
+                app_state.backend_write_gate.clone(),
             ));
             app_state.storage_settings_service = Some(storage_settings_svc.clone());
             tracing::info!("Storage settings service initialized");
@@ -3027,6 +3084,7 @@ impl AppServiceFactory {
                     app_state.core.config.storage_entries.clone(),
                     self.storage_path.clone(),
                     app_state.migration_readonly.clone(),
+                    app_state.backend_write_gate.clone(),
                     app_state.core.blob_backend_hot_swap.clone(),
                     app_state.migration_progress.clone(),
                 ),
@@ -3255,7 +3313,9 @@ impl AppServiceFactory {
         // Migration-readonly boot-clear rule. See
         // `docs/plan/storage-multi-entry.md` §"Read-only mode".
         //
-        // If the flag was set true at boot AND no backend_migration
+        // If the flag was set true at boot AND the gate's typed
+        // holder is a `Migration` variant (or absent — legacy
+        // bool-only pre-upgrade state) AND no backend_migration
         // run is currently non-terminal AND active_backend_name
         // matches the entry the app actually booted onto — that means
         // the cutover completed on a prior boot (the run reached
@@ -3264,14 +3324,29 @@ impl AppServiceFactory {
         // still needs writes-off, and matching active_backend_name
         // means we're already on the target the run was pointing at.
         //
+        // Non-Migration holders (External / Backup / Rotation)
+        // are NEVER auto-cleared. An operator who engaged an
+        // External lock must release it explicitly — the whole
+        // point of that lock is to survive a restart in the middle
+        // of an external backup window. Clearing it here would
+        // silently resume writes mid-restic-run.
+        //
         // If ANY of those conditions fails (flag was false at boot;
-        // there's still a Paused/Running/CancelRequested run in the
-        // way; active doesn't match booted — mismatch means someone
-        // manually edited the pointer while readonly was on) we
-        // leave the flag alone. Operator has to decide.
+        // non-Migration holder; there's still a Paused/Running/
+        // CancelRequested run in the way; active doesn't match
+        // booted — mismatch means someone manually edited the
+        // pointer while readonly was on) we leave the flag alone.
+        // Operator has to decide.
+        let holder_is_migration_or_absent = matches!(
+            app_state.backend_write_gate.held_by(),
+            None | Some(
+                crate::application::services::backend_write_gate::BackendWriteLockReason::Migration { .. }
+            )
+        );
         if app_state
             .migration_readonly
             .load(std::sync::atomic::Ordering::Relaxed)
+            && holder_is_migration_or_absent
         {
             use crate::infrastructure::services::backend_migration_service::BACKEND_MIGRATION_JOB_NAME;
             let has_in_flight = match app_state
@@ -3323,12 +3398,32 @@ impl AppServiceFactory {
             };
 
             if !has_in_flight && db_active_matches {
-                use crate::infrastructure::services::entry_backend::persist_migration_readonly;
+                use crate::infrastructure::services::entry_backend::{
+                    persist_backend_write_lock_holder, persist_migration_readonly,
+                };
                 match persist_migration_readonly(&pool, false).await {
                     Ok(()) => {
-                        app_state
-                            .migration_readonly
-                            .store(false, std::sync::atomic::Ordering::Relaxed);
+                        // Also clear the typed holder row so atomic +
+                        // reason + DB don't drift apart. A persist
+                        // failure on this one is non-fatal (next boot
+                        // sees `legacy_migration_readonly=false` +
+                        // stale typed holder, and the holder's
+                        // Migration-ness still passes this gate), but
+                        // we log it so operators have a trail.
+                        if let Err(e) = persist_backend_write_lock_holder(&pool, None).await {
+                            tracing::warn!(
+                                target: "oxicloud::scheduler",
+                                event = "storage.backend_write_lock.holder_clear_failed",
+                                error = %e,
+                                "cleared migration_readonly bool but typed holder NULL persist \
+                                 failed — stale holder row stays until next successful release"
+                            );
+                        }
+                        // Flip the gate's state in one place; the atomic
+                        // is the gate's own fast_path handle, so this
+                        // writes BOTH the fast-path atomic and the
+                        // reason slot atomically.
+                        app_state.backend_write_gate.release();
                         tracing::info!(
                             target: "audit",
                             event = "storage.migration_readonly.cleared_at_boot",
@@ -3890,14 +3985,39 @@ pub struct AppState {
     pub authorization: Arc<crate::infrastructure::services::pg_acl_engine::PgAclEngine>,
     /// Global "server is in migration read-only mode" flag, shared
     /// with [`Self::authorization`] so it can short-circuit write
-    /// permissions. Backed by
-    /// `admin_settings.storage.migration_readonly` for restart
-    /// survival. Slice 5's cutover state machine flips this atomic
-    /// (via `Ordering::Relaxed`) and calls
-    /// `entry_backend::persist_migration_readonly` to keep DB and
-    /// memory in sync. See `docs/plan/storage-multi-entry.md`
-    /// §"Read-only mode".
+    /// permissions. Historically the single source of truth; today
+    /// this is the fast-path atomic exposed by
+    /// [`Self::backend_write_gate`] — same `AtomicBool`, same reader
+    /// contract (load Relaxed, true = refuse writes), but writes
+    /// flow exclusively through the gate's `try_acquire` / `release`
+    /// methods. Keep reading this on the AuthZ hot path; call the
+    /// gate when you need the WHY. See
+    /// `docs/plan/storage-multi-entry.md` §"Read-only mode".
     pub migration_readonly: Arc<std::sync::atomic::AtomicBool>,
+
+    /// Operator-driven banner messages. The admin UI CRUDs on this
+    /// via `/api/admin/banners`; the `X-Server-Status` middleware
+    /// reads the version hash on every response; `/api/config` body
+    /// surfaces the public-filtered list for boot hydration. See
+    /// `application::services::ops_banner_service` for the design.
+    pub ops_banner_service:
+        Arc<crate::application::services::ops_banner_service::OpsBannerService>,
+
+    /// Typed-reason backend write-lock gate. One holder at a time;
+    /// variants cover migration, backup, rotation, and the
+    /// operator-driven External lock exposed by `/api/admin/storage`.
+    /// Flipped by:
+    ///   - `backend_migration_service` on engage / terminal-cancel /
+    ///     success-swap
+    ///   - admin API `/api/admin/storage/write-lock` + `/release`
+    ///   - the boot-clear rule in this file
+    ///
+    /// Backend-writer jobs (`backend_reclaim`, `backend_rechunk`,
+    /// `backend_rotate`, `*_import`, `satellites_consistency`) check
+    /// `is_held()` in the scheduler prologue and defer their tick
+    /// instead of running when the gate is held.
+    pub backend_write_gate:
+        Arc<crate::application::services::backend_write_gate::BackendWriteGate>,
     /// Live progress snapshot for the storage-migration handler.
     /// `Some(_)` while a migration is running; `None` otherwise.
     /// Updated by the handler on every batch checkpoint (cheap

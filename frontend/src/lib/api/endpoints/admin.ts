@@ -454,6 +454,13 @@ export interface AdminDashboard {
 	 *  `false` on local-filesystem deployments (nothing to cache) and
 	 *  when the cache is already on. */
 	storage_cache_recommended: boolean;
+	/** `true` when NEITHER `OXICLOUD_JOBS_NOTIFY_EMAIL_TO` nor
+	 *  `OXICLOUD_WEBHOOK_URL` is configured — job-failure findings
+	 *  would be invisible to anyone not actively watching
+	 *  `/admin/jobs`. The admin UI shows an advisory banner inviting
+	 *  the operator to set at least one. Flips to `false` the moment
+	 *  either env var is defined. */
+	notification_sink_missing: boolean;
 	/** Live occupancy of the moka in-memory file-content cache.
 	 *  Always present (the content cache runs unconditionally).
 	 *  Entries here are ASSEMBLED files (<10 MB each), NOT chunks —
@@ -895,6 +902,158 @@ export function migrationAction(
  */
 export function rotateStorageEntry(name: string): Promise<void> {
 	return mutate(`/api/admin/storage/entries/${encodeURIComponent(name)}/rotate`, 'POST', undefined);
+}
+
+// ── Backend write-lock (operator-driven External variant) ──
+//
+// One primitive, several reasons: the server-side gate can be held
+// by a migration, a backup, a key rotation, or an `External` lock
+// an operator engages for a restic / borg / filesystem snapshot
+// window. The admin UI only exposes the External variant for
+// acquire — the three other variants originate from their own
+// jobs — but release clears whichever variant is held, which is
+// the operator's escape hatch if a `backend_migration` ever
+// wedges.
+//
+// Backend: `src/interfaces/api/handlers/admin_handler.rs`
+// §"Backend write-lock — operator-driven External acquire/release"
+// and the `BackendWriteLockReason` enum shape over the wire.
+
+export type BackendWriteLockHolder =
+	| { kind: 'migration'; source: string; target: string }
+	| { kind: 'backup'; destination: string; started_at: string }
+	| { kind: 'rotation'; entry: string }
+	| {
+			kind: 'external';
+			admin_id: string;
+			label: string;
+			acquired_at: string;
+			expires_at: string;
+	  };
+
+export interface BackendWriteLockStatus {
+	is_held: boolean;
+	holder?: BackendWriteLockHolder;
+}
+
+/**
+ * Current holder of the global backend write-lock. `is_held = false`
+ * means user writes are allowed AND backend-writer jobs
+ * (`backend_reclaim`, `backend_rechunk`, `backend_rotate`,
+ * `*_import`, `satellites_consistency`) run on their normal
+ * cadence. `is_held = true` + a typed `holder` tells the UI which
+ * variant is engaged — the storage card renders a reason-specific
+ * row and (for `external`) a Release button.
+ */
+export function getBackendWriteLock(): Promise<BackendWriteLockStatus> {
+	return apiJson<BackendWriteLockStatus>('/api/admin/storage/write-lock', {
+		credentials: 'same-origin'
+	});
+}
+
+/**
+ * Engage the operator-driven External lock. `label` is required (a
+ * one-line explanation surfaced on the UI banner + audit trail);
+ * `expiresInSeconds` is optional and server-clamped to [60s, 24h].
+ * Caller re-reads status via [`getBackendWriteLock`] after this
+ * resolves (same pattern the migration controls use).
+ */
+export function acquireBackendWriteLock(label: string, expiresInSeconds?: number): Promise<void> {
+	return mutate('/api/admin/storage/write-lock', 'POST', {
+		label,
+		expires_in_seconds: expiresInSeconds
+	});
+}
+
+/**
+ * Release whichever variant currently holds the gate. Admin-only
+ * escape hatch; audit-logged with the previous holder's kind. Safe
+ * to call on a free gate — the server returns the same "not held"
+ * status.
+ */
+export function releaseBackendWriteLock(): Promise<void> {
+	return mutate('/api/admin/storage/write-lock', 'DELETE', undefined);
+}
+
+// ── Ops banners ──────────────────────────────────────────────────
+//
+// Admin CRUD surface for the operator-authored banner messages that
+// appear across every connected user's session. The public read
+// path goes through `/api/config.server_status.banners` (hydrated
+// at boot, refetched on `banners_version` diff from the
+// X-Server-Status header or the WS push); these wrappers only cover
+// the admin edit side.
+
+import type { OpsBanner } from '$lib/api/types';
+
+/** Payload for create / update — the server assigns id /
+ *  created_by / created_at on create, and preserves them on
+ *  update. */
+export interface OpsBannerInput {
+	severity: 'warning' | 'notification';
+	body: Record<string, string>;
+	starts_at?: string | null;
+	/** Optional auto-hide timestamp. Must be strictly after
+	 *  `starts_at` (or `now` if `starts_at` is unset). The server
+	 *  rejects an earlier `expires_at` with 400 — surfaces the typo
+	 *  rather than silently creating a dead banner. */
+	expires_at?: string | null;
+}
+
+/**
+ * `GET /api/admin/banners` — full admin list including
+ * scheduled-but-not-yet-visible entries. The public endpoint on
+ * `/api/config` filters those out so the admin UI can show
+ * "scheduled: visible from 2026-10-16 20:00".
+ */
+export function listOpsBanners(): Promise<OpsBanner[]> {
+	return apiJson<OpsBanner[]>('/api/admin/banners', { credentials: 'same-origin' });
+}
+
+/**
+ * `POST /api/admin/banners` — create a new banner. Rejects with
+ * 409 if the server-side cap (10 banners) is reached, 400 on
+ * validation failure (empty body, body > 2048 bytes, invalid
+ * locale key).
+ */
+export async function createOpsBanner(input: OpsBannerInput): Promise<OpsBanner> {
+	const res = await apiFetch('/api/admin/banners', {
+		method: 'POST',
+		credentials: 'same-origin',
+		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
+		body: JSON.stringify(input)
+	});
+	if (!res.ok) {
+		const e = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
+		throw new Error(e.message || e.error || `create banner failed: ${res.status}`);
+	}
+	return (await res.json()) as OpsBanner;
+}
+
+/**
+ * `PUT /api/admin/banners/{id}` — full-replacement update. `id`,
+ * `created_by`, `created_at` stay. Severity change on an existing
+ * id does NOT un-dismiss users who already dismissed; the design
+ * note on the backend's `update` recommends DELETE + create for
+ * that case.
+ */
+export async function updateOpsBanner(id: string, input: OpsBannerInput): Promise<OpsBanner> {
+	const res = await apiFetch(`/api/admin/banners/${encodeURIComponent(id)}`, {
+		method: 'PUT',
+		credentials: 'same-origin',
+		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
+		body: JSON.stringify(input)
+	});
+	if (!res.ok) {
+		const e = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
+		throw new Error(e.message || e.error || `update banner failed: ${res.status}`);
+	}
+	return (await res.json()) as OpsBanner;
+}
+
+/** `DELETE /api/admin/banners/{id}` — remove one banner. */
+export function deleteOpsBanner(id: string): Promise<void> {
+	return mutate(`/api/admin/banners/${encodeURIComponent(id)}`, 'DELETE', undefined);
 }
 
 // verifyMigration + MigrationVerifyResult retired in slice 7 of

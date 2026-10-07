@@ -107,6 +107,19 @@ pub enum Topic {
     /// gate so the C2 WS-integration slice can land without a spec
     /// change here.
     Collab(Uuid),
+
+    /// Server-wide maintenance state broadcast. Carries announcements
+    /// that would otherwise require polling: `OpsBannerChanged` for
+    /// the admin-authored banner list, with room for future global
+    /// state transitions (migration started/completed, write-lock
+    /// engaged/released) that today only surface via the
+    /// X-Server-Status header on the next API call.
+    ///
+    /// AuthZ: public — any authenticated session can subscribe. The
+    /// payload is strictly the subset of state we already expose on
+    /// `/api/config` without authentication (`banners_version` is a
+    /// hash of that same payload). No per-user filtering needed.
+    ServerStatus,
 }
 
 impl Topic {
@@ -119,6 +132,7 @@ impl Topic {
             Topic::UserNotifications(id) => format!("user:{id}:notifications"),
             Topic::Job(name) => format!("job:{name}"),
             Topic::Collab(id) => format!("collab:{id}"),
+            Topic::ServerStatus => "server:status".to_string(),
         }
     }
 
@@ -144,6 +158,9 @@ impl Topic {
         if let Some(rest) = s.strip_prefix("collab:") {
             let id = Uuid::parse_str(rest).map_err(|_| ParseTopicErr::BadUuid)?;
             return Ok(Topic::Collab(id));
+        }
+        if s == "server:status" {
+            return Ok(Topic::ServerStatus);
         }
         if let Some(name) = s.strip_prefix("job:") {
             // Job names are scheduler-registered short slugs — see
@@ -187,6 +204,7 @@ impl Topic {
             Topic::Collab(id) => AuthzCheck::ResourceRead {
                 resource: BusResource::File(*id),
             },
+            Topic::ServerStatus => AuthzCheck::Public,
         }
     }
 }
@@ -242,6 +260,12 @@ pub enum AuthzCheck {
     /// Non-admin subscriber gets `topic_forbidden` on the wire —
     /// same anti-enum shape as unknown-topic denial.
     RoleAdmin,
+
+    /// Class 4 — Public. Any authenticated session may subscribe;
+    /// no per-user, per-role, or per-resource gate. Reserved for
+    /// topics whose payload is already exposed on `/api/config`
+    /// without authentication (`Topic::ServerStatus`).
+    Public,
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -426,6 +450,22 @@ pub enum MessageBusEvent {
         reason: Option<String>,
         ended_at: chrono::DateTime<chrono::Utc>,
     },
+
+    /// Something about server-wide status changed — ops banners,
+    /// backend write-lock holder, migration progress, rotation
+    /// state, future global flags. Carries ONLY a short `version`
+    /// hash that the FE compares against its last-seen value and
+    /// refetches `/api/config` on mismatch. Keeping the event tiny
+    /// means one source of truth for the full state
+    /// (`/api/config.server_status`), and WS-down /
+    /// reconnect-window cases degrade cleanly to the per-request
+    /// `X-Server-Status` header-diff path on the FE.
+    ///
+    /// Deliberately one event for every axis — a new axis gets a
+    /// new field on the HeaderPayload and a new fire site that
+    /// bumps the same `version`, no new event variant. See
+    /// `interfaces/middleware/server_status.rs` for the current set.
+    ServerStatusChanged { version: String },
 }
 
 // ════════════════════════════════════════════════════════════════════════════

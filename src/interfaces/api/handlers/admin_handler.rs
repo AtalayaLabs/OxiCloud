@@ -104,6 +104,24 @@ pub fn admin_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/storage/migration/start", post(start_migration))
         .route("/storage/migration/pause", post(pause_migration))
         .route("/storage/migration/resume", post(resume_migration))
+        // Backend write-lock (operator-driven External variant) —
+        // see the handler docs. GET inspects, POST acquires, DELETE
+        // releases any variant (admin escape hatch for stuck
+        // migrations).
+        .route(
+            "/storage/write-lock",
+            get(get_backend_write_lock)
+                .post(acquire_backend_write_lock)
+                .delete(release_backend_write_lock),
+        )
+        // Operator-driven banner messages — CRUD on the list +
+        // per-id update/delete. See the handler docs on each
+        // function.
+        .route("/banners", get(list_ops_banners).post(create_ops_banner))
+        .route(
+            "/banners/{id}",
+            axum::routing::put(update_ops_banner).delete(delete_ops_banner),
+        )
         // K3 (storage-key-rotation): per-entry rotate trigger.
         // Normalises every blob on the named entry to its head-pair
         // format (legacy → v1, plaintext ↔ encrypted, old-key →
@@ -635,6 +653,480 @@ pub async fn resume_migration(
     trigger_backend_migration(state, None).await
 }
 
+// ─── Backend write-lock — operator-driven External acquire/release ─────────
+//
+// The typed-reason gate from
+// `application::services::backend_write_gate` covers four variants:
+// `Migration`, `Backup`, `Rotation` (held by the job that owns the
+// operation), and `External` (held by an operator who needs OxiCloud
+// to quiesce while they run restic / borg / a filesystem snapshot).
+// These three endpoints expose the External variant to the admin
+// UI — one GET to inspect the holder, one POST to acquire, one
+// DELETE to release.
+//
+// Why operator-release can clear ANY holder (not just External):
+// the operator is the last-resort escape hatch for a stuck
+// `backend_migration` whose job row cannot be cancelled. The
+// alternative was editing admin_settings by hand. Audit-logged with
+// the previous holder's kind so the trail survives operator-driven
+// clears.
+
+/// GET /api/admin/storage/write-lock — current holder, or `None`.
+///
+/// Public contract: the response is a stable
+/// [`BackendWriteLockStatusDto`] carrying `is_held` + an optional
+/// `holder` (typed reason). Called by the admin UI on every
+/// Storage-tab visit, and by hurl tests to assert pre/post state.
+#[utoipa::path(
+    get,
+    path = "/api/admin/storage/write-lock",
+    responses(
+        (status = 200, body = crate::application::dtos::settings_dto::BackendWriteLockStatusDto, description = "Current backend-write-lock holder"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn get_backend_write_lock(
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, AppError> {
+    let holder = state.backend_write_gate.held_by();
+    Ok(Json(
+        crate::application::dtos::settings_dto::BackendWriteLockStatusDto {
+            is_held: holder.is_some(),
+            holder,
+        },
+    ))
+}
+
+/// POST /api/admin/storage/write-lock — engage the External lock.
+///
+/// Takes a one-line label the UI surfaces alongside the lock icon
+/// (e.g., "nightly restic to NAS"). Fails with 409 if any OTHER
+/// holder is already engaged — operator must release the current
+/// hold first via DELETE, which is audit-logged.
+#[utoipa::path(
+    post,
+    path = "/api/admin/storage/write-lock",
+    request_body(
+        content = crate::application::dtos::settings_dto::AcquireExternalLockDto,
+        description = "Label + optional auto-expiry"
+    ),
+    responses(
+        (status = 200, body = crate::application::dtos::settings_dto::BackendWriteLockStatusDto, description = "External lock engaged"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required"),
+        (status = 409, description = "Backend write-lock already held by another operation (migration/backup/rotation/external)")
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn acquire_backend_write_lock(
+    State(state): State<Arc<AppState>>,
+    auth_user: AuthUser,
+    Json(body): Json<crate::application::dtos::settings_dto::AcquireExternalLockDto>,
+) -> Result<impl IntoResponse, AppError> {
+    use crate::application::services::backend_write_gate::{
+        BackendWriteLockReason, EXTERNAL_LOCK_MAX_HOLD,
+    };
+
+    // Clamp the expiry to [60s, 24h]. Zero would defeat the lock;
+    // a week-long default would wedge writes if the operator's
+    // cron script dies.
+    let max_secs = EXTERNAL_LOCK_MAX_HOLD.num_seconds().max(0) as u64;
+    let expires_in = body
+        .expires_in_seconds
+        .unwrap_or(max_secs)
+        .clamp(60, 24 * 3600);
+    let now = chrono::Utc::now();
+    let reason = BackendWriteLockReason::External {
+        admin_id: auth_user.id,
+        label: body.label.clone(),
+        acquired_at: now,
+        expires_at: now + chrono::Duration::seconds(expires_in as i64),
+    };
+
+    if let Err(current) = state.backend_write_gate.try_acquire(reason.clone()) {
+        tracing::info!(
+            target: "audit",
+            event = "backend_write_lock.acquire_rejected",
+            reason = "already_held",
+            caller_id = %auth_user.id,
+            current_holder = %current.0.kind(),
+            "👮🏻‍♂️ external lock refused — backend write-lock already held by {}",
+            current.0.kind()
+        );
+        return Err(AppError::new(
+            StatusCode::CONFLICT,
+            format!(
+                "backend write-lock is already held by {} — release it first",
+                current.0.kind()
+            ),
+            "Conflict",
+        ));
+    }
+
+    // Persist bool + typed holder for restart survival.
+    if let Some(pool) = state.db_pool.as_ref() {
+        if let Err(e) = crate::infrastructure::services::entry_backend::persist_migration_readonly(
+            pool.as_ref(),
+            true,
+        )
+        .await
+        {
+            // Roll back the in-memory gate so a crash doesn't leave
+            // writes refused for a lock we failed to persist. The
+            // operator sees a 500 and can retry.
+            state.backend_write_gate.release();
+            tracing::warn!(
+                target: "audit",
+                event = "backend_write_lock.persist_bool_failed",
+                caller_id = %auth_user.id,
+                error = %e,
+            );
+            return Err(AppError::internal_error(format!(
+                "could not persist readonly flag: {e}"
+            )));
+        }
+        if let Err(e) =
+            crate::infrastructure::services::entry_backend::persist_backend_write_lock_holder(
+                pool.as_ref(),
+                Some(&reason),
+            )
+            .await
+        {
+            // Bool is set so writes stay refused; just a less
+            // informative reason on restart. Log and continue.
+            tracing::warn!(
+                target: "audit",
+                event = "backend_write_lock.persist_holder_failed",
+                caller_id = %auth_user.id,
+                error = %e,
+                "external hold engaged but typed holder write failed; a restart would \
+                 reseed as Migration(legacy)"
+            );
+        }
+    }
+    state
+        .migration_readonly
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+
+    broadcast_server_status_change(&state);
+    tracing::info!(
+        target: "audit",
+        event = "backend_write_lock.acquired",
+        reason = "external",
+        caller_id = %auth_user.id,
+        label = %body.label,
+        expires_in_seconds = expires_in,
+        "👮🏻‍♂️ external backend write-lock engaged"
+    );
+
+    Ok(Json(
+        crate::application::dtos::settings_dto::BackendWriteLockStatusDto {
+            is_held: true,
+            holder: Some(reason),
+        },
+    ))
+}
+
+/// DELETE /api/admin/storage/write-lock — release the lock,
+/// whatever variant currently holds it.
+///
+/// Clears both the typed holder and the legacy bool, so writes
+/// resume AND backend-writer jobs stop deferring on the next tick.
+/// Audit-logged with the previous holder's kind for the trail.
+#[utoipa::path(
+    delete,
+    path = "/api/admin/storage/write-lock",
+    responses(
+        (status = 200, body = crate::application::dtos::settings_dto::BackendWriteLockStatusDto, description = "Lock released (or was already free)"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn release_backend_write_lock(
+    State(state): State<Arc<AppState>>,
+    auth_user: AuthUser,
+) -> Result<impl IntoResponse, AppError> {
+    let previous = state.backend_write_gate.release();
+    state
+        .migration_readonly
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+
+    if let Some(pool) = state.db_pool.as_ref() {
+        if let Err(e) = crate::infrastructure::services::entry_backend::persist_migration_readonly(
+            pool.as_ref(),
+            false,
+        )
+        .await
+        {
+            tracing::warn!(
+                target: "audit",
+                event = "backend_write_lock.release_persist_bool_failed",
+                caller_id = %auth_user.id,
+                error = %e,
+                "in-memory release OK but the DB bool persist failed; a restart will \
+                 reseed the gate until admin_settings is corrected"
+            );
+        }
+        if let Err(e) =
+            crate::infrastructure::services::entry_backend::persist_backend_write_lock_holder(
+                pool.as_ref(),
+                None,
+            )
+            .await
+        {
+            // Audit — not just a trace. The bool is already cleared
+            // so the AuthZ fast path is free, but a stale typed row
+            // would come back on the next boot and reseed the gate.
+            // Operator needs to see this.
+            tracing::warn!(
+                target: "audit",
+                event = "backend_write_lock.release_persist_holder_failed",
+                caller_id = %auth_user.id,
+                error = %e,
+                "in-memory release OK and bool cleared, but typed holder DELETE failed; \
+                 the next boot would reseed the gate — operator must clear the row \
+                 manually (DELETE FROM auth.admin_settings WHERE key = \
+                 'storage.backend_write_lock_holder')"
+            );
+        }
+    }
+
+    broadcast_server_status_change(&state);
+    tracing::info!(
+        target: "audit",
+        event = "backend_write_lock.released",
+        caller_id = %auth_user.id,
+        previous_holder = ?previous.as_ref().map(|r| r.kind()),
+        "👮🏻‍♂️ backend write-lock released by admin"
+    );
+
+    Ok(Json(
+        crate::application::dtos::settings_dto::BackendWriteLockStatusDto {
+            is_held: false,
+            holder: None,
+        },
+    ))
+}
+
+// ─── Ops banners — operator-driven announcements ────────────────────────────
+//
+// CRUD surface for the `/admin/maintenance` banner editor. Audit-logged
+// on every mutation; the message bus broadcasts `OpsBannerChanged` on
+// `Topic::ServerStatus` so open client tabs refresh their banner store
+// within ~1s instead of on their next natural API call. The
+// version-diff fallback on X-Server-Status covers the WS-down /
+// reconnect-window cases.
+//
+// Note on ordering vs permissions: this surface is admin-only (gated
+// by the `/api/admin/*` middleware layer, not inline), and inputs are
+// validated by [`OpsBannerService`] against hard caps on count /
+// locale count / body size. 400s are mapped from service errors with
+// a stable `error_type` discriminator the SPA can switch on.
+
+/// GET /api/admin/banners — full list, including `starts_at > now`
+/// entries not yet visible to users. Admin inspects what they've
+/// scheduled; the public endpoint filters.
+#[utoipa::path(
+    get,
+    path = "/api/admin/banners",
+    responses(
+        (status = 200, body = Vec<crate::application::services::ops_banner_service::OpsBanner>, description = "Full admin-side banner list — includes scheduled-but-not-yet-visible entries"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn list_ops_banners(
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, AppError> {
+    Ok(Json(state.ops_banner_service.list_all()))
+}
+
+/// POST /api/admin/banners — create a new banner.
+#[utoipa::path(
+    post,
+    path = "/api/admin/banners",
+    request_body = crate::application::services::ops_banner_service::OpsBannerInput,
+    responses(
+        (status = 201, body = crate::application::services::ops_banner_service::OpsBanner, description = "Banner created"),
+        (status = 400, description = "Validation error (empty body, oversized body, invalid locale, …)"),
+        (status = 409, description = "Banner cap reached — delete one before creating another"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn create_ops_banner(
+    State(state): State<Arc<AppState>>,
+    auth_user: AuthUser,
+    Json(input): Json<crate::application::services::ops_banner_service::OpsBannerInput>,
+) -> Result<impl IntoResponse, AppError> {
+    let banner = state
+        .ops_banner_service
+        .create(input, auth_user.id)
+        .await
+        .map_err(map_banner_error)?;
+    broadcast_server_status_change(&state);
+    tracing::info!(
+        target: "audit",
+        event = "ops_banner.created",
+        caller_id = %auth_user.id,
+        banner_id = %banner.id,
+        severity = ?banner.severity,
+        locales_count = banner.body.len(),
+        "👮🏻‍♂️ ops banner created"
+    );
+    Ok((StatusCode::CREATED, Json(banner)))
+}
+
+/// PUT /api/admin/banners/{id} — full-replacement update of
+/// severity/body/starts_at. `id` + `created_by` + `created_at` stay.
+#[utoipa::path(
+    put,
+    path = "/api/admin/banners/{id}",
+    params(("id" = String, Path, description = "Banner UUID")),
+    request_body = crate::application::services::ops_banner_service::OpsBannerInput,
+    responses(
+        (status = 200, body = crate::application::services::ops_banner_service::OpsBanner, description = "Banner updated"),
+        (status = 400, description = "Validation error"),
+        (status = 404, description = "Banner not found"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn update_ops_banner(
+    State(state): State<Arc<AppState>>,
+    auth_user: AuthUser,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(input): Json<crate::application::services::ops_banner_service::OpsBannerInput>,
+) -> Result<impl IntoResponse, AppError> {
+    let uuid = Uuid::parse_str(&id).map_err(|_| {
+        AppError::new(
+            StatusCode::NOT_FOUND,
+            "banner not found".to_string(),
+            "NotFound",
+        )
+    })?;
+    let banner = state
+        .ops_banner_service
+        .update(uuid, input)
+        .await
+        .map_err(map_banner_error)?;
+    broadcast_server_status_change(&state);
+    tracing::info!(
+        target: "audit",
+        event = "ops_banner.updated",
+        caller_id = %auth_user.id,
+        banner_id = %banner.id,
+        severity = ?banner.severity,
+        locales_count = banner.body.len(),
+        "👮🏻‍♂️ ops banner updated"
+    );
+    Ok(Json(banner))
+}
+
+/// DELETE /api/admin/banners/{id} — remove one banner.
+#[utoipa::path(
+    delete,
+    path = "/api/admin/banners/{id}",
+    params(("id" = String, Path, description = "Banner UUID")),
+    responses(
+        (status = 204, description = "Banner deleted"),
+        (status = 404, description = "Banner not found"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Admin required")
+    ),
+    security(("bearerAuth" = [])),
+    tag = "admin"
+)]
+pub async fn delete_ops_banner(
+    State(state): State<Arc<AppState>>,
+    auth_user: AuthUser,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    let uuid = Uuid::parse_str(&id).map_err(|_| {
+        AppError::new(
+            StatusCode::NOT_FOUND,
+            "banner not found".to_string(),
+            "NotFound",
+        )
+    })?;
+    state
+        .ops_banner_service
+        .delete(uuid)
+        .await
+        .map_err(map_banner_error)?;
+    broadcast_server_status_change(&state);
+    tracing::info!(
+        target: "audit",
+        event = "ops_banner.deleted",
+        caller_id = %auth_user.id,
+        banner_id = %uuid,
+        "👮🏻‍♂️ ops banner deleted"
+    );
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Map a service-layer validation / IO error to an HTTP response.
+/// One place so every mutating endpoint uses the same discriminator
+/// strings — the FE switches on `error_type`.
+fn map_banner_error(
+    e: crate::application::services::ops_banner_service::OpsBannerError,
+) -> AppError {
+    use crate::application::services::ops_banner_service::OpsBannerError;
+    match e {
+        OpsBannerError::CapReached => {
+            AppError::new(StatusCode::CONFLICT, e.to_string(), "Conflict")
+        }
+        OpsBannerError::NotFound => AppError::new(StatusCode::NOT_FOUND, e.to_string(), "NotFound"),
+        OpsBannerError::EmptyBody
+        | OpsBannerError::TooManyLocales
+        | OpsBannerError::BodyTooLong { .. }
+        | OpsBannerError::InvalidLocale { .. }
+        | OpsBannerError::ExpiresBeforeStart => {
+            AppError::new(StatusCode::BAD_REQUEST, e.to_string(), "BadRequest")
+        }
+        OpsBannerError::Internal(msg) => AppError::internal_error(msg),
+    }
+}
+
+/// Publish the new `banners_version` on the server-status bus topic
+/// so every connected client refreshes. Silent no-op when the bus
+/// isn't configured (`OXICLOUD_MESSAGEBUS_ENABLE=false`) — the
+/// FE's X-Server-Status version-diff fallback covers it.
+/// Broadcast a `ServerStatusChanged` event on the WS message bus so
+/// every connected session refetches `/api/config` within ~1s. The
+/// `version` hash covers EVERY axis the server-status payload
+/// carries (readonly, holder, migration/rotation progress,
+/// banners), so a single call site is correct for ops banners,
+/// write-lock acquire/release, migration engage/release — any
+/// state transition the FE might care about.
+///
+/// WS-down / reconnect-window gracefully degrades to the X-Server-
+/// Status header-diff path (same code path), so this is purely a
+/// latency optimisation.
+fn broadcast_server_status_change(state: &Arc<AppState>) {
+    use crate::application::ports::message_bus_ports::{MessageBus, MessageBusEvent, Topic};
+    use crate::interfaces::middleware::server_status::compute_server_status_version;
+    let bus: &dyn MessageBus = state.bus.as_ref();
+    bus.publish(
+        &Topic::ServerStatus,
+        MessageBusEvent::ServerStatusChanged {
+            version: compute_server_status_version(state),
+        },
+    );
+}
+
 // verify_migration endpoint retired (slice 7 of
 // docs/plan/storage-multi-entry.md). It was a sample-based sanity
 // check against the currently-effective target backend; superseded
@@ -1160,6 +1652,13 @@ pub async fn get_dashboard_stats(
                 });
             remote && !state.core.config.storage.cache.enabled
         },
+        // No notification sink configured — see
+        // [`compute_notification_sink_missing`] for the rule.
+        notification_sink_missing: compute_notification_sink_missing(
+            &state.core.config.jobs_notify.email_to,
+            state.core.config.smtp.is_enabled(),
+            state.core.config.webhook.url.as_deref(),
+        ),
         // Live cache occupancy for the admin "Storage cache" card.
         // Both snapshots are point-in-time; moka runs maintenance
         // lazily, so the backend-cache side flushes pending tasks
@@ -3380,23 +3879,30 @@ pub async fn cancel_job(
                     .migration_readonly
                     .load(std::sync::atomic::Ordering::Relaxed)
             {
-                if let Some(pool) = state.db_pool.as_ref()
-                    && let Err(e) =
+                if let Some(pool) = state.db_pool.as_ref() {
+                    if let Err(e) =
                         crate::infrastructure::services::entry_backend::persist_migration_readonly(
                             pool.as_ref(),
                             false,
                         )
                         .await
-                {
-                    tracing::warn!(
-                        target: "oxicloud::migration",
-                        event = "storage.migration_readonly.release_persist_failed",
-                        run_id = %run_id,
-                        error = %e,
-                        "could not persist migration_readonly=false after cancelling a paused \
-                         migration; writes resume now but a restart will come up read-only"
-                    );
+                    {
+                        tracing::warn!(
+                            target: "oxicloud::migration",
+                            event = "storage.migration_readonly.release_persist_failed",
+                            run_id = %run_id,
+                            error = %e,
+                            "could not persist migration_readonly=false after cancelling a paused \
+                             migration; writes resume now but a restart will come up read-only"
+                        );
+                    }
+                    let _ = crate::infrastructure::services::entry_backend::persist_backend_write_lock_holder(
+                        pool.as_ref(),
+                        None,
+                    )
+                    .await;
                 }
+                state.backend_write_gate.release();
                 state
                     .migration_readonly
                     .store(false, std::sync::atomic::Ordering::Relaxed);
@@ -3823,9 +4329,82 @@ pub async fn get_notify_info(
 // against the SMTP mock, which is a better test than a button an operator
 // has to think to press.
 
+/// `notification_sink_missing` rule for the dashboard DTO.
+///
+/// Returns `true` when both outbound paths are effectively
+/// unavailable:
+///
+/// * **Email path** — needs BOTH `OXICLOUD_JOBS_NOTIFY_EMAIL_TO`
+///   (non-empty recipients) AND SMTP configured
+///   (`OXICLOUD_SMTP_HOST`). Setting `JOBS_NOTIFY_EMAIL_TO` without
+///   SMTP leaves findings addressed to recipients but no transport
+///   to carry them, so the banner must still fire — treating that
+///   half-configured state as "sink exists" would silently drop
+///   every alert.
+/// * **Webhook path** — `OXICLOUD_WEBHOOK_URL` set.
+///
+/// Banner fires only when BOTH paths are unavailable. Either one
+/// configured silences it.
+///
+/// Lifted out of the inline DTO expression so the truth-table
+/// branches get covered by [`tests::notification_sink_missing_rule`]
+/// — the hurl suite pins only one combination (all-set / banner
+/// off) because hurl can't flip env vars on a running server.
+fn compute_notification_sink_missing(
+    email_to: &[String],
+    smtp_enabled: bool,
+    webhook_url: Option<&str>,
+) -> bool {
+    let email_path_available = !email_to.is_empty() && smtp_enabled;
+    let webhook_path_available = webhook_url.is_some();
+    !email_path_available && !webhook_path_available
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Truth table for the `notification_sink_missing` flag. The
+    /// banner must light up ONLY when both outbound paths are
+    /// effectively unavailable. Specifically:
+    ///   * `OXICLOUD_JOBS_NOTIFY_EMAIL_TO` without SMTP is NOT
+    ///     a usable email path — the common misconfig of
+    ///     "address set, SMTP forgotten" still fires the banner.
+    ///   * Either path fully configured silences it.
+    #[test]
+    fn notification_sink_missing_rule() {
+        let one_email = &["ops@example.com".to_string()][..];
+        let webhook = Some("https://hooks.example.com/x");
+
+        // Neither path configured → banner fires.
+        assert!(compute_notification_sink_missing(&[], false, None));
+
+        // Email path HALF-configured (recipients but no SMTP) is
+        // STILL "no sink" — mail would be addressed but never
+        // leave the server. Banner fires.
+        assert!(compute_notification_sink_missing(one_email, false, None));
+
+        // Email path HALF-configured the other way (SMTP up but
+        // nobody to mail) — also no sink.
+        assert!(compute_notification_sink_missing(&[], true, None));
+
+        // Email path FULLY configured → silenced.
+        assert!(!compute_notification_sink_missing(one_email, true, None));
+
+        // Webhook alone → silenced regardless of email state.
+        assert!(!compute_notification_sink_missing(&[], false, webhook));
+        assert!(!compute_notification_sink_missing(
+            one_email, false, webhook
+        ));
+        assert!(!compute_notification_sink_missing(&[], true, webhook));
+        assert!(!compute_notification_sink_missing(one_email, true, webhook));
+
+        // Multiple emails — any non-empty counts as "recipients
+        // present"; still needs SMTP to actually silence.
+        let two_emails = &["a@x".to_string(), "b@x".to_string()][..];
+        assert!(compute_notification_sink_missing(two_emails, false, None));
+        assert!(!compute_notification_sink_missing(two_emails, true, None));
+    }
 
     /// The job-trigger query must extract from any URL shape, including
     /// one with no query string at all.

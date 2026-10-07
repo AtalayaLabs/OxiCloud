@@ -163,6 +163,14 @@ impl RecoverableJobHandler for BackendRotateService {
         Mutates::Always
     }
 
+    fn is_backend_writer(&self) -> bool {
+        // Rewrites every blob with a new key. A rotation that runs
+        // concurrently with a migration would have the migration
+        // copying the OLD ciphertext while the rotation is replacing
+        // it in place — undefined ordering, likely data loss.
+        true
+    }
+
     /// Definitive count — one row per blob. Same query as
     /// `backend_migration::count_total`; the two walk the same rows.
     async fn count_total(&self) -> Option<u64> {

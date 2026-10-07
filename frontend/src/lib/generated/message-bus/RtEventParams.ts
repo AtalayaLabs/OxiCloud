@@ -10,6 +10,7 @@ import type NotificationReceivedData from './NotificationReceivedData';
 import type JobRunStartedData from './JobRunStartedData';
 import type JobRunProgressData from './JobRunProgressData';
 import type JobRunEndedData from './JobRunEndedData';
+import type ServerStatusChangedData from './ServerStatusChangedData';
 import type RtEventKind from './RtEventKind';
 // AUTO-GENERATED — do not edit by hand.
 // Regenerate with `just asyncapi-ts`.
@@ -26,7 +27,8 @@ interface RtEventParams {
 		| NotificationReceivedData
 		| JobRunStartedData
 		| JobRunProgressData
-		| JobRunEndedData;
+		| JobRunEndedData
+		| ServerStatusChangedData;
 	event: RtEventKind;
 	topic: string;
 }

@@ -118,6 +118,13 @@ impl RecoverableJobHandler for BackendRechunk {
         None
     }
 
+    fn is_backend_writer(&self) -> bool {
+        // Writes new chunk blobs AND deletes legacy whole-file blobs
+        // once the rechunk is verified. Both are backend ops that must
+        // not race a migration / backup / rotation / External hold.
+        true
+    }
+
     async fn count_total(&self) -> Option<u64> {
         match self.dedup.count_legacy_blobs().await {
             Ok(n) => Some(n.max(0) as u64),

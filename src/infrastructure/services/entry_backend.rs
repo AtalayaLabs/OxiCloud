@@ -39,7 +39,22 @@ pub const ACTIVE_BACKEND_NAME_KEY: &str = "storage.active_backend_name";
 /// `docs/plan/storage-multi-entry.md` §"Read-only mode reuses the
 /// existing AuthZ short-circuit". Value is `"true"` or `"false"`
 /// (plain text; the settings table stores strings).
+///
+/// Kept alive as a backward-compat seed for the typed holder below —
+/// when the holder row is absent at boot but this bool reads `"true"`,
+/// the gate reseeds as `Migration { source: "legacy", target: "legacy" }`
+/// so an operator mid-migration across the upgrade still sees writes
+/// refused and the UI banner surfaces the (coarse) reason. New writes
+/// now go to [`BACKEND_WRITE_LOCK_HOLDER_KEY`] alongside this bool so
+/// a restart recovers both "is held" AND "why".
 pub const MIGRATION_READONLY_KEY: &str = "storage.migration_readonly";
+
+/// Key in `auth.admin_settings` that holds the typed
+/// [`BackendWriteLockReason`] as JSON — the gate's authoritative
+/// restart-survival storage. `NULL` / absent / malformed → gate is
+/// not held (and the legacy bool above provides the coarse-grained
+/// fallback for pre-upgrade state).
+pub const BACKEND_WRITE_LOCK_HOLDER_KEY: &str = "storage.backend_write_lock_holder";
 
 /// Read the persisted `migration_readonly` flag from `admin_settings`.
 /// Absent row / parse failure / DB error all resolve to `false` — the
@@ -86,6 +101,126 @@ pub async fn persist_migration_readonly(pool: &PgPool, value: bool) -> Result<()
     .bind(if value { "true" } else { "false" })
     .execute(pool)
     .await?;
+    Ok(())
+}
+
+/// Read the persisted typed [`BackendWriteLockReason`] from
+/// `admin_settings`. Returns `None` for the three "not held" cases
+/// (absent row, NULL value, malformed JSON) — all collapse to
+/// "writes allowed". A malformed row MUST NOT wedge the server:
+/// a corrupt reason is at worst a lost banner-caption, not a
+/// permanent read-only state.
+///
+/// Called once at boot. Takes an optional legacy bool as a
+/// fallback: if the typed row is absent but
+/// `legacy_migration_readonly = true`, synthesize a
+/// `Migration { source: "legacy", target: "legacy" }` so an
+/// operator mid-migration-upgrade still sees writes refused — the
+/// exact failure the typed storage is being added to prevent.
+pub async fn load_backend_write_lock_holder(
+    pool: &PgPool,
+    legacy_migration_readonly: bool,
+) -> Option<crate::application::services::backend_write_gate::BackendWriteLockReason> {
+    use crate::application::services::backend_write_gate::BackendWriteLockReason;
+    let row: Result<Option<(Option<String>,)>, sqlx::Error> =
+        sqlx::query_as("SELECT value FROM auth.admin_settings WHERE key = $1")
+            .bind(BACKEND_WRITE_LOCK_HOLDER_KEY)
+            .fetch_optional(pool)
+            .await;
+    match row {
+        Ok(Some((Some(json),))) => match serde_json::from_str::<BackendWriteLockReason>(&json) {
+            Ok(reason) => Some(reason),
+            Err(e) => {
+                tracing::warn!(
+                    target: "oxicloud::scheduler",
+                    event = "storage.backend_write_lock.parse_failed",
+                    error = %e,
+                    raw = %json,
+                    "could not parse backend_write_lock_holder — treating gate as free; \
+                     the legacy migration_readonly bool is the only fallback"
+                );
+                legacy_fallback(legacy_migration_readonly)
+            }
+        },
+        Ok(_) => legacy_fallback(legacy_migration_readonly),
+        Err(e) => {
+            tracing::warn!(
+                target: "oxicloud::scheduler",
+                event = "storage.backend_write_lock.load_failed",
+                error = %e,
+                "failed to read {BACKEND_WRITE_LOCK_HOLDER_KEY} at boot; falling back to the \
+                 legacy migration_readonly bool"
+            );
+            legacy_fallback(legacy_migration_readonly)
+        }
+    }
+}
+
+fn legacy_fallback(
+    legacy_migration_readonly: bool,
+) -> Option<crate::application::services::backend_write_gate::BackendWriteLockReason> {
+    use crate::application::services::backend_write_gate::BackendWriteLockReason;
+    if legacy_migration_readonly {
+        tracing::info!(
+            target: "oxicloud::scheduler",
+            event = "storage.backend_write_lock.legacy_bool_seeded",
+            "no typed backend_write_lock_holder row, but migration_readonly=true — gate \
+             reseeded as Migration{{source=\"legacy\",target=\"legacy\"}}; the banner will \
+             update once the current operation checkpoints with its real pair of names"
+        );
+        Some(BackendWriteLockReason::Migration {
+            source: "legacy".to_string(),
+            target: "legacy".to_string(),
+        })
+    } else {
+        None
+    }
+}
+
+/// Persist the typed [`BackendWriteLockReason`] holder. `Some(reason)`
+/// upserts the serialized JSON; `None` DELETEs the row entirely —
+/// `auth.admin_settings.value` is `NOT NULL`, so writing a SQL NULL
+/// here would silently fail the release path and leave a stale
+/// holder row that reseeds the gate on the next boot. The load
+/// function already treats row-absence as "gate is free", so a
+/// clean DELETE is semantically identical to "no holder" without
+/// the schema violation.
+///
+/// Keep the legacy `MIGRATION_READONLY_KEY` bool in sync via
+/// [`persist_migration_readonly`] — the AuthZ fast-path reader
+/// doesn't speak JSON yet and reseeds from the bool on reboot.
+pub async fn persist_backend_write_lock_holder(
+    pool: &PgPool,
+    holder: Option<&crate::application::services::backend_write_gate::BackendWriteLockReason>,
+) -> Result<(), sqlx::Error> {
+    match holder {
+        Some(reason) => {
+            let payload = serde_json::to_string(reason).map_err(|e| {
+                // sqlx::Error has no "serialization" variant; wrap in Protocol
+                // which the handler's error logging treats the same as any DB
+                // error.
+                sqlx::Error::Protocol(format!("serialize backend_write_lock_holder: {e}"))
+            })?;
+            sqlx::query(
+                r#"
+                INSERT INTO auth.admin_settings (key, value, category, is_secret)
+                     VALUES ($1, $2, 'storage', FALSE)
+                ON CONFLICT (key)
+                DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+                "#,
+            )
+            .bind(BACKEND_WRITE_LOCK_HOLDER_KEY)
+            .bind(&payload)
+            .execute(pool)
+            .await?;
+        }
+        None => {
+            sqlx::query("DELETE FROM auth.admin_settings WHERE key = $1")
+                .bind(BACKEND_WRITE_LOCK_HOLDER_KEY)
+                .execute(pool)
+                .await?;
+        }
+    }
     Ok(())
 }
 

@@ -924,6 +924,9 @@
           },
           {
             "$ref": "#/components/schemas/JobRunEndedData"
+          },
+          {
+            "$ref": "#/components/schemas/ServerStatusChangedData"
           }
         ]
       },
@@ -941,7 +944,8 @@
           "notification_received",
           "job_run_started",
           "job_run_progress",
-          "job_run_ended"
+          "job_run_ended",
+          "server_status_changed"
         ],
         "type": "string"
       },
@@ -1222,6 +1226,19 @@
           "jsonrpc",
           "id",
           "method"
+        ],
+        "type": "object"
+      },
+      "ServerStatusChangedData": {
+        "additionalProperties": false,
+        "description": "Something about server-wide status changed — ops banners, backend write-lock holder, migration/rotation state, future global flags. Carries only a short `version` hash that the FE compares against its last-seen value and refetches `/api/config` on mismatch. One event for every axis; a new axis gets a new field on the HeaderPayload and a new fire site that bumps the same `version`, no new event variant. WS-down / reconnect-window cases degrade cleanly to the X-Server-Status header-diff path on the FE.",
+        "properties": {
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "version"
         ],
         "type": "object"
       }
