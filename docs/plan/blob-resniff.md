@@ -1,7 +1,7 @@
 # Plan — Re-sniffing content: content-keyed metadata and the `content_rescan` job
 
 **Status:** design captured 2026-10-07, nothing implemented. Triggered by
-`778b4339` (`fix(security): sniff the content type before trusting the
+`d5f37514` (`fix(security): sniff the content type before trusting the
 uploader's claim`), which fixed MIME detection on the *inflow* and surfaced
 three things it cannot fix: rows already stored, rows invalidated by content
 overwrite, and the fact that both existing re-extract endpoints iterate files
@@ -12,7 +12,7 @@ heading:
 
 | item | state |
 |---|---|
-| §0 container regression in `refine_content_type` | **NOT STARTED** — live defect in `778b4339` |
+| §0 envelope narrowing in `refine_content_type` | ✅ **DONE 2026-10-07** — `1e41f1b9` (carve-out + `upload_mime_sniffing.hurl`), `a7caafab` (widened to the vendor tree, measured on Apache Tika's 826-file corpus: 541 → 576 correctly typed), `ef6a3243` + `e40dcc38` (everyday + phone-camera type coverage). api-test green |
 | §A.1 migrations — both tables keyed by content | **NOT STARTED** |
 | §A.2 the two `media_sort_date` triggers | **NOT STARTED** — one is new and currently missing |
 | §A.3 writers, readers, dead-code deletions | **NOT STARTED** |
@@ -69,16 +69,43 @@ content-keyed, so "once per content" is expressible at all.
 
 ---
 
-# §0 — the container regression in the shipped upload path
+# §0 — the container regression in the shipped upload path — ✅ **DONE 2026-10-07**
 
-**Do this first; it is a live defect in `778b4339`, not future work.**
+Shipped in `1e41f1b9` and widened in `a7caafab`. Kept here because the
+reasoning is what §B.2 has to agree with, and because the final rule is
+broader than this section originally proposed:
+
+- The carve-out is **not** container-specific. It covers any detection that
+  describes the *envelope*: `application/zip`, `application/x-tar`,
+  `application/gzip`, `application/x-ole-storage` and **`text/xml`** — the
+  last because `infer` has no SVG matcher at all, so every SVG degraded to
+  `text/xml`, which was the costliest case (an SVG stored as XML is not an
+  image to anything downstream).
+- The accepted narrowing is the **shape** of the set, not a list of formats:
+  `application/vnd.*` plus the `+zip` / `+xml` structured suffixes. An
+  enumerated version was measured against Apache Tika's 826-file corpus and
+  missed ~25 real cases — `.msg`, `.vsd`, `.mpp`, `.kmz`, `.xps`, `.ggb`,
+  `.thmx`, and every password-protected OOXML document (an OLE2 wrapper
+  around the real zip).
+- **Not** narrowed, deliberately: `text/x-shellscript` (so `.py` with a
+  shebang reads as a shell script — same category, presentational, and the
+  frontend owns highlighter choice) and `text/html` (the detection is
+  security-relevant on the download path).
+- Residual, measured and accepted: ~22 corpus files where `infer` gives the
+  correct *parent* type — OOXML base vs `.docm`/`.xlsm`/`.xlsb`,
+  `image/heif` vs `heic`, `image/tiff` vs camera RAW. Those need a type
+  hierarchy (Tika's `<sub-class-of>`), not another whitelist entry.
+
+Original statement of the defect follows, for the record.
+
+**Was a live defect in `d5f37514`, not future work.**
 
 Making `refine_content_type` magic-first (`src/common/mime_detect.rs:49`) means
 `infer` now outranks a specific claim. For container formats where `infer`
 cannot see the discriminating entry inside `MAGIC_BYTES_LEN`, that is a
 *downgrade*:
 
-| scenario | before `778b4339` | after |
+| scenario | before `d5f37514` | after |
 |---|---|---|
 | `.docx`, browser sends the real OOXML type, `infer` detects docx | correct | correct |
 | `.docx`, browser sends the real OOXML type, `infer` falls through to `is_zip` | **correct** (claim won) | **`application/zip`** ← regression |
@@ -104,7 +131,7 @@ The existing seven precedence tests stay. Add, as a named group:
 
 | case | expected | guards against |
 |---|---|---|
-| zip bytes + `report.docx` + OOXML claim | the OOXML type | the `778b4339` regression itself |
+| zip bytes + `report.docx` + OOXML claim | the OOXML type | the `d5f37514` regression itself |
 | zip bytes + `report.docx` + `application/octet-stream` | the OOXML type | extension rescues when the client says nothing |
 | zip bytes + `sheet.xlsx` / `deck.pptx` | the matching OOXML type | one-format-only fixes |
 | zip bytes + `book.epub` | `application/epub+zip` | `infer` has an epub matcher; the rule must not fight it |
@@ -507,8 +534,14 @@ Delete: `reextract_all_audio_metadata` (`audio_metadata_service.rs:208`),
 `*FileRow` and `MetadataExtractionResult` types, handlers
 (`admin_handler.rs:1839,1866`), routes (`:150,:152`), the two frontend API
 wrappers (`frontend/src/lib/api/endpoints/admin.ts:59-69`), the two buttons and
-their state (`frontend/src/routes/admin/[[tab]]/+page.svelte`), and the
-`admin.reextract_*` locale keys across all 16 locales.
+their state, and the `admin.reextract_*` locale keys across all 16 locales.
+
+⚠ The buttons moved after this plan was written: maintenance actions now live
+under the **`maintenance` tab** of `frontend/src/routes/admin/[[tab]]/+page.svelte`
+(tab in the union at `:232`, rendered from `:3483`, and the file's own comment
+at `:2662` records the move). Still the same file — `/admin/maintenance` is a
+tab value, not a separate route — but grep for `reextract` rather than trusting
+line numbers.
 
 No shims: both are admin-only, synchronous, and their only callers are the
 buttons being deleted in the same change.
@@ -634,12 +667,11 @@ reference and dies with its source.
 
 ## Sequencing
 
-**§0 first, on its own** — it is a regression in already-committed code
-(`778b4339`), it is small, and it is the layer the job's rule has to agree
-with. Shipping it separately keeps the regression and its fix legible in
-history rather than buried in a feature branch.
+**§0 is done** (`1e41f1b9`, `a7caafab`, `ef6a3243`, `e40dcc38`) — shipped on its
+own, as intended, so the regression and its fix stay legible in history rather
+than buried in a feature branch.
 
-Then §A ships independently — A.1/A.2 (migrations + both triggers), A.3
+Next: §A ships independently — A.1/A.2 (migrations + both triggers), A.3
 (writers, readers, deletions), A.4 (reap hook) — then §B. A.4 is a hard
 prerequisite: the job creates rows corpus-wide.
 
