@@ -191,12 +191,7 @@ impl<T: Serialize> CursorListResponse<T> {
     /// every listing makes the body byte-identical given the same
     /// inputs, so the client's HTTP cache can treat the ETag as
     /// strong without risk.
-    pub fn weak_etag(
-        &self,
-        cursor_input: Option<&str>,
-        limit: usize,
-        fresh_signal: u64,
-    ) -> String {
+    pub fn weak_etag(&self, cursor_input: Option<&str>, limit: usize, fresh_signal: u64) -> String {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         cursor_input.hash(&mut hasher);

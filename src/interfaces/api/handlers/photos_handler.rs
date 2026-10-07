@@ -216,18 +216,13 @@ pub async fn list_photos_resources(
         })
         .collect();
 
-    let envelope =
-        CursorListResponse::<PhotoResourceItemDto>::with_cursor(items, next_cursor);
+    let envelope = CursorListResponse::<PhotoResourceItemDto>::with_cursor(items, next_cursor);
 
     // Compute the ETag from (cursor-input, limit, max media_sort_date,
     // row count, next_cursor) and short-circuit a repeated page fetch
     // with an empty 304 — §2 of the plan. The browser's HTTP cache
     // then re-serves the kept body without reshipping any tile.
-    let etag = envelope.weak_etag(
-        params.cursor.as_deref(),
-        limit as usize,
-        fresh_signal,
-    );
+    let etag = envelope.weak_etag(params.cursor.as_deref(), limit as usize, fresh_signal);
     if if_none_match_matches(&headers, &etag) {
         return not_modified(&etag).into_response();
     }

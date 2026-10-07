@@ -1,7 +1,7 @@
 use axum::{
     Json,
     extract::{Path, Query, State},
-    http::{Response, StatusCode, header},
+    http::{HeaderMap, Response, StatusCode, header},
     response::IntoResponse,
 };
 use std::sync::Arc;
@@ -28,6 +28,7 @@ use crate::domain::services::authorization::{Permission, Subject};
 use crate::domain::services::external_mount_id::{
     NodeId, encode_child_id, virtual_file_etag, virtual_folder_etag,
 };
+use crate::interfaces::api::etag::{if_none_match_matches, not_modified, with_cache_headers};
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::{AuthUser, CallerSubjects};
 
@@ -586,6 +587,7 @@ pub async fn download_folder_zip(
 pub async fn list_folder_resources(
     State(service): State<AppState>,
     callers: CallerSubjects,
+    headers: HeaderMap,
     Path(id): Path<String>,
     Query(q): Query<FolderResourcesQuery>,
 ) -> impl IntoResponse {
@@ -602,8 +604,11 @@ pub async fn list_folder_resources(
 
     let order_by = q.order_by.clone().unwrap_or_else(|| "name".to_owned());
     let kinds = q.resource_kinds();
+    // Snapshot cursor + limit for the shared ETag engine (§2).
+    let cursor_input = q.cursor.clone();
+    let limit = q.limit_clamped();
     let opts = ListResourcesOptions {
-        limit: q.limit_clamped(),
+        limit,
         cursor: q.decode_cursor(),
         order_by: &order_by,
         kinds: kinds.as_deref(),
@@ -640,6 +645,16 @@ pub async fn list_folder_resources(
         .await
     {
         Ok((rows, next_cursor)) => {
+            // Fresh signal for the ETag — max(modified_at) across the
+            // folder's children. Each `row.modified_at` is a
+            // `DateTime<Utc>`; capture BEFORE `rows.into_iter()`
+            // consumes the vec. An empty folder collapses to 0,
+            // stable across repeated empty revalidations.
+            let fresh_signal: u64 = rows
+                .iter()
+                .map(|r| r.modified_at.timestamp().max(0) as u64)
+                .max()
+                .unwrap_or(0);
             // Decided once, not per row. `is_favorite` / `is_shared` were
             // already handled in SQL; this covers the owner's identifiers,
             // which come straight off the row.
@@ -739,15 +754,24 @@ pub async fn list_folder_resources(
                 })
                 .collect();
 
-            {
-                // Pre-sized serialization (benches/ROUND12.md §M1).
-                let body = FolderResourcesDto::with_cursor(items, next_cursor);
-                crate::interfaces::api::sized_json::sized_json(
-                    128 + body.items.len()
-                        * crate::interfaces::api::sized_json::EST_WRAPPED_ROW_BYTES,
-                    &body,
-                )
+            let body = FolderResourcesDto::with_cursor(items, next_cursor);
+            // §2 shared ETag — short-circuit a repeat page fetch with
+            // an empty 304. The browser's HTTP cache then re-serves
+            // the kept body without reshipping every row. Mount-path
+            // listings (`list_mount_dir_response` below) do not yet
+            // thread headers through and keep returning 200 without
+            // an ETag — follow-up to extend the engine over external
+            // mounts.
+            let etag = body.weak_etag(cursor_input.as_deref(), limit, fresh_signal);
+            if if_none_match_matches(&headers, &etag) {
+                return not_modified(&etag).into_response();
             }
+            // Pre-sized serialization (benches/ROUND12.md §M1).
+            let response = crate::interfaces::api::sized_json::sized_json(
+                128 + body.items.len() * crate::interfaces::api::sized_json::EST_WRAPPED_ROW_BYTES,
+                &body,
+            );
+            with_cache_headers(response, &etag).into_response()
         }
         Err(e) => AppError::from(e).into_response(),
     }

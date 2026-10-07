@@ -1,6 +1,6 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use serde_json::json;
 use tracing::{debug, error, instrument, warn};
@@ -8,6 +8,7 @@ use tracing::{debug, error, instrument, warn};
 use crate::application::dtos::trash_dto::{TrashResourcesDto, TrashResourcesQuery};
 use crate::application::ports::trash_ports::TrashUseCase;
 use crate::common::di::AppState;
+use crate::interfaces::api::etag::{if_none_match_matches, not_modified, with_cache_headers};
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::AuthUser;
 use std::sync::Arc;
@@ -36,6 +37,7 @@ use std::sync::Arc;
 pub async fn get_trash_resources(
     State(state): State<Arc<AppState>>,
     auth_user: AuthUser,
+    headers: HeaderMap,
     Query(q): Query<TrashResourcesQuery>,
 ) -> axum::response::Response {
     let user_id = auth_user.id;
@@ -52,6 +54,8 @@ pub async fn get_trash_resources(
     };
 
     let order_by = q.order_by.as_deref().unwrap_or("deletion_date").to_owned();
+    let cursor_input = q.cursor.clone();
+    let limit = q.limit_clamped();
 
     // Discard cursor if sort dimension or direction changed between pages.
     let cursor = q
@@ -63,7 +67,7 @@ pub async fn get_trash_resources(
     match trash_service
         .list_resources_paged(
             user_id,
-            q.limit_clamped(),
+            limit,
             cursor,
             &order_by,
             kinds.as_deref(),
@@ -71,11 +75,26 @@ pub async fn get_trash_resources(
         )
         .await
     {
-        Ok((items, next_cursor)) => (
-            StatusCode::OK,
-            Json(TrashResourcesDto::with_cursor(items, next_cursor)),
-        )
-            .into_response(),
+        Ok((items, next_cursor)) => {
+            let envelope = TrashResourcesDto::with_cursor(items, next_cursor);
+            // Fresh signal: newest `trashed_at` on the page — bumps
+            // when a new row lands in trash, stable on repeat
+            // revalidations of an unchanged page. An empty trash
+            // collapses to 0, which stays stable across repeated
+            // "is my trash still empty?" checks and bumps as soon as
+            // the first item lands.
+            let fresh_signal: u64 = envelope
+                .items
+                .iter()
+                .map(|i| i.trashed_at.timestamp().max(0) as u64)
+                .max()
+                .unwrap_or(0);
+            let etag = envelope.weak_etag(cursor_input.as_deref(), limit, fresh_signal);
+            if if_none_match_matches(&headers, &etag) {
+                return not_modified(&etag).into_response();
+            }
+            with_cache_headers(Json(envelope), &etag).into_response()
+        }
         Err(e) => AppError::from(e).into_response(),
     }
 }
