@@ -132,6 +132,18 @@ tests/caldav/server.log
 # Test fixtures generated on-the-fly by tests/api/run.sh
 tests/fixtures/chunk-over-cap-*.bin
 tests/fixtures/rechunk-legacy-*.bin
+# Apache Tika's test-documents corpus, when copied in locally for the
+# MIME-detection audit (`cargo test --ignored tika_corpus_audit`).
+# NOT committed: ~119 MB over 826 files, it includes files named
+# `*KEY.pem` that secret scanners reject, and its provenance is a mix of
+# third-party samples enumerated in Tika's own NOTICE. Copy it in when
+# you want to run the audit, leave it out of git.
+#   for F in ./tika-parsers-standard-modules/*/src/test/resources/test-documents/*; \
+#     do cp -i "$F" tests/fixtures/mime-types; done
+tests/fixtures/mime-types/*
+!tests/fixtures/mime-types/Lorem*
+!tests/fixtures/mime-types/test.zip
+
 tests/fixtures/sniff-*.docx
 tests/fixtures/sniff-*.epub
 tests/fixtures/sniff-*.zip
