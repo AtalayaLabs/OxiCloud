@@ -94,28 +94,42 @@ fn specialises(candidate: &str, generic: &str) -> bool {
     // Strip any `; charset=…` parameter before comparing.
     let c = candidate.split(';').next().unwrap_or(candidate).trim();
     match generic {
-        "application/zip" => {
-            // `+zip` structured suffix (epub, and anything future), plus the
-            // two office families, which predate the suffix convention.
-            c.ends_with("+zip")
-                || c.starts_with("application/vnd.openxmlformats-officedocument")
-                || c.starts_with("application/vnd.oasis.opendocument")
+        // Both of these are *container* envelopes: a huge number of formats
+        // are "a zip with a particular layout" or "an OLE2 compound file
+        // with particular streams", and neither signature can tell you
+        // which.
+        //
+        // The shape of the accepted set, rather than a list of formats.
+        // An earlier version enumerated the two office families and was
+        // measured against Apache Tika's 826-file corpus (see
+        // `tika_corpus_audit`); it missed roughly 25 real cases —
+        // `.msg` → `vnd.ms-outlook`, `.vsd` → `vnd.visio`,
+        // `.mpp` → `vnd.ms-project`, `.kmz` → `vnd.google-earth.kmz`,
+        // `.xps` → `vnd.ms-xpsdocument`, `.ggb` → `vnd.geogebra.file`,
+        // `.thmx` → `vnd.ms-officetheme`, and every password-protected
+        // OOXML document, which is an OLE2 wrapper around the real zip.
+        // Enumerating that tail is a losing game; `application/vnd.*` is
+        // the registry's own name for "a specific vendor format", which is
+        // exactly the predicate wanted here.
+        //
+        // Still a whitelist: `text/html`, `image/svg+xml`,
+        // `application/javascript` and `text/plain` are all outside the
+        // vendor tree, so none of them can be smuggled past the sniffer.
+        "application/zip" | "application/x-ole-storage" => {
+            c.starts_with("application/vnd.")
+                || c.ends_with("+zip")
                 || matches!(
                     c,
-                    "application/java-archive" | "application/vnd.android.package-archive"
+                    "application/msword" | "application/java-archive" | "application/x-mspublisher"
                 )
         }
         // `image/svg+xml`, and any other `+xml` structured suffix.
         "text/xml" => c.ends_with("+xml"),
-        // Legacy OLE2 compound documents, when the CLSID was not recognised.
-        "application/x-ole-storage" => matches!(
-            c,
-            "application/msword" | "application/vnd.ms-excel" | "application/vnd.ms-powerpoint"
-        ),
         // tar and gzip have no narrowing worth preferring — `.tar.gz` maps
-        // straight back to `application/gzip`. Listed as envelopes anyway so
-        // the set reads as "what infer can emit generically", not "what we
-        // happened to handle".
+        // straight back to `application/gzip`, and `.svgz` is honestly
+        // gzip (the SVG inside is a second decode away). Listed as
+        // envelopes anyway so the set reads as "what infer can emit
+        // generically", not "what we happened to handle".
         _ => false,
     }
 }
@@ -467,6 +481,51 @@ mod tests {
         );
     }
 
+    /// OLE2 compound-file signature with a zeroed CLSID, which is what
+    /// `infer` cannot resolve to a specific type — it answers
+    /// `application/x-ole-storage`. Synthesised rather than fixtured:
+    /// every case below is reachable from these eight bytes.
+    const OLE2: &[u8] = b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1\x00\x00\x00\x00\x00\x00\x00\x00";
+
+    #[test]
+    fn ole_and_zip_envelopes_narrow_across_the_vendor_tree() {
+        // Each of these was a miss in the first version of `specialises`,
+        // found by running Apache Tika's corpus through it. Kept as a
+        // table so the next envelope format is one line, not a redesign.
+        for (bytes, name, expected) in [
+            (OLE2, "mail.msg", "application/vnd.ms-outlook"),
+            (OLE2, "plan.mpp", "application/vnd.ms-project"),
+            (OLE2, "diagram.vsd", "application/vnd.visio"),
+            // A password-protected OOXML document is an OLE2 wrapper
+            // around the real zip — so the bytes say "compound file" and
+            // only the name says "spreadsheet".
+            (
+                OLE2,
+                "locked.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ),
+            (ZIP, "earth.kmz", "application/vnd.google-earth.kmz"),
+            (ZIP, "print.xps", "application/vnd.ms-xpsdocument"),
+            (ZIP, "theme.thmx", "application/vnd.ms-officetheme"),
+        ] {
+            assert_eq!(
+                refine_content_type(bytes, name, "application/octet-stream"),
+                expected,
+                "{name} should narrow its envelope"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unresolvable_ole_file_keeps_the_envelope() {
+        // The inverse for the OLE arm: nothing to narrow with, so the
+        // honest generic stands.
+        assert_eq!(
+            refine_content_type(OLE2, "mystery.bin", "application/octet-stream"),
+            "application/x-ole-storage"
+        );
+    }
+
     #[test]
     fn a_real_xml_file_stays_xml() {
         let xml = br#"<?xml version="1.0"?><note><to>you</to></note>"#;
@@ -541,6 +600,94 @@ mod tests {
             refine_content_type(b"#!/usr/bin/env python3\nprint(1)\n", "tool.py", ""),
             "text/x-shellscript"
         );
+    }
+
+    /// Audit `refine_content_type` against a real-world corpus.
+    ///
+    /// `#[ignore]`d and opt-in: it needs Apache Tika's `test-documents`
+    /// copied into `tests/fixtures/mime-types/`, which is gitignored
+    /// (~119 MB, 826 files, includes `*KEY.pem` that secret scanners
+    /// reject). Copy it in and run:
+    ///
+    /// ```text
+    /// for F in ./tika-parsers-standard-modules/*/src/test/resources/test-documents/*; \
+    ///   do cp -i "$F" tests/fixtures/mime-types; done
+    /// cargo test --lib mime_detect::tests::tika_corpus_audit -- --ignored --nocapture
+    /// ```
+    ///
+    /// Not an assertion — a report. The question it answers is "which
+    /// detections describe the envelope rather than the content", which
+    /// is how `generic_envelope` should be extended: from evidence, not
+    /// from guessing which format is a zip in disguise.
+    #[test]
+    #[ignore = "needs the Tika corpus copied into tests/fixtures/mime-types (gitignored)"]
+    fn tika_corpus_audit() {
+        use std::collections::BTreeMap;
+
+        let dir = Path::new("tests/fixtures/mime-types");
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            eprintln!("corpus absent at {} — see the doc comment", dir.display());
+            return;
+        };
+
+        let mut silent = 0usize;
+        let mut agreed = 0usize;
+        // detected -> extension-implied -> example filenames
+        let mut disagreements: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            let head = &bytes[..bytes.len().min(MAGIC_BYTES_LEN)];
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+
+            let Some(kind) = infer::get(head) else {
+                silent += 1;
+                continue;
+            };
+            let detected = kind.mime_type().to_string();
+
+            // What the filename claims, as the reference "truth" — it is
+            // what a user and every other tool would call this file.
+            let by_ext = mime_guess::from_path(&name)
+                .first()
+                .map(|m| m.to_string())
+                .unwrap_or_default();
+
+            // What we would actually store today.
+            let stored = refine_content_type(head, &name, "");
+
+            if by_ext.is_empty() || stored == by_ext {
+                agreed += 1;
+            } else {
+                disagreements
+                    .entry((detected, by_ext))
+                    .or_default()
+                    .push(name);
+            }
+        }
+
+        eprintln!("\n── Tika corpus audit ───────────────────────────────");
+        eprintln!("infer silent (claim/extension decides): {silent}");
+        eprintln!("stored type matches the extension:      {agreed}");
+        eprintln!("disagreements, by (detected → extension):");
+        for ((detected, by_ext), names) in &disagreements {
+            eprintln!(
+                "  {:>4}×  {detected}  →  {by_ext}\n          e.g. {}",
+                names.len(),
+                names.iter().take(3).cloned().collect::<Vec<_>>().join(", ")
+            );
+        }
+        eprintln!("────────────────────────────────────────────────────\n");
     }
 
     #[test]
