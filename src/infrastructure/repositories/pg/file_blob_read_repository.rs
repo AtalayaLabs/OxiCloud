@@ -612,6 +612,33 @@ impl FileBlobReadRepository {
         // row. If `$5` is non-null and NOT in accessible, the CTE
         // is empty → LATERAL yields no rows → anti-enum: the
         // caller sees the same shape as a drive with no photos.
+        //
+        // §9 within-drive dedup by `blob_hash`. The lateral probe's
+        // inner `DISTINCT ON (fi.blob_hash)` picks one file row per
+        // unique blob WITHIN this drive — the newest by
+        // `(media_sort_date, id)`, matching the sort axis the
+        // gallery renders in. Cursor + outer LIMIT apply OUTSIDE the
+        // DISTINCT so a page boundary never drops the "newest copy"
+        // and promotes an older sibling on the next page (which
+        // would read as the photo "coming back" under a different
+        // name).
+        //
+        // Scope choice: within-drive, NOT cross-drive — `accessible`
+        // is already per-drive via `CROSS JOIN LATERAL`, so each
+        // drive's DISTINCT ON scope is isolated. A blob visible via
+        // grants on two drives surfaces once per drive, keeping
+        // provenance when the user organised distinct copies into
+        // distinct scopes.
+        //
+        // Perf: `idx_files_media_dedup_by_drive_blob` (migration
+        // `20261103000004_files_media_dedup_by_drive_blob_index.sql`)
+        // supports this DISTINCT ON directly — its leading
+        // `(drive_id, blob_hash)` lets the planner do a loose index
+        // scan (one seek per unique blob), and the trailing
+        // `(media_sort_date DESC, id DESC)` aligns with the per-group
+        // ORDER BY so the newest row per blob is at the head of each
+        // group with no in-memory sort. Partial WHERE mirrors the
+        // existing `idx_files_media_timeline_by_drive` filter.
         let sql = format!(
             r#"
             WITH accessible AS MATERIALIZED (
@@ -656,11 +683,16 @@ impl FileBlobReadRepository {
                   FROM accessible a
                  CROSS JOIN LATERAL (
                     SELECT fi.*
-                      FROM storage.files fi
-                     WHERE fi.drive_id = a.id
-                       AND NOT fi.is_trashed
-                       {kind_pred}
-                       {favorite_pred}
+                      FROM (
+                        SELECT DISTINCT ON (fi.blob_hash) fi.*
+                          FROM storage.files fi
+                         WHERE fi.drive_id = a.id
+                           AND NOT fi.is_trashed
+                           {kind_pred}
+                           {favorite_pred}
+                         ORDER BY fi.blob_hash, fi.media_sort_date DESC, fi.id DESC
+                     ) fi
+                     WHERE TRUE
                        {cursor_pred}
                      ORDER BY fi.media_sort_date DESC, fi.id DESC
                      LIMIT $4

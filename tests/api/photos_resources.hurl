@@ -549,6 +549,75 @@ HTTP *
 
 
 # ─────────────────────────────────────────────────────────────
+# Step 8d — §9 within-drive content_hash dedup. Alice's drive
+#          carries two unique blobs today: oxicloud-logo.jpg
+#          (`photo_file_id`) and img-00000.png (`photo_file_id_2`).
+#          Upload a SECOND copy of oxicloud-logo.jpg under a new
+#          folder — same content_hash, different file row — and
+#          verify the gallery still returns exactly two items,
+#          with the newer copy winning the oxicloud-logo blob's
+#          representation (DISTINCT ON picks the newest by
+#          `(media_sort_date, id)`).
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/folders
+Authorization: Bearer {{alice_token_again}}
+Content-Type: application/json
+{ "name": "photos-dedup-test", "parent_id": "{{home_folder_id}}" }
+
+HTTP 201
+[Captures]
+dedup_folder_id: jsonpath "$.id"
+
+
+POST {{base_url}}/api/files/upload
+Authorization: Bearer {{alice_token_again}}
+[MultipartFormData]
+folder_id: {{dedup_folder_id}}
+file: file,fixtures/oxicloud-logo.jpg; image/jpeg
+
+HTTP 201
+[Captures]
+dedup_photo_id: jsonpath "$.id"
+
+
+# Dedup proof lives in three shape invariants, not an absolute
+# count — the suite shares one DB with earlier runs, so alice's
+# drive may carry stale photos uploaded by prior iterations and
+# a hard count would test environment state, not dedup. The
+# three asserts below pin the §9 property regardless of what
+# else sits in the drive:
+#   - `dedup_photo_id` (newer upload) IS in the response — it's
+#     the winner of the (oxicloud-logo) blob's dedup group.
+#   - `photo_file_id` (step 4's older upload of the same bytes)
+#     is NOT in the response — the DISTINCT ON picked the newer
+#     sibling, squeezing this one out.
+#   - `photo_file_id_2` (img-00000.png, a different blob) is
+#     still there — dedup only collapses same-hash rows.
+GET {{base_url}}/api/photos/resources?limit=50
+Authorization: Bearer {{alice_token_again}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.items[*].resource.id" contains "{{dedup_photo_id}}"
+jsonpath "$.items[*].resource.id" contains "{{photo_file_id_2}}"
+jsonpath "$.items[*].resource.id" not contains "{{photo_file_id}}"
+
+
+# Cleanup the dedup fixture so later suites don't inherit the
+# extra file row + folder.
+DELETE {{base_url}}/api/files/{{dedup_photo_id}}
+Authorization: Bearer {{alice_token_again}}
+
+HTTP *
+
+
+DELETE {{base_url}}/api/folders/{{dedup_folder_id}}
+Authorization: Bearer {{alice_token_again}}
+
+HTTP *
+
+
+# ─────────────────────────────────────────────────────────────
 # Step 9 — Teardown. Hurl shares one DB; leaving the overlap
 #          fixture around would poison later photo-count
 #          assertions (same rule as the §0 regression test).

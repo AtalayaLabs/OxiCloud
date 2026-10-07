@@ -21,7 +21,7 @@ resources family for free.
 | §6b `?drive_id=<uuid>` filter + supporting composite index on the photo listing | **TODO** |
 | §7 Facet-filter axis — `?person_id=` now, `?keyword=` and `?location=` later | **PROPOSAL** |
 | §8 Realtime push for new photos via message bus | **DEFERRED** |
-| §9 Dedup `/api/photos/resources` rows by `content_hash` server-side | **PROPOSAL** |
+| §9 Dedup `/api/photos/resources` rows by `content_hash` server-side | **DONE** |
 
 ---
 
@@ -1083,6 +1083,15 @@ revalidation path is the shipping answer.
 
 ---
 
+## §9 — Dedup `/api/photos/resources` rows by `content_hash` — DONE
+
+Shipped 2026-10-08. Policy pick: **within-drive dedup**, not
+cross-drive — a blob visible via grants on two drives surfaces
+once per drive. See the implementation note below for the SQL
+shape and the regression test (`photos_resources.hurl` step 8d).
+
+---
+
 ## §9 — Dedup `/api/photos/resources` rows by `content_hash` — PROPOSAL
 
 ### Why
@@ -1217,10 +1226,10 @@ roadmap once that policy is chosen.
 8. **§8 — DEFERRED.** Not scheduled. Captured for shape only; a
    future "watching listings go stale" demand across more than
    one `/resources` endpoint earns the message-bus axis.
-9. **§9 — PROPOSAL.** Dedup by `content_hash` server-side.
-   Confirmed user-visible need (gallery with N file-rows on one
-   blob reads as noise, not inventory). Blocked only on the
-   within-drive-vs-cross-drive policy call; once that's named,
-   this is a `DISTINCT ON (blob_hash)` SQL change on
-   `list_media_resources` + the hurl regression test the §9
-   section mandates.
+9. **§9 — DONE** (2026-10-08). Within-drive dedup via
+   `DISTINCT ON (fi.blob_hash)` on the lateral probe, cursor + outer
+   LIMIT applied after the DISTINCT so a page boundary never
+   promotes an older sibling of a surviving blob. Cross-drive dedup
+   stays off — each drive's scope is isolated by the per-drive
+   `CROSS JOIN LATERAL`. Regression test lives at
+   `photos_resources.hurl` step 8d.
