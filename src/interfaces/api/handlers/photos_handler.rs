@@ -1,7 +1,7 @@
 use axum::{
     Json,
     extract::{Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
 };
 use serde::Deserialize;
@@ -16,6 +16,7 @@ use crate::application::dtos::photos_dto::{
     PhotoOrderBy, PhotoResourceItemDto, PhotosCursor, PhotosResourcesDto,
 };
 use crate::common::di::AppState;
+use crate::interfaces::api::etag::{if_none_match_matches, not_modified, with_cache_headers};
 use crate::interfaces::middleware::auth::AuthUser;
 
 // §4 of docs/plan/photos-resources-migration.md hard-cut the legacy
@@ -77,6 +78,7 @@ fn default_limit() -> u32 {
 pub async fn list_photos_resources(
     State(state): State<Arc<AppState>>,
     auth_user: AuthUser,
+    headers: HeaderMap,
     Query(params): Query<PhotosResourcesQueryParams>,
 ) -> impl IntoResponse {
     let caller_id = auth_user.id;
@@ -167,6 +169,15 @@ pub async fn list_photos_resources(
     if has_more {
         rows.truncate(limit as usize);
     }
+    // Freshness signal for the ETag: the newest `media_sort_date`
+    // in this page. Empty page collapses to 0 — stable identity
+    // across repeat empty revalidations (`photos_resources.hurl`
+    // step 3), bumps the moment a row lands.
+    let fresh_signal: u64 = rows
+        .iter()
+        .map(|r| r.sort_date_ts.timestamp().max(0) as u64)
+        .max()
+        .unwrap_or(0);
     let next_cursor = if has_more {
         rows.last().map(|r| {
             // Full-precision `sort_date_ts` (not `sort_date`
@@ -192,8 +203,6 @@ pub async fn list_photos_resources(
             let mut dto = FileDto::from(r.file);
             dto.is_favorite = r.is_favorite;
             dto.is_shared = r.is_shared;
-            // sort_date is at the item level now (not on FileDto) —
-            // §4 will remove the field on FileDto entirely.
             PhotoResourceItemDto {
                 resource_type: ResourceTypeDto::File,
                 resource: ResourceContentDto::File(dto),
@@ -207,11 +216,23 @@ pub async fn list_photos_resources(
         })
         .collect();
 
-    Json(CursorListResponse::<PhotoResourceItemDto>::with_cursor(
-        items,
-        next_cursor,
-    ))
-    .into_response()
+    let envelope =
+        CursorListResponse::<PhotoResourceItemDto>::with_cursor(items, next_cursor);
+
+    // Compute the ETag from (cursor-input, limit, max media_sort_date,
+    // row count, next_cursor) and short-circuit a repeated page fetch
+    // with an empty 304 — §2 of the plan. The browser's HTTP cache
+    // then re-serves the kept body without reshipping any tile.
+    let etag = envelope.weak_etag(
+        params.cursor.as_deref(),
+        limit as usize,
+        fresh_signal,
+    );
+    if if_none_match_matches(&headers, &etag) {
+        return not_modified(&etag).into_response();
+    }
+
+    with_cache_headers(Json(envelope), &etag).into_response()
 }
 
 /// Query parameters for the photos map (clustered) endpoint.

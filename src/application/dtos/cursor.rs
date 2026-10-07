@@ -158,4 +158,52 @@ impl<T: Serialize> CursorListResponse<T> {
     pub fn with_cursor(items: Vec<T>, next_cursor: Option<String>) -> Self {
         Self { items, next_cursor }
     }
+
+    /// Compute a page-identity ETag for `If-None-Match` revalidation.
+    ///
+    /// Shared across every `/resources` endpoint (§2 of
+    /// `docs/plan/photos-resources-migration.md`): the hash mixes the
+    /// cursor input, limit, a per-endpoint freshness signal, the row
+    /// count, and the next-page cursor so a page transitioning from
+    /// "has next" to "last page" invalidates on its own.
+    ///
+    /// `fresh_signal` is endpoint-specific — the right thing to feed
+    /// in differs by surface:
+    ///
+    /// - photos:     `max(media_sort_date)` across returned rows
+    /// - favorites:  `max(favorited_at)`
+    /// - recents:    `max(accessed_at)`
+    /// - trash:      `max(trashed_at)`
+    /// - folders:    `max(modified_at)` over the folder's children
+    ///
+    /// Empty-page semantics: callers pass `0` when the vec is empty.
+    /// A `0` signal is still legitimate — the hash collapses to
+    /// `(cursor, limit, 0, 0, None)`, which revalidates stably across
+    /// a repeatedly-empty page (new-user onboarding, cleaned-out
+    /// trash) and invalidates the moment the first row appears
+    /// (`len == 1`, non-zero signal).
+    ///
+    /// Deliberately NOT a hash of the serialised body: the point is
+    /// to short-circuit BEFORE serialisation, and the body shape is
+    /// stable so cursor + limit + freshness is a correct identity
+    /// for "nothing changed on this page". Strong-form syntactically
+    /// (no `W/` prefix) — our deterministic `ORDER BY <axis>, id` on
+    /// every listing makes the body byte-identical given the same
+    /// inputs, so the client's HTTP cache can treat the ETag as
+    /// strong without risk.
+    pub fn weak_etag(
+        &self,
+        cursor_input: Option<&str>,
+        limit: usize,
+        fresh_signal: u64,
+    ) -> String {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        cursor_input.hash(&mut hasher);
+        limit.hash(&mut hasher);
+        fresh_signal.hash(&mut hasher);
+        self.items.len().hash(&mut hasher);
+        self.next_cursor.hash(&mut hasher);
+        format!("\"{:x}\"", hasher.finish())
+    }
 }

@@ -106,6 +106,45 @@ jsonpath "$.items[0].resource.longitude" not exists
 
 
 # ─────────────────────────────────────────────────────────────
+# Step 4b — §2 ETag revalidation (scenarios 8-9 of the plan).
+#          The §2 shared engine stamps `ETag` + `Cache-Control:
+#          private, no-cache` on every /resources response and
+#          honors `If-None-Match` with an empty 304. First GET
+#          captures the ETag; second GET with that same token
+#          returns 304 + empty body; a stale/mismatched token
+#          still gets the full 200.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/photos/resources?limit=50
+Authorization: Bearer {{alice_token}}
+
+HTTP 200
+[Captures]
+photos_resources_etag: header "ETag"
+[Asserts]
+header "ETag"          exists
+header "Cache-Control" contains "no-cache"
+
+
+GET {{base_url}}/api/photos/resources?limit=50
+Authorization: Bearer {{alice_token}}
+If-None-Match: {{photos_resources_etag}}
+
+HTTP 304
+[Asserts]
+header "ETag" == "{{photos_resources_etag}}"
+bytes count == 0
+
+
+GET {{base_url}}/api/photos/resources?limit=50
+Authorization: Bearer {{alice_token}}
+If-None-Match: "stale-etag-does-not-match"
+
+HTTP 200
+[Asserts]
+jsonpath "$.items" isCollection
+
+
+# ─────────────────────────────────────────────────────────────
 # Step 5 — Pagination (scenario 4 abbreviated). Needs ≥ 2 photos
 #          for `limit=1` to produce an over-fetch — the suite's
 #          DB may be fresh with only the step-4 upload on alice's
