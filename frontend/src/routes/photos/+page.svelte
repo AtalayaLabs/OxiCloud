@@ -177,7 +177,12 @@
 			// Pinned to `'square'` since the per-user layout toggle was
 			// retired alongside the §6 filter wiring; keeping the util
 			// signature intact means the justified-packing code stays
-			// available if a future preference brings it back.
+			// available if a future preference brings it back. The
+			// Flickr-style justified layout + its toolbar button
+			// originally shipped in commit 75ee9b7c
+			// (`feat(photos): justified (aspect-preserving) layout
+			// option`, Jun 2026) — git-show it to recover the toggle
+			// markup, localStorage persistence, and the i18n copy.
 			layoutMode: 'square',
 			width: gridWidth,
 			mobile: isMobile,
