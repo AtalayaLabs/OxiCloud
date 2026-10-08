@@ -47,6 +47,14 @@ struct MediaResourceDbRow {
     orientation: Option<i16>,
     /// `latitude IS NOT NULL AND longitude IS NOT NULL`.
     has_gps: bool,
+    /// True when another non-trashed media row in the same drive
+    /// references this blob hash. The §9 within-drive `DISTINCT ON
+    /// (blob_hash)` hides siblings from the listing itself; this
+    /// flag surfaces the fact that siblings exist so the delete-UX
+    /// can warn before trashing — the tile the user clicked may be
+    /// one of several representatives of the same bytes. See §9b
+    /// Layer 1 of `docs/plan/photos-resources-migration.md`.
+    has_blob_siblings: bool,
 }
 
 /// Structured row returned by [`FileBlobReadRepository::list_media_resources`].
@@ -71,6 +79,12 @@ pub struct MediaResourceRow {
     pub has_gps: bool,
     pub is_favorite: bool,
     pub is_shared: bool,
+    /// True when another non-trashed media row in the same drive
+    /// references this blob hash — the siblings the within-drive
+    /// §9 `DISTINCT ON` hid. Powers the delete-UX in §9b Layer 1:
+    /// a `true` tile is flagged on the client as "trashing this
+    /// removes just one copy — N other copies exist in this drive".
+    pub has_blob_siblings: bool,
 }
 
 use bytes::Bytes;
@@ -677,7 +691,25 @@ impl FileBlobReadRepository {
                        ELSE EXTRACT(EPOCH FROM fm.captured_at)::bigint
                    END                                        AS captured_at,
                    fm.orientation                             AS orientation,
-                   (fm.latitude IS NOT NULL AND fm.longitude IS NOT NULL) AS has_gps
+                   (fm.latitude IS NOT NULL AND fm.longitude IS NOT NULL) AS has_gps,
+                   -- §9b Layer 1 — within-drive sibling probe. True when
+                   -- the DISTINCT ON above hid at least one other
+                   -- non-trashed media row with the same blob_hash in the
+                   -- same drive. Hits `idx_files_media_dedup_by_drive_blob`
+                   -- (leading `(drive_id, blob_hash)` + the index's partial
+                   -- `NOT is_trashed AND (image/% OR video/%)` predicate),
+                   -- so this is one index seek per returned row — no
+                   -- heap tuple fetch for the sibling check.
+                   EXISTS (
+                       SELECT 1
+                         FROM storage.files sib
+                        WHERE sib.drive_id   = top.drive_id
+                          AND sib.blob_hash  = top.blob_hash
+                          AND sib.id        != top.id
+                          AND NOT sib.is_trashed
+                          AND (sib.mime_type LIKE 'image/%'
+                               OR sib.mime_type LIKE 'video/%')
+                   )                                          AS has_blob_siblings
               FROM (
                 SELECT fi.*
                   FROM accessible a
@@ -743,6 +775,7 @@ impl FileBlobReadRepository {
                 has_gps: r.has_gps,
                 is_favorite: r.is_favorite,
                 is_shared: r.is_shared,
+                has_blob_siblings: r.has_blob_siblings,
             });
         }
         Ok(out)

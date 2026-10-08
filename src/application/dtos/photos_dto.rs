@@ -210,6 +210,20 @@ pub struct PhotoResourceItemDto {
     /// — the explicit per-photo call is the right disclosure
     /// boundary.
     pub has_gps: bool,
+
+    /// `true` when at least one other non-trashed media row in the
+    /// same drive references the same blob hash — i.e. the §9
+    /// within-drive `DISTINCT ON (blob_hash)` hid one or more
+    /// siblings behind this tile. §9b Layer 1 of
+    /// `docs/plan/photos-resources-migration.md` surfaces this as the
+    /// delete-UX hint: a `true` tile warns the user that "trashing
+    /// this removes only one copy of the content — N other copies
+    /// still live elsewhere in this drive", so the gallery can offer
+    /// the siblings list from `GET /api/dedup/check/{hash}` (Layer 2)
+    /// before committing. `false` is the common case and lets the FE
+    /// skip the sibling fetch entirely — zero round trips when
+    /// there's nothing to warn about.
+    pub has_blob_siblings: bool,
 }
 
 /// Response envelope for `GET /api/photos/resources`.

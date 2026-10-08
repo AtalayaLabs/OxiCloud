@@ -254,6 +254,7 @@ pub async fn list_photos_resources(
                 captured_at: r.captured_at,
                 orientation: r.orientation,
                 has_gps: r.has_gps,
+                has_blob_siblings: r.has_blob_siblings,
             }
         })
         .collect();

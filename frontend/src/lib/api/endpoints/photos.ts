@@ -24,6 +24,17 @@ export interface PhotoItem extends FileItem {
 	orientation?: number;
 	/** `true` when the file has both lat AND lng. Raw coordinates stay off the listing. */
 	has_gps: boolean;
+	/**
+	 * `true` when the §9 within-drive `DISTINCT ON (blob_hash)` hid at least
+	 * one sibling behind this tile — another non-trashed media file in the
+	 * same drive referencing the same bytes. Powers the delete-UX in §9b
+	 * Layer 1: a `true` tile warns the user that trashing it removes just
+	 * one copy of the content, so the gallery can fetch the siblings list
+	 * from `GET /api/dedup/check/{hash}` (Layer 2) before committing.
+	 * `false` is the common case; the gallery can skip the sibling fetch
+	 * entirely in that branch.
+	 */
+	has_blob_siblings: boolean;
 }
 
 export interface PhotoPage {
@@ -41,6 +52,7 @@ interface PhotoEnvelopeItem {
 	captured_at?: number;
 	orientation?: number;
 	has_gps: boolean;
+	has_blob_siblings: boolean;
 }
 
 interface PhotosEnvelope {
@@ -147,7 +159,8 @@ export async function fetchPhotos(limit = 60, opts: FetchPhotosOptions = {}): Pr
 		sort_date: row.sort_date,
 		captured_at: row.captured_at,
 		orientation: row.orientation,
-		has_gps: row.has_gps
+		has_gps: row.has_gps,
+		has_blob_siblings: row.has_blob_siblings
 	}));
 	return {
 		items,
