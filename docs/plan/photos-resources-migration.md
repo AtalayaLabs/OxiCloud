@@ -22,6 +22,7 @@ resources family for free.
 | §7 Facet-filter axis — `?person_id=` now, `?keyword=` and `?location=` later | **PROPOSAL** |
 | §8 Realtime push for new photos via message bus | **DEFERRED** |
 | §9 Dedup `/api/photos/resources` rows by `content_hash` server-side | **DONE** |
+| §9b Delete-UX for photos with sibling blobs (gallery promoting a sibling after trash) | **TODO** |
 
 ---
 
@@ -1092,6 +1093,155 @@ shape and the regression test (`photos_resources.hurl` step 8d).
 
 ---
 
+## §9b — Delete-UX for photos with sibling blobs — TODO
+
+### Why
+
+§9's `DISTINCT ON (blob_hash)` picks the newest file row per unique
+blob within a drive. If the user trashes the gallery-visible
+representative, the next natural refetch (scroll past the sentinel,
+filter flip, new upload) picks the next-newest sibling of the same
+blob and the "deleted" photo reappears under a different file row
+and path. The user sees "I deleted this photo. 5 minutes later it
+was back." — a confidence-destroying bug on an otherwise-correct
+gallery dedup.
+
+Observed 2026-10-08. Flagged in the §9 shipping notes as
+non-blocking, because the dedup win is substantial and the
+mitigation is a well-shaped follow-up rather than a design flaw in
+§9 itself.
+
+### Shape — three-layer mitigation
+
+Build on §9's SQL + the existing `storage.blobs.ref_count`
+infrastructure, surfacing caller-scoped counts on the DTO + the
+dedup-check endpoint, and adding a bulk-trash primitive. Three
+layers:
+
+1. **On the listing — `has_blob_siblings: bool`** on
+   `PhotoResourceItemDto`. One extra per-row `EXISTS` in the
+   `list_media_resources` SELECT, backed by
+   `idx_files_media_dedup_by_drive_blob` (`(drive_id, blob_hash,
+   media_sort_date DESC, id DESC)` partial, shipped with §9).
+   Index seek per row — ~0.1 ms × 60 rows = ~6 ms added on the
+   listing hot path. Same order of magnitude as the two per-row
+   EXISTS already running (`is_favorite`, `is_shared`).
+
+2. **At delete time — extend `GET /api/dedup/check/{hash}`** with
+   two caller-scoped fields:
+
+       {
+         "exists": bool,
+         "hash": String,
+         "existing_size": Option<u64>,
+         "ref_count": Option<u32>,         // admin-only (unchanged;
+                                            //   global count across every
+                                            //   user and drive)
+         "accessible_count": Option<u32>,  // NEW: file-rows the caller SEES
+                                            //   (walks caller_accessible_drives
+                                            //   + reader+ role filter)
+         "deletable_count": Option<u32>    // NEW: of those, how many caller
+                                            //   can TRASH (owner/editor roles
+                                            //   + per-file Delete grants)
+       }
+
+   Both new fields are caller-scoped so they're safe to expose
+   universally. The split exists because a sibling in a shared
+   drive where the caller only has Viewer SEES but can't DELETE
+   — the modal needs both numbers to render honestly. Delete-time
+   call: not on the listing hot path, so the expensive per-sibling
+   AuthZ walk is fine.
+
+   The existing `user_owns_blob_reference` in `blob_handler.rs`
+   uses a `owner/editor/contributor` writable predicate which is
+   neither of the two scopes we need. A sibling query returns the
+   two counts; same shape, different role sets.
+
+3. **For "delete all my copies" — new endpoint
+   `POST /api/dedup/{hash}/trash-mine`**. Atomically moves every
+   accessible-and-trashable file row referencing the blob to trash,
+   returning `{ trashed_count: u32, failed_count: u32 }`. Honours
+   per-file AuthZ at the SQL level (same filter as §2's
+   `deletable_count`). Idempotent — a second call after full trash
+   returns `trashed_count = 0`.
+
+### UX — the modal
+
+The confirmation dialog branches on the two counts fetched from
+`/api/dedup/check/{hash}` when at least one selected item has
+`has_blob_siblings === true`:
+
+- `deletable_count === 1`: *"Delete this photo?"* (same as today,
+  no modal change)
+- `deletable_count > 1` AND `accessible_count === deletable_count`:
+  *"Delete this copy only, or all {{n}} copies?"* with two
+  destructive-styled buttons
+- `accessible_count > deletable_count`: *"Delete all {{n}} copies
+  you can delete ({{m}} others remain in drives where you have
+  Read-only access)."* explicit about the asymmetry
+
+For batch delete across multiple selected items with siblings, the
+flow is the obvious extension: call `check/{hash}` once per unique
+hash in the selection (or `POST /api/dedup/check-batch` if we
+widen the batch form the same way), aggregate the counts, present
+one modal with the per-blob breakdown.
+
+### Why not reuse `ref_count`
+
+- Admin-only (safe default — leaks cross-user info otherwise).
+- Global across every drive — not caller-scoped.
+- Only hurl tests consume it today
+  (`refcount_same_content_rewrite.hurl`,
+  `derived_blob_copy.hurl`). The extension is purely additive;
+  those tests keep running unchanged as the regression anchor on
+  the admin-gated path.
+
+### Test matrix — regression hurl REQUIRED
+
+Shipping §9b MUST land with hurl scenarios on
+`photos_resources.hurl` (or a new `photos_delete_siblings.hurl`)
+that pin:
+
+1. Upload two copies of the same fixture under different folders
+   → `has_blob_siblings === true` on the surviving listing item.
+2. `GET /api/dedup/check/{hash}` as the uploader →
+   `accessible_count === 2`, `deletable_count === 2`.
+3. Grant a second user Viewer on one of the drives containing a
+   copy → from the second user's perspective,
+   `accessible_count === 1`, `deletable_count === 0`.
+4. `POST /api/dedup/{hash}/trash-mine` as the uploader →
+   `trashed_count === 2`, subsequent GET returns `exists: false`.
+5. Admin perspective: `ref_count` on the response is unchanged
+   semantically (global, non-trashed rows). Keeps the §9 admin
+   diagnostic surface intact.
+
+### Hot-path cost summary
+
+- Listing: +~6 ms per 60-row page (one index-only EXISTS per row).
+- Delete click: +10-50 ms one-shot `/api/dedup/check/{hash}` call
+  per unique hash in the selection — never on the scroll loop.
+- Bulk-trash call: one roundtrip at delete-confirmation time,
+  returns a count.
+
+### Scope ambiguity resolved alongside shipping
+
+- The §9 "cross-drive dedup" question stays answered as
+  "within-drive only" — no change in §9b.
+- The §9b sibling counts (both `accessible` and `deletable`) ARE
+  cross-drive by nature, so `trash-mine` can delete copies in
+  OTHER drives the caller writes to. The modal copy must say
+  this clearly ("Delete all 5 copies across every drive you can
+  trash from") so the user isn't surprised when a photo gone from
+  the gallery is also gone from their Files tab in a shared drive.
+
+### Why TODO, not PROPOSAL
+
+The design converged in-session; the three layers above are the
+answer and nobody has flagged a competing shape. The gating is
+scheduling + a hurl author seat, not design.
+
+---
+
 ## §9 — Dedup `/api/photos/resources` rows by `content_hash` — PROPOSAL
 
 ### Why
@@ -1233,3 +1383,10 @@ roadmap once that policy is chosen.
    stays off — each drive's scope is isolated by the per-drive
    `CROSS JOIN LATERAL`. Regression test lives at
    `photos_resources.hurl` step 8d.
+10. **§9b — TODO.** Delete-UX follow-up to §9. Design converged
+    in-session: `has_blob_siblings: bool` on the listing DTO,
+    `accessible_count` + `deletable_count` on
+    `GET /api/dedup/check/{hash}`, and a new
+    `POST /api/dedup/{hash}/trash-mine` bulk-trash primitive.
+    Hot-path cost ~6 ms per listing page. See §9b for the three-
+    layer shape + hurl matrix.
