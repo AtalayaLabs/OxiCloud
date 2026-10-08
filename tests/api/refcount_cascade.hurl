@@ -36,9 +36,13 @@
 # skipping that would make the assertions wrong regardless of
 # whether the copy-side bug is present.
 #
-# `/api/dedup/check/{hash}` returns `ref_count` only for admin
-# callers (regular users get `null` for anti-enumeration). This
-# suite requires the admin token; setup.hurl seeds it.
+# `ref_count` lives on the admin split
+# `GET /api/admin/dedup/check/{hash}`; the user-facing
+# `/api/dedup/check/{hash}` carries only `{hash, existing_size}` and
+# 404s when the caller holds no visible reference. This suite needs
+# the admin token for the accounting probes; the two end-of-scenario
+# checks that just assert "ownership edge gone" use the user route.
+# setup.hurl seeds the admin token.
 #
 # Run:
 #   hurl --variables-file tests/api/test.env --test \
@@ -149,12 +153,11 @@ jsonpath "$.content_hash" == "2d8eb13178cff0036a22e0c3c42446061e86579f9d59ea73c8
 # ─────────────────────────────────────────────────────────────
 # A3 — Baseline: exactly one live reference.
 # ─────────────────────────────────────────────────────────────
-GET {{base_url}}/api/dedup/check/2d8eb13178cff0036a22e0c3c42446061e86579f9d59ea73c8343bccc2df0fd3
+GET {{base_url}}/api/admin/dedup/check/2d8eb13178cff0036a22e0c3c42446061e86579f9d59ea73c8343bccc2df0fd3
 Authorization: Bearer {{token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.exists"    == true
 jsonpath "$.ref_count" == 1
 
 
@@ -196,12 +199,11 @@ jsonpath "$.successful[0].files_copied" == 1
 #      pre-fix bug left this at 1 — a subsequent GC would then
 #      reap the blob out from under the copied file.
 # ─────────────────────────────────────────────────────────────
-GET {{base_url}}/api/dedup/check/2d8eb13178cff0036a22e0c3c42446061e86579f9d59ea73c8343bccc2df0fd3
+GET {{base_url}}/api/admin/dedup/check/2d8eb13178cff0036a22e0c3c42446061e86579f9d59ea73c8343bccc2df0fd3
 Authorization: Bearer {{token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.exists"    == true
 jsonpath "$.ref_count" == 2
 
 
@@ -251,12 +253,11 @@ Authorization: Bearer {{token}}
 
 HTTP 204
 
-GET {{base_url}}/api/dedup/check/2d8eb13178cff0036a22e0c3c42446061e86579f9d59ea73c8343bccc2df0fd3
+GET {{base_url}}/api/admin/dedup/check/2d8eb13178cff0036a22e0c3c42446061e86579f9d59ea73c8343bccc2df0fd3
 Authorization: Bearer {{token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.exists"    == true
 jsonpath "$.ref_count" == 2
 
 
@@ -278,12 +279,11 @@ Authorization: Bearer {{token}}
 HTTP 200
 
 
-GET {{base_url}}/api/dedup/check/2d8eb13178cff0036a22e0c3c42446061e86579f9d59ea73c8343bccc2df0fd3
+GET {{base_url}}/api/admin/dedup/check/2d8eb13178cff0036a22e0c3c42446061e86579f9d59ea73c8343bccc2df0fd3
 Authorization: Bearer {{token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.exists"    == true
 jsonpath "$.ref_count" == 1
 
 
@@ -306,12 +306,12 @@ Authorization: Bearer {{token}}
 HTTP 200
 
 
+# User-route probe: the ownership edge is gone with the trash purge,
+# independent of whether physical blob reclamation has run yet.
 GET {{base_url}}/api/dedup/check/2d8eb13178cff0036a22e0c3c42446061e86579f9d59ea73c8343bccc2df0fd3
 Authorization: Bearer {{token}}
 
-HTTP 200
-[Asserts]
-jsonpath "$.exists" == false
+HTTP 404
 
 
 # ─────────────────────────────────────────────────────────────
@@ -394,12 +394,11 @@ jsonpath "$.content_hash" == "fb1e63c28bb792e0f69cd16cd7595989f83c218cf70894e07d
 #      blobs_consistency-driven assertion. See
 #      `docs/plan/recovery.md`.
 # ─────────────────────────────────────────────────────────────
-GET {{base_url}}/api/dedup/check/fb1e63c28bb792e0f69cd16cd7595989f83c218cf70894e07d1f811ab1dc6f83
+GET {{base_url}}/api/admin/dedup/check/fb1e63c28bb792e0f69cd16cd7595989f83c218cf70894e07d1f811ab1dc6f83
 Authorization: Bearer {{token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.exists"    == true
 jsonpath "$.ref_count" == 1
 
 
@@ -436,12 +435,11 @@ jsonpath "$.successful[0].files_copied" == 1
 # ─────────────────────────────────────────────────────────────
 # B5 — CDC copy-side assertion: ref_count == 2.
 # ─────────────────────────────────────────────────────────────
-GET {{base_url}}/api/dedup/check/fb1e63c28bb792e0f69cd16cd7595989f83c218cf70894e07d1f811ab1dc6f83
+GET {{base_url}}/api/admin/dedup/check/fb1e63c28bb792e0f69cd16cd7595989f83c218cf70894e07d1f811ab1dc6f83
 Authorization: Bearer {{token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.exists"    == true
 jsonpath "$.ref_count" == 2
 
 
@@ -481,12 +479,11 @@ Authorization: Bearer {{token}}
 
 HTTP 204
 
-GET {{base_url}}/api/dedup/check/fb1e63c28bb792e0f69cd16cd7595989f83c218cf70894e07d1f811ab1dc6f83
+GET {{base_url}}/api/admin/dedup/check/fb1e63c28bb792e0f69cd16cd7595989f83c218cf70894e07d1f811ab1dc6f83
 Authorization: Bearer {{token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.exists"    == true
 jsonpath "$.ref_count" == 2
 
 
@@ -499,12 +496,11 @@ Authorization: Bearer {{token}}
 HTTP 200
 
 
-GET {{base_url}}/api/dedup/check/fb1e63c28bb792e0f69cd16cd7595989f83c218cf70894e07d1f811ab1dc6f83
+GET {{base_url}}/api/admin/dedup/check/fb1e63c28bb792e0f69cd16cd7595989f83c218cf70894e07d1f811ab1dc6f83
 Authorization: Bearer {{token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.exists"    == true
 jsonpath "$.ref_count" == 1
 
 
@@ -523,12 +519,11 @@ Authorization: Bearer {{token}}
 HTTP 200
 
 
+# User-route probe: ownership gone with the trash purge; see Scenario A end.
 GET {{base_url}}/api/dedup/check/fb1e63c28bb792e0f69cd16cd7595989f83c218cf70894e07d1f811ab1dc6f83
 Authorization: Bearer {{token}}
 
-HTTP 200
-[Asserts]
-jsonpath "$.exists" == false
+HTTP 404
 
 
 # ─────────────────────────────────────────────────────────────

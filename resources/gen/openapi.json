@@ -1085,6 +1085,53 @@
         "x-oxicloud-scope": "role:admin"
       }
     },
+    "/api/admin/dedup/check/{hash}": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "operationId": "admin_check_hash",
+        "parameters": [
+          {
+            "name": "hash",
+            "in": "path",
+            "description": "BLAKE3 hash (64 hex characters)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Admin blob accounting: size + global ref_count",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HashCheckAdminResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "403": {
+            "description": "Caller is not an admin"
+          },
+          "404": {
+            "description": "No blob with this hash is stored (or malformed input)"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-oxicloud-scope": "role:admin"
+      }
+    },
     "/api/admin/dedup/recalculate": {
       "post": {
         "tags": [
@@ -5159,7 +5206,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Hash check result. `ref_count` is only present for admin users.",
+            "description": "Caller holds a visible reference",
             "content": {
               "application/json": {
                 "schema": {
@@ -5168,8 +5215,8 @@
               }
             }
           },
-          "400": {
-            "description": "Invalid hash format"
+          "404": {
+            "description": "No visible reference, unknown hash, or malformed input"
           }
         },
         "security": [
@@ -13614,39 +13661,50 @@
           }
         }
       },
-      "HashCheckResponse": {
+      "HashCheckAdminResponse": {
         "type": "object",
-        "description": "Response for hash check endpoint",
+        "description": "Response for the admin-facing `GET /api/admin/dedup/check/{hash}`.\n\n`ref_count` is REQUIRED on this shape — a 200 means the blob is known\nto the dedup store, and the test suites (`refcount_same_content_rewrite.hurl`,\n`derived_blob_copy.hurl`) assert on it unconditionally. A 404 means\nthe blob is not stored.\n\nThe route is registered under `/api/admin/*` so the admin middleware\nlayer is the one authority on access (AuthZ audit #24/#25 pattern —\nno bespoke role check in this handler). See §9b of\n`docs/plan/photos-resources-migration.md` for the user/admin split\nrationale.",
         "required": [
-          "exists",
-          "hash"
+          "hash",
+          "existing_size",
+          "ref_count"
         ],
         "properties": {
           "existing_size": {
-            "type": [
-              "integer",
-              "null"
-            ],
+            "type": "integer",
             "format": "int64",
-            "description": "If exists, the size of the existing blob",
+            "description": "Size of the existing blob in bytes.",
             "minimum": 0
-          },
-          "exists": {
-            "type": "boolean",
-            "description": "Whether a blob with this hash already exists"
           },
           "hash": {
             "type": "string",
-            "description": "The BLAKE3 hash that was checked"
+            "description": "The BLAKE3 hash that was checked."
           },
           "ref_count": {
-            "type": [
-              "integer",
-              "null"
-            ],
+            "type": "integer",
             "format": "int32",
-            "description": "Global reference count for this blob across all users.\nOnly populated when the authenticated user has the `admin` role;\nomitted for regular users to prevent cross-user content inference.",
+            "description": "Global reference count across every user, every drive.",
             "minimum": 0
+          }
+        }
+      },
+      "HashCheckResponse": {
+        "type": "object",
+        "description": "Response for the user-facing `GET /api/dedup/check/{hash}`.\n\n404 — not just a 200 with `exists: false` — is the signal that the\ncaller has no visible reference to this blob. The pre-split shape\ncarried an `exists: bool` + an `Option<u32> ref_count` whose\npresence depended on the caller's role; both are gone from this\nroute. The admin accounting field lives at\n`GET /api/admin/dedup/check/{hash}` instead (`HashCheckAdminResponse`),\nwhich is middleware-gated and never readable to a non-admin — the\nsplit prevents cross-user content inference by construction, with no\nper-handler role branch left to drift. See §9b of\n`docs/plan/photos-resources-migration.md`.",
+        "required": [
+          "hash",
+          "existing_size"
+        ],
+        "properties": {
+          "existing_size": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Size of the existing blob in bytes. Always populated on a 200 —\na 200 implies the caller holds at least one visible reference,\nand the metadata row is read under the same guard.",
+            "minimum": 0
+          },
+          "hash": {
+            "type": "string",
+            "description": "The BLAKE3 hash that was checked."
           }
         }
       },

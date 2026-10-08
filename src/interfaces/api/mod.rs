@@ -61,7 +61,9 @@ use crate::interfaces::api::handlers::contacts_handler::{
     AddMemberRequest, AddressBookResponse, CreateAddressBookRequest, CreateContactRequest,
     GroupNameRequest, UpdateAddressBookRequest, UpdateContactRequest,
 };
-use crate::interfaces::api::handlers::dedup_handler::{HashCheckResponse, StatsResponse};
+use crate::interfaces::api::handlers::dedup_handler::{
+    HashCheckAdminResponse, HashCheckResponse, StatsResponse,
+};
 use crate::interfaces::api::handlers::file_handler::MoveFilePayload;
 use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader};
 
@@ -137,6 +139,7 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         handlers::chunked_upload_handler::cancel_upload,
         // Dedup handlers — all free functions for the same utoipa reason as chunked uploads.
         handlers::dedup_handler::check_hash,
+        handlers::dedup_handler::admin_check_hash,
         handlers::dedup_handler::check_hashes_batch,
         handlers::dedup_handler::get_stats,
         handlers::dedup_handler::get_blob,
@@ -487,6 +490,7 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             UploadStatusResponseDto,
             // Dedup schemas
             HashCheckResponse,
+            HashCheckAdminResponse,
             StatsResponse,
             // Contacts / address-book schemas
             AddressBookResponse,

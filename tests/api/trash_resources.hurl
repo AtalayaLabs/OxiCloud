@@ -35,8 +35,19 @@ token: jsonpath "$.access_token"
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 2 – Trash starts empty (trash.hurl left it that way)
+# Step 2 – Trash starts empty.
+#
+# Pre-flight DELETE /api/trash/empty: `trash.hurl` runs just before
+# this file and leaves trash empty on a clean run, but a fail-stopped
+# session may have left residue. The empty-trash call makes the
+# assertion below self-healing without changing what we're verifying.
 # ─────────────────────────────────────────────────────────────
+DELETE {{base_url}}/api/trash/empty
+Authorization: Bearer {{token}}
+
+HTTP 200
+
+
 GET {{base_url}}/api/trash/resources
 Authorization: Bearer {{token}}
 

@@ -68,7 +68,22 @@ webdav_delete() {
 
 rest_get()    { curl -s -H "Authorization: Bearer $TOKEN" "$base_url$1"; }
 rest_delete() { curl -s -o /dev/null -w "%{http_code}" -X DELETE -H "Authorization: Bearer $TOKEN" "$base_url$1"; }
-dedup_check() { curl -s -H "Authorization: Bearer $TOKEN" "$base_url/api/dedup/check/$1"; }
+dedup_check_admin() {
+    # ref_count lives on the admin split (§9b route split, 2026-10-08);
+    # the user-facing /api/dedup/check/{hash} no longer carries it.
+    curl -s -H "Authorization: Bearer $TOKEN" "$base_url/api/admin/dedup/check/$1"
+}
+
+dedup_check_user_status() {
+    # The user-facing /api/dedup/check/{hash} returns 200 when the
+    # caller holds a visible reference, 404 otherwise. Used for the
+    # "ownership edge gone" check at end of scenario — this does not
+    # depend on blob-row GC timing (admin route would 200 until the
+    # row is physically reaped).
+    curl -s -o /dev/null -w "%{http_code}" \
+         -H "Authorization: Bearer $TOKEN" \
+         "$base_url/api/dedup/check/$1"
+}
 
 purge_from_trash() {
     local name="$1"
@@ -166,14 +181,11 @@ pass "content_hash on both A and B matches local BLAKE3 ($BLOB_HASH)"
 # ── Step 3: ref_count == 2 ────────────────────────────────────────────────────
 
 echo "  step 3: dedup/check → expect ref_count=2..."
-RESP=$(dedup_check "$BLOB_HASH")
-EXISTS=$(jq -r '.exists'    <<< "$RESP")
-RC=$(    jq -r '.ref_count' <<< "$RESP")
+RESP=$(dedup_check_admin "$BLOB_HASH")
+RC=$(jq -r '.ref_count' <<< "$RESP")
 
-[[ "$EXISTS" == "true" ]] \
-    || fail "dedup/check: expected exists=true, got $EXISTS  (response: $RESP)"
 [[ "$RC" == "2" ]] \
-    || fail "dedup/check: expected ref_count=2, got $RC"
+    || fail "dedup/check: expected ref_count=2, got $RC (full response: $RESP)"
 pass "ref_count == 2: both files reference the same 8-chunk blob"
 
 # ── Step 4: Permanently delete file A ────────────────────────────────────────
@@ -195,14 +207,11 @@ pass "File A permanently deleted"
 # ── Step 5: ref_count == 1 — chunk blobs must still be alive ─────────────────
 
 echo "  step 5: dedup/check → expect ref_count=1 (chunks must survive)..."
-RESP=$(dedup_check "$BLOB_HASH")
-EXISTS=$(jq -r '.exists'    <<< "$RESP")
-RC=$(    jq -r '.ref_count' <<< "$RESP")
+RESP=$(dedup_check_admin "$BLOB_HASH")
+RC=$(jq -r '.ref_count' <<< "$RESP")
 
-[[ "$EXISTS" == "true" ]] \
-    || fail "dedup/check: expected exists=true (file B still references blob), got $EXISTS"
 [[ "$RC" == "1" ]] \
-    || fail "dedup/check: expected ref_count=1, got $RC  (chunk blobs may have been freed prematurely)"
+    || fail "dedup/check: expected ref_count=1, got $RC (chunk blobs may have been freed prematurely; full response: $RESP)"
 pass "ref_count == 1: manifest decremented, all 8 chunk blobs still alive"
 
 # ── Step 6: Permanently delete file B ────────────────────────────────────────
@@ -221,13 +230,15 @@ pass "File B permanently deleted"
 
 # ── Step 7: blob gone ─────────────────────────────────────────────────────────
 
-echo "  step 7: dedup/check → expect exists=false (manifest + chunks freed)..."
-RESP=$(dedup_check "$BLOB_HASH")
-EXISTS=$(jq -r '.exists' <<< "$RESP")
-
-[[ "$EXISTS" == "false" ]] \
-    || fail "dedup/check: expected exists=false after both files deleted, got $EXISTS"
-pass "exists == false: manifest and all 8 chunk blobs cleaned up"
+echo "  step 7: dedup/check → expect 404 (user no longer owns the content)..."
+# User-route probe: the ownership edge is cleared synchronously with
+# the trash purge, independent of whether the chunk-manifest + 8
+# chunk blobs have been physically reaped yet (that runs on the
+# dedup_gc cadence and is not what this test is verifying).
+STATUS=$(dedup_check_user_status "$BLOB_HASH")
+[[ "$STATUS" == "404" ]] \
+    || fail "dedup/check: expected 404 after both files deleted, got $STATUS"
+pass "user no longer owns the blob after both files deleted"
 
 # ── summary ───────────────────────────────────────────────────────────────────
 

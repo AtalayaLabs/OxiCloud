@@ -27,8 +27,21 @@ jsonpath "$.access_token" isString
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 2 – Trash is empty at the start
+# Step 2 – Trash is empty at the start.
+#
+# Pre-flight DELETE /api/trash/empty first so residue from a prior
+# session (fail-stopped test that never reached its teardown) can't
+# flunk the `count == 0` assertion that follows. The endpoint is
+# idempotent — a succeeded 200 on an already-empty trash is the
+# usual case. This mirrors step 14 below, which uses the same
+# endpoint for the test's own cleanup.
 # ─────────────────────────────────────────────────────────────
+DELETE {{base_url}}/api/trash/empty
+Authorization: Bearer {{token}}
+
+HTTP 200
+
+
 GET {{base_url}}/api/trash/resources
 Authorization: Bearer {{token}}
 

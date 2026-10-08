@@ -326,9 +326,17 @@ HURL_FILES=( \
   "$API_DIR/trash_resources.hurl" \
   "$API_DIR/recent.hurl" \
   "$API_DIR/batch_folder_copy.hurl" \
+  # derived_blob_copy and dedup_blob_cleanup share the dedup-test.jpg
+  # fixture, whose hash governs their absolute `ref_count` assertions.
+  # Running derived_blob_copy FIRST (then letting it tear down cleanly to
+  # ref_count=0) keeps both tests reading a clean count — the pre-fix
+  # order was the opposite and any fail-stop in dedup_blob_cleanup left
+  # one stale reference that broke derived_blob_copy's `ref_count == 1`
+  # assertion. `refcount_same_content_rewrite.hurl` uses a unique
+  # fixture, so its position is independent.
+  "$API_DIR/derived_blob_copy.hurl" \
   "$API_DIR/dedup_blob_cleanup.hurl" \
   "$API_DIR/refcount_same_content_rewrite.hurl" \
-  "$API_DIR/derived_blob_copy.hurl" \
   "$API_DIR/thumbnail_etag_content_keyed.hurl" \
   "$API_DIR/attached_thumbnail_copy.hurl" \
   "$API_DIR/transcode_cache.hurl" \

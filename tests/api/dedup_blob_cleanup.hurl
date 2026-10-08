@@ -99,12 +99,11 @@ jsonpath "$.content_hash" == "cde1ca663a2e62e0dadb41c3194e11ecb7d971d84c7451db17
 
 
 # ref_count == 1: blob has exactly one file reference after first upload
-GET {{base_url}}/api/dedup/check/cde1ca663a2e62e0dadb41c3194e11ecb7d971d84c7451db17063b55c09e8066
+GET {{base_url}}/api/admin/dedup/check/cde1ca663a2e62e0dadb41c3194e11ecb7d971d84c7451db17063b55c09e8066
 Authorization: Bearer {{token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.exists" == true
 jsonpath "$.ref_count" == 1
 
 
@@ -131,12 +130,11 @@ jsonpath "$.content_hash" == "cde1ca663a2e62e0dadb41c3194e11ecb7d971d84c7451db17
 
 
 # ref_count == 2: dedup hit — same blob now referenced by two file records
-GET {{base_url}}/api/dedup/check/cde1ca663a2e62e0dadb41c3194e11ecb7d971d84c7451db17063b55c09e8066
+GET {{base_url}}/api/admin/dedup/check/cde1ca663a2e62e0dadb41c3194e11ecb7d971d84c7451db17063b55c09e8066
 Authorization: Bearer {{token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.exists" == true
 jsonpath "$.ref_count" == 2
 
 
@@ -192,12 +190,11 @@ HTTP 200
 
 
 # ref_count == 1: blob survives — file2 still holds a reference
-GET {{base_url}}/api/dedup/check/cde1ca663a2e62e0dadb41c3194e11ecb7d971d84c7451db17063b55c09e8066
+GET {{base_url}}/api/admin/dedup/check/cde1ca663a2e62e0dadb41c3194e11ecb7d971d84c7451db17063b55c09e8066
 Authorization: Bearer {{token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.exists" == true
 jsonpath "$.ref_count" == 1
 
 
@@ -246,13 +243,16 @@ Authorization: Bearer {{token}}
 HTTP 200
 
 
-# ref_count hits 0 → blob and manifest deleted; user no longer owns this hash
+# ref_count hits 0: the user no longer holds a visible reference, so
+# the user-route probe 404s. On the user route rather than the admin
+# split on purpose — the ownership edge is cleared synchronously with
+# the trash purge, while physical reclamation of `storage.blobs` runs
+# on its own cadence (and is covered by the consistency sweeps, not
+# by this test).
 GET {{base_url}}/api/dedup/check/cde1ca663a2e62e0dadb41c3194e11ecb7d971d84c7451db17063b55c09e8066
 Authorization: Bearer {{token}}
 
-HTTP 200
-[Asserts]
-jsonpath "$.exists" == false
+HTTP 404
 
 
 # ─────────────────────────────────────────────────────────────

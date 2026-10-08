@@ -5,7 +5,7 @@
 # Uploads free_video_over_1MB.mp4 (2760653 bytes) in 3 chunks
 # of 1 MiB each via the TUS-like chunked upload API, then:
 #   1. Verifies the file appears in folder listing with video/mp4 MIME type
-#   2. Checks GET /api/dedup/check/{hash} → ref_count == 1
+#   2. Checks GET /api/dedup/check/{hash} → HTTP 200 (uploader owns it)
 #
 # BLAKE3 hash of free_video_over_1MB.mp4:
 #   95d42b25a2d39f24f1b2f38bf1b947d4ec74201271a98ea0e76a9cea421eff80
@@ -38,7 +38,15 @@ fail() { FAIL=$(( FAIL + 1 )); echo "  FAIL: $*" >&2; exit 1; }
 
 rest_get()    { curl -s -H "Authorization: Bearer $TOKEN" "$base_url$1"; }
 rest_delete() { curl -s -o /dev/null -w "%{http_code}" -X DELETE -H "Authorization: Bearer $TOKEN" "$base_url$1"; }
-dedup_check() { curl -s -H "Authorization: Bearer $TOKEN" "$base_url/api/dedup/check/$1"; }
+dedup_check_status() {
+    # The user-facing /api/dedup/check/{hash} returns 200 when the
+    # caller owns a visible reference, 404 otherwise (§9b route split).
+    # Status alone is sufficient here — this test only needs to know
+    # the chunked upload registered the blob under the caller's name.
+    curl -s -o /dev/null -w "%{http_code}" \
+         -H "Authorization: Bearer $TOKEN" \
+         "$base_url/api/dedup/check/$1"
+}
 
 purge_from_trash() {
     local name="$1"
@@ -158,18 +166,13 @@ LISTED_HASH=$(jq -r '.content_hash // empty' <<< "$LISTED_FILE")
     || fail "content_hash mismatch: server=$LISTED_HASH expected=$BLOB_HASH"
 pass "content_hash matches local BLAKE3 ($BLOB_HASH)"
 
-# ── Step 5: Dedup check → ref_count == 1 ─────────────────────────────────────
+# ── Step 5: Dedup check → 200 (caller owns the blob) ────────────────────────
 
 echo "  step 5: GET /api/dedup/check/$BLOB_HASH..."
-RESP=$(dedup_check "$BLOB_HASH")
-EXISTS=$(jq -r '.exists'    <<< "$RESP")
-RC=$(    jq -r '.ref_count' <<< "$RESP")
-
-[[ "$EXISTS" == "true" ]] \
-    || fail "dedup/check: expected exists=true, got $EXISTS (response: $RESP)"
-[[ "$RC" == "1" ]] \
-    || fail "dedup/check: expected ref_count=1, got $RC"
-pass "ref_count == 1: blob registered after chunked upload"
+STATUS=$(dedup_check_status "$BLOB_HASH")
+[[ "$STATUS" == "200" ]] \
+    || fail "dedup/check: expected 200 (uploader owns the blob), got $STATUS"
+pass "chunked upload registered the blob under the uploader"
 
 # ── cleanup ───────────────────────────────────────────────────────────────────
 

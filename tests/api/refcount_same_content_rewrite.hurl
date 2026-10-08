@@ -38,9 +38,13 @@
 #   content: `refcount-samecontent-9f3c1a` (27 bytes, no trailing LF)
 #   blake3 : 22fc01d8938dfe4ef0237713e97a6318d2e909fb30c3d6b957d6f11e290e191c
 #
-# `/api/dedup/check/{hash}` exposes `ref_count` to admin callers
-# only (regular users get null for anti-enumeration), so this suite
-# needs the admin token that setup.hurl seeds.
+# `ref_count` lives exclusively on the admin split:
+# `GET /api/admin/dedup/check/{hash}`. The user-facing
+# `/api/dedup/check/{hash}` carries only `{hash, existing_size}` and
+# 404s when the caller holds no visible reference. The accounting
+# assertions below therefore run against the admin URL and need the
+# admin token that setup.hurl seeds. See §9b of
+# `docs/plan/photos-resources-migration.md`.
 #
 # Baselines rather than `== 0` on the consistency sweeps: other
 # files in the suite share this database, so only NEW drift
@@ -144,12 +148,11 @@ jsonpath "$.content_hash" == "22fc01d8938dfe4ef0237713e97a6318d2e909fb30c3d6b957
 # ─────────────────────────────────────────────────────────────
 # Step 5 — Exactly one live reference before any rewrite.
 # ─────────────────────────────────────────────────────────────
-GET {{base_url}}/api/dedup/check/22fc01d8938dfe4ef0237713e97a6318d2e909fb30c3d6b957d6f11e290e191c
+GET {{base_url}}/api/admin/dedup/check/22fc01d8938dfe4ef0237713e97a6318d2e909fb30c3d6b957d6f11e290e191c
 Authorization: Bearer {{token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.exists"    == true
 jsonpath "$.ref_count" == 1
 
 
@@ -173,12 +176,11 @@ HTTP 204
 #          reference count must not have moved. Before the fix this
 #          read 2.
 # ─────────────────────────────────────────────────────────────
-GET {{base_url}}/api/dedup/check/22fc01d8938dfe4ef0237713e97a6318d2e909fb30c3d6b957d6f11e290e191c
+GET {{base_url}}/api/admin/dedup/check/22fc01d8938dfe4ef0237713e97a6318d2e909fb30c3d6b957d6f11e290e191c
 Authorization: Bearer {{token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.exists"    == true
 jsonpath "$.ref_count" == 1
 
 
@@ -203,12 +205,11 @@ file,fixtures/refcount-samecontent.txt;
 HTTP 204
 
 
-GET {{base_url}}/api/dedup/check/22fc01d8938dfe4ef0237713e97a6318d2e909fb30c3d6b957d6f11e290e191c
+GET {{base_url}}/api/admin/dedup/check/22fc01d8938dfe4ef0237713e97a6318d2e909fb30c3d6b957d6f11e290e191c
 Authorization: Bearer {{token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.exists"    == true
 jsonpath "$.ref_count" == 1
 
 
@@ -265,22 +266,28 @@ HTTP 200
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 11 — THE ASSERTION THAT MATTERS MOST. The blob must be gone.
+# Step 11 — THE ASSERTION THAT MATTERS MOST. The user has no visible
+#           reference to the content any more.
 #
 #           This is the user-visible harm of the leak rather than a
 #           restatement of step 7: a surplus reference means the
-#           count can never reach 0, so the blob is never reclaimed
-#           and its bytes are pinned for the life of the
-#           deployment. With the leak present and three rewrites,
-#           ref_count would still be 3 here and `exists` would be
-#           true.
+#           count can never reach 0, the uploader keeps appearing to
+#           "own" the content, and the bytes are pinned for the life
+#           of the deployment. With the leak present and three
+#           rewrites, the user-route probe would still return 200
+#           here because the stale +1 keeps the ownership edge alive.
+#
+#           Deliberately on the user route rather than the admin
+#           split: this step asserts the ownership edge is gone, not
+#           that `storage.blobs` has been physically reaped — those
+#           have different GC timings. The admin accounting of
+#           `ref_count` already ran in steps 5/7/9 where the surplus
+#           would have shown up directly.
 # ─────────────────────────────────────────────────────────────
 GET {{base_url}}/api/dedup/check/22fc01d8938dfe4ef0237713e97a6318d2e909fb30c3d6b957d6f11e290e191c
 Authorization: Bearer {{token}}
 
-HTTP 200
-[Asserts]
-jsonpath "$.exists" == false
+HTTP 404
 
 
 # ─────────────────────────────────────────────────────────────
