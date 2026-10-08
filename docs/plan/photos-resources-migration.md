@@ -1114,9 +1114,42 @@ mitigation is a well-shaped follow-up rather than a design flaw in
 ### Shape — three-layer mitigation
 
 Build on §9's SQL + the existing `storage.blobs.ref_count`
-infrastructure, surfacing caller-scoped counts on the DTO + the
-dedup-check endpoint, and adding a bulk-trash primitive. Three
-layers:
+infrastructure. Three layers; the earlier design's bulk-trash
+layer dropped once the sibling-list shape made it unnecessary
+(see rationale below).
+
+0. **Route split — hardening prep (ships standalone before §9b
+   proper).** The existing `GET /api/dedup/check/{hash}` multiplexes
+   an admin-only `ref_count` field onto the user response via a
+   role gate inside the handler. §9b replaces the gate with a
+   route-level split so the two audiences can't share a wire
+   shape at all:
+
+   - `GET /api/dedup/check/{hash}` → **user-scoped**; the
+     `ref_count` field is DROPPED entirely (not just omitted on a
+     non-admin call). Response is 200 with the §9b siblings list
+     (next layer), or **404** on no visible references. Replaces
+     the previous `200 {"exists": false}` anti-enum shape with a
+     cleaner HTTP-level anti-enum: not-found and not-accessible
+     are indistinguishable.
+   - `GET /api/admin/dedup/check/{hash}` → **admin-scoped**
+     (middleware-gated under the `/api/admin/*` layer). Returns
+     200 with `{ hash, existing_size, ref_count }` or 404 on
+     blob-not-on-instance. `ref_count` is unconditional (not
+     Option) on the admin route.
+
+   Hurl migration:
+   - `refcount_same_content_rewrite.hurl` (4 GETs) → moves to
+     the admin route. Admin login already in place; `ref_count ==
+     N` assertions keep working verbatim.
+   - `derived_blob_copy.hurl` (4 GETs) → stays on the user route.
+     Assertions flip: drop `jsonpath "$.exists" == true` (implicit
+     in 200), keep `existing_size`, and the not-found case moves
+     from `HTTP 200 + $.exists == false` to `HTTP 404`.
+
+   No production FE caller to migrate — the FE uses
+   `POST /api/dedup/check-batch` for upload-skip, which stays on
+   its current path with its own response shape.
 
 1. **On the listing — `has_blob_siblings: bool`** on
    `PhotoResourceItemDto`. One extra per-row `EXISTS` in the
@@ -1127,74 +1160,134 @@ layers:
    listing hot path. Same order of magnitude as the two per-row
    EXISTS already running (`is_favorite`, `is_shared`).
 
-2. **At delete time — extend `GET /api/dedup/check/{hash}`** with
-   two caller-scoped fields:
+2. **At delete time — `GET /api/dedup/check/{hash}` returns the
+   caller-visible sibling file-rows.** The modal reads the list
+   verbatim; the FE batches the ticked `file_id`s into the
+   existing `POST /api/batch/trash` to perform the actual delete.
+   Shape:
 
+       // 200 (blob reachable by the caller):
        {
-         "exists": bool,
-         "hash": String,
-         "existing_size": Option<u64>,
-         "ref_count": Option<u32>,         // admin-only (unchanged;
-                                            //   global count across every
-                                            //   user and drive)
-         "accessible_count": Option<u32>,  // NEW: file-rows the caller SEES
-                                            //   (walks caller_accessible_drives
-                                            //   + reader+ role filter)
-         "deletable_count": Option<u32>    // NEW: of those, how many caller
-                                            //   can TRASH (owner/editor roles
-                                            //   + per-file Delete grants)
+         "hash": "<blake3>",
+         "existing_size": 12345,
+         "siblings": [
+           {
+             "file_id": "aaa…",
+             "name": "IMG_1234.jpg",
+             "drive_id": "ddd…",
+             "folder_id": "fff…",
+             "can_delete": true,     // Permission::Delete
+             "can_update": true,     // Permission::Update (rename/move)
+             "can_share": true       // Permission::Share
+           },
+           {
+             "file_id": "bbb…",
+             "name": "IMG_1234.jpg",
+             "drive_id": "eee…",
+             "folder_id": "ggg…",
+             "can_delete": false,    // Viewer on this drive
+             "can_update": false,
+             "can_share": false
+           }
+         ],
+         "count": 2,         // length of `siblings[]`
+         "limit": 500,       // SQL LIMIT applied to the enumeration
+         "truncated": false  // true when the caller has > `limit`
+                             //   visible siblings; FE renders a
+                             //   "Showing N of M copies" affordance
        }
+       // 404 (no visible references — not found OR not accessible)
 
-   Both new fields are caller-scoped so they're safe to expose
-   universally. The split exists because a sibling in a shared
-   drive where the caller only has Viewer SEES but can't DELETE
-   — the modal needs both numbers to render honestly. Delete-time
-   call: not on the listing hot path, so the expensive per-sibling
-   AuthZ walk is fine.
+   Field conventions:
+   - Permission `can_*` fields mirror the `Permission` enum
+     verbs (`Read`, `Create`, `Share`, `Comment`, `Delete`,
+     `Update`, `Manage`) — same vocabulary as the AuthZ engine so
+     the modal copy maps 1:1 to the server-side gate. `can_read`
+     is omitted (always true — we only return rows the caller can
+     read); start with `can_delete` + `can_update` + `can_share`
+     and add more verbs when a modal action needs them.
+   - `name` + `drive_id` + `folder_id` are enough for the modal
+     to render a "Family Drive / Vacation 2024 / IMG_1234.jpg"
+     breadcrumb against the drives store it already has; a
+     resolved `folder_path` would need a second SQL join per row
+     and isn't earned until the UX stretch demands it.
+   - LIMIT 500 is a hard safety cap — pathological 5000-copy
+     cases return `truncated: true` with the first 500. The FE
+     renders a "Load more copies" affordance that re-fetches with
+     a cursor param (shape TBD when the truncated case actually
+     ships; the common 2–10 sibling path never hits it).
 
-   The existing `user_owns_blob_reference` in `blob_handler.rs`
-   uses a `owner/editor/contributor` writable predicate which is
-   neither of the two scopes we need. A sibling query returns the
-   two counts; same shape, different role sets.
+   AuthZ: the SQL walks `storage.files` on the hash + a
+   caller-visibility predicate (reader+ role on the drive). The
+   per-sibling `can_delete` / `can_update` / `can_share` fields
+   project the Permission gate the AuthZ engine would evaluate at
+   action time, so the modal is honest. The existing
+   `user_owns_blob_reference` in `blob_handler.rs` doesn't fit —
+   different predicate scope. A sibling query is a parallel
+   addition.
 
-3. **For "delete all my copies" — new endpoint
-   `POST /api/dedup/{hash}/trash-mine`**. Atomically moves every
-   accessible-and-trashable file row referencing the blob to trash,
-   returning `{ trashed_count: u32, failed_count: u32 }`. Honours
-   per-file AuthZ at the SQL level (same filter as §2's
-   `deletable_count`). Idempotent — a second call after full trash
-   returns `trashed_count = 0`.
+   **No `POST /api/dedup/{hash}/trash-mine` layer-3 endpoint.**
+   The siblings list hands every `file_id` to the FE, which calls
+   the already-existing `POST /api/batch/trash` with the ticked
+   subset. The caller explicitly names what to trash — no "server
+   decides the scope" step, zero blast-radius risk. The earlier
+   design's bulk endpoint existed only to compensate for a
+   count-only response that didn't expose the file_ids; the
+   siblings list obsoletes it.
 
 ### UX — the modal
 
-The confirmation dialog branches on the two counts fetched from
-`/api/dedup/check/{hash}` when at least one selected item has
-`has_blob_siblings === true`:
+The confirmation dialog reads the full siblings list and derives
+counts locally:
 
-- `deletable_count === 1`: *"Delete this photo?"* (same as today,
-  no modal change)
-- `deletable_count > 1` AND `accessible_count === deletable_count`:
-  *"Delete this copy only, or all {{n}} copies?"* with two
-  destructive-styled buttons
-- `accessible_count > deletable_count`: *"Delete all {{n}} copies
-  you can delete ({{m}} others remain in drives where you have
-  Read-only access)."* explicit about the asymmetry
+    const deletable = siblings.filter(s => s.can_delete);
+    const nonDeletable = siblings.filter(s => !s.can_delete);
+
+Branches:
+
+- `siblings.length === 1 && siblings[0].can_delete`:
+  *"Delete this photo?"* — single-row flow, same as today.
+- `deletable.length > 1 && nonDeletable.length === 0`:
+  Render the deletable rows as a checked-by-default list
+  (file name, drive + folder breadcrumb per entry) with
+  "Delete {{n}} copies" + "Delete only this one". User can
+  uncheck specific rows to narrow the trash set.
+- `deletable.length >= 1 && nonDeletable.length >= 1`:
+  Same list, with non-deletable rows rendered disabled (greyed,
+  no checkbox, "Read-only on {{drive}}" tooltip). Button copy:
+  *"Delete {{n}} selected copies"* — the ticked set only. The
+  non-deletable rows are visible so the user knows other copies
+  remain.
+- `deletable.length === 0 && nonDeletable.length >= 1`:
+  shouldn't arise from a delete click on a visible-and-deletable
+  row — render as a disabled-delete affordance for safety:
+  *"You can see this photo in {{m}} place(s) but can't delete
+  any of them."*
+- `truncated: true`: footer link *"Load more copies"* refetches
+  with a cursor param. Common 2–10 case never shows this.
+
+Trash flow: user confirms with a ticked set of `file_id`s → FE
+calls `POST /api/batch/trash` with those ids verbatim. The
+server-side batch endpoint already AuthZ-validates per file, so
+unauthorized ticks (shouldn't happen given the `can_delete`
+filter but defensive) 403 silently per row.
 
 For batch delete across multiple selected items with siblings, the
 flow is the obvious extension: call `check/{hash}` once per unique
-hash in the selection (or `POST /api/dedup/check-batch` if we
-widen the batch form the same way), aggregate the counts, present
-one modal with the per-blob breakdown.
+hash in the selection, aggregate the sibling lists, present one
+modal with the per-blob breakdown.
 
 ### Why not reuse `ref_count`
 
 - Admin-only (safe default — leaks cross-user info otherwise).
+  Layer 0 above makes this a route-level constraint rather than
+  a field-level one.
 - Global across every drive — not caller-scoped.
 - Only hurl tests consume it today
   (`refcount_same_content_rewrite.hurl`,
-  `derived_blob_copy.hurl`). The extension is purely additive;
-  those tests keep running unchanged as the regression anchor on
-  the admin-gated path.
+  `derived_blob_copy.hurl`). The route split is a tiny migration
+  for them; `ref_count` keeps the same semantics on the admin
+  route after the move.
 
 ### Test matrix — regression hurl REQUIRED
 
@@ -1202,18 +1295,80 @@ Shipping §9b MUST land with hurl scenarios on
 `photos_resources.hurl` (or a new `photos_delete_siblings.hurl`)
 that pin:
 
-1. Upload two copies of the same fixture under different folders
-   → `has_blob_siblings === true` on the surviving listing item.
-2. `GET /api/dedup/check/{hash}` as the uploader →
-   `accessible_count === 2`, `deletable_count === 2`.
-3. Grant a second user Viewer on one of the drives containing a
-   copy → from the second user's perspective,
-   `accessible_count === 1`, `deletable_count === 0`.
-4. `POST /api/dedup/{hash}/trash-mine` as the uploader →
-   `trashed_count === 2`, subsequent GET returns `exists: false`.
-5. Admin perspective: `ref_count` on the response is unchanged
-   semantically (global, non-trashed rows). Keeps the §9 admin
-   diagnostic surface intact.
+1. **Route-split prep (layer 0, standalone commit before the rest):**
+   - Admin login + `GET /api/admin/dedup/check/{hash}` on an
+     accessible blob → 200 with `ref_count` present.
+   - Regular user + `GET /api/dedup/check/{hash}` on an
+     accessible blob → 200 with the new sibling-list shape, no
+     `ref_count`.
+   - Regular user + `GET /api/admin/dedup/check/{hash}` → 403
+     (middleware gate).
+   - Any caller + `GET /api/dedup/check/{hash}` on an
+     unreachable hash → 404 (anti-enum).
+   - **Token subject** (public-share link caller) +
+     `GET /api/dedup/check/{hash}` → 404 (handler-level guard).
+     Dedup checks are session-only; link visitors never probe the
+     endpoint. Audit anchor on top of the AuthZ gate so the
+     caller surface stays strictly bounded.
+   - Migrate `refcount_same_content_rewrite.hurl`'s 4 GETs to the
+     admin route verbatim; migrate `derived_blob_copy.hurl`'s 4
+     GETs to the new shape (drop `exists`, keep `existing_size`,
+     flip not-found from `$.exists === false` to `HTTP 404`).
+
+2. **Siblings signal on the listing (layer 1):** upload two copies
+   of the same fixture under different folders → the surviving
+   listing item has `has_blob_siblings === true`.
+
+3. **Siblings list — happy path (layer 2):** upload the same
+   fixture into two folders on the same drive, then
+   `GET /api/dedup/check/{hash}` as the uploader:
+
+   ```hurl
+   GET {{base_url}}/api/dedup/check/{{photo_hash}}
+   Authorization: Bearer {{alice_token}}
+
+   HTTP 200
+   [Asserts]
+   jsonpath "$.hash"              == "{{photo_hash}}"
+   jsonpath "$.existing_size"     exists
+   jsonpath "$.count"             == 2
+   jsonpath "$.truncated"         == false
+   jsonpath "$.siblings"          count == 2
+   # Every row carries file_id + name + drive + folder:
+   jsonpath "$.siblings[0].file_id"    exists
+   jsonpath "$.siblings[0].name"       exists
+   jsonpath "$.siblings[0].drive_id"   exists
+   jsonpath "$.siblings[0].folder_id"  exists
+   # Permission flags mirror the Permission enum vocabulary:
+   jsonpath "$.siblings[0].can_delete" == true
+   jsonpath "$.siblings[0].can_update" == true
+   jsonpath "$.siblings[0].can_share"  == true
+   # Both ids are the expected two file-rows:
+   jsonpath "$.siblings[*].file_id" contains "{{photo_file_id_a}}"
+   jsonpath "$.siblings[*].file_id" contains "{{photo_file_id_b}}"
+   ```
+
+4. **Visibility asymmetry (layer 2):** grant a second user Viewer
+   on one of the drives containing a copy; from the second
+   user's perspective:
+   - The 200 shape still fires because the caller has at least
+     one visible row.
+   - `jsonpath "$.count" == 1`
+   - `jsonpath "$.siblings[0].can_delete" == false`
+   - `jsonpath "$.siblings[0].can_update" == false`
+   - `jsonpath "$.siblings[0].can_share"  == false`
+
+5. **Bulk-trash via the existing batch endpoint:** `POST
+   /api/batch/trash` with the two `file_id`s from scenario 3 →
+   both trashed. Subsequent `GET /api/dedup/check/{hash}` returns
+   **HTTP 404** (no visible references after batch-trash). The
+   admin `GET /api/admin/dedup/check/{hash}` still returns 200
+   with `ref_count` reflecting the trashed siblings' ref drop
+   (admin surface is global, not caller-scoped).
+
+6. **Admin diagnostic surface unchanged:** `refcount_same_content_rewrite.hurl`
+   keeps asserting `jsonpath "$.ref_count" == 1` after the route
+   migration. Keeps the §9 admin diagnostic contract intact.
 
 ### Hot-path cost summary
 
@@ -1384,9 +1539,23 @@ roadmap once that policy is chosen.
    `CROSS JOIN LATERAL`. Regression test lives at
    `photos_resources.hurl` step 8d.
 10. **§9b — TODO.** Delete-UX follow-up to §9. Design converged
-    in-session: `has_blob_siblings: bool` on the listing DTO,
-    `accessible_count` + `deletable_count` on
-    `GET /api/dedup/check/{hash}`, and a new
-    `POST /api/dedup/{hash}/trash-mine` bulk-trash primitive.
-    Hot-path cost ~6 ms per listing page. See §9b for the three-
-    layer shape + hurl matrix.
+    in-session as a three-layer stack:
+    - Layer 0 (standalone commit): split
+      `GET /api/dedup/check/{hash}` into user-scoped (drops
+      `ref_count`, 404 anti-enum, token-subject gated) and
+      admin-scoped (`GET /api/admin/dedup/check/{hash}`, always
+      carries `ref_count`). Hurl:
+      `refcount_same_content_rewrite.hurl` migrates to admin
+      route; `derived_blob_copy.hurl` adjusts to the new 200/404
+      user shape.
+    - Layer 1: `has_blob_siblings: bool` on the listing DTO.
+      ~6 ms per listing page via the §9 index.
+    - Layer 2: the (now user-scoped) check endpoint returns the
+      caller's visible sibling file-rows — `{ file_id, name,
+      drive_id, folder_id, can_delete, can_update, can_share }`
+      per row plus `count` + `limit` + `truncated`. The modal
+      renders a per-row checkbox list and batches ticked ids
+      into the existing `POST /api/batch/trash`. No new
+      bulk-trash endpoint needed — the caller explicitly names
+      what to trash, so zero blast-radius risk.
+    See §9b for the full shape + hurl matrix.
