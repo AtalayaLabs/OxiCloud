@@ -1,5 +1,4 @@
 <script lang="ts">
-	import Button from '$lib/components/Button.svelte';
 	import EmptyState from '$lib/components/EmptyState.svelte';
 	import VirtualRows from '$lib/components/VirtualRows.svelte';
 	import { lazyComponent } from '$lib/composables/lazyComponent.svelte';
@@ -389,7 +388,11 @@
 
 <svelte:head><title>{t('nav.photos', 'Photos')} · OxiCloud</title></svelte:head>
 
-<div class="page-sticky-header photos-head">
+<!-- Title + subnav live ABOVE the sticky block — they scroll away
+     with the page so vertical space is only paid for them while the
+     user is near the top. Only the Moments toolbar sticks (next
+     block) so the batch cluster stays reachable during long scrolls. -->
+<div class="photos-head">
 	<h1 class="page-title">{t('nav.photos', 'Photos')}</h1>
 	<div class="photos-subnav" role="tablist" aria-label={t('nav.photos', 'Photos')}>
 		<button
@@ -427,147 +430,194 @@
 	</div>
 </div>
 
-{#if tab === 'moments'}
-	<div class="photos-toolbar">
-		<div class="seg" role="group" aria-label={t('photos.group_by', 'Group by')}>
-			{#each MODES as m (m)}
-				<button class="seg__btn" class:active={groupMode === m} onclick={() => setGroupMode(m)}>
-					{t(`photos.${m}`, m)}
-				</button>
-			{/each}
-		</div>
-		<div class="seg" role="group" aria-label={t('photos.filter_kind', 'Media type')}>
-			<button
-				class="seg__btn"
-				class:active={kindFilter === 'all'}
-				title={t('photos.kind.all', 'All')}
-				aria-label={t('photos.kind.all', 'All')}
-				data-testid="photos-kind-all-btn"
-				onclick={() => setKindFilter('all')}
-			>
-				<Icon name="images" />
-			</button>
-			<button
-				class="seg__btn"
-				class:active={kindFilter === 'photo'}
-				title={t('photos.kind.photo', 'Photos')}
-				aria-label={t('photos.kind.photo', 'Photos')}
-				data-testid="photos-kind-photo-btn"
-				onclick={() => setKindFilter('photo')}
-			>
-				<Icon name="image" />
-			</button>
-			<button
-				class="seg__btn"
-				class:active={kindFilter === 'video'}
-				title={t('photos.kind.video', 'Videos')}
-				aria-label={t('photos.kind.video', 'Videos')}
-				data-testid="photos-kind-video-btn"
-				onclick={() => setKindFilter('video')}
-			>
-				<Icon name="video" />
-			</button>
-		</div>
-		{#if availableDrives.length > 0}
-			<!-- Drive filter — uses the shared `.group-by-selector`
-			     dropdown classes (styles/ported/buttons.css) so photos,
-			     /shared, and every `DisplayModeControls` consumer share
-			     the same trigger-button + popup pattern. -->
-			<div class="group-by-selector drive-filter" data-testid="photos-drive-filter">
-				<button
-					type="button"
-					class="toggle-btn group-by-btn active"
-					title={t('photos.filter_drive', 'Drive')}
-					aria-haspopup="true"
-					aria-expanded={driveFilterOpen}
-					data-testid="photos-drive-filter-btn"
-					onclick={(e) => {
-						e.stopPropagation();
-						driveFilterOpen = !driveFilterOpen;
-					}}
-				>
-					<Icon name={driveFilterIcon} />
-					<span class="group-by-label">{driveFilterLabel}</span>
-				</button>
-				{#if driveFilterOpen}
-					<div
-						class="group-by-menu"
-						role="menu"
-						tabindex="-1"
-						onclick={(e) => e.stopPropagation()}
-						onkeydown={(e) => e.key === 'Escape' && (driveFilterOpen = false)}
+<!-- Sticky block — carries ONLY the Moments toolbar. Title + subnav
+     above have already scrolled off; the toolbar (and the batch
+     cluster inside it) stays reachable during long gallery scrolls. -->
+<div class="page-sticky-header">
+	{#if tab === 'moments'}
+		<!-- Toolbar uses the shared `.actions-bar` class from
+		     `styles/ported/content.css` (same contract as /files,
+		     /favorites, /recent, /trash via ResourceList's ActionBar).
+		     Fixed 60px height eliminates layout shift when
+		     `BatchSelectionBar` mounts; `justify-content: space-between`
+		     distributes the always-present start slot (`.action-buttons`
+		     — holds the batch pill) and the end slot (filter clusters).
+		     The start slot carries `flex: auto` globally so the batch
+		     pill fills the leading space, pushing filter clusters to
+		     the trailing edge. -->
+		<div class="actions-bar">
+			<!-- Start slot. `.action-buttons` always renders (reserves
+			     the leading space + carries `flex: auto` so the slot
+			     fills); when selection is non-empty it ALSO gets the
+			     `.batch-selection-bar` modifier so the shared
+			     `styles/ported/batchToolbar.css` paints the pill
+			     styling (background, padding, rounded corners) on the
+			     same element. Matches ResourceList's inline pattern on
+			     /files — SAME element carries BOTH classes
+			     simultaneously. -->
+			<div class="action-buttons" class:batch-selection-bar={selected.size > 0}>
+				{#if selected.size > 0}
+					<button
+						class="batch-bar-close"
+						title={t('common.clear', 'Clear selection')}
+						aria-label={t('common.clear', 'Clear selection')}
+						data-testid="photos-batch-bar-clear-btn"
+						onclick={() => selected.clear()}
 					>
+						<Icon name="times" />
+					</button>
+					<span class="batch-bar-count">
+						{t('files.selected_count', { count: selected.size }, '{{count}} selected')}
+					</span>
+					<div class="batch-bar-actions">
 						<button
-							type="button"
-							class="group-by-option"
-							class:active={driveFilter === null}
-							data-testid="photos-drive-filter-all"
-							onclick={() => {
-								setDriveFilter(null);
-								driveFilterOpen = false;
-							}}
+							class="batch-btn"
+							title={t('common.download', 'Download')}
+							data-testid="photos-batch-download-btn"
+							onclick={downloadSelected}
 						>
-							<Icon name="hdd" />
-							{t('photos.all_drives', 'All drives')}
+							<Icon name="download" />
+							<span>{t('common.download', 'Download')}</span>
 						</button>
-						{#each availableDrives as drive (drive.id)}
-							<button
-								type="button"
-								class="group-by-option"
-								class:active={driveFilter === drive.id}
-								data-testid={`photos-drive-filter-${drive.id}`}
-								onclick={() => {
-									setDriveFilter(drive.id);
-									driveFilterOpen = false;
-								}}
-							>
-								<Icon name={driveIcon(drive)} />
-								{drive.name}
-							</button>
-						{/each}
+						<button
+							class="batch-btn batch-btn-danger"
+							title={t('common.delete', 'Delete')}
+							data-testid="photos-batch-delete-btn"
+							onclick={trashSelected}
+						>
+							<Icon name="trash" />
+							<span>{t('common.delete', 'Delete')}</span>
+						</button>
 					</div>
 				{/if}
 			</div>
-		{/if}
-		<!-- Favourites-only toggle. Same `.toggle-btn` pattern as the
+			<div class="actions-bar__end">
+				<div class="seg" role="group" aria-label={t('photos.group_by', 'Group by')}>
+					{#each MODES as m (m)}
+						<button class="seg__btn" class:active={groupMode === m} onclick={() => setGroupMode(m)}>
+							{t(`photos.${m}`, m)}
+						</button>
+					{/each}
+				</div>
+				<div class="seg" role="group" aria-label={t('photos.filter_kind', 'Media type')}>
+					<button
+						class="seg__btn"
+						class:active={kindFilter === 'all'}
+						title={t('photos.kind.all', 'All')}
+						aria-label={t('photos.kind.all', 'All')}
+						data-testid="photos-kind-all-btn"
+						onclick={() => setKindFilter('all')}
+					>
+						<Icon name="images" />
+					</button>
+					<button
+						class="seg__btn"
+						class:active={kindFilter === 'photo'}
+						title={t('photos.kind.photo', 'Photos')}
+						aria-label={t('photos.kind.photo', 'Photos')}
+						data-testid="photos-kind-photo-btn"
+						onclick={() => setKindFilter('photo')}
+					>
+						<Icon name="image" />
+					</button>
+					<button
+						class="seg__btn"
+						class:active={kindFilter === 'video'}
+						title={t('photos.kind.video', 'Videos')}
+						aria-label={t('photos.kind.video', 'Videos')}
+						data-testid="photos-kind-video-btn"
+						onclick={() => setKindFilter('video')}
+					>
+						<Icon name="video" />
+					</button>
+				</div>
+				{#if availableDrives.length > 0}
+					<!-- Drive filter — uses the shared `.group-by-selector`
+			     dropdown classes (styles/ported/buttons.css) so photos,
+			     /shared, and every `DisplayModeControls` consumer share
+			     the same trigger-button + popup pattern. -->
+					<div class="group-by-selector drive-filter" data-testid="photos-drive-filter">
+						<button
+							type="button"
+							class="toggle-btn group-by-btn active"
+							title={t('photos.filter_drive', 'Drive')}
+							aria-haspopup="true"
+							aria-expanded={driveFilterOpen}
+							data-testid="photos-drive-filter-btn"
+							onclick={(e) => {
+								e.stopPropagation();
+								driveFilterOpen = !driveFilterOpen;
+							}}
+						>
+							<Icon name={driveFilterIcon} />
+							<span class="group-by-label">{driveFilterLabel}</span>
+						</button>
+						{#if driveFilterOpen}
+							<div
+								class="group-by-menu"
+								role="menu"
+								tabindex="-1"
+								onclick={(e) => e.stopPropagation()}
+								onkeydown={(e) => e.key === 'Escape' && (driveFilterOpen = false)}
+							>
+								<button
+									type="button"
+									class="group-by-option"
+									class:active={driveFilter === null}
+									data-testid="photos-drive-filter-all"
+									onclick={() => {
+										setDriveFilter(null);
+										driveFilterOpen = false;
+									}}
+								>
+									<Icon name="hdd" />
+									{t('photos.all_drives', 'All drives')}
+								</button>
+								{#each availableDrives as drive (drive.id)}
+									<button
+										type="button"
+										class="group-by-option"
+										class:active={driveFilter === drive.id}
+										data-testid={`photos-drive-filter-${drive.id}`}
+										onclick={() => {
+											setDriveFilter(drive.id);
+											driveFilterOpen = false;
+										}}
+									>
+										<Icon name={driveIcon(drive)} />
+										{drive.name}
+									</button>
+								{/each}
+							</div>
+						{/if}
+					</div>
+				{/if}
+				<!-- Favourites-only toggle. Same `.toggle-btn` pattern as the
 		     dotfile eye on DisplayModeControls, with a `.favorite-btn`
 		     modifier that opts OUT of the shared active-state
 		     background change — the only visible toggle signal is
 		     the star's fill colour (grey → gold), matching the
 		     favorite-star treatment on the file list. -->
-		<button
-			type="button"
-			class="toggle-btn favorite-btn"
-			class:active={favoriteFilter}
-			title={favoriteFilter
-				? t('photos.filter_favorite_on', 'Showing favourites only — click to show all')
-				: t('photos.filter_favorite_off', 'Show favourites only')}
-			aria-label={t('photos.filter_favorite', 'Favourites only')}
-			aria-pressed={favoriteFilter}
-			data-testid="photos-favorite-filter-btn"
-			onclick={toggleFavoriteFilter}
-		>
-			<Icon name="star" />
-		</button>
-	</div>
-
-	{#if selected.size > 0}
-		<div class="batch-bar" data-testid="photos-batch-bar">
-			<span>{t('files.selected_count', { count: selected.size }, '{{count}} selected')}</span>
-			<div class="batch-bar__actions">
-				<Button data-testid="photos-batch-download-btn" onclick={downloadSelected}
-					>{t('common.download', 'Download')}</Button
+				<button
+					type="button"
+					class="toggle-btn favorite-btn"
+					class:active={favoriteFilter}
+					title={favoriteFilter
+						? t('photos.filter_favorite_on', 'Showing favourites only — click to show all')
+						: t('photos.filter_favorite_off', 'Show favourites only')}
+					aria-label={t('photos.filter_favorite', 'Favourites only')}
+					aria-pressed={favoriteFilter}
+					data-testid="photos-favorite-filter-btn"
+					onclick={toggleFavoriteFilter}
 				>
-				<Button data-testid="photos-batch-clear-btn" onclick={() => selected.clear()}
-					>{t('common.clear', 'Clear')}</Button
-				>
-				<Button data-testid="photos-batch-delete-btn" variant="danger" onclick={trashSelected}
-					>{t('common.delete', 'Delete')}</Button
-				>
+					<Icon name="star" />
+				</button>
 			</div>
 		</div>
 	{/if}
+</div>
 
+{#if tab === 'moments'}
 	{#if error}
 		<p class="status status--error" role="alert">{error}</p>
 	{:else if visibleItems.length === 0 && exhausted}
@@ -693,11 +743,18 @@
 		justify-content: space-between;
 		gap: var(--space-3);
 		flex-wrap: wrap;
-		padding: 1rem 1rem 0;
+		/* No top/left padding — the parent `.content-area` already
+		   provides the gutter, and the sticky `.actions-bar` below
+		   shouldn't inherit a double-indent on its leading edge. */
+		padding: 0 1rem 0 0;
 	}
 
 	.page-title {
-		margin: 0;
+		/* Keep the shared `.page-title` margin-bottom (var(--space-5))
+		   from `styles/ported/content.css` so Photos sits at the same
+		   vertical rhythm as /files / /favorites / /recent / /trash.
+		   Only override font-size + colour-token to match the Photos
+		   look (slightly smaller, dedicated heading colour). */
 		font-size: 1.5rem;
 		color: var(--color-text-heading);
 	}
@@ -722,15 +779,39 @@
 		border-bottom-color: var(--color-accent);
 	}
 
-	.photos-toolbar {
+	/* Toolbar visual contract (fixed height, flex row, padding) comes
+	   from the shared `.actions-bar` rule in
+	   `styles/ported/content.css` — Photos only adds a side-margin to
+	   align with the sticky-header padding and `align-items: center`
+	   so the segmented controls / dropdown / star all vertically
+	   centre on the 60 px row the shared rule reserves. */
+	.actions-bar {
+		align-items: center;
+		margin-left: 1rem;
+		margin-right: 1rem;
+	}
+
+	/* End slot — groups the group-by segment, kind filter, drive
+	   dropdown, and favourites toggle so the `.actions-bar`'s
+	   `justify-content: space-between` sees exactly two children:
+	   `.action-buttons` (start, auto-grow) and this trailing cluster. */
+	.actions-bar__end {
 		display: flex;
 		align-items: center;
-		/* Group every control to the trailing edge — same cluster
-		   placement as `DisplayModeControls` renders inside the
-		   `/files` ActionBar `end` snippet. */
-		justify-content: flex-end;
 		gap: var(--space-3);
-		padding: var(--space-3) 1rem 0;
+	}
+
+	/* The shared `.batch-selection-bar` rule in
+	   `styles/ported/batchToolbar.css` carries
+	   `transform: translateY(-8px)` — a layout-specific hack for the
+	   /files ActionBar that pulls the pill 8 px up to connect
+	   visually to the row above. Inside Photos' sticky header that
+	   overflow bleeds into the subnav row and the pill reads as
+	   mis-aligned against `.actions-bar__end`. Zero the transform
+	   locally so the pill vertical-centres on the 60 px row like
+	   every other control in the toolbar. */
+	.actions-bar :global(.batch-selection-bar) {
+		transform: none;
 	}
 
 	.seg {
@@ -795,23 +876,6 @@
 
 	.favorite-btn.active:hover {
 		color: var(--color-star-text-hover);
-	}
-
-	.batch-bar {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--space-3);
-		margin: var(--space-3) 1rem 0;
-		padding: var(--space-2) var(--space-3);
-		background: var(--color-accent-tint, var(--color-bg-hover));
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
-	}
-
-	.batch-bar__actions {
-		display: flex;
-		gap: var(--space-2);
 	}
 
 	.photos-area {
