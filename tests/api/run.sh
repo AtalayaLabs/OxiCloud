@@ -330,6 +330,11 @@ HURL_FILES=( \
   # at the end, so order is independent, but putting it adjacent to
   # photos_resources.hurl keeps the ETag suite together.
   "$API_DIR/resources_etag_contract.hurl" \
+  # Keyset-cursor stability: an upstream insert flips page 1's ETag but
+  # MUST NOT flip the ETag of any page strictly after that boundary
+  # cursor — otherwise cursor-based scrolling re-downloads every
+  # subsequent page on every upload. See the file for the full scenario.
+  "$API_DIR/resources_etag_pagination.hurl" \
   "$API_DIR/favorites.hurl" \
   "$API_DIR/trash.hurl" \
   "$API_DIR/trash_resources.hurl" \
