@@ -221,28 +221,52 @@
 	}
 
 	/**
-	 * Called on every filter change (`kindFilter`, `driveFilter`).
-	 * Pagination state keys off the server-issued cursor, and the
-	 * server returns 400 if a cursor is reused across a filter flip
-	 * — so flipping either filter MUST reset `items` / `cursor` /
+	 * Called on every filter change (`kindFilter`, `driveFilter`,
+	 * `favoriteFilter`). Pagination state keys off the server-issued
+	 * cursor, and the server returns 400 if a cursor is reused across
+	 * a filter flip — so flipping any filter MUST reset `cursor` /
 	 * `exhausted` and refetch from page 1. Selection also clears:
 	 * a photo selected under one filter may not exist in the next
-	 * view, and the batch bar would otherwise refer to invisible
-	 * ids.
+	 * view, and the batch bar would otherwise refer to invisible ids.
+	 *
+	 * The grid stays painted with the previous items until the new
+	 * page 1 arrives, then swaps atomically. Clearing `items` up
+	 * front (as the pre-fix code did) caused a full-grid flash +
+	 * loading-indicator cycle on every filter click that read as
+	 * a page reload. Scroll position is preserved on purpose — the
+	 * user can review the delta where they are and the virtualised
+	 * grid stays mounted.
 	 */
-	function resetAndReload() {
-		items = [];
+	async function resetAndReload() {
 		cursor = null;
 		exhausted = false;
 		selected.clear();
-		void loadMore();
+		loading = true;
+		error = null;
+		try {
+			const page = await fetchPhotos(60, {
+				cursor: null,
+				kind: kindFilter,
+				driveId: driveFilter,
+				favoriteOnly: favoriteFilter
+			});
+			items = page.items;
+			cursor = page.nextCursor;
+			if (!page.nextCursor) exhausted = true;
+		} catch (e) {
+			error = e instanceof Error ? e.message : String(e);
+			items = [];
+			exhausted = true;
+		} finally {
+			loading = false;
+		}
 	}
 
 	function setKindFilter(k: PhotosKind) {
 		if (kindFilter === k) return;
 		kindFilter = k;
 		if (typeof localStorage !== 'undefined') localStorage.setItem(KIND_KEY, k);
-		resetAndReload();
+		void resetAndReload();
 	}
 
 	function setDriveFilter(id: string | null) {
@@ -252,7 +276,7 @@
 			if (id) localStorage.setItem(DRIVE_KEY, id);
 			else localStorage.removeItem(DRIVE_KEY);
 		}
-		resetAndReload();
+		void resetAndReload();
 	}
 
 	function toggleFavoriteFilter() {
@@ -261,7 +285,7 @@
 			if (favoriteFilter) localStorage.setItem(FAVORITE_KEY, 'true');
 			else localStorage.removeItem(FAVORITE_KEY);
 		}
-		resetAndReload();
+		void resetAndReload();
 	}
 
 	/** A plain tile click toggles selection once anything is selected, else opens the lightbox. */
