@@ -1538,24 +1538,37 @@ roadmap once that policy is chosen.
    stays off — each drive's scope is isolated by the per-drive
    `CROSS JOIN LATERAL`. Regression test lives at
    `photos_resources.hurl` step 8d.
-10. **§9b — TODO.** Delete-UX follow-up to §9. Design converged
-    in-session as a three-layer stack:
-    - Layer 0 (standalone commit): split
-      `GET /api/dedup/check/{hash}` into user-scoped (drops
-      `ref_count`, 404 anti-enum, token-subject gated) and
-      admin-scoped (`GET /api/admin/dedup/check/{hash}`, always
-      carries `ref_count`). Hurl:
-      `refcount_same_content_rewrite.hurl` migrates to admin
-      route; `derived_blob_copy.hurl` adjusts to the new 200/404
-      user shape.
-    - Layer 1: `has_blob_siblings: bool` on the listing DTO.
-      ~6 ms per listing page via the §9 index.
-    - Layer 2: the (now user-scoped) check endpoint returns the
-      caller's visible sibling file-rows — `{ file_id, name,
-      drive_id, folder_id, can_delete, can_update, can_share }`
-      per row plus `count` + `limit` + `truncated`. The modal
-      renders a per-row checkbox list and batches ticked ids
-      into the existing `POST /api/batch/trash`. No new
-      bulk-trash endpoint needed — the caller explicitly names
-      what to trash, so zero blast-radius risk.
-    See §9b for the full shape + hurl matrix.
+10. **§9b — DONE** (2026-10-09). Delete-UX follow-up to §9, shipped
+    as the three-layer stack the design converged on:
+    - Layer 0 (`3d5a2b1a`): split `GET /api/dedup/check/{hash}`
+      into user-scoped (drops `ref_count`, 404 anti-enum,
+      anonymous-caller guard) and admin-scoped
+      (`GET /api/admin/dedup/check/{hash}`, always carries
+      `ref_count`). Hurl +  webdav bash tests migrated;
+      `trash.hurl` + `trash_resources.hurl` gained a
+      `DELETE /api/trash/empty` preflight so prior-session
+      residue can't flunk their `count==0` assertion.
+    - Layer 1 (`c949215d`): `has_blob_siblings: bool` on
+      `PhotoResourceItemDto`, computed by a per-row EXISTS probe
+      that rides `idx_files_media_dedup_by_drive_blob`. The flag
+      scope matches the gallery's own filter (`NOT is_trashed AND
+      image/video`) — "siblings a user would actually SEE in the
+      gallery", not "every ref anywhere". A trashed-only fan-out
+      reads `false`; the FE must still call Layer 2 to be fully
+      honest about bytes if that matters to the specific flow.
+    - Layer 2 (`e9902b17`): the user-scoped check endpoint
+      returns the caller's visible sibling file-rows —
+      `{ file_id, name, drive_id, folder_id, is_trashed,
+      can_delete, can_update, can_share }` per row, plus `count`
+      + `truncated` (cap `MAX_SIBLINGS = 500`). Trashed rows are
+      included: they still hold a blob ref until the trash entry
+      is purged, so leaving them out would hide bytes the user
+      needs to see. Authz filter runs through
+      `check_files_read_batch` so the response never discloses
+      files behind drive grants the caller doesn't hold — same
+      anti-enum guarantee the handler leads with for its 404
+      path. The modal renders a per-row checkbox list and
+      batches ticked ids into the existing
+      `POST /api/batch/trash`. No new bulk-trash endpoint — the
+      caller explicitly names what to trash, so zero
+      blast-radius risk.
