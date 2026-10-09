@@ -5,7 +5,7 @@
 	 * deletions are reported via `onDelete` so the parent can update its own list.
 	 */
 	import Icon from '$lib/icons/Icon.svelte';
-	import { addFavorite } from '$lib/api/endpoints/favorites';
+	import { addFavorite, removeFavorite } from '$lib/api/endpoints/favorites';
 	import {
 		deleteFile,
 		fileDownloadUrl,
@@ -109,7 +109,12 @@
 		const gen = ++generation;
 		showingOriginal = p.mime_type === 'image/gif';
 		fullResBusy = false;
-		favorited = false;
+		// Seed the star from the item's own `is_favorite` — the pre-fix
+		// code hardcoded `false`, so reopening the lightbox on a photo
+		// the user had previously favorited always painted an empty
+		// star, and the next click would redundantly re-ADD the
+		// favorite via the toggle below.
+		favorited = p.is_favorite;
 		meta = baseMeta(p);
 		preloadNeighbors();
 		void fetchFileMetadata(p.id).then((md) => {
@@ -165,9 +170,25 @@
 
 	async function toggleFavorite() {
 		if (!item) return;
+		const target = item;
+		const next = !favorited;
 		try {
-			await addFavorite('file', item.id);
-			favorited = !favorited;
+			// The two endpoints are not symmetrical idempotent: `addFavorite`
+			// on an already-favorited row returns success; `removeFavorite`
+			// on a non-favorited row 404s. Branching on the current state
+			// keeps both directions clean and matches the per-tile toggle
+			// everywhere else in the SPA.
+			if (next) {
+				await addFavorite('file', target.id);
+			} else {
+				await removeFavorite('file', target.id);
+			}
+			favorited = next;
+			// Propagate the flip back to the parent's `items` array so
+			// re-opening the lightbox on the same tile (or navigating
+			// prev/next and back) seeds the star correctly via
+			// `showItem` reading `p.is_favorite`.
+			target.is_favorite = next;
 		} catch (e) {
 			errorToast(e);
 		}
