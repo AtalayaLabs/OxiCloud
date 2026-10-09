@@ -95,9 +95,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          # Build the release tag on release events, otherwise build the
-          # branch/tag that dispatched the workflow.
-          ref: ${{ github.event.release.tag_name || github.ref }}
+          # Build the exact tag behind the published release or manual dispatch.
+          ref: ${{ github.event.inputs.version || github.event.release.tag_name || github.ref }}
           # This job runs `cargo test --workspace` — no OXICLOUD_VERSION
           # is injected explicitly, so build.rs falls through to
           # `git describe --tags`. Without tags in the checkout it
@@ -154,11 +153,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          # Build the release tag on release events; otherwise build the
-          # branch/tag that triggered this run. On push-to-main, `github.ref` resolves to
+          # Build the exact tag behind the published release or manual
+          # dispatch. On push-to-main, `github.ref` resolves to
           # `refs/heads/main` and this checks out the freshly-merged
           # commit — exactly what we want to publish as `:main`.
-          ref: ${{ github.event.release.tag_name || github.ref }}
+          ref: ${{ github.event.inputs.version || github.event.release.tag_name || github.ref }}
 
       - name: Resolve channel + version + tags
         id: meta
