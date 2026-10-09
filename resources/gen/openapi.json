@@ -13693,9 +13693,18 @@
         "description": "Response for the user-facing `GET /api/dedup/check/{hash}`.\n\n404 — not just a 200 with `exists: false` — is the signal that the\ncaller has no visible reference to this blob. The pre-split shape\ncarried an `exists: bool` + an `Option<u32> ref_count` whose\npresence depended on the caller's role; both are gone from this\nroute. The admin accounting field lives at\n`GET /api/admin/dedup/check/{hash}` instead (`HashCheckAdminResponse`),\nwhich is middleware-gated and never readable to a non-admin — the\nsplit prevents cross-user content inference by construction, with no\nper-handler role branch left to drift. See §9b of\n`docs/plan/photos-resources-migration.md`.",
         "required": [
           "hash",
-          "existing_size"
+          "existing_size",
+          "count",
+          "truncated",
+          "siblings"
         ],
         "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Count of siblings returned in `siblings[]` below — equal to the\nvisible fan-out when `truncated == false`, equal to `MAX_SIBLINGS`\nwhen `truncated == true`. Includes the file the caller is probing\nFROM when that file is itself a sibling (same drive, same blob) —\nthe FE already knows which row that is and can mark it.",
+            "minimum": 0
+          },
           "existing_size": {
             "type": "integer",
             "format": "int64",
@@ -13705,6 +13714,62 @@
           "hash": {
             "type": "string",
             "description": "The BLAKE3 hash that was checked."
+          },
+          "siblings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HashSiblingDto"
+            },
+            "description": "Up to `MAX_SIBLINGS` files the caller has Read access to that\nreference this blob hash, each enriched with the per-row\npermissions needed by the delete-UX (`can_delete`, `can_update`,\n`can_share`). Rows the caller cannot Read are filtered out at the\nauthz boundary — the siblings list never discloses the existence\nof files behind drive grants the caller doesn't hold."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when more visible siblings exist than this response returned.\nSignals the FE to fall back to its single-copy delete default\nrather than paint a 1000-row chooser."
+          }
+        }
+      },
+      "HashSiblingDto": {
+        "type": "object",
+        "description": "One entry in `HashCheckResponse::siblings` — a file the caller can see\nthat references the probed blob. Carries the ids the FE needs to drive\n`POST /api/batch/trash` on the user's chosen subset, plus the per-row\npermission bits the delete-UX reads to decide which actions the chooser\nmay offer against this specific row (e.g. a sibling in a drive the\ncaller only has Comment on is listed but not trashable from here).\n\n`is_trashed` is TRUE for a sibling that currently sits in trash: the\nrow still holds a blob reference until the trash entry is purged, so\nthe UX surfaces it as \"to free these bytes, purge this from trash\ntoo\". Non-trashed and trashed rows share the same shape — the flag\nis the only discriminator so clients can colour or group them without\na second round trip.",
+        "required": [
+          "file_id",
+          "name",
+          "drive_id",
+          "is_trashed",
+          "can_delete",
+          "can_update",
+          "can_share"
+        ],
+        "properties": {
+          "can_delete": {
+            "type": "boolean"
+          },
+          "can_share": {
+            "type": "boolean"
+          },
+          "can_update": {
+            "type": "boolean"
+          },
+          "drive_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "file_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "folder_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "is_trashed": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
           }
         }
       },

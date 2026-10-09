@@ -6,10 +6,22 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+use uuid::Uuid;
 
 use crate::common::di::AppState;
 use crate::interfaces::middleware::auth::AuthUser;
 use std::sync::Arc;
+
+/// Upper bound on siblings returned by `GET /api/dedup/check/{hash}` on a
+/// single response (§9b Layer 2 of `docs/plan/photos-resources-migration.md`).
+/// 500 covers every realistic photo-dedup fan-out — the §9 within-drive
+/// `DISTINCT ON` already collapses massive copy sets at the gallery level,
+/// so this surface sees the long tail, not the pathological case. The
+/// cap caps per-row permission evaluations (up to 3 authz checks per
+/// sibling); above it, the response flips `truncated: true` and the FE
+/// falls back to its "trash this one copy" default rather than painting a
+/// 1000-row chooser.
+const MAX_SIBLINGS: usize = 500;
 
 /// Global application state for dependency injection
 type GlobalState = Arc<AppState>;
@@ -45,6 +57,48 @@ pub struct HashCheckResponse {
     /// a 200 implies the caller holds at least one visible reference,
     /// and the metadata row is read under the same guard.
     pub existing_size: u64,
+    /// Count of siblings returned in `siblings[]` below — equal to the
+    /// visible fan-out when `truncated == false`, equal to `MAX_SIBLINGS`
+    /// when `truncated == true`. Includes the file the caller is probing
+    /// FROM when that file is itself a sibling (same drive, same blob) —
+    /// the FE already knows which row that is and can mark it.
+    pub count: u32,
+    /// True when more visible siblings exist than this response returned.
+    /// Signals the FE to fall back to its single-copy delete default
+    /// rather than paint a 1000-row chooser.
+    pub truncated: bool,
+    /// Up to `MAX_SIBLINGS` files the caller has Read access to that
+    /// reference this blob hash, each enriched with the per-row
+    /// permissions needed by the delete-UX (`can_delete`, `can_update`,
+    /// `can_share`). Rows the caller cannot Read are filtered out at the
+    /// authz boundary — the siblings list never discloses the existence
+    /// of files behind drive grants the caller doesn't hold.
+    pub siblings: Vec<HashSiblingDto>,
+}
+
+/// One entry in `HashCheckResponse::siblings` — a file the caller can see
+/// that references the probed blob. Carries the ids the FE needs to drive
+/// `POST /api/batch/trash` on the user's chosen subset, plus the per-row
+/// permission bits the delete-UX reads to decide which actions the chooser
+/// may offer against this specific row (e.g. a sibling in a drive the
+/// caller only has Comment on is listed but not trashable from here).
+///
+/// `is_trashed` is TRUE for a sibling that currently sits in trash: the
+/// row still holds a blob reference until the trash entry is purged, so
+/// the UX surfaces it as "to free these bytes, purge this from trash
+/// too". Non-trashed and trashed rows share the same shape — the flag
+/// is the only discriminator so clients can colour or group them without
+/// a second round trip.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct HashSiblingDto {
+    pub file_id: Uuid,
+    pub name: String,
+    pub drive_id: Uuid,
+    pub folder_id: Option<Uuid>,
+    pub is_trashed: bool,
+    pub can_delete: bool,
+    pub can_update: bool,
+    pub can_share: bool,
 }
 
 /// Response for the admin-facing `GET /api/admin/dedup/check/{hash}`.
@@ -175,9 +229,82 @@ impl DedupHandler {
             None => return Self::not_found_json(),
         };
 
+        // §9b Layer 2 — siblings list. Fetch at most `MAX_SIBLINGS + 1`
+        // rows so the response can distinguish "complete fan-out" from
+        // "there is more, FE falls back to the single-copy default".
+        // Rows are filtered through the authz engine (Read on each file)
+        // so the response never discloses files behind drive grants the
+        // caller doesn't hold — same anti-enum guarantee the handler
+        // leads with for the 404 path.
+        let raw_siblings = dedup
+            .list_files_by_blob_hash(&hash, (MAX_SIBLINGS as i64) + 1)
+            .await;
+        let truncated = raw_siblings.len() > MAX_SIBLINGS;
+        let candidate: Vec<_> = raw_siblings.into_iter().take(MAX_SIBLINGS).collect();
+
+        // Batch Read-visibility — the engine's `check_files_read_batch`
+        // resolves every file's drive in ONE query and reuses the
+        // per-drive role cache, so a 500-row page costs 1 round-trip
+        // instead of 500 sequential ones. Falling back to the "nothing
+        // visible" empty set on an infrastructure error preserves the
+        // engine's `?Err -> Hidden` default.
+        let subject = crate::domain::services::authorization::Subject::User(auth_user.id);
+        let candidate_ids: Vec<_> = candidate.iter().map(|row| row.id).collect();
+        let readable: std::collections::HashSet<Uuid> = {
+            use crate::application::ports::authorization_ports::AuthorizationEngine;
+            state
+                .authorization
+                .check_files_read_batch(subject, &candidate_ids)
+                .await
+                .unwrap_or_default()
+        };
+
+        // Enrich each Read-visible row with the three per-row permission
+        // bits the delete-UX reads. Checks are sequential per row (3 ×
+        // visible-count) but each hits the engine's decision cache
+        // after the batch Read above seeded the per-drive role rows.
+        use crate::application::ports::authorization_ports::AuthorizationEngine;
+        use crate::domain::services::authorization::{Permission, Resource};
+        let mut siblings = Vec::with_capacity(candidate.len().min(readable.len()));
+        for row in candidate {
+            if !readable.contains(&row.id) {
+                continue;
+            }
+            let resource = Resource::File(row.id);
+            let can_delete = state
+                .authorization
+                .check(subject, Permission::Delete, resource)
+                .await
+                .unwrap_or(false);
+            let can_update = state
+                .authorization
+                .check(subject, Permission::Update, resource)
+                .await
+                .unwrap_or(false);
+            let can_share = state
+                .authorization
+                .check(subject, Permission::Share, resource)
+                .await
+                .unwrap_or(false);
+            siblings.push(HashSiblingDto {
+                file_id: row.id,
+                name: row.name,
+                drive_id: row.drive_id,
+                folder_id: row.folder_id,
+                is_trashed: row.is_trashed,
+                can_delete,
+                can_update,
+                can_share,
+            });
+        }
+
+        let count = siblings.len() as u32;
         let response = HashCheckResponse {
             hash,
             existing_size: size,
+            count,
+            truncated,
+            siblings,
         };
         Response::builder()
             .status(StatusCode::OK)

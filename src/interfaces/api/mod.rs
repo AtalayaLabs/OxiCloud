@@ -62,7 +62,7 @@ use crate::interfaces::api::handlers::contacts_handler::{
     GroupNameRequest, UpdateAddressBookRequest, UpdateContactRequest,
 };
 use crate::interfaces::api::handlers::dedup_handler::{
-    HashCheckAdminResponse, HashCheckResponse, StatsResponse,
+    HashCheckAdminResponse, HashCheckResponse, HashSiblingDto, StatsResponse,
 };
 use crate::interfaces::api::handlers::file_handler::MoveFilePayload;
 use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader};
@@ -491,6 +491,7 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             // Dedup schemas
             HashCheckResponse,
             HashCheckAdminResponse,
+            HashSiblingDto,
             StatsResponse,
             // Contacts / address-book schemas
             AddressBookResponse,
