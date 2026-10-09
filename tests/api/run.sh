@@ -321,6 +321,15 @@ HURL_FILES=( \
   "$API_DIR/files-folders.hurl" \
   "$API_DIR/folder_ancestors.hurl" \
   "$API_DIR/photos_resources.hurl" \
+  # §2b — ETag + mutation-invalidation contract that the SPA cache
+  # (frontend/src/lib/api/etagCache.ts) relies on across favorites,
+  # recent, trash, and folder-contents listings. Runs BEFORE the
+  # per-endpoint hurls because the trash-listing empty-at-start
+  # preflight those files carry is only self-healing when there's no
+  # concurrent residue — this test cleans up its own folder in trash
+  # at the end, so order is independent, but putting it adjacent to
+  # photos_resources.hurl keeps the ETag suite together.
+  "$API_DIR/resources_etag_contract.hurl" \
   "$API_DIR/favorites.hurl" \
   "$API_DIR/trash.hurl" \
   "$API_DIR/trash_resources.hurl" \

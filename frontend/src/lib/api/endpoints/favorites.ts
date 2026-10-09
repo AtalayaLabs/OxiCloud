@@ -1,5 +1,6 @@
 /** Favorites endpoints — ported from favoritesModel.js + features/library. */
 import { apiFetch } from '$lib/api/client';
+import { invalidatePrefix } from '$lib/api/etagCache';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import { t } from '$lib/i18n/index.svelte';
 import {
@@ -129,6 +130,10 @@ export async function addFavorite(type: ItemType, id: string): Promise<void> {
 		body: '{}'
 	});
 	if (!res.ok) throw new Error(`add favorite failed: ${res.status}`);
+	// §2b — the favorites listing changes composition, and the Photos
+	// timeline's `?favorite_only=true` filter view flips with it.
+	invalidatePrefix('/api/favorites/resources');
+	invalidatePrefix('/api/photos/resources');
 }
 
 export async function removeFavorite(type: ItemType, id: string): Promise<void> {
@@ -138,4 +143,6 @@ export async function removeFavorite(type: ItemType, id: string): Promise<void> 
 		headers: getCsrfHeaders()
 	});
 	if (!res.ok) throw new Error(`remove favorite failed: ${res.status}`);
+	invalidatePrefix('/api/favorites/resources');
+	invalidatePrefix('/api/photos/resources');
 }

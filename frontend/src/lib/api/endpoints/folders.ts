@@ -1,5 +1,6 @@
 /** Folder endpoints — ported from filesModel.js + fileOperations.js. */
 import { apiFetch, apiJson } from '$lib/api/client';
+import { apiFetchEtagged, invalidatePrefix } from '$lib/api/etagCache';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import type { FileItem, FolderAncestorsResponse, FolderItem, ItemType } from '$lib/api/types';
 
@@ -213,16 +214,31 @@ export async function fetchFolderPage(
 	if (opts.reverse) params.set('reverse', 'true');
 	if (opts.cursor) params.set('cursor', opts.cursor);
 	if (opts.forceRefresh) params.set('force_refresh', 'true');
-	const res = await apiFetch(`/api/folders/${folderId}/resources?${params.toString()}`, {
-		credentials: 'same-origin',
-		cache: 'no-store'
-	});
-	if (res.status === 403) throw Object.assign(new Error('Forbidden'), { status: 403 });
-	if (!res.ok) throw new Error(`listing failed: ${res.status}`);
-	const page = (await res.json()) as {
+	// §2b — the folder-contents listing is the most frequently hit
+	// `/resources` endpoint in a browsing session. ETag-aware wrapper
+	// attaches `If-None-Match` on refetch and reuses the previous body
+	// on 304 so tab-switch / back-navigation to the same folder is a
+	// zero-body round trip. Callers that specifically bypass the
+	// cache set `forceRefresh` which is already part of the URL and
+	// yields a different cache key (so cached entries stay intact).
+	let page: {
 		items?: { resource_type: ItemType; resource: FolderItem | FileItem }[];
 		next_cursor?: string;
 	};
+	try {
+		const r = await apiFetchEtagged<typeof page>(
+			`/api/folders/${folderId}/resources?${params.toString()}`,
+			{ credentials: 'same-origin' }
+		);
+		page = r.body;
+	} catch (e) {
+		// `apiFetchEtagged` attaches `.status` on the thrown error so
+		// the pre-adoption 403 rethrow shape is preserved for callers
+		// that discriminate on that code.
+		const status = (e as { status?: number }).status;
+		if (status === 403) throw Object.assign(new Error('Forbidden'), { status: 403 });
+		throw e instanceof Error ? e : new Error(`listing failed: ${String(e)}`);
+	}
 	const items: (FolderItem | FileItem)[] = [];
 	const folders: FolderItem[] = [];
 	const files: FileItem[] = [];
@@ -276,6 +292,16 @@ export async function listFolder(folderId: string, forceRefresh = false): Promis
 	return res.listing ?? { folders: [], files: [] };
 }
 
+// §2b — mutations that reshape any folder-contents listing (create,
+// rename, move, delete) drop every cached /api/folders/*/resources entry
+// and the photos timeline (which carries folder_name on sibling probes
+// and may reflect folder renames via its folder_path projection). Trash
+// and favorites prefixes are invalidated by their own mutation endpoints.
+function invalidateFolderListings(): void {
+	invalidatePrefix('/api/folders/');
+	invalidatePrefix('/api/photos/resources');
+}
+
 export async function createFolder(name: string, parentId: string | null): Promise<FolderItem> {
 	const res = await apiFetch('/api/folders', {
 		method: 'POST',
@@ -284,6 +310,7 @@ export async function createFolder(name: string, parentId: string | null): Promi
 		body: JSON.stringify({ name, parent_id: parentId })
 	});
 	if (!res.ok) throw new Error(`create folder failed: ${res.status}`);
+	invalidateFolderListings();
 	return (await res.json()) as FolderItem;
 }
 
@@ -295,6 +322,7 @@ export async function renameFolder(folderId: string, name: string): Promise<void
 		body: JSON.stringify({ name })
 	});
 	if (!res.ok) throw new Error(`rename folder failed: ${res.status}`);
+	invalidateFolderListings();
 }
 
 export async function moveFolder(folderId: string, targetFolderId: string | null): Promise<void> {
@@ -305,6 +333,7 @@ export async function moveFolder(folderId: string, targetFolderId: string | null
 		body: JSON.stringify({ parent_id: targetFolderId || null })
 	});
 	if (!res.ok) throw new Error(`move folder failed: ${res.status}`);
+	invalidateFolderListings();
 }
 
 export async function deleteFolder(folderId: string): Promise<void> {
@@ -314,6 +343,8 @@ export async function deleteFolder(folderId: string): Promise<void> {
 		headers: getCsrfHeaders()
 	});
 	if (!res.ok) throw new Error(`delete folder failed: ${res.status}`);
+	invalidateFolderListings();
+	invalidatePrefix('/api/trash/resources');
 }
 
 export function folderZipUrl(folderId: string): string {

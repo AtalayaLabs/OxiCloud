@@ -1,5 +1,6 @@
 /** Trash endpoints — ported from trashModel.js + views/trash. */
 import { apiFetch } from '$lib/api/client';
+import { invalidatePrefix } from '$lib/api/etagCache';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import { t } from '$lib/i18n/index.svelte';
 import { fetchResourcePage, type ResourcePage, type ResourcePageOpts } from './resources';
@@ -84,6 +85,19 @@ export function remainingDaysBucket(value: number | string | null | undefined): 
 	return t('expiryBucket.later', 'Later');
 }
 
+/**
+ * §2b — every trash mutation (restore, permanent delete, empty) reshapes
+ * the trash listing. Restore also re-adds the item to its folder and may
+ * resurface it on photos / favorites / recent — invalidate those too.
+ */
+function invalidateAfterTrashMutation(): void {
+	invalidatePrefix('/api/trash/resources');
+	invalidatePrefix('/api/folders/');
+	invalidatePrefix('/api/photos/resources');
+	invalidatePrefix('/api/favorites/resources');
+	invalidatePrefix('/api/recent/resources');
+}
+
 export async function restoreTrashItem(trashId: string): Promise<void> {
 	const res = await apiFetch(`/api/trash/${trashId}/restore`, {
 		method: 'POST',
@@ -92,6 +106,7 @@ export async function restoreTrashItem(trashId: string): Promise<void> {
 		body: '{}'
 	});
 	if (!res.ok) throw new Error(`restore failed: ${res.status}`);
+	invalidateAfterTrashMutation();
 }
 
 export async function deleteTrashItem(trashId: string): Promise<void> {
@@ -101,6 +116,7 @@ export async function deleteTrashItem(trashId: string): Promise<void> {
 		headers: getCsrfHeaders()
 	});
 	if (!res.ok) throw new Error(`permanent delete failed: ${res.status}`);
+	invalidateAfterTrashMutation();
 }
 
 export async function emptyTrash(): Promise<void> {
@@ -110,6 +126,7 @@ export async function emptyTrash(): Promise<void> {
 		headers: getCsrfHeaders()
 	});
 	if (!res.ok) throw new Error(`empty trash failed: ${res.status}`);
+	invalidateAfterTrashMutation();
 }
 
 /**
