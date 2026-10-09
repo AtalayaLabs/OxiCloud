@@ -27,6 +27,23 @@
 		/** Called after a successful delete so the parent can drop it from `items`. */
 		onDelete?: (id: string) => void;
 		/**
+		 * Optional hook that lets the parent intercept the delete gesture
+		 * before the default confirm+deleteFile flow runs. The Photos page
+		 * wires this to its dedup chooser so a `has_blob_siblings` tile
+		 * shows the siblings-picker instead of the plain confirm — same
+		 * UX as deleting from the gallery grid. Return `true` to signal
+		 * "I took over, do not run the default flow"; `false` or
+		 * `undefined` to delegate to the lightbox's own confirmDialog +
+		 * `deleteFile` path.
+		 *
+		 * When the handler takes over, it owns the item-removal /
+		 * `onDelete` fan-out — it has already updated the shared `items`
+		 * list via its own batchTrash call. The lightbox's clamp-index
+		 * effect picks up the shrunk list and slides to the next tile
+		 * (or closes when nothing is left).
+		 */
+		onDeleteRequested?: (item: FileItem) => Promise<boolean>;
+		/**
 		 * Hide every affordance that mutates. Set by the public-share page,
 		 * whose viewer holds a link rather than an account.
 		 *
@@ -42,7 +59,13 @@
 		readOnly?: boolean;
 	}
 
-	let { items, index = $bindable(), onDelete, readOnly = false }: Props = $props();
+	let {
+		items,
+		index = $bindable(),
+		onDelete,
+		onDeleteRequested,
+		readOnly = false
+	}: Props = $props();
 
 	let showingOriginal = $state(false);
 	let fullResBusy = $state(false);
@@ -153,6 +176,23 @@
 	async function remove() {
 		if (!item) return;
 		const target = item;
+
+		// Give the parent a chance to intercept — the Photos page wires
+		// this to its dedup siblings chooser when the tile carries
+		// `has_blob_siblings`, so the lightbox-triggered delete lands in
+		// the same chooser as the gallery-triggered one. A `true` return
+		// means the parent handled everything (including removing the
+		// trashed items from the shared `items` list); the clamp-index
+		// effect then slides the lightbox to the next tile.
+		if (onDeleteRequested) {
+			try {
+				if (await onDeleteRequested(target)) return;
+			} catch (e) {
+				errorToast(e);
+				return;
+			}
+		}
+
 		const ok = await confirmDialog({
 			title: t('photos.delete', 'Delete photo'),
 			message: t('photos.confirm_delete_one', { name: target.name }, 'Delete {{name}}?'),

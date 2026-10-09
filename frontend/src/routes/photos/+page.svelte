@@ -17,7 +17,7 @@
 	import { fileDownloadUrl, fileThumbnailUrl } from '$lib/api/endpoints/files';
 	import { listDrives } from '$lib/api/endpoints/drives';
 	import { driveIcon } from '$lib/stores/drives.svelte';
-	import type { Drive } from '$lib/api/types';
+	import type { Drive, FileItem } from '$lib/api/types';
 	import Icon from '$lib/icons/Icon.svelte';
 	import { confirmDialog } from '$lib/stores/dialogs.svelte';
 	import { preferences } from '$lib/stores/preferences.svelte';
@@ -302,42 +302,57 @@
 	let dedupTruncated = $state(false);
 	let dedupOriginId = $state<string>('');
 
+	/**
+	 * Try to open the dedup chooser for one tile. Returns `true` when the
+	 * chooser was opened (caller should skip its default confirm flow);
+	 * `false` when there's nothing to disambiguate (no sibling flag, no
+	 * live siblings beyond the origin, or the probe failed — in which
+	 * case the caller falls back to its plain confirm).
+	 *
+	 * Shared between the gallery delete gesture (`trashSelected` on a
+	 * single-select) and the lightbox's `onDeleteRequested` hook so both
+	 * entry points reach the same chooser.
+	 */
+	async function tryOpenDedupChooser(target: PhotoItem): Promise<boolean> {
+		if (!target.has_blob_siblings || !target.content_hash) return false;
+		try {
+			const resp = await fetchHashSiblings(target.content_hash);
+			// The dialog filters trashed siblings out — gating here on
+			// "any LIVE sibling other than the origin tile" avoids
+			// opening an empty-list chooser when every other copy is
+			// already in trash (the §9 live-only `has_blob_siblings`
+			// flag can diverge from the Layer 2 live set between the
+			// listing fetch and this probe, e.g. after a sibling was
+			// trashed in another tab).
+			const liveOthers = resp
+				? resp.siblings.filter((s) => !s.is_trashed && s.file_id !== target.id)
+				: [];
+			if (resp && liveOthers.length > 0) {
+				dedupSiblings = resp.siblings;
+				dedupTruncated = resp.truncated;
+				dedupOriginId = target.id;
+				dedupDialogOpen = true;
+				return true;
+			}
+		} catch {
+			// Fall through — a failed probe should not block the delete
+			// the user explicitly asked for.
+		}
+		return false;
+	}
+
 	async function trashSelected() {
 		const ids = selected.values();
 
 		// Single-tile trash where the server flagged `has_blob_siblings:
 		// true` — hand off to the dedup chooser so the user can decide
-		// which copies to actually trash. On any dedup-fetch failure we
-		// degrade to the plain confirm rather than block the delete
-		// path; the user can still trash what they asked for.
+		// which copies to actually trash. Multi-select stays on the
+		// plain confirm; the per-tile sibling fan-out can diverge
+		// arbitrarily across a mixed selection and a chooser-of-choosers
+		// is not what the UX needs.
 		if (ids.length === 1) {
 			const target = items.find((p) => p.id === ids[0]);
-			if (target && target.has_blob_siblings && target.content_hash) {
-				try {
-					const resp = await fetchHashSiblings(target.content_hash);
-					// The dialog filters trashed siblings out — gating here on
-					// "any LIVE sibling other than the origin tile" avoids
-					// opening an empty-list chooser when every other copy is
-					// already in trash (the §9 live-only `has_blob_siblings`
-					// flag can diverge from the Layer 2 live set between the
-					// listing fetch and this probe, e.g. after a sibling was
-					// trashed in another tab).
-					const liveOthers = resp
-						? resp.siblings.filter((s) => !s.is_trashed && s.file_id !== target.id)
-						: [];
-					if (resp && liveOthers.length > 0) {
-						dedupSiblings = resp.siblings;
-						dedupTruncated = resp.truncated;
-						dedupOriginId = target.id;
-						dedupDialogOpen = true;
-						return;
-					}
-				} catch {
-					// Fall through to the simple confirm — a failed probe
-					// should not prevent the user from trashing the one
-					// tile they explicitly selected.
-				}
-			}
+			if (target && (await tryOpenDedupChooser(target))) return;
 		}
 
 		const ok = await confirmDialog({
@@ -348,6 +363,34 @@
 		});
 		if (!ok) return;
 		await runBatchTrash(ids);
+	}
+
+	/**
+	 * Lightbox hook: route the lightbox's delete gesture through the dedup
+	 * chooser when the tile has siblings. Returning `true` tells the
+	 * lightbox "I took over, do not run your default confirm+delete flow"
+	 * — the chooser's confirm path updates `items`, and the lightbox's
+	 * own clamp-index effect slides to the next tile.
+	 */
+	async function onLightboxDeleteRequested(target: PhotoItem | FileItem): Promise<boolean> {
+		// The lightbox types `items` as `FileItem[]` for its share-page
+		// reuse case; a PhotoItem is a superset so the runtime check
+		// works regardless of what the compiler sees.
+		const asPhoto = target as PhotoItem;
+		if (await tryOpenDedupChooser(asPhoto)) return true;
+		// No chooser needed — but the lightbox's default path calls the
+		// single-file `deleteFile` endpoint, not the batchTrash /
+		// item-removal pipeline the Photos page uses. Route to the same
+		// pipeline so item-list consistency is maintained.
+		const ok = await confirmDialog({
+			title: t('photos.delete', 'Delete photo'),
+			message: t('photos.confirm_delete_one', { name: target.name }, 'Delete {{name}}?'),
+			confirmText: t('common.delete', 'Delete'),
+			danger: true
+		});
+		if (!ok) return true;
+		await runBatchTrash([target.id]);
+		return true;
 	}
 
 	async function runBatchTrash(ids: string[]) {
@@ -745,7 +788,12 @@
 		<!-- Lightbox operates on `visibleItems` — indices align with
 		     what the grid rendered, so next/prev never surfaces a
 		     hidden photo the user can't see in the grid behind. -->
-		<PhotoLightbox items={visibleItems} bind:index={lightbox} onDelete={onDeletePhoto} />
+		<PhotoLightbox
+			items={visibleItems}
+			bind:index={lightbox}
+			onDelete={onDeletePhoto}
+			onDeleteRequested={onLightboxDeleteRequested}
+		/>
 	{/if}
 {:else if tab === 'places'}
 	{#if placesMap.component}
