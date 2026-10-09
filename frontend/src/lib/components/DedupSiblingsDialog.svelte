@@ -3,9 +3,16 @@
 	 * §9b Layer 2 delete-UX chooser. Opened when the user asks to trash a photo
 	 * whose listing row carries `has_blob_siblings: true` — i.e. the §9
 	 * within-drive dedup hid at least one other visible file referencing the
-	 * same bytes. The dialog lists every sibling the caller can Read (live
-	 * AND trashed), lets them tick which copies to actually trash, and
-	 * returns the picked ids to the caller for a single `batchTrash` call.
+	 * same bytes. Lists every LIVE sibling the caller can Read, lets them tick
+	 * which copies to trash, and returns the picked ids for a single
+	 * `batchTrash` call.
+	 *
+	 * Already-trashed siblings are filtered out at the FE boundary — the batch
+	 * endpoint rejects them (SQL guard `WHERE NOT is_trashed`), so including
+	 * them would produce a confusing "N of M moved to trash" warning without
+	 * freeing any bytes. A `trashed_note` surfaces the trashed-sibling count
+	 * so the user knows bytes still held by trash entries need the Trash
+	 * view's permanent-delete to be reclaimed.
 	 *
 	 * No new bulk-trash endpoint is involved — the dialog is a UX helper on
 	 * top of `POST /api/batch/trash`, so there is zero blast-radius risk from
@@ -57,10 +64,18 @@
 		}
 	});
 
-	const checkable = $derived(siblings.filter((s) => s.can_delete));
-	const nonCheckable = $derived(siblings.filter((s) => !s.can_delete));
-	const liveCount = $derived(siblings.filter((s) => !s.is_trashed).length);
-	const trashedCount = $derived(siblings.length - liveCount);
+	// Filter trashed siblings out at the FE boundary: the chooser is a
+	// "which copies to trash NOW" picker, and the batch-trash endpoint
+	// rejects already-trashed rows (SQL guard `WHERE NOT is_trashed`)
+	// as `not_found`. Keeping them in the list produces a confusing
+	// "N of M moved to trash" warning without freeing any bytes. The
+	// server still returns them in the raw response so audits /
+	// future admin views have the full picture. Freeing bytes held by
+	// trashed copies is the Trash view's job (`DELETE /api/trash/{id}`).
+	const live = $derived(siblings.filter((s) => !s.is_trashed));
+	const checkable = $derived(live.filter((s) => s.can_delete));
+	const nonCheckable = $derived(live.filter((s) => !s.can_delete));
+	const trashedCount = $derived(siblings.length - live.length);
 
 	function toggle(id: string) {
 		if (picked.has(id)) picked.delete(id);
@@ -98,10 +113,20 @@
 		<p class="dedup-dialog__intro">
 			{t(
 				'photos.dedup_dialog.intro',
-				{ live: liveCount, trashed: trashedCount },
-				'{{live}} live file(s) and {{trashed}} trashed file(s) in your drive reference the same bytes. Trashing one copy does not free the content — pick every copy you want to send to trash.'
+				{ n: live.length },
+				'{{n}} file(s) in your drive reference the same bytes. Trashing one copy does not free the content — pick every copy you want to send to trash.'
 			)}
 		</p>
+
+		{#if trashedCount > 0}
+			<p class="dedup-dialog__note">
+				{t(
+					'photos.dedup_dialog.trashed_note',
+					{ n: trashedCount },
+					'{{n}} other copy / copies already sit in your trash and still hold the content. Purge them from the Trash view to actually free the bytes.'
+				)}
+			</p>
+		{/if}
 
 		{#if truncated}
 			<p class="dedup-dialog__warning">
@@ -131,12 +156,8 @@
 		</div>
 
 		<ul class="dedup-dialog__list" role="list">
-			{#each siblings as sib (sib.file_id)}
-				<li
-					class="dedup-dialog__row"
-					class:dedup-dialog__row--trashed={sib.is_trashed}
-					class:dedup-dialog__row--readonly={!sib.can_delete}
-				>
+			{#each live as sib (sib.file_id)}
+				<li class="dedup-dialog__row" class:dedup-dialog__row--readonly={!sib.can_delete}>
 					<label class="dedup-dialog__row-label">
 						<input
 							type="checkbox"
@@ -144,23 +165,27 @@
 							disabled={!sib.can_delete}
 							onchange={() => toggle(sib.file_id)}
 						/>
-						<span class="dedup-dialog__row-name">{sib.name}</span>
-						{#if sib.file_id === originId}
-							<span class="dedup-dialog__badge dedup-dialog__badge--origin">
-								{t('photos.dedup_dialog.origin_badge', 'the one you clicked')}
-							</span>
-						{/if}
-						{#if sib.is_trashed}
-							<span class="dedup-dialog__badge dedup-dialog__badge--trashed">
-								<Icon name="trash" />
-								{t('photos.dedup_dialog.trashed_badge', 'in trash')}
-							</span>
-						{/if}
-						{#if !sib.can_delete}
-							<span class="dedup-dialog__badge dedup-dialog__badge--readonly">
-								{t('photos.dedup_dialog.readonly_badge', 'read-only')}
-							</span>
-						{/if}
+						<div class="dedup-dialog__row-body">
+							<div class="dedup-dialog__row-head">
+								<span class="dedup-dialog__row-name">{sib.name}</span>
+								{#if sib.file_id === originId}
+									<span class="dedup-dialog__badge dedup-dialog__badge--origin">
+										{t('photos.dedup_dialog.origin_badge', 'the one you clicked')}
+									</span>
+								{/if}
+								{#if !sib.can_delete}
+									<span class="dedup-dialog__badge dedup-dialog__badge--readonly">
+										{t('photos.dedup_dialog.readonly_badge', 'read-only')}
+									</span>
+								{/if}
+							</div>
+							<div class="dedup-dialog__row-location">
+								<Icon name="folder" />
+								<span>
+									{sib.folder_name ?? t('photos.dedup_dialog.drive_root', 'Drive root')}
+								</span>
+							</div>
+						</div>
 					</label>
 				</li>
 			{/each}
@@ -261,21 +286,44 @@
 		border-bottom: none;
 	}
 
-	.dedup-dialog__row--trashed {
-		background: var(--color-bg-subtle);
-	}
-
 	.dedup-dialog__row--readonly {
 		opacity: 0.7;
 	}
 
 	.dedup-dialog__row-label {
 		display: flex;
-		align-items: center;
+		align-items: flex-start;
 		gap: var(--space-2);
 		padding: var(--space-2) var(--space-3);
 		cursor: pointer;
 		font-size: var(--text-sm);
+	}
+
+	.dedup-dialog__row-body {
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+
+	.dedup-dialog__row-head {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		min-width: 0;
+	}
+
+	.dedup-dialog__row-location {
+		display: flex;
+		align-items: center;
+		gap: var(--space-1);
+		color: var(--color-text-muted);
+		font-size: var(--text-xs);
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.dedup-dialog__row--readonly .dedup-dialog__row-label {
@@ -303,11 +351,6 @@
 	.dedup-dialog__badge--origin {
 		background: var(--color-accent-tint);
 		color: var(--color-accent);
-	}
-
-	.dedup-dialog__badge--trashed {
-		background: var(--color-danger-light-bg);
-		color: var(--color-danger-bg);
 	}
 
 	.dedup-dialog__badge--readonly {

@@ -26,6 +26,9 @@ export interface HashSibling {
 	name: string;
 	drive_id: string;
 	folder_id: string | null;
+	/** Display name of the parent folder — null when the file lives at the drive
+	 *  root. The chooser uses this to disambiguate siblings that share a filename. */
+	folder_name: string | null;
 	is_trashed: boolean;
 	/** The caller has Delete on this file (via the service-layer authz engine). */
 	can_delete: boolean;

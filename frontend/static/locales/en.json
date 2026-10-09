@@ -146,14 +146,15 @@
     "map_error": "Could not load the map",
     "dedup_dialog": {
       "title": "This content has copies",
-      "intro": "{{live}} live file(s) and {{trashed}} trashed file(s) in your drive reference the same bytes. Trashing one copy does not free the content — pick every copy you want to send to trash.",
+      "intro": "{{n}} file(s) in your drive reference the same bytes. Trashing one copy does not free the content — pick every copy you want to send to trash.",
+      "trashed_note": "{{n}} other copy / copies already sit in your trash and still hold the content. Purge them from the Trash view to actually free the bytes.",
       "truncated": "The server capped this list. More copies exist but are not shown here.",
       "select_all": "Select all deletable",
       "select_none": "Select none",
       "picked": "{{n}} of {{total}} selected",
       "origin_badge": "the one you clicked",
-      "trashed_badge": "in trash",
       "readonly_badge": "read-only",
+      "drive_root": "Drive root",
       "readonly_note": "{{n}} copy / copies live where you only have read access — they cannot be trashed from here.",
       "confirm": "Trash {{n}} file(s)"
     }

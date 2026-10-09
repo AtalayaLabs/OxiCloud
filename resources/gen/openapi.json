@@ -13765,6 +13765,13 @@
             ],
             "format": "uuid"
           },
+          "folder_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Display name of the parent folder — the chooser uses this to\ndisambiguate siblings that share a filename (e.g. the same\nscreenshot filename copied across several folders). `None`\nwhen the file lives at the drive root (`folder_id` is `None`)."
+          },
           "is_trashed": {
             "type": "boolean"
           },

@@ -315,7 +315,17 @@
 			if (target && target.has_blob_siblings && target.content_hash) {
 				try {
 					const resp = await fetchHashSiblings(target.content_hash);
-					if (resp && resp.siblings.length > 0) {
+					// The dialog filters trashed siblings out — gating here on
+					// "any LIVE sibling other than the origin tile" avoids
+					// opening an empty-list chooser when every other copy is
+					// already in trash (the §9 live-only `has_blob_siblings`
+					// flag can diverge from the Layer 2 live set between the
+					// listing fetch and this probe, e.g. after a sibling was
+					// trashed in another tab).
+					const liveOthers = resp
+						? resp.siblings.filter((s) => !s.is_trashed && s.file_id !== target.id)
+						: [];
+					if (resp && liveOthers.length > 0) {
 						dedupSiblings = resp.siblings;
 						dedupTruncated = resp.truncated;
 						dedupOriginId = target.id;

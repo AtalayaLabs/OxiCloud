@@ -95,6 +95,11 @@ pub struct HashSiblingDto {
     pub name: String,
     pub drive_id: Uuid,
     pub folder_id: Option<Uuid>,
+    /// Display name of the parent folder — the chooser uses this to
+    /// disambiguate siblings that share a filename (e.g. the same
+    /// screenshot filename copied across several folders). `None`
+    /// when the file lives at the drive root (`folder_id` is `None`).
+    pub folder_name: Option<String>,
     pub is_trashed: bool,
     pub can_delete: bool,
     pub can_update: bool,
@@ -291,6 +296,7 @@ impl DedupHandler {
                 name: row.name,
                 drive_id: row.drive_id,
                 folder_id: row.folder_id,
+                folder_name: row.folder_name,
                 is_trashed: row.is_trashed,
                 can_delete,
                 can_update,
