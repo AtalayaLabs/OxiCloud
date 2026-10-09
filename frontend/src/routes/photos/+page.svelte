@@ -11,6 +11,8 @@
 		type PhotoItem,
 		type PhotosKind
 	} from '$lib/api/endpoints/photos';
+	import { fetchHashSiblings, type HashSibling } from '$lib/api/endpoints/dedup';
+	import DedupSiblingsDialog from '$lib/components/DedupSiblingsDialog.svelte';
 	import { peopleEnabled } from '$lib/api/endpoints/people';
 	import { fileDownloadUrl, fileThumbnailUrl } from '$lib/api/endpoints/files';
 	import { listDrives } from '$lib/api/endpoints/drives';
@@ -288,8 +290,46 @@
 		}
 	}
 
+	// §9b Layer 2 dedup chooser state. Opened only on the single-select
+	// path when the clicked tile carries `has_blob_siblings: true` — the
+	// listing-level signal that the §9 within-drive DISTINCT ON hid at
+	// least one other visible file referencing the same bytes. For
+	// multi-select trashing we fall back to the plain confirm; the
+	// per-tile sibling fan-out can diverge arbitrarily across a mixed
+	// selection and a chooser-of-choosers is not what the UX needs.
+	let dedupDialogOpen = $state(false);
+	let dedupSiblings = $state<HashSibling[]>([]);
+	let dedupTruncated = $state(false);
+	let dedupOriginId = $state<string>('');
+
 	async function trashSelected() {
 		const ids = selected.values();
+
+		// Single-tile trash where the server flagged `has_blob_siblings:
+		// true` — hand off to the dedup chooser so the user can decide
+		// which copies to actually trash. On any dedup-fetch failure we
+		// degrade to the plain confirm rather than block the delete
+		// path; the user can still trash what they asked for.
+		if (ids.length === 1) {
+			const target = items.find((p) => p.id === ids[0]);
+			if (target && target.has_blob_siblings && target.content_hash) {
+				try {
+					const resp = await fetchHashSiblings(target.content_hash);
+					if (resp && resp.siblings.length > 0) {
+						dedupSiblings = resp.siblings;
+						dedupTruncated = resp.truncated;
+						dedupOriginId = target.id;
+						dedupDialogOpen = true;
+						return;
+					}
+				} catch {
+					// Fall through to the simple confirm — a failed probe
+					// should not prevent the user from trashing the one
+					// tile they explicitly selected.
+				}
+			}
+		}
+
 		const ok = await confirmDialog({
 			title: t('photos.delete', 'Delete photos'),
 			message: t('photos.confirm_delete', { n: ids.length }, 'Move {{n}} photos to trash?'),
@@ -297,6 +337,10 @@
 			danger: true
 		});
 		if (!ok) return;
+		await runBatchTrash(ids);
+	}
+
+	async function runBatchTrash(ids: string[]) {
 		try {
 			const trashed = await batchTrash(ids);
 			if (trashed.size > 0) {
@@ -318,6 +362,11 @@
 		} catch (e) {
 			errorToast(e);
 		}
+	}
+
+	function onDedupConfirm(ids: string[]) {
+		if (ids.length === 0) return;
+		void runBatchTrash(ids);
 	}
 
 	/**
@@ -735,6 +784,14 @@
 		</button>
 	</div>
 {/snippet}
+
+<DedupSiblingsDialog
+	bind:open={dedupDialogOpen}
+	siblings={dedupSiblings}
+	truncated={dedupTruncated}
+	originId={dedupOriginId}
+	onconfirm={onDedupConfirm}
+/>
 
 <style>
 	.photos-head {
