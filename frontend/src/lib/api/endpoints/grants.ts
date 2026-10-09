@@ -1,8 +1,33 @@
 /** Sharing (ReBAC grants) endpoints — ported from model/grants.js. */
 import { apiFetch, apiJson } from '$lib/api/client';
+import { invalidatePrefix } from '$lib/api/etagCache';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import type { ItemType } from '$lib/api/types';
 import type { ResourceBody, ResourcePage } from './resources';
+
+// §2b — grant mutations flip the `is_shared` column on their target
+// row in every listing that surfaces it, but the server's weak_etag
+// `fresh_signal` folds in `max(modified_at)`, and grant triggers do
+// NOT bump `modified_at` on the target file or folder. The listing's
+// ETag therefore stays stable across a grant change — correct from
+// the server's "same content, same timestamps" view, but it leaves
+// stale `is_shared` badges in the SPA cache's cached bodies.
+//
+// Dropping the cache entries on the client here forces the next GET
+// to skip `If-None-Match` entirely (`apiFetchEtagged` only sends it
+// when it has a prior entry), so the browser gets a fresh 200 body
+// instead of a 304 that would re-serve the stale badge. One extra
+// body per listing per share mutation, which is rare — acceptable
+// cost compared to the alternative of waiting on a `fresh_signal`
+// refactor that would need to fold grant state into every endpoint's
+// hash.
+function invalidateAfterGrantMutation(): void {
+	invalidatePrefix('/api/folders/');
+	invalidatePrefix('/api/photos/resources');
+	invalidatePrefix('/api/favorites/resources');
+	invalidatePrefix('/api/recent/resources');
+	invalidatePrefix('/api/trash/resources');
+}
 
 /**
  * Resource kinds the `/api/grants` family addresses. File/folder grants flow
@@ -125,6 +150,7 @@ export async function createGrant(
 		const e = (await res.json().catch(() => ({}))) as { error?: string };
 		throw new Error(e.error || `create grant failed: ${res.status}`);
 	}
+	invalidateAfterGrantMutation();
 	return (await res.json()) as CreateGrantResponse;
 }
 
@@ -141,6 +167,7 @@ export async function updateGrantRole(
 		body: JSON.stringify({ subject, resource, role, expires_at: expiresAt ?? null })
 	});
 	if (!res.ok) throw new Error(`update role failed: ${res.status}`);
+	invalidateAfterGrantMutation();
 }
 
 export async function revokeGrant(grantId: string): Promise<void> {
@@ -150,6 +177,7 @@ export async function revokeGrant(grantId: string): Promise<void> {
 		headers: getCsrfHeaders()
 	});
 	if (!res.ok) throw new Error(`revoke grant failed: ${res.status}`);
+	invalidateAfterGrantMutation();
 }
 
 /**
