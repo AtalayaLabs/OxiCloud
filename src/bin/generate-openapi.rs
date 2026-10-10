@@ -1,9 +1,16 @@
+use oxicloud::common::spec_tag::require_release_tag_or_exit;
 use oxicloud::interfaces::api::ApiDoc;
 use std::fs;
 use std::path::PathBuf;
 use utoipa::OpenApi;
 
 fn main() {
+    // `info.version` carries OXICLOUD_TAG (see the utoipa `info()` in
+    // src/interfaces/api/mod.rs). Refuse to write a spec stamped with a
+    // bare commit SHA — it would pass locally and fail CI's drift job for
+    // everyone. See src/common/spec_tag.rs.
+    require_release_tag_or_exit("generate-openapi", env!("OXICLOUD_TAG"));
+
     let openapi = ApiDoc::openapi();
 
     let json =

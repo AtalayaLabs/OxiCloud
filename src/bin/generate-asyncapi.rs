@@ -25,9 +25,15 @@ use std::fs;
 use std::path::PathBuf;
 
 use oxicloud::application::ports::message_bus_ports::error_code;
+use oxicloud::common::spec_tag::require_release_tag_or_exit;
 use serde_json::{Value, json};
 
 fn main() {
+    // `info.version` below carries OXICLOUD_TAG. Refuse to write a spec
+    // stamped with a bare commit SHA — it would pass locally and fail
+    // CI's drift job for everyone. See src/common/spec_tag.rs.
+    require_release_tag_or_exit("generate-asyncapi", env!("OXICLOUD_TAG"));
+
     let doc = build_asyncapi();
     let json =
         serde_json::to_string_pretty(&doc).expect("Failed to serialize AsyncAPI spec to JSON");
