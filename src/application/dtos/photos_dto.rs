@@ -25,14 +25,26 @@ use uuid::Uuid;
 use crate::application::dtos::cursor::{CursorListResponse, PageCursor};
 use crate::application::dtos::grant_dto::{ResourceContentDto, ResourceTypeDto};
 
-/// Sort axis for `GET /api/photos/resources`.
+/// Sort axis for `GET /api/photos/resources` (§3).
 ///
-/// `CapturedAt` — the current default — orders by
-/// `COALESCE(captured_at, created_at)` via the materialised
-/// `storage.files.media_sort_date` column. The `?order_by=created_at`
-/// override (§3) will land once a stakeholder actually asks for the
-/// upload-time view; the cursor already encodes the axis so §3 is a
-/// purely additive wiring change.
+/// The three axes serve distinct questions:
+///
+/// - `CapturedAt` (default) — "when was this photo TAKEN". Orders by
+///   `COALESCE(captured_at, created_at)` via the materialised
+///   `storage.files.media_sort_date` column, so uploads without EXIF
+///   fall back to upload time rather than sinking to NULL.
+/// - `CreatedAt` — "when did this file ARRIVE in OxiCloud". Pure
+///   `storage.files.created_at`; EXIF capture date ignored. Useful
+///   for the operator-style "recently uploaded" view.
+/// - `UpdatedAt` — "when was this file last TOUCHED". Pure
+///   `storage.files.updated_at`; moves and renames resurface rows.
+///   Useful when the user wants to find a file they recently acted
+///   on, independent of when it was taken or first uploaded.
+///
+/// All three axes paginate on the same `(sort_value, id)` keyset,
+/// just over different columns. The cursor carries the axis so a
+/// mid-scroll flip is rejected by the handler with 400 rather than
+/// silently drifting pagination.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PhotoOrderBy {
@@ -40,9 +52,12 @@ pub enum PhotoOrderBy {
     /// files that carry no EXIF.
     #[default]
     CapturedAt,
-    /// File-row `created_at` only. Reserved for §3; the handler does
-    /// not accept this value today.
+    /// File-row `created_at` only, no EXIF COALESCE.
     CreatedAt,
+    /// File-row `updated_at` only — surfaces the most recently
+    /// touched rows (uploads, renames, overwrites, trash
+    /// transitions) regardless of capture or arrival time.
+    UpdatedAt,
 }
 
 /// Media-kind filter for `GET /api/photos/resources` (§6).
@@ -88,6 +103,14 @@ pub struct PhotosFilter {
     /// clause on the inner lateral — one subquery feeds both the
     /// projection and the filter.
     pub favorite_only: bool,
+    /// Sort axis (§3). Default `CapturedAt` matches today's
+    /// `media_sort_date` ordering; the two other axes order by the
+    /// file row's own `created_at` / `updated_at` columns.
+    pub order_by: PhotoOrderBy,
+    /// Reverse the natural newest-first direction. Default `false`
+    /// matches the historic Photos read order; `true` flips to
+    /// oldest-first on whichever axis `order_by` selects.
+    pub reverse: bool,
 }
 
 /// Opaque keyset cursor for `GET /api/photos/resources`.
@@ -142,6 +165,14 @@ pub struct PhotosCursor {
     /// default when the request omits the filter.
     #[serde(default)]
     pub favorite_only: bool,
+    /// Reverse direction the page was issued under (§3). Encoded for
+    /// the same cursor-round-trip reason: a cursor minted on the
+    /// newest-first view can't be reused against the oldest-first
+    /// view — the row sets flip entirely. `#[serde(default)]` lets
+    /// cursors minted before this field existed decode as `false`,
+    /// matching the historic newest-first default.
+    #[serde(default)]
+    pub reverse: bool,
     /// Full-precision timestamp of the last-returned item's sort column.
     pub sort_value: DateTime<Utc>,
     /// Tie-breaker — the last-returned item's `file_id`.

@@ -264,18 +264,39 @@ jsonpath "$.error_type" == "bad_request"
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 7 — Unsupported sort axis. §3 reserves `created_at` but
-#          doesn't accept it today — the handler returns 400
-#          with error_type=bad_request. Mislabeling the default
-#          axis would silently paginate against the wrong column
-#          once §3 lands, so we fail loud now.
+# Step 7 — §3 sort axis + reverse. The three accepted axes are
+#          `captured_at` (default), `created_at`, `updated_at`;
+#          each paginates on its own column keyset. `reverse=true`
+#          flips newest-first to oldest-first. Unknown axis
+#          values fail parsing at the Deserialize layer with 400
+#          (the serde enum rejects anything outside the
+#          snake_case variants).
 # ─────────────────────────────────────────────────────────────
-GET {{base_url}}/api/photos/resources?order_by=created_at
+GET {{base_url}}/api/photos/resources?order_by=created_at&limit=5
+Authorization: Bearer {{alice_token}}
+
+HTTP 200
+
+
+GET {{base_url}}/api/photos/resources?order_by=updated_at&limit=5
+Authorization: Bearer {{alice_token}}
+
+HTTP 200
+
+
+GET {{base_url}}/api/photos/resources?order_by=captured_at&reverse=true&limit=5
+Authorization: Bearer {{alice_token}}
+
+HTTP 200
+
+
+# Unknown axis fails at the serde layer with 400 — the enum
+# rejects anything that isn't one of the three snake_case
+# variants, so a typo can't silently fall back to the default.
+GET {{base_url}}/api/photos/resources?order_by=bogus
 Authorization: Bearer {{alice_token}}
 
 HTTP 400
-[Asserts]
-jsonpath "$.error_type" == "bad_request"
 
 
 # ─────────────────────────────────────────────────────────────

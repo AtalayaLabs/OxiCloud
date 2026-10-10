@@ -8613,7 +8613,7 @@
           {
             "name": "order_by",
             "in": "query",
-            "description": "Sort axis. `captured_at` (default) orders by\n`COALESCE(captured_at, created_at)`; `created_at` is reserved\nfor §3 and refused today with 400.",
+            "description": "Sort axis (§3). `captured_at` (default) orders by\n`COALESCE(captured_at, created_at)` so rows without EXIF fall\nback to upload time; `created_at` orders by pure upload time;\n`updated_at` surfaces recently-touched rows.",
             "required": false,
             "schema": {
               "oneOf": [
@@ -8624,6 +8624,15 @@
                   "$ref": "#/components/schemas/PhotoOrderBy"
                 }
               ]
+            }
+          },
+          {
+            "name": "reverse",
+            "in": "query",
+            "description": "Reverse the natural (newest-first) direction. Default `false`\nkeeps the Photos-style read order — `true` flips to oldest-first\non whichever axis `order_by` selects. The cursor carries this\nflag so a mid-scroll flip is rejected as a cursor-mismatch 400\nrather than silently drifting pages.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
             }
           },
           {

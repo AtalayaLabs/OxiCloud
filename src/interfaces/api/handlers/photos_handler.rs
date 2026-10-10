@@ -39,10 +39,18 @@ pub struct PhotosResourcesQueryParams {
     pub limit: u32,
     /// Opaque cursor from a previous response. Absent on page 1.
     pub cursor: Option<String>,
-    /// Sort axis. `captured_at` (default) orders by
-    /// `COALESCE(captured_at, created_at)`; `created_at` is reserved
-    /// for §3 and refused today with 400.
+    /// Sort axis (§3). `captured_at` (default) orders by
+    /// `COALESCE(captured_at, created_at)` so rows without EXIF fall
+    /// back to upload time; `created_at` orders by pure upload time;
+    /// `updated_at` surfaces recently-touched rows.
     pub order_by: Option<PhotoOrderBy>,
+    /// Reverse the natural (newest-first) direction. Default `false`
+    /// keeps the Photos-style read order — `true` flips to oldest-first
+    /// on whichever axis `order_by` selects. The cursor carries this
+    /// flag so a mid-scroll flip is rejected as a cursor-mismatch 400
+    /// rather than silently drifting pages.
+    #[serde(default)]
+    pub reverse: bool,
     /// Narrow to one media family (§6). `photo` matches `image/%`,
     /// `video` matches `video/%`, `all` (default) keeps both
     /// interleaved — the pre-filter behaviour.
@@ -103,23 +111,15 @@ pub async fn list_photos_resources(
         kind: params.kind.unwrap_or_default(),
         drive_id: params.drive_id,
         favorite_only: params.favorite_only.unwrap_or(false),
+        order_by: requested_order,
+        reverse: params.reverse,
     };
 
-    // §3 reserves `order_by=created_at`; today the only accepted axis
-    // is `captured_at` (the default). Reject other values with 400
-    // explicitly rather than silently falling back — a client that
-    // sent `?order_by=created_at` would otherwise think it got the
-    // alternate axis when it got the default.
-    if requested_order != PhotoOrderBy::CapturedAt {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error_type": "bad_request",
-                "message": "order_by=created_at is reserved for §3 of the photos-resources migration and not yet accepted"
-            })),
-        )
-            .into_response();
-    }
+    // §3 — all three axes (captured_at / created_at / updated_at)
+    // are accepted; the repository branches the ORDER BY column on
+    // `requested_order` below. The axis is also folded into the
+    // cursor, so a mid-scroll flip is rejected as a cursor-mismatch
+    // 400 further down rather than silently drifting pages.
 
     // Decode the opaque cursor. An undecodable string yields 400
     // (not "start from the top") so pagination can't drift silently
@@ -135,7 +135,8 @@ pub async fn list_photos_resources(
                 if c.order_by == requested_order
                     && c.kind == requested_filter.kind
                     && c.drive_id == requested_filter.drive_id
-                    && c.favorite_only == requested_filter.favorite_only =>
+                    && c.favorite_only == requested_filter.favorite_only
+                    && c.reverse == requested_filter.reverse =>
             {
                 Some(c)
             }
@@ -146,8 +147,10 @@ pub async fn list_photos_resources(
                     "kind"
                 } else if c.drive_id != requested_filter.drive_id {
                     "drive_id"
-                } else {
+                } else if c.favorite_only != requested_filter.favorite_only {
                     "favorite_only"
+                } else {
+                    "reverse"
                 };
                 return (
                     StatusCode::BAD_REQUEST,
@@ -230,6 +233,7 @@ pub async fn list_photos_resources(
                 kind: requested_filter.kind,
                 drive_id: requested_filter.drive_id,
                 favorite_only: requested_filter.favorite_only,
+                reverse: requested_filter.reverse,
                 sort_value: r.sort_date_ts,
                 file_id: r.file.id().parse().unwrap_or_default(),
             }

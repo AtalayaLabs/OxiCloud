@@ -112,6 +112,11 @@ const BATCH_CHUNK_SIZE = 1000;
  *  short on the default view. */
 export type PhotosKind = 'all' | 'photo' | 'video';
 
+/** Sort axis on the Photos timeline (§3). `captured_at` (default) orders by
+ *  EXIF capture date with upload-time fallback; `created_at` is pure upload
+ *  time; `updated_at` surfaces recently-touched rows. */
+export type PhotosOrderBy = 'captured_at' | 'created_at' | 'updated_at';
+
 /** Optional filter / cursor knobs on {@link fetchPhotos}. All default
  *  to "no filter"; the resulting URL omits every absent param. */
 export interface FetchPhotosOptions {
@@ -123,6 +128,10 @@ export interface FetchPhotosOptions {
 	driveId?: string | null;
 	/** Narrow to the caller's favourited rows only. `false`/omitted keeps the full feed. */
 	favoriteOnly?: boolean;
+	/** Sort axis (§3). Default `captured_at`; absent query param on default. */
+	orderBy?: PhotosOrderBy;
+	/** Flip to oldest-first on whichever axis `orderBy` selects. */
+	reverse?: boolean;
 }
 
 /**
@@ -149,6 +158,8 @@ export async function fetchPhotos(limit = 60, opts: FetchPhotosOptions = {}): Pr
 	if (opts.kind && opts.kind !== 'all') q.set('kind', opts.kind);
 	if (opts.driveId) q.set('drive_id', opts.driveId);
 	if (opts.favoriteOnly) q.set('favorite_only', 'true');
+	if (opts.orderBy && opts.orderBy !== 'captured_at') q.set('order_by', opts.orderBy);
+	if (opts.reverse) q.set('reverse', 'true');
 	// §2 server-side ETag + the browser's HTTP cache deliver the
 	// fast-tab-switch 304 fast path without an SPA-level cache; §2b
 	// was dropped in favour of that native path (see

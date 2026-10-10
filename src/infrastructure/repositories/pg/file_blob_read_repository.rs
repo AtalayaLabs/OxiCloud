@@ -567,26 +567,51 @@ impl FileBlobReadRepository {
         filter: crate::application::dtos::photos_dto::PhotosFilter,
         limit: i64,
     ) -> Result<Vec<MediaResourceRow>, DomainError> {
-        use crate::application::dtos::photos_dto::PhotoKind;
+        use crate::application::dtos::photos_dto::{PhotoKind, PhotoOrderBy};
+        // §3 — sort axis + direction. The three axes map to three
+        // columns on `storage.files`; `reverse` flips newest-first
+        // (DESC — the historic Photos read order) to oldest-first
+        // (ASC). The chosen (column, direction) pair is spliced into
+        // every ORDER BY and into the cursor comparison predicate so
+        // the keyset keeps the same `(sort_col, id)` row-value shape
+        // under either axis. The partial covering index on
+        // `(drive_id, media_sort_date DESC)` only serves the
+        // CapturedAt branch; CreatedAt / UpdatedAt fall back to the
+        // row-level fetch, which is acceptable at 10k-user scale and
+        // is only paid when a stakeholder explicitly asks for the
+        // alternate axis.
+        let sort_col = match filter.order_by {
+            PhotoOrderBy::CapturedAt => "media_sort_date",
+            PhotoOrderBy::CreatedAt => "created_at",
+            PhotoOrderBy::UpdatedAt => "updated_at",
+        };
+        let (dir, cmp) = if filter.reverse {
+            ("ASC", ">")
+        } else {
+            ("DESC", "<")
+        };
+
         // Decompose the opaque cursor into (ts, id). `None` → no
         // keyset bound at all; the predicate collapses to `$2::timestamptz
         // IS NULL` so the planner still gets a single prepared-statement
         // shape across cursored and uncursored calls. The cursor carries
-        // a full-precision `DateTime<Utc>` (not epoch seconds) so the
-        // comparison matches `storage.files.media_sort_date` at
-        // microsecond fidelity — truncating to seconds silently drops
-        // rows at the page boundary.
+        // a full-precision `DateTime<Utc>` so the comparison matches the
+        // underlying `timestamptz` column at microsecond fidelity —
+        // truncating to seconds silently drops rows at the page boundary.
         let cursor_ts = cursor.map(|c| c.sort_value);
         let cursor_id = cursor.map(|c| c.file_id);
         let cursor_pred = if cursor_ts.is_some() {
-            // Row-value comparison on (media_sort_date, id): the primary
-            // bound uses the composite partial index, and ties at the
-            // exact second resolve via `fi.id < $3`. `<` on both halves
-            // matches ORDER BY DESC on both halves.
-            "AND (fi.media_sort_date < $2
-               OR (fi.media_sort_date = $2 AND fi.id < $3::uuid))"
+            // Row-value comparison on (sort_col, id): the primary
+            // bound uses the covering index when the axis is
+            // CapturedAt, and ties resolve via `fi.id {cmp} $3`.
+            // `cmp` is `<` for DESC (newest-first) and `>` for ASC
+            // (oldest-first).
+            format!(
+                "AND (fi.{sort_col} {cmp} $2
+               OR (fi.{sort_col} = $2 AND fi.id {cmp} $3::uuid))"
+            )
         } else {
-            "AND $2::timestamptz IS NULL"
+            "AND $2::timestamptz IS NULL".to_owned()
         };
         // §6 — kind filter interpolated as a predicate string rather
         // than a bound CASE WHEN: Postgres can then use the partial
@@ -682,8 +707,8 @@ impl FileBlobReadRepository {
                         WHERE g.resource_id   = top.id
                           AND g.resource_type = 'file'
                    )                                          AS is_shared,
-                   EXTRACT(EPOCH FROM top.media_sort_date)::bigint AS sort_date,
-                   top.media_sort_date                        AS sort_date_ts,
+                   EXTRACT(EPOCH FROM top.{sort_col})::bigint AS sort_date,
+                   top.{sort_col}                             AS sort_date_ts,
                    fm.width                                   AS width,
                    fm.height                                  AS height,
                    CASE
@@ -722,19 +747,19 @@ impl FileBlobReadRepository {
                            AND NOT fi.is_trashed
                            {kind_pred}
                            {favorite_pred}
-                         ORDER BY fi.blob_hash, fi.media_sort_date DESC, fi.id DESC
+                         ORDER BY fi.blob_hash, fi.{sort_col} {dir}, fi.id {dir}
                      ) fi
                      WHERE TRUE
                        {cursor_pred}
-                     ORDER BY fi.media_sort_date DESC, fi.id DESC
+                     ORDER BY fi.{sort_col} {dir}, fi.id {dir}
                      LIMIT $4
                  ) fi
-                 ORDER BY fi.media_sort_date DESC, fi.id DESC
+                 ORDER BY fi.{sort_col} {dir}, fi.id {dir}
                  LIMIT $4
               ) top
               LEFT JOIN storage.folders fo ON fo.id = top.folder_id
               LEFT JOIN storage.file_metadata fm ON fm.file_id = top.id
-             ORDER BY top.media_sort_date DESC, top.id DESC
+             ORDER BY top.{sort_col} {dir}, top.id {dir}
             "#,
         );
         let rows: Vec<MediaResourceDbRow> = sqlx::query_as(&sql)
