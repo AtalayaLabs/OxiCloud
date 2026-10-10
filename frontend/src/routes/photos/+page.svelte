@@ -9,7 +9,8 @@
 		batchTrash,
 		fetchPhotos,
 		type PhotoItem,
-		type PhotosKind
+		type PhotosKind,
+		type PhotosOrderBy
 	} from '$lib/api/endpoints/photos';
 	import { fetchHashSiblings, type HashSibling } from '$lib/api/endpoints/dedup';
 	import DedupSiblingsDialog from '$lib/components/DedupSiblingsDialog.svelte';
@@ -63,7 +64,31 @@
 	const KIND_KEY = 'oxi-photos-kind';
 	const DRIVE_KEY = 'oxi-photos-drive';
 	const FAVORITE_KEY = 'oxi-photos-favorite-only';
+	const ORDER_BY_KEY = 'oxi-photos-order-by';
+	const REVERSE_KEY = 'oxi-photos-reverse';
 	let groupMode = $state<GroupMode>('month');
+	/** Open/close for the group-by dropdown trigger. Mirrors the
+	 *  drive and order-by filters — same `.group-by-selector`
+	 *  outside-click behaviour. */
+	let groupByOpen = $state(false);
+	/** Human label for the active group mode — shown on the trigger
+	 *  button. Falls through the generic `view_{period}ly` i18n keys
+	 *  already present in en.json. */
+	const groupModeLabel = $derived(
+		groupMode === 'day'
+			? t('photos.view_daily', 'Day')
+			: groupMode === 'month'
+				? t('photos.view_monthly', 'Month')
+				: t('photos.view_yearly', 'Year')
+	);
+	$effect(() => {
+		if (!groupByOpen) return;
+		const onDown = (e: MouseEvent) => {
+			if (!(e.target as HTMLElement).closest('.group-mode-filter')) groupByOpen = false;
+		};
+		window.addEventListener('pointerdown', onDown);
+		return () => window.removeEventListener('pointerdown', onDown);
+	});
 	/**
 	 * §6 — media-kind filter. Backed by `?kind=` on the server;
 	 * `'all'` sends no query param so the default URL stays short.
@@ -84,6 +109,39 @@
 	 * returns 400 if a cursor is reused across filter axes.
 	 */
 	let favoriteFilter = $state(false);
+	/**
+	 * §3 — sort axis + direction. Three accepted values on the server;
+	 * `captured_at` is the historic Photos default (EXIF capture date,
+	 * falling back to upload time). `reverse` flips newest-first (the
+	 * default) to oldest-first on whichever axis is chosen. Both ride
+	 * through to `/api/photos/resources` as `?order_by=` + `?reverse=`
+	 * and the server returns 400 if a cursor is reused across a flip,
+	 * so a change here MUST reset-and-reload (same as kind / drive /
+	 * favourites).
+	 */
+	let orderBy = $state<PhotosOrderBy>('captured_at');
+	let reverse = $state(false);
+	/** Open/close for the order-by dropdown trigger. */
+	let orderByOpen = $state(false);
+	/** Icon + label for the active axis — mirrors the active-drive
+	 *  readout on the drive filter. */
+	const orderByLabel = $derived(
+		orderBy === 'captured_at'
+			? t('photos.sort.captured_at', 'Captured date')
+			: orderBy === 'created_at'
+				? t('photos.sort.created_at', 'Upload date')
+				: t('photos.sort.updated_at', 'Last modified')
+	);
+	// Close the order-by dropdown on an outside click. Same mechanism
+	// the drive filter uses.
+	$effect(() => {
+		if (!orderByOpen) return;
+		const onDown = (e: MouseEvent) => {
+			if (!(e.target as HTMLElement).closest('.order-by-filter')) orderByOpen = false;
+		};
+		window.addEventListener('pointerdown', onDown);
+		return () => window.removeEventListener('pointerdown', onDown);
+	});
 	/**
 	 * Drives the dropdown lists. Loaded once on mount; filtered to
 	 * entries whose typed policy bag has `include_in_photo_index`
@@ -201,7 +259,9 @@
 				cursor,
 				kind: kindFilter,
 				driveId: driveFilter,
-				favoriteOnly: favoriteFilter
+				favoriteOnly: favoriteFilter,
+				orderBy,
+				reverse
 			});
 			items = [...items, ...page.items];
 			cursor = page.nextCursor;
@@ -248,7 +308,9 @@
 				cursor: null,
 				kind: kindFilter,
 				driveId: driveFilter,
-				favoriteOnly: favoriteFilter
+				favoriteOnly: favoriteFilter,
+				orderBy,
+				reverse
 			});
 			items = page.items;
 			cursor = page.nextCursor;
@@ -284,6 +346,27 @@
 		if (typeof localStorage !== 'undefined') {
 			if (favoriteFilter) localStorage.setItem(FAVORITE_KEY, 'true');
 			else localStorage.removeItem(FAVORITE_KEY);
+		}
+		void resetAndReload();
+	}
+
+	function setOrderBy(axis: PhotosOrderBy) {
+		if (orderBy === axis) return;
+		orderBy = axis;
+		if (typeof localStorage !== 'undefined') {
+			// Default (captured_at) stays implicit — removing the key
+			// keeps a clean localStorage for the common case.
+			if (axis === 'captured_at') localStorage.removeItem(ORDER_BY_KEY);
+			else localStorage.setItem(ORDER_BY_KEY, axis);
+		}
+		void resetAndReload();
+	}
+
+	function toggleReverse() {
+		reverse = !reverse;
+		if (typeof localStorage !== 'undefined') {
+			if (reverse) localStorage.setItem(REVERSE_KEY, 'true');
+			else localStorage.removeItem(REVERSE_KEY);
 		}
 		void resetAndReload();
 	}
@@ -469,6 +552,16 @@
 			kindFilter = savedKind;
 		if (typeof localStorage !== 'undefined' && localStorage.getItem(FAVORITE_KEY) === 'true')
 			favoriteFilter = true;
+		const savedOrderBy =
+			typeof localStorage !== 'undefined' ? localStorage.getItem(ORDER_BY_KEY) : null;
+		if (
+			savedOrderBy === 'captured_at' ||
+			savedOrderBy === 'created_at' ||
+			savedOrderBy === 'updated_at'
+		)
+			orderBy = savedOrderBy;
+		if (typeof localStorage !== 'undefined' && localStorage.getItem(REVERSE_KEY) === 'true')
+			reverse = true;
 		const savedDrive = typeof localStorage !== 'undefined' ? localStorage.getItem(DRIVE_KEY) : null;
 		// Restored unconditionally — if the drive is since gone (deleted,
 		// policy flipped off), the server returns an empty page via the
@@ -622,13 +715,13 @@
 				{/if}
 			</div>
 			<div class="actions-bar__end">
-				<div class="seg" role="group" aria-label={t('photos.group_by', 'Group by')}>
-					{#each MODES as m (m)}
-						<button class="seg__btn" class:active={groupMode === m} onclick={() => setGroupMode(m)}>
-							{t(`photos.${m}`, m)}
-						</button>
-					{/each}
-				</div>
+				<!-- Toolbar order (left → right):
+				     1. Media kind (all / photo / video)   — WHAT content
+				     2. Favourites-only toggle             — SUBSET of what
+				     3. Drive selector                     — SCOPE
+				     4. Group-by (day / month / year)      — AGGREGATION
+				     5. Order-by (axis + direction)        — SORT
+				     Reads left-to-right as "narrow down → how to view". -->
 				<div class="seg" role="group" aria-label={t('photos.filter_kind', 'Media type')}>
 					<button
 						class="seg__btn"
@@ -661,6 +754,26 @@
 						<Icon name="video" />
 					</button>
 				</div>
+				<!-- Favourites-only toggle. Same `.toggle-btn` pattern as the
+		     dotfile eye on DisplayModeControls, with a `.favorite-btn`
+		     modifier that opts OUT of the shared active-state
+		     background change — the only visible toggle signal is
+		     the star's fill colour (grey → gold), matching the
+		     favorite-star treatment on the file list. -->
+				<button
+					type="button"
+					class="toggle-btn favorite-btn"
+					class:active={favoriteFilter}
+					title={favoriteFilter
+						? t('photos.filter_favorite_on', 'Showing favourites only — click to show all')
+						: t('photos.filter_favorite_off', 'Show favourites only')}
+					aria-label={t('photos.filter_favorite', 'Favourites only')}
+					aria-pressed={favoriteFilter}
+					data-testid="photos-favorite-filter-btn"
+					onclick={toggleFavoriteFilter}
+				>
+					<Icon name="star" />
+				</button>
 				{#if availableDrives.length > 0}
 					<!-- Drive filter — uses the shared `.group-by-selector`
 			     dropdown classes (styles/ported/buttons.css) so photos,
@@ -722,26 +835,142 @@
 						{/if}
 					</div>
 				{/if}
-				<!-- Favourites-only toggle. Same `.toggle-btn` pattern as the
-		     dotfile eye on DisplayModeControls, with a `.favorite-btn`
-		     modifier that opts OUT of the shared active-state
-		     background change — the only visible toggle signal is
-		     the star's fill colour (grey → gold), matching the
-		     favorite-star treatment on the file list. -->
-				<button
-					type="button"
-					class="toggle-btn favorite-btn"
-					class:active={favoriteFilter}
-					title={favoriteFilter
-						? t('photos.filter_favorite_on', 'Showing favourites only — click to show all')
-						: t('photos.filter_favorite_off', 'Show favourites only')}
-					aria-label={t('photos.filter_favorite', 'Favourites only')}
-					aria-pressed={favoriteFilter}
-					data-testid="photos-favorite-filter-btn"
-					onclick={toggleFavoriteFilter}
-				>
-					<Icon name="star" />
-				</button>
+				<!-- Group-by (day / month / year) — aggregation axis for
+		     the timeline. Dropdown mirrors the `.group-by-selector`
+		     pattern used by the drive and order-by filters so the
+		     trigger button + popup + layer-group icon per option
+		     look identical to the files-list toolbar. -->
+				<div class="group-by-selector group-mode-filter" data-testid="photos-group-by-filter">
+					<button
+						type="button"
+						class="toggle-btn group-by-btn active"
+						title={t('photos.group_by', 'Group by')}
+						aria-haspopup="true"
+						aria-expanded={groupByOpen}
+						data-testid="photos-group-by-filter-btn"
+						onclick={(e) => {
+							e.stopPropagation();
+							groupByOpen = !groupByOpen;
+						}}
+					>
+						<Icon name="layer-group" />
+						<span class="group-by-label">{groupModeLabel}</span>
+					</button>
+					{#if groupByOpen}
+						<div
+							class="group-by-menu"
+							role="menu"
+							tabindex="-1"
+							onclick={(e) => e.stopPropagation()}
+							onkeydown={(e) => e.key === 'Escape' && (groupByOpen = false)}
+						>
+							{#each MODES as m (m)}
+								<button
+									type="button"
+									class="group-by-option"
+									class:active={groupMode === m}
+									data-testid={`photos-group-by-${m}`}
+									onclick={() => {
+										setGroupMode(m);
+										groupByOpen = false;
+									}}
+								>
+									<Icon name="layer-group" />
+									{m === 'day'
+										? t('photos.view_daily', 'Day')
+										: m === 'month'
+											? t('photos.view_monthly', 'Month')
+											: t('photos.view_yearly', 'Year')}
+								</button>
+							{/each}
+						</div>
+					{/if}
+				</div>
+				<!-- §3 — Sort axis dropdown + direction toggle. Mirrors the
+		     `.group-by-selector` + `.sort-dir-btn` pattern from
+		     ListToolbar so the trigger button + popup + arrow look
+		     identical to the files-list toolbar. Three axes:
+		     Captured (default, EXIF with upload-time fallback),
+		     Upload (pure created_at), Modified (updated_at). The
+		     up-arrow glyph flips class:active when `reverse=true`. -->
+				<div class="group-by-selector order-by-filter" data-testid="photos-order-by-filter">
+					<button
+						type="button"
+						class="toggle-btn group-by-btn active"
+						title={t('photos.sort.title', 'Sort by')}
+						aria-haspopup="true"
+						aria-expanded={orderByOpen}
+						data-testid="photos-order-by-filter-btn"
+						onclick={(e) => {
+							e.stopPropagation();
+							orderByOpen = !orderByOpen;
+						}}
+					>
+						<Icon name="arrow-up-a-z" />
+						<span class="group-by-label">{orderByLabel}</span>
+					</button>
+					<button
+						type="button"
+						class="toggle-btn sort-dir-btn"
+						class:active={reverse}
+						title={t('photos.sort.direction', 'Sort direction')}
+						aria-label={t('photos.sort.direction', 'Sort direction')}
+						aria-pressed={reverse}
+						data-testid="photos-sort-direction-btn"
+						onclick={toggleReverse}
+					>
+						<Icon name="arrow-up" />
+					</button>
+					{#if orderByOpen}
+						<div
+							class="group-by-menu"
+							role="menu"
+							tabindex="-1"
+							onclick={(e) => e.stopPropagation()}
+							onkeydown={(e) => e.key === 'Escape' && (orderByOpen = false)}
+						>
+							<button
+								type="button"
+								class="group-by-option"
+								class:active={orderBy === 'captured_at'}
+								data-testid="photos-order-by-captured-at"
+								onclick={() => {
+									setOrderBy('captured_at');
+									orderByOpen = false;
+								}}
+							>
+								<Icon name="arrow-up-a-z" />
+								{t('photos.sort.captured_at', 'Captured date')}
+							</button>
+							<button
+								type="button"
+								class="group-by-option"
+								class:active={orderBy === 'created_at'}
+								data-testid="photos-order-by-created-at"
+								onclick={() => {
+									setOrderBy('created_at');
+									orderByOpen = false;
+								}}
+							>
+								<Icon name="arrow-up-a-z" />
+								{t('photos.sort.created_at', 'Upload date')}
+							</button>
+							<button
+								type="button"
+								class="group-by-option"
+								class:active={orderBy === 'updated_at'}
+								data-testid="photos-order-by-updated-at"
+								onclick={() => {
+									setOrderBy('updated_at');
+									orderByOpen = false;
+								}}
+							>
+								<Icon name="arrow-up-a-z" />
+								{t('photos.sort.updated_at', 'Last modified')}
+							</button>
+						</div>
+					{/if}
+				</div>
 			</div>
 		</div>
 	{/if}
