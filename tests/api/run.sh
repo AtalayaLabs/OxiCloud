@@ -320,15 +320,37 @@ HURL_FILES=( \
   "$API_DIR/nc_avatar_preview.hurl" \
   "$API_DIR/files-folders.hurl" \
   "$API_DIR/folder_ancestors.hurl" \
-  "$API_DIR/photos_etag.hurl" \
+  "$API_DIR/photos_resources.hurl" \
+  # §2b — ETag + mutation-invalidation contract that the SPA cache
+  # (frontend/src/lib/api/etagCache.ts) relies on across favorites,
+  # recent, trash, and folder-contents listings. Runs BEFORE the
+  # per-endpoint hurls because the trash-listing empty-at-start
+  # preflight those files carry is only self-healing when there's no
+  # concurrent residue — this test cleans up its own folder in trash
+  # at the end, so order is independent, but putting it adjacent to
+  # photos_resources.hurl keeps the ETag suite together.
+  "$API_DIR/resources_etag_contract.hurl" \
+  # Keyset-cursor stability: an upstream insert flips page 1's ETag but
+  # MUST NOT flip the ETag of any page strictly after that boundary
+  # cursor — otherwise cursor-based scrolling re-downloads every
+  # subsequent page on every upload. See the file for the full scenario.
+  "$API_DIR/resources_etag_pagination.hurl" \
   "$API_DIR/favorites.hurl" \
   "$API_DIR/trash.hurl" \
   "$API_DIR/trash_resources.hurl" \
   "$API_DIR/recent.hurl" \
   "$API_DIR/batch_folder_copy.hurl" \
+  # derived_blob_copy and dedup_blob_cleanup share the dedup-test.jpg
+  # fixture, whose hash governs their absolute `ref_count` assertions.
+  # Running derived_blob_copy FIRST (then letting it tear down cleanly to
+  # ref_count=0) keeps both tests reading a clean count — the pre-fix
+  # order was the opposite and any fail-stop in dedup_blob_cleanup left
+  # one stale reference that broke derived_blob_copy's `ref_count == 1`
+  # assertion. `refcount_same_content_rewrite.hurl` uses a unique
+  # fixture, so its position is independent.
+  "$API_DIR/derived_blob_copy.hurl" \
   "$API_DIR/dedup_blob_cleanup.hurl" \
   "$API_DIR/refcount_same_content_rewrite.hurl" \
-  "$API_DIR/derived_blob_copy.hurl" \
   "$API_DIR/thumbnail_etag_content_keyed.hurl" \
   "$API_DIR/attached_thumbnail_copy.hurl" \
   "$API_DIR/transcode_cache.hurl" \

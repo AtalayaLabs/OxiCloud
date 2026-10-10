@@ -7,27 +7,85 @@
 //! File paths are resolved by JOINing with `storage.folders.path` (the
 //! materialized path column), so no recursive CTEs or N+1 queries are needed.
 
-/// Row shape returned by media-file queries (avoids `clippy::type_complexity`).
-/// Post-D7-step-6: `storage.files.user_id` dropped, so it's no
-/// longer projected.
-type MediaFileRow = (
-    Uuid,           // id (binary decode; benches/ROUND6.md §10)
-    String,         // name
-    Option<Uuid>,   // folder_id
-    Option<String>, // folder path
-    i64,            // size
-    String,         // mime_type
-    i64,            // created_at
-    i64,            // updated_at
-    String,         // blob_hash
-    Option<Uuid>,   // created_by (§14 provenance)
-    Option<Uuid>,   // updated_by (§14 provenance)
-    bool,           // is_favorite (caller-scoped EXISTS on user_favorites)
-    bool,           // is_shared   (resource-scoped EXISTS on role_grants)
-    i64,            // sort_date
-    Option<i32>,    // width
-    Option<i32>,    // height
-);
+/// Row shape returned by `list_media_resources` — carries the file
+/// columns plus the photo-specific signals the
+/// `/api/photos/resources` envelope exposes at the item level
+/// (`captured_at`, `orientation`, `has_gps`), plus the raw timestamp
+/// used to build the opaque keyset cursor at column fidelity.
+///
+/// Named-field [`sqlx::FromRow`] rather than a tuple because sqlx
+/// only impls `FromRow` for tuples up to arity 16 and this row has
+/// 20 columns.
+#[derive(sqlx::FromRow)]
+struct MediaResourceDbRow {
+    id: Uuid,
+    name: String,
+    folder_id: Option<Uuid>,
+    folder_path: Option<String>,
+    size: i64,
+    mime_type: String,
+    created_at: i64,
+    updated_at: i64,
+    blob_hash: String,
+    created_by: Option<Uuid>,
+    updated_by: Option<Uuid>,
+    is_favorite: bool,
+    is_shared: bool,
+    /// Epoch seconds of the chosen sort axis — client-facing precision.
+    sort_date: i64,
+    /// Full-precision `timestamptz` of the chosen sort axis — the
+    /// opaque cursor keys off this value so the WHERE predicate can
+    /// compare at column fidelity. Carrying only `sort_date` (seconds)
+    /// drops rows that landed inside the same wall-clock second as
+    /// the page boundary.
+    sort_date_ts: chrono::DateTime<chrono::Utc>,
+    width: Option<i32>,
+    height: Option<i32>,
+    /// Raw EXIF capture time, epoch seconds, nullable.
+    captured_at: Option<i64>,
+    /// EXIF TIFF orientation (1-8), nullable.
+    orientation: Option<i16>,
+    /// `latitude IS NOT NULL AND longitude IS NOT NULL`.
+    has_gps: bool,
+    /// True when another non-trashed media row in the same drive
+    /// references this blob hash. The §9 within-drive `DISTINCT ON
+    /// (blob_hash)` hides siblings from the listing itself; this
+    /// flag surfaces the fact that siblings exist so the delete-UX
+    /// can warn before trashing — the tile the user clicked may be
+    /// one of several representatives of the same bytes. See §9b
+    /// Layer 1 of `docs/plan/photos-resources-migration.md`.
+    has_blob_siblings: bool,
+}
+
+/// Structured row returned by [`FileBlobReadRepository::list_media_resources`].
+/// One struct per row so adding photo-level signals downstream does not
+/// balloon the parallel-vector pattern [`list_media_files`] still uses.
+pub struct MediaResourceRow {
+    pub file: File,
+    /// Sort axis value for this row, epoch seconds. Matches
+    /// `storage.files.media_sort_date` on the `CapturedAt` axis;
+    /// equal to `created_at` on the `CreatedAt` axis (reserved for §3).
+    pub sort_date: i64,
+    /// Full-precision timestamp of the chosen sort axis — the
+    /// handler uses this to build the opaque keyset cursor so the
+    /// WHERE predicate on the next page compares at column fidelity
+    /// (microsecond, not the truncated second `sort_date` exposes to
+    /// clients).
+    pub sort_date_ts: chrono::DateTime<chrono::Utc>,
+    pub captured_at: Option<i64>,
+    pub orientation: Option<i16>,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub has_gps: bool,
+    pub is_favorite: bool,
+    pub is_shared: bool,
+    /// True when another non-trashed media row in the same drive
+    /// references this blob hash — the siblings the within-drive
+    /// §9 `DISTINCT ON` hid. Powers the delete-UX in §9b Layer 1:
+    /// a `true` tile is flagged on the client as "trashing this
+    /// removes just one copy — N other copies exist in this drive".
+    pub has_blob_siblings: bool,
+}
 
 use bytes::Bytes;
 use futures::{Stream, TryStreamExt};
@@ -480,177 +538,272 @@ impl FileBlobReadRepository {
         Ok(hash)
     }
 
-    /// Lists all image/video files for a user, sorted by capture date (EXIF) or
-    /// creation date, with cursor-based pagination for the Photos timeline.
+    /// Drive-scoped media listing for the normalized
+    /// `/api/photos/resources` envelope (§1 of
+    /// `docs/plan/photos-resources-migration.md`). Returns the same
+    /// drive-visibility semantics as [`Self::list_media_files`] (one
+    /// row per accessible drive via
+    /// [`storage.caller_accessible_drives`]) plus three photo-level
+    /// signals the new envelope promotes to the item layer:
+    /// `captured_at`, `orientation`, `has_gps`.
     ///
-    /// Returns `(Vec<File>, Vec<i64>)` where the second vec contains the
-    /// `sort_date` epoch for each file (used as pagination cursor).
+    /// `cursor` is the opaque keyset position decoded by the handler;
+    /// `None` means "page 1". The predicate pairs `(media_sort_date,
+    /// id)` so pages at the same `media_sort_date` second never skip
+    /// or re-emit rows — the id tie-break stays within the row-value
+    /// comparison. The index
+    /// `idx_files_media_timeline_by_drive (drive_id, media_sort_date
+    /// DESC)` bounds the scan on `media_sort_date`; the id predicate
+    /// applies on the boundary slice only.
     ///
-    /// Uses the denormalised `media_sort_date` column (synced from
-    /// `file_metadata.captured_at` by trigger). The accessible drive ids
-    /// are materialised once, then a `CROSS JOIN LATERAL (… ORDER BY
-    /// media_sort_date DESC LIMIT k)` per drive turns the partial covering
-    /// index `idx_files_media_timeline_by_drive` (migration 20260901000001,
-    /// `(drive_id, media_sort_date DESC)` filtered on non-trashed
-    /// image/video rows) into one BOUNDED index scan per drive; the outer
-    /// merge sorts `drives × k` rows. The folders / file_metadata joins sit
-    /// outside the top-N so only the k emitted rows pay them.
-    ///
-    /// The previous shape put the joins and the global `ORDER BY … LIMIT`
-    /// above a `drive_id IN (…)` nested loop — Postgres fed EVERY media row
-    /// through the join into a top-N heapsort, scanning the timeline index
-    /// to exhaustion on every page: O(library) per page, 97 ms on a
-    /// 50k-photo library vs 1.6 ms for this shape (55.7x,
-    /// benches/PHOTOS-TIMELINE.md).
-    ///
-    /// Scope (`docs/plan/drive.md` §15): drives with
-    /// `policies.include_in_photo_index = true` where the caller has a
-    /// direct grant (`subject_type = 'user'`) OR a grant on a group they
-    /// belong to transitively. Group membership is expanded inline by the
-    /// `storage.caller_group_ids(caller)` SQL function (migration
-    /// `20260901000002_caller_group_ids_function.sql`) — no ceremony at
-    /// the handler layer, no cross-space ambiguity from the earlier
-    /// parallel-arrays pattern.
-    ///
-    /// Default personal drives always match because the flag is
-    /// materialised to `true` at drive creation (see
-    /// `DriveRepository::create_personal_drive_atomic` + the backfill
-    /// migration `20260901000000_default_personal_photo_music_flags.sql`)
-    /// — no per-kind carve-out needed. Non-default drives (secondary
-    /// personals, shared drives) surface here only after their owner
-    /// flips the flag on via the admin "Manage policies" modal.
-    pub async fn list_media_files(
+    /// Callers must pass `limit + 1` and consume the extra row to
+    /// detect "another page exists" — same over-fetch convention as
+    /// [`CursorListResponse::from_oversized`] uses on the favorites
+    /// and recents listings.
+    pub async fn list_media_resources(
         &self,
         caller_id: Uuid,
-        before: Option<i64>,
+        cursor: Option<&crate::application::dtos::photos_dto::PhotosCursor>,
+        filter: crate::application::dtos::photos_dto::PhotosFilter,
         limit: i64,
-    ) -> Result<
-        (
-            Vec<File>,
-            Vec<i64>,
-            Vec<(Option<i32>, Option<i32>)>,
-            // Per-row caller flags (is_favorite, is_shared). Aligned
-            // with `files` — zip 1:1. Kept parallel to `sort_dates` /
-            // `dims` instead of on the File entity so the domain
-            // stays caller-agnostic.
-            Vec<(bool, bool)>,
-        ),
-        DomainError,
-    > {
-        // Sargable keyset cursor: compare the RAW `media_sort_date` column
-        // against a timestamptz bind so the planner can use the cursor as
-        // an index boundary condition on `idx_files_media_timeline_by_drive`.
-        // The old shape wrapped the column in `EXTRACT(EPOCH …)::bigint`
-        // (plus an `IS NULL OR` disjunction), which degraded the cursor to
-        // a per-row Filter: page k re-read and discarded all k·limit rows
-        // already scrolled past (benches/PHOTOS-CURSOR.md). Since `before`
-        // is whole seconds, `media_sort_date < to_timestamp(before)` admits
-        // exactly the same rows as the old truncated comparison. The
-        // predicate is emitted only when a cursor exists — a bound
-        // disjunction would block the index condition under generic plans.
-        let cursor_ts = before.and_then(|s| chrono::DateTime::from_timestamp(s, 0));
-        let cursor_pred = if cursor_ts.is_some() {
-            "AND fi.media_sort_date < $2"
-        } else {
-            "AND $2::timestamptz IS NULL"
+    ) -> Result<Vec<MediaResourceRow>, DomainError> {
+        use crate::application::dtos::photos_dto::{PhotoKind, PhotoOrderBy};
+        // §3 — sort axis + direction. The three axes map to three
+        // columns on `storage.files`; `reverse` flips newest-first
+        // (DESC — the historic Photos read order) to oldest-first
+        // (ASC). The chosen (column, direction) pair is spliced into
+        // every ORDER BY and into the cursor comparison predicate so
+        // the keyset keeps the same `(sort_col, id)` row-value shape
+        // under either axis. The partial covering index on
+        // `(drive_id, media_sort_date DESC)` only serves the
+        // CapturedAt branch; CreatedAt / UpdatedAt fall back to the
+        // row-level fetch, which is acceptable at 10k-user scale and
+        // is only paid when a stakeholder explicitly asks for the
+        // alternate axis.
+        let sort_col = match filter.order_by {
+            PhotoOrderBy::CapturedAt => "media_sort_date",
+            PhotoOrderBy::CreatedAt => "created_at",
+            PhotoOrderBy::UpdatedAt => "updated_at",
         };
+        let (dir, cmp) = if filter.reverse {
+            ("ASC", ">")
+        } else {
+            ("DESC", "<")
+        };
+
+        // Decompose the opaque cursor into (ts, id). `None` → no
+        // keyset bound at all; the predicate collapses to `$2::timestamptz
+        // IS NULL` so the planner still gets a single prepared-statement
+        // shape across cursored and uncursored calls. The cursor carries
+        // a full-precision `DateTime<Utc>` so the comparison matches the
+        // underlying `timestamptz` column at microsecond fidelity —
+        // truncating to seconds silently drops rows at the page boundary.
+        let cursor_ts = cursor.map(|c| c.sort_value);
+        let cursor_id = cursor.map(|c| c.file_id);
+        let cursor_pred = if cursor_ts.is_some() {
+            // Row-value comparison on (sort_col, id): the primary
+            // bound uses the covering index when the axis is
+            // CapturedAt, and ties resolve via `fi.id {cmp} $3`.
+            // `cmp` is `<` for DESC (newest-first) and `>` for ASC
+            // (oldest-first).
+            format!(
+                "AND (fi.{sort_col} {cmp} $2
+               OR (fi.{sort_col} = $2 AND fi.id {cmp} $3::uuid))"
+            )
+        } else {
+            "AND $2::timestamptz IS NULL".to_owned()
+        };
+        // §6 — kind filter interpolated as a predicate string rather
+        // than a bound CASE WHEN: Postgres can then use the partial
+        // covering index on `(drive_id, media_sort_date DESC)` under
+        // whichever branch and apply the mime narrowing on scanned
+        // rows (the partial index already carries both mime families).
+        let kind_pred = match filter.kind {
+            PhotoKind::Photo => "AND fi.mime_type LIKE 'image/%'",
+            PhotoKind::Video => "AND fi.mime_type LIKE 'video/%'",
+            PhotoKind::All => "AND (fi.mime_type LIKE 'image/%' OR fi.mime_type LIKE 'video/%')",
+        };
+        // Favourite-only filter: same EXISTS subquery the top-level
+        // SELECT already runs for the `is_favorite` projection,
+        // pushed into the LATERAL WHERE when the caller asks for
+        // favourites only. Interpolated (not bound) so the planner
+        // can short-circuit the empty-branch at parse time when
+        // `favorite_only = false`.
+        let favorite_pred = if filter.favorite_only {
+            "AND EXISTS (
+                SELECT 1 FROM auth.user_favorites uf
+                 WHERE uf.user_id   = $1
+                   AND uf.item_id   = fi.id::text
+                   AND uf.item_type = 'file'
+             )"
+        } else {
+            ""
+        };
+        // SELECT column aliases align with `MediaResourceDbRow`'s field
+        // names so `sqlx::FromRow` can deserialise by name — critical
+        // because tuple `FromRow` tops out at arity 16 and this row has
+        // 19 fields. Keep the alias ↔ field names in lockstep when
+        // adding future photo signals.
+        // §6b — drive-scope filter: pre-restrict the accessible CTE
+        // to the requested drive. If `$5` is NULL, the predicate is
+        // a no-op (cross-drive view). If `$5` is non-null and names
+        // an accessible drive, `accessible` collapses to that one
+        // row. If `$5` is non-null and NOT in accessible, the CTE
+        // is empty → LATERAL yields no rows → anti-enum: the
+        // caller sees the same shape as a drive with no photos.
+        //
+        // §9 within-drive dedup by `blob_hash`. The lateral probe's
+        // inner `DISTINCT ON (fi.blob_hash)` picks one file row per
+        // unique blob WITHIN this drive — the newest by
+        // `(media_sort_date, id)`, matching the sort axis the
+        // gallery renders in. Cursor + outer LIMIT apply OUTSIDE the
+        // DISTINCT so a page boundary never drops the "newest copy"
+        // and promotes an older sibling on the next page (which
+        // would read as the photo "coming back" under a different
+        // name).
+        //
+        // Scope choice: within-drive, NOT cross-drive — `accessible`
+        // is already per-drive via `CROSS JOIN LATERAL`, so each
+        // drive's DISTINCT ON scope is isolated. A blob visible via
+        // grants on two drives surfaces once per drive, keeping
+        // provenance when the user organised distinct copies into
+        // distinct scopes.
+        //
+        // Perf: `idx_files_media_dedup_by_drive_blob` (migration
+        // `20261103000004_files_media_dedup_by_drive_blob_index.sql`)
+        // supports this DISTINCT ON directly — its leading
+        // `(drive_id, blob_hash)` lets the planner do a loose index
+        // scan (one seek per unique blob), and the trailing
+        // `(media_sort_date DESC, id DESC)` aligns with the per-group
+        // ORDER BY so the newest row per blob is at the head of each
+        // group with no in-memory sort. Partial WHERE mirrors the
+        // existing `idx_files_media_timeline_by_drive` filter.
         let sql = format!(
             r#"
             WITH accessible AS MATERIALIZED (
-                SELECT d.id
-                  FROM storage.drives_effective d
-                  JOIN storage.role_grants g
-                    ON g.resource_type = 'drive'
-                   AND g.resource_id   = d.id
-                 WHERE (
-                         (g.subject_type = 'user'  AND g.subject_id = $1)
-                      OR (g.subject_type = 'group' AND g.subject_id IN
-                              (SELECT storage.caller_group_ids($1)))
-                       )
-                   AND (g.expires_at IS NULL OR g.expires_at > NOW())
-                   AND (d.effective_policies->>'include_in_photo_index')::boolean = true
+                SELECT drive_id AS id
+                  FROM storage.caller_accessible_drives($1, 'include_in_photo_index')
+                 WHERE $5::uuid IS NULL OR drive_id = $5::uuid
             )
-            SELECT top.id, top.name, top.folder_id, fo.path,
-                   top.size, top.mime_type,
-                   EXTRACT(EPOCH FROM top.created_at)::bigint,
-                   EXTRACT(EPOCH FROM top.updated_at)::bigint,
-                   top.blob_hash,
-                   top.created_by, top.updated_by,
+            SELECT top.id                                     AS id,
+                   top.name                                   AS name,
+                   top.folder_id                              AS folder_id,
+                   fo.path                                    AS folder_path,
+                   top.size                                   AS size,
+                   top.mime_type                              AS mime_type,
+                   EXTRACT(EPOCH FROM top.created_at)::bigint AS created_at,
+                   EXTRACT(EPOCH FROM top.updated_at)::bigint AS updated_at,
+                   top.blob_hash                              AS blob_hash,
+                   top.created_by                             AS created_by,
+                   top.updated_by                             AS updated_by,
                    EXISTS (
                        SELECT 1 FROM auth.user_favorites uf
                         WHERE uf.user_id   = $1
                           AND uf.item_id   = top.id::text
                           AND uf.item_type = 'file'
-                   ) AS is_favorite,
+                   )                                          AS is_favorite,
                    EXISTS (
                        SELECT 1 FROM storage.role_grants g
                         WHERE g.resource_id   = top.id
                           AND g.resource_type = 'file'
-                   ) AS is_shared,
-                   EXTRACT(EPOCH FROM top.media_sort_date)::bigint AS sort_date,
-                   fm.width, fm.height
+                   )                                          AS is_shared,
+                   EXTRACT(EPOCH FROM top.{sort_col})::bigint AS sort_date,
+                   top.{sort_col}                             AS sort_date_ts,
+                   fm.width                                   AS width,
+                   fm.height                                  AS height,
+                   CASE
+                       WHEN fm.captured_at IS NULL THEN NULL
+                       ELSE EXTRACT(EPOCH FROM fm.captured_at)::bigint
+                   END                                        AS captured_at,
+                   fm.orientation                             AS orientation,
+                   (fm.latitude IS NOT NULL AND fm.longitude IS NOT NULL) AS has_gps,
+                   -- §9b Layer 1 — within-drive sibling probe. True when
+                   -- the DISTINCT ON above hid at least one other
+                   -- non-trashed media row with the same blob_hash in the
+                   -- same drive. Hits `idx_files_media_dedup_by_drive_blob`
+                   -- (leading `(drive_id, blob_hash)` + the index's partial
+                   -- `NOT is_trashed AND (image/% OR video/%)` predicate),
+                   -- so this is one index seek per returned row — no
+                   -- heap tuple fetch for the sibling check.
+                   EXISTS (
+                       SELECT 1
+                         FROM storage.files sib
+                        WHERE sib.drive_id   = top.drive_id
+                          AND sib.blob_hash  = top.blob_hash
+                          AND sib.id        != top.id
+                          AND NOT sib.is_trashed
+                          AND (sib.mime_type LIKE 'image/%'
+                               OR sib.mime_type LIKE 'video/%')
+                   )                                          AS has_blob_siblings
               FROM (
                 SELECT fi.*
                   FROM accessible a
                  CROSS JOIN LATERAL (
                     SELECT fi.*
-                      FROM storage.files fi
-                     WHERE fi.drive_id = a.id
-                       AND NOT fi.is_trashed
-                       AND (fi.mime_type LIKE 'image/%' OR fi.mime_type LIKE 'video/%')
+                      FROM (
+                        SELECT DISTINCT ON (fi.blob_hash) fi.*
+                          FROM storage.files fi
+                         WHERE fi.drive_id = a.id
+                           AND NOT fi.is_trashed
+                           {kind_pred}
+                           {favorite_pred}
+                         ORDER BY fi.blob_hash, fi.{sort_col} {dir}, fi.id {dir}
+                     ) fi
+                     WHERE TRUE
                        {cursor_pred}
-                     ORDER BY fi.media_sort_date DESC
-                     LIMIT $3
+                     ORDER BY fi.{sort_col} {dir}, fi.id {dir}
+                     LIMIT $4
                  ) fi
-                 ORDER BY fi.media_sort_date DESC
-                 LIMIT $3
+                 ORDER BY fi.{sort_col} {dir}, fi.id {dir}
+                 LIMIT $4
               ) top
               LEFT JOIN storage.folders fo ON fo.id = top.folder_id
               LEFT JOIN storage.file_metadata fm ON fm.file_id = top.id
-             ORDER BY top.media_sort_date DESC
+             ORDER BY top.{sort_col} {dir}, top.id {dir}
             "#,
         );
-        let rows: Vec<MediaFileRow> = sqlx::query_as(&sql)
+        let rows: Vec<MediaResourceDbRow> = sqlx::query_as(&sql)
             .bind(caller_id)
             .bind(cursor_ts)
+            .bind(cursor_id)
             .bind(limit)
+            .bind(filter.drive_id)
             .fetch_all(self.pool.as_ref())
             .await
-            .map_err(|e| DomainError::internal_error("FileBlobRead", format!("list_media: {e}")))?;
+            .map_err(|e| {
+                DomainError::internal_error("FileBlobRead", format!("list_media_resources: {e}"))
+            })?;
 
-        let mut files = Vec::with_capacity(rows.len());
-        let mut sort_dates = Vec::with_capacity(rows.len());
-        let mut dims = Vec::with_capacity(rows.len());
-        let mut flags = Vec::with_capacity(rows.len());
-
-        for (
-            id,
-            name,
-            fid,
-            fpath,
-            size,
-            mime,
-            ca,
-            ma,
-            blob_hash,
-            cb,
-            ub,
-            is_fav,
-            is_shr,
-            sd,
-            w,
-            h,
-        ) in rows
-        {
-            files.push(Self::row_to_file(
-                id, name, fid, fpath, size, mime, ca, ma, blob_hash, cb, ub,
-            )?);
-            sort_dates.push(sd);
-            dims.push((w, h));
-            flags.push((is_fav, is_shr));
+        let mut out = Vec::with_capacity(rows.len());
+        for r in rows {
+            let file = Self::row_to_file(
+                r.id,
+                r.name,
+                r.folder_id,
+                r.folder_path,
+                r.size,
+                r.mime_type,
+                r.created_at,
+                r.updated_at,
+                r.blob_hash,
+                r.created_by,
+                r.updated_by,
+            )?;
+            out.push(MediaResourceRow {
+                file,
+                sort_date: r.sort_date,
+                sort_date_ts: r.sort_date_ts,
+                captured_at: r.captured_at,
+                orientation: r.orientation,
+                width: r.width,
+                height: r.height,
+                has_gps: r.has_gps,
+                is_favorite: r.is_favorite,
+                is_shared: r.is_shared,
+                has_blob_siblings: r.has_blob_siblings,
+            });
         }
-
-        Ok((files, sort_dates, dims, flags))
+        Ok(out)
     }
 
     /// Aggregate the caller's geotagged photos into grid cells of side `cell`
@@ -685,18 +838,12 @@ impl FileBlobReadRepository {
               FROM storage.file_metadata fm
               JOIN storage.files fi ON fi.id = fm.file_id
              WHERE fi.drive_id IN (
-                     SELECT d.id
-                       FROM storage.drives_effective d
-                       JOIN storage.role_grants g
-                         ON g.resource_type = 'drive'
-                        AND g.resource_id   = d.id
-                      WHERE (
-                              (g.subject_type = 'user'  AND g.subject_id = $1)
-                           OR (g.subject_type = 'group' AND g.subject_id IN
-                                   (SELECT storage.caller_group_ids($1)))
-                            )
-                        AND (g.expires_at IS NULL OR g.expires_at > NOW())
-                        AND (d.effective_policies->>'include_in_photo_index')::boolean = true
+                     -- Same `storage.caller_accessible_drives` the Photos
+                     -- timeline runs through — the two surfaces MUST agree
+                     -- on drive scope, so sharing the function makes the
+                     -- invariant explicit rather than copy-pasted.
+                     SELECT drive_id
+                       FROM storage.caller_accessible_drives($1, 'include_in_photo_index')
                    )
                AND NOT fi.is_trashed
                AND fm.latitude IS NOT NULL

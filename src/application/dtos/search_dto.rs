@@ -627,7 +627,6 @@ fn append_files(
             updated_by: f.updated_by,
             is_favorite: f.is_favorite,
             is_shared: f.is_shared,
-            sort_date: None,
         };
         items.push(SearchResourceItem {
             resource_type: ResourceTypeDto::File,

@@ -462,8 +462,11 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         //
         // `/stats` and `/recalculate` moved to `/api/admin/dedup/*`
         // (AuthZ audit #24/#25, 2026-07-17) so the middleware admin
-        // gate covers them by construction. See
-        // `admin_handler::admin_routes()`.
+        // gate covers them by construction. The `/check/{hash}` URL is
+        // split — the user-scoped shape stays here (no `ref_count`,
+        // 404 on no visible reference); the admin shape with the
+        // global `ref_count` lives at `/api/admin/dedup/check/{hash}`.
+        // See §9b of `docs/plan/photos-resources-migration.md`.
         .with_state(app_state.clone());
 
     let mut router = Router::new()
@@ -483,7 +486,8 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     {
         use crate::interfaces::api::handlers::photos_handler;
 
-        let mut photos_router = Router::new().route("/", get(photos_handler::list_photos));
+        let mut photos_router =
+            Router::new().route("/resources", get(photos_handler::list_photos_resources));
         if app_state.places_service.is_some() {
             photos_router = photos_router.route("/geo", get(photos_handler::list_photos_geo));
         }

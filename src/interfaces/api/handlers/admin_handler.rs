@@ -32,7 +32,9 @@ use crate::common::di::AppState;
 use crate::domain::repositories::drive_repository::DriveRepository;
 use crate::domain::services::authorization::{Resource, Subject};
 use crate::infrastructure::scheduler::{JobStoreProvider, PausedRunBrief};
-use crate::interfaces::api::handlers::dedup_handler::{get_stats, recalculate_stats};
+use crate::interfaces::api::handlers::dedup_handler::{
+    admin_check_hash, get_stats, recalculate_stats,
+};
 use crate::interfaces::api::handlers::search_handler::clear_search_cache;
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::AuthUser;
@@ -197,8 +199,15 @@ pub fn admin_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         // + verify_integrity sweep). Moved here from `/api/dedup/*`
         // so the URL declares admin intent and the middleware layer
         // enforces it — same pattern as `search/cache` above. The
-        // any-authenticated sibling routes (`/check`, `/check-batch`,
-        // `/blob/{hash}`) stay at `/api/dedup/*`.
+        // any-authenticated sibling routes (`/check-batch`,
+        // `/blob/{hash}`) stay at `/api/dedup/*`; `/check/{hash}` is
+        // split — the user-scoped sibling at `/api/dedup/check/{hash}`
+        // drops `ref_count` entirely and 404s when the caller holds no
+        // visible reference, while the admin shape below carries the
+        // global `ref_count` the accounting tests assert on
+        // (`refcount_same_content_rewrite.hurl`, `derived_blob_copy.hurl`).
+        // See §9b of `docs/plan/photos-resources-migration.md`.
+        .route("/dedup/check/{hash}", get(admin_check_hash))
         .route("/dedup/stats", get(get_stats))
         .route("/dedup/recalculate", post(recalculate_stats))
         // Transcode effectiveness. Nothing exposed these before, so there

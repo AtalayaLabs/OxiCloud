@@ -1,7 +1,7 @@
 use axum::{
     Json,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
 };
 use serde::Deserialize;
@@ -21,6 +21,7 @@ use crate::application::dtos::grant_dto::{ResourceContentDto, ResourceTypeDto};
 use crate::application::ports::favorites_ports::FavoritesUseCase;
 use crate::application::services::favorites_service::FavoritesService;
 use crate::domain::entities::file::File;
+use crate::interfaces::api::etag::{if_none_match_matches, not_modified, with_cache_headers};
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::AuthUser;
 
@@ -166,11 +167,18 @@ pub async fn remove_favorite(
 pub async fn list_favorites_resources(
     State(favorites_service): State<Arc<FavoritesService>>,
     auth_user: AuthUser,
+    headers: HeaderMap,
     Query(q): Query<FavoritesResourcesQuery>,
 ) -> impl IntoResponse {
     let user_id = auth_user.id;
 
     let order_by = q.order_by.as_deref().unwrap_or("name").to_owned();
+
+    // Capture the raw cursor-input string before `q` moves into the
+    // decode step — the ETag mixes it in so pagination round-trips
+    // don't false-match on a different page's cached body.
+    let cursor_input = q.cursor.clone();
+    let limit = q.limit_clamped();
 
     // If a cursor exists, validate that it matches the requested sort/direction.
     let cursor = q
@@ -182,7 +190,7 @@ pub async fn list_favorites_resources(
     match favorites_service
         .list_resources_paged(
             user_id,
-            q.limit_clamped(),
+            limit,
             cursor,
             &order_by,
             kinds.as_deref(),
@@ -267,7 +275,6 @@ pub async fn list_favorites_resources(
                             icon_special_class,
                             category,
                             size_formatted: format_file_size(size_bytes),
-                            sort_date: None,
                             content_hash,
                             etag,
                             created_by: row.created_by,
@@ -284,11 +291,22 @@ pub async fn list_favorites_resources(
                 })
                 .collect();
 
-            (
-                StatusCode::OK,
-                Json(FavoritesResourcesDto::with_cursor(items, next_cursor)),
-            )
-                .into_response()
+            let envelope = FavoritesResourcesDto::with_cursor(items, next_cursor);
+            // Fresh signal — max(favorited_at) across returned rows;
+            // 0 on an empty page. Collapses stably across repeated
+            // revalidations of an empty page and bumps as soon as a
+            // new favourite lands.
+            let fresh_signal: u64 = envelope
+                .items
+                .iter()
+                .map(|i| i.favorited_at.timestamp().max(0) as u64)
+                .max()
+                .unwrap_or(0);
+            let etag = envelope.weak_etag(cursor_input.as_deref(), limit, fresh_signal);
+            if if_none_match_matches(&headers, &etag) {
+                return not_modified(&etag).into_response();
+            }
+            with_cache_headers(Json(envelope), &etag).into_response()
         }
         Err(e) => AppError::from(e).into_response(),
     }

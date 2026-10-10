@@ -1016,7 +1016,6 @@ fn row_to_item_dto(row: TrashResourceRow) -> TrashResourceItemDto {
             icon_special_class: intern_display(classes.icon_special_class),
             category: intern_display(classes.category),
             size_formatted: format_file_size(size_bytes),
-            sort_date: None,
             content_hash,
             etag,
             created_by: row.created_by,

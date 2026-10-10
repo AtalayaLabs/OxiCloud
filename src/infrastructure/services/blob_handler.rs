@@ -734,6 +734,29 @@ fn manifest_reap_sql(registry: &BlobReferenceRegistry) -> String {
     )
 }
 
+/// Row returned by [`BlobHandler::list_files_by_blob_hash`] — the ids,
+/// trash flag, and parent folder's display name that the §9b Layer 2
+/// siblings-list handler needs to drive per-row authz evaluation,
+/// `POST /api/batch/trash` against the user's picks, and a chooser
+/// that can disambiguate several siblings sharing the same filename
+/// (e.g. the same screenshot stored at three different folder depths).
+/// Trashed rows ARE included: a trashed file still holds a blob
+/// reference until the trash entry is purged, so leaving them out of
+/// the response would lie to the delete-UX about whether an action
+/// will actually free bytes.
+#[derive(sqlx::FromRow, Debug, Clone)]
+pub struct FileBlobSiblingRow {
+    pub id: uuid::Uuid,
+    pub name: String,
+    pub drive_id: uuid::Uuid,
+    pub folder_id: Option<uuid::Uuid>,
+    /// Display name of the parent folder — `storage.folders.name`,
+    /// resolved via a LEFT JOIN so a drive-root file (`folder_id =
+    /// NULL`) carries `None` without erroring the query.
+    pub folder_name: Option<String>,
+    pub is_trashed: bool,
+}
+
 pub struct BlobHandler {
     /// Pluggable blob storage backend (local FS, S3, …).
     backend: Arc<dyn BlobStorageBackend>,
@@ -2554,6 +2577,44 @@ impl BlobHandler {
         )
         .bind(hashes)
         .bind(user_id)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .unwrap_or_default()
+    }
+
+    /// List every file row referencing `hash` — live AND trashed —
+    /// up to `limit + 1` so the caller can distinguish "complete
+    /// fan-out" from "there is more". Trashed rows are included
+    /// because they still hold a blob reference (ref_count only drops
+    /// when the trash entry is purged), so excluding them would hide
+    /// bytes the user needs to see to understand why deletion of a
+    /// live sibling may not free storage. The caller surfaces this
+    /// via the per-row `is_trashed` flag.
+    ///
+    /// No authz filter applied here — the handler filters to the
+    /// caller's Read-visible subset via `check_files_read_batch` so
+    /// the engine's per-drive role cache is reused, and the SQL path
+    /// stays a cheap `idx_files_blob_hash` lookup. Rows ordered by
+    /// `(created_at, id)` so the same page contents come back on
+    /// repeat probes.
+    ///
+    /// §9b Layer 2 of `docs/plan/photos-resources-migration.md`.
+    pub async fn list_files_by_blob_hash(&self, hash: &str, limit: i64) -> Vec<FileBlobSiblingRow> {
+        sqlx::query_as::<_, FileBlobSiblingRow>(
+            "SELECT f.id,
+                    f.name,
+                    f.drive_id,
+                    f.folder_id,
+                    fo.name AS folder_name,
+                    f.is_trashed
+               FROM storage.files f
+          LEFT JOIN storage.folders fo ON fo.id = f.folder_id
+              WHERE f.blob_hash = $1
+              ORDER BY f.created_at ASC, f.id ASC
+              LIMIT $2",
+        )
+        .bind(hash)
+        .bind(limit)
         .fetch_all(self.pool.as_ref())
         .await
         .unwrap_or_default()

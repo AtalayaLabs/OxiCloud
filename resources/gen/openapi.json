@@ -1085,6 +1085,53 @@
         "x-oxicloud-scope": "role:admin"
       }
     },
+    "/api/admin/dedup/check/{hash}": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "operationId": "admin_check_hash",
+        "parameters": [
+          {
+            "name": "hash",
+            "in": "path",
+            "description": "BLAKE3 hash (64 hex characters)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Admin blob accounting: size + global ref_count",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HashCheckAdminResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "403": {
+            "description": "Caller is not an admin"
+          },
+          "404": {
+            "description": "No blob with this hash is stored (or malformed input)"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-oxicloud-scope": "role:admin"
+      }
+    },
     "/api/admin/dedup/recalculate": {
       "post": {
         "tags": [
@@ -5159,7 +5206,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Hash check result. `ref_count` is only present for admin users.",
+            "description": "Caller holds a visible reference",
             "content": {
               "application/json": {
                 "schema": {
@@ -5168,8 +5215,8 @@
               }
             }
           },
-          "400": {
-            "description": "Invalid hash format"
+          "404": {
+            "description": "No visible reference, unknown hash, or malformed input"
           }
         },
         "security": [
@@ -8474,64 +8521,6 @@
         }
       }
     },
-    "/api/photos": {
-      "get": {
-        "tags": [
-          "photos"
-        ],
-        "summary": "Lists all image/video files for the authenticated user, sorted by\ncapture date (EXIF DateTimeOriginal) falling back to upload date.",
-        "description": "Supports cursor-based pagination via the `before` parameter.\nThe `X-Next-Cursor` response header contains the cursor for the next page.",
-        "operationId": "list_photos",
-        "parameters": [
-          {
-            "name": "before",
-            "in": "query",
-            "description": "Cursor: only return items with sort_date before this epoch value",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "format": "int64"
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "description": "Max items to return (default 200, max 500)",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "format": "int64"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "List of media files sorted by capture date",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/PhotoDto"
-                  }
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthorized"
-          },
-          "500": {
-            "description": "Internal server error"
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      }
-    },
     "/api/photos/geo": {
       "get": {
         "tags": [
@@ -8580,6 +8569,133 @@
           },
           "401": {
             "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/photos/resources": {
+      "get": {
+        "tags": [
+          "photos"
+        ],
+        "summary": "`GET /api/photos/resources` — normalized photos listing (§1 of\n`docs/plan/photos-resources-migration.md`).",
+        "description": "Returns the standard `CursorListResponse` envelope every other\n`/resources` endpoint uses, with photo-specific signals\n(`width`, `height`, `sort_date`, `captured_at`, `orientation`,\n`has_gps`) at the item level — siblings to `resource` — so\n`FileDto` stays shape-identical to every other file-listing\nendpoint. Compare `GET /api/photos` which flattens everything\ninto a bare array and is slated for removal in §4.\n\nOn a bad cursor (undecodable base64, mismatched `order_by`) the\nhandler returns 400; invalid payloads must fail loud rather than\npaginate across axes.",
+        "operationId": "list_photos_resources",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Max items to return (1-200, default 50).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque cursor from a previous response. Absent on page 1.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "order_by",
+            "in": "query",
+            "description": "Sort axis (§3). `captured_at` (default) orders by\n`COALESCE(captured_at, created_at)` so rows without EXIF fall\nback to upload time; `created_at` orders by pure upload time;\n`updated_at` surfaces recently-touched rows.",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/PhotoOrderBy"
+                }
+              ]
+            }
+          },
+          {
+            "name": "reverse",
+            "in": "query",
+            "description": "Reverse the natural (newest-first) direction. Default `false`\nkeeps the Photos-style read order — `true` flips to oldest-first\non whichever axis `order_by` selects. The cursor carries this\nflag so a mid-scroll flip is rejected as a cursor-mismatch 400\nrather than silently drifting pages.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "description": "Narrow to one media family (§6). `photo` matches `image/%`,\n`video` matches `video/%`, `all` (default) keeps both\ninterleaved — the pre-filter behaviour.",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/PhotoKind"
+                }
+              ]
+            }
+          },
+          {
+            "name": "drive_id",
+            "in": "query",
+            "description": "Restrict the listing to one accessible drive (§6b). Omit for\nthe cross-drive feed. A `drive_id` the caller cannot see\nreturns an empty page (same anti-enum shape as a drive with\nno photos) — no 403/404 disclosure difference.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "favorite_only",
+            "in": "query",
+            "description": "Narrow to the caller's favourited rows only. Omit (or send\n`false`) for the full feed; `true` filters via the same\n`auth.user_favorites` EXISTS the `is_favorite` projection\nalready runs on every row.",
+            "required": false,
+            "schema": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Page of media files with photo-level signals",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid cursor or unsupported order_by"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "500": {
+            "description": "Internal server error"
           }
         },
         "security": [
@@ -12997,15 +13113,6 @@
             "type": "string",
             "description": "Human-readable formatted size (e.g. \"3.27 MB\")"
           },
-          "sort_date": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "description": "Sort date for Photos timeline — COALESCE(EXIF captured_at, created_at).\nOnly populated by the /api/photos endpoint.",
-            "minimum": 0
-          },
           "updated_by": {
             "type": [
               "string",
@@ -13563,39 +13670,122 @@
           }
         }
       },
-      "HashCheckResponse": {
+      "HashCheckAdminResponse": {
         "type": "object",
-        "description": "Response for hash check endpoint",
+        "description": "Response for the admin-facing `GET /api/admin/dedup/check/{hash}`.\n\n`ref_count` is REQUIRED on this shape — a 200 means the blob is known\nto the dedup store, and the test suites (`refcount_same_content_rewrite.hurl`,\n`derived_blob_copy.hurl`) assert on it unconditionally. A 404 means\nthe blob is not stored.\n\nThe route is registered under `/api/admin/*` so the admin middleware\nlayer is the one authority on access (AuthZ audit #24/#25 pattern —\nno bespoke role check in this handler). See §9b of\n`docs/plan/photos-resources-migration.md` for the user/admin split\nrationale.",
         "required": [
-          "exists",
-          "hash"
+          "hash",
+          "existing_size",
+          "ref_count"
         ],
         "properties": {
           "existing_size": {
-            "type": [
-              "integer",
-              "null"
-            ],
+            "type": "integer",
             "format": "int64",
-            "description": "If exists, the size of the existing blob",
+            "description": "Size of the existing blob in bytes.",
             "minimum": 0
-          },
-          "exists": {
-            "type": "boolean",
-            "description": "Whether a blob with this hash already exists"
           },
           "hash": {
             "type": "string",
-            "description": "The BLAKE3 hash that was checked"
+            "description": "The BLAKE3 hash that was checked."
           },
           "ref_count": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Global reference count across every user, every drive.",
+            "minimum": 0
+          }
+        }
+      },
+      "HashCheckResponse": {
+        "type": "object",
+        "description": "Response for the user-facing `GET /api/dedup/check/{hash}`.\n\n404 — not just a 200 with `exists: false` — is the signal that the\ncaller has no visible reference to this blob. The pre-split shape\ncarried an `exists: bool` + an `Option<u32> ref_count` whose\npresence depended on the caller's role; both are gone from this\nroute. The admin accounting field lives at\n`GET /api/admin/dedup/check/{hash}` instead (`HashCheckAdminResponse`),\nwhich is middleware-gated and never readable to a non-admin — the\nsplit prevents cross-user content inference by construction, with no\nper-handler role branch left to drift. See §9b of\n`docs/plan/photos-resources-migration.md`.",
+        "required": [
+          "hash",
+          "existing_size",
+          "count",
+          "truncated",
+          "siblings"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Count of siblings returned in `siblings[]` below — equal to the\nvisible fan-out when `truncated == false`, equal to `MAX_SIBLINGS`\nwhen `truncated == true`. Includes the file the caller is probing\nFROM when that file is itself a sibling (same drive, same blob) —\nthe FE already knows which row that is and can mark it.",
+            "minimum": 0
+          },
+          "existing_size": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Size of the existing blob in bytes. Always populated on a 200 —\na 200 implies the caller holds at least one visible reference,\nand the metadata row is read under the same guard.",
+            "minimum": 0
+          },
+          "hash": {
+            "type": "string",
+            "description": "The BLAKE3 hash that was checked."
+          },
+          "siblings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HashSiblingDto"
+            },
+            "description": "Up to `MAX_SIBLINGS` files the caller has Read access to that\nreference this blob hash, each enriched with the per-row\npermissions needed by the delete-UX (`can_delete`, `can_update`,\n`can_share`). Rows the caller cannot Read are filtered out at the\nauthz boundary — the siblings list never discloses the existence\nof files behind drive grants the caller doesn't hold."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when more visible siblings exist than this response returned.\nSignals the FE to fall back to its single-copy delete default\nrather than paint a 1000-row chooser."
+          }
+        }
+      },
+      "HashSiblingDto": {
+        "type": "object",
+        "description": "One entry in `HashCheckResponse::siblings` — a file the caller can see\nthat references the probed blob. Carries the ids the FE needs to drive\n`POST /api/batch/trash` on the user's chosen subset, plus the per-row\npermission bits the delete-UX reads to decide which actions the chooser\nmay offer against this specific row (e.g. a sibling in a drive the\ncaller only has Comment on is listed but not trashable from here).\n\n`is_trashed` is TRUE for a sibling that currently sits in trash: the\nrow still holds a blob reference until the trash entry is purged, so\nthe UX surfaces it as \"to free these bytes, purge this from trash\ntoo\". Non-trashed and trashed rows share the same shape — the flag\nis the only discriminator so clients can colour or group them without\na second round trip.",
+        "required": [
+          "file_id",
+          "name",
+          "drive_id",
+          "is_trashed",
+          "can_delete",
+          "can_update",
+          "can_share"
+        ],
+        "properties": {
+          "can_delete": {
+            "type": "boolean"
+          },
+          "can_share": {
+            "type": "boolean"
+          },
+          "can_update": {
+            "type": "boolean"
+          },
+          "drive_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "file_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "folder_id": {
             "type": [
-              "integer",
+              "string",
               "null"
             ],
-            "format": "int32",
-            "description": "Global reference count for this blob across all users.\nOnly populated when the authenticated user has the `admin` role;\nomitted for regular users to prevent cross-user content inference.",
-            "minimum": 0
+            "format": "uuid"
+          },
+          "folder_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Display name of the parent folder — the chooser uses this to\ndisambiguate siblings that share a filename (e.g. the same\nscreenshot filename copied across several folders). `None`\nwhen the file lives at the drive root (`folder_id` is `None`)."
+          },
+          "is_trashed": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
           }
         }
       },
@@ -14662,35 +14852,6 @@
             "type": "string"
           }
         }
-      },
-      "PhotoDto": {
-        "allOf": [
-          {
-            "$ref": "#/components/schemas/FileDto"
-          },
-          {
-            "type": "object",
-            "properties": {
-              "height": {
-                "type": [
-                  "integer",
-                  "null"
-                ],
-                "format": "int32",
-                "minimum": 0
-              },
-              "width": {
-                "type": [
-                  "integer",
-                  "null"
-                ],
-                "format": "int32",
-                "minimum": 0
-              }
-            }
-          }
-        ],
-        "description": "Photos-timeline item: a `FileDto` plus the image's original pixel\ndimensions (from EXIF/metadata), flattened into the same JSON shape so\nthe gallery can lay tiles out at their true aspect ratio without a\nsecond per-file metadata round-trip."
       },
       "PlaylistDto": {
         "type": "object",

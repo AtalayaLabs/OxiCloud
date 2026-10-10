@@ -5,7 +5,7 @@
 	 * deletions are reported via `onDelete` so the parent can update its own list.
 	 */
 	import Icon from '$lib/icons/Icon.svelte';
-	import { addFavorite } from '$lib/api/endpoints/favorites';
+	import { addFavorite, removeFavorite } from '$lib/api/endpoints/favorites';
 	import {
 		deleteFile,
 		fileDownloadUrl,
@@ -27,6 +27,23 @@
 		/** Called after a successful delete so the parent can drop it from `items`. */
 		onDelete?: (id: string) => void;
 		/**
+		 * Optional hook that lets the parent intercept the delete gesture
+		 * before the default confirm+deleteFile flow runs. The Photos page
+		 * wires this to its dedup chooser so a `has_blob_siblings` tile
+		 * shows the siblings-picker instead of the plain confirm — same
+		 * UX as deleting from the gallery grid. Return `true` to signal
+		 * "I took over, do not run the default flow"; `false` or
+		 * `undefined` to delegate to the lightbox's own confirmDialog +
+		 * `deleteFile` path.
+		 *
+		 * When the handler takes over, it owns the item-removal /
+		 * `onDelete` fan-out — it has already updated the shared `items`
+		 * list via its own batchTrash call. The lightbox's clamp-index
+		 * effect picks up the shrunk list and slides to the next tile
+		 * (or closes when nothing is left).
+		 */
+		onDeleteRequested?: (item: FileItem) => Promise<boolean>;
+		/**
 		 * Hide every affordance that mutates. Set by the public-share page,
 		 * whose viewer holds a link rather than an account.
 		 *
@@ -42,7 +59,13 @@
 		readOnly?: boolean;
 	}
 
-	let { items, index = $bindable(), onDelete, readOnly = false }: Props = $props();
+	let {
+		items,
+		index = $bindable(),
+		onDelete,
+		onDeleteRequested,
+		readOnly = false
+	}: Props = $props();
 
 	let showingOriginal = $state(false);
 	let fullResBusy = $state(false);
@@ -86,7 +109,12 @@
 		const gen = ++generation;
 		showingOriginal = p.mime_type === 'image/gif';
 		fullResBusy = false;
-		favorited = false;
+		// Seed the star from the item's own `is_favorite` — the pre-fix
+		// code hardcoded `false`, so reopening the lightbox on a photo
+		// the user had previously favorited always painted an empty
+		// star, and the next click would redundantly re-ADD the
+		// favorite via the toggle below.
+		favorited = p.is_favorite;
 		meta = baseMeta(p);
 		preloadNeighbors();
 		void fetchFileMetadata(p.id).then((md) => {
@@ -142,9 +170,25 @@
 
 	async function toggleFavorite() {
 		if (!item) return;
+		const target = item;
+		const next = !favorited;
 		try {
-			await addFavorite('file', item.id);
-			favorited = !favorited;
+			// The two endpoints are not symmetrical idempotent: `addFavorite`
+			// on an already-favorited row returns success; `removeFavorite`
+			// on a non-favorited row 404s. Branching on the current state
+			// keeps both directions clean and matches the per-tile toggle
+			// everywhere else in the SPA.
+			if (next) {
+				await addFavorite('file', target.id);
+			} else {
+				await removeFavorite('file', target.id);
+			}
+			favorited = next;
+			// Propagate the flip back to the parent's `items` array so
+			// re-opening the lightbox on the same tile (or navigating
+			// prev/next and back) seeds the star correctly via
+			// `showItem` reading `p.is_favorite`.
+			target.is_favorite = next;
 		} catch (e) {
 			errorToast(e);
 		}
@@ -153,6 +197,23 @@
 	async function remove() {
 		if (!item) return;
 		const target = item;
+
+		// Give the parent a chance to intercept — the Photos page wires
+		// this to its dedup siblings chooser when the tile carries
+		// `has_blob_siblings`, so the lightbox-triggered delete lands in
+		// the same chooser as the gallery-triggered one. A `true` return
+		// means the parent handled everything (including removing the
+		// trashed items from the shared `items` list); the clamp-index
+		// effect then slides the lightbox to the next tile.
+		if (onDeleteRequested) {
+			try {
+				if (await onDeleteRequested(target)) return;
+			} catch (e) {
+				errorToast(e);
+				return;
+			}
+		}
+
 		const ok = await confirmDialog({
 			title: t('photos.delete', 'Delete photo'),
 			message: t('photos.confirm_delete_one', { name: target.name }, 'Delete {{name}}?'),

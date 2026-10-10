@@ -121,12 +121,11 @@ jsonpath "$.content_hash" isString
 
 
 # One file holds the blob.
-GET {{base_url}}/api/dedup/check/{{blob_hash}}
+GET {{base_url}}/api/admin/dedup/check/{{blob_hash}}
 Authorization: Bearer {{token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.exists" == true
 jsonpath "$.ref_count" == 1
 
 
@@ -223,12 +222,11 @@ jsonpath "$.successful[0].id" != "{{orig_file_id}}"
 # ─────────────────────────────────────────────────────────────
 # Step 6 – The copy took a reference.
 # ─────────────────────────────────────────────────────────────
-GET {{base_url}}/api/dedup/check/{{blob_hash}}
+GET {{base_url}}/api/admin/dedup/check/{{blob_hash}}
 Authorization: Bearer {{token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.exists" == true
 jsonpath "$.ref_count" == 2
 
 
@@ -296,7 +294,7 @@ jsonpath "$[0].content_hash" == "{{blob_hash}}"
 # Step 9 – Three references now. Before `copy_file_satellites` the tree
 #          path contributed nothing here and this stayed at 2.
 # ─────────────────────────────────────────────────────────────
-GET {{base_url}}/api/dedup/check/{{blob_hash}}
+GET {{base_url}}/api/admin/dedup/check/{{blob_hash}}
 Authorization: Bearer {{token}}
 
 HTTP 200
@@ -336,12 +334,11 @@ HTTP 200
 
 
 # Two copies remain, so the content must too.
-GET {{base_url}}/api/dedup/check/{{blob_hash}}
+GET {{base_url}}/api/admin/dedup/check/{{blob_hash}}
 Authorization: Bearer {{token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.exists" == true
 jsonpath "$.ref_count" == 2
 
 

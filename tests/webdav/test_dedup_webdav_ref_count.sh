@@ -6,10 +6,10 @@
 #   1. PUT dedup-test.jpg via WebDAV as file A
 #   2. PUT dedup-test-2.jpg (identical content) via WebDAV as file B
 #      → same blob, two distinct file records, ref_count == 2
-#   3. GET /api/dedup/check/{hash} → assert ref_count == 2
+#   3. GET /api/admin/dedup/check/{hash} → assert ref_count == 2
 #   4. Overwrite file B via WebDAV PUT with different content
 #      → file B now references a new blob; original ref_count drops
-#   5. GET /api/dedup/check/{hash} → assert ref_count == 1
+#   5. GET /api/admin/dedup/check/{hash} → assert ref_count == 1
 #
 # BLAKE3 hash of dedup-test.jpg (== dedup-test-2.jpg — same content):
 #   cde1ca663a2e62e0dadb41c3194e11ecb7d971d84c7451db17063b55c09e8066
@@ -70,7 +70,9 @@ rest_delete() {
 }
 
 dedup_check() {
-    curl -s -H "Authorization: Bearer $TOKEN" "$base_url/api/dedup/check/$1"
+    # ref_count lives on the admin split (§9b route split, 2026-10-08);
+    # the user-facing /api/dedup/check/{hash} no longer carries it.
+    curl -s -H "Authorization: Bearer $TOKEN" "$base_url/api/admin/dedup/check/$1"
 }
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
@@ -168,15 +170,15 @@ pass "content_hash on both A and B matches local BLAKE3 ($BLOB_HASH)"
 
 # ── Step 4: Dedup check → ref_count == 2 ─────────────────────────────────────
 
-echo "  step 4: GET /api/dedup/check/$BLOB_HASH..."
+echo "  step 4: GET /api/admin/dedup/check/$BLOB_HASH..."
 RESP=$(dedup_check "$BLOB_HASH")
-EXISTS=$(jq -r '.exists'    <<< "$RESP")
-RC=$(    jq -r '.ref_count' <<< "$RESP")
+RC=$(jq -r '.ref_count' <<< "$RESP")
 
-[[ "$EXISTS" == "true" ]] \
-    || fail "dedup/check: expected exists=true, got $EXISTS (full response: $RESP)"
+# The admin check shape is {hash, existing_size, ref_count} — a 404
+# would print `null` for ref_count, so an unparsed/missing value is an
+# "unknown blob" signal in addition to the explicit count mismatch.
 [[ "$RC" == "2" ]] \
-    || fail "dedup/check: expected ref_count=2 after two identical uploads, got $RC"
+    || fail "dedup/check: expected ref_count=2 after two identical uploads, got $RC (full response: $RESP)"
 pass "ref_count == 2: both files reference the same blob"
 
 # ── Step 5: Overwrite file B with different content ───────────────────────────
@@ -209,15 +211,12 @@ pass "post-overwrite: A still on $BLOB_HASH, B flipped to $FILE_B_HASH_AFTER"
 # ── Step 6: Dedup check → ref_count == 1 ─────────────────────────────────────
 # File B now references a different blob; file A still holds the original.
 
-echo "  step 6: GET /api/dedup/check/$BLOB_HASH..."
+echo "  step 6: GET /api/admin/dedup/check/$BLOB_HASH..."
 RESP=$(dedup_check "$BLOB_HASH")
-EXISTS=$(jq -r '.exists'    <<< "$RESP")
-RC=$(    jq -r '.ref_count' <<< "$RESP")
+RC=$(jq -r '.ref_count' <<< "$RESP")
 
-[[ "$EXISTS" == "true" ]] \
-    || fail "dedup/check: expected exists=true (file A still references blob), got $EXISTS"
 [[ "$RC" == "1" ]] \
-    || fail "dedup/check: expected ref_count=1 after overwriting file B, got $RC"
+    || fail "dedup/check: expected ref_count=1 after overwriting file B, got $RC (full response: $RESP)"
 pass "ref_count == 1: only file A still references the original blob"
 
 # ── cleanup ───────────────────────────────────────────────────────────────────

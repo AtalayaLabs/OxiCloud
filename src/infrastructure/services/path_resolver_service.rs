@@ -219,7 +219,6 @@ impl PathResolverService {
                     icon_special_class: intern_display(classes.icon_special_class),
                     category: intern_display(classes.category),
                     size_formatted: format_file_size(sz),
-                    sort_date: None,
                     content_hash: hash,
                     etag,
                     // §14 provenance not selected by this resolver path

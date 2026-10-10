@@ -237,7 +237,6 @@ mod before {
                 .into(),
             category: category_for(&fr.name, &fr.mime_type).to_string().into(),
             size_formatted: format_file_size(fr.size),
-            sort_date: None,
             content_hash: fr.blob_hash.clone(),
             etag,
             created_by: None,

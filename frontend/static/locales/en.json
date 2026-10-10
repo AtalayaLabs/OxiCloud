@@ -128,11 +128,43 @@
     "trashed": "{{n}} moved to trash.",
     "layout_square": "Grid",
     "layout_justified": "Justified",
+    "filter_kind": "Media type",
+    "filter_drive": "Drive",
+    "all_drives": "All drives",
+    "sort": {
+      "title": "Sort by",
+      "direction": "Sort direction",
+      "captured_at": "Captured date",
+      "created_at": "Upload date",
+      "updated_at": "Last modified"
+    },
+    "filter_favorite": "Favourites only",
+    "filter_favorite_on": "Showing favourites only — click to show all",
+    "filter_favorite_off": "Show favourites only",
+    "kind": {
+      "all": "All",
+      "photo": "Photos",
+      "video": "Videos"
+    },
     "tab_moments": "Moments",
     "tab_places": "Places",
     "tab_people": "People",
     "map_loading": "Loading map…",
-    "map_error": "Could not load the map"
+    "map_error": "Could not load the map",
+    "dedup_dialog": {
+      "title": "This content has copies",
+      "intro": "{{n}} file(s) in your drive reference the same bytes. Trashing one copy does not free the content — pick every copy you want to send to trash.",
+      "trashed_note": "{{n}} other copy / copies already sit in your trash and still hold the content. Purge them from the Trash view to actually free the bytes.",
+      "truncated": "The server capped this list. More copies exist but are not shown here.",
+      "select_all": "Select all deletable",
+      "select_none": "Select none",
+      "picked": "{{n}} of {{total}} selected",
+      "origin_badge": "the one you clicked",
+      "readonly_badge": "read-only",
+      "drive_root": "Drive root",
+      "readonly_note": "{{n}} copy / copies live where you only have read access — they cannot be trashed from here.",
+      "confirm": "Trash {{n}} file(s)"
+    }
   },
   "people": {
     "unnamed": "Unnamed",

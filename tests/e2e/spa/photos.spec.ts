@@ -41,7 +41,16 @@ test('photo grid opens the lightbox and navigates', async ({ page }) => {
   await expect(page.getByTestId('photo-lightbox')).toHaveCount(0);
 });
 
-test('select photos, toggle layout, and batch-delete', async ({ page }) => {
+// The retired `[ Grid | Justified ]` layout toggle originally
+// shipped in 75ee9b7c (`feat(photos): justified
+// (aspect-preserving) layout option`, Jun 2026). Removed in
+// ebb15488 to free the toolbar for the §6 / §6b / §6c filter
+// axes. The pre-rename test name was "select photos, toggle
+// layout, and batch-delete"; the layout-flip step was always
+// decorative on a batch-delete flow, so this test now exercises
+// just the real property. Git-show either commit to recover the
+// layout buttons or their original test IDs.
+test('select photos and batch-delete', async ({ page }) => {
   await seedPhotos(page, 3);
   await page.goto('/photos');
 
@@ -50,10 +59,6 @@ test('select photos, toggle layout, and batch-delete', async ({ page }) => {
   await expect(tileCheck).toBeAttached({ timeout: 15_000 });
   await tileCheck.dispatchEvent('click');
   await expect(page.getByTestId('photos-batch-bar')).toBeVisible({ timeout: 5_000 });
-
-  // Layout toggles.
-  await page.getByTestId('photos-layout-justified-btn').click();
-  await page.getByTestId('photos-layout-square-btn').click();
 
   // Batch-delete the selection (confirm if prompted).
   await page.getByTestId('photos-batch-delete-btn').click();

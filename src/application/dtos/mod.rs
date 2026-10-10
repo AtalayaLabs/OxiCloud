@@ -16,6 +16,7 @@ pub mod grant_dto;
 pub mod i18n_dto;
 pub mod pagination;
 pub mod people_dto;
+pub mod photos_dto;
 pub mod playlist_dto;
 pub mod plugin_dto;
 pub mod recent_dto;

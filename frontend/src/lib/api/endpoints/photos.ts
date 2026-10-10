@@ -4,17 +4,61 @@ import { getCsrfHeaders } from '$lib/api/csrf';
 import type { FileItem } from '$lib/api/types';
 
 /**
- * A timeline photo/video. Extends {@link FileItem} with the pixel dimensions the
- * list endpoint returns, used by the justified (aspect-preserving) grid layout.
+ * A timeline photo/video. The `/api/photos/resources` envelope carries file
+ * fields at `.resource.*` (as every other `/resources` endpoint does), but
+ * the SPA's photos code — grid layout, lightbox, selection — reads
+ * `.id`/`.name`/`.width`/`.height`/`.sort_date` directly, so {@link fetchPhotos}
+ * flattens the envelope item: file fields spread onto the top level, plus the
+ * item-level signals (`width`, `height`, `sort_date`, `captured_at`,
+ * `orientation`, `has_gps`) that live outside `resource` on the wire. Keeps
+ * every consumer unchanged across the §4 cutover from `/api/photos` → `/api/photos/resources`.
  */
 export interface PhotoItem extends FileItem {
 	width?: number;
 	height?: number;
+	/** Always present on the envelope — epoch seconds; the item's sort axis value. */
+	sort_date: number;
+	/** Raw EXIF `DateTimeOriginal`, epoch seconds. Absent when the file carries no EXIF date. */
+	captured_at?: number;
+	/** Raw EXIF orientation (TIFF 1-8). Absent when the file carries no orientation tag. */
+	orientation?: number;
+	/** `true` when the file has both lat AND lng. Raw coordinates stay off the listing. */
+	has_gps: boolean;
+	/**
+	 * `true` when the §9 within-drive `DISTINCT ON (blob_hash)` hid at least
+	 * one sibling behind this tile — another non-trashed media file in the
+	 * same drive referencing the same bytes. Powers the delete-UX in §9b
+	 * Layer 1: a `true` tile warns the user that trashing it removes just
+	 * one copy of the content, so the gallery can fetch the siblings list
+	 * from `GET /api/dedup/check/{hash}` (Layer 2) before committing.
+	 * `false` is the common case; the gallery can skip the sibling fetch
+	 * entirely in that branch.
+	 */
+	has_blob_siblings: boolean;
 }
 
 export interface PhotoPage {
 	items: PhotoItem[];
 	nextCursor: string | null;
+}
+
+/** One row of the `/api/photos/resources` envelope — item-level fields + nested `resource`. */
+interface PhotoEnvelopeItem {
+	resource_type: 'file';
+	resource: FileItem;
+	width?: number;
+	height?: number;
+	sort_date: number;
+	captured_at?: number;
+	orientation?: number;
+	has_gps: boolean;
+	has_blob_siblings: boolean;
+}
+
+interface PhotosEnvelope {
+	items: PhotoEnvelopeItem[];
+	/** Omitted when this is the last page (not `null`). */
+	next_cursor?: string;
 }
 
 /** EXIF metadata returned by `/api/files/{id}/metadata` (subset used by the lightbox). */
@@ -62,21 +106,80 @@ export async function fetchPhotosGeo(bbox: string, zoom: number): Promise<GeoClu
 /** Backend `MAX_BATCH_SIZE` — chunk larger selections into separate requests. */
 const BATCH_CHUNK_SIZE = 1000;
 
+/** Media-kind filter on the Photos timeline. `'all'` is the default
+ *  (both image AND video rows); `'photo'` / `'video'` narrow to one
+ *  mime family. Omits the query param on `'all'` so the URL stays
+ *  short on the default view. */
+export type PhotosKind = 'all' | 'photo' | 'video';
+
+/** Sort axis on the Photos timeline (§3). `captured_at` (default) orders by
+ *  EXIF capture date with upload-time fallback; `created_at` is pure upload
+ *  time; `updated_at` surfaces recently-touched rows. */
+export type PhotosOrderBy = 'captured_at' | 'created_at' | 'updated_at';
+
+/** Optional filter / cursor knobs on {@link fetchPhotos}. All default
+ *  to "no filter"; the resulting URL omits every absent param. */
+export interface FetchPhotosOptions {
+	/** Opaque cursor from a prior response. Absent for page 1. */
+	cursor?: string | null;
+	/** Narrow to photos or videos. `'all'` (default) keeps both. */
+	kind?: PhotosKind;
+	/** Restrict to a single drive the caller can access. Absent → cross-drive view. */
+	driveId?: string | null;
+	/** Narrow to the caller's favourited rows only. `false`/omitted keeps the full feed. */
+	favoriteOnly?: boolean;
+	/** Sort axis (§3). Default `captured_at`; absent query param on default. */
+	orderBy?: PhotosOrderBy;
+	/** Flip to oldest-first on whichever axis `orderBy` selects. */
+	reverse?: boolean;
+}
+
 /**
- * Fetch one page of the photo timeline. The next-page cursor is returned in the
- * `X-Next-Cursor` response header; the page is the last one when fewer than
- * `limit` items come back.
+ * Fetch one page of the photo timeline from `/api/photos/resources` — the
+ * normalized `CursorListResponse<PhotoResourceItemDto>` envelope that
+ * replaced the bare-array `/api/photos` endpoint in §4 of
+ * `docs/plan/photos-resources-migration.md`.
+ *
+ * The envelope's items have the file at `.resource` and the photo-level
+ * signals as siblings. We flatten them into {@link PhotoItem} so the SPA's
+ * grid, lightbox, and selection paths read `.id`/`.name`/`.width`/`.height`
+ * directly — the cutover is transparent to every consumer. The next-page
+ * cursor comes from the `next_cursor` body field (omitted on the last page,
+ * `undefined` in the parsed envelope) rather than a response header.
+ *
+ * Filter knobs (§6 / §6b) ride in {@link FetchPhotosOptions}. A cursor
+ * MUST be reused against the same filter combo that minted it — the server
+ * returns 400 on mismatch, which the caller should treat as a signal to
+ * reset pagination (page 1 with the new filter set) rather than retry.
  */
-export async function fetchPhotos(limit = 60, before?: string | null): Promise<PhotoPage> {
-	let url = `/api/photos?limit=${limit}`;
-	if (before) url += `&before=${encodeURIComponent(before)}`;
-	const res = await apiFetch(url, { credentials: 'same-origin' });
+export async function fetchPhotos(limit = 60, opts: FetchPhotosOptions = {}): Promise<PhotoPage> {
+	const q = new URLSearchParams({ limit: String(limit) });
+	if (opts.cursor) q.set('cursor', opts.cursor);
+	if (opts.kind && opts.kind !== 'all') q.set('kind', opts.kind);
+	if (opts.driveId) q.set('drive_id', opts.driveId);
+	if (opts.favoriteOnly) q.set('favorite_only', 'true');
+	if (opts.orderBy && opts.orderBy !== 'captured_at') q.set('order_by', opts.orderBy);
+	if (opts.reverse) q.set('reverse', 'true');
+	// §2 server-side ETag + the browser's HTTP cache deliver the
+	// fast-tab-switch 304 fast path without an SPA-level cache; §2b
+	// was dropped in favour of that native path (see
+	// docs/plan/photos-resources-migration.md §2b for the rationale).
+	const res = await apiFetch(`/api/photos/resources?${q}`, { credentials: 'same-origin' });
 	if (!res.ok) throw new Error(`photos failed: ${res.status}`);
-	const items = (await res.json()) as PhotoItem[];
-	const cursor = res.headers.get('X-Next-Cursor');
+	const envelope = (await res.json()) as PhotosEnvelope;
+	const items: PhotoItem[] = (envelope.items ?? []).map((row) => ({
+		...row.resource,
+		width: row.width,
+		height: row.height,
+		sort_date: row.sort_date,
+		captured_at: row.captured_at,
+		orientation: row.orientation,
+		has_gps: row.has_gps,
+		has_blob_siblings: row.has_blob_siblings
+	}));
 	return {
-		items: items ?? [],
-		nextCursor: cursor && items && items.length >= limit ? cursor : null
+		items,
+		nextCursor: envelope.next_cursor ?? null
 	};
 }
 

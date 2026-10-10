@@ -130,7 +130,14 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		z-index: 900;
+		/*
+		 * 1050 — sits above full-screen overlays (PhotoLightbox,
+		 * FileViewer, notifications-root at z 1000) so a delete /
+		 * confirm / chooser triggered while a lightbox is open is
+		 * reachable. Stays below CommandPalette (1200) and the
+		 * global Toaster (1200) which must remain top-of-stack.
+		 */
+		z-index: 1050;
 		padding: 1rem;
 		animation: modal-fade 0.16s ease;
 	}

@@ -1,14 +1,24 @@
 <script lang="ts">
-	import Button from '$lib/components/Button.svelte';
 	import EmptyState from '$lib/components/EmptyState.svelte';
 	import VirtualRows from '$lib/components/VirtualRows.svelte';
 	import { lazyComponent } from '$lib/composables/lazyComponent.svelte';
 	import { useSelection } from '$lib/composables/useSelection.svelte';
 	import { errorToast } from '$lib/utils/errors';
 	import { onMount } from 'svelte';
-	import { batchTrash, fetchPhotos, type PhotoItem } from '$lib/api/endpoints/photos';
+	import {
+		batchTrash,
+		fetchPhotos,
+		type PhotoItem,
+		type PhotosKind,
+		type PhotosOrderBy
+	} from '$lib/api/endpoints/photos';
+	import { fetchHashSiblings, type HashSibling } from '$lib/api/endpoints/dedup';
+	import DedupSiblingsDialog from '$lib/components/DedupSiblingsDialog.svelte';
 	import { peopleEnabled } from '$lib/api/endpoints/people';
 	import { fileDownloadUrl, fileThumbnailUrl } from '$lib/api/endpoints/files';
+	import { listDrives } from '$lib/api/endpoints/drives';
+	import { driveIcon } from '$lib/stores/drives.svelte';
+	import type { Drive, FileItem } from '$lib/api/types';
 	import Icon from '$lib/icons/Icon.svelte';
 	import { confirmDialog } from '$lib/stores/dialogs.svelte';
 	import { preferences } from '$lib/stores/preferences.svelte';
@@ -17,12 +27,7 @@
 	import { filterDotfiles } from '$lib/utils/dotfileFilter';
 	import { dateTimeFormatFor } from '$lib/utils/display';
 	import { isVideo, photoTimestamp } from '$lib/utils/media';
-	import {
-		PhotoTimeline,
-		type GroupMode,
-		type LayoutMode,
-		type PhotoRow
-	} from '$lib/utils/photoTimeline';
+	import { PhotoTimeline, type GroupMode, type PhotoRow } from '$lib/utils/photoTimeline';
 
 	type Tab = 'moments' | 'places' | 'people';
 	let tab = $state<Tab>('moments');
@@ -56,9 +61,125 @@
 	let gridWidth = $state(0);
 
 	const GROUP_KEY = 'oxi-photos-group';
-	const LAYOUT_KEY = 'oxi-photos-layout';
+	const KIND_KEY = 'oxi-photos-kind';
+	const DRIVE_KEY = 'oxi-photos-drive';
+	const FAVORITE_KEY = 'oxi-photos-favorite-only';
+	const ORDER_BY_KEY = 'oxi-photos-order-by';
+	const REVERSE_KEY = 'oxi-photos-reverse';
 	let groupMode = $state<GroupMode>('month');
-	let layoutMode = $state<LayoutMode>('square');
+	/** Open/close for the group-by dropdown trigger. Mirrors the
+	 *  drive and order-by filters — same `.group-by-selector`
+	 *  outside-click behaviour. */
+	let groupByOpen = $state(false);
+	/** Human label for the active group mode — shown on the trigger
+	 *  button. Falls through the generic `view_{period}ly` i18n keys
+	 *  already present in en.json. */
+	const groupModeLabel = $derived(
+		groupMode === 'day'
+			? t('photos.view_daily', 'Day')
+			: groupMode === 'month'
+				? t('photos.view_monthly', 'Month')
+				: t('photos.view_yearly', 'Year')
+	);
+	$effect(() => {
+		if (!groupByOpen) return;
+		const onDown = (e: MouseEvent) => {
+			if (!(e.target as HTMLElement).closest('.group-mode-filter')) groupByOpen = false;
+		};
+		window.addEventListener('pointerdown', onDown);
+		return () => window.removeEventListener('pointerdown', onDown);
+	});
+	/**
+	 * §6 — media-kind filter. Backed by `?kind=` on the server;
+	 * `'all'` sends no query param so the default URL stays short.
+	 */
+	let kindFilter = $state<PhotosKind>('all');
+	/**
+	 * §6b — drive-scope filter. `null` is the cross-drive feed; a
+	 * uuid restricts to that drive. The drive-select dropdown lists
+	 * only drives with `policies.include_in_photo_index === true`
+	 * — otherwise the uploaded content never shows up in the
+	 * timeline anyway, so picking one would land on an empty view.
+	 */
+	let driveFilter = $state<string | null>(null);
+	/**
+	 * Toggle for the "favourites only" filter — passes
+	 * `?favorite_only=true` to the server when on. Default off keeps
+	 * the full feed. Reset-and-reload fires on flip since the server
+	 * returns 400 if a cursor is reused across filter axes.
+	 */
+	let favoriteFilter = $state(false);
+	/**
+	 * §3 — sort axis + direction. Three accepted values on the server;
+	 * `captured_at` is the historic Photos default (EXIF capture date,
+	 * falling back to upload time). `reverse` flips newest-first (the
+	 * default) to oldest-first on whichever axis is chosen. Both ride
+	 * through to `/api/photos/resources` as `?order_by=` + `?reverse=`
+	 * and the server returns 400 if a cursor is reused across a flip,
+	 * so a change here MUST reset-and-reload (same as kind / drive /
+	 * favourites).
+	 */
+	let orderBy = $state<PhotosOrderBy>('captured_at');
+	let reverse = $state(false);
+	/** Open/close for the order-by dropdown trigger. */
+	let orderByOpen = $state(false);
+	/** Icon + label for the active axis — mirrors the active-drive
+	 *  readout on the drive filter. */
+	const orderByLabel = $derived(
+		orderBy === 'captured_at'
+			? t('photos.sort.captured_at', 'Captured date')
+			: orderBy === 'created_at'
+				? t('photos.sort.created_at', 'Upload date')
+				: t('photos.sort.updated_at', 'Last modified')
+	);
+	// Close the order-by dropdown on an outside click. Same mechanism
+	// the drive filter uses.
+	$effect(() => {
+		if (!orderByOpen) return;
+		const onDown = (e: MouseEvent) => {
+			if (!(e.target as HTMLElement).closest('.order-by-filter')) orderByOpen = false;
+		};
+		window.addEventListener('pointerdown', onDown);
+		return () => window.removeEventListener('pointerdown', onDown);
+	});
+	/**
+	 * Drives the dropdown lists. Loaded once on mount; filtered to
+	 * entries whose typed policy bag has `include_in_photo_index`
+	 * set true (the server-side eligibility rule for the photo
+	 * axis).
+	 */
+	let availableDrives = $state<Drive[]>([]);
+	/** Dropdown open/close for the drive-filter trigger. Matches the
+	 *  pattern used by `DisplayModeControls` and the /shared kind
+	 *  filter — same `.group-by-selector` CSS classes in
+	 *  `styles/ported/buttons.css`. */
+	let driveFilterOpen = $state(false);
+	/** Current label shown on the dropdown trigger — the chosen drive's
+	 *  name, or "All drives" when the filter is off. */
+	const driveFilterLabel = $derived(
+		driveFilter
+			? (availableDrives.find((d) => d.id === driveFilter)?.name ??
+					t('photos.all_drives', 'All drives'))
+			: t('photos.all_drives', 'All drives')
+	);
+	/** Icon on the trigger button — mirrors the active drive's icon
+	 *  when scoped, falls back to the generic `hdd` glyph in the
+	 *  cross-drive view. */
+	const driveFilterIcon = $derived.by(() => {
+		if (!driveFilter) return 'hdd';
+		const d = availableDrives.find((x) => x.id === driveFilter);
+		return d ? driveIcon(d) : 'hdd';
+	});
+	// Close the drive-filter dropdown on an outside click. Same
+	// mechanism DisplayModeControls uses for the group-by menu.
+	$effect(() => {
+		if (!driveFilterOpen) return;
+		const onDown = (e: MouseEvent) => {
+			if (!(e.target as HTMLElement).closest('.drive-filter')) driveFilterOpen = false;
+		};
+		window.addEventListener('pointerdown', onDown);
+		return () => window.removeEventListener('pointerdown', onDown);
+	});
 	const selected = useSelection();
 	let lightbox = $state(-1); // index into `items`, -1 = closed
 
@@ -112,7 +233,16 @@
 	const photoRows = $derived.by<PhotoRow[]>(() =>
 		timeline.sync(visibleItems, {
 			groupMode,
-			layoutMode,
+			// Pinned to `'square'` since the per-user layout toggle was
+			// retired alongside the §6 filter wiring; keeping the util
+			// signature intact means the justified-packing code stays
+			// available if a future preference brings it back. The
+			// Flickr-style justified layout + its toolbar button
+			// originally shipped in commit 75ee9b7c
+			// (`feat(photos): justified (aspect-preserving) layout
+			// option`, Jun 2026) — git-show it to recover the toggle
+			// markup, localStorage persistence, and the i18n copy.
+			layoutMode: 'square',
 			width: gridWidth,
 			mobile: isMobile,
 			timestampOf: photoTimestamp,
@@ -125,7 +255,14 @@
 		loading = true;
 		error = null;
 		try {
-			const page = await fetchPhotos(60, cursor);
+			const page = await fetchPhotos(60, {
+				cursor,
+				kind: kindFilter,
+				driveId: driveFilter,
+				favoriteOnly: favoriteFilter,
+				orderBy,
+				reverse
+			});
 			items = [...items, ...page.items];
 			cursor = page.nextCursor;
 			if (!page.nextCursor) exhausted = true;
@@ -143,10 +280,95 @@
 		if (typeof localStorage !== 'undefined') localStorage.setItem(GROUP_KEY, m);
 	}
 
-	function setLayoutMode(m: LayoutMode) {
-		if (layoutMode === m) return;
-		layoutMode = m;
-		if (typeof localStorage !== 'undefined') localStorage.setItem(LAYOUT_KEY, m);
+	/**
+	 * Called on every filter change (`kindFilter`, `driveFilter`,
+	 * `favoriteFilter`). Pagination state keys off the server-issued
+	 * cursor, and the server returns 400 if a cursor is reused across
+	 * a filter flip — so flipping any filter MUST reset `cursor` /
+	 * `exhausted` and refetch from page 1. Selection also clears:
+	 * a photo selected under one filter may not exist in the next
+	 * view, and the batch bar would otherwise refer to invisible ids.
+	 *
+	 * The grid stays painted with the previous items until the new
+	 * page 1 arrives, then swaps atomically. Clearing `items` up
+	 * front (as the pre-fix code did) caused a full-grid flash +
+	 * loading-indicator cycle on every filter click that read as
+	 * a page reload. Scroll position is preserved on purpose — the
+	 * user can review the delta where they are and the virtualised
+	 * grid stays mounted.
+	 */
+	async function resetAndReload() {
+		cursor = null;
+		exhausted = false;
+		selected.clear();
+		loading = true;
+		error = null;
+		try {
+			const page = await fetchPhotos(60, {
+				cursor: null,
+				kind: kindFilter,
+				driveId: driveFilter,
+				favoriteOnly: favoriteFilter,
+				orderBy,
+				reverse
+			});
+			items = page.items;
+			cursor = page.nextCursor;
+			if (!page.nextCursor) exhausted = true;
+		} catch (e) {
+			error = e instanceof Error ? e.message : String(e);
+			items = [];
+			exhausted = true;
+		} finally {
+			loading = false;
+		}
+	}
+
+	function setKindFilter(k: PhotosKind) {
+		if (kindFilter === k) return;
+		kindFilter = k;
+		if (typeof localStorage !== 'undefined') localStorage.setItem(KIND_KEY, k);
+		void resetAndReload();
+	}
+
+	function setDriveFilter(id: string | null) {
+		if (driveFilter === id) return;
+		driveFilter = id;
+		if (typeof localStorage !== 'undefined') {
+			if (id) localStorage.setItem(DRIVE_KEY, id);
+			else localStorage.removeItem(DRIVE_KEY);
+		}
+		void resetAndReload();
+	}
+
+	function toggleFavoriteFilter() {
+		favoriteFilter = !favoriteFilter;
+		if (typeof localStorage !== 'undefined') {
+			if (favoriteFilter) localStorage.setItem(FAVORITE_KEY, 'true');
+			else localStorage.removeItem(FAVORITE_KEY);
+		}
+		void resetAndReload();
+	}
+
+	function setOrderBy(axis: PhotosOrderBy) {
+		if (orderBy === axis) return;
+		orderBy = axis;
+		if (typeof localStorage !== 'undefined') {
+			// Default (captured_at) stays implicit — removing the key
+			// keeps a clean localStorage for the common case.
+			if (axis === 'captured_at') localStorage.removeItem(ORDER_BY_KEY);
+			else localStorage.setItem(ORDER_BY_KEY, axis);
+		}
+		void resetAndReload();
+	}
+
+	function toggleReverse() {
+		reverse = !reverse;
+		if (typeof localStorage !== 'undefined') {
+			if (reverse) localStorage.setItem(REVERSE_KEY, 'true');
+			else localStorage.removeItem(REVERSE_KEY);
+		}
+		void resetAndReload();
 	}
 
 	/** A plain tile click toggles selection once anything is selected, else opens the lightbox. */
@@ -175,8 +397,71 @@
 		}
 	}
 
+	// §9b Layer 2 dedup chooser state. Opened only on the single-select
+	// path when the clicked tile carries `has_blob_siblings: true` — the
+	// listing-level signal that the §9 within-drive DISTINCT ON hid at
+	// least one other visible file referencing the same bytes. For
+	// multi-select trashing we fall back to the plain confirm; the
+	// per-tile sibling fan-out can diverge arbitrarily across a mixed
+	// selection and a chooser-of-choosers is not what the UX needs.
+	let dedupDialogOpen = $state(false);
+	let dedupSiblings = $state<HashSibling[]>([]);
+	let dedupTruncated = $state(false);
+	let dedupOriginId = $state<string>('');
+
+	/**
+	 * Try to open the dedup chooser for one tile. Returns `true` when the
+	 * chooser was opened (caller should skip its default confirm flow);
+	 * `false` when there's nothing to disambiguate (no sibling flag, no
+	 * live siblings beyond the origin, or the probe failed — in which
+	 * case the caller falls back to its plain confirm).
+	 *
+	 * Shared between the gallery delete gesture (`trashSelected` on a
+	 * single-select) and the lightbox's `onDeleteRequested` hook so both
+	 * entry points reach the same chooser.
+	 */
+	async function tryOpenDedupChooser(target: PhotoItem): Promise<boolean> {
+		if (!target.has_blob_siblings || !target.content_hash) return false;
+		try {
+			const resp = await fetchHashSiblings(target.content_hash);
+			// The dialog filters trashed siblings out — gating here on
+			// "any LIVE sibling other than the origin tile" avoids
+			// opening an empty-list chooser when every other copy is
+			// already in trash (the §9 live-only `has_blob_siblings`
+			// flag can diverge from the Layer 2 live set between the
+			// listing fetch and this probe, e.g. after a sibling was
+			// trashed in another tab).
+			const liveOthers = resp
+				? resp.siblings.filter((s) => !s.is_trashed && s.file_id !== target.id)
+				: [];
+			if (resp && liveOthers.length > 0) {
+				dedupSiblings = resp.siblings;
+				dedupTruncated = resp.truncated;
+				dedupOriginId = target.id;
+				dedupDialogOpen = true;
+				return true;
+			}
+		} catch {
+			// Fall through — a failed probe should not block the delete
+			// the user explicitly asked for.
+		}
+		return false;
+	}
+
 	async function trashSelected() {
 		const ids = selected.values();
+
+		// Single-tile trash where the server flagged `has_blob_siblings:
+		// true` — hand off to the dedup chooser so the user can decide
+		// which copies to actually trash. Multi-select stays on the
+		// plain confirm; the per-tile sibling fan-out can diverge
+		// arbitrarily across a mixed selection and a chooser-of-choosers
+		// is not what the UX needs.
+		if (ids.length === 1) {
+			const target = items.find((p) => p.id === ids[0]);
+			if (target && (await tryOpenDedupChooser(target))) return;
+		}
+
 		const ok = await confirmDialog({
 			title: t('photos.delete', 'Delete photos'),
 			message: t('photos.confirm_delete', { n: ids.length }, 'Move {{n}} photos to trash?'),
@@ -184,6 +469,38 @@
 			danger: true
 		});
 		if (!ok) return;
+		await runBatchTrash(ids);
+	}
+
+	/**
+	 * Lightbox hook: route the lightbox's delete gesture through the dedup
+	 * chooser when the tile has siblings. Returning `true` tells the
+	 * lightbox "I took over, do not run your default confirm+delete flow"
+	 * — the chooser's confirm path updates `items`, and the lightbox's
+	 * own clamp-index effect slides to the next tile.
+	 */
+	async function onLightboxDeleteRequested(target: PhotoItem | FileItem): Promise<boolean> {
+		// The lightbox types `items` as `FileItem[]` for its share-page
+		// reuse case; a PhotoItem is a superset so the runtime check
+		// works regardless of what the compiler sees.
+		const asPhoto = target as PhotoItem;
+		if (await tryOpenDedupChooser(asPhoto)) return true;
+		// No chooser needed — but the lightbox's default path calls the
+		// single-file `deleteFile` endpoint, not the batchTrash /
+		// item-removal pipeline the Photos page uses. Route to the same
+		// pipeline so item-list consistency is maintained.
+		const ok = await confirmDialog({
+			title: t('photos.delete', 'Delete photo'),
+			message: t('photos.confirm_delete_one', { name: target.name }, 'Delete {{name}}?'),
+			confirmText: t('common.delete', 'Delete'),
+			danger: true
+		});
+		if (!ok) return true;
+		await runBatchTrash([target.id]);
+		return true;
+	}
+
+	async function runBatchTrash(ids: string[]) {
 		try {
 			const trashed = await batchTrash(ids);
 			if (trashed.size > 0) {
@@ -207,6 +524,11 @@
 		}
 	}
 
+	function onDedupConfirm(ids: string[]) {
+		if (ids.length === 0) return;
+		void runBatchTrash(ids);
+	}
+
 	/**
 	 * A tile thumbnail failed to load — no server thumbnail yet (SVGs the backend
 	 * can't rasterise; a video whose server-side frame extraction is still running
@@ -225,9 +547,48 @@
 		const savedGroup = typeof localStorage !== 'undefined' ? localStorage.getItem(GROUP_KEY) : null;
 		if (savedGroup === 'day' || savedGroup === 'month' || savedGroup === 'year')
 			groupMode = savedGroup;
-		const savedLayout =
-			typeof localStorage !== 'undefined' ? localStorage.getItem(LAYOUT_KEY) : null;
-		if (savedLayout === 'square' || savedLayout === 'justified') layoutMode = savedLayout;
+		const savedKind = typeof localStorage !== 'undefined' ? localStorage.getItem(KIND_KEY) : null;
+		if (savedKind === 'all' || savedKind === 'photo' || savedKind === 'video')
+			kindFilter = savedKind;
+		if (typeof localStorage !== 'undefined' && localStorage.getItem(FAVORITE_KEY) === 'true')
+			favoriteFilter = true;
+		const savedOrderBy =
+			typeof localStorage !== 'undefined' ? localStorage.getItem(ORDER_BY_KEY) : null;
+		if (
+			savedOrderBy === 'captured_at' ||
+			savedOrderBy === 'created_at' ||
+			savedOrderBy === 'updated_at'
+		)
+			orderBy = savedOrderBy;
+		if (typeof localStorage !== 'undefined' && localStorage.getItem(REVERSE_KEY) === 'true')
+			reverse = true;
+		const savedDrive = typeof localStorage !== 'undefined' ? localStorage.getItem(DRIVE_KEY) : null;
+		// Restored unconditionally — if the drive is since gone (deleted,
+		// policy flipped off), the server returns an empty page via the
+		// anti-enum path and the dropdown will drop the stale entry once
+		// the drives load lands below.
+		if (savedDrive) driveFilter = savedDrive;
+		// Hydrate the drive-selector list. Filter to drives that opt into
+		// the photo axis — picking a non-opted-in drive would always land
+		// on an empty view, so there is no point surfacing them. Failure
+		// is non-fatal: the dropdown stays empty, the cross-drive feed
+		// still works.
+		void listDrives()
+			.then((drives) => {
+				availableDrives = drives.filter(
+					(d) =>
+						(d.policies as { include_in_photo_index?: boolean })?.include_in_photo_index === true
+				);
+				// If a restored `driveFilter` isn't in the eligible set,
+				// drop back to the cross-drive view silently.
+				if (driveFilter && !availableDrives.some((d) => d.id === driveFilter)) {
+					driveFilter = null;
+					if (typeof localStorage !== 'undefined') localStorage.removeItem(DRIVE_KEY);
+				}
+			})
+			.catch(() => {
+				/* intentional: dropdown stays empty, cross-drive feed still works */
+			});
 		void loadMore();
 		void peopleEnabled().then((ok) => (peopleAvailable = ok));
 		if (!sentinel) return;
@@ -246,7 +607,11 @@
 
 <svelte:head><title>{t('nav.photos', 'Photos')} · OxiCloud</title></svelte:head>
 
-<div class="page-sticky-header photos-head">
+<!-- Title + subnav live ABOVE the sticky block — they scroll away
+     with the page so vertical space is only paid for them while the
+     user is near the top. Only the Moments toolbar sticks (next
+     block) so the batch cluster stays reachable during long scrolls. -->
+<div class="photos-head">
 	<h1 class="page-title">{t('nav.photos', 'Photos')}</h1>
 	<div class="photos-subnav" role="tablist" aria-label={t('nav.photos', 'Photos')}>
 		<button
@@ -284,52 +649,334 @@
 	</div>
 </div>
 
-{#if tab === 'moments'}
-	<div class="photos-toolbar">
-		<div class="seg" role="group" aria-label={t('photos.group_by', 'Group by')}>
-			{#each MODES as m (m)}
-				<button class="seg__btn" class:active={groupMode === m} onclick={() => setGroupMode(m)}>
-					{t(`photos.${m}`, m)}
+<!-- Sticky block — carries ONLY the Moments toolbar. Title + subnav
+     above have already scrolled off; the toolbar (and the batch
+     cluster inside it) stays reachable during long gallery scrolls. -->
+<div class="page-sticky-header">
+	{#if tab === 'moments'}
+		<!-- Toolbar uses the shared `.actions-bar` class from
+		     `styles/ported/content.css` (same contract as /files,
+		     /favorites, /recent, /trash via ResourceList's ActionBar).
+		     Fixed 60px height eliminates layout shift when
+		     `BatchSelectionBar` mounts; `justify-content: space-between`
+		     distributes the always-present start slot (`.action-buttons`
+		     — holds the batch pill) and the end slot (filter clusters).
+		     The start slot carries `flex: auto` globally so the batch
+		     pill fills the leading space, pushing filter clusters to
+		     the trailing edge. -->
+		<div class="actions-bar">
+			<!-- Start slot. `.action-buttons` always renders (reserves
+			     the leading space + carries `flex: auto` so the slot
+			     fills); when selection is non-empty it ALSO gets the
+			     `.batch-selection-bar` modifier so the shared
+			     `styles/ported/batchToolbar.css` paints the pill
+			     styling (background, padding, rounded corners) on the
+			     same element. Matches ResourceList's inline pattern on
+			     /files — SAME element carries BOTH classes
+			     simultaneously. -->
+			<div
+				class="action-buttons"
+				class:batch-selection-bar={selected.size > 0}
+				data-testid={selected.size > 0 ? 'photos-batch-bar' : undefined}
+			>
+				{#if selected.size > 0}
+					<button
+						class="batch-bar-close"
+						title={t('common.clear', 'Clear selection')}
+						aria-label={t('common.clear', 'Clear selection')}
+						data-testid="photos-batch-bar-clear-btn"
+						onclick={() => selected.clear()}
+					>
+						<Icon name="times" />
+					</button>
+					<span class="batch-bar-count">
+						{t('files.selected_count', { count: selected.size }, '{{count}} selected')}
+					</span>
+					<div class="batch-bar-actions">
+						<button
+							class="batch-btn"
+							title={t('common.download', 'Download')}
+							data-testid="photos-batch-download-btn"
+							onclick={downloadSelected}
+						>
+							<Icon name="download" />
+							<span>{t('common.download', 'Download')}</span>
+						</button>
+						<button
+							class="batch-btn batch-btn-danger"
+							title={t('common.delete', 'Delete')}
+							data-testid="photos-batch-delete-btn"
+							onclick={trashSelected}
+						>
+							<Icon name="trash" />
+							<span>{t('common.delete', 'Delete')}</span>
+						</button>
+					</div>
+				{/if}
+			</div>
+			<div class="actions-bar__end">
+				<!-- Toolbar order (left → right):
+				     1. Media kind (all / photo / video)   — WHAT content
+				     2. Favourites-only toggle             — SUBSET of what
+				     3. Drive selector                     — SCOPE
+				     4. Group-by (day / month / year)      — AGGREGATION
+				     5. Order-by (axis + direction)        — SORT
+				     Reads left-to-right as "narrow down → how to view". -->
+				<div class="seg" role="group" aria-label={t('photos.filter_kind', 'Media type')}>
+					<button
+						class="seg__btn"
+						class:active={kindFilter === 'all'}
+						title={t('photos.kind.all', 'All')}
+						aria-label={t('photos.kind.all', 'All')}
+						data-testid="photos-kind-all-btn"
+						onclick={() => setKindFilter('all')}
+					>
+						<Icon name="images" />
+					</button>
+					<button
+						class="seg__btn"
+						class:active={kindFilter === 'photo'}
+						title={t('photos.kind.photo', 'Photos')}
+						aria-label={t('photos.kind.photo', 'Photos')}
+						data-testid="photos-kind-photo-btn"
+						onclick={() => setKindFilter('photo')}
+					>
+						<Icon name="image" />
+					</button>
+					<button
+						class="seg__btn"
+						class:active={kindFilter === 'video'}
+						title={t('photos.kind.video', 'Videos')}
+						aria-label={t('photos.kind.video', 'Videos')}
+						data-testid="photos-kind-video-btn"
+						onclick={() => setKindFilter('video')}
+					>
+						<Icon name="video" />
+					</button>
+				</div>
+				<!-- Favourites-only toggle. Same `.toggle-btn` pattern as the
+		     dotfile eye on DisplayModeControls, with a `.favorite-btn`
+		     modifier that opts OUT of the shared active-state
+		     background change — the only visible toggle signal is
+		     the star's fill colour (grey → gold), matching the
+		     favorite-star treatment on the file list. -->
+				<button
+					type="button"
+					class="toggle-btn favorite-btn"
+					class:active={favoriteFilter}
+					title={favoriteFilter
+						? t('photos.filter_favorite_on', 'Showing favourites only — click to show all')
+						: t('photos.filter_favorite_off', 'Show favourites only')}
+					aria-label={t('photos.filter_favorite', 'Favourites only')}
+					aria-pressed={favoriteFilter}
+					data-testid="photos-favorite-filter-btn"
+					onclick={toggleFavoriteFilter}
+				>
+					<Icon name="star" />
 				</button>
-			{/each}
-		</div>
-		<div class="seg" role="group" aria-label={t('photos.layout_square', 'Layout')}>
-			<button
-				class="seg__btn"
-				class:active={layoutMode === 'square'}
-				title={t('photos.layout_square', 'Grid')}
-				aria-label={t('photos.layout_square', 'Grid')}
-				data-testid="photos-layout-square-btn"
-				onclick={() => setLayoutMode('square')}><Icon name="th" /></button
-			>
-			<button
-				class="seg__btn"
-				class:active={layoutMode === 'justified'}
-				title={t('photos.layout_justified', 'Justified')}
-				aria-label={t('photos.layout_justified', 'Justified')}
-				data-testid="photos-layout-justified-btn"
-				onclick={() => setLayoutMode('justified')}><Icon name="layer-group" /></button
-			>
-		</div>
-	</div>
-
-	{#if selected.size > 0}
-		<div class="batch-bar" data-testid="photos-batch-bar">
-			<span>{t('files.selected_count', { count: selected.size }, '{{count}} selected')}</span>
-			<div class="batch-bar__actions">
-				<Button data-testid="photos-batch-download-btn" onclick={downloadSelected}
-					>{t('common.download', 'Download')}</Button
-				>
-				<Button data-testid="photos-batch-clear-btn" onclick={() => selected.clear()}
-					>{t('common.clear', 'Clear')}</Button
-				>
-				<Button data-testid="photos-batch-delete-btn" variant="danger" onclick={trashSelected}
-					>{t('common.delete', 'Delete')}</Button
-				>
+				{#if availableDrives.length > 0}
+					<!-- Drive filter — uses the shared `.group-by-selector`
+			     dropdown classes (styles/ported/buttons.css) so photos,
+			     /shared, and every `DisplayModeControls` consumer share
+			     the same trigger-button + popup pattern. -->
+					<div class="group-by-selector drive-filter" data-testid="photos-drive-filter">
+						<button
+							type="button"
+							class="toggle-btn group-by-btn active"
+							title={t('photos.filter_drive', 'Drive')}
+							aria-haspopup="true"
+							aria-expanded={driveFilterOpen}
+							data-testid="photos-drive-filter-btn"
+							onclick={(e) => {
+								e.stopPropagation();
+								driveFilterOpen = !driveFilterOpen;
+							}}
+						>
+							<Icon name={driveFilterIcon} />
+							<span class="group-by-label">{driveFilterLabel}</span>
+						</button>
+						{#if driveFilterOpen}
+							<div
+								class="group-by-menu"
+								role="menu"
+								tabindex="-1"
+								onclick={(e) => e.stopPropagation()}
+								onkeydown={(e) => e.key === 'Escape' && (driveFilterOpen = false)}
+							>
+								<button
+									type="button"
+									class="group-by-option"
+									class:active={driveFilter === null}
+									data-testid="photos-drive-filter-all"
+									onclick={() => {
+										setDriveFilter(null);
+										driveFilterOpen = false;
+									}}
+								>
+									<Icon name="hdd" />
+									{t('photos.all_drives', 'All drives')}
+								</button>
+								{#each availableDrives as drive (drive.id)}
+									<button
+										type="button"
+										class="group-by-option"
+										class:active={driveFilter === drive.id}
+										data-testid={`photos-drive-filter-${drive.id}`}
+										onclick={() => {
+											setDriveFilter(drive.id);
+											driveFilterOpen = false;
+										}}
+									>
+										<Icon name={driveIcon(drive)} />
+										{drive.name}
+									</button>
+								{/each}
+							</div>
+						{/if}
+					</div>
+				{/if}
+				<!-- Group-by (day / month / year) — aggregation axis for
+		     the timeline. Dropdown mirrors the `.group-by-selector`
+		     pattern used by the drive and order-by filters so the
+		     trigger button + popup + layer-group icon per option
+		     look identical to the files-list toolbar. -->
+				<div class="group-by-selector group-mode-filter" data-testid="photos-group-by-filter">
+					<button
+						type="button"
+						class="toggle-btn group-by-btn active"
+						title={t('photos.group_by', 'Group by')}
+						aria-haspopup="true"
+						aria-expanded={groupByOpen}
+						data-testid="photos-group-by-filter-btn"
+						onclick={(e) => {
+							e.stopPropagation();
+							groupByOpen = !groupByOpen;
+						}}
+					>
+						<Icon name="layer-group" />
+						<span class="group-by-label">{groupModeLabel}</span>
+					</button>
+					{#if groupByOpen}
+						<div
+							class="group-by-menu"
+							role="menu"
+							tabindex="-1"
+							onclick={(e) => e.stopPropagation()}
+							onkeydown={(e) => e.key === 'Escape' && (groupByOpen = false)}
+						>
+							{#each MODES as m (m)}
+								<button
+									type="button"
+									class="group-by-option"
+									class:active={groupMode === m}
+									data-testid={`photos-group-by-${m}`}
+									onclick={() => {
+										setGroupMode(m);
+										groupByOpen = false;
+									}}
+								>
+									<Icon name="layer-group" />
+									{m === 'day'
+										? t('photos.view_daily', 'Day')
+										: m === 'month'
+											? t('photos.view_monthly', 'Month')
+											: t('photos.view_yearly', 'Year')}
+								</button>
+							{/each}
+						</div>
+					{/if}
+				</div>
+				<!-- §3 — Sort axis dropdown + direction toggle. Mirrors the
+		     `.group-by-selector` + `.sort-dir-btn` pattern from
+		     ListToolbar so the trigger button + popup + arrow look
+		     identical to the files-list toolbar. Three axes:
+		     Captured (default, EXIF with upload-time fallback),
+		     Upload (pure created_at), Modified (updated_at). The
+		     up-arrow glyph flips class:active when `reverse=true`. -->
+				<div class="group-by-selector order-by-filter" data-testid="photos-order-by-filter">
+					<button
+						type="button"
+						class="toggle-btn group-by-btn active"
+						title={t('photos.sort.title', 'Sort by')}
+						aria-haspopup="true"
+						aria-expanded={orderByOpen}
+						data-testid="photos-order-by-filter-btn"
+						onclick={(e) => {
+							e.stopPropagation();
+							orderByOpen = !orderByOpen;
+						}}
+					>
+						<Icon name="arrow-up-a-z" />
+						<span class="group-by-label">{orderByLabel}</span>
+					</button>
+					<button
+						type="button"
+						class="toggle-btn sort-dir-btn"
+						class:active={reverse}
+						title={t('photos.sort.direction', 'Sort direction')}
+						aria-label={t('photos.sort.direction', 'Sort direction')}
+						aria-pressed={reverse}
+						data-testid="photos-sort-direction-btn"
+						onclick={toggleReverse}
+					>
+						<Icon name="arrow-up" />
+					</button>
+					{#if orderByOpen}
+						<div
+							class="group-by-menu"
+							role="menu"
+							tabindex="-1"
+							onclick={(e) => e.stopPropagation()}
+							onkeydown={(e) => e.key === 'Escape' && (orderByOpen = false)}
+						>
+							<button
+								type="button"
+								class="group-by-option"
+								class:active={orderBy === 'captured_at'}
+								data-testid="photos-order-by-captured-at"
+								onclick={() => {
+									setOrderBy('captured_at');
+									orderByOpen = false;
+								}}
+							>
+								<Icon name="arrow-up-a-z" />
+								{t('photos.sort.captured_at', 'Captured date')}
+							</button>
+							<button
+								type="button"
+								class="group-by-option"
+								class:active={orderBy === 'created_at'}
+								data-testid="photos-order-by-created-at"
+								onclick={() => {
+									setOrderBy('created_at');
+									orderByOpen = false;
+								}}
+							>
+								<Icon name="arrow-up-a-z" />
+								{t('photos.sort.created_at', 'Upload date')}
+							</button>
+							<button
+								type="button"
+								class="group-by-option"
+								class:active={orderBy === 'updated_at'}
+								data-testid="photos-order-by-updated-at"
+								onclick={() => {
+									setOrderBy('updated_at');
+									orderByOpen = false;
+								}}
+							>
+								<Icon name="arrow-up-a-z" />
+								{t('photos.sort.updated_at', 'Last modified')}
+							</button>
+						</div>
+					{/if}
+				</div>
 			</div>
 		</div>
 	{/if}
+</div>
 
+{#if tab === 'moments'}
 	{#if error}
 		<p class="status status--error" role="alert">{error}</p>
 	{:else if visibleItems.length === 0 && exhausted}
@@ -381,14 +1028,29 @@
 	{/if}
 
 	<div bind:this={sentinel} class="sentinel" aria-hidden="true"></div>
-	{#if loading}<p class="status">{t('common.loading', 'Loading…')}</p>{/if}
+	<!-- Loading indicator hidden for the first ~1s via a CSS animation
+	     delay (feedback_ui_css_first: no JS setTimeout for visual
+	     timing). The element always mounts while `loading` is true;
+	     a sub-second fetch unmounts before the delay elapses, so the
+	     indicator never fades in and the filter flip renders cleanly
+	     with no flash. Longer requests surface the status normally. -->
+	{#if loading}
+		<p class="status status--delayed" role="status" aria-live="polite">
+			{t('common.loading', 'Loading…')}
+		</p>
+	{/if}
 
 	{#if photoLightbox.component}
 		{@const PhotoLightbox = photoLightbox.component}
 		<!-- Lightbox operates on `visibleItems` — indices align with
 		     what the grid rendered, so next/prev never surfaces a
 		     hidden photo the user can't see in the grid behind. -->
-		<PhotoLightbox items={visibleItems} bind:index={lightbox} onDelete={onDeletePhoto} />
+		<PhotoLightbox
+			items={visibleItems}
+			bind:index={lightbox}
+			onDelete={onDeletePhoto}
+			onDeleteRequested={onLightboxDeleteRequested}
+		/>
 	{/if}
 {:else if tab === 'places'}
 	{#if placesMap.component}
@@ -438,6 +1100,14 @@
 	</div>
 {/snippet}
 
+<DedupSiblingsDialog
+	bind:open={dedupDialogOpen}
+	siblings={dedupSiblings}
+	truncated={dedupTruncated}
+	originId={dedupOriginId}
+	onconfirm={onDedupConfirm}
+/>
+
 <style>
 	.photos-head {
 		display: flex;
@@ -445,11 +1115,18 @@
 		justify-content: space-between;
 		gap: var(--space-3);
 		flex-wrap: wrap;
-		padding: 1rem 1rem 0;
+		/* No top/left padding — the parent `.content-area` already
+		   provides the gutter, and the sticky `.actions-bar` below
+		   shouldn't inherit a double-indent on its leading edge. */
+		padding: 0 1rem 0 0;
 	}
 
 	.page-title {
-		margin: 0;
+		/* Keep the shared `.page-title` margin-bottom (var(--space-5))
+		   from `styles/ported/content.css` so Photos sits at the same
+		   vertical rhythm as /files / /favorites / /recent / /trash.
+		   Only override font-size + colour-token to match the Photos
+		   look (slightly smaller, dedicated heading colour). */
 		font-size: 1.5rem;
 		color: var(--color-text-heading);
 	}
@@ -474,12 +1151,39 @@
 		border-bottom-color: var(--color-accent);
 	}
 
-	.photos-toolbar {
+	/* Toolbar visual contract (fixed height, flex row, padding) comes
+	   from the shared `.actions-bar` rule in
+	   `styles/ported/content.css` — Photos only adds a side-margin to
+	   align with the sticky-header padding and `align-items: center`
+	   so the segmented controls / dropdown / star all vertically
+	   centre on the 60 px row the shared rule reserves. */
+	.actions-bar {
+		align-items: center;
+		margin-left: 1rem;
+		margin-right: 1rem;
+	}
+
+	/* End slot — groups the group-by segment, kind filter, drive
+	   dropdown, and favourites toggle so the `.actions-bar`'s
+	   `justify-content: space-between` sees exactly two children:
+	   `.action-buttons` (start, auto-grow) and this trailing cluster. */
+	.actions-bar__end {
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
 		gap: var(--space-3);
-		padding: var(--space-3) 1rem 0;
+	}
+
+	/* The shared `.batch-selection-bar` rule in
+	   `styles/ported/batchToolbar.css` carries
+	   `transform: translateY(-8px)` — a layout-specific hack for the
+	   /files ActionBar that pulls the pill 8 px up to connect
+	   visually to the row above. Inside Photos' sticky header that
+	   overflow bleeds into the subnav row and the pill reads as
+	   mis-aligned against `.actions-bar__end`. Zero the transform
+	   locally so the pill vertical-centres on the 60 px row like
+	   every other control in the toolbar. */
+	.actions-bar :global(.batch-selection-bar) {
+		transform: none;
 	}
 
 	.seg {
@@ -490,9 +1194,20 @@
 	}
 
 	.seg__btn {
-		display: grid;
-		place-items: center;
-		padding: var(--space-2) var(--space-3);
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		/* `gap` spaces an optional icon from its label without
+		   requiring every button to carry both — group-by buttons
+		   are text-only, kind-filter buttons are icon-only, and
+		   both lay out correctly with the same base rules. */
+		gap: var(--space-2);
+		/* Pin the row height to `.toggle-btn` (32 px in
+		   `styles/ported/buttons.css`) so the segmented controls
+		   sit flush with the dropdown trigger + favourites toggle.
+		   Padding stays for the icon's horizontal breathing room. */
+		height: 32px;
+		padding: 0 var(--space-3);
 		border: none;
 		background: var(--color-bg-surface);
 		color: var(--color-text-muted);
@@ -505,21 +1220,34 @@
 		color: var(--color-on-accent);
 	}
 
-	.batch-bar {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--space-3);
-		margin: var(--space-3) 1rem 0;
-		padding: var(--space-2) var(--space-3);
-		background: var(--color-accent-tint, var(--color-bg-hover));
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
+	/* §6b drive-scope dropdown. All visual weight comes from the
+	   shared `.group-by-selector` / `.group-by-btn` / `.group-by-menu`
+	   / `.group-by-option` classes in `styles/ported/buttons.css`;
+	   the `.drive-filter` modifier exists only as a selector hook
+	   for the outside-click dismiss listener in the parent script. */
+	.drive-filter {
+		position: relative;
 	}
 
-	.batch-bar__actions {
-		display: flex;
-		gap: var(--space-2);
+	/* Favourites-only toggle: inherit the base `.toggle-btn` sizing
+	   / border radius from `styles/ported/buttons.css` but pin a
+	   visible background at rest in BOTH states so the only toggle
+	   signal is the star's fill colour (grey → gold) — matches the
+	   favorite-star treatment on the file list. The shared
+	   `.toggle-btn.active` would otherwise shift the background and
+	   add a shadow, which reads as a different kind of state tell. */
+	.favorite-btn,
+	.favorite-btn.active {
+		background-color: var(--color-border);
+		box-shadow: none;
+	}
+
+	.favorite-btn.active {
+		color: var(--color-star-text-hover);
+	}
+
+	.favorite-btn.active:hover {
+		color: var(--color-star-text-hover);
 	}
 
 	.photos-area {
@@ -642,6 +1370,24 @@
 		text-align: center;
 		color: var(--color-text-muted);
 		padding: 2rem 0;
+	}
+
+	/* CSS-first timing: the loading paragraph mounts with opacity:0
+	   and only fades in after a 1s delay, so a sub-second fetch
+	   (the common filter-flip case) unmounts before the keyframe
+	   starts and the indicator is never visible. Longer requests —
+	   the ones a user actually waits on — reveal normally. See
+	   `feedback_ui_css_first` for why this is pure CSS rather than
+	   a JS setTimeout. */
+	.status--delayed {
+		opacity: 0;
+		animation: delayed-fade-in 150ms ease-out 1s forwards;
+	}
+
+	@keyframes delayed-fade-in {
+		to {
+			opacity: 1;
+		}
 	}
 
 	.status--error {

@@ -1,5 +1,6 @@
 pub mod cookie_auth;
 pub mod deserializer;
+pub mod etag;
 pub mod handlers;
 pub mod routes;
 pub mod sized_json;
@@ -60,7 +61,9 @@ use crate::interfaces::api::handlers::contacts_handler::{
     AddMemberRequest, AddressBookResponse, CreateAddressBookRequest, CreateContactRequest,
     GroupNameRequest, UpdateAddressBookRequest, UpdateContactRequest,
 };
-use crate::interfaces::api::handlers::dedup_handler::{HashCheckResponse, StatsResponse};
+use crate::interfaces::api::handlers::dedup_handler::{
+    HashCheckAdminResponse, HashCheckResponse, HashSiblingDto, StatsResponse,
+};
 use crate::interfaces::api::handlers::file_handler::MoveFilePayload;
 use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader};
 
@@ -136,6 +139,7 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         handlers::chunked_upload_handler::cancel_upload,
         // Dedup handlers — all free functions for the same utoipa reason as chunked uploads.
         handlers::dedup_handler::check_hash,
+        handlers::dedup_handler::admin_check_hash,
         handlers::dedup_handler::check_hashes_batch,
         handlers::dedup_handler::get_stats,
         handlers::dedup_handler::get_blob,
@@ -173,7 +177,7 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         handlers::notifications_handler::mark_all_read,
         handlers::notifications_handler::delete_notification,
         // Photos handler (free function)
-        handlers::photos_handler::list_photos,
+        handlers::photos_handler::list_photos_resources,
         handlers::photos_handler::list_photos_geo,
         // People / face-clustering handlers — mounted only when
         // `OXICLOUD_ENABLE_FACES` is on; each handler is defensive
@@ -486,6 +490,8 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             UploadStatusResponseDto,
             // Dedup schemas
             HashCheckResponse,
+            HashCheckAdminResponse,
+            HashSiblingDto,
             StatsResponse,
             // Contacts / address-book schemas
             AddressBookResponse,

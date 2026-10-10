@@ -1,7 +1,7 @@
 use axum::{
     Json,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
 };
 use std::sync::Arc;
@@ -19,6 +19,7 @@ use crate::application::dtos::recent_dto::{
 use crate::application::ports::recent_ports::RecentItemsUseCase;
 use crate::application::services::recent_service::RecentService;
 use crate::domain::entities::file::File;
+use crate::interfaces::api::etag::{if_none_match_matches, not_modified, with_cache_headers};
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::AuthUser;
 use uuid::Uuid;
@@ -186,11 +187,19 @@ pub async fn clear_recent_items(
 pub async fn list_recent_resources(
     State(recent_service): State<Arc<RecentService>>,
     auth_user: AuthUser,
+    headers: HeaderMap,
     Query(q): Query<RecentResourcesQuery>,
 ) -> impl IntoResponse {
     let user_id = auth_user.id;
 
     let order_by = q.order_by.as_deref().unwrap_or("accessed_at").to_owned();
+
+    // Snapshot the raw cursor + limit for the ETag — captured BEFORE
+    // the decode step consumes `q.cursor`, matching the pattern on
+    // favorites and photos. See `src/interfaces/api/etag.rs` for the
+    // shared engine.
+    let cursor_input = q.cursor.clone();
+    let limit = q.limit_clamped();
 
     // If a cursor exists, validate that it matches the requested sort/direction.
     let cursor = q
@@ -282,7 +291,6 @@ pub async fn list_recent_resources(
                             icon_special_class,
                             category,
                             size_formatted: format_file_size(size_bytes),
-                            sort_date: None,
                             content_hash,
                             etag,
                             created_by: row.created_by,
@@ -299,11 +307,19 @@ pub async fn list_recent_resources(
                 })
                 .collect();
 
-            (
-                StatusCode::OK,
-                Json(RecentResourcesDto::with_cursor(items, next_cursor)),
-            )
-                .into_response()
+            let envelope = RecentResourcesDto::with_cursor(items, next_cursor);
+            // Fresh signal: newest `accessed_at` on the page.
+            let fresh_signal: u64 = envelope
+                .items
+                .iter()
+                .map(|i| i.accessed_at.timestamp().max(0) as u64)
+                .max()
+                .unwrap_or(0);
+            let etag = envelope.weak_etag(cursor_input.as_deref(), limit, fresh_signal);
+            if if_none_match_matches(&headers, &etag) {
+                return not_modified(&etag).into_response();
+            }
+            with_cache_headers(Json(envelope), &etag).into_response()
         }
         Err(e) => AppError::from(e).into_response(),
     }
