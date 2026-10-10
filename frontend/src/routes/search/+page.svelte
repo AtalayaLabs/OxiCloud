@@ -93,9 +93,14 @@
 	// Accumulated pages of results. Cursor pagination — a filter/sort/query
 	// change resets to page 1, infinite scroll appends via `loadMore()`.
 	let raw = $state<SearchResourceItem[]>([]);
-	let cursor = $state<string | undefined>(undefined);
+	// Three state values track the server's cursor-paginated response.
+	// Generated types widen to `string | null | undefined` /
+	// `number | null | undefined` because the server emits JSON `null`
+	// rather than dropping the key on absent values; we accept both
+	// here and normalise `null` away at the consumer sites below.
+	let cursor = $state<string | null | undefined>(undefined);
 	let queryTimeMs = $state<number | null>(null);
-	let total = $state<number | undefined>(undefined);
+	let total = $state<number | null | undefined>(undefined);
 	let loading = $state(false);
 	let error = $state<string | null>(null);
 	// Sort dimension + direction are surfaced through ResourceList's

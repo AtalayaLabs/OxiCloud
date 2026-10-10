@@ -13,10 +13,9 @@
  * `$lib/api/types` keep seeing the old shape.
  *
  * This script fails with a non-zero exit the moment such a collision
- * exists. It is exposed as `npm run check:types-overlap` today —
- * opt-in diagnostic only. §Phase 2 of the normalisation plan will
- * clear the 9 current collisions, then this script gets promoted
- * into the default `npm run check` so new drift fails CI on sight.
+ * exists. Chained into the default `npm run check` so new drift
+ * fails CI on sight. Also runnable standalone as
+ * `npm run check:types-overlap` for diagnostic.
  *
  * The check does NOT compare shapes — collision by name alone is
  * enough signal that one of two things must happen:
