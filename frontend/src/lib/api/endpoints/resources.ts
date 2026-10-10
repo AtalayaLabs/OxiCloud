@@ -3,7 +3,7 @@
  * endpoints, which all take the same query params. Ported from the original
  * favoritesModel/recentModel/trashModel.
  */
-import { apiFetchEtagged } from '$lib/api/etagCache';
+import { apiFetch } from '$lib/api/client';
 import type { FileItem, FolderItem, ItemType } from '$lib/api/types';
 
 export interface ResourcePageOpts {
@@ -36,15 +36,7 @@ export async function fetchResourcePage<TItem>(
 	opts: ResourcePageOpts = {}
 ): Promise<ResourcePage<TItem>> {
 	const qs = buildResourceParams(opts, defaultOrderBy);
-	// §2b — the shared helper for favorites, recent, trash. All three
-	// endpoints emit ETags via `CursorListResponse::weak_etag`, so one
-	// adoption here covers the three callers (favorites.ts / recent.ts
-	// / trash.ts) in one place. `cache: 'no-store'` is dropped: the
-	// browser-level cache stays disabled by default on these fetches,
-	// but the SPA ETag cache attaches `If-None-Match` on refetch and
-	// reuses the previous body on 304. See `etagCache.ts`.
-	const { body } = await apiFetchEtagged<ResourcePage<TItem>>(`${base}?${qs}`, {
-		credentials: 'same-origin'
-	});
-	return body;
+	const res = await apiFetch(`${base}?${qs}`, { credentials: 'same-origin', cache: 'no-store' });
+	if (!res.ok) throw new Error(`GET ${base} failed: ${res.status}`);
+	return (await res.json()) as ResourcePage<TItem>;
 }

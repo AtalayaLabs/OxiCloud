@@ -1,6 +1,5 @@
 /** Photos timeline endpoint — ported from features/library/photos.js. */
 import { apiFetch } from '$lib/api/client';
-import { apiFetchEtagged, invalidatePrefix } from '$lib/api/etagCache';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import type { FileItem } from '$lib/api/types';
 
@@ -150,15 +149,13 @@ export async function fetchPhotos(limit = 60, opts: FetchPhotosOptions = {}): Pr
 	if (opts.kind && opts.kind !== 'all') q.set('kind', opts.kind);
 	if (opts.driveId) q.set('drive_id', opts.driveId);
 	if (opts.favoriteOnly) q.set('favorite_only', 'true');
-	// §2b — `apiFetchEtagged` attaches `If-None-Match` from a prior
-	// response, so a tab-switch back to the same filter set resolves on
-	// a 304 with no body re-transfer and reuses the cached envelope.
-	// Each unique query string (filter combo + cursor) gets its own
-	// entry; mutations invalidate the whole `/api/photos/resources`
-	// prefix (see `batchTrash` below).
-	const { body: envelope } = await apiFetchEtagged<PhotosEnvelope>(`/api/photos/resources?${q}`, {
-		credentials: 'same-origin'
-	});
+	// §2 server-side ETag + the browser's HTTP cache deliver the
+	// fast-tab-switch 304 fast path without an SPA-level cache; §2b
+	// was dropped in favour of that native path (see
+	// docs/plan/photos-resources-migration.md §2b for the rationale).
+	const res = await apiFetch(`/api/photos/resources?${q}`, { credentials: 'same-origin' });
+	if (!res.ok) throw new Error(`photos failed: ${res.status}`);
+	const envelope = (await res.json()) as PhotosEnvelope;
 	const items: PhotoItem[] = (envelope.items ?? []).map((row) => ({
 		...row.resource,
 		width: row.width,
@@ -193,13 +190,6 @@ export async function fetchFileMetadata(fileId: string): Promise<FileMetadata | 
  */
 export async function batchTrash(fileIds: string[]): Promise<Set<string>> {
 	const trashed = new Set<string>();
-	// §2b cache: any trash moves a photo out of every photos/favorites/
-	// recents/folder listing it was in. Drop the matching prefixes so the
-	// next read fetches fresh — the browser-level HTTP cache still gets
-	// a 304 for pages the server considers unchanged, but the SPA layer
-	// can't rely on that alone (private tabs, mobile eviction).
-	invalidatePrefix('/api/photos/resources');
-	invalidatePrefix('/api/favorites/resources');
 	for (let i = 0; i < fileIds.length; i += BATCH_CHUNK_SIZE) {
 		const chunk = fileIds.slice(i, i + BATCH_CHUNK_SIZE);
 		const res = await apiFetch('/api/batch/trash', {

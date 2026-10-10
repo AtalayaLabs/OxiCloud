@@ -1,24 +1,7 @@
 /** File endpoints — ported from fileOperations.js. */
 import { apiFetch, withBase } from '$lib/api/client';
-import { invalidatePrefix } from '$lib/api/etagCache';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import type { FileItem } from '$lib/api/types';
-
-/**
- * §2b — every file mutation touches at least one listing: the parent
- * folder's contents, and whatever cross-cutting listings surface the file
- * (photos, favorites, recent, trash). Broad-prefix invalidation here keeps
- * every write-path endpoint from reasoning about which listings it may
- * affect — the cost is one extra 304 round trip per listing on next read,
- * which the server-side ETag already shortcuts.
- */
-function invalidateAfterFileMutation(): void {
-	invalidatePrefix('/api/folders/');
-	invalidatePrefix('/api/photos/resources');
-	invalidatePrefix('/api/favorites/resources');
-	invalidatePrefix('/api/recent/resources');
-	invalidatePrefix('/api/trash/resources');
-}
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
@@ -80,7 +63,6 @@ export async function uploadFile(folderId: string | null, file: File): Promise<F
 		body: form
 	});
 	if (!res.ok) throw new Error(`upload failed: ${res.status}`);
-	invalidateAfterFileMutation();
 	// Tolerate a body-less success: the upload itself is what matters,
 	// and an older/proxied response shape must not turn a completed
 	// upload into a thrown error.
@@ -208,12 +190,10 @@ export async function uploadFileWithProgress(
 			// Nonce was harvested by the failed attempt's onload; retry ONCE.
 			// A second challenge would loop, so any further failure surfaces.
 			await attempt();
-			invalidateAfterFileMutation();
 			return;
 		}
 		throw err;
 	}
-	invalidateAfterFileMutation();
 }
 
 export async function renameFile(fileId: string, name: string): Promise<void> {
@@ -224,7 +204,6 @@ export async function renameFile(fileId: string, name: string): Promise<void> {
 		body: JSON.stringify({ name })
 	});
 	if (!res.ok) throw new Error(`rename file failed: ${res.status}`);
-	invalidateAfterFileMutation();
 }
 
 export async function moveFile(fileId: string, targetFolderId: string | null): Promise<void> {
@@ -235,7 +214,6 @@ export async function moveFile(fileId: string, targetFolderId: string | null): P
 		body: JSON.stringify({ folder_id: targetFolderId || null })
 	});
 	if (!res.ok) throw new Error(`move file failed: ${res.status}`);
-	invalidateAfterFileMutation();
 }
 
 export async function deleteFile(fileId: string): Promise<void> {
@@ -245,7 +223,6 @@ export async function deleteFile(fileId: string): Promise<void> {
 		headers: getCsrfHeaders()
 	});
 	if (!res.ok) throw new Error(`delete file failed: ${res.status}`);
-	invalidateAfterFileMutation();
 }
 
 /**

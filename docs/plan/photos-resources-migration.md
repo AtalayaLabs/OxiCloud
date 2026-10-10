@@ -13,7 +13,7 @@ resources family for free.
 |---|---|
 | §1 Introduce `GET /api/photos/resources` returning the normalized envelope | **TODO** |
 | §2 Lift ETag computation into a shared `CursorListResponse` helper used by every `/resources` endpoint | **TODO** |
-| §2b Client-side `If-None-Match` + response-body reuse on top of §2's server ETags | **TODO** |
+| §2b Client-side `If-None-Match` + response-body reuse on top of §2's server ETags | **DROPPED — see §2b** |
 | §3 Make the sort axis configurable (`captured_at` default, `created_at` fallback) | **TODO** |
 | §4 Hard-cut: remove `GET /api/photos` in the same release | **TODO** |
 | §5 Shared `caller_accessible_drives()` SQL function to fix multi-grant duplicate rows across every listing | **TODO** |
@@ -348,7 +348,129 @@ Deliberately NOT `blake3(serialized_body)`. Reasons:
 
 ---
 
-## §2b — Client-side `If-None-Match` + response-body reuse — TODO
+## §2b — Client-side `If-None-Match` + response-body reuse — DROPPED
+
+### Decision (2026-10-10)
+
+An SPA-level ETag cache was prototyped and reverted (commits
+`94ed7152` + `16fcc7ed` + `38107d7d` → reverted in the same branch).
+The server-side ETag (§2) is kept; the browser's native HTTP cache
+handles the client-side revalidation on top of it, which is the
+baseline this section originally proposed to improve. §2b is CLOSED,
+not deferred — a future iteration would need to re-open it after
+addressing the correctness gaps below.
+
+### Why dropped
+
+Three concerns, each on its own already heavy, together conclusive:
+
+1. **Server-side `fresh_signal` has gaps we can't paper over.**
+   `CursorListResponse::weak_etag` folds in `max(modified_at)` + row
+   count + cursor + next_cursor. Two paths that reshape visible
+   listings leave the hash stable:
+
+   - **Grant mutations** — adding or revoking a share flips the
+     `is_shared` column on the target row, but role-grant triggers do
+     NOT bump `storage.files.updated_at` /
+     `storage.folders.updated_at`. The listing's `max(modified_at)`
+     doesn't move. Server returns 304 across the write; the SPA cache
+     (if present) replays a body with the stale `is_shared` badge.
+
+   - **Second-resolution race** — `fresh_signal` reads
+     `.timestamp()` (seconds). Two rapid same-second mutations
+     collapse to the same `max`. The test suite tripped on this
+     during §2b development (`resources_etag_contract.hurl` Scenario
+     D originally renamed a child and got a 304 instead of the
+     expected invalidation; we worked around it by switching to a
+     count-changing mutation, but the race itself is still there).
+
+   An SPA cache that keys off ETag inherits every gap in the ETag.
+
+2. **Collaborative editing + live folder sync amplify every gap.**
+   OxiCloud's product axis is collaboration (see AGENTS.md Purpose).
+   `useFolderTopic` subscribes to the message bus and triggers a
+   refetch on `FileCreated` / `FolderUpdated` / etc. events pushed by
+   OTHER users' writes. With an SPA ETag cache in place:
+
+   - The push event IS the authoritative "something changed" signal.
+   - The subscriber's refetch sends `If-None-Match` with the SPA's
+     stale ETag.
+   - If the remote mutation hit any `fresh_signal` gap (e.g. was a
+     grant change, or landed in the same second as a prior one), the
+     server returns 304.
+   - The SPA cache replays the pre-push body, discarding the push
+     event. The user's gallery shows no change despite the server
+     having told the SPA something changed.
+
+   This is strictly worse than relying on the browser's HTTP cache,
+   which the subscriber's refetch can bypass per-request via the
+   `cache` option when the push event tells us the cached state is
+   known stale. An SPA cache that lives inside the fetch wrapper is
+   much harder to selectively bypass.
+
+3. **Invalidation discipline is open-ended and growing.**
+   The prototype's broad-prefix invalidation at every mutation
+   endpoint (upload / rename / move / trash / favorite / grant / …)
+   centralises nothing: new mutation paths (WebDAV MOVE, cascading
+   copy via `batch/folders/copy`, chunked upload complete, future
+   OpenCloudMesh federation handlers, …) must each remember to
+   invalidate. A developer who adds a new write path and forgets the
+   hook leaves silently-stale cached bodies. Even the central
+   `apiFetch`-level invalidation that would have paved over this on
+   the SPA side does not help with the collaboration case above:
+   remote writes don't flow through `apiFetch` at all.
+
+### What survives
+
+- **Server-side ETag emission (§2)** is kept on all five `/resources`
+  endpoints via `CursorListResponse::weak_etag`. This is the whole
+  win on the common path — the browser's HTTP cache sends
+  `If-None-Match` automatically, honours 304, and replays the cached
+  body for the JS consumer with no SPA-level code involved.
+
+- **Hurl coverage of the §2 server contract:**
+  `resources_etag_contract.hurl` (ETag emission + mutation-driven
+  invalidation on favorites / recent / trash / folders) and
+  `resources_etag_pagination.hurl` (keyset-cursor stability across
+  an upstream mutation) stay in `tests/api/run.sh`. These tests
+  caught two bugs during §2b development that would have slipped
+  through otherwise, and they verify properties the browser's HTTP
+  cache relies on just as much as any SPA-level cache would. The
+  grant and second-resolution gaps are known weaknesses they do NOT
+  cover — a future server-side fix would need to extend them.
+
+### If we re-open
+
+Not as a client-side cache. The right fix is server-side:
+
+- Fold a per-user "listings epoch" column into `fresh_signal`,
+  bumped by database triggers on `storage.files`, `storage.folders`,
+  `storage.role_grants`, `auth.user_favorites`, `storage.recent_items`,
+  `storage.trash`. One trigger per write-active table, every path
+  (REST / WebDAV / DAV MOVE/COPY / cascading copy / grant mutation /
+  future federation) goes through the DB and bumps the counter by
+  construction.
+- At second resolution, replace `.timestamp()` with microsecond
+  precision (or just use the epoch counter instead of max_timestamp
+  — the counter is strictly monotonic and already does the job).
+
+A server-side epoch counter would make the SPA cache correct by
+construction AND would let `useFolderTopic` subscribers reason about
+freshness without any client-side cache module. It would also serve
+WebDAV's `getetag` and NC's `dav:getetag` on folder resources, where
+the same `fresh_signal` gaps currently exist. That's §2 work, not
+§2b work, and worth doing when a stakeholder actually feels the
+pain of the current gaps.
+
+---
+
+<!-- Original §2b design kept below as historical context; everything
+     from here through the end of this section describes the prototype
+     that was reverted on 2026-10-10. Keep this preserved so a future
+     revisit has the original rationale, scope, and interaction notes
+     in one place. -->
+
+## §2b — Client-side `If-None-Match` + response-body reuse — ORIGINAL DESIGN (reverted)
 
 ### Why
 
@@ -1508,13 +1630,17 @@ roadmap once that policy is chosen.
    doing both at once avoids a two-step rewrite.
 2. **§2** — shared ETag engine. Fits any time after §1 lands; retrofits
    the four other `/resources` endpoints independently.
-3. **§2b** — client-side `If-None-Match` cache. Lands AFTER §2 (needs
-   server ETags on every target endpoint). Low-risk ~80 LoC wrapper
-   around `apiFetch`; adopt one endpoint at a time starting with
-   `/api/photos/resources` and `/api/folders/{id}/resources`. The
-   browser's HTTP cache already covers the common case, so §2b is
-   earned by (a) stale-while-revalidate UX on tab switch and
-   (b) resilience against mobile browser cache evictions.
+3. **§2b — DROPPED** (2026-10-10). A SPA ETag cache was prototyped
+   and reverted. The browser's native HTTP cache on top of §2 handles
+   the common path; the three gaps §2b hit (server-side
+   `fresh_signal` doesn't cover grant mutations, second-resolution
+   race collapses rapid same-second rename invalidations, and remote
+   writes delivered via the message bus silently serve stale cached
+   bodies when the subscriber's refetch returns 304) make an SPA
+   cache strictly worse than the browser cache for OxiCloud's
+   collaboration-first product axis. See §2b for the full rationale.
+   The server-contract hurl tests `resources_etag_contract.hurl` +
+   `resources_etag_pagination.hurl` stay — they protect §2.
 4. **§6** — `?kind=photo|video` filter. Cheap; one `WHERE` branch
    and a cursor field. Lands anytime after §1.
 5. **§6b** — `?drive_id=<uuid>` filter. Reuses the existing
