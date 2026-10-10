@@ -14853,6 +14853,24 @@
           }
         }
       },
+      "PhotoKind": {
+        "type": "string",
+        "description": "Media-kind filter for `GET /api/photos/resources` (§6).\n\nDefault `All` preserves the pre-filter behaviour — both image and\nvideo rows interleaved — so a client that never sends `?kind=` is\nunaffected. `Photo` and `Video` narrow to one mime family at the\nSQL layer; a client that wants a dedicated \"Videos\" tab stops\npulling and discarding video rows on the way to the next\n`?limit=` worth of photos.",
+        "enum": [
+          "all",
+          "photo",
+          "video"
+        ]
+      },
+      "PhotoOrderBy": {
+        "type": "string",
+        "description": "Sort axis for `GET /api/photos/resources` (§3).\n\nThe three axes serve distinct questions:\n\n- `CapturedAt` (default) — \"when was this photo TAKEN\". Orders by\n  `COALESCE(captured_at, created_at)` via the materialised\n  `storage.files.media_sort_date` column, so uploads without EXIF\n  fall back to upload time rather than sinking to NULL.\n- `CreatedAt` — \"when did this file ARRIVE in OxiCloud\". Pure\n  `storage.files.created_at`; EXIF capture date ignored. Useful\n  for the operator-style \"recently uploaded\" view.\n- `UpdatedAt` — \"when was this file last TOUCHED\". Pure\n  `storage.files.updated_at`; moves and renames resurface rows.\n  Useful when the user wants to find a file they recently acted\n  on, independent of when it was taken or first uploaded.\n\nAll three axes paginate on the same `(sort_value, id)` keyset,\njust over different columns. The cursor carries the axis so a\nmid-scroll flip is rejected by the handler with 400 rather than\nsilently drifting pagination.",
+        "enum": [
+          "captured_at",
+          "created_at",
+          "updated_at"
+        ]
+      },
       "PlaylistDto": {
         "type": "object",
         "required": [

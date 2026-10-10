@@ -2661,6 +2661,42 @@ export type PhoneDto = {
     type: string;
 };
 
+/**
+ * Media-kind filter for `GET /api/photos/resources` (§6).
+ *
+ * Default `All` preserves the pre-filter behaviour — both image and
+ * video rows interleaved — so a client that never sends `?kind=` is
+ * unaffected. `Photo` and `Video` narrow to one mime family at the
+ * SQL layer; a client that wants a dedicated "Videos" tab stops
+ * pulling and discarding video rows on the way to the next
+ * `?limit=` worth of photos.
+ */
+export type PhotoKind = 'all' | 'photo' | 'video';
+
+/**
+ * Sort axis for `GET /api/photos/resources` (§3).
+ *
+ * The three axes serve distinct questions:
+ *
+ * - `CapturedAt` (default) — "when was this photo TAKEN". Orders by
+ * `COALESCE(captured_at, created_at)` via the materialised
+ * `storage.files.media_sort_date` column, so uploads without EXIF
+ * fall back to upload time rather than sinking to NULL.
+ * - `CreatedAt` — "when did this file ARRIVE in OxiCloud". Pure
+ * `storage.files.created_at`; EXIF capture date ignored. Useful
+ * for the operator-style "recently uploaded" view.
+ * - `UpdatedAt` — "when was this file last TOUCHED". Pure
+ * `storage.files.updated_at`; moves and renames resurface rows.
+ * Useful when the user wants to find a file they recently acted
+ * on, independent of when it was taken or first uploaded.
+ *
+ * All three axes paginate on the same `(sort_value, id)` keyset,
+ * just over different columns. The cursor carries the axis so a
+ * mid-scroll flip is rejected by the handler with 400 rather than
+ * silently drifting pagination.
+ */
+export type PhotoOrderBy = 'captured_at' | 'created_at' | 'updated_at';
+
 export type PlaylistDto = {
     cover_file_id?: string | null;
     created_at: string;
@@ -10724,7 +10760,7 @@ export type ListPhotosResourcesData = {
          * back to upload time; `created_at` orders by pure upload time;
          * `updated_at` surfaces recently-touched rows.
          */
-        order_by?: null | unknown;
+        order_by?: null | PhotoOrderBy;
         /**
          * Reverse the natural (newest-first) direction. Default `false`
          * keeps the Photos-style read order — `true` flips to oldest-first
@@ -10738,7 +10774,7 @@ export type ListPhotosResourcesData = {
          * `video` matches `video/%`, `all` (default) keeps both
          * interleaved — the pre-filter behaviour.
          */
-        kind?: null | unknown;
+        kind?: null | PhotoKind;
         /**
          * Restrict the listing to one accessible drive (§6b). Omit for
          * the cross-drive feed. A `drive_id` the caller cannot see

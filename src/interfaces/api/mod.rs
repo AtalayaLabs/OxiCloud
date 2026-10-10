@@ -35,6 +35,7 @@ use crate::application::dtos::i18n_dto::{
     LocaleDto, TranslationErrorDto, TranslationRequestDto, TranslationResponseDto,
 };
 use crate::application::dtos::pagination::{PaginationDto, PaginationRequestDto};
+use crate::application::dtos::photos_dto::{PhotoKind, PhotoOrderBy};
 use crate::application::dtos::recent_dto::{RecentItemDto, RecentResourceItemDto};
 use crate::application::dtos::search_dto::{
     SearchCriteriaDto, SearchFileResultDto, SearchFolderResultDto, SearchMeta, SearchResourceItem,
@@ -493,6 +494,14 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             HashCheckAdminResponse,
             HashSiblingDto,
             StatsResponse,
+            // Photos — the two filter enums `PhotosResourcesQueryParams`
+            // references via `Option<_>`. utoipa emits them as
+            // `$ref`-s on the params; without registering them here
+            // the FE's openapi-ts gen prints
+            // "Skipping unresolvable $ref" and the generated SDK is
+            // missing their TS types.
+            PhotoKind,
+            PhotoOrderBy,
             // Contacts / address-book schemas
             AddressBookResponse,
             CreateAddressBookRequest,
