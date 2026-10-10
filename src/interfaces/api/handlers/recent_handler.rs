@@ -250,6 +250,7 @@ pub async fn list_recent_resources(
                             updated_by: row.updated_by,
                             is_favorite: row.is_favorite,
                             is_shared: row.is_shared,
+                            mount: None,
                         };
                         RecentResourceItemDto {
                             resource_type: ResourceTypeDto::Folder,

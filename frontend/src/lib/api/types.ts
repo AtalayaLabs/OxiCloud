@@ -69,6 +69,12 @@ export interface FolderItem {
 	 * on the wire.
 	 */
 	is_shared: boolean;
+	/** Present on share mount rows (docs/plan/share-mounts.md). */
+	mount?: {
+		kind: 'shared_folder' | 'shared_drive' | 'external';
+		target_id?: string;
+		target_drive_id?: string;
+	};
 }
 
 export interface FileItem {
@@ -1037,6 +1043,8 @@ export interface ServerFeatures {
 	faces: boolean;
 	video_thumbnails: boolean;
 	external_mounts: boolean;
+	/** Share mount points (granted folders / shared drives inside the personal drive). */
+	share_mounts: boolean;
 	/** Collaborative `.md` editing (Yjs CRDT over the message-bus WS).
 	 *  When `false`, the FE hides the "New markdown" menu entry and
 	 *  falls back to the plain `.md` viewer. Requires `message_bus`. */

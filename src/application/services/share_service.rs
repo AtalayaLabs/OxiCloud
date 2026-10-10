@@ -52,6 +52,8 @@ pub enum ShareServiceError {
     InvalidItemType(String),
     #[error("Validation error: {0}")]
     Validation(String),
+    #[error("Conflict: {0}")]
+    Conflict(String),
 }
 
 impl From<ShareServiceError> for DomainError {
@@ -67,6 +69,7 @@ impl From<ShareServiceError> for DomainError {
             ShareServiceError::Repository(s) => DomainError::internal_error("Share", s),
             ShareServiceError::InvalidItemType(s) => DomainError::validation_error(s),
             ShareServiceError::Validation(s) => DomainError::validation_error(s),
+            ShareServiceError::Conflict(s) => DomainError::conflict("Share", s),
         }
     }
 }
@@ -109,6 +112,8 @@ pub struct ShareService {
     /// still get stale-until-TTL for now (would need a per-resource
     /// invalidation index; deferred).
     search: Option<Arc<SearchService>>,
+    /// Share mount guard: a mount row cannot get a public link (R2).
+    share_mounts: Option<Arc<crate::application::services::share_mount_service::ShareMountService>>,
 }
 
 impl ShareService {
@@ -134,7 +139,16 @@ impl ShareService {
             authorization,
             hash_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_HASHES)),
             search,
+            share_mounts: None,
         }
+    }
+
+    pub fn with_share_mounts(
+        mut self,
+        svc: Arc<crate::application::services::share_mount_service::ShareMountService>,
+    ) -> Self {
+        self.share_mounts = Some(svc);
+        self
     }
 
     /// Verifies that the item to share exists
@@ -284,6 +298,23 @@ impl ShareUseCase for ShareService {
             .map_err(|e| ShareServiceError::InvalidItemType(e.to_string()))?;
 
         self.verify_item_exists(&dto.item_id, &item_type).await?;
+
+        if matches!(item_type, ShareItemType::Folder)
+            && let Some(svc) = &self.share_mounts
+            && svc.is_mount(&dto.item_id).await.unwrap_or(false)
+        {
+            tracing::info!(
+                target: "audit",
+                event = "share_mount.rejected",
+                reason = "public_link_on_mount",
+                caller_id = %user_id,
+                resource_id = %dto.item_id,
+                "👮🏻‍♂️ public link on a share mount rejected",
+            );
+            return Err(
+                ShareServiceError::Conflict("a share mount cannot be shared".to_string()).into(),
+            );
+        }
 
         // AuthZ: only callers with `Share` on the resource may mint a
         // public link. Without this gate, an ex-Viewer who kept a

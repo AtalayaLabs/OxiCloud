@@ -2325,6 +2325,12 @@ pub struct FeaturesConfig {
     /// trash/search). OFF by default — opt-in per deployment.
     /// Env: `OXICLOUD_ENABLE_EXTERNAL_MOUNTS`.
     pub enable_external_mounts: bool,
+    /// Mount granted folders and shared drives into the recipient's personal
+    /// drive (docs/plan/share-mounts.md). Off by default. Env: `OXICLOUD_ENABLE_SHARE_MOUNTS`.
+    pub enable_share_mounts: bool,
+    /// Folder under the personal root where new share mounts land; `None` = root.
+    /// Env: `OXICLOUD_SHARE_MOUNT_FOLDER`.
+    pub share_mount_folder: Option<String>,
     /// Native WebDAV path segment that lists the caller's drives.
     ///
     /// * Default `"@drive"` — bare `/webdav/` addresses the caller's
@@ -2901,6 +2907,8 @@ impl Default for FeaturesConfig {
             expose_system_users: true,     // Expose OxiCloud users as address book by default
             enable_video_thumbnails: true, // Video thumbs via ffmpeg (if detected)
             enable_external_mounts: false, // External mounts — opt-in, off by default
+            enable_share_mounts: false,    // Share mounts — opt-in until proven
+            share_mount_folder: None,
             // Back-compat with pre-multi-drive clients — bare `/webdav/`
             // maps to the caller's default drive; drive listing is
             // reachable at `/webdav/@drive/`.
@@ -4152,6 +4160,15 @@ impl AppConfig {
             config.features.enable_external_mounts = val;
         }
 
+        if let Ok(v) = env::var("OXICLOUD_ENABLE_SHARE_MOUNTS").map(|v| v.parse::<bool>())
+            && let Ok(val) = v
+        {
+            config.features.enable_share_mounts = val;
+        }
+        if let Ok(v) = env::var("OXICLOUD_SHARE_MOUNT_FOLDER") {
+            config.features.share_mount_folder = parse_share_mount_folder(&v);
+        }
+
         // Faces (People) ONNX runtime + models — operator-provided at runtime.
         if let Ok(v) = env::var("OXICLOUD_FACES_ORT_DYLIB").or_else(|_| env::var("ORT_DYLIB_PATH"))
             && !v.is_empty()
@@ -4816,6 +4833,12 @@ pub fn parse_base_path(raw: &str) -> String {
 }
 
 /// Gets a default global configuration
+/// `OXICLOUD_SHARE_MOUNT_FOLDER` value → folder name; blanks and bare slashes mean root.
+pub fn parse_share_mount_folder(raw: &str) -> Option<String> {
+    let v = raw.trim().trim_matches('/').to_owned();
+    (!v.is_empty()).then_some(v)
+}
+
 pub fn default_config() -> AppConfig {
     AppConfig::default()
 }
@@ -4823,6 +4846,23 @@ pub fn default_config() -> AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn share_mounts_default_off_with_root_share_folder() {
+        let c = AppConfig::default();
+        assert!(!c.features.enable_share_mounts);
+        assert_eq!(c.features.share_mount_folder, None);
+    }
+
+    #[test]
+    fn share_mount_folder_trims_slashes_and_blanks() {
+        assert_eq!(
+            parse_share_mount_folder("/Shared/"),
+            Some("Shared".to_string())
+        );
+        assert_eq!(parse_share_mount_folder("  "), None);
+        assert_eq!(parse_share_mount_folder("/"), None);
+    }
 
     /// Optional URL knobs: unset and empty both mean "derive", a trailing
     /// slash is trimmed so callers can glue paths on directly.

@@ -39,6 +39,8 @@ pub struct FileManagementService {
     /// External-mount classifier. `None` in stub/test construction → all ids
     /// are treated as native.
     mount_router: Option<Arc<MountRouter>>,
+    /// Share mount guards for copy (docs/plan/share-mounts.md R2).
+    share_mounts: Option<Arc<crate::application::services::share_mount_service::ShareMountService>>,
     /// Read/write access hook — fired so Recent reflects "this is the file
     /// I just copied / renamed / moved", same way the read paths surface
     /// downloads. Distinct from the lifecycle hook because lifecycle hooks
@@ -109,6 +111,7 @@ impl FileManagementService {
             authz,
             file_lifecycle_hook: None,
             mount_router: None,
+            share_mounts: None,
             resource_access_hook: None,
             drive_repo: None,
             storage_usage: None,
@@ -151,6 +154,14 @@ impl FileManagementService {
     /// `ext:` ids to the provider.
     pub fn with_mount_router(mut self, router: Arc<MountRouter>) -> Self {
         self.mount_router = Some(router);
+        self
+    }
+
+    pub fn with_share_mounts(
+        mut self,
+        svc: Arc<crate::application::services::share_mount_service::ShareMountService>,
+    ) -> Self {
+        self.share_mounts = Some(svc);
         self
     }
 
@@ -834,6 +845,20 @@ impl FileManagementUseCase for FileManagementService {
         target_parent_id: Option<String>,
         dest_name: Option<String>,
     ) -> Result<CopyFolderTreeResult, DomainError> {
+        // Share mounts are neither copied nor copied into (docs/plan/share-mounts.md R2).
+        if let Some(svc) = &self.share_mounts
+            && (svc.is_mount(source_folder_id).await?
+                || match &target_parent_id {
+                    Some(p) => svc.is_mount(p).await?,
+                    None => false,
+                })
+        {
+            return Err(DomainError::conflict(
+                "Folder",
+                "share mounts cannot be copied or copied into",
+            ));
+        }
+
         // copy_folder_tree = Read on the source folder + Create on the target parent.
         self.require_target_folder_perm(Some(source_folder_id), Permission::Read, caller_id)
             .await?;

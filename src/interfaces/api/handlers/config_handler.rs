@@ -132,6 +132,9 @@ pub struct FeaturesDto {
     /// Admin-configured external filesystem mounts. See
     /// `FeaturesConfig::enable_external_mounts`.
     pub external_mounts: bool,
+    /// Share mount points: granted folders and shared drives appear in the
+    /// personal drive. See `FeaturesConfig::enable_share_mounts`.
+    pub share_mounts: bool,
     /// Collaborative `.md` editing over the message-bus WebSocket
     /// (Yjs CRDT). When `false`, the FE hides the "New markdown"
     /// menu entry and falls back to the plain `.md` viewer when
@@ -166,6 +169,7 @@ pub async fn get_config(State(state): State<Arc<AppState>>) -> Json<ServerConfig
             faces: f.enable_faces,
             video_thumbnails: f.enable_video_thumbnails,
             external_mounts: f.enable_external_mounts,
+            share_mounts: f.enable_share_mounts,
             markdown_collab: f.enable_markdown_collab,
         },
         auth: AuthDto {

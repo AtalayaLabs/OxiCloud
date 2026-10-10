@@ -12966,6 +12966,7 @@
           "faces",
           "video_thumbnails",
           "external_mounts",
+          "share_mounts",
           "markdown_collab"
         ],
         "properties": {
@@ -12996,6 +12997,10 @@
           "search": {
             "type": "boolean",
             "description": "Full-text and metadata search (`/api/search/*`). See\n`FeaturesConfig::enable_search`."
+          },
+          "share_mounts": {
+            "type": "boolean",
+            "description": "Share mount points: granted folders and shared drives appear in the\npersonal drive. See `FeaturesConfig::enable_share_mounts`."
           },
           "sharing": {
             "type": "boolean",
@@ -13268,6 +13273,17 @@
             "format": "int64",
             "description": "Last modification timestamp",
             "minimum": 0
+          },
+          "mount": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/MountDto",
+                "description": "Present on mount rows only."
+              }
+            ]
           },
           "name": {
             "type": "string",
@@ -14014,6 +14030,35 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          }
+        }
+      },
+      "MountDto": {
+        "type": "object",
+        "description": "Marks a folder as a mount (docs/plan/share-mounts.md § API).",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "`\"shared_folder\"`, `\"shared_drive\"` or `\"external\"`."
+          },
+          "target_drive_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Drive of the target; absent for external mounts."
+          },
+          "target_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Target folder the mount answers for; absent for external mounts."
           }
         }
       },

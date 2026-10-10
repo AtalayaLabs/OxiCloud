@@ -102,6 +102,9 @@ fn rows(n: usize) -> Vec<FolderResourceRow> {
                 sort_str: format!("row {i}"),
                 type_order: 0,
                 folder_first: if is_folder { 0 } else { 1 },
+                mount_target_id: None,
+                mount_target_drive_id: None,
+                mount_kind: None,
             }
         })
         .collect()
@@ -134,6 +137,7 @@ fn map_before(rows: Vec<FolderResourceRow>) -> Vec<Probe> {
                     updated_by: None,
                     is_favorite: false,
                     is_shared: false,
+                    mount: None,
                 };
                 (dto.name, dto.icon_class, dto.category)
             } else {
@@ -198,6 +202,7 @@ fn map_after(rows: Vec<FolderResourceRow>) -> Vec<Probe> {
                     updated_by: None,
                     is_favorite: false,
                     is_shared: false,
+                    mount: None,
                 };
                 (dto.name, dto.icon_class, dto.category)
             } else {
@@ -326,6 +331,7 @@ fn fav_map_before(rows: Vec<FavoriteResourceRow>) -> Vec<FavProbe> {
                     updated_by: None,
                     is_favorite: false,
                     is_shared: false,
+                    mount: None,
                 };
                 (
                     dto.name,
@@ -408,6 +414,7 @@ fn fav_map_after(rows: Vec<FavoriteResourceRow>) -> Vec<FavProbe> {
                     updated_by: None,
                     is_favorite: false,
                     is_shared: false,
+                    mount: None,
                 };
                 (
                     dto.name,

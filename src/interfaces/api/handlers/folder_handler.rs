@@ -13,7 +13,8 @@ use crate::application::dtos::display_helpers::{
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::{
     AncestorsQuery, CreateFolderDto, FolderAncestorsDto, FolderDto, FolderResourceItemDto,
-    FolderResourcesDto, FolderResourcesQuery, ListResourcesOptions, MoveFolderDto, RenameFolderDto,
+    FolderResourcesDto, FolderResourcesQuery, ListResourcesOptions, MountDto, MoveFolderDto,
+    RenameFolderDto,
 };
 use crate::application::dtos::grant_dto::{ResourceContentDto, ResourceTypeDto};
 use crate::application::ports::external_mount_ports::MountEntry;
@@ -325,6 +326,13 @@ impl FolderHandler {
             .await
         {
             Ok(subject) => subject,
+            Err(err) => return AppError::from(err).into_response(),
+        };
+
+        // Share mount: the archive is the target's subtree (docs/plan/share-mounts.md R1).
+        let id = match folder_service.resolve_share_mount(authorized_as, &id).await {
+            Ok(Some(m)) => m.target_id.to_string(),
+            Ok(None) => id,
             Err(err) => return AppError::from(err).into_response(),
         };
 
@@ -683,6 +691,14 @@ pub async fn list_folder_resources(
                             updated_by: row.updated_by,
                             is_favorite: row.is_favorite,
                             is_shared: row.is_shared,
+                            mount: row.mount_target_id.map(|t| MountDto {
+                                kind: row
+                                    .mount_kind
+                                    .clone()
+                                    .unwrap_or_else(|| "shared_folder".to_owned()),
+                                target_id: Some(t),
+                                target_drive_id: row.mount_target_drive_id,
+                            }),
                         };
                         let dto = if redact {
                             dto.redacted_for_token()
@@ -836,6 +852,7 @@ fn mount_entry_to_item(
             // grants rows can ever key against them.
             is_favorite: false,
             is_shared: false,
+            mount: None,
         };
         FolderResourceItemDto {
             resource_type: ResourceTypeDto::Folder,

@@ -294,6 +294,26 @@ pub async fn create_grant(
     // personal-drive guard and shared-drive last-owner protection apply
     // — the same guards that gate `/api/drives/{id}/members`. Defense in
     // depth: a caller can't bypass them by hitting `/api/grants` directly.
+    //
+    // A share mount is never shareable (docs/plan/share-mounts.md R2).
+    if let Resource::Folder(fid) = resource
+        && let Some(svc) = state.share_mount_service.as_ref()
+        && matches!(svc.is_mount(&fid.to_string()).await, Ok(true))
+    {
+        tracing::info!(
+            target: "audit",
+            event = "share_mount.rejected",
+            reason = "grant_on_mount",
+            caller_id = %caller_id,
+            resource_id = %fid,
+            "👮🏻‍♂️ grant on a share mount rejected",
+        );
+        return AppError::from(DomainError::conflict(
+            "Grant",
+            "a share mount cannot be shared",
+        ))
+        .into_response();
+    }
     let grant = if let Resource::Drive(drive_id) = resource {
         match state
             .drive_management_service
@@ -329,6 +349,18 @@ pub async fn create_grant(
         expires_at = ?expires_at,
         "🤝 grant created with role '{}'", role.as_str(),
     );
+
+    // Share mounts follow the grant (docs/plan/share-mounts.md § Lifecycle).
+    if let Some(svc) = state.share_mount_service.as_ref() {
+        let r = match resource {
+            Resource::Folder(fid) => svc.on_folder_granted(subject, fid).await,
+            Resource::Drive(did) => svc.on_drive_member_set(subject, did).await,
+            _ => Ok(()),
+        };
+        if let Err(e) = r {
+            warn!("share mount reconcile after grant failed: {e}");
+        }
+    }
 
     // Slice E — persistent in-app notification (bell) for every
     // recipient user. Separate channel from the email path below:
@@ -549,7 +581,9 @@ pub async fn revoke_grant(
         }
     } else {
         // Caller is authorized if they are the granter OR have Share on the resource.
+        // The granter, a Share holder, or the recipient themselves may remove it.
         if granter != caller_id
+            && subject != Subject::User(caller_id)
             && let Err(e) = authz
                 .require(Subject::User(caller_id), Permission::Share, resource)
                 .await
@@ -591,6 +625,12 @@ pub async fn revoke_grant(
         self_revoke = (granter == caller_id),
         "🗑️ grant revoked",
     );
+
+    if let Some(svc) = state.share_mount_service.as_ref()
+        && let Err(e) = svc.on_subject_revoked(subject).await
+    {
+        warn!("share mount reconcile after revoke failed: {e}");
+    }
 
     // Message-bus eviction cascade — the revoke committed, so any WS
     // session that had the affected user auto-subscribed to
