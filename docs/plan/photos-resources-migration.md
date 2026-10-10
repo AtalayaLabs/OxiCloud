@@ -11,18 +11,18 @@ resources family for free.
 
 | item | state |
 |---|---|
-| §1 Introduce `GET /api/photos/resources` returning the normalized envelope | **TODO** |
-| §2 Lift ETag computation into a shared `CursorListResponse` helper used by every `/resources` endpoint | **TODO** |
+| §1 Introduce `GET /api/photos/resources` returning the normalized envelope | **DONE** |
+| §2 Lift ETag computation into a shared `CursorListResponse` helper used by every `/resources` endpoint | **DONE** |
 | §2b Client-side `If-None-Match` + response-body reuse on top of §2's server ETags | **DROPPED — see §2b** |
 | §3 Make the sort axis configurable (`captured_at` default, `created_at` fallback) | **TODO** |
-| §4 Hard-cut: remove `GET /api/photos` in the same release | **TODO** |
-| §5 Shared `caller_accessible_drives()` SQL function to fix multi-grant duplicate rows across every listing | **TODO** |
-| §6 `?kind=photo\|video` filter on `/api/photos/resources` | **TODO** |
-| §6b `?drive_id=<uuid>` filter + supporting composite index on the photo listing | **TODO** |
+| §4 Hard-cut: remove `GET /api/photos` in the same release | **DONE** |
+| §5 Shared `caller_accessible_drives()` SQL function to fix multi-grant duplicate rows across every listing | **DONE** |
+| §6 `?kind=photo\|video` filter on `/api/photos/resources` | **DONE** |
+| §6b `?drive_id=<uuid>` filter + supporting composite index on the photo listing | **DONE** |
 | §7 Facet-filter axis — `?person_id=` now, `?keyword=` and `?location=` later | **PROPOSAL** |
 | §8 Realtime push for new photos via message bus | **DEFERRED** |
 | §9 Dedup `/api/photos/resources` rows by `content_hash` server-side | **DONE** |
-| §9b Delete-UX for photos with sibling blobs (gallery promoting a sibling after trash) | **TODO** |
+| §9b Delete-UX for photos with sibling blobs (gallery promoting a sibling after trash) | **DONE** |
 
 ---
 
