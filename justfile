@@ -240,7 +240,7 @@ gen-asyncapi-schema:
 gen-asyncapi: gen-asyncapi-schema
     cd frontend && npm run gen:asyncapi
 
-# Local mirror of the `message-bus-spec-drift` CI job. Regenerates
+# Local mirror of the `asyncapi-spec-drift` CI job. Regenerates
 # both artefacts and fails if the committed files differ from the
 # fresh generator output. Included in `pre-pull-request` so
 # developers catch drift BEFORE pushing — the CI job is
