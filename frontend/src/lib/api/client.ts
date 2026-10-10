@@ -1,8 +1,8 @@
 import { withBase } from '$lib/utils/appPath';
 export { withBase } from '$lib/utils/appPath';
 /** Public API entry point. Every request is built and executed by Hey API. */
-import { client } from './generated/client.gen';
-import type { RequestOptions } from './generated/client';
+import { client } from './generated/openapi/client.gen';
+import type { RequestOptions } from './generated/openapi/client';
 import { generatedApiFetch } from './hey-api';
 import { apiProbeTransport, createApiTransport, urlString } from './transport';
 export {

@@ -10,7 +10,7 @@
 //   * `frames.ts`                — JSON-RPC framing (pure functions).
 //   * `error-codes.ts`           — named constants for `RtErrorObject.code`.
 //   * `$lib/composables/useTopic.svelte.ts` — per-component lifecycle.
-//   * `$lib/generated/message-bus/`         — wire DTOs (Modelina, auto).
+//   * `$lib/api/generated/asyncapi/`         — wire DTOs (Modelina, auto).
 //
 // Auth: same-origin WS carries the session cookie automatically. DPoP-
 // required deployments need the ticket flow (Phase F, deferred); the
@@ -33,8 +33,8 @@ import {
 	type IncomingFrame,
 	type RtWriteDeniedParams
 } from './frames';
-import type RtEventParams from '$lib/generated/message-bus/RtEventParams';
-import type RtRevokedParams from '$lib/generated/message-bus/RtRevokedParams';
+import type RtEventParams from '$lib/api/generated/asyncapi/RtEventParams';
+import type RtRevokedParams from '$lib/api/generated/asyncapi/RtRevokedParams';
 
 /** Response body from `POST /api/rt/ticket`. Matches the Rust
  *  `RtTicketResponse` shape — see `handlers/rt_ticket_handler.rs`. */

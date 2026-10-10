@@ -2,19 +2,19 @@
 //
 // Pure functions — no I/O, no state, no side effects. Sits between
 // `client.svelte.ts` (owns the WebSocket + subscription refcounts) and
-// the generated wire DTOs under `$lib/generated/message-bus/`. Keeping
+// the generated wire DTOs under `$lib/api/generated/asyncapi/`. Keeping
 // the framing logic isolated makes it directly unit-testable and keeps
 // `client.svelte.ts` focused on lifecycle.
 //
 // One-way import direction: this file reads from `$lib/generated/…`;
 // nothing under `generated/` imports from here.
 
-import type RtSubscribeRequestBody from '$lib/generated/message-bus/RtSubscribeRequestBody';
-import type RtUnsubscribeRequestBody from '$lib/generated/message-bus/RtUnsubscribeRequestBody';
-import type RtPingRequestBody from '$lib/generated/message-bus/RtPingRequestBody';
-import type RtEventParams from '$lib/generated/message-bus/RtEventParams';
-import type RtRevokedParams from '$lib/generated/message-bus/RtRevokedParams';
-import type RtErrorObject from '$lib/generated/message-bus/RtErrorObject';
+import type RtSubscribeRequestBody from '$lib/api/generated/asyncapi/RtSubscribeRequestBody';
+import type RtUnsubscribeRequestBody from '$lib/api/generated/asyncapi/RtUnsubscribeRequestBody';
+import type RtPingRequestBody from '$lib/api/generated/asyncapi/RtPingRequestBody';
+import type RtEventParams from '$lib/api/generated/asyncapi/RtEventParams';
+import type RtRevokedParams from '$lib/api/generated/asyncapi/RtRevokedParams';
+import type RtErrorObject from '$lib/api/generated/asyncapi/RtErrorObject';
 
 /**
  * Discriminated result of parsing one text frame off the wire.

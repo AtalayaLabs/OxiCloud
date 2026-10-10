@@ -13,11 +13,11 @@
 // into one call surface.
 
 import { useTopic } from './useTopic.svelte';
-import type RtEventParams from '$lib/generated/message-bus/RtEventParams';
-import type RtRevokedParams from '$lib/generated/message-bus/RtRevokedParams';
-import type JobRunStartedData from '$lib/generated/message-bus/JobRunStartedData';
-import type JobRunProgressData from '$lib/generated/message-bus/JobRunProgressData';
-import type JobRunEndedData from '$lib/generated/message-bus/JobRunEndedData';
+import type RtEventParams from '$lib/api/generated/asyncapi/RtEventParams';
+import type RtRevokedParams from '$lib/api/generated/asyncapi/RtRevokedParams';
+import type JobRunStartedData from '$lib/api/generated/asyncapi/JobRunStartedData';
+import type JobRunProgressData from '$lib/api/generated/asyncapi/JobRunProgressData';
+import type JobRunEndedData from '$lib/api/generated/asyncapi/JobRunEndedData';
 
 /**
  * Optional per-verb handlers for a single job's run stream. Any

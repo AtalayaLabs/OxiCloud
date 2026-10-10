@@ -3,8 +3,8 @@ import { apiFetch } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import { getAuthStatus } from './auth';
 
-export type { PersonDto as Person } from '../generated/types.gen';
-import type { PersonDto as Person } from '../generated/types.gen';
+export type { PersonDto as Person } from '../generated/openapi/types.gen';
+import type { PersonDto as Person } from '../generated/openapi/types.gen';
 
 /**
  * List identity clusters. The feature is gated on `OXICLOUD_ENABLE_FACES` —

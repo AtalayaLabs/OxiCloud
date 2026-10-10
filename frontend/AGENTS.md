@@ -56,7 +56,7 @@ Convention:
 
 The realtime channel is the **message bus** everywhere — backend port
 `MessageBus`, plan doc `docs/plan/message-bus.md`, generated DTOs under
-`$lib/generated/message-bus/`, FE store/composables named accordingly.
+`$lib/api/generated/asyncapi/`, FE store/composables named accordingly.
 Only two things keep the older `rt`/`Rt` shorthand, and both for wire-
 protocol reasons:
 

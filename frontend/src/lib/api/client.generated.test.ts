@@ -13,8 +13,8 @@ vi.mock('$lib/auth/dpop-proof', () => ({
 }));
 vi.mock('$lib/api/csrf', () => ({ getCsrfHeaders: () => ({ 'X-CSRF-Token': 'csrf' }) }));
 import { apiFetch, setLogoutInProgress } from './client';
-import { client } from './generated/client.gen';
-import { renamePerson } from './generated/sdk.gen';
+import { client } from './generated/openapi/client.gen';
+import { renamePerson } from './generated/openapi/sdk.gen';
 import { subscribePluginLogs } from './endpoints/admin';
 import { buildDpopProof } from '$lib/auth/dpop-proof';
 
