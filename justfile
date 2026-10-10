@@ -191,9 +191,8 @@ plugin-check:
 audit:
     cargo audit
 
-gen-openapi: openapi
-
-openapi:
+# Regenerate `resources/gen/asyncapi.json`
+gen-openapi-schema:
     cargo run --features dev_tools --bin generate-openapi
 
 # Local mirror of the `openapi-spec-drift` CI job. Regenerates
@@ -202,16 +201,18 @@ openapi:
 # committed file differs from the fresh output. Included in
 # `pre-pull-request` so developers catch drift BEFORE pushing —
 # the CI job is belt-and-braces, not the only defence.
-check-openapi-spec: openapi
+check-openapi: gen-openapi-schema
     #!/usr/bin/env bash
     set -euo pipefail
-    if ! git diff --exit-code resources/gen/openapi.json; then
+    if ! git diff --exit-code \
+            resources/gen/openapi.json \
+            frontend/src/lib/api/generated; then
         echo ""
         echo "❌ OpenAPI spec drift: committed openapi.json differs from the fresh"
         echo "   generator output. Someone edited a #[utoipa::path] attribute"
         echo "   (added a handler, changed a schema, renamed a path) without"
         echo "   regenerating. Fix:"
-        echo "     git add resources/gen/openapi.json"
+        echo "     git add resources/gen/openapi.json frontend/src/lib/api/generated/"
         echo "     git commit -m 'chore(openapi): regenerate spec'"
         exit 1
     fi
@@ -221,9 +222,7 @@ check-openapi-spec: openapi
 # analogue of openapi.json. Built from the `Topic`, `MessageBusEvent`,
 # and `error_code` constants in `application/ports/message_bus_ports.rs`
 # so the spec stays in sync with the wire by construction.
-gen-asyncapi: asyncapi
-
-asyncapi:
+gen-asyncapi-schema:
     cargo run --features dev_tools --bin generate-asyncapi
 
 # Regenerate frontend TypeScript DTOs from `resources/gen/asyncapi.json`
@@ -235,10 +234,11 @@ asyncapi:
 # .ts files (idempotent — same input → same output, CI dirty-tree
 # check catches genuine drift).
 #
-# Output lands in `frontend/src/lib/generated/message-bus/`; consumers
-# import from there but never edit those files.
-asyncapi-ts: asyncapi
-    cd frontend && npm run gen:message-bus
+# Output lands in `frontend/src/lib/api/generated/asyncapi/`; consumers
+# import from there but never edit those files. Lives next to the
+# OpenAPI SDK's `src/lib/api/generated/openapi/` under a shared root.
+gen-asyncapi: gen-asyncapi-schema
+    cd frontend && npm run gen:asyncapi
 
 # Local mirror of the `message-bus-spec-drift` CI job. Regenerates
 # both artefacts and fails if the committed files differ from the
@@ -246,19 +246,19 @@ asyncapi-ts: asyncapi
 # developers catch drift BEFORE pushing — the CI job is
 # belt-and-braces, not the only defence.
 #
-# Depends on `asyncapi-ts` which itself depends on `asyncapi`, so the
+# Depends on `asyncapi-client` which itself depends on `asyncapi`, so the
 # whole chain runs; then we assert on `git diff --exit-code` over
 # the two paths we care about.
-check-message-bus-spec: asyncapi-ts
+check-asyncapi: gen-asyncapi
     #!/usr/bin/env bash
     set -euo pipefail
     if ! git diff --exit-code \
              resources/gen/asyncapi.json \
-             frontend/src/lib/generated/message-bus/; then
+             frontend/src/lib/api/generated/asyncapi/; then
         echo ""
         echo "❌ message-bus spec drift: committed files differ from the fresh"
         echo "   generator output. Fix:"
-        echo "     git add resources/gen/asyncapi.json frontend/src/lib/generated/message-bus/"
+        echo "     git add resources/gen/asyncapi.json frontend/src/lib/api/generated/asyncapi/"
         echo "     git commit -m 'chore(bus): regenerate spec + DTOs'"
         exit 1
     fi
@@ -266,8 +266,10 @@ check-message-bus-spec: asyncapi-ts
 
 # Regenerate the backend OpenAPI document and the typed frontend client.
 # The generated directory is disposable: never edit its contents by hand.
-api-client: openapi
-    cd frontend && npm run api:generate
+gen-openapi: gen-openapi-schema
+    cd frontend && npm run gen:openapi
+
+gen-fe-api: gen-openapi gen-asyncapi
 
 db:
     docker compose up -d postgres
@@ -397,22 +399,22 @@ fe-install:
     cd frontend && npm ci
 
 # Vite dev server only (HMR) — backend must already be running on :8086.
-# `asyncapi-ts` prereq runs once at start; Vite's watcher picks up
+# `gen-fe-api` prereq runs once at start; Vite's watcher picks up
 # any subsequent regenerations for HMR.
-fe-dev: asyncapi-ts
+fe-dev: gen-fe-api
     cd frontend && npm run dev
 
 # build the SPA (Phase 0: -> frontend/build; Phase 5: -> static-dist).
-# `asyncapi-ts` prerequisite (which itself depends on `asyncapi`)
-# guarantees `frontend/src/lib/generated/message-bus/*.ts` is in sync
+# `gen-fe-api` prerequisite (which itself depends on `asyncapi`)
+# guarantees `frontend/src/lib/api/generated/asyncapi/*.ts` is in sync
 # with the Rust-side wire spec before Vite compiles — no stale-DTO
 # window in local dev. CI still runs a dirty-tree check on the
 # generated files as belt-and-braces.
-fe-build: asyncapi-ts
+fe-build: gen-fe-api
     cd frontend && npm run build
 
 # Build the SPA with e2e instrumentation for the Playwright coverage
-# suite. Same asyncapi-ts prereq as `fe-build` — the E2E build must
+# suite. Same gen-fe-api prereq as `fe-build` — the E2E build must
 # see the same generated DTOs the release build sees. Both env vars
 # are load-bearing:
 #   * VITE_E2E=1  — keeps the `data-testid` tile hooks the release
@@ -425,19 +427,19 @@ fe-build: asyncapi-ts
 #                   report empty.
 # Called automatically by `front-test`; run manually if you're
 # invoking Playwright directly.
-fe-build-e2e: asyncapi-ts
+fe-build-e2e: gen-fe-api
     cd frontend && COVERAGE=1 VITE_E2E=1 npm run build
 
 # svelte-check + eslint + stylelint + prettier. Depends on
-# `asyncapi-ts` so svelte-check sees current generated types (a stale
+# `gen-fe-api` so svelte-check sees current generated types (a stale
 # import would surface as a TS error at check time — better to
 # regenerate first than chase phantom errors).
-fe-check: asyncapi-ts
+fe-check: gen-fe-api
     cd frontend && npm run check
 
-# Vitest unit/component tests. Same asyncapi-ts prereq — tests that
-# import from `lib/generated/message-bus` need it fresh.
-fe-test: asyncapi-ts
+# Vitest unit/component tests. Same gen-fe-api prereq — tests that
+# import from `lib/api/generated/asyncapi` need it fresh.
+fe-test: gen-fe-api
     cd frontend && npm run test:unit
 
 # ─────────────────────────── Docs (VitePress) ───────────────────────────
@@ -456,17 +458,17 @@ docs-install:
 # Regenerate the two API-reference specs then start the VitePress dev
 # server. The npm `predocs:dev` hook (see docs/package.json) also
 # regenerates `docs/public/api/` from the JSON on `resources/gen/`.
-docs-dev: openapi asyncapi
+docs-dev: gen-openapi gen-asyncapi
     cd docs && npm run docs:dev
 
 # Full static build. Emits to `docs/.vitepress/dist/`.
-docs-build: openapi asyncapi
+docs-build: gen-openapi gen-asyncapi
     cd docs && npm run docs:build
 
 # Just regenerate the JSON specs and the derived `docs/public/api/`
 # artifacts, without running VitePress. Handy when iterating on the
 # `#[utoipa::path]` annotations and wanting to re-check the diff.
-docs-specs: openapi asyncapi
+docs-specs: gen-openapi gen-asyncapi
     cd docs && npm run docs:specs
 
 # Run backend (API) and the Vite dev server together; one Ctrl-C stops both.
@@ -506,4 +508,4 @@ test-docker-tags:
 
 # Check and test everything
 # recommanded before pull request
-pre-pull-request: test-docker-tags check fe-check audit check-migrations check-message-bus-spec check-openapi-spec test test-integration fe-test build test-bundle test-api fe-build-e2e  front-test
+pre-pull-request: test-docker-tags check fe-check audit check-migrations check-asyncapi check-openapi test test-integration fe-test build test-bundle test-api fe-build-e2e  front-test

@@ -21,7 +21,7 @@ vi.mock('$lib/api/csrf', () => ({ getCsrfHeaders: () => ({}) }));
 vi.mock('$app/paths', () => ({ base: '/oxicloud' }));
 
 import { apiFetch, withBase } from './client';
-import { renamePerson } from './generated/sdk.gen';
+import { renamePerson } from './generated/openapi/sdk.gen';
 import { fetchAsset } from '$lib/utils/assets';
 
 beforeEach(() => {

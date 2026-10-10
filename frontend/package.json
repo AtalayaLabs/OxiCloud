@@ -7,7 +7,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "api:generate": "svelte-kit sync && openapi-ts",
+    "gen:openapi": "svelte-kit sync && openapi-ts",
     "dev": "vite dev",
     "build": "vite build",
     "postbuild": "node scripts/emit-askama-common.mjs && node scripts/portable-shell.mjs && node scripts/precompress.mjs ../static-dist",
@@ -19,7 +19,7 @@
     "test:unit": "LANG=C vitest run",
     "test:unit:watch": "LANG=C vitest",
     "test:unit:coverage": "rm -rf ../tests/e2e/.nyc_output_unit && LANG=C COVERAGE=1 vitest run",
-    "gen:message-bus": "node scripts/gen-message-bus-types.mjs"
+    "gen:asyncapi": "node scripts/gen-message-bus-types.mjs"
   },
   "devDependencies": {
     "@asyncapi/modelina": "^5.5.0",

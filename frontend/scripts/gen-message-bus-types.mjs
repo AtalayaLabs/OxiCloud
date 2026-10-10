@@ -7,15 +7,18 @@
 // interfaces so `lib/composables/useTopic.ts` and every folder-view
 // switch statement is compile-time exhaustive over the `rt.event` variants.
 //
-// Regenerate: `just asyncapi-ts` (or `npm run gen:message-bus`).
+// Regenerate: `just asyncapi-ts` (or `npm run gen:asyncapi`).
 // CI is expected to run the same command and fail if the working tree is
 // dirty afterwards — same discipline `just openapi` follows.
 //
 // Design notes:
 //   * `modelType: 'interface'` — plain records, not classes-with-getters.
 //     Matches the FE codebase style (see `lib/api/types.ts`).
-//   * Output goes to `src/lib/generated/message-bus/` — a directory reserved
-//     for auto-generated files. Never hand-edit anything inside.
+//   * Output goes to `src/lib/api/generated/asyncapi/` — a directory
+//     reserved for auto-generated files. Lives next to the OpenAPI
+//     SDK's `src/lib/api/generated/openapi/` under a shared root so
+//     each protocol's generated tree is self-contained. Never
+//     hand-edit anything inside.
 //   * Every file gets a `AUTO-GENERATED` banner via a preset so a stray
 //     edit is obvious at review time.
 //   * Modelina auto-detects AsyncAPI 3.0 from the top-level `asyncapi`
@@ -32,13 +35,13 @@ import { TypeScriptFileGenerator } from '@asyncapi/modelina';
 const execFile = promisify(execFileCb);
 
 // Anchor everything on this script's location so `just asyncapi-ts` from
-// the repo root and `npm run gen:message-bus` from the frontend both work.
+// the repo root and `npm run gen:asyncapi` from the frontend both work.
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const frontendRoot = resolve(__dirname, '..');
 const repoRoot = resolve(frontendRoot, '..');
 
 const specPath = resolve(repoRoot, 'resources/gen/asyncapi.json');
-const outputDir = resolve(frontendRoot, 'src/lib/generated/message-bus');
+const outputDir = resolve(frontendRoot, 'src/lib/api/generated/asyncapi');
 
 // Load the spec. Failing here means the wire spec hasn't been generated
 // yet — hint the operator at the right command.

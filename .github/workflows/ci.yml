@@ -59,7 +59,7 @@ jobs:
               - 'src/bin/generate-asyncapi.rs'
               - 'resources/gen/asyncapi.json'
               - 'frontend/scripts/gen-message-bus-types.mjs'
-              - 'frontend/src/lib/generated/message-bus/**'
+              - 'frontend/src/lib/api/generated/asyncapi/**'
               - 'frontend/package.json'
             openapi_spec:
               # Every REST/WOPI/WebDAV/NextCloud handler carries
@@ -136,7 +136,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # Node for `just asyncapi-ts` — Modelina projects the spec into
-      # the FE `src/lib/generated/message-bus/` folder.
+      # the FE `src/lib/api/generated/asyncapi/` folder.
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -151,7 +151,7 @@ jobs:
         run: cargo run --features dev_tools --bin generate-asyncapi
       - name: Regenerate TS DTOs (Modelina)
         working-directory: frontend
-        run: npm run gen:message-bus
+        run: npm run gen:asyncapi
       - name: Fail if committed files drifted
         # A non-empty diff means a contributor edited the Rust wire
         # source (or Modelina config) without regenerating, or hand-
@@ -160,7 +160,7 @@ jobs:
         run: |
           if ! git diff --exit-code \
                  resources/gen/asyncapi.json \
-                 frontend/src/lib/generated/message-bus/; then
+                 frontend/src/lib/api/generated/asyncapi/; then
             echo ""
             echo "::error::Message-bus spec drift: the committed files differ from what the"
             echo "::error::generator produces from source. Run \`just asyncapi-ts\` locally"

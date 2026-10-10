@@ -112,7 +112,7 @@ stretch that adds a drift risk for zero gain.
 2. Add the variant to `generate-asyncapi.rs`'s `event_kind` enum
    and (if the variant has payload fields) a schema function.
 3. Regenerate AsyncAPI + FE DTOs via `just asyncapi` +
-   `npm run gen:message-bus`.
+   `npm run gen:asyncapi`.
 4. **Do not** add the variant to OpenAPI. Bus events don't
    travel on REST.
 

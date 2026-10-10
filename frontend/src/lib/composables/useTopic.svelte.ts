@@ -11,8 +11,8 @@
 
 import { messageBus } from '$lib/message-bus/client.svelte';
 import { serverConfig } from '$lib/stores/serverConfig.svelte';
-import type RtEventParams from '$lib/generated/message-bus/RtEventParams';
-import type RtRevokedParams from '$lib/generated/message-bus/RtRevokedParams';
+import type RtEventParams from '$lib/api/generated/asyncapi/RtEventParams';
+import type RtRevokedParams from '$lib/api/generated/asyncapi/RtRevokedParams';
 
 /**
  * Subscribe to `topic` for the lifetime of the calling component.
