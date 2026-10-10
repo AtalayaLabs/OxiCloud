@@ -21,55 +21,14 @@ export interface LightItem {
 	parentId: string;
 }
 
-export interface FolderItem {
-	category: string;
-	created_at: number;
-	icon_class: string;
-	icon_special_class: string;
-	id: string;
-	is_root: boolean;
-	modified_at: number;
-	name: string;
-	// §14 provenance — who originally created the folder. `null` when
-	// the creating user has since been deleted (backend FK is
-	// `ON DELETE SET NULL`), or when the folder is returned to a
-	// share recipient that lost provenance via
-	// `FolderDto::without_hierarchy_info`. The canonical "owner"
-	// signal on the Files browser / Favorites / Shared surfaces
-	// (replaced the retired `owner_id` field in D7).
-	created_by: string | null;
-	// §14 provenance — who last touched the folder (rename / move /
-	// metadata change). The canonical "who touched this recently"
-	// signal on the Recent surface.
-	updated_by: string | null;
-	parent_id: string | null;
-	path: string;
-	etag: string;
-	/**
-	 * The drive this folder belongs to (post-D0 ownership pivot per
-	 * `docs/plan/drive.md` §3). Populated by the backend `FolderDto`
-	 * on every response; the field was left out of the TS type until
-	 * a caller needed it. Used by `/files` to resolve the current
-	 * drive for the read-only banner without depending on the URL's
-	 * leading segment being a drive-root folder id.
-	 */
-	drive_id: string;
-	/**
-	 * Caller-scoped: `true` when the requesting user has favorited
-	 * this folder. Always present on the wire — never null, never
-	 * absent — per the backend enrichment contract. `ResourceList`
-	 * renders the fav-star chip natively from this field.
-	 */
-	is_favorite: boolean;
-	/**
-	 * Resource-scoped: `true` when the folder has any
-	 * `storage.role_grants` entry (link share via `subject_type =
-	 * 'token'`, user grant, group grant, any role). "Someone was
-	 * given access to this beyond drive membership." Always present
-	 * on the wire.
-	 */
-	is_shared: boolean;
-}
+// Authoritative on the generated SDK. `FolderDto` carries the same
+// 15 fields with matching types (all primitives — no cascading
+// hand-written type references), so the alias is pure name-forward
+// with zero shape change. §Phase 3 of the generated-types
+// normalisation. Local import so other hand-written interfaces in
+// this file can keep referencing `FolderItem`.
+import type { FolderDto as FolderItem } from './generated/openapi/types.gen';
+export type { FolderItem };
 
 export interface FileItem {
 	category: string;
@@ -132,10 +91,9 @@ export interface CreateShare {
 	expires_at: number | null;
 }
 
-export interface UpdateShare {
-	password?: string | null;
-	expires_at?: number | null;
-}
+// Authoritative on the generated SDK. Identical shape, no
+// cascading dependencies — pure name-forward.
+export type { UpdateShareDto as UpdateShare } from './generated/openapi/types.gen';
 
 export interface FavoriteItem {
 	id: string;
@@ -515,20 +473,16 @@ export interface DriveMember {
 // `access_source` telling the breadcrumb component which root icon /
 // tooltip to render.
 
-export interface FolderAncestor {
-	id: string;
-	name: string;
-	/** `null` on the drive-root ancestor. */
-	parent_id: string | null;
-	/**
-	 * Drive the folder belongs to (always populated — every folder has a
-	 * drive_id post-D0). Lets `/files` derive `currentFolderDriveId` from
-	 * the ancestors response instead of firing an extra
-	 * `GET /api/folders/{id}` on load. Same value across every entry in
-	 * `ancestors` (all folders in a chain live in one drive).
-	 */
-	drive_id: string;
-}
+// Authoritative on the generated SDK. All four fields are
+// primitives, no cascading dependencies — pure name-forward. The
+// generated version types `parent_id?: string | null` where the
+// pre-SDK hand-written was `parent_id: string | null` (always
+// present): matches the server's actual emit (JSON `null` on the
+// drive-root ancestor, not a dropped key). Local import so other
+// hand-written interfaces in this file can keep referencing
+// `FolderAncestor`.
+import type { FolderAncestorDto as FolderAncestor } from './generated/openapi/types.gen';
+export type { FolderAncestor };
 
 /**
  * How the caller reached the topmost accessible ancestor.

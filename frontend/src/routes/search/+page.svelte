@@ -418,7 +418,10 @@
 	// at drive roots. Null → no meaningful parent to open. Mirrors the
 	// same helper in /favorites and /recent.
 	function parentFolderId(item: FileItem | FolderItem): string | null {
-		return isFile(item) ? item.folder_id : item.parent_id;
+		// Generated `FolderItem.parent_id` is `string | null | undefined`;
+		// collapse to `null` so downstream callers keep one "no parent"
+		// signal. See /favorites mirror.
+		return isFile(item) ? item.folder_id : (item.parent_id ?? null);
 	}
 
 	async function toggleFavorite(item: FileItem | FolderItem) {

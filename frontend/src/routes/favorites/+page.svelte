@@ -216,7 +216,12 @@
 	// folders carry `parent_id`; nullable when the folder is a drive
 	// root. Null → no meaningful parent to open.
 	function parentFolderId(item: FileItem | FolderItem): string | null {
-		return isFile(item) ? item.folder_id : item.parent_id;
+		// Generated `FolderItem.parent_id` is `string | null | undefined` —
+		// the server emits JSON `null` on drive roots, and openapi-ts
+		// adds `| undefined` on top because the key is `?: `. Collapse
+		// the two "no parent" shapes to `null` so callers downstream
+		// keep seeing one signal.
+		return isFile(item) ? item.folder_id : (item.parent_id ?? null);
 	}
 
 	const contextActions: ContextAction[] = [
