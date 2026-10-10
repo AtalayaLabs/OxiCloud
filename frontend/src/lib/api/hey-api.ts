@@ -1,6 +1,6 @@
 import { base } from '$app/paths';
 /** Runtime configuration shared by generated SDK operations and endpoint adapters. */
-import type { CreateClientConfig } from './generated/client.gen';
+import type { CreateClientConfig } from './generated/openapi/client.gen';
 import { apiTransport } from './transport';
 
 export const generatedApiFetch = (

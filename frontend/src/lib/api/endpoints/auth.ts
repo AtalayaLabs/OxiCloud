@@ -5,7 +5,7 @@
  */
 import { ApiError, apiFetch } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
-import type { SystemStatus } from '../generated/types.gen';
+import type { SystemStatus } from '../generated/openapi/types.gen';
 import type { AuthResponse, SelfUser } from '$lib/api/types';
 
 /**

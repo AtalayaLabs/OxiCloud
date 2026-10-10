@@ -26,7 +26,7 @@ jobs:
       wasm: ${{ steps.filter.outputs.wasm }}
       plugins: ${{ steps.filter.outputs.plugins }}
       migrations: ${{ steps.filter.outputs.migrations }}
-      message_bus_spec: ${{ steps.filter.outputs.message_bus_spec }}
+      asyncapi_spec: ${{ steps.filter.outputs.asyncapi_spec }}
       openapi_spec: ${{ steps.filter.outputs.openapi_spec }}
     steps:
       - uses: actions/checkout@v4
@@ -54,12 +54,12 @@ jobs:
               - 'src/application/adapters/plugin_user_lifecycle_hook.rs'
             migrations:
               - 'migrations/**'
-            message_bus_spec:
+            asyncapi_spec:
               - 'src/application/ports/message_bus_ports.rs'
               - 'src/bin/generate-asyncapi.rs'
               - 'resources/gen/asyncapi.json'
               - 'frontend/scripts/gen-message-bus-types.mjs'
-              - 'frontend/src/lib/generated/message-bus/**'
+              - 'frontend/src/lib/api/generated/asyncapi/**'
               - 'frontend/package.json'
             openapi_spec:
               # Every REST/WOPI/WebDAV/NextCloud handler carries
@@ -67,7 +67,12 @@ jobs:
               # spec. A change to any handler can shift the wire, so
               # the filter is broad — anything under `handlers/`, DTOs
               # the paths reference, the generator itself, or a utoipa
-              # version bump in Cargo.toml.
+              # version bump in Cargo.toml. The FE SDK is a projection
+              # of the same spec via `@hey-api/openapi-ts`, so its
+              # config, lockfile, and generated tree are in-scope too —
+              # a hand-edit, a toolchain bump, or a config change can
+              # drift the SDK without touching the spec, and the
+              # drift job needs to catch all three.
               - 'src/interfaces/api/handlers/**'
               - 'src/interfaces/nextcloud/**'
               - 'src/application/dtos/**'
@@ -75,6 +80,9 @@ jobs:
               - 'resources/gen/openapi.json'
               - 'Cargo.toml'
               - 'Cargo.lock'
+              - 'frontend/openapi-ts.config.ts'
+              - 'frontend/src/lib/api/generated/openapi/**'
+              - 'frontend/package.json'
 
   frontend-check:
     name: Frontend — svelte-check, ESLint, Stylelint, Prettier
@@ -110,15 +118,15 @@ jobs:
   # of the Rust source (`message_bus_ports.rs`), and the TS DTOs are
   # a compile-time artefact of the spec, so both must be reproducible.
   #
-  # Scoped by the `message_bus_spec` path filter so a PR that doesn't
+  # Scoped by the `asyncapi_spec` path filter so a PR that doesn't
   # touch the wire (or its generator scripts, or the Modelina version)
   # skips this job entirely. Needs BOTH Rust and Node toolchains, so
   # it's slightly heavier than a single-toolchain job — the filter
   # keeps it off the hot path.
-  message-bus-spec-drift:
-    name: Message-bus spec — AsyncAPI + TypeScript DTO drift
+  asyncapi-spec-drift:
+    name: AsyncAPI spec — modelina + TS DTO drift
     needs: changes
-    if: needs.changes.outputs.message_bus_spec == 'true'
+    if: needs.changes.outputs.asyncapi_spec == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -135,8 +143,8 @@ jobs:
       # `cargo run --features dev_tools --bin generate-asyncapi`.
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # Node for `just asyncapi-ts` — Modelina projects the spec into
-      # the FE `src/lib/generated/message-bus/` folder.
+      # Node for `just gen-asyncapi` — Modelina projects the spec into
+      # the FE `src/lib/api/generated/asyncapi/` folder.
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -151,7 +159,7 @@ jobs:
         run: cargo run --features dev_tools --bin generate-asyncapi
       - name: Regenerate TS DTOs (Modelina)
         working-directory: frontend
-        run: npm run gen:message-bus
+        run: npm run gen:asyncapi
       - name: Fail if committed files drifted
         # A non-empty diff means a contributor edited the Rust wire
         # source (or Modelina config) without regenerating, or hand-
@@ -160,11 +168,11 @@ jobs:
         run: |
           if ! git diff --exit-code \
                  resources/gen/asyncapi.json \
-                 frontend/src/lib/generated/message-bus/; then
+                 frontend/src/lib/api/generated/asyncapi/; then
             echo ""
-            echo "::error::Message-bus spec drift: the committed files differ from what the"
-            echo "::error::generator produces from source. Run \`just asyncapi-ts\` locally"
-            echo "::error::and commit the result — that recipe re-runs both stages."
+            echo "::error::AsyncAPI spec/DTO drift: the committed files differ from the fresh"
+            echo "::error::generator output. Run \`just gen-asyncapi\` locally — that recipe"
+            echo "::error::re-runs both stages (Rust spec + TS DTOs) — and commit the result."
             exit 1
           fi
 
@@ -180,38 +188,61 @@ jobs:
   # quietly serve outdated docs.
   #
   # Scoped by the `openapi_spec` path filter — anything under
-  # `handlers/`, DTOs those paths reference, the generator, or the
-  # utoipa version in Cargo.toml. Skipped when a PR doesn't touch
-  # any of them.
+  # `handlers/`, DTOs those paths reference, the generator, the
+  # utoipa version in Cargo.toml, the FE openapi-ts config, or the
+  # SDK output tree. Skipped when a PR doesn't touch any of them.
   openapi-spec-drift:
-    name: OpenAPI spec — utoipa drift
+    name: OpenAPI spec — utoipa + TS SDK drift
     needs: changes
     if: needs.changes.outputs.openapi_spec == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          # Same reason as message-bus-spec-drift above: build.rs feeds
+          # Same reason as asyncapi-spec-drift above: build.rs feeds
           # `git describe`'s nearest-tag output into the spec's
           # `info.version`; without tags + history CI produces a
           # different value than a developer's commit and the drift
           # check false-positives.
           fetch-depth: 0
           fetch-tags: true
+      # Rust toolchain for `cargo run --bin generate-openapi` (writes
+      # resources/gen/openapi.json).
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # Node toolchain for `npm run gen:openapi` (projects the spec
+      # into `frontend/src/lib/api/generated/openapi/` via @hey-api/
+      # openapi-ts). Mirrors the asyncapi-spec-drift job's shape
+      # so both halves of the spec/SDK pipeline are reproducibility-
+      # checked uniformly.
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 26.3.0
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci
       - name: Regenerate OpenAPI spec
-        # `just openapi` = `cargo run --features dev_tools --bin generate-openapi`.
+        # `just gen-openapi-schema` = `cargo run --features dev_tools --bin generate-openapi`.
         run: cargo run --features dev_tools --bin generate-openapi
-      - name: Fail if committed openapi.json drifted
+      - name: Regenerate TS SDK (openapi-ts)
+        working-directory: frontend
+        run: npm run gen:openapi
+      - name: Fail if committed files drifted
+        # A non-empty diff means someone edited a `#[utoipa::path]`
+        # attribute (handler added, schema changed, path renamed),
+        # bumped `@hey-api/openapi-ts`, hand-edited the generated
+        # SDK, or regenerated one half without the other.
         run: |
-          if ! git diff --exit-code resources/gen/openapi.json; then
+          if ! git diff --exit-code \
+                 resources/gen/openapi.json \
+                 frontend/src/lib/api/generated/openapi/; then
             echo ""
-            echo "::error::OpenAPI spec drift: the committed openapi.json differs from"
-            echo "::error::what the generator produces from source. Someone edited a"
-            echo "::error::#[utoipa::path] attribute (added a handler, changed a schema,"
-            echo "::error::renamed a path) without regenerating. Run \`just openapi\`"
-            echo "::error::locally and commit resources/gen/openapi.json."
+            echo "::error::OpenAPI spec/SDK drift: committed files differ from the fresh"
+            echo "::error::generator output. Run \`just gen-openapi\` locally — that recipe"
+            echo "::error::re-runs both stages (Rust spec + TS SDK) — and commit the result."
             exit 1
           fi
 

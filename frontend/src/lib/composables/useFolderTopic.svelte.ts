@@ -8,16 +8,16 @@
 
 import { useReconnect } from './useReconnect.svelte';
 import { useTopic } from './useTopic.svelte';
-import type RtEventParams from '$lib/generated/message-bus/RtEventParams';
-import type RtRevokedParams from '$lib/generated/message-bus/RtRevokedParams';
-import type FileCreatedData from '$lib/generated/message-bus/FileCreatedData';
-import type FileRenamedData from '$lib/generated/message-bus/FileRenamedData';
-import type FileMovedData from '$lib/generated/message-bus/FileMovedData';
-import type FileDeletedData from '$lib/generated/message-bus/FileDeletedData';
-import type FolderCreatedData from '$lib/generated/message-bus/FolderCreatedData';
-import type FolderRenamedData from '$lib/generated/message-bus/FolderRenamedData';
-import type FolderMovedData from '$lib/generated/message-bus/FolderMovedData';
-import type FolderDeletedData from '$lib/generated/message-bus/FolderDeletedData';
+import type RtEventParams from '$lib/api/generated/asyncapi/RtEventParams';
+import type RtRevokedParams from '$lib/api/generated/asyncapi/RtRevokedParams';
+import type FileCreatedData from '$lib/api/generated/asyncapi/FileCreatedData';
+import type FileRenamedData from '$lib/api/generated/asyncapi/FileRenamedData';
+import type FileMovedData from '$lib/api/generated/asyncapi/FileMovedData';
+import type FileDeletedData from '$lib/api/generated/asyncapi/FileDeletedData';
+import type FolderCreatedData from '$lib/api/generated/asyncapi/FolderCreatedData';
+import type FolderRenamedData from '$lib/api/generated/asyncapi/FolderRenamedData';
+import type FolderMovedData from '$lib/api/generated/asyncapi/FolderMovedData';
+import type FolderDeletedData from '$lib/api/generated/asyncapi/FolderDeletedData';
 
 /**
  * Optional per-verb handlers. Any subset is accepted; unhandled verbs
