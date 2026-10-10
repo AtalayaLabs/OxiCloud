@@ -264,7 +264,10 @@ it('creates a new text document from the bundled blank template', async () => {
 	await fireEvent.click(await screen.findByTestId('files-add-btn'));
 	await fireEvent.click(await screen.findByTestId('files-newdoc-odt-item'));
 	await waitFor(() => expect(uploadFileWithProgress).toHaveBeenCalled());
-	expect(globalThis.fetch).toHaveBeenCalledWith(expect.stringContaining('/templates/blank.odt'));
+	expect(globalThis.fetch).toHaveBeenCalledWith(
+		expect.stringContaining('/templates/blank.odt'),
+		undefined
+	);
 	const uploaded = m(uploadFileWithProgress).mock.calls[0];
 	expect(uploaded[0]).toBe('home');
 	expect((uploaded[1] as File).name).toBe('Memo.odt');

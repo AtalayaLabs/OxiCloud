@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { fetchAsset } from '$lib/utils/assets';
 	import { errorMessage, errorToast } from '$lib/utils/errors';
 	import { goto } from '$app/navigation';
 	import { base, resolve } from '$app/paths';
@@ -2110,7 +2111,7 @@
 		try {
 			let file: File;
 			if (handler === 'wopi') {
-				const res = await fetch(`${base}/templates/blank.${kind}`);
+				const res = await fetchAsset(`${base}/templates/blank.${kind}`);
 				if (!res.ok) throw new Error(`template fetch failed: ${res.status}`);
 				const blob = await res.blob();
 				file = new File([blob], fname, { type: NEW_DOC_KINDS[kind].mime });

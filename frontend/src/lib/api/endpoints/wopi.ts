@@ -3,7 +3,7 @@
  * `getEditorUrl` returns the iframe action URL + access token; the office editor
  * is launched by POST-ing the token to that URL (see WopiEditor.svelte).
  */
-import { apiFetch, withBase } from '$lib/api/client';
+import { apiFetch } from '$lib/api/client';
 
 export interface WopiEditorData {
 	editor_url: string;
@@ -37,7 +37,7 @@ let cachedExts: string[] | null = null;
 export async function getSupportedExtensions(): Promise<string[]> {
 	if (cachedExts) return cachedExts;
 	try {
-		const res = await fetch(withBase('/wopi/supported-extensions'));
+		const res = await apiFetch('/wopi/supported-extensions', { retryUnauthorized: false });
 		if (res.ok) {
 			const exts = (await res.json()) as string[];
 			if (Array.isArray(exts) && exts.length > 0) {
@@ -64,7 +64,7 @@ export async function getSupportedExtensions(): Promise<string[]> {
  */
 export async function advertisedExtensions(): Promise<string[] | null> {
 	try {
-		const res = await fetch(withBase('/wopi/supported-extensions'));
+		const res = await apiFetch('/wopi/supported-extensions', { retryUnauthorized: false });
 		if (!res.ok) return null;
 		const exts = (await res.json()) as string[];
 		return Array.isArray(exts) && exts.length > 0 ? exts : null;

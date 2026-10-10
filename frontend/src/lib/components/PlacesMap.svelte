@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { base } from '$app/paths';
+	import { fetchAsset } from '$lib/utils/assets';
+
 	/**
 	 * Places: geotagged photos on a self-hosted MapLibre GL map. Clusters are
 	 * computed server-side (`GET /api/photos/geo`), so we draw one lightweight HTML
@@ -55,7 +57,7 @@
 	async function checkBasemap(): Promise<boolean> {
 		if (hasBasemap !== null) return hasBasemap;
 		try {
-			const res = await fetch(BASEMAP_URL, { headers: { Range: 'bytes=0-0' } });
+			const res = await fetchAsset(BASEMAP_URL, { headers: { Range: 'bytes=0-0' } });
 			// The SPA fallback serves index.html (HTTP 200, text/html) for any
 			// missing path, so `res.ok` alone can't distinguish "basemap present"
 			// from "absent". A real .pmtiles is binary (octet-stream); the shell

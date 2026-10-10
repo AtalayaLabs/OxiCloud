@@ -91,7 +91,7 @@ class MockXHR {
 		this.url = url;
 	}
 	setRequestHeader(k: string, v: string): void {
-		this.requestHeaders.set(k, v);
+		this.requestHeaders.set(k.toLowerCase(), v);
 	}
 	send(body: unknown): void {
 		this.body = body;
@@ -128,7 +128,9 @@ async function waitForXhr(sink: MockXHR[], idx = 0, tries = 30): Promise<MockXHR
 
 describe('uploadFileWithProgress — DPoP + XHR', () => {
 	let xhrs: MockXHR[];
-	beforeEach(() => {
+	beforeEach(async () => {
+		const actual = await vi.importActual<typeof import('$lib/api/client')>('$lib/api/client');
+		f.mockImplementation(actual.apiFetch);
 		vi.clearAllMocks();
 		dpopState.proof = 'proof.upload';
 		xhrs = [];
@@ -149,8 +151,8 @@ describe('uploadFileWithProgress — DPoP + XHR', () => {
 		const xhr = await waitForXhr(xhrs);
 
 		expect(xhr.method).toBe('POST');
-		expect(xhr.url).toBe('/api/files/upload');
-		expect(xhr.requestHeaders.get('DPoP')).toBe('proof.upload');
+		expect(xhr.url).toBe(`${location.origin}/api/files/upload`);
+		expect(xhr.requestHeaders.get('dpop')).toBe('proof.upload');
 		expect(xhr.withCredentials).toBe(true);
 
 		// Simulate progress + successful completion.
@@ -167,7 +169,7 @@ describe('uploadFileWithProgress — DPoP + XHR', () => {
 		const file = new File([new Uint8Array([1])], 'a.txt');
 		const p = uploadFileWithProgress(null, file, () => {});
 		const xhr = await waitForXhr(xhrs);
-		expect(xhr.requestHeaders.get('DPoP')).toBeUndefined();
+		expect(xhr.requestHeaders.get('dpop')).toBeUndefined();
 		xhr.respond(200);
 		await p;
 	});
@@ -205,7 +207,7 @@ describe('uploadFileWithProgress — DPoP + XHR', () => {
 		// Retry mints a fresh XHR (the first one has already consumed
 		// its body); it must also carry the DPoP header.
 		const second = await waitForXhr(xhrs, 1);
-		expect(second.requestHeaders.get('DPoP')).toBe('proof.upload');
+		expect(second.requestHeaders.get('dpop')).toBe('proof.upload');
 		second.respond(200);
 		await expect(p).resolves.toBeUndefined();
 		expect(xhrs).toHaveLength(2);
@@ -226,7 +228,7 @@ describe('uploadFileWithProgress — DPoP + XHR', () => {
 			'DPoP-Nonce': 'srv-fresher'
 		});
 
-		await expect(p).rejects.toThrow(/dpop_nonce_challenge/);
+		await expect(p).rejects.toThrow(/upload failed: 401/);
 		expect(xhrs).toHaveLength(2); // never a third
 	});
 });

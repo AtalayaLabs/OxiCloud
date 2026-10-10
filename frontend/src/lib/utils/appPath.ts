@@ -17,3 +17,11 @@ export function appPath(pathname: string): string {
 	}
 	return pathname;
 }
+
+/** Prefix root-relative paths once for subpath deployments. */
+export function withBase(path: string): string {
+	if (!base || !path.startsWith('/') || path === base || path.startsWith(`${base}/`)) {
+		return path;
+	}
+	return base + path;
+}

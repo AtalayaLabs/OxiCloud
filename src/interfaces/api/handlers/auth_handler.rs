@@ -1365,6 +1365,8 @@ pub struct SystemStatus {
     admin_count: i64,
     /// Whether self-registration is allowed.
     registration_allowed: bool,
+    /// Whether the People routes are available in this running instance.
+    faces_enabled: bool,
 }
 
 /// Return the system initialisation state (used by the UI before setup).
@@ -1403,6 +1405,7 @@ pub async fn get_system_status(
         initialized: db_initialized || admin_count > 0,
         admin_count,
         registration_allowed: db_initialized || admin_count > 0,
+        faces_enabled: state.people_service.is_some(),
     };
 
     tracing::info!(
