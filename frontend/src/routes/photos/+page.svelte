@@ -581,7 +581,11 @@
 			     same element. Matches ResourceList's inline pattern on
 			     /files — SAME element carries BOTH classes
 			     simultaneously. -->
-			<div class="action-buttons" class:batch-selection-bar={selected.size > 0}>
+			<div
+				class="action-buttons"
+				class:batch-selection-bar={selected.size > 0}
+				data-testid={selected.size > 0 ? 'photos-batch-bar' : undefined}
+			>
 				{#if selected.size > 0}
 					<button
 						class="batch-bar-close"
