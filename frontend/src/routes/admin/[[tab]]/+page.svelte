@@ -2169,8 +2169,9 @@
 				kind: 'shared',
 				name,
 				owner: { type: owner.type, id: owner.id },
-				quota_bytes:
-					driveForm.quotaValue > 0 ? Math.round(driveForm.quotaValue * driveForm.quotaUnit) : null
+				// Always explicit: the hint promises "0 = unlimited", and an
+				// omitted quota would take the server's configured default.
+				quota_bytes: Math.max(0, Math.round(driveForm.quotaValue * driveForm.quotaUnit))
 			});
 			driveCreateOpen = false;
 			await loadDrivesTab();

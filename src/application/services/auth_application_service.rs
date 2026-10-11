@@ -106,6 +106,62 @@ fn validate_dpop_jkt(raw: &str) -> Result<String, &'static str> {
     Ok(raw.to_string())
 }
 
+/// Caps a default quota to the free disk space. `0` (unlimited) passes
+/// through untouched; a finite quota is never capped below 1 byte, because
+/// a full disk (`avail == 0`) would otherwise yield `0` — unlimited.
+fn cap_quota_to_available(base_quota: i64, role: &str, avail: Option<u64>) -> i64 {
+    if base_quota == 0 {
+        return 0;
+    }
+    match avail {
+        Some(avail) => {
+            let avail_i64 = i64::try_from(avail).unwrap_or(i64::MAX).max(1);
+            if avail_i64 < base_quota {
+                tracing::info!(
+                    "Available disk space ({} bytes) is less than default {} quota ({} bytes) — capping quota",
+                    avail,
+                    role,
+                    base_quota,
+                );
+                avail_i64
+            } else {
+                base_quota
+            }
+        }
+        None => {
+            tracing::warn!("Could not determine available disk space, using default quota");
+            base_quota
+        }
+    }
+}
+
+#[cfg(test)]
+mod cap_quota_tests {
+    use super::cap_quota_to_available;
+
+    #[test]
+    fn unlimited_passes_through() {
+        assert_eq!(cap_quota_to_available(0, "user", Some(0)), 0);
+        assert_eq!(cap_quota_to_available(0, "user", Some(10)), 0);
+    }
+
+    #[test]
+    fn caps_to_available_space() {
+        assert_eq!(cap_quota_to_available(100, "user", Some(40)), 40);
+        assert_eq!(cap_quota_to_available(100, "user", Some(400)), 100);
+    }
+
+    #[test]
+    fn full_disk_never_yields_unlimited() {
+        assert_eq!(cap_quota_to_available(100, "user", Some(0)), 1);
+    }
+
+    #[test]
+    fn unknown_space_keeps_base() {
+        assert_eq!(cap_quota_to_available(100, "user", None), 100);
+    }
+}
+
 #[cfg(test)]
 mod dpop_jkt_tests {
     use super::validate_dpop_jkt;
@@ -709,30 +765,11 @@ impl AuthApplicationService {
             self.default_quotas.user_bytes
         };
 
-        if base_quota == 0 {
-            return 0;
-        }
-
-        match Self::available_disk_space(&self.storage_path) {
-            Some(avail) => {
-                let avail_i64 = avail as i64;
-                if avail_i64 < base_quota {
-                    tracing::info!(
-                        "Available disk space ({} bytes) is less than default {} quota ({} bytes) — capping quota",
-                        avail_i64,
-                        role.as_str(),
-                        base_quota,
-                    );
-                    avail_i64
-                } else {
-                    base_quota
-                }
-            }
-            None => {
-                tracing::warn!("Could not determine available disk space, using default quota");
-                base_quota
-            }
-        }
+        cap_quota_to_available(
+            base_quota,
+            role.as_str(),
+            Self::available_disk_space(&self.storage_path),
+        )
     }
 
     /// Query the available space on the filesystem that contains `path`.
