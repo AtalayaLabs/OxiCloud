@@ -9,6 +9,7 @@ pub mod carddav_handler;
 pub mod chunked_upload_handler;
 pub mod config_handler;
 pub mod contacts_handler;
+mod dav_paths;
 pub mod dedup_handler;
 pub mod delta_upload_handler;
 pub mod device_auth_handler;

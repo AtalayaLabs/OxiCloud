@@ -597,6 +597,7 @@ async fn handle_propfind(
         .to_string();
 
     let user = extract_user(&req)?;
+    let request_path = req.uri().path().to_owned();
     let calendar_service = get_calendar_service(&state)?;
 
     let body_bytes = body::to_bytes(req.into_body(), MAX_CALDAV_BODY)
@@ -700,11 +701,8 @@ async fn handle_propfind(
                 // DTO + the full multistatus in RAM); depth-0 has no
                 // event section and keeps the tiny buffered path.
                 if depth != "0" {
-                    let base_href = format!(
-                        "{}/caldav/{}/",
-                        crate::common::config::server_base_path(),
-                        first_segment
-                    );
+                    let base_href =
+                        super::dav_paths::collection_href("caldav", &request_path, first_segment);
                     return Ok(build_streaming_collection_propfind(
                         calendar_service.clone(),
                         calendar,
@@ -715,11 +713,8 @@ async fn handle_propfind(
                     ));
                 }
 
-                let base_href = &format!(
-                    "{}/caldav/{}/",
-                    crate::common::config::server_base_path(),
-                    first_segment
-                );
+                let base_href =
+                    &super::dav_paths::collection_href("caldav", &request_path, first_segment);
                 let mut response_body = Vec::new();
 
                 CalDavAdapter::generate_calendar_collection_propfind(
@@ -801,11 +796,10 @@ async fn handle_propfind(
                     // Same streaming/buffered split as the
                     // single-segment collection branch above.
                     if depth != "0" {
-                        let base_href = format!(
-                            "{}/caldav/{}/{}/",
-                            crate::common::config::server_base_path(),
-                            first_segment,
-                            sub_parts[0]
+                        let base_href = super::dav_paths::collection_href(
+                            "caldav",
+                            &request_path,
+                            sub_parts[0],
                         );
                         return Ok(build_streaming_collection_propfind(
                             calendar_service.clone(),
@@ -817,12 +811,8 @@ async fn handle_propfind(
                         ));
                     }
 
-                    let base_href = &format!(
-                        "{}/caldav/{}/{}/",
-                        crate::common::config::server_base_path(),
-                        first_segment,
-                        sub_parts[0]
-                    );
+                    let base_href =
+                        &super::dav_paths::collection_href("caldav", &request_path, sub_parts[0]);
                     let mut response_body = Vec::new();
 
                     CalDavAdapter::generate_calendar_collection_propfind(
@@ -861,11 +851,8 @@ async fn handle_propfind(
                     AppError::not_found(format!("Calendar object not found: {}", ical_uid))
                 })?;
 
-            let base_href = &format!(
-                "{}/caldav/{}/",
-                crate::common::config::server_base_path(),
-                calendar_id
-            );
+            let base_href =
+                &super::dav_paths::collection_href("caldav", &request_path, calendar_id);
             let report_type = CalDavReportType::CalendarMultiget {
                 hrefs: vec![format!("{}{}.ics", base_href, ical_uid)],
                 props: vec![],
@@ -908,6 +895,7 @@ async fn handle_report(
     path: &str,
 ) -> Result<Response<Body>, AppError> {
     let user = extract_user(&req)?;
+    let request_path = req.uri().path().to_owned();
     let calendar_service = get_calendar_service(&state)?;
 
     let body_bytes = body::to_bytes(req.into_body(), MAX_CALDAV_BODY)
@@ -948,11 +936,7 @@ async fn handle_report(
             .get_calendar(calendar_id, user.id)
             .await
             .map_err(AppError::from)?;
-        let base_href = format!(
-            "{}/caldav/{}/",
-            crate::common::config::server_base_path(),
-            calendar_id
-        );
+        let base_href = super::dav_paths::collection_href("caldav", &request_path, calendar_id);
         return Ok(build_streaming_report_response(
             calendar_service.clone(),
             calendar_id.to_string(),
@@ -1009,11 +993,7 @@ async fn handle_report(
         }
     };
 
-    let base_href = &format!(
-        "{}/caldav/{}/",
-        crate::common::config::server_base_path(),
-        calendar_id
-    );
+    let base_href = &super::dav_paths::collection_href("caldav", &request_path, calendar_id);
     // One multistatus carrying both kinds: events first, then tasks.
     // `write_report_page` over an empty slice emits nothing, so the
     // kinds not targeted above cost no bytes.
