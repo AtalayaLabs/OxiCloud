@@ -2,7 +2,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::application::dtos::timestamp_helpers::epoch_to_datetime;
+use crate::application::dtos::timestamp_helpers::{
+    deserialize_flex_datetime_option, epoch_to_datetime,
+};
 use crate::domain::entities::share::Share;
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -28,14 +30,26 @@ pub struct CreateShareDto {
     pub item_name: Option<String>,
     pub item_type: String,
     pub password: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Inbound request accepts an integer epoch second OR an RFC 3339
+    /// string — see `timestamp_helpers::deserialize_flex_datetime_option`.
+    /// Outbound serialization is always RFC 3339.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_flex_datetime_option"
+    )]
     pub expires_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct UpdateShareDto {
     pub password: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// See [`CreateShareDto::expires_at`] for the lenient wire contract.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_flex_datetime_option"
+    )]
     pub expires_at: Option<DateTime<Utc>>,
 }
 

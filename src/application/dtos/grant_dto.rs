@@ -233,8 +233,13 @@ pub struct CreateGrantDto {
     pub subject: SubjectInputDto,
     pub resource: ResourceDto,
     pub role: RoleDto,
-    /// Optional expiry for the grant. RFC 3339 / ISO 8601.
-    #[serde(default)]
+    /// Optional expiry for the grant. Accepts an integer epoch second
+    /// OR an RFC 3339 string on input — see
+    /// `timestamp_helpers::deserialize_flex_datetime_option`.
+    #[serde(
+        default,
+        deserialize_with = "crate::application::dtos::timestamp_helpers::deserialize_flex_datetime_option"
+    )]
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
@@ -245,7 +250,11 @@ pub struct UpdateRoleDto {
     pub resource: ResourceDto,
     pub role: RoleDto,
     /// Optional expiry applied to every grant written or updated by this call.
-    #[serde(default)]
+    /// Accepts both wire shapes — see [`CreateGrantDto::expires_at`].
+    #[serde(
+        default,
+        deserialize_with = "crate::application::dtos::timestamp_helpers::deserialize_flex_datetime_option"
+    )]
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 

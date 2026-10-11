@@ -70,7 +70,12 @@ pub async fn list_drives(
 pub struct AddDriveMemberDto {
     pub subject: SubjectDto,
     pub role: RoleDto,
-    #[serde(default)]
+    /// Accepts an integer epoch second OR an RFC 3339 string — see
+    /// `timestamp_helpers::deserialize_flex_datetime_option`.
+    #[serde(
+        default,
+        deserialize_with = "crate::application::dtos::timestamp_helpers::deserialize_flex_datetime_option"
+    )]
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
@@ -79,7 +84,11 @@ pub struct AddDriveMemberDto {
 pub struct UpdateDriveMemberDto {
     pub role: RoleDto,
     /// Optional. Pass `null` (or omit) to clear an existing expiry.
-    #[serde(default)]
+    /// Accepts both wire shapes — see [`AddDriveMemberDto::expires_at`].
+    #[serde(
+        default,
+        deserialize_with = "crate::application::dtos::timestamp_helpers::deserialize_flex_datetime_option"
+    )]
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 

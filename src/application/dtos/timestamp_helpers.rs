@@ -15,6 +15,7 @@
 //! every mapper site.
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Deserializer};
 
 /// Convert an internal epoch-seconds `u64` to a wire `DateTime<Utc>`.
 /// Falls back to the Unix epoch (`1970-01-01T00:00:00Z`) on the
@@ -35,4 +36,98 @@ pub fn datetime_to_epoch(dt: DateTime<Utc>) -> u64 {
 /// / `modified_at: 0` behaviour of the stub builders.
 pub fn epoch_zero() -> DateTime<Utc> {
     DateTime::<Utc>::from_timestamp(0, 0).expect("epoch 0 is a valid DateTime<Utc>")
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// Lenient inbound deserialization
+// ══════════════════════════════════════════════════════════════════════
+//
+// Request DTOs (`CreateShareDto.expires_at`, `UpdateShareDto.expires_at`,
+// `CreateGrantDto.expires_at`, admin-side drive-membership expiries) all
+// used to accept an integer epoch second on the wire. The ISO-8601
+// pivot made the Rust field a `DateTime<Utc>`, whose default serde
+// deserializer rejects integers → every API client that still sent
+// `{"expires_at": 1700000000}` would 422.
+//
+// The two helpers below are glued to those request fields via
+// `#[serde(deserialize_with = …)]` so the server accepts BOTH shapes
+// transparently:
+//
+//   - A JSON string → parsed as RFC 3339 (`"2026-01-01T00:00:00Z"`)
+//   - A JSON integer → treated as Unix epoch seconds
+//   - `null` or missing → `None`
+//
+// Output stays canonical: chrono's default `Serialize` for
+// `DateTime<Utc>` always emits RFC 3339, so GET responses are
+// unchanged. These helpers are inbound-only — a server-to-client
+// response field never routes through them.
+
+/// Lenient deserializer for `Option<DateTime<Utc>>` — accepts an RFC
+/// 3339 string, an integer epoch second, or `null`/missing.
+pub fn deserialize_flex_datetime_option<'de, D>(
+    deserializer: D,
+) -> Result<Option<DateTime<Utc>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Flex {
+        Str(String),
+        Int(i64),
+    }
+
+    let opt: Option<Flex> = Option::deserialize(deserializer)?;
+    match opt {
+        None => Ok(None),
+        Some(Flex::Int(secs)) => DateTime::<Utc>::from_timestamp(secs, 0)
+            .map(Some)
+            .ok_or_else(|| serde::de::Error::custom("epoch seconds out of range")),
+        Some(Flex::Str(s)) => DateTime::parse_from_rfc3339(&s)
+            .map(|dt| Some(dt.with_timezone(&Utc)))
+            .map_err(|e| {
+                serde::de::Error::custom(format!("not a valid RFC 3339 timestamp: {e}"))
+            }),
+    }
+}
+
+#[cfg(test)]
+mod lenient_tests {
+    use super::*;
+
+    #[derive(Debug, Deserialize)]
+    struct Row {
+        #[serde(default, deserialize_with = "deserialize_flex_datetime_option")]
+        at: Option<DateTime<Utc>>,
+    }
+
+    #[test]
+    fn accepts_integer_epoch() {
+        let r: Row = serde_json::from_str(r#"{"at": 1700000000}"#).unwrap();
+        assert_eq!(r.at, Some(epoch_to_datetime(1_700_000_000)));
+    }
+
+    #[test]
+    fn accepts_rfc3339_string() {
+        let r: Row = serde_json::from_str(r#"{"at": "2023-11-14T22:13:20Z"}"#).unwrap();
+        assert_eq!(r.at, Some(epoch_to_datetime(1_700_000_000)));
+    }
+
+    #[test]
+    fn accepts_null() {
+        let r: Row = serde_json::from_str(r#"{"at": null}"#).unwrap();
+        assert_eq!(r.at, None);
+    }
+
+    #[test]
+    fn accepts_missing() {
+        let r: Row = serde_json::from_str("{}").unwrap();
+        assert_eq!(r.at, None);
+    }
+
+    #[test]
+    fn rejects_garbage_string() {
+        let err = serde_json::from_str::<Row>(r#"{"at": "not-a-date"}"#).unwrap_err();
+        assert!(err.to_string().contains("RFC 3339"));
+    }
 }

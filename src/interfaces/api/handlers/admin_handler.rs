@@ -3143,14 +3143,22 @@ pub async fn list_drive_members_admin(
 pub struct AdminAddDriveMemberDto {
     pub subject: SubjectDto,
     pub role: RoleDto,
-    #[serde(default)]
+    /// Accepts an integer epoch second OR an RFC 3339 string — see
+    /// `timestamp_helpers::deserialize_flex_datetime_option`.
+    #[serde(
+        default,
+        deserialize_with = "crate::application::dtos::timestamp_helpers::deserialize_flex_datetime_option"
+    )]
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
 pub struct AdminUpdateDriveMemberDto {
     pub role: RoleDto,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::application::dtos::timestamp_helpers::deserialize_flex_datetime_option"
+    )]
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 

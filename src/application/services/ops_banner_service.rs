@@ -182,11 +182,20 @@ impl std::error::Error for OpsBannerError {}
 pub struct OpsBannerInput {
     pub severity: OpsBannerSeverity,
     pub body: BTreeMap<String, String>,
-    #[serde(default)]
+    /// Accepts an integer epoch second OR an RFC 3339 string — see
+    /// `timestamp_helpers::deserialize_flex_datetime_option`.
+    #[serde(
+        default,
+        deserialize_with = "crate::application::dtos::timestamp_helpers::deserialize_flex_datetime_option"
+    )]
     pub starts_at: Option<DateTime<Utc>>,
     /// Optional auto-hide timestamp. See the field doc on
-    /// [`OpsBanner::expires_at`].
-    #[serde(default)]
+    /// [`OpsBanner::expires_at`]. Accepts both wire shapes — see
+    /// [`OpsBannerInput::starts_at`].
+    #[serde(
+        default,
+        deserialize_with = "crate::application::dtos::timestamp_helpers::deserialize_flex_datetime_option"
+    )]
     pub expires_at: Option<DateTime<Utc>>,
 }
 
