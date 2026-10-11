@@ -197,6 +197,7 @@ impl PathResolverService {
                     // helper.
                     is_favorite: false,
                     is_shared: false,
+                    mount: None,
                 }))
             }
             _ => {

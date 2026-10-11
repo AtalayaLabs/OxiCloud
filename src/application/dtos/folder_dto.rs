@@ -36,6 +36,19 @@ pub struct MoveFolderDto {
     pub parent_id: Option<String>,
 }
 
+/// Marks a folder as a mount (docs/plan/share-mounts.md § API).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct MountDto {
+    /// `"shared_folder"`, `"shared_drive"` or `"external"`.
+    pub kind: String,
+    /// Target folder the mount answers for; absent for external mounts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_id: Option<Uuid>,
+    /// Drive of the target; absent for external mounts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_drive_id: Option<Uuid>,
+}
+
 /// DTO for folder responses
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct FolderDto {
@@ -109,6 +122,10 @@ pub struct FolderDto {
     /// Resource-scoped: `true` when the folder has ANY explicit
     /// role-grant on it. Same wire contract as `is_favorite`.
     pub is_shared: bool,
+
+    /// Present on mount rows only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mount: Option<MountDto>,
 }
 
 impl From<Folder> for FolderDto {
@@ -145,6 +162,7 @@ impl From<Folder> for FolderDto {
             // Json response.
             is_favorite: false,
             is_shared: false,
+            mount: None,
         }
     }
 }
@@ -209,6 +227,7 @@ impl FolderDto {
     /// Creates an empty folder DTO for stub implementations
     pub fn empty() -> Self {
         Self {
+            mount: None,
             id: "stub-id".to_string(),
             name: "stub-folder".to_string(),
             path: "/stub/path".to_string(),
@@ -289,6 +308,12 @@ pub struct FolderResourceRow {
     pub type_order: i64,
     /// `0` for folders, `1` for files (used by `name` sort to keep folders first).
     pub folder_first: i32,
+    /// Share mount target (folder rows only; `None` for plain folders and files).
+    pub mount_target_id: Option<Uuid>,
+    /// Drive of the mount target.
+    pub mount_target_drive_id: Option<Uuid>,
+    /// `"shared_folder"` | `"shared_drive"` for mount rows.
+    pub mount_kind: Option<String>,
 }
 
 /// Opaque keyset-pagination cursor for `/api/folders/{id}/resources`.

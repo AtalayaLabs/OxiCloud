@@ -252,6 +252,20 @@ impl FileHandler {
 
                 // ── Fail-fast pre-check: verify the caller can Create inside
                 // the target folder BEFORE spooling the multipart body to disk.
+                // Share mount: uploads land in the target (docs/plan/share-mounts.md R1).
+                if let Some(ref fid) = folder_id {
+                    match state
+                        .applications
+                        .folder_service_concrete
+                        .resolve_share_mount(Subject::User(auth_user.id), fid)
+                        .await
+                    {
+                        Ok(Some(m)) => folder_id = Some(m.target_id.to_string()),
+                        Ok(None) => {}
+                        Err(err) => return Err(Self::domain_error_response(err)),
+                    }
+                }
+
                 // The upload service re-checks at write time — this is a
                 // UX/resource optimization, not the security boundary.
                 if let Some(ref fid) = folder_id

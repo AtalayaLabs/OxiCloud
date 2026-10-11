@@ -49,6 +49,8 @@ pub struct SubjectGroupService {
     /// drive grants changes every affected user's visible drive list,
     /// so the cached lists drop alongside `user_groups_cache`.
     drive_repo: Arc<crate::infrastructure::repositories::pg::DrivePgRepository>,
+    /// Share mounts follow group membership (docs/plan/share-mounts.md § Lifecycle).
+    share_mounts: Option<Arc<crate::application::services::share_mount_service::ShareMountService>>,
 }
 
 impl SubjectGroupService {
@@ -65,7 +67,16 @@ impl SubjectGroupService {
             user_storage,
             engine,
             drive_repo,
+            share_mounts: None,
         }
+    }
+
+    pub fn with_share_mounts(
+        mut self,
+        svc: Arc<crate::application::services::share_mount_service::ShareMountService>,
+    ) -> Self {
+        self.share_mounts = Some(svc);
+        self
     }
 
     /// Returns the user IDs whose `user_groups_cache` entries need to
@@ -434,6 +445,11 @@ impl SubjectGroupService {
         for uid in self.invalidation_targets(member).await? {
             self.engine.invalidate_user_groups_cache(uid).await;
             self.drive_repo.invalidate_readable_for_user(uid).await;
+            if let Some(svc) = &self.share_mounts
+                && let Err(e) = svc.reconcile(uid).await
+            {
+                tracing::warn!("share mount reconcile after group change failed: {e}");
+            }
         }
 
         tracing::info!(
@@ -558,6 +574,11 @@ impl SubjectGroupService {
         for uid in invalidation {
             self.engine.invalidate_user_groups_cache(uid).await;
             self.drive_repo.invalidate_readable_for_user(uid).await;
+            if let Some(svc) = &self.share_mounts
+                && let Err(e) = svc.reconcile(uid).await
+            {
+                tracing::warn!("share mount reconcile after group change failed: {e}");
+            }
         }
 
         tracing::info!(

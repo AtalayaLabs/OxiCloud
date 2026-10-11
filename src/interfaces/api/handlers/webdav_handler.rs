@@ -578,6 +578,7 @@ async fn handle_propfind(
                 // Synthetic root, not on the SPA path — safe default.
                 is_favorite: false,
                 is_shared: false,
+                mount: None,
             };
             // Skip the 2-query quota resolution when the request's prop list
             // never mentions quota (benches/QUOTA-PATH.md).

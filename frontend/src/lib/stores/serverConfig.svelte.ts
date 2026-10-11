@@ -41,6 +41,7 @@ const DEFAULT_FEATURES: ServerFeatures = {
 	faces: false,
 	video_thumbnails: true,
 	external_mounts: false,
+	share_mounts: false,
 	markdown_collab: false
 };
 

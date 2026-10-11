@@ -187,6 +187,8 @@ pub const KNOWN: &[(&str, &str)] = &[
     ("features", "OXICLOUD_ENABLE_AUTH"),
     ("features", "OXICLOUD_ENABLE_CONTENT_SEARCH"),
     ("features", "OXICLOUD_ENABLE_EXTERNAL_MOUNTS"),
+    ("features", "OXICLOUD_ENABLE_SHARE_MOUNTS"),
+    ("features", "OXICLOUD_SHARE_MOUNT_FOLDER"),
     ("features", "OXICLOUD_ENABLE_FACES"),
     ("features", "OXICLOUD_COLLAB_DEBOUNCE_IDLE_MS"),
     ("features", "OXICLOUD_COLLAB_DEBOUNCE_MAX_MS"),

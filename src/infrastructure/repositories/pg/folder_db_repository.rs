@@ -832,7 +832,17 @@ impl FolderRepository for FolderDbRepository {
             .fetch_optional(self.pool())
         })
         .await
-        .map_err(|e| DomainError::internal_error("FolderDb", format!("move: {e}")))?
+        .map_err(|e| {
+            if let sqlx::Error::Database(db_err) = &e
+                && db_err.code().as_deref() == Some("23505")
+            {
+                return DomainError::already_exists(
+                    "Folder",
+                    format!("a sibling with the same name exists at the destination ({id})"),
+                );
+            }
+            DomainError::internal_error("FolderDb", format!("move: {e}"))
+        })?
         .ok_or_else(|| DomainError::not_found("Folder", id))?;
 
         Self::row_to_folder(
@@ -1126,6 +1136,7 @@ impl FolderRepository for FolderDbRepository {
                         fo.created_by, fo.updated_by \
                      FROM storage.folders fo \
                     WHERE fo.is_trashed = false \
+                      AND fo.mount_target_id IS NULL \
                       AND fo.lpath <@ (SELECT lpath FROM storage.folders WHERE id = $1::uuid) \
                     ORDER BY fo.path";
 
@@ -1727,10 +1738,13 @@ impl FolderDbRepository {
         order_by: &str,
         kinds: Option<&[ResourceKind]>,
         reverse: bool,
+        show_mounts: bool,
     ) -> Result<Vec<FolderResourceRow>, DomainError> {
         // A token caller has no `auth.users` row; nil matches no favourite.
         let caller_id = caller.user_id().unwrap_or_else(Uuid::nil);
         let show_is_shared = caller.user_id().is_some();
+        // R0: mount rows render only for a signed-in recipient (docs/plan/share-mounts.md).
+        let show_mounts = show_mounts && caller.user_id().is_some();
         let include_folders = kinds.is_none_or(|k| k.contains(&ResourceKind::Folder));
         let include_files = kinds.is_none_or(|k| k.contains(&ResourceKind::File));
 
@@ -1766,9 +1780,40 @@ impl FolderDbRepository {
                 ))                        AS is_shared,
                 LOWER(f.name)             AS sort_str,
                 0::bigint                 AS type_order,
-                0::int                    AS folder_first
+                0::int                    AS folder_first,
+                f.mount_target_id,
+                (SELECT t.drive_id FROM storage.folders t WHERE t.id = f.mount_target_id)
+                                          AS mount_target_drive_id,
+                (SELECT CASE WHEN t.parent_id IS NULL THEN 'shared_drive' ELSE 'shared_folder' END
+                   FROM storage.folders t WHERE t.id = f.mount_target_id)
+                                          AS mount_kind
             FROM storage.folders f
             WHERE f.parent_id = $1::uuid AND NOT f.is_trashed
+              AND (
+                  f.mount_target_id IS NULL
+                  OR (
+                      $9::bool
+                      AND EXISTS (SELECT 1 FROM storage.drives d
+                                   WHERE d.id = f.drive_id AND d.default_for_user = $7::uuid)
+                      AND EXISTS (
+                          SELECT 1 FROM storage.folders t
+                           WHERE t.id = f.mount_target_id AND NOT t.is_trashed
+                             AND (
+                                 EXISTS (SELECT 1 FROM storage.role_grants g
+                                           JOIN storage.folders a ON a.id = g.resource_id
+                                          WHERE g.resource_type = 'folder' AND a.lpath @> t.lpath
+                                            AND (g.expires_at IS NULL OR g.expires_at > NOW())
+                                            AND ((g.subject_type = 'user'  AND g.subject_id = $7::uuid)
+                                              OR (g.subject_type = 'group' AND g.subject_id IN (SELECT storage.caller_group_ids($7::uuid)))))
+                              OR EXISTS (SELECT 1 FROM storage.role_grants g
+                                          WHERE g.resource_type = 'drive' AND g.resource_id = t.drive_id
+                                            AND (g.expires_at IS NULL OR g.expires_at > NOW())
+                                            AND ((g.subject_type = 'user'  AND g.subject_id = $7::uuid)
+                                              OR (g.subject_type = 'group' AND g.subject_id IN (SELECT storage.caller_group_ids($7::uuid)))))
+                             )
+                      )
+                  )
+              )
         "#;
 
         let file_branch = r#"
@@ -1798,7 +1843,10 @@ impl FolderDbRepository {
                 ))                        AS is_shared,
                 LOWER(fm.name)            AS sort_str,
                 fm.category_order::bigint AS type_order,
-                1::int                    AS folder_first
+                1::int                    AS folder_first,
+                NULL::uuid                AS mount_target_id,
+                NULL::uuid                AS mount_target_drive_id,
+                NULL::text                AS mount_kind
             FROM storage.files fm
             WHERE fm.folder_id = $1::uuid AND NOT fm.is_trashed
         "#;
@@ -1988,7 +2036,8 @@ impl FolderDbRepository {
                     created_at, modified_at, drive_id, blob_hash, \
                     created_by, updated_by, \
                     is_favorite, is_shared, \
-                    sort_str, type_order, folder_first \
+                    sort_str, type_order, folder_first, \
+                    mount_target_id, mount_target_drive_id, mount_kind \
              FROM ({inner}) r \
              {outer_order} \
              LIMIT $6"
@@ -2017,6 +2066,7 @@ impl FolderDbRepository {
             .bind(limit as i64)
             .bind(caller_id)
             .bind(show_is_shared)
+            .bind(show_mounts)
             .fetch_all(self.pool())
             .await
             .map_err(|e| {
@@ -2051,8 +2101,161 @@ impl FolderDbRepository {
                     sort_str: r.try_get_unchecked(14).map_err(|e| decode_err(14, e))?,
                     type_order: r.try_get_unchecked(15).map_err(|e| decode_err(15, e))?,
                     folder_first: r.try_get_unchecked(16).map_err(|e| decode_err(16, e))?,
+                    mount_target_id: r.try_get_unchecked(17).map_err(|e| decode_err(17, e))?,
+                    mount_target_drive_id: r
+                        .try_get_unchecked(18)
+                        .map_err(|e| decode_err(18, e))?,
+                    mount_kind: r.try_get_unchecked(19).map_err(|e| decode_err(19, e))?,
                 })
             })
             .collect()
+    }
+}
+
+#[cfg(all(test, integration_tests))]
+mod share_mount_listing_tests {
+    use super::*;
+    use crate::domain::services::authorization::Subject;
+    use crate::infrastructure::repositories::pg::ShareMountPgRepository;
+    use crate::infrastructure::repositories::pg::share_mount_pg_repository::trigger_tests::{
+        make_user_with_drive, personal_root,
+    };
+    use crate::mount_it_support::{fresh_db, provision_folder};
+
+    async fn grant(pool: &sqlx::PgPool, subject: Uuid, folder: Uuid, by: Uuid) {
+        sqlx::query(
+            "INSERT INTO storage.role_grants (subject_type, subject_id, resource_type, resource_id, role, granted_by) VALUES ('user', $1, 'folder', $2, 'viewer', $3)",
+        )
+        .bind(subject)
+        .bind(folder)
+        .bind(by)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn list_ids(
+        repo: &FolderDbRepository,
+        parent: Uuid,
+        caller: Subject,
+        show_mounts: bool,
+    ) -> Vec<Uuid> {
+        repo.list_resources_paged(parent, caller, 100, None, "name", None, false, show_mounts)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn r0_mount_visible_only_to_recipient_with_readable_target() {
+        let (_c, pool) = fresh_db().await;
+        let alice = provision_folder(&pool, "alice", "Docs").await;
+        let bob = make_user_with_drive(&pool, "bob").await;
+        let carol = make_user_with_drive(&pool, "carol").await;
+        let (bob_drive, bob_root) = personal_root(&pool, bob).await;
+        grant(&pool, bob, alice.mount_folder_id, alice.owner_id).await;
+        let mounts = ShareMountPgRepository::new(pool.clone());
+        let m = mounts
+            .create_mount(bob_drive, bob_root, alice.mount_folder_id, bob)
+            .await
+            .unwrap();
+        let repo = FolderDbRepository::new(pool.clone());
+        assert_eq!(
+            list_ids(&repo, bob_root, Subject::User(bob), true).await,
+            vec![m.mount_id]
+        );
+        assert!(
+            list_ids(&repo, bob_root, Subject::User(bob), false)
+                .await
+                .is_empty(),
+            "flag off hides mounts"
+        );
+        grant(&pool, carol, bob_root, bob).await;
+        assert!(
+            list_ids(&repo, bob_root, Subject::User(carol), true)
+                .await
+                .is_empty()
+        );
+        assert!(
+            list_ids(&repo, bob_root, Subject::Token(Uuid::new_v4()), true)
+                .await
+                .is_empty()
+        );
+        sqlx::query("UPDATE storage.folders SET is_trashed = TRUE WHERE id = $1")
+            .bind(alice.mount_folder_id)
+            .execute(&*pool)
+            .await
+            .unwrap();
+        assert!(
+            list_ids(&repo, bob_root, Subject::User(bob), true)
+                .await
+                .is_empty()
+        );
+        sqlx::query("UPDATE storage.folders SET is_trashed = FALSE WHERE id = $1")
+            .bind(alice.mount_folder_id)
+            .execute(&*pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            list_ids(&repo, bob_root, Subject::User(bob), true).await,
+            vec![m.mount_id]
+        );
+        sqlx::query("DELETE FROM storage.role_grants WHERE subject_id = $1 AND resource_id = $2")
+            .bind(bob)
+            .bind(alice.mount_folder_id)
+            .execute(&*pool)
+            .await
+            .unwrap();
+        assert!(
+            list_ids(&repo, bob_root, Subject::User(bob), true)
+                .await
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn listing_row_carries_mount_columns() {
+        let (_c, pool) = fresh_db().await;
+        let alice = provision_folder(&pool, "alice", "Docs").await;
+        let bob = make_user_with_drive(&pool, "bob").await;
+        let (bob_drive, bob_root) = personal_root(&pool, bob).await;
+        grant(&pool, bob, alice.mount_folder_id, alice.owner_id).await;
+        ShareMountPgRepository::new(pool.clone())
+            .create_mount(bob_drive, bob_root, alice.mount_folder_id, bob)
+            .await
+            .unwrap();
+        let repo = FolderDbRepository::new(pool.clone());
+        let rows = repo
+            .list_resources_paged(
+                bob_root,
+                Subject::User(bob),
+                10,
+                None,
+                "name",
+                None,
+                false,
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows[0].mount_target_id, Some(alice.mount_folder_id));
+        assert_eq!(rows[0].mount_target_drive_id, Some(alice.drive_id));
+        assert_eq!(rows[0].mount_kind.as_deref(), Some("shared_folder"));
+        let plain = repo
+            .list_resources_paged(
+                alice.mount_folder_id,
+                Subject::User(alice.owner_id),
+                10,
+                None,
+                "name",
+                None,
+                false,
+                true,
+            )
+            .await
+            .unwrap();
+        assert!(plain.is_empty() || plain[0].mount_target_id.is_none());
     }
 }
