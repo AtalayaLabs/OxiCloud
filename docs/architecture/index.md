@@ -78,3 +78,4 @@ src/
 - [Derived and Attached Blobs →](/architecture/derived-and-attached-blobs) — thumbnails, transcodes and uploaded previews: why content-keyed and file-keyed artifacts need separate tables
 - [Background Jobs →](/architecture/jobs)
 - [Message Bus & Notifications →](/architecture/message-bus-and-notifications) — real-time WebSocket bus (topics, AuthZ scopes, tab-visibility grace-close), persistent notifications (bell), AsyncAPI vs OpenAPI schema ownership
+- [Dates and Timestamps →](/architecture/dates) — which column means `btime`, `mtime`, `ctime` or capture time, which WebDAV / NextCloud slot each one feeds, and how far a client-supplied date is trusted
