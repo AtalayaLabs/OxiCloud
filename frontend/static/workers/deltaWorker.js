@@ -32,7 +32,8 @@ const WASM_GLUE_URL = `${BASE}/vendors/hash-wasm/oxicloud_hash_wasm.js`;
 const SLICE_BYTES = 8 * 1024 * 1024;
 /** Negotiate after this many freshly hashed chunks (~64 MiB of content). */
 const NEGOTIATE_BATCH = 256;
-/** Default target size of a PUT body (grouping multiple chunk frames).
+/** Default maximum size of a PUT body, including chunk-frame headers.
+ *  A chunk is indivisible: one frame larger than the limit travels alone.
  *  The orchestrator may override this per-upload via the init message's
  *  `uploadBatchBytes` field, sourced from `window.oxi.UPLOAD_BATCH_BYTES`.
  *  Lowering it (say to 1 MiB) helps clients behind proxies with tight
@@ -76,7 +77,7 @@ workerScope.onmessage = async (event) => {
     // Per-upload override sourced from `window.oxi.UPLOAD_BATCH_BYTES`
     // in the main thread. Falls back to the module default (8 MiB).
     const uploadBatchBytesEff =
-        typeof uploadBatchBytes === 'number' && uploadBatchBytes > 0
+        typeof uploadBatchBytes === 'number' && Number.isFinite(uploadBatchBytes) && uploadBatchBytes > 0
             ? uploadBatchBytes
             : UPLOAD_BATCH_BYTES_DEFAULT;
 
@@ -191,18 +192,57 @@ workerScope.onmessage = async (event) => {
         return wire;
     };
 
+    /**
+     * Select a bounded request without copying the rest of the queue. The same
+     * framing budget applies to initial uploads and commit-time recovery.
+     * Always take one chunk, even when its frame alone exceeds the budget:
+     * splitting a content-addressed chunk would change the protocol.
+     * @param {(WorkerChunk | undefined)[]} pending
+     * @param {number} start
+     */
+    const takeBatch = (pending, start) => {
+        /** @type {WorkerChunk[]} */
+        const batch = [];
+        let bytes = 0;
+        let next = start;
+        while (next < pending.length) {
+            const c = /** @type {WorkerChunk} */ (pending[next]);
+            const frameBytes = 4 + c.s;
+            if (batch.length > 0 && bytes + frameBytes > uploadBatchBytesEff) break;
+            batch.push(c);
+            bytes += frameBytes;
+            next++;
+        }
+        return { batch, next };
+    };
+
+    /** Send one bounded batch; count content bytes only after acknowledgement. */
+    const putBatch = async (/** @type {WorkerChunk[]} */ batch) => {
+        const wire = await encodeFrames(batch);
+        log('debug', `chunk PUT: ${batch.length} chunks, ${wire.length} bytes`);
+        const response = await withHeartbeat(() =>
+            fetch(`${BASE}/api/files/delta/chunks`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/octet-stream',
+                    ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {})
+                },
+                body: wire
+            })
+        );
+        if (response.ok) {
+            for (const c of batch) uploadedBytes += c.s;
+            progress();
+        }
+        return response;
+    };
+
     const uploadLoop = async () => {
         while (!failed) {
-            // Take up to the effective per-PUT byte cap from the queue.
-            /** @type {WorkerChunk[]} */
-            const batch = [];
-            let bytes = 0;
-            while (uploadHead < uploadQueue.length && bytes < uploadBatchBytesEff) {
-                const c = /** @type {WorkerChunk} */ (uploadQueue[uploadHead]);
+            const { batch, next } = takeBatch(uploadQueue, uploadHead);
+            while (uploadHead < next) {
                 uploadQueue[uploadHead] = undefined;
                 uploadHead++;
-                batch.push(c);
-                bytes += c.s;
             }
             if (uploadHead === uploadQueue.length) {
                 uploadQueue.length = 0;
@@ -225,26 +265,12 @@ workerScope.onmessage = async (event) => {
             }
             try {
                 // eslint-disable-next-line no-await-in-loop -- bounded by pool size
-                const wire = await encodeFrames(batch);
-                log('debug', `chunk PUT: ${batch.length} chunks, ${wire.length} bytes`);
-                // eslint-disable-next-line no-await-in-loop -- bounded by pool size
-                const response = await withHeartbeat(() =>
-                    fetch(`${BASE}/api/files/delta/chunks`, {
-                        method: 'PUT',
-                        headers: {
-                            'Content-Type': 'application/octet-stream',
-                            ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {})
-                        },
-                        body: wire
-                    })
-                );
+                const response = await putBatch(batch);
                 if (!response.ok) {
                     failed = `chunk PUT failed (HTTP ${response.status})`;
                     log('error', failed);
                     return;
                 }
-                for (const c of batch) uploadedBytes += c.s;
-                progress();
             } catch (err) {
                 failed = `chunk PUT failed: ${err instanceof Error ? err.message : String(err)}`;
                 log('error', failed);
@@ -392,7 +418,7 @@ workerScope.onmessage = async (event) => {
                 const byHash = new Map(chunks.map((c) => [c.h, c]));
                 /** @type {WorkerChunk[]} */
                 const retry = [];
-                for (const h of body.still_missing) {
+                for (const h of new Set(body.still_missing)) {
                     const c = byHash.get(h);
                     if (!c) {
                         fallback('server requested an unknown chunk');
@@ -400,23 +426,16 @@ workerScope.onmessage = async (event) => {
                     }
                     retry.push(c);
                 }
-                const wire = await encodeFrames(retry);
-                // eslint-disable-next-line no-await-in-loop -- retry loop
-                const put = await withHeartbeat(() =>
-                    fetch(`${BASE}/api/files/delta/chunks`, {
-                        method: 'PUT',
-                        headers: {
-                            'Content-Type': 'application/octet-stream',
-                            ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {})
-                        },
-                        body: wire
-                    })
-                );
-                if (!put.ok) {
-                    fallback(`retry chunk PUT failed (HTTP ${put.status})`);
-                    return;
+                for (let start = 0; start < retry.length;) {
+                    const { batch, next } = takeBatch(retry, start);
+                    // eslint-disable-next-line no-await-in-loop -- bounded recovery requests
+                    const put = await putBatch(batch);
+                    if (!put.ok) {
+                        fallback(`retry chunk PUT failed (HTTP ${put.status})`);
+                        return;
+                    }
+                    start = next;
                 }
-                for (const c of retry) uploadedBytes += c.s;
                 progress(true);
                 continue;
             }
