@@ -1,7 +1,7 @@
 # Vault encrypted files and sharing
 
 **Status: proposal, not implemented.** Reviewed against OxiCloud
-`8c0dd334cf065ad11f60f9be24e2aafd5dda7550` on 2026-09-29.
+`efed8bc67106d4140319a3233278ba0dc71c36f4` on 2026-10-10.
 
 Bring client-encrypted files, metadata, sharing and notes to OxiCloud through
 the Vault direction in [AGENTS.md](../../AGENTS.md). Preserve shared drives,
@@ -20,8 +20,9 @@ authorization and lifecycle rules.
 The missing property is that file contents and sensitive metadata can remain
 unreadable to the OxiCloud server. Today:
 
-- `DriveKind` has `Personal` and `Shared` only. Vault is an architectural
-  direction, not an available drive type.
+- `DriveKind` has `Personal` and `Shared` only. This proposal uses "Vault" for
+  an encrypted personal or shared drive, with protection independent of kind.
+  That capability is not implemented.
 - `EncryptedBlobBackend` holds server-side keys. Its encryption protects
   backend objects at rest, not content from the application server.
 - `frontend/src/lib/api/endpoints/opaque.ts::opaqueLogin` uses the completed
@@ -80,7 +81,7 @@ that a recipient already copied.
 flowchart LR
   A[Unlocked Svelte client] --> B[Encrypt bytes and metadata in worker]
   B --> C[Vault application service and AuthorizationEngine]
-  C --> D[DedupService storing ciphertext]
+  C --> D[BlobHandler storing ciphertext]
   D --> E[Existing Local / S3 / Azure backend]
   C --> F[PostgreSQL grants, envelopes and revision metadata]
   F --> G[Authorized recipient client]
@@ -93,13 +94,22 @@ It must survive folder moves, copies, restored versions, shared access and
 every protocol surface. A filename extension, MIME type or mutable policy flag
 alone is insufficient to identify protected content.
 
-Adding `DriveKind::Vault` requires the database CHECK constraint, domain enum,
-DTOs, OpenAPI generation and Svelte types to change together. It must also
-specify whether a Vault can have multiple members. Proposed answer: yes, through
-existing grants, with its own encrypted membership state. Do not expose a
-new kind that silently behaves as `Personal` or `Shared` before those rules exist.
+Keep `DriveKind::{Personal, Shared}` and add a separate typed, persisted
+content-protection property, for example `Plain` or `ClientEncrypted` with a
+versioned encryption context. Both kinds can then be encrypted. This refines
+the reserved Vault-kind wording in `AGENTS.md`; align that guidance when the
+model is agreed. Database constraints, domain types, DTOs, OpenAPI and Svelte
+types must agree on the property. It is not a freely toggled policy: existing
+drives default to plain, and changing protection on populated content requires
+an explicit client-mediated migration with verification and crash recovery.
 
-Content I/O still uses `DedupService`, as required by `src/AGENTS.md`. A Vault
+Attach the encryption context to the source drive. Shares and per-recipient
+mounts distribute access and key envelopes; they do not redefine the source
+content's protection. Moving, copying or linking content must preserve that
+context or use the explicit migration path. Cross-drive and per-share encryption
+contexts remain separate future designs, not implicit behavior in this release.
+
+Content I/O still uses `BlobHandler`, as required by `src/AGENTS.md`. A Vault
 stores an opaque client envelope as content; server-side encryption may wrap
 those already-encrypted bytes again. The server hashes ciphertext for storage
 integrity and must not require a plaintext hash to register or commit it.
@@ -108,6 +118,14 @@ The older OXCPT v2 sketch needs a separate format decision before implementation
 either retain a client envelope inside today's storage framing or implement an
 explicit v2 dispatch path with migration tests. Do not reinterpret existing v1
 objects or add a passthrough arm without the service-level Vault boundary.
+
+The existing chunk headers provide a format/version and key-fingerprint hook
+for rotation. Define separately which fields describe the server's at-rest key
+and which identify the client's envelope/epoch; neither a fingerprint nor an
+unkeyed chunk hash proves authenticity. Bind client-relevant header fields to
+the authenticated envelope and manifest. Reject unknown versions, mismatched
+epochs and downgrade attempts. Any header extension needs versioned read/write
+vectors and mixed-version rotation tests without rewriting legacy semantics.
 
 Randomized encryption prevents useful cross-user plaintext deduplication.
 Never use deterministic encryption or plaintext hash probes to preserve current
@@ -171,6 +189,25 @@ with bounded backoff and cancellation; never silently fall back to plaintext.
 Maximum plaintext chunk size must account for AEAD tags and envelope overhead
 inside existing server/proxy frame limits.
 
+Treat manifest poisoning as a protocol threat, including substitution of valid
+chunks from another object, reordering and replay of an older complete revision.
+Require a canonical, versioned manifest authenticated by an authorized writer's
+signature (or an explicitly reviewed equivalent construction). Bind the source
+drive/encryption context, object and revision IDs, parent revision, membership
+epoch, ordered ciphertext hashes and lengths, encrypted-metadata digest, total
+length and final marker. Clients verify it against authenticated writer identity
+and membership before accepting decrypted content; server-side validation alone
+cannot establish E2EE integrity. Signature coverage and key distribution need
+independent test vectors and security review.
+
+A valid signature does not establish freshness. Clients must retain or obtain
+an authenticated revision/epoch checkpoint and reject rollback or divergent
+history according to a defined recovery policy. A new device has no such local
+history: bootstrap from a trusted device/recovery checkpoint, or explicitly
+document the remaining server-equivocation risk. Include substitution, missing
+chunk, duplicate/reordered chunk, unauthorized writer, stale-epoch and rollback
+cases in the acceptance suite.
+
 Finalization must recheck authorization, quota, object revision and membership
 epoch under one transactional boundary. On a revoked grant or changed epoch,
 reject the stale commit without changing the active revision. Publish the new
@@ -206,6 +243,16 @@ future access at the service layer, and rotate content keys for future revisions
 after membership removal. Notify clients through existing message-bus topics
 using opaque IDs rather than decrypted filenames.
 
+Encrypted collaboration is a target of this design. The first usable release
+must support multiple members editing encrypted file revisions with conflict
+handling; it must not stop at an owner-only Vault. Live co-editing additionally
+needs an encrypted update/snapshot protocol with authenticated writer identities,
+ordering/replay protection, membership-epoch rotation and offline merge rules.
+Keep the current plaintext CRDT persistence unavailable to encrypted drives
+until that protocol is reviewed. Its release gate is two clients editing and
+reconnecting concurrently, including member removal, without plaintext updates
+or snapshots reaching server storage, logs or backups.
+
 ## Feature compatibility
 
 | Surface | Required Vault behavior |
@@ -225,12 +272,13 @@ using opaque IDs rather than decrypted filenames.
 |---|---|---|
 | 1 | Bounded delta recovery, usable independently | Real worker tests for request caps, framing, recovery subset, duplicates, failure and retry limit; frontend checks/build. |
 | 2 | This design and correction of the historical storage prompt | Maintainer agreement on threat model, multi-user Vault semantics, formats, recovery and compatible dependencies. No runtime E2EE claim. |
-| 3 | Typed Vault capability boundary and inert feature gate | Cross-user/service tests; every REST/DAV/WOPI/index path rejects unsupported access; new migrations sort after current main. No user-created Vault until subsequent gates pass. |
-| 4 | Reviewed envelope, account/device keys, unlock and recovery | Independent vectors; altered/truncated/reordered content rejected; wrong keys and changed identity detected; password/OIDC/recovery tests. |
+| 3 | Typed drive-protection property and inert feature gate | Personal and shared drive coverage; cross-user/service tests; every REST/DAV/WOPI/index path rejects unsupported access; new migrations sort after current main. No user-created Vault until subsequent gates pass. |
+| 4 | Reviewed envelope and signed manifest, account/device keys, unlock and recovery | Independent vectors; manifest poisoning, rollback, altered/truncated/reordered content rejected; wrong keys and changed identity detected; header-version/rotation and password/OIDC/recovery tests. |
 | 5 | Ciphertext upload/download and encrypted metadata | Browser round trip on Local and S3; zero plaintext in API traces, DB, logs, temp files or derivatives; interruption/restart/idempotency tests; bounded memory. |
 | 6 | Multi-user membership and encrypted public links | Two users and a group; add/remove/role change races; stale-epoch commit denial; link expiry/revoke; recipient decrypt with no server key. PRs 4–6 form the first usable release together. |
 | 7 | Notes, immutable versions, encrypted previews and local search | Conflict-safe saves, retention/refcount/restore tests, sanitized rendering, account-switch cleanup. |
 | 8 | Optional searchable tags, direct S3, offline clients and federation | Separate leakage/permission model, protocol compatibility and failure-injection tests. |
+| 9 | Encrypted live collaboration | Reviewed update/snapshot protocol; two-client concurrent edits and offline reconnect; replay/rollback and revoked-member rejection; no server-readable CRDT state. Can proceed alongside PRs 7–8 once the shared key lifecycle is stable. |
 
 MFA, scheduled consistency checks and ordinary file versioning are valuable
 parallel contribution areas, but none alone supplies Vault E2EE. Do not mark
