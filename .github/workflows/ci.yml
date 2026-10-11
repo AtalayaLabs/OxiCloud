@@ -55,12 +55,18 @@ jobs:
             migrations:
               - 'migrations/**'
             asyncapi_spec:
+              # The lockfile is in scope alongside package.json because the
+              # job regenerates the DTOs with `npm ci`, which installs the
+              # resolved tree verbatim. `@asyncapi/modelina` is declared as
+              # `^5.5.0`, so a minor bump lands in package-lock.json ALONE —
+              # new emitted DTOs with no package.json edit to trigger on.
               - 'src/application/ports/message_bus_ports.rs'
               - 'src/bin/generate-asyncapi.rs'
               - 'resources/gen/asyncapi.json'
               - 'frontend/scripts/gen-message-bus-types.mjs'
               - 'frontend/src/lib/api/generated/asyncapi/**'
               - 'frontend/package.json'
+              - 'frontend/package-lock.json'
             openapi_spec:
               # Every REST/WOPI/WebDAV/NextCloud handler carries
               # `#[utoipa::path(...)]` attributes that feed the OpenAPI
@@ -83,6 +89,7 @@ jobs:
               - 'frontend/openapi-ts.config.ts'
               - 'frontend/src/lib/api/generated/openapi/**'
               - 'frontend/package.json'
+              - 'frontend/package-lock.json'
 
   frontend-check:
     name: Frontend — svelte-check, ESLint, Stylelint, Prettier

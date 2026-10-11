@@ -23,7 +23,7 @@
     "gen:asyncapi": "node scripts/gen-message-bus-types.mjs"
   },
   "devDependencies": {
-    "@asyncapi/modelina": "^5.5.0",
+    "@asyncapi/modelina": "5.10.1",
     "@eslint/js": "^10.0.1",
     "@hey-api/openapi-ts": "0.99.0",
     "@sveltejs/adapter-static": "^3.0.10",
