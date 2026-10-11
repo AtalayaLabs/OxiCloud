@@ -710,7 +710,9 @@
 	}
 
 	function shareExpiryIso(s: ShareItem): string | null {
-		return s.expires_at ? new Date(s.expires_at * 1000).toISOString().slice(0, 10) : null;
+		// `s.expires_at` is already an RFC 3339 UTC string post-pivot; render
+		// only the yyyy-mm-dd part for the `<input type="date">` control.
+		return s.expires_at ? s.expires_at.slice(0, 10) : null;
 	}
 
 	$effect(() => {

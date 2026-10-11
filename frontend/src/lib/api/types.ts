@@ -32,12 +32,14 @@ export type { FolderItem };
 
 export interface FileItem {
 	category: string;
-	created_at: number;
+	/** RFC 3339 UTC timestamp (wire form after the DTO ISO-8601 pivot). */
+	created_at: string;
 	icon_class: string;
 	icon_special_class: string;
 	id: string;
 	mime_type: string;
-	modified_at: number;
+	/** RFC 3339 UTC timestamp. */
+	modified_at: string;
 	name: string;
 	// §14 provenance — see FolderItem for semantics. Replaced the
 	// retired `owner_id` field in D7.
@@ -71,9 +73,11 @@ export interface FileItem {
 
 export interface ShareItem {
 	access_count: number;
-	created_at: number;
+	/** RFC 3339 UTC timestamp. */
+	created_at: string;
 	created_by: string;
-	expires_at: number;
+	/** RFC 3339 UTC timestamp; `null` → never expires. */
+	expires_at: string | null;
 	has_password: boolean;
 	id: string;
 	item_id: string;
@@ -88,7 +92,8 @@ export interface CreateShare {
 	item_name?: string | null;
 	item_type: ItemType;
 	password: string | null;
-	expires_at: number | null;
+	/** RFC 3339 UTC timestamp or `null` for never. */
+	expires_at: string | null;
 }
 
 // Authoritative on the generated SDK. Identical shape, no
@@ -100,12 +105,14 @@ export interface FavoriteItem {
 	user_id: string;
 	item_id: string;
 	item_type: ItemType;
-	created_at: number;
+	/** RFC 3339 UTC timestamp. */
+	created_at: string;
 	item_name: string | null;
 	item_size: number | null;
 	item_mime_type: string | null;
 	parent_id: string | null;
-	modified_at: number | null;
+	/** RFC 3339 UTC timestamp; `null` for folders without a mtime projection. */
+	modified_at: string | null;
 	item_path: string;
 	icon_class: string;
 	icon_special_class: string;
@@ -118,7 +125,8 @@ export interface RecentItem {
 	user_id: string;
 	item_id: string;
 	item_type: ItemType;
-	accessed_at: number;
+	/** RFC 3339 UTC timestamp. */
+	accessed_at: string;
 	item_name: string | null;
 	item_size: number | null;
 	item_mime_type: string | null;

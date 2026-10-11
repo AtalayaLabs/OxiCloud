@@ -52,11 +52,6 @@ impl<T, E: std::fmt::Display> XmlResultExt<T> for Result<T, E> {
     }
 }
 
-/// Convert a `u64` timestamp to `i64` safely, falling back to 0 on overflow.
-fn timestamp_to_i64(ts: u64) -> i64 {
-    i64::try_from(ts).unwrap_or(0)
-}
-
 const HEADER_DAV: HeaderName = HeaderName::from_static("dav");
 
 /// Resolve the internal OxiCloud path from a NextCloud DAV subpath
@@ -585,9 +580,7 @@ async fn handle_get(
         .await
         .map_err(|e| AppError::internal_error(format!("Failed to read file: {}", e)))?;
 
-    let modified_at =
-        chrono::DateTime::<Utc>::from_timestamp(timestamp_to_i64(file.modified_at), 0)
-            .unwrap_or_else(Utc::now);
+    let modified_at = file.modified_at;
 
     Ok(Response::builder()
         .status(StatusCode::OK)
@@ -659,9 +652,7 @@ async fn handle_head(
         }
     };
 
-    let modified_at =
-        chrono::DateTime::<Utc>::from_timestamp(timestamp_to_i64(file.modified_at), 0)
-            .unwrap_or_else(Utc::now);
+    let modified_at = file.modified_at;
 
     // ETag comes from `FileDto::etag` — see the same comment block on
     // the GET handler. HEAD and GET must agree byte-for-byte; pulling
@@ -2088,7 +2079,7 @@ pub fn write_folder_response<W: std::io::Write>(
     write_date_element(
         xml,
         "d:getlastmodified",
-        timestamp_to_i64(folder.modified_at),
+        folder.modified_at.timestamp(),
         true,
     )?;
     // Route through `FolderDto::etag` (= `Folder::etag()`: the
@@ -2097,12 +2088,7 @@ pub fn write_folder_response<W: std::io::Write>(
     write_etag_element(xml, "d:getetag", &folder.etag)?;
     write_text_element(xml, "d:getcontenttype", "httpd/unix-directory")?;
     write_text_element(xml, "d:getcontentlength", "0")?;
-    write_date_element(
-        xml,
-        "d:creationdate",
-        timestamp_to_i64(folder.created_at),
-        false,
-    )?;
+    write_date_element(xml, "d:creationdate", folder.created_at.timestamp(), false)?;
 
     // Nextcloud/ownCloud properties
     if let Some(id) = file_id {
@@ -2202,19 +2188,9 @@ pub fn write_file_response<W: std::io::Write>(
         )?;
     }
 
-    write_date_element(
-        xml,
-        "d:getlastmodified",
-        timestamp_to_i64(file.modified_at),
-        true,
-    )?;
+    write_date_element(xml, "d:getlastmodified", file.modified_at.timestamp(), true)?;
     write_etag_element(xml, "d:getetag", &file.etag)?;
-    write_date_element(
-        xml,
-        "d:creationdate",
-        timestamp_to_i64(file.created_at),
-        false,
-    )?;
+    write_date_element(xml, "d:creationdate", file.created_at.timestamp(), false)?;
 
     // Nextcloud/ownCloud properties
     if let Some(id) = file_id {
@@ -2261,17 +2237,20 @@ pub fn write_file_response<W: std::io::Write>(
 
     write_text_element(xml, "nc:is-encrypted", "0")?;
     write_text_element(xml, "nc:mount-type", "")?;
+    // nc:creation_time + nc:upload_time are NC-compat integer Unix
+    // seconds (the NC desktop/mobile clients deserialize these as
+    // numbers, not RFC 3339). Convert from the DTO's `DateTime<Utc>`.
     {
         let mut buf = [0u8; 20];
         write_text_element(
             xml,
             "nc:creation_time",
-            crate::common::fmt::u64_str(&mut buf, file.created_at),
+            crate::common::fmt::u64_str(&mut buf, file.created_at.timestamp().max(0) as u64),
         )?;
         write_text_element(
             xml,
             "nc:upload_time",
-            crate::common::fmt::u64_str(&mut buf, file.modified_at),
+            crate::common::fmt::u64_str(&mut buf, file.modified_at.timestamp().max(0) as u64),
         )?;
     }
 
@@ -2422,8 +2401,8 @@ mod tests {
             parent_id: None,
             // Test stub — path mapper doesn't read drive_id.
             drive_id: uuid::Uuid::nil(),
-            created_at: 0,
-            modified_at: 0,
+            created_at: crate::application::dtos::timestamp_helpers::epoch_zero(),
+            modified_at: crate::application::dtos::timestamp_helpers::epoch_zero(),
             is_root: false,
             icon_class: std::sync::Arc::from("fas fa-folder"),
             icon_special_class: std::sync::Arc::from("folder-icon"),
@@ -2678,17 +2657,5 @@ mod tests {
     fn test_extract_wrong_user_returns_none() {
         let result = extract_nc_subpath_from_dest("/remote.php/dav/files/bob/secret.txt", "alice");
         assert!(result.is_none());
-    }
-
-    // ── timestamp_to_i64 ──
-
-    #[test]
-    fn test_timestamp_normal() {
-        assert_eq!(timestamp_to_i64(1700000000), 1700000000i64);
-    }
-
-    #[test]
-    fn test_timestamp_overflow_returns_zero() {
-        assert_eq!(timestamp_to_i64(u64::MAX), 0);
     }
 }

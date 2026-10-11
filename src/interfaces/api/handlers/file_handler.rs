@@ -1254,8 +1254,14 @@ impl FileHandler {
             .await
         {
             Ok(files) => {
-                // Compute lightweight ETag from max modified_at + count
-                let max_mod = files.iter().map(|f| f.modified_at).max().unwrap_or(0);
+                // Compute lightweight ETag from max modified_at + count.
+                // Collapse to epoch seconds (i64) so the hash stays stable
+                // across the DateTime<Utc> wire shape and old u64 shape.
+                let max_mod: i64 = files
+                    .iter()
+                    .map(|f| f.modified_at.timestamp())
+                    .max()
+                    .unwrap_or(0);
                 let count = files.len();
                 let mut hasher = std::collections::hash_map::DefaultHasher::new();
                 std::hash::Hash::hash(&max_mod, &mut hasher);

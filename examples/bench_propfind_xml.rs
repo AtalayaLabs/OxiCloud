@@ -68,7 +68,6 @@ static GLOBAL: CountingAlloc = CountingAlloc;
 
 #[allow(clippy::all)]
 mod before {
-    use chrono::Utc;
     use oxicloud::application::adapters::webdav_adapter::{
         PropFindRequest, PropFindType, QualifiedName,
     };
@@ -210,14 +209,12 @@ mod before {
         xml_writer.write_event(Event::End(BytesEnd::new("D:displayname")))?;
 
         xml_writer.write_event(Event::Start(BytesStart::new("D:creationdate")))?;
-        let created_at = chrono::DateTime::<Utc>::from_timestamp(folder.created_at as i64, 0)
-            .unwrap_or_else(Utc::now);
+        let created_at = folder.created_at;
         xml_writer.write_event(Event::Text(BytesText::new(&created_at.to_rfc3339())))?;
         xml_writer.write_event(Event::End(BytesEnd::new("D:creationdate")))?;
 
         xml_writer.write_event(Event::Start(BytesStart::new("D:getlastmodified")))?;
-        let modified_at = chrono::DateTime::<Utc>::from_timestamp(folder.modified_at as i64, 0)
-            .unwrap_or_else(Utc::now);
+        let modified_at = folder.modified_at;
         xml_writer.write_event(Event::Text(BytesText::new(&modified_at.to_rfc2822())))?;
         xml_writer.write_event(Event::End(BytesEnd::new("D:getlastmodified")))?;
 
@@ -258,14 +255,12 @@ mod before {
         xml_writer.write_event(Event::End(BytesEnd::new("D:getcontentlength")))?;
 
         xml_writer.write_event(Event::Start(BytesStart::new("D:creationdate")))?;
-        let created_at = chrono::DateTime::<Utc>::from_timestamp(file.created_at as i64, 0)
-            .unwrap_or_else(Utc::now);
+        let created_at = file.created_at;
         xml_writer.write_event(Event::Text(BytesText::new(&created_at.to_rfc3339())))?;
         xml_writer.write_event(Event::End(BytesEnd::new("D:creationdate")))?;
 
         xml_writer.write_event(Event::Start(BytesStart::new("D:getlastmodified")))?;
-        let modified_at = chrono::DateTime::<Utc>::from_timestamp(file.modified_at as i64, 0)
-            .unwrap_or_else(Utc::now);
+        let modified_at = file.modified_at;
         xml_writer.write_event(Event::Text(BytesText::new(&modified_at.to_rfc2822())))?;
         xml_writer.write_event(Event::End(BytesEnd::new("D:getlastmodified")))?;
 
@@ -296,9 +291,7 @@ mod before {
                     }
                     "creationdate" => {
                         xml_writer.write_event(Event::Start(BytesStart::new("D:creationdate")))?;
-                        let created_at =
-                            chrono::DateTime::<Utc>::from_timestamp(folder.created_at as i64, 0)
-                                .unwrap_or_else(Utc::now);
+                        let created_at = folder.created_at;
                         xml_writer
                             .write_event(Event::Text(BytesText::new(&created_at.to_rfc3339())))?;
                         xml_writer.write_event(Event::End(BytesEnd::new("D:creationdate")))?;
@@ -306,9 +299,7 @@ mod before {
                     "getlastmodified" => {
                         xml_writer
                             .write_event(Event::Start(BytesStart::new("D:getlastmodified")))?;
-                        let modified_at =
-                            chrono::DateTime::<Utc>::from_timestamp(folder.modified_at as i64, 0)
-                                .unwrap_or_else(Utc::now);
+                        let modified_at = folder.modified_at;
                         xml_writer
                             .write_event(Event::Text(BytesText::new(&modified_at.to_rfc2822())))?;
                         xml_writer.write_event(Event::End(BytesEnd::new("D:getlastmodified")))?;
@@ -394,9 +385,7 @@ mod before {
                     }
                     "creationdate" => {
                         xml_writer.write_event(Event::Start(BytesStart::new("D:creationdate")))?;
-                        let created_at =
-                            chrono::DateTime::<Utc>::from_timestamp(file.created_at as i64, 0)
-                                .unwrap_or_else(Utc::now);
+                        let created_at = file.created_at;
                         xml_writer
                             .write_event(Event::Text(BytesText::new(&created_at.to_rfc3339())))?;
                         xml_writer.write_event(Event::End(BytesEnd::new("D:creationdate")))?;
@@ -404,9 +393,7 @@ mod before {
                     "getlastmodified" => {
                         xml_writer
                             .write_event(Event::Start(BytesStart::new("D:getlastmodified")))?;
-                        let modified_at =
-                            chrono::DateTime::<Utc>::from_timestamp(file.modified_at as i64, 0)
-                                .unwrap_or_else(Utc::now);
+                        let modified_at = file.modified_at;
                         xml_writer
                             .write_event(Event::Text(BytesText::new(&modified_at.to_rfc2822())))?;
                         xml_writer.write_event(Event::End(BytesEnd::new("D:getlastmodified")))?;

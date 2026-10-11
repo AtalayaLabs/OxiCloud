@@ -36,16 +36,19 @@ function photo(i: number): PhotoItem {
 	// Newest-first: photo 0 is most recent; ~half a day apart spans ~4 years
 	// over 3k photos, so month/day buckets are bounded (realistic library).
 	const sortDate = 1_700_000_000 - i * (DAY / 2);
+	// Wire shape (post-pivot) is RFC 3339 UTC string; the bench still needs
+	// the numeric `sort_date` to drive its stride, so keep both in sync.
+	const sortDateIso = new Date(sortDate * 1000).toISOString();
 	const w = 200 + ((i * 37) % 400);
 	const h = 200 + ((i * 53) % 300);
 	return {
 		category: 'image',
-		created_at: sortDate,
+		created_at: sortDateIso,
 		icon_class: '',
 		icon_special_class: '',
 		id: `p-${i.toString().padStart(6, '0')}`,
 		mime_type: 'image/jpeg',
-		modified_at: sortDate,
+		modified_at: sortDateIso,
 		name: `photo ${i}.jpg`,
 		created_by: null,
 		updated_by: null,
@@ -68,10 +71,19 @@ function makeConfig(
 	width: number,
 	counter?: { n: number }
 ): TimelineConfig {
-	const timestampOf = (p: PhotoItem) => {
+	const timestampOf = (p: PhotoItem): number => {
 		if (counter) counter.n++;
-		const v = p.sort_date || p.created_at || 0;
-		return v < 1e12 ? v * 1000 : v;
+		// Prefer the numeric `sort_date` test seed (seconds); fall back to
+		// the RFC 3339 `created_at` for photos without a seed. Keep the
+		// `< 1e12 ? *1000 : raw` scale so the test accepts either unit.
+		if (typeof p.sort_date === 'number' && p.sort_date > 0) {
+			return p.sort_date < 1e12 ? p.sort_date * 1000 : p.sort_date;
+		}
+		if (p.created_at) {
+			const t = Date.parse(p.created_at);
+			if (!Number.isNaN(t)) return t;
+		}
+		return 0;
 	};
 	// Stable label fn (reference identity matters for the config-unchanged path).
 	const labelOf = (d: Date, mode: GroupMode) =>

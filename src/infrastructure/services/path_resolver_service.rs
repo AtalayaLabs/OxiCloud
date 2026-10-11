@@ -14,6 +14,7 @@ use crate::application::dtos::display_helpers::{
 };
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::FolderDto;
+use crate::application::dtos::timestamp_helpers::epoch_to_datetime;
 use crate::common::errors::DomainError;
 use crate::domain::entities::file::File;
 use crate::domain::entities::folder::Folder;
@@ -177,8 +178,8 @@ impl PathResolverService {
                     path: res_path,
                     parent_id,
                     drive_id,
-                    created_at: created_at as u64,
-                    modified_at: modified_at as u64,
+                    created_at: epoch_to_datetime(created_at.max(0) as u64),
+                    modified_at: epoch_to_datetime(modified_at.max(0) as u64),
                     is_root: false,
                     icon_class: intern_display("fas fa-folder"),
                     icon_special_class: intern_display("folder-icon"),
@@ -213,8 +214,8 @@ impl PathResolverService {
                     size: sz,
                     mime_type: intern_mime(&mime),
                     folder_id,
-                    created_at: created_at as u64,
-                    modified_at: modified_at_u,
+                    created_at: epoch_to_datetime(created_at.max(0) as u64),
+                    modified_at: epoch_to_datetime(modified_at_u),
                     icon_class: intern_display(classes.icon_class),
                     icon_special_class: intern_display(classes.icon_special_class),
                     category: intern_display(classes.category),

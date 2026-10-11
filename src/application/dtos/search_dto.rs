@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -140,10 +141,10 @@ pub struct SearchFileResultDto {
     pub mime_type: Arc<str>,
     /// Parent folder ID
     pub folder_id: Option<String>,
-    /// Creation timestamp
-    pub created_at: u64,
-    /// Last modification timestamp
-    pub modified_at: u64,
+    /// Creation timestamp (RFC 3339 UTC).
+    pub created_at: DateTime<Utc>,
+    /// Last modification timestamp (RFC 3339 UTC).
+    pub modified_at: DateTime<Utc>,
     /// Relevance score (0-100) computed server-side
     pub relevance_score: u32,
     /// Human-readable file size (e.g., "2.5 MB")
@@ -216,10 +217,10 @@ pub struct SearchFolderResultDto {
     /// carried through so downstream callers (e.g. the NC search REPORT
     /// handler) can populate `FolderDto::drive_id` without a fallback sentinel.
     pub drive_id: Uuid,
-    /// Creation timestamp
-    pub created_at: u64,
-    /// Last modification timestamp
-    pub modified_at: u64,
+    /// Creation timestamp (RFC 3339 UTC).
+    pub created_at: DateTime<Utc>,
+    /// Last modification timestamp (RFC 3339 UTC).
+    pub modified_at: DateTime<Utc>,
     /// Whether it is a root folder
     pub is_root: bool,
     /// Relevance score (0-100) computed server-side

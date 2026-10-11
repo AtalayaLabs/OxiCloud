@@ -27,12 +27,14 @@ import { files as filesStore } from '$lib/stores/files.svelte';
 
 interface TestFile {
 	category: string;
-	created_at: number;
+	/** RFC 3339 UTC — matches the FileItem wire shape post-pivot. */
+	created_at: string;
 	icon_class: string;
 	icon_special_class: string;
 	id: string;
 	mime_type: string;
-	modified_at: number;
+	/** RFC 3339 UTC — matches the FileItem wire shape post-pivot. */
+	modified_at: string;
 	name: string;
 	created_by: string;
 	updated_by: string;
@@ -50,12 +52,12 @@ interface TestFile {
 function fileItem(i: number): TestFile {
 	return {
 		category: 'Document',
-		created_at: 0,
+		created_at: '1970-01-01T00:00:00Z',
 		icon_class: 'fa-file',
 		icon_special_class: '',
 		id: `f${i}`,
 		mime_type: 'text/plain',
-		modified_at: 0,
+		modified_at: '1970-01-01T00:00:00Z',
 		name: `file-${i}.txt`,
 		created_by: 'me',
 		updated_by: 'me',

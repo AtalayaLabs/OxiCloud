@@ -180,8 +180,12 @@ mod before {
             size: file.size,
             mime_type: file.mime_type.to_string(),
             folder_id: file.folder_id.clone(),
-            created_at: file.created_at,
-            modified_at: file.modified_at,
+            created_at: oxicloud::application::dtos::timestamp_helpers::datetime_to_epoch(
+                file.created_at,
+            ),
+            modified_at: oxicloud::application::dtos::timestamp_helpers::datetime_to_epoch(
+                file.modified_at,
+            ),
             relevance_score: relevance,
             size_formatted: format_bytes(file.size),
             icon_class: get_icon_class(&file.name, &file.mime_type),
@@ -207,8 +211,12 @@ mod before {
             path: folder.path.clone(),
             parent_id: folder.parent_id.clone(),
             drive_id: folder.drive_id,
-            created_at: folder.created_at,
-            modified_at: folder.modified_at,
+            created_at: oxicloud::application::dtos::timestamp_helpers::datetime_to_epoch(
+                folder.created_at,
+            ),
+            modified_at: oxicloud::application::dtos::timestamp_helpers::datetime_to_epoch(
+                folder.modified_at,
+            ),
             is_root: folder.is_root,
             relevance_score: relevance,
         }
@@ -229,8 +237,12 @@ mod before {
             size: fr.size,
             mime_type: fr.mime_type.clone().into(),
             folder_id: fr.folder_id.clone(),
-            created_at: fr.created_at,
-            modified_at: fr.modified_at,
+            created_at: oxicloud::application::dtos::timestamp_helpers::epoch_to_datetime(
+                fr.created_at,
+            ),
+            modified_at: oxicloud::application::dtos::timestamp_helpers::epoch_to_datetime(
+                fr.modified_at,
+            ),
             icon_class: icon_class_for(&fr.name, &fr.mime_type).to_string().into(),
             icon_special_class: icon_special_class_for(&fr.name, &fr.mime_type)
                 .to_string()
@@ -289,8 +301,12 @@ fn folder_dtos(n: usize) -> Vec<FolderDto> {
             path: format!("Documents/Folder-{i:05}"),
             parent_id: Some(uuid::Uuid::new_v4().to_string()),
             drive_id: uuid::Uuid::new_v4(),
-            created_at: 1_700_000_000,
-            modified_at: 1_700_000_100,
+            created_at: oxicloud::application::dtos::timestamp_helpers::epoch_to_datetime(
+                1_700_000_000,
+            ),
+            modified_at: oxicloud::application::dtos::timestamp_helpers::epoch_to_datetime(
+                1_700_000_100,
+            ),
             is_root: false,
             etag: format!("{i:032x}"),
             icon_class: Arc::from("fas fa-folder"),
@@ -326,8 +342,14 @@ fn main() {
                 && old.size == new.size
                 && old.mime_type == *new.mime_type
                 && old.folder_id == new.folder_id
-                && old.created_at == new.created_at
-                && old.modified_at == new.modified_at
+                && old.created_at
+                    == oxicloud::application::dtos::timestamp_helpers::datetime_to_epoch(
+                        new.created_at,
+                    )
+                && old.modified_at
+                    == oxicloud::application::dtos::timestamp_helpers::datetime_to_epoch(
+                        new.modified_at,
+                    )
                 && old.relevance_score == new.relevance_score
                 && old.size_formatted == new.size_formatted
                 && old.icon_class == *new.icon_class
@@ -350,8 +372,14 @@ fn main() {
                 && old.path == new.path
                 && old.parent_id == new.parent_id
                 && old.drive_id == new.drive_id
-                && old.created_at == new.created_at
-                && old.modified_at == new.modified_at
+                && old.created_at
+                    == oxicloud::application::dtos::timestamp_helpers::datetime_to_epoch(
+                        new.created_at,
+                    )
+                && old.modified_at
+                    == oxicloud::application::dtos::timestamp_helpers::datetime_to_epoch(
+                        new.modified_at,
+                    )
                 && old.is_root == new.is_root
                 && old.relevance_score == new.relevance_score;
             if !same {

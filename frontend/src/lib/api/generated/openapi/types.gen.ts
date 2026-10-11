@@ -699,7 +699,7 @@ export type CreatePlaylistDto = {
 };
 
 export type CreateShareDto = {
-    expires_at?: number | null;
+    expires_at?: string | null;
     item_id: string;
     item_name?: string | null;
     item_type: string;
@@ -1381,9 +1381,9 @@ export type FileDto = {
      */
     content_hash: string;
     /**
-     * Creation timestamp
+     * Creation timestamp (RFC 3339 UTC).
      */
-    created_at: number;
+    created_at: string;
     /**
      * §14 provenance: user that originally created this file.
      * `None` when the referenced user has been deleted (FK is
@@ -1441,9 +1441,9 @@ export type FileDto = {
      */
     mime_type: string;
     /**
-     * Last modification timestamp
+     * Last modification timestamp (RFC 3339 UTC).
      */
-    modified_at: number;
+    modified_at: string;
     /**
      * File name
      */
@@ -1552,9 +1552,9 @@ export type FolderDto = {
      */
     category: string;
     /**
-     * Creation timestamp
+     * Creation timestamp (RFC 3339 UTC).
      */
-    created_at: number;
+    created_at: string;
     /**
      * §14 provenance: user that originally created this folder.
      * `None` when the referenced user has been deleted (FK is
@@ -1606,9 +1606,9 @@ export type FolderDto = {
      */
     is_shared: boolean;
     /**
-     * Last modification timestamp
+     * Last modification timestamp (RFC 3339 UTC).
      */
-    modified_at: number;
+    modified_at: string;
     /**
      * Folder name
      */
@@ -3139,9 +3139,9 @@ export type SearchFileResultDto = {
      */
     category: string;
     /**
-     * Creation timestamp
+     * Creation timestamp (RFC 3339 UTC).
      */
-    created_at: number;
+    created_at: string;
     /**
      * §14 provenance — user that originally created this file. `None`
      * when the referenced user has been deleted or for legacy rows.
@@ -3193,9 +3193,9 @@ export type SearchFileResultDto = {
      */
     mime_type: string;
     /**
-     * Last modification timestamp
+     * Last modification timestamp (RFC 3339 UTC).
      */
-    modified_at: number;
+    modified_at: string;
     /**
      * File name
      */
@@ -3236,9 +3236,9 @@ export type SearchFileResultDto = {
  */
 export type SearchFolderResultDto = {
     /**
-     * Creation timestamp
+     * Creation timestamp (RFC 3339 UTC).
      */
-    created_at: number;
+    created_at: string;
     /**
      * §14 provenance — creator user id. `None` for legacy folders.
      */
@@ -3274,9 +3274,9 @@ export type SearchFolderResultDto = {
      */
     is_shared?: boolean;
     /**
-     * Last modification timestamp
+     * Last modification timestamp (RFC 3339 UTC).
      */
-    modified_at: number;
+    modified_at: string;
     /**
      * Folder name
      */
@@ -3671,9 +3671,12 @@ export type SetupAdminDto = {
 
 export type ShareDto = {
     access_count: number;
-    created_at: number;
+    /**
+     * Creation timestamp (RFC 3339 UTC).
+     */
+    created_at: string;
     created_by: string;
-    expires_at?: number | null;
+    expires_at?: string | null;
     has_password: boolean;
     id: string;
     item_id: string;
@@ -4430,7 +4433,7 @@ export type UpdateRoleDto = {
 };
 
 export type UpdateShareDto = {
-    expires_at?: number | null;
+    expires_at?: string | null;
     password?: string | null;
 };
 

@@ -773,16 +773,17 @@ impl WebDavAdapter {
     // bytes from stack buffers (`common::fmt`); out-of-range timestamps
     // keep the old chrono path as a byte-identical fallback.
 
-    fn write_creationdate<W: Write>(xml_writer: &mut Writer<W>, secs: u64) -> Result<()> {
+    fn write_creationdate<W: Write>(
+        xml_writer: &mut Writer<W>,
+        dt: chrono::DateTime<Utc>,
+    ) -> Result<()> {
         xml_writer.write_event(Event::Start(BytesStart::new("D:creationdate")))?;
-        let secs = secs as i64;
+        let secs = dt.timestamp();
         let mut buf = [0u8; 25];
         match crate::common::fmt::rfc3339_utc(&mut buf, secs) {
             Some(s) => xml_writer.write_event(Event::Text(BytesText::new(s)))?,
             None => {
-                let s = chrono::DateTime::<Utc>::from_timestamp(secs, 0)
-                    .unwrap_or_else(Utc::now)
-                    .to_rfc3339();
+                let s = dt.to_rfc3339();
                 xml_writer.write_event(Event::Text(BytesText::new(&s)))?;
             }
         }
@@ -790,16 +791,17 @@ impl WebDavAdapter {
         Ok(())
     }
 
-    fn write_lastmodified<W: Write>(xml_writer: &mut Writer<W>, secs: u64) -> Result<()> {
+    fn write_lastmodified<W: Write>(
+        xml_writer: &mut Writer<W>,
+        dt: chrono::DateTime<Utc>,
+    ) -> Result<()> {
         xml_writer.write_event(Event::Start(BytesStart::new("D:getlastmodified")))?;
-        let secs = secs as i64;
+        let secs = dt.timestamp();
         let mut buf = [0u8; 31];
         match crate::common::fmt::rfc2822_utc(&mut buf, secs) {
             Some(s) => xml_writer.write_event(Event::Text(BytesText::new(s)))?,
             None => {
-                let s = chrono::DateTime::<Utc>::from_timestamp(secs, 0)
-                    .unwrap_or_else(Utc::now)
-                    .to_rfc2822();
+                let s = dt.to_rfc2822();
                 xml_writer.write_event(Event::Text(BytesText::new(&s)))?;
             }
         }

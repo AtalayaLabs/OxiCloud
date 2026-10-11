@@ -438,7 +438,9 @@ fn file_dto_from_search(fr: &crate::application::dtos::search_dto::SearchFileRes
     let etag = if fr.blob_hash.is_empty() {
         String::new()
     } else {
-        File::compute_etag(&fr.blob_hash, fr.modified_at)
+        // `File::compute_etag` keeps its `u64` input (byte-stable ETag);
+        // the DTO wire shape became `DateTime<Utc>`, so round-trip here.
+        File::compute_etag(&fr.blob_hash, fr.modified_at.timestamp().max(0) as u64)
     };
     FileDto {
         id: fr.id.clone(),

@@ -1,11 +1,13 @@
 use std::sync::Arc;
 
 use crate::domain::entities::file::File;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
 use super::display_helpers::{classify_display, format_file_size, intern_display, intern_mime};
+use super::timestamp_helpers::{datetime_to_epoch, epoch_to_datetime, epoch_zero};
 
 /// DTO for file responses
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -30,11 +32,11 @@ pub struct FileDto {
     /// Parent folder ID
     pub folder_id: Option<String>,
 
-    /// Creation timestamp
-    pub created_at: u64,
+    /// Creation timestamp (RFC 3339 UTC).
+    pub created_at: DateTime<Utc>,
 
-    /// Last modification timestamp
-    pub modified_at: u64,
+    /// Last modification timestamp (RFC 3339 UTC).
+    pub modified_at: DateTime<Utc>,
 
     // ── Pre-computed display fields (Arc<str>: values come from static tables) ──
     /// FontAwesome icon CSS class (e.g. "fas fa-file-image")
@@ -135,8 +137,11 @@ impl From<File> for FileDto {
             size: parts.size,
             mime_type,
             folder_id: parts.folder_id,
-            created_at: parts.created_at,
-            modified_at: parts.modified_at,
+            // `File` keeps timestamps as epoch seconds internally
+            // (ETag input, cheap compare); on the wire the DTO is
+            // RFC 3339 UTC — convert once at the DTO boundary.
+            created_at: epoch_to_datetime(parts.created_at),
+            modified_at: epoch_to_datetime(parts.modified_at),
             icon_class,
             icon_special_class,
             category,
@@ -159,6 +164,8 @@ impl From<FileDto> for File {
     fn from(dto: FileDto) -> Self {
         // Display fields (icon_class, icon_special_class, category, size_formatted)
         // are not part of the domain entity and are ignored.
+        // Domain entity keeps timestamps as epoch seconds; DTO holds
+        // RFC 3339 UTC. See `timestamp_helpers` for the rationale.
         File::from_dto(
             dto.id,
             dto.name,
@@ -166,8 +173,8 @@ impl From<FileDto> for File {
             dto.size,
             dto.mime_type.to_string(),
             dto.folder_id,
-            dto.created_at,
-            dto.modified_at,
+            datetime_to_epoch(dto.created_at),
+            datetime_to_epoch(dto.modified_at),
         )
     }
 }
@@ -209,8 +216,8 @@ impl FileDto {
             size: 0,
             mime_type: intern_mime("application/octet-stream"),
             folder_id: None,
-            created_at: 0,
-            modified_at: 0,
+            created_at: epoch_zero(),
+            modified_at: epoch_zero(),
             icon_class: intern_display("fas fa-file"),
             icon_special_class: intern_display(""),
             category: intern_display("Document"),
@@ -228,5 +235,53 @@ impl FileDto {
 impl Default for FileDto {
     fn default() -> Self {
         Self::empty()
+    }
+}
+
+#[cfg(test)]
+mod wire_shape_tests {
+    //! Byte-level snapshot of the FileDto JSON wire shape. Freezes the
+    //! ISO-8601 timestamp contract: `created_at` / `modified_at` must emit
+    //! as RFC 3339 UTC strings, never as integer epoch seconds. Trip-wire
+    //! for any future accidental re-flip of the timestamp serializer.
+
+    use super::*;
+
+    fn fixture() -> FileDto {
+        let mut dto = FileDto::empty();
+        dto.id = "11111111-1111-1111-1111-111111111111".to_string();
+        dto.name = "report.pdf".to_string();
+        dto.path = "Documents/report.pdf".to_string();
+        dto.size = 1024;
+        dto.folder_id = Some("22222222-2222-2222-2222-222222222222".to_string());
+        dto.created_at = epoch_to_datetime(1_700_000_000);
+        dto.modified_at = epoch_to_datetime(1_700_086_400);
+        dto.content_hash = "abcdef0123456789".to_string();
+        dto.etag = "abcdef0123456789-1700086400".to_string();
+        dto
+    }
+
+    #[test]
+    fn timestamps_serialize_as_rfc3339_utc_strings() {
+        let json = serde_json::to_value(fixture()).unwrap();
+        // Byte-exact: no sub-second noise, trailing `Z`, 20-char RFC 3339.
+        assert_eq!(json["created_at"], "2023-11-14T22:13:20Z");
+        assert_eq!(json["modified_at"], "2023-11-15T22:13:20Z");
+    }
+
+    #[test]
+    fn timestamps_round_trip_through_wire() {
+        let before = fixture();
+        let json = serde_json::to_string(&before).unwrap();
+        let after: FileDto = serde_json::from_str(&json).unwrap();
+        assert_eq!(before.created_at, after.created_at);
+        assert_eq!(before.modified_at, after.modified_at);
+    }
+
+    #[test]
+    fn empty_dto_timestamps_are_epoch_zero() {
+        let json = serde_json::to_value(FileDto::empty()).unwrap();
+        assert_eq!(json["created_at"], "1970-01-01T00:00:00Z");
+        assert_eq!(json["modified_at"], "1970-01-01T00:00:00Z");
     }
 }

@@ -12128,11 +12128,10 @@
         "properties": {
           "expires_at": {
             "type": [
-              "integer",
+              "string",
               "null"
             ],
-            "format": "int64",
-            "minimum": 0
+            "format": "date-time"
           },
           "item_id": {
             "type": "string"
@@ -13041,10 +13040,9 @@
             "description": "Raw BLAKE3 content hash. Populated from `File::content_hash()`.\nExposed in REST JSON so API consumers can use it for\ncontent-addressable URLs, dedup verification, and integrity\naudits. Distinct from `etag` (which is an HTTP-only cache\ntoken whose formula may grow to include `modified_at` etc.)."
           },
           "created_at": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Creation timestamp",
-            "minimum": 0
+            "type": "string",
+            "format": "date-time",
+            "description": "Creation timestamp (RFC 3339 UTC)."
           },
           "created_by": {
             "type": [
@@ -13090,10 +13088,9 @@
             "description": "MIME type — `Arc<str>` because MIME values repeat across files\nand DTOs are cloned on every request (clone is O(1) atomic increment)."
           },
           "modified_at": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Last modification timestamp",
-            "minimum": 0
+            "type": "string",
+            "format": "date-time",
+            "description": "Last modification timestamp (RFC 3339 UTC)."
           },
           "name": {
             "type": "string",
@@ -13217,10 +13214,9 @@
             "description": "Human-readable category (always \"Folder\")"
           },
           "created_at": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Creation timestamp",
-            "minimum": 0
+            "type": "string",
+            "format": "date-time",
+            "description": "Creation timestamp (RFC 3339 UTC)."
           },
           "created_by": {
             "type": [
@@ -13264,10 +13260,9 @@
             "description": "Resource-scoped: `true` when the folder has ANY explicit\nrole-grant on it. Same wire contract as `is_favorite`."
           },
           "modified_at": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Last modification timestamp",
-            "minimum": 0
+            "type": "string",
+            "format": "date-time",
+            "description": "Last modification timestamp (RFC 3339 UTC)."
           },
           "name": {
             "type": "string",
@@ -15652,10 +15647,9 @@
             "description": "Content category: \"document\", \"image\", \"video\", \"audio\", \"archive\", \"code\", \"other\""
           },
           "created_at": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Creation timestamp",
-            "minimum": 0
+            "type": "string",
+            "format": "date-time",
+            "description": "Creation timestamp (RFC 3339 UTC)."
           },
           "created_by": {
             "type": [
@@ -15708,10 +15702,9 @@
             "description": "MIME type — `Arc<str>` so enrichment reuses `FileDto`'s interned\nvalue (an atomic increment) instead of allocating per result row."
           },
           "modified_at": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Last modification timestamp",
-            "minimum": 0
+            "type": "string",
+            "format": "date-time",
+            "description": "Last modification timestamp (RFC 3339 UTC)."
           },
           "name": {
             "type": "string",
@@ -15769,10 +15762,9 @@
         ],
         "properties": {
           "created_at": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Creation timestamp",
-            "minimum": 0
+            "type": "string",
+            "format": "date-time",
+            "description": "Creation timestamp (RFC 3339 UTC)."
           },
           "created_by": {
             "type": [
@@ -15808,10 +15800,9 @@
             "description": "Resource-scoped: `true` when the folder has any explicit\nrole-grant. EXISTS on `storage.role_grants`."
           },
           "modified_at": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Last modification timestamp",
-            "minimum": 0
+            "type": "string",
+            "format": "date-time",
+            "description": "Last modification timestamp (RFC 3339 UTC)."
           },
           "name": {
             "type": "string",
@@ -16285,20 +16276,19 @@
             "minimum": 0
           },
           "created_at": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
+            "type": "string",
+            "format": "date-time",
+            "description": "Creation timestamp (RFC 3339 UTC)."
           },
           "created_by": {
             "type": "string"
           },
           "expires_at": {
             "type": [
-              "integer",
+              "string",
               "null"
             ],
-            "format": "int64",
-            "minimum": 0
+            "format": "date-time"
           },
           "has_password": {
             "type": "boolean"
@@ -17396,11 +17386,10 @@
         "properties": {
           "expires_at": {
             "type": [
-              "integer",
+              "string",
               "null"
             ],
-            "format": "int64",
-            "minimum": 0
+            "format": "date-time"
           },
           "password": {
             "type": [

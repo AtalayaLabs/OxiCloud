@@ -567,8 +567,8 @@ async fn handle_propfind(
                 parent_id: None,
                 // Synthetic root — not a real DB row.
                 drive_id: Uuid::nil(),
-                created_at: Utc::now().timestamp() as u64,
-                modified_at: Utc::now().timestamp() as u64,
+                created_at: Utc::now(),
+                modified_at: Utc::now(),
                 is_root: true,
                 icon_class: intern_display("fas fa-folder"),
                 icon_special_class: intern_display("folder-icon"),
@@ -1200,12 +1200,7 @@ async fn handle_get(
         .header(header::CONTENT_LENGTH, file.size)
         .header(header::ETAG, etag)
         .header(header::ACCEPT_RANGES, "bytes")
-        .header(
-            header::LAST_MODIFIED,
-            chrono::DateTime::<Utc>::from_timestamp(file.created_at as i64, 0)
-                .unwrap_or_else(Utc::now)
-                .to_rfc2822(),
-        )
+        .header(header::LAST_MODIFIED, file.created_at.to_rfc2822())
         .body(Body::from_stream(Box::into_pin(stream)))
         .unwrap())
 }
@@ -1278,12 +1273,7 @@ async fn handle_head(
                     .header(header::CONTENT_TYPE, &*file.mime_type)
                     .header(header::CONTENT_LENGTH, file.size)
                     .header(header::ETAG, format!("\"{}\"", file.etag))
-                    .header(
-                        header::LAST_MODIFIED,
-                        chrono::DateTime::<Utc>::from_timestamp(file.created_at as i64, 0)
-                            .unwrap_or_else(Utc::now)
-                            .to_rfc2822(),
-                    )
+                    .header(header::LAST_MODIFIED, file.created_at.to_rfc2822())
                     .body(Body::empty())
                     .unwrap());
             }
@@ -1333,12 +1323,7 @@ async fn handle_head(
         .header(header::CONTENT_TYPE, &*file.mime_type)
         .header(header::CONTENT_LENGTH, file.size)
         .header(header::ETAG, format!("\"{}\"", file.etag))
-        .header(
-            header::LAST_MODIFIED,
-            chrono::DateTime::<Utc>::from_timestamp(file.created_at as i64, 0)
-                .unwrap_or_else(Utc::now)
-                .to_rfc2822(),
-        )
+        .header(header::LAST_MODIFIED, file.created_at.to_rfc2822())
         .body(Body::empty())
         .unwrap())
 }

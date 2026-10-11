@@ -370,7 +370,7 @@ impl ShareUseCase for ShareService {
             // `None` expiry means never — the laxest possible value, so an
             // uncapped request under a capped policy is always a refusal
             // rather than "no expiry to compare".
-            let requested_secs = dto.expires_at.map(|ts| ts as i64);
+            let requested_secs = dto.expires_at.map(|ts| ts.timestamp());
             let cap_secs = chrono::Utc::now().timestamp() + (cap_days as i64) * 86_400;
             let over = match requested_secs {
                 None => true,
@@ -424,9 +424,8 @@ impl ShareUseCase for ShareService {
             ShareItemType::File => Resource::File(item_id_uuid),
             ShareItemType::Folder => Resource::Folder(item_id_uuid),
         };
-        let expires_dt = dto
-            .expires_at
-            .and_then(|ts| chrono::DateTime::from_timestamp(ts as i64, 0));
+        // `dto.expires_at` is already `DateTime<Utc>` on the wire now.
+        let expires_dt = dto.expires_at;
         self.authorization
             .set_role(
                 user_id,
@@ -515,12 +514,8 @@ impl ShareUseCase for ShareService {
         }
 
         // Expiry is managed at the grant level; update all grants for this token.
-        let new_expires_at = if dto.expires_at.is_some() {
-            dto.expires_at
-                .and_then(|ts| chrono::DateTime::from_timestamp(ts as i64, 0))
-        } else {
-            None
-        };
+        // `dto.expires_at` already arrives as `DateTime<Utc>`.
+        let new_expires_at = dto.expires_at;
         if dto.expires_at.is_some() {
             self.authorization
                 .set_expiry_for_subject(Subject::Token(share.id()), new_expires_at)

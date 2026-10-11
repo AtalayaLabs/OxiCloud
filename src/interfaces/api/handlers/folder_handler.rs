@@ -16,6 +16,7 @@ use crate::application::dtos::folder_dto::{
     FolderResourcesDto, FolderResourcesQuery, ListResourcesOptions, MoveFolderDto, RenameFolderDto,
 };
 use crate::application::dtos::grant_dto::{ResourceContentDto, ResourceTypeDto};
+use crate::application::dtos::timestamp_helpers::epoch_to_datetime;
 use crate::application::ports::external_mount_ports::MountEntry;
 use crate::application::ports::folder_ports::FolderUseCase;
 use crate::application::ports::trash_ports::TrashUseCase;
@@ -673,8 +674,8 @@ pub async fn list_folder_resources(
                             path: String::new(), // cleared — share recipients must not see hierarchy
                             parent_id: row.parent_id.map(|u| u.to_string()),
                             drive_id: row.drive_id,
-                            created_at: row.created_at.timestamp() as u64,
-                            modified_at: row.modified_at.timestamp() as u64,
+                            created_at: row.created_at,
+                            modified_at: row.modified_at,
                             is_root: false,
                             icon_class: intern_display("fas fa-folder"),
                             icon_special_class: intern_display("folder-icon"),
@@ -728,8 +729,8 @@ pub async fn list_folder_resources(
                             size: size_bytes,
                             mime_type: intern_mime(mime),
                             folder_id: row.parent_id.map(|u| u.to_string()),
-                            created_at: row.created_at.timestamp() as u64,
-                            modified_at: row.modified_at.timestamp() as u64,
+                            created_at: row.created_at,
+                            modified_at: row.modified_at,
                             icon_class,
                             icon_special_class,
                             category,
@@ -824,8 +825,8 @@ fn mount_entry_to_item(
             path: String::new(),
             parent_id: Some(parent_id.to_owned()),
             drive_id: cfg.drive_id,
-            created_at: entry.created_at,
-            modified_at: entry.modified_at,
+            created_at: epoch_to_datetime(entry.created_at),
+            modified_at: epoch_to_datetime(entry.modified_at),
             is_root: false,
             icon_class: Arc::from("fas fa-folder"),
             icon_special_class: Arc::from("folder-icon"),
@@ -852,8 +853,8 @@ fn mount_entry_to_item(
             size: entry.size,
             mime_type: Arc::from(mime.as_str()),
             folder_id: Some(parent_id.to_owned()),
-            created_at: entry.created_at,
-            modified_at: entry.modified_at,
+            created_at: epoch_to_datetime(entry.created_at),
+            modified_at: epoch_to_datetime(entry.modified_at),
             icon_class: Arc::from(icon_class_for(&entry.name, &mime)),
             icon_special_class: Arc::from(icon_special_class_for(&entry.name, &mime)),
             category: Arc::from(category_for(&entry.name, &mime)),
