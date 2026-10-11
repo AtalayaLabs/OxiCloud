@@ -3463,6 +3463,18 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    /// `true` when every blob backend this deployment can write to is the
+    /// local filesystem — the legacy flat backend and every named entry.
+    /// Any S3 or Azure entry makes it `false`, since the active entry can be
+    /// switched at runtime. Gates the free-disk-space cap on default quotas.
+    pub fn blob_storage_is_local_only(&self) -> bool {
+        self.storage.backend == StorageBackendType::Local
+            && self
+                .storage_entries
+                .iter()
+                .all(|e| e.backend == StorageBackendType::Local)
+    }
+
     pub fn from_env() -> Self {
         let mut config = Self::default();
 
@@ -4915,6 +4927,30 @@ mod tests {
         assert_eq!(parse_quota_bytes(var, "-1"), None);
         assert_eq!(parse_quota_bytes(var, "5GB"), None);
         assert_eq!(parse_quota_bytes(var, ""), None);
+    }
+
+    #[test]
+    fn disk_quota_cap_applies_only_to_local_only_storage() {
+        let entry = |backend| NamedStorageEntry {
+            name: "e".to_string(),
+            backend,
+            root_dir: None,
+            s3: None,
+            azure: None,
+            encryption: None,
+        };
+        let mut config = AppConfig::default();
+        assert!(config.blob_storage_is_local_only());
+
+        config.storage_entries = vec![entry(StorageBackendType::Local)];
+        assert!(config.blob_storage_is_local_only());
+
+        config.storage_entries.push(entry(StorageBackendType::S3));
+        assert!(!config.blob_storage_is_local_only());
+
+        config.storage_entries.clear();
+        config.storage.backend = StorageBackendType::Azure;
+        assert!(!config.blob_storage_is_local_only());
     }
 
     #[test]

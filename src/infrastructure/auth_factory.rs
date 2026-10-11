@@ -55,7 +55,9 @@ pub async fn create_auth_services(
 
     // Quotas new accounts start with — password sign-up, OIDC
     // auto-provisioning and admin-created users alike.
-    auth_app_service = auth_app_service.with_default_quotas(config.storage.default_quotas);
+    auth_app_service = auth_app_service
+        .with_default_quotas(config.storage.default_quotas)
+        .with_disk_capped_quotas(config.blob_storage_is_local_only());
 
     // Wire the auth-method allowlist + email-verification requirement so
     // login / magic-link / register handlers consult a single snapshot

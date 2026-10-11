@@ -40,7 +40,7 @@ Defaults for things created from now on. Existing accounts and drives keep their
 
 | Variable | Default | Description |
 |---|---|---|
-| `OXICLOUD_DEFAULT_USER_QUOTA_BYTES` | `1073741824` | Quota for new non-admin accounts (1 GiB): self-registration, OIDC auto-provisioning, admin-created users without an explicit quota. Capped to the free space under `OXICLOUD_STORAGE_PATH` at creation time, unless `0`. |
+| `OXICLOUD_DEFAULT_USER_QUOTA_BYTES` | `1073741824` | Quota for new non-admin accounts (1 GiB): self-registration, OIDC auto-provisioning, admin-created users without an explicit quota. Capped to the free space under `OXICLOUD_STORAGE_PATH` at creation time, unless `0` or any blob backend is S3/Azure. |
 | `OXICLOUD_DEFAULT_ADMIN_QUOTA_BYTES` | `107374182400` | Quota for new admin accounts (100 GiB). Capped like the user quota. |
 | `OXICLOUD_DEFAULT_SHARED_DRIVE_QUOTA_BYTES` | `0` | Quota for new shared drives created without `quota_bytes`. `0` keeps them unlimited. |
 

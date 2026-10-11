@@ -468,6 +468,10 @@ pub struct AuthApplicationService {
     storage_path: PathBuf,
     /// Quota stamped on new accounts, per role. See [`Self::capped_quota`].
     default_quotas: DefaultQuotas,
+    /// Whether default quotas are capped to the free space under
+    /// `storage_path`. Only meaningful when blobs live on that disk; see
+    /// [`Self::with_disk_capped_quotas`].
+    cap_quotas_to_disk: bool,
     oidc: RwLock<OidcState>,
     /// Pending OIDC authorization flows keyed by state token (CSRF + PKCE + nonce).
     /// Auto-expires after 10 minutes via moka TTL; max 10 000 entries for DoS protection.
@@ -552,6 +556,7 @@ impl AuthApplicationService {
             user_lifecycle: None,
             storage_path,
             default_quotas: DefaultQuotas::default(),
+            cap_quotas_to_disk: true,
             oidc: RwLock::new(OidcState {
                 service: None,
                 config: None,
@@ -755,15 +760,29 @@ impl AuthApplicationService {
         self
     }
 
+    /// Turns the free-disk-space cap on default quotas on or off. The DI
+    /// factory turns it off when any configured blob backend is remote
+    /// (S3, Azure): the local disk then says nothing about how much can be
+    /// stored, and capping to it would silently shrink the configured value.
+    pub fn with_disk_capped_quotas(mut self, enabled: bool) -> Self {
+        self.cap_quotas_to_disk = enabled;
+        self
+    }
+
     /// Returns the default quota for the given role, capped to the available
-    /// disk space on the filesystem that hosts the storage directory.
-    /// A configured quota of `0` (unlimited) is returned as is.
+    /// disk space on the filesystem that hosts the storage directory when
+    /// blobs live there. A configured quota of `0` (unlimited) is returned
+    /// as is.
     fn capped_quota(&self, role: &UserRole) -> i64 {
         let base_quota = if role.at_least(UserRole::Admin) {
             self.default_quotas.admin_bytes
         } else {
             self.default_quotas.user_bytes
         };
+
+        if !self.cap_quotas_to_disk {
+            return base_quota;
+        }
 
         cap_quota_to_available(
             base_quota,
