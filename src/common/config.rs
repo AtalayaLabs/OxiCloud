@@ -258,6 +258,8 @@ pub struct StorageConfig {
     /// backends where the one-time re-read of every legacy blob should be
     /// scheduled deliberately. Default: true. Env: `OXICLOUD_LEGACY_RECHUNK`.
     pub legacy_rechunk_enabled: bool,
+    /// Quotas stamped on accounts and shared drives at creation time.
+    pub default_quotas: DefaultQuotas,
     /// Which blob storage backend to use (`local`, `s3`, or `azure`).
     pub backend: StorageBackendType,
     /// S3-compatible backend configuration (used when `backend == S3`).
@@ -273,6 +275,54 @@ pub struct StorageConfig {
     /// Wall-clock bounds on backend calls, so a stalled endpoint
     /// surfaces as a transient error instead of hanging indefinitely.
     pub timeout: TimeoutPolicy,
+}
+
+/// Quota applied to a new user account when none is given explicitly.
+/// Kept at the historical values so leaving the knobs unset changes nothing.
+const DEFAULT_USER_QUOTA_BYTES: i64 = 1_073_741_824; // 1 GiB
+const DEFAULT_ADMIN_QUOTA_BYTES: i64 = 107_374_182_400; // 100 GiB
+
+/// Default storage quotas, in bytes, for things created from now on.
+///
+/// `0` means unlimited, the same convention the quota checks already use.
+/// Existing accounts and drives are never touched: these only decide what a
+/// new row starts with, the admin quota endpoints stay the way to change it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DefaultQuotas {
+    /// New non-admin accounts: self-registration, OIDC auto-provisioning,
+    /// admin-created users without a quota, external → internal promotion.
+    /// Env: `OXICLOUD_DEFAULT_USER_QUOTA_BYTES`.
+    pub user_bytes: i64,
+    /// New admin accounts. Env: `OXICLOUD_DEFAULT_ADMIN_QUOTA_BYTES`.
+    pub admin_bytes: i64,
+    /// New shared drives created without an explicit `quota_bytes`.
+    /// Env: `OXICLOUD_DEFAULT_SHARED_DRIVE_QUOTA_BYTES`.
+    pub shared_drive_bytes: i64,
+}
+
+impl Default for DefaultQuotas {
+    fn default() -> Self {
+        Self {
+            user_bytes: DEFAULT_USER_QUOTA_BYTES,
+            admin_bytes: DEFAULT_ADMIN_QUOTA_BYTES,
+            shared_drive_bytes: 0,
+        }
+    }
+}
+
+/// Parses a quota knob. Anything that is not a non-negative integer is
+/// ignored with a warning: silently reading a typo as `0` would hand every
+/// new account unlimited storage.
+fn parse_quota_bytes(var: &str, raw: &str) -> Option<i64> {
+    match raw.trim().parse::<i64>() {
+        Ok(bytes) if bytes >= 0 => Some(bytes),
+        _ => {
+            tracing::warn!(
+                "{var}={raw:?} is not a byte count (0 = unlimited); keeping the default"
+            );
+            None
+        }
+    }
 }
 
 /// Which blob storage backend to use.
@@ -1294,6 +1344,7 @@ impl Default for StorageConfig {
             usage_reconcile_secs: 600, // 10 minutes
             tree_etag_flush_ms: 500,
             legacy_rechunk_enabled: true,
+            default_quotas: DefaultQuotas::default(),
             backend: StorageBackendType::Local,
             s3: None,
             azure: None,
@@ -4352,6 +4403,24 @@ impl AppConfig {
                 enabled.eq_ignore_ascii_case("true") || enabled == "1";
         }
 
+        // Default quotas for new accounts and shared drives
+        if let Ok(raw) = env::var("OXICLOUD_DEFAULT_USER_QUOTA_BYTES")
+            && let Some(bytes) = parse_quota_bytes("OXICLOUD_DEFAULT_USER_QUOTA_BYTES", &raw)
+        {
+            config.storage.default_quotas.user_bytes = bytes;
+        }
+        if let Ok(raw) = env::var("OXICLOUD_DEFAULT_ADMIN_QUOTA_BYTES")
+            && let Some(bytes) = parse_quota_bytes("OXICLOUD_DEFAULT_ADMIN_QUOTA_BYTES", &raw)
+        {
+            config.storage.default_quotas.admin_bytes = bytes;
+        }
+        if let Ok(raw) = env::var("OXICLOUD_DEFAULT_SHARED_DRIVE_QUOTA_BYTES")
+            && let Some(bytes) =
+                parse_quota_bytes("OXICLOUD_DEFAULT_SHARED_DRIVE_QUOTA_BYTES", &raw)
+        {
+            config.storage.default_quotas.shared_drive_bytes = bytes;
+        }
+
         // Multi-entry storage config (docs/plan/storage-multi-entry.md).
         // Parsed here so a bad config aborts boot with a clear error
         // message before any downstream service tries to use it.
@@ -4835,6 +4904,17 @@ mod tests {
             non_empty_url(Ok("http://oxicloud:8086/".to_string())),
             Some("http://oxicloud:8086".to_string())
         );
+    }
+
+    #[test]
+    fn quota_knobs_accept_byte_counts_and_reject_the_rest() {
+        let var = "OXICLOUD_DEFAULT_USER_QUOTA_BYTES";
+        assert_eq!(parse_quota_bytes(var, "5368709120"), Some(5_368_709_120));
+        assert_eq!(parse_quota_bytes(var, " 42 "), Some(42));
+        assert_eq!(parse_quota_bytes(var, "0"), Some(0));
+        assert_eq!(parse_quota_bytes(var, "-1"), None);
+        assert_eq!(parse_quota_bytes(var, "5GB"), None);
+        assert_eq!(parse_quota_bytes(var, ""), None);
     }
 
     #[test]

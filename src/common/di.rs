@@ -2599,7 +2599,8 @@ impl AppServiceFactory {
                             pool.clone(),
                         ),
                     ),
-                ),
+                )
+                .with_default_shared_drive_quota(self.config.storage.default_quotas.shared_drive_bytes),
             ),
             drive_policy_defaults_service: Arc::new(
                 crate::application::services::drive_policy_defaults_service::DrivePolicyDefaultsService::new(

@@ -46,6 +46,9 @@ pub struct DriveManagementService {
     /// `POST /api/drives/{id}/members` route would otherwise open
     /// (the grant_handler check only catches `POST /api/grants`).
     user_repo: Arc<UserPgRepository>,
+    /// Quota given to a shared drive created without one; `0` keeps such
+    /// drives unlimited. Env: `OXICLOUD_DEFAULT_SHARED_DRIVE_QUOTA_BYTES`.
+    default_shared_drive_quota: i64,
 }
 
 impl DriveManagementService {
@@ -60,7 +63,14 @@ impl DriveManagementService {
             authz,
             group_repo,
             user_repo,
+            default_shared_drive_quota: 0,
         }
+    }
+
+    /// Sets the quota a shared drive gets when the create request omits one.
+    pub fn with_default_shared_drive_quota(mut self, quota_bytes: i64) -> Self {
+        self.default_shared_drive_quota = quota_bytes;
+        self
     }
 
     /// `POST /api/drives` — create a shared drive owned by a group.
@@ -72,6 +82,10 @@ impl DriveManagementService {
     /// signature. `caller_is_admin` is resolved by the HTTP handler
     /// from `CurrentUser.role` and passed in; the service trusts it
     /// (defense-in-depth check stays at the route layer).
+    ///
+    /// Quota: an omitted `quota_bytes` falls back to the configured
+    /// default; an explicit value ≤ 0 means unlimited, as in
+    /// [`Self::update_quota`].
     ///
     /// Audit log: `drive.created` with the drive id, the owner group,
     /// and the granted_by (the admin caller).
@@ -142,6 +156,9 @@ impl DriveManagementService {
         if trimmed.is_empty() {
             return Err(DomainError::validation_error("Drive name is required."));
         }
+
+        let quota_bytes =
+            Some(quota_bytes.unwrap_or(self.default_shared_drive_quota)).filter(|&q| q > 0);
 
         let drive = self
             .drive_repo

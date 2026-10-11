@@ -53,6 +53,10 @@ pub async fn create_auth_services(
     // direct FolderService dependency for that path.
     auth_app_service = auth_app_service.with_user_lifecycle(user_lifecycle);
 
+    // Quotas new accounts start with — password sign-up, OIDC
+    // auto-provisioning and admin-created users alike.
+    auth_app_service = auth_app_service.with_default_quotas(config.storage.default_quotas);
+
     // Wire the auth-method allowlist + email-verification requirement so
     // login / magic-link / register handlers consult a single snapshot
     // rather than reaching into the app config on every call.
