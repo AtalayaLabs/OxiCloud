@@ -310,18 +310,20 @@ impl Default for DefaultQuotas {
     }
 }
 
-/// Parses a quota knob. Anything that is not a non-negative integer is
-/// ignored with a warning: silently reading a typo as `0` would hand every
-/// new account unlimited storage.
-fn parse_quota_bytes(var: &str, raw: &str) -> Option<i64> {
-    match raw.trim().parse::<i64>() {
-        Ok(bytes) if bytes >= 0 => Some(bytes),
-        _ => {
-            tracing::warn!(
-                "{var}={raw:?} is not a byte count (0 = unlimited); keeping the default"
-            );
-            None
-        }
+/// Parses a quota knob. An empty value counts as unset (`Ok(None)`).
+/// Anything else that is not a non-negative integer is an error, and boot
+/// refuses to continue: falling back to the default would quietly leave a
+/// misconfigured deployment with a quota the operator did not ask for.
+fn parse_quota_bytes(raw: &str) -> Result<Option<i64>, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    match raw.parse::<i64>() {
+        Ok(bytes) if bytes >= 0 => Ok(Some(bytes)),
+        _ => Err(format!(
+            "{raw:?} is not a byte count (a non-negative integer, 0 = unlimited)"
+        )),
     }
 }
 
@@ -4416,21 +4418,24 @@ impl AppConfig {
         }
 
         // Default quotas for new accounts and shared drives
-        if let Ok(raw) = env::var("OXICLOUD_DEFAULT_USER_QUOTA_BYTES")
-            && let Some(bytes) = parse_quota_bytes("OXICLOUD_DEFAULT_USER_QUOTA_BYTES", &raw)
-        {
-            config.storage.default_quotas.user_bytes = bytes;
-        }
-        if let Ok(raw) = env::var("OXICLOUD_DEFAULT_ADMIN_QUOTA_BYTES")
-            && let Some(bytes) = parse_quota_bytes("OXICLOUD_DEFAULT_ADMIN_QUOTA_BYTES", &raw)
-        {
-            config.storage.default_quotas.admin_bytes = bytes;
-        }
-        if let Ok(raw) = env::var("OXICLOUD_DEFAULT_SHARED_DRIVE_QUOTA_BYTES")
-            && let Some(bytes) =
-                parse_quota_bytes("OXICLOUD_DEFAULT_SHARED_DRIVE_QUOTA_BYTES", &raw)
-        {
-            config.storage.default_quotas.shared_drive_bytes = bytes;
+        let quotas = &mut config.storage.default_quotas;
+        for (var, field) in [
+            ("OXICLOUD_DEFAULT_USER_QUOTA_BYTES", &mut quotas.user_bytes),
+            (
+                "OXICLOUD_DEFAULT_ADMIN_QUOTA_BYTES",
+                &mut quotas.admin_bytes,
+            ),
+            (
+                "OXICLOUD_DEFAULT_SHARED_DRIVE_QUOTA_BYTES",
+                &mut quotas.shared_drive_bytes,
+            ),
+        ] {
+            if let Ok(raw) = env::var(var)
+                && let Some(bytes) =
+                    parse_quota_bytes(&raw).unwrap_or_else(|e| panic!("{var}: {e}"))
+            {
+                *field = bytes;
+            }
         }
 
         // Multi-entry storage config (docs/plan/storage-multi-entry.md).
@@ -4920,13 +4925,13 @@ mod tests {
 
     #[test]
     fn quota_knobs_accept_byte_counts_and_reject_the_rest() {
-        let var = "OXICLOUD_DEFAULT_USER_QUOTA_BYTES";
-        assert_eq!(parse_quota_bytes(var, "5368709120"), Some(5_368_709_120));
-        assert_eq!(parse_quota_bytes(var, " 42 "), Some(42));
-        assert_eq!(parse_quota_bytes(var, "0"), Some(0));
-        assert_eq!(parse_quota_bytes(var, "-1"), None);
-        assert_eq!(parse_quota_bytes(var, "5GB"), None);
-        assert_eq!(parse_quota_bytes(var, ""), None);
+        assert_eq!(parse_quota_bytes("5368709120"), Ok(Some(5_368_709_120)));
+        assert_eq!(parse_quota_bytes(" 42 "), Ok(Some(42)));
+        assert_eq!(parse_quota_bytes("0"), Ok(Some(0)));
+        assert_eq!(parse_quota_bytes(""), Ok(None));
+        assert_eq!(parse_quota_bytes("  "), Ok(None));
+        assert!(parse_quota_bytes("-1").is_err());
+        assert!(parse_quota_bytes("5GB").is_err());
     }
 
     #[test]

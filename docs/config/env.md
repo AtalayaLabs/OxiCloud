@@ -36,7 +36,7 @@ Every variable below can also be written in a TOML config file — the key is th
 
 ## Quotas
 
-Defaults for things created from now on. Existing accounts and drives keep their quota; change those with `PUT /api/admin/users/{id}/quota` and `PATCH /api/drives/{id}/quota`. Values are bytes, `0` means unlimited, and a negative or non-numeric value is ignored with a warning.
+Defaults for things created from now on. Existing accounts and drives keep their quota; change those with `PUT /api/admin/users/{id}/quota` and `PATCH /api/drives/{id}/quota`. Values are bytes, `0` means unlimited, and a negative or non-numeric value stops the server at boot (an empty value counts as unset).
 
 | Variable | Default | Description |
 |---|---|---|
