@@ -1,5 +1,18 @@
 # External Storage Backends — Implementation Plan
 
+> **Historical implementation prompt.** Its Local/S3/Azure backends, admin
+> configuration, migration, cache and server-side encryption now have
+> implementations. Use [the current backend architecture](docs/architecture/backend-storage.md),
+> [storage consistency](docs/plan/storage-consistency.md) and `AGENTS.md` for new
+> work. The paths, SQL details and failure handling below describe an earlier
+> design; they are not instructions to recreate those systems. In particular,
+> failed work must pause/resume rather than report successful completion.
+>
+> Task 4.2 describes **server-side encryption at rest**: the OxiCloud server
+> holds the key and decrypts the content. It is not browser/client end-to-end
+> encryption. The separate [Vault proposal](docs/plan/vault-e2ee.md) covers that
+> remaining feature and is not an implemented capability.
+
 > **Purpose**: This prompt provides Claude Code with full architectural context to implement pluggable blob storage backends (S3, Backblaze B2, MinIO, etc.) for OxiCloud, across 4 phases. All changes MUST respect the existing hexagonal architecture, BLAKE3 dedup system, and coding conventions defined in `CLAUDE.md`.
 
 ---
@@ -737,7 +750,7 @@ OXICLOUD_STORAGE_CACHE_MAX_SIZE=53687091200    # 50 GB
 OXICLOUD_STORAGE_CACHE_PATH=/fast-ssd/oxicloud-cache
 ```
 
-### Task 4.2: Client-side encryption (AES-256-GCM)
+### Task 4.2: Server-side encryption at rest (AES-256-GCM)
 
 **File**: `src/infrastructure/services/encrypted_blob_backend.rs` (NEW)
 
