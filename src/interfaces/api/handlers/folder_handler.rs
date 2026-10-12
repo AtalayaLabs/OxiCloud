@@ -701,19 +701,14 @@ pub async fn list_folder_resources(
                             .unwrap_or("application/octet-stream");
                         let size_bytes = row.size.max(0) as u64;
                         // `blob_hash` is `Some(_)` for file rows in the
-                        // UNION ALL (`NULL` for folders). Route the
-                        // ETag formula through `File::compute_etag` —
-                        // the single source of truth shared with
-                        // GET/HEAD/PROPFIND/PUT response — so this
-                        // listing's `etag` byte-equals what a
-                        // conditional request would compare against.
-                        let modified_at_u = row.modified_at.timestamp() as u64;
+                        // UNION ALL (`NULL` for folders). Route the ETag
+                        // through `File::etag_for_listing` — the single
+                        // helper shared with every other listing endpoint
+                        // and byte-equal to GET/HEAD/PROPFIND for the same
+                        // file.
+                        let etag =
+                            File::etag_for_listing(row.blob_hash.as_deref(), row.modified_at);
                         let content_hash = row.blob_hash.unwrap_or_default();
-                        let etag = if content_hash.is_empty() {
-                            String::new()
-                        } else {
-                            File::compute_etag(&content_hash, modified_at_u)
-                        };
                         // Compute the name-derived icon/category classes first
                         // (they borrow `&row.name`), so `name` can be moved into
                         // the DTO below instead of cloned — one fewer String

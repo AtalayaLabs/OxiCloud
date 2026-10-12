@@ -992,16 +992,11 @@ fn row_to_item_dto(row: TrashResourceRow) -> TrashResourceItemDto {
             .as_deref()
             .unwrap_or("application/octet-stream");
         let size_bytes = row.size.max(0) as u64;
-        // Route ETag through `File::compute_etag` so trash items
-        // match GET/HEAD/PROPFIND ETags — a client restoring a
-        // file may conditional-request it immediately after.
-        let modified_at_u = row.modified_at.timestamp() as u64;
+        // Route ETag through `File::etag_for_listing` so trash items
+        // match GET/HEAD/PROPFIND ETags — a client restoring a file
+        // may conditional-request it immediately after.
+        let etag = File::etag_for_listing(row.blob_hash.as_deref(), row.modified_at);
         let content_hash = row.blob_hash.unwrap_or_default();
-        let etag = if content_hash.is_empty() {
-            String::new()
-        } else {
-            File::compute_etag(&content_hash, modified_at_u)
-        };
         let classes = classify_display(&row.name, mime);
         let dto = FileDto {
             id: row.resource_id.to_string(),

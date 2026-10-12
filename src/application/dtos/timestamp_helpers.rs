@@ -38,6 +38,86 @@ pub fn epoch_zero() -> DateTime<Utc> {
     DateTime::<Utc>::from_timestamp(0, 0).expect("epoch 0 is a valid DateTime<Utc>")
 }
 
+/// Convert a `DateTime<Utc>` to the integer-seconds value used as input to
+/// [`crate::domain::entities::file::File::compute_etag`].
+///
+/// This MUST match PostgreSQL's `EXTRACT(EPOCH FROM x)::bigint` behaviour
+/// (round half-up) rather than chrono's `.timestamp()` (floor), because the
+/// File entity is loaded via the SQL cast in `file_blob_read_repository.rs`
+/// and WebDAV / NC sync clients (NC desktop, Cyberduck, Finder) have been
+/// caching ETags computed from the ROUNDED value since the project started.
+/// Switching every ETag input to `.timestamp()` floor would invalidate every
+/// sync client's local cache in one go — same value here keeps those caches
+/// valid across the pivot.
+///
+/// The listing REST endpoints (`/api/folders/<id>/resources`,
+/// `/api/favorites/resources`, `/api/recent/resources`,
+/// `/api/trash/resources`, NC REPORT/search) previously used `.timestamp()
+/// as u64` which floors, producing an ETag that drifted by one second from
+/// the WebDAV path on any file whose sub-second was ≥ 0.5. Cyberduck
+/// surfaced this: GET /webdav/ returned `...-1783489231` while the SPA
+/// listing returned `...-1783489230` for the same file. This helper is the
+/// single source of truth; both paths now agree.
+pub fn datetime_to_etag_seconds(dt: DateTime<Utc>) -> u64 {
+    let secs = dt.timestamp().max(0) as u64;
+    // Postgres `::bigint` cast on numeric uses round-half-to-even
+    // (banker's rounding). For nanosecond resolution the half-boundary
+    // sits at exactly 500_000_000; everything else is unambiguous, so
+    // round-half-up produces the same output as banker's rounding for
+    // every value chrono can represent EXCEPT exactly `.5` seconds.
+    // Our source values are microsecond-granular (Postgres TIMESTAMPTZ),
+    // so a true `.5` boundary is vanishingly rare in practice.
+    if dt.timestamp_subsec_nanos() >= 500_000_000 {
+        secs.saturating_add(1)
+    } else {
+        secs
+    }
+}
+
+#[cfg(test)]
+mod etag_seconds_tests {
+    //! Byte-level freeze of the ETag-input rounding rule so WebDAV + NC
+    //! sync-client caches survive a refactor. Cross-check the Hurl guard
+    //! in `webdav_etag_cross_check.hurl` (end-to-end) and the ETag
+    //! byte-equality test on `file.rs::compute_etag` (formula shape).
+
+    use super::*;
+    use chrono::TimeZone;
+
+    #[test]
+    fn below_half_second_floors() {
+        let dt = Utc.timestamp_opt(1_783_489_230, 499_999_999).unwrap();
+        assert_eq!(datetime_to_etag_seconds(dt), 1_783_489_230);
+    }
+
+    #[test]
+    fn at_exactly_half_second_rounds_up() {
+        let dt = Utc.timestamp_opt(1_783_489_230, 500_000_000).unwrap();
+        assert_eq!(datetime_to_etag_seconds(dt), 1_783_489_231);
+    }
+
+    #[test]
+    fn above_half_second_rounds_up() {
+        // The Cyberduck finding: 1783489230.883931 → 1783489231
+        let dt = Utc.timestamp_opt(1_783_489_230, 883_931_000).unwrap();
+        assert_eq!(datetime_to_etag_seconds(dt), 1_783_489_231);
+    }
+
+    #[test]
+    fn whole_second_passes_through() {
+        let dt = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
+        assert_eq!(datetime_to_etag_seconds(dt), 1_700_000_000);
+    }
+
+    #[test]
+    fn negative_epoch_clamps_to_zero() {
+        // Hypothetical pre-1970 timestamp; the unsigned cast on
+        // `.timestamp()` without clamping would wrap into a huge positive.
+        let dt = Utc.timestamp_opt(-5, 0).unwrap();
+        assert_eq!(datetime_to_etag_seconds(dt), 0);
+    }
+}
+
 // ══════════════════════════════════════════════════════════════════════
 // Lenient inbound deserialization
 // ══════════════════════════════════════════════════════════════════════

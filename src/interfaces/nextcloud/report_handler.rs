@@ -430,18 +430,14 @@ async fn handle_search(
 
 /// Build a `FileDto` from a search file result.
 fn file_dto_from_search(fr: &crate::application::dtos::search_dto::SearchFileResultDto) -> FileDto {
-    // Route ETag through `File::compute_etag` so REPORT/SEARCH hits
-    // emit the same opaque token NC's sync client cached from the
-    // earlier PROPFIND walk — without this, NC's conditional-request
-    // logic on search results disagrees with its own cached state
-    // and triggers a spurious re-fetch.
-    let etag = if fr.blob_hash.is_empty() {
-        String::new()
-    } else {
-        // `File::compute_etag` keeps its `u64` input (byte-stable ETag);
-        // the DTO wire shape became `DateTime<Utc>`, so round-trip here.
-        File::compute_etag(&fr.blob_hash, fr.modified_at.timestamp().max(0) as u64)
-    };
+    // Route ETag through `File::etag_for_listing` so REPORT/SEARCH hits
+    // emit the same opaque token NC's sync client cached from the earlier
+    // PROPFIND walk — without this, NC's conditional-request logic on
+    // search results disagrees with its own cached state and triggers a
+    // spurious re-fetch. The helper handles empty-hash → empty-ETag so
+    // search rows missing a blob (shouldn't happen in practice) still
+    // match the previous behaviour.
+    let etag = File::etag_for_listing(Some(fr.blob_hash.as_str()), fr.modified_at);
     FileDto {
         id: fr.id.clone(),
         name: fr.name.clone(),
