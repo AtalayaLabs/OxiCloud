@@ -79,6 +79,16 @@ Authorization: Bearer {{access_v2}}
 HTTP 200
 [Asserts]
 jsonpath "$.full.user.username" == "{{username}}"
+# End-to-end wire-shape guard for the REST surface's ISO-8601 pivot.
+# The 15 `wire_shape_tests` in `cargo test wire_shape` freeze the DTO
+# → serde output IN ISOLATION; this assertion freezes the HTTP body
+# a real client actually receives. Catches any response-rewriter
+# middleware or future serde-attribute override that lands between
+# the DTO and the wire — things the Rust unit tests can't see.
+# RFC 3339 UTC: 4-digit year, dash-separated date, `T`, 24h time,
+# optional sub-second, `Z` or ±HH:MM offset.
+jsonpath "$.full.created_at" matches "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$"
+jsonpath "$.full.updated_at" matches "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$"
 
 
 # ─────────────────────────────────────────────────────────────

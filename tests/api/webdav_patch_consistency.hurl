@@ -118,6 +118,11 @@ header "Content-Length" == "20"
 # `handle_patch` response builders) — `contains` tolerates that
 # formatting difference instead of asserting byte-for-byte equality.
 header "ETag" contains {{etag2}}
+# `Last-Modified` is RFC 1123 HTTP-date (RFC 7231 §7.1.1.1). Alternates
+# ` GMT` and ` +0000` are both accepted by Nextcloud desktop / Finder /
+# Cyberduck in practice; our emitter uses ` +0000`. An accidental
+# regression to RFC 3339 (`2026-10-11T22:13:20Z`) would break them.
+header "Last-Modified" matches "^[A-Z][a-z]{2}, [0-9]{1,2} [A-Z][a-z]{2} [0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2} (GMT|\\+0000)$"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -135,6 +140,8 @@ Content-Type: application/xml; charset=utf-8
   <D:prop>
     <D:getcontentlength/>
     <D:getetag/>
+    <D:getlastmodified/>
+    <D:creationdate/>
   </D:prop>
 </D:propfind>
 ```
@@ -143,6 +150,18 @@ HTTP 207
 [Asserts]
 xpath "number(//*[local-name()='getcontentlength'])" == 20
 xpath "string(//*[local-name()='getetag'])" contains {{etag2}}
+# `D:getlastmodified` is RFC 1123 HTTP-date (RFC 4918 §15.7) — the shape
+# sync clients cache. Our emitters (`chrono::DateTime::to_rfc2822` and the
+# stack-buffer `common::fmt::rfc2822_utc` fast path) both end in ` +0000`
+# rather than ` GMT`; both are accepted by every sync client in practice
+# and the alternation below tolerates either.  An accidental regression
+# to RFC 3339 (`2026-10-11T22:13:20Z`) would break Nextcloud desktop
+# right here.
+xpath "string(//*[local-name()='getlastmodified'])" matches "^[A-Z][a-z]{2}, [0-9]{1,2} [A-Z][a-z]{2} [0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2} (GMT|\\+0000)$"
+# `D:creationdate` is RFC 3339 (RFC 4918 §15.1). Keep it separate from
+# `getlastmodified` on purpose — the two properties have different
+# RFC-mandated formats, and mixing them up breaks sync clients.
+xpath "string(//*[local-name()='creationdate'])" matches "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$"
 
 
 # Cleanup Part A.
