@@ -51,7 +51,7 @@ export default ts.config(
 		// field is intentionally a no-fields object (pure-poke events
 		// like `notification_received`). See
 		// `docs/plan/templated-messages.md § Bus event is a pure poke`.
-		files: ['src/lib/generated/message-bus/**/*.ts'],
+		files: ['src/lib/api/generated/asyncapi/**/*.ts'],
 		rules: {
 			'@typescript-eslint/no-empty-object-type': 'off'
 		}
@@ -115,7 +115,7 @@ export default ts.config(
 			'package/',
 			'static/',
 			'bench/',
-			// Replaced wholesale by `npm run api:generate`; lint the source
+			// Replaced wholesale by `npm run gen:openapi`; lint the source
 			// OpenAPI and our runtime adapter, not Hey API's bundled internals.
 			'src/lib/api/generated/'
 		]

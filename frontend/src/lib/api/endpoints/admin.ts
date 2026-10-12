@@ -1,4 +1,4 @@
-import { client as generatedClient } from '../generated/client.gen';
+import { client as generatedClient } from '../generated/openapi/client.gen';
 /**
  * Admin endpoints — ported from views/admin/admin.js. Covers users, plugins
  * (incl. logs/retention/live SSE tail), dashboard, settings (OIDC/storage/SMTP),
