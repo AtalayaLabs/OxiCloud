@@ -9,7 +9,7 @@ use crate::application::ports::auth_ports::{
 use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::application::ports::user_lifecycle::{DeletionMode, LogoutReason};
 use crate::application::services::user_lifecycle_service::UserLifecycleService;
-use crate::common::config::{AuthMethod, AuthPolicy, OidcConfig};
+use crate::common::config::{AuthMethod, AuthPolicy, DefaultQuotas, OidcConfig};
 use crate::common::errors::{DomainError, ErrorKind};
 use crate::domain::entities::magic_link_token::{MagicLinkResourceKind, MagicLinkStatus};
 use crate::domain::entities::session::Session;
@@ -104,6 +104,62 @@ fn validate_dpop_jkt(raw: &str) -> Result<String, &'static str> {
         return Err("DPoP thumbprint contains non-base64url characters");
     }
     Ok(raw.to_string())
+}
+
+/// Caps a default quota to the free disk space. `0` (unlimited) passes
+/// through untouched; a finite quota is never capped below 1 byte, because
+/// a full disk (`avail == 0`) would otherwise yield `0` — unlimited.
+fn cap_quota_to_available(base_quota: i64, role: &str, avail: Option<u64>) -> i64 {
+    if base_quota == 0 {
+        return 0;
+    }
+    match avail {
+        Some(avail) => {
+            let avail_i64 = i64::try_from(avail).unwrap_or(i64::MAX).max(1);
+            if avail_i64 < base_quota {
+                tracing::info!(
+                    "Available disk space ({} bytes) is less than default {} quota ({} bytes) — capping quota",
+                    avail,
+                    role,
+                    base_quota,
+                );
+                avail_i64
+            } else {
+                base_quota
+            }
+        }
+        None => {
+            tracing::warn!("Could not determine available disk space, using default quota");
+            base_quota
+        }
+    }
+}
+
+#[cfg(test)]
+mod cap_quota_tests {
+    use super::cap_quota_to_available;
+
+    #[test]
+    fn unlimited_passes_through() {
+        assert_eq!(cap_quota_to_available(0, "user", Some(0)), 0);
+        assert_eq!(cap_quota_to_available(0, "user", Some(10)), 0);
+    }
+
+    #[test]
+    fn caps_to_available_space() {
+        assert_eq!(cap_quota_to_available(100, "user", Some(40)), 40);
+        assert_eq!(cap_quota_to_available(100, "user", Some(400)), 100);
+    }
+
+    #[test]
+    fn full_disk_never_yields_unlimited() {
+        assert_eq!(cap_quota_to_available(100, "user", Some(0)), 1);
+    }
+
+    #[test]
+    fn unknown_space_keeps_base() {
+        assert_eq!(cap_quota_to_available(100, "user", None), 100);
+    }
 }
 
 #[cfg(test)]
@@ -397,10 +453,6 @@ struct OidcState {
     config: Option<OidcConfig>,
 }
 
-/// Default quota: 100 GB
-const DEFAULT_ADMIN_QUOTA: i64 = 107_374_182_400;
-const DEFAULT_USER_QUOTA: i64 = 1_073_741_824; // 1 GB
-
 pub struct AuthApplicationService {
     user_storage: Arc<UserPgRepository>,
     session_storage: Arc<SessionPgRepository>,
@@ -414,6 +466,12 @@ pub struct AuthApplicationService {
     user_lifecycle: Option<Arc<UserLifecycleService>>,
     /// Path to the storage directory, used for disk-space–aware quota calculation
     storage_path: PathBuf,
+    /// Quota stamped on new accounts, per role. See [`Self::capped_quota`].
+    default_quotas: DefaultQuotas,
+    /// Whether default quotas are capped to the free space under
+    /// `storage_path`. Only meaningful when blobs live on that disk; see
+    /// [`Self::with_disk_capped_quotas`].
+    cap_quotas_to_disk: bool,
     oidc: RwLock<OidcState>,
     /// Pending OIDC authorization flows keyed by state token (CSRF + PKCE + nonce).
     /// Auto-expires after 10 minutes via moka TTL; max 10 000 entries for DoS protection.
@@ -497,6 +555,8 @@ impl AuthApplicationService {
             token_service,
             user_lifecycle: None,
             storage_path,
+            default_quotas: DefaultQuotas::default(),
+            cap_quotas_to_disk: true,
             oidc: RwLock::new(OidcState {
                 service: None,
                 config: None,
@@ -692,35 +752,43 @@ impl AuthApplicationService {
         self
     }
 
+    /// Sets the quotas new accounts start with. Called by the DI factory
+    /// from `OXICLOUD_DEFAULT_*_QUOTA_BYTES`; left uncalled, the historical
+    /// 1 GiB / 100 GiB defaults apply.
+    pub fn with_default_quotas(mut self, default_quotas: DefaultQuotas) -> Self {
+        self.default_quotas = default_quotas;
+        self
+    }
+
+    /// Turns the free-disk-space cap on default quotas on or off. The DI
+    /// factory turns it off when any configured blob backend is remote
+    /// (S3, Azure): the local disk then says nothing about how much can be
+    /// stored, and capping to it would silently shrink the configured value.
+    pub fn with_disk_capped_quotas(mut self, enabled: bool) -> Self {
+        self.cap_quotas_to_disk = enabled;
+        self
+    }
+
     /// Returns the default quota for the given role, capped to the available
-    /// disk space on the filesystem that hosts the storage directory.
+    /// disk space on the filesystem that hosts the storage directory when
+    /// blobs live there. A configured quota of `0` (unlimited) is returned
+    /// as is.
     fn capped_quota(&self, role: &UserRole) -> i64 {
         let base_quota = if role.at_least(UserRole::Admin) {
-            DEFAULT_ADMIN_QUOTA
+            self.default_quotas.admin_bytes
         } else {
-            DEFAULT_USER_QUOTA
+            self.default_quotas.user_bytes
         };
 
-        match Self::available_disk_space(&self.storage_path) {
-            Some(avail) => {
-                let avail_i64 = avail as i64;
-                if avail_i64 < base_quota {
-                    tracing::info!(
-                        "Available disk space ({} bytes) is less than default {} quota ({} bytes) — capping quota",
-                        avail_i64,
-                        role.as_str(),
-                        base_quota,
-                    );
-                    avail_i64
-                } else {
-                    base_quota
-                }
-            }
-            None => {
-                tracing::warn!("Could not determine available disk space, using default quota");
-                base_quota
-            }
+        if !self.cap_quotas_to_disk {
+            return base_quota;
         }
+
+        cap_quota_to_available(
+            base_quota,
+            role.as_str(),
+            Self::available_disk_space(&self.storage_path),
+        )
     }
 
     /// Query the available space on the filesystem that contains `path`.

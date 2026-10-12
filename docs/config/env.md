@@ -34,6 +34,16 @@ Every variable below can also be written in a TOML config file — the key is th
 | `OXICLOUD_WEBHOOK_TARGET` | (unset) | Recipient for the formats that carry it in the body rather than the URL: a **Telegram** chat id (URL is `https://api.telegram.org/bot<TOKEN>/sendMessage`) — a supergroup or channel id such as `-1001234567890`, where the leading `-` is real and supergroup ids start with `-100`; or `@channelusername`; or a positive id for a private chat with one user — or an **ntfy** topic (URL is the ntfy base, e.g. `https://ntfy.sh/`; the topic goes in the body because ntfy's `POST /<topic>` form treats the whole body as the message text, so JSON publishing goes to the root). **Required** for `telegram` and `ntfy` — the server refuses to start without it rather than discovering the gap at the first alert. Ignored by the other formats. |
 | `OXICLOUD_LEGACY_RECHUNK` | `true` | **DEPRECATED — removed in the next major release.** The pre-CDC re-chunk migration is now the `backend_rechunk` job, present in the default `OXICLOUD_JOBS_STARTUP` above, which gives it an admin trigger, run history, findings and a resumable cursor — so "has this finished on my instance?" is answerable from the admin panel rather than from boot logs. Setting this to `false` still has its original effect: `backend_rechunk` is dropped from the **default** startup list, so no egress is spent re-reading every legacy blob at boot, and a deprecation warning is logged. It has **no effect when `OXICLOUD_JOBS_STARTUP` is set explicitly**, because that list is a direct statement about what runs at boot and is not second-guessed by another variable. To keep the deferral after the variable is gone, set `OXICLOUD_JOBS_STARTUP` explicitly without `backend_rechunk` and trigger the job by hand when the egress is convenient. |
 
+## Quotas
+
+Defaults for things created from now on. Existing accounts and drives keep their quota; change those with `PUT /api/admin/users/{id}/quota` and `PATCH /api/drives/{id}/quota`. Values are bytes, `0` means unlimited, and a negative or non-numeric value stops the server at boot (an empty value counts as unset).
+
+| Variable | Default | Description |
+|---|---|---|
+| `OXICLOUD_DEFAULT_USER_QUOTA_BYTES` | `1073741824` | Quota for new non-admin accounts (1 GiB): self-registration, OIDC auto-provisioning, admin-created users without an explicit quota. Capped to the free space under `OXICLOUD_STORAGE_PATH` at creation time, unless `0` or any blob backend is S3/Azure. |
+| `OXICLOUD_DEFAULT_ADMIN_QUOTA_BYTES` | `107374182400` | Quota for new admin accounts (100 GiB). Capped like the user quota. |
+| `OXICLOUD_DEFAULT_SHARED_DRIVE_QUOTA_BYTES` | `0` | Quota for new shared drives created without `quota_bytes`. `0` keeps them unlimited. |
+
 ## Database
 
 | Variable | Default | Description |

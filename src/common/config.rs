@@ -258,6 +258,8 @@ pub struct StorageConfig {
     /// backends where the one-time re-read of every legacy blob should be
     /// scheduled deliberately. Default: true. Env: `OXICLOUD_LEGACY_RECHUNK`.
     pub legacy_rechunk_enabled: bool,
+    /// Quotas stamped on accounts and shared drives at creation time.
+    pub default_quotas: DefaultQuotas,
     /// Which blob storage backend to use (`local`, `s3`, or `azure`).
     pub backend: StorageBackendType,
     /// S3-compatible backend configuration (used when `backend == S3`).
@@ -273,6 +275,56 @@ pub struct StorageConfig {
     /// Wall-clock bounds on backend calls, so a stalled endpoint
     /// surfaces as a transient error instead of hanging indefinitely.
     pub timeout: TimeoutPolicy,
+}
+
+/// Quota applied to a new user account when none is given explicitly.
+/// Kept at the historical values so leaving the knobs unset changes nothing.
+const DEFAULT_USER_QUOTA_BYTES: i64 = 1_073_741_824; // 1 GiB
+const DEFAULT_ADMIN_QUOTA_BYTES: i64 = 107_374_182_400; // 100 GiB
+
+/// Default storage quotas, in bytes, for things created from now on.
+///
+/// `0` means unlimited, the same convention the quota checks already use.
+/// Existing accounts and drives are never touched: these only decide what a
+/// new row starts with, the admin quota endpoints stay the way to change it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DefaultQuotas {
+    /// New non-admin accounts: self-registration, OIDC auto-provisioning,
+    /// admin-created users without a quota, external → internal promotion.
+    /// Env: `OXICLOUD_DEFAULT_USER_QUOTA_BYTES`.
+    pub user_bytes: i64,
+    /// New admin accounts. Env: `OXICLOUD_DEFAULT_ADMIN_QUOTA_BYTES`.
+    pub admin_bytes: i64,
+    /// New shared drives created without an explicit `quota_bytes`.
+    /// Env: `OXICLOUD_DEFAULT_SHARED_DRIVE_QUOTA_BYTES`.
+    pub shared_drive_bytes: i64,
+}
+
+impl Default for DefaultQuotas {
+    fn default() -> Self {
+        Self {
+            user_bytes: DEFAULT_USER_QUOTA_BYTES,
+            admin_bytes: DEFAULT_ADMIN_QUOTA_BYTES,
+            shared_drive_bytes: 0,
+        }
+    }
+}
+
+/// Parses a quota knob. An empty value counts as unset (`Ok(None)`).
+/// Anything else that is not a non-negative integer is an error, and boot
+/// refuses to continue: falling back to the default would quietly leave a
+/// misconfigured deployment with a quota the operator did not ask for.
+fn parse_quota_bytes(raw: &str) -> Result<Option<i64>, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    match raw.parse::<i64>() {
+        Ok(bytes) if bytes >= 0 => Ok(Some(bytes)),
+        _ => Err(format!(
+            "{raw:?} is not a byte count (a non-negative integer, 0 = unlimited)"
+        )),
+    }
 }
 
 /// Which blob storage backend to use.
@@ -1294,6 +1346,7 @@ impl Default for StorageConfig {
             usage_reconcile_secs: 600, // 10 minutes
             tree_etag_flush_ms: 500,
             legacy_rechunk_enabled: true,
+            default_quotas: DefaultQuotas::default(),
             backend: StorageBackendType::Local,
             s3: None,
             azure: None,
@@ -3412,6 +3465,18 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    /// `true` when every blob backend this deployment can write to is the
+    /// local filesystem — the legacy flat backend and every named entry.
+    /// Any S3 or Azure entry makes it `false`, since the active entry can be
+    /// switched at runtime. Gates the free-disk-space cap on default quotas.
+    pub fn blob_storage_is_local_only(&self) -> bool {
+        self.storage.backend == StorageBackendType::Local
+            && self
+                .storage_entries
+                .iter()
+                .all(|e| e.backend == StorageBackendType::Local)
+    }
+
     pub fn from_env() -> Self {
         let mut config = Self::default();
 
@@ -4352,6 +4417,27 @@ impl AppConfig {
                 enabled.eq_ignore_ascii_case("true") || enabled == "1";
         }
 
+        // Default quotas for new accounts and shared drives
+        let quotas = &mut config.storage.default_quotas;
+        for (var, field) in [
+            ("OXICLOUD_DEFAULT_USER_QUOTA_BYTES", &mut quotas.user_bytes),
+            (
+                "OXICLOUD_DEFAULT_ADMIN_QUOTA_BYTES",
+                &mut quotas.admin_bytes,
+            ),
+            (
+                "OXICLOUD_DEFAULT_SHARED_DRIVE_QUOTA_BYTES",
+                &mut quotas.shared_drive_bytes,
+            ),
+        ] {
+            if let Ok(raw) = env::var(var)
+                && let Some(bytes) =
+                    parse_quota_bytes(&raw).unwrap_or_else(|e| panic!("{var}: {e}"))
+            {
+                *field = bytes;
+            }
+        }
+
         // Multi-entry storage config (docs/plan/storage-multi-entry.md).
         // Parsed here so a bad config aborts boot with a clear error
         // message before any downstream service tries to use it.
@@ -4835,6 +4921,41 @@ mod tests {
             non_empty_url(Ok("http://oxicloud:8086/".to_string())),
             Some("http://oxicloud:8086".to_string())
         );
+    }
+
+    #[test]
+    fn quota_knobs_accept_byte_counts_and_reject_the_rest() {
+        assert_eq!(parse_quota_bytes("5368709120"), Ok(Some(5_368_709_120)));
+        assert_eq!(parse_quota_bytes(" 42 "), Ok(Some(42)));
+        assert_eq!(parse_quota_bytes("0"), Ok(Some(0)));
+        assert_eq!(parse_quota_bytes(""), Ok(None));
+        assert_eq!(parse_quota_bytes("  "), Ok(None));
+        assert!(parse_quota_bytes("-1").is_err());
+        assert!(parse_quota_bytes("5GB").is_err());
+    }
+
+    #[test]
+    fn disk_quota_cap_applies_only_to_local_only_storage() {
+        let entry = |backend| NamedStorageEntry {
+            name: "e".to_string(),
+            backend,
+            root_dir: None,
+            s3: None,
+            azure: None,
+            encryption: None,
+        };
+        let mut config = AppConfig::default();
+        assert!(config.blob_storage_is_local_only());
+
+        config.storage_entries = vec![entry(StorageBackendType::Local)];
+        assert!(config.blob_storage_is_local_only());
+
+        config.storage_entries.push(entry(StorageBackendType::S3));
+        assert!(!config.blob_storage_is_local_only());
+
+        config.storage_entries.clear();
+        config.storage.backend = StorageBackendType::Azure;
+        assert!(!config.blob_storage_is_local_only());
     }
 
     #[test]
