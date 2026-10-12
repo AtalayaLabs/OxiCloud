@@ -2659,3 +2659,121 @@ mod tests {
         assert!(result.is_none());
     }
 }
+
+#[cfg(test)]
+mod wire_shape_tests {
+    //! Byte-level snapshot of the NC-compat `/remote.php/dav/` XML
+    //! emission path. See the companion `wire_shape_tests` in
+    //! `application/adapters/webdav_adapter.rs` for the native `/webdav/`
+    //! surface — the two paths emit via DIFFERENT code (this file's
+    //! `write_date_element` + direct text writes vs the adapter's
+    //! `write_lastmodified` / `write_creationdate`) and must each be
+    //! guarded independently.
+    //!
+    //! The three NC-specific traps this guards:
+    //!
+    //!   - `D:getlastmodified` MUST be RFC 1123 HTTP-date (` +0000`).
+    //!     NC desktop + mobile parse via `strptime("%a, %d %b %Y %H:%M:%S %z")`.
+    //!   - `D:creationdate` MUST be RFC 3339 with the `+00:00` suffix.
+    //!   - `nc:creation_time` + `nc:upload_time` MUST be INTEGER Unix
+    //!     epoch seconds (not a string timestamp). NC clients parse these
+    //!     with `(int)$value`; an ISO string coerces to `0` and the client
+    //!     treats the file as "never uploaded", triggering a re-upload
+    //!     loop. This is the single sharpest NC-compat trap in the whole
+    //!     pivot — the Hurl guard in `nc_multidrive_move_regression.hurl`
+    //!     catches it end-to-end; this test trips the same regression on
+    //!     every `cargo test` run.
+    //!
+    //! Fixture time: epoch 1_700_000_000 → 2023-11-14T22:13:20Z,
+    //! epoch 1_700_086_400 → 2023-11-15T22:13:20Z.
+
+    use super::*;
+    use crate::application::dtos::file_dto::FileDto;
+    use crate::application::dtos::timestamp_helpers::epoch_to_datetime;
+    use quick_xml::Writer;
+    use std::collections::HashSet;
+    use std::io::Cursor;
+    use std::sync::Arc;
+
+    fn render_file_response(file: FileDto) -> String {
+        let mut buf = Cursor::new(Vec::<u8>::new());
+        let mut xml = Writer::new(&mut buf);
+        write_nc_multistatus_open(&mut xml).expect("multistatus open");
+        write_file_response(
+            &mut xml,
+            &file,
+            "/remote.php/dav/files/alice/report.pdf",
+            (Some(42), Some("00000042ocxyz")),
+            "alice",
+            &HashSet::new(),
+            &[],
+        )
+        .expect("write_file_response");
+        String::from_utf8(buf.into_inner()).expect("utf-8")
+    }
+
+    fn fixture_file() -> FileDto {
+        let mut dto = FileDto::empty();
+        dto.id = "11111111-1111-1111-1111-111111111111".to_string();
+        dto.name = "report.pdf".to_string();
+        dto.path = "Documents/report.pdf".to_string();
+        dto.size = 1024;
+        dto.mime_type = Arc::from("application/pdf");
+        dto.created_at = epoch_to_datetime(1_700_000_000);
+        dto.modified_at = epoch_to_datetime(1_700_086_400);
+        dto.content_hash = "abcdef0123456789".to_string();
+        dto.etag = "abcdef0123456789-1700086400".to_string();
+        dto
+    }
+
+    #[test]
+    fn nc_file_response_emits_rfc1123_getlastmodified() {
+        let xml = render_file_response(fixture_file());
+        assert!(
+            xml.contains("Wed, 15 Nov 2023 22:13:20 +0000"),
+            "NC getlastmodified not in RFC 1123 shape; XML:\n{xml}"
+        );
+    }
+
+    #[test]
+    fn nc_file_response_emits_rfc3339_creationdate() {
+        let xml = render_file_response(fixture_file());
+        assert!(
+            xml.contains("2023-11-14T22:13:20+00:00"),
+            "NC creationdate not in RFC 3339 (+00:00) shape; XML:\n{xml}"
+        );
+    }
+
+    /// The sharpest NC-compat trap: `nc:creation_time` + `nc:upload_time`
+    /// MUST be an integer. An ISO-string regression here breaks every NC
+    /// sync client's local index immediately.
+    #[test]
+    fn nc_creation_time_is_integer_unix_epoch() {
+        let xml = render_file_response(fixture_file());
+        assert!(
+            xml.contains("<nc:creation_time>1700000000</nc:creation_time>"),
+            "nc:creation_time not an integer Unix epoch; XML:\n{xml}"
+        );
+    }
+
+    #[test]
+    fn nc_upload_time_is_integer_unix_epoch() {
+        let xml = render_file_response(fixture_file());
+        assert!(
+            xml.contains("<nc:upload_time>1700086400</nc:upload_time>"),
+            "nc:upload_time not an integer Unix epoch; XML:\n{xml}"
+        );
+    }
+
+    /// Negative assertion: `nc:creation_time` MUST NOT be an ISO string.
+    /// Catches an accidental refactor that pipes `file.created_at.to_rfc3339()`
+    /// into this element — valid Rust, invalid for NC clients.
+    #[test]
+    fn nc_creation_time_is_not_iso_string() {
+        let xml = render_file_response(fixture_file());
+        assert!(
+            !xml.contains("<nc:creation_time>2023-11"),
+            "nc:creation_time regressed to ISO string; XML:\n{xml}"
+        );
+    }
+}
