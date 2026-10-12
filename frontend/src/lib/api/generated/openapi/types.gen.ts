@@ -68,6 +68,10 @@ export type AcquireExternalLockDto = {
  * Body for `POST /api/drives/{id}/members`.
  */
 export type AddDriveMemberDto = {
+    /**
+     * Accepts an integer epoch second OR an RFC 3339 string — see
+     * `timestamp_helpers::deserialize_flex_datetime_option`.
+     */
     expires_at?: string | null;
     role: RoleDto;
     subject: SubjectDto;
@@ -127,6 +131,10 @@ export type AddressDto = {
  * circular feel between admin and user-facing surfaces).
  */
 export type AdminAddDriveMemberDto = {
+    /**
+     * Accepts an integer epoch second OR an RFC 3339 string — see
+     * `timestamp_helpers::deserialize_flex_datetime_option`.
+     */
     expires_at?: string | null;
     role: RoleDto;
     subject: SubjectDto;
@@ -665,7 +673,9 @@ export type CreateFolderDto = {
  */
 export type CreateGrantDto = {
     /**
-     * Optional expiry for the grant. RFC 3339 / ISO 8601.
+     * Optional expiry for the grant. Accepts an integer epoch second
+     * OR an RFC 3339 string on input — see
+     * `timestamp_helpers::deserialize_flex_datetime_option`.
      */
     expires_at?: string | null;
     resource: ResourceDto;
@@ -699,6 +709,11 @@ export type CreatePlaylistDto = {
 };
 
 export type CreateShareDto = {
+    /**
+     * Inbound request accepts an integer epoch second OR an RFC 3339
+     * string — see `timestamp_helpers::deserialize_flex_datetime_option`.
+     * Outbound serialization is always RFC 3339.
+     */
     expires_at?: string | null;
     item_id: string;
     item_name?: string | null;
@@ -2518,10 +2533,15 @@ export type OpsBannerInput = {
     };
     /**
      * Optional auto-hide timestamp. See the field doc on
-     * [`OpsBanner::expires_at`].
+     * [`OpsBanner::expires_at`]. Accepts both wire shapes — see
+     * [`OpsBannerInput::starts_at`].
      */
     expires_at?: string | null;
     severity: OpsBannerSeverity;
+    /**
+     * Accepts an integer epoch second OR an RFC 3339 string — see
+     * `timestamp_helpers::deserialize_flex_datetime_option`.
+     */
     starts_at?: string | null;
 };
 
@@ -4261,6 +4281,7 @@ export type UpdateContactRequest = {
 export type UpdateDriveMemberDto = {
     /**
      * Optional. Pass `null` (or omit) to clear an existing expiry.
+     * Accepts both wire shapes — see [`AddDriveMemberDto::expires_at`].
      */
     expires_at?: string | null;
     role: RoleDto;
@@ -4425,6 +4446,7 @@ export type UpdateProfileDto = {
 export type UpdateRoleDto = {
     /**
      * Optional expiry applied to every grant written or updated by this call.
+     * Accepts both wire shapes — see [`CreateGrantDto::expires_at`].
      */
     expires_at?: string | null;
     resource: ResourceDto;
@@ -4433,6 +4455,9 @@ export type UpdateRoleDto = {
 };
 
 export type UpdateShareDto = {
+    /**
+     * See [`CreateShareDto::expires_at`] for the lenient wire contract.
+     */
     expires_at?: string | null;
     password?: string | null;
 };
