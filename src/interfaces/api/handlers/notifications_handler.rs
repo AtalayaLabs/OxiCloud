@@ -228,3 +228,43 @@ pub async fn delete_notification(
     }
     Ok(StatusCode::NO_CONTENT)
 }
+
+#[cfg(test)]
+mod wire_shape_tests {
+    //! Byte-level snapshot of the NotificationDto JSON wire shape —
+    //! ISO-8601 timestamp pivot companion for `/api/notifications`.
+    //! `created_at` is always present (RFC 3339), `read_at` emits
+    //! as RFC 3339 when the row has been read or `null` when unread.
+
+    use super::*;
+    use crate::application::dtos::timestamp_helpers::epoch_to_datetime;
+
+    fn fixture() -> NotificationDto {
+        NotificationDto {
+            id: Uuid::nil(),
+            kind: "share.granted".to_string(),
+            payload: serde_json::json!({}),
+            created_at: epoch_to_datetime(1_700_000_000),
+            read_at: Some(epoch_to_datetime(1_700_086_400)),
+        }
+    }
+
+    #[test]
+    fn timestamps_serialize_as_rfc3339_utc_strings() {
+        let json = serde_json::to_value(fixture()).unwrap();
+        assert_eq!(json["created_at"], "2023-11-14T22:13:20Z");
+        assert_eq!(json["read_at"], "2023-11-15T22:13:20Z");
+    }
+
+    #[test]
+    fn read_at_is_null_when_unread() {
+        let dto = NotificationDto {
+            read_at: None,
+            ..fixture()
+        };
+        let json = serde_json::to_value(dto).unwrap();
+        // No `skip_serializing_if` → key stays present as `null`,
+        // which the SPA keys off (`notif.read_at == null` ⇒ unread badge).
+        assert_eq!(json["read_at"], serde_json::Value::Null);
+    }
+}

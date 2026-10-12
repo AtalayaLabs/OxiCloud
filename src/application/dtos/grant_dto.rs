@@ -544,3 +544,48 @@ pub struct OutgoingResourceItemDto {
 
 /// Response for `GET /api/grants/outgoing/resources`.
 pub type MySharesDto = CursorListResponse<OutgoingResourceItemDto>;
+
+#[cfg(test)]
+mod wire_shape_tests {
+    //! Byte-level snapshot of GrantDto wire shape (and its share-granted
+    //! sibling path). Freezes `granted_at` as RFC 3339, `expires_at`
+    //! as either an RFC 3339 string (Some) or absent (None).
+
+    use super::*;
+    use crate::application::dtos::timestamp_helpers::epoch_to_datetime;
+
+    fn fixture() -> GrantDto {
+        GrantDto {
+            id: Uuid::nil(),
+            subject: SubjectDto {
+                kind: SubjectTypeDto::User,
+                id: Uuid::nil(),
+            },
+            resource: ResourceDto {
+                kind: ResourceTypeDto::Folder,
+                id: Uuid::nil(),
+            },
+            role: RoleDto::Viewer,
+            granted_by: Uuid::nil(),
+            granted_at: epoch_to_datetime(1_700_000_000),
+            expires_at: Some(epoch_to_datetime(1_700_086_400)),
+        }
+    }
+
+    #[test]
+    fn timestamps_serialize_as_rfc3339_utc_strings() {
+        let json = serde_json::to_value(fixture()).unwrap();
+        assert_eq!(json["granted_at"], "2023-11-14T22:13:20Z");
+        assert_eq!(json["expires_at"], "2023-11-15T22:13:20Z");
+    }
+
+    #[test]
+    fn expires_at_omitted_when_none() {
+        let dto = GrantDto {
+            expires_at: None,
+            ..fixture()
+        };
+        let json = serde_json::to_value(dto).unwrap();
+        assert!(json.get("expires_at").is_none(), "wire: {json}");
+    }
+}

@@ -85,9 +85,7 @@ where
             .ok_or_else(|| serde::de::Error::custom("epoch seconds out of range")),
         Some(Flex::Str(s)) => DateTime::parse_from_rfc3339(&s)
             .map(|dt| Some(dt.with_timezone(&Utc)))
-            .map_err(|e| {
-                serde::de::Error::custom(format!("not a valid RFC 3339 timestamp: {e}"))
-            }),
+            .map_err(|e| serde::de::Error::custom(format!("not a valid RFC 3339 timestamp: {e}"))),
     }
 }
 
