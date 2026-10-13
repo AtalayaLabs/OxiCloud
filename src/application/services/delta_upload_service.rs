@@ -51,7 +51,7 @@ use crate::infrastructure::services::pg_acl_engine::PgAclEngine;
 /// One chunk reference: `h` = BLAKE3 hex (64 chars), `s` = size in bytes.
 /// Field names are deliberately terse — a 10 GB file is ~40 000 of these.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct ChunkRef {
+pub struct DeltaChunkRef {
     /// BLAKE3 hash of the chunk (64 hex chars).
     pub h: String,
     /// Chunk size in bytes (1 ..= 1 MiB).
@@ -62,7 +62,7 @@ pub struct ChunkRef {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct DeltaNegotiateRequest {
     /// The file's chunks, in order (duplicates allowed — repeated content).
-    pub chunks: Vec<ChunkRef>,
+    pub chunks: Vec<DeltaChunkRef>,
 }
 
 /// Response of `POST /api/files/delta/negotiate`.
@@ -77,7 +77,7 @@ pub struct DeltaNegotiateResponse {
 /// own hashes to detect corruption before committing.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct DeltaChunksResponse {
-    pub received: Vec<ChunkRef>,
+    pub received: Vec<DeltaChunkRef>,
 }
 
 /// Request body of `POST /api/files/delta/commit`.
@@ -89,7 +89,7 @@ pub struct DeltaCommitRequest {
     /// BLAKE3 of the complete file (verified server-side, never trusted).
     pub file_hash: String,
     /// Full chunk sequence, in file order (per occurrence).
-    pub chunks: Vec<ChunkRef>,
+    pub chunks: Vec<DeltaChunkRef>,
     /// Create mode: file name (basename).
     pub name: Option<String>,
     /// Create mode: target folder (caller needs Create permission).
@@ -108,7 +108,7 @@ pub struct DeltaManifestResponse {
     /// Total size in bytes.
     pub total_size: u64,
     /// Full chunk sequence, in file order (per occurrence).
-    pub chunks: Vec<ChunkRef>,
+    pub chunks: Vec<DeltaChunkRef>,
 }
 
 /// Request body of `POST /api/files/delta/download` — distinct chunk
@@ -201,7 +201,7 @@ impl DeltaUploadService {
 
     /// Shape-validate a chunk list: hash format, per-chunk size bounds,
     /// count and total ceilings. Returns the total size.
-    fn validate_chunk_list(&self, chunks: &[ChunkRef]) -> Result<u64, DomainError> {
+    fn validate_chunk_list(&self, chunks: &[DeltaChunkRef]) -> Result<u64, DomainError> {
         if chunks.len() > self.max_chunk_count() {
             return Err(DomainError::validation_error(format!(
                 "Too many chunks: {} (maximum {})",
@@ -263,7 +263,7 @@ impl DeltaUploadService {
         Ok(DeltaChunksResponse {
             received: received
                 .into_iter()
-                .map(|(h, s)| ChunkRef { h, s })
+                .map(|(h, s)| DeltaChunkRef { h, s })
                 .collect(),
         })
     }
@@ -529,7 +529,7 @@ impl DeltaUploadService {
         Ok(DeltaManifestResponse {
             file_hash,
             total_size,
-            chunks: chunks.into_iter().map(|(h, s)| ChunkRef { h, s }).collect(),
+            chunks: chunks.into_iter().map(|(h, s)| DeltaChunkRef { h, s }).collect(),
         })
     }
 
@@ -686,7 +686,7 @@ fn sanitize_file_name(name: &str) -> Result<String, DomainError> {
 }
 
 /// Distinct hashes in first-occurrence order.
-fn distinct_hashes(chunks: &[ChunkRef]) -> Vec<String> {
+fn distinct_hashes(chunks: &[DeltaChunkRef]) -> Vec<String> {
     // foldhash::quality::RandomState — fast, per-instance random-seeded and thus
     // DoS-safe for these attacker-controlled client hashes (benches/ROUND26.md §G1).
     let mut seen: HashSet<&str, foldhash::quality::RandomState> = HashSet::default();

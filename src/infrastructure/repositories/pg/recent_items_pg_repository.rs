@@ -3,6 +3,7 @@ use std::sync::Arc;
 use tracing::error;
 use uuid::Uuid;
 
+use crate::application::dtos::favorites_dto::ItemKind;
 use crate::application::dtos::recent_dto::{RecentCursor, RecentItemDto, RecentResourceRow};
 use crate::application::ports::recent_ports::RecentItemsRepositoryPort;
 use crate::common::errors::{DomainError, ErrorKind, Result};
@@ -65,14 +66,25 @@ impl RecentItemsRepositoryPort for RecentItemsPgRepository {
             )
         })?;
 
-        let items = rows
+        // Mapper returns `Result<_>` so a corrupt `item_type` propagates
+        // out via `?`. The CHECK constraint on `recent_items.item_type`
+        // means this is unreachable in practice.
+        let items: Vec<RecentItemDto> = rows
             .iter()
-            .map(|row| {
-                RecentItemDto {
+            .map(|row| -> Result<RecentItemDto> {
+                let item_type: ItemKind =
+                    row.get::<String, _>("item_type").parse().map_err(|e| {
+                        DomainError::new(
+                            ErrorKind::InternalError,
+                            "RecentItems",
+                            format!("corrupt recent_items.item_type: {e}"),
+                        )
+                    })?;
+                Ok(RecentItemDto {
                     id: row.get::<i32, _>("id").to_string(),
                     user_id: row.get::<Uuid, _>("user_id").to_string(),
                     item_id: row.get("item_id"),
-                    item_type: row.get("item_type"),
+                    item_type,
                     accessed_at: row.get("accessed_at"),
                     item_name: row.try_get("item_name").ok(),
                     item_size: row.try_get("item_size").ok(),
@@ -89,9 +101,9 @@ impl RecentItemsRepositoryPort for RecentItemsPgRepository {
                     category: String::new(),
                     size_formatted: String::new(),
                 }
-                .with_display_fields()
+                .with_display_fields())
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(items)
     }

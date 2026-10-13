@@ -65,6 +65,13 @@ export type AcquireExternalLockDto = {
 };
 
 /**
+ * Request body for adding a contact to a group.
+ */
+export type AddContactToGroupRequest = {
+    contact_id: string;
+};
+
+/**
  * Body for `POST /api/drives/{id}/members`.
  */
 export type AddDriveMemberDto = {
@@ -75,13 +82,6 @@ export type AddDriveMemberDto = {
     expires_at?: string | null;
     role: RoleDto;
     subject: SubjectDto;
-};
-
-/**
- * Request body for adding a contact to a group.
- */
-export type AddMemberRequest = {
-    contact_id: string;
 };
 
 export type AddSubjectGroupMemberRequest = {
@@ -463,21 +463,6 @@ export type ChangePasswordDto = {
 };
 
 /**
- * One chunk reference: `h` = BLAKE3 hex (64 chars), `s` = size in bytes.
- * Field names are deliberately terse — a 10 GB file is ~40 000 of these.
- */
-export type ChunkRef = {
-    /**
-     * BLAKE3 hash of the chunk (64 hex chars).
-     */
-    h: string;
-    /**
-     * Chunk size in bytes (1 ..= 1 MiB).
-     */
-    s: number;
-};
-
-/**
  * Response returned after a single chunk is uploaded.
  */
 export type ChunkUploadResponseDto = {
@@ -563,6 +548,13 @@ export type ContactGroupDto = {
     members_count?: number | null;
     name: string;
     updated_at: string;
+};
+
+/**
+ * Request body for creating or renaming a group.
+ */
+export type ContactGroupNameRequest = {
+    name: string;
 };
 
 /**
@@ -844,10 +836,59 @@ export type DashboardStatsDto = {
 };
 
 /**
+ * Response for dedup stats endpoint
+ */
+export type DedupStatsResponse = {
+    /**
+     * Total bytes saved by deduplication
+     */
+    bytes_saved: number;
+    /**
+     * Deduplication ratio (logical / physical)
+     */
+    dedup_ratio: number;
+    /**
+     * Percentage of storage saved
+     */
+    savings_percentage: number;
+    /**
+     * Total logical bytes (what users think they have)
+     */
+    total_logical_bytes: number;
+    /**
+     * Total physical bytes (actual disk usage)
+     */
+    total_physical_bytes: number;
+    /**
+     * Total number of references (files pointing to blobs)
+     */
+    total_references: number;
+    /**
+     * Total number of unique blobs stored
+     */
+    unique_blobs: number;
+};
+
+/**
  * Request to permanently delete an item from trash
  */
 export type DeletePermanentlyRequest = {
     trash_id: string;
+};
+
+/**
+ * One chunk reference: `h` = BLAKE3 hex (64 chars), `s` = size in bytes.
+ * Field names are deliberately terse — a 10 GB file is ~40 000 of these.
+ */
+export type DeltaChunkRef = {
+    /**
+     * BLAKE3 hash of the chunk (64 hex chars).
+     */
+    h: string;
+    /**
+     * Chunk size in bytes (1 ..= 1 MiB).
+     */
+    s: number;
 };
 
 /**
@@ -856,7 +897,7 @@ export type DeletePermanentlyRequest = {
  * own hashes to detect corruption before committing.
  */
 export type DeltaChunksResponse = {
-    received: Array<ChunkRef>;
+    received: Array<DeltaChunkRef>;
 };
 
 /**
@@ -869,7 +910,7 @@ export type DeltaCommitRequest = {
     /**
      * Full chunk sequence, in file order (per occurrence).
      */
-    chunks: Array<ChunkRef>;
+    chunks: Array<DeltaChunkRef>;
     /**
      * BLAKE3 of the complete file (verified server-side, never trusted).
      */
@@ -906,7 +947,7 @@ export type DeltaManifestResponse = {
     /**
      * Full chunk sequence, in file order (per occurrence).
      */
-    chunks: Array<ChunkRef>;
+    chunks: Array<DeltaChunkRef>;
     /**
      * BLAKE3 of the whole file (verify the local reassembly against it).
      */
@@ -924,7 +965,7 @@ export type DeltaNegotiateRequest = {
     /**
      * The file's chunks, in order (duplicates allowed — repeated content).
      */
-    chunks: Array<ChunkRef>;
+    chunks: Array<DeltaChunkRef>;
 };
 
 /**
@@ -1858,13 +1899,6 @@ export type GroupMemberDto = {
 };
 
 /**
- * Request body for creating or renaming a group.
- */
-export type GroupNameRequest = {
-    name: string;
-};
-
-/**
  * Request body for the batch hash-ownership check (`POST /api/dedup/check-batch`).
  */
 export type HashBatchRequest = {
@@ -2067,16 +2101,6 @@ export type HolderHeader = {
  */
 export type ItemKind = 'file' | 'folder';
 
-export type ListResponseDto = {
-    items: Array<NotificationDto>;
-    /**
-     * Unread rows for this user across the whole table — the bell
-     * badge reads this. Kept on the list response so a bell open
-     * doesn't need a second round-trip for the badge.
-     */
-    unread_count: number;
-};
-
 /**
  * DTO for locale information
  */
@@ -2120,7 +2144,7 @@ export type MarkAllReadResponseDto = {
     marked: number;
 };
 
-export type MergeBody = {
+export type MergePeopleRequest = {
     /**
      * Cluster id being merged into `into`. Deleted after the merge.
      */
@@ -2204,6 +2228,16 @@ export type NotificationDto = {
      * `null` = unread.
      */
     read_at?: string | null;
+};
+
+export type NotificationListResponseDto = {
+    items: Array<NotificationDto>;
+    /**
+     * Unread rows for this user across the whole table — the bell
+     * badge reads this. Kept on the list response so a bell open
+     * doesn't need a second round-trip for the badge.
+     */
+    unread_count: number;
 };
 
 /**
@@ -2955,9 +2989,11 @@ export type RecentItemDto = {
      */
     item_size?: number | null;
     /**
-     * Item type ('file' or 'folder')
+     * Item type. Shared enum with `FavoriteItemDto.item_type` — both
+     * collections record a reference to one of the two leaf resource
+     * kinds, nothing else.
      */
-    item_type: string;
+    item_type: ItemKind;
     /**
      * Parent folder ID (folder_id for files, parent_id for folders)
      */
@@ -3011,14 +3047,6 @@ export type RegisterDto = {
     username?: string | null;
 };
 
-export type RenameBody = {
-    /**
-     * New display name for the cluster. `null` or omitted clears
-     * the name, reverting the cluster to its "Unnamed" state.
-     */
-    name?: string | null;
-};
-
 /**
  * DTO for folder rename requests
  */
@@ -3027,6 +3055,14 @@ export type RenameFolderDto = {
      * New name for the folder
      */
     name: string;
+};
+
+export type RenamePersonRequest = {
+    /**
+     * New display name for the cluster. `null` or omitted clears
+     * the name, reverting the cluster to its "Unnamed" state.
+     */
+    name?: string | null;
 };
 
 export type ReorderTracksDto = {
@@ -3949,40 +3985,6 @@ export type StartMigrationDto = {
 };
 
 /**
- * Response for dedup stats endpoint
- */
-export type StatsResponse = {
-    /**
-     * Total bytes saved by deduplication
-     */
-    bytes_saved: number;
-    /**
-     * Deduplication ratio (logical / physical)
-     */
-    dedup_ratio: number;
-    /**
-     * Percentage of storage saved
-     */
-    savings_percentage: number;
-    /**
-     * Total logical bytes (what users think they have)
-     */
-    total_logical_bytes: number;
-    /**
-     * Total physical bytes (actual disk usage)
-     */
-    total_physical_bytes: number;
-    /**
-     * Total number of references (files pointing to blobs)
-     */
-    total_references: number;
-    /**
-     * Total number of unique blobs stored
-     */
-    unique_blobs: number;
-};
-
-/**
  * Which blob backend an entry / request targets. Wire values are
  * `"local"`, `"s3"`, `"azure"` — the three implementations in
  * `infrastructure::services::{local,s3,azure}_blob_backend`. The
@@ -4154,7 +4156,7 @@ export type SubjectTypeDto = 'user' | 'group' | 'token';
 /**
  * System initialisation state, returned by `GET /api/auth/status`.
  */
-export type SystemStatus = {
+export type SystemInitStatusDto = {
     /**
      * Number of admin users in the system.
      */
@@ -4419,6 +4421,20 @@ export type UpdateDriveQuotaDto = {
     quota_bytes?: number | null;
 };
 
+/**
+ * `PUT /api/grants/role` — reconcile a subject's role on a resource.
+ */
+export type UpdateGrantRoleDto = {
+    /**
+     * Optional expiry applied to every grant written or updated by this call.
+     * Accepts both wire shapes — see [`CreateGrantDto::expires_at`].
+     */
+    expires_at?: string | null;
+    resource: ResourceDto;
+    role: RoleDto;
+    subject: SubjectDto;
+};
+
 export type UpdateGroupRequest = {
     /**
      * Reserved for future use; v1 only persists the name in `rename`.
@@ -4516,20 +4532,6 @@ export type UpdateProfileDto = {
      * the escape hatch for genuine typos.
      */
     username?: string | null;
-};
-
-/**
- * `PUT /api/grants/role` — reconcile a subject's role on a resource.
- */
-export type UpdateRoleDto = {
-    /**
-     * Optional expiry applied to every grant written or updated by this call.
-     * Accepts both wire shapes — see [`CreateGrantDto::expires_at`].
-     */
-    expires_at?: string | null;
-    resource: ResourceDto;
-    role: RoleDto;
-    subject: SubjectDto;
 };
 
 export type UpdateShareDto = {
@@ -5044,7 +5046,7 @@ export type ListGroupsResponses = {
 export type ListGroupsResponse = ListGroupsResponses[keyof ListGroupsResponses];
 
 export type CreateGroupData = {
-    body: GroupNameRequest;
+    body: ContactGroupNameRequest;
     path: {
         /**
          * Address book UUID
@@ -5148,7 +5150,7 @@ export type GetGroupResponses = {
 export type GetGroupResponse = GetGroupResponses[keyof GetGroupResponses];
 
 export type UpdateGroupData = {
-    body: GroupNameRequest;
+    body: ContactGroupNameRequest;
     path: {
         /**
          * Address book UUID
@@ -5220,7 +5222,7 @@ export type ListContactsInGroupResponses = {
 export type ListContactsInGroupResponse = ListContactsInGroupResponses[keyof ListContactsInGroupResponses];
 
 export type AddContactToGroupData = {
-    body: AddMemberRequest;
+    body: AddContactToGroupRequest;
     path: {
         /**
          * Address book UUID
@@ -5526,7 +5528,7 @@ export type RecalculateStatsResponses = {
     /**
      * Statistics after integrity verification
      */
-    200: StatsResponse;
+    200: DedupStatsResponse;
 };
 
 export type RecalculateStatsResponse = RecalculateStatsResponses[keyof RecalculateStatsResponses];
@@ -5553,7 +5555,7 @@ export type GetStatsResponses = {
     /**
      * Deduplication statistics
      */
-    200: StatsResponse;
+    200: DedupStatsResponse;
 };
 
 export type GetStatsResponse = GetStatsResponses[keyof GetStatsResponses];
@@ -7871,7 +7873,7 @@ export type GetSystemStatusResponses = {
     /**
      * System status
      */
-    200: SystemStatus;
+    200: SystemInitStatusDto;
 };
 
 export type GetSystemStatusResponse = GetSystemStatusResponses[keyof GetSystemStatusResponses];
@@ -9950,7 +9952,7 @@ export type ListMySharesResponses = {
 export type ListMySharesResponse = ListMySharesResponses[keyof ListMySharesResponses];
 
 export type SetRoleData = {
-    body: UpdateRoleDto;
+    body: UpdateGrantRoleDto;
     path?: never;
     query?: never;
     url: '/api/grants/role';
@@ -10569,7 +10571,7 @@ export type ListNotificationsResponses = {
     /**
      * List of notifications
      */
-    200: ListResponseDto;
+    200: NotificationListResponseDto;
 };
 
 export type ListNotificationsResponse = ListNotificationsResponses[keyof ListNotificationsResponses];
@@ -10727,7 +10729,7 @@ export type FacesForFileResponses = {
 export type FacesForFileResponse = FacesForFileResponses[keyof FacesForFileResponses];
 
 export type MergePeopleData = {
-    body: MergeBody;
+    body: MergePeopleRequest;
     path?: never;
     query?: never;
     url: '/api/people/merge';
@@ -10775,7 +10777,7 @@ export type ReclusterResponses = {
 };
 
 export type RenamePersonData = {
-    body: RenameBody;
+    body: RenamePersonRequest;
     path: {
         /**
          * Person cluster id

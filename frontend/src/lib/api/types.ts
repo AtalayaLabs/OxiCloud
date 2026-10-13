@@ -535,19 +535,14 @@ export interface FolderAncestorsResponse {
 	effective_links?: EffectiveLink[];
 }
 
-/** A public link on an ancestor folder or the drive. */
-export interface EffectiveLink {
-	/** Token grant id — stable list key. */
-	grant_id: string;
-	/** `storage.shares.id`. */
-	share_id: string;
-	/** Operator-given name; absent when the link was never named. */
-	name?: string;
-	has_password: boolean;
-	/** Where the link lives. Resolve a folder's name from `ancestors`. */
-	resource: { type: 'file' | 'folder' | 'drive'; id: string };
-	expires_at?: string | null;
-}
+// Authoritative on the generated SDK — Phase 3 Group D. The handwritten
+// shape only diverged in two cosmetic ways: `name?: string` widens to
+// `?: string | null`, and the inline `resource: { type, id }` is factored
+// out as the generated `ResourceDto` with the same two fields.
+// Local import so the sibling `FolderAncestorsResponse` interface above
+// keeps resolving the short name.
+import type { EffectiveLinkDto as EffectiveLink } from './generated/openapi/types.gen';
+export type { EffectiveLink };
 
 // ─── Job registry (Part 1 + Part 2) ────────────────────────────────────────
 //
@@ -831,44 +826,14 @@ export interface Finding {
  * DPoP thumbprint is truncated to an 8-char prefix so admins viewing
  * other users' sessions can't exfiltrate the full binding fingerprint.
  */
-export interface SessionSummary {
-	id: string;
-	user_id: string;
-	created_at: string;
-	expires_at: string;
-	/** Wall-clock (RFC 3339) of the last authenticated request the
-	 *  server observed on this session. Trails the true value by at
-	 *  most the tracker's flush interval (30 s) on a running server;
-	 *  converges after graceful shutdown. Populates the "last seen X
-	 *  ago" tooltip on the presence dot. */
-	last_seen_at: string;
-	ip_address: string | null;
-	user_agent: string | null;
-	is_bound: boolean;
-	dpop_jkt_prefix: string | null;
-	is_revoked: boolean;
-	is_active: boolean;
-	/** Presence signal — `true` when the server observed a request on
-	 *  this session within the last 5 minutes AND the row is `is_active`
-	 *  (never `true` on revoked / expired rows). Renders as a filled
-	 *  green dot in the Status column; `false` on an otherwise-active
-	 *  row renders as an outlined idle dot with a "last seen X ago"
-	 *  tooltip. Distinct from `is_active`: that's a lifecycle signal,
-	 *  this is a presence signal. Derived server-side against the
-	 *  same window that drives `oxicloud_sessions_online[_users]`. */
-	is_online: boolean;
-	/** How this session was minted. `unknown` covers pre-migration
-	 *  rows and any origin the SPA doesn't yet render. Server enum
-	 *  is populated at INSERT (see `Session::new`) and copied on
-	 *  refresh. Snake_case wire values map to the labels rendered
-	 *  in the admin table. */
-	origin: 'password' | 'opaque' | 'magic_link' | 'oidc' | 'device' | 'unknown';
-	/** `true` when this row IS the admin's currently-active session —
-	 *  compared server-side by `dpop_jkt`. Panel uses this to warn
-	 *  before revoking ("this will log you out"). Always `false` when
-	 *  the admin's own session is unbound. */
-	is_current: boolean;
-}
+// Authoritative on the generated SDK — Phase 3 Group D. The three
+// nullable fields (`ip_address`, `user_agent`, `dpop_jkt_prefix`)
+// widen from `: string | null` to `?: string | null`; `origin`
+// moves from an inline 6-string union to the generated `SessionOrigin`
+// alias (same 6 values). Local import so `AdminSessionsPage` below
+// keeps resolving the short name.
+import type { SessionSummaryDto as SessionSummary } from './generated/openapi/types.gen';
+export type { SessionSummary };
 
 /** Wire response of `GET /api/admin/sessions`. */
 export interface AdminSessionsPage {
@@ -1010,14 +975,16 @@ export interface ServerConfig {
 // what they need from the blob). Adding a new kind server-side does
 // NOT churn this file; the FE renders a generic bell row for any
 // unknown kind.
-export interface Notification {
-	id: string;
-	kind: string;
-	payload: Record<string, unknown>;
-	created_at: string;
-	/** `null` = unread. */
-	read_at: string | null;
-}
+// Authoritative on the generated SDK — Phase 3 Group D. The only
+// diffs were cosmetic: `payload: Record<string, unknown>` →
+// `{ [key: string]: unknown }` and `read_at: string | null` →
+// `read_at?: string | null`. Local import so `NotificationListResponse`
+// below keeps resolving the short name AND so the SPA's handwritten
+// alias wins over the browser's `Notification` global in composable
+// scope (a bare `export type { ... as Notification }` doesn't bind
+// into module scope and the lib.dom.d.ts global surfaces instead).
+import type { NotificationDto as Notification } from './generated/openapi/types.gen';
+export type { Notification };
 
 export interface NotificationListResponse {
 	items: Notification[];

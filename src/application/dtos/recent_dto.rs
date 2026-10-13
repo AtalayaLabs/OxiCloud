@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 use super::cursor::{CursorListResponse, CursorQuery, PageCursor};
 use super::display_helpers::{classify_display, format_file_size};
+use super::favorites_dto::ItemKind;
 use super::grant_dto::{ResourceContentDto, ResourceTypeDto};
 use crate::domain::services::authorization::ResourceKind;
 
@@ -21,8 +22,10 @@ pub struct RecentItemDto {
     /// Item ID (file or folder)
     pub item_id: String,
 
-    /// Item type ('file' or 'folder')
-    pub item_type: String,
+    /// Item type. Shared enum with `FavoriteItemDto.item_type` — both
+    /// collections record a reference to one of the two leaf resource
+    /// kinds, nothing else.
+    pub item_type: ItemKind,
 
     /// When the item was accessed
     pub accessed_at: DateTime<Utc>,
@@ -67,7 +70,7 @@ impl RecentItemDto {
     /// Populate display fields from the enriched metadata.
     /// Call this after constructing from the SQL row.
     pub fn with_display_fields(mut self) -> Self {
-        if self.item_type == "folder" {
+        if matches!(self.item_type, ItemKind::Folder) {
             self.icon_class = "fas fa-folder".to_string();
             self.icon_special_class = "folder-icon".to_string();
             self.category = "Folder".to_string();

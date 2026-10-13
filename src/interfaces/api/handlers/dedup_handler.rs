@@ -144,7 +144,7 @@ pub struct HashBatchResponse {
 
 /// Response for dedup stats endpoint
 #[derive(Debug, Serialize, ToSchema)]
-pub struct StatsResponse {
+pub struct DedupStatsResponse {
     /// Total number of unique blobs stored
     pub unique_blobs: u64,
     /// Total number of references (files pointing to blobs)
@@ -444,7 +444,7 @@ impl DedupHandler {
             0.0
         };
 
-        let response = StatsResponse {
+        let response = DedupStatsResponse {
             unique_blobs: stats.total_blobs,
             total_references: stats.dedup_hits + stats.total_blobs, // Approximation
             bytes_saved: stats.bytes_saved,
@@ -580,7 +580,7 @@ impl DedupHandler {
             0.0
         };
 
-        let response = StatsResponse {
+        let response = DedupStatsResponse {
             unique_blobs: stats.total_blobs,
             total_references: stats.dedup_hits + stats.total_blobs,
             bytes_saved: stats.bytes_saved,
@@ -691,7 +691,7 @@ pub async fn check_hashes_batch(
     get,
     path = "/api/admin/dedup/stats",
     responses(
-        (status = 200, description = "Deduplication statistics", body = StatsResponse),
+        (status = 200, description = "Deduplication statistics", body = DedupStatsResponse),
         (status = 401, description = "Missing or invalid token"),
         (status = 403, description = "Caller is not an admin"),
     ),
@@ -728,7 +728,7 @@ pub async fn get_blob(
     post,
     path = "/api/admin/dedup/recalculate",
     responses(
-        (status = 200, description = "Statistics after integrity verification", body = StatsResponse),
+        (status = 200, description = "Statistics after integrity verification", body = DedupStatsResponse),
         (status = 401, description = "Missing or invalid token"),
         (status = 403, description = "Caller is not an admin"),
         (status = 500, description = "Integrity verification failed"),

@@ -515,7 +515,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/GroupNameRequest"
+                "$ref": "#/components/schemas/ContactGroupNameRequest"
               }
             }
           },
@@ -627,7 +627,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/GroupNameRequest"
+                "$ref": "#/components/schemas/ContactGroupNameRequest"
               }
             }
           },
@@ -785,7 +785,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/AddMemberRequest"
+                "$ref": "#/components/schemas/AddContactToGroupRequest"
               }
             }
           },
@@ -1145,7 +1145,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/StatsResponse"
+                  "$ref": "#/components/schemas/DedupStatsResponse"
                 }
               }
             }
@@ -1181,7 +1181,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/StatsResponse"
+                  "$ref": "#/components/schemas/DedupStatsResponse"
                 }
               }
             }
@@ -4312,7 +4312,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SystemStatus"
+                  "$ref": "#/components/schemas/SystemInitStatusDto"
                 }
               }
             }
@@ -7319,7 +7319,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/UpdateRoleDto"
+                "$ref": "#/components/schemas/UpdateGrantRoleDto"
               }
             }
           },
@@ -8173,7 +8173,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ListResponseDto"
+                  "$ref": "#/components/schemas/NotificationListResponseDto"
                 }
               }
             }
@@ -8398,7 +8398,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/MergeBody"
+                "$ref": "#/components/schemas/MergePeopleRequest"
               }
             }
           },
@@ -8461,7 +8461,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/RenameBody"
+                "$ref": "#/components/schemas/RenamePersonRequest"
               }
             }
           },
@@ -10776,6 +10776,18 @@
           }
         }
       },
+      "AddContactToGroupRequest": {
+        "type": "object",
+        "description": "Request body for adding a contact to a group.",
+        "required": [
+          "contact_id"
+        ],
+        "properties": {
+          "contact_id": {
+            "type": "string"
+          }
+        }
+      },
       "AddDriveMemberDto": {
         "type": "object",
         "description": "Body for `POST /api/drives/{id}/members`.",
@@ -10797,18 +10809,6 @@
           },
           "subject": {
             "$ref": "#/components/schemas/SubjectDto"
-          }
-        }
-      },
-      "AddMemberRequest": {
-        "type": "object",
-        "description": "Request body for adding a contact to a group.",
-        "required": [
-          "contact_id"
-        ],
-        "properties": {
-          "contact_id": {
-            "type": "string"
           }
         }
       },
@@ -11597,26 +11597,6 @@
           }
         }
       },
-      "ChunkRef": {
-        "type": "object",
-        "description": "One chunk reference: `h` = BLAKE3 hex (64 chars), `s` = size in bytes.\nField names are deliberately terse — a 10 GB file is ~40 000 of these.",
-        "required": [
-          "h",
-          "s"
-        ],
-        "properties": {
-          "h": {
-            "type": "string",
-            "description": "BLAKE3 hash of the chunk (64 hex chars)."
-          },
-          "s": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Chunk size in bytes (1 ..= 1 MiB).",
-            "minimum": 0
-          }
-        }
-      },
       "ChunkUploadResponseDto": {
         "type": "object",
         "description": "Response returned after a single chunk is uploaded.",
@@ -11840,6 +11820,18 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "ContactGroupNameRequest": {
+        "type": "object",
+        "description": "Request body for creating or renaming a group.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
           }
         }
       },
@@ -12369,6 +12361,61 @@
           }
         }
       },
+      "DedupStatsResponse": {
+        "type": "object",
+        "description": "Response for dedup stats endpoint",
+        "required": [
+          "unique_blobs",
+          "total_references",
+          "bytes_saved",
+          "total_logical_bytes",
+          "total_physical_bytes",
+          "dedup_ratio",
+          "savings_percentage"
+        ],
+        "properties": {
+          "bytes_saved": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total bytes saved by deduplication",
+            "minimum": 0
+          },
+          "dedup_ratio": {
+            "type": "number",
+            "format": "double",
+            "description": "Deduplication ratio (logical / physical)"
+          },
+          "savings_percentage": {
+            "type": "number",
+            "format": "double",
+            "description": "Percentage of storage saved"
+          },
+          "total_logical_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total logical bytes (what users think they have)",
+            "minimum": 0
+          },
+          "total_physical_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total physical bytes (actual disk usage)",
+            "minimum": 0
+          },
+          "total_references": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total number of references (files pointing to blobs)",
+            "minimum": 0
+          },
+          "unique_blobs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total number of unique blobs stored",
+            "minimum": 0
+          }
+        }
+      },
       "DeletePermanentlyRequest": {
         "type": "object",
         "description": "Request to permanently delete an item from trash",
@@ -12378,6 +12425,26 @@
         "properties": {
           "trash_id": {
             "type": "string"
+          }
+        }
+      },
+      "DeltaChunkRef": {
+        "type": "object",
+        "description": "One chunk reference: `h` = BLAKE3 hex (64 chars), `s` = size in bytes.\nField names are deliberately terse — a 10 GB file is ~40 000 of these.",
+        "required": [
+          "h",
+          "s"
+        ],
+        "properties": {
+          "h": {
+            "type": "string",
+            "description": "BLAKE3 hash of the chunk (64 hex chars)."
+          },
+          "s": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Chunk size in bytes (1 ..= 1 MiB).",
+            "minimum": 0
           }
         }
       },
@@ -12391,7 +12458,7 @@
           "received": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/ChunkRef"
+              "$ref": "#/components/schemas/DeltaChunkRef"
             }
           }
         }
@@ -12407,7 +12474,7 @@
           "chunks": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/ChunkRef"
+              "$ref": "#/components/schemas/DeltaChunkRef"
             },
             "description": "Full chunk sequence, in file order (per occurrence)."
           },
@@ -12465,7 +12532,7 @@
           "chunks": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/ChunkRef"
+              "$ref": "#/components/schemas/DeltaChunkRef"
             },
             "description": "Full chunk sequence, in file order (per occurrence)."
           },
@@ -12491,7 +12558,7 @@
           "chunks": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/ChunkRef"
+              "$ref": "#/components/schemas/DeltaChunkRef"
             },
             "description": "The file's chunks, in order (duplicates allowed — repeated content)."
           }
@@ -13642,18 +13709,6 @@
           }
         ]
       },
-      "GroupNameRequest": {
-        "type": "object",
-        "description": "Request body for creating or renaming a group.",
-        "required": [
-          "name"
-        ],
-        "properties": {
-          "name": {
-            "type": "string"
-          }
-        }
-      },
       "HashBatchRequest": {
         "type": "object",
         "description": "Request body for the batch hash-ownership check (`POST /api/dedup/check-batch`).",
@@ -13892,26 +13947,6 @@
           "folder"
         ]
       },
-      "ListResponseDto": {
-        "type": "object",
-        "required": [
-          "items",
-          "unread_count"
-        ],
-        "properties": {
-          "items": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/NotificationDto"
-            }
-          },
-          "unread_count": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Unread rows for this user across the whole table — the bell\nbadge reads this. Kept on the list response so a bell open\ndoesn't need a second round-trip for the badge."
-          }
-        }
-      },
       "LocaleDto": {
         "type": "object",
         "description": "DTO for locale information",
@@ -13967,7 +14002,7 @@
           }
         }
       },
-      "MergeBody": {
+      "MergePeopleRequest": {
         "type": "object",
         "required": [
           "into",
@@ -14126,6 +14161,26 @@
             ],
             "format": "date-time",
             "description": "`null` = unread."
+          }
+        }
+      },
+      "NotificationListResponseDto": {
+        "type": "object",
+        "required": [
+          "items",
+          "unread_count"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NotificationDto"
+            }
+          },
+          "unread_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unread rows for this user across the whole table — the bell\nbadge reads this. Kept on the list response so a bell open\ndoesn't need a second round-trip for the badge."
           }
         }
       },
@@ -15277,8 +15332,8 @@
             "description": "Size in bytes (files only; folders → None)"
           },
           "item_type": {
-            "type": "string",
-            "description": "Item type ('file' or 'folder')"
+            "$ref": "#/components/schemas/ItemKind",
+            "description": "Item type. Shared enum with `FavoriteItemDto.item_type` — both\ncollections record a reference to one of the two leaf resource\nkinds, nothing else."
           },
           "parent_id": {
             "type": [
@@ -15356,18 +15411,6 @@
           }
         }
       },
-      "RenameBody": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "New display name for the cluster. `null` or omitted clears\nthe name, reverting the cluster to its \"Unnamed\" state."
-          }
-        }
-      },
       "RenameFolderDto": {
         "type": "object",
         "description": "DTO for folder rename requests",
@@ -15378,6 +15421,18 @@
           "name": {
             "type": "string",
             "description": "New name for the folder"
+          }
+        }
+      },
+      "RenamePersonRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "New display name for the cluster. `null` or omitted clears\nthe name, reverting the cluster to its \"Unnamed\" state."
           }
         }
       },
@@ -16588,61 +16643,6 @@
           }
         }
       },
-      "StatsResponse": {
-        "type": "object",
-        "description": "Response for dedup stats endpoint",
-        "required": [
-          "unique_blobs",
-          "total_references",
-          "bytes_saved",
-          "total_logical_bytes",
-          "total_physical_bytes",
-          "dedup_ratio",
-          "savings_percentage"
-        ],
-        "properties": {
-          "bytes_saved": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Total bytes saved by deduplication",
-            "minimum": 0
-          },
-          "dedup_ratio": {
-            "type": "number",
-            "format": "double",
-            "description": "Deduplication ratio (logical / physical)"
-          },
-          "savings_percentage": {
-            "type": "number",
-            "format": "double",
-            "description": "Percentage of storage saved"
-          },
-          "total_logical_bytes": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Total logical bytes (what users think they have)",
-            "minimum": 0
-          },
-          "total_physical_bytes": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Total physical bytes (actual disk usage)",
-            "minimum": 0
-          },
-          "total_references": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Total number of references (files pointing to blobs)",
-            "minimum": 0
-          },
-          "unique_blobs": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Total number of unique blobs stored",
-            "minimum": 0
-          }
-        }
-      },
       "StorageBackendKind": {
         "type": "string",
         "description": "Which blob backend an entry / request targets. Wire values are\n`\"local\"`, `\"s3\"`, `\"azure\"` — the three implementations in\n`infrastructure::services::{local,s3,azure}_blob_backend`. The\nthree producers across those modules (and the local storage-\nsettings service) all previously populated this as a raw string\nliteral; the shared enum makes the OpenAPI spec exhaustive and\ngives the FE SDK a typed union to switch on.\n\nSerialized as lowercase to match the historical wire shape.",
@@ -16882,7 +16882,7 @@
           "token"
         ]
       },
-      "SystemStatus": {
+      "SystemInitStatusDto": {
         "type": "object",
         "description": "System initialisation state, returned by `GET /api/auth/status`.",
         "required": [
@@ -17339,6 +17339,34 @@
           }
         }
       },
+      "UpdateGrantRoleDto": {
+        "type": "object",
+        "description": "`PUT /api/grants/role` — reconcile a subject's role on a resource.",
+        "required": [
+          "subject",
+          "resource",
+          "role"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Optional expiry applied to every grant written or updated by this call.\nAccepts both wire shapes — see [`CreateGrantDto::expires_at`]."
+          },
+          "resource": {
+            "$ref": "#/components/schemas/ResourceDto"
+          },
+          "role": {
+            "$ref": "#/components/schemas/RoleDto"
+          },
+          "subject": {
+            "$ref": "#/components/schemas/SubjectDto"
+          }
+        }
+      },
       "UpdateGroupRequest": {
         "type": "object",
         "properties": {
@@ -17425,34 +17453,6 @@
               "null"
             ],
             "description": "Handle to claim (2-64 chars, `[A-Za-z0-9._-]+`, no `@`).\nAccepted only when the caller currently has no username. Once\nclaimed the handle is permanent for the lifetime of the\naccount; subsequent attempts to set or change it via this\nendpoint are rejected with 409. Admin override (via the\nadmin-create-user / admin-update-user surface, future PR) is\nthe escape hatch for genuine typos."
-          }
-        }
-      },
-      "UpdateRoleDto": {
-        "type": "object",
-        "description": "`PUT /api/grants/role` — reconcile a subject's role on a resource.",
-        "required": [
-          "subject",
-          "resource",
-          "role"
-        ],
-        "properties": {
-          "expires_at": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date-time",
-            "description": "Optional expiry applied to every grant written or updated by this call.\nAccepts both wire shapes — see [`CreateGrantDto::expires_at`]."
-          },
-          "resource": {
-            "$ref": "#/components/schemas/ResourceDto"
-          },
-          "role": {
-            "$ref": "#/components/schemas/RoleDto"
-          },
-          "subject": {
-            "$ref": "#/components/schemas/SubjectDto"
           }
         }
       },

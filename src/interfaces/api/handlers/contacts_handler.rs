@@ -105,13 +105,13 @@ pub struct UpdateContactRequest {
 
 /// Request body for creating or renaming a group.
 #[derive(Debug, Deserialize, ToSchema)]
-pub struct GroupNameRequest {
+pub struct ContactGroupNameRequest {
     pub name: String,
 }
 
 /// Request body for adding a contact to a group.
 #[derive(Debug, Deserialize, ToSchema)]
-pub struct AddMemberRequest {
+pub struct AddContactToGroupRequest {
     pub contact_id: String,
 }
 
@@ -850,7 +850,7 @@ pub async fn create_group(
     State(state): State<ContactsApiState>,
     auth_user: AuthUser,
     Path(book_id): Path<String>,
-    Json(body): Json<GroupNameRequest>,
+    Json(body): Json<ContactGroupNameRequest>,
 ) -> impl IntoResponse {
     if book_id == SYSTEM_BOOK_ID {
         return system_book_readonly();
@@ -930,7 +930,7 @@ pub async fn update_group(
     State(state): State<ContactsApiState>,
     auth_user: AuthUser,
     Path((book_id, group_id)): Path<(String, String)>,
-    Json(body): Json<GroupNameRequest>,
+    Json(body): Json<ContactGroupNameRequest>,
 ) -> impl IntoResponse {
     if book_id == SYSTEM_BOOK_ID {
         return system_book_readonly();
@@ -1049,7 +1049,7 @@ pub async fn add_contact_to_group(
     State(state): State<ContactsApiState>,
     auth_user: AuthUser,
     Path((book_id, group_id)): Path<(String, String)>,
-    Json(body): Json<AddMemberRequest>,
+    Json(body): Json<AddContactToGroupRequest>,
 ) -> impl IntoResponse {
     if book_id == SYSTEM_BOOK_ID {
         return system_book_readonly();

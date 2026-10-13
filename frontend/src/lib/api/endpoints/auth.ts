@@ -5,7 +5,7 @@
  */
 import { ApiError, apiFetch } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
-import type { SystemStatus } from '../generated/openapi/types.gen';
+import type { SystemInitStatusDto } from '../generated/openapi/types.gen';
 import type { AuthResponse, SelfUser } from '$lib/api/types';
 
 /**
@@ -292,7 +292,7 @@ export async function getOidcProviders(): Promise<OidcProviders> {
 	}
 }
 
-export type AuthStatus = SystemStatus;
+export type AuthStatus = SystemInitStatusDto;
 
 /**
  * System bootstrap probe. When `initialized === false` no admin exists yet and
