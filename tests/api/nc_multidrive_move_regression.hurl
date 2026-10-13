@@ -182,12 +182,46 @@ HTTP 201
 # file, so we pin that shape.
 PROPFIND {{base_url}}/remote.php/dav/files/{{nc_basic_user}}/regression-assembled.txt
 Depth: 0
+Content-Type: application/xml; charset=utf-8
 [BasicAuth]
 {{nc_basic_user}}: {{nc_password}}
+```
+<?xml version="1.0" encoding="utf-8"?>
+<D:propfind xmlns:D="DAV:" xmlns:nc="http://nextcloud.org/ns">
+  <D:prop>
+    <D:getcontentlength/>
+    <D:getlastmodified/>
+    <D:creationdate/>
+    <nc:creation_time/>
+    <nc:upload_time/>
+  </D:prop>
+</D:propfind>
+```
 
 HTTP 207
 [Asserts]
 xpath "string(//*[local-name()='getcontentlength'])" == "0"
+# NC WebDAV surface (`interfaces/nextcloud/webdav_handler.rs`) emits
+# dates through a different code path than the native `/webdav/` surface
+# (`interfaces/api/handlers/webdav_handler.rs`). Both paths must emit
+# the RFC-mandated shape — NC desktop/mobile/Finder hit THIS URL via
+# the Basic-Auth app-password flow and will loop-upload on format drift.
+# `D:getlastmodified` is RFC 1123 HTTP-date (RFC 4918 §15.7); our
+# emitter uses ` +0000` (both ` GMT` and ` +0000` accepted by every
+# modern sync client).
+xpath "string(//*[local-name()='getlastmodified'])" matches "^[A-Z][a-z]{2}, [0-9]{1,2} [A-Z][a-z]{2} [0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2} (GMT|\\+0000)$"
+# `D:creationdate` is RFC 3339 (RFC 4918 §15.1) — distinct from the
+# `getlastmodified` HTTP-date on purpose. Mixing them up breaks clients.
+xpath "string(//*[local-name()='creationdate'])" matches "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$"
+# `nc:creation_time` and `nc:upload_time` are NC/OC custom properties
+# (NOT RFC 4918) that the NC desktop + mobile + ownCloud clients parse
+# with `(int)$value` — the wire shape is an integer Unix epoch second,
+# NOT a date-time string. A regression that emitted the RFC 3339 /
+# RFC 1123 shape here would break every NC sync client's local DB
+# writeback (type-coerced to 0, treated as "never"). The regex pins
+# the normalized shape: a non-negative decimal integer, nothing else.
+xpath "string(//*[local-name()='creation_time'])" matches "^[0-9]+$"
+xpath "string(//*[local-name()='upload_time'])" matches "^[0-9]+$"
 
 
 # Cleanup — remove the assembled file so a re-run starts clean.

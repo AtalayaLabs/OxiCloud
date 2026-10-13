@@ -240,8 +240,8 @@ pub async fn list_recent_resources(
                             path,
                             parent_id: row.parent_id.map(|u| u.to_string()),
                             drive_id: row.drive_id,
-                            created_at: row.resource_created_at.timestamp() as u64,
-                            modified_at: row.modified_at.timestamp() as u64,
+                            created_at: row.resource_created_at,
+                            modified_at: row.modified_at,
                             is_root: false,
                             icon_class: intern_display("fas fa-folder"),
                             icon_special_class: intern_display("folder-icon"),
@@ -262,16 +262,12 @@ pub async fn list_recent_resources(
                             .as_deref()
                             .unwrap_or("application/octet-stream");
                         let size_bytes = row.size.max(0) as u64;
-                        // Route ETag through `File::compute_etag` so this
-                        // listing matches GET/HEAD/PROPFIND byte-for-byte
-                        // for the same file.
-                        let modified_at_u = row.modified_at.timestamp() as u64;
+                        // Route ETag through `File::etag_for_listing` —
+                        // single helper for every listing endpoint, same
+                        // rounding as the WebDAV / File-entity path.
+                        let etag =
+                            File::etag_for_listing(row.blob_hash.as_deref(), row.modified_at);
                         let content_hash = row.blob_hash.unwrap_or_default();
-                        let etag = if content_hash.is_empty() {
-                            String::new()
-                        } else {
-                            File::compute_etag(&content_hash, modified_at_u)
-                        };
                         // Name-derived display classes borrow `row.name`;
                         // compute them before the name moves into the DTO.
                         let classes = classify_display(&row.name, mime);
@@ -285,8 +281,8 @@ pub async fn list_recent_resources(
                             size: size_bytes,
                             mime_type: intern_mime(mime),
                             folder_id: row.parent_id.map(|u| u.to_string()),
-                            created_at: row.resource_created_at.timestamp() as u64,
-                            modified_at: modified_at_u,
+                            created_at: row.resource_created_at,
+                            modified_at: row.modified_at,
                             icon_class,
                             icon_special_class,
                             category,

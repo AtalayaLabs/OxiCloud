@@ -143,8 +143,12 @@ mod before {
             size: parts.size,
             mime_type,
             folder_id: parts.folder_id,
-            created_at: parts.created_at,
-            modified_at: parts.modified_at,
+            created_at: oxicloud::application::dtos::timestamp_helpers::epoch_to_datetime(
+                parts.created_at,
+            ),
+            modified_at: oxicloud::application::dtos::timestamp_helpers::epoch_to_datetime(
+                parts.modified_at,
+            ),
             icon_class,
             icon_special_class,
             category,
@@ -171,8 +175,12 @@ mod before {
             path: folder.path_string().to_string(),
             parent_id: folder.parent_id().map(String::from),
             drive_id: folder.drive_id(),
-            created_at: folder.created_at(),
-            modified_at: folder.modified_at(),
+            created_at: oxicloud::application::dtos::timestamp_helpers::epoch_to_datetime(
+                folder.created_at(),
+            ),
+            modified_at: oxicloud::application::dtos::timestamp_helpers::epoch_to_datetime(
+                folder.modified_at(),
+            ),
             is_root,
             icon_class: Arc::from("fas fa-folder"),
             icon_special_class: Arc::from("folder-icon"),

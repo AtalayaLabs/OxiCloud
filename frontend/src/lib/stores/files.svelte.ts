@@ -20,8 +20,11 @@ export type ViewMode = 'grid' | 'list';
 // owner label). Pure functions, shared by the files view's swimlane grouping
 // and cell rendering so the same bucketing logic isn't duplicated per call site.
 
-/** Normalise an epoch (seconds or ms) into a Date. */
-function toDate(value: number): Date {
+/** Normalise a timestamp into a Date. Accepts an RFC 3339 UTC string
+ * (modern wire shape, post the ISO-8601 pivot) or an epoch number in
+ * seconds OR milliseconds (legacy fixtures / numeric sort axes). */
+function toDate(value: number | string): Date {
+	if (typeof value === 'string') return new Date(value);
 	return new Date(value < 1e12 ? value * 1000 : value);
 }
 
@@ -37,7 +40,7 @@ export function sizeBucket(bytes: number): string {
 }
 
 /** Coarse date bucket: Today | Last 7 days | Last 30 days | <YYYY>. */
-export function dateBucket(value: number | null | undefined): string {
+export function dateBucket(value: number | string | null | undefined): string {
 	if (!value) return t('dateBucket.unknown', 'Unknown');
 	const diffDays = Math.floor((Date.now() - toDate(value).getTime()) / 86_400_000);
 	if (diffDays <= 0) return t('dateBucket.today', 'Today');

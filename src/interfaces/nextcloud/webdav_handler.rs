@@ -52,11 +52,6 @@ impl<T, E: std::fmt::Display> XmlResultExt<T> for Result<T, E> {
     }
 }
 
-/// Convert a `u64` timestamp to `i64` safely, falling back to 0 on overflow.
-fn timestamp_to_i64(ts: u64) -> i64 {
-    i64::try_from(ts).unwrap_or(0)
-}
-
 const HEADER_DAV: HeaderName = HeaderName::from_static("dav");
 
 /// Resolve the internal OxiCloud path from a NextCloud DAV subpath
@@ -585,9 +580,7 @@ async fn handle_get(
         .await
         .map_err(|e| AppError::internal_error(format!("Failed to read file: {}", e)))?;
 
-    let modified_at =
-        chrono::DateTime::<Utc>::from_timestamp(timestamp_to_i64(file.modified_at), 0)
-            .unwrap_or_else(Utc::now);
+    let modified_at = file.modified_at;
 
     Ok(Response::builder()
         .status(StatusCode::OK)
@@ -659,9 +652,7 @@ async fn handle_head(
         }
     };
 
-    let modified_at =
-        chrono::DateTime::<Utc>::from_timestamp(timestamp_to_i64(file.modified_at), 0)
-            .unwrap_or_else(Utc::now);
+    let modified_at = file.modified_at;
 
     // ETag comes from `FileDto::etag` — see the same comment block on
     // the GET handler. HEAD and GET must agree byte-for-byte; pulling
@@ -2088,7 +2079,7 @@ pub fn write_folder_response<W: std::io::Write>(
     write_date_element(
         xml,
         "d:getlastmodified",
-        timestamp_to_i64(folder.modified_at),
+        folder.modified_at.timestamp(),
         true,
     )?;
     // Route through `FolderDto::etag` (= `Folder::etag()`: the
@@ -2097,12 +2088,7 @@ pub fn write_folder_response<W: std::io::Write>(
     write_etag_element(xml, "d:getetag", &folder.etag)?;
     write_text_element(xml, "d:getcontenttype", "httpd/unix-directory")?;
     write_text_element(xml, "d:getcontentlength", "0")?;
-    write_date_element(
-        xml,
-        "d:creationdate",
-        timestamp_to_i64(folder.created_at),
-        false,
-    )?;
+    write_date_element(xml, "d:creationdate", folder.created_at.timestamp(), false)?;
 
     // Nextcloud/ownCloud properties
     if let Some(id) = file_id {
@@ -2202,19 +2188,9 @@ pub fn write_file_response<W: std::io::Write>(
         )?;
     }
 
-    write_date_element(
-        xml,
-        "d:getlastmodified",
-        timestamp_to_i64(file.modified_at),
-        true,
-    )?;
+    write_date_element(xml, "d:getlastmodified", file.modified_at.timestamp(), true)?;
     write_etag_element(xml, "d:getetag", &file.etag)?;
-    write_date_element(
-        xml,
-        "d:creationdate",
-        timestamp_to_i64(file.created_at),
-        false,
-    )?;
+    write_date_element(xml, "d:creationdate", file.created_at.timestamp(), false)?;
 
     // Nextcloud/ownCloud properties
     if let Some(id) = file_id {
@@ -2261,17 +2237,20 @@ pub fn write_file_response<W: std::io::Write>(
 
     write_text_element(xml, "nc:is-encrypted", "0")?;
     write_text_element(xml, "nc:mount-type", "")?;
+    // nc:creation_time + nc:upload_time are NC-compat integer Unix
+    // seconds (the NC desktop/mobile clients deserialize these as
+    // numbers, not RFC 3339). Convert from the DTO's `DateTime<Utc>`.
     {
         let mut buf = [0u8; 20];
         write_text_element(
             xml,
             "nc:creation_time",
-            crate::common::fmt::u64_str(&mut buf, file.created_at),
+            crate::common::fmt::u64_str(&mut buf, file.created_at.timestamp().max(0) as u64),
         )?;
         write_text_element(
             xml,
             "nc:upload_time",
-            crate::common::fmt::u64_str(&mut buf, file.modified_at),
+            crate::common::fmt::u64_str(&mut buf, file.modified_at.timestamp().max(0) as u64),
         )?;
     }
 
@@ -2422,8 +2401,8 @@ mod tests {
             parent_id: None,
             // Test stub — path mapper doesn't read drive_id.
             drive_id: uuid::Uuid::nil(),
-            created_at: 0,
-            modified_at: 0,
+            created_at: crate::application::dtos::timestamp_helpers::epoch_zero(),
+            modified_at: crate::application::dtos::timestamp_helpers::epoch_zero(),
             is_root: false,
             icon_class: std::sync::Arc::from("fas fa-folder"),
             icon_special_class: std::sync::Arc::from("folder-icon"),
@@ -2679,16 +2658,122 @@ mod tests {
         let result = extract_nc_subpath_from_dest("/remote.php/dav/files/bob/secret.txt", "alice");
         assert!(result.is_none());
     }
+}
 
-    // ── timestamp_to_i64 ──
+#[cfg(test)]
+mod wire_shape_tests {
+    //! Byte-level snapshot of the NC-compat `/remote.php/dav/` XML
+    //! emission path. See the companion `wire_shape_tests` in
+    //! `application/adapters/webdav_adapter.rs` for the native `/webdav/`
+    //! surface — the two paths emit via DIFFERENT code (this file's
+    //! `write_date_element` + direct text writes vs the adapter's
+    //! `write_lastmodified` / `write_creationdate`) and must each be
+    //! guarded independently.
+    //!
+    //! The three NC-specific traps this guards:
+    //!
+    //!   - `D:getlastmodified` MUST be RFC 1123 HTTP-date (` +0000`).
+    //!     NC desktop + mobile parse via `strptime("%a, %d %b %Y %H:%M:%S %z")`.
+    //!   - `D:creationdate` MUST be RFC 3339 with the `+00:00` suffix.
+    //!   - `nc:creation_time` + `nc:upload_time` MUST be INTEGER Unix
+    //!     epoch seconds (not a string timestamp). NC clients parse these
+    //!     with `(int)$value`; an ISO string coerces to `0` and the client
+    //!     treats the file as "never uploaded", triggering a re-upload
+    //!     loop. This is the single sharpest NC-compat trap in the whole
+    //!     pivot — the Hurl guard in `nc_multidrive_move_regression.hurl`
+    //!     catches it end-to-end; this test trips the same regression on
+    //!     every `cargo test` run.
+    //!
+    //! Fixture time: epoch 1_700_000_000 → 2023-11-14T22:13:20Z,
+    //! epoch 1_700_086_400 → 2023-11-15T22:13:20Z.
 
-    #[test]
-    fn test_timestamp_normal() {
-        assert_eq!(timestamp_to_i64(1700000000), 1700000000i64);
+    use super::*;
+    use crate::application::dtos::file_dto::FileDto;
+    use crate::application::dtos::timestamp_helpers::epoch_to_datetime;
+    use quick_xml::Writer;
+    use std::collections::HashSet;
+    use std::io::Cursor;
+    use std::sync::Arc;
+
+    fn render_file_response(file: FileDto) -> String {
+        let mut buf = Cursor::new(Vec::<u8>::new());
+        let mut xml = Writer::new(&mut buf);
+        write_nc_multistatus_open(&mut xml).expect("multistatus open");
+        write_file_response(
+            &mut xml,
+            &file,
+            "/remote.php/dav/files/alice/report.pdf",
+            (Some(42), Some("00000042ocxyz")),
+            "alice",
+            &HashSet::new(),
+            &[],
+        )
+        .expect("write_file_response");
+        String::from_utf8(buf.into_inner()).expect("utf-8")
+    }
+
+    fn fixture_file() -> FileDto {
+        let mut dto = FileDto::empty();
+        dto.id = "11111111-1111-1111-1111-111111111111".to_string();
+        dto.name = "report.pdf".to_string();
+        dto.path = "Documents/report.pdf".to_string();
+        dto.size = 1024;
+        dto.mime_type = Arc::from("application/pdf");
+        dto.created_at = epoch_to_datetime(1_700_000_000);
+        dto.modified_at = epoch_to_datetime(1_700_086_400);
+        dto.content_hash = "abcdef0123456789".to_string();
+        dto.etag = "abcdef0123456789-1700086400".to_string();
+        dto
     }
 
     #[test]
-    fn test_timestamp_overflow_returns_zero() {
-        assert_eq!(timestamp_to_i64(u64::MAX), 0);
+    fn nc_file_response_emits_rfc1123_getlastmodified() {
+        let xml = render_file_response(fixture_file());
+        assert!(
+            xml.contains("Wed, 15 Nov 2023 22:13:20 +0000"),
+            "NC getlastmodified not in RFC 1123 shape; XML:\n{xml}"
+        );
+    }
+
+    #[test]
+    fn nc_file_response_emits_rfc3339_creationdate() {
+        let xml = render_file_response(fixture_file());
+        assert!(
+            xml.contains("2023-11-14T22:13:20+00:00"),
+            "NC creationdate not in RFC 3339 (+00:00) shape; XML:\n{xml}"
+        );
+    }
+
+    /// The sharpest NC-compat trap: `nc:creation_time` + `nc:upload_time`
+    /// MUST be an integer. An ISO-string regression here breaks every NC
+    /// sync client's local index immediately.
+    #[test]
+    fn nc_creation_time_is_integer_unix_epoch() {
+        let xml = render_file_response(fixture_file());
+        assert!(
+            xml.contains("<nc:creation_time>1700000000</nc:creation_time>"),
+            "nc:creation_time not an integer Unix epoch; XML:\n{xml}"
+        );
+    }
+
+    #[test]
+    fn nc_upload_time_is_integer_unix_epoch() {
+        let xml = render_file_response(fixture_file());
+        assert!(
+            xml.contains("<nc:upload_time>1700086400</nc:upload_time>"),
+            "nc:upload_time not an integer Unix epoch; XML:\n{xml}"
+        );
+    }
+
+    /// Negative assertion: `nc:creation_time` MUST NOT be an ISO string.
+    /// Catches an accidental refactor that pipes `file.created_at.to_rfc3339()`
+    /// into this element — valid Rust, invalid for NC clients.
+    #[test]
+    fn nc_creation_time_is_not_iso_string() {
+        let xml = render_file_response(fixture_file());
+        assert!(
+            !xml.contains("<nc:creation_time>2023-11"),
+            "nc:creation_time regressed to ISO string; XML:\n{xml}"
+        );
     }
 }

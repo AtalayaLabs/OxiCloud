@@ -407,6 +407,32 @@ impl File {
         etag
     }
 
+    /// Wire-side ETag builder: accepts the `DateTime<Utc>` values that
+    /// listing SQL rows carry, routes `modified_at` through the shared
+    /// `datetime_to_etag_seconds` rounding (matches
+    /// `EXTRACT(EPOCH FROM x)::bigint` on the File-entity path), and
+    /// returns the empty string on folder rows (`blob_hash` is `None`
+    /// in the UNION ALL).
+    ///
+    /// Prefer this over inlining the three-line
+    /// `let secs = …; File::compute_etag(hash, secs)` dance at every
+    /// listing site — one callsite, one rounding rule, no drift between
+    /// endpoints. See the Cyberduck regression captured in
+    /// `tests/api/webdav_etag_cross_check.hurl` for what inlining
+    /// cost us.
+    pub fn etag_for_listing(
+        blob_hash: Option<&str>,
+        modified_at: chrono::DateTime<chrono::Utc>,
+    ) -> String {
+        let Some(hash) = blob_hash.filter(|h| !h.is_empty()) else {
+            return String::new();
+        };
+        Self::compute_etag(
+            hash,
+            crate::application::dtos::timestamp_helpers::datetime_to_etag_seconds(modified_at),
+        )
+    }
+
     // Getters
     pub fn id(&self) -> &str {
         &self.id

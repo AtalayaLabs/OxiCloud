@@ -68,6 +68,10 @@ export type AcquireExternalLockDto = {
  * Body for `POST /api/drives/{id}/members`.
  */
 export type AddDriveMemberDto = {
+    /**
+     * Accepts an integer epoch second OR an RFC 3339 string — see
+     * `timestamp_helpers::deserialize_flex_datetime_option`.
+     */
     expires_at?: string | null;
     role: RoleDto;
     subject: SubjectDto;
@@ -127,6 +131,10 @@ export type AddressDto = {
  * circular feel between admin and user-facing surfaces).
  */
 export type AdminAddDriveMemberDto = {
+    /**
+     * Accepts an integer epoch second OR an RFC 3339 string — see
+     * `timestamp_helpers::deserialize_flex_datetime_option`.
+     */
     expires_at?: string | null;
     role: RoleDto;
     subject: SubjectDto;
@@ -665,7 +673,9 @@ export type CreateFolderDto = {
  */
 export type CreateGrantDto = {
     /**
-     * Optional expiry for the grant. RFC 3339 / ISO 8601.
+     * Optional expiry for the grant. Accepts an integer epoch second
+     * OR an RFC 3339 string on input — see
+     * `timestamp_helpers::deserialize_flex_datetime_option`.
      */
     expires_at?: string | null;
     resource: ResourceDto;
@@ -699,7 +709,12 @@ export type CreatePlaylistDto = {
 };
 
 export type CreateShareDto = {
-    expires_at?: number | null;
+    /**
+     * Inbound request accepts an integer epoch second OR an RFC 3339
+     * string — see `timestamp_helpers::deserialize_flex_datetime_option`.
+     * Outbound serialization is always RFC 3339.
+     */
+    expires_at?: string | null;
     item_id: string;
     item_name?: string | null;
     item_type: string;
@@ -1381,9 +1396,9 @@ export type FileDto = {
      */
     content_hash: string;
     /**
-     * Creation timestamp
+     * Creation timestamp (RFC 3339 UTC).
      */
-    created_at: number;
+    created_at: string;
     /**
      * §14 provenance: user that originally created this file.
      * `None` when the referenced user has been deleted (FK is
@@ -1441,9 +1456,9 @@ export type FileDto = {
      */
     mime_type: string;
     /**
-     * Last modification timestamp
+     * Last modification timestamp (RFC 3339 UTC).
      */
-    modified_at: number;
+    modified_at: string;
     /**
      * File name
      */
@@ -1552,9 +1567,9 @@ export type FolderDto = {
      */
     category: string;
     /**
-     * Creation timestamp
+     * Creation timestamp (RFC 3339 UTC).
      */
-    created_at: number;
+    created_at: string;
     /**
      * §14 provenance: user that originally created this folder.
      * `None` when the referenced user has been deleted (FK is
@@ -1606,9 +1621,9 @@ export type FolderDto = {
      */
     is_shared: boolean;
     /**
-     * Last modification timestamp
+     * Last modification timestamp (RFC 3339 UTC).
      */
-    modified_at: number;
+    modified_at: string;
     /**
      * Folder name
      */
@@ -2518,10 +2533,15 @@ export type OpsBannerInput = {
     };
     /**
      * Optional auto-hide timestamp. See the field doc on
-     * [`OpsBanner::expires_at`].
+     * [`OpsBanner::expires_at`]. Accepts both wire shapes — see
+     * [`OpsBannerInput::starts_at`].
      */
     expires_at?: string | null;
     severity: OpsBannerSeverity;
+    /**
+     * Accepts an integer epoch second OR an RFC 3339 string — see
+     * `timestamp_helpers::deserialize_flex_datetime_option`.
+     */
     starts_at?: string | null;
 };
 
@@ -3139,9 +3159,9 @@ export type SearchFileResultDto = {
      */
     category: string;
     /**
-     * Creation timestamp
+     * Creation timestamp (RFC 3339 UTC).
      */
-    created_at: number;
+    created_at: string;
     /**
      * §14 provenance — user that originally created this file. `None`
      * when the referenced user has been deleted or for legacy rows.
@@ -3193,9 +3213,9 @@ export type SearchFileResultDto = {
      */
     mime_type: string;
     /**
-     * Last modification timestamp
+     * Last modification timestamp (RFC 3339 UTC).
      */
-    modified_at: number;
+    modified_at: string;
     /**
      * File name
      */
@@ -3236,9 +3256,9 @@ export type SearchFileResultDto = {
  */
 export type SearchFolderResultDto = {
     /**
-     * Creation timestamp
+     * Creation timestamp (RFC 3339 UTC).
      */
-    created_at: number;
+    created_at: string;
     /**
      * §14 provenance — creator user id. `None` for legacy folders.
      */
@@ -3274,9 +3294,9 @@ export type SearchFolderResultDto = {
      */
     is_shared?: boolean;
     /**
-     * Last modification timestamp
+     * Last modification timestamp (RFC 3339 UTC).
      */
-    modified_at: number;
+    modified_at: string;
     /**
      * Folder name
      */
@@ -3671,9 +3691,12 @@ export type SetupAdminDto = {
 
 export type ShareDto = {
     access_count: number;
-    created_at: number;
+    /**
+     * Creation timestamp (RFC 3339 UTC).
+     */
+    created_at: string;
     created_by: string;
-    expires_at?: number | null;
+    expires_at?: string | null;
     has_password: boolean;
     id: string;
     item_id: string;
@@ -4258,6 +4281,7 @@ export type UpdateContactRequest = {
 export type UpdateDriveMemberDto = {
     /**
      * Optional. Pass `null` (or omit) to clear an existing expiry.
+     * Accepts both wire shapes — see [`AddDriveMemberDto::expires_at`].
      */
     expires_at?: string | null;
     role: RoleDto;
@@ -4422,6 +4446,7 @@ export type UpdateProfileDto = {
 export type UpdateRoleDto = {
     /**
      * Optional expiry applied to every grant written or updated by this call.
+     * Accepts both wire shapes — see [`CreateGrantDto::expires_at`].
      */
     expires_at?: string | null;
     resource: ResourceDto;
@@ -4430,7 +4455,10 @@ export type UpdateRoleDto = {
 };
 
 export type UpdateShareDto = {
-    expires_at?: number | null;
+    /**
+     * See [`CreateShareDto::expires_at`] for the lenient wire contract.
+     */
+    expires_at?: string | null;
     password?: string | null;
 };
 

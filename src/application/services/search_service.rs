@@ -1098,6 +1098,7 @@ mod tests {
     }
 
     fn dto(name: &str, relevance: u32, size: u64, modified_at: u64) -> SearchFileResultDto {
+        use crate::application::dtos::timestamp_helpers::{epoch_to_datetime, epoch_zero};
         SearchFileResultDto {
             id: name.to_string(),
             name: name.to_string(),
@@ -1105,8 +1106,8 @@ mod tests {
             size,
             mime_type: "text/plain".into(),
             folder_id: None,
-            created_at: 0,
-            modified_at,
+            created_at: epoch_zero(),
+            modified_at: epoch_to_datetime(modified_at),
             relevance_score: relevance,
             size_formatted: String::new(),
             icon_class: "".into(),
@@ -1153,8 +1154,8 @@ mod tests {
                 path: "/docs".to_string(),
                 parent_id: Some("parent".to_string()),
                 drive_id: Uuid::nil(),
-                created_at: 0,
-                modified_at: 0,
+                created_at: crate::application::dtos::timestamp_helpers::epoch_zero(),
+                modified_at: crate::application::dtos::timestamp_helpers::epoch_zero(),
                 is_root: false,
                 relevance_score: 50,
                 etag: String::new(),

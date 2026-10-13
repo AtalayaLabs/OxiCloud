@@ -773,16 +773,17 @@ impl WebDavAdapter {
     // bytes from stack buffers (`common::fmt`); out-of-range timestamps
     // keep the old chrono path as a byte-identical fallback.
 
-    fn write_creationdate<W: Write>(xml_writer: &mut Writer<W>, secs: u64) -> Result<()> {
+    fn write_creationdate<W: Write>(
+        xml_writer: &mut Writer<W>,
+        dt: chrono::DateTime<Utc>,
+    ) -> Result<()> {
         xml_writer.write_event(Event::Start(BytesStart::new("D:creationdate")))?;
-        let secs = secs as i64;
+        let secs = dt.timestamp();
         let mut buf = [0u8; 25];
         match crate::common::fmt::rfc3339_utc(&mut buf, secs) {
             Some(s) => xml_writer.write_event(Event::Text(BytesText::new(s)))?,
             None => {
-                let s = chrono::DateTime::<Utc>::from_timestamp(secs, 0)
-                    .unwrap_or_else(Utc::now)
-                    .to_rfc3339();
+                let s = dt.to_rfc3339();
                 xml_writer.write_event(Event::Text(BytesText::new(&s)))?;
             }
         }
@@ -790,16 +791,17 @@ impl WebDavAdapter {
         Ok(())
     }
 
-    fn write_lastmodified<W: Write>(xml_writer: &mut Writer<W>, secs: u64) -> Result<()> {
+    fn write_lastmodified<W: Write>(
+        xml_writer: &mut Writer<W>,
+        dt: chrono::DateTime<Utc>,
+    ) -> Result<()> {
         xml_writer.write_event(Event::Start(BytesStart::new("D:getlastmodified")))?;
-        let secs = secs as i64;
+        let secs = dt.timestamp();
         let mut buf = [0u8; 31];
         match crate::common::fmt::rfc2822_utc(&mut buf, secs) {
             Some(s) => xml_writer.write_event(Event::Text(BytesText::new(s)))?,
             None => {
-                let s = chrono::DateTime::<Utc>::from_timestamp(secs, 0)
-                    .unwrap_or_else(Utc::now)
-                    .to_rfc2822();
+                let s = dt.to_rfc2822();
                 xml_writer.write_event(Event::Text(BytesText::new(&s)))?;
             }
         }
@@ -1616,5 +1618,136 @@ pub mod bench {
         WebDavAdapter::write_folder_response_with_dead_props(
             xml_writer, folder, request, href, dead_props, quota,
         )
+    }
+}
+
+#[cfg(test)]
+mod wire_shape_tests {
+    //! Byte-level snapshot of the native `/webdav/` XML emission paths.
+    //!
+    //! The REST serde surface is covered by the DTO-level `wire_shape_tests`
+    //! modules in `file_dto.rs` / `folder_dto.rs` etc. The WebDAV XML
+    //! writers bypass serde entirely — they write XML text directly via
+    //! `quick_xml`'s event stream, consuming `common::fmt::rfc2822_utc`
+    //! (RFC 1123 HTTP-date, with ` +0000` suffix) + `common::fmt::rfc3339_utc`
+    //! (RFC 3339 with `+00:00` suffix) with chrono fallback on year-overflow.
+    //! Those shapes are what every sync client (Nextcloud desktop, Finder,
+    //! Cyberduck, rclone) parses — a regression that re-emitted RFC 3339 on
+    //! `D:getlastmodified` or RFC 1123 on `D:creationdate` would silently
+    //! break their local DBs and trigger loop-uploads.
+    //!
+    //! The Hurl guards in `webdav_patch_consistency.hurl` validate the same
+    //! formats end-to-end via a real PROPFIND; these inline tests trip on
+    //! the exact same regression during `cargo test` (seconds instead of
+    //! minutes of `just api-test`).
+    //!
+    //! Fixture time: epoch 1_700_000_000 → 2023-11-14T22:13:20Z (Tue),
+    //! epoch 1_700_086_400 → 2023-11-15T22:13:20Z (Wed).
+
+    use super::*;
+    use crate::application::dtos::timestamp_helpers::epoch_to_datetime;
+    use quick_xml::Writer;
+    use std::io::Cursor;
+    use std::sync::Arc;
+
+    fn render_file_entry(file: FileDto) -> String {
+        let mut buf = Cursor::new(Vec::<u8>::new());
+        let mut writer = Writer::new(&mut buf);
+        let request = PropFindRequest {
+            prop_find_type: PropFindType::AllProp,
+        };
+        WebDavAdapter::write_file_entry(&mut writer, &file, &request, "/webdav/x.txt")
+            .expect("write_file_entry");
+        String::from_utf8(buf.into_inner()).expect("utf-8")
+    }
+
+    fn render_folder_entry(folder: FolderDto) -> String {
+        let mut buf = Cursor::new(Vec::<u8>::new());
+        let mut writer = Writer::new(&mut buf);
+        let request = PropFindRequest {
+            prop_find_type: PropFindType::AllProp,
+        };
+        WebDavAdapter::write_folder_entry(&mut writer, &folder, &request, "/webdav/dir/")
+            .expect("write_folder_entry");
+        String::from_utf8(buf.into_inner()).expect("utf-8")
+    }
+
+    fn fixture_file() -> FileDto {
+        let mut dto = FileDto::empty();
+        dto.id = "11111111-1111-1111-1111-111111111111".to_string();
+        dto.name = "report.pdf".to_string();
+        dto.path = "Documents/report.pdf".to_string();
+        dto.size = 1024;
+        dto.mime_type = Arc::from("application/pdf");
+        dto.created_at = epoch_to_datetime(1_700_000_000);
+        dto.modified_at = epoch_to_datetime(1_700_086_400);
+        dto.content_hash = "abcdef0123456789".to_string();
+        dto.etag = "abcdef0123456789-1700086400".to_string();
+        dto
+    }
+
+    fn fixture_folder() -> FolderDto {
+        let mut dto = FolderDto::empty();
+        dto.id = "22222222-2222-2222-2222-222222222222".to_string();
+        dto.name = "Documents".to_string();
+        dto.path = "Documents".to_string();
+        dto.created_at = epoch_to_datetime(1_700_000_000);
+        dto.modified_at = epoch_to_datetime(1_700_086_400);
+        dto.etag = "22222222222222222222222222222222-1700086400".to_string();
+        dto
+    }
+
+    #[test]
+    fn file_entry_emits_rfc1123_getlastmodified() {
+        let xml = render_file_entry(fixture_file());
+        // RFC 1123 (RFC 4918 §15.7) with the ` +0000` suffix our fast-path
+        // emitter uses. A regression to RFC 3339 (`T...Z`) breaks sync
+        // clients that parse this with `strptime(..., "%a, %d %b %Y %H:%M:%S %z")`.
+        assert!(
+            xml.contains("<D:getlastmodified>Wed, 15 Nov 2023 22:13:20 +0000</D:getlastmodified>"),
+            "getlastmodified not in RFC 1123 shape; XML:\n{xml}"
+        );
+    }
+
+    #[test]
+    fn file_entry_emits_rfc3339_creationdate() {
+        let xml = render_file_entry(fixture_file());
+        // RFC 3339 (RFC 4918 §15.1) — DIFFERENT format from getlastmodified,
+        // on purpose. The emitter is `common::fmt::rfc3339_utc` which
+        // appends `+00:00` (NOT `Z`). Mixing them up breaks clients.
+        assert!(
+            xml.contains("<D:creationdate>2023-11-14T22:13:20+00:00</D:creationdate>"),
+            "creationdate not in RFC 3339 (+00:00) shape; XML:\n{xml}"
+        );
+    }
+
+    #[test]
+    fn folder_entry_emits_rfc1123_getlastmodified() {
+        let xml = render_folder_entry(fixture_folder());
+        assert!(
+            xml.contains("<D:getlastmodified>Wed, 15 Nov 2023 22:13:20 +0000</D:getlastmodified>"),
+            "folder getlastmodified not in RFC 1123 shape; XML:\n{xml}"
+        );
+    }
+
+    #[test]
+    fn folder_entry_emits_rfc3339_creationdate() {
+        let xml = render_folder_entry(fixture_folder());
+        assert!(
+            xml.contains("<D:creationdate>2023-11-14T22:13:20+00:00</D:creationdate>"),
+            "folder creationdate not in RFC 3339 (+00:00) shape; XML:\n{xml}"
+        );
+    }
+
+    /// Negative assertion: `D:getlastmodified` MUST NOT be RFC 3339.
+    /// If a future refactor accidentally pipes it through `.to_rfc3339()`,
+    /// this trips before any sync client sees the breaking shape.
+    #[test]
+    fn getlastmodified_is_not_rfc3339() {
+        let xml = render_file_entry(fixture_file());
+        assert!(
+            !xml.contains("<D:getlastmodified>2023-11"),
+            "getlastmodified regressed to RFC 3339; XML:\n{xml}"
+        );
     }
 }

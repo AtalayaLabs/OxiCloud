@@ -54,7 +54,23 @@ const proxy = {
 	'/caldav': p(BACKEND),
 	'/carddav': p(BACKEND),
 	'/wopi': p(BACKEND),
-	'/magic': p(BACKEND)
+	'/magic': p(BACKEND),
+	// NC desktop sync-client login flow v2 — the server composes a
+	// browser URL on its own base_url (which in dev points at Vite),
+	// so the browser lands on `localhost:5173/login/v2/flow/<token>`
+	// and we need to forward that to the backend's
+	// `handle_login_page` instead of letting SvelteKit's SPA
+	// fallback return 404.
+	'/login/v2': p(BACKEND),
+	// Static assets referenced by backend-rendered Askama templates
+	// (NC drive-picker + magic-link pages). Browser loads the HTML
+	// from the backend (via the proxies above), then references these
+	// as `/askama-common.css` and `/logo/logo-plain.svg` — both are
+	// root-level paths served by the backend from `static-dist/`. In
+	// dev Vite has no corresponding route so without this forward the
+	// pages render unstyled.
+	'/askama-common.css': p(BACKEND),
+	'/logo': p(BACKEND)
 };
 
 export default defineConfig({

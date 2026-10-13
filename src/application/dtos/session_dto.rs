@@ -442,3 +442,41 @@ mod tests {
         assert!(!dto.is_revoked); // exp-but-unrevoked distinct from revoked
     }
 }
+
+#[cfg(test)]
+mod wire_shape_tests {
+    //! Byte-level snapshot of the SessionSummaryDto JSON wire shape —
+    //! the ISO-8601 timestamp pivot companion for `/api/admin/sessions`.
+    //! Any accidental re-flip of chrono's default DateTime serialization
+    //! trips here before an admin sees a 1970-year badge on their panel.
+
+    use super::*;
+    use crate::application::dtos::timestamp_helpers::epoch_to_datetime;
+
+    fn fixture() -> SessionSummaryDto {
+        SessionSummaryDto {
+            id: Uuid::nil(),
+            user_id: Uuid::nil(),
+            created_at: epoch_to_datetime(1_700_000_000),
+            expires_at: epoch_to_datetime(1_700_086_400),
+            last_seen_at: epoch_to_datetime(1_700_000_300),
+            ip_address: Some("192.0.2.1".to_string()),
+            user_agent: Some("Mozilla/5.0".to_string()),
+            is_bound: false,
+            dpop_jkt_prefix: None,
+            is_revoked: false,
+            is_active: true,
+            is_online: false,
+            origin: SessionOrigin::Password,
+            is_current: false,
+        }
+    }
+
+    #[test]
+    fn timestamps_serialize_as_rfc3339_utc_strings() {
+        let json = serde_json::to_value(fixture()).unwrap();
+        assert_eq!(json["created_at"], "2023-11-14T22:13:20Z");
+        assert_eq!(json["expires_at"], "2023-11-15T22:13:20Z");
+        assert_eq!(json["last_seen_at"], "2023-11-14T22:18:20Z");
+    }
+}

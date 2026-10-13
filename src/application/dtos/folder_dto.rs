@@ -5,6 +5,9 @@ use crate::application::dtos::display_helpers::intern_display;
 use crate::application::dtos::grant_dto::{
     GrantDto, ResourceContentDto, ResourceDto, ResourceTypeDto, RoleDto,
 };
+use crate::application::dtos::timestamp_helpers::{
+    datetime_to_epoch, epoch_to_datetime, epoch_zero,
+};
 use crate::domain::entities::folder::Folder;
 use crate::domain::services::authorization::ResourceKind;
 use chrono::{DateTime, Utc};
@@ -57,11 +60,11 @@ pub struct FolderDto {
     /// DTO-reconstructed folders carry `Uuid::nil()`.
     pub drive_id: Uuid,
 
-    /// Creation timestamp
-    pub created_at: u64,
+    /// Creation timestamp (RFC 3339 UTC).
+    pub created_at: DateTime<Utc>,
 
-    /// Last modification timestamp
-    pub modified_at: u64,
+    /// Last modification timestamp (RFC 3339 UTC).
+    pub modified_at: DateTime<Utc>,
 
     /// Whether this is a root folder
     pub is_root: bool,
@@ -129,8 +132,11 @@ impl From<Folder> for FolderDto {
             path: parts.storage_path.into_joined(),
             parent_id: parts.parent_id,
             drive_id: parts.drive_id,
-            created_at: parts.created_at,
-            modified_at: parts.modified_at,
+            // `Folder` keeps timestamps as epoch seconds internally;
+            // on the wire the DTO is RFC 3339 UTC — convert once at
+            // the DTO boundary. See `timestamp_helpers` for the rationale.
+            created_at: epoch_to_datetime(parts.created_at),
+            modified_at: epoch_to_datetime(parts.modified_at),
             is_root,
             // Constant display fields: refcount bump on interned statics
             // instead of 3 fresh Arc allocations per row.
@@ -159,8 +165,8 @@ impl From<FolderDto> for Folder {
             dto.name,
             dto.path,
             dto.parent_id,
-            dto.created_at,
-            dto.modified_at,
+            datetime_to_epoch(dto.created_at),
+            datetime_to_epoch(dto.modified_at),
         )
     }
 }
@@ -214,8 +220,8 @@ impl FolderDto {
             path: "/stub/path".to_string(),
             parent_id: None,
             drive_id: Uuid::nil(),
-            created_at: 0,
-            modified_at: 0,
+            created_at: epoch_zero(),
+            modified_at: epoch_zero(),
             is_root: true,
             icon_class: intern_display("fas fa-folder"),
             icon_special_class: intern_display("folder-icon"),
@@ -607,4 +613,44 @@ pub struct EffectiveLinkDto {
     pub resource: ResourceDto,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<DateTime<Utc>>,
+}
+
+#[cfg(test)]
+mod wire_shape_tests {
+    //! Byte-level snapshot of the FolderDto JSON wire shape — companion
+    //! to `file_dto::wire_shape_tests`. Freezes the ISO-8601 timestamp
+    //! contract so an accidental re-flip of the serializer trips here.
+
+    use super::*;
+
+    #[test]
+    fn timestamps_serialize_as_rfc3339_utc_strings() {
+        let mut dto = FolderDto::empty();
+        dto.created_at = epoch_to_datetime(1_700_000_000);
+        dto.modified_at = epoch_to_datetime(1_700_086_400);
+        let json = serde_json::to_value(dto).unwrap();
+        assert_eq!(json["created_at"], "2023-11-14T22:13:20Z");
+        assert_eq!(json["modified_at"], "2023-11-15T22:13:20Z");
+    }
+
+    #[test]
+    fn optional_expiry_serialises_iso_string_when_set() {
+        // Option<DateTime<Utc>>::Some → RFC 3339 string on the wire;
+        // None omits the field entirely via `#[serde(skip_serializing_if)]`.
+        // Smoke-test the general Option<DateTime<Utc>> contract via a
+        // lightweight scope-local struct so we don't drag EffectiveLinkDto's
+        // deeper fixture surface into this timestamp-focused snapshot.
+        #[derive(serde::Serialize)]
+        struct Row {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            expires_at: Option<DateTime<Utc>>,
+        }
+        let none = serde_json::to_value(Row { expires_at: None }).unwrap();
+        assert!(none.get("expires_at").is_none(), "wire: {none}");
+        let some = serde_json::to_value(Row {
+            expires_at: Some(epoch_to_datetime(1_700_000_000)),
+        })
+        .unwrap();
+        assert_eq!(some["expires_at"], "2023-11-14T22:13:20Z");
+    }
 }

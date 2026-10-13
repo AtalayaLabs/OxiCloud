@@ -21,64 +21,25 @@ export interface LightItem {
 	parentId: string;
 }
 
-export interface FolderItem {
-	category: string;
-	created_at: number;
-	icon_class: string;
-	icon_special_class: string;
-	id: string;
-	is_root: boolean;
-	modified_at: number;
-	name: string;
-	// §14 provenance — who originally created the folder. `null` when
-	// the creating user has since been deleted (backend FK is
-	// `ON DELETE SET NULL`), or when the folder is returned to a
-	// share recipient that lost provenance via
-	// `FolderDto::without_hierarchy_info`. The canonical "owner"
-	// signal on the Files browser / Favorites / Shared surfaces
-	// (replaced the retired `owner_id` field in D7).
-	created_by: string | null;
-	// §14 provenance — who last touched the folder (rename / move /
-	// metadata change). The canonical "who touched this recently"
-	// signal on the Recent surface.
-	updated_by: string | null;
-	parent_id: string | null;
-	path: string;
-	etag: string;
-	/**
-	 * The drive this folder belongs to (post-D0 ownership pivot per
-	 * `docs/plan/drive.md` §3). Populated by the backend `FolderDto`
-	 * on every response; the field was left out of the TS type until
-	 * a caller needed it. Used by `/files` to resolve the current
-	 * drive for the read-only banner without depending on the URL's
-	 * leading segment being a drive-root folder id.
-	 */
-	drive_id: string;
-	/**
-	 * Caller-scoped: `true` when the requesting user has favorited
-	 * this folder. Always present on the wire — never null, never
-	 * absent — per the backend enrichment contract. `ResourceList`
-	 * renders the fav-star chip natively from this field.
-	 */
-	is_favorite: boolean;
-	/**
-	 * Resource-scoped: `true` when the folder has any
-	 * `storage.role_grants` entry (link share via `subject_type =
-	 * 'token'`, user grant, group grant, any role). "Someone was
-	 * given access to this beyond drive membership." Always present
-	 * on the wire.
-	 */
-	is_shared: boolean;
-}
+// Authoritative on the generated SDK. `FolderDto` carries the same
+// 15 fields with matching types (all primitives — no cascading
+// hand-written type references), so the alias is pure name-forward
+// with zero shape change. §Phase 3 of the generated-types
+// normalisation. Local import so other hand-written interfaces in
+// this file can keep referencing `FolderItem`.
+import type { FolderDto as FolderItem } from './generated/openapi/types.gen';
+export type { FolderItem };
 
 export interface FileItem {
 	category: string;
-	created_at: number;
+	/** RFC 3339 UTC timestamp (wire form after the DTO ISO-8601 pivot). */
+	created_at: string;
 	icon_class: string;
 	icon_special_class: string;
 	id: string;
 	mime_type: string;
-	modified_at: number;
+	/** RFC 3339 UTC timestamp. */
+	modified_at: string;
 	name: string;
 	// §14 provenance — see FolderItem for semantics. Replaced the
 	// retired `owner_id` field in D7.
@@ -112,9 +73,11 @@ export interface FileItem {
 
 export interface ShareItem {
 	access_count: number;
-	created_at: number;
+	/** RFC 3339 UTC timestamp. */
+	created_at: string;
 	created_by: string;
-	expires_at: number;
+	/** RFC 3339 UTC timestamp; `null` → never expires. */
+	expires_at: string | null;
 	has_password: boolean;
 	id: string;
 	item_id: string;
@@ -129,25 +92,27 @@ export interface CreateShare {
 	item_name?: string | null;
 	item_type: ItemType;
 	password: string | null;
-	expires_at: number | null;
+	/** RFC 3339 UTC timestamp or `null` for never. */
+	expires_at: string | null;
 }
 
-export interface UpdateShare {
-	password?: string | null;
-	expires_at?: number | null;
-}
+// Authoritative on the generated SDK. Identical shape, no
+// cascading dependencies — pure name-forward.
+export type { UpdateShareDto as UpdateShare } from './generated/openapi/types.gen';
 
 export interface FavoriteItem {
 	id: string;
 	user_id: string;
 	item_id: string;
 	item_type: ItemType;
-	created_at: number;
+	/** RFC 3339 UTC timestamp. */
+	created_at: string;
 	item_name: string | null;
 	item_size: number | null;
 	item_mime_type: string | null;
 	parent_id: string | null;
-	modified_at: number | null;
+	/** RFC 3339 UTC timestamp; `null` for folders without a mtime projection. */
+	modified_at: string | null;
 	item_path: string;
 	icon_class: string;
 	icon_special_class: string;
@@ -160,7 +125,8 @@ export interface RecentItem {
 	user_id: string;
 	item_id: string;
 	item_type: ItemType;
-	accessed_at: number;
+	/** RFC 3339 UTC timestamp. */
+	accessed_at: string;
 	item_name: string | null;
 	item_size: number | null;
 	item_mime_type: string | null;
@@ -339,39 +305,22 @@ export type SortBy = 'relevance' | 'name' | 'size' | 'updated_at' | 'created_at'
  * `/api/search` envelope. Mirrors backend `SearchMeta` — see
  * `application/dtos/search_dto.rs`.
  */
-export interface SearchMeta {
-	/** Relevance in [0, 1]; the higher the better. */
-	score: number;
-	/** Optional HTML-safe excerpt when the match fired via content index. */
-	snippet?: string;
-	/** Where the match fired. */
-	via?: 'name' | 'content' | 'path';
-}
-
-/**
- * Single hit in the `/api/search` envelope. `resource_type` disambiguates
- * `resource`'s union so the shared `ResourceList` component can render it
- * exactly like a folders/favorites/recent/trash row.
- */
-export interface SearchResourceItem {
-	resource_type: ItemType;
-	resource: FileItem | FolderItem;
-	meta: SearchMeta;
-}
-
-/**
- * Wire response of `GET /api/search`. Same envelope shape as the other
- * "resources" listing endpoints (`items[]` + optional `next_cursor`),
- * plus two search-specific top-level fields: `query_time_ms` (health
- * signal for admins, "Found N in Xms" for users) and `total` (approximate,
- * caller-visible; never leaks a count for rows the caller can't see).
- */
-export interface SearchResourcesResponse {
-	items: SearchResourceItem[];
-	next_cursor?: string;
-	query_time_ms: number;
-	total?: number;
-}
+// Shapes authoritative on the generated SDK — re-exported here so
+// consumers importing from `$lib/api/types` keep working. The
+// generated `SearchResourceItem.resource` is `ResourceContentDto`
+// (a `FileDto | FolderDto | DriveDto` untagged union) rather than
+// the pre-SDK `FileItem | FolderItem` hand-written union: a search
+// result CAN now be a Drive. Consumers that discriminated on
+// `resource_type` already handle the broader union correctly; those
+// that pattern-matched on the two-arm shape need updating at the
+// call site (TS surfaces the delta).
+//
+// `SearchResourcesResponse` maps to the generated `SearchResourcesDto`
+// — the openapi-ts-emitted `SearchResourcesResponse` is a status-code
+// wrapper (`{ 200: SearchResourcesDto }[keyof …]`), not the payload
+// shape the FE wants.
+export type { SearchMeta, SearchResourceItem } from './generated/openapi/types.gen';
+export type { SearchResourcesDto as SearchResourcesResponse } from './generated/openapi/types.gen';
 
 export type DriveKind = 'personal' | 'shared';
 
@@ -454,50 +403,13 @@ export interface Drive {
  * See `docs/plan/drive.md` §8 for the `forbid_*` gates and §15 for the
  * `include_in_*_index` scope flags.
  */
-export interface DrivePolicies {
-	forbid_sharing: boolean;
-	forbid_external_sharing: boolean;
-	forbid_public_links: boolean;
-	forbid_cross_drive_move: boolean;
-	forbid_owner_role_change: boolean;
-	/**
-	 * §15 opt-in for `/api/photos` timeline scope. Default personal drives
-	 * are created with `true`; non-default drives (secondary personals,
-	 * shared) start `false` and opt in via the admin policy modal.
-	 */
-	include_in_photo_index: boolean;
-	/**
-	 * §15 opt-in for the Music library surface (currently playlists;
-	 * future `/api/music/tracks` library view will read this too).
-	 * Symmetric shape to `include_in_photo_index`.
-	 */
-	include_in_music_index: boolean;
-	/**
-	 * Full freeze / legal-hold. When `true`, every mutation on resources
-	 * in the drive is refused — user-initiated AND background alike (the
-	 * trash-retention purge SQL filter excludes read-only drives). Only
-	 * `Read` passes. Admins can un-freeze via the admin-only policy PATCH.
-	 * See `docs/plan/drive.md` §8 (`read_only`).
-	 */
-	read_only: boolean;
-	/**
-	 * Longest a public link in this drive may live, in days. `null` means
-	 * no cap — the LAXEST value, since a link that never expires is
-	 * permitted. Enforced at link creation; links that already outlive a
-	 * newly-set cap keep working and are surfaced by
-	 * `drive_policies_consistency`.
-	 *
-	 * The only non-boolean policy. Note the expiry it constrains lives on
-	 * the token's role grant, not on the share row.
-	 */
-	max_public_link_days: number | null;
-	/**
-	 * Public links in this drive must carry a password. Enforced at link
-	 * creation; existing password-less links keep working and are reported
-	 * by the compliance scan.
-	 */
-	require_public_link_password: boolean;
-}
+// Shape is authoritative on the generated SDK (every policy is
+// optional there — a partial payload is a legal "patch" that leaves
+// unlisted keys untouched). Re-exported under the same name for
+// consumers importing from `$lib/api/types`; local import so the
+// `DrivePoliciesPartial` alias below can keep its definition.
+import type { DrivePolicies } from './generated/openapi/types.gen';
+export type { DrivePolicies };
 
 /**
  * Body shape for the admin policy editor — every key optional so omitting
@@ -569,20 +481,16 @@ export interface DriveMember {
 // `access_source` telling the breadcrumb component which root icon /
 // tooltip to render.
 
-export interface FolderAncestor {
-	id: string;
-	name: string;
-	/** `null` on the drive-root ancestor. */
-	parent_id: string | null;
-	/**
-	 * Drive the folder belongs to (always populated — every folder has a
-	 * drive_id post-D0). Lets `/files` derive `currentFolderDriveId` from
-	 * the ancestors response instead of firing an extra
-	 * `GET /api/folders/{id}` on load. Same value across every entry in
-	 * `ancestors` (all folders in a chain live in one drive).
-	 */
-	drive_id: string;
-}
+// Authoritative on the generated SDK. All four fields are
+// primitives, no cascading dependencies — pure name-forward. The
+// generated version types `parent_id?: string | null` where the
+// pre-SDK hand-written was `parent_id: string | null` (always
+// present): matches the server's actual emit (JSON `null` on the
+// drive-root ancestor, not a dropped key). Local import so other
+// hand-written interfaces in this file can keep referencing
+// `FolderAncestor`.
+import type { FolderAncestorDto as FolderAncestor } from './generated/openapi/types.gen';
+export type { FolderAncestor };
 
 /**
  * How the caller reached the topmost accessible ancestor.
@@ -593,8 +501,14 @@ export interface FolderAncestor {
  *   `subject` may name the grantee (self or a group) once subject
  *   enrichment lands; MVP leaves it null.
  * - `token` — reserved for public-link callers. Not emitted today.
+ *
+ * Shape is authoritative on the generated SDK; local import so the
+ * `AccessSource` interface below can keep its typed `kind` field,
+ * plus a re-export so `$lib/api/types` consumers still resolve the
+ * name here.
  */
-export type AccessSourceKind = 'drive' | 'direct_share' | 'token';
+import type { AccessSourceKind } from './generated/openapi/types.gen';
+export type { AccessSourceKind };
 
 export interface AccessSourceDrive {
 	id: string;
@@ -1089,26 +1003,17 @@ export interface ServerStatus {
  *  variant (warning / notification). `body` holds raw markdown
  *  per locale; the FE picks the viewer's preferred_locale with
  *  `en` as the hard-coded fallback. */
-export interface OpsBanner {
-	id: string;
-	severity: 'warning' | 'notification';
-	body: Record<string, string>;
-	/** `undefined` when effective immediately. `Some(ISO 8601)`
-	 *  when the operator scheduled the banner for a future time —
-	 *  the server-side filter hides it on the public wire until
-	 *  that time arrives, so a value here means "visible soon".
-	 *  Admin surface shows it regardless. */
-	starts_at?: string;
-	/** `undefined` → stays until the operator deletes it.
-	 *  `Some(ISO 8601)` → auto-hides from the public wire once
-	 *  reached, and the periodic `ops_banner_expiry` job removes
-	 *  it from storage on its next tick (every ~10 min). Admin
-	 *  surface still shows it until the job sweeps so the operator
-	 *  can see "I posted a banner that expired an hour ago". */
-	expires_at?: string;
-	created_by: string;
-	created_at: string;
-}
+// Authoritative on the generated SDK. The wire-level difference
+// vs the pre-SDK hand-written shape:
+//   - `severity` becomes the named `OpsBannerSeverity` enum (same
+//     'warning' | 'notification' union, re-exported).
+//   - `starts_at` / `expires_at` carry `string | null`, matching
+//     the server emitting `null` for the "not scheduled / never
+//     expires" cases rather than dropping the key.
+// Local import so the `ServerStatus.banners` field above can keep
+// its typed reference.
+import type { OpsBanner, OpsBannerSeverity } from './generated/openapi/types.gen';
+export type { OpsBanner, OpsBannerSeverity };
 
 /** See [`ServerStatus.holder`]. */
 export interface ServerStatusHolder {
@@ -1165,13 +1070,15 @@ export interface NotificationListResponse {
 	unread_count: number;
 }
 
-export interface UnreadCountResponse {
-	unread_count: number;
-}
-
-export interface MarkAllReadResponse {
-	marked: number;
-}
+// `GET /api/notifications/unread` + `POST /api/notifications/mark-all-read`
+// payload DTOs. The openapi-ts-emitted `UnreadCountResponse` /
+// `MarkAllReadResponse` names are status-code wrappers (`{ 200: Dto }
+// [keyof …]`), not the body shape — re-exporting the `*Dto` under
+// the old names so consumers get the actual payload type.
+export type {
+	UnreadCountDto as UnreadCountResponse,
+	MarkAllReadResponseDto as MarkAllReadResponse
+} from './generated/openapi/types.gen';
 
 /** Canonical kind slugs — mirror `domain::entities::notification::kind`. */
 export const NOTIFICATION_KIND = {
@@ -1181,32 +1088,10 @@ export const NOTIFICATION_KIND = {
 	STORAGE_QUOTA_THRESHOLD: 'storage_quota_threshold'
 } as const;
 
-/**
- * Payload shape for `share_granted` notifications — hand-mirror of
- * `crate::domain::entities::notification::SharegrantedPayload`.
- * `#[derive(ToSchema)]` on the Rust struct makes it authoritative;
- * this interface is a projection for FE type-narrowing until the
- * codebase adopts `openapi-typescript` for the REST surface.
- *
- * See `docs/plan/templated-messages.md § Making payloads a real
- * Rust struct` for the rationale — OpenAPI owns the payload; the
- * bus event is a pure poke.
- */
-export interface SharegrantedPayload {
-	granter_id: string;
-	resource_type: string;
-	resource_id: string;
-	resource_name?: string;
-	/** Storage path for `folder` / `file` kinds only. `undefined`
-	 *  for drive / calendar / address_book / playlist. */
-	resource_path?: string;
-	/** FE-navigation hint for kinds whose `resource_id` isn't itself
-	 *  a folder id. Populated for `drive` (the drive's root folder
-	 *  id — the FE routes to `/files/{navigate_folder_id}` because
-	 *  drives don't have a browsable URL of their own). Absent for
-	 *  folder (uses `resource_id` directly), file (routes to
-	 *  `/shared-with-me?file=`), and non-browsable kinds. */
-	navigate_folder_id?: string;
-	role: string;
-	expires_at?: string;
-}
+// `share_granted` notification payload. Authoritative on the
+// generated SDK; the hand-written mirror this replaced carried
+// `?: string` where the generated version uses `?: string | null`
+// — matches what the server actually emits (JSON `null`, not
+// dropped keys). See `docs/plan/templated-messages.md § Making
+// payloads a real Rust struct` for the original rationale.
+export type { SharegrantedPayload } from './generated/openapi/types.gen';

@@ -93,9 +93,14 @@
 	// Accumulated pages of results. Cursor pagination — a filter/sort/query
 	// change resets to page 1, infinite scroll appends via `loadMore()`.
 	let raw = $state<SearchResourceItem[]>([]);
-	let cursor = $state<string | undefined>(undefined);
+	// Three state values track the server's cursor-paginated response.
+	// Generated types widen to `string | null | undefined` /
+	// `number | null | undefined` because the server emits JSON `null`
+	// rather than dropping the key on absent values; we accept both
+	// here and normalise `null` away at the consumer sites below.
+	let cursor = $state<string | null | undefined>(undefined);
 	let queryTimeMs = $state<number | null>(null);
-	let total = $state<number | undefined>(undefined);
+	let total = $state<number | null | undefined>(undefined);
 	let loading = $state(false);
 	let error = $state<string | null>(null);
 	// Sort dimension + direction are surfaced through ResourceList's
@@ -413,7 +418,10 @@
 	// at drive roots. Null → no meaningful parent to open. Mirrors the
 	// same helper in /favorites and /recent.
 	function parentFolderId(item: FileItem | FolderItem): string | null {
-		return isFile(item) ? item.folder_id : item.parent_id;
+		// Generated `FolderItem.parent_id` is `string | null | undefined`;
+		// collapse to `null` so downstream callers keep one "no parent"
+		// signal. See /favorites mirror.
+		return isFile(item) ? item.folder_id : (item.parent_id ?? null);
 	}
 
 	async function toggleFavorite(item: FileItem | FolderItem) {

@@ -100,3 +100,33 @@ impl From<DriveWithRootName> for DriveDto {
         }
     }
 }
+
+#[cfg(test)]
+mod wire_shape_tests {
+    //! Byte-level snapshot of the DriveDto JSON wire shape — the
+    //! ISO-8601 timestamp pivot companion for `GET /api/drives` and the
+    //! admin drive-management surface.
+
+    use super::*;
+    use crate::application::dtos::timestamp_helpers::epoch_to_datetime;
+
+    #[test]
+    fn timestamps_serialize_as_rfc3339_utc_strings() {
+        let dto = DriveDto {
+            id: Uuid::nil(),
+            name: "Personal".to_string(),
+            kind: DriveKindDto::Personal,
+            default_for_user: None,
+            root_folder_id: Uuid::nil(),
+            quota_bytes: None,
+            used_bytes: 0,
+            policies: serde_json::json!({}),
+            created_at: epoch_to_datetime(1_700_000_000),
+            updated_at: epoch_to_datetime(1_700_086_400),
+            caller_role: None,
+        };
+        let json = serde_json::to_value(dto).unwrap();
+        assert_eq!(json["created_at"], "2023-11-14T22:13:20Z");
+        assert_eq!(json["updated_at"], "2023-11-15T22:13:20Z");
+    }
+}

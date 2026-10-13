@@ -135,8 +135,12 @@ fn synth_entry(idx: u64) -> Arc<SearchResultsDto> {
             size: 831_942,
             mime_type: MIMES[row % MIMES.len()].into(),
             folder_id: Some(pseudo_uuid(&mut rng)),
-            created_at: 1_752_700_000,
-            modified_at: 1_752_800_000,
+            created_at: oxicloud::application::dtos::timestamp_helpers::epoch_to_datetime(
+                1_752_700_000,
+            ),
+            modified_at: oxicloud::application::dtos::timestamp_helpers::epoch_to_datetime(
+                1_752_800_000,
+            ),
             relevance_score: 50,
             size_formatted: "812.4 KB".to_string(),
             icon_class: "fas fa-file-pdf".into(),

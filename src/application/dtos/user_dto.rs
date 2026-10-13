@@ -766,3 +766,71 @@ mod three_layer_quarantine {
         }
     }
 }
+
+#[cfg(test)]
+mod wire_shape_tests {
+    //! Byte-level snapshot of the FullUserDto JSON wire shape — the
+    //! ISO-8601 timestamp pivot companion for `/api/admin/users` and
+    //! `/api/auth/me`. Required timestamps serialize as RFC 3339;
+    //! `Option<DateTime<Utc>>` fields with `skip_serializing_if` either
+    //! omit the key (None) or emit the RFC 3339 string (Some).
+
+    use super::*;
+    use crate::application::dtos::timestamp_helpers::epoch_to_datetime;
+
+    fn fixture_user() -> PublicUserDto {
+        PublicUserDto {
+            id: "11111111-1111-1111-1111-111111111111".to_string(),
+            username: Some("alice".to_string()),
+            email: "alice@example.com".to_string(),
+            role: "user".to_string(),
+            image: None,
+            is_external: false,
+            given_name: None,
+            family_name: None,
+            is_online: false,
+        }
+    }
+
+    fn fixture_full() -> FullUserDto {
+        FullUserDto {
+            user: fixture_user(),
+            federation_kind: None,
+            federation_issuer: None,
+            preferred_locale: None,
+            email_verified_at: Some(epoch_to_datetime(1_700_000_000)),
+            created_at: epoch_to_datetime(1_700_000_000),
+            updated_at: epoch_to_datetime(1_700_086_400),
+            last_login_at: Some(epoch_to_datetime(1_700_000_300)),
+            active: true,
+            storage_quota_bytes: 0,
+            storage_used_bytes: 0,
+            has_password: true,
+            opaque_registered: false,
+            opaque_migrated: false,
+        }
+    }
+
+    #[test]
+    fn timestamps_serialize_as_rfc3339_utc_strings() {
+        let json = serde_json::to_value(fixture_full()).unwrap();
+        assert_eq!(json["created_at"], "2023-11-14T22:13:20Z");
+        assert_eq!(json["updated_at"], "2023-11-15T22:13:20Z");
+        assert_eq!(json["email_verified_at"], "2023-11-14T22:13:20Z");
+        assert_eq!(json["last_login_at"], "2023-11-14T22:18:20Z");
+    }
+
+    #[test]
+    fn optional_timestamps_omit_when_none() {
+        let mut dto = fixture_full();
+        dto.email_verified_at = None;
+        let json = serde_json::to_value(&dto).unwrap();
+        // `email_verified_at` is `skip_serializing_if = "Option::is_none"`
+        // → absent from the wire shape. `last_login_at` has no
+        // `skip_serializing_if` so it stays present as `null` when None.
+        assert!(json.get("email_verified_at").is_none(), "wire: {json}");
+        dto.last_login_at = None;
+        let json = serde_json::to_value(&dto).unwrap();
+        assert_eq!(json["last_login_at"], serde_json::Value::Null);
+    }
+}

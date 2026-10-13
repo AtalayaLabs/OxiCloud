@@ -21,7 +21,10 @@ export async function createShare(input: CreateShareInput): Promise<ShareItem> {
 		item_name: input.itemName ?? null,
 		item_type: input.itemType,
 		password: input.password || null,
-		expires_at: input.expiresAt ? Math.floor(new Date(input.expiresAt).getTime() / 1000) : null
+		// Server accepts RFC 3339 UTC (`DateTime<Utc>` on the wire).
+		// Normalise via `Date.toISOString()` so the server always sees the
+		// same canonical form regardless of what the caller passed in.
+		expires_at: input.expiresAt ? new Date(input.expiresAt).toISOString() : null
 	};
 	const res = await apiFetch('/api/shares', {
 		method: 'POST',
@@ -65,12 +68,11 @@ export interface UpdateShareInput {
  * `PUT /api/shares/{id}` with `{ password, expires_at }`.
  */
 export async function updateShare(shareId: string, input: UpdateShareInput): Promise<ShareItem> {
-	const body: { password?: string | null; expires_at?: number | null } = {};
+	const body: { password?: string | null; expires_at?: string | null } = {};
 	if (input.password !== undefined) body.password = input.password;
 	if (input.expiresAt !== undefined) {
-		body.expires_at = input.expiresAt
-			? Math.floor(new Date(input.expiresAt).getTime() / 1000)
-			: null;
+		// Server now accepts RFC 3339 UTC strings.
+		body.expires_at = input.expiresAt ? new Date(input.expiresAt).toISOString() : null;
 	}
 	const res = await apiFetch(`/api/shares/${encodeURIComponent(shareId)}`, {
 		method: 'PUT',

@@ -102,8 +102,12 @@ fn fixture_folder() -> FolderDto {
         path: "Personal".to_string(),
         parent_id: None,
         drive_id: uuid::Uuid::new_v4(),
-        created_at: 1_700_000_000,
-        modified_at: 1_700_000_100,
+        created_at: oxicloud::application::dtos::timestamp_helpers::epoch_to_datetime(
+            1_700_000_000,
+        ),
+        modified_at: oxicloud::application::dtos::timestamp_helpers::epoch_to_datetime(
+            1_700_000_100,
+        ),
         is_root: true,
         etag: "8f2e5a1c9b3d4e6f".to_string(),
         icon_class: Arc::from("fas fa-folder"),

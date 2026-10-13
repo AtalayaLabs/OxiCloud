@@ -14,6 +14,7 @@ use crate::application::dtos::display_helpers::{
 };
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::FolderDto;
+use crate::application::dtos::timestamp_helpers::epoch_to_datetime;
 use crate::application::ports::external_mount_ports::{MountEntry, MountStat};
 use crate::application::services::mount_registry::MountConfig;
 use crate::domain::services::external_mount_id::{
@@ -59,8 +60,8 @@ pub fn mount_folder_dto(cfg: &MountConfig, parent_id: &str, stat: &MountStat) ->
         path: String::new(),
         parent_id: Some(parent_id.to_owned()),
         drive_id: cfg.drive_id,
-        created_at: stat.created_at,
-        modified_at: stat.modified_at,
+        created_at: epoch_to_datetime(stat.created_at),
+        modified_at: epoch_to_datetime(stat.modified_at),
         is_root: false,
         icon_class: Arc::from("fas fa-folder"),
         icon_special_class: Arc::from("folder-icon"),
@@ -85,8 +86,8 @@ pub fn mount_entry_folder_dto(cfg: &MountConfig, parent_id: &str, entry: &MountE
         path: String::new(),
         parent_id: Some(parent_id.to_owned()),
         drive_id: cfg.drive_id,
-        created_at: entry.created_at,
-        modified_at: entry.modified_at,
+        created_at: epoch_to_datetime(entry.created_at),
+        modified_at: epoch_to_datetime(entry.modified_at),
         is_root: false,
         icon_class: Arc::from("fas fa-folder"),
         icon_special_class: Arc::from("folder-icon"),
@@ -111,8 +112,8 @@ pub fn mount_entry_file_dto(cfg: &MountConfig, parent_id: &str, entry: &MountEnt
         size: entry.size,
         mime_type: Arc::from(mime.as_str()),
         folder_id: Some(parent_id.to_owned()),
-        created_at: entry.created_at,
-        modified_at: entry.modified_at,
+        created_at: epoch_to_datetime(entry.created_at),
+        modified_at: epoch_to_datetime(entry.modified_at),
         icon_class: Arc::from(icon_class_for(name, &mime)),
         icon_special_class: Arc::from(icon_special_class_for(name, &mime)),
         category: Arc::from(category_for(name, &mime)),
@@ -138,8 +139,8 @@ pub fn mount_file_dto(cfg: &MountConfig, parent_id: &str, stat: &MountStat) -> F
         size: stat.size,
         mime_type: Arc::from(mime),
         folder_id: Some(parent_id.to_owned()),
-        created_at: stat.created_at,
-        modified_at: stat.modified_at,
+        created_at: epoch_to_datetime(stat.created_at),
+        modified_at: epoch_to_datetime(stat.modified_at),
         icon_class: Arc::from(icon_class_for(name, mime)),
         icon_special_class: Arc::from(icon_special_class_for(name, mime)),
         category: Arc::from(category_for(name, mime)),

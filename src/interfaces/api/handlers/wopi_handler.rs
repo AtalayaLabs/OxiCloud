@@ -175,10 +175,8 @@ async fn check_file_info(
         Err(_) => return StatusCode::NOT_FOUND.into_response(),
     };
 
-    // Convert u64 timestamp to RFC 3339 string
-    let last_modified = chrono::DateTime::from_timestamp(file.modified_at as i64, 0)
-        .map(|dt| dt.to_rfc3339())
-        .unwrap_or_default();
+    // `file.modified_at` is now `DateTime<Utc>` — format directly.
+    let last_modified = file.modified_at.to_rfc3339();
 
     let response = CheckFileInfoResponse {
         base_file_name: file.name.clone(),

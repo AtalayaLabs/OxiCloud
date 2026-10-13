@@ -90,6 +90,12 @@ GET {{base_url}}/remote.php/dav/files/{{nc_username}}/nc-patch-probe.txt
 HTTP 200
 [Asserts]
 body == "012XYZ6789"
+# NC GET surface emits `Last-Modified` as RFC 1123 HTTP-date (RFC 7231
+# §7.1.1.1). Alternates ` GMT` and ` +0000` are both accepted by sync
+# clients in practice; our emitter uses ` +0000`. A regression to RFC
+# 3339 (`2026-10-11T22:13:20Z`) would break NC desktop / Finder /
+# Cyberduck here.
+header "Last-Modified" matches "^[A-Z][a-z]{2}, [0-9]{1,2} [A-Z][a-z]{2} [0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2} (GMT|\\+0000)$"
 
 
 # ─────────────────────────────────────────────────────────────

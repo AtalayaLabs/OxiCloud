@@ -182,11 +182,20 @@ impl std::error::Error for OpsBannerError {}
 pub struct OpsBannerInput {
     pub severity: OpsBannerSeverity,
     pub body: BTreeMap<String, String>,
-    #[serde(default)]
+    /// Accepts an integer epoch second OR an RFC 3339 string — see
+    /// `timestamp_helpers::deserialize_flex_datetime_option`.
+    #[serde(
+        default,
+        deserialize_with = "crate::application::dtos::timestamp_helpers::deserialize_flex_datetime_option"
+    )]
     pub starts_at: Option<DateTime<Utc>>,
     /// Optional auto-hide timestamp. See the field doc on
-    /// [`OpsBanner::expires_at`].
-    #[serde(default)]
+    /// [`OpsBanner::expires_at`]. Accepts both wire shapes — see
+    /// [`OpsBannerInput::starts_at`].
+    #[serde(
+        default,
+        deserialize_with = "crate::application::dtos::timestamp_helpers::deserialize_flex_datetime_option"
+    )]
     pub expires_at: Option<DateTime<Utc>>,
 }
 
@@ -657,5 +666,51 @@ mod tests {
             .collect();
         assert_eq!(public.len(), 2);
         assert!(public.iter().all(|b| b.body["en"] != "future"));
+    }
+}
+
+#[cfg(test)]
+mod wire_shape_tests {
+    //! Byte-level snapshot of the OpsBanner JSON wire shape — ISO-8601
+    //! timestamp pivot companion for `/api/admin/banners` and the public
+    //! `/api/config` surface that embeds the banner list.
+
+    use super::*;
+    use crate::application::dtos::timestamp_helpers::epoch_to_datetime;
+
+    fn fixture() -> OpsBanner {
+        OpsBanner {
+            id: Uuid::nil(),
+            severity: OpsBannerSeverity::Warning,
+            body: {
+                let mut m = BTreeMap::new();
+                m.insert("en".to_string(), "Scheduled maintenance".to_string());
+                m
+            },
+            starts_at: Some(epoch_to_datetime(1_700_000_000)),
+            expires_at: Some(epoch_to_datetime(1_700_086_400)),
+            created_by: Uuid::nil(),
+            created_at: epoch_to_datetime(1_700_000_000),
+        }
+    }
+
+    #[test]
+    fn timestamps_serialize_as_rfc3339_utc_strings() {
+        let json = serde_json::to_value(fixture()).unwrap();
+        assert_eq!(json["created_at"], "2023-11-14T22:13:20Z");
+        assert_eq!(json["starts_at"], "2023-11-14T22:13:20Z");
+        assert_eq!(json["expires_at"], "2023-11-15T22:13:20Z");
+    }
+
+    #[test]
+    fn optional_schedule_fields_omit_when_none() {
+        let dto = OpsBanner {
+            starts_at: None,
+            expires_at: None,
+            ..fixture()
+        };
+        let json = serde_json::to_value(dto).unwrap();
+        assert!(json.get("starts_at").is_none(), "wire: {json}");
+        assert!(json.get("expires_at").is_none(), "wire: {json}");
     }
 }
