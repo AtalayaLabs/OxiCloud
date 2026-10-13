@@ -22,7 +22,8 @@ export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends 
  * List all address books accessible to the current user (owned + shared),
  * plus the virtual read-only system book listing all OxiCloud users.
  */
-export const listAddressBooks = <ThrowOnError extends boolean = false>(options?: Options<ListAddressBooksData, ThrowOnError>): RequestResult<ListAddressBooksResponses, ListAddressBooksErrors, ThrowOnError> => (options?.client ?? client).get<ListAddressBooksResponses, ListAddressBooksErrors, ThrowOnError>({
+export const listAddressBooks = <ThrowOnError extends boolean = false>(options?: Options<ListAddressBooksData, ThrowOnError>): RequestResult<ListAddressBooksResponses, ListAddressBooksErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<ListAddressBooksResponses, ListAddressBooksErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/address-books',
     ...options
@@ -31,7 +32,8 @@ export const listAddressBooks = <ThrowOnError extends boolean = false>(options?:
 /**
  * Create a new personal address book.
  */
-export const createAddressBook = <ThrowOnError extends boolean = false>(options: Options<CreateAddressBookData, ThrowOnError>): RequestResult<CreateAddressBookResponses, CreateAddressBookErrors, ThrowOnError> => (options.client ?? client).post<CreateAddressBookResponses, CreateAddressBookErrors, ThrowOnError>({
+export const createAddressBook = <ThrowOnError extends boolean = false>(options: Options<CreateAddressBookData, ThrowOnError>): RequestResult<CreateAddressBookResponses, CreateAddressBookErrors, ThrowOnError, 'data'> => (options.client ?? client).post<CreateAddressBookResponses, CreateAddressBookErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/address-books',
     ...options,
@@ -44,7 +46,8 @@ export const createAddressBook = <ThrowOnError extends boolean = false>(options:
 /**
  * Delete an address book and all its contacts. Only the owner can do this.
  */
-export const deleteAddressBook = <ThrowOnError extends boolean = false>(options: Options<DeleteAddressBookData, ThrowOnError>): RequestResult<DeleteAddressBookResponses, DeleteAddressBookErrors, ThrowOnError> => (options.client ?? client).delete<DeleteAddressBookResponses, DeleteAddressBookErrors, ThrowOnError>({
+export const deleteAddressBook = <ThrowOnError extends boolean = false>(options: Options<DeleteAddressBookData, ThrowOnError>): RequestResult<DeleteAddressBookResponses, DeleteAddressBookErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<DeleteAddressBookResponses, DeleteAddressBookErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/address-books/{book_id}',
     ...options
@@ -53,7 +56,8 @@ export const deleteAddressBook = <ThrowOnError extends boolean = false>(options:
 /**
  * Update an address book's name, description, or color.
  */
-export const updateAddressBook = <ThrowOnError extends boolean = false>(options: Options<UpdateAddressBookData, ThrowOnError>): RequestResult<UpdateAddressBookResponses, UpdateAddressBookErrors, ThrowOnError> => (options.client ?? client).put<UpdateAddressBookResponses, UpdateAddressBookErrors, ThrowOnError>({
+export const updateAddressBook = <ThrowOnError extends boolean = false>(options: Options<UpdateAddressBookData, ThrowOnError>): RequestResult<UpdateAddressBookResponses, UpdateAddressBookErrors, ThrowOnError, 'data'> => (options.client ?? client).put<UpdateAddressBookResponses, UpdateAddressBookErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/address-books/{book_id}',
     ...options,
@@ -67,7 +71,8 @@ export const updateAddressBook = <ThrowOnError extends boolean = false>(options:
  * List contacts in an address book.
  * `book_id = "system"` returns all OxiCloud users (excluding the caller).
  */
-export const listContacts = <ThrowOnError extends boolean = false>(options: Options<ListContactsData, ThrowOnError>): RequestResult<ListContactsResponses, ListContactsErrors, ThrowOnError> => (options.client ?? client).get<ListContactsResponses, ListContactsErrors, ThrowOnError>({
+export const listContacts = <ThrowOnError extends boolean = false>(options: Options<ListContactsData, ThrowOnError>): RequestResult<ListContactsResponses, ListContactsErrors, ThrowOnError, 'data'> => (options.client ?? client).get<ListContactsResponses, ListContactsErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/address-books/{book_id}/contacts',
     ...options
@@ -76,7 +81,8 @@ export const listContacts = <ThrowOnError extends boolean = false>(options: Opti
 /**
  * Create a new contact in an address book.
  */
-export const createContact = <ThrowOnError extends boolean = false>(options: Options<CreateContactData, ThrowOnError>): RequestResult<CreateContactResponses, CreateContactErrors, ThrowOnError> => (options.client ?? client).post<CreateContactResponses, CreateContactErrors, ThrowOnError>({
+export const createContact = <ThrowOnError extends boolean = false>(options: Options<CreateContactData, ThrowOnError>): RequestResult<CreateContactResponses, CreateContactErrors, ThrowOnError, 'data'> => (options.client ?? client).post<CreateContactResponses, CreateContactErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/address-books/{book_id}/contacts',
     ...options,
@@ -89,7 +95,8 @@ export const createContact = <ThrowOnError extends boolean = false>(options: Opt
 /**
  * Delete a contact. Optionally honours `If-Match`.
  */
-export const deleteContact = <ThrowOnError extends boolean = false>(options: Options<DeleteContactData, ThrowOnError>): RequestResult<DeleteContactResponses, DeleteContactErrors, ThrowOnError> => (options.client ?? client).delete<DeleteContactResponses, DeleteContactErrors, ThrowOnError>({
+export const deleteContact = <ThrowOnError extends boolean = false>(options: Options<DeleteContactData, ThrowOnError>): RequestResult<DeleteContactResponses, DeleteContactErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<DeleteContactResponses, DeleteContactErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/address-books/{book_id}/contacts/{contact_id}',
     ...options
@@ -99,7 +106,8 @@ export const deleteContact = <ThrowOnError extends boolean = false>(options: Opt
  * Get a single contact. Returns an `ETag` header for optimistic concurrency.
  * `book_id = "system"` looks up an OxiCloud user by UUID.
  */
-export const getContact = <ThrowOnError extends boolean = false>(options: Options<GetContactData, ThrowOnError>): RequestResult<GetContactResponses, GetContactErrors, ThrowOnError> => (options.client ?? client).get<GetContactResponses, GetContactErrors, ThrowOnError>({
+export const getContact = <ThrowOnError extends boolean = false>(options: Options<GetContactData, ThrowOnError>): RequestResult<GetContactResponses, GetContactErrors, ThrowOnError, 'data'> => (options.client ?? client).get<GetContactResponses, GetContactErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/address-books/{book_id}/contacts/{contact_id}',
     ...options
@@ -109,7 +117,8 @@ export const getContact = <ThrowOnError extends boolean = false>(options: Option
  * Update a contact. Honours `If-Match` for optimistic concurrency — returns
  * `412 Precondition Failed` when the stored ETag does not match.
  */
-export const updateContact = <ThrowOnError extends boolean = false>(options: Options<UpdateContactData, ThrowOnError>): RequestResult<UpdateContactResponses, UpdateContactErrors, ThrowOnError> => (options.client ?? client).put<UpdateContactResponses, UpdateContactErrors, ThrowOnError>({
+export const updateContact = <ThrowOnError extends boolean = false>(options: Options<UpdateContactData, ThrowOnError>): RequestResult<UpdateContactResponses, UpdateContactErrors, ThrowOnError, 'data'> => (options.client ?? client).put<UpdateContactResponses, UpdateContactErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/address-books/{book_id}/contacts/{contact_id}',
     ...options,
@@ -122,7 +131,8 @@ export const updateContact = <ThrowOnError extends boolean = false>(options: Opt
 /**
  * List contact groups in an address book. The system book has no groups.
  */
-export const listGroups = <ThrowOnError extends boolean = false>(options: Options<ListGroupsData, ThrowOnError>): RequestResult<ListGroupsResponses, ListGroupsErrors, ThrowOnError> => (options.client ?? client).get<ListGroupsResponses, ListGroupsErrors, ThrowOnError>({
+export const listGroups = <ThrowOnError extends boolean = false>(options: Options<ListGroupsData, ThrowOnError>): RequestResult<ListGroupsResponses, ListGroupsErrors, ThrowOnError, 'data'> => (options.client ?? client).get<ListGroupsResponses, ListGroupsErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/address-books/{book_id}/groups',
     ...options
@@ -131,7 +141,8 @@ export const listGroups = <ThrowOnError extends boolean = false>(options: Option
 /**
  * Create a contact group in an address book.
  */
-export const createGroup = <ThrowOnError extends boolean = false>(options: Options<CreateGroupData, ThrowOnError>): RequestResult<CreateGroupResponses, CreateGroupErrors, ThrowOnError> => (options.client ?? client).post<CreateGroupResponses, CreateGroupErrors, ThrowOnError>({
+export const createGroup = <ThrowOnError extends boolean = false>(options: Options<CreateGroupData, ThrowOnError>): RequestResult<CreateGroupResponses, CreateGroupErrors, ThrowOnError, 'data'> => (options.client ?? client).post<CreateGroupResponses, CreateGroupErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/address-books/{book_id}/groups',
     ...options,
@@ -144,7 +155,8 @@ export const createGroup = <ThrowOnError extends boolean = false>(options: Optio
 /**
  * Delete a contact group.
  */
-export const deleteGroup = <ThrowOnError extends boolean = false>(options: Options<DeleteGroupData, ThrowOnError>): RequestResult<DeleteGroupResponses, DeleteGroupErrors, ThrowOnError> => (options.client ?? client).delete<DeleteGroupResponses, DeleteGroupErrors, ThrowOnError>({
+export const deleteGroup = <ThrowOnError extends boolean = false>(options: Options<DeleteGroupData, ThrowOnError>): RequestResult<DeleteGroupResponses, DeleteGroupErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<DeleteGroupResponses, DeleteGroupErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/address-books/{book_id}/groups/{group_id}',
     ...options
@@ -153,7 +165,8 @@ export const deleteGroup = <ThrowOnError extends boolean = false>(options: Optio
 /**
  * Get a single contact group by ID.
  */
-export const getGroup = <ThrowOnError extends boolean = false>(options: Options<GetGroupData, ThrowOnError>): RequestResult<GetGroupResponses, GetGroupErrors, ThrowOnError> => (options.client ?? client).get<GetGroupResponses, GetGroupErrors, ThrowOnError>({
+export const getGroup = <ThrowOnError extends boolean = false>(options: Options<GetGroupData, ThrowOnError>): RequestResult<GetGroupResponses, GetGroupErrors, ThrowOnError, 'data'> => (options.client ?? client).get<GetGroupResponses, GetGroupErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/address-books/{book_id}/groups/{group_id}',
     ...options
@@ -162,7 +175,8 @@ export const getGroup = <ThrowOnError extends boolean = false>(options: Options<
 /**
  * Rename a contact group.
  */
-export const updateGroup = <ThrowOnError extends boolean = false>(options: Options<UpdateGroupData, ThrowOnError>): RequestResult<UpdateGroupResponses, UpdateGroupErrors, ThrowOnError> => (options.client ?? client).put<UpdateGroupResponses, UpdateGroupErrors, ThrowOnError>({
+export const updateGroup = <ThrowOnError extends boolean = false>(options: Options<UpdateGroupData, ThrowOnError>): RequestResult<UpdateGroupResponses, UpdateGroupErrors, ThrowOnError, 'data'> => (options.client ?? client).put<UpdateGroupResponses, UpdateGroupErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/address-books/{book_id}/groups/{group_id}',
     ...options,
@@ -175,7 +189,8 @@ export const updateGroup = <ThrowOnError extends boolean = false>(options: Optio
 /**
  * List contacts that belong to a group.
  */
-export const listContactsInGroup = <ThrowOnError extends boolean = false>(options: Options<ListContactsInGroupData, ThrowOnError>): RequestResult<ListContactsInGroupResponses, ListContactsInGroupErrors, ThrowOnError> => (options.client ?? client).get<ListContactsInGroupResponses, ListContactsInGroupErrors, ThrowOnError>({
+export const listContactsInGroup = <ThrowOnError extends boolean = false>(options: Options<ListContactsInGroupData, ThrowOnError>): RequestResult<ListContactsInGroupResponses, ListContactsInGroupErrors, ThrowOnError, 'data'> => (options.client ?? client).get<ListContactsInGroupResponses, ListContactsInGroupErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/address-books/{book_id}/groups/{group_id}/contacts',
     ...options
@@ -184,7 +199,8 @@ export const listContactsInGroup = <ThrowOnError extends boolean = false>(option
 /**
  * Add a contact to a group.
  */
-export const addContactToGroup = <ThrowOnError extends boolean = false>(options: Options<AddContactToGroupData, ThrowOnError>): RequestResult<AddContactToGroupResponses, AddContactToGroupErrors, ThrowOnError> => (options.client ?? client).post<AddContactToGroupResponses, AddContactToGroupErrors, ThrowOnError>({
+export const addContactToGroup = <ThrowOnError extends boolean = false>(options: Options<AddContactToGroupData, ThrowOnError>): RequestResult<AddContactToGroupResponses, AddContactToGroupErrors, ThrowOnError, 'data'> => (options.client ?? client).post<AddContactToGroupResponses, AddContactToGroupErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/address-books/{book_id}/groups/{group_id}/contacts',
     ...options,
@@ -197,7 +213,8 @@ export const addContactToGroup = <ThrowOnError extends boolean = false>(options:
 /**
  * Remove a contact from a group.
  */
-export const removeContactFromGroup = <ThrowOnError extends boolean = false>(options: Options<RemoveContactFromGroupData, ThrowOnError>): RequestResult<RemoveContactFromGroupResponses, RemoveContactFromGroupErrors, ThrowOnError> => (options.client ?? client).delete<RemoveContactFromGroupResponses, RemoveContactFromGroupErrors, ThrowOnError>({
+export const removeContactFromGroup = <ThrowOnError extends boolean = false>(options: Options<RemoveContactFromGroupData, ThrowOnError>): RequestResult<RemoveContactFromGroupResponses, RemoveContactFromGroupErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<RemoveContactFromGroupResponses, RemoveContactFromGroupErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/address-books/{book_id}/groups/{group_id}/contacts/{contact_id}',
     ...options
@@ -210,7 +227,8 @@ export const removeContactFromGroup = <ThrowOnError extends boolean = false>(opt
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const listOpsBanners = <ThrowOnError extends boolean = false>(options?: Options<ListOpsBannersData, ThrowOnError>): RequestResult<ListOpsBannersResponses, ListOpsBannersErrors, ThrowOnError> => (options?.client ?? client).get<ListOpsBannersResponses, ListOpsBannersErrors, ThrowOnError>({
+export const listOpsBanners = <ThrowOnError extends boolean = false>(options?: Options<ListOpsBannersData, ThrowOnError>): RequestResult<ListOpsBannersResponses, ListOpsBannersErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<ListOpsBannersResponses, ListOpsBannersErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/banners',
     ...options
@@ -221,7 +239,8 @@ export const listOpsBanners = <ThrowOnError extends boolean = false>(options?: O
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const createOpsBanner = <ThrowOnError extends boolean = false>(options: Options<CreateOpsBannerData, ThrowOnError>): RequestResult<CreateOpsBannerResponses, CreateOpsBannerErrors, ThrowOnError> => (options.client ?? client).post<CreateOpsBannerResponses, CreateOpsBannerErrors, ThrowOnError>({
+export const createOpsBanner = <ThrowOnError extends boolean = false>(options: Options<CreateOpsBannerData, ThrowOnError>): RequestResult<CreateOpsBannerResponses, CreateOpsBannerErrors, ThrowOnError, 'data'> => (options.client ?? client).post<CreateOpsBannerResponses, CreateOpsBannerErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/banners',
     ...options,
@@ -236,7 +255,8 @@ export const createOpsBanner = <ThrowOnError extends boolean = false>(options: O
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const deleteOpsBanner = <ThrowOnError extends boolean = false>(options: Options<DeleteOpsBannerData, ThrowOnError>): RequestResult<DeleteOpsBannerResponses, DeleteOpsBannerErrors, ThrowOnError> => (options.client ?? client).delete<DeleteOpsBannerResponses, DeleteOpsBannerErrors, ThrowOnError>({
+export const deleteOpsBanner = <ThrowOnError extends boolean = false>(options: Options<DeleteOpsBannerData, ThrowOnError>): RequestResult<DeleteOpsBannerResponses, DeleteOpsBannerErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<DeleteOpsBannerResponses, DeleteOpsBannerErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/banners/{id}',
     ...options
@@ -248,7 +268,8 @@ export const deleteOpsBanner = <ThrowOnError extends boolean = false>(options: O
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const updateOpsBanner = <ThrowOnError extends boolean = false>(options: Options<UpdateOpsBannerData, ThrowOnError>): RequestResult<UpdateOpsBannerResponses, UpdateOpsBannerErrors, ThrowOnError> => (options.client ?? client).put<UpdateOpsBannerResponses, UpdateOpsBannerErrors, ThrowOnError>({
+export const updateOpsBanner = <ThrowOnError extends boolean = false>(options: Options<UpdateOpsBannerData, ThrowOnError>): RequestResult<UpdateOpsBannerResponses, UpdateOpsBannerErrors, ThrowOnError, 'data'> => (options.client ?? client).put<UpdateOpsBannerResponses, UpdateOpsBannerErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/banners/{id}',
     ...options,
@@ -263,7 +284,8 @@ export const updateOpsBanner = <ThrowOnError extends boolean = false>(options: O
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const getDashboardStats = <ThrowOnError extends boolean = false>(options?: Options<GetDashboardStatsData, ThrowOnError>): RequestResult<GetDashboardStatsResponses, GetDashboardStatsErrors, ThrowOnError> => (options?.client ?? client).get<GetDashboardStatsResponses, GetDashboardStatsErrors, ThrowOnError>({
+export const getDashboardStats = <ThrowOnError extends boolean = false>(options?: Options<GetDashboardStatsData, ThrowOnError>): RequestResult<GetDashboardStatsResponses, GetDashboardStatsErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<GetDashboardStatsResponses, GetDashboardStatsErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/dashboard',
     ...options
@@ -272,7 +294,8 @@ export const getDashboardStats = <ThrowOnError extends boolean = false>(options?
 /**
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const adminCheckHash = <ThrowOnError extends boolean = false>(options: Options<AdminCheckHashData, ThrowOnError>): RequestResult<AdminCheckHashResponses, AdminCheckHashErrors, ThrowOnError> => (options.client ?? client).get<AdminCheckHashResponses, AdminCheckHashErrors, ThrowOnError>({
+export const adminCheckHash = <ThrowOnError extends boolean = false>(options: Options<AdminCheckHashData, ThrowOnError>): RequestResult<AdminCheckHashResponses, AdminCheckHashErrors, ThrowOnError, 'data'> => (options.client ?? client).get<AdminCheckHashResponses, AdminCheckHashErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/dedup/check/{hash}',
     ...options
@@ -281,7 +304,8 @@ export const adminCheckHash = <ThrowOnError extends boolean = false>(options: Op
 /**
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const recalculateStats = <ThrowOnError extends boolean = false>(options?: Options<RecalculateStatsData, ThrowOnError>): RequestResult<RecalculateStatsResponses, RecalculateStatsErrors, ThrowOnError> => (options?.client ?? client).post<RecalculateStatsResponses, RecalculateStatsErrors, ThrowOnError>({
+export const recalculateStats = <ThrowOnError extends boolean = false>(options?: Options<RecalculateStatsData, ThrowOnError>): RequestResult<RecalculateStatsResponses, RecalculateStatsErrors, ThrowOnError, 'data'> => (options?.client ?? client).post<RecalculateStatsResponses, RecalculateStatsErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/dedup/recalculate',
     ...options
@@ -290,7 +314,8 @@ export const recalculateStats = <ThrowOnError extends boolean = false>(options?:
 /**
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const getStats = <ThrowOnError extends boolean = false>(options?: Options<GetStatsData, ThrowOnError>): RequestResult<GetStatsResponses, GetStatsErrors, ThrowOnError> => (options?.client ?? client).get<GetStatsResponses, GetStatsErrors, ThrowOnError>({
+export const getStats = <ThrowOnError extends boolean = false>(options?: Options<GetStatsData, ThrowOnError>): RequestResult<GetStatsResponses, GetStatsErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<GetStatsResponses, GetStatsErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/dedup/stats',
     ...options
@@ -304,7 +329,8 @@ export const getStats = <ThrowOnError extends boolean = false>(options?: Options
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const getDrivePolicyDefaults = <ThrowOnError extends boolean = false>(options: Options<GetDrivePolicyDefaultsData, ThrowOnError>): RequestResult<GetDrivePolicyDefaultsResponses, GetDrivePolicyDefaultsErrors, ThrowOnError> => (options.client ?? client).get<GetDrivePolicyDefaultsResponses, GetDrivePolicyDefaultsErrors, ThrowOnError>({
+export const getDrivePolicyDefaults = <ThrowOnError extends boolean = false>(options: Options<GetDrivePolicyDefaultsData, ThrowOnError>): RequestResult<GetDrivePolicyDefaultsResponses, GetDrivePolicyDefaultsErrors, ThrowOnError, 'data'> => (options.client ?? client).get<GetDrivePolicyDefaultsResponses, GetDrivePolicyDefaultsErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/drive-policies/defaults/{kind}',
     ...options
@@ -332,7 +358,8 @@ export const getDrivePolicyDefaults = <ThrowOnError extends boolean = false>(opt
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const setDrivePolicyDefaults = <ThrowOnError extends boolean = false>(options: Options<SetDrivePolicyDefaultsData, ThrowOnError>): RequestResult<SetDrivePolicyDefaultsResponses, SetDrivePolicyDefaultsErrors, ThrowOnError> => (options.client ?? client).put<SetDrivePolicyDefaultsResponses, SetDrivePolicyDefaultsErrors, ThrowOnError>({
+export const setDrivePolicyDefaults = <ThrowOnError extends boolean = false>(options: Options<SetDrivePolicyDefaultsData, ThrowOnError>): RequestResult<SetDrivePolicyDefaultsResponses, SetDrivePolicyDefaultsErrors, ThrowOnError, 'data'> => (options.client ?? client).put<SetDrivePolicyDefaultsResponses, SetDrivePolicyDefaultsErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/drive-policies/defaults/{kind}',
     ...options,
@@ -356,7 +383,8 @@ export const setDrivePolicyDefaults = <ThrowOnError extends boolean = false>(opt
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const getDrivePolicyDrift = <ThrowOnError extends boolean = false>(options?: Options<GetDrivePolicyDriftData, ThrowOnError>): RequestResult<GetDrivePolicyDriftResponses, GetDrivePolicyDriftErrors, ThrowOnError> => (options?.client ?? client).get<GetDrivePolicyDriftResponses, GetDrivePolicyDriftErrors, ThrowOnError>({
+export const getDrivePolicyDrift = <ThrowOnError extends boolean = false>(options?: Options<GetDrivePolicyDriftData, ThrowOnError>): RequestResult<GetDrivePolicyDriftResponses, GetDrivePolicyDriftErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<GetDrivePolicyDriftResponses, GetDrivePolicyDriftErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/drive-policies/drift',
     ...options
@@ -378,7 +406,8 @@ export const getDrivePolicyDrift = <ThrowOnError extends boolean = false>(option
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const listAllDrives = <ThrowOnError extends boolean = false>(options?: Options<ListAllDrivesData, ThrowOnError>): RequestResult<ListAllDrivesResponses, ListAllDrivesErrors, ThrowOnError> => (options?.client ?? client).get<ListAllDrivesResponses, ListAllDrivesErrors, ThrowOnError>({
+export const listAllDrives = <ThrowOnError extends boolean = false>(options?: Options<ListAllDrivesData, ThrowOnError>): RequestResult<ListAllDrivesResponses, ListAllDrivesErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<ListAllDrivesResponses, ListAllDrivesErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/drives',
     ...options
@@ -397,7 +426,8 @@ export const listAllDrives = <ThrowOnError extends boolean = false>(options?: Op
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const deleteDriveAdmin = <ThrowOnError extends boolean = false>(options: Options<DeleteDriveAdminData, ThrowOnError>): RequestResult<DeleteDriveAdminResponses, DeleteDriveAdminErrors, ThrowOnError> => (options.client ?? client).delete<DeleteDriveAdminResponses, DeleteDriveAdminErrors, ThrowOnError>({
+export const deleteDriveAdmin = <ThrowOnError extends boolean = false>(options: Options<DeleteDriveAdminData, ThrowOnError>): RequestResult<DeleteDriveAdminResponses, DeleteDriveAdminErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<DeleteDriveAdminResponses, DeleteDriveAdminErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/drives/{id}',
     ...options
@@ -419,7 +449,8 @@ export const deleteDriveAdmin = <ThrowOnError extends boolean = false>(options: 
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const listDriveMembersAdmin = <ThrowOnError extends boolean = false>(options: Options<ListDriveMembersAdminData, ThrowOnError>): RequestResult<ListDriveMembersAdminResponses, ListDriveMembersAdminErrors, ThrowOnError> => (options.client ?? client).get<ListDriveMembersAdminResponses, ListDriveMembersAdminErrors, ThrowOnError>({
+export const listDriveMembersAdmin = <ThrowOnError extends boolean = false>(options: Options<ListDriveMembersAdminData, ThrowOnError>): RequestResult<ListDriveMembersAdminResponses, ListDriveMembersAdminErrors, ThrowOnError, 'data'> => (options.client ?? client).get<ListDriveMembersAdminResponses, ListDriveMembersAdminErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/drives/{id}/members',
     ...options
@@ -434,7 +465,8 @@ export const listDriveMembersAdmin = <ThrowOnError extends boolean = false>(opti
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const addDriveMemberAdmin = <ThrowOnError extends boolean = false>(options: Options<AddDriveMemberAdminData, ThrowOnError>): RequestResult<AddDriveMemberAdminResponses, AddDriveMemberAdminErrors, ThrowOnError> => (options.client ?? client).post<AddDriveMemberAdminResponses, AddDriveMemberAdminErrors, ThrowOnError>({
+export const addDriveMemberAdmin = <ThrowOnError extends boolean = false>(options: Options<AddDriveMemberAdminData, ThrowOnError>): RequestResult<AddDriveMemberAdminResponses, AddDriveMemberAdminErrors, ThrowOnError, 'data'> => (options.client ?? client).post<AddDriveMemberAdminResponses, AddDriveMemberAdminErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/drives/{id}/members',
     ...options,
@@ -450,7 +482,8 @@ export const addDriveMemberAdmin = <ThrowOnError extends boolean = false>(option
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const removeDriveMemberAdmin = <ThrowOnError extends boolean = false>(options: Options<RemoveDriveMemberAdminData, ThrowOnError>): RequestResult<RemoveDriveMemberAdminResponses, RemoveDriveMemberAdminErrors, ThrowOnError> => (options.client ?? client).delete<RemoveDriveMemberAdminResponses, RemoveDriveMemberAdminErrors, ThrowOnError>({
+export const removeDriveMemberAdmin = <ThrowOnError extends boolean = false>(options: Options<RemoveDriveMemberAdminData, ThrowOnError>): RequestResult<RemoveDriveMemberAdminResponses, RemoveDriveMemberAdminErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<RemoveDriveMemberAdminResponses, RemoveDriveMemberAdminErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/drives/{id}/members/{kind}/{sid}',
     ...options
@@ -463,7 +496,8 @@ export const removeDriveMemberAdmin = <ThrowOnError extends boolean = false>(opt
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const updateDriveMemberAdmin = <ThrowOnError extends boolean = false>(options: Options<UpdateDriveMemberAdminData, ThrowOnError>): RequestResult<UpdateDriveMemberAdminResponses, UpdateDriveMemberAdminErrors, ThrowOnError> => (options.client ?? client).patch<UpdateDriveMemberAdminResponses, UpdateDriveMemberAdminErrors, ThrowOnError>({
+export const updateDriveMemberAdmin = <ThrowOnError extends boolean = false>(options: Options<UpdateDriveMemberAdminData, ThrowOnError>): RequestResult<UpdateDriveMemberAdminResponses, UpdateDriveMemberAdminErrors, ThrowOnError, 'data'> => (options.client ?? client).patch<UpdateDriveMemberAdminResponses, UpdateDriveMemberAdminErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/drives/{id}/members/{kind}/{sid}',
     ...options,
@@ -476,7 +510,8 @@ export const updateDriveMemberAdmin = <ThrowOnError extends boolean = false>(opt
 /**
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const listJobs = <ThrowOnError extends boolean = false>(options?: Options<ListJobsData, ThrowOnError>): RequestResult<ListJobsResponses, ListJobsErrors, ThrowOnError> => (options?.client ?? client).get<ListJobsResponses, ListJobsErrors, ThrowOnError>({
+export const listJobs = <ThrowOnError extends boolean = false>(options?: Options<ListJobsData, ThrowOnError>): RequestResult<ListJobsResponses, ListJobsErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<ListJobsResponses, ListJobsErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/jobs',
     ...options
@@ -499,7 +534,8 @@ export const listJobs = <ThrowOnError extends boolean = false>(options?: Options
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const cancelJob = <ThrowOnError extends boolean = false>(options: Options<CancelJobData, ThrowOnError>): RequestResult<CancelJobResponses, CancelJobErrors, ThrowOnError> => (options.client ?? client).post<CancelJobResponses, CancelJobErrors, ThrowOnError>({
+export const cancelJob = <ThrowOnError extends boolean = false>(options: Options<CancelJobData, ThrowOnError>): RequestResult<CancelJobResponses, CancelJobErrors, ThrowOnError, 'data'> => (options.client ?? client).post<CancelJobResponses, CancelJobErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/jobs/{name}/cancel',
     ...options
@@ -519,7 +555,8 @@ export const cancelJob = <ThrowOnError extends boolean = false>(options: Options
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const pauseJob = <ThrowOnError extends boolean = false>(options: Options<PauseJobData, ThrowOnError>): RequestResult<PauseJobResponses, PauseJobErrors, ThrowOnError> => (options.client ?? client).post<PauseJobResponses, PauseJobErrors, ThrowOnError>({
+export const pauseJob = <ThrowOnError extends boolean = false>(options: Options<PauseJobData, ThrowOnError>): RequestResult<PauseJobResponses, PauseJobErrors, ThrowOnError, 'data'> => (options.client ?? client).post<PauseJobResponses, PauseJobErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/jobs/{name}/pause',
     ...options
@@ -534,7 +571,8 @@ export const pauseJob = <ThrowOnError extends boolean = false>(options: Options<
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const listJobRuns = <ThrowOnError extends boolean = false>(options: Options<ListJobRunsData, ThrowOnError>): RequestResult<ListJobRunsResponses, ListJobRunsErrors, ThrowOnError> => (options.client ?? client).get<ListJobRunsResponses, ListJobRunsErrors, ThrowOnError>({
+export const listJobRuns = <ThrowOnError extends boolean = false>(options: Options<ListJobRunsData, ThrowOnError>): RequestResult<ListJobRunsResponses, ListJobRunsErrors, ThrowOnError, 'data'> => (options.client ?? client).get<ListJobRunsResponses, ListJobRunsErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/jobs/{name}/runs',
     ...options
@@ -550,7 +588,8 @@ export const listJobRuns = <ThrowOnError extends boolean = false>(options: Optio
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const getJobRun = <ThrowOnError extends boolean = false>(options: Options<GetJobRunData, ThrowOnError>): RequestResult<GetJobRunResponses, GetJobRunErrors, ThrowOnError> => (options.client ?? client).get<GetJobRunResponses, GetJobRunErrors, ThrowOnError>({
+export const getJobRun = <ThrowOnError extends boolean = false>(options: Options<GetJobRunData, ThrowOnError>): RequestResult<GetJobRunResponses, GetJobRunErrors, ThrowOnError, 'data'> => (options.client ?? client).get<GetJobRunResponses, GetJobRunErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/jobs/{name}/runs/{id}',
     ...options
@@ -570,7 +609,8 @@ export const getJobRun = <ThrowOnError extends boolean = false>(options: Options
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const listJobRunFindings = <ThrowOnError extends boolean = false>(options: Options<ListJobRunFindingsData, ThrowOnError>): RequestResult<ListJobRunFindingsResponses, ListJobRunFindingsErrors, ThrowOnError> => (options.client ?? client).get<ListJobRunFindingsResponses, ListJobRunFindingsErrors, ThrowOnError>({
+export const listJobRunFindings = <ThrowOnError extends boolean = false>(options: Options<ListJobRunFindingsData, ThrowOnError>): RequestResult<ListJobRunFindingsResponses, ListJobRunFindingsErrors, ThrowOnError, 'data'> => (options.client ?? client).get<ListJobRunFindingsResponses, ListJobRunFindingsErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/jobs/{name}/runs/{id}/findings',
     ...options
@@ -589,7 +629,8 @@ export const listJobRunFindings = <ThrowOnError extends boolean = false>(options
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const triggerJob = <ThrowOnError extends boolean = false>(options: Options<TriggerJobData, ThrowOnError>): RequestResult<TriggerJobResponses, TriggerJobErrors, ThrowOnError> => (options.client ?? client).post<TriggerJobResponses, TriggerJobErrors, ThrowOnError>({
+export const triggerJob = <ThrowOnError extends boolean = false>(options: Options<TriggerJobData, ThrowOnError>): RequestResult<TriggerJobResponses, TriggerJobErrors, ThrowOnError, 'data'> => (options.client ?? client).post<TriggerJobResponses, TriggerJobErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/jobs/{name}/trigger',
     ...options
@@ -608,7 +649,8 @@ export const triggerJob = <ThrowOnError extends boolean = false>(options: Option
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const getNotifyInfo = <ThrowOnError extends boolean = false>(options?: Options<GetNotifyInfoData, ThrowOnError>): RequestResult<GetNotifyInfoResponses, GetNotifyInfoErrors, ThrowOnError> => (options?.client ?? client).get<GetNotifyInfoResponses, GetNotifyInfoErrors, ThrowOnError>({
+export const getNotifyInfo = <ThrowOnError extends boolean = false>(options?: Options<GetNotifyInfoData, ThrowOnError>): RequestResult<GetNotifyInfoResponses, GetNotifyInfoErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<GetNotifyInfoResponses, GetNotifyInfoErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/notify/info',
     ...options
@@ -617,7 +659,8 @@ export const getNotifyInfo = <ThrowOnError extends boolean = false>(options?: Op
 /**
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const clearSearchCache = <ThrowOnError extends boolean = false>(options?: Options<ClearSearchCacheData, ThrowOnError>): RequestResult<ClearSearchCacheResponses, ClearSearchCacheErrors, ThrowOnError> => (options?.client ?? client).delete<ClearSearchCacheResponses, ClearSearchCacheErrors, ThrowOnError>({
+export const clearSearchCache = <ThrowOnError extends boolean = false>(options?: Options<ClearSearchCacheData, ThrowOnError>): RequestResult<ClearSearchCacheResponses, ClearSearchCacheErrors, ThrowOnError, 'data'> => (options?.client ?? client).delete<ClearSearchCacheResponses, ClearSearchCacheErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/search/cache',
     ...options
@@ -635,7 +678,8 @@ export const clearSearchCache = <ThrowOnError extends boolean = false>(options?:
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const listSessions = <ThrowOnError extends boolean = false>(options?: Options<ListSessionsData, ThrowOnError>): RequestResult<ListSessionsResponses, ListSessionsErrors, ThrowOnError> => (options?.client ?? client).get<ListSessionsResponses, ListSessionsErrors, ThrowOnError>({
+export const listSessions = <ThrowOnError extends boolean = false>(options?: Options<ListSessionsData, ThrowOnError>): RequestResult<ListSessionsResponses, ListSessionsErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<ListSessionsResponses, ListSessionsErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/sessions',
     ...options
@@ -646,7 +690,8 @@ export const listSessions = <ThrowOnError extends boolean = false>(options?: Opt
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const revokeSession = <ThrowOnError extends boolean = false>(options: Options<RevokeSessionData, ThrowOnError>): RequestResult<RevokeSessionResponses, RevokeSessionErrors, ThrowOnError> => (options.client ?? client).delete<RevokeSessionResponses, RevokeSessionErrors, ThrowOnError>({
+export const revokeSession = <ThrowOnError extends boolean = false>(options: Options<RevokeSessionData, ThrowOnError>): RequestResult<RevokeSessionResponses, RevokeSessionErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<RevokeSessionResponses, RevokeSessionErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/sessions/{id}',
     ...options
@@ -657,7 +702,8 @@ export const revokeSession = <ThrowOnError extends boolean = false>(options: Opt
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const getOidcSettings = <ThrowOnError extends boolean = false>(options?: Options<GetOidcSettingsData, ThrowOnError>): RequestResult<GetOidcSettingsResponses, GetOidcSettingsErrors, ThrowOnError> => (options?.client ?? client).get<GetOidcSettingsResponses, GetOidcSettingsErrors, ThrowOnError>({
+export const getOidcSettings = <ThrowOnError extends boolean = false>(options?: Options<GetOidcSettingsData, ThrowOnError>): RequestResult<GetOidcSettingsResponses, GetOidcSettingsErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<GetOidcSettingsResponses, GetOidcSettingsErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/settings/oidc',
     ...options
@@ -668,7 +714,8 @@ export const getOidcSettings = <ThrowOnError extends boolean = false>(options?: 
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const saveOidcSettings = <ThrowOnError extends boolean = false>(options: Options<SaveOidcSettingsData, ThrowOnError>): RequestResult<SaveOidcSettingsResponses, SaveOidcSettingsErrors, ThrowOnError> => (options.client ?? client).put<SaveOidcSettingsResponses, SaveOidcSettingsErrors, ThrowOnError>({
+export const saveOidcSettings = <ThrowOnError extends boolean = false>(options: Options<SaveOidcSettingsData, ThrowOnError>): RequestResult<SaveOidcSettingsResponses, SaveOidcSettingsErrors, ThrowOnError, 'data'> => (options.client ?? client).put<SaveOidcSettingsResponses, SaveOidcSettingsErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/settings/oidc',
     ...options,
@@ -683,7 +730,8 @@ export const saveOidcSettings = <ThrowOnError extends boolean = false>(options: 
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const setRegistrationSetting = <ThrowOnError extends boolean = false>(options: Options<SetRegistrationSettingData, ThrowOnError>): RequestResult<SetRegistrationSettingResponses, SetRegistrationSettingErrors, ThrowOnError> => (options.client ?? client).put<SetRegistrationSettingResponses, SetRegistrationSettingErrors, ThrowOnError>({
+export const setRegistrationSetting = <ThrowOnError extends boolean = false>(options: Options<SetRegistrationSettingData, ThrowOnError>): RequestResult<SetRegistrationSettingResponses, SetRegistrationSettingErrors, ThrowOnError, 'data'> => (options.client ?? client).put<SetRegistrationSettingResponses, SetRegistrationSettingErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/settings/registration',
     ...options,
@@ -698,7 +746,8 @@ export const setRegistrationSetting = <ThrowOnError extends boolean = false>(opt
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const getStorageSettings = <ThrowOnError extends boolean = false>(options?: Options<GetStorageSettingsData, ThrowOnError>): RequestResult<GetStorageSettingsResponses, GetStorageSettingsErrors, ThrowOnError> => (options?.client ?? client).get<GetStorageSettingsResponses, GetStorageSettingsErrors, ThrowOnError>({
+export const getStorageSettings = <ThrowOnError extends boolean = false>(options?: Options<GetStorageSettingsData, ThrowOnError>): RequestResult<GetStorageSettingsResponses, GetStorageSettingsErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<GetStorageSettingsResponses, GetStorageSettingsErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/settings/storage',
     ...options
@@ -709,7 +758,8 @@ export const getStorageSettings = <ThrowOnError extends boolean = false>(options
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const saveStorageSettings = <ThrowOnError extends boolean = false>(options: Options<SaveStorageSettingsData, ThrowOnError>): RequestResult<SaveStorageSettingsResponses, SaveStorageSettingsErrors, ThrowOnError> => (options.client ?? client).put<SaveStorageSettingsResponses, SaveStorageSettingsErrors, ThrowOnError>({
+export const saveStorageSettings = <ThrowOnError extends boolean = false>(options: Options<SaveStorageSettingsData, ThrowOnError>): RequestResult<SaveStorageSettingsResponses, SaveStorageSettingsErrors, ThrowOnError, 'data'> => (options.client ?? client).put<SaveStorageSettingsResponses, SaveStorageSettingsErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/settings/storage',
     ...options,
@@ -724,7 +774,8 @@ export const saveStorageSettings = <ThrowOnError extends boolean = false>(option
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const generateEncryptionKey = <ThrowOnError extends boolean = false>(options?: Options<GenerateEncryptionKeyData, ThrowOnError>): RequestResult<GenerateEncryptionKeyResponses, GenerateEncryptionKeyErrors, ThrowOnError> => (options?.client ?? client).post<GenerateEncryptionKeyResponses, GenerateEncryptionKeyErrors, ThrowOnError>({
+export const generateEncryptionKey = <ThrowOnError extends boolean = false>(options?: Options<GenerateEncryptionKeyData, ThrowOnError>): RequestResult<GenerateEncryptionKeyResponses, GenerateEncryptionKeyErrors, ThrowOnError, 'data'> => (options?.client ?? client).post<GenerateEncryptionKeyResponses, GenerateEncryptionKeyErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/settings/storage/generate-key',
     ...options
@@ -735,7 +786,8 @@ export const generateEncryptionKey = <ThrowOnError extends boolean = false>(opti
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const getSmtpInfo = <ThrowOnError extends boolean = false>(options?: Options<GetSmtpInfoData, ThrowOnError>): RequestResult<GetSmtpInfoResponses, GetSmtpInfoErrors, ThrowOnError> => (options?.client ?? client).get<GetSmtpInfoResponses, GetSmtpInfoErrors, ThrowOnError>({
+export const getSmtpInfo = <ThrowOnError extends boolean = false>(options?: Options<GetSmtpInfoData, ThrowOnError>): RequestResult<GetSmtpInfoResponses, GetSmtpInfoErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<GetSmtpInfoResponses, GetSmtpInfoErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/smtp/info',
     ...options
@@ -751,7 +803,8 @@ export const getSmtpInfo = <ThrowOnError extends boolean = false>(options?: Opti
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const sendSmtpTest = <ThrowOnError extends boolean = false>(options: Options<SendSmtpTestData, ThrowOnError>): RequestResult<SendSmtpTestResponses, SendSmtpTestErrors, ThrowOnError> => (options.client ?? client).post<SendSmtpTestResponses, SendSmtpTestErrors, ThrowOnError>({
+export const sendSmtpTest = <ThrowOnError extends boolean = false>(options: Options<SendSmtpTestData, ThrowOnError>): RequestResult<SendSmtpTestResponses, SendSmtpTestErrors, ThrowOnError, 'data'> => (options.client ?? client).post<SendSmtpTestResponses, SendSmtpTestErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/smtp/test',
     ...options,
@@ -779,7 +832,8 @@ export const sendSmtpTest = <ThrowOnError extends boolean = false>(options: Opti
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const triggerBackendRotate = <ThrowOnError extends boolean = false>(options: Options<TriggerBackendRotateData, ThrowOnError>): RequestResult<TriggerBackendRotateResponses, TriggerBackendRotateErrors, ThrowOnError> => (options.client ?? client).post<TriggerBackendRotateResponses, TriggerBackendRotateErrors, ThrowOnError>({
+export const triggerBackendRotate = <ThrowOnError extends boolean = false>(options: Options<TriggerBackendRotateData, ThrowOnError>): RequestResult<TriggerBackendRotateResponses, TriggerBackendRotateErrors, ThrowOnError, 'data'> => (options.client ?? client).post<TriggerBackendRotateResponses, TriggerBackendRotateErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/storage/entries/{name}/rotate',
     ...options
@@ -798,7 +852,8 @@ export const triggerBackendRotate = <ThrowOnError extends boolean = false>(optio
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const getMigrationStatus = <ThrowOnError extends boolean = false>(options?: Options<GetMigrationStatusData, ThrowOnError>): RequestResult<GetMigrationStatusResponses, GetMigrationStatusErrors, ThrowOnError> => (options?.client ?? client).get<GetMigrationStatusResponses, GetMigrationStatusErrors, ThrowOnError>({
+export const getMigrationStatus = <ThrowOnError extends boolean = false>(options?: Options<GetMigrationStatusData, ThrowOnError>): RequestResult<GetMigrationStatusResponses, GetMigrationStatusErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<GetMigrationStatusResponses, GetMigrationStatusErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/storage/migration',
     ...options
@@ -815,7 +870,8 @@ export const getMigrationStatus = <ThrowOnError extends boolean = false>(options
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const pauseMigration = <ThrowOnError extends boolean = false>(options?: Options<PauseMigrationData, ThrowOnError>): RequestResult<PauseMigrationResponses, PauseMigrationErrors, ThrowOnError> => (options?.client ?? client).post<PauseMigrationResponses, PauseMigrationErrors, ThrowOnError>({
+export const pauseMigration = <ThrowOnError extends boolean = false>(options?: Options<PauseMigrationData, ThrowOnError>): RequestResult<PauseMigrationResponses, PauseMigrationErrors, ThrowOnError, 'data'> => (options?.client ?? client).post<PauseMigrationResponses, PauseMigrationErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/storage/migration/pause',
     ...options
@@ -830,7 +886,8 @@ export const pauseMigration = <ThrowOnError extends boolean = false>(options?: O
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const resumeMigration = <ThrowOnError extends boolean = false>(options?: Options<ResumeMigrationData, ThrowOnError>): RequestResult<ResumeMigrationResponses, ResumeMigrationErrors, ThrowOnError> => (options?.client ?? client).post<ResumeMigrationResponses, ResumeMigrationErrors, ThrowOnError>({
+export const resumeMigration = <ThrowOnError extends boolean = false>(options?: Options<ResumeMigrationData, ThrowOnError>): RequestResult<ResumeMigrationResponses, ResumeMigrationErrors, ThrowOnError, 'data'> => (options?.client ?? client).post<ResumeMigrationResponses, ResumeMigrationErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/storage/migration/resume',
     ...options
@@ -853,7 +910,8 @@ export const resumeMigration = <ThrowOnError extends boolean = false>(options?: 
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const startMigration = <ThrowOnError extends boolean = false>(options: Options<StartMigrationData, ThrowOnError>): RequestResult<StartMigrationResponses, StartMigrationErrors, ThrowOnError> => (options.client ?? client).post<StartMigrationResponses, StartMigrationErrors, ThrowOnError>({
+export const startMigration = <ThrowOnError extends boolean = false>(options: Options<StartMigrationData, ThrowOnError>): RequestResult<StartMigrationResponses, StartMigrationErrors, ThrowOnError, 'data'> => (options.client ?? client).post<StartMigrationResponses, StartMigrationErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/storage/migration/start',
     ...options,
@@ -873,7 +931,8 @@ export const startMigration = <ThrowOnError extends boolean = false>(options: Op
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const releaseBackendWriteLock = <ThrowOnError extends boolean = false>(options?: Options<ReleaseBackendWriteLockData, ThrowOnError>): RequestResult<ReleaseBackendWriteLockResponses, ReleaseBackendWriteLockErrors, ThrowOnError> => (options?.client ?? client).delete<ReleaseBackendWriteLockResponses, ReleaseBackendWriteLockErrors, ThrowOnError>({
+export const releaseBackendWriteLock = <ThrowOnError extends boolean = false>(options?: Options<ReleaseBackendWriteLockData, ThrowOnError>): RequestResult<ReleaseBackendWriteLockResponses, ReleaseBackendWriteLockErrors, ThrowOnError, 'data'> => (options?.client ?? client).delete<ReleaseBackendWriteLockResponses, ReleaseBackendWriteLockErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/storage/write-lock',
     ...options
@@ -889,7 +948,8 @@ export const releaseBackendWriteLock = <ThrowOnError extends boolean = false>(op
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const getBackendWriteLock = <ThrowOnError extends boolean = false>(options?: Options<GetBackendWriteLockData, ThrowOnError>): RequestResult<GetBackendWriteLockResponses, GetBackendWriteLockErrors, ThrowOnError> => (options?.client ?? client).get<GetBackendWriteLockResponses, GetBackendWriteLockErrors, ThrowOnError>({
+export const getBackendWriteLock = <ThrowOnError extends boolean = false>(options?: Options<GetBackendWriteLockData, ThrowOnError>): RequestResult<GetBackendWriteLockResponses, GetBackendWriteLockErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<GetBackendWriteLockResponses, GetBackendWriteLockErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/storage/write-lock',
     ...options
@@ -905,7 +965,8 @@ export const getBackendWriteLock = <ThrowOnError extends boolean = false>(option
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const acquireBackendWriteLock = <ThrowOnError extends boolean = false>(options: Options<AcquireBackendWriteLockData, ThrowOnError>): RequestResult<AcquireBackendWriteLockResponses, AcquireBackendWriteLockErrors, ThrowOnError> => (options.client ?? client).post<AcquireBackendWriteLockResponses, AcquireBackendWriteLockErrors, ThrowOnError>({
+export const acquireBackendWriteLock = <ThrowOnError extends boolean = false>(options: Options<AcquireBackendWriteLockData, ThrowOnError>): RequestResult<AcquireBackendWriteLockResponses, AcquireBackendWriteLockErrors, ThrowOnError, 'data'> => (options.client ?? client).post<AcquireBackendWriteLockResponses, AcquireBackendWriteLockErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/storage/write-lock',
     ...options,
@@ -925,7 +986,8 @@ export const acquireBackendWriteLock = <ThrowOnError extends boolean = false>(op
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const transferOwnership = <ThrowOnError extends boolean = false>(options: Options<TransferOwnershipData, ThrowOnError>): RequestResult<TransferOwnershipResponses, TransferOwnershipErrors, ThrowOnError> => (options.client ?? client).post<TransferOwnershipResponses, TransferOwnershipErrors, ThrowOnError>({
+export const transferOwnership = <ThrowOnError extends boolean = false>(options: Options<TransferOwnershipData, ThrowOnError>): RequestResult<TransferOwnershipResponses, TransferOwnershipErrors, ThrowOnError, 'data'> => (options.client ?? client).post<TransferOwnershipResponses, TransferOwnershipErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/transfer-ownership',
     ...options,
@@ -948,7 +1010,8 @@ export const transferOwnership = <ThrowOnError extends boolean = false>(options:
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const listUsers = <ThrowOnError extends boolean = false>(options?: Options<ListUsersData, ThrowOnError>): RequestResult<ListUsersResponses, ListUsersErrors, ThrowOnError> => (options?.client ?? client).get<ListUsersResponses, ListUsersErrors, ThrowOnError>({
+export const listUsers = <ThrowOnError extends boolean = false>(options?: Options<ListUsersData, ThrowOnError>): RequestResult<ListUsersResponses, ListUsersErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<ListUsersResponses, ListUsersErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/users',
     ...options
@@ -959,7 +1022,8 @@ export const listUsers = <ThrowOnError extends boolean = false>(options?: Option
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const createUser = <ThrowOnError extends boolean = false>(options: Options<CreateUserData, ThrowOnError>): RequestResult<CreateUserResponses, CreateUserErrors, ThrowOnError> => (options.client ?? client).post<CreateUserResponses, CreateUserErrors, ThrowOnError>({
+export const createUser = <ThrowOnError extends boolean = false>(options: Options<CreateUserData, ThrowOnError>): RequestResult<CreateUserResponses, CreateUserErrors, ThrowOnError, 'data'> => (options.client ?? client).post<CreateUserResponses, CreateUserErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/users',
     ...options,
@@ -974,7 +1038,8 @@ export const createUser = <ThrowOnError extends boolean = false>(options: Option
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const deleteUser = <ThrowOnError extends boolean = false>(options: Options<DeleteUserData, ThrowOnError>): RequestResult<DeleteUserResponses, DeleteUserErrors, ThrowOnError> => (options.client ?? client).delete<DeleteUserResponses, DeleteUserErrors, ThrowOnError>({
+export const deleteUser = <ThrowOnError extends boolean = false>(options: Options<DeleteUserData, ThrowOnError>): RequestResult<DeleteUserResponses, DeleteUserErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<DeleteUserResponses, DeleteUserErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/users/{id}',
     ...options
@@ -985,7 +1050,8 @@ export const deleteUser = <ThrowOnError extends boolean = false>(options: Option
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const getUser = <ThrowOnError extends boolean = false>(options: Options<GetUserData, ThrowOnError>): RequestResult<GetUserResponses, GetUserErrors, ThrowOnError> => (options.client ?? client).get<GetUserResponses, GetUserErrors, ThrowOnError>({
+export const getUser = <ThrowOnError extends boolean = false>(options: Options<GetUserData, ThrowOnError>): RequestResult<GetUserResponses, GetUserErrors, ThrowOnError, 'data'> => (options.client ?? client).get<GetUserResponses, GetUserErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/users/{id}',
     ...options
@@ -996,7 +1062,8 @@ export const getUser = <ThrowOnError extends boolean = false>(options: Options<G
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const updateUserActive = <ThrowOnError extends boolean = false>(options: Options<UpdateUserActiveData, ThrowOnError>): RequestResult<UpdateUserActiveResponses, UpdateUserActiveErrors, ThrowOnError> => (options.client ?? client).put<UpdateUserActiveResponses, UpdateUserActiveErrors, ThrowOnError>({
+export const updateUserActive = <ThrowOnError extends boolean = false>(options: Options<UpdateUserActiveData, ThrowOnError>): RequestResult<UpdateUserActiveResponses, UpdateUserActiveErrors, ThrowOnError, 'data'> => (options.client ?? client).put<UpdateUserActiveResponses, UpdateUserActiveErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/users/{id}/active',
     ...options,
@@ -1011,7 +1078,8 @@ export const updateUserActive = <ThrowOnError extends boolean = false>(options: 
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const resetUserPassword = <ThrowOnError extends boolean = false>(options: Options<ResetUserPasswordData, ThrowOnError>): RequestResult<ResetUserPasswordResponses, ResetUserPasswordErrors, ThrowOnError> => (options.client ?? client).put<ResetUserPasswordResponses, ResetUserPasswordErrors, ThrowOnError>({
+export const resetUserPassword = <ThrowOnError extends boolean = false>(options: Options<ResetUserPasswordData, ThrowOnError>): RequestResult<ResetUserPasswordResponses, ResetUserPasswordErrors, ThrowOnError, 'data'> => (options.client ?? client).put<ResetUserPasswordResponses, ResetUserPasswordErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/users/{id}/password',
     ...options,
@@ -1031,7 +1099,8 @@ export const resetUserPassword = <ThrowOnError extends boolean = false>(options:
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const adminPromoteExternalToInternal = <ThrowOnError extends boolean = false>(options: Options<AdminPromoteExternalToInternalData, ThrowOnError>): RequestResult<AdminPromoteExternalToInternalResponses, AdminPromoteExternalToInternalErrors, ThrowOnError> => (options.client ?? client).post<AdminPromoteExternalToInternalResponses, AdminPromoteExternalToInternalErrors, ThrowOnError>({
+export const adminPromoteExternalToInternal = <ThrowOnError extends boolean = false>(options: Options<AdminPromoteExternalToInternalData, ThrowOnError>): RequestResult<AdminPromoteExternalToInternalResponses, AdminPromoteExternalToInternalErrors, ThrowOnError, 'data'> => (options.client ?? client).post<AdminPromoteExternalToInternalResponses, AdminPromoteExternalToInternalErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/users/{id}/promote-to-internal',
     ...options
@@ -1042,7 +1111,8 @@ export const adminPromoteExternalToInternal = <ThrowOnError extends boolean = fa
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const updateUserQuota = <ThrowOnError extends boolean = false>(options: Options<UpdateUserQuotaData, ThrowOnError>): RequestResult<UpdateUserQuotaResponses, UpdateUserQuotaErrors, ThrowOnError> => (options.client ?? client).put<UpdateUserQuotaResponses, UpdateUserQuotaErrors, ThrowOnError>({
+export const updateUserQuota = <ThrowOnError extends boolean = false>(options: Options<UpdateUserQuotaData, ThrowOnError>): RequestResult<UpdateUserQuotaResponses, UpdateUserQuotaErrors, ThrowOnError, 'data'> => (options.client ?? client).put<UpdateUserQuotaResponses, UpdateUserQuotaErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/users/{id}/quota',
     ...options,
@@ -1057,7 +1127,8 @@ export const updateUserQuota = <ThrowOnError extends boolean = false>(options: O
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const updateUserRole = <ThrowOnError extends boolean = false>(options: Options<UpdateUserRoleData, ThrowOnError>): RequestResult<UpdateUserRoleResponses, UpdateUserRoleErrors, ThrowOnError> => (options.client ?? client).put<UpdateUserRoleResponses, UpdateUserRoleErrors, ThrowOnError>({
+export const updateUserRole = <ThrowOnError extends boolean = false>(options: Options<UpdateUserRoleData, ThrowOnError>): RequestResult<UpdateUserRoleResponses, UpdateUserRoleErrors, ThrowOnError, 'data'> => (options.client ?? client).put<UpdateUserRoleResponses, UpdateUserRoleErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/users/{id}/role',
     ...options,
@@ -1078,7 +1149,8 @@ export const updateUserRole = <ThrowOnError extends boolean = false>(options: Op
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const getWebhookInfo = <ThrowOnError extends boolean = false>(options?: Options<GetWebhookInfoData, ThrowOnError>): RequestResult<GetWebhookInfoResponses, GetWebhookInfoErrors, ThrowOnError> => (options?.client ?? client).get<GetWebhookInfoResponses, GetWebhookInfoErrors, ThrowOnError>({
+export const getWebhookInfo = <ThrowOnError extends boolean = false>(options?: Options<GetWebhookInfoData, ThrowOnError>): RequestResult<GetWebhookInfoResponses, GetWebhookInfoErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<GetWebhookInfoResponses, GetWebhookInfoErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/webhook/info',
     ...options
@@ -1104,7 +1176,8 @@ export const getWebhookInfo = <ThrowOnError extends boolean = false>(options?: O
  *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
-export const sendWebhookTest = <ThrowOnError extends boolean = false>(options?: Options<SendWebhookTestData, ThrowOnError>): RequestResult<SendWebhookTestResponses, SendWebhookTestErrors, ThrowOnError> => (options?.client ?? client).post<SendWebhookTestResponses, SendWebhookTestErrors, ThrowOnError>({
+export const sendWebhookTest = <ThrowOnError extends boolean = false>(options?: Options<SendWebhookTestData, ThrowOnError>): RequestResult<SendWebhookTestResponses, SendWebhookTestErrors, ThrowOnError, 'data'> => (options?.client ?? client).post<SendWebhookTestResponses, SendWebhookTestErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/admin/webhook/test',
     ...options
@@ -1113,7 +1186,8 @@ export const sendWebhookTest = <ThrowOnError extends boolean = false>(options?: 
 /**
  * Change the current user's password.
  */
-export const changePassword = <ThrowOnError extends boolean = false>(options: Options<ChangePasswordData, ThrowOnError>): RequestResult<ChangePasswordResponses, ChangePasswordErrors, ThrowOnError> => (options.client ?? client).put<ChangePasswordResponses, ChangePasswordErrors, ThrowOnError>({
+export const changePassword = <ThrowOnError extends boolean = false>(options: Options<ChangePasswordData, ThrowOnError>): RequestResult<ChangePasswordResponses, ChangePasswordErrors, ThrowOnError, 'data'> => (options.client ?? client).put<ChangePasswordResponses, ChangePasswordErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/auth/change-password',
     ...options,
@@ -1140,7 +1214,8 @@ export const changePassword = <ThrowOnError extends boolean = false>(options: Op
  * re-bound to a different key).
  * * 401 if no session (auth middleware layer emits this).
  */
-export const dpopBind = <ThrowOnError extends boolean = false>(options: Options<DpopBindData, ThrowOnError>): RequestResult<DpopBindResponses, DpopBindErrors, ThrowOnError> => (options.client ?? client).post<DpopBindResponses, DpopBindErrors, ThrowOnError>({
+export const dpopBind = <ThrowOnError extends boolean = false>(options: Options<DpopBindData, ThrowOnError>): RequestResult<DpopBindResponses, DpopBindErrors, ThrowOnError, 'data'> => (options.client ?? client).post<DpopBindResponses, DpopBindErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/auth/dpop/bind',
     ...options,
@@ -1156,7 +1231,8 @@ export const dpopBind = <ThrowOnError extends boolean = false>(options: Options<
  * On success, sets `oxicloud_access`, `oxicloud_refresh`, and `oxicloud_csrf`
  * HttpOnly cookies in addition to returning the tokens in the JSON body.
  */
-export const login = <ThrowOnError extends boolean = false>(options: Options<LoginData, ThrowOnError>): RequestResult<LoginResponses, LoginErrors, ThrowOnError> => (options.client ?? client).post<LoginResponses, LoginErrors, ThrowOnError>({
+export const login = <ThrowOnError extends boolean = false>(options: Options<LoginData, ThrowOnError>): RequestResult<LoginResponses, LoginErrors, ThrowOnError, 'data'> => (options.client ?? client).post<LoginResponses, LoginErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     url: '/api/auth/login',
     ...options,
     headers: {
@@ -1172,7 +1248,8 @@ export const login = <ThrowOnError extends boolean = false>(options: Options<Log
  * `{ "refresh_token": "..." }` (API clients) or the `oxicloud_refresh`
  * HttpOnly cookie (browsers).
  */
-export const logout = <ThrowOnError extends boolean = false>(options: Options<LogoutData, ThrowOnError>): RequestResult<LogoutResponses, LogoutErrors, ThrowOnError> => (options.client ?? client).post<LogoutResponses, LogoutErrors, ThrowOnError>({
+export const logout = <ThrowOnError extends boolean = false>(options: Options<LogoutData, ThrowOnError>): RequestResult<LogoutResponses, LogoutErrors, ThrowOnError, 'data'> => (options.client ?? client).post<LogoutResponses, LogoutErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/auth/logout',
     ...options,
@@ -1209,7 +1286,8 @@ export const logout = <ThrowOnError extends boolean = false>(options: Options<Lo
  * Authenticated callers (Authorization header or access cookie
  * present) bypass both limits.
  */
-export const sendMagicLink = <ThrowOnError extends boolean = false>(options: Options<SendMagicLinkData, ThrowOnError>): RequestResult<SendMagicLinkResponses, SendMagicLinkErrors, ThrowOnError> => (options.client ?? client).post<SendMagicLinkResponses, SendMagicLinkErrors, ThrowOnError>({
+export const sendMagicLink = <ThrowOnError extends boolean = false>(options: Options<SendMagicLinkData, ThrowOnError>): RequestResult<SendMagicLinkResponses, SendMagicLinkErrors, ThrowOnError, 'data'> => (options.client ?? client).post<SendMagicLinkResponses, SendMagicLinkErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     url: '/api/auth/magic-link/send',
     ...options,
     headers: {
@@ -1221,7 +1299,8 @@ export const sendMagicLink = <ThrowOnError extends boolean = false>(options: Opt
 /**
  * Return the authenticated user's profile, including cached storage usage.
  */
-export const getCurrentUser = <ThrowOnError extends boolean = false>(options?: Options<GetCurrentUserData, ThrowOnError>): RequestResult<GetCurrentUserResponses, GetCurrentUserErrors, ThrowOnError> => (options?.client ?? client).get<GetCurrentUserResponses, GetCurrentUserErrors, ThrowOnError>({
+export const getCurrentUser = <ThrowOnError extends boolean = false>(options?: Options<GetCurrentUserData, ThrowOnError>): RequestResult<GetCurrentUserResponses, GetCurrentUserErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<GetCurrentUserResponses, GetCurrentUserErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/auth/me',
     ...options
@@ -1239,7 +1318,8 @@ export const getCurrentUser = <ThrowOnError extends boolean = false>(options?: O
  * OIDC-linked users are rejected wholesale with 403 — their profile
  * is owned by the IdP.
  */
-export const updateProfile = <ThrowOnError extends boolean = false>(options: Options<UpdateProfileData, ThrowOnError>): RequestResult<UpdateProfileResponses, UpdateProfileErrors, ThrowOnError> => (options.client ?? client).patch<UpdateProfileResponses, UpdateProfileErrors, ThrowOnError>({
+export const updateProfile = <ThrowOnError extends boolean = false>(options: Options<UpdateProfileData, ThrowOnError>): RequestResult<UpdateProfileResponses, UpdateProfileErrors, ThrowOnError, 'data'> => (options.client ?? client).patch<UpdateProfileResponses, UpdateProfileErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/auth/me/profile',
     ...options,
@@ -1255,7 +1335,11 @@ export const updateProfile = <ThrowOnError extends boolean = false>(options: Opt
  * Generates PKCE, CSRF state, and nonce then issues a 302 redirect to the
  * provider's authorization endpoint.
  */
-export const oidcAuthorize = <ThrowOnError extends boolean = false>(options?: Options<OidcAuthorizeData, ThrowOnError>): RequestResult<unknown, OidcAuthorizeErrors, ThrowOnError> => (options?.client ?? client).get<unknown, OidcAuthorizeErrors, ThrowOnError>({ url: '/api/auth/oidc/authorize', ...options });
+export const oidcAuthorize = <ThrowOnError extends boolean = false>(options?: Options<OidcAuthorizeData, ThrowOnError>): RequestResult<unknown, OidcAuthorizeErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<unknown, OidcAuthorizeErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
+    url: '/api/auth/oidc/authorize',
+    ...options
+});
 
 /**
  * OIDC Back-Channel Logout 1.0 receiver.
@@ -1275,8 +1359,9 @@ export const oidcAuthorize = <ThrowOnError extends boolean = false>(options?: Op
  * The `logout_token` signature IS the authentication — an unsigned or
  * wrongly-signed token gets rejected by the OIDC service validator.
  */
-export const oidcBackchannelLogout = <ThrowOnError extends boolean = false>(options?: Options<OidcBackchannelLogoutData, ThrowOnError>): RequestResult<OidcBackchannelLogoutResponses, OidcBackchannelLogoutErrors, ThrowOnError> => (options?.client ?? client).post<OidcBackchannelLogoutResponses, OidcBackchannelLogoutErrors, ThrowOnError>({
+export const oidcBackchannelLogout = <ThrowOnError extends boolean = false>(options?: Options<OidcBackchannelLogoutData, ThrowOnError>): RequestResult<OidcBackchannelLogoutResponses, OidcBackchannelLogoutErrors, ThrowOnError, 'data'> => (options?.client ?? client).post<OidcBackchannelLogoutResponses, OidcBackchannelLogoutErrors, ThrowOnError, 'data'>({
     ...urlSearchParamsBodySerializer,
+    responseStyle: 'data',
     url: '/api/auth/oidc/backchannel-logout',
     ...options,
     headers: {
@@ -1292,7 +1377,11 @@ export const oidcBackchannelLogout = <ThrowOnError extends boolean = false>(opti
  * redirects the browser to the frontend login route with a short-lived
  * exchange code (`/login?oidc_code=…`), which the SPA swaps for a session.
  */
-export const oidcCallback = <ThrowOnError extends boolean = false>(options: Options<OidcCallbackData, ThrowOnError>): RequestResult<unknown, OidcCallbackErrors, ThrowOnError> => (options.client ?? client).get<unknown, OidcCallbackErrors, ThrowOnError>({ url: '/api/auth/oidc/callback', ...options });
+export const oidcCallback = <ThrowOnError extends boolean = false>(options: Options<OidcCallbackData, ThrowOnError>): RequestResult<unknown, OidcCallbackErrors, ThrowOnError, 'data'> => (options.client ?? client).get<unknown, OidcCallbackErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
+    url: '/api/auth/oidc/callback',
+    ...options
+});
 
 /**
  * Exchange a one-time OIDC code for access + refresh tokens.
@@ -1300,7 +1389,8 @@ export const oidcCallback = <ThrowOnError extends boolean = false>(options: Opti
  * The frontend calls this after being redirected back with `?oidc_code=…`.
  * The exchange code is valid for a single use and expires in 60 s.
  */
-export const oidcExchange = <ThrowOnError extends boolean = false>(options: Options<OidcExchangeData, ThrowOnError>): RequestResult<OidcExchangeResponses, OidcExchangeErrors, ThrowOnError> => (options.client ?? client).post<OidcExchangeResponses, OidcExchangeErrors, ThrowOnError>({
+export const oidcExchange = <ThrowOnError extends boolean = false>(options: Options<OidcExchangeData, ThrowOnError>): RequestResult<OidcExchangeResponses, OidcExchangeErrors, ThrowOnError, 'data'> => (options.client ?? client).post<OidcExchangeResponses, OidcExchangeErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     url: '/api/auth/oidc/exchange',
     ...options,
     headers: {
@@ -1316,7 +1406,8 @@ export const oidcExchange = <ThrowOnError extends boolean = false>(options: Opti
  * which dispatches to the link branch based on the state cache's
  * `intent` field. See docs/plan/oidc-account-linking.md.
  */
-export const oidcLinkStart = <ThrowOnError extends boolean = false>(options?: Options<OidcLinkStartData, ThrowOnError>): RequestResult<OidcLinkStartResponses, OidcLinkStartErrors, ThrowOnError> => (options?.client ?? client).post<OidcLinkStartResponses, OidcLinkStartErrors, ThrowOnError>({
+export const oidcLinkStart = <ThrowOnError extends boolean = false>(options?: Options<OidcLinkStartData, ThrowOnError>): RequestResult<OidcLinkStartResponses, OidcLinkStartErrors, ThrowOnError, 'data'> => (options?.client ?? client).post<OidcLinkStartResponses, OidcLinkStartErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/auth/oidc/link/start',
     ...options
@@ -1327,14 +1418,19 @@ export const oidcLinkStart = <ThrowOnError extends boolean = false>(options?: Op
  *
  * Returns `enabled: false` when OIDC is not configured.
  */
-export const oidcProviders = <ThrowOnError extends boolean = false>(options?: Options<OidcProvidersData, ThrowOnError>): RequestResult<OidcProvidersResponses, OidcProvidersErrors, ThrowOnError> => (options?.client ?? client).get<OidcProvidersResponses, OidcProvidersErrors, ThrowOnError>({ url: '/api/auth/oidc/providers', ...options });
+export const oidcProviders = <ThrowOnError extends boolean = false>(options?: Options<OidcProvidersData, ThrowOnError>): RequestResult<OidcProvidersResponses, OidcProvidersErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<OidcProvidersResponses, OidcProvidersErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
+    url: '/api/auth/oidc/providers',
+    ...options
+});
 
 /**
  * Unlink the current user's OIDC identity. Refuses when the user has
  * no other credential (password / OPAQUE) — see plan doc for the
  * no-alternative-auth guard rationale.
  */
-export const oidcUnlink = <ThrowOnError extends boolean = false>(options?: Options<OidcUnlinkData, ThrowOnError>): RequestResult<OidcUnlinkResponses, OidcUnlinkErrors, ThrowOnError> => (options?.client ?? client).post<OidcUnlinkResponses, OidcUnlinkErrors, ThrowOnError>({
+export const oidcUnlink = <ThrowOnError extends boolean = false>(options?: Options<OidcUnlinkData, ThrowOnError>): RequestResult<OidcUnlinkResponses, OidcUnlinkErrors, ThrowOnError, 'data'> => (options?.client ?? client).post<OidcUnlinkResponses, OidcUnlinkErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/auth/oidc/unlink',
     ...options
@@ -1359,7 +1455,8 @@ export const oidcUnlink = <ThrowOnError extends boolean = false>(options?: Optio
  * bootstrap; there's no caller identity yet. We use the same
  * dispatch as legacy `/api/auth/login`.
  */
-export const loginKe1 = <ThrowOnError extends boolean = false>(options: Options<LoginKe1Data, ThrowOnError>): RequestResult<LoginKe1Responses, LoginKe1Errors, ThrowOnError> => (options.client ?? client).post<LoginKe1Responses, LoginKe1Errors, ThrowOnError>({
+export const loginKe1 = <ThrowOnError extends boolean = false>(options: Options<LoginKe1Data, ThrowOnError>): RequestResult<LoginKe1Responses, LoginKe1Errors, ThrowOnError, 'data'> => (options.client ?? client).post<LoginKe1Responses, LoginKe1Errors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     url: '/api/auth/opaque/login/ke1',
     ...options,
     headers: {
@@ -1388,7 +1485,8 @@ export const loginKe1 = <ThrowOnError extends boolean = false>(options: Options<
  * failure branch so attackers can't distinguish "expired" from
  * "wrong password" from "id already consumed".
  */
-export const loginKe3 = <ThrowOnError extends boolean = false>(options: Options<LoginKe3Data, ThrowOnError>): RequestResult<LoginKe3Responses, LoginKe3Errors, ThrowOnError> => (options.client ?? client).post<LoginKe3Responses, LoginKe3Errors, ThrowOnError>({
+export const loginKe3 = <ThrowOnError extends boolean = false>(options: Options<LoginKe3Data, ThrowOnError>): RequestResult<LoginKe3Responses, LoginKe3Errors, ThrowOnError, 'data'> => (options.client ?? client).post<LoginKe3Responses, LoginKe3Errors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     url: '/api/auth/opaque/login/ke3',
     ...options,
     headers: {
@@ -1404,7 +1502,8 @@ export const loginKe3 = <ThrowOnError extends boolean = false>(options: Options<
  * Rate-limited via the shared `login_limiter` (mount layer in
  * `main.rs`), so lookup can't be used as a cheap enumeration probe.
  */
-export const loginLookup = <ThrowOnError extends boolean = false>(options: Options<LoginLookupData, ThrowOnError>): RequestResult<LoginLookupResponses, LoginLookupErrors, ThrowOnError> => (options.client ?? client).post<LoginLookupResponses, LoginLookupErrors, ThrowOnError>({
+export const loginLookup = <ThrowOnError extends boolean = false>(options: Options<LoginLookupData, ThrowOnError>): RequestResult<LoginLookupResponses, LoginLookupErrors, ThrowOnError, 'data'> => (options.client ?? client).post<LoginLookupResponses, LoginLookupErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     url: '/api/auth/opaque/login/lookup',
     ...options,
     headers: {
@@ -1424,7 +1523,11 @@ export const loginLookup = <ThrowOnError extends boolean = false>(options: Optio
  * next SPA reload rather than lingering behind an intermediary
  * cache.
  */
-export const opaqueParams = <ThrowOnError extends boolean = false>(options?: Options<OpaqueParamsData, ThrowOnError>): RequestResult<OpaqueParamsResponses, unknown, ThrowOnError> => (options?.client ?? client).get<OpaqueParamsResponses, unknown, ThrowOnError>({ url: '/api/auth/opaque/params', ...options });
+export const opaqueParams = <ThrowOnError extends boolean = false>(options?: Options<OpaqueParamsData, ThrowOnError>): RequestResult<OpaqueParamsResponses, unknown, ThrowOnError, 'data'> => (options?.client ?? client).get<OpaqueParamsResponses, unknown, ThrowOnError, 'data'>({
+    responseStyle: 'data',
+    url: '/api/auth/opaque/params',
+    ...options
+});
 
 /**
  * KE2 (register/finish): parse client `RegistrationUpload`, finalise
@@ -1432,7 +1535,8 @@ export const opaqueParams = <ThrowOnError extends boolean = false>(options?: Opt
  * bytes. Idempotent-per-user: re-running finish overwrites the
  * existing envelope (COALESCEing `opaque_registered_at`).
  */
-export const registerFinish = <ThrowOnError extends boolean = false>(options: Options<RegisterFinishData, ThrowOnError>): RequestResult<RegisterFinishResponses, RegisterFinishErrors, ThrowOnError> => (options.client ?? client).post<RegisterFinishResponses, RegisterFinishErrors, ThrowOnError>({
+export const registerFinish = <ThrowOnError extends boolean = false>(options: Options<RegisterFinishData, ThrowOnError>): RequestResult<RegisterFinishResponses, RegisterFinishErrors, ThrowOnError, 'data'> => (options.client ?? client).post<RegisterFinishResponses, RegisterFinishErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/auth/opaque/register/finish',
     ...options,
@@ -1451,7 +1555,8 @@ export const registerFinish = <ThrowOnError extends boolean = false>(options: Op
  * carries the client's OPRF blinding; the response includes the
  * server's static pubkey; the client alone knows the seed).
  */
-export const registerStart = <ThrowOnError extends boolean = false>(options: Options<RegisterStartData, ThrowOnError>): RequestResult<RegisterStartResponses, RegisterStartErrors, ThrowOnError> => (options.client ?? client).post<RegisterStartResponses, RegisterStartErrors, ThrowOnError>({
+export const registerStart = <ThrowOnError extends boolean = false>(options: Options<RegisterStartData, ThrowOnError>): RequestResult<RegisterStartResponses, RegisterStartErrors, ThrowOnError, 'data'> => (options.client ?? client).post<RegisterStartResponses, RegisterStartErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/auth/opaque/register/start',
     ...options,
@@ -1470,7 +1575,8 @@ export const registerStart = <ThrowOnError extends boolean = false>(options: Opt
  *
  * Issues new access + refresh tokens and rotates all three auth cookies.
  */
-export const refreshToken = <ThrowOnError extends boolean = false>(options: Options<RefreshTokenData, ThrowOnError>): RequestResult<RefreshTokenResponses, RefreshTokenErrors, ThrowOnError> => (options.client ?? client).post<RefreshTokenResponses, RefreshTokenErrors, ThrowOnError>({
+export const refreshToken = <ThrowOnError extends boolean = false>(options: Options<RefreshTokenData, ThrowOnError>): RequestResult<RefreshTokenResponses, RefreshTokenErrors, ThrowOnError, 'data'> => (options.client ?? client).post<RefreshTokenResponses, RefreshTokenErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     url: '/api/auth/refresh',
     ...options,
     headers: {
@@ -1504,7 +1610,8 @@ export const refreshToken = <ThrowOnError extends boolean = false>(options: Opti
  * clear message. These are instance-wide settings, not per-user
  * oracles — legitimate users deserve an actionable error.
  */
-export const register = <ThrowOnError extends boolean = false>(options: Options<RegisterData, ThrowOnError>): RequestResult<RegisterResponses, RegisterErrors, ThrowOnError> => (options.client ?? client).post<RegisterResponses, RegisterErrors, ThrowOnError>({
+export const register = <ThrowOnError extends boolean = false>(options: Options<RegisterData, ThrowOnError>): RequestResult<RegisterResponses, RegisterErrors, ThrowOnError, 'data'> => (options.client ?? client).post<RegisterResponses, RegisterErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     url: '/api/auth/register',
     ...options,
     headers: {
@@ -1516,7 +1623,11 @@ export const register = <ThrowOnError extends boolean = false>(options: Options<
 /**
  * Return the system initialisation state (used by the UI before setup).
  */
-export const getSystemStatus = <ThrowOnError extends boolean = false>(options?: Options<GetSystemStatusData, ThrowOnError>): RequestResult<GetSystemStatusResponses, GetSystemStatusErrors, ThrowOnError> => (options?.client ?? client).get<GetSystemStatusResponses, GetSystemStatusErrors, ThrowOnError>({ url: '/api/auth/status', ...options });
+export const getSystemStatus = <ThrowOnError extends boolean = false>(options?: Options<GetSystemStatusData, ThrowOnError>): RequestResult<GetSystemStatusResponses, GetSystemStatusErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<GetSystemStatusResponses, GetSystemStatusErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
+    url: '/api/auth/status',
+    ...options
+});
 
 /**
  * Convert the authenticated external user into a full internal
@@ -1546,7 +1657,8 @@ export const getSystemStatus = <ThrowOnError extends boolean = false>(options?: 
  * `is_external = false`, updated OPAQUE / auth capability flags — in one
  * round trip without a follow-up `/me` fetch.
  */
-export const upgradeToInternal = <ThrowOnError extends boolean = false>(options: Options<UpgradeToInternalData, ThrowOnError>): RequestResult<UpgradeToInternalResponses, UpgradeToInternalErrors, ThrowOnError> => (options.client ?? client).post<UpgradeToInternalResponses, UpgradeToInternalErrors, ThrowOnError>({
+export const upgradeToInternal = <ThrowOnError extends boolean = false>(options: Options<UpgradeToInternalData, ThrowOnError>): RequestResult<UpgradeToInternalResponses, UpgradeToInternalErrors, ThrowOnError, 'data'> => (options.client ?? client).post<UpgradeToInternalResponses, UpgradeToInternalErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/auth/upgrade-to-internal',
     ...options,
@@ -1556,7 +1668,8 @@ export const upgradeToInternal = <ThrowOnError extends boolean = false>(options:
     }
 });
 
-export const downloadBatchQuerystring = <ThrowOnError extends boolean = false>(options?: Options<DownloadBatchQuerystringData, ThrowOnError>): RequestResult<DownloadBatchQuerystringResponses, DownloadBatchQuerystringErrors, ThrowOnError> => (options?.client ?? client).get<DownloadBatchQuerystringResponses, DownloadBatchQuerystringErrors, ThrowOnError>({
+export const downloadBatchQuerystring = <ThrowOnError extends boolean = false>(options?: Options<DownloadBatchQuerystringData, ThrowOnError>): RequestResult<DownloadBatchQuerystringResponses, DownloadBatchQuerystringErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<DownloadBatchQuerystringResponses, DownloadBatchQuerystringErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/batch/download',
     ...options
@@ -1568,7 +1681,8 @@ export const downloadBatchQuerystring = <ThrowOnError extends boolean = false>(o
  * The ZIP is written to a temporary file and streamed to the client,
  * so RAM usage is O(buffer_size) regardless of archive size.
  */
-export const downloadBatchPost = <ThrowOnError extends boolean = false>(options: Options<DownloadBatchPostData, ThrowOnError>): RequestResult<DownloadBatchPostResponses, DownloadBatchPostErrors, ThrowOnError> => (options.client ?? client).post<DownloadBatchPostResponses, DownloadBatchPostErrors, ThrowOnError>({
+export const downloadBatchPost = <ThrowOnError extends boolean = false>(options: Options<DownloadBatchPostData, ThrowOnError>): RequestResult<DownloadBatchPostResponses, DownloadBatchPostErrors, ThrowOnError, 'data'> => (options.client ?? client).post<DownloadBatchPostResponses, DownloadBatchPostErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/batch/download',
     ...options,
@@ -1581,7 +1695,8 @@ export const downloadBatchPost = <ThrowOnError extends boolean = false>(options:
 /**
  * Handler for copying multiple files in batch
  */
-export const copyFilesBatch = <ThrowOnError extends boolean = false>(options: Options<CopyFilesBatchData, ThrowOnError>): RequestResult<CopyFilesBatchResponses, CopyFilesBatchErrors, ThrowOnError> => (options.client ?? client).post<CopyFilesBatchResponses, CopyFilesBatchErrors, ThrowOnError>({
+export const copyFilesBatch = <ThrowOnError extends boolean = false>(options: Options<CopyFilesBatchData, ThrowOnError>): RequestResult<CopyFilesBatchResponses, CopyFilesBatchErrors, ThrowOnError, 'data'> => (options.client ?? client).post<CopyFilesBatchResponses, CopyFilesBatchErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/batch/files/copy',
     ...options,
@@ -1594,7 +1709,8 @@ export const copyFilesBatch = <ThrowOnError extends boolean = false>(options: Op
 /**
  * Handler for deleting multiple files in batch
  */
-export const deleteFilesBatch = <ThrowOnError extends boolean = false>(options: Options<DeleteFilesBatchData, ThrowOnError>): RequestResult<DeleteFilesBatchResponses, DeleteFilesBatchErrors, ThrowOnError> => (options.client ?? client).post<DeleteFilesBatchResponses, DeleteFilesBatchErrors, ThrowOnError>({
+export const deleteFilesBatch = <ThrowOnError extends boolean = false>(options: Options<DeleteFilesBatchData, ThrowOnError>): RequestResult<DeleteFilesBatchResponses, DeleteFilesBatchErrors, ThrowOnError, 'data'> => (options.client ?? client).post<DeleteFilesBatchResponses, DeleteFilesBatchErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/batch/files/delete',
     ...options,
@@ -1607,7 +1723,8 @@ export const deleteFilesBatch = <ThrowOnError extends boolean = false>(options: 
 /**
  * Handler for getting multiple files in batch
  */
-export const getFilesBatch = <ThrowOnError extends boolean = false>(options: Options<GetFilesBatchData, ThrowOnError>): RequestResult<GetFilesBatchResponses, GetFilesBatchErrors, ThrowOnError> => (options.client ?? client).post<GetFilesBatchResponses, GetFilesBatchErrors, ThrowOnError>({
+export const getFilesBatch = <ThrowOnError extends boolean = false>(options: Options<GetFilesBatchData, ThrowOnError>): RequestResult<GetFilesBatchResponses, GetFilesBatchErrors, ThrowOnError, 'data'> => (options.client ?? client).post<GetFilesBatchResponses, GetFilesBatchErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/batch/files/get',
     ...options,
@@ -1620,7 +1737,8 @@ export const getFilesBatch = <ThrowOnError extends boolean = false>(options: Opt
 /**
  * Handler for moving multiple files in batch
  */
-export const moveFilesBatch = <ThrowOnError extends boolean = false>(options: Options<MoveFilesBatchData, ThrowOnError>): RequestResult<MoveFilesBatchResponses, MoveFilesBatchErrors, ThrowOnError> => (options.client ?? client).post<MoveFilesBatchResponses, MoveFilesBatchErrors, ThrowOnError>({
+export const moveFilesBatch = <ThrowOnError extends boolean = false>(options: Options<MoveFilesBatchData, ThrowOnError>): RequestResult<MoveFilesBatchResponses, MoveFilesBatchErrors, ThrowOnError, 'data'> => (options.client ?? client).post<MoveFilesBatchResponses, MoveFilesBatchErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/batch/files/move',
     ...options,
@@ -1633,7 +1751,8 @@ export const moveFilesBatch = <ThrowOnError extends boolean = false>(options: Op
 /**
  * Handler for copying multiple folder trees in batch
  */
-export const copyFoldersBatch = <ThrowOnError extends boolean = false>(options: Options<CopyFoldersBatchData, ThrowOnError>): RequestResult<CopyFoldersBatchResponses, CopyFoldersBatchErrors, ThrowOnError> => (options.client ?? client).post<CopyFoldersBatchResponses, CopyFoldersBatchErrors, ThrowOnError>({
+export const copyFoldersBatch = <ThrowOnError extends boolean = false>(options: Options<CopyFoldersBatchData, ThrowOnError>): RequestResult<CopyFoldersBatchResponses, CopyFoldersBatchErrors, ThrowOnError, 'data'> => (options.client ?? client).post<CopyFoldersBatchResponses, CopyFoldersBatchErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/batch/folders/copy',
     ...options,
@@ -1646,7 +1765,8 @@ export const copyFoldersBatch = <ThrowOnError extends boolean = false>(options: 
 /**
  * Handler for creating multiple folders in batch
  */
-export const createFoldersBatch = <ThrowOnError extends boolean = false>(options: Options<CreateFoldersBatchData, ThrowOnError>): RequestResult<CreateFoldersBatchResponses, CreateFoldersBatchErrors, ThrowOnError> => (options.client ?? client).post<CreateFoldersBatchResponses, CreateFoldersBatchErrors, ThrowOnError>({
+export const createFoldersBatch = <ThrowOnError extends boolean = false>(options: Options<CreateFoldersBatchData, ThrowOnError>): RequestResult<CreateFoldersBatchResponses, CreateFoldersBatchErrors, ThrowOnError, 'data'> => (options.client ?? client).post<CreateFoldersBatchResponses, CreateFoldersBatchErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/batch/folders/create',
     ...options,
@@ -1659,7 +1779,8 @@ export const createFoldersBatch = <ThrowOnError extends boolean = false>(options
 /**
  * Handler for deleting multiple folders in batch
  */
-export const deleteFoldersBatch = <ThrowOnError extends boolean = false>(options: Options<DeleteFoldersBatchData, ThrowOnError>): RequestResult<DeleteFoldersBatchResponses, DeleteFoldersBatchErrors, ThrowOnError> => (options.client ?? client).post<DeleteFoldersBatchResponses, DeleteFoldersBatchErrors, ThrowOnError>({
+export const deleteFoldersBatch = <ThrowOnError extends boolean = false>(options: Options<DeleteFoldersBatchData, ThrowOnError>): RequestResult<DeleteFoldersBatchResponses, DeleteFoldersBatchErrors, ThrowOnError, 'data'> => (options.client ?? client).post<DeleteFoldersBatchResponses, DeleteFoldersBatchErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/batch/folders/delete',
     ...options,
@@ -1672,7 +1793,8 @@ export const deleteFoldersBatch = <ThrowOnError extends boolean = false>(options
 /**
  * Handler for getting multiple folders in batch
  */
-export const getFoldersBatch = <ThrowOnError extends boolean = false>(options: Options<GetFoldersBatchData, ThrowOnError>): RequestResult<GetFoldersBatchResponses, GetFoldersBatchErrors, ThrowOnError> => (options.client ?? client).post<GetFoldersBatchResponses, GetFoldersBatchErrors, ThrowOnError>({
+export const getFoldersBatch = <ThrowOnError extends boolean = false>(options: Options<GetFoldersBatchData, ThrowOnError>): RequestResult<GetFoldersBatchResponses, GetFoldersBatchErrors, ThrowOnError, 'data'> => (options.client ?? client).post<GetFoldersBatchResponses, GetFoldersBatchErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/batch/folders/get',
     ...options,
@@ -1685,7 +1807,8 @@ export const getFoldersBatch = <ThrowOnError extends boolean = false>(options: O
 /**
  * Handler for moving multiple folders in batch
  */
-export const moveFoldersBatch = <ThrowOnError extends boolean = false>(options: Options<MoveFoldersBatchData, ThrowOnError>): RequestResult<MoveFoldersBatchResponses, MoveFoldersBatchErrors, ThrowOnError> => (options.client ?? client).post<MoveFoldersBatchResponses, MoveFoldersBatchErrors, ThrowOnError>({
+export const moveFoldersBatch = <ThrowOnError extends boolean = false>(options: Options<MoveFoldersBatchData, ThrowOnError>): RequestResult<MoveFoldersBatchResponses, MoveFoldersBatchErrors, ThrowOnError, 'data'> => (options.client ?? client).post<MoveFoldersBatchResponses, MoveFoldersBatchErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/batch/folders/move',
     ...options,
@@ -1698,7 +1821,8 @@ export const moveFoldersBatch = <ThrowOnError extends boolean = false>(options: 
 /**
  * Handler for moving multiple files and folders to trash in batch
  */
-export const trashBatch = <ThrowOnError extends boolean = false>(options: Options<TrashBatchData, ThrowOnError>): RequestResult<TrashBatchResponses, TrashBatchErrors, ThrowOnError> => (options.client ?? client).post<TrashBatchResponses, TrashBatchErrors, ThrowOnError>({
+export const trashBatch = <ThrowOnError extends boolean = false>(options: Options<TrashBatchData, ThrowOnError>): RequestResult<TrashBatchResponses, TrashBatchErrors, ThrowOnError, 'data'> => (options.client ?? client).post<TrashBatchResponses, TrashBatchErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/batch/trash',
     ...options,
@@ -1715,15 +1839,21 @@ export const trashBatch = <ThrowOnError extends boolean = false>(options: Option
  * is called at most once per SPA boot per client. Adding a short
  * `Cache-Control` TTL later is safe if load ever becomes a concern.
  */
-export const getConfig = <ThrowOnError extends boolean = false>(options?: Options<GetConfigData, ThrowOnError>): RequestResult<GetConfigResponses, unknown, ThrowOnError> => (options?.client ?? client).get<GetConfigResponses, unknown, ThrowOnError>({ url: '/api/config', ...options });
+export const getConfig = <ThrowOnError extends boolean = false>(options?: Options<GetConfigData, ThrowOnError>): RequestResult<GetConfigResponses, unknown, ThrowOnError, 'data'> => (options?.client ?? client).get<GetConfigResponses, unknown, ThrowOnError, 'data'>({
+    responseStyle: 'data',
+    url: '/api/config',
+    ...options
+});
 
-export const getBlob = <ThrowOnError extends boolean = false>(options: Options<GetBlobData, ThrowOnError>): RequestResult<GetBlobResponses, GetBlobErrors, ThrowOnError> => (options.client ?? client).get<GetBlobResponses, GetBlobErrors, ThrowOnError>({
+export const getBlob = <ThrowOnError extends boolean = false>(options: Options<GetBlobData, ThrowOnError>): RequestResult<GetBlobResponses, GetBlobErrors, ThrowOnError, 'data'> => (options.client ?? client).get<GetBlobResponses, GetBlobErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/dedup/blob/{hash}',
     ...options
 });
 
-export const checkHashesBatch = <ThrowOnError extends boolean = false>(options: Options<CheckHashesBatchData, ThrowOnError>): RequestResult<CheckHashesBatchResponses, CheckHashesBatchErrors, ThrowOnError> => (options.client ?? client).post<CheckHashesBatchResponses, CheckHashesBatchErrors, ThrowOnError>({
+export const checkHashesBatch = <ThrowOnError extends boolean = false>(options: Options<CheckHashesBatchData, ThrowOnError>): RequestResult<CheckHashesBatchResponses, CheckHashesBatchErrors, ThrowOnError, 'data'> => (options.client ?? client).post<CheckHashesBatchResponses, CheckHashesBatchErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/dedup/check-batch',
     ...options,
@@ -1733,13 +1863,15 @@ export const checkHashesBatch = <ThrowOnError extends boolean = false>(options: 
     }
 });
 
-export const checkHash = <ThrowOnError extends boolean = false>(options: Options<CheckHashData, ThrowOnError>): RequestResult<CheckHashResponses, CheckHashErrors, ThrowOnError> => (options.client ?? client).get<CheckHashResponses, CheckHashErrors, ThrowOnError>({
+export const checkHash = <ThrowOnError extends boolean = false>(options: Options<CheckHashData, ThrowOnError>): RequestResult<CheckHashResponses, CheckHashErrors, ThrowOnError, 'data'> => (options.client ?? client).get<CheckHashResponses, CheckHashErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/dedup/check/{hash}',
     ...options
 });
 
-export const listDrives = <ThrowOnError extends boolean = false>(options?: Options<ListDrivesData, ThrowOnError>): RequestResult<ListDrivesResponses, ListDrivesErrors, ThrowOnError> => (options?.client ?? client).get<ListDrivesResponses, ListDrivesErrors, ThrowOnError>({
+export const listDrives = <ThrowOnError extends boolean = false>(options?: Options<ListDrivesData, ThrowOnError>): RequestResult<ListDrivesResponses, ListDrivesErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<ListDrivesResponses, ListDrivesErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/drives',
     ...options
@@ -1758,19 +1890,22 @@ export const listDrives = <ThrowOnError extends boolean = false>(options?: Optio
  * scoped to the drive are removed in one transaction; cached drive
  * roles are invalidated.
  */
-export const deleteDrive = <ThrowOnError extends boolean = false>(options: Options<DeleteDriveData, ThrowOnError>): RequestResult<DeleteDriveResponses, DeleteDriveErrors, ThrowOnError> => (options.client ?? client).delete<DeleteDriveResponses, DeleteDriveErrors, ThrowOnError>({
+export const deleteDrive = <ThrowOnError extends boolean = false>(options: Options<DeleteDriveData, ThrowOnError>): RequestResult<DeleteDriveResponses, DeleteDriveErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<DeleteDriveResponses, DeleteDriveErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/drives/{id}',
     ...options
 });
 
-export const listDriveMembers = <ThrowOnError extends boolean = false>(options: Options<ListDriveMembersData, ThrowOnError>): RequestResult<ListDriveMembersResponses, ListDriveMembersErrors, ThrowOnError> => (options.client ?? client).get<ListDriveMembersResponses, ListDriveMembersErrors, ThrowOnError>({
+export const listDriveMembers = <ThrowOnError extends boolean = false>(options: Options<ListDriveMembersData, ThrowOnError>): RequestResult<ListDriveMembersResponses, ListDriveMembersErrors, ThrowOnError, 'data'> => (options.client ?? client).get<ListDriveMembersResponses, ListDriveMembersErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/drives/{id}/members',
     ...options
 });
 
-export const addDriveMember = <ThrowOnError extends boolean = false>(options: Options<AddDriveMemberData, ThrowOnError>): RequestResult<AddDriveMemberResponses, AddDriveMemberErrors, ThrowOnError> => (options.client ?? client).post<AddDriveMemberResponses, AddDriveMemberErrors, ThrowOnError>({
+export const addDriveMember = <ThrowOnError extends boolean = false>(options: Options<AddDriveMemberData, ThrowOnError>): RequestResult<AddDriveMemberResponses, AddDriveMemberErrors, ThrowOnError, 'data'> => (options.client ?? client).post<AddDriveMemberResponses, AddDriveMemberErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/drives/{id}/members',
     ...options,
@@ -1780,13 +1915,15 @@ export const addDriveMember = <ThrowOnError extends boolean = false>(options: Op
     }
 });
 
-export const removeDriveMember = <ThrowOnError extends boolean = false>(options: Options<RemoveDriveMemberData, ThrowOnError>): RequestResult<RemoveDriveMemberResponses, RemoveDriveMemberErrors, ThrowOnError> => (options.client ?? client).delete<RemoveDriveMemberResponses, RemoveDriveMemberErrors, ThrowOnError>({
+export const removeDriveMember = <ThrowOnError extends boolean = false>(options: Options<RemoveDriveMemberData, ThrowOnError>): RequestResult<RemoveDriveMemberResponses, RemoveDriveMemberErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<RemoveDriveMemberResponses, RemoveDriveMemberErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/drives/{id}/members/{kind}/{sid}',
     ...options
 });
 
-export const updateDriveMember = <ThrowOnError extends boolean = false>(options: Options<UpdateDriveMemberData, ThrowOnError>): RequestResult<UpdateDriveMemberResponses, UpdateDriveMemberErrors, ThrowOnError> => (options.client ?? client).patch<UpdateDriveMemberResponses, UpdateDriveMemberErrors, ThrowOnError>({
+export const updateDriveMember = <ThrowOnError extends boolean = false>(options: Options<UpdateDriveMemberData, ThrowOnError>): RequestResult<UpdateDriveMemberResponses, UpdateDriveMemberErrors, ThrowOnError, 'data'> => (options.client ?? client).patch<UpdateDriveMemberResponses, UpdateDriveMemberErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/drives/{id}/members/{kind}/{sid}',
     ...options,
@@ -1817,7 +1954,8 @@ export const updateDriveMember = <ThrowOnError extends boolean = false>(options:
  * Audit: emits `drive.policy_changed` with `by = <admin_user_id>`
  * and every key's post-merge value (steady-state observability).
  */
-export const updateDrivePolicies = <ThrowOnError extends boolean = false>(options: Options<UpdateDrivePoliciesData, ThrowOnError>): RequestResult<UpdateDrivePoliciesResponses, UpdateDrivePoliciesErrors, ThrowOnError> => (options.client ?? client).patch<UpdateDrivePoliciesResponses, UpdateDrivePoliciesErrors, ThrowOnError>({
+export const updateDrivePolicies = <ThrowOnError extends boolean = false>(options: Options<UpdateDrivePoliciesData, ThrowOnError>): RequestResult<UpdateDrivePoliciesResponses, UpdateDrivePoliciesErrors, ThrowOnError, 'data'> => (options.client ?? client).patch<UpdateDrivePoliciesResponses, UpdateDrivePoliciesErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/drives/{id}/policies',
     ...options,
@@ -1861,7 +1999,8 @@ export const updateDrivePolicies = <ThrowOnError extends boolean = false>(option
  * `audit drive.quota_changed` can spot a shrink that landed the
  * drive in the over-quota delete-only state.
  */
-export const updateDriveQuota = <ThrowOnError extends boolean = false>(options: Options<UpdateDriveQuotaData, ThrowOnError>): RequestResult<UpdateDriveQuotaResponses, UpdateDriveQuotaErrors, ThrowOnError> => (options.client ?? client).patch<UpdateDriveQuotaResponses, UpdateDriveQuotaErrors, ThrowOnError>({
+export const updateDriveQuota = <ThrowOnError extends boolean = false>(options: Options<UpdateDriveQuotaData, ThrowOnError>): RequestResult<UpdateDriveQuotaResponses, UpdateDriveQuotaErrors, ThrowOnError, 'data'> => (options.client ?? client).patch<UpdateDriveQuotaResponses, UpdateDriveQuotaErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/drives/{id}/quota',
     ...options,
@@ -1875,7 +2014,8 @@ export const updateDriveQuota = <ThrowOnError extends boolean = false>(options: 
  * Add multiple items to favourites in a single transaction.
  * POST /api/favorites/batch
  */
-export const batchAddFavorites = <ThrowOnError extends boolean = false>(options: Options<BatchAddFavoritesData, ThrowOnError>): RequestResult<BatchAddFavoritesResponses, BatchAddFavoritesErrors, ThrowOnError> => (options.client ?? client).post<BatchAddFavoritesResponses, BatchAddFavoritesErrors, ThrowOnError>({
+export const batchAddFavorites = <ThrowOnError extends boolean = false>(options: Options<BatchAddFavoritesData, ThrowOnError>): RequestResult<BatchAddFavoritesResponses, BatchAddFavoritesErrors, ThrowOnError, 'data'> => (options.client ?? client).post<BatchAddFavoritesResponses, BatchAddFavoritesErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/favorites/batch',
     ...options,
@@ -1892,7 +2032,8 @@ export const batchAddFavorites = <ThrowOnError extends boolean = false>(options:
  * Items that have been deleted/trashed are silently excluded.
  * `path` is cleared when the resource is not owned by the requesting user.
  */
-export const listFavoritesResources = <ThrowOnError extends boolean = false>(options?: Options<ListFavoritesResourcesData, ThrowOnError>): RequestResult<ListFavoritesResourcesResponses, ListFavoritesResourcesErrors, ThrowOnError> => (options?.client ?? client).get<ListFavoritesResourcesResponses, ListFavoritesResourcesErrors, ThrowOnError>({
+export const listFavoritesResources = <ThrowOnError extends boolean = false>(options?: Options<ListFavoritesResourcesData, ThrowOnError>): RequestResult<ListFavoritesResourcesResponses, ListFavoritesResourcesErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<ListFavoritesResourcesResponses, ListFavoritesResourcesErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/favorites/resources',
     ...options
@@ -1901,7 +2042,8 @@ export const listFavoritesResources = <ThrowOnError extends boolean = false>(opt
 /**
  * Remove an item from user's favorites
  */
-export const removeFavorite = <ThrowOnError extends boolean = false>(options: Options<RemoveFavoriteData, ThrowOnError>): RequestResult<RemoveFavoriteResponses, RemoveFavoriteErrors, ThrowOnError> => (options.client ?? client).delete<RemoveFavoriteResponses, RemoveFavoriteErrors, ThrowOnError>({
+export const removeFavorite = <ThrowOnError extends boolean = false>(options: Options<RemoveFavoriteData, ThrowOnError>): RequestResult<RemoveFavoriteResponses, RemoveFavoriteErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<RemoveFavoriteResponses, RemoveFavoriteErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/favorites/{item_type}/{item_id}',
     ...options
@@ -1910,19 +2052,22 @@ export const removeFavorite = <ThrowOnError extends boolean = false>(options: Op
 /**
  * Add an item to user's favorites
  */
-export const addFavorite = <ThrowOnError extends boolean = false>(options: Options<AddFavoriteData, ThrowOnError>): RequestResult<AddFavoriteResponses, AddFavoriteErrors, ThrowOnError> => (options.client ?? client).post<AddFavoriteResponses, AddFavoriteErrors, ThrowOnError>({
+export const addFavorite = <ThrowOnError extends boolean = false>(options: Options<AddFavoriteData, ThrowOnError>): RequestResult<AddFavoriteResponses, AddFavoriteErrors, ThrowOnError, 'data'> => (options.client ?? client).post<AddFavoriteResponses, AddFavoriteErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/favorites/{item_type}/{item_id}',
     ...options
 });
 
-export const listFilesQuery = <ThrowOnError extends boolean = false>(options?: Options<ListFilesQueryData, ThrowOnError>): RequestResult<ListFilesQueryResponses, unknown, ThrowOnError> => (options?.client ?? client).get<ListFilesQueryResponses, unknown, ThrowOnError>({
+export const listFilesQuery = <ThrowOnError extends boolean = false>(options?: Options<ListFilesQueryData, ThrowOnError>): RequestResult<ListFilesQueryResponses, unknown, ThrowOnError, 'data'> => (options?.client ?? client).get<ListFilesQueryResponses, unknown, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/files',
     ...options
 });
 
-export const createFileByHash = <ThrowOnError extends boolean = false>(options: Options<CreateFileByHashData, ThrowOnError>): RequestResult<CreateFileByHashResponses, CreateFileByHashErrors, ThrowOnError> => (options.client ?? client).post<CreateFileByHashResponses, CreateFileByHashErrors, ThrowOnError>({
+export const createFileByHash = <ThrowOnError extends boolean = false>(options: Options<CreateFileByHashData, ThrowOnError>): RequestResult<CreateFileByHashResponses, CreateFileByHashErrors, ThrowOnError, 'data'> => (options.client ?? client).post<CreateFileByHashResponses, CreateFileByHashErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/files/by-hash',
     ...options,
@@ -1932,8 +2077,9 @@ export const createFileByHash = <ThrowOnError extends boolean = false>(options: 
     }
 });
 
-export const deltaUploadChunks = <ThrowOnError extends boolean = false>(options?: Options<DeltaUploadChunksData, ThrowOnError>): RequestResult<DeltaUploadChunksResponses, DeltaUploadChunksErrors, ThrowOnError> => (options?.client ?? client).put<DeltaUploadChunksResponses, DeltaUploadChunksErrors, ThrowOnError>({
+export const deltaUploadChunks = <ThrowOnError extends boolean = false>(options?: Options<DeltaUploadChunksData, ThrowOnError>): RequestResult<DeltaUploadChunksResponses, DeltaUploadChunksErrors, ThrowOnError, 'data'> => (options?.client ?? client).put<DeltaUploadChunksResponses, DeltaUploadChunksErrors, ThrowOnError, 'data'>({
     bodySerializer: null,
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/files/delta/chunks',
     ...options,
@@ -1943,7 +2089,8 @@ export const deltaUploadChunks = <ThrowOnError extends boolean = false>(options?
     }
 });
 
-export const deltaCommit = <ThrowOnError extends boolean = false>(options: Options<DeltaCommitData, ThrowOnError>): RequestResult<DeltaCommitResponses, DeltaCommitErrors, ThrowOnError> => (options.client ?? client).post<DeltaCommitResponses, DeltaCommitErrors, ThrowOnError>({
+export const deltaCommit = <ThrowOnError extends boolean = false>(options: Options<DeltaCommitData, ThrowOnError>): RequestResult<DeltaCommitResponses, DeltaCommitErrors, ThrowOnError, 'data'> => (options.client ?? client).post<DeltaCommitResponses, DeltaCommitErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/files/delta/commit',
     ...options,
@@ -1953,7 +2100,8 @@ export const deltaCommit = <ThrowOnError extends boolean = false>(options: Optio
     }
 });
 
-export const deltaDownloadChunks = <ThrowOnError extends boolean = false>(options: Options<DeltaDownloadChunksData, ThrowOnError>): RequestResult<DeltaDownloadChunksResponses, DeltaDownloadChunksErrors, ThrowOnError> => (options.client ?? client).post<DeltaDownloadChunksResponses, DeltaDownloadChunksErrors, ThrowOnError>({
+export const deltaDownloadChunks = <ThrowOnError extends boolean = false>(options: Options<DeltaDownloadChunksData, ThrowOnError>): RequestResult<DeltaDownloadChunksResponses, DeltaDownloadChunksErrors, ThrowOnError, 'data'> => (options.client ?? client).post<DeltaDownloadChunksResponses, DeltaDownloadChunksErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/files/delta/download',
     ...options,
@@ -1963,7 +2111,8 @@ export const deltaDownloadChunks = <ThrowOnError extends boolean = false>(option
     }
 });
 
-export const deltaNegotiate = <ThrowOnError extends boolean = false>(options: Options<DeltaNegotiateData, ThrowOnError>): RequestResult<DeltaNegotiateResponses, DeltaNegotiateErrors, ThrowOnError> => (options.client ?? client).post<DeltaNegotiateResponses, DeltaNegotiateErrors, ThrowOnError>({
+export const deltaNegotiate = <ThrowOnError extends boolean = false>(options: Options<DeltaNegotiateData, ThrowOnError>): RequestResult<DeltaNegotiateResponses, DeltaNegotiateErrors, ThrowOnError, 'data'> => (options.client ?? client).post<DeltaNegotiateResponses, DeltaNegotiateErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/files/delta/negotiate',
     ...options,
@@ -1973,8 +2122,9 @@ export const deltaNegotiate = <ThrowOnError extends boolean = false>(options: Op
     }
 });
 
-export const uploadFileWithThumbnails = <ThrowOnError extends boolean = false>(options?: Options<UploadFileWithThumbnailsData, ThrowOnError>): RequestResult<UploadFileWithThumbnailsResponses, UploadFileWithThumbnailsErrors, ThrowOnError> => (options?.client ?? client).post<UploadFileWithThumbnailsResponses, UploadFileWithThumbnailsErrors, ThrowOnError>({
+export const uploadFileWithThumbnails = <ThrowOnError extends boolean = false>(options?: Options<UploadFileWithThumbnailsData, ThrowOnError>): RequestResult<UploadFileWithThumbnailsResponses, UploadFileWithThumbnailsErrors, ThrowOnError, 'data'> => (options?.client ?? client).post<UploadFileWithThumbnailsResponses, UploadFileWithThumbnailsErrors, ThrowOnError, 'data'>({
     ...formDataBodySerializer,
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/files/upload',
     ...options,
@@ -1984,7 +2134,8 @@ export const uploadFileWithThumbnails = <ThrowOnError extends boolean = false>(o
     }
 });
 
-export const deleteFile = <ThrowOnError extends boolean = false>(options: Options<DeleteFileData, ThrowOnError>): RequestResult<DeleteFileResponses, DeleteFileErrors, ThrowOnError> => (options.client ?? client).delete<DeleteFileResponses, DeleteFileErrors, ThrowOnError>({
+export const deleteFile = <ThrowOnError extends boolean = false>(options: Options<DeleteFileData, ThrowOnError>): RequestResult<DeleteFileResponses, DeleteFileErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<DeleteFileResponses, DeleteFileErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/files/{id}',
     ...options
@@ -1993,13 +2144,15 @@ export const deleteFile = <ThrowOnError extends boolean = false>(options: Option
 /**
  * Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.
  */
-export const downloadFile = <ThrowOnError extends boolean = false>(options: Options<DownloadFileData, ThrowOnError>): RequestResult<DownloadFileResponses, DownloadFileErrors, ThrowOnError> => (options.client ?? client).get<DownloadFileResponses, DownloadFileErrors, ThrowOnError>({
+export const downloadFile = <ThrowOnError extends boolean = false>(options: Options<DownloadFileData, ThrowOnError>): RequestResult<DownloadFileResponses, DownloadFileErrors, ThrowOnError, 'data'> => (options.client ?? client).get<DownloadFileResponses, DownloadFileErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/files/{id}',
     ...options
 });
 
-export const deltaFileManifest = <ThrowOnError extends boolean = false>(options: Options<DeltaFileManifestData, ThrowOnError>): RequestResult<DeltaFileManifestResponses, DeltaFileManifestErrors, ThrowOnError> => (options.client ?? client).get<DeltaFileManifestResponses, DeltaFileManifestErrors, ThrowOnError>({
+export const deltaFileManifest = <ThrowOnError extends boolean = false>(options: Options<DeltaFileManifestData, ThrowOnError>): RequestResult<DeltaFileManifestResponses, DeltaFileManifestErrors, ThrowOnError, 'data'> => (options.client ?? client).get<DeltaFileManifestResponses, DeltaFileManifestErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/files/{id}/manifest',
     ...options
@@ -2008,13 +2161,15 @@ export const deltaFileManifest = <ThrowOnError extends boolean = false>(options:
 /**
  * Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.
  */
-export const getFileMetadata = <ThrowOnError extends boolean = false>(options: Options<GetFileMetadataData, ThrowOnError>): RequestResult<GetFileMetadataResponses, GetFileMetadataErrors, ThrowOnError> => (options.client ?? client).get<GetFileMetadataResponses, GetFileMetadataErrors, ThrowOnError>({
+export const getFileMetadata = <ThrowOnError extends boolean = false>(options: Options<GetFileMetadataData, ThrowOnError>): RequestResult<GetFileMetadataResponses, GetFileMetadataErrors, ThrowOnError, 'data'> => (options.client ?? client).get<GetFileMetadataResponses, GetFileMetadataErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/files/{id}/metadata',
     ...options
 });
 
-export const moveFileSimple = <ThrowOnError extends boolean = false>(options: Options<MoveFileSimpleData, ThrowOnError>): RequestResult<MoveFileSimpleResponses, MoveFileSimpleErrors, ThrowOnError> => (options.client ?? client).put<MoveFileSimpleResponses, MoveFileSimpleErrors, ThrowOnError>({
+export const moveFileSimple = <ThrowOnError extends boolean = false>(options: Options<MoveFileSimpleData, ThrowOnError>): RequestResult<MoveFileSimpleResponses, MoveFileSimpleErrors, ThrowOnError, 'data'> => (options.client ?? client).put<MoveFileSimpleResponses, MoveFileSimpleErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/files/{id}/move',
     ...options,
@@ -2024,7 +2179,8 @@ export const moveFileSimple = <ThrowOnError extends boolean = false>(options: Op
     }
 });
 
-export const renameFile = <ThrowOnError extends boolean = false>(options: Options<RenameFileData, ThrowOnError>): RequestResult<RenameFileResponses, RenameFileErrors, ThrowOnError> => (options.client ?? client).put<RenameFileResponses, RenameFileErrors, ThrowOnError>({
+export const renameFile = <ThrowOnError extends boolean = false>(options: Options<RenameFileData, ThrowOnError>): RequestResult<RenameFileResponses, RenameFileErrors, ThrowOnError, 'data'> => (options.client ?? client).put<RenameFileResponses, RenameFileErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/files/{id}/rename',
     ...options,
@@ -2037,14 +2193,16 @@ export const renameFile = <ThrowOnError extends boolean = false>(options: Option
 /**
  * Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.
  */
-export const getThumbnail = <ThrowOnError extends boolean = false>(options: Options<GetThumbnailData, ThrowOnError>): RequestResult<GetThumbnailResponses, GetThumbnailErrors, ThrowOnError> => (options.client ?? client).get<GetThumbnailResponses, GetThumbnailErrors, ThrowOnError>({
+export const getThumbnail = <ThrowOnError extends boolean = false>(options: Options<GetThumbnailData, ThrowOnError>): RequestResult<GetThumbnailResponses, GetThumbnailErrors, ThrowOnError, 'data'> => (options.client ?? client).get<GetThumbnailResponses, GetThumbnailErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/files/{id}/thumbnail/{size}',
     ...options
 });
 
-export const uploadThumbnail = <ThrowOnError extends boolean = false>(options: Options<UploadThumbnailData, ThrowOnError>): RequestResult<UploadThumbnailResponses, UploadThumbnailErrors, ThrowOnError> => (options.client ?? client).put<UploadThumbnailResponses, UploadThumbnailErrors, ThrowOnError>({
+export const uploadThumbnail = <ThrowOnError extends boolean = false>(options: Options<UploadThumbnailData, ThrowOnError>): RequestResult<UploadThumbnailResponses, UploadThumbnailErrors, ThrowOnError, 'data'> => (options.client ?? client).put<UploadThumbnailResponses, UploadThumbnailErrors, ThrowOnError, 'data'>({
     bodySerializer: null,
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/files/{id}/thumbnail/{size}',
     ...options,
@@ -2054,13 +2212,15 @@ export const uploadThumbnail = <ThrowOnError extends boolean = false>(options: O
     }
 });
 
-export const listRootFolders = <ThrowOnError extends boolean = false>(options?: Options<ListRootFoldersData, ThrowOnError>): RequestResult<ListRootFoldersResponses, unknown, ThrowOnError> => (options?.client ?? client).get<ListRootFoldersResponses, unknown, ThrowOnError>({
+export const listRootFolders = <ThrowOnError extends boolean = false>(options?: Options<ListRootFoldersData, ThrowOnError>): RequestResult<ListRootFoldersResponses, unknown, ThrowOnError, 'data'> => (options?.client ?? client).get<ListRootFoldersResponses, unknown, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/folders',
     ...options
 });
 
-export const createFolder = <ThrowOnError extends boolean = false>(options: Options<CreateFolderData, ThrowOnError>): RequestResult<CreateFolderResponses, CreateFolderErrors, ThrowOnError> => (options.client ?? client).post<CreateFolderResponses, CreateFolderErrors, ThrowOnError>({
+export const createFolder = <ThrowOnError extends boolean = false>(options: Options<CreateFolderData, ThrowOnError>): RequestResult<CreateFolderResponses, CreateFolderErrors, ThrowOnError, 'data'> => (options.client ?? client).post<CreateFolderResponses, CreateFolderErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/folders',
     ...options,
@@ -2070,7 +2230,8 @@ export const createFolder = <ThrowOnError extends boolean = false>(options: Opti
     }
 });
 
-export const deleteFolderWithTrash = <ThrowOnError extends boolean = false>(options: Options<DeleteFolderWithTrashData, ThrowOnError>): RequestResult<DeleteFolderWithTrashResponses, DeleteFolderWithTrashErrors, ThrowOnError> => (options.client ?? client).delete<DeleteFolderWithTrashResponses, DeleteFolderWithTrashErrors, ThrowOnError>({
+export const deleteFolderWithTrash = <ThrowOnError extends boolean = false>(options: Options<DeleteFolderWithTrashData, ThrowOnError>): RequestResult<DeleteFolderWithTrashResponses, DeleteFolderWithTrashErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<DeleteFolderWithTrashResponses, DeleteFolderWithTrashErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/folders/{id}',
     ...options
@@ -2079,7 +2240,8 @@ export const deleteFolderWithTrash = <ThrowOnError extends boolean = false>(opti
 /**
  * Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.
  */
-export const getFolder = <ThrowOnError extends boolean = false>(options: Options<GetFolderData, ThrowOnError>): RequestResult<GetFolderResponses, GetFolderErrors, ThrowOnError> => (options.client ?? client).get<GetFolderResponses, GetFolderErrors, ThrowOnError>({
+export const getFolder = <ThrowOnError extends boolean = false>(options: Options<GetFolderData, ThrowOnError>): RequestResult<GetFolderResponses, GetFolderErrors, ThrowOnError, 'data'> => (options.client ?? client).get<GetFolderResponses, GetFolderErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/folders/{id}',
     ...options
@@ -2088,7 +2250,8 @@ export const getFolder = <ThrowOnError extends boolean = false>(options: Options
 /**
  * Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.
  */
-export const getFolderAncestors = <ThrowOnError extends boolean = false>(options: Options<GetFolderAncestorsData, ThrowOnError>): RequestResult<GetFolderAncestorsResponses, GetFolderAncestorsErrors, ThrowOnError> => (options.client ?? client).get<GetFolderAncestorsResponses, GetFolderAncestorsErrors, ThrowOnError>({
+export const getFolderAncestors = <ThrowOnError extends boolean = false>(options: Options<GetFolderAncestorsData, ThrowOnError>): RequestResult<GetFolderAncestorsResponses, GetFolderAncestorsErrors, ThrowOnError, 'data'> => (options.client ?? client).get<GetFolderAncestorsResponses, GetFolderAncestorsErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/folders/{id}/ancestors',
     ...options
@@ -2097,13 +2260,15 @@ export const getFolderAncestors = <ThrowOnError extends boolean = false>(options
 /**
  * Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.
  */
-export const downloadFolderZip = <ThrowOnError extends boolean = false>(options: Options<DownloadFolderZipData, ThrowOnError>): RequestResult<DownloadFolderZipResponses, DownloadFolderZipErrors, ThrowOnError> => (options.client ?? client).get<DownloadFolderZipResponses, DownloadFolderZipErrors, ThrowOnError>({
+export const downloadFolderZip = <ThrowOnError extends boolean = false>(options: Options<DownloadFolderZipData, ThrowOnError>): RequestResult<DownloadFolderZipResponses, DownloadFolderZipErrors, ThrowOnError, 'data'> => (options.client ?? client).get<DownloadFolderZipResponses, DownloadFolderZipErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/folders/{id}/download',
     ...options
 });
 
-export const moveFolder = <ThrowOnError extends boolean = false>(options: Options<MoveFolderData, ThrowOnError>): RequestResult<MoveFolderResponses, MoveFolderErrors, ThrowOnError> => (options.client ?? client).put<MoveFolderResponses, MoveFolderErrors, ThrowOnError>({
+export const moveFolder = <ThrowOnError extends boolean = false>(options: Options<MoveFolderData, ThrowOnError>): RequestResult<MoveFolderResponses, MoveFolderErrors, ThrowOnError, 'data'> => (options.client ?? client).put<MoveFolderResponses, MoveFolderErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/folders/{id}/move',
     ...options,
@@ -2113,7 +2278,8 @@ export const moveFolder = <ThrowOnError extends boolean = false>(options: Option
     }
 });
 
-export const renameFolder = <ThrowOnError extends boolean = false>(options: Options<RenameFolderData, ThrowOnError>): RequestResult<RenameFolderResponses, RenameFolderErrors, ThrowOnError> => (options.client ?? client).put<RenameFolderResponses, RenameFolderErrors, ThrowOnError>({
+export const renameFolder = <ThrowOnError extends boolean = false>(options: Options<RenameFolderData, ThrowOnError>): RequestResult<RenameFolderResponses, RenameFolderErrors, ThrowOnError, 'data'> => (options.client ?? client).put<RenameFolderResponses, RenameFolderErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/folders/{id}/rename',
     ...options,
@@ -2126,13 +2292,15 @@ export const renameFolder = <ThrowOnError extends boolean = false>(options: Opti
 /**
  * Reachable with a public-share token (`share:read`): a visitor holding an unlocked share link may call this, scoped to what that share grants.
  */
-export const listFolderResources = <ThrowOnError extends boolean = false>(options: Options<ListFolderResourcesData, ThrowOnError>): RequestResult<ListFolderResourcesResponses, ListFolderResourcesErrors, ThrowOnError> => (options.client ?? client).get<ListFolderResourcesResponses, ListFolderResourcesErrors, ThrowOnError>({
+export const listFolderResources = <ThrowOnError extends boolean = false>(options: Options<ListFolderResourcesData, ThrowOnError>): RequestResult<ListFolderResourcesResponses, ListFolderResourcesErrors, ThrowOnError, 'data'> => (options.client ?? client).get<ListFolderResourcesResponses, ListFolderResourcesErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/folders/{id}/resources',
     ...options
 });
 
-export const listOnResource = <ThrowOnError extends boolean = false>(options: Options<ListOnResourceData, ThrowOnError>): RequestResult<ListOnResourceResponses, ListOnResourceErrors, ThrowOnError> => (options.client ?? client).get<ListOnResourceResponses, ListOnResourceErrors, ThrowOnError>({
+export const listOnResource = <ThrowOnError extends boolean = false>(options: Options<ListOnResourceData, ThrowOnError>): RequestResult<ListOnResourceResponses, ListOnResourceErrors, ThrowOnError, 'data'> => (options.client ?? client).get<ListOnResourceResponses, ListOnResourceErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/grants',
     ...options
@@ -2162,7 +2330,8 @@ export const listOnResource = <ThrowOnError extends boolean = false>(options: Op
  * personal-drive guard and shared-drive last-owner protection apply
  * no matter which endpoint creates the grant.
  */
-export const createGrant = <ThrowOnError extends boolean = false>(options: Options<CreateGrantData, ThrowOnError>): RequestResult<CreateGrantResponses, CreateGrantErrors, ThrowOnError> => (options.client ?? client).post<CreateGrantResponses, CreateGrantErrors, ThrowOnError>({
+export const createGrant = <ThrowOnError extends boolean = false>(options: Options<CreateGrantData, ThrowOnError>): RequestResult<CreateGrantResponses, CreateGrantErrors, ThrowOnError, 'data'> => (options.client ?? client).post<CreateGrantResponses, CreateGrantErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/grants',
     ...options,
@@ -2172,25 +2341,29 @@ export const createGrant = <ThrowOnError extends boolean = false>(options: Optio
     }
 });
 
-export const listIncoming = <ThrowOnError extends boolean = false>(options?: Options<ListIncomingData, ThrowOnError>): RequestResult<ListIncomingResponses, unknown, ThrowOnError> => (options?.client ?? client).get<ListIncomingResponses, unknown, ThrowOnError>({
+export const listIncoming = <ThrowOnError extends boolean = false>(options?: Options<ListIncomingData, ThrowOnError>): RequestResult<ListIncomingResponses, unknown, ThrowOnError, 'data'> => (options?.client ?? client).get<ListIncomingResponses, unknown, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/grants/incoming',
     ...options
 });
 
-export const listSharedWithMe = <ThrowOnError extends boolean = false>(options?: Options<ListSharedWithMeData, ThrowOnError>): RequestResult<ListSharedWithMeResponses, unknown, ThrowOnError> => (options?.client ?? client).get<ListSharedWithMeResponses, unknown, ThrowOnError>({
+export const listSharedWithMe = <ThrowOnError extends boolean = false>(options?: Options<ListSharedWithMeData, ThrowOnError>): RequestResult<ListSharedWithMeResponses, unknown, ThrowOnError, 'data'> => (options?.client ?? client).get<ListSharedWithMeResponses, unknown, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/grants/incoming/resources',
     ...options
 });
 
-export const listOutgoing = <ThrowOnError extends boolean = false>(options?: Options<ListOutgoingData, ThrowOnError>): RequestResult<ListOutgoingResponses, unknown, ThrowOnError> => (options?.client ?? client).get<ListOutgoingResponses, unknown, ThrowOnError>({
+export const listOutgoing = <ThrowOnError extends boolean = false>(options?: Options<ListOutgoingData, ThrowOnError>): RequestResult<ListOutgoingResponses, unknown, ThrowOnError, 'data'> => (options?.client ?? client).get<ListOutgoingResponses, unknown, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/grants/outgoing',
     ...options
 });
 
-export const listMyShares = <ThrowOnError extends boolean = false>(options?: Options<ListMySharesData, ThrowOnError>): RequestResult<ListMySharesResponses, unknown, ThrowOnError> => (options?.client ?? client).get<ListMySharesResponses, unknown, ThrowOnError>({
+export const listMyShares = <ThrowOnError extends boolean = false>(options?: Options<ListMySharesData, ThrowOnError>): RequestResult<ListMySharesResponses, unknown, ThrowOnError, 'data'> => (options?.client ?? client).get<ListMySharesResponses, unknown, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/grants/outgoing/resources',
     ...options
@@ -2221,7 +2394,8 @@ export const listMyShares = <ThrowOnError extends boolean = false>(options?: Opt
  * `DriveManagementService.set_member_role` internally — the
  * personal-drive guard and shared-drive last-owner protection apply.
  */
-export const setRole = <ThrowOnError extends boolean = false>(options: Options<SetRoleData, ThrowOnError>): RequestResult<SetRoleResponses, SetRoleErrors, ThrowOnError> => (options.client ?? client).put<SetRoleResponses, SetRoleErrors, ThrowOnError>({
+export const setRole = <ThrowOnError extends boolean = false>(options: Options<SetRoleData, ThrowOnError>): RequestResult<SetRoleResponses, SetRoleErrors, ThrowOnError, 'data'> => (options.client ?? client).put<SetRoleResponses, SetRoleErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/grants/role',
     ...options,
@@ -2231,13 +2405,15 @@ export const setRole = <ThrowOnError extends boolean = false>(options: Options<S
     }
 });
 
-export const revokeGrant = <ThrowOnError extends boolean = false>(options: Options<RevokeGrantData, ThrowOnError>): RequestResult<RevokeGrantResponses, RevokeGrantErrors, ThrowOnError> => (options.client ?? client).delete<RevokeGrantResponses, RevokeGrantErrors, ThrowOnError>({
+export const revokeGrant = <ThrowOnError extends boolean = false>(options: Options<RevokeGrantData, ThrowOnError>): RequestResult<RevokeGrantResponses, RevokeGrantErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<RevokeGrantResponses, RevokeGrantErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/grants/{id}',
     ...options
 });
 
-export const notifyGrantRecipient = <ThrowOnError extends boolean = false>(options: Options<NotifyGrantRecipientData, ThrowOnError>): RequestResult<NotifyGrantRecipientResponses, NotifyGrantRecipientErrors, ThrowOnError> => (options.client ?? client).post<NotifyGrantRecipientResponses, NotifyGrantRecipientErrors, ThrowOnError>({
+export const notifyGrantRecipient = <ThrowOnError extends boolean = false>(options: Options<NotifyGrantRecipientData, ThrowOnError>): RequestResult<NotifyGrantRecipientResponses, NotifyGrantRecipientErrors, ThrowOnError, 'data'> => (options.client ?? client).post<NotifyGrantRecipientResponses, NotifyGrantRecipientErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/grants/{id}/notify',
     ...options
@@ -2246,7 +2422,8 @@ export const notifyGrantRecipient = <ThrowOnError extends boolean = false>(optio
 /**
  * List subject groups (paginated). Admin-only.
  */
-export const subjectGroupList = <ThrowOnError extends boolean = false>(options?: Options<SubjectGroupListData, ThrowOnError>): RequestResult<SubjectGroupListResponses, SubjectGroupListErrors, ThrowOnError> => (options?.client ?? client).get<SubjectGroupListResponses, SubjectGroupListErrors, ThrowOnError>({
+export const subjectGroupList = <ThrowOnError extends boolean = false>(options?: Options<SubjectGroupListData, ThrowOnError>): RequestResult<SubjectGroupListResponses, SubjectGroupListErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<SubjectGroupListResponses, SubjectGroupListErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/groups',
     ...options
@@ -2256,7 +2433,8 @@ export const subjectGroupList = <ThrowOnError extends boolean = false>(options?:
  * Create a new ReBAC subject group. Admin-only. The name must match the
  * RFC 5321 local-part shape and be globally unique (case-insensitive).
  */
-export const subjectGroupCreate = <ThrowOnError extends boolean = false>(options: Options<SubjectGroupCreateData, ThrowOnError>): RequestResult<SubjectGroupCreateResponses, SubjectGroupCreateErrors, ThrowOnError> => (options.client ?? client).post<SubjectGroupCreateResponses, SubjectGroupCreateErrors, ThrowOnError>({
+export const subjectGroupCreate = <ThrowOnError extends boolean = false>(options: Options<SubjectGroupCreateData, ThrowOnError>): RequestResult<SubjectGroupCreateResponses, SubjectGroupCreateErrors, ThrowOnError, 'data'> => (options.client ?? client).post<SubjectGroupCreateResponses, SubjectGroupCreateErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/groups',
     ...options,
@@ -2270,7 +2448,8 @@ export const subjectGroupCreate = <ThrowOnError extends boolean = false>(options
  * Search non-virtual groups by name substring. Authenticated only (no
  * admin role required) — backs the share-dialog recipient autocomplete.
  */
-export const subjectGroupSearch = <ThrowOnError extends boolean = false>(options: Options<SubjectGroupSearchData, ThrowOnError>): RequestResult<SubjectGroupSearchResponses, SubjectGroupSearchErrors, ThrowOnError> => (options.client ?? client).get<SubjectGroupSearchResponses, SubjectGroupSearchErrors, ThrowOnError>({
+export const subjectGroupSearch = <ThrowOnError extends boolean = false>(options: Options<SubjectGroupSearchData, ThrowOnError>): RequestResult<SubjectGroupSearchResponses, SubjectGroupSearchErrors, ThrowOnError, 'data'> => (options.client ?? client).get<SubjectGroupSearchResponses, SubjectGroupSearchErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/groups/search',
     ...options
@@ -2280,7 +2459,8 @@ export const subjectGroupSearch = <ThrowOnError extends boolean = false>(options
  * Delete a group. Cascades to `subject_group_members` (FK) and to
  * `access_grants` rows referencing this group as a subject. Admin-only.
  */
-export const subjectGroupDelete = <ThrowOnError extends boolean = false>(options: Options<SubjectGroupDeleteData, ThrowOnError>): RequestResult<SubjectGroupDeleteResponses, SubjectGroupDeleteErrors, ThrowOnError> => (options.client ?? client).delete<SubjectGroupDeleteResponses, SubjectGroupDeleteErrors, ThrowOnError>({
+export const subjectGroupDelete = <ThrowOnError extends boolean = false>(options: Options<SubjectGroupDeleteData, ThrowOnError>): RequestResult<SubjectGroupDeleteResponses, SubjectGroupDeleteErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<SubjectGroupDeleteResponses, SubjectGroupDeleteErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/groups/{id}',
     ...options
@@ -2289,7 +2469,8 @@ export const subjectGroupDelete = <ThrowOnError extends boolean = false>(options
 /**
  * Fetch a single group's details. Admin-only.
  */
-export const subjectGroupGet = <ThrowOnError extends boolean = false>(options: Options<SubjectGroupGetData, ThrowOnError>): RequestResult<SubjectGroupGetResponses, SubjectGroupGetErrors, ThrowOnError> => (options.client ?? client).get<SubjectGroupGetResponses, SubjectGroupGetErrors, ThrowOnError>({
+export const subjectGroupGet = <ThrowOnError extends boolean = false>(options: Options<SubjectGroupGetData, ThrowOnError>): RequestResult<SubjectGroupGetResponses, SubjectGroupGetErrors, ThrowOnError, 'data'> => (options.client ?? client).get<SubjectGroupGetResponses, SubjectGroupGetErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/groups/{id}',
     ...options
@@ -2298,7 +2479,8 @@ export const subjectGroupGet = <ThrowOnError extends boolean = false>(options: O
 /**
  * Update a group's metadata. Admin-only. v1 only persists name renames.
  */
-export const subjectGroupUpdate = <ThrowOnError extends boolean = false>(options: Options<SubjectGroupUpdateData, ThrowOnError>): RequestResult<SubjectGroupUpdateResponses, SubjectGroupUpdateErrors, ThrowOnError> => (options.client ?? client).patch<SubjectGroupUpdateResponses, SubjectGroupUpdateErrors, ThrowOnError>({
+export const subjectGroupUpdate = <ThrowOnError extends boolean = false>(options: Options<SubjectGroupUpdateData, ThrowOnError>): RequestResult<SubjectGroupUpdateResponses, SubjectGroupUpdateErrors, ThrowOnError, 'data'> => (options.client ?? client).patch<SubjectGroupUpdateResponses, SubjectGroupUpdateErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/groups/{id}',
     ...options,
@@ -2312,7 +2494,8 @@ export const subjectGroupUpdate = <ThrowOnError extends boolean = false>(options
  * List every user transitively reached through this group (members of
  * members of members, etc.). Used by admin / audit tooling. Admin-only.
  */
-export const subjectGroupEffectiveMembers = <ThrowOnError extends boolean = false>(options: Options<SubjectGroupEffectiveMembersData, ThrowOnError>): RequestResult<SubjectGroupEffectiveMembersResponses, SubjectGroupEffectiveMembersErrors, ThrowOnError> => (options.client ?? client).get<SubjectGroupEffectiveMembersResponses, SubjectGroupEffectiveMembersErrors, ThrowOnError>({
+export const subjectGroupEffectiveMembers = <ThrowOnError extends boolean = false>(options: Options<SubjectGroupEffectiveMembersData, ThrowOnError>): RequestResult<SubjectGroupEffectiveMembersResponses, SubjectGroupEffectiveMembersErrors, ThrowOnError, 'data'> => (options.client ?? client).get<SubjectGroupEffectiveMembersResponses, SubjectGroupEffectiveMembersErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/groups/{id}/effective-members',
     ...options
@@ -2321,7 +2504,8 @@ export const subjectGroupEffectiveMembers = <ThrowOnError extends boolean = fals
 /**
  * List the *direct* members of a group (one level only). Admin-only.
  */
-export const subjectGroupListMembers = <ThrowOnError extends boolean = false>(options: Options<SubjectGroupListMembersData, ThrowOnError>): RequestResult<SubjectGroupListMembersResponses, SubjectGroupListMembersErrors, ThrowOnError> => (options.client ?? client).get<SubjectGroupListMembersResponses, SubjectGroupListMembersErrors, ThrowOnError>({
+export const subjectGroupListMembers = <ThrowOnError extends boolean = false>(options: Options<SubjectGroupListMembersData, ThrowOnError>): RequestResult<SubjectGroupListMembersResponses, SubjectGroupListMembersErrors, ThrowOnError, 'data'> => (options.client ?? client).get<SubjectGroupListMembersResponses, SubjectGroupListMembersErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/groups/{id}/members',
     ...options
@@ -2332,7 +2516,8 @@ export const subjectGroupListMembers = <ThrowOnError extends boolean = false>(op
  * provided. Adding a group-member runs a write-time cycle check and a
  * nesting-depth check (max 8). Admin-only.
  */
-export const subjectGroupAddMember = <ThrowOnError extends boolean = false>(options: Options<SubjectGroupAddMemberData, ThrowOnError>): RequestResult<SubjectGroupAddMemberResponses, SubjectGroupAddMemberErrors, ThrowOnError> => (options.client ?? client).post<SubjectGroupAddMemberResponses, SubjectGroupAddMemberErrors, ThrowOnError>({
+export const subjectGroupAddMember = <ThrowOnError extends boolean = false>(options: Options<SubjectGroupAddMemberData, ThrowOnError>): RequestResult<SubjectGroupAddMemberResponses, SubjectGroupAddMemberErrors, ThrowOnError, 'data'> => (options.client ?? client).post<SubjectGroupAddMemberResponses, SubjectGroupAddMemberErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/groups/{id}/members',
     ...options,
@@ -2345,7 +2530,8 @@ export const subjectGroupAddMember = <ThrowOnError extends boolean = false>(opti
 /**
  * Remove a nested group-member from a group. Admin-only.
  */
-export const subjectGroupRemoveGroupMember = <ThrowOnError extends boolean = false>(options: Options<SubjectGroupRemoveGroupMemberData, ThrowOnError>): RequestResult<SubjectGroupRemoveGroupMemberResponses, SubjectGroupRemoveGroupMemberErrors, ThrowOnError> => (options.client ?? client).delete<SubjectGroupRemoveGroupMemberResponses, SubjectGroupRemoveGroupMemberErrors, ThrowOnError>({
+export const subjectGroupRemoveGroupMember = <ThrowOnError extends boolean = false>(options: Options<SubjectGroupRemoveGroupMemberData, ThrowOnError>): RequestResult<SubjectGroupRemoveGroupMemberResponses, SubjectGroupRemoveGroupMemberErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<SubjectGroupRemoveGroupMemberResponses, SubjectGroupRemoveGroupMemberErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/groups/{id}/members/group/{gid}',
     ...options
@@ -2354,22 +2540,36 @@ export const subjectGroupRemoveGroupMember = <ThrowOnError extends boolean = fal
 /**
  * Remove a user-member from a group. Admin-only.
  */
-export const subjectGroupRemoveUserMember = <ThrowOnError extends boolean = false>(options: Options<SubjectGroupRemoveUserMemberData, ThrowOnError>): RequestResult<SubjectGroupRemoveUserMemberResponses, SubjectGroupRemoveUserMemberErrors, ThrowOnError> => (options.client ?? client).delete<SubjectGroupRemoveUserMemberResponses, SubjectGroupRemoveUserMemberErrors, ThrowOnError>({
+export const subjectGroupRemoveUserMember = <ThrowOnError extends boolean = false>(options: Options<SubjectGroupRemoveUserMemberData, ThrowOnError>): RequestResult<SubjectGroupRemoveUserMemberResponses, SubjectGroupRemoveUserMemberErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<SubjectGroupRemoveUserMemberResponses, SubjectGroupRemoveUserMemberErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/groups/{id}/members/user/{uid}',
     ...options
 });
 
-export const getLocales = <ThrowOnError extends boolean = false>(options?: Options<GetLocalesData, ThrowOnError>): RequestResult<GetLocalesResponses, unknown, ThrowOnError> => (options?.client ?? client).get<GetLocalesResponses, unknown, ThrowOnError>({ url: '/api/i18n/locales', ...options });
+export const getLocales = <ThrowOnError extends boolean = false>(options?: Options<GetLocalesData, ThrowOnError>): RequestResult<GetLocalesResponses, unknown, ThrowOnError, 'data'> => (options?.client ?? client).get<GetLocalesResponses, unknown, ThrowOnError, 'data'>({
+    responseStyle: 'data',
+    url: '/api/i18n/locales',
+    ...options
+});
 
-export const getTranslationsByLocale = <ThrowOnError extends boolean = false>(options: Options<GetTranslationsByLocaleData, ThrowOnError>): RequestResult<GetTranslationsByLocaleResponses, GetTranslationsByLocaleErrors, ThrowOnError> => (options.client ?? client).get<GetTranslationsByLocaleResponses, GetTranslationsByLocaleErrors, ThrowOnError>({ url: '/api/i18n/locales/{locale_code}', ...options });
+export const getTranslationsByLocale = <ThrowOnError extends boolean = false>(options: Options<GetTranslationsByLocaleData, ThrowOnError>): RequestResult<GetTranslationsByLocaleResponses, GetTranslationsByLocaleErrors, ThrowOnError, 'data'> => (options.client ?? client).get<GetTranslationsByLocaleResponses, GetTranslationsByLocaleErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
+    url: '/api/i18n/locales/{locale_code}',
+    ...options
+});
 
-export const translate = <ThrowOnError extends boolean = false>(options: Options<TranslateData, ThrowOnError>): RequestResult<TranslateResponses, TranslateErrors, ThrowOnError> => (options.client ?? client).get<TranslateResponses, TranslateErrors, ThrowOnError>({ url: '/api/i18n/translate', ...options });
+export const translate = <ThrowOnError extends boolean = false>(options: Options<TranslateData, ThrowOnError>): RequestResult<TranslateResponses, TranslateErrors, ThrowOnError, 'data'> => (options.client ?? client).get<TranslateResponses, TranslateErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
+    url: '/api/i18n/translate',
+    ...options
+});
 
 /**
  * GET /api/notifications
  */
-export const listNotifications = <ThrowOnError extends boolean = false>(options?: Options<ListNotificationsData, ThrowOnError>): RequestResult<ListNotificationsResponses, unknown, ThrowOnError> => (options?.client ?? client).get<ListNotificationsResponses, unknown, ThrowOnError>({
+export const listNotifications = <ThrowOnError extends boolean = false>(options?: Options<ListNotificationsData, ThrowOnError>): RequestResult<ListNotificationsResponses, unknown, ThrowOnError, 'data'> => (options?.client ?? client).get<ListNotificationsResponses, unknown, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/notifications',
     ...options
@@ -2378,7 +2578,8 @@ export const listNotifications = <ThrowOnError extends boolean = false>(options?
 /**
  * POST /api/notifications/read-all — bulk mark-all-read.
  */
-export const markAllRead = <ThrowOnError extends boolean = false>(options?: Options<MarkAllReadData, ThrowOnError>): RequestResult<MarkAllReadResponses, unknown, ThrowOnError> => (options?.client ?? client).post<MarkAllReadResponses, unknown, ThrowOnError>({
+export const markAllRead = <ThrowOnError extends boolean = false>(options?: Options<MarkAllReadData, ThrowOnError>): RequestResult<MarkAllReadResponses, unknown, ThrowOnError, 'data'> => (options?.client ?? client).post<MarkAllReadResponses, unknown, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/notifications/read-all',
     ...options
@@ -2387,7 +2588,8 @@ export const markAllRead = <ThrowOnError extends boolean = false>(options?: Opti
 /**
  * GET /api/notifications/unread — badge-only fast path.
  */
-export const unreadCount = <ThrowOnError extends boolean = false>(options?: Options<UnreadCountData, ThrowOnError>): RequestResult<UnreadCountResponses, unknown, ThrowOnError> => (options?.client ?? client).get<UnreadCountResponses, unknown, ThrowOnError>({
+export const unreadCount = <ThrowOnError extends boolean = false>(options?: Options<UnreadCountData, ThrowOnError>): RequestResult<UnreadCountResponses, unknown, ThrowOnError, 'data'> => (options?.client ?? client).get<UnreadCountResponses, unknown, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/notifications/unread',
     ...options
@@ -2398,7 +2600,8 @@ export const unreadCount = <ThrowOnError extends boolean = false>(options?: Opti
  *
  * Same anti-enum semantics as `mark_read` — always 204.
  */
-export const deleteNotification = <ThrowOnError extends boolean = false>(options: Options<DeleteNotificationData, ThrowOnError>): RequestResult<DeleteNotificationResponses, unknown, ThrowOnError> => (options.client ?? client).delete<DeleteNotificationResponses, unknown, ThrowOnError>({
+export const deleteNotification = <ThrowOnError extends boolean = false>(options: Options<DeleteNotificationData, ThrowOnError>): RequestResult<DeleteNotificationResponses, unknown, ThrowOnError, 'data'> => (options.client ?? client).delete<DeleteNotificationResponses, unknown, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/notifications/{id}',
     ...options
@@ -2412,7 +2615,8 @@ export const deleteNotification = <ThrowOnError extends boolean = false>(options
  * (audit reason `notification.marked_read` on success), never
  * surfaced to the wire.
  */
-export const markRead = <ThrowOnError extends boolean = false>(options: Options<MarkReadData, ThrowOnError>): RequestResult<MarkReadResponses, unknown, ThrowOnError> => (options.client ?? client).post<MarkReadResponses, unknown, ThrowOnError>({
+export const markRead = <ThrowOnError extends boolean = false>(options: Options<MarkReadData, ThrowOnError>): RequestResult<MarkReadResponses, unknown, ThrowOnError, 'data'> => (options.client ?? client).post<MarkReadResponses, unknown, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/notifications/{id}/read',
     ...options
@@ -2421,22 +2625,35 @@ export const markRead = <ThrowOnError extends boolean = false>(options: Options<
 /**
  * GET /api/people — identity clusters for the caller.
  */
-export const listPeople = <ThrowOnError extends boolean = false>(options?: Options<ListPeopleData, ThrowOnError>): RequestResult<ListPeopleResponses, ListPeopleErrors, ThrowOnError> => (options?.client ?? client).get<ListPeopleResponses, ListPeopleErrors, ThrowOnError>({ url: '/api/people', ...options });
+export const listPeople = <ThrowOnError extends boolean = false>(options?: Options<ListPeopleData, ThrowOnError>): RequestResult<ListPeopleResponses, ListPeopleErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<ListPeopleResponses, ListPeopleErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
+    url: '/api/people',
+    ...options
+});
 
 /**
  * DELETE /api/people/data — erase all of the caller's face data.
  */
-export const deleteAll = <ThrowOnError extends boolean = false>(options?: Options<DeleteAllData, ThrowOnError>): RequestResult<DeleteAllResponses, DeleteAllErrors, ThrowOnError> => (options?.client ?? client).delete<DeleteAllResponses, DeleteAllErrors, ThrowOnError>({ url: '/api/people/data', ...options });
+export const deleteAll = <ThrowOnError extends boolean = false>(options?: Options<DeleteAllData, ThrowOnError>): RequestResult<DeleteAllResponses, DeleteAllErrors, ThrowOnError, 'data'> => (options?.client ?? client).delete<DeleteAllResponses, DeleteAllErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
+    url: '/api/people/data',
+    ...options
+});
 
 /**
  * GET /api/people/faces/{file_id} — face boxes within a photo (lightbox tags).
  */
-export const facesForFile = <ThrowOnError extends boolean = false>(options: Options<FacesForFileData, ThrowOnError>): RequestResult<FacesForFileResponses, FacesForFileErrors, ThrowOnError> => (options.client ?? client).get<FacesForFileResponses, FacesForFileErrors, ThrowOnError>({ url: '/api/people/faces/{file_id}', ...options });
+export const facesForFile = <ThrowOnError extends boolean = false>(options: Options<FacesForFileData, ThrowOnError>): RequestResult<FacesForFileResponses, FacesForFileErrors, ThrowOnError, 'data'> => (options.client ?? client).get<FacesForFileResponses, FacesForFileErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
+    url: '/api/people/faces/{file_id}',
+    ...options
+});
 
 /**
  * POST /api/people/merge — merge `from` into `into`.
  */
-export const mergePeople = <ThrowOnError extends boolean = false>(options: Options<MergePeopleData, ThrowOnError>): RequestResult<MergePeopleResponses, MergePeopleErrors, ThrowOnError> => (options.client ?? client).post<MergePeopleResponses, MergePeopleErrors, ThrowOnError>({
+export const mergePeople = <ThrowOnError extends boolean = false>(options: Options<MergePeopleData, ThrowOnError>): RequestResult<MergePeopleResponses, MergePeopleErrors, ThrowOnError, 'data'> => (options.client ?? client).post<MergePeopleResponses, MergePeopleErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     url: '/api/people/merge',
     ...options,
     headers: {
@@ -2448,12 +2665,17 @@ export const mergePeople = <ThrowOnError extends boolean = false>(options: Optio
 /**
  * POST /api/people/recluster — re-run identity clustering for the caller.
  */
-export const recluster = <ThrowOnError extends boolean = false>(options?: Options<ReclusterData, ThrowOnError>): RequestResult<ReclusterResponses, ReclusterErrors, ThrowOnError> => (options?.client ?? client).post<ReclusterResponses, ReclusterErrors, ThrowOnError>({ url: '/api/people/recluster', ...options });
+export const recluster = <ThrowOnError extends boolean = false>(options?: Options<ReclusterData, ThrowOnError>): RequestResult<ReclusterResponses, ReclusterErrors, ThrowOnError, 'data'> => (options?.client ?? client).post<ReclusterResponses, ReclusterErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
+    url: '/api/people/recluster',
+    ...options
+});
 
 /**
  * PATCH /api/people/{id} — name (or clear the name of) a person.
  */
-export const renamePerson = <ThrowOnError extends boolean = false>(options: Options<RenamePersonData, ThrowOnError>): RequestResult<RenamePersonResponses, RenamePersonErrors, ThrowOnError> => (options.client ?? client).patch<RenamePersonResponses, RenamePersonErrors, ThrowOnError>({
+export const renamePerson = <ThrowOnError extends boolean = false>(options: Options<RenamePersonData, ThrowOnError>): RequestResult<RenamePersonResponses, RenamePersonErrors, ThrowOnError, 'data'> => (options.client ?? client).patch<RenamePersonResponses, RenamePersonErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     url: '/api/people/{id}',
     ...options,
     headers: {
@@ -2465,14 +2687,19 @@ export const renamePerson = <ThrowOnError extends boolean = false>(options: Opti
 /**
  * GET /api/people/{id}/photos — file ids of a person's photos.
  */
-export const personPhotos = <ThrowOnError extends boolean = false>(options: Options<PersonPhotosData, ThrowOnError>): RequestResult<PersonPhotosResponses, PersonPhotosErrors, ThrowOnError> => (options.client ?? client).get<PersonPhotosResponses, PersonPhotosErrors, ThrowOnError>({ url: '/api/people/{id}/photos', ...options });
+export const personPhotos = <ThrowOnError extends boolean = false>(options: Options<PersonPhotosData, ThrowOnError>): RequestResult<PersonPhotosResponses, PersonPhotosErrors, ThrowOnError, 'data'> => (options.client ?? client).get<PersonPhotosResponses, PersonPhotosErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
+    url: '/api/people/{id}/photos',
+    ...options
+});
 
 /**
  * Lists the caller's geotagged photos aggregated into map clusters within a
  * bounding box. Gated on `OXICLOUD_ENABLE_PLACES` (the route is only mounted
  * when the Places service is present).
  */
-export const listPhotosGeo = <ThrowOnError extends boolean = false>(options: Options<ListPhotosGeoData, ThrowOnError>): RequestResult<ListPhotosGeoResponses, ListPhotosGeoErrors, ThrowOnError> => (options.client ?? client).get<ListPhotosGeoResponses, ListPhotosGeoErrors, ThrowOnError>({
+export const listPhotosGeo = <ThrowOnError extends boolean = false>(options: Options<ListPhotosGeoData, ThrowOnError>): RequestResult<ListPhotosGeoResponses, ListPhotosGeoErrors, ThrowOnError, 'data'> => (options.client ?? client).get<ListPhotosGeoResponses, ListPhotosGeoErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/photos/geo',
     ...options
@@ -2494,19 +2721,22 @@ export const listPhotosGeo = <ThrowOnError extends boolean = false>(options: Opt
  * handler returns 400; invalid payloads must fail loud rather than
  * paginate across axes.
  */
-export const listPhotosResources = <ThrowOnError extends boolean = false>(options?: Options<ListPhotosResourcesData, ThrowOnError>): RequestResult<ListPhotosResourcesResponses, ListPhotosResourcesErrors, ThrowOnError> => (options?.client ?? client).get<ListPhotosResourcesResponses, ListPhotosResourcesErrors, ThrowOnError>({
+export const listPhotosResources = <ThrowOnError extends boolean = false>(options?: Options<ListPhotosResourcesData, ThrowOnError>): RequestResult<ListPhotosResourcesResponses, ListPhotosResourcesErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<ListPhotosResourcesResponses, ListPhotosResourcesErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/photos/resources',
     ...options
 });
 
-export const listPlaylists = <ThrowOnError extends boolean = false>(options?: Options<ListPlaylistsData, ThrowOnError>): RequestResult<ListPlaylistsResponses, ListPlaylistsErrors, ThrowOnError> => (options?.client ?? client).get<ListPlaylistsResponses, ListPlaylistsErrors, ThrowOnError>({
+export const listPlaylists = <ThrowOnError extends boolean = false>(options?: Options<ListPlaylistsData, ThrowOnError>): RequestResult<ListPlaylistsResponses, ListPlaylistsErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<ListPlaylistsResponses, ListPlaylistsErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/playlists',
     ...options
 });
 
-export const createPlaylist = <ThrowOnError extends boolean = false>(options: Options<CreatePlaylistData, ThrowOnError>): RequestResult<CreatePlaylistResponses, CreatePlaylistErrors, ThrowOnError> => (options.client ?? client).post<CreatePlaylistResponses, CreatePlaylistErrors, ThrowOnError>({
+export const createPlaylist = <ThrowOnError extends boolean = false>(options: Options<CreatePlaylistData, ThrowOnError>): RequestResult<CreatePlaylistResponses, CreatePlaylistErrors, ThrowOnError, 'data'> => (options.client ?? client).post<CreatePlaylistResponses, CreatePlaylistErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/playlists',
     ...options,
@@ -2516,25 +2746,29 @@ export const createPlaylist = <ThrowOnError extends boolean = false>(options: Op
     }
 });
 
-export const getAudioMetadata = <ThrowOnError extends boolean = false>(options: Options<GetAudioMetadataData, ThrowOnError>): RequestResult<GetAudioMetadataResponses, GetAudioMetadataErrors, ThrowOnError> => (options.client ?? client).get<GetAudioMetadataResponses, GetAudioMetadataErrors, ThrowOnError>({
+export const getAudioMetadata = <ThrowOnError extends boolean = false>(options: Options<GetAudioMetadataData, ThrowOnError>): RequestResult<GetAudioMetadataResponses, GetAudioMetadataErrors, ThrowOnError, 'data'> => (options.client ?? client).get<GetAudioMetadataResponses, GetAudioMetadataErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/playlists/audio-metadata/{file_id}',
     ...options
 });
 
-export const deletePlaylist = <ThrowOnError extends boolean = false>(options: Options<DeletePlaylistData, ThrowOnError>): RequestResult<DeletePlaylistResponses, DeletePlaylistErrors, ThrowOnError> => (options.client ?? client).delete<DeletePlaylistResponses, DeletePlaylistErrors, ThrowOnError>({
+export const deletePlaylist = <ThrowOnError extends boolean = false>(options: Options<DeletePlaylistData, ThrowOnError>): RequestResult<DeletePlaylistResponses, DeletePlaylistErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<DeletePlaylistResponses, DeletePlaylistErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/playlists/{playlist_id}',
     ...options
 });
 
-export const getPlaylist = <ThrowOnError extends boolean = false>(options: Options<GetPlaylistData, ThrowOnError>): RequestResult<GetPlaylistResponses, GetPlaylistErrors, ThrowOnError> => (options.client ?? client).get<GetPlaylistResponses, GetPlaylistErrors, ThrowOnError>({
+export const getPlaylist = <ThrowOnError extends boolean = false>(options: Options<GetPlaylistData, ThrowOnError>): RequestResult<GetPlaylistResponses, GetPlaylistErrors, ThrowOnError, 'data'> => (options.client ?? client).get<GetPlaylistResponses, GetPlaylistErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/playlists/{playlist_id}',
     ...options
 });
 
-export const updatePlaylist = <ThrowOnError extends boolean = false>(options: Options<UpdatePlaylistData, ThrowOnError>): RequestResult<UpdatePlaylistResponses, UpdatePlaylistErrors, ThrowOnError> => (options.client ?? client).put<UpdatePlaylistResponses, UpdatePlaylistErrors, ThrowOnError>({
+export const updatePlaylist = <ThrowOnError extends boolean = false>(options: Options<UpdatePlaylistData, ThrowOnError>): RequestResult<UpdatePlaylistResponses, UpdatePlaylistErrors, ThrowOnError, 'data'> => (options.client ?? client).put<UpdatePlaylistResponses, UpdatePlaylistErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/playlists/{playlist_id}',
     ...options,
@@ -2544,7 +2778,8 @@ export const updatePlaylist = <ThrowOnError extends boolean = false>(options: Op
     }
 });
 
-export const reorderTracks = <ThrowOnError extends boolean = false>(options: Options<ReorderTracksData, ThrowOnError>): RequestResult<ReorderTracksResponses, ReorderTracksErrors, ThrowOnError> => (options.client ?? client).put<ReorderTracksResponses, ReorderTracksErrors, ThrowOnError>({
+export const reorderTracks = <ThrowOnError extends boolean = false>(options: Options<ReorderTracksData, ThrowOnError>): RequestResult<ReorderTracksResponses, ReorderTracksErrors, ThrowOnError, 'data'> => (options.client ?? client).put<ReorderTracksResponses, ReorderTracksErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/playlists/{playlist_id}/reorder',
     ...options,
@@ -2554,7 +2789,8 @@ export const reorderTracks = <ThrowOnError extends boolean = false>(options: Opt
     }
 });
 
-export const sharePlaylist = <ThrowOnError extends boolean = false>(options: Options<SharePlaylistData, ThrowOnError>): RequestResult<SharePlaylistResponses, SharePlaylistErrors, ThrowOnError> => (options.client ?? client).post<SharePlaylistResponses, SharePlaylistErrors, ThrowOnError>({
+export const sharePlaylist = <ThrowOnError extends boolean = false>(options: Options<SharePlaylistData, ThrowOnError>): RequestResult<SharePlaylistResponses, SharePlaylistErrors, ThrowOnError, 'data'> => (options.client ?? client).post<SharePlaylistResponses, SharePlaylistErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/playlists/{playlist_id}/share',
     ...options,
@@ -2564,25 +2800,29 @@ export const sharePlaylist = <ThrowOnError extends boolean = false>(options: Opt
     }
 });
 
-export const removeShare = <ThrowOnError extends boolean = false>(options: Options<RemoveShareData, ThrowOnError>): RequestResult<RemoveShareResponses, RemoveShareErrors, ThrowOnError> => (options.client ?? client).delete<RemoveShareResponses, RemoveShareErrors, ThrowOnError>({
+export const removeShare = <ThrowOnError extends boolean = false>(options: Options<RemoveShareData, ThrowOnError>): RequestResult<RemoveShareResponses, RemoveShareErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<RemoveShareResponses, RemoveShareErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/playlists/{playlist_id}/share/{user_id}',
     ...options
 });
 
-export const getPlaylistShares = <ThrowOnError extends boolean = false>(options: Options<GetPlaylistSharesData, ThrowOnError>): RequestResult<GetPlaylistSharesResponses, GetPlaylistSharesErrors, ThrowOnError> => (options.client ?? client).get<GetPlaylistSharesResponses, GetPlaylistSharesErrors, ThrowOnError>({
+export const getPlaylistShares = <ThrowOnError extends boolean = false>(options: Options<GetPlaylistSharesData, ThrowOnError>): RequestResult<GetPlaylistSharesResponses, GetPlaylistSharesErrors, ThrowOnError, 'data'> => (options.client ?? client).get<GetPlaylistSharesResponses, GetPlaylistSharesErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/playlists/{playlist_id}/shares',
     ...options
 });
 
-export const listPlaylistTracks = <ThrowOnError extends boolean = false>(options: Options<ListPlaylistTracksData, ThrowOnError>): RequestResult<ListPlaylistTracksResponses, ListPlaylistTracksErrors, ThrowOnError> => (options.client ?? client).get<ListPlaylistTracksResponses, ListPlaylistTracksErrors, ThrowOnError>({
+export const listPlaylistTracks = <ThrowOnError extends boolean = false>(options: Options<ListPlaylistTracksData, ThrowOnError>): RequestResult<ListPlaylistTracksResponses, ListPlaylistTracksErrors, ThrowOnError, 'data'> => (options.client ?? client).get<ListPlaylistTracksResponses, ListPlaylistTracksErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/playlists/{playlist_id}/tracks',
     ...options
 });
 
-export const addTracks = <ThrowOnError extends boolean = false>(options: Options<AddTracksData, ThrowOnError>): RequestResult<AddTracksResponses, AddTracksErrors, ThrowOnError> => (options.client ?? client).post<AddTracksResponses, AddTracksErrors, ThrowOnError>({
+export const addTracks = <ThrowOnError extends boolean = false>(options: Options<AddTracksData, ThrowOnError>): RequestResult<AddTracksResponses, AddTracksErrors, ThrowOnError, 'data'> => (options.client ?? client).post<AddTracksResponses, AddTracksErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/playlists/{playlist_id}/tracks',
     ...options,
@@ -2592,7 +2832,8 @@ export const addTracks = <ThrowOnError extends boolean = false>(options: Options
     }
 });
 
-export const removeTrack = <ThrowOnError extends boolean = false>(options: Options<RemoveTrackData, ThrowOnError>): RequestResult<RemoveTrackResponses, RemoveTrackErrors, ThrowOnError> => (options.client ?? client).delete<RemoveTrackResponses, RemoveTrackErrors, ThrowOnError>({
+export const removeTrack = <ThrowOnError extends boolean = false>(options: Options<RemoveTrackData, ThrowOnError>): RequestResult<RemoveTrackResponses, RemoveTrackErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<RemoveTrackResponses, RemoveTrackErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/playlists/{playlist_id}/tracks/{file_id}',
     ...options
@@ -2601,7 +2842,8 @@ export const removeTrack = <ThrowOnError extends boolean = false>(options: Optio
 /**
  * Clear all recent items
  */
-export const clearRecentItems = <ThrowOnError extends boolean = false>(options?: Options<ClearRecentItemsData, ThrowOnError>): RequestResult<ClearRecentItemsResponses, unknown, ThrowOnError> => (options?.client ?? client).delete<ClearRecentItemsResponses, unknown, ThrowOnError>({
+export const clearRecentItems = <ThrowOnError extends boolean = false>(options?: Options<ClearRecentItemsData, ThrowOnError>): RequestResult<ClearRecentItemsResponses, unknown, ThrowOnError, 'data'> => (options?.client ?? client).delete<ClearRecentItemsResponses, unknown, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/recent/clear',
     ...options
@@ -2613,7 +2855,8 @@ export const clearRecentItems = <ThrowOnError extends boolean = false>(options?:
  * Sorted by `accessed_at` DESC by default (most recently accessed first).
  * `path` is cleared when the resource is not owned by the requesting user.
  */
-export const listRecentResources = <ThrowOnError extends boolean = false>(options?: Options<ListRecentResourcesData, ThrowOnError>): RequestResult<ListRecentResourcesResponses, ListRecentResourcesErrors, ThrowOnError> => (options?.client ?? client).get<ListRecentResourcesResponses, ListRecentResourcesErrors, ThrowOnError>({
+export const listRecentResources = <ThrowOnError extends boolean = false>(options?: Options<ListRecentResourcesData, ThrowOnError>): RequestResult<ListRecentResourcesResponses, ListRecentResourcesErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<ListRecentResourcesResponses, ListRecentResourcesErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/recent/resources',
     ...options
@@ -2622,7 +2865,8 @@ export const listRecentResources = <ThrowOnError extends boolean = false>(option
 /**
  * Remove an item from recents
  */
-export const removeFromRecent = <ThrowOnError extends boolean = false>(options: Options<RemoveFromRecentData, ThrowOnError>): RequestResult<RemoveFromRecentResponses, RemoveFromRecentErrors, ThrowOnError> => (options.client ?? client).delete<RemoveFromRecentResponses, RemoveFromRecentErrors, ThrowOnError>({
+export const removeFromRecent = <ThrowOnError extends boolean = false>(options: Options<RemoveFromRecentData, ThrowOnError>): RequestResult<RemoveFromRecentResponses, RemoveFromRecentErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<RemoveFromRecentResponses, RemoveFromRecentErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/recent/{item_type}/{item_id}',
     ...options
@@ -2631,7 +2875,8 @@ export const removeFromRecent = <ThrowOnError extends boolean = false>(options: 
 /**
  * Record access to an item
  */
-export const recordItemAccess = <ThrowOnError extends boolean = false>(options: Options<RecordItemAccessData, ThrowOnError>): RequestResult<RecordItemAccessResponses, RecordItemAccessErrors, ThrowOnError> => (options.client ?? client).post<RecordItemAccessResponses, RecordItemAccessErrors, ThrowOnError>({
+export const recordItemAccess = <ThrowOnError extends boolean = false>(options: Options<RecordItemAccessData, ThrowOnError>): RequestResult<RecordItemAccessResponses, RecordItemAccessErrors, ThrowOnError, 'data'> => (options.client ?? client).post<RecordItemAccessResponses, RecordItemAccessErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/recent/{item_type}/{item_id}',
     ...options
@@ -2640,12 +2885,17 @@ export const recordItemAccess = <ThrowOnError extends boolean = false>(options: 
 /**
  * Access a shared item via its token
  */
-export const accessSharedItem = <ThrowOnError extends boolean = false>(options: Options<AccessSharedItemData, ThrowOnError>): RequestResult<AccessSharedItemResponses, AccessSharedItemErrors, ThrowOnError> => (options.client ?? client).get<AccessSharedItemResponses, AccessSharedItemErrors, ThrowOnError>({ url: '/api/s/{token}', ...options });
+export const accessSharedItem = <ThrowOnError extends boolean = false>(options: Options<AccessSharedItemData, ThrowOnError>): RequestResult<AccessSharedItemResponses, AccessSharedItemErrors, ThrowOnError, 'data'> => (options.client ?? client).get<AccessSharedItemResponses, AccessSharedItemErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
+    url: '/api/s/{token}',
+    ...options
+});
 
 /**
  * Verify password for a password-protected shared item
  */
-export const verifySharedItemPassword = <ThrowOnError extends boolean = false>(options: Options<VerifySharedItemPasswordData, ThrowOnError>): RequestResult<VerifySharedItemPasswordResponses, VerifySharedItemPasswordErrors, ThrowOnError> => (options.client ?? client).post<VerifySharedItemPasswordResponses, VerifySharedItemPasswordErrors, ThrowOnError>({
+export const verifySharedItemPassword = <ThrowOnError extends boolean = false>(options: Options<VerifySharedItemPasswordData, ThrowOnError>): RequestResult<VerifySharedItemPasswordResponses, VerifySharedItemPasswordErrors, ThrowOnError, 'data'> => (options.client ?? client).post<VerifySharedItemPasswordResponses, VerifySharedItemPasswordErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     url: '/api/s/{token}/verify',
     ...options,
     headers: {
@@ -2654,13 +2904,15 @@ export const verifySharedItemPassword = <ThrowOnError extends boolean = false>(o
     }
 });
 
-export const searchResources = <ThrowOnError extends boolean = false>(options?: Options<SearchResourcesData, ThrowOnError>): RequestResult<SearchResourcesResponses, SearchResourcesErrors, ThrowOnError> => (options?.client ?? client).get<SearchResourcesResponses, SearchResourcesErrors, ThrowOnError>({
+export const searchResources = <ThrowOnError extends boolean = false>(options?: Options<SearchResourcesData, ThrowOnError>): RequestResult<SearchResourcesResponses, SearchResourcesErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<SearchResourcesResponses, SearchResourcesErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/search',
     ...options
 });
 
-export const suggestFiles = <ThrowOnError extends boolean = false>(options: Options<SuggestFilesData, ThrowOnError>): RequestResult<SuggestFilesResponses, SuggestFilesErrors, ThrowOnError> => (options.client ?? client).get<SuggestFilesResponses, SuggestFilesErrors, ThrowOnError>({
+export const suggestFiles = <ThrowOnError extends boolean = false>(options: Options<SuggestFilesData, ThrowOnError>): RequestResult<SuggestFilesResponses, SuggestFilesErrors, ThrowOnError, 'data'> => (options.client ?? client).get<SuggestFilesResponses, SuggestFilesErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/search/suggest',
     ...options
@@ -2673,7 +2925,8 @@ export const suggestFiles = <ThrowOnError extends boolean = false>(options: Opti
  * Once the admin is created the endpoint permanently returns 403.
  * Uses an atomic "claim" operation so concurrent requests cannot both succeed.
  */
-export const setupAdmin = <ThrowOnError extends boolean = false>(options: Options<SetupAdminData, ThrowOnError>): RequestResult<SetupAdminResponses, SetupAdminErrors, ThrowOnError> => (options.client ?? client).post<SetupAdminResponses, SetupAdminErrors, ThrowOnError>({
+export const setupAdmin = <ThrowOnError extends boolean = false>(options: Options<SetupAdminData, ThrowOnError>): RequestResult<SetupAdminResponses, SetupAdminErrors, ThrowOnError, 'data'> => (options.client ?? client).post<SetupAdminResponses, SetupAdminErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     url: '/api/setup',
     ...options,
     headers: {
@@ -2686,7 +2939,8 @@ export const setupAdmin = <ThrowOnError extends boolean = false>(options: Option
  * Get all shared links created by the current user.
  * Supports optional filtering by item_id + item_type query params.
  */
-export const getUserShares = <ThrowOnError extends boolean = false>(options?: Options<GetUserSharesData, ThrowOnError>): RequestResult<GetUserSharesResponses, unknown, ThrowOnError> => (options?.client ?? client).get<GetUserSharesResponses, unknown, ThrowOnError>({
+export const getUserShares = <ThrowOnError extends boolean = false>(options?: Options<GetUserSharesData, ThrowOnError>): RequestResult<GetUserSharesResponses, unknown, ThrowOnError, 'data'> => (options?.client ?? client).get<GetUserSharesResponses, unknown, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/shares',
     ...options
@@ -2695,7 +2949,8 @@ export const getUserShares = <ThrowOnError extends boolean = false>(options?: Op
 /**
  * Create a new shared link
  */
-export const createSharedLink = <ThrowOnError extends boolean = false>(options: Options<CreateSharedLinkData, ThrowOnError>): RequestResult<CreateSharedLinkResponses, CreateSharedLinkErrors, ThrowOnError> => (options.client ?? client).post<CreateSharedLinkResponses, CreateSharedLinkErrors, ThrowOnError>({
+export const createSharedLink = <ThrowOnError extends boolean = false>(options: Options<CreateSharedLinkData, ThrowOnError>): RequestResult<CreateSharedLinkResponses, CreateSharedLinkErrors, ThrowOnError, 'data'> => (options.client ?? client).post<CreateSharedLinkResponses, CreateSharedLinkErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/shares',
     ...options,
@@ -2708,7 +2963,8 @@ export const createSharedLink = <ThrowOnError extends boolean = false>(options: 
 /**
  * Delete a shared link
  */
-export const deleteSharedLink = <ThrowOnError extends boolean = false>(options: Options<DeleteSharedLinkData, ThrowOnError>): RequestResult<DeleteSharedLinkResponses, DeleteSharedLinkErrors, ThrowOnError> => (options.client ?? client).delete<DeleteSharedLinkResponses, DeleteSharedLinkErrors, ThrowOnError>({
+export const deleteSharedLink = <ThrowOnError extends boolean = false>(options: Options<DeleteSharedLinkData, ThrowOnError>): RequestResult<DeleteSharedLinkResponses, DeleteSharedLinkErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<DeleteSharedLinkResponses, DeleteSharedLinkErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/shares/{id}',
     ...options
@@ -2717,7 +2973,8 @@ export const deleteSharedLink = <ThrowOnError extends boolean = false>(options: 
 /**
  * Get information about a specific shared link by ID
  */
-export const getSharedLink = <ThrowOnError extends boolean = false>(options: Options<GetSharedLinkData, ThrowOnError>): RequestResult<GetSharedLinkResponses, GetSharedLinkErrors, ThrowOnError> => (options.client ?? client).get<GetSharedLinkResponses, GetSharedLinkErrors, ThrowOnError>({
+export const getSharedLink = <ThrowOnError extends boolean = false>(options: Options<GetSharedLinkData, ThrowOnError>): RequestResult<GetSharedLinkResponses, GetSharedLinkErrors, ThrowOnError, 'data'> => (options.client ?? client).get<GetSharedLinkResponses, GetSharedLinkErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/shares/{id}',
     ...options
@@ -2726,7 +2983,8 @@ export const getSharedLink = <ThrowOnError extends boolean = false>(options: Opt
 /**
  * Update a shared link's properties
  */
-export const updateSharedLink = <ThrowOnError extends boolean = false>(options: Options<UpdateSharedLinkData, ThrowOnError>): RequestResult<UpdateSharedLinkResponses, UpdateSharedLinkErrors, ThrowOnError> => (options.client ?? client).put<UpdateSharedLinkResponses, UpdateSharedLinkErrors, ThrowOnError>({
+export const updateSharedLink = <ThrowOnError extends boolean = false>(options: Options<UpdateSharedLinkData, ThrowOnError>): RequestResult<UpdateSharedLinkResponses, UpdateSharedLinkErrors, ThrowOnError, 'data'> => (options.client ?? client).put<UpdateSharedLinkResponses, UpdateSharedLinkErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/shares/{id}',
     ...options,
@@ -2749,7 +3007,8 @@ export const updateSharedLink = <ThrowOnError extends boolean = false>(options: 
  * role on the named drive — the user-facing drive listing would emit
  * the same shape for an unknown id.
  */
-export const emptyTrashForDrive = <ThrowOnError extends boolean = false>(options: Options<EmptyTrashForDriveData, ThrowOnError>): RequestResult<EmptyTrashForDriveResponses, EmptyTrashForDriveErrors, ThrowOnError> => (options.client ?? client).delete<EmptyTrashForDriveResponses, EmptyTrashForDriveErrors, ThrowOnError>({
+export const emptyTrashForDrive = <ThrowOnError extends boolean = false>(options: Options<EmptyTrashForDriveData, ThrowOnError>): RequestResult<EmptyTrashForDriveResponses, EmptyTrashForDriveErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<EmptyTrashForDriveResponses, EmptyTrashForDriveErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/trash/drive/{drive_id}',
     ...options
@@ -2758,7 +3017,8 @@ export const emptyTrashForDrive = <ThrowOnError extends boolean = false>(options
 /**
  * Empties the trash completely for the current user
  */
-export const emptyTrash = <ThrowOnError extends boolean = false>(options?: Options<EmptyTrashData, ThrowOnError>): RequestResult<EmptyTrashResponses, EmptyTrashErrors, ThrowOnError> => (options?.client ?? client).delete<EmptyTrashResponses, EmptyTrashErrors, ThrowOnError>({
+export const emptyTrash = <ThrowOnError extends boolean = false>(options?: Options<EmptyTrashData, ThrowOnError>): RequestResult<EmptyTrashResponses, EmptyTrashErrors, ThrowOnError, 'data'> => (options?.client ?? client).delete<EmptyTrashResponses, EmptyTrashErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/trash/empty',
     ...options
@@ -2767,7 +3027,8 @@ export const emptyTrash = <ThrowOnError extends boolean = false>(options?: Optio
 /**
  * Moves a file to the trash
  */
-export const moveFileToTrash = <ThrowOnError extends boolean = false>(options: Options<MoveFileToTrashData, ThrowOnError>): RequestResult<MoveFileToTrashResponses, MoveFileToTrashErrors, ThrowOnError> => (options.client ?? client).delete<MoveFileToTrashResponses, MoveFileToTrashErrors, ThrowOnError>({
+export const moveFileToTrash = <ThrowOnError extends boolean = false>(options: Options<MoveFileToTrashData, ThrowOnError>): RequestResult<MoveFileToTrashResponses, MoveFileToTrashErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<MoveFileToTrashResponses, MoveFileToTrashErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/trash/files/{id}',
     ...options
@@ -2776,7 +3037,8 @@ export const moveFileToTrash = <ThrowOnError extends boolean = false>(options: O
 /**
  * Moves a folder to the trash
  */
-export const moveFolderToTrash = <ThrowOnError extends boolean = false>(options: Options<MoveFolderToTrashData, ThrowOnError>): RequestResult<MoveFolderToTrashResponses, MoveFolderToTrashErrors, ThrowOnError> => (options.client ?? client).delete<MoveFolderToTrashResponses, MoveFolderToTrashErrors, ThrowOnError>({
+export const moveFolderToTrash = <ThrowOnError extends boolean = false>(options: Options<MoveFolderToTrashData, ThrowOnError>): RequestResult<MoveFolderToTrashResponses, MoveFolderToTrashErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<MoveFolderToTrashResponses, MoveFolderToTrashErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/trash/folders/{id}',
     ...options
@@ -2791,7 +3053,8 @@ export const moveFolderToTrash = <ThrowOnError extends boolean = false>(options:
  * Items implicitly trashed as descendants of a trashed parent are excluded
  * (only top-level trashed items appear).
  */
-export const getTrashResources = <ThrowOnError extends boolean = false>(options?: Options<GetTrashResourcesData, ThrowOnError>): RequestResult<GetTrashResourcesResponses, GetTrashResourcesErrors, ThrowOnError> => (options?.client ?? client).get<GetTrashResourcesResponses, GetTrashResourcesErrors, ThrowOnError>({
+export const getTrashResources = <ThrowOnError extends boolean = false>(options?: Options<GetTrashResourcesData, ThrowOnError>): RequestResult<GetTrashResourcesResponses, GetTrashResourcesErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<GetTrashResourcesResponses, GetTrashResourcesErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/trash/resources',
     ...options
@@ -2800,7 +3063,8 @@ export const getTrashResources = <ThrowOnError extends boolean = false>(options?
 /**
  * Permanently deletes an item from the trash
  */
-export const deletePermanently = <ThrowOnError extends boolean = false>(options: Options<DeletePermanentlyData, ThrowOnError>): RequestResult<DeletePermanentlyResponses, DeletePermanentlyErrors, ThrowOnError> => (options.client ?? client).delete<DeletePermanentlyResponses, DeletePermanentlyErrors, ThrowOnError>({
+export const deletePermanently = <ThrowOnError extends boolean = false>(options: Options<DeletePermanentlyData, ThrowOnError>): RequestResult<DeletePermanentlyResponses, DeletePermanentlyErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<DeletePermanentlyResponses, DeletePermanentlyErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/trash/{id}',
     ...options
@@ -2809,7 +3073,8 @@ export const deletePermanently = <ThrowOnError extends boolean = false>(options:
 /**
  * Restores an item from the trash to its original location
  */
-export const restoreFromTrash = <ThrowOnError extends boolean = false>(options: Options<RestoreFromTrashData, ThrowOnError>): RequestResult<RestoreFromTrashResponses, RestoreFromTrashErrors, ThrowOnError> => (options.client ?? client).post<RestoreFromTrashResponses, RestoreFromTrashErrors, ThrowOnError>({
+export const restoreFromTrash = <ThrowOnError extends boolean = false>(options: Options<RestoreFromTrashData, ThrowOnError>): RequestResult<RestoreFromTrashResponses, RestoreFromTrashErrors, ThrowOnError, 'data'> => (options.client ?? client).post<RestoreFromTrashResponses, RestoreFromTrashErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/trash/{id}/restore',
     ...options
@@ -2824,7 +3089,8 @@ export const restoreFromTrash = <ThrowOnError extends boolean = false>(options: 
  *
  * @deprecated
  */
-export const createUpload = <ThrowOnError extends boolean = false>(options: Options<CreateUploadData, ThrowOnError>): RequestResult<CreateUploadResponses, CreateUploadErrors, ThrowOnError> => (options.client ?? client).post<CreateUploadResponses, CreateUploadErrors, ThrowOnError>({
+export const createUpload = <ThrowOnError extends boolean = false>(options: Options<CreateUploadData, ThrowOnError>): RequestResult<CreateUploadResponses, CreateUploadErrors, ThrowOnError, 'data'> => (options.client ?? client).post<CreateUploadResponses, CreateUploadErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/uploads',
     ...options,
@@ -2841,7 +3107,8 @@ export const createUpload = <ThrowOnError extends boolean = false>(options: Opti
  *
  * @deprecated
  */
-export const cancelUpload = <ThrowOnError extends boolean = false>(options: Options<CancelUploadData, ThrowOnError>): RequestResult<CancelUploadResponses, CancelUploadErrors, ThrowOnError> => (options.client ?? client).delete<CancelUploadResponses, CancelUploadErrors, ThrowOnError>({
+export const cancelUpload = <ThrowOnError extends boolean = false>(options: Options<CancelUploadData, ThrowOnError>): RequestResult<CancelUploadResponses, CancelUploadErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<CancelUploadResponses, CancelUploadErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/uploads/{upload_id}',
     ...options
@@ -2854,7 +3121,8 @@ export const cancelUpload = <ThrowOnError extends boolean = false>(options: Opti
  *
  * @deprecated
  */
-export const getUploadStatus = <ThrowOnError extends boolean = false>(options: Options<GetUploadStatusData, ThrowOnError>): RequestResult<GetUploadStatusResponses, GetUploadStatusErrors, ThrowOnError> => (options.client ?? client).head<GetUploadStatusResponses, GetUploadStatusErrors, ThrowOnError>({
+export const getUploadStatus = <ThrowOnError extends boolean = false>(options: Options<GetUploadStatusData, ThrowOnError>): RequestResult<GetUploadStatusResponses, GetUploadStatusErrors, ThrowOnError, 'data'> => (options.client ?? client).head<GetUploadStatusResponses, GetUploadStatusErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/uploads/{upload_id}',
     ...options
@@ -2867,8 +3135,9 @@ export const getUploadStatus = <ThrowOnError extends boolean = false>(options: O
  *
  * @deprecated
  */
-export const uploadChunk = <ThrowOnError extends boolean = false>(options: Options<UploadChunkData, ThrowOnError>): RequestResult<UploadChunkResponses, UploadChunkErrors, ThrowOnError> => (options.client ?? client).patch<UploadChunkResponses, UploadChunkErrors, ThrowOnError>({
+export const uploadChunk = <ThrowOnError extends boolean = false>(options: Options<UploadChunkData, ThrowOnError>): RequestResult<UploadChunkResponses, UploadChunkErrors, ThrowOnError, 'data'> => (options.client ?? client).patch<UploadChunkResponses, UploadChunkErrors, ThrowOnError, 'data'>({
     bodySerializer: null,
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/uploads/{upload_id}',
     ...options,
@@ -2885,7 +3154,8 @@ export const uploadChunk = <ThrowOnError extends boolean = false>(options: Optio
  *
  * @deprecated
  */
-export const completeUpload = <ThrowOnError extends boolean = false>(options: Options<CompleteUploadData, ThrowOnError>): RequestResult<CompleteUploadResponses, CompleteUploadErrors, ThrowOnError> => (options.client ?? client).post<CompleteUploadResponses, CompleteUploadErrors, ThrowOnError>({
+export const completeUpload = <ThrowOnError extends boolean = false>(options: Options<CompleteUploadData, ThrowOnError>): RequestResult<CompleteUploadResponses, CompleteUploadErrors, ThrowOnError, 'data'> => (options.client ?? client).post<CompleteUploadResponses, CompleteUploadErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/uploads/{upload_id}/complete',
     ...options,
@@ -2895,7 +3165,8 @@ export const completeUpload = <ThrowOnError extends boolean = false>(options: Op
     }
 });
 
-export const getUserProfile = <ThrowOnError extends boolean = false>(options: Options<GetUserProfileData, ThrowOnError>): RequestResult<GetUserProfileResponses, GetUserProfileErrors, ThrowOnError> => (options.client ?? client).get<GetUserProfileResponses, GetUserProfileErrors, ThrowOnError>({
+export const getUserProfile = <ThrowOnError extends boolean = false>(options: Options<GetUserProfileData, ThrowOnError>): RequestResult<GetUserProfileResponses, GetUserProfileErrors, ThrowOnError, 'data'> => (options.client ?? client).get<GetUserProfileResponses, GetUserProfileErrors, ThrowOnError, 'data'>({
+    responseStyle: 'data',
     security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/users/{id}',
     ...options

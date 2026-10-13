@@ -23,7 +23,7 @@
 
 import log from 'loglevel';
 
-import { fetchServerConfig } from '$lib/api/endpoints/config';
+import { getConfig } from '$lib/api/generated/openapi/sdk.gen';
 import type { ServerAuth, ServerConfig, ServerFeatures, ServerStatus } from '$lib/api/types';
 
 /** Sensible defaults for every field. Used before `load()` resolves
@@ -86,7 +86,12 @@ class ServerConfigStore {
 
 	async load(): Promise<void> {
 		try {
-			const cfg: ServerConfig = await fetchServerConfig();
+			// `{ throwOnError: true }` narrows the generated return type
+			// from `ServerConfigDto | undefined` to `ServerConfigDto` and
+			// turns a non-2xx into a thrown exception — matching the
+			// semantics of the previous `apiJson<ServerConfig>` wrapper
+			// exactly. See `docs/plan/move-to-openapi.md` for the pattern.
+			const cfg: ServerConfig = await getConfig({ throwOnError: true });
 			this.version = cfg.version;
 			this.features = cfg.features;
 			this.auth = cfg.auth ?? { ...DEFAULT_AUTH };
