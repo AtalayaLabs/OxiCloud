@@ -11006,11 +11006,15 @@
             "description": "Storage quota in bytes; 0 = unlimited. If omitted, uses role default.\nIgnored when `is_external = true` (external users have no storage)."
           },
           "role": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "\"admin\" or \"user\"; defaults to \"user\""
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/UserRoleDto",
+                "description": "Role for the new account. Defaults to `UserRoleDto::User` when\nomitted. The service refuses `UserRoleDto::Owner` here — admin-\ncreate is for provisioning peers, not transferring ownership."
+              }
+            ]
           },
           "username": {
             "type": "string"
@@ -12905,8 +12909,8 @@
             "description": "Size in bytes (files only; folders → None)"
           },
           "item_type": {
-            "type": "string",
-            "description": "Type of the item ('file' or 'folder')"
+            "$ref": "#/components/schemas/ItemKind",
+            "description": "Type of the item ('file' or 'folder'). Typed enum rather than a\nraw string — the CHECK constraint on `favorites.item_type` enforces\nthe same invariant, and the TS SDK gets exhaustive narrowing on\nthe two values."
           },
           "modified_at": {
             "type": [
@@ -13013,6 +13017,15 @@
             "description": "Server-side video-thumbnail generation via ffmpeg. See\n`FeaturesConfig::enable_video_thumbnails`."
           }
         }
+      },
+      "FederationKindDto": {
+        "type": "string",
+        "description": "Wire-level view of [`FederationKind`]. Dedicated DTO rather than\nderiving `Serialize + ToSchema` directly on the domain enum so the\nhexagonal boundary stays clean — the domain stays free of\nserde/utoipa dependencies, and widening the enum (e.g. adding a\nnew `SamlSso` variant) is a two-step migration (domain, then\nwire) rather than a single commit that may silently break clients.\n\nWire spelling matches [`FederationKind::as_str`] exactly — the DB\nCHECK constraint on `auth.users.federation_kind` is the ultimate\nsource of truth for the three canonical values.",
+        "enum": [
+          "magic_link",
+          "ocm",
+          "oidc"
+        ]
       },
       "FileDto": {
         "type": "object",
@@ -13390,11 +13403,15 @@
             "description": "The authority that minted this user's `federation_subject` —\nissuer URL for OIDC (id_token `iss` claim), peer domain for OCM,\n`None` for local users. Same rationale as `federation_kind`."
           },
           "federation_kind": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Which trust chain minted this user's federation identity —\n`\"oidc\" | \"ocm\" | \"magic_link\"` — or `None` for pure local users.\nKept off `PublicUserDto` because a peer's federation kind is a\nsoft org-affiliation leak; only self + admin need it."
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/FederationKindDto",
+                "description": "Which trust chain minted this user's federation identity —\n`\"oidc\" | \"ocm\" | \"magic_link\"` — or `None` for pure local users.\nKept off `PublicUserDto` because a peer's federation kind is a\nsoft org-affiliation leak; only self + admin need it."
+              }
+            ]
           },
           "has_password": {
             "type": "boolean",
@@ -13867,6 +13884,14 @@
           }
         }
       },
+      "ItemKind": {
+        "type": "string",
+        "description": "What a favorite points at. The server emits exactly these two values\ntoday; the dedicated enum (rather than the 6-value `ResourceTypeDto`)\nmatches reality — favorites hold a file or a folder, nothing else —\nso clients don't have to carry impossible branches for drives,\ncalendars, address books or playlists. If a future product decision\npermits favoriting one of those, add the variant here and the TS SDK\nsurfaces it on regen.",
+        "enum": [
+          "file",
+          "folder"
+        ]
+      },
       "ListResponseDto": {
         "type": "object",
         "required": [
@@ -13999,7 +14024,7 @@
             ]
           },
           "status": {
-            "type": "string"
+            "$ref": "#/components/schemas/MigrationStatus"
           },
           "throughput_bytes_per_sec": {
             "type": [
@@ -14015,6 +14040,18 @@
             "minimum": 0
           }
         }
+      },
+      "MigrationStatus": {
+        "type": "string",
+        "description": "Status of a storage-migration run as the admin UI sees it. The\n6 variants mirror the projection in\n`admin_handler::run_to_migration_dto` of the recoverable\n`RunStatus` + the `idle` zero-run case. `cancel_requested` folds\ninto `paused` for display, so it doesn't surface here.",
+        "enum": [
+          "idle",
+          "running",
+          "paused",
+          "completed",
+          "failed",
+          "cancelled"
+        ]
       },
       "MoveFilePayload": {
         "type": "object",
@@ -14109,8 +14146,8 @@
             "description": "`OXICLOUD_JOBS_NOTIFY_EMAIL_TO`, as parsed. Empty when mail\nalerting is off."
           },
           "min_severity": {
-            "type": "string",
-            "description": "Severity floor: `data_loss`, `inconsistent`, `anomaly`, or `none`.\n\nThe field the panel was missing. An operator with a configured\nwebhook and a healthy relay can still be told nothing, because the\ndefault floor admits only `data_loss` — and until this was\nsurfaced, the only way to discover that was to read the server's\nenvironment."
+            "$ref": "#/components/schemas/NotifyMinSeverity",
+            "description": "Severity floor. The field the panel was missing: an operator\nwith a configured webhook and a healthy relay can still be\ntold nothing, because the default floor admits only\n`data_loss`."
           },
           "sinks": {
             "type": "array",
@@ -14120,6 +14157,16 @@
             "description": "Channels actually built and wired, by name — `webhook`, `email`.\nEmpty means findings are recorded but nobody is told."
           }
         }
+      },
+      "NotifyMinSeverity": {
+        "type": "string",
+        "description": "Alert-severity floor on `GET /api/admin/notify/info`. 3 real\nseverities + `None` for the \"floor off\" state (admits no alerts).\nThe `None` wire value replaces the earlier `\"none\".to_string()`\nsentinel; the real severities match [`application::ports::\nnotification_sink_ports::Severity`] canonical spellings.",
+        "enum": [
+          "none",
+          "anomaly",
+          "inconsistent",
+          "data_loss"
+        ]
       },
       "NotifyOutcomeDto": {
         "oneOf": [
@@ -15149,8 +15196,8 @@
             "description": "Presence signal — TRUE when the server observed a request on any\nof this user's non-revoked sessions within the last\n[`ONLINE_WINDOW`](crate::application::dtos::session_dto::ONLINE_WINDOW)\n(5 min). Sourced from an EXISTS subquery when the DTO is built\nfrom a list-projection path; single-user endpoints that don't\nenrich presence ship `false`."
           },
           "role": {
-            "type": "string",
-            "description": "Role string (\"admin\" | \"user\"). Kept public because the sharee /\ngroup-member vignette renders an admin badge."
+            "$ref": "#/components/schemas/UserRoleDto",
+            "description": "Account role. Mirrors the stored `auth.users.role` — `owner` is\na legitimate value, kept out of the handwritten FE `Role` type\npre-pivot. Kept public because the sharee / group-member\nvignette renders an admin badge."
           },
           "username": {
             "type": [
@@ -15477,7 +15524,7 @@
         ],
         "properties": {
           "backend": {
-            "type": "string"
+            "$ref": "#/components/schemas/StorageBackendKind"
           },
           "s3_access_key": {
             "type": [
@@ -16467,8 +16514,8 @@
             "minimum": 0
           },
           "tls": {
-            "type": "string",
-            "description": "Transport encryption mode: `\"starttls\"`, `\"tls\"`, or `\"none\"`."
+            "$ref": "#/components/schemas/SmtpTlsModeDto",
+            "description": "Transport encryption mode."
           },
           "user_state": {
             "type": "string",
@@ -16510,6 +16557,15 @@
             "type": "boolean"
           }
         }
+      },
+      "SmtpTlsModeDto": {
+        "type": "string",
+        "description": "Wire-level view of [`common::config::SmtpTlsMode`]. Kept DTO-\nsuffixed because the domain name clashes.",
+        "enum": [
+          "starttls",
+          "tls",
+          "none"
+        ]
       },
       "StartMigrationDto": {
         "type": "object",
@@ -16587,6 +16643,15 @@
           }
         }
       },
+      "StorageBackendKind": {
+        "type": "string",
+        "description": "Which blob backend an entry / request targets. Wire values are\n`\"local\"`, `\"s3\"`, `\"azure\"` — the three implementations in\n`infrastructure::services::{local,s3,azure}_blob_backend`. The\nthree producers across those modules (and the local storage-\nsettings service) all previously populated this as a raw string\nliteral; the shared enum makes the OpenAPI spec exhaustive and\ngives the FE SDK a typed union to switch on.\n\nSerialized as lowercase to match the historical wire shape.",
+        "enum": [
+          "local",
+          "s3",
+          "azure"
+        ]
+      },
       "StorageEncryptionPairDto": {
         "type": "object",
         "description": "One `<cipher>:<key>` pair rendered for the admin UI. Never\ncarries key material — only cipher name + a truncated fingerprint\nsafe to show operators.",
@@ -16623,8 +16688,8 @@
         ],
         "properties": {
           "backend": {
-            "type": "string",
-            "description": "Backend type — \"local\" / \"s3\" / \"azure\"."
+            "$ref": "#/components/schemas/StorageBackendKind",
+            "description": "Which backend this entry targets."
           },
           "encryption_enabled": {
             "type": "boolean",
@@ -16682,8 +16747,8 @@
             ]
           },
           "current_backend": {
-            "type": "string",
-            "description": "Backend type currently in use (`\"local\"` / `\"s3\"` / `\"azure\"`) —\nwhat the LIVE `blob_backend` is bound to, from\n`blob_handler.backend().backend_type()`. Redundant with\n`entries[i where is_active].backend` in multi-entry mode; kept\nbecause pre-boot / mid-migration inspection may still find it\nuseful."
+            "$ref": "#/components/schemas/StorageBackendKind",
+            "description": "Backend type currently in use — what the LIVE `blob_backend` is\nbound to, from `blob_handler.backend().backend_type()`. Redundant\nwith `entries[i where is_active].backend` in multi-entry mode;\nkept because pre-boot / mid-migration inspection may still find\nit useful."
           },
           "dedup_ratio": {
             "type": "number",
@@ -17438,13 +17503,13 @@
       },
       "UpdateUserRoleDto": {
         "type": "object",
-        "description": "Request body for updating a user's role",
+        "description": "Request body for updating a user's role. The service layer refuses\n`UserRoleDto::Owner` on this endpoint — conferring ownership would\ncreate a second owner rather than move the one that exists; use\n[`TransferOwnershipDto`] for that. Reusing `UserRoleDto` keeps a\nsingle wire shape across the FE (consumer sees the same 3-value\nenum on reads and writes); the owner-refusal remains a service-\nlevel invariant.",
         "required": [
           "role"
         ],
         "properties": {
           "role": {
-            "type": "string"
+            "$ref": "#/components/schemas/UserRoleDto"
           }
         }
       },
@@ -17515,6 +17580,15 @@
           }
         }
       },
+      "UserRoleDto": {
+        "type": "string",
+        "description": "Account role as carried on `PublicUserDto` and inbound on\n`UpdateUserRoleDto`. Mirrors the three stored values of\n[`UserRole`] — `Anonymous` is a session-only domain variant and\nnever appears on a persisted row, so it is deliberately absent\nfrom this wire shape.\n\nThe DB CHECK constraint on `auth.users.role` is the ultimate\nsource of truth for the three canonical values; parse errors\nthrough [`UserRoleDto::from_str`] mean a corrupt row.",
+        "enum": [
+          "owner",
+          "admin",
+          "user"
+        ]
+      },
       "VerifyPasswordRequest": {
         "type": "object",
         "required": [
@@ -17558,6 +17632,18 @@
           }
         }
       },
+      "WebhookFormatDto": {
+        "type": "string",
+        "description": "Which JSON shape a webhook sink POSTs. Wire mirror of\n[`infrastructure::services::webhook_notification_sink::WebhookFormat`] —\nkept DTO-suffixed because the domain name clashes.",
+        "enum": [
+          "generic",
+          "slack",
+          "discord",
+          "teams",
+          "telegram",
+          "ntfy"
+        ]
+      },
       "WebhookInfoDto": {
         "type": "object",
         "description": "Read-only webhook info, shown beside SMTP on the admin Notifications\npage. Like SMTP, configured only through environment variables.",
@@ -17573,8 +17659,8 @@
             "description": "Whether `OXICLOUD_WEBHOOK_URL` is set and the sink was built."
           },
           "format": {
-            "type": "string",
-            "description": "`generic`, `slack`, `discord`, `teams`, `telegram` or `ntfy`."
+            "$ref": "#/components/schemas/WebhookFormatDto",
+            "description": "Which webhook JSON shape this sink speaks."
           },
           "host": {
             "type": "string",

@@ -8,6 +8,38 @@ use super::display_helpers::{classify_display, format_file_size};
 use super::grant_dto::{ResourceContentDto, ResourceTypeDto};
 use crate::domain::services::authorization::ResourceKind;
 
+/// What a favorite points at. The server emits exactly these two values
+/// today; the dedicated enum (rather than the 6-value `ResourceTypeDto`)
+/// matches reality — favorites hold a file or a folder, nothing else —
+/// so clients don't have to carry impossible branches for drives,
+/// calendars, address books or playlists. If a future product decision
+/// permits favoriting one of those, add the variant here and the TS SDK
+/// surfaces it on regen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ItemKind {
+    File,
+    Folder,
+}
+
+impl std::str::FromStr for ItemKind {
+    type Err = String;
+
+    /// Parse the DB / wire spelling. Matches the DB CHECK constraint on
+    /// `favorites.item_type` and the handwritten FE `ItemType` union.
+    /// Unknown values are a bug — the column has a CHECK and the enum
+    /// variants are the source of truth.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "file" => Ok(ItemKind::File),
+            "folder" => Ok(ItemKind::Folder),
+            other => Err(format!(
+                "unexpected favorite item_type: {other} (expected 'file' or 'folder')"
+            )),
+        }
+    }
+}
+
 /// DTO for favorites item, enriched with item metadata via SQL JOIN
 /// so the frontend does not need N+1 requests to resolve names/sizes.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -21,8 +53,11 @@ pub struct FavoriteItemDto {
     /// ID of the favorited item (file or folder)
     pub item_id: String,
 
-    /// Type of the item ('file' or 'folder')
-    pub item_type: String,
+    /// Type of the item ('file' or 'folder'). Typed enum rather than a
+    /// raw string — the CHECK constraint on `favorites.item_type` enforces
+    /// the same invariant, and the TS SDK gets exhaustive narrowing on
+    /// the two values.
+    pub item_type: ItemKind,
 
     /// When the item was added to favorites
     pub created_at: DateTime<Utc>,
@@ -71,7 +106,7 @@ impl FavoriteItemDto {
     /// Populate display fields from the enriched metadata.
     /// Call this after constructing from the SQL row.
     pub fn with_display_fields(mut self) -> Self {
-        if self.item_type == "folder" {
+        if matches!(self.item_type, ItemKind::Folder) {
             self.icon_class = "fas fa-folder".to_string();
             self.icon_special_class = "folder-icon".to_string();
             self.category = "Folder".to_string();

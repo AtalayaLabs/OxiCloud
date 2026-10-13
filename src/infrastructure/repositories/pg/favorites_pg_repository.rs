@@ -69,14 +69,26 @@ impl FavoritesRepositoryPort for FavoritesPgRepository {
             )
         })?;
 
-        let favorites = rows
+        // Mapper returns `Result<_>` so a corrupt `item_type` propagates
+        // out via `?` into the outer `collect::<Result<Vec<_>>>()`. The
+        // CHECK constraint on the column means this is unreachable in
+        // practice — the explicit error is a belt-and-braces for the
+        // "DB migrated by hand" failure mode.
+        let favorites: Vec<FavoriteItemDto> = rows
             .iter()
-            .map(|row| {
-                FavoriteItemDto {
+            .map(|row| -> Result<FavoriteItemDto> {
+                let item_type = row.get::<String, _>("item_type").parse().map_err(|e| {
+                    DomainError::new(
+                        ErrorKind::InternalError,
+                        "Favorites",
+                        format!("corrupt favorites.item_type: {e}"),
+                    )
+                })?;
+                Ok(FavoriteItemDto {
                     id: row.get::<i32, _>("id").to_string(),
                     user_id: row.get::<Uuid, _>("user_id").to_string(),
                     item_id: row.get("item_id"),
-                    item_type: row.get("item_type"),
+                    item_type,
                     created_at: row.get("created_at"),
                     item_name: row.try_get("item_name").ok(),
                     item_size: row.try_get("item_size").ok(),
@@ -94,9 +106,9 @@ impl FavoritesRepositoryPort for FavoritesPgRepository {
                     category: String::new(),
                     size_formatted: String::new(),
                 }
-                .with_display_fields()
+                .with_display_fields())
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(favorites)
     }

@@ -17,10 +17,11 @@ use crate::application::dtos::plugin_dto::{
 };
 use crate::application::dtos::settings_dto::{
     AdminCreateUserDto, AdminResetPasswordDto, DashboardStatsDto, DriveKindUsageDto,
-    ListSessionsQueryDto, ListUsersQueryDto, MigrationStateDto, NotifyInfoDto, SaveOidcSettingsDto,
-    SaveStorageSettingsDto, SendSmtpTestDto, SmtpInfoDto, SmtpTestResultDto, StartMigrationDto,
-    TestOidcConnectionDto, TestStorageConnectionDto, TransferOwnershipDto, UpdateUserActiveDto,
-    UpdateUserQuotaDto, UpdateUserRoleDto, WebhookInfoDto,
+    ListSessionsQueryDto, ListUsersQueryDto, MigrationStateDto, MigrationStatus, NotifyInfoDto,
+    NotifyMinSeverity, SaveOidcSettingsDto, SaveStorageSettingsDto, SendSmtpTestDto, SmtpInfoDto,
+    SmtpTestResultDto, SmtpTlsModeDto, StartMigrationDto, TestOidcConnectionDto,
+    TestStorageConnectionDto, TransferOwnershipDto, UpdateUserActiveDto, UpdateUserQuotaDto,
+    UpdateUserRoleDto, WebhookFormatDto, WebhookInfoDto,
 };
 use crate::application::dtos::user_dto::{FullUserDto, PublicUserDto};
 use crate::application::ports::authorization_ports::AuthorizationEngine;
@@ -1319,7 +1320,7 @@ pub async fn trigger_backend_rotate(
 /// Idle-state DTO — no run has been triggered yet.
 fn idle_migration_dto() -> MigrationStateDto {
     MigrationStateDto {
-        status: "idle".to_string(),
+        status: MigrationStatus::Idle,
         total_blobs: 0,
         migrated_blobs: 0,
         // `migrated_bytes` and `throughput_bytes_per_sec` are no
@@ -1344,21 +1345,19 @@ fn run_to_migration_dto(
 ) -> MigrationStateDto {
     use crate::infrastructure::scheduler::RunStatus;
 
-    // Fold CancelRequested into "paused" — from the admin UI's
-    // point of view a cancel-in-flight is the "waiting for the
-    // handler to yield" state. Same visual affordance as Paused.
+    // Fold CancelRequested into Paused — from the admin UI's point
+    // of view a cancel-in-flight is the "waiting for the handler to
+    // yield" state. Same visual affordance as Paused.
     let status = match run.status {
-        RunStatus::Running => "running",
-        RunStatus::Paused => "paused",
-        RunStatus::CancelRequested => "paused",
-        RunStatus::Completed => "completed",
-        RunStatus::Failed => "failed",
+        RunStatus::Running => MigrationStatus::Running,
+        RunStatus::Paused | RunStatus::CancelRequested => MigrationStatus::Paused,
+        RunStatus::Completed => MigrationStatus::Completed,
+        RunStatus::Failed => MigrationStatus::Failed,
         // Cancelled is user-abandoned but terminal — same visual as
         // failed for the migration status endpoint (both mean "not
         // going to finish, look at findings/logs to know why").
-        RunStatus::Cancelled => "cancelled",
-    }
-    .to_string();
+        RunStatus::Cancelled => MigrationStatus::Cancelled,
+    };
 
     let (total_blobs, migrated_blobs) = match run.progress.as_ref() {
         Some(p) => (p.total, p.scanned),
@@ -2013,7 +2012,7 @@ pub async fn update_user_role(
     // does not outrank (including the server owner), are refused inside
     // the service.
     auth.auth_application_service
-        .change_user_role(admin_id, id, &dto.role)
+        .change_user_role(admin_id, id, dto.role)
         .await
         .map_err(AppError::from)?;
 
@@ -2444,7 +2443,14 @@ pub async fn get_webhook_info(
             // but unusable never becomes a sink, and the page should say
             // "not enabled" rather than implying delivery works.
             enabled: state.webhook_sink.is_some(),
-            format: format!("{:?}", webhook.format).to_lowercase(),
+            format: match webhook.format {
+                crate::infrastructure::services::webhook_notification_sink::WebhookFormat::Generic => WebhookFormatDto::Generic,
+                crate::infrastructure::services::webhook_notification_sink::WebhookFormat::Slack => WebhookFormatDto::Slack,
+                crate::infrastructure::services::webhook_notification_sink::WebhookFormat::Discord => WebhookFormatDto::Discord,
+                crate::infrastructure::services::webhook_notification_sink::WebhookFormat::Teams => WebhookFormatDto::Teams,
+                crate::infrastructure::services::webhook_notification_sink::WebhookFormat::Telegram => WebhookFormatDto::Telegram,
+                crate::infrastructure::services::webhook_notification_sink::WebhookFormat::Ntfy => WebhookFormatDto::Ntfy,
+            },
             host,
             target: webhook.target.clone().unwrap_or_default(),
         }),
@@ -2472,9 +2478,9 @@ pub async fn get_smtp_info(
         host: smtp.host.clone(),
         port: smtp.port,
         tls: match smtp.tls {
-            crate::common::config::SmtpTlsMode::Starttls => "starttls".to_string(),
-            crate::common::config::SmtpTlsMode::Tls => "tls".to_string(),
-            crate::common::config::SmtpTlsMode::None => "none".to_string(),
+            crate::common::config::SmtpTlsMode::Starttls => SmtpTlsModeDto::Starttls,
+            crate::common::config::SmtpTlsMode::Tls => SmtpTlsModeDto::Tls,
+            crate::common::config::SmtpTlsMode::None => SmtpTlsModeDto::None,
         },
         from: smtp.from.clone(),
         user_state: if smtp.user.is_empty() {
@@ -4322,8 +4328,16 @@ pub async fn get_notify_info(
         StatusCode::OK,
         Json(NotifyInfoDto {
             min_severity: match notify.min_severity {
-                NotifyThreshold::None => "none".to_string(),
-                NotifyThreshold::AtLeast(s) => s.as_str().to_string(),
+                NotifyThreshold::None => NotifyMinSeverity::None,
+                NotifyThreshold::AtLeast(
+                    crate::application::ports::notification_sink_ports::Severity::Anomaly,
+                ) => NotifyMinSeverity::Anomaly,
+                NotifyThreshold::AtLeast(
+                    crate::application::ports::notification_sink_ports::Severity::Inconsistent,
+                ) => NotifyMinSeverity::Inconsistent,
+                NotifyThreshold::AtLeast(
+                    crate::application::ports::notification_sink_ports::Severity::DataLoss,
+                ) => NotifyMinSeverity::DataLoss,
             },
             sinks,
             // Operator addresses, on an admin-only endpoint, and the one

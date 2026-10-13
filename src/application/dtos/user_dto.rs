@@ -1,10 +1,102 @@
-use crate::domain::entities::user::User;
+use crate::domain::entities::user::{FederationKind, User, UserRole};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 use std::sync::Arc;
 use utoipa::ToSchema;
 use uuid::Uuid;
+
+/// Wire-level view of [`FederationKind`]. Dedicated DTO rather than
+/// deriving `Serialize + ToSchema` directly on the domain enum so the
+/// hexagonal boundary stays clean — the domain stays free of
+/// serde/utoipa dependencies, and widening the enum (e.g. adding a
+/// new `SamlSso` variant) is a two-step migration (domain, then
+/// wire) rather than a single commit that may silently break clients.
+///
+/// Wire spelling matches [`FederationKind::as_str`] exactly — the DB
+/// CHECK constraint on `auth.users.federation_kind` is the ultimate
+/// source of truth for the three canonical values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FederationKindDto {
+    MagicLink,
+    Ocm,
+    Oidc,
+}
+
+impl From<FederationKind> for FederationKindDto {
+    fn from(k: FederationKind) -> Self {
+        match k {
+            FederationKind::MagicLink => FederationKindDto::MagicLink,
+            FederationKind::Ocm => FederationKindDto::Ocm,
+            FederationKind::Oidc => FederationKindDto::Oidc,
+        }
+    }
+}
+
+/// Account role as carried on `PublicUserDto` and inbound on
+/// `UpdateUserRoleDto`. Mirrors the three stored values of
+/// [`UserRole`] — `Anonymous` is a session-only domain variant and
+/// never appears on a persisted row, so it is deliberately absent
+/// from this wire shape.
+///
+/// The DB CHECK constraint on `auth.users.role` is the ultimate
+/// source of truth for the three canonical values; parse errors
+/// through [`UserRoleDto::from_str`] mean a corrupt row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum UserRoleDto {
+    Owner,
+    Admin,
+    User,
+}
+
+impl UserRoleDto {
+    /// Canonical wire spelling. Matches [`UserRole::as_str`] for the
+    /// three stored variants.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            UserRoleDto::Owner => "owner",
+            UserRoleDto::Admin => "admin",
+            UserRoleDto::User => "user",
+        }
+    }
+}
+
+impl From<UserRole> for UserRoleDto {
+    /// Lossy for `UserRole::Anonymous` — collapses to `User`, mirroring
+    /// the pre-enum behaviour where the raw string column could only
+    /// hold stored values anyway. Call sites that may see `Anonymous`
+    /// (session-only paths) should not route through this conversion.
+    fn from(r: UserRole) -> Self {
+        match r {
+            UserRole::Owner => UserRoleDto::Owner,
+            UserRole::Admin => UserRoleDto::Admin,
+            UserRole::User | UserRole::Anonymous => UserRoleDto::User,
+        }
+    }
+}
+
+impl std::str::FromStr for UserRoleDto {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "owner" => Ok(UserRoleDto::Owner),
+            "admin" => Ok(UserRoleDto::Admin),
+            "user" => Ok(UserRoleDto::User),
+            other => Err(format!(
+                "unexpected user role: {other} (expected 'owner', 'admin', or 'user')"
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for UserRoleDto {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
 
 // ────────────────────────────────────────────────────────────────────────
 // Three-layer user DTO family — see docs/plan/userdto-refactor.md.
@@ -41,9 +133,11 @@ pub struct PublicUserDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
     pub email: String,
-    /// Role string ("admin" | "user"). Kept public because the sharee /
-    /// group-member vignette renders an admin badge.
-    pub role: String,
+    /// Account role. Mirrors the stored `auth.users.role` — `owner` is
+    /// a legitimate value, kept out of the handwritten FE `Role` type
+    /// pre-pivot. Kept public because the sharee / group-member
+    /// vignette renders an admin badge.
+    pub role: UserRoleDto,
     /// Avatar payload (base64 data-URI up to 512 KiB). Public so a share
     /// picker can render the recipient's face directly. Will move to a
     /// dedicated avatar endpoint in a future refactor — this shape is
@@ -86,7 +180,7 @@ pub struct FullUserDto {
     /// Kept off `PublicUserDto` because a peer's federation kind is a
     /// soft org-affiliation leak; only self + admin need it.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub federation_kind: Option<String>,
+    pub federation_kind: Option<FederationKindDto>,
     /// The authority that minted this user's `federation_subject` —
     /// issuer URL for OIDC (id_token `iss` claim), peer domain for OCM,
     /// `None` for local users. Same rationale as `federation_kind`.
@@ -194,7 +288,7 @@ impl PublicUserDto {
     ///   presence read is a no-op — no dot lights up on the stale
     ///   value.
     pub fn new(user: User, is_online: bool) -> Self {
-        let role = format!("{}", user.role());
+        let role = UserRoleDto::from(user.role());
         let p = user.into_parts();
         Self {
             id: p.id.to_string(),
@@ -223,7 +317,7 @@ impl FullUserDto {
         user: User,
         flags: crate::domain::repositories::user_repository::UserDerivedFlags,
     ) -> Self {
-        let role = format!("{}", user.role());
+        let role = UserRoleDto::from(user.role());
         let p = user.into_parts();
         Self {
             user: PublicUserDto {
@@ -237,7 +331,7 @@ impl FullUserDto {
                 family_name: p.family_name,
                 is_online: flags.is_online,
             },
-            federation_kind: p.federation_kind.map(|k| k.as_str().to_string()),
+            federation_kind: p.federation_kind.map(FederationKindDto::from),
             federation_issuer: p.federation_issuer,
             preferred_locale: p.preferred_locale,
             email_verified_at: p.email_verified_at,
@@ -664,7 +758,7 @@ mod three_layer_quarantine {
                     id: "00000000-0000-0000-0000-000000000001".into(),
                     username: None,
                     email: "self@example.invalid".into(),
-                    role: "user".into(),
+                    role: UserRoleDto::User,
                     image: None,
                     is_external: false,
                     given_name: None,
@@ -741,7 +835,7 @@ mod three_layer_quarantine {
                 id: "00000000-0000-0000-0000-000000000002".into(),
                 username: Some("bob".into()),
                 email: "bob@example.invalid".into(),
-                role: "user".into(),
+                role: UserRoleDto::User,
                 image: None,
                 is_external: false,
                 given_name: None,
@@ -797,7 +891,7 @@ mod wire_shape_tests {
             id: "11111111-1111-1111-1111-111111111111".to_string(),
             username: Some("alice".to_string()),
             email: "alice@example.com".to_string(),
-            role: "user".to_string(),
+            role: UserRoleDto::User,
             image: None,
             is_external: false,
             given_name: None,

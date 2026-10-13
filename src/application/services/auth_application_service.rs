@@ -1,6 +1,6 @@
 use crate::application::dtos::user_dto::{
     AuthResponseDto, ChangePasswordDto, FullUserDto, LoginDto, PublicUserDto, RefreshTokenDto,
-    RegisterDto, SelfUserDto, UpgradeToInternalDto,
+    RegisterDto, SelfUserDto, UpgradeToInternalDto, UserRoleDto,
 };
 use crate::application::ports::auth_ports::{
     OidcIdClaims, OidcServicePort, PasswordHasherPort, SessionStoragePort, TokenServicePort,
@@ -3745,15 +3745,22 @@ impl AuthApplicationService {
         // request for a role this binary does not know with a 201 and a
         // plain user, so the caller was told their request succeeded when
         // it had in fact been silently rewritten.
-        let role = match dto.role.as_deref() {
+        // `role` is `Option<UserRoleDto>` since the DTO was typed through.
+        // Owner is refused the same way `change_user_role` does: admin-
+        // create is for peer provisioning, not ownership transfer.
+        let role = match dto.role {
             None => UserRole::User,
-            Some(raw) => UserRole::from_stored(raw).ok_or_else(|| {
-                DomainError::new(
+            Some(UserRoleDto::Admin) => UserRole::Admin,
+            Some(UserRoleDto::User) => UserRole::User,
+            Some(UserRoleDto::Owner) => {
+                return Err(DomainError::new(
                     ErrorKind::InvalidInput,
                     "User",
-                    format!("Unknown role: {raw:?}"),
-                )
-            })?,
+                    "Owner cannot be assigned through admin-create. \
+                     Use transfer-ownership on an existing admin."
+                        .to_string(),
+                ));
+            }
         };
 
         // You may only create an account you could subsequently administer.
@@ -4238,7 +4245,7 @@ impl AuthApplicationService {
         &self,
         caller_id: Uuid,
         user_id: Uuid,
-        role: &str,
+        role: UserRoleDto,
     ) -> Result<(), DomainError> {
         // Your own role is not yours to set, at any rank. Kept separate
         // from the hierarchy check because it is a self rule, not a
@@ -4260,13 +4267,16 @@ impl AuthApplicationService {
         }
         self.require_can_modify(caller_id, user_id).await?;
 
-        let requested = match UserRole::from_stored(role) {
-            Some(r @ (UserRole::Admin | UserRole::User)) => r,
-            _ => {
+        let requested = match role {
+            UserRoleDto::Admin => UserRole::Admin,
+            UserRoleDto::User => UserRole::User,
+            UserRoleDto::Owner => {
                 return Err(DomainError::new(
                     ErrorKind::InvalidInput,
                     "User",
-                    format!("Invalid role: {}. Must be 'admin' or 'user'", role),
+                    "Owner cannot be assigned through this endpoint. \
+                     Use transfer-ownership instead."
+                        .to_string(),
                 ));
             }
         };
@@ -4304,7 +4314,9 @@ impl AuthApplicationService {
             ));
         }
 
-        self.user_storage.change_role(user_id, role).await?;
+        self.user_storage
+            .change_role(user_id, requested.as_str())
+            .await?;
         self.user_flags_cache.invalidate(&user_id).await;
         Ok(())
     }

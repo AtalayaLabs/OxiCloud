@@ -160,7 +160,11 @@ export interface TrashResourcesResponse {
 	next_cursor?: string;
 }
 
-export type Role = 'user' | 'admin';
+// Authoritative on the generated SDK. The handwritten alias was a
+// 2-value `'user' | 'admin'` union missing the `owner` row that
+// `auth.users.role` has carried since the Owner role landed. The
+// generated `UserRoleDto` is 3-value and matches reality.
+export type { UserRoleDto as Role } from './generated/openapi/types.gen';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Three-layer user family — mirrors src/application/dtos/user_dto.rs.

@@ -165,10 +165,7 @@ export type AdminCreateUserDto = {
      * Ignored when `is_external = true` (external users have no storage).
      */
     quota_bytes?: number | null;
-    /**
-     * "admin" or "user"; defaults to "user"
-     */
-    role?: string | null;
+    role?: null | UserRoleDto;
     username: string;
 };
 
@@ -1289,9 +1286,12 @@ export type FavoriteItemDto = {
      */
     item_size?: number | null;
     /**
-     * Type of the item ('file' or 'folder')
+     * Type of the item ('file' or 'folder'). Typed enum rather than a
+     * raw string — the CHECK constraint on `favorites.item_type` enforces
+     * the same invariant, and the TS SDK gets exhaustive narrowing on
+     * the two values.
      */
-    item_type: string;
+    item_type: ItemKind;
     /**
      * Last modification timestamp of the item
      */
@@ -1386,6 +1386,20 @@ export type FeaturesDto = {
      */
     video_thumbnails: boolean;
 };
+
+/**
+ * Wire-level view of [`FederationKind`]. Dedicated DTO rather than
+ * deriving `Serialize + ToSchema` directly on the domain enum so the
+ * hexagonal boundary stays clean — the domain stays free of
+ * serde/utoipa dependencies, and widening the enum (e.g. adding a
+ * new `SamlSso` variant) is a two-step migration (domain, then
+ * wire) rather than a single commit that may silently break clients.
+ *
+ * Wire spelling matches [`FederationKind::as_str`] exactly — the DB
+ * CHECK constraint on `auth.users.federation_kind` is the ultimate
+ * source of truth for the three canonical values.
+ */
+export type FederationKindDto = 'magic_link' | 'ocm' | 'oidc';
 
 /**
  * DTO for file responses
@@ -1725,13 +1739,7 @@ export type FullUserDto = {
      * `None` for local users. Same rationale as `federation_kind`.
      */
     federation_issuer?: string | null;
-    /**
-     * Which trust chain minted this user's federation identity —
-     * `"oidc" | "ocm" | "magic_link"` — or `None` for pure local users.
-     * Kept off `PublicUserDto` because a peer's federation kind is a
-     * soft org-affiliation leak; only self + admin need it.
-     */
-    federation_kind?: string | null;
+    federation_kind?: null | FederationKindDto;
     /**
      * TRUE when the account has a server-verifiable password
      * (`password_hash IS NOT NULL`). Kept off `PublicUserDto` because
@@ -2048,6 +2056,17 @@ export type HolderHeader = {
     kind: string;
 };
 
+/**
+ * What a favorite points at. The server emits exactly these two values
+ * today; the dedicated enum (rather than the 6-value `ResourceTypeDto`)
+ * matches reality — favorites hold a file or a folder, nothing else —
+ * so clients don't have to carry impossible branches for drives,
+ * calendars, address books or playlists. If a future product decision
+ * permits favoriting one of those, add the variant here and the TS SDK
+ * surfaces it on regen.
+ */
+export type ItemKind = 'file' | 'folder';
+
 export type ListResponseDto = {
     items: Array<NotificationDto>;
     /**
@@ -2124,13 +2143,22 @@ export type MigrationStateDto = {
     migrated_blobs: number;
     migrated_bytes: number;
     started_at?: string | null;
-    status: string;
+    status: MigrationStatus;
     /**
      * Estimated throughput in bytes/sec (for UI ETA calculation).
      */
     throughput_bytes_per_sec?: number | null;
     total_blobs: number;
 };
+
+/**
+ * Status of a storage-migration run as the admin UI sees it. The
+ * 6 variants mirror the projection in
+ * `admin_handler::run_to_migration_dto` of the recoverable
+ * `RunStatus` + the `idle` zero-run case. `cancel_requested` folds
+ * into `paused` for display, so it doesn't surface here.
+ */
+export type MigrationStatus = 'idle' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
 
 /**
  * Payload for moving a file
@@ -2192,21 +2220,27 @@ export type NotifyInfoDto = {
      */
     email_recipients: Array<string>;
     /**
-     * Severity floor: `data_loss`, `inconsistent`, `anomaly`, or `none`.
-     *
-     * The field the panel was missing. An operator with a configured
-     * webhook and a healthy relay can still be told nothing, because the
-     * default floor admits only `data_loss` — and until this was
-     * surfaced, the only way to discover that was to read the server's
-     * environment.
+     * Severity floor. The field the panel was missing: an operator
+     * with a configured webhook and a healthy relay can still be
+     * told nothing, because the default floor admits only
+     * `data_loss`.
      */
-    min_severity: string;
+    min_severity: NotifyMinSeverity;
     /**
      * Channels actually built and wired, by name — `webhook`, `email`.
      * Empty means findings are recorded but nobody is told.
      */
     sinks: Array<string>;
 };
+
+/**
+ * Alert-severity floor on `GET /api/admin/notify/info`. 3 real
+ * severities + `None` for the "floor off" state (admits no alerts).
+ * The `None` wire value replaces the earlier `"none".to_string()`
+ * sentinel; the real severities match [`application::ports::
+ * notification_sink_ports::Severity`] canonical spellings.
+ */
+export type NotifyMinSeverity = 'none' | 'anomaly' | 'inconsistent' | 'data_loss';
 
 /**
  * One per resolved recipient. `kind` discriminates; sibling fields are
@@ -2865,10 +2899,12 @@ export type PublicUserDto = {
      */
     is_online?: boolean;
     /**
-     * Role string ("admin" | "user"). Kept public because the sharee /
-     * group-member vignette renders an admin badge.
+     * Account role. Mirrors the stored `auth.users.role` — `owner` is
+     * a legitimate value, kept out of the handwritten FE `Role` type
+     * pre-pivot. Kept public because the sharee / group-member
+     * vignette renders an admin badge.
      */
-    role: string;
+    role: UserRoleDto;
     username?: string | null;
 };
 
@@ -3054,7 +3090,7 @@ export type SaveOidcSettingsDto = {
  * Request body for saving storage settings from the admin panel
  */
 export type SaveStorageSettingsDto = {
-    backend: string;
+    backend: StorageBackendKind;
     /**
      * Only update if provided and non-empty (None = keep existing)
      */
@@ -3843,9 +3879,9 @@ export type SmtpInfoDto = {
      */
     port: number;
     /**
-     * Transport encryption mode: `"starttls"`, `"tls"`, or `"none"`.
+     * Transport encryption mode.
      */
-    tls: string;
+    tls: SmtpTlsModeDto;
     /**
      * `<set>` if a SASL user is configured, `<anon>` otherwise.
      * Never echoes the username — admins compare against the
@@ -3876,6 +3912,12 @@ export type SmtpTestResultDto = {
     message?: string | null;
     success: boolean;
 };
+
+/**
+ * Wire-level view of [`common::config::SmtpTlsMode`]. Kept DTO-
+ * suffixed because the domain name clashes.
+ */
+export type SmtpTlsModeDto = 'starttls' | 'tls' | 'none';
 
 /**
  * Request body for `POST /api/admin/storage/migration/start`.
@@ -3941,6 +3983,19 @@ export type StatsResponse = {
 };
 
 /**
+ * Which blob backend an entry / request targets. Wire values are
+ * `"local"`, `"s3"`, `"azure"` — the three implementations in
+ * `infrastructure::services::{local,s3,azure}_blob_backend`. The
+ * three producers across those modules (and the local storage-
+ * settings service) all previously populated this as a raw string
+ * literal; the shared enum makes the OpenAPI spec exhaustive and
+ * gives the FE SDK a typed union to switch on.
+ *
+ * Serialized as lowercase to match the historical wire shape.
+ */
+export type StorageBackendKind = 'local' | 's3' | 'azure';
+
+/**
  * One `<cipher>:<key>` pair rendered for the admin UI. Never
  * carries key material — only cipher name + a truncated fingerprint
  * safe to show operators.
@@ -3974,9 +4029,9 @@ export type StorageEncryptionPairDto = {
  */
 export type StorageEntrySummaryDto = {
     /**
-     * Backend type — "local" / "s3" / "azure".
+     * Which backend this entry targets.
      */
-    backend: string;
+    backend: StorageBackendKind;
     /**
      * True when the entry has a per-entry encryption key. UI shows
      * a lock icon. Presence-only — the key bytes never leave the
@@ -4040,14 +4095,13 @@ export type StorageSettingsDto = {
     active_entry_name: string;
     backend_write_lock?: null | BackendWriteLockReason;
     /**
-     * Backend type currently in use (`"local"` / `"s3"` / `"azure"`) —
-     * what the LIVE `blob_backend` is bound to, from
-     * `blob_handler.backend().backend_type()`. Redundant with
-     * `entries[i where is_active].backend` in multi-entry mode; kept
-     * because pre-boot / mid-migration inspection may still find it
-     * useful.
+     * Backend type currently in use — what the LIVE `blob_backend` is
+     * bound to, from `blob_handler.backend().backend_type()`. Redundant
+     * with `entries[i where is_active].backend` in multi-entry mode;
+     * kept because pre-boot / mid-migration inspection may still find
+     * it useful.
      */
-    current_backend: string;
+    current_backend: StorageBackendKind;
     dedup_ratio: number;
     /**
      * All named storage entries declared in env. Empty when running
@@ -4504,10 +4558,16 @@ export type UpdateUserQuotaDto = {
 };
 
 /**
- * Request body for updating a user's role
+ * Request body for updating a user's role. The service layer refuses
+ * `UserRoleDto::Owner` on this endpoint — conferring ownership would
+ * create a second owner rather than move the one that exists; use
+ * [`TransferOwnershipDto`] for that. Reusing `UserRoleDto` keeps a
+ * single wire shape across the FE (consumer sees the same 3-value
+ * enum on reads and writes); the owner-refusal remains a service-
+ * level invariant.
  */
 export type UpdateUserRoleDto = {
-    role: string;
+    role: UserRoleDto;
 };
 
 /**
@@ -4542,6 +4602,19 @@ export type UploadStatusResponseDto = {
     upload_id: string;
 };
 
+/**
+ * Account role as carried on `PublicUserDto` and inbound on
+ * `UpdateUserRoleDto`. Mirrors the three stored values of
+ * [`UserRole`] — `Anonymous` is a session-only domain variant and
+ * never appears on a persisted row, so it is deliberately absent
+ * from this wire shape.
+ *
+ * The DB CHECK constraint on `auth.users.role` is the ultimate
+ * source of truth for the three canonical values; parse errors
+ * through [`UserRoleDto::from_str`] mean a corrupt row.
+ */
+export type UserRoleDto = 'owner' | 'admin' | 'user';
+
 export type VerifyPasswordRequest = {
     password: string;
 };
@@ -4566,6 +4639,13 @@ export type WeakerDriveDto = {
 };
 
 /**
+ * Which JSON shape a webhook sink POSTs. Wire mirror of
+ * [`infrastructure::services::webhook_notification_sink::WebhookFormat`] —
+ * kept DTO-suffixed because the domain name clashes.
+ */
+export type WebhookFormatDto = 'generic' | 'slack' | 'discord' | 'teams' | 'telegram' | 'ntfy';
+
+/**
  * Read-only webhook info, shown beside SMTP on the admin Notifications
  * page. Like SMTP, configured only through environment variables.
  */
@@ -4575,9 +4655,9 @@ export type WebhookInfoDto = {
      */
     enabled: boolean;
     /**
-     * `generic`, `slack`, `discord`, `teams`, `telegram` or `ntfy`.
+     * Which webhook JSON shape this sink speaks.
      */
-    format: string;
+    format: WebhookFormatDto;
     /**
      * Scheme and host of the endpoint — **never the full URL**.
      *

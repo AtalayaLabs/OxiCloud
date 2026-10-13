@@ -237,7 +237,7 @@ async fn user_provisioning_response(
     // administrator of this instance and NextCloud clients decide what to
     // offer from this list, so omitting them would hide admin features
     // from the one account that certainly has them.
-    let groups = if UserRole::str_at_least(&user_dto.user.role, UserRole::Admin) {
+    let groups = if UserRole::str_at_least(user_dto.user.role.as_str(), UserRole::Admin) {
         vec!["admin", "users"]
     } else {
         vec!["users"]
@@ -250,7 +250,10 @@ async fn user_provisioning_response(
     // "MockSSO" or, post Phase B of the federation-identity rename, when
     // the field became an issuer URL that doesn't contain "oidc". The
     // kind field is the load-bearing signal.
-    let backend = if user_dto.federation_kind.as_deref() == Some("oidc") {
+    let backend = if matches!(
+        user_dto.federation_kind,
+        Some(crate::application::dtos::user_dto::FederationKindDto::Oidc)
+    ) {
         "OIDC"
     } else {
         "Database"

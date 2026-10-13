@@ -24,7 +24,7 @@ use tracing::error;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use crate::application::dtos::drive_dto::DriveDto;
+use crate::application::dtos::drive_dto::{DriveDto, DriveKindDto};
 use crate::application::dtos::grant_dto::{GrantDto, RoleDto, SubjectDto, SubjectTypeDto};
 use crate::common::di::AppState;
 use crate::domain::entities::user::UserRole;
@@ -118,14 +118,6 @@ pub struct CreateDriveDto {
     /// Quota mutation post-creation is OxiCloud-admin-only (D4).
     #[serde(default)]
     pub quota_bytes: Option<i64>,
-}
-
-/// Wire-shape enum for the drive flavour. Mirrors backend `DriveKind`.
-#[derive(Debug, Clone, Copy, Deserialize, ToSchema, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum DriveKindDto {
-    Personal,
-    Shared,
 }
 
 fn parse_subject(kind: SubjectTypeDto, id: Uuid) -> Subject {
