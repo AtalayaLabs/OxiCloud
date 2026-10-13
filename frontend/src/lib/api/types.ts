@@ -87,14 +87,16 @@ export interface ShareItem {
 	url: string;
 }
 
-export interface CreateShare {
-	item_id: string;
-	item_name?: string | null;
-	item_type: ItemType;
-	password: string | null;
-	/** RFC 3339 UTC timestamp or `null` for never. */
-	expires_at: string | null;
-}
+// Authoritative on the generated SDK — Group B of the Phase 3
+// rename-pattern sweep. The handwritten shape diverged in two
+// benign ways: `item_type: ItemType` ('file' | 'folder') widens
+// to `item_type: string`, and `password` / `expires_at` move from
+// `: string | null` (required nullable) to `?: string | null`
+// (optional nullable). Both are strict widenings on the input side,
+// so every current caller passing a literal `'file'`/`'folder'`
+// item_type or an explicit `null` for the other two still fits.
+import type { CreateShareDto as CreateShare } from './generated/openapi/types.gen';
+export type { CreateShare };
 
 // Authoritative on the generated SDK. Identical shape, no
 // cascading dependencies — pure name-forward.
@@ -178,22 +180,19 @@ export type Role = 'user' | 'admin';
 //   * Only self about themselves → SelfUser.
 // ─────────────────────────────────────────────────────────────────────────
 
-/** Public identity — 9 fields visible to any authenticated caller. */
-export interface PublicUser {
-	id: string;
-	username?: string;
-	email: string;
-	role: string;
-	image?: string | null;
-	is_external: boolean;
-	given_name?: string;
-	family_name?: string;
-	/** Presence — TRUE when the server observed a request on any of this
-	 * user's non-revoked sessions within the last 5 min. Populated on
-	 * list endpoints; single-user public paths default to `false`.
-	 * Backwards-compat: missing on older backend builds → `false`. */
-	is_online?: boolean;
-}
+// Authoritative on the generated SDK — Group B of the Phase 3
+// rename-pattern sweep. The handwritten shape differed only in three
+// optional fields (`username`, `given_name`, `family_name`) that the
+// generated DTO types as `?: string | null` instead of `?: string`.
+// Call-sites doing a bare truthy check on these keep working (null
+// is falsy); the few that typed a variable off `.username` directly
+// absorb a `| null` in the inferred type.
+//
+// Local import so other hand-written interfaces in this file
+// (`FullUser.user: PublicUser`, `AccessSourceSubject` neighbours)
+// keep resolving the name.
+import type { PublicUserDto as PublicUser } from './generated/openapi/types.gen';
+export type { PublicUser };
 
 /** Full user record — public identity + all fields BOTH an admin (viewing
  * another user) AND the subject themselves may see. Returned as `Vec` by
@@ -228,34 +227,15 @@ export interface FullUser {
 	opaque_migrated: boolean;
 }
 
-/** Self view — everything the caller may see about themselves.
- * Returned by `/api/auth/me` and every `AuthResponse` (login / refresh /
- * OIDC callback / magic-link redemption ships this so the SPA's post-auth
- * state matches its post-`/me` state with no UI race). */
-export interface SelfUser {
-	full: FullUser;
-	/** Opaque UI-preferences bag. Cross-device store for pure UI toggles
-	 * (view mode, sidebar collapse, hide-dotfiles, …). Server never
-	 * inspects contents; the SPA defines the keys (see
-	 * `lib/stores/preferences.svelte.ts`). Always an object on the wire
-	 * — empty bag is `{}`, never `null`. PATCH via `/api/auth/me/profile`
-	 * shallow-merges; setting a key to `null` removes it. */
-	ui_preferences: Record<string, unknown>;
-	/** Whether the user wants share-notification emails. */
-	notify_on_share: boolean;
-	/** Session-scoped: my current session is DPoP-bound. SPA reads this
-	 * on `session.load()` to skip a redundant `/api/auth/dpop/bind` call
-	 * (409 `already_bound` otherwise, noisy in the audit stream). */
-	is_dpop_bound: boolean;
-	/** Admin-set temp-password gate — SPA nav guard blocks everything
-	 * but /change-password until this flips back. Cleared by a successful
-	 * `POST /api/auth/change-password`. */
-	force_password_change: boolean;
-	/** Caller-scoped: can I edit my own avatar? `false` for OIDC users
-	 * whose avatar comes from the IdP. Only meaningful when caller ==
-	 * subject; nonsense on any other DTO. */
-	can_edit_image: boolean;
-}
+// Authoritative on the generated SDK — Group C of the Phase 3
+// rename-pattern sweep. The handwritten shape differed only in
+// `full: FullUser` (now resolves to `FullUserDto` — see sibling
+// cascade below) and `ui_preferences: Record<string, unknown>` which
+// the generated type widens to `unknown`. `Record<string, unknown>`
+// is assignable INTO `unknown`, so every current consumer that
+// writes-through or reads with narrowing still compiles.
+import type { SelfUserDto as SelfUser } from './generated/openapi/types.gen';
+export type { SelfUser };
 
 /** Backwards-compat alias while migrating call-sites. Prefer `PublicUser`
  * for public-identity contexts (sharee, group member, invitee) or
@@ -268,28 +248,13 @@ export interface AdminUsersPage {
 	users: FullUser[];
 }
 
-export interface AuthResponse {
-	user: SelfUser;
-	access_token: string;
-	refresh_token: string;
-	token_type: string;
-	expires_in: number;
-	/**
-	 * Mirrors `auth.users.force_password_change_at_next_login` — set
-	 * TRUE by the admin password-reset flow (see backend
-	 * `OpaquePgRepository::clear_registration`) so admin-picked
-	 * passwords stay temporary until the user changes them. When true,
-	 * the SPA's post-login handler must route to `/settings/security`
-	 * (or the equivalent change-password surface) instead of the
-	 * user's home. Cleared server-side by a successful
-	 * `POST /api/auth/change-password`.
-	 *
-	 * Optional on the wire because the backend `#[serde(default)]`s
-	 * to `false` — older clients / non-login endpoints hitting this
-	 * type won't nil-deref.
-	 */
-	force_password_change?: boolean;
-}
+// Authoritative on the generated SDK. The handwritten shape only
+// differed in `user: SelfUser` vs `user: SelfUserDto` — those two
+// are structurally compatible (`SelfUser` differs only in one
+// sibling-renamed field, see Group C of the Phase 3 reclassification).
+// All field docs — including the detailed `force_password_change`
+// explanation — are already carried by the generated type via utoipa.
+export type { AuthResponseDto as AuthResponse } from './generated/openapi/types.gen';
 
 /**
  * Sort dimension for `GET /api/search`. Wire-matches the backend's
@@ -372,24 +337,19 @@ export interface DriveMemberSubject {
  * contexts where the caller is the granter rather than a member (e.g.
  * outgoing-grants listing).
  */
-export interface Drive {
-	id: string;
-	name: string;
-	kind: DriveKind;
-	default_for_user?: string | null;
-	root_folder_id: string;
-	quota_bytes?: number | null;
-	used_bytes: number;
-	/**
-	 * Drive policies — raw JSONB bag from the backend. Unknown keys are
-	 * preserved verbatim. For the typed view used by the admin policy
-	 * editor, see [`DrivePolicies`].
-	 */
-	policies: Record<string, unknown>;
-	created_at: string;
-	updated_at: string;
-	caller_role?: DriveRole | null;
-}
+// Authoritative on the generated SDK — Group C of the Phase 3
+// rename-pattern sweep. The handwritten shape differed in three
+// cosmetic places: `kind: DriveKind` → `kind: DriveKindDto` (same
+// 2-string union), `caller_role?: DriveRole | null` → `caller_role?:
+// null | RoleDto` (the generated RoleDto carries all 5 role values;
+// at a drive it will only ever be one of the drive-scoped subset in
+// practice — the server narrows), and `policies: Record<string,
+// unknown>` → `policies: unknown`. All three widen at the type level
+// without changing wire semantics. Local import so other hand-written
+// interfaces in this file (DriveSummary, DriveMembership) keep
+// resolving `Drive` by its short name.
+import type { DriveDto as Drive } from './generated/openapi/types.gen';
+export type { Drive };
 
 /**
  * Typed mirror of the known drive policy keys. Every field defaults to
@@ -510,44 +470,34 @@ export type { FolderAncestor };
 import type { AccessSourceKind } from './generated/openapi/types.gen';
 export type { AccessSourceKind };
 
-export interface AccessSourceDrive {
-	id: string;
-	name: string;
-	kind: DriveKind;
-}
+// Authoritative on the generated SDK — Group A of the Phase 3
+// rename-pattern sweep. The handwritten `AccessSourceDrive.kind`
+// typed its enum as the handwritten `DriveKind`; the generated
+// equivalent uses `DriveKindDto` (same string-union shape).
+// `AccessSourceSubject.kind` was the inline literal `'user' | 'group'`;
+// the generated version factors it out as `AccessSourceSubjectKind`
+// (same two values).
+//
+// Import-then-export because the `AccessSource` interface below still
+// references both names locally; a bare `export type { … as … }`
+// doesn't bind the alias into module scope.
+import type {
+	AccessSourceDriveDto as AccessSourceDrive,
+	AccessSourceSubjectDto as AccessSourceSubject
+} from './generated/openapi/types.gen';
+export type { AccessSourceDrive, AccessSourceSubject };
 
-export interface AccessSourceSubject {
-	kind: 'user' | 'group';
-	id: string;
-	/** Nullable in MVP (subject enrichment deferred). */
-	name?: string | null;
-}
-
-export interface AccessSource {
-	kind: AccessSourceKind;
-	/** Populated when `kind === 'drive'`. */
-	drive?: AccessSourceDrive;
-	/**
-	 * SHARER — the user who created the grant that gave the caller
-	 * access at the boundary (`role_grants.granted_by`). Kind is always
-	 * `'user'` today (a group can't perform an action), but the type
-	 * stays open in case a future model permits it. Null when the
-	 * boundary can't be resolved to a single grant (e.g. `token`).
-	 */
-	subject?: AccessSourceSubject;
-	/**
-	 * Caller's role via the boundary grant (`role_grants.role` on the
-	 * same row that carries `granted_by`). Lets the FE render permission-
-	 * aware affordances at the ancestor scope. Reflects the boundary grant
-	 * only — aggregate effective role via other channels may be stronger.
-	 * Null on `token` access.
-	 *
-	 * Typed as `GrantRole` (not `DriveRole`): the boundary can be a
-	 * folder-level share where all five role_grant values are valid,
-	 * not just the drive-scoped subset.
-	 */
-	caller_role?: GrantRole | null;
-}
+// Authoritative on the generated SDK — Group C of the Phase 3
+// rename-pattern sweep. The handwritten shape differed only in
+// three nullable-optional widenings: `drive?: AccessSourceDrive` →
+// `drive?: null | AccessSourceDriveDto`, same for `subject`, and
+// `caller_role?: GrantRole | null` → `caller_role?: null | RoleDto`.
+// `AccessSourceDrive` / `AccessSourceSubject` already alias to their
+// Dto siblings (Group A), and `RoleDto` carries the full 5-value
+// GrantRole set. Local import so `FolderAncestorsResponse` below
+// keeps resolving the short name.
+import type { AccessSourceDto as AccessSource } from './generated/openapi/types.gen';
+export type { AccessSource };
 
 /**
  * Response envelope of `GET /api/folders/{id}/ancestors`. `ancestors`

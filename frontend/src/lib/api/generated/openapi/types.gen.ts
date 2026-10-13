@@ -993,8 +993,16 @@ export type DriveDto = {
      * Capability-flag bag — clients render UI affordances based on
      * known keys (`forbid_public_links`, `include_in_photo_index`,
      * `forbid_music_index`, …). Unknown keys preserved verbatim.
+     *
+     * `#[schema(value_type = Object)]` tightens the OpenAPI emission
+     * from "any JSON value" to `type: object, additionalProperties:
+     * true` — forward-compat for unknown keys stays, and TS SDK
+     * consumers get `{ [key: string]: unknown }` instead of a bare
+     * `unknown` they'd have to cast through every access.
      */
-    policies: unknown;
+    policies: {
+        [key: string]: unknown;
+    };
     /**
      * Storage cap in bytes. `None` means "no quota" (admin override /
      * future system drives). Mutation is OxiCloud-admin only — drive
@@ -3522,8 +3530,16 @@ export type SelfUserDto = {
      * for pure UI toggles (view mode, sidebar collapse, hide dotfiles,
      * …). The server never inspects the contents. Always present on
      * the wire; empty bag is `{}`, never `null`.
+     *
+     * `#[schema(value_type = Object)]`: see `drive_dto.rs::policies`
+     * for the full rationale — in short, this tightens the emitted
+     * schema from "any JSON value" to "an object with unknown keys"
+     * so TS SDK consumers get `{ [key: string]: unknown }` instead
+     * of a bare `unknown`.
      */
-    ui_preferences: unknown;
+    ui_preferences: {
+        [key: string]: unknown;
+    };
 };
 
 /**
@@ -4426,8 +4442,16 @@ export type UpdateProfileDto = {
      *
      * Absent → no change to the bag. This is a UI-only surface;
      * server never inspects the keys.
+     *
+     * `#[schema(value_type = Option<Object>)]`: see
+     * `drive_dto.rs::policies` for the full rationale — tightens the
+     * emitted schema from "any JSON value" to "an object with
+     * unknown keys", so inbound-DTO TS SDK consumers get an optional
+     * `{ [key: string]: unknown }` instead of an optional `unknown`.
      */
-    ui_preferences?: unknown;
+    ui_preferences?: {
+        [key: string]: unknown;
+    } | null;
     /**
      * Handle to claim (2-64 chars, `[A-Za-z0-9._-]+`, no `@`).
      * Accepted only when the caller currently has no username. Once

@@ -60,6 +60,13 @@ pub struct DriveDto {
     /// Capability-flag bag — clients render UI affordances based on
     /// known keys (`forbid_public_links`, `include_in_photo_index`,
     /// `forbid_music_index`, …). Unknown keys preserved verbatim.
+    ///
+    /// `#[schema(value_type = Object)]` tightens the OpenAPI emission
+    /// from "any JSON value" to `type: object, additionalProperties:
+    /// true` — forward-compat for unknown keys stays, and TS SDK
+    /// consumers get `{ [key: string]: unknown }` instead of a bare
+    /// `unknown` they'd have to cast through every access.
+    #[schema(value_type = Object)]
     pub policies: serde_json::Value,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,

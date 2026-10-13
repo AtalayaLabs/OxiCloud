@@ -51,7 +51,7 @@
 	import { TEXTY_EXT_RE } from '$lib/utils/textyExt';
 	import { preferences } from '$lib/stores/preferences.svelte';
 	import { serverConfig } from '$lib/stores/serverConfig.svelte';
-	import type { FileItem, FolderItem, ItemType } from '$lib/api/types';
+	import type { DrivePolicies, FileItem, FolderItem, ItemType } from '$lib/api/types';
 	import Banner from '$lib/components/Banner.svelte';
 	import FolderBreadcrumb from '$lib/components/FolderBreadcrumb.svelte';
 	import ResourceList, {
@@ -2185,7 +2185,10 @@
 	     pinned. Shows when either any item in the current listing surfaces
 	     a `drive_id` for a frozen drive, or (empty folder fallback) the
 	     URL's leading segment resolves to one. -->
-	{#if currentDrive?.policies?.read_only}
+	<!-- `currentDrive.policies` is typed `{ [key: string]: unknown }` on
+	     the SDK — forward-compat for unknown knobs. Narrow to the typed
+	     view here to read a known policy. -->
+	{#if currentDrive && (currentDrive.policies as DrivePolicies).read_only}
 		<Banner
 			severity="info"
 			icon="lock"

@@ -144,6 +144,13 @@ pub struct SelfUserDto {
     /// for pure UI toggles (view mode, sidebar collapse, hide dotfiles,
     /// …). The server never inspects the contents. Always present on
     /// the wire; empty bag is `{}`, never `null`.
+    ///
+    /// `#[schema(value_type = Object)]`: see `drive_dto.rs::policies`
+    /// for the full rationale — in short, this tightens the emitted
+    /// schema from "any JSON value" to "an object with unknown keys"
+    /// so TS SDK consumers get `{ [key: string]: unknown }` instead
+    /// of a bare `unknown`.
+    #[schema(value_type = Object)]
     pub ui_preferences: serde_json::Value,
     /// Whether I want share-notification emails.
     pub notify_on_share: bool,
@@ -397,7 +404,14 @@ pub struct UpdateProfileDto {
     ///
     /// Absent → no change to the bag. This is a UI-only surface;
     /// server never inspects the keys.
+    ///
+    /// `#[schema(value_type = Option<Object>)]`: see
+    /// `drive_dto.rs::policies` for the full rationale — tightens the
+    /// emitted schema from "any JSON value" to "an object with
+    /// unknown keys", so inbound-DTO TS SDK consumers get an optional
+    /// `{ [key: string]: unknown }` instead of an optional `unknown`.
     #[serde(default)]
+    #[schema(value_type = Option<Object>)]
     pub ui_preferences: Option<serde_json::Value>,
 }
 

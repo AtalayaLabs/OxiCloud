@@ -12600,7 +12600,8 @@
             "description": "Display name. Sourced from `storage.folders.name` of the row\npointed at by `root_folder_id` (drives have no `name` column —\nsee docs/plan/drive.md §3). The wire shape is unchanged from\nthe client's perspective."
           },
           "policies": {
-            "description": "Capability-flag bag — clients render UI affordances based on\nknown keys (`forbid_public_links`, `include_in_photo_index`,\n`forbid_music_index`, …). Unknown keys preserved verbatim."
+            "type": "object",
+            "description": "Capability-flag bag — clients render UI affordances based on\nknown keys (`forbid_public_links`, `include_in_photo_index`,\n`forbid_music_index`, …). Unknown keys preserved verbatim.\n\n`#[schema(value_type = Object)]` tightens the OpenAPI emission\nfrom \"any JSON value\" to `type: object, additionalProperties:\ntrue` — forward-compat for unknown keys stays, and TS SDK\nconsumers get `{ [key: string]: unknown }` instead of a bare\n`unknown` they'd have to cast through every access."
           },
           "quota_bytes": {
             "type": [
@@ -16089,7 +16090,8 @@
             "description": "Whether I want share-notification emails."
           },
           "ui_preferences": {
-            "description": "Opaque UI preferences bag — my own UI state. Cross-device store\nfor pure UI toggles (view mode, sidebar collapse, hide dotfiles,\n…). The server never inspects the contents. Always present on\nthe wire; empty bag is `{}`, never `null`."
+            "type": "object",
+            "description": "Opaque UI preferences bag — my own UI state. Cross-device store\nfor pure UI toggles (view mode, sidebar collapse, hide dotfiles,\n…). The server never inspects the contents. Always present on\nthe wire; empty bag is `{}`, never `null`.\n\n`#[schema(value_type = Object)]`: see `drive_dto.rs::policies`\nfor the full rationale — in short, this tightens the emitted\nschema from \"any JSON value\" to \"an object with unknown keys\"\nso TS SDK consumers get `{ [key: string]: unknown }` instead\nof a bare `unknown`."
           }
         }
       },
@@ -17346,7 +17348,11 @@
             "description": "New preferred locale (BCP-47 shape, e.g. `\"fr\"`, `\"zh-TW\"`).\nMust resolve against the server's `LocaleRegistry` — unknown\ncodes are rejected with 400. Pass an empty string to clear the\npreference back to the server default (the application layer\nnormalises `\"\"` → `None`)."
           },
           "ui_preferences": {
-            "description": "Partial patch into the opaque UI preferences bag. **Must be a\nJSON object.** Applied via a SHALLOW merge on the server:\nkeys present here overwrite existing top-level keys; keys not\npresent survive. A key value of `null` REMOVES that key from\nthe bag (implemented via `jsonb_strip_nulls` after the merge).\n\nExample: current bag `{\"a\":1,\"b\":2}`, patch `{\"b\":3,\"c\":4}`\n→ merged `{\"a\":1,\"b\":3,\"c\":4}`. Patch `{\"a\":null}` → `{\"b\":2}`.\n\nAbsent → no change to the bag. This is a UI-only surface;\nserver never inspects the keys."
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Partial patch into the opaque UI preferences bag. **Must be a\nJSON object.** Applied via a SHALLOW merge on the server:\nkeys present here overwrite existing top-level keys; keys not\npresent survive. A key value of `null` REMOVES that key from\nthe bag (implemented via `jsonb_strip_nulls` after the merge).\n\nExample: current bag `{\"a\":1,\"b\":2}`, patch `{\"b\":3,\"c\":4}`\n→ merged `{\"a\":1,\"b\":3,\"c\":4}`. Patch `{\"a\":null}` → `{\"b\":2}`.\n\nAbsent → no change to the bag. This is a UI-only surface;\nserver never inspects the keys.\n\n`#[schema(value_type = Option<Object>)]`: see\n`drive_dto.rs::policies` for the full rationale — tightens the\nemitted schema from \"any JSON value\" to \"an object with\nunknown keys\", so inbound-DTO TS SDK consumers get an optional\n`{ [key: string]: unknown }` instead of an optional `unknown`."
           },
           "username": {
             "type": [
