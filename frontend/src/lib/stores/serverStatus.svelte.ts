@@ -177,13 +177,19 @@ async function refetchBanners(): Promise<void> {
 		ssLog.debug('/api/config returned', cfg.server_status);
 		// Replace from the fresh body — one atomic assignment so
 		// Svelte's reactivity notifies one time, not per-field.
+		// Coalesce `null → undefined` at the SDK/store boundary. The
+		// generated SDK models absent sub-fields as `null | undefined`
+		// (serde `#[serde(skip_serializing_if = …)]` + an explicit
+		// nullable in the schema), while the store deliberately speaks
+		// `undefined`-only — a single "absence" shape keeps conditional
+		// rendering (`{#if store.migration}`) idiomatic.
 		current = {
 			readonly: cfg.server_status.readonly,
-			migration: cfg.server_status.migration,
-			rotation: cfg.server_status.rotation,
-			holder: cfg.server_status.holder,
-			banners: cfg.server_status.banners,
-			banners_version: cfg.server_status.banners_version
+			migration: cfg.server_status.migration ?? undefined,
+			rotation: cfg.server_status.rotation ?? undefined,
+			holder: cfg.server_status.holder ?? undefined,
+			banners: cfg.server_status.banners ?? undefined,
+			banners_version: cfg.server_status.banners_version ?? undefined
 		};
 	} catch (err) {
 		ssLog.warn('refetch failed', err);

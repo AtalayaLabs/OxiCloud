@@ -98,7 +98,12 @@ class ServerConfigStore {
 			// `banners_version` so the first header carrying the same
 			// version doesn't trigger a redundant refetch.
 			const { hydrateBanners } = await import('$lib/stores/serverStatus.svelte');
-			hydrateBanners(cfg.server_status.banners, cfg.server_status.banners_version);
+			// Null-coalesce at the SDK/store boundary — see the sibling
+			// `serverStatus.svelte.ts` note for the full rationale.
+			hydrateBanners(
+				cfg.server_status.banners ?? undefined,
+				cfg.server_status.banners_version ?? undefined
+			);
 			cfgLog.debug('server config loaded', {
 				version: cfg.version,
 				message_bus: cfg.features.message_bus,

@@ -692,7 +692,7 @@
 		{:else}
 			<ul class="dp__findings" data-testid="admin-policy-drift">
 				{#each drift as d (d.id)}
-					{@render weakerRow(d.id, d.name, d.knobs)}
+					{@render weakerRow(d.id, d.name ?? null, d.knobs)}
 				{/each}
 			</ul>
 		{/if}
