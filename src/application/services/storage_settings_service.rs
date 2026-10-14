@@ -434,7 +434,9 @@ impl StorageSettingsService {
                             "entry `{name}` not declared in OXICLOUD_STORAGE_ENTRIES. \
                              Available: [{available}]"
                         ),
-                        backend_type: None,
+                        backend_type: "unknown".to_string(),
+                        // Entry never resolved → no typed kind to report.
+                        backend_kind: None,
                         available_bytes: None,
                         roundtrip_passed: None,
                         phase_reached: None,
@@ -458,19 +460,24 @@ impl StorageSettingsService {
             // We use the wrapper-only string as a fallback for the
             // health-check-failed branch, where there's no formatted
             // status to draw from.
-            // `backend_type()` on the trait returns a `&'static str`
-            // from a closed set; parse into the enum, log + fall back
-            // to `None` on an unexpected value so the admin panel
-            // still renders the error.
-            let fallback_backend_kind: Option<StorageBackendKind> =
-                backend.backend_type().parse().ok();
+            // Keep the full `backend_type()` string (post-K2 that's the
+            // composite `"<wrapper>(<inner>)"` form) as the fallback —
+            // the admin panel renders it as a diagnostic string when
+            // health-check fails before the richer round-trip report
+            // is available.
+            // Composite string (post-K2 the `"<wrapper>(<inner>)"`
+            // form) + strongly-typed pure kind, both known from the
+            // entry we just resolved.
+            let fallback_backend_type = backend.backend_type().to_string();
+            let backend_kind: StorageBackendKind = entry.backend.clone().into();
             let status = match backend.health_check().await {
                 Ok(s) => s,
                 Err(e) => {
                     return Ok(StorageTestResultDto {
                         connected: false,
                         message: format!("health-check failed: {e}"),
-                        backend_type: fallback_backend_kind,
+                        backend_type: fallback_backend_type,
+                        backend_kind: Some(backend_kind),
                         available_bytes: None,
                         roundtrip_passed: None,
                         phase_reached: None,
@@ -484,7 +491,8 @@ impl StorageSettingsService {
             let mut out = StorageTestResultDto {
                 connected: status.connected,
                 message: status.message,
-                backend_type: status.backend_type.parse().ok(),
+                backend_type: status.backend_type,
+                backend_kind: Some(backend_kind),
                 available_bytes: status.available_bytes,
                 roundtrip_passed: None,
                 phase_reached: None,
@@ -515,7 +523,8 @@ impl StorageSettingsService {
                 let mut out = StorageTestResultDto {
                     connected: status.connected,
                     message: status.message,
-                    backend_type: Some(StorageBackendKind::Local),
+                    backend_type: "local".to_string(),
+                    backend_kind: Some(StorageBackendKind::Local),
                     available_bytes: status.available_bytes,
                     roundtrip_passed: None,
                     phase_reached: None,
@@ -535,7 +544,8 @@ impl StorageSettingsService {
                     return Ok(StorageTestResultDto {
                         connected: false,
                         message: "S3 bucket name is required".to_string(),
-                        backend_type: Some(StorageBackendKind::S3),
+                        backend_type: "s3".to_string(),
+                        backend_kind: Some(StorageBackendKind::S3),
                         available_bytes: None,
                         roundtrip_passed: None,
                         phase_reached: None,
@@ -592,7 +602,8 @@ impl StorageSettingsService {
                     Ok(status) => StorageTestResultDto {
                         connected: status.connected,
                         message: status.message,
-                        backend_type: Some(StorageBackendKind::S3),
+                        backend_type: "s3".to_string(),
+                        backend_kind: Some(StorageBackendKind::S3),
                         available_bytes: status.available_bytes,
                         roundtrip_passed: None,
                         phase_reached: None,
@@ -604,7 +615,8 @@ impl StorageSettingsService {
                     Err(e) => StorageTestResultDto {
                         connected: false,
                         message: format!("Connection failed: {}", e),
-                        backend_type: Some(StorageBackendKind::S3),
+                        backend_type: "s3".to_string(),
+                        backend_kind: Some(StorageBackendKind::S3),
                         available_bytes: None,
                         roundtrip_passed: None,
                         phase_reached: None,

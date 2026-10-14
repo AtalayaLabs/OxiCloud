@@ -529,7 +529,10 @@ impl DeltaUploadService {
         Ok(DeltaManifestResponse {
             file_hash,
             total_size,
-            chunks: chunks.into_iter().map(|(h, s)| DeltaChunkRef { h, s }).collect(),
+            chunks: chunks
+                .into_iter()
+                .map(|(h, s)| DeltaChunkRef { h, s })
+                .collect(),
         })
     }
 

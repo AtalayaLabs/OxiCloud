@@ -48,6 +48,16 @@ impl std::str::FromStr for StorageBackendKind {
     }
 }
 
+impl From<crate::common::config::StorageBackendType> for StorageBackendKind {
+    fn from(t: crate::common::config::StorageBackendType) -> Self {
+        match t {
+            crate::common::config::StorageBackendType::Local => StorageBackendKind::Local,
+            crate::common::config::StorageBackendType::S3 => StorageBackendKind::S3,
+            crate::common::config::StorageBackendType::Azure => StorageBackendKind::Azure,
+        }
+    }
+}
+
 impl std::fmt::Display for StorageBackendKind {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.write_str(self.as_str())
@@ -618,11 +628,24 @@ impl StorageBackendKind {
 pub struct StorageTestResultDto {
     pub connected: bool,
     pub message: String,
-    /// Which backend was tested. `None` when the request couldn't be
-    /// resolved to a backend (e.g. unknown `entry_name`), replacing
-    /// the pre-enum `"unknown"` sentinel.
+    /// Which backend was tested, in the `"<wrapper>(<inner>)"` form
+    /// that `BackendHealthStatus.backend_type` emits — post-K2 every
+    /// entry runs behind the always-wrap storage layer, and the
+    /// admin test-connection page uses this composite as a
+    /// diagnostic ("tested the v1-plaintext wrapper on top of the
+    /// local backend"). Stays a `String` because the composite can
+    /// nest arbitrarily (`cached(encrypted(local))`) and wrapper
+    /// names are an open set. For the strongly-typed pure-backend
+    /// kind, see `backend_kind` below. `"unknown"` is the sentinel
+    /// for the "we couldn't even resolve a backend to test" case.
+    pub backend_type: String,
+    /// Strongly-typed pure backend kind. `None` only when the
+    /// request couldn't be resolved to a backend (e.g. unknown
+    /// `entry_name`) — otherwise always set alongside `backend_type`
+    /// so clients that only care about the pure kind can skip the
+    /// composite-string parsing.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub backend_type: Option<StorageBackendKind>,
+    pub backend_kind: Option<StorageBackendKind>,
     pub available_bytes: Option<u64>,
     /// Set only when reachability passed AND a round-trip was
     /// attempted. `Some(true)` = full write + read + verify success;

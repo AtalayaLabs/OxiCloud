@@ -3739,28 +3739,25 @@ impl AuthApplicationService {
         // Validate password
         self.require_password_length(&dto.password)?;
 
-        // Determine role. Omitting `role` means "regular user" — that is
-        // the documented default and stays. But an unrecognised value is
-        // REJECTED rather than coerced: `_ => UserRole::User` answered a
-        // request for a role this binary does not know with a 201 and a
-        // plain user, so the caller was told their request succeeded when
-        // it had in fact been silently rewritten.
-        // `role` is `Option<UserRoleDto>` since the DTO was typed through.
-        // Owner is refused the same way `change_user_role` does: admin-
-        // create is for peer provisioning, not ownership transfer.
+        // Determine role. Omitting `role` means "regular user" — the
+        // documented default. Every typed variant is allowed to pass
+        // through here; the policy decisions are left to the rank
+        // check below:
+        //
+        //   - `Owner` reaches the `caller_role.outranks(role)` guard,
+        //     which refuses the create with 403 `AccessDenied` because
+        //     an owner does not outrank another owner (strict
+        //     comparison). Short-circuiting here with 400 would mask
+        //     that "the policy is about hierarchy, not about input
+        //     being malformed" distinction the admin UI uses to
+        //     branch the error UX.
+        //   - `Admin` / `User` fall through to the same rank check
+        //     with the same semantics.
         let role = match dto.role {
             None => UserRole::User,
             Some(UserRoleDto::Admin) => UserRole::Admin,
             Some(UserRoleDto::User) => UserRole::User,
-            Some(UserRoleDto::Owner) => {
-                return Err(DomainError::new(
-                    ErrorKind::InvalidInput,
-                    "User",
-                    "Owner cannot be assigned through admin-create. \
-                     Use transfer-ownership on an existing admin."
-                        .to_string(),
-                ));
-            }
+            Some(UserRoleDto::Owner) => UserRole::Owner,
         };
 
         // You may only create an account you could subsequently administer.

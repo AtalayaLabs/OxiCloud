@@ -59,11 +59,11 @@ use crate::interfaces::api::handlers::chunked_upload_handler::{
 };
 use crate::interfaces::api::handlers::config_handler::{FeaturesDto, ServerConfigDto};
 use crate::interfaces::api::handlers::contacts_handler::{
-    AddContactToGroupRequest, AddressBookResponse, CreateAddressBookRequest, CreateContactRequest,
-    ContactGroupNameRequest, UpdateAddressBookRequest, UpdateContactRequest,
+    AddContactToGroupRequest, AddressBookResponse, ContactGroupNameRequest,
+    CreateAddressBookRequest, CreateContactRequest, UpdateAddressBookRequest, UpdateContactRequest,
 };
 use crate::interfaces::api::handlers::dedup_handler::{
-    HashCheckAdminResponse, HashCheckResponse, HashSiblingDto, DedupStatsResponse,
+    DedupStatsResponse, HashCheckAdminResponse, HashCheckResponse, HashSiblingDto,
 };
 use crate::interfaces::api::handlers::file_handler::MoveFilePayload;
 use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader};
