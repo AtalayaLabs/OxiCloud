@@ -6,9 +6,6 @@
 		addUserMember,
 		createGroup,
 		deleteGroup,
-		groupDescription,
-		groupDisplayName,
-		groupIconName,
 		INTERNAL_GROUP_ID,
 		listGroupsPage,
 		listMembers,
@@ -18,6 +15,7 @@
 		type GroupItem,
 		type GroupMember
 	} from '$lib/api/endpoints/groups';
+	import { groupDescription, groupDisplayName, groupIconName } from '$lib/utils/groupFormat';
 	import {
 		ensureResolvers,
 		resolveRecipient,

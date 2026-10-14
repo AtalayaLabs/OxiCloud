@@ -10,7 +10,8 @@
 // pixel-area saving is the documented ~7x.
 
 import { describe, expect, it } from 'vitest';
-import { fileThumbnailUrl, thumbSizeForView } from './files';
+import { fileThumbnailUrl } from './files';
+import { thumbSizeForView } from '$lib/utils/thumbnails';
 
 describe('round12 §F1 — thumbnail rendition per view', () => {
 	it('list view requests the icon rendition, grid keeps preview', () => {

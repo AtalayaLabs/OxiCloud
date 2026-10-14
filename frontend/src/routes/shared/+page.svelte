@@ -5,8 +5,6 @@
 	import { resolve } from '$app/paths';
 	import { onMount } from 'svelte';
 	import {
-		displayRole,
-		expiryToIso,
 		fetchMyShares,
 		notifyGrantRecipient,
 		revokeGrant,
@@ -16,6 +14,8 @@
 		type OutgoingResourceGrant,
 		type ShareRole
 	} from '$lib/api/endpoints/grants';
+	import { displayRole } from '$lib/utils/grantFormat';
+	import { expiryToIso } from '$lib/utils/dateInput';
 	import { copyShareLink, deleteShare, getShareById, updateShare } from '$lib/api/endpoints/shares';
 	import { ensureResolvers, resolveLabel } from '$lib/api/endpoints/recipients';
 	import { fileInlineUrl } from '$lib/api/endpoints/files';

@@ -1,6 +1,7 @@
 /** Folder endpoints — ported from filesModel.js + fileOperations.js. */
 import { apiFetch, apiJson } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
+import { rememberFolderName } from '$lib/utils/folderCache';
 import type { FileItem, FolderAncestorsResponse, FolderItem, ItemType } from '$lib/api/types';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
@@ -26,66 +27,10 @@ export interface FolderListingResult {
 	etag?: string;
 }
 
-// ── In-memory listing cache (stale-while-revalidate) ─────────────────────────
-// Lets the files view paint a previously-visited folder instantly on
-// back/forward navigation, then revalidate with `If-None-Match` (304 = no body).
-interface CachedFolder {
-	listing: FolderListing;
-	etag?: string;
-}
-const FOLDER_CACHE_MAX = 40;
-const folderCache = new Map<string, CachedFolder>();
-
-/** Cached listing for a folder, bumped to most-recently-used. */
-export function getCachedFolder(folderId: string): CachedFolder | undefined {
-	const hit = folderCache.get(folderId);
-	if (hit) {
-		folderCache.delete(folderId);
-		folderCache.set(folderId, hit);
-	}
-	return hit;
-}
-
-export function cacheFolder(folderId: string, listing: FolderListing, etag?: string): void {
-	// Learn the children's names for breadcrumb resolution.
-	for (const f of listing.folders) rememberFolderName(f.id, f.name);
-	folderCache.delete(folderId);
-	folderCache.set(folderId, { listing, etag });
-	// Evict the least-recently-used entries past the cap.
-	while (folderCache.size > FOLDER_CACHE_MAX) {
-		const oldest = folderCache.keys().next().value;
-		if (oldest === undefined) break;
-		folderCache.delete(oldest);
-	}
-}
-
-/** Drop one folder, or the whole cache (no id), after a mutation. */
-export function invalidateFolderCache(folderId?: string): void {
-	if (folderId === undefined) folderCache.clear();
-	else folderCache.delete(folderId);
-}
-
-// ── Folder name cache (breadcrumbs) ──────────────────────────────────────────
-// id → name, learned from every listing (a folder's listing names its children)
-// and from getFolder. Lets breadcrumbs resolve with zero requests during normal
-// navigation (each ancestor was named by its parent's listing); only a cold
-// deep-link fetches the names it hasn't seen.
-const FOLDER_NAMES_MAX = 1000;
-const folderNames = new Map<string, string>();
-
-export function rememberFolderName(id: string, name: string): void {
-	folderNames.delete(id);
-	folderNames.set(id, name);
-	while (folderNames.size > FOLDER_NAMES_MAX) {
-		const oldest = folderNames.keys().next().value;
-		if (oldest === undefined) break;
-		folderNames.delete(oldest);
-	}
-}
-
-export function getFolderName(id: string): string | undefined {
-	return folderNames.get(id);
-}
+// Listing + name caches moved to `$lib/utils/folderCache`. See that
+// file for the rationale; call sites that previously imported those
+// helpers from `endpoints/folders` should now go to `utils/folderCache`
+// directly.
 
 // In-flight dedup (the `resolveUser` pattern): on a cold deep-link the
 // breadcrumb builder and the drive-id resolver both request the same folder

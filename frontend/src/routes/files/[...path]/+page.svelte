@@ -12,12 +12,11 @@
 		deleteFolder,
 		fetchFolderPage,
 		getFolderAncestors,
-		invalidateFolderCache,
 		moveFolder,
-		rememberFolderName,
 		renameFolder,
 		type FolderListing
 	} from '$lib/api/endpoints/folders';
+	import { invalidateFolderCache, rememberFolderName } from '$lib/utils/folderCache';
 	import {
 		deleteFile,
 		fileDownloadUrl,

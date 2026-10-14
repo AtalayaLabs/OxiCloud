@@ -9,12 +9,9 @@
 	} from '$lib/api/endpoints/shares';
 	import {
 		createGrant,
-		expiryToIso,
-		displayRole,
 		fetchGrantsForResource,
 		notifyGrantRecipient,
 		revokeGrant,
-		todayIso,
 		updateGrantRole,
 		type Grant,
 		type GrantSubject,
@@ -22,6 +19,8 @@
 		type NotifyOutcome,
 		type ShareRole
 	} from '$lib/api/endpoints/grants';
+	import { displayRole } from '$lib/utils/grantFormat';
+	import { expiryToIso, todayIso } from '$lib/utils/dateInput';
 	import {
 		ensureResolvers,
 		isDirectoryAvailable,

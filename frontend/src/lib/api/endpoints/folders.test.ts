@@ -8,16 +8,14 @@ vi.mock('$lib/api/client', () => ({
 
 import { apiFetch, apiJson } from '$lib/api/client';
 import type { FolderItem } from '$lib/api/types';
+import { fetchFolderListing, getFolder, type FolderListing } from './folders';
 import {
-	fetchFolderListing,
-	getCachedFolder,
 	cacheFolder,
-	invalidateFolderCache,
-	getFolder,
+	getCachedFolder,
 	getFolderName,
-	rememberFolderName,
-	type FolderListing
-} from './folders';
+	invalidateFolderCache,
+	rememberFolderName
+} from '$lib/utils/folderCache';
 
 type ResourceItem = { resource_type: 'file' | 'folder'; resource: { id: string; name?: string } };
 type ResourcePage = { items?: ResourceItem[]; next_cursor?: string };
