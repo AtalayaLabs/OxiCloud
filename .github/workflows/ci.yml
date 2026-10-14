@@ -258,12 +258,16 @@ jobs:
   # tightened enums, request shape narrowing, response field type
   # changes, status-code semantic shifts, and so on.
   #
-  # The allow-list at the repo root (`oasdiff-openapi-breaking-allow.txt`)
-  # is DELIBERATELY EMPTY by default: every breaking change should
+  # The gate is tuned by two files under `checks/openapi/`:
+  #   * `severity.conf` downgrades rules that are definitionally non-
+  #     breaking on the wire (e.g. adding values to a response enum).
+  #   * `breaking-allow.conf` carries per-signal exact-line exceptions
+  #     for request-side tightenings that stay at ERR.
+  # Both are deliberately slim: every genuinely breaking change should
   # surface on the PR that introduces it, be discussed with the
-  # reviewer, and either undone or acknowledged (with a narrowly-
-  # targeted allow entry added in the same PR and a one-sentence
-  # rationale in the PR description).
+  # reviewer, and either undone or acknowledged (with an entry added
+  # in the same PR and a one-sentence rationale in the PR description
+  # naming the Rust type / invariant that makes it safe).
   #
   # Compares the committed `resources/gen/openapi.json` on each side —
   # which is enforced-fresh by the `openapi-spec-drift` job above, so
@@ -312,15 +316,16 @@ jobs:
           oasdiff breaking-files \
             --base "origin/${BASE_REF}" \
             --fail-on ERR \
-            --err-ignore oasdiff-openapi-breaking-allow.txt \
+            --severity-levels checks/openapi/severity.conf \
+            --err-ignore checks/openapi/breaking-allow.conf \
             resources/gen/openapi.json
           STATUS=$?
           if [ "$STATUS" -ne 0 ]; then
             echo ""
             echo "::error::OpenAPI breaking change detected vs. '${{ github.base_ref }}'."
             echo "::error::Fix: either revert the breaking change, or acknowledge it by"
-            echo "::error::adding a narrowly-targeted substring match to"
-            echo "::error::\`oasdiff-openapi-breaking-allow.txt\` in this same PR, with"
+            echo "::error::adding the oasdiff singleline (exact match) to"
+            echo "::error::\`checks/openapi/breaking-allow.conf\` in this same PR, with"
             echo "::error::a one-sentence rationale in the PR description naming the"
             echo "::error::Rust type / invariant that makes the change safe for consumers."
             exit "$STATUS"
