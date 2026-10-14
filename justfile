@@ -201,7 +201,7 @@ gen-openapi-schema:
 # committed file differs from the fresh output. Included in
 # `pre-pull-request` so developers catch drift BEFORE pushing —
 # the CI job is belt-and-braces, not the only defence.
-check-openapi: gen-openapi-schema
+check-openapi-gen: gen-openapi-schema
     #!/usr/bin/env bash
     set -euo pipefail
     if ! git diff --exit-code \
@@ -217,6 +217,49 @@ check-openapi: gen-openapi-schema
         exit 1
     fi
     echo "✅ OpenAPI spec: committed file matches generator output"
+
+# Local mirror of the `openapi-breaking-check` CI job. Diffs
+# `resources/gen/openapi.json` on this branch against `origin/main`
+# via `oasdiff breaking`, suppressing any match listed in the repo-
+# root `oasdiff-openapi-breaking-allow.txt`. Fails on the first
+# unlisted breaking change — same contract the CI enforces, so
+# running this locally before pushing catches surprises in the
+# fast feedback loop.
+#
+# Requires `oasdiff` on PATH. Install via `brew install oasdiff` on
+# macOS or grab a release binary from https://github.com/oasdiff/oasdiff/releases.
+check-openapi: gen-openapi-schema
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! command -v oasdiff >/dev/null; then
+        echo "❌ oasdiff not found on PATH."
+        echo "   brew install oasdiff"
+        echo "   or: https://github.com/oasdiff/oasdiff/releases"
+        exit 1
+    fi
+    # Resolve the base ref. `origin/HEAD` is set by `git clone` to
+    # whatever branch the remote considers default, so this works in
+    # repos where mainline is `master`, or where someone's fork has a
+    # different default. Falls back to a literal `origin/main` only
+    # when `origin/HEAD` isn't configured — not a silent assumption,
+    # the user sees the fallback printed below. `BASE_REF` env
+    # override lets a developer diff against a feature branch or a
+    # specific tag when needed.
+    BASE_REF="${BASE_REF:-$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)}"
+    echo "ℹ Comparing resources/gen/openapi.json against ${BASE_REF}"
+    # Fetch so a stale local baseline doesn't let a drift slip
+    # through. `|| true` keeps the check runnable offline — the
+    # baseline just stays whatever is already in the local repo.
+    git fetch --quiet origin "${BASE_REF#origin/}" || \
+        echo "⚠ fetch failed; comparing against the LOCAL copy of ${BASE_REF}"
+    # `breaking-files` compares the given spec against its own path in
+    # the base ref — no manual `git show` dance, no temp files.
+    oasdiff breaking-files \
+        --base "${BASE_REF}" \
+        --fail-on ERR \
+        --err-ignore oasdiff-openapi-breaking-allow.txt \
+        resources/gen/openapi.json
+    echo "✅ OpenAPI: no breaking changes vs ${BASE_REF}"
 
 # Regenerate `resources/gen/asyncapi.json` — the WS surface's spec,
 # analogue of openapi.json. Built from the `Topic`, `MessageBusEvent`,
@@ -249,7 +292,7 @@ gen-asyncapi: gen-asyncapi-schema
 # Depends on `asyncapi-client` which itself depends on `asyncapi`, so the
 # whole chain runs; then we assert on `git diff --exit-code` over
 # the two paths we care about.
-check-asyncapi: gen-asyncapi
+check-asyncapi-gen: gen-asyncapi
     #!/usr/bin/env bash
     set -euo pipefail
     if ! git diff --exit-code \
@@ -508,4 +551,4 @@ test-docker-tags:
 
 # Check and test everything
 # recommanded before pull request
-pre-pull-request: test-docker-tags check fe-check audit check-migrations check-asyncapi check-openapi test test-integration fe-test build test-bundle test-api fe-build-e2e  front-test
+pre-pull-request: test-docker-tags check fe-check audit check-migrations check-asyncapi-gen check-openapi-gen test test-integration fe-test build test-bundle test-api fe-build-e2e  front-test
