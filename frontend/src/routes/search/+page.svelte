@@ -13,12 +13,8 @@
 	import { searchResources } from '$lib/api/endpoints/search';
 	import { fileDownloadUrl, renameFile, deleteFile } from '$lib/api/endpoints/files';
 	import { renameFolder, deleteFolder } from '$lib/api/endpoints/folders';
-	import {
-		addFavorite,
-		removeFavorite,
-		dateBucket,
-		sizeBucket
-	} from '$lib/api/endpoints/favorites';
+	import { addFavorite, removeFavorite } from '$lib/api/endpoints/favorites';
+	import { dateBucket, sizeBucket } from '$lib/utils/resourceBuckets';
 	import type { FileItem, FolderItem, SearchResourceItem, SortBy } from '$lib/api/types';
 	import { lazyComponent } from '$lib/composables/lazyComponent.svelte';
 	import { folderAccessCached, probeFolderAccess } from '$lib/utils/folderAccess';

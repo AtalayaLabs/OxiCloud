@@ -36,7 +36,7 @@
 		setDrivePolicyDefaults
 	} from '$lib/api/endpoints/admin';
 	import DrivePoliciesModal from '$lib/components/DrivePoliciesModal.svelte';
-	import { resolveOwnerName } from '$lib/api/endpoints/favorites';
+	import { resolveOwnerName } from '$lib/utils/ownerName';
 	import { SvelteMap } from 'svelte/reactivity';
 	import { listFindings, listRuns, triggerJob } from '$lib/api/endpoints/adminJobs';
 	import {

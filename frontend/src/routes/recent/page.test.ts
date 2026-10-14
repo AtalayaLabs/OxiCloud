@@ -15,11 +15,14 @@ vi.mock('$lib/api/generated/openapi/sdk.gen', () => ({
 	listRecentResources: vi.fn(),
 	removeFromRecent: vi.fn()
 }));
-vi.mock('$lib/api/endpoints/favorites', () => ({
+// Display helpers moved out of endpoints/favorites — mock their new homes.
+vi.mock('$lib/utils/resourceBuckets', () => ({
 	dateBucket: () => 'Today',
-	resolveOwnerName: vi.fn(async () => 'me'),
 	sizeBucket: () => 'Small',
 	typeLabel: () => 'File'
+}));
+vi.mock('$lib/utils/ownerName', () => ({
+	resolveOwnerName: vi.fn(async () => 'me')
 }));
 vi.mock('$lib/api/endpoints/files', () => ({
 	fileDownloadUrl: () => '/dl',

@@ -31,14 +31,9 @@
 	type RecentFileOrFolderItem = RecentResourceItemDto & {
 		resource: FileDto | FolderDto;
 	};
-	import {
-		addFavorite,
-		dateBucket,
-		removeFavorite,
-		resolveOwnerName,
-		sizeBucket,
-		typeLabel
-	} from '$lib/api/endpoints/favorites';
+	import { addFavorite, removeFavorite } from '$lib/api/endpoints/favorites';
+	import { dateBucket, sizeBucket, typeLabel } from '$lib/utils/resourceBuckets';
+	import { resolveOwnerName } from '$lib/utils/ownerName';
 	import { fileDownloadUrl, renameFile, deleteFile } from '$lib/api/endpoints/files';
 	import { renameFolder, deleteFolder } from '$lib/api/endpoints/folders';
 	import type { FileItem, FolderItem, ItemType } from '$lib/api/types';

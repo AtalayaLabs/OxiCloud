@@ -6,13 +6,9 @@
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { onMount, untrack } from 'svelte';
-	import {
-		addFavorite,
-		dateBucket,
-		removeFavorite,
-		resolveOwnerName,
-		typeLabel
-	} from '$lib/api/endpoints/favorites';
+	import { addFavorite, removeFavorite } from '$lib/api/endpoints/favorites';
+	import { dateBucket, typeLabel } from '$lib/utils/resourceBuckets';
+	import { resolveOwnerName } from '$lib/utils/ownerName';
 	import { fileDownloadUrl } from '$lib/api/endpoints/files';
 	import { folderZipUrl } from '$lib/api/endpoints/folders';
 	import { fetchSharedWithMe, type IncomingGrantItem } from '$lib/api/endpoints/grants';

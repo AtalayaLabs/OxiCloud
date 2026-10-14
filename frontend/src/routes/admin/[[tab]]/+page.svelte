@@ -82,7 +82,7 @@
 	} from '$lib/api/endpoints/admin';
 	import { createDrive } from '$lib/api/endpoints/drives';
 	import { seedUser } from '$lib/api/endpoints/users';
-	import { resolveOwnerName } from '$lib/api/endpoints/favorites';
+	import { resolveOwnerName } from '$lib/utils/ownerName';
 	import { useOwnerCache } from '$lib/composables/useOwnerCache.svelte';
 	import {
 		ensureResolvers,

@@ -12,7 +12,7 @@
 		remainingDaysBucket,
 		restoreTrashItem
 	} from '$lib/api/endpoints/trash';
-	import { dateBucket, sizeBucket, typeLabel } from '$lib/api/endpoints/favorites';
+	import { dateBucket, sizeBucket, typeLabel } from '$lib/utils/resourceBuckets';
 	import { formatDate } from '$lib/utils/display';
 	import type { Drive, FileItem, FolderItem, TrashResourceItem } from '$lib/api/types';
 	import Icon from '$lib/icons/Icon.svelte';
