@@ -408,7 +408,7 @@ impl DevicePollError {
 // ============================================================================
 
 /// DTO for listing authorized devices in the user's profile.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct DeviceInfoDto {
     pub id: String,
     pub client_name: String,

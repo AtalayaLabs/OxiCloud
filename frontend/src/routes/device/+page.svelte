@@ -4,13 +4,43 @@
 	import { errorMessage } from '$lib/utils/errors';
 	import { page } from '$app/state';
 	import { onMount } from 'svelte';
-	import {
-		decideDevice,
-		DeviceLookupFailure,
-		lookupDeviceCode,
-		type DeviceInfo
-	} from '$lib/api/endpoints/device';
+	import { deviceVerifyAction, deviceVerifyInfo } from '$lib/api/generated/openapi/sdk.gen';
+	import type { DeviceVerifyInfoDto } from '$lib/api/generated/openapi/types.gen';
 	import { t } from '$lib/i18n/index.svelte';
+
+	// Distinguishable failure modes the page renders differently.
+	// Lives on the component rather than in a shared module because
+	// this is the only place these distinctions matter — the former
+	// `endpoints/device.ts` wrapper is retired as part of the Phase 4
+	// migration to the generated SDK.
+	type DeviceLookupErrorKind = 'unauthorized' | 'not-found' | 'failed';
+	class DeviceLookupFailure extends Error {
+		kind: DeviceLookupErrorKind;
+		constructor(kind: DeviceLookupErrorKind) {
+			super(kind);
+			this.kind = kind;
+			this.name = 'DeviceLookupFailure';
+		}
+	}
+
+	/**
+	 * Look up a device user-code via the generated SDK. The backend returns
+	 * HTTP 200 with `{valid:false}` for unknown/expired codes (NOT a non-2xx),
+	 * so the body must be inspected — a 2xx alone does not mean the code is
+	 * good. A 401 means the caller isn't signed in and must authenticate
+	 * before authorizing a device.
+	 */
+	async function lookupDeviceCode(c: string): Promise<DeviceVerifyInfoDto> {
+		let data: DeviceVerifyInfoDto;
+		try {
+			data = await deviceVerifyInfo({ throwOnError: true, query: { code: c } });
+		} catch (err) {
+			const status = (err as { response?: { status?: number } })?.response?.status;
+			throw new DeviceLookupFailure(status === 401 ? 'unauthorized' : 'failed');
+		}
+		if (!data.valid) throw new DeviceLookupFailure('not-found');
+		return data;
+	}
 
 	type Step = 'code' | 'loading' | 'review' | 'approved' | 'denied' | 'error';
 
@@ -19,7 +49,7 @@
 
 	let code = $state(page.url.searchParams.get('code') ?? '');
 	let step = $state<Step>('code');
-	let info = $state<DeviceInfo | null>(null);
+	let info = $state<DeviceVerifyInfoDto | null>(null);
 	let errorText = $state('');
 	let busy = $state(false);
 
@@ -83,7 +113,10 @@
 	async function decide(action: 'approve' | 'deny') {
 		busy = true;
 		try {
-			await decideDevice(code, action);
+			await deviceVerifyAction({
+				throwOnError: true,
+				body: { user_code: code, action }
+			});
 			step = action === 'approve' ? 'approved' : 'denied';
 		} catch (err) {
 			errorText = errorMessage(err);

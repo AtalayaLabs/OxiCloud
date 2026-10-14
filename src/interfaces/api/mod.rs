@@ -356,6 +356,14 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         handlers::subject_group_handler::list_effective_members,
         // Public server-config discovery.
         handlers::config_handler::get_config,
+        // Device-authorization grant (RFC 8628) — client flow + user
+        // verification + device-management endpoints.
+        handlers::device_auth_handler::device_authorize,
+        handlers::device_auth_handler::device_token,
+        handlers::device_auth_handler::device_verify_info,
+        handlers::device_auth_handler::device_verify_action,
+        handlers::device_auth_handler::list_devices,
+        handlers::device_auth_handler::revoke_device,
     ),
     components(
         schemas(
@@ -399,6 +407,16 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             ChangePasswordDto,
             RefreshTokenDto,
             SystemInitStatusDto,
+            // Device-authorization grant (RFC 8628).
+            crate::application::dtos::device_auth_dto::DeviceAuthorizeRequestDto,
+            crate::application::dtos::device_auth_dto::DeviceAuthorizeResponseDto,
+            crate::application::dtos::device_auth_dto::DeviceTokenRequestDto,
+            crate::application::dtos::device_auth_dto::DeviceTokenSuccessDto,
+            crate::application::dtos::device_auth_dto::DeviceTokenPendingDto,
+            crate::application::dtos::device_auth_dto::DeviceVerifyRequestDto,
+            crate::application::dtos::device_auth_dto::DeviceVerifyInfoDto,
+            crate::application::dtos::device_auth_dto::DeviceVerifyActionResponseDto,
+            crate::application::services::device_auth_service::DeviceInfoDto,
             // Public server-config discovery — `GET /api/config`.
             ServerConfigDto,
             FeaturesDto,

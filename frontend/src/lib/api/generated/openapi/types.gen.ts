@@ -997,6 +997,142 @@ export type DeltaStillMissingResponse = {
 };
 
 /**
+ * POST /api/auth/device/authorize — request body
+ */
+export type DeviceAuthorizeRequestDto = {
+    /**
+     * Human-readable name of the client (e.g. "rclone", "DAVx⁵")
+     */
+    client_name?: string;
+    /**
+     * Comma-separated scopes (e.g. "webdav,caldav,carddav")
+     */
+    scope?: string;
+};
+
+/**
+ * Response to POST /api/auth/device/authorize (RFC 8628 §3.2)
+ */
+export type DeviceAuthorizeResponseDto = {
+    /**
+     * The device verification code
+     */
+    device_code: string;
+    /**
+     * Lifetime in seconds of the device_code and user_code
+     */
+    expires_in: number;
+    /**
+     * Minimum polling interval in seconds
+     */
+    interval: number;
+    /**
+     * The end-user verification code (short, human-readable)
+     */
+    user_code: string;
+    /**
+     * The end-user verification URI
+     */
+    verification_uri: string;
+    /**
+     * Optional: verification URI with user_code pre-filled
+     */
+    verification_uri_complete?: string | null;
+};
+
+/**
+ * DTO for listing authorized devices in the user's profile.
+ */
+export type DeviceInfoDto = {
+    authorized_at?: string | null;
+    client_name: string;
+    created_at: string;
+    expires_at: string;
+    id: string;
+    scopes: string;
+    status: string;
+};
+
+/**
+ * Response to POST /api/auth/device/token when authorization is still pending
+ */
+export type DeviceTokenPendingDto = {
+    error: string;
+    error_description?: string | null;
+};
+
+/**
+ * POST /api/auth/device/token — client polls for tokens
+ */
+export type DeviceTokenRequestDto = {
+    /**
+     * The device_code received from the initial authorize call
+     */
+    device_code: string;
+    /**
+     * Must be "urn:ietf:params:oauth:grant-type:device_code"
+     */
+    grant_type?: string;
+};
+
+/**
+ * Response to POST /api/auth/device/token when authorization is complete
+ */
+export type DeviceTokenSuccessDto = {
+    access_token: string;
+    expires_in: number;
+    refresh_token: string;
+    scope: string;
+    token_type: string;
+};
+
+/**
+ * Response to POST /api/auth/device/verify — approve/deny status
+ * confirmation. Replaces the previous ad-hoc
+ * `json!({"status": "approved"})` body so the TS SDK gets a typed
+ * discriminant it can switch on.
+ */
+export type DeviceVerifyActionResponseDto = {
+    /**
+     * `"approved"` or `"denied"` — mirrors the inbound `action` the
+     * user picked.
+     */
+    status: string;
+};
+
+/**
+ * GET /api/auth/device/verify — info about the pending device code
+ */
+export type DeviceVerifyInfoDto = {
+    /**
+     * The client name requesting access
+     */
+    client_name: string;
+    /**
+     * Scopes being requested
+     */
+    scopes: string;
+    /**
+     * Whether the user_code is valid and pending
+     */
+    valid: boolean;
+};
+
+/**
+ * POST /api/auth/device/verify — user submits the code from the browser
+ */
+export type DeviceVerifyRequestDto = {
+    /**
+     * Whether the user approves ("approve") or denies ("deny")
+     */
+    action: string;
+    /**
+     * The user_code displayed on the client device
+     */
+    user_code: string;
+};
+
+/**
  * Post-redirect DPoP bind DTO — only field is the JWK thumbprint.
  */
 export type DpopBindDto = {
@@ -7264,6 +7400,157 @@ export type ChangePasswordResponses = {
 };
 
 export type ChangePasswordResponse = ChangePasswordResponses[keyof ChangePasswordResponses];
+
+export type DeviceAuthorizeData = {
+    body: DeviceAuthorizeRequestDto;
+    path?: never;
+    query?: never;
+    url: '/api/auth/device/authorize';
+};
+
+export type DeviceAuthorizeResponses = {
+    /**
+     * Device flow initiated — hand `user_code` to the end user
+     */
+    200: DeviceAuthorizeResponseDto;
+};
+
+export type DeviceAuthorizeResponse = DeviceAuthorizeResponses[keyof DeviceAuthorizeResponses];
+
+export type ListDevicesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/auth/device/devices';
+};
+
+export type ListDevicesErrors = {
+    /**
+     * Not authenticated
+     */
+    401: unknown;
+};
+
+export type ListDevicesResponses = {
+    /**
+     * The caller's authorized devices
+     */
+    200: Array<DeviceInfoDto>;
+};
+
+export type ListDevicesResponse = ListDevicesResponses[keyof ListDevicesResponses];
+
+export type RevokeDeviceData = {
+    body?: never;
+    path: {
+        /**
+         * The device-code row id (`device_codes.id`, UUID)
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/auth/device/devices/{id}';
+};
+
+export type RevokeDeviceErrors = {
+    /**
+     * Invalid device id
+     */
+    400: unknown;
+    /**
+     * Not authenticated
+     */
+    401: unknown;
+};
+
+export type RevokeDeviceResponses = {
+    /**
+     * Revoked
+     */
+    204: void;
+};
+
+export type RevokeDeviceResponse = RevokeDeviceResponses[keyof RevokeDeviceResponses];
+
+export type DeviceTokenData = {
+    body: DeviceTokenRequestDto;
+    path?: never;
+    query?: never;
+    url: '/api/auth/device/token';
+};
+
+export type DeviceTokenErrors = {
+    /**
+     * RFC 8628 error — `authorization_pending`, `slow_down`, `access_denied`, `expired_token`, …
+     */
+    400: DeviceTokenPendingDto;
+};
+
+export type DeviceTokenError = DeviceTokenErrors[keyof DeviceTokenErrors];
+
+export type DeviceTokenResponses = {
+    /**
+     * Authorization granted — tokens issued
+     */
+    200: DeviceTokenSuccessDto;
+};
+
+export type DeviceTokenResponse = DeviceTokenResponses[keyof DeviceTokenResponses];
+
+export type DeviceVerifyInfoData = {
+    body?: never;
+    path?: never;
+    query: {
+        /**
+         * The user_code the client is displaying (hyphen-separated, e.g. `ABCD-1234`)
+         */
+        code: string;
+    };
+    url: '/api/auth/device/verify';
+};
+
+export type DeviceVerifyInfoErrors = {
+    /**
+     * Caller is not signed in — the user must authenticate before approving a device
+     */
+    401: unknown;
+};
+
+export type DeviceVerifyInfoResponses = {
+    /**
+     * Info about the pending authorization — `valid: false` means the code is unknown or expired
+     */
+    200: DeviceVerifyInfoDto;
+};
+
+export type DeviceVerifyInfoResponse = DeviceVerifyInfoResponses[keyof DeviceVerifyInfoResponses];
+
+export type DeviceVerifyActionData = {
+    body: DeviceVerifyRequestDto;
+    path?: never;
+    query?: never;
+    url: '/api/auth/device/verify';
+};
+
+export type DeviceVerifyActionErrors = {
+    /**
+     * `action` was not one of `approve`/`deny`
+     */
+    400: unknown;
+    /**
+     * Caller is not signed in
+     */
+    401: unknown;
+};
+
+export type DeviceVerifyActionResponses = {
+    /**
+     * Decision recorded — `status` echoes `approved` or `denied`
+     */
+    200: DeviceVerifyActionResponseDto;
+};
+
+export type DeviceVerifyActionResponse = DeviceVerifyActionResponses[keyof DeviceVerifyActionResponses];
 
 export type DpopBindData = {
     body: DpopBindDto;

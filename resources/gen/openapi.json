@@ -3508,6 +3508,202 @@
         ]
       }
     },
+    "/api/auth/device/authorize": {
+      "post": {
+        "tags": [
+          "device-auth"
+        ],
+        "summary": "Client sends: `{ \"client_name\": \"rclone\", \"scope\": \"webdav\" }`\nServer returns: device_code, user_code, verification_uri, etc.",
+        "operationId": "device_authorize",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceAuthorizeRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Device flow initiated — hand `user_code` to the end user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceAuthorizeResponseDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/device/devices": {
+      "get": {
+        "tags": [
+          "device-auth"
+        ],
+        "operationId": "list_devices",
+        "responses": {
+          "200": {
+            "description": "The caller's authorized devices",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DeviceInfoDto"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated"
+          }
+        }
+      }
+    },
+    "/api/auth/device/devices/{id}": {
+      "delete": {
+        "tags": [
+          "device-auth"
+        ],
+        "operationId": "revoke_device",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The device-code row id (`device_codes.id`, UUID)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Revoked"
+          },
+          "400": {
+            "description": "Invalid device id"
+          },
+          "401": {
+            "description": "Not authenticated"
+          }
+        }
+      }
+    },
+    "/api/auth/device/token": {
+      "post": {
+        "tags": [
+          "device-auth"
+        ],
+        "summary": "Client sends: `{ \"device_code\": \"...\", \"grant_type\": \"urn:ietf:params:oauth:grant-type:device_code\" }`\nReturns tokens on success, or RFC 8628 error codes while pending.",
+        "operationId": "device_token",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceTokenRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Authorization granted — tokens issued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceTokenSuccessDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "RFC 8628 error — `authorization_pending`, `slow_down`, `access_denied`, `expired_token`, …",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceTokenPendingDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/device/verify": {
+      "get": {
+        "tags": [
+          "device-auth"
+        ],
+        "operationId": "device_verify_info",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "description": "The user_code the client is displaying (hyphen-separated, e.g. `ABCD-1234`)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Info about the pending authorization — `valid: false` means the code is unknown or expired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceVerifyInfoDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Caller is not signed in — the user must authenticate before approving a device"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "device-auth"
+        ],
+        "operationId": "device_verify_action",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceVerifyRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Decision recorded — `status` echoes `approved` or `denied`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceVerifyActionResponseDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`action` was not one of `approve`/`deny`"
+          },
+          "401": {
+            "description": "Caller is not signed in"
+          }
+        }
+      }
+    },
     "/api/auth/dpop/bind": {
       "post": {
         "tags": [
@@ -12607,6 +12803,218 @@
             "items": {
               "type": "string"
             }
+          }
+        }
+      },
+      "DeviceAuthorizeRequestDto": {
+        "type": "object",
+        "description": "POST /api/auth/device/authorize — request body",
+        "properties": {
+          "client_name": {
+            "type": "string",
+            "description": "Human-readable name of the client (e.g. \"rclone\", \"DAVx⁵\")"
+          },
+          "scope": {
+            "type": "string",
+            "description": "Comma-separated scopes (e.g. \"webdav,caldav,carddav\")"
+          }
+        }
+      },
+      "DeviceAuthorizeResponseDto": {
+        "type": "object",
+        "description": "Response to POST /api/auth/device/authorize (RFC 8628 §3.2)",
+        "required": [
+          "device_code",
+          "user_code",
+          "verification_uri",
+          "expires_in",
+          "interval"
+        ],
+        "properties": {
+          "device_code": {
+            "type": "string",
+            "description": "The device verification code"
+          },
+          "expires_in": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Lifetime in seconds of the device_code and user_code"
+          },
+          "interval": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Minimum polling interval in seconds"
+          },
+          "user_code": {
+            "type": "string",
+            "description": "The end-user verification code (short, human-readable)"
+          },
+          "verification_uri": {
+            "type": "string",
+            "description": "The end-user verification URI"
+          },
+          "verification_uri_complete": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional: verification URI with user_code pre-filled"
+          }
+        }
+      },
+      "DeviceInfoDto": {
+        "type": "object",
+        "description": "DTO for listing authorized devices in the user's profile.",
+        "required": [
+          "id",
+          "client_name",
+          "scopes",
+          "status",
+          "created_at",
+          "expires_at"
+        ],
+        "properties": {
+          "authorized_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "client_name": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "scopes": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "DeviceTokenPendingDto": {
+        "type": "object",
+        "description": "Response to POST /api/auth/device/token when authorization is still pending",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "error_description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "DeviceTokenRequestDto": {
+        "type": "object",
+        "description": "POST /api/auth/device/token — client polls for tokens",
+        "required": [
+          "device_code"
+        ],
+        "properties": {
+          "device_code": {
+            "type": "string",
+            "description": "The device_code received from the initial authorize call"
+          },
+          "grant_type": {
+            "type": "string",
+            "description": "Must be \"urn:ietf:params:oauth:grant-type:device_code\""
+          }
+        }
+      },
+      "DeviceTokenSuccessDto": {
+        "type": "object",
+        "description": "Response to POST /api/auth/device/token when authorization is complete",
+        "required": [
+          "access_token",
+          "token_type",
+          "refresh_token",
+          "expires_in",
+          "scope"
+        ],
+        "properties": {
+          "access_token": {
+            "type": "string"
+          },
+          "expires_in": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "refresh_token": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "token_type": {
+            "type": "string"
+          }
+        }
+      },
+      "DeviceVerifyActionResponseDto": {
+        "type": "object",
+        "description": "Response to POST /api/auth/device/verify — approve/deny status\nconfirmation. Replaces the previous ad-hoc\n`json!({\"status\": \"approved\"})` body so the TS SDK gets a typed\ndiscriminant it can switch on.",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "`\"approved\"` or `\"denied\"` — mirrors the inbound `action` the\nuser picked."
+          }
+        }
+      },
+      "DeviceVerifyInfoDto": {
+        "type": "object",
+        "description": "GET /api/auth/device/verify — info about the pending device code",
+        "required": [
+          "client_name",
+          "scopes",
+          "valid"
+        ],
+        "properties": {
+          "client_name": {
+            "type": "string",
+            "description": "The client name requesting access"
+          },
+          "scopes": {
+            "type": "string",
+            "description": "Scopes being requested"
+          },
+          "valid": {
+            "type": "boolean",
+            "description": "Whether the user_code is valid and pending"
+          }
+        }
+      },
+      "DeviceVerifyRequestDto": {
+        "type": "object",
+        "description": "POST /api/auth/device/verify — user submits the code from the browser",
+        "required": [
+          "user_code",
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "Whether the user approves (\"approve\") or denies (\"deny\")"
+          },
+          "user_code": {
+            "type": "string",
+            "description": "The user_code displayed on the client device"
           }
         }
       },
