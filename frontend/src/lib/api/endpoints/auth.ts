@@ -8,8 +8,13 @@ import { getCsrfHeaders } from '$lib/api/csrf';
 import {
 	getSystemStatus,
 	oidcExchange,
+	oidcLinkStart,
 	oidcProviders,
-	sendMagicLink as sdkSendMagicLink
+	oidcUnlink,
+	register as sdkRegister,
+	sendMagicLink as sdkSendMagicLink,
+	setupAdmin as sdkSetupAdmin,
+	upgradeToInternal as sdkUpgradeToInternal
 } from '../generated/openapi/sdk.gen';
 import type { SystemInitStatusDto } from '../generated/openapi/types.gen';
 import type { AuthResponse, SelfUser } from '$lib/api/types';
@@ -34,6 +39,32 @@ async function parseErrorBody(res: Response): Promise<{ errorType?: string; mess
 	} catch {
 		return {};
 	}
+}
+
+/**
+ * Map an SDK-thrown error (`throwOnError: true`) into the same `ApiError`
+ * shape the hand-written wrappers produced from `apiFetch` + `parseErrorBody`.
+ *
+ * Hey API's thrown object carries `response` (the raw Fetch Response — status,
+ * statusText) alongside `data`, which is the ALREADY-PARSED error body — no
+ * second JSON parse is needed, unlike the apiFetch path. See `transport.ts`
+ * for the matching contract: both paths share the same `ErrorResponseDto`
+ * shape on non-2xx.
+ */
+function apiErrorFromSdkError(e: unknown, path: string): ApiError {
+	const err = e as { response?: Response; data?: unknown };
+	const status = err.response?.status ?? 0;
+	const statusText = err.response?.statusText ?? '';
+	const body = (err.data ?? {}) as {
+		error_type?: unknown;
+		message?: unknown;
+		error?: unknown;
+	};
+	const errorType = typeof body.error_type === 'string' ? body.error_type : undefined;
+	const message =
+		(typeof body.message === 'string' ? body.message : undefined) ??
+		(typeof body.error === 'string' ? body.error : undefined);
+	return new ApiError(status, statusText, path, errorType, message);
 }
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
@@ -333,16 +364,23 @@ export async function getAuthStatus(): Promise<AuthStatus> {
  * user and marks the system initialized. An ordinary 401 surfaces to the caller.
  */
 export async function setupAdmin(email: string, password: string): Promise<void> {
-	const res = await apiFetch('/api/setup', {
-		retryUnauthorized: false,
-		method: 'POST',
-		credentials: 'same-origin',
-		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-		body: JSON.stringify({ username: 'admin', email, password })
-	});
-	if (!res.ok) {
-		const e = (await res.json().catch(() => ({}))) as { error?: string; message?: string };
-		throw new Error(e.error || e.message || `setup failed: ${res.status}`);
+	// Phase 4 — SDK call. `/api/setup` is in AUTH_PRIMITIVES, so no refresh
+	// dance to opt out of. Error shape stays plain `Error` (not `ApiError`)
+	// because the setup wizard renders `.message` directly and never
+	// branches on `error_type` — a semantic chosen pre-Phase-4.
+	try {
+		await sdkSetupAdmin({
+			body: { username: 'admin', email, password },
+			throwOnError: true
+		});
+	} catch (e) {
+		const err = e as { response?: { status?: number }; data?: unknown };
+		const body = (err.data ?? {}) as { error?: unknown; message?: unknown };
+		const msg =
+			(typeof body.message === 'string' && body.message) ||
+			(typeof body.error === 'string' && body.error) ||
+			`setup failed: ${err.response?.status ?? 'unknown'}`;
+		throw new Error(msg, { cause: e });
 	}
 }
 
@@ -373,18 +411,22 @@ export async function exchangeOidcCode(code: string): Promise<SelfUser | null> {
  * Like login, registration bypasses unauthorized retry in the shared transport.
  */
 export async function register(email: string, password?: string, username?: string): Promise<void> {
+	// Phase 4 — SDK call. Target `/api/auth/register` is in AUTH_PRIMITIVES.
+	// Plain `Error` throw preserved (no `ApiError`) because the signup form
+	// renders `.message` directly, same as `setupAdmin`.
 	const body: Record<string, unknown> = { email, role: 'user' };
 	if (password) body.password = password;
 	if (username) body.username = username;
-	const res = await apiFetch('/api/auth/register', {
-		method: 'POST',
-		credentials: 'same-origin',
-		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-		body: JSON.stringify(body)
-	});
-	if (!res.ok) {
-		const e = (await res.json().catch(() => ({}))) as { error?: string; message?: string };
-		throw new Error(e.error || e.message || `register failed: ${res.status}`);
+	try {
+		await sdkRegister({ body: body as never, throwOnError: true });
+	} catch (e) {
+		const err = e as { response?: { status?: number }; data?: unknown };
+		const errBody = (err.data ?? {}) as { error?: unknown; message?: unknown };
+		const msg =
+			(typeof errBody.message === 'string' && errBody.message) ||
+			(typeof errBody.error === 'string' && errBody.error) ||
+			`register failed: ${err.response?.status ?? 'unknown'}`;
+		throw new Error(msg, { cause: e });
 	}
 }
 
@@ -405,25 +447,22 @@ export async function register(email: string, password?: string, username?: stri
  * refresh interceptor is the right response.
  */
 export async function upgradeToInternal(password?: string): Promise<SelfUser> {
+	// Phase 4 — SDK call. Caller IS authenticated; a 401 here is a genuine
+	// session expiry and the shared transport's refresh+retry is the right
+	// response (so no `fetch: apiProbeTransport` override). On non-2xx the
+	// SDK throws; `apiErrorFromSdkError` reshapes to the same `ApiError`
+	// surface the SPA already surfaces via its error-mapping modal.
 	const body: Record<string, unknown> = {};
 	if (password) body.password = password;
-	const res = await apiFetch('/api/auth/upgrade-to-internal', {
-		method: 'POST',
-		credentials: 'same-origin',
-		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-		body: JSON.stringify(body)
-	});
-	if (!res.ok) {
-		const { errorType, message } = await parseErrorBody(res);
-		throw new ApiError(
-			res.status,
-			res.statusText,
-			'/api/auth/upgrade-to-internal',
-			errorType,
-			message
-		);
+	try {
+		const data = await sdkUpgradeToInternal({
+			body: body as never,
+			throwOnError: true
+		});
+		return data as SelfUser;
+	} catch (e) {
+		throw apiErrorFromSdkError(e, '/api/auth/upgrade-to-internal');
 	}
-	return (await res.json()) as SelfUser;
 }
 
 export type MagicLinkResult = 'sent' | 'unavailable';
@@ -470,21 +509,23 @@ export interface LogoutResult {
  * (safety-check refusal). See docs/plan/oidc-account-linking.md.
  */
 export async function startOidcLink(): Promise<string> {
-	const res = await apiFetch('/api/auth/oidc/link/start', {
-		method: 'POST',
-		credentials: 'same-origin',
-		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-		body: '{}'
-	});
-	if (!res.ok) {
-		const { errorType, message } = await parseErrorBody(res);
-		throw new ApiError(res.status, res.statusText, '/api/auth/oidc/link/start', errorType, message);
+	// Phase 4 — SDK call. Two distinct failure modes stay separate:
+	//   * HTTP non-2xx → ApiError (SPA renders the IdP error toast)
+	//   * HTTP 200 but no `authorize_url` → generic Error (programming
+	//     bug on the server; shouldn't be surfaced as "the IdP said no")
+	// Split as two try blocks so the second malformed-response throw
+	// isn't caught by apiErrorFromSdkError and remapped.
+	let body: unknown;
+	try {
+		body = await oidcLinkStart({ throwOnError: true });
+	} catch (e) {
+		throw apiErrorFromSdkError(e, '/api/auth/oidc/link/start');
 	}
-	const body = (await res.json()) as { authorize_url?: string };
-	if (typeof body.authorize_url !== 'string' || body.authorize_url.length === 0) {
+	const authorizeUrl = (body as { authorize_url?: unknown }).authorize_url;
+	if (typeof authorizeUrl !== 'string' || authorizeUrl.length === 0) {
 		throw new Error('malformed link/start response: missing authorize_url');
 	}
-	return body.authorize_url;
+	return authorizeUrl;
 }
 
 /**
@@ -494,15 +535,12 @@ export async function startOidcLink(): Promise<string> {
  * should offer the "set a password first" affordance in that case.
  */
 export async function unlinkOidc(): Promise<void> {
-	const res = await apiFetch('/api/auth/oidc/unlink', {
-		method: 'POST',
-		credentials: 'same-origin',
-		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-		body: '{}'
-	});
-	if (!res.ok) {
-		const { errorType, message } = await parseErrorBody(res);
-		throw new ApiError(res.status, res.statusText, '/api/auth/oidc/unlink', errorType, message);
+	// Phase 4 — SDK call. Pattern-identical to startOidcLink minus the
+	// authorize_url validation (there is no success-shape to check).
+	try {
+		await oidcUnlink({ throwOnError: true });
+	} catch (e) {
+		throw apiErrorFromSdkError(e, '/api/auth/oidc/unlink');
 	}
 }
 
