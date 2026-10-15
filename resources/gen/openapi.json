@@ -515,7 +515,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/GroupNameRequest"
+                "$ref": "#/components/schemas/ContactGroupNameRequest"
               }
             }
           },
@@ -627,7 +627,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/GroupNameRequest"
+                "$ref": "#/components/schemas/ContactGroupNameRequest"
               }
             }
           },
@@ -785,7 +785,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/AddMemberRequest"
+                "$ref": "#/components/schemas/AddContactToGroupRequest"
               }
             }
           },
@@ -1145,7 +1145,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/StatsResponse"
+                  "$ref": "#/components/schemas/DedupStatsResponse"
                 }
               }
             }
@@ -1181,7 +1181,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/StatsResponse"
+                  "$ref": "#/components/schemas/DedupStatsResponse"
                 }
               }
             }
@@ -3508,6 +3508,202 @@
         ]
       }
     },
+    "/api/auth/device/authorize": {
+      "post": {
+        "tags": [
+          "device-auth"
+        ],
+        "summary": "Client sends: `{ \"client_name\": \"rclone\", \"scope\": \"webdav\" }`\nServer returns: device_code, user_code, verification_uri, etc.",
+        "operationId": "device_authorize",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceAuthorizeRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Device flow initiated — hand `user_code` to the end user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceAuthorizeResponseDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/device/devices": {
+      "get": {
+        "tags": [
+          "device-auth"
+        ],
+        "operationId": "list_devices",
+        "responses": {
+          "200": {
+            "description": "The caller's authorized devices",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DeviceInfoDto"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated"
+          }
+        }
+      }
+    },
+    "/api/auth/device/devices/{id}": {
+      "delete": {
+        "tags": [
+          "device-auth"
+        ],
+        "operationId": "revoke_device",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The device-code row id (`device_codes.id`, UUID)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Revoked"
+          },
+          "400": {
+            "description": "Invalid device id"
+          },
+          "401": {
+            "description": "Not authenticated"
+          }
+        }
+      }
+    },
+    "/api/auth/device/token": {
+      "post": {
+        "tags": [
+          "device-auth"
+        ],
+        "summary": "Client sends: `{ \"device_code\": \"...\", \"grant_type\": \"urn:ietf:params:oauth:grant-type:device_code\" }`\nReturns tokens on success, or RFC 8628 error codes while pending.",
+        "operationId": "device_token",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceTokenRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Authorization granted — tokens issued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceTokenSuccessDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "RFC 8628 error — `authorization_pending`, `slow_down`, `access_denied`, `expired_token`, …",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceTokenPendingDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/device/verify": {
+      "get": {
+        "tags": [
+          "device-auth"
+        ],
+        "operationId": "device_verify_info",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "description": "The user_code the client is displaying (hyphen-separated, e.g. `ABCD-1234`)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Info about the pending authorization — `valid: false` means the code is unknown or expired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceVerifyInfoDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Caller is not signed in — the user must authenticate before approving a device"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "device-auth"
+        ],
+        "operationId": "device_verify_action",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceVerifyRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Decision recorded — `status` echoes `approved` or `denied`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceVerifyActionResponseDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`action` was not one of `approve`/`deny`"
+          },
+          "401": {
+            "description": "Caller is not signed in"
+          }
+        }
+      }
+    },
     "/api/auth/dpop/bind": {
       "post": {
         "tags": [
@@ -4312,7 +4508,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SystemStatus"
+                  "$ref": "#/components/schemas/SystemInitStatusDto"
                 }
               }
             }
@@ -7319,7 +7515,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/UpdateRoleDto"
+                "$ref": "#/components/schemas/UpdateGrantRoleDto"
               }
             }
           },
@@ -8173,7 +8369,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ListResponseDto"
+                  "$ref": "#/components/schemas/NotificationListResponseDto"
                 }
               }
             }
@@ -8398,7 +8594,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/MergeBody"
+                "$ref": "#/components/schemas/MergePeopleRequest"
               }
             }
           },
@@ -8461,7 +8657,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/RenameBody"
+                "$ref": "#/components/schemas/RenamePersonRequest"
               }
             }
           },
@@ -10776,6 +10972,18 @@
           }
         }
       },
+      "AddContactToGroupRequest": {
+        "type": "object",
+        "description": "Request body for adding a contact to a group.",
+        "required": [
+          "contact_id"
+        ],
+        "properties": {
+          "contact_id": {
+            "type": "string"
+          }
+        }
+      },
       "AddDriveMemberDto": {
         "type": "object",
         "description": "Body for `POST /api/drives/{id}/members`.",
@@ -10797,18 +11005,6 @@
           },
           "subject": {
             "$ref": "#/components/schemas/SubjectDto"
-          }
-        }
-      },
-      "AddMemberRequest": {
-        "type": "object",
-        "description": "Request body for adding a contact to a group.",
-        "required": [
-          "contact_id"
-        ],
-        "properties": {
-          "contact_id": {
-            "type": "string"
           }
         }
       },
@@ -11006,11 +11202,15 @@
             "description": "Storage quota in bytes; 0 = unlimited. If omitted, uses role default.\nIgnored when `is_external = true` (external users have no storage)."
           },
           "role": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "\"admin\" or \"user\"; defaults to \"user\""
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/UserRoleDto",
+                "description": "Role for the new account. Defaults to `UserRoleDto::User` when\nomitted. The service refuses `UserRoleDto::Owner` here — admin-\ncreate is for provisioning peers, not transferring ownership."
+              }
+            ]
           },
           "username": {
             "type": "string"
@@ -11593,26 +11793,6 @@
           }
         }
       },
-      "ChunkRef": {
-        "type": "object",
-        "description": "One chunk reference: `h` = BLAKE3 hex (64 chars), `s` = size in bytes.\nField names are deliberately terse — a 10 GB file is ~40 000 of these.",
-        "required": [
-          "h",
-          "s"
-        ],
-        "properties": {
-          "h": {
-            "type": "string",
-            "description": "BLAKE3 hash of the chunk (64 hex chars)."
-          },
-          "s": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Chunk size in bytes (1 ..= 1 MiB).",
-            "minimum": 0
-          }
-        }
-      },
       "ChunkUploadResponseDto": {
         "type": "object",
         "description": "Response returned after a single chunk is uploaded.",
@@ -11836,6 +12016,18 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "ContactGroupNameRequest": {
+        "type": "object",
+        "description": "Request body for creating or renaming a group.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
           }
         }
       },
@@ -12365,6 +12557,61 @@
           }
         }
       },
+      "DedupStatsResponse": {
+        "type": "object",
+        "description": "Response for dedup stats endpoint",
+        "required": [
+          "unique_blobs",
+          "total_references",
+          "bytes_saved",
+          "total_logical_bytes",
+          "total_physical_bytes",
+          "dedup_ratio",
+          "savings_percentage"
+        ],
+        "properties": {
+          "bytes_saved": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total bytes saved by deduplication",
+            "minimum": 0
+          },
+          "dedup_ratio": {
+            "type": "number",
+            "format": "double",
+            "description": "Deduplication ratio (logical / physical)"
+          },
+          "savings_percentage": {
+            "type": "number",
+            "format": "double",
+            "description": "Percentage of storage saved"
+          },
+          "total_logical_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total logical bytes (what users think they have)",
+            "minimum": 0
+          },
+          "total_physical_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total physical bytes (actual disk usage)",
+            "minimum": 0
+          },
+          "total_references": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total number of references (files pointing to blobs)",
+            "minimum": 0
+          },
+          "unique_blobs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total number of unique blobs stored",
+            "minimum": 0
+          }
+        }
+      },
       "DeletePermanentlyRequest": {
         "type": "object",
         "description": "Request to permanently delete an item from trash",
@@ -12374,6 +12621,26 @@
         "properties": {
           "trash_id": {
             "type": "string"
+          }
+        }
+      },
+      "DeltaChunkRef": {
+        "type": "object",
+        "description": "One chunk reference: `h` = BLAKE3 hex (64 chars), `s` = size in bytes.\nField names are deliberately terse — a 10 GB file is ~40 000 of these.",
+        "required": [
+          "h",
+          "s"
+        ],
+        "properties": {
+          "h": {
+            "type": "string",
+            "description": "BLAKE3 hash of the chunk (64 hex chars)."
+          },
+          "s": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Chunk size in bytes (1 ..= 1 MiB).",
+            "minimum": 0
           }
         }
       },
@@ -12387,7 +12654,7 @@
           "received": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/ChunkRef"
+              "$ref": "#/components/schemas/DeltaChunkRef"
             }
           }
         }
@@ -12403,7 +12670,7 @@
           "chunks": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/ChunkRef"
+              "$ref": "#/components/schemas/DeltaChunkRef"
             },
             "description": "Full chunk sequence, in file order (per occurrence)."
           },
@@ -12461,7 +12728,7 @@
           "chunks": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/ChunkRef"
+              "$ref": "#/components/schemas/DeltaChunkRef"
             },
             "description": "Full chunk sequence, in file order (per occurrence)."
           },
@@ -12487,7 +12754,7 @@
           "chunks": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/ChunkRef"
+              "$ref": "#/components/schemas/DeltaChunkRef"
             },
             "description": "The file's chunks, in order (duplicates allowed — repeated content)."
           }
@@ -12536,6 +12803,218 @@
             "items": {
               "type": "string"
             }
+          }
+        }
+      },
+      "DeviceAuthorizeRequestDto": {
+        "type": "object",
+        "description": "POST /api/auth/device/authorize — request body",
+        "properties": {
+          "client_name": {
+            "type": "string",
+            "description": "Human-readable name of the client (e.g. \"rclone\", \"DAVx⁵\")"
+          },
+          "scope": {
+            "type": "string",
+            "description": "Comma-separated scopes (e.g. \"webdav,caldav,carddav\")"
+          }
+        }
+      },
+      "DeviceAuthorizeResponseDto": {
+        "type": "object",
+        "description": "Response to POST /api/auth/device/authorize (RFC 8628 §3.2)",
+        "required": [
+          "device_code",
+          "user_code",
+          "verification_uri",
+          "expires_in",
+          "interval"
+        ],
+        "properties": {
+          "device_code": {
+            "type": "string",
+            "description": "The device verification code"
+          },
+          "expires_in": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Lifetime in seconds of the device_code and user_code"
+          },
+          "interval": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Minimum polling interval in seconds"
+          },
+          "user_code": {
+            "type": "string",
+            "description": "The end-user verification code (short, human-readable)"
+          },
+          "verification_uri": {
+            "type": "string",
+            "description": "The end-user verification URI"
+          },
+          "verification_uri_complete": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional: verification URI with user_code pre-filled"
+          }
+        }
+      },
+      "DeviceInfoDto": {
+        "type": "object",
+        "description": "DTO for listing authorized devices in the user's profile.",
+        "required": [
+          "id",
+          "client_name",
+          "scopes",
+          "status",
+          "created_at",
+          "expires_at"
+        ],
+        "properties": {
+          "authorized_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "client_name": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "scopes": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "DeviceTokenPendingDto": {
+        "type": "object",
+        "description": "Response to POST /api/auth/device/token when authorization is still pending",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "error_description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "DeviceTokenRequestDto": {
+        "type": "object",
+        "description": "POST /api/auth/device/token — client polls for tokens",
+        "required": [
+          "device_code"
+        ],
+        "properties": {
+          "device_code": {
+            "type": "string",
+            "description": "The device_code received from the initial authorize call"
+          },
+          "grant_type": {
+            "type": "string",
+            "description": "Must be \"urn:ietf:params:oauth:grant-type:device_code\""
+          }
+        }
+      },
+      "DeviceTokenSuccessDto": {
+        "type": "object",
+        "description": "Response to POST /api/auth/device/token when authorization is complete",
+        "required": [
+          "access_token",
+          "token_type",
+          "refresh_token",
+          "expires_in",
+          "scope"
+        ],
+        "properties": {
+          "access_token": {
+            "type": "string"
+          },
+          "expires_in": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "refresh_token": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "token_type": {
+            "type": "string"
+          }
+        }
+      },
+      "DeviceVerifyActionResponseDto": {
+        "type": "object",
+        "description": "Response to POST /api/auth/device/verify — approve/deny status\nconfirmation. Replaces the previous ad-hoc\n`json!({\"status\": \"approved\"})` body so the TS SDK gets a typed\ndiscriminant it can switch on.",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "`\"approved\"` or `\"denied\"` — mirrors the inbound `action` the\nuser picked."
+          }
+        }
+      },
+      "DeviceVerifyInfoDto": {
+        "type": "object",
+        "description": "GET /api/auth/device/verify — info about the pending device code",
+        "required": [
+          "client_name",
+          "scopes",
+          "valid"
+        ],
+        "properties": {
+          "client_name": {
+            "type": "string",
+            "description": "The client name requesting access"
+          },
+          "scopes": {
+            "type": "string",
+            "description": "Scopes being requested"
+          },
+          "valid": {
+            "type": "boolean",
+            "description": "Whether the user_code is valid and pending"
+          }
+        }
+      },
+      "DeviceVerifyRequestDto": {
+        "type": "object",
+        "description": "POST /api/auth/device/verify — user submits the code from the browser",
+        "required": [
+          "user_code",
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "Whether the user approves (\"approve\") or denies (\"deny\")"
+          },
+          "user_code": {
+            "type": "string",
+            "description": "The user_code displayed on the client device"
           }
         }
       },
@@ -12600,7 +13079,8 @@
             "description": "Display name. Sourced from `storage.folders.name` of the row\npointed at by `root_folder_id` (drives have no `name` column —\nsee docs/plan/drive.md §3). The wire shape is unchanged from\nthe client's perspective."
           },
           "policies": {
-            "description": "Capability-flag bag — clients render UI affordances based on\nknown keys (`forbid_public_links`, `include_in_photo_index`,\n`forbid_music_index`, …). Unknown keys preserved verbatim."
+            "type": "object",
+            "description": "Capability-flag bag — clients render UI affordances based on\nknown keys (`forbid_public_links`, `include_in_photo_index`,\n`forbid_music_index`, …). Unknown keys preserved verbatim.\n\n`#[schema(value_type = Object)]` tightens the OpenAPI emission\nfrom \"any JSON value\" to `type: object, additionalProperties:\ntrue` — forward-compat for unknown keys stays, and TS SDK\nconsumers get `{ [key: string]: unknown }` instead of a bare\n`unknown` they'd have to cast through every access."
           },
           "quota_bytes": {
             "type": [
@@ -12904,8 +13384,8 @@
             "description": "Size in bytes (files only; folders → None)"
           },
           "item_type": {
-            "type": "string",
-            "description": "Type of the item ('file' or 'folder')"
+            "$ref": "#/components/schemas/ItemKind",
+            "description": "Type of the item ('file' or 'folder'). Typed enum rather than a\nraw string — the CHECK constraint on `favorites.item_type` enforces\nthe same invariant, and the TS SDK gets exhaustive narrowing on\nthe two values."
           },
           "modified_at": {
             "type": [
@@ -13012,6 +13492,15 @@
             "description": "Server-side video-thumbnail generation via ffmpeg. See\n`FeaturesConfig::enable_video_thumbnails`."
           }
         }
+      },
+      "FederationKindDto": {
+        "type": "string",
+        "description": "Wire-level view of [`FederationKind`]. Dedicated DTO rather than\nderiving `Serialize + ToSchema` directly on the domain enum so the\nhexagonal boundary stays clean — the domain stays free of\nserde/utoipa dependencies, and widening the enum (e.g. adding a\nnew `SamlSso` variant) is a two-step migration (domain, then\nwire) rather than a single commit that may silently break clients.\n\nWire spelling matches [`FederationKind::as_str`] exactly — the DB\nCHECK constraint on `auth.users.federation_kind` is the ultimate\nsource of truth for the three canonical values.",
+        "enum": [
+          "magic_link",
+          "ocm",
+          "oidc"
+        ]
       },
       "FileDto": {
         "type": "object",
@@ -13389,11 +13878,15 @@
             "description": "The authority that minted this user's `federation_subject` —\nissuer URL for OIDC (id_token `iss` claim), peer domain for OCM,\n`None` for local users. Same rationale as `federation_kind`."
           },
           "federation_kind": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Which trust chain minted this user's federation identity —\n`\"oidc\" | \"ocm\" | \"magic_link\"` — or `None` for pure local users.\nKept off `PublicUserDto` because a peer's federation kind is a\nsoft org-affiliation leak; only self + admin need it."
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/FederationKindDto",
+                "description": "Which trust chain minted this user's federation identity —\n`\"oidc\" | \"ocm\" | \"magic_link\"` — or `None` for pure local users.\nKept off `PublicUserDto` because a peer's federation kind is a\nsoft org-affiliation leak; only self + admin need it."
+              }
+            ]
           },
           "has_password": {
             "type": "boolean",
@@ -13623,18 +14116,6 @@
             }
           }
         ]
-      },
-      "GroupNameRequest": {
-        "type": "object",
-        "description": "Request body for creating or renaming a group.",
-        "required": [
-          "name"
-        ],
-        "properties": {
-          "name": {
-            "type": "string"
-          }
-        }
       },
       "HashBatchRequest": {
         "type": "object",
@@ -13866,25 +14347,13 @@
           }
         }
       },
-      "ListResponseDto": {
-        "type": "object",
-        "required": [
-          "items",
-          "unread_count"
-        ],
-        "properties": {
-          "items": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/NotificationDto"
-            }
-          },
-          "unread_count": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Unread rows for this user across the whole table — the bell\nbadge reads this. Kept on the list response so a bell open\ndoesn't need a second round-trip for the badge."
-          }
-        }
+      "ItemKind": {
+        "type": "string",
+        "description": "What a favorite points at. The server emits exactly these two values\ntoday; the dedicated enum (rather than the 6-value `ResourceTypeDto`)\nmatches reality — favorites hold a file or a folder, nothing else —\nso clients don't have to carry impossible branches for drives,\ncalendars, address books or playlists. If a future product decision\npermits favoriting one of those, add the variant here and the TS SDK\nsurfaces it on regen.",
+        "enum": [
+          "file",
+          "folder"
+        ]
       },
       "LocaleDto": {
         "type": "object",
@@ -13941,7 +14410,7 @@
           }
         }
       },
-      "MergeBody": {
+      "MergePeopleRequest": {
         "type": "object",
         "required": [
           "into",
@@ -13998,7 +14467,7 @@
             ]
           },
           "status": {
-            "type": "string"
+            "$ref": "#/components/schemas/MigrationStatus"
           },
           "throughput_bytes_per_sec": {
             "type": [
@@ -14014,6 +14483,18 @@
             "minimum": 0
           }
         }
+      },
+      "MigrationStatus": {
+        "type": "string",
+        "description": "Status of a storage-migration run as the admin UI sees it. The\n6 variants mirror the projection in\n`admin_handler::run_to_migration_dto` of the recoverable\n`RunStatus` + the `idle` zero-run case. `cancel_requested` folds\ninto `paused` for display, so it doesn't surface here.",
+        "enum": [
+          "idle",
+          "running",
+          "paused",
+          "completed",
+          "failed",
+          "cancelled"
+        ]
       },
       "MoveFilePayload": {
         "type": "object",
@@ -14091,6 +14572,26 @@
           }
         }
       },
+      "NotificationListResponseDto": {
+        "type": "object",
+        "required": [
+          "items",
+          "unread_count"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NotificationDto"
+            }
+          },
+          "unread_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unread rows for this user across the whole table — the bell\nbadge reads this. Kept on the list response so a bell open\ndoesn't need a second round-trip for the badge."
+          }
+        }
+      },
       "NotifyInfoDto": {
         "type": "object",
         "description": "Read-only alerting policy, from `GET /api/admin/notify/info`.\n\nThe *what gets sent* half, where `SmtpInfoDto` and [`WebhookInfoDto`]\nare the *how it travels* half. Configured through environment\nvariables only, shown for confirmation rather than editing.",
@@ -14108,8 +14609,8 @@
             "description": "`OXICLOUD_JOBS_NOTIFY_EMAIL_TO`, as parsed. Empty when mail\nalerting is off."
           },
           "min_severity": {
-            "type": "string",
-            "description": "Severity floor: `data_loss`, `inconsistent`, `anomaly`, or `none`.\n\nThe field the panel was missing. An operator with a configured\nwebhook and a healthy relay can still be told nothing, because the\ndefault floor admits only `data_loss` — and until this was\nsurfaced, the only way to discover that was to read the server's\nenvironment."
+            "$ref": "#/components/schemas/NotifyMinSeverity",
+            "description": "Severity floor. The field the panel was missing: an operator\nwith a configured webhook and a healthy relay can still be\ntold nothing, because the default floor admits only\n`data_loss`."
           },
           "sinks": {
             "type": "array",
@@ -14119,6 +14620,16 @@
             "description": "Channels actually built and wired, by name — `webhook`, `email`.\nEmpty means findings are recorded but nobody is told."
           }
         }
+      },
+      "NotifyMinSeverity": {
+        "type": "string",
+        "description": "Alert-severity floor on `GET /api/admin/notify/info`. 3 real\nseverities + `None` for the \"floor off\" state (admits no alerts).\nThe `None` wire value replaces the earlier `\"none\".to_string()`\nsentinel; the real severities match [`application::ports::\nnotification_sink_ports::Severity`] canonical spellings.",
+        "enum": [
+          "none",
+          "anomaly",
+          "inconsistent",
+          "data_loss"
+        ]
       },
       "NotifyOutcomeDto": {
         "oneOf": [
@@ -15148,8 +15659,8 @@
             "description": "Presence signal — TRUE when the server observed a request on any\nof this user's non-revoked sessions within the last\n[`ONLINE_WINDOW`](crate::application::dtos::session_dto::ONLINE_WINDOW)\n(5 min). Sourced from an EXISTS subquery when the DTO is built\nfrom a list-projection path; single-user endpoints that don't\nenrich presence ship `false`."
           },
           "role": {
-            "type": "string",
-            "description": "Role string (\"admin\" | \"user\"). Kept public because the sharee /\ngroup-member vignette renders an admin badge."
+            "$ref": "#/components/schemas/UserRoleDto",
+            "description": "Account role. Mirrors the stored `auth.users.role` — `owner` is\na legitimate value, kept out of the handwritten FE `Role` type\npre-pivot. Kept public because the sharee / group-member\nvignette renders an admin badge."
           },
           "username": {
             "type": [
@@ -15229,8 +15740,8 @@
             "description": "Size in bytes (files only; folders → None)"
           },
           "item_type": {
-            "type": "string",
-            "description": "Item type ('file' or 'folder')"
+            "$ref": "#/components/schemas/ItemKind",
+            "description": "Item type. Shared enum with `FavoriteItemDto.item_type` — both\ncollections record a reference to one of the two leaf resource\nkinds, nothing else."
           },
           "parent_id": {
             "type": [
@@ -15308,18 +15819,6 @@
           }
         }
       },
-      "RenameBody": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "New display name for the cluster. `null` or omitted clears\nthe name, reverting the cluster to its \"Unnamed\" state."
-          }
-        }
-      },
       "RenameFolderDto": {
         "type": "object",
         "description": "DTO for folder rename requests",
@@ -15330,6 +15829,18 @@
           "name": {
             "type": "string",
             "description": "New name for the folder"
+          }
+        }
+      },
+      "RenamePersonRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "New display name for the cluster. `null` or omitted clears\nthe name, reverting the cluster to its \"Unnamed\" state."
           }
         }
       },
@@ -15476,7 +15987,7 @@
         ],
         "properties": {
           "backend": {
-            "type": "string"
+            "$ref": "#/components/schemas/StorageBackendKind"
           },
           "s3_access_key": {
             "type": [
@@ -16089,7 +16600,8 @@
             "description": "Whether I want share-notification emails."
           },
           "ui_preferences": {
-            "description": "Opaque UI preferences bag — my own UI state. Cross-device store\nfor pure UI toggles (view mode, sidebar collapse, hide dotfiles,\n…). The server never inspects the contents. Always present on\nthe wire; empty bag is `{}`, never `null`."
+            "type": "object",
+            "description": "Opaque UI preferences bag — my own UI state. Cross-device store\nfor pure UI toggles (view mode, sidebar collapse, hide dotfiles,\n…). The server never inspects the contents. Always present on\nthe wire; empty bag is `{}`, never `null`.\n\n`#[schema(value_type = Object)]`: see `drive_dto.rs::policies`\nfor the full rationale — in short, this tightens the emitted\nschema from \"any JSON value\" to \"an object with unknown keys\"\nso TS SDK consumers get `{ [key: string]: unknown }` instead\nof a bare `unknown`."
           }
         }
       },
@@ -16465,8 +16977,8 @@
             "minimum": 0
           },
           "tls": {
-            "type": "string",
-            "description": "Transport encryption mode: `\"starttls\"`, `\"tls\"`, or `\"none\"`."
+            "$ref": "#/components/schemas/SmtpTlsModeDto",
+            "description": "Transport encryption mode."
           },
           "user_state": {
             "type": "string",
@@ -16509,6 +17021,15 @@
           }
         }
       },
+      "SmtpTlsModeDto": {
+        "type": "string",
+        "description": "Wire-level view of [`common::config::SmtpTlsMode`]. Kept DTO-\nsuffixed because the domain name clashes.",
+        "enum": [
+          "starttls",
+          "tls",
+          "none"
+        ]
+      },
       "StartMigrationDto": {
         "type": "object",
         "description": "Request body for `POST /api/admin/storage/migration/start`.\n\n**Multi-entry contract** (see `docs/plan/storage-multi-entry.md`):\n`target_name` is REQUIRED — it names the storage entry the copy\njob will move blobs INTO. The admin picks it from the entries\ndeclared in `OXICLOUD_STORAGE_ENTRIES`. The trigger endpoint\nrejects the request when the name doesn't exist or equals the\ncurrently-active entry (no-op guard).",
@@ -16530,60 +17051,14 @@
           }
         }
       },
-      "StatsResponse": {
-        "type": "object",
-        "description": "Response for dedup stats endpoint",
-        "required": [
-          "unique_blobs",
-          "total_references",
-          "bytes_saved",
-          "total_logical_bytes",
-          "total_physical_bytes",
-          "dedup_ratio",
-          "savings_percentage"
-        ],
-        "properties": {
-          "bytes_saved": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Total bytes saved by deduplication",
-            "minimum": 0
-          },
-          "dedup_ratio": {
-            "type": "number",
-            "format": "double",
-            "description": "Deduplication ratio (logical / physical)"
-          },
-          "savings_percentage": {
-            "type": "number",
-            "format": "double",
-            "description": "Percentage of storage saved"
-          },
-          "total_logical_bytes": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Total logical bytes (what users think they have)",
-            "minimum": 0
-          },
-          "total_physical_bytes": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Total physical bytes (actual disk usage)",
-            "minimum": 0
-          },
-          "total_references": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Total number of references (files pointing to blobs)",
-            "minimum": 0
-          },
-          "unique_blobs": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Total number of unique blobs stored",
-            "minimum": 0
-          }
-        }
+      "StorageBackendKind": {
+        "type": "string",
+        "description": "Which blob backend an entry / request targets. Wire values are\n`\"local\"`, `\"s3\"`, `\"azure\"` — the three implementations in\n`infrastructure::services::{local,s3,azure}_blob_backend`. The\nthree producers across those modules (and the local storage-\nsettings service) all previously populated this as a raw string\nliteral; the shared enum makes the OpenAPI spec exhaustive and\ngives the FE SDK a typed union to switch on.\n\nSerialized as lowercase to match the historical wire shape.",
+        "enum": [
+          "local",
+          "s3",
+          "azure"
+        ]
       },
       "StorageEncryptionPairDto": {
         "type": "object",
@@ -16621,8 +17096,8 @@
         ],
         "properties": {
           "backend": {
-            "type": "string",
-            "description": "Backend type — \"local\" / \"s3\" / \"azure\"."
+            "$ref": "#/components/schemas/StorageBackendKind",
+            "description": "Which backend this entry targets."
           },
           "encryption_enabled": {
             "type": "boolean",
@@ -16680,8 +17155,8 @@
             ]
           },
           "current_backend": {
-            "type": "string",
-            "description": "Backend type currently in use (`\"local\"` / `\"s3\"` / `\"azure\"`) —\nwhat the LIVE `blob_backend` is bound to, from\n`blob_handler.backend().backend_type()`. Redundant with\n`entries[i where is_active].backend` in multi-entry mode; kept\nbecause pre-boot / mid-migration inspection may still find it\nuseful."
+            "$ref": "#/components/schemas/StorageBackendKind",
+            "description": "Backend type currently in use — what the LIVE `blob_backend` is\nbound to, from `blob_handler.backend().backend_type()`. Redundant\nwith `entries[i where is_active].backend` in multi-entry mode;\nkept because pre-boot / mid-migration inspection may still find\nit useful."
           },
           "dedup_ratio": {
             "type": "number",
@@ -16815,7 +17290,7 @@
           "token"
         ]
       },
-      "SystemStatus": {
+      "SystemInitStatusDto": {
         "type": "object",
         "description": "System initialisation state, returned by `GET /api/auth/status`.",
         "required": [
@@ -17272,6 +17747,34 @@
           }
         }
       },
+      "UpdateGrantRoleDto": {
+        "type": "object",
+        "description": "`PUT /api/grants/role` — reconcile a subject's role on a resource.",
+        "required": [
+          "subject",
+          "resource",
+          "role"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Optional expiry applied to every grant written or updated by this call.\nAccepts both wire shapes — see [`CreateGrantDto::expires_at`]."
+          },
+          "resource": {
+            "$ref": "#/components/schemas/ResourceDto"
+          },
+          "role": {
+            "$ref": "#/components/schemas/RoleDto"
+          },
+          "subject": {
+            "$ref": "#/components/schemas/SubjectDto"
+          }
+        }
+      },
       "UpdateGroupRequest": {
         "type": "object",
         "properties": {
@@ -17346,7 +17849,11 @@
             "description": "New preferred locale (BCP-47 shape, e.g. `\"fr\"`, `\"zh-TW\"`).\nMust resolve against the server's `LocaleRegistry` — unknown\ncodes are rejected with 400. Pass an empty string to clear the\npreference back to the server default (the application layer\nnormalises `\"\"` → `None`)."
           },
           "ui_preferences": {
-            "description": "Partial patch into the opaque UI preferences bag. **Must be a\nJSON object.** Applied via a SHALLOW merge on the server:\nkeys present here overwrite existing top-level keys; keys not\npresent survive. A key value of `null` REMOVES that key from\nthe bag (implemented via `jsonb_strip_nulls` after the merge).\n\nExample: current bag `{\"a\":1,\"b\":2}`, patch `{\"b\":3,\"c\":4}`\n→ merged `{\"a\":1,\"b\":3,\"c\":4}`. Patch `{\"a\":null}` → `{\"b\":2}`.\n\nAbsent → no change to the bag. This is a UI-only surface;\nserver never inspects the keys."
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Partial patch into the opaque UI preferences bag. **Must be a\nJSON object.** Applied via a SHALLOW merge on the server:\nkeys present here overwrite existing top-level keys; keys not\npresent survive. A key value of `null` REMOVES that key from\nthe bag (implemented via `jsonb_strip_nulls` after the merge).\n\nExample: current bag `{\"a\":1,\"b\":2}`, patch `{\"b\":3,\"c\":4}`\n→ merged `{\"a\":1,\"b\":3,\"c\":4}`. Patch `{\"a\":null}` → `{\"b\":2}`.\n\nAbsent → no change to the bag. This is a UI-only surface;\nserver never inspects the keys.\n\n`#[schema(value_type = Option<Object>)]`: see\n`drive_dto.rs::policies` for the full rationale — tightens the\nemitted schema from \"any JSON value\" to \"an object with\nunknown keys\", so inbound-DTO TS SDK consumers get an optional\n`{ [key: string]: unknown }` instead of an optional `unknown`."
           },
           "username": {
             "type": [
@@ -17354,34 +17861,6 @@
               "null"
             ],
             "description": "Handle to claim (2-64 chars, `[A-Za-z0-9._-]+`, no `@`).\nAccepted only when the caller currently has no username. Once\nclaimed the handle is permanent for the lifetime of the\naccount; subsequent attempts to set or change it via this\nendpoint are rejected with 409. Admin override (via the\nadmin-create-user / admin-update-user surface, future PR) is\nthe escape hatch for genuine typos."
-          }
-        }
-      },
-      "UpdateRoleDto": {
-        "type": "object",
-        "description": "`PUT /api/grants/role` — reconcile a subject's role on a resource.",
-        "required": [
-          "subject",
-          "resource",
-          "role"
-        ],
-        "properties": {
-          "expires_at": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date-time",
-            "description": "Optional expiry applied to every grant written or updated by this call.\nAccepts both wire shapes — see [`CreateGrantDto::expires_at`]."
-          },
-          "resource": {
-            "$ref": "#/components/schemas/ResourceDto"
-          },
-          "role": {
-            "$ref": "#/components/schemas/RoleDto"
-          },
-          "subject": {
-            "$ref": "#/components/schemas/SubjectDto"
           }
         }
       },
@@ -17432,13 +17911,13 @@
       },
       "UpdateUserRoleDto": {
         "type": "object",
-        "description": "Request body for updating a user's role",
+        "description": "Request body for updating a user's role. The service layer refuses\n`UserRoleDto::Owner` on this endpoint — conferring ownership would\ncreate a second owner rather than move the one that exists; use\n[`TransferOwnershipDto`] for that. Reusing `UserRoleDto` keeps a\nsingle wire shape across the FE (consumer sees the same 3-value\nenum on reads and writes); the owner-refusal remains a service-\nlevel invariant.",
         "required": [
           "role"
         ],
         "properties": {
           "role": {
-            "type": "string"
+            "$ref": "#/components/schemas/UserRoleDto"
           }
         }
       },
@@ -17509,6 +17988,15 @@
           }
         }
       },
+      "UserRoleDto": {
+        "type": "string",
+        "description": "Account role as carried on `PublicUserDto` and inbound on\n`UpdateUserRoleDto`. Mirrors the three stored values of\n[`UserRole`] — `Anonymous` is a session-only domain variant and\nnever appears on a persisted row, so it is deliberately absent\nfrom this wire shape.\n\nThe DB CHECK constraint on `auth.users.role` is the ultimate\nsource of truth for the three canonical values; parse errors\nthrough [`UserRoleDto::from_str`] mean a corrupt row.",
+        "enum": [
+          "owner",
+          "admin",
+          "user"
+        ]
+      },
       "VerifyPasswordRequest": {
         "type": "object",
         "required": [
@@ -17552,6 +18040,18 @@
           }
         }
       },
+      "WebhookFormatDto": {
+        "type": "string",
+        "description": "Which JSON shape a webhook sink POSTs. Wire mirror of\n[`infrastructure::services::webhook_notification_sink::WebhookFormat`] —\nkept DTO-suffixed because the domain name clashes.",
+        "enum": [
+          "generic",
+          "slack",
+          "discord",
+          "teams",
+          "telegram",
+          "ntfy"
+        ]
+      },
       "WebhookInfoDto": {
         "type": "object",
         "description": "Read-only webhook info, shown beside SMTP on the admin Notifications\npage. Like SMTP, configured only through environment variables.",
@@ -17567,8 +18067,8 @@
             "description": "Whether `OXICLOUD_WEBHOOK_URL` is set and the sink was built."
           },
           "format": {
-            "type": "string",
-            "description": "`generic`, `slack`, `discord`, `teams`, `telegram` or `ntfy`."
+            "$ref": "#/components/schemas/WebhookFormatDto",
+            "description": "Which webhook JSON shape this sink speaks."
           },
           "host": {
             "type": "string",

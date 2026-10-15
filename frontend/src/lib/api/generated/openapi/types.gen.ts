@@ -65,6 +65,13 @@ export type AcquireExternalLockDto = {
 };
 
 /**
+ * Request body for adding a contact to a group.
+ */
+export type AddContactToGroupRequest = {
+    contact_id: string;
+};
+
+/**
  * Body for `POST /api/drives/{id}/members`.
  */
 export type AddDriveMemberDto = {
@@ -75,13 +82,6 @@ export type AddDriveMemberDto = {
     expires_at?: string | null;
     role: RoleDto;
     subject: SubjectDto;
-};
-
-/**
- * Request body for adding a contact to a group.
- */
-export type AddMemberRequest = {
-    contact_id: string;
 };
 
 export type AddSubjectGroupMemberRequest = {
@@ -165,10 +165,7 @@ export type AdminCreateUserDto = {
      * Ignored when `is_external = true` (external users have no storage).
      */
     quota_bytes?: number | null;
-    /**
-     * "admin" or "user"; defaults to "user"
-     */
-    role?: string | null;
+    role?: null | UserRoleDto;
     username: string;
 };
 
@@ -466,21 +463,6 @@ export type ChangePasswordDto = {
 };
 
 /**
- * One chunk reference: `h` = BLAKE3 hex (64 chars), `s` = size in bytes.
- * Field names are deliberately terse — a 10 GB file is ~40 000 of these.
- */
-export type ChunkRef = {
-    /**
-     * BLAKE3 hash of the chunk (64 hex chars).
-     */
-    h: string;
-    /**
-     * Chunk size in bytes (1 ..= 1 MiB).
-     */
-    s: number;
-};
-
-/**
  * Response returned after a single chunk is uploaded.
  */
 export type ChunkUploadResponseDto = {
@@ -566,6 +548,13 @@ export type ContactGroupDto = {
     members_count?: number | null;
     name: string;
     updated_at: string;
+};
+
+/**
+ * Request body for creating or renaming a group.
+ */
+export type ContactGroupNameRequest = {
+    name: string;
 };
 
 /**
@@ -847,10 +836,59 @@ export type DashboardStatsDto = {
 };
 
 /**
+ * Response for dedup stats endpoint
+ */
+export type DedupStatsResponse = {
+    /**
+     * Total bytes saved by deduplication
+     */
+    bytes_saved: number;
+    /**
+     * Deduplication ratio (logical / physical)
+     */
+    dedup_ratio: number;
+    /**
+     * Percentage of storage saved
+     */
+    savings_percentage: number;
+    /**
+     * Total logical bytes (what users think they have)
+     */
+    total_logical_bytes: number;
+    /**
+     * Total physical bytes (actual disk usage)
+     */
+    total_physical_bytes: number;
+    /**
+     * Total number of references (files pointing to blobs)
+     */
+    total_references: number;
+    /**
+     * Total number of unique blobs stored
+     */
+    unique_blobs: number;
+};
+
+/**
  * Request to permanently delete an item from trash
  */
 export type DeletePermanentlyRequest = {
     trash_id: string;
+};
+
+/**
+ * One chunk reference: `h` = BLAKE3 hex (64 chars), `s` = size in bytes.
+ * Field names are deliberately terse — a 10 GB file is ~40 000 of these.
+ */
+export type DeltaChunkRef = {
+    /**
+     * BLAKE3 hash of the chunk (64 hex chars).
+     */
+    h: string;
+    /**
+     * Chunk size in bytes (1 ..= 1 MiB).
+     */
+    s: number;
 };
 
 /**
@@ -859,7 +897,7 @@ export type DeletePermanentlyRequest = {
  * own hashes to detect corruption before committing.
  */
 export type DeltaChunksResponse = {
-    received: Array<ChunkRef>;
+    received: Array<DeltaChunkRef>;
 };
 
 /**
@@ -872,7 +910,7 @@ export type DeltaCommitRequest = {
     /**
      * Full chunk sequence, in file order (per occurrence).
      */
-    chunks: Array<ChunkRef>;
+    chunks: Array<DeltaChunkRef>;
     /**
      * BLAKE3 of the complete file (verified server-side, never trusted).
      */
@@ -909,7 +947,7 @@ export type DeltaManifestResponse = {
     /**
      * Full chunk sequence, in file order (per occurrence).
      */
-    chunks: Array<ChunkRef>;
+    chunks: Array<DeltaChunkRef>;
     /**
      * BLAKE3 of the whole file (verify the local reassembly against it).
      */
@@ -927,7 +965,7 @@ export type DeltaNegotiateRequest = {
     /**
      * The file's chunks, in order (duplicates allowed — repeated content).
      */
-    chunks: Array<ChunkRef>;
+    chunks: Array<DeltaChunkRef>;
 };
 
 /**
@@ -956,6 +994,142 @@ export type DeltaNotAvailableResponse = {
  */
 export type DeltaStillMissingResponse = {
     still_missing: Array<string>;
+};
+
+/**
+ * POST /api/auth/device/authorize — request body
+ */
+export type DeviceAuthorizeRequestDto = {
+    /**
+     * Human-readable name of the client (e.g. "rclone", "DAVx⁵")
+     */
+    client_name?: string;
+    /**
+     * Comma-separated scopes (e.g. "webdav,caldav,carddav")
+     */
+    scope?: string;
+};
+
+/**
+ * Response to POST /api/auth/device/authorize (RFC 8628 §3.2)
+ */
+export type DeviceAuthorizeResponseDto = {
+    /**
+     * The device verification code
+     */
+    device_code: string;
+    /**
+     * Lifetime in seconds of the device_code and user_code
+     */
+    expires_in: number;
+    /**
+     * Minimum polling interval in seconds
+     */
+    interval: number;
+    /**
+     * The end-user verification code (short, human-readable)
+     */
+    user_code: string;
+    /**
+     * The end-user verification URI
+     */
+    verification_uri: string;
+    /**
+     * Optional: verification URI with user_code pre-filled
+     */
+    verification_uri_complete?: string | null;
+};
+
+/**
+ * DTO for listing authorized devices in the user's profile.
+ */
+export type DeviceInfoDto = {
+    authorized_at?: string | null;
+    client_name: string;
+    created_at: string;
+    expires_at: string;
+    id: string;
+    scopes: string;
+    status: string;
+};
+
+/**
+ * Response to POST /api/auth/device/token when authorization is still pending
+ */
+export type DeviceTokenPendingDto = {
+    error: string;
+    error_description?: string | null;
+};
+
+/**
+ * POST /api/auth/device/token — client polls for tokens
+ */
+export type DeviceTokenRequestDto = {
+    /**
+     * The device_code received from the initial authorize call
+     */
+    device_code: string;
+    /**
+     * Must be "urn:ietf:params:oauth:grant-type:device_code"
+     */
+    grant_type?: string;
+};
+
+/**
+ * Response to POST /api/auth/device/token when authorization is complete
+ */
+export type DeviceTokenSuccessDto = {
+    access_token: string;
+    expires_in: number;
+    refresh_token: string;
+    scope: string;
+    token_type: string;
+};
+
+/**
+ * Response to POST /api/auth/device/verify — approve/deny status
+ * confirmation. Replaces the previous ad-hoc
+ * `json!({"status": "approved"})` body so the TS SDK gets a typed
+ * discriminant it can switch on.
+ */
+export type DeviceVerifyActionResponseDto = {
+    /**
+     * `"approved"` or `"denied"` — mirrors the inbound `action` the
+     * user picked.
+     */
+    status: string;
+};
+
+/**
+ * GET /api/auth/device/verify — info about the pending device code
+ */
+export type DeviceVerifyInfoDto = {
+    /**
+     * The client name requesting access
+     */
+    client_name: string;
+    /**
+     * Scopes being requested
+     */
+    scopes: string;
+    /**
+     * Whether the user_code is valid and pending
+     */
+    valid: boolean;
+};
+
+/**
+ * POST /api/auth/device/verify — user submits the code from the browser
+ */
+export type DeviceVerifyRequestDto = {
+    /**
+     * Whether the user approves ("approve") or denies ("deny")
+     */
+    action: string;
+    /**
+     * The user_code displayed on the client device
+     */
+    user_code: string;
 };
 
 /**
@@ -993,8 +1167,16 @@ export type DriveDto = {
      * Capability-flag bag — clients render UI affordances based on
      * known keys (`forbid_public_links`, `include_in_photo_index`,
      * `forbid_music_index`, …). Unknown keys preserved verbatim.
+     *
+     * `#[schema(value_type = Object)]` tightens the OpenAPI emission
+     * from "any JSON value" to `type: object, additionalProperties:
+     * true` — forward-compat for unknown keys stays, and TS SDK
+     * consumers get `{ [key: string]: unknown }` instead of a bare
+     * `unknown` they'd have to cast through every access.
      */
-    policies: unknown;
+    policies: {
+        [key: string]: unknown;
+    };
     /**
      * Storage cap in bytes. `None` means "no quota" (admin override /
      * future system drives). Mutation is OxiCloud-admin only — drive
@@ -1281,9 +1463,12 @@ export type FavoriteItemDto = {
      */
     item_size?: number | null;
     /**
-     * Type of the item ('file' or 'folder')
+     * Type of the item ('file' or 'folder'). Typed enum rather than a
+     * raw string — the CHECK constraint on `favorites.item_type` enforces
+     * the same invariant, and the TS SDK gets exhaustive narrowing on
+     * the two values.
      */
-    item_type: string;
+    item_type: ItemKind;
     /**
      * Last modification timestamp of the item
      */
@@ -1378,6 +1563,20 @@ export type FeaturesDto = {
      */
     video_thumbnails: boolean;
 };
+
+/**
+ * Wire-level view of [`FederationKind`]. Dedicated DTO rather than
+ * deriving `Serialize + ToSchema` directly on the domain enum so the
+ * hexagonal boundary stays clean — the domain stays free of
+ * serde/utoipa dependencies, and widening the enum (e.g. adding a
+ * new `SamlSso` variant) is a two-step migration (domain, then
+ * wire) rather than a single commit that may silently break clients.
+ *
+ * Wire spelling matches [`FederationKind::as_str`] exactly — the DB
+ * CHECK constraint on `auth.users.federation_kind` is the ultimate
+ * source of truth for the three canonical values.
+ */
+export type FederationKindDto = 'magic_link' | 'ocm' | 'oidc';
 
 /**
  * DTO for file responses
@@ -1717,13 +1916,7 @@ export type FullUserDto = {
      * `None` for local users. Same rationale as `federation_kind`.
      */
     federation_issuer?: string | null;
-    /**
-     * Which trust chain minted this user's federation identity —
-     * `"oidc" | "ocm" | "magic_link"` — or `None` for pure local users.
-     * Kept off `PublicUserDto` because a peer's federation kind is a
-     * soft org-affiliation leak; only self + admin need it.
-     */
-    federation_kind?: string | null;
+    federation_kind?: null | FederationKindDto;
     /**
      * TRUE when the account has a server-verifiable password
      * (`password_hash IS NOT NULL`). Kept off `PublicUserDto` because
@@ -1839,13 +2032,6 @@ export type GroupMemberDto = {
 } | {
     id: string;
     kind: 'group';
-};
-
-/**
- * Request body for creating or renaming a group.
- */
-export type GroupNameRequest = {
-    name: string;
 };
 
 /**
@@ -2040,15 +2226,16 @@ export type HolderHeader = {
     kind: string;
 };
 
-export type ListResponseDto = {
-    items: Array<NotificationDto>;
-    /**
-     * Unread rows for this user across the whole table — the bell
-     * badge reads this. Kept on the list response so a bell open
-     * doesn't need a second round-trip for the badge.
-     */
-    unread_count: number;
-};
+/**
+ * What a favorite points at. The server emits exactly these two values
+ * today; the dedicated enum (rather than the 6-value `ResourceTypeDto`)
+ * matches reality — favorites hold a file or a folder, nothing else —
+ * so clients don't have to carry impossible branches for drives,
+ * calendars, address books or playlists. If a future product decision
+ * permits favoriting one of those, add the variant here and the TS SDK
+ * surfaces it on regen.
+ */
+export type ItemKind = 'file' | 'folder';
 
 /**
  * DTO for locale information
@@ -2093,7 +2280,7 @@ export type MarkAllReadResponseDto = {
     marked: number;
 };
 
-export type MergeBody = {
+export type MergePeopleRequest = {
     /**
      * Cluster id being merged into `into`. Deleted after the merge.
      */
@@ -2116,13 +2303,22 @@ export type MigrationStateDto = {
     migrated_blobs: number;
     migrated_bytes: number;
     started_at?: string | null;
-    status: string;
+    status: MigrationStatus;
     /**
      * Estimated throughput in bytes/sec (for UI ETA calculation).
      */
     throughput_bytes_per_sec?: number | null;
     total_blobs: number;
 };
+
+/**
+ * Status of a storage-migration run as the admin UI sees it. The
+ * 6 variants mirror the projection in
+ * `admin_handler::run_to_migration_dto` of the recoverable
+ * `RunStatus` + the `idle` zero-run case. `cancel_requested` folds
+ * into `paused` for display, so it doesn't surface here.
+ */
+export type MigrationStatus = 'idle' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
 
 /**
  * Payload for moving a file
@@ -2170,6 +2366,16 @@ export type NotificationDto = {
     read_at?: string | null;
 };
 
+export type NotificationListResponseDto = {
+    items: Array<NotificationDto>;
+    /**
+     * Unread rows for this user across the whole table — the bell
+     * badge reads this. Kept on the list response so a bell open
+     * doesn't need a second round-trip for the badge.
+     */
+    unread_count: number;
+};
+
 /**
  * Read-only alerting policy, from `GET /api/admin/notify/info`.
  *
@@ -2184,21 +2390,27 @@ export type NotifyInfoDto = {
      */
     email_recipients: Array<string>;
     /**
-     * Severity floor: `data_loss`, `inconsistent`, `anomaly`, or `none`.
-     *
-     * The field the panel was missing. An operator with a configured
-     * webhook and a healthy relay can still be told nothing, because the
-     * default floor admits only `data_loss` — and until this was
-     * surfaced, the only way to discover that was to read the server's
-     * environment.
+     * Severity floor. The field the panel was missing: an operator
+     * with a configured webhook and a healthy relay can still be
+     * told nothing, because the default floor admits only
+     * `data_loss`.
      */
-    min_severity: string;
+    min_severity: NotifyMinSeverity;
     /**
      * Channels actually built and wired, by name — `webhook`, `email`.
      * Empty means findings are recorded but nobody is told.
      */
     sinks: Array<string>;
 };
+
+/**
+ * Alert-severity floor on `GET /api/admin/notify/info`. 3 real
+ * severities + `None` for the "floor off" state (admits no alerts).
+ * The `None` wire value replaces the earlier `"none".to_string()`
+ * sentinel; the real severities match [`application::ports::
+ * notification_sink_ports::Severity`] canonical spellings.
+ */
+export type NotifyMinSeverity = 'none' | 'anomaly' | 'inconsistent' | 'data_loss';
 
 /**
  * One per resolved recipient. `kind` discriminates; sibling fields are
@@ -2857,10 +3069,12 @@ export type PublicUserDto = {
      */
     is_online?: boolean;
     /**
-     * Role string ("admin" | "user"). Kept public because the sharee /
-     * group-member vignette renders an admin badge.
+     * Account role. Mirrors the stored `auth.users.role` — `owner` is
+     * a legitimate value, kept out of the handwritten FE `Role` type
+     * pre-pivot. Kept public because the sharee / group-member
+     * vignette renders an admin badge.
      */
-    role: string;
+    role: UserRoleDto;
     username?: string | null;
 };
 
@@ -2911,9 +3125,11 @@ export type RecentItemDto = {
      */
     item_size?: number | null;
     /**
-     * Item type ('file' or 'folder')
+     * Item type. Shared enum with `FavoriteItemDto.item_type` — both
+     * collections record a reference to one of the two leaf resource
+     * kinds, nothing else.
      */
-    item_type: string;
+    item_type: ItemKind;
     /**
      * Parent folder ID (folder_id for files, parent_id for folders)
      */
@@ -2967,14 +3183,6 @@ export type RegisterDto = {
     username?: string | null;
 };
 
-export type RenameBody = {
-    /**
-     * New display name for the cluster. `null` or omitted clears
-     * the name, reverting the cluster to its "Unnamed" state.
-     */
-    name?: string | null;
-};
-
 /**
  * DTO for folder rename requests
  */
@@ -2983,6 +3191,14 @@ export type RenameFolderDto = {
      * New name for the folder
      */
     name: string;
+};
+
+export type RenamePersonRequest = {
+    /**
+     * New display name for the cluster. `null` or omitted clears
+     * the name, reverting the cluster to its "Unnamed" state.
+     */
+    name?: string | null;
 };
 
 export type ReorderTracksDto = {
@@ -3046,7 +3262,7 @@ export type SaveOidcSettingsDto = {
  * Request body for saving storage settings from the admin panel
  */
 export type SaveStorageSettingsDto = {
-    backend: string;
+    backend: StorageBackendKind;
     /**
      * Only update if provided and non-empty (None = keep existing)
      */
@@ -3522,8 +3738,16 @@ export type SelfUserDto = {
      * for pure UI toggles (view mode, sidebar collapse, hide dotfiles,
      * …). The server never inspects the contents. Always present on
      * the wire; empty bag is `{}`, never `null`.
+     *
+     * `#[schema(value_type = Object)]`: see `drive_dto.rs::policies`
+     * for the full rationale — in short, this tightens the emitted
+     * schema from "any JSON value" to "an object with unknown keys"
+     * so TS SDK consumers get `{ [key: string]: unknown }` instead
+     * of a bare `unknown`.
      */
-    ui_preferences: unknown;
+    ui_preferences: {
+        [key: string]: unknown;
+    };
 };
 
 /**
@@ -3827,9 +4051,9 @@ export type SmtpInfoDto = {
      */
     port: number;
     /**
-     * Transport encryption mode: `"starttls"`, `"tls"`, or `"none"`.
+     * Transport encryption mode.
      */
-    tls: string;
+    tls: SmtpTlsModeDto;
     /**
      * `<set>` if a SASL user is configured, `<anon>` otherwise.
      * Never echoes the username — admins compare against the
@@ -3862,6 +4086,12 @@ export type SmtpTestResultDto = {
 };
 
 /**
+ * Wire-level view of [`common::config::SmtpTlsMode`]. Kept DTO-
+ * suffixed because the domain name clashes.
+ */
+export type SmtpTlsModeDto = 'starttls' | 'tls' | 'none';
+
+/**
  * Request body for `POST /api/admin/storage/migration/start`.
  *
  * **Multi-entry contract** (see `docs/plan/storage-multi-entry.md`):
@@ -3891,38 +4121,17 @@ export type StartMigrationDto = {
 };
 
 /**
- * Response for dedup stats endpoint
+ * Which blob backend an entry / request targets. Wire values are
+ * `"local"`, `"s3"`, `"azure"` — the three implementations in
+ * `infrastructure::services::{local,s3,azure}_blob_backend`. The
+ * three producers across those modules (and the local storage-
+ * settings service) all previously populated this as a raw string
+ * literal; the shared enum makes the OpenAPI spec exhaustive and
+ * gives the FE SDK a typed union to switch on.
+ *
+ * Serialized as lowercase to match the historical wire shape.
  */
-export type StatsResponse = {
-    /**
-     * Total bytes saved by deduplication
-     */
-    bytes_saved: number;
-    /**
-     * Deduplication ratio (logical / physical)
-     */
-    dedup_ratio: number;
-    /**
-     * Percentage of storage saved
-     */
-    savings_percentage: number;
-    /**
-     * Total logical bytes (what users think they have)
-     */
-    total_logical_bytes: number;
-    /**
-     * Total physical bytes (actual disk usage)
-     */
-    total_physical_bytes: number;
-    /**
-     * Total number of references (files pointing to blobs)
-     */
-    total_references: number;
-    /**
-     * Total number of unique blobs stored
-     */
-    unique_blobs: number;
-};
+export type StorageBackendKind = 'local' | 's3' | 'azure';
 
 /**
  * One `<cipher>:<key>` pair rendered for the admin UI. Never
@@ -3958,9 +4167,9 @@ export type StorageEncryptionPairDto = {
  */
 export type StorageEntrySummaryDto = {
     /**
-     * Backend type — "local" / "s3" / "azure".
+     * Which backend this entry targets.
      */
-    backend: string;
+    backend: StorageBackendKind;
     /**
      * True when the entry has a per-entry encryption key. UI shows
      * a lock icon. Presence-only — the key bytes never leave the
@@ -4024,14 +4233,13 @@ export type StorageSettingsDto = {
     active_entry_name: string;
     backend_write_lock?: null | BackendWriteLockReason;
     /**
-     * Backend type currently in use (`"local"` / `"s3"` / `"azure"`) —
-     * what the LIVE `blob_backend` is bound to, from
-     * `blob_handler.backend().backend_type()`. Redundant with
-     * `entries[i where is_active].backend` in multi-entry mode; kept
-     * because pre-boot / mid-migration inspection may still find it
-     * useful.
+     * Backend type currently in use — what the LIVE `blob_backend` is
+     * bound to, from `blob_handler.backend().backend_type()`. Redundant
+     * with `entries[i where is_active].backend` in multi-entry mode;
+     * kept because pre-boot / mid-migration inspection may still find
+     * it useful.
      */
-    current_backend: string;
+    current_backend: StorageBackendKind;
     dedup_ratio: number;
     /**
      * All named storage entries declared in env. Empty when running
@@ -4084,7 +4292,7 @@ export type SubjectTypeDto = 'user' | 'group' | 'token';
 /**
  * System initialisation state, returned by `GET /api/auth/status`.
  */
-export type SystemStatus = {
+export type SystemInitStatusDto = {
     /**
      * Number of admin users in the system.
      */
@@ -4349,6 +4557,20 @@ export type UpdateDriveQuotaDto = {
     quota_bytes?: number | null;
 };
 
+/**
+ * `PUT /api/grants/role` — reconcile a subject's role on a resource.
+ */
+export type UpdateGrantRoleDto = {
+    /**
+     * Optional expiry applied to every grant written or updated by this call.
+     * Accepts both wire shapes — see [`CreateGrantDto::expires_at`].
+     */
+    expires_at?: string | null;
+    resource: ResourceDto;
+    role: RoleDto;
+    subject: SubjectDto;
+};
+
 export type UpdateGroupRequest = {
     /**
      * Reserved for future use; v1 only persists the name in `rename`.
@@ -4426,8 +4648,16 @@ export type UpdateProfileDto = {
      *
      * Absent → no change to the bag. This is a UI-only surface;
      * server never inspects the keys.
+     *
+     * `#[schema(value_type = Option<Object>)]`: see
+     * `drive_dto.rs::policies` for the full rationale — tightens the
+     * emitted schema from "any JSON value" to "an object with
+     * unknown keys", so inbound-DTO TS SDK consumers get an optional
+     * `{ [key: string]: unknown }` instead of an optional `unknown`.
      */
-    ui_preferences?: unknown;
+    ui_preferences?: {
+        [key: string]: unknown;
+    } | null;
     /**
      * Handle to claim (2-64 chars, `[A-Za-z0-9._-]+`, no `@`).
      * Accepted only when the caller currently has no username. Once
@@ -4438,20 +4668,6 @@ export type UpdateProfileDto = {
      * the escape hatch for genuine typos.
      */
     username?: string | null;
-};
-
-/**
- * `PUT /api/grants/role` — reconcile a subject's role on a resource.
- */
-export type UpdateRoleDto = {
-    /**
-     * Optional expiry applied to every grant written or updated by this call.
-     * Accepts both wire shapes — see [`CreateGrantDto::expires_at`].
-     */
-    expires_at?: string | null;
-    resource: ResourceDto;
-    role: RoleDto;
-    subject: SubjectDto;
 };
 
 export type UpdateShareDto = {
@@ -4480,10 +4696,16 @@ export type UpdateUserQuotaDto = {
 };
 
 /**
- * Request body for updating a user's role
+ * Request body for updating a user's role. The service layer refuses
+ * `UserRoleDto::Owner` on this endpoint — conferring ownership would
+ * create a second owner rather than move the one that exists; use
+ * [`TransferOwnershipDto`] for that. Reusing `UserRoleDto` keeps a
+ * single wire shape across the FE (consumer sees the same 3-value
+ * enum on reads and writes); the owner-refusal remains a service-
+ * level invariant.
  */
 export type UpdateUserRoleDto = {
-    role: string;
+    role: UserRoleDto;
 };
 
 /**
@@ -4518,6 +4740,19 @@ export type UploadStatusResponseDto = {
     upload_id: string;
 };
 
+/**
+ * Account role as carried on `PublicUserDto` and inbound on
+ * `UpdateUserRoleDto`. Mirrors the three stored values of
+ * [`UserRole`] — `Anonymous` is a session-only domain variant and
+ * never appears on a persisted row, so it is deliberately absent
+ * from this wire shape.
+ *
+ * The DB CHECK constraint on `auth.users.role` is the ultimate
+ * source of truth for the three canonical values; parse errors
+ * through [`UserRoleDto::from_str`] mean a corrupt row.
+ */
+export type UserRoleDto = 'owner' | 'admin' | 'user';
+
 export type VerifyPasswordRequest = {
     password: string;
 };
@@ -4542,6 +4777,13 @@ export type WeakerDriveDto = {
 };
 
 /**
+ * Which JSON shape a webhook sink POSTs. Wire mirror of
+ * [`infrastructure::services::webhook_notification_sink::WebhookFormat`] —
+ * kept DTO-suffixed because the domain name clashes.
+ */
+export type WebhookFormatDto = 'generic' | 'slack' | 'discord' | 'teams' | 'telegram' | 'ntfy';
+
+/**
  * Read-only webhook info, shown beside SMTP on the admin Notifications
  * page. Like SMTP, configured only through environment variables.
  */
@@ -4551,9 +4793,9 @@ export type WebhookInfoDto = {
      */
     enabled: boolean;
     /**
-     * `generic`, `slack`, `discord`, `teams`, `telegram` or `ntfy`.
+     * Which webhook JSON shape this sink speaks.
      */
-    format: string;
+    format: WebhookFormatDto;
     /**
      * Scheme and host of the endpoint — **never the full URL**.
      *
@@ -4940,7 +5182,7 @@ export type ListGroupsResponses = {
 export type ListGroupsResponse = ListGroupsResponses[keyof ListGroupsResponses];
 
 export type CreateGroupData = {
-    body: GroupNameRequest;
+    body: ContactGroupNameRequest;
     path: {
         /**
          * Address book UUID
@@ -5044,7 +5286,7 @@ export type GetGroupResponses = {
 export type GetGroupResponse = GetGroupResponses[keyof GetGroupResponses];
 
 export type UpdateGroupData = {
-    body: GroupNameRequest;
+    body: ContactGroupNameRequest;
     path: {
         /**
          * Address book UUID
@@ -5116,7 +5358,7 @@ export type ListContactsInGroupResponses = {
 export type ListContactsInGroupResponse = ListContactsInGroupResponses[keyof ListContactsInGroupResponses];
 
 export type AddContactToGroupData = {
-    body: AddMemberRequest;
+    body: AddContactToGroupRequest;
     path: {
         /**
          * Address book UUID
@@ -5422,7 +5664,7 @@ export type RecalculateStatsResponses = {
     /**
      * Statistics after integrity verification
      */
-    200: StatsResponse;
+    200: DedupStatsResponse;
 };
 
 export type RecalculateStatsResponse = RecalculateStatsResponses[keyof RecalculateStatsResponses];
@@ -5449,7 +5691,7 @@ export type GetStatsResponses = {
     /**
      * Deduplication statistics
      */
-    200: StatsResponse;
+    200: DedupStatsResponse;
 };
 
 export type GetStatsResponse = GetStatsResponses[keyof GetStatsResponses];
@@ -7159,6 +7401,157 @@ export type ChangePasswordResponses = {
 
 export type ChangePasswordResponse = ChangePasswordResponses[keyof ChangePasswordResponses];
 
+export type DeviceAuthorizeData = {
+    body: DeviceAuthorizeRequestDto;
+    path?: never;
+    query?: never;
+    url: '/api/auth/device/authorize';
+};
+
+export type DeviceAuthorizeResponses = {
+    /**
+     * Device flow initiated — hand `user_code` to the end user
+     */
+    200: DeviceAuthorizeResponseDto;
+};
+
+export type DeviceAuthorizeResponse = DeviceAuthorizeResponses[keyof DeviceAuthorizeResponses];
+
+export type ListDevicesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/auth/device/devices';
+};
+
+export type ListDevicesErrors = {
+    /**
+     * Not authenticated
+     */
+    401: unknown;
+};
+
+export type ListDevicesResponses = {
+    /**
+     * The caller's authorized devices
+     */
+    200: Array<DeviceInfoDto>;
+};
+
+export type ListDevicesResponse = ListDevicesResponses[keyof ListDevicesResponses];
+
+export type RevokeDeviceData = {
+    body?: never;
+    path: {
+        /**
+         * The device-code row id (`device_codes.id`, UUID)
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/auth/device/devices/{id}';
+};
+
+export type RevokeDeviceErrors = {
+    /**
+     * Invalid device id
+     */
+    400: unknown;
+    /**
+     * Not authenticated
+     */
+    401: unknown;
+};
+
+export type RevokeDeviceResponses = {
+    /**
+     * Revoked
+     */
+    204: void;
+};
+
+export type RevokeDeviceResponse = RevokeDeviceResponses[keyof RevokeDeviceResponses];
+
+export type DeviceTokenData = {
+    body: DeviceTokenRequestDto;
+    path?: never;
+    query?: never;
+    url: '/api/auth/device/token';
+};
+
+export type DeviceTokenErrors = {
+    /**
+     * RFC 8628 error — `authorization_pending`, `slow_down`, `access_denied`, `expired_token`, …
+     */
+    400: DeviceTokenPendingDto;
+};
+
+export type DeviceTokenError = DeviceTokenErrors[keyof DeviceTokenErrors];
+
+export type DeviceTokenResponses = {
+    /**
+     * Authorization granted — tokens issued
+     */
+    200: DeviceTokenSuccessDto;
+};
+
+export type DeviceTokenResponse = DeviceTokenResponses[keyof DeviceTokenResponses];
+
+export type DeviceVerifyInfoData = {
+    body?: never;
+    path?: never;
+    query: {
+        /**
+         * The user_code the client is displaying (hyphen-separated, e.g. `ABCD-1234`)
+         */
+        code: string;
+    };
+    url: '/api/auth/device/verify';
+};
+
+export type DeviceVerifyInfoErrors = {
+    /**
+     * Caller is not signed in — the user must authenticate before approving a device
+     */
+    401: unknown;
+};
+
+export type DeviceVerifyInfoResponses = {
+    /**
+     * Info about the pending authorization — `valid: false` means the code is unknown or expired
+     */
+    200: DeviceVerifyInfoDto;
+};
+
+export type DeviceVerifyInfoResponse = DeviceVerifyInfoResponses[keyof DeviceVerifyInfoResponses];
+
+export type DeviceVerifyActionData = {
+    body: DeviceVerifyRequestDto;
+    path?: never;
+    query?: never;
+    url: '/api/auth/device/verify';
+};
+
+export type DeviceVerifyActionErrors = {
+    /**
+     * `action` was not one of `approve`/`deny`
+     */
+    400: unknown;
+    /**
+     * Caller is not signed in
+     */
+    401: unknown;
+};
+
+export type DeviceVerifyActionResponses = {
+    /**
+     * Decision recorded — `status` echoes `approved` or `denied`
+     */
+    200: DeviceVerifyActionResponseDto;
+};
+
+export type DeviceVerifyActionResponse = DeviceVerifyActionResponses[keyof DeviceVerifyActionResponses];
+
 export type DpopBindData = {
     body: DpopBindDto;
     path?: never;
@@ -7767,7 +8160,7 @@ export type GetSystemStatusResponses = {
     /**
      * System status
      */
-    200: SystemStatus;
+    200: SystemInitStatusDto;
 };
 
 export type GetSystemStatusResponse = GetSystemStatusResponses[keyof GetSystemStatusResponses];
@@ -9846,7 +10239,7 @@ export type ListMySharesResponses = {
 export type ListMySharesResponse = ListMySharesResponses[keyof ListMySharesResponses];
 
 export type SetRoleData = {
-    body: UpdateRoleDto;
+    body: UpdateGrantRoleDto;
     path?: never;
     query?: never;
     url: '/api/grants/role';
@@ -10465,7 +10858,7 @@ export type ListNotificationsResponses = {
     /**
      * List of notifications
      */
-    200: ListResponseDto;
+    200: NotificationListResponseDto;
 };
 
 export type ListNotificationsResponse = ListNotificationsResponses[keyof ListNotificationsResponses];
@@ -10623,7 +11016,7 @@ export type FacesForFileResponses = {
 export type FacesForFileResponse = FacesForFileResponses[keyof FacesForFileResponses];
 
 export type MergePeopleData = {
-    body: MergeBody;
+    body: MergePeopleRequest;
     path?: never;
     query?: never;
     url: '/api/people/merge';
@@ -10671,7 +11064,7 @@ export type ReclusterResponses = {
 };
 
 export type RenamePersonData = {
-    body: RenameBody;
+    body: RenamePersonRequest;
     path: {
         /**
          * Person cluster id

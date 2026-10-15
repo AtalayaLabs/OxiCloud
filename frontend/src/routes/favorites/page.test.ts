@@ -7,10 +7,16 @@ const { confirmDialog, promptDialog } = vi.hoisted(() => ({
 }));
 vi.mock('$lib/api/endpoints/favorites', () => ({
 	fetchFavoritesPage: vi.fn(),
-	removeFavorite: vi.fn(),
-	resolveOwnerName: vi.fn(async () => 'me'),
+	removeFavorite: vi.fn()
+}));
+// Display helpers moved out of endpoints/favorites — mock their new homes.
+vi.mock('$lib/utils/resourceBuckets', () => ({
+	dateBucket: () => 'Today',
 	sizeBucket: () => 'Small',
 	typeLabel: () => 'File'
+}));
+vi.mock('$lib/utils/ownerName', () => ({
+	resolveOwnerName: vi.fn(async () => 'me')
 }));
 vi.mock('$lib/api/endpoints/files', () => ({
 	fileDownloadUrl: () => '/dl',

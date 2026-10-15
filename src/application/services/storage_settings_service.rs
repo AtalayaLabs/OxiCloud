@@ -5,8 +5,8 @@ use uuid::Uuid;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::application::dtos::settings_dto::{
-    SaveStorageSettingsDto, StorageEntrySummaryDto, StorageSettingsDto, StorageTestResultDto,
-    TestStorageConnectionDto,
+    SaveStorageSettingsDto, StorageBackendKind, StorageEntrySummaryDto, StorageSettingsDto,
+    StorageTestPhase, StorageTestResultDto, TestStorageConnectionDto,
 };
 use crate::application::ports::blob_storage_ports::BlobStorageBackend;
 use crate::common::config::{
@@ -263,7 +263,19 @@ impl StorageSettingsService {
     /// admin_settings rows saved by the retired admin-panel form.
     pub async fn get_storage_settings(&self) -> Result<StorageSettingsDto, DomainError> {
         let stats = self.blob_handler.get_stats().await;
-        let current_backend = self.blob_handler.backend().backend_type().to_string();
+        // The trait returns `&'static str` from a closed set of three
+        // values; `parse()` is infallible in practice. Fall back to
+        // Local on an unexpected value so the admin panel still
+        // renders, with a warn so the regression is visible.
+        let current_backend: StorageBackendKind = self
+            .blob_handler
+            .backend()
+            .backend_type()
+            .parse()
+            .unwrap_or_else(|e| {
+                tracing::warn!("unknown backend_type from live backend: {e}");
+                StorageBackendKind::Local
+            });
 
         // Project the multi-entry view. `is_active` is name-compared
         // against the boot-selected `active_entry_name` (matches
@@ -302,9 +314,9 @@ impl StorageSettingsService {
                 StorageEntrySummaryDto {
                     name: e.name.clone(),
                     backend: match e.backend {
-                        StorageBackendType::Local => "local".to_string(),
-                        StorageBackendType::S3 => "s3".to_string(),
-                        StorageBackendType::Azure => "azure".to_string(),
+                        StorageBackendType::Local => StorageBackendKind::Local,
+                        StorageBackendType::S3 => StorageBackendKind::S3,
+                        StorageBackendType::Azure => StorageBackendKind::Azure,
                     },
                     is_active: e.name == active_entry_name,
                     encryption_enabled: e.is_encrypted(),
@@ -336,7 +348,7 @@ impl StorageSettingsService {
         let by = Some(updated_by);
 
         self.settings_repo
-            .set("storage.backend", &dto.backend, cat, false, by)
+            .set("storage.backend", dto.backend.as_str(), cat, false, by)
             .await?;
 
         if let Some(ref v) = dto.s3_endpoint_url {
@@ -423,6 +435,8 @@ impl StorageSettingsService {
                              Available: [{available}]"
                         ),
                         backend_type: "unknown".to_string(),
+                        // Entry never resolved → no typed kind to report.
+                        backend_kind: None,
                         available_bytes: None,
                         roundtrip_passed: None,
                         phase_reached: None,
@@ -446,14 +460,24 @@ impl StorageSettingsService {
             // We use the wrapper-only string as a fallback for the
             // health-check-failed branch, where there's no formatted
             // status to draw from.
-            let fallback_backend_kind = backend.backend_type().to_string();
+            // Keep the full `backend_type()` string (post-K2 that's the
+            // composite `"<wrapper>(<inner>)"` form) as the fallback —
+            // the admin panel renders it as a diagnostic string when
+            // health-check fails before the richer round-trip report
+            // is available.
+            // Composite string (post-K2 the `"<wrapper>(<inner>)"`
+            // form) + strongly-typed pure kind, both known from the
+            // entry we just resolved.
+            let fallback_backend_type = backend.backend_type().to_string();
+            let backend_kind: StorageBackendKind = entry.backend.clone().into();
             let status = match backend.health_check().await {
                 Ok(s) => s,
                 Err(e) => {
                     return Ok(StorageTestResultDto {
                         connected: false,
                         message: format!("health-check failed: {e}"),
-                        backend_type: fallback_backend_kind,
+                        backend_type: fallback_backend_type,
+                        backend_kind: Some(backend_kind),
                         available_bytes: None,
                         roundtrip_passed: None,
                         phase_reached: None,
@@ -468,6 +492,7 @@ impl StorageSettingsService {
                 connected: status.connected,
                 message: status.message,
                 backend_type: status.backend_type,
+                backend_kind: Some(backend_kind),
                 available_bytes: status.available_bytes,
                 roundtrip_passed: None,
                 phase_reached: None,
@@ -499,6 +524,7 @@ impl StorageSettingsService {
                     connected: status.connected,
                     message: status.message,
                     backend_type: "local".to_string(),
+                    backend_kind: Some(StorageBackendKind::Local),
                     available_bytes: status.available_bytes,
                     roundtrip_passed: None,
                     phase_reached: None,
@@ -519,6 +545,7 @@ impl StorageSettingsService {
                         connected: false,
                         message: "S3 bucket name is required".to_string(),
                         backend_type: "s3".to_string(),
+                        backend_kind: Some(StorageBackendKind::S3),
                         available_bytes: None,
                         roundtrip_passed: None,
                         phase_reached: None,
@@ -576,6 +603,7 @@ impl StorageSettingsService {
                         connected: status.connected,
                         message: status.message,
                         backend_type: "s3".to_string(),
+                        backend_kind: Some(StorageBackendKind::S3),
                         available_bytes: status.available_bytes,
                         roundtrip_passed: None,
                         phase_reached: None,
@@ -588,6 +616,7 @@ impl StorageSettingsService {
                         connected: false,
                         message: format!("Connection failed: {}", e),
                         backend_type: "s3".to_string(),
+                        backend_kind: Some(StorageBackendKind::S3),
                         available_bytes: None,
                         roundtrip_passed: None,
                         phase_reached: None,
@@ -654,7 +683,7 @@ async fn run_backend_roundtrip(
     backend: &dyn BlobStorageBackend,
 ) -> (
     /* passed */ bool,
-    /* phase_reached */ String,
+    /* phase_reached */ StorageTestPhase,
     /* bytes_written */ u64,
     /* bytes_read */ u64,
     /* elapsed_ms */ u64,
@@ -685,7 +714,7 @@ async fn run_backend_roundtrip(
     {
         return (
             false,
-            "initialize".to_string(),
+            StorageTestPhase::Initialize,
             0,
             0,
             started.elapsed().as_millis() as u64,
@@ -700,7 +729,7 @@ async fn run_backend_roundtrip(
             let cleanup_ok = backend.delete_blob(&hash).await.is_ok();
             return (
                 false,
-                "put_ok".to_string(),
+                StorageTestPhase::PutOk,
                 bytes_written,
                 0,
                 started.elapsed().as_millis() as u64,
@@ -712,7 +741,7 @@ async fn run_backend_roundtrip(
             let cleanup_ok = backend.delete_blob(&hash).await.is_ok();
             return (
                 false,
-                "put_ok".to_string(),
+                StorageTestPhase::PutOk,
                 bytes_written,
                 0,
                 started.elapsed().as_millis() as u64,
@@ -733,7 +762,7 @@ async fn run_backend_roundtrip(
                         let cleanup_ok = backend.delete_blob(&hash).await.is_ok();
                         return (
                             false,
-                            "exists_ok".to_string(),
+                            StorageTestPhase::ExistsOk,
                             bytes_written,
                             got.len() as u64,
                             started.elapsed().as_millis() as u64,
@@ -748,7 +777,7 @@ async fn run_backend_roundtrip(
             let cleanup_ok = backend.delete_blob(&hash).await.is_ok();
             return (
                 false,
-                "exists_ok".to_string(),
+                StorageTestPhase::ExistsOk,
                 bytes_written,
                 0,
                 started.elapsed().as_millis() as u64,
@@ -768,7 +797,7 @@ async fn run_backend_roundtrip(
         let cleanup_ok = backend.delete_blob(&hash).await.is_ok();
         return (
             false,
-            "get_ok".to_string(),
+            StorageTestPhase::GetOk,
             bytes_written,
             bytes_read,
             started.elapsed().as_millis() as u64,
@@ -786,11 +815,10 @@ async fn run_backend_roundtrip(
     (
         true,
         if cleanup_ok {
-            "cleanup_ok"
+            StorageTestPhase::CleanupOk
         } else {
-            "verify_ok"
-        }
-        .to_string(),
+            StorageTestPhase::VerifyOk
+        },
         bytes_written,
         bytes_read,
         started.elapsed().as_millis() as u64,

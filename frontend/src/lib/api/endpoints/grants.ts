@@ -71,38 +71,9 @@ export interface CreateGrantResponse {
 	notification: NotifyOutcomeSet;
 }
 
-/**
- * Map a backend role string to the role the UI exposes. The server may emit the
- * full enum (`owner`/`editor`/`viewer`/`commenter`/`contributor`); the picker
- * only shows Owner/Editor/Viewer, so collapse the two unexposed roles to their
- * closest neighbour rather than render an unknown option.
- */
-export function displayRole(role: string | undefined): ShareRole {
-	if (role === 'owner' || role === 'editor' || role === 'viewer') return role;
-	if (role === 'contributor') return 'editor';
-	if (role === 'commenter') return 'viewer';
-	return 'viewer';
-}
-
-/** Convert a YYYY-MM-DD date (or null) to an ISO-8601 datetime at midnight UTC. */
-export function expiryToIso(date: string | null | undefined): string | null {
-	return date ? new Date(`${date}T00:00:00Z`).toISOString() : null;
-}
-
-/**
- * Today's date in YYYY-MM-DD form (local time zone). Used as the `min`
- * attribute on grant / share expiry date inputs so the native picker
- * refuses to select a past date. Callers should also validate the
- * changed value in their `onchange` handler as a belt-and-braces guard
- * (some browsers still let scripted / paste input bypass `min`).
- */
-export function todayIso(): string {
-	const now = new Date();
-	const y = now.getFullYear();
-	const m = String(now.getMonth() + 1).padStart(2, '0');
-	const d = String(now.getDate()).padStart(2, '0');
-	return `${y}-${m}-${d}`;
-}
+// `displayRole` moved to `$lib/utils/grantFormat.ts`.
+// `expiryToIso` / `todayIso` moved to `$lib/utils/dateInput.ts` —
+// they're generic date-picker helpers, not grant-specific.
 
 export function fetchGrantsForResource(type: GrantResourceType, id: string): Promise<Grant[]> {
 	const params = new URLSearchParams({ resource_type: type, resource_id: id });

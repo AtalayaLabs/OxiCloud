@@ -245,7 +245,7 @@ pub struct CreateGrantDto {
 
 /// `PUT /api/grants/role` — reconcile a subject's role on a resource.
 #[derive(Debug, Deserialize, ToSchema)]
-pub struct UpdateRoleDto {
+pub struct UpdateGrantRoleDto {
     pub subject: SubjectDto,
     pub resource: ResourceDto,
     pub role: RoleDto,

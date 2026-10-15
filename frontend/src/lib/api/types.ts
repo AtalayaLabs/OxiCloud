@@ -87,78 +87,61 @@ export interface ShareItem {
 	url: string;
 }
 
-export interface CreateShare {
-	item_id: string;
-	item_name?: string | null;
-	item_type: ItemType;
-	password: string | null;
-	/** RFC 3339 UTC timestamp or `null` for never. */
-	expires_at: string | null;
-}
+// Authoritative on the generated SDK — Group B of the Phase 3
+// rename-pattern sweep. The handwritten shape diverged in two
+// benign ways: `item_type: ItemType` ('file' | 'folder') widens
+// to `item_type: string`, and `password` / `expires_at` move from
+// `: string | null` (required nullable) to `?: string | null`
+// (optional nullable). Both are strict widenings on the input side,
+// so every current caller passing a literal `'file'`/`'folder'`
+// item_type or an explicit `null` for the other two still fits.
+import type { CreateShareDto as CreateShare } from './generated/openapi/types.gen';
+export type { CreateShare };
 
 // Authoritative on the generated SDK. Identical shape, no
 // cascading dependencies — pure name-forward.
 export type { UpdateShareDto as UpdateShare } from './generated/openapi/types.gen';
 
-export interface FavoriteItem {
-	id: string;
-	user_id: string;
-	item_id: string;
-	item_type: ItemType;
-	/** RFC 3339 UTC timestamp. */
-	created_at: string;
-	item_name: string | null;
-	item_size: number | null;
-	item_mime_type: string | null;
-	parent_id: string | null;
-	/** RFC 3339 UTC timestamp; `null` for folders without a mtime projection. */
-	modified_at: string | null;
-	item_path: string;
-	icon_class: string;
-	icon_special_class: string;
-	category: string;
-	size_formatted: string;
-}
+// Authoritative on the generated SDK — Phase 3 Group D. Both FavoriteItem
+// and RecentItem shared the exact same diff pattern: `item_type: ItemType`
+// → `item_type: ItemKind` (same 2-value enum via the Rust-side `ItemKind`
+// derive) + 5-6 required-nullable fields widen to optional-nullable
+// (`item_name`, `item_size`, `item_mime_type`, `parent_id`, `item_path`,
+// and on favorites also `modified_at`). Call-sites doing bare truthy
+// checks on the nullables keep working; the handful reading `.item_path`
+// unconditionally now narrow via `?.` which is already common idiom.
+// Local import so `FavoritesResponse` / `RecentResponse` below keep
+// resolving the short names.
+import type {
+	FavoriteItemDto as FavoriteItem,
+	RecentItemDto as RecentItem
+} from './generated/openapi/types.gen';
+export type { FavoriteItem, RecentItem };
 
-export interface RecentItem {
-	id: string;
-	user_id: string;
-	item_id: string;
-	item_type: ItemType;
-	/** RFC 3339 UTC timestamp. */
-	accessed_at: string;
-	item_name: string | null;
-	item_size: number | null;
-	item_mime_type: string | null;
-	parent_id: string | null;
-	item_path: string;
-	icon_class: string;
-	icon_special_class: string;
-	category: string;
-	size_formatted: string;
-}
-
-export interface TrashResourceItem {
-	resource_type: ItemType;
-	trashed_at: string;
-	deletion_date: string;
-	/**
-	 * Drive the trashed item belongs to (D2b). Enables client-side
-	 * group-by-drive in the `/trash` UI without resolving the drive from
-	 * `resource.drive_id` per row. The drive's display name resolves
-	 * against `drives.svelte` (the in-memory store already populated by
-	 * the sidebar picker / config pages — no extra round-trip).
-	 */
-	drive_id: string;
-	resource: FileItem | FolderItem;
-}
+// Authoritative on the generated SDK — Phase 3 Group D. Two reshapes:
+// `resource_type: ItemType` ('file'|'folder') widens to `ResourceTypeDto`
+// (6-value union — all legitimate trash kinds are a strict subset so
+// current `.resource_type` switches still cover reality), and
+// `resource: FileItem | FolderItem` widens to `ResourceContentDto`
+// (= FileDto | FolderDto | DriveDto). The display-enriched fields
+// (`icon_class`, `category`, `size_formatted`, …) are present on both
+// FileDto and FolderDto, so UI rows that read them keep working;
+// DriveDto is a phantom branch — drives never go into trash, so a
+// `kind === 'drive'` match is dead code at runtime but legal at the
+// type level.
+import type { TrashResourceItemDto as TrashResourceItem } from './generated/openapi/types.gen';
+export type { TrashResourceItem };
 
 export interface TrashResourcesResponse {
 	items: TrashResourceItem[];
 	next_cursor?: string;
 }
 
-export type Role = 'user' | 'admin';
+// Authoritative on the generated SDK. The handwritten alias was a
+// 2-value `'user' | 'admin'` union missing the `owner` row that
+// `auth.users.role` has carried since the Owner role landed. The
+// generated `UserRoleDto` is 3-value and matches reality.
+export type { UserRoleDto as Role } from './generated/openapi/types.gen';
 
 // ─────────────────────────────────────────────────────────────────────────
 // Three-layer user family — mirrors src/application/dtos/user_dto.rs.
@@ -178,84 +161,38 @@ export type Role = 'user' | 'admin';
 //   * Only self about themselves → SelfUser.
 // ─────────────────────────────────────────────────────────────────────────
 
-/** Public identity — 9 fields visible to any authenticated caller. */
-export interface PublicUser {
-	id: string;
-	username?: string;
-	email: string;
-	role: string;
-	image?: string | null;
-	is_external: boolean;
-	given_name?: string;
-	family_name?: string;
-	/** Presence — TRUE when the server observed a request on any of this
-	 * user's non-revoked sessions within the last 5 min. Populated on
-	 * list endpoints; single-user public paths default to `false`.
-	 * Backwards-compat: missing on older backend builds → `false`. */
-	is_online?: boolean;
-}
+// Authoritative on the generated SDK — Group B of the Phase 3
+// rename-pattern sweep. The handwritten shape differed only in three
+// optional fields (`username`, `given_name`, `family_name`) that the
+// generated DTO types as `?: string | null` instead of `?: string`.
+// Call-sites doing a bare truthy check on these keep working (null
+// is falsy); the few that typed a variable off `.username` directly
+// absorb a `| null` in the inferred type.
+//
+// Local import so other hand-written interfaces in this file
+// (`FullUser.user: PublicUser`, `AccessSourceSubject` neighbours)
+// keep resolving the name.
+import type { PublicUserDto as PublicUser } from './generated/openapi/types.gen';
+export type { PublicUser };
 
-/** Full user record — public identity + all fields BOTH an admin (viewing
- * another user) AND the subject themselves may see. Returned as `Vec` by
- * `/api/admin/users`; embedded in `SelfUser` for `/api/auth/me`. */
-export interface FullUser {
-	user: PublicUser;
-	/** IdP linkage. Load-bearing "is federated?" predicate:
-	 * `full.federation_kind === 'oidc'`. */
-	federation_kind?: 'oidc' | 'ocm' | 'magic_link';
-	/** Authority that minted the OIDC/OCM identity — issuer URL for OIDC,
-	 * peer domain for OCM. FE that wants a friendly label maps this
-	 * against `OidcProviders.issuer → provider_name`. */
-	federation_issuer?: string;
-	preferred_locale?: string;
-	email_verified_at?: string;
-	created_at: string;
-	updated_at: string;
-	last_login_at?: string | null;
-	active: boolean;
-	storage_quota_bytes: number;
-	storage_used_bytes: number;
-	/** TRUE when the account has a local Argon2id `password_hash` on file.
-	 * Distinct from `federation_kind`: an OIDC-linked account can ALSO
-	 * carry a local password (hybrid). */
-	has_password: boolean;
-	/** TRUE when the user has an OPAQUE envelope on file. Admin-visible
-	 * rollout signal — kept off `PublicUser` so directory endpoints don't
-	 * leak OPAQUE adoption. */
-	opaque_registered: boolean;
-	/** TRUE when the user has completed ≥1 OPAQUE login. Distinct from
-	 * `opaque_registered` — envelope-on-file vs successful-login. */
-	opaque_migrated: boolean;
-}
+// Authoritative on the generated SDK — Phase 3 Group D. The handwritten
+// shape differed in five cosmetic places: `user: PublicUser` cascades
+// to `PublicUserDto` (already aliased), `federation_kind` becomes
+// `FederationKindDto` (same 3 values, now null-tolerant), and three
+// optional strings widen to `?: X | null`. All field docs are carried
+// on the generated side via utoipa — see `src/application/dtos/user_dto.rs`.
+import type { FullUserDto as FullUser } from './generated/openapi/types.gen';
+export type { FullUser };
 
-/** Self view — everything the caller may see about themselves.
- * Returned by `/api/auth/me` and every `AuthResponse` (login / refresh /
- * OIDC callback / magic-link redemption ships this so the SPA's post-auth
- * state matches its post-`/me` state with no UI race). */
-export interface SelfUser {
-	full: FullUser;
-	/** Opaque UI-preferences bag. Cross-device store for pure UI toggles
-	 * (view mode, sidebar collapse, hide-dotfiles, …). Server never
-	 * inspects contents; the SPA defines the keys (see
-	 * `lib/stores/preferences.svelte.ts`). Always an object on the wire
-	 * — empty bag is `{}`, never `null`. PATCH via `/api/auth/me/profile`
-	 * shallow-merges; setting a key to `null` removes it. */
-	ui_preferences: Record<string, unknown>;
-	/** Whether the user wants share-notification emails. */
-	notify_on_share: boolean;
-	/** Session-scoped: my current session is DPoP-bound. SPA reads this
-	 * on `session.load()` to skip a redundant `/api/auth/dpop/bind` call
-	 * (409 `already_bound` otherwise, noisy in the audit stream). */
-	is_dpop_bound: boolean;
-	/** Admin-set temp-password gate — SPA nav guard blocks everything
-	 * but /change-password until this flips back. Cleared by a successful
-	 * `POST /api/auth/change-password`. */
-	force_password_change: boolean;
-	/** Caller-scoped: can I edit my own avatar? `false` for OIDC users
-	 * whose avatar comes from the IdP. Only meaningful when caller ==
-	 * subject; nonsense on any other DTO. */
-	can_edit_image: boolean;
-}
+// Authoritative on the generated SDK — Group C of the Phase 3
+// rename-pattern sweep. The handwritten shape differed only in
+// `full: FullUser` (now resolves to `FullUserDto` — see sibling
+// cascade below) and `ui_preferences: Record<string, unknown>` which
+// the generated type widens to `unknown`. `Record<string, unknown>`
+// is assignable INTO `unknown`, so every current consumer that
+// writes-through or reads with narrowing still compiles.
+import type { SelfUserDto as SelfUser } from './generated/openapi/types.gen';
+export type { SelfUser };
 
 /** Backwards-compat alias while migrating call-sites. Prefer `PublicUser`
  * for public-identity contexts (sharee, group member, invitee) or
@@ -268,28 +205,13 @@ export interface AdminUsersPage {
 	users: FullUser[];
 }
 
-export interface AuthResponse {
-	user: SelfUser;
-	access_token: string;
-	refresh_token: string;
-	token_type: string;
-	expires_in: number;
-	/**
-	 * Mirrors `auth.users.force_password_change_at_next_login` — set
-	 * TRUE by the admin password-reset flow (see backend
-	 * `OpaquePgRepository::clear_registration`) so admin-picked
-	 * passwords stay temporary until the user changes them. When true,
-	 * the SPA's post-login handler must route to `/settings/security`
-	 * (or the equivalent change-password surface) instead of the
-	 * user's home. Cleared server-side by a successful
-	 * `POST /api/auth/change-password`.
-	 *
-	 * Optional on the wire because the backend `#[serde(default)]`s
-	 * to `false` — older clients / non-login endpoints hitting this
-	 * type won't nil-deref.
-	 */
-	force_password_change?: boolean;
-}
+// Authoritative on the generated SDK. The handwritten shape only
+// differed in `user: SelfUser` vs `user: SelfUserDto` — those two
+// are structurally compatible (`SelfUser` differs only in one
+// sibling-renamed field, see Group C of the Phase 3 reclassification).
+// All field docs — including the detailed `force_password_change`
+// explanation — are already carried by the generated type via utoipa.
+export type { AuthResponseDto as AuthResponse } from './generated/openapi/types.gen';
 
 /**
  * Sort dimension for `GET /api/search`. Wire-matches the backend's
@@ -372,24 +294,19 @@ export interface DriveMemberSubject {
  * contexts where the caller is the granter rather than a member (e.g.
  * outgoing-grants listing).
  */
-export interface Drive {
-	id: string;
-	name: string;
-	kind: DriveKind;
-	default_for_user?: string | null;
-	root_folder_id: string;
-	quota_bytes?: number | null;
-	used_bytes: number;
-	/**
-	 * Drive policies — raw JSONB bag from the backend. Unknown keys are
-	 * preserved verbatim. For the typed view used by the admin policy
-	 * editor, see [`DrivePolicies`].
-	 */
-	policies: Record<string, unknown>;
-	created_at: string;
-	updated_at: string;
-	caller_role?: DriveRole | null;
-}
+// Authoritative on the generated SDK — Group C of the Phase 3
+// rename-pattern sweep. The handwritten shape differed in three
+// cosmetic places: `kind: DriveKind` → `kind: DriveKindDto` (same
+// 2-string union), `caller_role?: DriveRole | null` → `caller_role?:
+// null | RoleDto` (the generated RoleDto carries all 5 role values;
+// at a drive it will only ever be one of the drive-scoped subset in
+// practice — the server narrows), and `policies: Record<string,
+// unknown>` → `policies: unknown`. All three widen at the type level
+// without changing wire semantics. Local import so other hand-written
+// interfaces in this file (DriveSummary, DriveMembership) keep
+// resolving `Drive` by its short name.
+import type { DriveDto as Drive } from './generated/openapi/types.gen';
+export type { Drive };
 
 /**
  * Typed mirror of the known drive policy keys. Every field defaults to
@@ -421,29 +338,23 @@ export type DrivePoliciesPartial = Partial<DrivePolicies>;
  * What changing a per-kind default WOULD do, from
  * `PUT /api/admin/drive-policies/defaults/{kind}?dry_run=true`.
  */
-export interface PolicyDefaultsImpact {
-	/** Drives that would end up laxer than the new default — they override it. */
-	drives_weaker_than_default: number;
-	/** Drives whose effective policy the change actually moves. */
-	drives_affected: number;
-	by_knob: { knob: string; follows: number; overrides: number }[];
-	/** The drives behind `drives_weaker_than_default`, named. */
-	weaker_drives: PolicyDrift[];
-}
-
-/**
- * One drive that is laxer than its kind's default, on the named knobs.
- *
- * Returned live by `GET /api/admin/drive-policies/drift`, and by the
- * dry-run preview for a candidate default — the same shape from both,
- * because it is the same comparison against a different target.
- */
-export interface PolicyDrift {
-	id: string;
-	name: string | null;
-	kind: DriveKind;
-	knobs: string[];
-}
+// Authoritative on the generated SDK — Phase 3 Group D. The inline
+// `by_knob` sub-shape and the handwritten `PolicyDrift` interface
+// both get retired in favour of their generated siblings:
+//
+//   PolicyDrift              → WeakerDriveDto
+//   { knob, follows, overrides } (inline) → PolicyKnobImpactDto
+//
+// `PolicyDrift` is kept as an alias for `WeakerDriveDto` because it's
+// imported directly by `AdminDrivePoliciesPanel.svelte` and
+// `endpoints/admin.ts` under that name. The one real widening is
+// `kind: DriveKind` → `kind: string` on the generated side (Rust-side
+// opportunity for a future enum tightening).
+import type {
+	PolicyDefaultsImpactDto as PolicyDefaultsImpact,
+	WeakerDriveDto as PolicyDrift
+} from './generated/openapi/types.gen';
+export type { PolicyDefaultsImpact, PolicyDrift };
 
 /**
  * Request body for `POST /api/drives` (D3a). Mirrors `CreateDriveDto` in
@@ -510,44 +421,34 @@ export type { FolderAncestor };
 import type { AccessSourceKind } from './generated/openapi/types.gen';
 export type { AccessSourceKind };
 
-export interface AccessSourceDrive {
-	id: string;
-	name: string;
-	kind: DriveKind;
-}
+// Authoritative on the generated SDK — Group A of the Phase 3
+// rename-pattern sweep. The handwritten `AccessSourceDrive.kind`
+// typed its enum as the handwritten `DriveKind`; the generated
+// equivalent uses `DriveKindDto` (same string-union shape).
+// `AccessSourceSubject.kind` was the inline literal `'user' | 'group'`;
+// the generated version factors it out as `AccessSourceSubjectKind`
+// (same two values).
+//
+// Import-then-export because the `AccessSource` interface below still
+// references both names locally; a bare `export type { … as … }`
+// doesn't bind the alias into module scope.
+import type {
+	AccessSourceDriveDto as AccessSourceDrive,
+	AccessSourceSubjectDto as AccessSourceSubject
+} from './generated/openapi/types.gen';
+export type { AccessSourceDrive, AccessSourceSubject };
 
-export interface AccessSourceSubject {
-	kind: 'user' | 'group';
-	id: string;
-	/** Nullable in MVP (subject enrichment deferred). */
-	name?: string | null;
-}
-
-export interface AccessSource {
-	kind: AccessSourceKind;
-	/** Populated when `kind === 'drive'`. */
-	drive?: AccessSourceDrive;
-	/**
-	 * SHARER — the user who created the grant that gave the caller
-	 * access at the boundary (`role_grants.granted_by`). Kind is always
-	 * `'user'` today (a group can't perform an action), but the type
-	 * stays open in case a future model permits it. Null when the
-	 * boundary can't be resolved to a single grant (e.g. `token`).
-	 */
-	subject?: AccessSourceSubject;
-	/**
-	 * Caller's role via the boundary grant (`role_grants.role` on the
-	 * same row that carries `granted_by`). Lets the FE render permission-
-	 * aware affordances at the ancestor scope. Reflects the boundary grant
-	 * only — aggregate effective role via other channels may be stronger.
-	 * Null on `token` access.
-	 *
-	 * Typed as `GrantRole` (not `DriveRole`): the boundary can be a
-	 * folder-level share where all five role_grant values are valid,
-	 * not just the drive-scoped subset.
-	 */
-	caller_role?: GrantRole | null;
-}
+// Authoritative on the generated SDK — Group C of the Phase 3
+// rename-pattern sweep. The handwritten shape differed only in
+// three nullable-optional widenings: `drive?: AccessSourceDrive` →
+// `drive?: null | AccessSourceDriveDto`, same for `subject`, and
+// `caller_role?: GrantRole | null` → `caller_role?: null | RoleDto`.
+// `AccessSourceDrive` / `AccessSourceSubject` already alias to their
+// Dto siblings (Group A), and `RoleDto` carries the full 5-value
+// GrantRole set. Local import so `FolderAncestorsResponse` below
+// keeps resolving the short name.
+import type { AccessSourceDto as AccessSource } from './generated/openapi/types.gen';
+export type { AccessSource };
 
 /**
  * Response envelope of `GET /api/folders/{id}/ancestors`. `ancestors`
@@ -581,19 +482,14 @@ export interface FolderAncestorsResponse {
 	effective_links?: EffectiveLink[];
 }
 
-/** A public link on an ancestor folder or the drive. */
-export interface EffectiveLink {
-	/** Token grant id — stable list key. */
-	grant_id: string;
-	/** `storage.shares.id`. */
-	share_id: string;
-	/** Operator-given name; absent when the link was never named. */
-	name?: string;
-	has_password: boolean;
-	/** Where the link lives. Resolve a folder's name from `ancestors`. */
-	resource: { type: 'file' | 'folder' | 'drive'; id: string };
-	expires_at?: string | null;
-}
+// Authoritative on the generated SDK — Phase 3 Group D. The handwritten
+// shape only diverged in two cosmetic ways: `name?: string` widens to
+// `?: string | null`, and the inline `resource: { type, id }` is factored
+// out as the generated `ResourceDto` with the same two fields.
+// Local import so the sibling `FolderAncestorsResponse` interface above
+// keeps resolving the short name.
+import type { EffectiveLinkDto as EffectiveLink } from './generated/openapi/types.gen';
+export type { EffectiveLink };
 
 // ─── Job registry (Part 1 + Part 2) ────────────────────────────────────────
 //
@@ -877,44 +773,14 @@ export interface Finding {
  * DPoP thumbprint is truncated to an 8-char prefix so admins viewing
  * other users' sessions can't exfiltrate the full binding fingerprint.
  */
-export interface SessionSummary {
-	id: string;
-	user_id: string;
-	created_at: string;
-	expires_at: string;
-	/** Wall-clock (RFC 3339) of the last authenticated request the
-	 *  server observed on this session. Trails the true value by at
-	 *  most the tracker's flush interval (30 s) on a running server;
-	 *  converges after graceful shutdown. Populates the "last seen X
-	 *  ago" tooltip on the presence dot. */
-	last_seen_at: string;
-	ip_address: string | null;
-	user_agent: string | null;
-	is_bound: boolean;
-	dpop_jkt_prefix: string | null;
-	is_revoked: boolean;
-	is_active: boolean;
-	/** Presence signal — `true` when the server observed a request on
-	 *  this session within the last 5 minutes AND the row is `is_active`
-	 *  (never `true` on revoked / expired rows). Renders as a filled
-	 *  green dot in the Status column; `false` on an otherwise-active
-	 *  row renders as an outlined idle dot with a "last seen X ago"
-	 *  tooltip. Distinct from `is_active`: that's a lifecycle signal,
-	 *  this is a presence signal. Derived server-side against the
-	 *  same window that drives `oxicloud_sessions_online[_users]`. */
-	is_online: boolean;
-	/** How this session was minted. `unknown` covers pre-migration
-	 *  rows and any origin the SPA doesn't yet render. Server enum
-	 *  is populated at INSERT (see `Session::new`) and copied on
-	 *  refresh. Snake_case wire values map to the labels rendered
-	 *  in the admin table. */
-	origin: 'password' | 'opaque' | 'magic_link' | 'oidc' | 'device' | 'unknown';
-	/** `true` when this row IS the admin's currently-active session —
-	 *  compared server-side by `dpop_jkt`. Panel uses this to warn
-	 *  before revoking ("this will log you out"). Always `false` when
-	 *  the admin's own session is unbound. */
-	is_current: boolean;
-}
+// Authoritative on the generated SDK — Phase 3 Group D. The three
+// nullable fields (`ip_address`, `user_agent`, `dpop_jkt_prefix`)
+// widen from `: string | null` to `?: string | null`; `origin`
+// moves from an inline 6-string union to the generated `SessionOrigin`
+// alias (same 6 values). Local import so `AdminSessionsPage` below
+// keeps resolving the short name.
+import type { SessionSummaryDto as SessionSummary } from './generated/openapi/types.gen';
+export type { SessionSummary };
 
 /** Wire response of `GET /api/admin/sessions`. */
 export interface AdminSessionsPage {
@@ -930,74 +796,29 @@ export interface AdminSessionsPage {
 
 // ── /api/config — public server-configuration discovery ────────────────────
 
-/** Boolean matrix of enabled optional subsystems. Mirrors the server's
- *  `FeaturesConfig`; adding a field is additive (clients ignore unknown
- *  fields, no field is ever repurposed — same discipline as JSON-RPC
- *  error codes on the message bus). */
-export interface ServerFeatures {
-	/** Message bus over WebSocket. When `false`, `/api/rt/ws` and
-	 *  `/api/rt/ticket` are unmounted server-side — clients skip WS setup
-	 *  entirely (see `$lib/message-bus/client.svelte.ts`). */
-	message_bus: boolean;
-	trash: boolean;
-	search: boolean;
-	sharing: boolean;
-	// NOTE: `quotas` was intentionally NOT exposed — see the Rust
-	// `FeaturesDto` doc for why (dormant server flag with zero
-	// consumers). Add it back once it actually gates FE-visible
-	// behavior.
-	music: boolean;
-	places: boolean;
-	faces: boolean;
-	video_thumbnails: boolean;
-	external_mounts: boolean;
-	/** Collaborative `.md` editing (Yjs CRDT over the message-bus WS).
-	 *  When `false`, the FE hides the "New markdown" menu entry and
-	 *  falls back to the plain `.md` viewer. Requires `message_bus`. */
-	markdown_collab: boolean;
-}
-
-/** One row in `ServerStatus.migration` / `ServerStatus.rotation` — a
- *  server-side long-running operation surfacing its progress to the SPA
- *  banner. Same JSON shape both fields share. */
-export interface ServerStatusProgress {
-	/** Short target name (e.g. `"backend_migration"`, `"rotation_v2"`). */
-	target: string;
-	migrated: number;
-	total: number;
-	/** Integer 0-100. */
-	percent: number;
-}
-
-/** Live server-status snapshot. Same shape and field names as the
- *  `X-Server-Status` header stamped on every response — the boot fetch
- *  from `/api/config` and the per-request header both share this wire
- *  vocabulary. Field-level absence means "nothing running"; the client
- *  can safely assume `readonly === false && !migration && !rotation` is
- *  the normal case. */
-export interface ServerStatus {
-	readonly: boolean;
-	migration?: ServerStatusProgress;
-	rotation?: ServerStatusProgress;
-	/** Public-safe projection of the backend write-lock holder. When
-	 *  `readonly === true` AND the gate is actually held, this names
-	 *  the variant (`"migration" | "backup" | "rotation" | "external"`)
-	 *  and carries a server-formatted one-liner safe to render raw.
-	 *  The full typed holder (admin_id, expires_at, label text,
-	 *  source/target entry names) stays admin-only on
-	 *  `/api/admin/storage/write-lock`. */
-	holder?: ServerStatusHolder;
-	/** Short hash of the operator-authored banner list. Carried on
-	 *  the `X-Server-Status` header on every API response; the FE
-	 *  version-diff pattern refetches `/api/config` on change to
-	 *  pick up the full `banners` list. Absent when no banners are
-	 *  live. */
-	banners_version?: string;
-	/** Full public-filtered banner list — only populated on
-	 *  `/api/config.server_status` (boot hydration + explicit
-	 *  refetch), never on the `X-Server-Status` response header. */
-	banners?: OpsBanner[];
-}
+// Authoritative on the generated SDK — Phase 3 Group D.
+//
+// Server-config cluster: `ServerFeatures` / `ServerAuth` / `ServerStatus`
+// / `ServerStatusProgress` / `ServerStatusHolder` all become their
+// generated siblings. The server-status header pieces (`HolderHeader`
+// / `ProgressHeader`) are deliberately HTTP-header-flavoured names on
+// the Rust side; aliasing them to the old descriptive names keeps the
+// FE vocabulary intact.
+//
+// Field-level diffs vs the handwritten shapes are all additive /
+// nullable widenings — `banners_version?: string` → `?: string | null`,
+// `holder?: ServerStatusHolder` → `?: null | HolderHeader`, etc. The
+// handwritten `OpaqueMode` string union stays alongside — the generated
+// `AuthDto.opaque_mode: string` doesn't tighten it yet (Rust-side
+// opportunity for a future enum pass).
+import type {
+	AuthDto as ServerAuth,
+	FeaturesDto as ServerFeatures,
+	HeaderPayload as ServerStatus,
+	HolderHeader as ServerStatusHolder,
+	ProgressHeader as ServerStatusProgress
+} from './generated/openapi/types.gen';
+export type { ServerAuth, ServerFeatures, ServerStatus, ServerStatusHolder, ServerStatusProgress };
 
 /** One operator-authored banner. Severity drives the visual
  *  variant (warning / notification). `body` holds raw markdown
@@ -1015,39 +836,15 @@ export interface ServerStatus {
 import type { OpsBanner, OpsBannerSeverity } from './generated/openapi/types.gen';
 export type { OpsBanner, OpsBannerSeverity };
 
-/** See [`ServerStatus.holder`]. */
-export interface ServerStatusHolder {
-	kind: 'migration' | 'backup' | 'rotation' | 'external';
-	display: string;
-}
-
-/** OPAQUE deployment mode, mirrored from `OXICLOUD_AUTH_OPAQUE_MODE`.
- *  Login should NOT branch on this — use the per-user lookup at
- *  `POST /api/auth/opaque/login/lookup` instead. Exposed for future
- *  consumers (admin status indicators, OPAQUE-native setup). */
+// OPAQUE deployment mode. Kept hand-written for now: the generated
+// `AuthDto.opaque_mode` is `string` (the Rust side doesn't carry a
+// typed enum yet). SPA code should treat this as the authoritative
+// narrowing until the server tightens.
 export type OpaqueMode = 'off' | 'migrate' | 'opaque_only';
 
-/** Auth-related tunables the SPA needs to gate submit locally.
- *  Mirrored from `AuthConfig` on the server; extends over time —
- *  clients ignore unknown fields, and no field is ever repurposed
- *  (same discipline as JSON-RPC error codes on the message bus). */
-export interface ServerAuth {
-	/** Minimum password length (UTF-8 bytes) enforced by every
-	 *  server-side password-bearing endpoint. The SPA gates submit on
-	 *  the same value so users see the failure instantly. See
-	 *  AtalayaLabs/OxiCloud#677. */
-	min_password_length: number;
-	/** OPAQUE server-wide mode. See [`OpaqueMode`] for callers. */
-	opaque_mode: OpaqueMode;
-}
-
-/** Response of `GET /api/config`. Public, unauthenticated. */
-export interface ServerConfig {
-	version: string;
-	features: ServerFeatures;
-	auth: ServerAuth;
-	server_status: ServerStatus;
-}
+// `ServerConfig` is the composite — the three sub-DTOs above are
+// already aliased, so this one is a pure name-forward.
+export type { ServerConfigDto as ServerConfig } from './generated/openapi/types.gen';
 
 // ─── Notifications (Slice E) ─────────────────────────────────────
 // Row shape mirrors `application/dtos` output of the Rust backend.
@@ -1056,14 +853,16 @@ export interface ServerConfig {
 // what they need from the blob). Adding a new kind server-side does
 // NOT churn this file; the FE renders a generic bell row for any
 // unknown kind.
-export interface Notification {
-	id: string;
-	kind: string;
-	payload: Record<string, unknown>;
-	created_at: string;
-	/** `null` = unread. */
-	read_at: string | null;
-}
+// Authoritative on the generated SDK — Phase 3 Group D. The only
+// diffs were cosmetic: `payload: Record<string, unknown>` →
+// `{ [key: string]: unknown }` and `read_at: string | null` →
+// `read_at?: string | null`. Local import so `NotificationListResponse`
+// below keeps resolving the short name AND so the SPA's handwritten
+// alias wins over the browser's `Notification` global in composable
+// scope (a bare `export type { ... as Notification }` doesn't bind
+// into module scope and the lib.dom.d.ts global surfaces instead).
+import type { NotificationDto as Notification } from './generated/openapi/types.gen';
+export type { Notification };
 
 export interface NotificationListResponse {
 	items: Notification[];

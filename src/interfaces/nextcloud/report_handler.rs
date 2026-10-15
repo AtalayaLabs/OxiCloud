@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::application::dtos::display_helpers::{format_file_size, intern_display};
+use crate::application::dtos::favorites_dto::ItemKind;
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::FolderDto;
 use crate::application::dtos::search_dto::SearchCriteriaDto;
@@ -108,10 +109,9 @@ async fn handle_filter_files(
     let mut file_ids: Vec<String> = Vec::new();
     let mut folder_ids: Vec<String> = Vec::new();
     for fav in &favorites {
-        match fav.item_type.as_str() {
-            "file" => file_ids.push(fav.item_id.clone()),
-            "folder" => folder_ids.push(fav.item_id.clone()),
-            _ => {}
+        match fav.item_type {
+            ItemKind::File => file_ids.push(fav.item_id.clone()),
+            ItemKind::Folder => folder_ids.push(fav.item_id.clone()),
         }
     }
 
@@ -138,18 +138,17 @@ async fn handle_filter_files(
     // unique per user, so `remove` drops nothing needed and the favorites order
     // is preserved (benches/ROUND20.md §C3).
     for fav in &favorites {
-        match fav.item_type.as_str() {
-            "file" => {
+        match fav.item_type {
+            ItemKind::File => {
                 if let Some(f) = file_map.remove(&fav.item_id) {
                     files.push(f);
                 }
             }
-            "folder" => {
+            ItemKind::Folder => {
                 if let Some(f) = folder_map.remove(&fav.item_id) {
                     folders.push(f);
                 }
             }
-            _ => {}
         }
     }
 

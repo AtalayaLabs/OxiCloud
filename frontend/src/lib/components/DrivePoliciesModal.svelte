@@ -16,7 +16,7 @@
 	import PolicyList from '$lib/components/PolicyList.svelte';
 	import { getDrivePolicyDefaults } from '$lib/api/endpoints/admin';
 	import { updateDrivePolicies } from '$lib/api/endpoints/drives';
-	import { resolveOwnerName } from '$lib/api/endpoints/favorites';
+	import { resolveOwnerName } from '$lib/utils/ownerName';
 	import { drives as drivesStore } from '$lib/stores/drives.svelte';
 	import { t } from '$lib/i18n/index.svelte';
 	import { errorMessage } from '$lib/utils/errors';

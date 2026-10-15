@@ -29,7 +29,7 @@ use crate::application::dtos::folder_listing_dto::FolderListingDto;
 use crate::application::dtos::grant_dto::{
     CreateGrantDto, GrantDto, OutgoingResourceItemDto, PermissionDto, ResourceContentDto,
     ResourceDto, ResourceTypeDto, RoleDto, SharedWithMeDto, SharedWithMeItemDto, SubjectDto,
-    SubjectTypeDto, UpdateRoleDto,
+    SubjectTypeDto, UpdateGrantRoleDto,
 };
 use crate::application::dtos::i18n_dto::{
     LocaleDto, TranslationErrorDto, TranslationRequestDto, TranslationResponseDto,
@@ -53,17 +53,17 @@ use crate::application::dtos::user_dto::{
 use crate::application::ports::chunked_upload_ports::{
     ChunkUploadResponseDto, CreateUploadResponseDto, UploadStatusResponseDto,
 };
-use crate::interfaces::api::handlers::auth_handler::SystemStatus;
+use crate::interfaces::api::handlers::auth_handler::SystemInitStatusDto;
 use crate::interfaces::api::handlers::chunked_upload_handler::{
     CompleteUploadResponse, CreateUploadRequest,
 };
 use crate::interfaces::api::handlers::config_handler::{FeaturesDto, ServerConfigDto};
 use crate::interfaces::api::handlers::contacts_handler::{
-    AddMemberRequest, AddressBookResponse, CreateAddressBookRequest, CreateContactRequest,
-    GroupNameRequest, UpdateAddressBookRequest, UpdateContactRequest,
+    AddContactToGroupRequest, AddressBookResponse, ContactGroupNameRequest,
+    CreateAddressBookRequest, CreateContactRequest, UpdateAddressBookRequest, UpdateContactRequest,
 };
 use crate::interfaces::api::handlers::dedup_handler::{
-    HashCheckAdminResponse, HashCheckResponse, HashSiblingDto, StatsResponse,
+    DedupStatsResponse, HashCheckAdminResponse, HashCheckResponse, HashSiblingDto,
 };
 use crate::interfaces::api::handlers::file_handler::MoveFilePayload;
 use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader};
@@ -356,6 +356,14 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         handlers::subject_group_handler::list_effective_members,
         // Public server-config discovery.
         handlers::config_handler::get_config,
+        // Device-authorization grant (RFC 8628) — client flow + user
+        // verification + device-management endpoints.
+        handlers::device_auth_handler::device_authorize,
+        handlers::device_auth_handler::device_token,
+        handlers::device_auth_handler::device_verify_info,
+        handlers::device_auth_handler::device_verify_action,
+        handlers::device_auth_handler::list_devices,
+        handlers::device_auth_handler::revoke_device,
     ),
     components(
         schemas(
@@ -378,7 +386,7 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             // File schemas
             FileDto,
             // Delta-upload schemas
-            crate::application::services::delta_upload_service::ChunkRef,
+            crate::application::services::delta_upload_service::DeltaChunkRef,
             crate::application::services::delta_upload_service::DeltaNegotiateRequest,
             crate::application::services::delta_upload_service::DeltaNegotiateResponse,
             crate::application::services::delta_upload_service::DeltaChunksResponse,
@@ -398,7 +406,17 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             AuthResponseDto,
             ChangePasswordDto,
             RefreshTokenDto,
-            SystemStatus,
+            SystemInitStatusDto,
+            // Device-authorization grant (RFC 8628).
+            crate::application::dtos::device_auth_dto::DeviceAuthorizeRequestDto,
+            crate::application::dtos::device_auth_dto::DeviceAuthorizeResponseDto,
+            crate::application::dtos::device_auth_dto::DeviceTokenRequestDto,
+            crate::application::dtos::device_auth_dto::DeviceTokenSuccessDto,
+            crate::application::dtos::device_auth_dto::DeviceTokenPendingDto,
+            crate::application::dtos::device_auth_dto::DeviceVerifyRequestDto,
+            crate::application::dtos::device_auth_dto::DeviceVerifyInfoDto,
+            crate::application::dtos::device_auth_dto::DeviceVerifyActionResponseDto,
+            crate::application::services::device_auth_service::DeviceInfoDto,
             // Public server-config discovery — `GET /api/config`.
             ServerConfigDto,
             FeaturesDto,
@@ -409,7 +427,7 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             // so FE consumers can type-narrow on `kind`. Adding a
             // new kind = one more entry here + one Rust struct.
             handlers::notifications_handler::NotificationDto,
-            handlers::notifications_handler::ListResponseDto,
+            handlers::notifications_handler::NotificationListResponseDto,
             handlers::notifications_handler::UnreadCountDto,
             handlers::notifications_handler::MarkAllReadResponseDto,
             crate::domain::entities::notification::SharegrantedPayload,
@@ -442,8 +460,8 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             // is documented in `face_indexing_service` + `onnx_face_analyzer`.
             crate::application::dtos::people_dto::PersonDto,
             crate::application::dtos::people_dto::FaceBoxDto,
-            handlers::people_handler::RenameBody,
-            handlers::people_handler::MergeBody,
+            handlers::people_handler::RenamePersonRequest,
+            handlers::people_handler::MergePeopleRequest,
             // Share schemas
             ShareDto,
             CreateShareDto,
@@ -493,7 +511,7 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             HashCheckResponse,
             HashCheckAdminResponse,
             HashSiblingDto,
-            StatsResponse,
+            DedupStatsResponse,
             // Photos — the two filter enums `PhotosResourcesQueryParams`
             // references via `Option<_>`. utoipa emits them as
             // `$ref`-s on the params; without registering them here
@@ -513,8 +531,8 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             AddressDto,
             CreateContactRequest,
             UpdateContactRequest,
-            GroupNameRequest,
-            AddMemberRequest,
+            ContactGroupNameRequest,
+            AddContactToGroupRequest,
             // Grant / ReBAC schemas
             SubjectTypeDto,
             SubjectDto,
@@ -523,7 +541,7 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             PermissionDto,
             RoleDto,
             CreateGrantDto,
-            UpdateRoleDto,
+            UpdateGrantRoleDto,
             GrantDto,
             SharedWithMeDto,
             SharedWithMeItemDto,

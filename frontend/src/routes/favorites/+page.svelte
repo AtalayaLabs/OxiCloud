@@ -8,14 +8,12 @@
 	import { resolve } from '$app/paths';
 	import { onMount } from 'svelte';
 	import {
-		dateBucket,
 		fetchFavoritesPage,
 		removeFavorite,
-		resolveOwnerName,
-		sizeBucket,
-		typeLabel,
 		type FavoritesResourceItem
 	} from '$lib/api/endpoints/favorites';
+	import { dateBucket, sizeBucket, typeLabel } from '$lib/utils/resourceBuckets';
+	import { resolveOwnerName } from '$lib/utils/ownerName';
 	import { fileDownloadUrl } from '$lib/api/endpoints/files';
 	import { renameFile, deleteFile } from '$lib/api/endpoints/files';
 	import { renameFolder, deleteFolder } from '$lib/api/endpoints/folders';

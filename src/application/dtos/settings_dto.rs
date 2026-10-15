@@ -1,6 +1,69 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use super::user_dto::UserRoleDto;
+
+/// Which blob backend an entry / request targets. Wire values are
+/// `"local"`, `"s3"`, `"azure"` — the three implementations in
+/// `infrastructure::services::{local,s3,azure}_blob_backend`. The
+/// three producers across those modules (and the local storage-
+/// settings service) all previously populated this as a raw string
+/// literal; the shared enum makes the OpenAPI spec exhaustive and
+/// gives the FE SDK a typed union to switch on.
+///
+/// Serialized as lowercase to match the historical wire shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum StorageBackendKind {
+    Local,
+    S3,
+    Azure,
+}
+
+impl StorageBackendKind {
+    /// Canonical wire spelling. Matches the three recognised values
+    /// of `OXICLOUD_STORAGE_BACKEND` and the string literals the three
+    /// blob backend modules emit from their `health_check()` paths.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StorageBackendKind::Local => "local",
+            StorageBackendKind::S3 => "s3",
+            StorageBackendKind::Azure => "azure",
+        }
+    }
+}
+
+impl std::str::FromStr for StorageBackendKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "local" => Ok(StorageBackendKind::Local),
+            "s3" => Ok(StorageBackendKind::S3),
+            "azure" => Ok(StorageBackendKind::Azure),
+            other => Err(format!(
+                "unknown storage backend: {other} (expected 'local', 's3', or 'azure')"
+            )),
+        }
+    }
+}
+
+impl From<crate::common::config::StorageBackendType> for StorageBackendKind {
+    fn from(t: crate::common::config::StorageBackendType) -> Self {
+        match t {
+            crate::common::config::StorageBackendType::Local => StorageBackendKind::Local,
+            crate::common::config::StorageBackendType::S3 => StorageBackendKind::S3,
+            crate::common::config::StorageBackendType::Azure => StorageBackendKind::Azure,
+        }
+    }
+}
+
+impl std::fmt::Display for StorageBackendKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 // ============================================================================
 // OIDC Settings DTOs (Admin Panel)
 // ============================================================================
@@ -62,10 +125,16 @@ pub struct OidcTestResultDto {
 // Admin User Management DTOs
 // ============================================================================
 
-/// Request body for updating a user's role
+/// Request body for updating a user's role. The service layer refuses
+/// `UserRoleDto::Owner` on this endpoint — conferring ownership would
+/// create a second owner rather than move the one that exists; use
+/// [`TransferOwnershipDto`] for that. Reusing `UserRoleDto` keeps a
+/// single wire shape across the FE (consumer sees the same 3-value
+/// enum on reads and writes); the owner-refusal remains a service-
+/// level invariant.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct UpdateUserRoleDto {
-    pub role: String,
+    pub role: UserRoleDto,
 }
 
 /// Request body for transferring server ownership.
@@ -101,8 +170,10 @@ pub struct AdminCreateUserDto {
     pub password: String,
     /// Optional — if omitted, a placeholder email is generated
     pub email: Option<String>,
-    /// "admin" or "user"; defaults to "user"
-    pub role: Option<String>,
+    /// Role for the new account. Defaults to `UserRoleDto::User` when
+    /// omitted. The service refuses `UserRoleDto::Owner` here — admin-
+    /// create is for provisioning peers, not transferring ownership.
+    pub role: Option<UserRoleDto>,
     /// Storage quota in bytes; 0 = unlimited. If omitted, uses role default.
     /// Ignored when `is_external = true` (external users have no storage).
     pub quota_bytes: Option<i64>,
@@ -352,13 +423,12 @@ pub struct ThumbnailCacheInfoDto {
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct StorageSettingsDto {
     // ── Current stats — pertain to the running process ──
-    /// Backend type currently in use (`"local"` / `"s3"` / `"azure"`) —
-    /// what the LIVE `blob_backend` is bound to, from
-    /// `blob_handler.backend().backend_type()`. Redundant with
-    /// `entries[i where is_active].backend` in multi-entry mode; kept
-    /// because pre-boot / mid-migration inspection may still find it
-    /// useful.
-    pub current_backend: String,
+    /// Backend type currently in use — what the LIVE `blob_backend` is
+    /// bound to, from `blob_handler.backend().backend_type()`. Redundant
+    /// with `entries[i where is_active].backend` in multi-entry mode;
+    /// kept because pre-boot / mid-migration inspection may still find
+    /// it useful.
+    pub current_backend: StorageBackendKind,
     pub total_blobs: u64,
     pub total_bytes_stored: u64,
     pub dedup_ratio: f64,
@@ -424,8 +494,8 @@ pub struct BackendWriteLockStatusDto {
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct StorageEntrySummaryDto {
     pub name: String,
-    /// Backend type — "local" / "s3" / "azure".
-    pub backend: String,
+    /// Which backend this entry targets.
+    pub backend: StorageBackendKind,
     /// True for exactly one entry (the entry the LIVE backend is on).
     /// Frontend uses this to badge the active row and to exclude it
     /// from the migration-target dropdown.
@@ -478,7 +548,7 @@ pub struct StorageEncryptionPairDto {
 /// Request body for saving storage settings from the admin panel
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct SaveStorageSettingsDto {
-    pub backend: String,
+    pub backend: StorageBackendKind,
     pub s3_endpoint_url: Option<String>,
     pub s3_bucket: Option<String>,
     pub s3_region: Option<String>,
@@ -501,14 +571,16 @@ pub struct SaveStorageSettingsDto {
 ///   the S3 fields. Server builds a temporary backend from those values
 ///   (pre-multi-entry behaviour). Still supported for zero-entries
 ///   deployments; deprecated for new integrations.
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TestStorageConnectionDto {
     /// If set, all other fields are ignored — server resolves this
     /// name against `OXICLOUD_STORAGE_ENTRIES` and tests that entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry_name: Option<String>,
-    #[serde(default)]
-    pub backend: String,
+    /// Which backend to test when `entry_name` is unset (legacy mode).
+    /// Omitting it in multi-entry mode is fine — the field is ignored.
+    #[serde(default = "StorageBackendKind::default_for_test")]
+    pub backend: StorageBackendKind,
     pub s3_endpoint_url: Option<String>,
     pub s3_bucket: Option<String>,
     pub s3_region: Option<String>,
@@ -517,9 +589,17 @@ pub struct TestStorageConnectionDto {
     pub s3_force_path_style: Option<bool>,
 }
 
-// Default is derived — every field is either an Option (defaults to
-// None) or `backend: String` (empty via `#[serde(default)]`). The
-// hand-rolled impl was flagged by clippy::derivable_impls.
+impl StorageBackendKind {
+    /// Default when a serde `#[serde(default)]` fires on this enum
+    /// inside an inbound DTO (`TestStorageConnectionDto.backend`). The
+    /// pre-enum DTO used `String::default() → ""`, which the service
+    /// handled implicitly in its match arms; `Local` is the closest
+    /// honest default — a single-host dev deployment reaches
+    /// `/api/admin/settings/storage/test` for local-FS smoke-testing.
+    fn default_for_test() -> Self {
+        StorageBackendKind::Local
+    }
+}
 
 /// Result of a storage connection + round-trip test.
 ///
@@ -539,11 +619,33 @@ pub struct TestStorageConnectionDto {
 /// backend was readable + writable but the test object may be
 /// orphaned on it (~100 B, content-addressed — harmless, admin can
 /// reap by hash).
+// `ToSchema` deliberately omitted: `test_storage_connection` lacks a
+// `#[utoipa::path]` annotation, so adding it here would surface the
+// shape without wiring up the endpoint. Leaving it off keeps the
+// spec consistent — if the endpoint gets documented later, this gets
+// `ToSchema` and `StorageTestPhase` reaches the TS SDK then.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StorageTestResultDto {
     pub connected: bool,
     pub message: String,
+    /// Which backend was tested, in the `"<wrapper>(<inner>)"` form
+    /// that `BackendHealthStatus.backend_type` emits — post-K2 every
+    /// entry runs behind the always-wrap storage layer, and the
+    /// admin test-connection page uses this composite as a
+    /// diagnostic ("tested the v1-plaintext wrapper on top of the
+    /// local backend"). Stays a `String` because the composite can
+    /// nest arbitrarily (`cached(encrypted(local))`) and wrapper
+    /// names are an open set. For the strongly-typed pure-backend
+    /// kind, see `backend_kind` below. `"unknown"` is the sentinel
+    /// for the "we couldn't even resolve a backend to test" case.
     pub backend_type: String,
+    /// Strongly-typed pure backend kind. `None` only when the
+    /// request couldn't be resolved to a backend (e.g. unknown
+    /// `entry_name`) — otherwise always set alongside `backend_type`
+    /// so clients that only care about the pure kind can skip the
+    /// composite-string parsing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend_kind: Option<StorageBackendKind>,
     pub available_bytes: Option<u64>,
     /// Set only when reachability passed AND a round-trip was
     /// attempted. `Some(true)` = full write + read + verify success;
@@ -552,11 +654,10 @@ pub struct StorageTestResultDto {
     /// because reachability failed).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub roundtrip_passed: Option<bool>,
-    /// Last round-trip phase completed successfully — one of
-    /// `initialize`, `put_ok`, `exists_ok`, `get_ok`, `verify_ok`,
-    /// `cleanup_ok`. `None` when round-trip wasn't attempted.
+    /// Last round-trip phase completed successfully. `None` when the
+    /// round-trip wasn't attempted.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub phase_reached: Option<String>,
+    pub phase_reached: Option<StorageTestPhase>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bytes_written: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -571,11 +672,42 @@ pub struct StorageTestResultDto {
 // Migration DTOs (Admin Panel — Storage Migration)
 // ============================================================================
 
+/// Status of a storage-migration run as the admin UI sees it. The
+/// 6 variants mirror the projection in
+/// `admin_handler::run_to_migration_dto` of the recoverable
+/// `RunStatus` + the `idle` zero-run case. `cancel_requested` folds
+/// into `paused` for display, so it doesn't surface here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum MigrationStatus {
+    Idle,
+    Running,
+    Paused,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+/// Which phase of the storage-connection round-trip test completed
+/// successfully. Matches the 6 strings
+/// `storage_settings_service::run_backend_roundtrip` previously
+/// emitted. Serialized lowercase so the wire shape is unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageTestPhase {
+    Initialize,
+    PutOk,
+    ExistsOk,
+    GetOk,
+    VerifyOk,
+    CleanupOk,
+}
+
 /// Migration progress returned by `GET /api/admin/storage/migration`.
 /// Re-exports the `MigrationState` shape for the admin UI.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct MigrationStateDto {
-    pub status: String,
+    pub status: MigrationStatus,
     pub total_blobs: u64,
     pub migrated_blobs: u64,
     pub migrated_bytes: u64,
@@ -620,6 +752,44 @@ pub struct StartMigrationDto {
 // SMTP Settings DTOs (Admin Panel)
 // ============================================================================
 
+/// Wire-level view of [`common::config::SmtpTlsMode`]. Kept DTO-
+/// suffixed because the domain name clashes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum SmtpTlsModeDto {
+    Starttls,
+    Tls,
+    None,
+}
+
+/// Which JSON shape a webhook sink POSTs. Wire mirror of
+/// [`infrastructure::services::webhook_notification_sink::WebhookFormat`] —
+/// kept DTO-suffixed because the domain name clashes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum WebhookFormatDto {
+    Generic,
+    Slack,
+    Discord,
+    Teams,
+    Telegram,
+    Ntfy,
+}
+
+/// Alert-severity floor on `GET /api/admin/notify/info`. 3 real
+/// severities + `None` for the "floor off" state (admits no alerts).
+/// The `None` wire value replaces the earlier `"none".to_string()`
+/// sentinel; the real severities match [`application::ports::
+/// notification_sink_ports::Severity`] canonical spellings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum NotifyMinSeverity {
+    None,
+    Anomaly,
+    Inconsistent,
+    DataLoss,
+}
+
 /// Read-only SMTP info shown on the admin SMTP page. SMTP configuration
 /// is sourced exclusively from environment variables — these fields are
 /// for display only and any change has to happen by updating the env
@@ -632,8 +802,8 @@ pub struct SmtpInfoDto {
     pub host: String,
     /// `OXICLOUD_SMTP_PORT`. Default 587.
     pub port: u16,
-    /// Transport encryption mode: `"starttls"`, `"tls"`, or `"none"`.
-    pub tls: String,
+    /// Transport encryption mode.
+    pub tls: SmtpTlsModeDto,
     /// `OXICLOUD_SMTP_FROM` mailbox. Empty when unset.
     pub from: String,
     /// `<set>` if a SASL user is configured, `<anon>` otherwise.
@@ -648,8 +818,8 @@ pub struct SmtpInfoDto {
 pub struct WebhookInfoDto {
     /// Whether `OXICLOUD_WEBHOOK_URL` is set and the sink was built.
     pub enabled: bool,
-    /// `generic`, `slack`, `discord`, `teams`, `telegram` or `ntfy`.
-    pub format: String,
+    /// Which webhook JSON shape this sink speaks.
+    pub format: WebhookFormatDto,
     /// Scheme and host of the endpoint — **never the full URL**.
     ///
     /// A Telegram endpoint embeds the bot token in its path
@@ -672,14 +842,11 @@ pub struct WebhookInfoDto {
 /// variables only, shown for confirmation rather than editing.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct NotifyInfoDto {
-    /// Severity floor: `data_loss`, `inconsistent`, `anomaly`, or `none`.
-    ///
-    /// The field the panel was missing. An operator with a configured
-    /// webhook and a healthy relay can still be told nothing, because the
-    /// default floor admits only `data_loss` — and until this was
-    /// surfaced, the only way to discover that was to read the server's
-    /// environment.
-    pub min_severity: String,
+    /// Severity floor. The field the panel was missing: an operator
+    /// with a configured webhook and a healthy relay can still be
+    /// told nothing, because the default floor admits only
+    /// `data_loss`.
+    pub min_severity: NotifyMinSeverity,
     /// Channels actually built and wired, by name — `webhook`, `email`.
     /// Empty means findings are recorded but nobody is told.
     pub sinks: Vec<String>,

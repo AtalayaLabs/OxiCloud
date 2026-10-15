@@ -1,7 +1,6 @@
 /** Group (ReBAC) endpoints — ported from model/groups.js. */
 import { apiFetch, apiJson } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
-import { t } from '$lib/i18n/index.svelte';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 const enc = encodeURIComponent;
@@ -13,25 +12,10 @@ const enc = encodeURIComponent;
  */
 export const INTERNAL_GROUP_ID = '00000000-0000-0000-0000-000000000001';
 
-/**
- * Map of well-known virtual-group UUIDs → i18n key for the human-readable
- * display name. Anything not in this map falls back to `group.name`. Ported
- * from `components/groupDisplay.js`.
- */
-const VIRTUAL_NAME_KEYS: Record<string, string> = {
-	[INTERNAL_GROUP_ID]: 'groups.virtual_internal_name'
-};
-
-/**
- * Map of well-known virtual-group UUIDs → i18n key for a human-readable
- * description. Virtual groups are server-seeded and their `description` column
- * holds developer/schema notes (e.g. the Internal group's "…no rows in
- * subject_group_members."), which must never reach end users — so virtual
- * groups display a localized blurb instead of their raw `description`.
- */
-const VIRTUAL_DESC_KEYS: Record<string, string> = {
-	[INTERNAL_GROUP_ID]: 'groups.virtual_internal_explanation'
-};
+// `VIRTUAL_NAME_KEYS` + `VIRTUAL_DESC_KEYS` + the three
+// `group{DisplayName,Description,IconName}` helpers moved to
+// `$lib/utils/groupFormat.ts`. The `INTERNAL_GROUP_ID` constant
+// stays here — it's a shared UUID the API-call helpers also use.
 
 export interface GroupItem {
 	id: string;
@@ -83,42 +67,6 @@ export async function listGroupsPage(limit = 50, offset = 0, q?: string): Promis
 /** Convenience wrapper returning just the items of the first page. */
 export async function listGroups(limit = 50, offset = 0, q?: string): Promise<GroupItem[]> {
 	return (await listGroupsPage(limit, offset, q)).items;
-}
-
-/**
- * Human-readable display name for a group. Virtual groups get a translated
- * label via the well-known UUID mapping; user-defined groups display their
- * raw name. Ported from `components/groupDisplay.js`.
- */
-export function groupDisplayName(group: GroupItem): string {
-	if (group.is_virtual) {
-		const key = VIRTUAL_NAME_KEYS[group.id];
-		if (key) return t(key, group.name);
-	}
-	return group.name;
-}
-
-/**
- * Human-readable description for a group row. Virtual groups render a localized
- * blurb (via the well-known UUID mapping) so their internal DB schema notes
- * never leak to the UI; a virtual group without a mapped key shows nothing.
- * User-defined groups display their raw `description` verbatim.
- */
-export function groupDescription(group: GroupItem): string | null {
-	if (group.is_virtual) {
-		const key = VIRTUAL_DESC_KEYS[group.id];
-		return key ? t(key, group.name) : null;
-	}
-	return group.description ?? null;
-}
-
-/**
- * Pick the icon registry name for a group avatar. Virtual (system-wide)
- * groups use `people-roof`; user-defined groups use `user-group`. Ported from
- * `components/groupDisplay.js`.
- */
-export function groupIconName(group: Pick<GroupItem, 'is_virtual'>): string {
-	return group.is_virtual ? 'people-roof' : 'user-group';
 }
 
 export function createGroup(name: string, description?: string | null): Promise<void> {

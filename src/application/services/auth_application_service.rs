@@ -1,6 +1,6 @@
 use crate::application::dtos::user_dto::{
     AuthResponseDto, ChangePasswordDto, FullUserDto, LoginDto, PublicUserDto, RefreshTokenDto,
-    RegisterDto, SelfUserDto, UpgradeToInternalDto,
+    RegisterDto, SelfUserDto, UpgradeToInternalDto, UserRoleDto,
 };
 use crate::application::ports::auth_ports::{
     OidcIdClaims, OidcServicePort, PasswordHasherPort, SessionStoragePort, TokenServicePort,
@@ -3739,21 +3739,25 @@ impl AuthApplicationService {
         // Validate password
         self.require_password_length(&dto.password)?;
 
-        // Determine role. Omitting `role` means "regular user" — that is
-        // the documented default and stays. But an unrecognised value is
-        // REJECTED rather than coerced: `_ => UserRole::User` answered a
-        // request for a role this binary does not know with a 201 and a
-        // plain user, so the caller was told their request succeeded when
-        // it had in fact been silently rewritten.
-        let role = match dto.role.as_deref() {
+        // Determine role. Omitting `role` means "regular user" — the
+        // documented default. Every typed variant is allowed to pass
+        // through here; the policy decisions are left to the rank
+        // check below:
+        //
+        //   - `Owner` reaches the `caller_role.outranks(role)` guard,
+        //     which refuses the create with 403 `AccessDenied` because
+        //     an owner does not outrank another owner (strict
+        //     comparison). Short-circuiting here with 400 would mask
+        //     that "the policy is about hierarchy, not about input
+        //     being malformed" distinction the admin UI uses to
+        //     branch the error UX.
+        //   - `Admin` / `User` fall through to the same rank check
+        //     with the same semantics.
+        let role = match dto.role {
             None => UserRole::User,
-            Some(raw) => UserRole::from_stored(raw).ok_or_else(|| {
-                DomainError::new(
-                    ErrorKind::InvalidInput,
-                    "User",
-                    format!("Unknown role: {raw:?}"),
-                )
-            })?,
+            Some(UserRoleDto::Admin) => UserRole::Admin,
+            Some(UserRoleDto::User) => UserRole::User,
+            Some(UserRoleDto::Owner) => UserRole::Owner,
         };
 
         // You may only create an account you could subsequently administer.
@@ -4238,7 +4242,7 @@ impl AuthApplicationService {
         &self,
         caller_id: Uuid,
         user_id: Uuid,
-        role: &str,
+        role: UserRoleDto,
     ) -> Result<(), DomainError> {
         // Your own role is not yours to set, at any rank. Kept separate
         // from the hierarchy check because it is a self rule, not a
@@ -4260,13 +4264,16 @@ impl AuthApplicationService {
         }
         self.require_can_modify(caller_id, user_id).await?;
 
-        let requested = match UserRole::from_stored(role) {
-            Some(r @ (UserRole::Admin | UserRole::User)) => r,
-            _ => {
+        let requested = match role {
+            UserRoleDto::Admin => UserRole::Admin,
+            UserRoleDto::User => UserRole::User,
+            UserRoleDto::Owner => {
                 return Err(DomainError::new(
                     ErrorKind::InvalidInput,
                     "User",
-                    format!("Invalid role: {}. Must be 'admin' or 'user'", role),
+                    "Owner cannot be assigned through this endpoint. \
+                     Use transfer-ownership instead."
+                        .to_string(),
                 ));
             }
         };
@@ -4304,7 +4311,9 @@ impl AuthApplicationService {
             ));
         }
 
-        self.user_storage.change_role(user_id, role).await?;
+        self.user_storage
+            .change_role(user_id, requested.as_str())
+            .await?;
         self.user_flags_cache.invalidate(&user_id).await;
         Ok(())
     }

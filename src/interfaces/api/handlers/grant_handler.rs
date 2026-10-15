@@ -24,7 +24,7 @@ use crate::application::dtos::grant_dto::{
     CreateGrantDto, CreateGrantResponseDto, GrantDto, MySharesDto, NotifyOutcomeSetDto,
     OutgoingResourceGrantDto, OutgoingResourceItemDto, ResourceContentDto, ResourceDto,
     ResourceTypeDto, SharedWithMeDto, SharedWithMeItemDto, SharedWithMeQuery, SubjectDto,
-    SubjectInputDto, UpdateRoleDto, role_from_permissions,
+    SubjectInputDto, UpdateGrantRoleDto, role_from_permissions,
 };
 use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::application::services::recipient_notification_service::NotifyTrigger;
@@ -826,7 +826,7 @@ pub async fn notify_grant_recipient(
 #[utoipa::path(
     put,
     path = "/api/grants/role",
-    request_body = UpdateRoleDto,
+    request_body = UpdateGrantRoleDto,
     responses(
         (status = 200, description = "Role applied; returns the new full grant set", body = Vec<GrantDto>),
         (status = 400, description = "Drive resource: shared-drive last-owner demotion refused"),
@@ -839,7 +839,7 @@ pub async fn notify_grant_recipient(
 pub async fn set_role(
     State(state): State<AppStateRef>,
     auth_user: AuthUser,
-    Json(dto): Json<UpdateRoleDto>,
+    Json(dto): Json<UpdateGrantRoleDto>,
 ) -> impl IntoResponse {
     let authz = &state.authorization;
     let caller_id = auth_user.id;

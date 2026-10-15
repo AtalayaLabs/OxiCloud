@@ -98,7 +98,7 @@ jsonpath "$.entries[1].encryption_enabled" == false
 POST {{base_url}}/api/admin/settings/storage/test
 Authorization: Bearer {{admin_token}}
 Content-Type: application/json
-{ "entry_name": "local_main", "backend": "" }
+{ "entry_name": "local_main" }
 
 HTTP 200
 [Asserts]
@@ -110,6 +110,11 @@ jsonpath "$.connected" == true
 # assertion survives future wrapper renames.
 jsonpath "$.backend_type" contains "local"
 jsonpath "$.backend_type" contains "v1-plaintext"
+# Strongly-typed pure-backend-kind field added alongside the composite
+# `backend_type` string. `backend_type` keeps the wrapper(inner) form
+# the admin panel renders; `backend_kind` lets consumers skip
+# composite-string parsing when they only care about the backend.
+jsonpath "$.backend_kind" == "local"
 jsonpath "$.roundtrip_passed" == true
 jsonpath "$.phase_reached" == "cleanup_ok"
 
@@ -121,7 +126,7 @@ jsonpath "$.phase_reached" == "cleanup_ok"
 POST {{base_url}}/api/admin/settings/storage/test
 Authorization: Bearer {{admin_token}}
 Content-Type: application/json
-{ "entry_name": "does_not_exist", "backend": "" }
+{ "entry_name": "does_not_exist" }
 
 HTTP 200
 [Asserts]

@@ -82,7 +82,7 @@ pub struct ListQuery {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-pub struct ListResponseDto {
+pub struct NotificationListResponseDto {
     pub items: Vec<NotificationDto>,
     /// Unread rows for this user across the whole table — the bell
     /// badge reads this. Kept on the list response so a bell open
@@ -112,7 +112,7 @@ pub struct MarkAllReadResponseDto {
         ("limit" = Option<u32>, Query, description = "Max rows (server-side clamp at 500)"),
     ),
     responses(
-        (status = 200, description = "List of notifications", body = ListResponseDto),
+        (status = 200, description = "List of notifications", body = NotificationListResponseDto),
     ),
     security(("bearerAuth" = [])),
     tag = "notifications"
@@ -121,7 +121,7 @@ pub async fn list_notifications(
     State(service): State<Arc<NotificationApplicationService>>,
     auth_user: AuthUser,
     Query(query): Query<ListQuery>,
-) -> Result<Json<ListResponseDto>, AppError> {
+) -> Result<Json<NotificationListResponseDto>, AppError> {
     let filter = NotificationListFilter {
         limit: query.limit,
         unread_only: query.unread,
@@ -130,7 +130,7 @@ pub async fn list_notifications(
     };
     let rows = service.list_for_user(auth_user.id, filter).await?;
     let unread_count = service.count_unread_for_user(auth_user.id).await?;
-    Ok(Json(ListResponseDto {
+    Ok(Json(NotificationListResponseDto {
         items: rows.into_iter().map(NotificationDto::from).collect(),
         unread_count,
     }))

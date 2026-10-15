@@ -1358,7 +1358,7 @@ pub async fn setup_admin(
 
 /// System initialisation state, returned by `GET /api/auth/status`.
 #[derive(serde::Serialize, ToSchema)]
-pub struct SystemStatus {
+pub struct SystemInitStatusDto {
     /// Whether the system has been set up with an admin.
     initialized: bool,
     /// Number of admin users in the system.
@@ -1374,7 +1374,7 @@ pub struct SystemStatus {
     get,
     path = "/api/auth/status",
     responses(
-        (status = 200, description = "System status", body = SystemStatus),
+        (status = 200, description = "System status", body = SystemInitStatusDto),
         (status = 503, description = "Auth service not configured"),
     ),
     tag = "auth"
@@ -1401,7 +1401,7 @@ pub async fn get_system_status(
         .await
         .unwrap_or(0);
 
-    let status = SystemStatus {
+    let status = SystemInitStatusDto {
         initialized: db_initialized || admin_count > 0,
         admin_count,
         registration_allowed: db_initialized || admin_count > 0,

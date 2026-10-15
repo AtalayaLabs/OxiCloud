@@ -103,7 +103,8 @@
 	import { gridColumns } from '$lib/utils/grid';
 	import { ResourceSectionsBuilder } from '$lib/utils/resourceSections';
 	import { ItemIndexBuilder } from '$lib/utils/itemIndex';
-	import { fileThumbnailUrl, thumbSizeForView } from '$lib/api/endpoints/files';
+	import { fileThumbnailUrl } from '$lib/api/endpoints/files';
+	import { thumbSizeForView } from '$lib/utils/thumbnails';
 	import {
 		canThumbnailClientSide,
 		preloadPdf,

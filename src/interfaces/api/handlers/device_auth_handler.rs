@@ -19,7 +19,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::application::dtos::device_auth_dto::*;
-use crate::application::services::device_auth_service::DeviceAuthService;
+use crate::application::services::device_auth_service::{DeviceAuthService, DeviceInfoDto};
 use crate::common::di::AppState;
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::AuthUser;
@@ -50,7 +50,16 @@ pub fn device_auth_protected_routes() -> Router<Arc<AppState>> {
 
 /// Client sends: `{ "client_name": "rclone", "scope": "webdav" }`
 /// Server returns: device_code, user_code, verification_uri, etc.
-async fn device_authorize(
+#[utoipa::path(
+    post,
+    path = "/api/auth/device/authorize",
+    request_body = DeviceAuthorizeRequestDto,
+    responses(
+        (status = 200, description = "Device flow initiated — hand `user_code` to the end user", body = DeviceAuthorizeResponseDto),
+    ),
+    tag = "device-auth"
+)]
+pub async fn device_authorize(
     State(state): State<Arc<AppState>>,
     Json(body): Json<DeviceAuthorizeRequestDto>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -70,7 +79,17 @@ async fn device_authorize(
 
 /// Client sends: `{ "device_code": "...", "grant_type": "urn:ietf:params:oauth:grant-type:device_code" }`
 /// Returns tokens on success, or RFC 8628 error codes while pending.
-async fn device_token(
+#[utoipa::path(
+    post,
+    path = "/api/auth/device/token",
+    request_body = DeviceTokenRequestDto,
+    responses(
+        (status = 200, description = "Authorization granted — tokens issued", body = DeviceTokenSuccessDto),
+        (status = 400, description = "RFC 8628 error — `authorization_pending`, `slow_down`, `access_denied`, `expired_token`, …", body = DeviceTokenPendingDto),
+    ),
+    tag = "device-auth"
+)]
+pub async fn device_token(
     State(state): State<Arc<AppState>>,
     Json(body): Json<DeviceTokenRequestDto>,
 ) -> Result<impl IntoResponse, impl IntoResponse> {
@@ -114,7 +133,19 @@ pub struct VerifyQuery {
     pub code: String,
 }
 
-async fn device_verify_info(
+#[utoipa::path(
+    get,
+    path = "/api/auth/device/verify",
+    params(
+        ("code" = String, Query, description = "The user_code the client is displaying (hyphen-separated, e.g. `ABCD-1234`)")
+    ),
+    responses(
+        (status = 200, description = "Info about the pending authorization — `valid: false` means the code is unknown or expired", body = DeviceVerifyInfoDto),
+        (status = 401, description = "Caller is not signed in — the user must authenticate before approving a device"),
+    ),
+    tag = "device-auth"
+)]
+pub async fn device_verify_info(
     State(state): State<Arc<AppState>>,
     _auth_user: AuthUser,
     Query(query): Query<VerifyQuery>,
@@ -136,7 +167,18 @@ async fn device_verify_info(
 // POST /api/auth/device/verify — User approves or denies
 // ============================================================================
 
-async fn device_verify_action(
+#[utoipa::path(
+    post,
+    path = "/api/auth/device/verify",
+    request_body = DeviceVerifyRequestDto,
+    responses(
+        (status = 200, description = "Decision recorded — `status` echoes `approved` or `denied`", body = DeviceVerifyActionResponseDto),
+        (status = 400, description = "`action` was not one of `approve`/`deny`"),
+        (status = 401, description = "Caller is not signed in"),
+    ),
+    tag = "device-auth"
+)]
+pub async fn device_verify_action(
     State(state): State<Arc<AppState>>,
     auth_user: AuthUser,
     Json(body): Json<DeviceVerifyRequestDto>,
@@ -154,7 +196,9 @@ async fn device_verify_action(
                 })?;
             Ok((
                 StatusCode::OK,
-                Json(serde_json::json!({ "status": "approved" })),
+                Json(DeviceVerifyActionResponseDto {
+                    status: "approved".to_string(),
+                }),
             ))
         }
         "deny" | "reject" | "cancel" => {
@@ -164,7 +208,9 @@ async fn device_verify_action(
             })?;
             Ok((
                 StatusCode::OK,
-                Json(serde_json::json!({ "status": "denied" })),
+                Json(DeviceVerifyActionResponseDto {
+                    status: "denied".to_string(),
+                }),
             ))
         }
         _ => Err(AppError::bad_request("action must be 'approve' or 'deny'")),
@@ -175,7 +221,16 @@ async fn device_verify_action(
 // GET /api/auth/device/devices — List user's authorized devices
 // ============================================================================
 
-async fn list_devices(
+#[utoipa::path(
+    get,
+    path = "/api/auth/device/devices",
+    responses(
+        (status = 200, description = "The caller's authorized devices", body = Vec<DeviceInfoDto>),
+        (status = 401, description = "Not authenticated"),
+    ),
+    tag = "device-auth"
+)]
+pub async fn list_devices(
     State(state): State<Arc<AppState>>,
     auth_user: AuthUser,
 ) -> Result<impl IntoResponse, AppError> {
@@ -196,7 +251,20 @@ async fn list_devices(
 // DELETE /api/auth/device/devices/{id} — Revoke a device authorization
 // ============================================================================
 
-async fn revoke_device(
+#[utoipa::path(
+    delete,
+    path = "/api/auth/device/devices/{id}",
+    params(
+        ("id" = String, Path, description = "The device-code row id (`device_codes.id`, UUID)")
+    ),
+    responses(
+        (status = 204, description = "Revoked"),
+        (status = 400, description = "Invalid device id"),
+        (status = 401, description = "Not authenticated"),
+    ),
+    tag = "device-auth"
+)]
+pub async fn revoke_device(
     State(state): State<Arc<AppState>>,
     auth_user: AuthUser,
     Path(device_id): Path<String>,

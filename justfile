@@ -220,11 +220,10 @@ check-openapi-gen: gen-openapi-schema
 
 # Local mirror of the `openapi-breaking-check` CI job. Diffs
 # `resources/gen/openapi.json` on this branch against `origin/main`
-# via `oasdiff breaking`, suppressing any match listed in the repo-
-# root `oasdiff-openapi-breaking-allow.txt`. Fails on the first
-# unlisted breaking change — same contract the CI enforces, so
-# running this locally before pushing catches surprises in the
-# fast feedback loop.
+# via `oasdiff breaking`, tuned by `checks/openapi/severity.conf` and
+# `checks/openapi/breaking-allow.conf`. Fails on the first unlisted
+# breaking change — same contract the CI enforces, so running this
+# locally before pushing catches surprises in the fast feedback loop.
 #
 # Requires `oasdiff` on PATH. Install via `brew install oasdiff` on
 # macOS or grab a release binary from https://github.com/oasdiff/oasdiff/releases.
@@ -254,10 +253,16 @@ check-openapi: gen-openapi-schema
         echo "⚠ fetch failed; comparing against the LOCAL copy of ${BASE_REF}"
     # `breaking-files` compares the given spec against its own path in
     # the base ref — no manual `git show` dance, no temp files.
+    # Two companion files in `checks/openapi/` tune the gate:
+    #   * `severity.conf` downgrades rules we never want to block on
+    #     (e.g. adding values to a response enum).
+    #   * `breaking-allow.conf` carries per-signal exceptions for the
+    #     request-side tightenings we DO block on.
     oasdiff breaking-files \
         --base "${BASE_REF}" \
         --fail-on ERR \
-        --err-ignore oasdiff-openapi-breaking-allow.txt \
+        --severity-levels checks/openapi/severity.conf \
+        --err-ignore checks/openapi/breaking-allow.conf \
         resources/gen/openapi.json
     echo "✅ OpenAPI: no breaking changes vs ${BASE_REF}"
 

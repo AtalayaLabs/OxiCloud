@@ -17,7 +17,12 @@
 	// scope (folder/file-scope semantics), so they're not in `DriveRole`.
 	const WRITABLE_ROLES: readonly DriveRole[] = ['owner', 'editor'] as const;
 	function isWritable(d: Drive): boolean {
-		return d.caller_role != null && WRITABLE_ROLES.includes(d.caller_role);
+		// `d.caller_role` is typed `RoleDto` (all 5 values) because `Drive`
+		// now aliases to `DriveDto`; at drive scope the server will only
+		// emit the 3-value `DriveRole` subset, so `.includes` on the
+		// 2-value `WRITABLE_ROLES` is safe — the two phantom values
+		// (`contributor`, `commenter`) narrow back to `false`.
+		return d.caller_role != null && WRITABLE_ROLES.includes(d.caller_role as DriveRole);
 	}
 
 	// Default-personal first, then secondary personals, then shared; within

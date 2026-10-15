@@ -87,7 +87,7 @@ pub async fn person_photos(
 }
 
 #[derive(Deserialize, ToSchema)]
-pub struct RenameBody {
+pub struct RenamePersonRequest {
     /// New display name for the cluster. `null` or omitted clears
     /// the name, reverting the cluster to its "Unnamed" state.
     pub name: Option<String>,
@@ -98,7 +98,7 @@ pub struct RenameBody {
     patch,
     path = "/api/people/{id}",
     params(("id" = String, Path, description = "Person cluster id")),
-    request_body = RenameBody,
+    request_body = RenamePersonRequest,
     responses(
         (status = 204, description = "Renamed"),
         (status = 400, description = "Malformed person id"),
@@ -110,7 +110,7 @@ pub async fn rename_person(
     State(state): State<Arc<AppState>>,
     auth_user: AuthUser,
     Path(id): Path<String>,
-    Json(body): Json<RenameBody>,
+    Json(body): Json<RenamePersonRequest>,
 ) -> Response {
     let Some(svc) = state.people_service.as_ref() else {
         return disabled();
@@ -125,7 +125,7 @@ pub async fn rename_person(
 }
 
 #[derive(Deserialize, ToSchema)]
-pub struct MergeBody {
+pub struct MergePeopleRequest {
     /// Cluster id that will absorb the other one (`from`'s photos are
     /// reattributed to `into`; `from` is deleted). Typically the
     /// larger / named cluster wins.
@@ -138,7 +138,7 @@ pub struct MergeBody {
 #[utoipa::path(
     post,
     path = "/api/people/merge",
-    request_body = MergeBody,
+    request_body = MergePeopleRequest,
     responses(
         (status = 204, description = "Merged"),
         (status = 400, description = "Malformed cluster id(s)"),
@@ -149,7 +149,7 @@ pub struct MergeBody {
 pub async fn merge_people(
     State(state): State<Arc<AppState>>,
     auth_user: AuthUser,
-    Json(body): Json<MergeBody>,
+    Json(body): Json<MergePeopleRequest>,
 ) -> Response {
     let Some(svc) = state.people_service.as_ref() else {
         return disabled();

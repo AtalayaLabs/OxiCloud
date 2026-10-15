@@ -36,7 +36,7 @@
 		setDrivePolicyDefaults
 	} from '$lib/api/endpoints/admin';
 	import DrivePoliciesModal from '$lib/components/DrivePoliciesModal.svelte';
-	import { resolveOwnerName } from '$lib/api/endpoints/favorites';
+	import { resolveOwnerName } from '$lib/utils/ownerName';
 	import { SvelteMap } from 'svelte/reactivity';
 	import { listFindings, listRuns, triggerJob } from '$lib/api/endpoints/adminJobs';
 	import {
@@ -692,7 +692,7 @@
 		{:else}
 			<ul class="dp__findings" data-testid="admin-policy-drift">
 				{#each drift as d (d.id)}
-					{@render weakerRow(d.id, d.name, d.knobs)}
+					{@render weakerRow(d.id, d.name ?? null, d.knobs)}
 				{/each}
 			</ul>
 		{/if}

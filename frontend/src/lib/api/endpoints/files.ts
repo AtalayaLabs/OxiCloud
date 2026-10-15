@@ -159,12 +159,4 @@ export function fileThumbnailUrl(
 	return withBase(`/api/files/${fileId}/thumbnail/${size}`);
 }
 
-/**
- * Thumbnail size matched to the rendering slot. List rows draw thumbnails in
- * a 40×40 box, so the 150px `icon` rendition is already ≥2× retina density —
- * fetching the 400px `preview` there moved ~7× more pixels than the slot can
- * show (benches/ROUND12.md §F1). Grid cards (100×70 slot) keep `preview`.
- */
-export function thumbSizeForView(view: 'grid' | 'list'): 'icon' | 'preview' {
-	return view === 'list' ? 'icon' : 'preview';
-}
+// `thumbSizeForView` moved to `$lib/utils/thumbnails.ts`.
