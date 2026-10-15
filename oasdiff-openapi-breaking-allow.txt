@@ -1,0 +1,36 @@
+# ─────────────────────────────────────────────────────────────────────
+# oasdiff — allow-list for API breaking changes vs. the PR base branch
+# ─────────────────────────────────────────────────────────────────────
+# This file is read by `oasdiff breaking --err-ignore` in the
+# `openapi-breaking-check` CI job (.github/workflows/ci.yml). Each
+# non-blank, non-comment line is a case-insensitive SUBSTRING pattern:
+# an oasdiff error whose message CONTAINS the substring is suppressed.
+#
+# DELIBERATELY EMPTY by default. Every breaking change to the public
+# API should surface on the PR that introduces it, be discussed with
+# the reviewer, and either:
+#
+#   1. Be undone, OR
+#   2. Be acknowledged in the PR description with a one-sentence
+#      rationale AND an entry added here that NARROWLY targets the
+#      specific message (not the rule name).
+#
+# RULES for adding an entry:
+#
+#   - Narrow substrings only. Match on
+#       `the \`<path>/<field>\` response property`
+#     or similar — never on just the rule name
+#     (`response-property-enum-value-added`), which would silence
+#     every future legitimate breaking enum change.
+#   - Group entries by the semantic reason they're allowed, with a
+#     comment naming the Rust type / invariant that enforces why
+#     the change is actually safe for consumers.
+#   - Delete an entry the moment the underlying field goes away or
+#     reverts. A stale allow-list hides real drift and defeats the
+#     point of this check.
+#
+# When adding an entry, assert in the PR description that no consumer
+# that worked against the pre-change spec breaks, and cite the
+# Rust type that makes that true.
+#
+# ─────────────────────────────────────────────────────────────────────

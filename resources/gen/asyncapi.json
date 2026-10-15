@@ -1266,7 +1266,7 @@
       "url": "https://opensource.org/licenses/MIT"
     },
     "title": "OxiCloud message bus",
-    "version": "0.9.2"
+    "version": "0.9.3"
   },
   "operations": {
     "collabFlush": {

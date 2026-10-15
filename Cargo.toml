@@ -181,7 +181,16 @@ utoipa = { version = "5.5.0", features = ["axum_extras", "uuid", "chrono"] }
 # aws_sdk_s3::config with static credentials; nothing referenced either
 # crate, and aws-config alone pulled aws-sdk-sso/ssooidc/sts (~90 crates)
 # into every build (benches/ROUND3.md).
-aws-sdk-s3 = "1.136.0"
+# `default-features = false` lets us keep the modern `default-https-client`
+# (hyper 1 + rustls 0.23) and drop the deprecated `rustls` feature which pulls
+# an unused hyper-0.14 + rustls 0.21 chain (RUSTSEC-2026-0346, -0349).
+aws-sdk-s3 = { version = "1.136.0", default-features = false, features = [
+    "sigv4a",
+    "http-1x",
+    "default-https-client",
+    "rt-tokio",
+    "behavior-version-latest",
+] }
 azure_core = { version = "0.21", default-features = false, features = ["enable_reqwest_rustls", "hmac_rust"] }
 azure_storage = { version = "0.21", default-features = false, features = ["enable_reqwest_rustls", "hmac_rust"] }
 azure_storage_blobs = { version = "0.21", default-features = false, features = ["enable_reqwest_rustls", "hmac_rust"] }

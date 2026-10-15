@@ -253,6 +253,79 @@ jobs:
             exit 1
           fi
 
+  # Fails the PR when the OpenAPI spec on this branch introduces a
+  # BREAKING CHANGE vs. the PR's base branch — removed endpoints,
+  # tightened enums, request shape narrowing, response field type
+  # changes, status-code semantic shifts, and so on.
+  #
+  # The allow-list at the repo root (`oasdiff-openapi-breaking-allow.txt`)
+  # is DELIBERATELY EMPTY by default: every breaking change should
+  # surface on the PR that introduces it, be discussed with the
+  # reviewer, and either undone or acknowledged (with a narrowly-
+  # targeted allow entry added in the same PR and a one-sentence
+  # rationale in the PR description).
+  #
+  # Compares the committed `resources/gen/openapi.json` on each side —
+  # which is enforced-fresh by the `openapi-spec-drift` job above, so
+  # we don't need to re-run the generator here.
+  #
+  # PR-only — on `push` triggers there is no base to diff against.
+  openapi-breaking-check:
+    name: OpenAPI spec — breaking-change diff vs base
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.openapi_spec == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR with history
+        uses: actions/checkout@v4
+        with:
+          # Need the base commit to materialise the base version of
+          # the spec. Shallow clone wouldn't carry it.
+          fetch-depth: 0
+      - name: Fetch target branch
+        run: git fetch --quiet origin "$BASE_REF"
+        env:
+          BASE_REF: ${{ github.base_ref }}
+      - name: Install oasdiff
+        # Pin a known-good release — the message strings in the
+        # allow-list match this version's error-text output, so a
+        # minor-bump that reworded a diagnostic would silently
+        # un-ignore allow entries. Bump deliberately when the time
+        # comes.
+        env:
+          OASDIFF_VERSION: v1.33.0
+        run: |
+          curl -fsSL "https://github.com/oasdiff/oasdiff/releases/download/${OASDIFF_VERSION}/oasdiff_$(echo ${OASDIFF_VERSION#v})_linux_amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin oasdiff
+          oasdiff --version
+      - name: Run oasdiff breaking-files (fails on any unlisted breaking change)
+        # `breaking-files` diffs the spec against its own path in the
+        # base ref — no manual `git show` dance, no temp files. The
+        # separate `git fetch` above makes origin/BASE_REF resolvable;
+        # we deliberately don't pass `--fetch` to oasdiff itself so a
+        # misconfigured runner surfaces a loud "ref not found" rather
+        # than silently reaching to the network.
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set +e
+          oasdiff breaking-files \
+            --base "origin/${BASE_REF}" \
+            --fail-on ERR \
+            --err-ignore oasdiff-openapi-breaking-allow.txt \
+            resources/gen/openapi.json
+          STATUS=$?
+          if [ "$STATUS" -ne 0 ]; then
+            echo ""
+            echo "::error::OpenAPI breaking change detected vs. '${{ github.base_ref }}'."
+            echo "::error::Fix: either revert the breaking change, or acknowledge it by"
+            echo "::error::adding a narrowly-targeted substring match to"
+            echo "::error::\`oasdiff-openapi-breaking-allow.txt\` in this same PR, with"
+            echo "::error::a one-sentence rationale in the PR description naming the"
+            echo "::error::Rust type / invariant that makes the change safe for consumers."
+            exit "$STATUS"
+          fi
+
   # Fails the PR if a new sqlx migration file has a timestamp NOT strictly
   # greater than every migration already on the target branch. Guards
   # against the "two branches in flight, whoever merges second breaks

@@ -222,6 +222,52 @@ ignore = [
     # Un-ignore trigger: same as RUSTSEC-2026-0327 above.
     "RUSTSEC-2026-0316",
 
+    # wasmtime 43.0.2 — three advisories published 2026-10-14, same crate,
+    # same `extism 1.30.0` chain, same absent upgrade path as the two
+    # wasmtime entries above: extism pins `wasmtime ^43` and the fixed
+    # releases for all three are >=48.0.6 <49 or >=49.0.3 — out of range.
+    #
+    # All three target the WebAssembly **Component Model**, which extism's
+    # PDK does not use (plugins/runtime.rs loads core `wasmtime::Module` /
+    # `Instance`, never `wasmtime::component::*`). Same unreachability
+    # argument as RUSTSEC-2026-0327; the standard `--features plugins`
+    # build-gate + `OXICLOUD_ENABLE_PLUGINS=true` runtime gate still apply
+    # on top.
+    #
+    #   RUSTSEC-2026-0362: async-entrypoint not enforced on component
+    #                      lifted exports (Component Model only).
+    #   RUSTSEC-2026-0363: handle tables capped only per-instance,
+    #                      charged to no resource limit (Component
+    #                      Model resource handles).
+    #   RUSTSEC-2026-0359: stack overflow dropping a long chain of
+    #                      recursive types (Component Model type
+    #                      elaboration).
+    #
+    # Un-ignore trigger: same as RUSTSEC-2026-0327 above — extism moves
+    # to wasmtime >=48.0.6 / >=49.0.3, OR OxiCloud starts using
+    # `wasmtime::component::*` directly.
+    "RUSTSEC-2026-0362",
+    "RUSTSEC-2026-0363",
+    "RUSTSEC-2026-0359",
+
+    # rustls-pemfile 2.2.0 — "rustls-pemfile is unmaintained"
+    # (RUSTSEC-2025-0134). Transitive via
+    # `testcontainers 0.25.2 → bollard 0.19.4 → rustls-pemfile 2.2.0`
+    # on the DEV-dependency tree only (testcontainers is pulled by
+    # `--cfg integration_tests`). Never compiled into the production
+    # binary. The crate is deprecated in favour of `rustls-pki-types`
+    # which bollard has not yet adopted.
+    #
+    # Severity: informational (unmaintained, no CVE). Even if a
+    # security issue surfaced later, exposure is bounded to the
+    # integration-test harness talking to the local test Postgres
+    # container over a trusted socket — no attacker-controlled TLS
+    # material reaches the parser.
+    #
+    # Un-ignore trigger: bollard drops `rustls-pemfile` for
+    # `rustls-pki-types`, OR testcontainers 0.26+ cuts the bollard dep.
+    "RUSTSEC-2025-0134",
+
     # astral-tokio-tar 0.5.6 — tar extraction advisories, transitive via
     # testcontainers → testcontainers-modules, a DEV-dependency used only by
     # the `--cfg integration_tests` harness to spin up throwaway Postgres
