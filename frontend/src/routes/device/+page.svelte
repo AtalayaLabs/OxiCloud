@@ -219,6 +219,12 @@
 
 <style>
 	.device {
+		/* Fill the body flex row — `base/reset.css` makes <body> a flex
+		   container, so without an explicit width this <main> collapses
+		   to its content width and `place-items: center` only centers
+		   the card inside that narrow stripe (vertical worked because
+		   `min-height: 100vh` already stretched it). */
+		width: 100%;
 		min-height: 100vh;
 		display: grid;
 		place-items: center;
