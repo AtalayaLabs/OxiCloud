@@ -6,7 +6,9 @@
 import { ApiError, apiFetch } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import {
+	dpopBind,
 	getSystemStatus,
+	login as sdkLogin,
 	oidcExchange,
 	oidcLinkStart,
 	oidcProviders,
@@ -18,28 +20,6 @@ import {
 } from '../generated/openapi/sdk.gen';
 import type { SystemInitStatusDto } from '../generated/openapi/types.gen';
 import type { AuthResponse, SelfUser } from '$lib/api/types';
-
-/**
- * Best-effort parse of the backend `ErrorResponse` shape
- * (`{ status, error, message, error_type }`). Returns whatever it could
- * extract; never throws — a malformed body just yields undefineds.
- */
-async function parseErrorBody(res: Response): Promise<{ errorType?: string; message?: string }> {
-	try {
-		const body = (await res.clone().json()) as {
-			error_type?: unknown;
-			message?: unknown;
-			error?: unknown;
-		};
-		const errorType = typeof body.error_type === 'string' ? body.error_type : undefined;
-		const rawMessage =
-			(typeof body.message === 'string' ? body.message : undefined) ??
-			(typeof body.error === 'string' ? body.error : undefined);
-		return { errorType, message: rawMessage };
-	} catch {
-		return {};
-	}
-}
 
 /**
  * Map an SDK-thrown error (`throwOnError: true`) into the same `ApiError`
@@ -131,29 +111,27 @@ async function tryBindingThumbprint(): Promise<string | null> {
  * typically ignore the return value; they might log it in dev.
  */
 export async function bindDpopIfPossible(): Promise<boolean> {
+	// Phase 4 — SDK call. `/api/auth/dpop/` is in AUTH_PRIMITIVES, so no
+	// refresh dance. Returns false on any failure (swallowed) — a browser
+	// that fails to bind is still usable with an unbound session, which
+	// is why the OIDC-callback / magic-link-redemption paths fall through
+	// to this best-effort call rather than aborting.
 	const jkt = await tryBindingThumbprint();
 	if (!jkt) return false;
 	try {
-		const res = await apiFetch('/api/auth/dpop/bind', {
-			method: 'POST',
-			credentials: 'same-origin',
-			headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-			body: JSON.stringify({ dpop_jkt: jkt })
-		});
-		if (res.ok) {
-			// Bind attached the thumbprint to the SESSION row — but the
-			// browser is still carrying the JWT issued at OIDC callback
-			// / magic-link redemption BEFORE that bind, so its
-			// `cnf.jkt` claim is empty. Force a refresh cycle: the
-			// `rotate_session` path preserves the DPoP binding on the
-			// new row and mints a fresh JWT whose `cnf.jkt` reflects
-			// it. Without this, downstream code that keys off
-			// `CurrentUser::dpop_jkt` (admin sessions "is_current"
-			// highlight, DPoP verifier's expected_jkt lookup) sees
-			// None and treats the caller as unbound.
-			await tryRefresh();
-		}
-		return res.ok;
+		await dpopBind({ body: { dpop_jkt: jkt }, throwOnError: true });
+		// Bind attached the thumbprint to the SESSION row — but the
+		// browser is still carrying the JWT issued at OIDC callback
+		// / magic-link redemption BEFORE that bind, so its `cnf.jkt`
+		// claim is empty. Force a refresh cycle: the `rotate_session`
+		// path preserves the DPoP binding on the new row and mints a
+		// fresh JWT whose `cnf.jkt` reflects it. Without this,
+		// downstream code that keys off `CurrentUser::dpop_jkt`
+		// (admin sessions "is_current" highlight, DPoP verifier's
+		// expected_jkt lookup) sees None and treats the caller as
+		// unbound.
+		await tryRefresh();
+		return true;
 	} catch (err) {
 		console.debug('dpop: bind endpoint call failed', err);
 		return false;
@@ -231,24 +209,25 @@ export async function login(emailOrUsername: string, password: string): Promise<
 	}
 
 	// ── Legacy login (fallback for users without an envelope yet) ─────
-	const res = await apiFetch('/api/auth/login', {
-		method: 'POST',
-		credentials: 'same-origin',
-		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-		body: JSON.stringify({
-			username: emailOrUsername,
-			password,
-			...(dpopJkt ? { dpop_jkt: dpopJkt } : {})
-		})
-	});
-	if (!res.ok) {
-		// Surface the backend `error_type` so the login page can offer
-		// specific UX: `EmailNotVerified` → "resend verification link",
-		// `PasswordLoginDisabled` → nudge toward magic-link / SSO, etc.
-		const { errorType, message } = await parseErrorBody(res);
-		throw new ApiError(res.status, res.statusText, '/api/auth/login', errorType, message);
+	// Phase 4 — SDK call. `/api/auth/login` is in AUTH_PRIMITIVES so a
+	// 401 here surfaces as a genuine bad-credentials error, not an
+	// expired-token refresh dance. The backend's `error_type` surfaces
+	// via `apiErrorFromSdkError` so the login page can branch on
+	// `EmailNotVerified` → "resend verification link",
+	// `PasswordLoginDisabled` → nudge to magic-link / SSO, etc.
+	let auth: AuthResponse;
+	try {
+		auth = (await sdkLogin({
+			body: {
+				username: emailOrUsername,
+				password,
+				...(dpopJkt ? { dpop_jkt: dpopJkt } : {})
+			},
+			throwOnError: true
+		})) as AuthResponse;
+	} catch (e) {
+		throw apiErrorFromSdkError(e, '/api/auth/login');
 	}
-	const auth = (await res.json()) as AuthResponse;
 
 	// ── OPAQUE silent migration (Phase 2) ──────────────────────────────
 	// After a successful legacy password login, transparently mint an

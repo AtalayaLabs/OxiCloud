@@ -46,11 +46,32 @@ vi.mock('@serenity-kit/opaque', () => ({
 		}))
 	}
 }));
+// Mock the generated SDK: Phase-4 migration routes legacy /api/auth/login
+// (and the other 10 wrappers in auth.ts) through this module instead of
+// through `apiFetch`. All 11 symbols are mocked as vi.fn() so a test that
+// doesn't customize a mock just gets an undefined-returning stub — the
+// transitive callers in auth.ts wrap SDK calls in `try { ... } catch { ... }`
+// with a safe fallback, so an unmocked call never crashes the test.
+vi.mock('../generated/openapi/sdk.gen', () => ({
+	dpopBind: vi.fn(),
+	getSystemStatus: vi.fn(),
+	login: vi.fn(),
+	oidcExchange: vi.fn(),
+	oidcLinkStart: vi.fn(),
+	oidcProviders: vi.fn(),
+	oidcUnlink: vi.fn(),
+	register: vi.fn(),
+	sendMagicLink: vi.fn(),
+	setupAdmin: vi.fn(),
+	upgradeToInternal: vi.fn()
+}));
 import { apiFetch, apiJson } from '$lib/api/client';
+import { login as sdkLoginMock } from '../generated/openapi/sdk.gen';
 import * as auth from './auth';
 import { __resetOpaqueParamsCache } from './opaque';
 const f = apiFetch as unknown as ReturnType<typeof vi.fn>;
 const j = apiJson as unknown as ReturnType<typeof vi.fn>;
+const sdkLogin = sdkLoginMock as unknown as ReturnType<typeof vi.fn>;
 // Several auth probes use the raw global fetch (NOT apiFetch) on purpose.
 // `headers: new Headers()` matches the real `fetch()` contract — several
 // probes (fetchMe, tryRefresh) run through the DPoP nonce-update shim,
@@ -332,12 +353,12 @@ it('OPAQUE login triggers silent rotation when envelope predates per-envelope KS
 });
 
 it('login falls back to legacy + silent-migration when hasOpaque: false', async () => {
-	// Order on the wire:
-	//   1. GET  /api/auth/opaque/params
-	//   2. POST /api/auth/opaque/login/lookup     → { hasOpaque: false }
-	//   3. POST /api/auth/login                   → AuthResponse
-	//   4. POST /api/auth/opaque/register/start   (params is cached — no re-fetch)
-	//   5. POST /api/auth/opaque/register/finish
+	// Order on the wire (Phase-4 split — see sdkLogin mock below):
+	//   1. GET  /api/auth/opaque/params        (apiFetch)
+	//   2. POST /api/auth/opaque/login/lookup  (apiFetch)  → { hasOpaque: false }
+	//   3. POST /api/auth/login                (sdkLogin)  → AuthResponse
+	//   4. POST /api/auth/opaque/register/start   (apiFetch)
+	//   5. POST /api/auth/opaque/register/finish  (apiFetch)
 	f.mockResolvedValueOnce({
 		ok: true,
 		status: 200,
@@ -358,33 +379,41 @@ it('login falls back to legacy + silent-migration when hasOpaque: false', async 
 			ok: true,
 			status: 200,
 			statusText: 'OK',
-			json: async () => ({
-				user: { id: 'u1', email: 'a@x.test' },
-				access_token: 'at',
-				refresh_token: 'rt',
-				token_type: 'Bearer',
-				expires_in: 3600
-			})
-		})
-		.mockResolvedValueOnce({
-			ok: true,
-			status: 200,
-			statusText: 'OK',
 			json: async () => ({ registrationResponse: 'RESP-R' })
 		})
 		.mockResolvedValueOnce({ ok: true, status: 204, json: async () => ({}) });
+	// Phase 4: legacy POST /api/auth/login now goes through the SDK, not
+	// apiFetch. The SDK call is mocked separately — it still returns the
+	// same AuthResponse shape so downstream silent-migration + return
+	// value are unchanged.
+	sdkLogin.mockResolvedValueOnce({
+		user: { id: 'u1', email: 'a@x.test' },
+		access_token: 'at',
+		refresh_token: 'rt',
+		token_type: 'Bearer',
+		expires_in: 3600
+	});
 
 	const authResponse = await auth.login('alice@example.com', 'correct horse battery staple');
 	expect(authResponse.access_token).toBe('at');
 
+	// URL ordering now covers the apiFetch surface only; the SDK leg is
+	// asserted via `sdkLogin.mock.calls` below.
 	const urls = f.mock.calls.map((c: unknown[]) => c[0] as string);
 	expect(urls).toEqual([
 		'/api/auth/opaque/params',
 		'/api/auth/opaque/login/lookup',
-		'/api/auth/login',
 		'/api/auth/opaque/register/start',
 		'/api/auth/opaque/register/finish'
 	]);
+	expect(sdkLogin).toHaveBeenCalledOnce();
+	expect(sdkLogin.mock.calls[0][0]).toMatchObject({
+		body: expect.objectContaining({
+			username: 'alice@example.com',
+			password: 'correct horse battery staple'
+		}),
+		throwOnError: true
+	});
 });
 
 it('login skips the OPAQUE branch entirely when the substrate is disabled', async () => {
@@ -392,6 +421,8 @@ it('login skips the OPAQUE branch entirely when the substrate is disabled', asyn
 	// lookup POST MUST NOT fire (cheap short-circuit inside
 	// checkOpaqueAvailable), and the legacy silent-migration hook
 	// MUST also short-circuit — no register/start calls either.
+	// Only apiFetch call: GET /api/auth/opaque/params. The legacy
+	// POST /api/auth/login runs through the SDK (mocked below).
 	f.mockResolvedValueOnce({
 		ok: true,
 		status: 200,
@@ -401,24 +432,21 @@ it('login skips the OPAQUE branch entirely when the substrate is disabled', asyn
 			ciphersuiteVersion: 0,
 			ksf: { memoryKib: 0, iterations: 0, parallelism: 0 }
 		})
-	}).mockResolvedValueOnce({
-		ok: true,
-		status: 200,
-		statusText: 'OK',
-		json: async () => ({
-			user: { id: 'u1', email: 'a@x.test' },
-			access_token: 'at',
-			refresh_token: 'rt',
-			token_type: 'Bearer',
-			expires_in: 3600
-		})
+	});
+	sdkLogin.mockResolvedValueOnce({
+		user: { id: 'u1', email: 'a@x.test' },
+		access_token: 'at',
+		refresh_token: 'rt',
+		token_type: 'Bearer',
+		expires_in: 3600
 	});
 
 	const authResponse = await auth.login('alice@example.com', 'pw');
 	expect(authResponse.access_token).toBe('at');
 
 	const urls = f.mock.calls.map((c: unknown[]) => c[0] as string);
-	expect(urls).toEqual(['/api/auth/opaque/params', '/api/auth/login']);
+	expect(urls).toEqual(['/api/auth/opaque/params']);
+	expect(sdkLogin).toHaveBeenCalledOnce();
 });
 
 it('login returns AuthResponse even when silent-migration fails (non-fatal)', async () => {
@@ -443,23 +471,23 @@ it('login returns AuthResponse even when silent-migration fails (non-fatal)', as
 			json: async () => ({ hasOpaque: false })
 		})
 		.mockResolvedValueOnce({
-			ok: true,
-			status: 200,
-			statusText: 'OK',
-			json: async () => ({
-				user: { id: 'u1', email: 'a@x.test' },
-				access_token: 'at',
-				refresh_token: 'rt',
-				token_type: 'Bearer',
-				expires_in: 3600
-			})
-		})
-		.mockResolvedValueOnce({
 			ok: false,
 			status: 500,
 			statusText: 'Internal Server Error',
 			json: async () => ({})
 		});
+	// Phase 4: legacy POST /api/auth/login routed through SDK — returns
+	// the AuthResponse that must survive the subsequent syncOpaqueEnvelope
+	// failure. The 500 above is the register/start response that fires
+	// INSIDE syncOpaqueEnvelope; the AuthResponse from sdkLogin is what
+	// the caller receives regardless.
+	sdkLogin.mockResolvedValueOnce({
+		user: { id: 'u1', email: 'a@x.test' },
+		access_token: 'at',
+		refresh_token: 'rt',
+		token_type: 'Bearer',
+		expires_in: 3600
+	});
 
 	const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 	const authResponse = await auth.login('alice@example.com', 'pw');
