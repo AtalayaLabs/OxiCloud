@@ -156,7 +156,16 @@ impl DeviceAuthService {
     ///
     /// * `user_code` — the code from the verification page
     /// * `user_id` — the authenticated user's ID (from session/JWT)
-    pub async fn approve(&self, user_code: &str, user_id: Uuid) -> Result<(), DomainError> {
+    /// * `client_ip` — the IP of the approver's browser; stamped on the
+    ///   created `auth.sessions` row so the admin "IP" column has a value
+    ///   consistent with other origins (login/magic/oidc all capture
+    ///   creation-time IP). `None` when the handler couldn't derive one.
+    pub async fn approve(
+        &self,
+        user_code: &str,
+        user_id: Uuid,
+        client_ip: Option<String>,
+    ) -> Result<(), DomainError> {
         let normalized = user_code.trim().to_uppercase().replace(' ', "");
 
         let mut dc = self
@@ -189,7 +198,7 @@ impl DeviceAuthService {
         let session = Session::new(
             user_id,
             refresh_token.clone(),
-            None,                                         // ip_address
+            client_ip, // ip_address — approver's browser IP
             Some(format!("device:{}", dc.client_name())), // user_agent
             self.token_service.refresh_token_expiry_days(),
             Uuid::new_v4(),
