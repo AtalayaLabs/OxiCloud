@@ -5,6 +5,12 @@
  */
 import { ApiError, apiFetch } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
+import {
+	getSystemStatus,
+	oidcExchange,
+	oidcProviders,
+	sendMagicLink as sdkSendMagicLink
+} from '../generated/openapi/sdk.gen';
 import type { SystemInitStatusDto } from '../generated/openapi/types.gen';
 import type { AuthResponse, SelfUser } from '$lib/api/types';
 
@@ -283,10 +289,14 @@ export interface OidcProviders {
 
 /** Public OIDC provider info for the login page. */
 export async function getOidcProviders(): Promise<OidcProviders> {
+	// Phase 4 — SDK call via generated client. Target `/api/auth/oidc/providers`
+	// is in `transport.ts::AUTH_PRIMITIVES` so the refresh-dance isn't engaged
+	// here. The swallow-everything fallback is preserved: the login page polls
+	// this on first render and MUST NOT surface an error if the IdP config
+	// endpoint is unreachable — it just hides the OIDC-sign-in button.
 	try {
-		const res = await apiFetch('/api/auth/oidc/providers');
-		if (!res.ok) return { enabled: false };
-		return (await res.json()) as OidcProviders;
+		const data = await oidcProviders({ throwOnError: true });
+		return data as OidcProviders;
 	} catch {
 		return { enabled: false };
 	}
@@ -301,6 +311,10 @@ export type AuthStatus = SystemInitStatusDto;
  * error never strands operators on the setup wizard.
  */
 export async function getAuthStatus(): Promise<AuthStatus> {
+	// Phase 4 — SDK call. The fallback object is NOT a plausible default;
+	// it is specifically the "already-initialized, nothing-to-set-up" state
+	// so a boot probe on a transiently-unreachable `/api/auth/status`
+	// doesn't push the user into the first-run setup wizard. Preserve it.
 	const fallback: AuthStatus = {
 		initialized: true,
 		admin_count: 1,
@@ -308,8 +322,7 @@ export async function getAuthStatus(): Promise<AuthStatus> {
 		faces_enabled: false
 	};
 	try {
-		const res = await apiFetch('/api/auth/status', { credentials: 'same-origin' });
-		return res.ok ? ((await res.json()) as AuthStatus) : fallback;
+		return await getSystemStatus({ throwOnError: true });
 	} catch {
 		return fallback;
 	}
@@ -340,16 +353,15 @@ export async function setupAdmin(email: string, password: string): Promise<void>
  * any failure so the caller can fall through to the normal login UI.
  */
 export async function exchangeOidcCode(code: string): Promise<SelfUser | null> {
+	// Phase 4 — SDK call. CSRF + Content-Type are attached by the shared
+	// transport (`transport.ts:162`), so the per-call `getCsrfHeaders()`
+	// spread + `JSON_HEADERS` disappear. Null-on-any-error preserved: the
+	// OIDC redirect-back page needs to handle an invalid/expired code
+	// gracefully (user sees "sign-in failed, try again") without a toast
+	// cascade.
 	try {
-		const res = await apiFetch('/api/auth/oidc/exchange', {
-			method: 'POST',
-			credentials: 'same-origin',
-			headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-			body: JSON.stringify({ code })
-		});
-		if (!res.ok) return null;
-		const data = (await res.json()) as { user?: SelfUser };
-		return data.user ?? null;
+		const data = await oidcExchange({ body: { code }, throwOnError: true });
+		return (data as { user?: SelfUser | null }).user ?? null;
 	} catch {
 		return null;
 	}
@@ -423,15 +435,18 @@ export type MagicLinkResult = 'sent' | 'unavailable';
  * throw so the caller can show a generic error. This auth primitive skips refresh.
  */
 export async function sendMagicLink(email: string): Promise<MagicLinkResult> {
-	const res = await apiFetch('/api/auth/magic-link/send', {
-		method: 'POST',
-		credentials: 'same-origin',
-		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-		body: JSON.stringify({ email })
-	});
-	if (res.status === 503) return 'unavailable';
-	if (!res.ok) throw new Error(`magic-link failed: ${res.status}`);
-	return 'sent';
+	// Phase 4 — SDK call. The 503 → 'unavailable' branch stays: a server
+	// without SMTP configured returns 503 by design, and the login page
+	// treats that as a soft signal ("magic-link is off, use password").
+	// All other non-2xx errors throw so the caller surfaces a toast.
+	try {
+		await sdkSendMagicLink({ body: { email }, throwOnError: true });
+		return 'sent';
+	} catch (e) {
+		const status = (e as { response?: { status?: number } })?.response?.status;
+		if (status === 503) return 'unavailable';
+		throw new Error(`magic-link failed: ${status ?? 'unknown'}`, { cause: e });
+	}
 }
 
 export interface LogoutResult {
