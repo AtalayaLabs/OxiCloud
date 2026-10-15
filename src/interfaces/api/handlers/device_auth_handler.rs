@@ -10,11 +10,12 @@
 
 use axum::{
     Router,
-    extract::{Json, Path, Query, State},
-    http::StatusCode,
+    extract::{ConnectInfo, Json, Path, Query, State},
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{delete, get, post},
 };
+use std::net::SocketAddr;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -23,6 +24,7 @@ use crate::application::services::device_auth_service::{DeviceAuthService, Devic
 use crate::common::di::AppState;
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::AuthUser;
+use crate::interfaces::middleware::trusted_proxy::client_ip_from_parts;
 
 /// Create the device auth router.
 ///
@@ -181,14 +183,22 @@ pub async fn device_verify_info(
 pub async fn device_verify_action(
     State(state): State<Arc<AppState>>,
     auth_user: AuthUser,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(body): Json<DeviceVerifyRequestDto>,
 ) -> Result<impl IntoResponse, AppError> {
     let device_service = get_device_service(&state)?;
 
     match body.action.to_lowercase().as_str() {
         "approve" | "allow" | "accept" => {
+            // Approver's IP is stamped on the new `auth.sessions` row so
+            // the admin "IP" column has a value consistent with login /
+            // magic-link / OIDC origins. The `trusted_proxy` helper honours
+            // X-Forwarded-For when the hop is a configured trusted proxy
+            // and falls back to the socket peer otherwise.
+            let client_ip = client_ip_from_parts(&headers, Some(peer), false);
             device_service
-                .approve(&body.user_code, auth_user.id)
+                .approve(&body.user_code, auth_user.id, Some(client_ip))
                 .await
                 .map_err(|e| {
                     tracing::error!("Device approve failed: {}", e);

@@ -75,6 +75,24 @@ pub fn is_batch_child(job_name: &str) -> bool {
     job_name.ends_with("_consistency") && job_name != CONSISTENCY_BATCH_JOB_NAME
 }
 
+/// Does this sub-job touch the storage backend (list objects, read
+/// blobs, enumerate satellite files)? These are the ones a `db_only`
+/// batch skips.
+///
+/// Kept as an explicit allowlist rather than a trait method on
+/// `JobHandler` because:
+///   * There are only two today and both are stable names.
+///   * `JobHandler` is a general-purpose trait — adding a
+///     `touches_backend()` default would push the concept into every
+///     handler whether or not it participates in the batch.
+///   * The dispatch gate lives beside `is_batch_child` so operators
+///     reading the batch's semantics find both rules in one file.
+///
+/// If a new backend-touching detector lands, add it here.
+pub fn touches_backend(job_name: &str) -> bool {
+    matches!(job_name, "backend_consistency" | "satellites_consistency")
+}
+
 pub struct ConsistencyBatch {
     registry: Weak<JobRegistry>,
 }
@@ -131,6 +149,18 @@ impl JobHandler for ConsistencyBatch {
                 "Forwarded to every sub-job that can repair, so one call \
                  fixes both refcount tenants.",
             ),
+            JobParam::boolean(
+                "db_only",
+                false,
+                "Dispatch only sub-jobs whose work is purely DB-side. \
+                 Backend-touching sub-jobs (backend_consistency, \
+                 satellites_consistency) are skipped and reported under \
+                 `outcome.extra.skipped_db_only`. Intended for deployments \
+                 where backend enumeration is costly (S3 list_objects on a \
+                 large bucket) or where the operator prefers to schedule \
+                 backend sweeps on a separate cadence. Individual \
+                 backend-touching sub-jobs can still be triggered directly.",
+            ),
         ];
         PARAMS
     }
@@ -167,13 +197,19 @@ impl JobHandler for ConsistencyBatch {
         // handles too, but we don't need them — `registry.trigger`
         // does the lookup by name itself. `snapshot` returns the
         // per-job public DTOs, which is exactly the shape we want.
-        let targets: Vec<String> = registry
+        //
+        // `db_only=true` further filters out backend-touching sub-jobs
+        // (see `touches_backend`); their names are captured separately
+        // for the outcome so operators can see what was intentionally
+        // skipped, not left out through a config/registration bug.
+        let db_only = args.get_bool("db_only");
+        let (targets, skipped): (Vec<String>, Vec<String>) = registry
             .snapshot()
             .await
             .into_iter()
             .filter(|s| is_batch_child(&s.name))
             .map(|s| s.name)
-            .collect();
+            .partition(|name| !(db_only && touches_backend(name)));
 
         let mut per_check = serde_json::Map::new();
         let mut ok_count = 0u64;
@@ -239,6 +275,8 @@ impl JobHandler for ConsistencyBatch {
                 "deep": args.get_bool("deep"),
                 "force": args.get_bool("force"),
                 "repair": args.get_bool("repair"),
+                "db_only": db_only,
+                "skipped_db_only": skipped,
                 "ok": ok_count,
                 "err": err_count,
             }),

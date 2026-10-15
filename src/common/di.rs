@@ -3136,7 +3136,7 @@ impl AppServiceFactory {
                 let base_url = self.config.base_url();
 
                 let device_auth_svc = Arc::new(DeviceAuthService::new(
-                    device_code_repo,
+                    device_code_repo.clone(),
                     auth_svc.token_service.clone(),
                     user_repo,
                     session_repo,
@@ -3144,6 +3144,22 @@ impl AppServiceFactory {
                 ));
                 app_state.device_auth_service = Some(device_auth_svc);
                 tracing::info!("Device Authorization Grant (RFC 8628) service initialized");
+
+                // Expired device-code cleanup — periodic janitor so the
+                // `auth.device_codes` table doesn't accumulate pending
+                // rows from abandoned `/authorize` ceremonies. Read paths
+                // already filter by `expires_at > NOW()` so this is a
+                // bloat guard, not a correctness fix; registering as a
+                // JobHandler (not a detached task) gives the operator a
+                // run history and an admin trigger. See
+                // `uploads_cleanup_service` for the same shape.
+                let _ = Arc::new(
+                    crate::infrastructure::services::device_codes_cleanup_service::DeviceCodesCleanup::new(
+                        device_code_repo,
+                    ),
+                )
+                .register(&app_state.core.job_registry)
+                .await;
             }
 
             // 9d. Wire App Password service (reuse shared instance)
