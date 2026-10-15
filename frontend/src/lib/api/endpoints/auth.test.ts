@@ -56,6 +56,7 @@ vi.mock('../generated/openapi/sdk.gen', () => ({
 	dpopBind: vi.fn(),
 	getSystemStatus: vi.fn(),
 	login: vi.fn(),
+	logout: vi.fn(),
 	oidcExchange: vi.fn(),
 	oidcLinkStart: vi.fn(),
 	oidcProviders: vi.fn(),
@@ -66,12 +67,32 @@ vi.mock('../generated/openapi/sdk.gen', () => ({
 	upgradeToInternal: vi.fn()
 }));
 import { apiFetch, apiJson } from '$lib/api/client';
-import { login as sdkLoginMock } from '../generated/openapi/sdk.gen';
+import {
+	getSystemStatus as sdkGetSystemStatusMock,
+	login as sdkLoginMock,
+	logout as sdkLogoutMock,
+	oidcExchange as sdkOidcExchangeMock,
+	oidcProviders as sdkOidcProvidersMock,
+	register as sdkRegisterMock,
+	sendMagicLink as sdkSendMagicLinkMock,
+	setupAdmin as sdkSetupAdminMock
+} from '../generated/openapi/sdk.gen';
 import * as auth from './auth';
 import { __resetOpaqueParamsCache } from './opaque';
 const f = apiFetch as unknown as ReturnType<typeof vi.fn>;
 const j = apiJson as unknown as ReturnType<typeof vi.fn>;
+// Expose the SDK stubs the migrated wrappers call. Each is `vi.fn()`
+// from the `vi.mock('../generated/openapi/sdk.gen')` block above —
+// cast here so individual tests can `.mockResolvedValueOnce(...)` or
+// read `.mock.calls`.
 const sdkLogin = sdkLoginMock as unknown as ReturnType<typeof vi.fn>;
+const sdkLogout = sdkLogoutMock as unknown as ReturnType<typeof vi.fn>;
+const sdkOidcProviders = sdkOidcProvidersMock as unknown as ReturnType<typeof vi.fn>;
+const sdkGetSystemStatus = sdkGetSystemStatusMock as unknown as ReturnType<typeof vi.fn>;
+const sdkOidcExchange = sdkOidcExchangeMock as unknown as ReturnType<typeof vi.fn>;
+const sdkRegister = sdkRegisterMock as unknown as ReturnType<typeof vi.fn>;
+const sdkSendMagicLink = sdkSendMagicLinkMock as unknown as ReturnType<typeof vi.fn>;
+const sdkSetupAdmin = sdkSetupAdminMock as unknown as ReturnType<typeof vi.fn>;
 // Several auth probes use the raw global fetch (NOT apiFetch) on purpose.
 // `headers: new Headers()` matches the real `fetch()` contract — several
 // probes (fetchMe, tryRefresh) run through the DPoP nonce-update shim,
@@ -103,8 +124,26 @@ it('exercises the auth endpoints (success paths)', async () => {
 	await auth.register('e@x.test', 'p', 'u').catch(() => {});
 	await auth.sendMagicLink('e@x.test').catch(() => {});
 	await auth.logout().catch(() => {});
+	// Smoke count across every wire surface this file routes through:
+	//   * apiFetch (`f`) — still used by fetchMe + OPAQUE helpers in opaque.ts
+	//   * raw global fetch (`fc`) — tryRefresh goes direct
+	//   * SDK stubs — the 8 Phase-4-migrated wrappers call these; each stub
+	//     records its invocation whether or not it resolved to a usable value
+	// The spirit is "every function was called and ran its code path", not
+	// a precise count — the exact number shifts as more wrappers migrate.
 	const fc = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
-	expect(fc + f.mock.calls.length).toBeGreaterThan(3);
+	const sdkMocks = [
+		sdkLogin,
+		sdkLogout,
+		sdkOidcProviders,
+		sdkGetSystemStatus,
+		sdkSetupAdmin,
+		sdkOidcExchange,
+		sdkRegister,
+		sdkSendMagicLink
+	];
+	const sdkCount = sdkMocks.reduce((n, m) => n + m.mock.calls.length, 0);
+	expect(fc + f.mock.calls.length + sdkCount).toBeGreaterThan(5);
 });
 it('fetchMe returns null when the probe is not ok', async () => {
 	// `headers: new Headers()` matches real `fetch()` — the DPoP-aware

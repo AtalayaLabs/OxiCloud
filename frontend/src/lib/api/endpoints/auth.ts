@@ -4,11 +4,11 @@
  * a genuine failure to the caller.
  */
 import { ApiError, apiFetch } from '$lib/api/client';
-import { getCsrfHeaders } from '$lib/api/csrf';
 import {
 	dpopBind,
 	getSystemStatus,
 	login as sdkLogin,
+	logout as sdkLogout,
 	oidcExchange,
 	oidcLinkStart,
 	oidcProviders,
@@ -529,20 +529,37 @@ export async function logout(): Promise<LogoutResult> {
 	// left ON across the goto to /login. See `client.ts::logoutInProgress`
 	// for what the gate suppresses (short-circuits ambient fetches with
 	// AbortError + blocks the session-expired divert).
-	const res = await apiFetch('/api/auth/logout', {
-		method: 'POST',
-		credentials: 'same-origin',
-		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-		body: '{}'
-	});
+	//
+	// Three phases to preserve under the SDK swap:
+	//   1. HTTP call (may fail — server down, 500, aborted mid-logout).
+	//   2. DPoP browser-state teardown — UNCONDITIONAL, runs even if
+	//      step 1 failed, so a user's logout intent never leaves a
+	//      stale keypair/nonce around.
+	//   3. post_logout_url extraction — only on success.
+	let body: { post_logout_url?: unknown } | undefined;
+	try {
+		// Empty body: the server-side handler takes `axum::body::Bytes`,
+		// not a typed Json extractor, and its own docstring states
+		// "Optional — omit when using the HttpOnly cookie". The SDK types
+		// require `refresh_token` only because the utoipa annotation on
+		// `logout_handler` declares `request_body = inline(RefreshTokenDto)`
+		// without marking it optional — a backend-side annotation fix is
+		// tracked separately. Cast through `as never` so TypeScript accepts
+		// the correct empty-body call without introducing a bogus token.
+		body = (await sdkLogout({ body: {} as never, throwOnError: true })) as {
+			post_logout_url?: unknown;
+		};
+	} catch {
+		// Server rejected logout (500, network down, aborted). The DPoP
+		// teardown below still fires — leaving a stale keypair would
+		// confuse the next login's bind step. `{}` returned at the end.
+	}
 
-	// Wipe DPoP browser state so the next login mints a fresh
-	// keypair — no correlation across the logout boundary is
-	// desirable (a new session is a new identity from the
-	// per-request-signature standpoint). Runs UNCONDITIONALLY of
-	// the logout HTTP status: even if the server call failed,
-	// the user's intent was to log out, and leaving a stale
-	// keypair around would confuse the next login's bind step.
+	// Wipe DPoP browser state so the next login mints a fresh keypair —
+	// no correlation across the logout boundary is desirable (a new
+	// session is a new identity from the per-request-signature
+	// standpoint). Runs UNCONDITIONALLY of the server response: the
+	// user's intent was to log out, period.
 	try {
 		const { clearKeypair } = await import('$lib/auth/dpop');
 		const { clearNonce } = await import('$lib/auth/dpop-proof');
@@ -557,11 +574,6 @@ export async function logout(): Promise<LogoutResult> {
 		console.debug('dpop: cleanup failed during logout', err);
 	}
 
-	if (!res.ok) return {};
-	try {
-		const body = (await res.json()) as { post_logout_url?: unknown };
-		return typeof body?.post_logout_url === 'string' ? { postLogoutUrl: body.post_logout_url } : {};
-	} catch {
-		return {};
-	}
+	if (!body) return {};
+	return typeof body.post_logout_url === 'string' ? { postLogoutUrl: body.post_logout_url } : {};
 }
