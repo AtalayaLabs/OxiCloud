@@ -92,6 +92,30 @@ it('fetchMe returns null when the probe is not ok', async () => {
 	f.mockResolvedValue({ ok: false, status: 401, headers: new Headers(), json: async () => ({}) });
 	await expect(auth.fetchMe()).resolves.toBeNull();
 });
+it('fetchMe opts out of the refresh+retry interceptor on 401', async () => {
+	// `fetchMe` is the boot-time "am I logged in?" probe. On an expired
+	// cookie it MUST return null cleanly, not silently refresh+retry —
+	// a refresh at boot defeats the "cleanly logged-out on boot" path.
+	// Pinned here because a Phase-4 swap to a generated client with a
+	// different default would silently flip this behaviour; nothing else
+	// in the suite would catch it.
+	f.mockResolvedValueOnce({
+		ok: false,
+		status: 401,
+		headers: new Headers(),
+		json: async () => ({})
+	});
+	await expect(auth.fetchMe()).resolves.toBeNull();
+	// One apiFetch call — no second trip, no refresh dance.
+	expect(f).toHaveBeenCalledTimes(1);
+	// And the opt-out option is on the call site. If this disappears,
+	// the migrated version must preserve the semantic through whatever
+	// equivalent the generated client exposes.
+	expect(f).toHaveBeenCalledWith(
+		'/api/auth/me',
+		expect.objectContaining({ retryUnauthorized: false })
+	);
+});
 it('tryRefresh returns false when the refresh fails', async () => {
 	f.mockResolvedValue({ ok: false, status: 401, headers: new Headers(), json: async () => ({}) });
 	await expect(auth.tryRefresh()).resolves.toBe(false);
