@@ -3,6 +3,11 @@ import { apiFetch } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import type { SelfUser } from '$lib/api/types';
 import { t } from '$lib/i18n/index.svelte';
+import {
+	createAppPassword as sdkCreateAppPassword,
+	listAppPasswords as sdkListAppPasswords,
+	revokeAppPassword as sdkRevokeAppPassword
+} from '../generated/openapi/sdk.gen';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
@@ -121,33 +126,83 @@ export function isAutoAppPassword(pw: Pick<AppPassword, 'label'>): boolean {
 }
 
 export async function listAppPasswords(): Promise<AppPassword[]> {
-	const res = await apiFetch('/api/auth/app-passwords', { credentials: 'same-origin' });
-	if (!res.ok) return [];
-	const data = (await res.json()) as AppPassword[] | { app_passwords?: AppPassword[] };
-	return Array.isArray(data) ? data : (data.app_passwords ?? []);
+	// Phase 4 — SDK call. Swallow every error path to `[]` to preserve
+	// the pre-migration contract (the apiFetch wrapper returned `[]` on
+	// any non-2xx — not a `throw` — so the profile page can render the
+	// empty state without a toast cascade on transient failures).
+	//
+	// Server DTO is `AppPasswordListResponseDto { app_passwords: Summary[] }`.
+	// `AppPasswordSummaryDto` is a strict superset of this file's local
+	// `AppPassword` interface, so the field-by-field map below is a
+	// NARROWING projection, not a widening: callers see only the four
+	// stable fields they've always consumed, which keeps the Svelte
+	// page's rendering code insulated from the richer wire shape
+	// (prefix / scopes / expires_at added for the admin audit view
+	// but not needed on the profile card today).
+	//
+	// `last_used_at` collapses `null` → `undefined` because the local
+	// `AppPassword` interface declares the field as optional `string`
+	// (not `string | null`) and the Svelte page's `pw.last_used_at &&
+	// format(…)` style check depends on undefined-vs-string semantics.
+	try {
+		const data = await sdkListAppPasswords({ throwOnError: true });
+		return data.app_passwords.map((p) => ({
+			id: p.id,
+			label: p.label,
+			active: p.active,
+			created_at: p.created_at,
+			last_used_at: p.last_used_at ?? undefined
+		}));
+	} catch {
+		return [];
+	}
 }
 
 /** Returns the one-time generated password (shown once). */
 export async function createAppPassword(label: string): Promise<string> {
-	const res = await apiFetch('/api/auth/app-passwords', {
-		method: 'POST',
-		credentials: 'same-origin',
-		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-		body: JSON.stringify({ label })
-	});
-	if (!res.ok) {
-		const e = (await res.json().catch(() => ({}))) as { error?: string; message?: string };
-		throw new Error(e.error || e.message || `create app password failed: ${res.status}`);
+	// Phase 4 — SDK call. Server returns `AppPasswordCreatedResponseDto`
+	// which is a rich envelope (`password`, `username`, `scopes`,
+	// `instructions`, `id`, `label`, `expires_at`). The pre-migration
+	// contract exposed ONLY `.password` as a plain string, so the Svelte
+	// page's "copy this once" card is unaware of the richer shape.
+	//
+	// Preserving that narrow contract on purpose: the Svelte card today
+	// only renders the password + a copy button. Widening to pass the
+	// full DTO would churn the UI without unlocking anything the admin
+	// Hurl pin at `tests/api/app_passwords.hurl` hasn't already covered.
+	// If the Svelte card ever grows an "advanced details" expander for
+	// username / scopes / instructions, flip this to return the full
+	// DTO (type is already in the SDK as `AppPasswordCreatedResponseDto`).
+	//
+	// Error mapping mirrors the pre-migration apiFetch path: the SDK
+	// throws the PARSED body on non-2xx (same `error_type` / `message`
+	// shape as `ErrorResponseDto`), so we read it directly off `e.data`
+	// without a second JSON parse.
+	try {
+		const data = await sdkCreateAppPassword({ body: { label }, throwOnError: true });
+		return data.password;
+	} catch (e) {
+		const err = e as {
+			response?: { status?: number };
+			data?: { error?: string; message?: string };
+		};
+		const msg = err.data?.error || err.data?.message;
+		throw new Error(msg || `create app password failed: ${err.response?.status ?? 0}`, {
+			cause: e
+		});
 	}
-	const data = (await res.json()) as { password: string };
-	return data.password;
 }
 
 export async function revokeAppPassword(id: string): Promise<void> {
-	const res = await apiFetch(`/api/auth/app-passwords/${encodeURIComponent(id)}`, {
-		method: 'DELETE',
-		credentials: 'same-origin',
-		headers: getCsrfHeaders()
-	});
-	if (!res.ok) throw new Error(`revoke app password failed: ${res.status}`);
+	// Phase 4 — SDK call. Server returns `AppPasswordRevokeResponseDto`
+	// (`{status: "revoked", id}`); the wrapper ignores it because the
+	// Svelte page just re-fetches the list after a successful revoke.
+	try {
+		await sdkRevokeAppPassword({ path: { id }, throwOnError: true });
+	} catch (e) {
+		const err = e as { response?: { status?: number } };
+		throw new Error(`revoke app password failed: ${err.response?.status ?? 0}`, {
+			cause: e
+		});
+	}
 }
