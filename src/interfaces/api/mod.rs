@@ -96,6 +96,7 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         handlers::auth_handler::dpop_bind,
         handlers::auth_handler::send_magic_link,
         handlers::auth_handler::update_profile,
+        handlers::auth_handler::update_user_image,
         handlers::auth_handler::upgrade_to_internal,
         // File handlers (free functions — see file_handler.rs for why)
         handlers::file_handler::list_files_query,

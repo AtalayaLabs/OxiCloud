@@ -1,15 +1,14 @@
 /** Profile / account endpoints — ported from views/profile/profile.js. */
-import { apiFetch } from '$lib/api/client';
-import { getCsrfHeaders } from '$lib/api/csrf';
 import type { SelfUser } from '$lib/api/types';
 import { t } from '$lib/i18n/index.svelte';
 import {
+	changePassword as sdkChangePassword,
 	createAppPassword as sdkCreateAppPassword,
 	listAppPasswords as sdkListAppPasswords,
-	revokeAppPassword as sdkRevokeAppPassword
+	revokeAppPassword as sdkRevokeAppPassword,
+	updateProfile as sdkUpdateProfile,
+	updateUserImage as sdkUpdateUserImage
 } from '../generated/openapi/sdk.gen';
-
-const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
 export interface ProfilePatch {
 	username?: string;
@@ -30,49 +29,77 @@ export interface ProfilePatch {
 }
 
 export async function updateProfile(patch: ProfilePatch): Promise<SelfUser> {
-	const res = await apiFetch('/api/auth/me/profile', {
-		method: 'PATCH',
-		credentials: 'same-origin',
-		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-		body: JSON.stringify(patch)
-	});
-	if (!res.ok) {
-		const err = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
-		// 409 covers two distinct conflicts that share the same status. The
-		// server's audit log carries the structured `reason`; the JSON body
-		// only exposes a human-readable message, so we branch on that.
-		if (res.status === 409) {
-			const msg = (err.message || err.error || '').toLowerCase();
+	// Phase 4 — SDK call. The pre-migration contract branched on three
+	// response statuses to pick an i18n key:
+	//   * 409 "already claimed" → profile.username_immutable_error
+	//   * 409 "taken"           → profile.username_taken_error
+	//   * 403                   → profile.edit_oidc_managed
+	//   * everything else       → raw message
+	//
+	// The three Vitest pins at `profile.test.ts` for these branches
+	// still cover the exact i18n-key selection, so swapping the
+	// transport underneath must preserve byte-identical mapping.
+	//
+	// SDK throws the parsed body on non-2xx (same pattern as
+	// `endpoints/auth.ts`), so we read `.response.status` + `.data`
+	// off the thrown object directly — no second JSON parse.
+	try {
+		const data = await sdkUpdateProfile({
+			body: patch as never,
+			throwOnError: true
+		});
+		return data as SelfUser;
+	} catch (e) {
+		const err = e as {
+			response?: { status?: number };
+			data?: { message?: string; error?: string };
+		};
+		const status = err.response?.status ?? 0;
+		const msg = (err.data?.message || err.data?.error || '').toLowerCase();
+		if (status === 409) {
 			const key = msg.includes('already claimed')
 				? 'profile.username_immutable_error'
 				: 'profile.username_taken_error';
 			const fallback = msg.includes('already claimed')
 				? "Your username has already been set and can't be changed."
 				: 'That username is already taken.';
-			throw new Error(t(key, fallback));
+			throw new Error(t(key, fallback), { cause: e });
 		}
-		// 403 here means the field is governed by the identity provider.
-		if (res.status === 403) {
+		if (status === 403) {
 			throw new Error(
 				t(
 					'profile.edit_oidc_managed',
 					'Your profile is managed by your identity provider. Update it there; changes appear on your next sign-in.'
-				)
+				),
+				{ cause: e }
 			);
 		}
-		throw new Error(err.message || err.error || `profile update failed: ${res.status}`);
+		throw new Error(err.data?.message || err.data?.error || `profile update failed: ${status}`, {
+			cause: e
+		});
 	}
-	return (await res.json()) as SelfUser;
 }
 
 export async function changePassword(currentPw: string, newPw: string): Promise<void> {
-	const res = await apiFetch('/api/auth/change-password', {
-		method: 'PUT',
-		credentials: 'same-origin',
-		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-		body: JSON.stringify({ current_password: currentPw, new_password: newPw })
-	});
-	if (!res.ok) throw new Error(`password change failed: ${res.status}`);
+	// Phase 4 — SDK call. Preserves the pre-migration contract: on
+	// non-2xx, throw a simple `"password change failed: <status>"`
+	// error (no body-shape branching here — the FE's `/profile` page
+	// surfaces the raw error to the user via its own toast layer).
+	//
+	// The OPAQUE re-mint below runs ONLY after the server-side
+	// change-password commits — same ordering as before. Session is
+	// preserved by the backend's `revoke_other_user_sessions` so the
+	// opaque sync's session-authenticated register endpoints are
+	// reachable straight away.
+	try {
+		await sdkChangePassword({
+			body: { current_password: currentPw, new_password: newPw },
+			throwOnError: true
+		});
+	} catch (e) {
+		const err = e as { response?: { status?: number } };
+		throw new Error(`password change failed: ${err.response?.status ?? 0}`, { cause: e });
+	}
 	// Re-mint the OPAQUE envelope under the new passphrase — SAME
 	// session is still valid after change_password (the backend now
 	// preserves the caller's session via `revoke_other_user_sessions`;
@@ -96,13 +123,26 @@ export async function changePassword(currentPw: string, newPw: string): Promise<
 }
 
 export async function updateAvatar(image: string | null): Promise<void> {
-	const res = await apiFetch('/api/auth/me/image', {
-		method: 'PUT',
-		credentials: 'same-origin',
-		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-		body: JSON.stringify({ image })
-	});
-	if (!res.ok) throw new Error(`avatar update failed: ${res.status}`);
+	// Phase 4 — SDK call. Prior to this commit the handler at
+	// `src/interfaces/api/handlers/auth_handler.rs:987` had a literal
+	// `// TODO: add utoipa` comment and the SDK carried no generated
+	// function for `/api/auth/me/image`; this migration ships the
+	// utoipa annotation + SDK regen alongside the FE flip so all three
+	// profile wrappers land in one commit.
+	//
+	// Null image clears the stored avatar — the server treats the
+	// field uniformly (`UpdateUserImageDto { image: Option<String> }`)
+	// so we pass it through. Response is an empty 200; the Svelte
+	// profile page re-fetches `GET /me` on next session.load tick.
+	try {
+		await sdkUpdateUserImage({
+			body: { image },
+			throwOnError: true
+		});
+	} catch (e) {
+		const err = e as { response?: { status?: number } };
+		throw new Error(`avatar update failed: ${err.response?.status ?? 0}`, { cause: e });
+	}
 }
 
 export interface AppPassword {
