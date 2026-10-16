@@ -19,6 +19,13 @@ use crate::common::errors::{DomainError, ErrorKind};
 /// 1 hour balances freshness against unnecessary network requests.
 const OIDC_CACHE_TTL: Duration = Duration::from_secs(3600);
 
+/// Appended to every discovery connection failure. Lists container
+/// reachability, CA trust, and an incorrect Issuer URL as possibilities
+/// for any such failure. See AtalayaLabs/OxiCloud#699.
+const DISCOVERY_CONNECTION_HINT: &str = "Possible causes include the container being unable to \
+     reach the issuer, the issuer certificate not being trusted by the container CA store, \
+     or an incorrect Issuer URL.";
+
 // ============================================================================
 // OIDC Discovery Document
 // ============================================================================
@@ -213,6 +220,33 @@ impl OidcService {
         })
     }
 
+    /// Operator-facing text for a failed discovery HTTP send.
+    ///
+    /// Reqwest's `Display` is only the outer layer (`error sending request
+    /// for url (…)`), and that URL can carry userinfo or query credentials.
+    /// The URL is removed from the owned error before the `source()` chain
+    /// is walked, so the underlying cause reaches the admin test result and
+    /// the container log. Emits the same structured warning for every caller.
+    /// See AtalayaLabs/OxiCloud#699.
+    pub(crate) fn format_discovery_connection_error(err: reqwest::Error) -> String {
+        let err = err.without_url();
+        let detail = Self::render_discovery_connection_error(&err);
+        tracing::warn!(error = %detail, "OIDC discovery connection failed");
+        detail
+    }
+
+    /// Walk `err` and each `source()` into one diagnostic line.
+    fn render_discovery_connection_error(err: &(dyn std::error::Error + 'static)) -> String {
+        let mut chain = err.to_string();
+        let mut current = std::error::Error::source(err);
+        while let Some(cause) = current {
+            chain.push_str(" -> ");
+            chain.push_str(&cause.to_string());
+            current = std::error::Error::source(cause);
+        }
+        format!("Failed to fetch OIDC discovery: {chain}. {DISCOVERY_CONNECTION_HINT}")
+    }
+
     /// Fetch and cache the OIDC discovery document (TTL: 1 hour)
     async fn get_discovery(&self) -> Result<OidcDiscovery, DomainError> {
         // Check cache first (return cached value only if not expired)
@@ -241,7 +275,7 @@ impl OidcService {
                 DomainError::new(
                     ErrorKind::InternalError,
                     "OIDC",
-                    format!("Failed to fetch OIDC discovery: {}", e),
+                    Self::format_discovery_connection_error(e),
                 )
             })?;
 
@@ -808,5 +842,307 @@ mod urlencoding {
             }
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use tokio::io::AsyncWriteExt;
+
+    #[derive(Clone)]
+    struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for SharedBuf {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("log buffer").extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedBuf {
+        type Writer = SharedBuf;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            SharedBuf(Arc::clone(&self.0))
+        }
+    }
+
+    fn capture_warnings(f: impl FnOnce()) -> String {
+        let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::new(
+                "oxicloud::infrastructure::services::oidc_service=warn",
+            ))
+            .with_ansi(false)
+            .with_writer(SharedBuf(buf.clone()))
+            .finish();
+        tracing::subscriber::with_default(subscriber, f);
+        String::from_utf8(buf.lock().expect("log buffer").clone()).expect("utf8 logs")
+    }
+
+    /// Accept loopback connections and drop them, so the client sees a
+    /// transport failure rather than an HTTP status.
+    async fn closing_listener() -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    break;
+                };
+                drop(stream);
+            }
+        });
+        addr
+    }
+
+    fn issuer_config(issuer_url: impl Into<String>) -> OidcConfig {
+        OidcConfig {
+            issuer_url: issuer_url.into(),
+            ..OidcConfig::default()
+        }
+    }
+
+    fn credential_url(addr: std::net::SocketAddr) -> String {
+        format!(
+            "http://sentinel-user:sentinel-pass@{addr}/.well-known/openid-configuration?client_secret=sentinel-query"
+        )
+    }
+
+    fn assert_credentials_absent(text: &str) {
+        assert!(!text.contains("sentinel-user"), "{text}");
+        assert!(!text.contains("sentinel-pass"), "{text}");
+        assert!(!text.contains("sentinel-query"), "{text}");
+        assert!(!text.contains("for url ("), "{text}");
+    }
+
+    #[test]
+    fn discovery_error_chain_keeps_deepest_cause_and_bare_error_stays_readable() {
+        #[derive(Debug)]
+        struct Leaf(&'static str);
+        impl std::fmt::Display for Leaf {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.0)
+            }
+        }
+        impl std::error::Error for Leaf {}
+
+        #[derive(Debug)]
+        struct Wrap {
+            msg: &'static str,
+            source: Option<Box<dyn std::error::Error + Send + Sync>>,
+        }
+        impl std::fmt::Display for Wrap {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.msg)
+            }
+        }
+        impl std::error::Error for Wrap {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                self.source.as_deref().map(|err| err as _)
+            }
+        }
+
+        let nested = Wrap {
+            msg: "error sending request",
+            source: Some(Box::new(Wrap {
+                msg: "connect failed",
+                source: Some(Box::new(Leaf("deepest transport cause"))),
+            })),
+        };
+        let formatted = OidcService::render_discovery_connection_error(&nested);
+        let outer = formatted.find("error sending request").expect("outer");
+        let mid = formatted.find("connect failed").expect("mid");
+        let deep = formatted.find("deepest transport cause").expect("deepest");
+        assert!(outer < mid && mid < deep, "{formatted}");
+        assert!(formatted.contains(DISCOVERY_CONNECTION_HINT), "{formatted}");
+
+        let bare = Leaf("issuer unreachable");
+        let formatted = OidcService::render_discovery_connection_error(&bare);
+        assert!(formatted.contains("issuer unreachable"), "{formatted}");
+        assert!(!formatted.contains(" -> "), "{formatted}");
+        assert!(formatted.contains(DISCOVERY_CONNECTION_HINT), "{formatted}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn reqwest_close_keeps_deepest_cause_and_drops_url_credentials() {
+        let addr = closing_listener().await;
+        let url = credential_url(addr);
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        let err = client.get(&url).send().await.expect_err("listener closes");
+        let err = err.without_url();
+        assert!(err.url().is_none());
+        let mut deepest: &(dyn std::error::Error + 'static) = &err;
+        while let Some(next) = std::error::Error::source(deepest) {
+            deepest = next;
+        }
+        assert!(
+            std::error::Error::source(&err).is_some(),
+            "a closed connection should nest a cause under reqwest"
+        );
+        let deepest_text = deepest.to_string();
+        let formatted = OidcService::render_discovery_connection_error(&err);
+        assert!(
+            formatted.contains(&deepest_text),
+            "missing {deepest_text} in {formatted}"
+        );
+        assert_credentials_absent(&formatted);
+
+        let err = client.get(&url).send().await.expect_err("listener closes");
+        let logs = capture_warnings(|| {
+            let formatted = OidcService::format_discovery_connection_error(err);
+            assert!(formatted.contains(" -> "), "{formatted}");
+            assert!(formatted.contains(DISCOVERY_CONNECTION_HINT), "{formatted}");
+            assert_credentials_absent(&formatted);
+        });
+        assert!(logs.contains("OIDC discovery connection failed"), "{logs}");
+        assert_credentials_absent(&logs);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn get_discovery_connection_failure_stays_internal_and_warns_the_cause() {
+        let addr = closing_listener().await;
+        let svc = OidcService::new(OidcConfig {
+            issuer_url: format!(
+                "http://sentinel-user:sentinel-pass@{addr}?client_secret=sentinel-query"
+            ),
+            client_secret: "client-secret-sentinel".to_string(),
+            ..OidcConfig::default()
+        });
+
+        let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::new(
+                "oxicloud::infrastructure::services::oidc_service=warn",
+            ))
+            .with_ansi(false)
+            .with_writer(SharedBuf(buf.clone()))
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let err = svc.get_discovery().await.expect_err("connection closes");
+        drop(_guard);
+        let logs = String::from_utf8(buf.lock().expect("log buffer").clone()).expect("utf8 logs");
+
+        // InternalError is the public auth contract: the callback maps it
+        // to login_error=callback_failed, and HTTP 500 sanitizes the text.
+        assert_eq!(err.kind, ErrorKind::InternalError);
+        assert_eq!(err.entity_type, "OIDC");
+        assert!(err.message.contains(" -> "), "{}", err.message);
+        assert!(
+            err.message.contains(DISCOVERY_CONNECTION_HINT),
+            "{}",
+            err.message
+        );
+        assert_credentials_absent(&err.message);
+        assert!(
+            !err.message.contains("client-secret-sentinel"),
+            "{}",
+            err.message
+        );
+        assert!(logs.contains("OIDC discovery connection failed"), "{logs}");
+        assert_credentials_absent(&logs);
+        assert!(!logs.contains("client-secret-sentinel"), "{logs}");
+        assert!(!logs.contains("TestOidcConnectionDto"), "{logs}");
+    }
+
+    async fn spawn_http(status: &str, body: &str) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let raw = format!(
+            "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let _ = stream.write_all(raw.as_bytes()).await;
+            }
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn get_discovery_success_parses_and_caches_metadata() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hits_task = hits.clone();
+        let body = r#"{"issuer":"https://idp.example/real","authorization_endpoint":"https://idp.example/auth","token_endpoint":"https://idp.example/token","userinfo_endpoint":"https://idp.example/userinfo","jwks_uri":"https://idp.example/jwks"}"#;
+        let raw = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                hits_task.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = stream.write_all(raw.as_bytes()).await;
+            }
+        });
+
+        let svc = OidcService::new(issuer_config(format!("http://{addr}")));
+
+        let first = svc.get_discovery().await.expect("discovery parses");
+        assert_eq!(first.issuer, "https://idp.example/real");
+        assert_eq!(first.authorization_endpoint, "https://idp.example/auth");
+        assert_eq!(first.token_endpoint, "https://idp.example/token");
+        assert_eq!(
+            first.userinfo_endpoint.as_deref(),
+            Some("https://idp.example/userinfo")
+        );
+        assert_eq!(first.jwks_uri, "https://idp.example/jwks");
+        assert_eq!(
+            svc.cached_issuer().as_deref(),
+            Some("https://idp.example/real")
+        );
+
+        let second = svc.get_discovery().await.expect("cached discovery");
+        assert_eq!(second.issuer, first.issuer);
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn get_discovery_http_status_and_malformed_json_stay_distinct() {
+        let status_addr = spawn_http("503 Service Unavailable", "response-body-sentinel").await;
+        let status_err = OidcService::new(issuer_config(format!("http://{status_addr}")))
+            .get_discovery()
+            .await
+            .expect_err("503");
+        assert_eq!(status_err.kind, ErrorKind::InternalError);
+        assert!(
+            status_err
+                .message
+                .starts_with("OIDC discovery returned status 503"),
+            "{}",
+            status_err.message
+        );
+        assert!(!status_err.message.contains(DISCOVERY_CONNECTION_HINT));
+        assert!(!status_err.message.contains("response-body-sentinel"));
+
+        let json_addr = spawn_http("200 OK", "not-json").await;
+        let json_err = OidcService::new(issuer_config(format!("http://{json_addr}")))
+            .get_discovery()
+            .await
+            .expect_err("malformed json");
+        assert_eq!(json_err.kind, ErrorKind::InternalError);
+        assert!(
+            json_err
+                .message
+                .starts_with("Failed to parse OIDC discovery:"),
+            "{}",
+            json_err.message
+        );
+        assert!(!json_err.message.contains(DISCOVERY_CONNECTION_HINT));
     }
 }

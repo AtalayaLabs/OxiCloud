@@ -287,12 +287,14 @@ impl AdminSettingsService {
         let resp = match client.get(&discovery_url).send().await {
             Ok(r) => r,
             Err(e) => {
+                // Same cause chain and warning as runtime discovery.
+                // The DTO message is what the admin UI shows; the warning
+                // is what shows up in the container log. The request URL
+                // is stripped inside the formatter. See AtalayaLabs/OxiCloud#699.
+                let message = OidcService::format_discovery_connection_error(e);
                 return Ok(OidcTestResultDto {
                     success: false,
-                    message: format!(
-                        "Cannot reach the OIDC provider: {}. Check your Issuer URL.",
-                        e
-                    ),
+                    message,
                     issuer: None,
                     authorization_endpoint: None,
                     token_endpoint: None,
@@ -449,5 +451,124 @@ impl AdminSettingsService {
                 Some(updated_by),
             )
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone)]
+    struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for SharedBuf {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("log buffer").extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedBuf {
+        type Writer = SharedBuf;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            SharedBuf(Arc::clone(&self.0))
+        }
+    }
+
+    /// `test_oidc_connection` only needs the service to exist; the send
+    /// path never touches the database. A lazy pool stays unconnected.
+    fn service() -> AdminSettingsService {
+        let pool = Arc::new(
+            sqlx::postgres::PgPoolOptions::new()
+                .connect_lazy("postgres://oxicloud@127.0.0.1:1/oxicloud")
+                .expect("lazy pool"),
+        );
+        let auth = Arc::new(AuthApplicationService::new(
+            Arc::new(crate::infrastructure::repositories::UserPgRepository::new(
+                pool.clone(),
+            )),
+            Arc::new(crate::infrastructure::repositories::SessionPgRepository::new(pool.clone())),
+            Arc::new(
+                crate::infrastructure::services::password_hasher::Argon2PasswordHasher::new(
+                    8, 1, 1,
+                ),
+            ),
+            Arc::new(
+                crate::infrastructure::services::jwt_service::JwtTokenService::new(
+                    "test-secret-do-not-use-in-prod-minimum-32-chars".to_string(),
+                    3600,
+                    86400,
+                ),
+            ),
+            std::path::PathBuf::from("/tmp"),
+        ));
+        AdminSettingsService::new(
+            Arc::new(SettingsPgRepository::new(pool)),
+            OidcConfig::default(),
+            auth,
+            "http://127.0.0.1".to_string(),
+        )
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_oidc_connection_send_error_reports_cause_without_credentials() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let issuer_url = format!(
+            "http://sentinel-user:sentinel-pass@127.0.0.1:{port}?client_secret=sentinel-query"
+        );
+        let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::new(
+                "oxicloud::infrastructure::services::oidc_service=warn",
+            ))
+            .with_ansi(false)
+            .with_writer(SharedBuf(buf.clone()))
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let result = service()
+            .test_oidc_connection(TestOidcConnectionDto { issuer_url })
+            .await
+            .expect("connection failure is a result, not an error");
+        drop(_guard);
+        let logs = String::from_utf8(buf.lock().expect("log buffer").clone()).expect("utf8 logs");
+
+        assert!(!result.success);
+        assert!(result.issuer.is_none());
+        assert!(result.authorization_endpoint.is_none());
+        assert!(result.message.contains(" -> "), "{}", result.message);
+        assert!(
+            result.message.contains("container CA store"),
+            "{}",
+            result.message
+        );
+        assert!(
+            !result.message.contains("sentinel-user"),
+            "{}",
+            result.message
+        );
+        assert!(
+            !result.message.contains("sentinel-pass"),
+            "{}",
+            result.message
+        );
+        assert!(
+            !result.message.contains("sentinel-query"),
+            "{}",
+            result.message
+        );
+        assert!(logs.contains("OIDC discovery connection failed"), "{logs}");
+        assert!(!logs.contains("sentinel-user"), "{logs}");
+        assert!(!logs.contains("sentinel-pass"), "{logs}");
+        assert!(!logs.contains("sentinel-query"), "{logs}");
+        assert!(!logs.contains("TestOidcConnectionDto"), "{logs}");
     }
 }
