@@ -34,7 +34,19 @@ pub fn app_password_routes() -> Router<Arc<AppState>> {
 /// [magic-link auth architecture page] for the full visibility model.
 ///
 /// [magic-link auth architecture page]: ../../../../docs/architecture/magic-link-auth.md
-async fn create_app_password(
+#[utoipa::path(
+    post,
+    path = "/api/auth/app-passwords",
+    request_body = CreateAppPasswordRequestDto,
+    responses(
+        (status = 200, description = "App password created — `password` is plain-text and shown exactly ONCE", body = crate::application::dtos::app_password_dto::AppPasswordCreatedResponseDto),
+        (status = 401, description = "Caller is not signed in"),
+        (status = 403, description = "External users cannot mint app passwords"),
+        (status = 409, description = "Caller has no claimed username — app password is unusable without one"),
+    ),
+    tag = "app-passwords"
+)]
+pub async fn create_app_password(
     State(state): State<Arc<AppState>>,
     user: AuthUser,
     Json(request): Json<CreateAppPasswordRequestDto>,
@@ -103,7 +115,16 @@ async fn create_app_password(
 /// GET /api/auth/app-passwords — List all app passwords for the current user.
 ///
 /// Never returns plain-text passwords (only prefix + metadata).
-async fn list_app_passwords(
+#[utoipa::path(
+    get,
+    path = "/api/auth/app-passwords",
+    responses(
+        (status = 200, description = "The caller's app passwords (metadata only, no plain text)", body = crate::application::dtos::app_password_dto::AppPasswordListResponseDto),
+        (status = 401, description = "Caller is not signed in"),
+    ),
+    tag = "app-passwords"
+)]
+pub async fn list_app_passwords(
     State(state): State<Arc<AppState>>,
     user: AuthUser,
 ) -> Result<Json<crate::application::dtos::app_password_dto::AppPasswordListResponseDto>, AppError>
@@ -119,7 +140,21 @@ async fn list_app_passwords(
 }
 
 /// DELETE /api/auth/app-passwords/:id — Revoke an app password.
-async fn revoke_app_password(
+#[utoipa::path(
+    delete,
+    path = "/api/auth/app-passwords/{id}",
+    params(
+        ("id" = String, Path, description = "App-password UUID returned by the create endpoint")
+    ),
+    responses(
+        (status = 200, description = "App password revoked — subsequent Basic-Auth with it returns 401", body = crate::application::dtos::app_password_dto::AppPasswordRevokeResponseDto),
+        (status = 400, description = "`id` is not a valid UUID"),
+        (status = 401, description = "Caller is not signed in"),
+        (status = 404, description = "No app password with this id for the caller"),
+    ),
+    tag = "app-passwords"
+)]
+pub async fn revoke_app_password(
     State(state): State<Arc<AppState>>,
     user: AuthUser,
     axum::extract::Path(id): axum::extract::Path<String>,

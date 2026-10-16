@@ -101,6 +101,25 @@ export default defineConfig({
 		// coverage into tests/e2e/.nyc_output_unit for the combined report.
 		setupFiles: ['./vitest-setup.ts', './vitest-coverage.ts'],
 		include: ['src/**/*.{test,spec}.{js,ts}'],
-		globals: true
+		globals: true,
+		// Automatic retry for the small number of flake-prone cases:
+		//   * `round18.bench.test.ts §F1` — perf gate that asserts a >=4x
+		//     speedup from the incremental Map rebuild. Already loosened
+		//     once (commit 74e48cae on main) but still flaky under CPU
+		//     noise / GC pauses. Local runs usually see 6-10x; retry
+		//     catches the 1-in-10 collapse to <4x without hiding a real
+		//     regression (two retries all collapsing would be deterministic
+		//     and still fail the gate).
+		//   * Worker-RPC teardown races in some component tests
+		//     ("Closing rpc while 'onUserConsoleLog' was pending") —
+		//     vitest 4.1 occasionally logs a mocked function during
+		//     teardown AFTER the worker starts closing its channel.
+		//     Nothing in the test itself fails; the "error" is scoped
+		//     to the test FILE's run, not any individual case, so retry
+		//     re-runs the file cleanly.
+		// Keep the number small — three attempts is enough to drown
+		// noise without masking a deterministic failure (which fails
+		// all three identically).
+		retry: 2
 	}
 });

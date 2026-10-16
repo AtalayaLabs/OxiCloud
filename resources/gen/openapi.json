@@ -3466,6 +3466,111 @@
         "x-oxicloud-scope": "role:admin"
       }
     },
+    "/api/auth/app-passwords": {
+      "get": {
+        "tags": [
+          "app-passwords"
+        ],
+        "summary": "GET /api/auth/app-passwords — List all app passwords for the current user.",
+        "description": "Never returns plain-text passwords (only prefix + metadata).",
+        "operationId": "list_app_passwords",
+        "responses": {
+          "200": {
+            "description": "The caller's app passwords (metadata only, no plain text)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppPasswordListResponseDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Caller is not signed in"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "app-passwords"
+        ],
+        "summary": "POST /api/auth/app-passwords — Create a new app password.",
+        "description": "Returns the plain-text password ONCE. The user must copy it immediately.\n\nExternal users are rejected with 403: app passwords are persistent\ncredentials, and the magic-link-eligibility rule (`magic_link_eligibility`)\nis built on the assumption that externals have NO other credential\nconfigured. Letting an external mint an app password would break that\ninvariant — and the Basic-Auth surface (`/remote.php/*`, `/ocs/*`)\nhas no semantic meaning for them anyway. See the\n[magic-link auth architecture page] for the full visibility model.\n\n[magic-link auth architecture page]: ../../../../docs/architecture/magic-link-auth.md",
+        "operationId": "create_app_password",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAppPasswordRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "App password created — `password` is plain-text and shown exactly ONCE",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppPasswordCreatedResponseDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Caller is not signed in"
+          },
+          "403": {
+            "description": "External users cannot mint app passwords"
+          },
+          "409": {
+            "description": "Caller has no claimed username — app password is unusable without one"
+          }
+        }
+      }
+    },
+    "/api/auth/app-passwords/{id}": {
+      "delete": {
+        "tags": [
+          "app-passwords"
+        ],
+        "summary": "DELETE /api/auth/app-passwords/:id — Revoke an app password.",
+        "operationId": "revoke_app_password",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "App-password UUID returned by the create endpoint",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "App password revoked — subsequent Basic-Auth with it returns 401",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppPasswordRevokeResponseDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`id` is not a valid UUID"
+          },
+          "401": {
+            "description": "Caller is not signed in"
+          },
+          "404": {
+            "description": "No app password with this id for the caller"
+          }
+        }
+      }
+    },
     "/api/auth/change-password": {
       "put": {
         "tags": [
@@ -3892,6 +3997,42 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Not authenticated"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/auth/me/image": {
+      "put": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Set or clear the current user's profile image.",
+        "description": "Body carries an image reference as either an HTTPS URL or a\ndata: URI (`data:image/png;base64,…`); `null` clears the stored\nvalue and the SPA falls back to the initials-avatar renderer.\nValidation (size cap, MIME allowlist, URL scheme) is enforced in\n`AuthApplicationService::update_user_image`.\n\nResponse is an empty 200 — the SPA re-fetches `GET /me` on the\nnext session.load tick to pick up the new avatar reference.",
+        "operationId": "update_user_image",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateUserImageDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Image updated (or cleared when `image` was null)"
+          },
+          "400": {
+            "description": "Validation error (invalid data URI / unsupported MIME / oversized / malformed URL)"
           },
           "401": {
             "description": "Not authenticated"
@@ -11277,6 +11418,156 @@
           }
         }
       },
+      "AppPasswordCreatedResponseDto": {
+        "type": "object",
+        "description": "Response when an app password is created — includes the plain-text password\nthat is shown ONCE to the user.",
+        "required": [
+          "id",
+          "label",
+          "password",
+          "username",
+          "scopes",
+          "instructions"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Expiration date or null for never."
+          },
+          "id": {
+            "type": "string",
+            "description": "Unique identifier for this app password."
+          },
+          "instructions": {
+            "$ref": "#/components/schemas/AppPasswordInstructions",
+            "description": "Usage instructions for common clients."
+          },
+          "label": {
+            "type": "string",
+            "description": "The label chosen by the user."
+          },
+          "password": {
+            "type": "string",
+            "description": "The plain-text app password — shown only ONCE.\nFormat: `oxicloud-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX`"
+          },
+          "scopes": {
+            "type": "string",
+            "description": "Active scopes."
+          },
+          "username": {
+            "type": "string",
+            "description": "The username to use with HTTP Basic Auth."
+          }
+        }
+      },
+      "AppPasswordInstructions": {
+        "type": "object",
+        "description": "Usage instructions included in the creation response.",
+        "required": [
+          "davx5",
+          "thunderbird",
+          "rclone",
+          "curl_example"
+        ],
+        "properties": {
+          "curl_example": {
+            "type": "string"
+          },
+          "davx5": {
+            "type": "string"
+          },
+          "rclone": {
+            "type": "string"
+          },
+          "thunderbird": {
+            "type": "string"
+          }
+        }
+      },
+      "AppPasswordListResponseDto": {
+        "type": "object",
+        "description": "Response for list endpoint.",
+        "required": [
+          "app_passwords",
+          "total"
+        ],
+        "properties": {
+          "app_passwords": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AppPasswordSummaryDto"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "AppPasswordRevokeResponseDto": {
+        "type": "object",
+        "description": "Response for revoke endpoint.",
+        "required": [
+          "status",
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "AppPasswordSummaryDto": {
+        "type": "object",
+        "description": "Summary of an app password (list view — never includes the plain-text password).",
+        "required": [
+          "id",
+          "label",
+          "prefix",
+          "scopes",
+          "created_at",
+          "active"
+        ],
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "last_used_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "prefix": {
+            "type": "string",
+            "description": "First 8 chars of the token for identification."
+          },
+          "scopes": {
+            "type": "string"
+          }
+        }
+      },
       "AudioMetadataDto": {
         "type": "object",
         "required": [
@@ -12079,6 +12370,32 @@
           },
           "name": {
             "type": "string"
+          }
+        }
+      },
+      "CreateAppPasswordRequestDto": {
+        "type": "object",
+        "description": "POST /api/auth/app-passwords — create a new app password",
+        "required": [
+          "label"
+        ],
+        "properties": {
+          "expires_in_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Optional expiration in days (None = never expires)",
+            "minimum": 0
+          },
+          "label": {
+            "type": "string",
+            "description": "Human-readable label (e.g. \"DAVx5 on Pixel 8\")"
+          },
+          "scopes": {
+            "type": "string",
+            "description": "Comma-separated scopes (defaults to all DAV protocols)"
           }
         }
       },
@@ -17892,6 +18209,19 @@
         "properties": {
           "active": {
             "type": "boolean"
+          }
+        }
+      },
+      "UpdateUserImageDto": {
+        "type": "object",
+        "description": "DTO for updating the user's profile image.",
+        "properties": {
+          "image": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Image URL (https/http) or data URI (data:image/png|webp|jpeg;base64,…). Null to clear."
           }
         }
       },
