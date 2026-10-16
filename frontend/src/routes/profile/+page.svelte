@@ -14,10 +14,18 @@
 		listAppPasswords,
 		revokeAppPassword,
 		updateAvatar,
-		updateProfile,
-		type AppPassword,
-		type ProfilePatch
+		updateProfile
 	} from '$lib/api/endpoints/profile';
+	// Phase-4 cleanup: the two types we need come from the generated
+	// SDK directly, NOT re-exported through the wrapper. Pass-through
+	// re-exports hide drift — if the backend DTO shape changes, the
+	// SDK regen catches it only when callers consume the SDK type
+	// at their own import site. See `feedback_no_passthrough_reexports`
+	// memory.
+	import type {
+		AppPasswordSummaryDto,
+		UpdateProfileDto
+	} from '$lib/api/generated/openapi/types.gen';
 	import { fetchMe, getOidcProviders, startOidcLink, unlinkOidc } from '$lib/api/endpoints/auth';
 	import { SUPPORTED_LOCALES, setLocale, t, type Locale } from '$lib/i18n/index.svelte';
 	import Icon from '$lib/icons/Icon.svelte';
@@ -67,7 +75,7 @@
 	let uploadedDataUrl = $state<string | null>(null);
 	let avatarImgFailed = $state(false);
 
-	let appPasswords = $state<AppPassword[]>([]);
+	let appPasswords = $state<AppPasswordSummaryDto[]>([]);
 	let appPwLoadFailed = $state(false);
 	let generated = $state<{ label: string; password: string } | null>(null);
 	let newLabel = $state('');
@@ -187,7 +195,7 @@
 
 		// Build a sparse patch of only the fields the user actually changed.
 		// Sending empty strings the user never touched would 400 on the server.
-		const patch: ProfilePatch = {};
+		const patch: UpdateProfileDto = {};
 		if (!usernameClaimed && username.trim() && username.trim() !== (me.full.user.username ?? '')) {
 			patch.username = username.trim();
 		}
@@ -403,7 +411,7 @@
 		}
 	}
 
-	async function revokePw(p: AppPassword) {
+	async function revokePw(p: AppPasswordSummaryDto) {
 		const ok = await confirmDialog({
 			title: t('profile.app_pw_revoke', 'Revoke app password'),
 			message: t('profile.confirm_revoke', { label: p.label }, 'Revoke "{{label}}"?'),
