@@ -3,6 +3,7 @@
  * primitives here intentionally bypass it (see client.ts) so a 401 surfaces as
  * a genuine failure to the caller.
  */
+import log from 'loglevel';
 import { ApiError, apiProbeTransport } from '$lib/api/client';
 import {
 	dpopBind,
@@ -22,6 +23,12 @@ import {
 } from '../generated/openapi/sdk.gen';
 import type { SystemInitStatusDto } from '../generated/openapi/types.gen';
 import type { AuthResponse, SelfUser } from '$lib/api/types';
+
+// Dedicated logger — silent by default; operators enable in devtools with
+// `oxi.setLogLevel('oxi:auth', 'debug')` to trace fetchMe / tryRefresh /
+// login / logout and the DPoP binding dance. Follows the pattern of
+// `oxi:server-status`, `oxi:message-bus`, `oxi:config`.
+const authLog = log.getLogger('oxi:auth');
 
 /**
  * Map an SDK-thrown error (`throwOnError: true`) into the same `ApiError`
@@ -62,13 +69,33 @@ export async function fetchMe(): Promise<SelfUser | null> {
 	// baked in and a no-op `onSessionExpired` handler, so a 401 surfaces
 	// to the caller unchanged. The pre-migration guard in d131ebc4 pins
 	// this contract from the test side.
-	try {
-		return await getCurrentUser({ fetch: apiProbeTransport, throwOnError: true });
-	} catch (e) {
-		const status = (e as { response?: { status?: number } })?.response?.status;
-		if (status === 401) return null;
-		throw e;
+	//
+	// `responseStyle: 'fields'` is DELIBERATE and load-bearing: Hey API's
+	// `throwOnError: true` path throws the PARSED BODY of the error
+	// response (e.g. `{error: 'Token not provided'}`), NOT a `{response,
+	// status}` object (see `client.gen.ts:189–198`). The 'fields' shape
+	// hands us `{response, data}` on every call, so we read
+	// `response.status` directly — same semantic as the pre-migration
+	// `apiFetch` path. If the SDK's shape ever drifts, the error paths
+	// here are the one place to re-verify.
+	const result = (await getCurrentUser({
+		fetch: apiProbeTransport,
+		responseStyle: 'fields'
+	})) as unknown as {
+		response?: Response;
+		data?: SelfUser;
+	};
+	if (!result.response) {
+		// Transport-level failure (network down, aborted) — no HTTP status
+		// to inspect. Match pre-migration behaviour: rethrow so the
+		// session store's catch surfaces it, not a false "logged out".
+		throw new Error('fetchMe: transport error (no response)');
 	}
+	if (result.response.status === 401) return null;
+	if (!result.response.ok) {
+		throw new Error(`/api/auth/me failed: ${result.response.status}`);
+	}
+	return result.data ?? null;
 }
 
 /** Startup refresh through the generated client and shared DPoP nonce handling. */
@@ -82,18 +109,43 @@ export async function tryRefresh(): Promise<boolean> {
 	// `onSessionExpired` guarantees. DPoP nonce-attach + nonce-retry logic
 	// still lives in the transport's `withProof` wrapper either way.
 	//
+	// `responseStyle: 'fields'` is DELIBERATE and load-bearing:
+	// a `throwOnError: true` call with the default `responseStyle: 'data'`
+	// relies on Hey API parsing the response body (`response.text()` →
+	// `JSON.parse`) to resolve on 2xx. That parsing throws on malformed
+	// JSON — surfacing a 200 as a "failure" in `catch`, which here would
+	// return `false` and skip the chained `fetchMe#2` in
+	// `session.load()`. The exact regression we hit: /refresh returned
+	// 200 with fresh Set-Cookie, but tryRefresh returned false, user
+	// landed on /login. The 'fields' shape just hands us the Response
+	// object; we read `.ok` directly like the pre-migration apiFetch
+	// path did, no body parsing involved.
+	//
 	// `body: {} as never` — same backend/annotation mismatch as logout:
 	// the handler takes `axum::body::Bytes`, cookie carries the refresh
 	// token, but the utoipa `request_body = inline(RefreshTokenDto)`
 	// generates a required field in the SDK types.
 	try {
-		await sdkRefreshToken({
+		// The generated `refreshToken` is typed with `responseStyle: 'data'`
+		// hard-coded, so a per-call `'fields'` override needs a cast — the
+		// runtime shape is `{response, data, request}`; see
+		// `client.gen.ts:139–186` for the branch that returns it.
+		const { response } = (await sdkRefreshToken({
 			body: {} as never,
 			fetch: apiProbeTransport,
-			throwOnError: true
-		});
-		return true;
-	} catch {
+			responseStyle: 'fields'
+		})) as unknown as { response: Response };
+		if (response.ok) {
+			authLog.debug('tryRefresh: /refresh succeeded, new access cookie minted');
+		} else {
+			authLog.debug(`tryRefresh: /refresh returned ${response.status}`);
+		}
+		return response.ok;
+	} catch (err) {
+		// Transport-level failure (network down, aborted, …). Only
+		// non-HTTP errors reach here now that we stopped relying on
+		// throwOnError's body-parse branch.
+		authLog.warn('tryRefresh: transport error', err);
 		return false;
 	}
 }
@@ -115,7 +167,7 @@ async function tryBindingThumbprint(): Promise<string | null> {
 		const kp = await ensureKeypair();
 		return await computeJkt(kp.publicKey);
 	} catch (err) {
-		console.debug('dpop: keypair unavailable, logging in unbound', err);
+		authLog.debug('dpop: keypair unavailable, logging in unbound', err);
 		return null;
 	}
 }
@@ -155,7 +207,7 @@ export async function bindDpopIfPossible(): Promise<boolean> {
 		await tryRefresh();
 		return true;
 	} catch (err) {
-		console.debug('dpop: bind endpoint call failed', err);
+		authLog.debug('dpop: bind endpoint call failed', err);
 		return false;
 	}
 }
@@ -593,7 +645,7 @@ export async function logout(): Promise<LogoutResult> {
 		// don't have to wait for their next 401 to notice.
 		broadcastSessionCleared();
 	} catch (err) {
-		console.debug('dpop: cleanup failed during logout', err);
+		authLog.debug('dpop: cleanup failed during logout', err);
 	}
 
 	if (!body) return {};

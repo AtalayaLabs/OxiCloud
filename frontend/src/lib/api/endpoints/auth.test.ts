@@ -160,11 +160,18 @@ it('exercises the auth endpoints (success paths)', async () => {
 	const sdkCount = sdkMocks.reduce((n, m) => n + m.mock.calls.length, 0);
 	expect(fc + f.mock.calls.length + sdkCount).toBeGreaterThan(5);
 });
-it('fetchMe returns null when the SDK call rejects with a 401', async () => {
-	// Phase 4 — SDK call. On 401 the Hey-API client throws an object
-	// shaped `{ response: Response, data?: unknown }`; fetchMe
-	// inspects `response.status` and returns null without rethrowing.
-	sdkGetCurrentUser.mockRejectedValue({ response: { status: 401 } });
+it('fetchMe returns null when the server responds 401', async () => {
+	// Phase 4 — SDK call with `responseStyle: 'fields'` + no throwOnError.
+	// On 401, Hey API resolves (not rejects) with `{response, error}` so
+	// fetchMe can read `response.status` directly. The pre-migration test
+	// mocked a REJECTED promise; after the "token not provided" fix the
+	// SDK resolves with the response-shaped object instead. See the
+	// comment in `fetchMe` for why — tl;dr: Hey API's throwOnError path
+	// throws the parsed error BODY, not a Response wrapper.
+	sdkGetCurrentUser.mockResolvedValue({
+		response: new Response(null, { status: 401 }),
+		error: { error: 'Token not provided' }
+	});
 	await expect(auth.fetchMe()).resolves.toBeNull();
 });
 it('fetchMe opts out of the refresh+retry interceptor on 401', async () => {
@@ -175,7 +182,10 @@ it('fetchMe opts out of the refresh+retry interceptor on 401', async () => {
 	// fetchMe passes `fetch: apiProbeTransport` on the SDK call, which
 	// has `retryUnauthorized: false` baked in and a no-op
 	// `onSessionExpired` handler. See src/lib/api/transport.ts:362.
-	sdkGetCurrentUser.mockRejectedValueOnce({ response: { status: 401 } });
+	sdkGetCurrentUser.mockResolvedValueOnce({
+		response: new Response(null, { status: 401 }),
+		error: { error: 'Token not provided' }
+	});
 	await expect(auth.fetchMe()).resolves.toBeNull();
 	// One SDK call — no refresh dance, no second trip.
 	expect(sdkGetCurrentUser).toHaveBeenCalledTimes(1);
@@ -187,6 +197,11 @@ it('fetchMe opts out of the refresh+retry interceptor on 401', async () => {
 	const call = sdkGetCurrentUser.mock.calls[0]?.[0];
 	expect(call).toBeTruthy();
 	expect(call.fetch).toBe(apiProbeTransport);
+	// AND responseStyle must be 'fields' — guards against a future
+	// swap back to 'data'+throwOnError that would reintroduce the
+	// "token not provided" regression (the body-parse throws, which
+	// catch here can't distinguish from a 401).
+	expect(call.responseStyle).toBe('fields');
 });
 it('tryRefresh returns false when the refresh fails', async () => {
 	// Phase 4 — SDK call. Any thrown error (401, 500, network) returns

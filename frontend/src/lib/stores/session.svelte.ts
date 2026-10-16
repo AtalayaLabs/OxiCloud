@@ -6,6 +6,7 @@
  * routing: externals (magic-link / OIDC-only / OCM recipients) have no home
  * folder and land on the shared-with-me view.
  */
+import log from 'loglevel';
 import { bindDpopIfPossible, fetchMe, tryRefresh } from '$lib/api/endpoints/auth';
 import { setLogoutInProgress } from '$lib/api/client';
 import { hasSessionHint } from '$lib/api/csrf';
@@ -13,6 +14,13 @@ import { seedNonceFromCookie } from '$lib/auth/dpop-proof';
 import { drives } from '$lib/stores/drives.svelte';
 import type { PublicUser, SelfUser } from '$lib/api/types';
 import { ensureActiveUser } from '$lib/utils/localStoragePrefs';
+
+// Dedicated logger — silent by default; operators enable in devtools
+// with `oxi.setLogLevel('oxi:session', 'debug')` to trace the probe /
+// refresh / dedup flow when the "removed access cookie → still logged
+// in via refresh" invariant breaks. Follows the pattern of
+// `oxi:server-status`, `oxi:message-bus`, `oxi:config`, `oxi:auth`.
+const sessionLog = log.getLogger('oxi:session');
 
 /**
  * Session store — the authenticated user and derived flags.
@@ -36,6 +44,20 @@ class SessionStore {
 	loaded = $state(false);
 	homeFolderId = $state<string | null>(null);
 	homeFolderName = $state<string | null>(null);
+	/**
+	 * In-flight dedup for `load()`. Multiple callers can reach `load()`
+	 * before the first one has flipped `loaded = true`:
+	 *   * the root `+layout.svelte` fires it on mount
+	 *   * the message-bus client (`client.svelte.ts:594`) calls it as a
+	 *     chokepoint before every connect attempt
+	 * Without dedup both callers run the full /me → /refresh → /me chain
+	 * in parallel. /refresh ROTATES the refresh token, so the second
+	 * caller's /refresh fires with the (just-invalidated) old cookie and
+	 * fails — pushing the user to /login even though the first caller's
+	 * refresh succeeded. Share one promise instead; `loaded = true` on
+	 * resolve blocks future callers via the fast path above.
+	 */
+	#inflight: Promise<SelfUser | null> | null = null;
 
 	/** Public-identity shorthand — same fields any authenticated caller
 	 * can see. Every legacy `session.user.foo` read (username, email, id,
@@ -65,6 +87,22 @@ class SessionStore {
 	 */
 	async load(): Promise<SelfUser | null> {
 		if (this.loaded) return this.me;
+		// Concurrent caller already loading? Share its promise instead of
+		// starting a second /me → /refresh → /me chain. See the field
+		// doc for the parallel-caller case this guards against.
+		if (this.#inflight) {
+			sessionLog.debug('load: joining in-flight probe');
+			return this.#inflight;
+		}
+		this.#inflight = this.#doLoad();
+		try {
+			return await this.#inflight;
+		} finally {
+			this.#inflight = null;
+		}
+	}
+
+	async #doLoad(): Promise<SelfUser | null> {
 		// No JS-visible session hint ⇒ nothing to probe. The server sets
 		// `oxicloud_csrf` alongside the HttpOnly session cookies and clears
 		// it on logout, so a missing hint means no session. Skips the
@@ -94,7 +132,8 @@ class SessionStore {
 				// so a slow IndexedDB open doesn't stall app boot.
 				if (me.is_dpop_bound === false) void bindDpopIfPossible();
 			} else this.me = null;
-		} catch {
+		} catch (err) {
+			sessionLog.warn('load: unexpected error', err);
 			this.me = null;
 		}
 		this.loaded = true;

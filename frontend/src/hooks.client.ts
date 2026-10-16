@@ -17,7 +17,9 @@ import { seedNonceFromCookie } from '$lib/auth/dpop-proof';
 //
 // Log levels — namespaces used today: `oxi:upload` (delta + direct
 // upload pipeline), `oxi:message-bus` (WebSocket client + `useTopic`),
-// `oxi:config` (server-config boot fetch).
+// `oxi:config` (server-config boot fetch), `oxi:auth` (login/logout +
+// fetchMe/tryRefresh + DPoP binding), `oxi:session` (session store
+// probe/refresh/dedup).
 // Levels: 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'silent'.
 // Choices persist to `localStorage['loglevel:<namespace>']` via loglevel.
 //
