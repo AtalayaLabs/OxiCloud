@@ -160,6 +160,27 @@ Default is empty, meaning the drive root. A non-empty value is created on
 demand. The recipient can move mounts anywhere else in their personal drive
 afterwards.
 
+The setting is a **landing spot, not a home**: it decides where a new mount
+appears and nothing else. Mounts stay movable anywhere in the personal drive
+(§ Decisions), which is also why the setting is **not retroactive** —
+changing it leaves existing mounts where they are and only later ones land in
+the new place. Relocating them would overwrite an organisation the recipient
+chose.
+
+A **folder** that already carries the configured name is **reused**, not
+suffixed: the point is one predictable place, and a recipient who already
+keeps shared things there is served by reuse rather than surprised by a
+second folder beside it.
+
+A **non-folder** of that name is stepped over, not failed on: a file called
+`Shares` in the personal root is not something to mount into, so the creator
+retries `Shares (2)`, `Shares (3)`, … until one is free. That is the same
+convention and the same loop the mount-name collision already uses
+(`ShareMountPgRepository::create_mount`): insert, catch the unique violation
+`23505` from the real index, retry — no pre-check, therefore no race window —
+and give up with a conflict after 100 attempts. Nothing here invents a second
+suffix style.
+
 The name is the target folder's name (for a shared drive: its display name,
 which *is* the root folder's name). On a unique-index conflict the creator
 retries with ` (2)`, ` (3)`, … exactly like NextCloud. Because the retry
