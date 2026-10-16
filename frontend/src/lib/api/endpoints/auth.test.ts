@@ -1,9 +1,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-vi.mock('$lib/api/client', () => ({
-	apiFetch: vi.fn(),
-	apiJson: vi.fn(),
-	withBase: (p: string) => p
-}));
+// Partial mock: stub `apiFetch` + `apiJson` so test fixtures can drive
+// the handful of legacy call sites still using them, while keeping
+// everything else (`apiProbeTransport`, `ApiError`, `withBase`, …) as
+// the real exports so Phase-4-migrated wrappers that need them (e.g.
+// `fetchMe` passes `apiProbeTransport` as the SDK's `fetch` option)
+// see the real values, not undefined.
+vi.mock('$lib/api/client', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('$lib/api/client')>();
+	return {
+		...actual,
+		apiFetch: vi.fn(),
+		apiJson: vi.fn()
+	};
+});
 vi.mock('$lib/api/csrf', () => ({ getCsrfHeaders: () => ({}) }));
 // Several probes (`fetchMe`, `tryRefresh`) run through the DPoP shim.
 // Default `proof = null` matches jsdom's missing WebCrypto keys — so
@@ -46,11 +55,59 @@ vi.mock('@serenity-kit/opaque', () => ({
 		}))
 	}
 }));
-import { apiFetch, apiJson } from '$lib/api/client';
+// Mock the generated SDK: Phase-4 migration routes legacy /api/auth/login
+// (and the other 10 wrappers in auth.ts) through this module instead of
+// through `apiFetch`. All 11 symbols are mocked as vi.fn() so a test that
+// doesn't customize a mock just gets an undefined-returning stub — the
+// transitive callers in auth.ts wrap SDK calls in `try { ... } catch { ... }`
+// with a safe fallback, so an unmocked call never crashes the test.
+vi.mock('../generated/openapi/sdk.gen', () => ({
+	dpopBind: vi.fn(),
+	getCurrentUser: vi.fn(),
+	getSystemStatus: vi.fn(),
+	login: vi.fn(),
+	logout: vi.fn(),
+	oidcExchange: vi.fn(),
+	oidcLinkStart: vi.fn(),
+	oidcProviders: vi.fn(),
+	oidcUnlink: vi.fn(),
+	refreshToken: vi.fn(),
+	register: vi.fn(),
+	sendMagicLink: vi.fn(),
+	setupAdmin: vi.fn(),
+	upgradeToInternal: vi.fn()
+}));
+import { apiFetch, apiJson, apiProbeTransport } from '$lib/api/client';
+import {
+	getCurrentUser as sdkGetCurrentUserMock,
+	getSystemStatus as sdkGetSystemStatusMock,
+	login as sdkLoginMock,
+	logout as sdkLogoutMock,
+	oidcExchange as sdkOidcExchangeMock,
+	oidcProviders as sdkOidcProvidersMock,
+	refreshToken as sdkRefreshTokenMock,
+	register as sdkRegisterMock,
+	sendMagicLink as sdkSendMagicLinkMock,
+	setupAdmin as sdkSetupAdminMock
+} from '../generated/openapi/sdk.gen';
 import * as auth from './auth';
 import { __resetOpaqueParamsCache } from './opaque';
 const f = apiFetch as unknown as ReturnType<typeof vi.fn>;
 const j = apiJson as unknown as ReturnType<typeof vi.fn>;
+// Expose the SDK stubs the migrated wrappers call. Each is `vi.fn()`
+// from the `vi.mock('../generated/openapi/sdk.gen')` block above —
+// cast here so individual tests can `.mockResolvedValueOnce(...)` or
+// read `.mock.calls`.
+const sdkGetCurrentUser = sdkGetCurrentUserMock as unknown as ReturnType<typeof vi.fn>;
+const sdkLogin = sdkLoginMock as unknown as ReturnType<typeof vi.fn>;
+const sdkLogout = sdkLogoutMock as unknown as ReturnType<typeof vi.fn>;
+const sdkOidcProviders = sdkOidcProvidersMock as unknown as ReturnType<typeof vi.fn>;
+const sdkGetSystemStatus = sdkGetSystemStatusMock as unknown as ReturnType<typeof vi.fn>;
+const sdkOidcExchange = sdkOidcExchangeMock as unknown as ReturnType<typeof vi.fn>;
+const sdkRefreshToken = sdkRefreshTokenMock as unknown as ReturnType<typeof vi.fn>;
+const sdkRegister = sdkRegisterMock as unknown as ReturnType<typeof vi.fn>;
+const sdkSendMagicLink = sdkSendMagicLinkMock as unknown as ReturnType<typeof vi.fn>;
+const sdkSetupAdmin = sdkSetupAdminMock as unknown as ReturnType<typeof vi.fn>;
 // Several auth probes use the raw global fetch (NOT apiFetch) on purpose.
 // `headers: new Headers()` matches the real `fetch()` contract — several
 // probes (fetchMe, tryRefresh) run through the DPoP nonce-update shim,
@@ -82,18 +139,75 @@ it('exercises the auth endpoints (success paths)', async () => {
 	await auth.register('e@x.test', 'p', 'u').catch(() => {});
 	await auth.sendMagicLink('e@x.test').catch(() => {});
 	await auth.logout().catch(() => {});
+	// Smoke count across every wire surface this file routes through:
+	//   * apiFetch (`f`) — still used by fetchMe + OPAQUE helpers in opaque.ts
+	//   * raw global fetch (`fc`) — tryRefresh goes direct
+	//   * SDK stubs — the 8 Phase-4-migrated wrappers call these; each stub
+	//     records its invocation whether or not it resolved to a usable value
+	// The spirit is "every function was called and ran its code path", not
+	// a precise count — the exact number shifts as more wrappers migrate.
 	const fc = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
-	expect(fc + f.mock.calls.length).toBeGreaterThan(3);
+	const sdkMocks = [
+		sdkLogin,
+		sdkLogout,
+		sdkOidcProviders,
+		sdkGetSystemStatus,
+		sdkSetupAdmin,
+		sdkOidcExchange,
+		sdkRegister,
+		sdkSendMagicLink
+	];
+	const sdkCount = sdkMocks.reduce((n, m) => n + m.mock.calls.length, 0);
+	expect(fc + f.mock.calls.length + sdkCount).toBeGreaterThan(5);
 });
-it('fetchMe returns null when the probe is not ok', async () => {
-	// `headers: new Headers()` matches real `fetch()` — the DPoP-aware
-	// path calls `response.headers.get('DPoP-Nonce')` on every reply
-	// and would crash on a bare `{ok, status, json}` mock.
-	f.mockResolvedValue({ ok: false, status: 401, headers: new Headers(), json: async () => ({}) });
+it('fetchMe returns null when the server responds 401', async () => {
+	// Phase 4 — SDK call with `responseStyle: 'fields'` + no throwOnError.
+	// On 401, Hey API resolves (not rejects) with `{response, error}` so
+	// fetchMe can read `response.status` directly. The pre-migration test
+	// mocked a REJECTED promise; after the "token not provided" fix the
+	// SDK resolves with the response-shaped object instead. See the
+	// comment in `fetchMe` for why — tl;dr: Hey API's throwOnError path
+	// throws the parsed error BODY, not a Response wrapper.
+	sdkGetCurrentUser.mockResolvedValue({
+		response: new Response(null, { status: 401 }),
+		error: { error: 'Token not provided' }
+	});
 	await expect(auth.fetchMe()).resolves.toBeNull();
 });
+it('fetchMe opts out of the refresh+retry interceptor on 401', async () => {
+	// `fetchMe` is the boot-time "am I logged in?" probe. On an expired
+	// cookie it MUST return null cleanly, not silently refresh+retry —
+	// a refresh at boot defeats the "cleanly logged-out on boot" path.
+	// Pinned pre-migration (d131ebc4) and preserved under the SDK swap:
+	// fetchMe passes `fetch: apiProbeTransport` on the SDK call, which
+	// has `retryUnauthorized: false` baked in and a no-op
+	// `onSessionExpired` handler. See src/lib/api/transport.ts:362.
+	sdkGetCurrentUser.mockResolvedValueOnce({
+		response: new Response(null, { status: 401 }),
+		error: { error: 'Token not provided' }
+	});
+	await expect(auth.fetchMe()).resolves.toBeNull();
+	// One SDK call — no refresh dance, no second trip.
+	expect(sdkGetCurrentUser).toHaveBeenCalledTimes(1);
+	// Opt-out signal: the per-call `fetch` option must be
+	// apiProbeTransport (identity check — the probe variant is the
+	// contract, not just "any fetch override"). If the migration
+	// drops the override, the default `apiTransport` would silently
+	// refresh+retry and this assertion catches it.
+	const call = sdkGetCurrentUser.mock.calls[0]?.[0];
+	expect(call).toBeTruthy();
+	expect(call.fetch).toBe(apiProbeTransport);
+	// AND responseStyle must be 'fields' — guards against a future
+	// swap back to 'data'+throwOnError that would reintroduce the
+	// "token not provided" regression (the body-parse throws, which
+	// catch here can't distinguish from a 401).
+	expect(call.responseStyle).toBe('fields');
+});
 it('tryRefresh returns false when the refresh fails', async () => {
-	f.mockResolvedValue({ ok: false, status: 401, headers: new Headers(), json: async () => ({}) });
+	// Phase 4 — SDK call. Any thrown error (401, 500, network) returns
+	// `false` cleanly; the `apiProbeTransport` override guarantees no
+	// `onSessionExpired` divert on the way out.
+	sdkRefreshToken.mockRejectedValue({ response: { status: 401 } });
 	await expect(auth.tryRefresh()).resolves.toBe(false);
 });
 
@@ -308,12 +422,12 @@ it('OPAQUE login triggers silent rotation when envelope predates per-envelope KS
 });
 
 it('login falls back to legacy + silent-migration when hasOpaque: false', async () => {
-	// Order on the wire:
-	//   1. GET  /api/auth/opaque/params
-	//   2. POST /api/auth/opaque/login/lookup     → { hasOpaque: false }
-	//   3. POST /api/auth/login                   → AuthResponse
-	//   4. POST /api/auth/opaque/register/start   (params is cached — no re-fetch)
-	//   5. POST /api/auth/opaque/register/finish
+	// Order on the wire (Phase-4 split — see sdkLogin mock below):
+	//   1. GET  /api/auth/opaque/params        (apiFetch)
+	//   2. POST /api/auth/opaque/login/lookup  (apiFetch)  → { hasOpaque: false }
+	//   3. POST /api/auth/login                (sdkLogin)  → AuthResponse
+	//   4. POST /api/auth/opaque/register/start   (apiFetch)
+	//   5. POST /api/auth/opaque/register/finish  (apiFetch)
 	f.mockResolvedValueOnce({
 		ok: true,
 		status: 200,
@@ -334,33 +448,41 @@ it('login falls back to legacy + silent-migration when hasOpaque: false', async 
 			ok: true,
 			status: 200,
 			statusText: 'OK',
-			json: async () => ({
-				user: { id: 'u1', email: 'a@x.test' },
-				access_token: 'at',
-				refresh_token: 'rt',
-				token_type: 'Bearer',
-				expires_in: 3600
-			})
-		})
-		.mockResolvedValueOnce({
-			ok: true,
-			status: 200,
-			statusText: 'OK',
 			json: async () => ({ registrationResponse: 'RESP-R' })
 		})
 		.mockResolvedValueOnce({ ok: true, status: 204, json: async () => ({}) });
+	// Phase 4: legacy POST /api/auth/login now goes through the SDK, not
+	// apiFetch. The SDK call is mocked separately — it still returns the
+	// same AuthResponse shape so downstream silent-migration + return
+	// value are unchanged.
+	sdkLogin.mockResolvedValueOnce({
+		user: { id: 'u1', email: 'a@x.test' },
+		access_token: 'at',
+		refresh_token: 'rt',
+		token_type: 'Bearer',
+		expires_in: 3600
+	});
 
 	const authResponse = await auth.login('alice@example.com', 'correct horse battery staple');
 	expect(authResponse.access_token).toBe('at');
 
+	// URL ordering now covers the apiFetch surface only; the SDK leg is
+	// asserted via `sdkLogin.mock.calls` below.
 	const urls = f.mock.calls.map((c: unknown[]) => c[0] as string);
 	expect(urls).toEqual([
 		'/api/auth/opaque/params',
 		'/api/auth/opaque/login/lookup',
-		'/api/auth/login',
 		'/api/auth/opaque/register/start',
 		'/api/auth/opaque/register/finish'
 	]);
+	expect(sdkLogin).toHaveBeenCalledOnce();
+	expect(sdkLogin.mock.calls[0][0]).toMatchObject({
+		body: expect.objectContaining({
+			username: 'alice@example.com',
+			password: 'correct horse battery staple'
+		}),
+		throwOnError: true
+	});
 });
 
 it('login skips the OPAQUE branch entirely when the substrate is disabled', async () => {
@@ -368,6 +490,8 @@ it('login skips the OPAQUE branch entirely when the substrate is disabled', asyn
 	// lookup POST MUST NOT fire (cheap short-circuit inside
 	// checkOpaqueAvailable), and the legacy silent-migration hook
 	// MUST also short-circuit — no register/start calls either.
+	// Only apiFetch call: GET /api/auth/opaque/params. The legacy
+	// POST /api/auth/login runs through the SDK (mocked below).
 	f.mockResolvedValueOnce({
 		ok: true,
 		status: 200,
@@ -377,24 +501,21 @@ it('login skips the OPAQUE branch entirely when the substrate is disabled', asyn
 			ciphersuiteVersion: 0,
 			ksf: { memoryKib: 0, iterations: 0, parallelism: 0 }
 		})
-	}).mockResolvedValueOnce({
-		ok: true,
-		status: 200,
-		statusText: 'OK',
-		json: async () => ({
-			user: { id: 'u1', email: 'a@x.test' },
-			access_token: 'at',
-			refresh_token: 'rt',
-			token_type: 'Bearer',
-			expires_in: 3600
-		})
+	});
+	sdkLogin.mockResolvedValueOnce({
+		user: { id: 'u1', email: 'a@x.test' },
+		access_token: 'at',
+		refresh_token: 'rt',
+		token_type: 'Bearer',
+		expires_in: 3600
 	});
 
 	const authResponse = await auth.login('alice@example.com', 'pw');
 	expect(authResponse.access_token).toBe('at');
 
 	const urls = f.mock.calls.map((c: unknown[]) => c[0] as string);
-	expect(urls).toEqual(['/api/auth/opaque/params', '/api/auth/login']);
+	expect(urls).toEqual(['/api/auth/opaque/params']);
+	expect(sdkLogin).toHaveBeenCalledOnce();
 });
 
 it('login returns AuthResponse even when silent-migration fails (non-fatal)', async () => {
@@ -419,23 +540,23 @@ it('login returns AuthResponse even when silent-migration fails (non-fatal)', as
 			json: async () => ({ hasOpaque: false })
 		})
 		.mockResolvedValueOnce({
-			ok: true,
-			status: 200,
-			statusText: 'OK',
-			json: async () => ({
-				user: { id: 'u1', email: 'a@x.test' },
-				access_token: 'at',
-				refresh_token: 'rt',
-				token_type: 'Bearer',
-				expires_in: 3600
-			})
-		})
-		.mockResolvedValueOnce({
 			ok: false,
 			status: 500,
 			statusText: 'Internal Server Error',
 			json: async () => ({})
 		});
+	// Phase 4: legacy POST /api/auth/login routed through SDK — returns
+	// the AuthResponse that must survive the subsequent syncOpaqueEnvelope
+	// failure. The 500 above is the register/start response that fires
+	// INSIDE syncOpaqueEnvelope; the AuthResponse from sdkLogin is what
+	// the caller receives regardless.
+	sdkLogin.mockResolvedValueOnce({
+		user: { id: 'u1', email: 'a@x.test' },
+		access_token: 'at',
+		refresh_token: 'rt',
+		token_type: 'Bearer',
+		expires_in: 3600
+	});
 
 	const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 	const authResponse = await auth.login('alice@example.com', 'pw');
@@ -474,8 +595,17 @@ describe('tryRefresh — DPoP wiring', () => {
 	});
 
 	beforeEach(async () => {
-		const actual = await vi.importActual<typeof import('$lib/api/client')>('$lib/api/client');
-		f.mockImplementation(actual.apiFetch);
+		// Phase 4 — tryRefresh now routes through the generated SDK's
+		// `refreshToken`, which the top-level `vi.mock` has stubbed as
+		// a plain `vi.fn()`. These wire-level tests need the REAL SDK
+		// call so the request actually hits the DPoP transport and the
+		// stubbed `globalThis.fetch` records the headers. Point the
+		// mocked SDK symbol at the real implementation inside this
+		// describe only; every other test still gets the plain stub.
+		const sdk = await vi.importActual<typeof import('../generated/openapi/sdk.gen')>(
+			'../generated/openapi/sdk.gen'
+		);
+		sdkRefreshToken.mockImplementation(sdk.refreshToken);
 		// Opt into DPoP-attached behaviour for this block; individual
 		// tests can still flip it back to null to check the fail-open.
 		dpopState.proof = 'proof.abc';
@@ -528,5 +658,73 @@ describe('tryRefresh — DPoP wiring', () => {
 		const ok = await auth.tryRefresh();
 		expect(ok).toBe(false);
 		expect(spy).toHaveBeenCalledTimes(2);
+	});
+});
+
+// ── Error-message pins for the plain-Error throw paths ──────────────
+//
+// `register`, `setupAdmin`, and `sendMagicLink` all throw `new Error(...)`
+// rather than the typed `ApiError`, because the signup form / setup
+// wizard / magic-link page render `.message` directly without
+// branching on `error_type`. These pins guard against a specific class
+// of regression where the thrown message surfaces as the literal string
+// "undefined" — the manual sandbox checklist watches for exactly that
+// (`Row 7: "a 400/409 shows a clean error message, not undefined"`).
+//
+// Pre-migration shape: `apiFetch` returned a Response; the wrapper read
+// `.json().message || .json().error || "foo failed: {status}"`.
+// Post-migration shape: SDK throws the parsed body (`{error|message}`);
+// the wrapper reads from `err.data`. A regression on either half can
+// collapse the || chain to `undefined`, which only shows up visually
+// in the SPA.
+describe('plain-Error wrappers never surface "undefined" to the UI', () => {
+	it('register extracts the server error message, not undefined', async () => {
+		sdkRegister.mockRejectedValueOnce({
+			response: { status: 409 },
+			data: { message: 'email already registered' }
+		});
+		await expect(auth.register('x@y.z', 'p')).rejects.toThrow('email already registered');
+	});
+
+	it('register falls back to a status-formatted message when the body is empty', async () => {
+		sdkRegister.mockRejectedValueOnce({ response: { status: 500 }, data: {} });
+		await expect(auth.register('x@y.z', 'p')).rejects.toThrow(/^register failed: 500$/);
+		// The whole point: NEVER the string "undefined".
+		try {
+			await auth.register('x@y.z', 'p');
+			sdkRegister.mockRejectedValueOnce({ response: { status: 500 }, data: {} });
+		} catch (e) {
+			expect((e as Error).message).not.toContain('undefined');
+		}
+	});
+
+	it('setupAdmin extracts the server error message, not undefined', async () => {
+		sdkSetupAdmin.mockRejectedValueOnce({
+			response: { status: 400 },
+			data: { error: 'password too weak' }
+		});
+		await expect(auth.setupAdmin('e@x.test', 'short')).rejects.toThrow('password too weak');
+	});
+
+	it('setupAdmin falls back to a status message when the body is empty', async () => {
+		sdkSetupAdmin.mockRejectedValueOnce({ response: { status: 500 }, data: null });
+		await expect(auth.setupAdmin('e@x.test', 'p')).rejects.toThrow(/^setup failed: 500$/);
+	});
+
+	it('sendMagicLink preserves the caught error as `cause` on throw', async () => {
+		// 503 branches to 'unavailable' (soft). Other failures throw an
+		// Error — must carry `cause` so the UI can surface the real
+		// transport failure in dev consoles. The ESLint rule
+		// preserve-caught-error enforces this at the source side; this
+		// test pins it at the behavioural side.
+		const underlying = { response: { status: 500 }, data: {} };
+		sdkSendMagicLink.mockRejectedValueOnce(underlying);
+		try {
+			await auth.sendMagicLink('x@y.z');
+			throw new Error('expected magic-link to throw');
+		} catch (e) {
+			expect((e as Error).message).not.toContain('undefined');
+			expect((e as Error).cause).toBe(underlying);
+		}
 	});
 });

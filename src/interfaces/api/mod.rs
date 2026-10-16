@@ -364,6 +364,12 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         handlers::device_auth_handler::device_verify_action,
         handlers::device_auth_handler::list_devices,
         handlers::device_auth_handler::revoke_device,
+        // App passwords — persistent credentials for DAV / NC-Basic clients
+        // (DAVx5, Thunderbird, rclone, NC desktop). Self-service CRUD; the
+        // plaintext secret is returned ONCE at creation and never again.
+        handlers::app_password_handler::create_app_password,
+        handlers::app_password_handler::list_app_passwords,
+        handlers::app_password_handler::revoke_app_password,
     ),
     components(
         schemas(
@@ -417,6 +423,13 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             crate::application::dtos::device_auth_dto::DeviceVerifyInfoDto,
             crate::application::dtos::device_auth_dto::DeviceVerifyActionResponseDto,
             crate::application::services::device_auth_service::DeviceInfoDto,
+            // App-password management.
+            crate::application::dtos::app_password_dto::CreateAppPasswordRequestDto,
+            crate::application::dtos::app_password_dto::AppPasswordCreatedResponseDto,
+            crate::application::dtos::app_password_dto::AppPasswordInstructions,
+            crate::application::dtos::app_password_dto::AppPasswordSummaryDto,
+            crate::application::dtos::app_password_dto::AppPasswordListResponseDto,
+            crate::application::dtos::app_password_dto::AppPasswordRevokeResponseDto,
             // Public server-config discovery — `GET /api/config`.
             ServerConfigDto,
             FeaturesDto,

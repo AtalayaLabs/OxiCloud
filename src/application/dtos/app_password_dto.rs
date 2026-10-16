@@ -1,13 +1,14 @@
 //! DTOs for App Password (application-specific passwords for DAV clients).
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 // ============================================================================
 // Request DTOs
 // ============================================================================
 
 /// POST /api/auth/app-passwords — create a new app password
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateAppPasswordRequestDto {
     /// Human-readable label (e.g. "DAVx5 on Pixel 8")
     pub label: String,
@@ -28,7 +29,7 @@ fn default_scopes() -> String {
 
 /// Response when an app password is created — includes the plain-text password
 /// that is shown ONCE to the user.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct AppPasswordCreatedResponseDto {
     /// Unique identifier for this app password.
     pub id: String,
@@ -48,7 +49,7 @@ pub struct AppPasswordCreatedResponseDto {
 }
 
 /// Usage instructions included in the creation response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct AppPasswordInstructions {
     pub davx5: String,
     pub thunderbird: String,
@@ -57,7 +58,7 @@ pub struct AppPasswordInstructions {
 }
 
 /// Summary of an app password (list view — never includes the plain-text password).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct AppPasswordSummaryDto {
     pub id: String,
     pub label: String,
@@ -71,14 +72,14 @@ pub struct AppPasswordSummaryDto {
 }
 
 /// Response for list endpoint.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct AppPasswordListResponseDto {
     pub app_passwords: Vec<AppPasswordSummaryDto>,
     pub total: usize,
 }
 
 /// Response for revoke endpoint.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct AppPasswordRevokeResponseDto {
     pub status: String,
     pub id: String,

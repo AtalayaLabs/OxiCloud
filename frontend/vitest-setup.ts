@@ -55,6 +55,23 @@ for (const name of ['localStorage', 'sessionStorage']) {
 	}
 }
 
+// Deterministic default locale for Intl.RelativeTimeFormat. Node's Intl
+// reads the macOS system locale via Core Foundation regardless of LANG /
+// LC_ALL env vars, so a developer on a French-locale machine sees
+// "il y a 2 ans" where `relativeTimeAgo` tests assert /year/. Force
+// 'en-US' when no locale is explicitly specified; tests that pass a
+// specific locale as the first argument are unaffected.
+//
+// Scoped to the test harness only — app code still uses the OS default
+// in production.
+const OriginalRTF = Intl.RelativeTimeFormat;
+class PatchedRTF extends OriginalRTF {
+	constructor(locale?: Intl.LocalesArgument, options?: Intl.RelativeTimeFormatOptions) {
+		super(locale ?? 'en-US', options);
+	}
+}
+Intl.RelativeTimeFormat = PatchedRTF as unknown as typeof Intl.RelativeTimeFormat;
+
 // jsdom has no IndexedDB. `$lib/auth/dpop` uses it as a single-entry
 // key/value store for the browser DPoP keypair; without a working
 // backing store every test that touches login / fetch prints a

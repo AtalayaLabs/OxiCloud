@@ -195,6 +195,85 @@ export type AdminUsersPageResponse = {
     users: Array<FullUserDto>;
 };
 
+/**
+ * Response when an app password is created — includes the plain-text password
+ * that is shown ONCE to the user.
+ */
+export type AppPasswordCreatedResponseDto = {
+    /**
+     * Expiration date or null for never.
+     */
+    expires_at?: string | null;
+    /**
+     * Unique identifier for this app password.
+     */
+    id: string;
+    /**
+     * Usage instructions for common clients.
+     */
+    instructions: AppPasswordInstructions;
+    /**
+     * The label chosen by the user.
+     */
+    label: string;
+    /**
+     * The plain-text app password — shown only ONCE.
+     * Format: `oxicloud-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX`
+     */
+    password: string;
+    /**
+     * Active scopes.
+     */
+    scopes: string;
+    /**
+     * The username to use with HTTP Basic Auth.
+     */
+    username: string;
+};
+
+/**
+ * Usage instructions included in the creation response.
+ */
+export type AppPasswordInstructions = {
+    curl_example: string;
+    davx5: string;
+    rclone: string;
+    thunderbird: string;
+};
+
+/**
+ * Response for list endpoint.
+ */
+export type AppPasswordListResponseDto = {
+    app_passwords: Array<AppPasswordSummaryDto>;
+    total: number;
+};
+
+/**
+ * Response for revoke endpoint.
+ */
+export type AppPasswordRevokeResponseDto = {
+    id: string;
+    status: string;
+};
+
+/**
+ * Summary of an app password (list view — never includes the plain-text password).
+ */
+export type AppPasswordSummaryDto = {
+    active: boolean;
+    created_at: string;
+    expires_at?: string | null;
+    id: string;
+    label: string;
+    last_used_at?: string | null;
+    /**
+     * First 8 chars of the token for identification.
+     */
+    prefix: string;
+    scopes: string;
+};
+
 export type AudioMetadataDto = {
     album?: string | null;
     album_artist?: string | null;
@@ -585,6 +664,24 @@ export type CreateAddressBookRequest = {
     color?: string | null;
     description?: string | null;
     name: string;
+};
+
+/**
+ * POST /api/auth/app-passwords — create a new app password
+ */
+export type CreateAppPasswordRequestDto = {
+    /**
+     * Optional expiration in days (None = never expires)
+     */
+    expires_in_days?: number | null;
+    /**
+     * Human-readable label (e.g. "DAVx5 on Pixel 8")
+     */
+    label: string;
+    /**
+     * Comma-separated scopes (defaults to all DAV protocols)
+     */
+    scopes?: string;
 };
 
 /**
@@ -7371,6 +7468,96 @@ export type SendWebhookTestResponses = {
 };
 
 export type SendWebhookTestResponse = SendWebhookTestResponses[keyof SendWebhookTestResponses];
+
+export type ListAppPasswordsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/auth/app-passwords';
+};
+
+export type ListAppPasswordsErrors = {
+    /**
+     * Caller is not signed in
+     */
+    401: unknown;
+};
+
+export type ListAppPasswordsResponses = {
+    /**
+     * The caller's app passwords (metadata only, no plain text)
+     */
+    200: AppPasswordListResponseDto;
+};
+
+export type ListAppPasswordsResponse = ListAppPasswordsResponses[keyof ListAppPasswordsResponses];
+
+export type CreateAppPasswordData = {
+    body: CreateAppPasswordRequestDto;
+    path?: never;
+    query?: never;
+    url: '/api/auth/app-passwords';
+};
+
+export type CreateAppPasswordErrors = {
+    /**
+     * Caller is not signed in
+     */
+    401: unknown;
+    /**
+     * External users cannot mint app passwords
+     */
+    403: unknown;
+    /**
+     * Caller has no claimed username — app password is unusable without one
+     */
+    409: unknown;
+};
+
+export type CreateAppPasswordResponses = {
+    /**
+     * App password created — `password` is plain-text and shown exactly ONCE
+     */
+    200: AppPasswordCreatedResponseDto;
+};
+
+export type CreateAppPasswordResponse = CreateAppPasswordResponses[keyof CreateAppPasswordResponses];
+
+export type RevokeAppPasswordData = {
+    body?: never;
+    path: {
+        /**
+         * App-password UUID returned by the create endpoint
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/auth/app-passwords/{id}';
+};
+
+export type RevokeAppPasswordErrors = {
+    /**
+     * `id` is not a valid UUID
+     */
+    400: unknown;
+    /**
+     * Caller is not signed in
+     */
+    401: unknown;
+    /**
+     * No app password with this id for the caller
+     */
+    404: unknown;
+};
+
+export type RevokeAppPasswordResponses = {
+    /**
+     * App password revoked — subsequent Basic-Auth with it returns 401
+     */
+    200: AppPasswordRevokeResponseDto;
+};
+
+export type RevokeAppPasswordResponse = RevokeAppPasswordResponses[keyof RevokeAppPasswordResponses];
 
 export type ChangePasswordData = {
     body: ChangePasswordDto;
