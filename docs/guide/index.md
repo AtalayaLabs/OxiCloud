@@ -23,6 +23,29 @@ NextCloud was too slow on a home server. So OxiCloud was built to run on minimal
 
 > NextCloud is a mature, feature-rich ecosystem. OxiCloud targets users who prioritise raw performance, simplicity, and low resource usage over plugin breadth.
 
+## Data integrity
+
+A storage product is only as good as its ability to never lose or corrupt your bytes. OxiCloud takes that promise literally and backs it with a set of **consistency jobs** that run quietly in the background.
+
+Each job inspects a different slice of your deployment — the files you've uploaded, the folders you've organised them into, the drives you share with teammates, the memberships of your groups, the blobs backing content-addressable deduplication — and reports any discrepancy it finds. By default these checks are **discovery-only**: nothing is changed on disk, nothing is deleted, nothing is repaired unless you explicitly ask for it. Findings surface in the admin dashboard with enough context for you to decide what to do.
+
+When something goes wrong — a job hits an unexpected error, or a run surfaces inconsistencies worth your attention — OxiCloud can **notify operators** through email or a webhook. You pick the channels and the severity threshold; the server routes alerts accordingly. You can be away from the dashboard for weeks at a time and still hear from the system the moment it needs you.
+
+The alternative — hoping nothing ever drifts and discovering a corrupted file months later — is not a hosting posture OxiCloud is willing to take.
+
+## Testing
+
+OxiCloud ships with approximately **4,500 automated tests** that run on every change. They span every layer of the stack, from the smallest Rust function to full browser-driven user journeys:
+
+- **~1,258 Rust unit tests** — pure-logic checks on domain entities, services, parsers, and policy engines
+- **~101 Rust integration tests** — service-layer flows against a real PostgreSQL database
+- **~562 frontend unit tests** — Svelte component behaviour, API wrappers, i18n, and store logic
+- **~2,430 API wire tests** — Hurl scenarios asserting every REST endpoint's request shape, response status, and error envelope
+- **~115 end-to-end tests** — Playwright-driven full-browser flows (login, upload, share, settings) against a running server
+- **~93 WebDAV compliance tests** — the Litmus test suite verifying RFC 4918 conformance for third-party clients (Thunderbird, DAVx⁵, Nextcloud desktop)
+
+Every regression that reaches a reviewer or a user comes back as a new test in the same patch — never as a fix alone. That discipline is what lets a small codebase ship fast without accumulating hidden breakage.
+
 ## Key Features
 
 ### Storage & Files
@@ -56,7 +79,6 @@ NextCloud was too slow on a home server. So OxiCloud was built to run on minimal
 - Dual DB pool (user queries never starved by background tasks)
 - Write-behind caching (moka) for sub-millisecond reads
 - LTO-optimised release builds
-- 222+ automated tests
 
 ## Feature Status
 

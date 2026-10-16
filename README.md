@@ -144,6 +144,14 @@ OxiCloud is actively developed and already covers the core self-hosted cloud wor
 
 Roadmap: [TODO-LIST.md](TODO-LIST.md)
 
+## Testing & Quality
+
+OxiCloud ships with **more than 4,500 automated tests** that run on every change. They cover every layer of the stack — Rust unit and integration tests, frontend unit tests, API wire tests, end-to-end browser flows, and WebDAV compliance.
+
+**One guiding principle**: every issue a user reports lands with a test once it is fixed. A bug that reached production is proof the test suite missed something; the pin for it ships in the same patch as the fix, in the lowest layer that would have caught it. The test is the deliverable, not the diagnosis.
+
+For the per-layer breakdown, see the [guide overview](docs/guide/index.md#testing).
+
 ## Help Shape OxiCloud
 
 If you want OxiCloud to get better faster, use the repo like a product feedback loop, not just a code dump.
@@ -196,6 +204,12 @@ cargo fmt --all --check
 cargo clippy --all-features --all-targets -- -D warnings
 cargo test --workspace
 ```
+
+## AI-Assisted Development
+
+OxiCloud is **co-developed with large language models**. The project treats them as a productivity tool, not an authority: anything that touches **architecture, security, data integrity, or performance** is strictly challenged against first principles — reviewed against the hexagonal boundaries, measured against the 10k-user scale target, benchmarked where it matters, and often rewritten — before it lands. Code suggestions pass the same bar as any human contribution: tests, linters, benchmarks, and reviewer scrutiny.
+
+The regression discipline from the [Testing & Quality](#testing--quality) section applies without exception here: an LLM-authored change that introduces a bug ships its own test the moment the bug is caught, in the same patch as the fix.
 
 ## Contributing
 
