@@ -135,6 +135,45 @@ fn cap_quota_to_available(base_quota: i64, role: &str, avail: Option<u64>) -> i6
     }
 }
 
+/// Pure boolean composition for [`AuthApplicationService::auto_redirect_to_oidc`].
+///
+/// Extracted so the five-clause truth table can be pinned with a
+/// trivial unit test — no service construction, no DB fixtures, no
+/// OIDC state. The method on the service is a thin wrapper that
+/// sources these inputs from its own config.
+///
+/// The five inputs correspond, in order, to:
+///   1. `AutoRedirectIfStandaloneOidc` policy is in the policy vector
+///   2. `oidc` is in `OXICLOUD_AUTH_METHODS` (operator-affirmed intent)
+///   3. `oidc_enabled()` is true at runtime (the OIDC service is
+///      actually wired — issuer, client id/secret, service in the
+///      slot).
+///   4. password login is live (`is_password_login_allowed()`)
+///   5. magic-link login is live (`is_magic_link_login_allowed()`)
+///
+/// All five must align for the SPA to skip the chooser and bounce
+/// straight to the IdP on page load. (2) and (3) are intentionally
+/// kept as independent inputs — belt-and-braces: cross-validation A
+/// at `config.rs:3941` panics at boot when `oidc` is in `AUTH_METHODS`
+/// but `OXICLOUD_OIDC_ENABLED != true` so they usually agree, but a
+/// runtime admin-panel tear-down (`state.config = None`) can still
+/// flip `oidc_enabled()` to false mid-session without touching the
+/// env-sourced allowlist. The guard keeps the SPA from auto-
+/// redirecting to a dead authorize endpoint in that window.
+fn should_auto_redirect_to_oidc(
+    policy_set: bool,
+    oidc_in_allowlist: bool,
+    oidc_runtime_enabled: bool,
+    password_login_allowed: bool,
+    magic_link_login_allowed: bool,
+) -> bool {
+    policy_set
+        && oidc_in_allowlist
+        && oidc_runtime_enabled
+        && !password_login_allowed
+        && !magic_link_login_allowed
+}
+
 #[cfg(test)]
 mod cap_quota_tests {
     use super::cap_quota_to_available;
@@ -159,6 +198,147 @@ mod cap_quota_tests {
     #[test]
     fn unknown_space_keeps_base() {
         assert_eq!(cap_quota_to_available(100, "user", None), 100);
+    }
+}
+
+#[cfg(test)]
+mod auto_redirect_to_oidc_tests {
+    //! Five-clause truth table for `auto_redirect_to_oidc` composed via
+    //! the pure [`super::should_auto_redirect_to_oidc`] helper.
+    //!
+    //! Written against the free function (not the service method) so
+    //! the matrix pins without any `AuthApplicationService` construction
+    //! or DB fixtures. The thin method wrapper's only responsibility is
+    //! to source these five booleans from its own fields; if a future
+    //! refactor drops one of those sources (e.g. removes the runtime
+    //! `oidc_enabled()` guard), the method's own doc contract fails
+    //! loudly in review — the truth-table pin stays correct either way.
+    //!
+    //! Two regressions this file pins (both discovered 2026-10-16):
+    //!
+    //! * **Allowlist override** — before this commit the second input
+    //!   was `oidc_enabled()` only. An operator with
+    //!   `OIDC_ENABLED=true` + `AUTH_METHODS=magic_link` + policy on
+    //!   would have been auto-redirected to the IdP — overriding
+    //!   their written allowlist. Case ⑥ pins the regression.
+    //!
+    //! * **Dead-endpoint redirect** — mid-review, before amending this
+    //!   commit, the composition dropped the runtime `oidc_enabled()`
+    //!   check entirely. An operator with `AUTH_METHODS=oidc` + policy
+    //!   on but with OIDC runtime wiring absent (incomplete admin
+    //!   panel config, failed reload, admin-panel disable after boot)
+    //!   would have been auto-redirected to a dead `/api/auth/oidc/
+    //!   authorize` endpoint. Case ⑦ pins the regression.
+    //!
+    //! Both must hold — intent AND capability.
+    use super::should_auto_redirect_to_oidc;
+
+    // Shorthand for the five booleans in order:
+    //   (policy, oidc_in_allowlist, oidc_runtime, password_live, magic_link_live)
+    fn s(a: bool, b: bool, c: bool, d: bool, e: bool) -> bool {
+        should_auto_redirect_to_oidc(a, b, c, d, e)
+    }
+
+    #[test]
+    fn standalone_oidc_with_policy_fires() {
+        // ① The canonical SSO-only shape: AUTH_METHODS=oidc, policy on,
+        //    OIDC wired at runtime, password + magic-link both muted
+        //    — must redirect.
+        assert!(s(true, true, true, false, false));
+    }
+
+    #[test]
+    fn policy_unset_never_fires() {
+        // ② Policy not set — regardless of any other combination,
+        //    stays false (operator didn't ask for auto-redirect).
+        assert!(!s(false, true, true, false, false));
+        assert!(!s(false, false, false, false, false));
+        assert!(!s(false, true, true, true, true));
+    }
+
+    #[test]
+    fn password_live_blocks_redirect() {
+        // ③ `AUTH_METHODS=password,oidc` + policy on: password login
+        //    page needs to render, so no auto-redirect.
+        assert!(!s(true, true, true, true, false));
+    }
+
+    #[test]
+    fn magic_link_live_blocks_redirect() {
+        // ④ `AUTH_METHODS=magic_link,oidc` + policy on + OIDC-master
+        //    rule NOT muting magic-link (e.g. magic-link somehow
+        //    kept live): no auto-redirect, chooser must render.
+        assert!(!s(true, true, true, false, true));
+    }
+
+    #[test]
+    fn oidc_not_in_allowlist_blocks_redirect() {
+        // ⑤ Operator wrote `AUTH_METHODS=password,magic_link`
+        //    (OIDC not listed) but ALSO `OIDC_ENABLED=true` (loose
+        //    mismatch — OIDC gets served anyway via the
+        //    enabled-flag-wins semantic documented at
+        //    authentication.md:62). Runtime says `oidc_enabled()`
+        //    = true. Even so, auto-redirect stays off because the
+        //    operator's allowlist did NOT affirm `oidc` as an
+        //    intended method.
+        assert!(!s(true, false, true, false, false));
+    }
+
+    #[test]
+    fn magic_link_only_plus_oidc_enabled_no_oidc_in_methods_stays_off() {
+        // ⑥ Config: AUTH_METHODS=magic_link, OIDC_ENABLED=true,
+        //    policy on. Resolved state: password NOT allowed,
+        //    magic-link NOT allowed (muted by OIDC-master rule),
+        //    policy ON, OIDC runtime ON. Under the OLD runtime-
+        //    only check this returned true and the SPA would
+        //    auto-redirect to the IdP — overriding the operator's
+        //    written allowlist. The allowlist check keeps auto-
+        //    redirect OFF here: the operator did not list `oidc`.
+        //    (OIDC still gets served via the loose semantic — just
+        //    not auto-redirected to.)
+        assert!(!s(true, false, true, false, false));
+    }
+
+    #[test]
+    fn oidc_in_allowlist_but_runtime_off_stays_off() {
+        // ⑦ Config: AUTH_METHODS=oidc, policy on, but OIDC runtime
+        //    wiring IS NOT ready — issuer / client id / client
+        //    secret missing, admin-panel config incomplete, provider
+        //    reload failed, or admin disabled OIDC via admin panel
+        //    after boot (`state.config = None`). Resolved state:
+        //    operator intent IS "SSO only", but a redirect to
+        //    /api/auth/oidc/authorize would hit a dead endpoint
+        //    (ServiceUnavailable or similar). The runtime capability
+        //    check keeps auto-redirect OFF so the SPA renders its
+        //    "no auth method available" shell instead of bouncing
+        //    the user to a broken flow.
+        //    Pins the mid-review regression where the composition
+        //    dropped the runtime guard entirely in favour of the
+        //    allowlist alone.
+        assert!(!s(true, true, false, false, false));
+    }
+
+    #[test]
+    fn full_truth_table_thirty_two_cases() {
+        // Belt-and-braces: enumerate every
+        // (policy, oidc_in_allowlist, oidc_runtime, password, magic_link)
+        // tuple and assert the formula holds. Catches any future
+        // "clever" refactor that reorders the AND chain in a way the
+        // per-case tests above might miss.
+        for i in 0..32 {
+            let policy = (i & 0b10000) != 0;
+            let oidc_allow = (i & 0b01000) != 0;
+            let oidc_run = (i & 0b00100) != 0;
+            let pw = (i & 0b00010) != 0;
+            let ml = (i & 0b00001) != 0;
+            let expected = policy && oidc_allow && oidc_run && !pw && !ml;
+            assert_eq!(
+                s(policy, oidc_allow, oidc_run, pw, ml),
+                expected,
+                "mismatch at (policy={policy}, oidc_in_allowlist={oidc_allow}, \
+                 oidc_runtime={oidc_run}, password_live={pw}, magic_link_live={ml})"
+            );
+        }
     }
 }
 
@@ -677,21 +857,53 @@ impl AuthApplicationService {
     /// True iff the login SPA should auto-redirect to the OIDC
     /// authorize endpoint on page load (SSO-only, no click needed).
     ///
-    /// Composed to be BOTH policy-set AND effectively-standalone:
+    /// Composed to be ALL of policy-set, operator-affirmed,
+    /// runtime-serviceable, and effectively-standalone:
     ///   * `AutoRedirectIfStandaloneOidc` policy is in the vector, AND
-    ///   * OIDC is enabled AND is the only WORKING login method
-    ///     (password + magic-link both refused by the composition of
-    ///     the allowlist + OIDC-master rule).
+    ///   * `oidc` is in `OXICLOUD_AUTH_METHODS` (operator-affirmed
+    ///     intent — not just "OIDC happens to be running"), AND
+    ///   * `oidc_enabled()` is true (the OIDC service is actually
+    ///     wired — issuer, client id/secret, service in the slot;
+    ///     prevents bouncing users to a dead authorize endpoint when
+    ///     intent and runtime wiring disagree), AND
+    ///   * OIDC is the only WORKING login method (password +
+    ///     magic-link both refused by the composition of the
+    ///     allowlist + OIDC-master rule).
     ///
-    /// When the policy is set but other methods are also live, this is
-    /// a silent no-op — the FE renders the multi-method chooser. If
-    /// the policy is NOT set, this is always false regardless.
+    /// **Why both the allowlist AND `oidc_enabled()`.** This field
+    /// signals operator intent AND runtime capability — both must
+    /// hold, because a redirect target that doesn't serve is a
+    /// dead-end for the user. Two misconfiguration shapes exist
+    /// (both documented at `authentication.md:62`):
+    ///
+    ///   * `AUTH_METHODS` lists `oidc` but runtime wiring is absent
+    ///     (operator-panel config incomplete, provider reload
+    ///     failed, admin-panel disable after boot) → allowlist says
+    ///     "yes", runtime says "no" — do NOT redirect.
+    ///   * `OIDC_ENABLED=true` but `AUTH_METHODS` does not list
+    ///     `oidc` (loose mismatch — OIDC gets served, "enabled flag
+    ///     wins") → runtime says "yes", allowlist says "no" — do
+    ///     NOT redirect (operator didn't affirm SSO-only intent).
+    ///
+    /// The OIDC-master rule in `is_magic_link_login_allowed()`
+    /// gates purely on `oidc_enabled()` because its rationale is a
+    /// runtime security property (the IdP enforces live 2FA /
+    /// step-up — mailbox-possession must be refused whenever OIDC
+    /// is actually serving, regardless of what the allowlist
+    /// claims). Different composition, different reason.
+    ///
+    /// When the policy is set but other methods are also live, this
+    /// is a silent no-op — the FE renders the multi-method chooser.
+    /// If the policy is NOT set, this is always false regardless.
     pub fn auto_redirect_to_oidc(&self) -> bool {
-        self.auth_policies
-            .contains(&AuthPolicy::AutoRedirectIfStandaloneOidc)
-            && self.oidc_enabled()
-            && !self.is_password_login_allowed()
-            && !self.is_magic_link_login_allowed()
+        should_auto_redirect_to_oidc(
+            self.auth_policies
+                .contains(&AuthPolicy::AutoRedirectIfStandaloneOidc),
+            self.allowed_auth_methods.contains(&AuthMethod::Oidc),
+            self.oidc_enabled(),
+            self.is_password_login_allowed(),
+            self.is_magic_link_login_allowed(),
+        )
     }
 
     /// Resolve a login-identifier (username OR email) to the account's
