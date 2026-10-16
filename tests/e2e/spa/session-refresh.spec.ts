@@ -59,4 +59,37 @@ test.describe('SPA · session refresh survives a deleted access cookie', () => {
 			TEST_ADMIN.username
 		);
 	});
+
+	test('reload with no cookies does not trigger a refresh dance', async ({ page, context }) => {
+		// Mirror of the test above. Where the previous one covers "access
+		// deleted, refresh survives → stay logged in via /refresh", this
+		// one covers the fully-logged-out boot path: ALL cookies cleared.
+		//   * session.load must bail on `hasSessionHint()` (which reads
+		//     the JS-visible `oxicloud_csrf` cookie — now absent).
+		//   * NO /me, NO /refresh request should fire on reload — any
+		//     either is a regression:
+		//        - /me firing → `hasSessionHint` leaks
+		//        - /refresh firing → fetchMe-401-triggers-refresh (the
+		//          exact contract the pre-migration guard in d131ebc4
+		//          pins at the unit layer)
+		//   * SPA lands on /login cleanly, no toast cascade.
+		await uiLogin(page);
+		await context.clearCookies();
+
+		const authRequests: string[] = [];
+		page.on('request', (r) => {
+			const u = r.url();
+			if (u.includes('/api/auth/me') || u.includes('/api/auth/refresh')) {
+				authRequests.push(new URL(u).pathname);
+			}
+		});
+
+		await page.reload();
+
+		await expect(page).toHaveURL(/\/login/);
+		await expect(page.getByTestId('login-form')).toBeVisible();
+		// Critical: no /me and no /refresh. `hasSessionHint()`'s early
+		// return keeps the probe-and-refresh chain unfired.
+		expect(authRequests).toEqual([]);
+	});
 });

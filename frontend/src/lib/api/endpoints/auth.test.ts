@@ -660,3 +660,71 @@ describe('tryRefresh — DPoP wiring', () => {
 		expect(spy).toHaveBeenCalledTimes(2);
 	});
 });
+
+// ── Error-message pins for the plain-Error throw paths ──────────────
+//
+// `register`, `setupAdmin`, and `sendMagicLink` all throw `new Error(...)`
+// rather than the typed `ApiError`, because the signup form / setup
+// wizard / magic-link page render `.message` directly without
+// branching on `error_type`. These pins guard against a specific class
+// of regression where the thrown message surfaces as the literal string
+// "undefined" — the manual sandbox checklist watches for exactly that
+// (`Row 7: "a 400/409 shows a clean error message, not undefined"`).
+//
+// Pre-migration shape: `apiFetch` returned a Response; the wrapper read
+// `.json().message || .json().error || "foo failed: {status}"`.
+// Post-migration shape: SDK throws the parsed body (`{error|message}`);
+// the wrapper reads from `err.data`. A regression on either half can
+// collapse the || chain to `undefined`, which only shows up visually
+// in the SPA.
+describe('plain-Error wrappers never surface "undefined" to the UI', () => {
+	it('register extracts the server error message, not undefined', async () => {
+		sdkRegister.mockRejectedValueOnce({
+			response: { status: 409 },
+			data: { message: 'email already registered' }
+		});
+		await expect(auth.register('x@y.z', 'p')).rejects.toThrow('email already registered');
+	});
+
+	it('register falls back to a status-formatted message when the body is empty', async () => {
+		sdkRegister.mockRejectedValueOnce({ response: { status: 500 }, data: {} });
+		await expect(auth.register('x@y.z', 'p')).rejects.toThrow(/^register failed: 500$/);
+		// The whole point: NEVER the string "undefined".
+		try {
+			await auth.register('x@y.z', 'p');
+			sdkRegister.mockRejectedValueOnce({ response: { status: 500 }, data: {} });
+		} catch (e) {
+			expect((e as Error).message).not.toContain('undefined');
+		}
+	});
+
+	it('setupAdmin extracts the server error message, not undefined', async () => {
+		sdkSetupAdmin.mockRejectedValueOnce({
+			response: { status: 400 },
+			data: { error: 'password too weak' }
+		});
+		await expect(auth.setupAdmin('e@x.test', 'short')).rejects.toThrow('password too weak');
+	});
+
+	it('setupAdmin falls back to a status message when the body is empty', async () => {
+		sdkSetupAdmin.mockRejectedValueOnce({ response: { status: 500 }, data: null });
+		await expect(auth.setupAdmin('e@x.test', 'p')).rejects.toThrow(/^setup failed: 500$/);
+	});
+
+	it('sendMagicLink preserves the caught error as `cause` on throw', async () => {
+		// 503 branches to 'unavailable' (soft). Other failures throw an
+		// Error — must carry `cause` so the UI can surface the real
+		// transport failure in dev consoles. The ESLint rule
+		// preserve-caught-error enforces this at the source side; this
+		// test pins it at the behavioural side.
+		const underlying = { response: { status: 500 }, data: {} };
+		sdkSendMagicLink.mockRejectedValueOnce(underlying);
+		try {
+			await auth.sendMagicLink('x@y.z');
+			throw new Error('expected magic-link to throw');
+		} catch (e) {
+			expect((e as Error).message).not.toContain('undefined');
+			expect((e as Error).cause).toBe(underlying);
+		}
+	});
+});
