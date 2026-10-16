@@ -4783,6 +4783,16 @@ export type UpdateUserActiveDto = {
 };
 
 /**
+ * DTO for updating the user's profile image.
+ */
+export type UpdateUserImageDto = {
+    /**
+     * Image URL (https/http) or data URI (data:image/png|webp|jpeg;base64,…). Null to clear.
+     */
+    image?: string | null;
+};
+
+/**
  * Request body for updating a user's storage quota
  */
 export type UpdateUserQuotaDto = {
@@ -7880,6 +7890,31 @@ export type GetCurrentUserResponses = {
 };
 
 export type GetCurrentUserResponse = GetCurrentUserResponses[keyof GetCurrentUserResponses];
+
+export type UpdateUserImageData = {
+    body: UpdateUserImageDto;
+    path?: never;
+    query?: never;
+    url: '/api/auth/me/image';
+};
+
+export type UpdateUserImageErrors = {
+    /**
+     * Validation error (invalid data URI / unsupported MIME / oversized / malformed URL)
+     */
+    400: unknown;
+    /**
+     * Not authenticated
+     */
+    401: unknown;
+};
+
+export type UpdateUserImageResponses = {
+    /**
+     * Image updated (or cleared when `image` was null)
+     */
+    200: unknown;
+};
 
 export type UpdateProfileData = {
     body: UpdateProfileDto;

@@ -4009,6 +4009,42 @@
         ]
       }
     },
+    "/api/auth/me/image": {
+      "put": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Set or clear the current user's profile image.",
+        "description": "Body carries an image reference as either an HTTPS URL or a\ndata: URI (`data:image/png;base64,…`); `null` clears the stored\nvalue and the SPA falls back to the initials-avatar renderer.\nValidation (size cap, MIME allowlist, URL scheme) is enforced in\n`AuthApplicationService::update_user_image`.\n\nResponse is an empty 200 — the SPA re-fetches `GET /me` on the\nnext session.load tick to pick up the new avatar reference.",
+        "operationId": "update_user_image",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateUserImageDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Image updated (or cleared when `image` was null)"
+          },
+          "400": {
+            "description": "Validation error (invalid data URI / unsupported MIME / oversized / malformed URL)"
+          },
+          "401": {
+            "description": "Not authenticated"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
     "/api/auth/me/profile": {
       "patch": {
         "tags": [
@@ -18173,6 +18209,19 @@
         "properties": {
           "active": {
             "type": "boolean"
+          }
+        }
+      },
+      "UpdateUserImageDto": {
+        "type": "object",
+        "description": "DTO for updating the user's profile image.",
+        "properties": {
+          "image": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Image URL (https/http) or data URI (data:image/png|webp|jpeg;base64,…). Null to clear."
           }
         }
       },
