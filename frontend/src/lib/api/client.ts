@@ -6,6 +6,14 @@ import type { RequestOptions } from './generated/openapi/client';
 import { generatedApiFetch } from './hey-api';
 import { apiProbeTransport, createApiTransport, urlString } from './transport';
 export {
+	// `apiProbeTransport` is exposed on the public API surface because
+	// endpoint wrappers that act as bootstrap probes (`fetchMe`,
+	// `tryRefresh`) legitimately need to opt out of the shared transport's
+	// 401 → refresh → retry dance by passing it on the per-call `fetch`
+	// option. The underlying `transport.ts` module stays private — the
+	// `no-restricted-imports` lint rule forbids reaching into it directly
+	// so wrappers can't skip the public contract on a whim.
+	apiProbeTransport,
 	createApiFetch,
 	setSessionExpiredHandler,
 	setPasswordChangeRequiredHandler,

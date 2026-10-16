@@ -1,9 +1,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-vi.mock('$lib/api/client', () => ({
-	apiFetch: vi.fn(),
-	apiJson: vi.fn(),
-	withBase: (p: string) => p
-}));
+// Partial mock: stub `apiFetch` + `apiJson` so test fixtures can drive
+// the handful of legacy call sites still using them, while keeping
+// everything else (`apiProbeTransport`, `ApiError`, `withBase`, …) as
+// the real exports so Phase-4-migrated wrappers that need them (e.g.
+// `fetchMe` passes `apiProbeTransport` as the SDK's `fetch` option)
+// see the real values, not undefined.
+vi.mock('$lib/api/client', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('$lib/api/client')>();
+	return {
+		...actual,
+		apiFetch: vi.fn(),
+		apiJson: vi.fn()
+	};
+});
 vi.mock('$lib/api/csrf', () => ({ getCsrfHeaders: () => ({}) }));
 // Several probes (`fetchMe`, `tryRefresh`) run through the DPoP shim.
 // Default `proof = null` matches jsdom's missing WebCrypto keys — so
@@ -54,6 +63,7 @@ vi.mock('@serenity-kit/opaque', () => ({
 // with a safe fallback, so an unmocked call never crashes the test.
 vi.mock('../generated/openapi/sdk.gen', () => ({
 	dpopBind: vi.fn(),
+	getCurrentUser: vi.fn(),
 	getSystemStatus: vi.fn(),
 	login: vi.fn(),
 	logout: vi.fn(),
@@ -61,18 +71,21 @@ vi.mock('../generated/openapi/sdk.gen', () => ({
 	oidcLinkStart: vi.fn(),
 	oidcProviders: vi.fn(),
 	oidcUnlink: vi.fn(),
+	refreshToken: vi.fn(),
 	register: vi.fn(),
 	sendMagicLink: vi.fn(),
 	setupAdmin: vi.fn(),
 	upgradeToInternal: vi.fn()
 }));
-import { apiFetch, apiJson } from '$lib/api/client';
+import { apiFetch, apiJson, apiProbeTransport } from '$lib/api/client';
 import {
+	getCurrentUser as sdkGetCurrentUserMock,
 	getSystemStatus as sdkGetSystemStatusMock,
 	login as sdkLoginMock,
 	logout as sdkLogoutMock,
 	oidcExchange as sdkOidcExchangeMock,
 	oidcProviders as sdkOidcProvidersMock,
+	refreshToken as sdkRefreshTokenMock,
 	register as sdkRegisterMock,
 	sendMagicLink as sdkSendMagicLinkMock,
 	setupAdmin as sdkSetupAdminMock
@@ -85,11 +98,13 @@ const j = apiJson as unknown as ReturnType<typeof vi.fn>;
 // from the `vi.mock('../generated/openapi/sdk.gen')` block above —
 // cast here so individual tests can `.mockResolvedValueOnce(...)` or
 // read `.mock.calls`.
+const sdkGetCurrentUser = sdkGetCurrentUserMock as unknown as ReturnType<typeof vi.fn>;
 const sdkLogin = sdkLoginMock as unknown as ReturnType<typeof vi.fn>;
 const sdkLogout = sdkLogoutMock as unknown as ReturnType<typeof vi.fn>;
 const sdkOidcProviders = sdkOidcProvidersMock as unknown as ReturnType<typeof vi.fn>;
 const sdkGetSystemStatus = sdkGetSystemStatusMock as unknown as ReturnType<typeof vi.fn>;
 const sdkOidcExchange = sdkOidcExchangeMock as unknown as ReturnType<typeof vi.fn>;
+const sdkRefreshToken = sdkRefreshTokenMock as unknown as ReturnType<typeof vi.fn>;
 const sdkRegister = sdkRegisterMock as unknown as ReturnType<typeof vi.fn>;
 const sdkSendMagicLink = sdkSendMagicLinkMock as unknown as ReturnType<typeof vi.fn>;
 const sdkSetupAdmin = sdkSetupAdminMock as unknown as ReturnType<typeof vi.fn>;
@@ -145,39 +160,39 @@ it('exercises the auth endpoints (success paths)', async () => {
 	const sdkCount = sdkMocks.reduce((n, m) => n + m.mock.calls.length, 0);
 	expect(fc + f.mock.calls.length + sdkCount).toBeGreaterThan(5);
 });
-it('fetchMe returns null when the probe is not ok', async () => {
-	// `headers: new Headers()` matches real `fetch()` — the DPoP-aware
-	// path calls `response.headers.get('DPoP-Nonce')` on every reply
-	// and would crash on a bare `{ok, status, json}` mock.
-	f.mockResolvedValue({ ok: false, status: 401, headers: new Headers(), json: async () => ({}) });
+it('fetchMe returns null when the SDK call rejects with a 401', async () => {
+	// Phase 4 — SDK call. On 401 the Hey-API client throws an object
+	// shaped `{ response: Response, data?: unknown }`; fetchMe
+	// inspects `response.status` and returns null without rethrowing.
+	sdkGetCurrentUser.mockRejectedValue({ response: { status: 401 } });
 	await expect(auth.fetchMe()).resolves.toBeNull();
 });
 it('fetchMe opts out of the refresh+retry interceptor on 401', async () => {
 	// `fetchMe` is the boot-time "am I logged in?" probe. On an expired
 	// cookie it MUST return null cleanly, not silently refresh+retry —
 	// a refresh at boot defeats the "cleanly logged-out on boot" path.
-	// Pinned here because a Phase-4 swap to a generated client with a
-	// different default would silently flip this behaviour; nothing else
-	// in the suite would catch it.
-	f.mockResolvedValueOnce({
-		ok: false,
-		status: 401,
-		headers: new Headers(),
-		json: async () => ({})
-	});
+	// Pinned pre-migration (d131ebc4) and preserved under the SDK swap:
+	// fetchMe passes `fetch: apiProbeTransport` on the SDK call, which
+	// has `retryUnauthorized: false` baked in and a no-op
+	// `onSessionExpired` handler. See src/lib/api/transport.ts:362.
+	sdkGetCurrentUser.mockRejectedValueOnce({ response: { status: 401 } });
 	await expect(auth.fetchMe()).resolves.toBeNull();
-	// One apiFetch call — no second trip, no refresh dance.
-	expect(f).toHaveBeenCalledTimes(1);
-	// And the opt-out option is on the call site. If this disappears,
-	// the migrated version must preserve the semantic through whatever
-	// equivalent the generated client exposes.
-	expect(f).toHaveBeenCalledWith(
-		'/api/auth/me',
-		expect.objectContaining({ retryUnauthorized: false })
-	);
+	// One SDK call — no refresh dance, no second trip.
+	expect(sdkGetCurrentUser).toHaveBeenCalledTimes(1);
+	// Opt-out signal: the per-call `fetch` option must be
+	// apiProbeTransport (identity check — the probe variant is the
+	// contract, not just "any fetch override"). If the migration
+	// drops the override, the default `apiTransport` would silently
+	// refresh+retry and this assertion catches it.
+	const call = sdkGetCurrentUser.mock.calls[0]?.[0];
+	expect(call).toBeTruthy();
+	expect(call.fetch).toBe(apiProbeTransport);
 });
 it('tryRefresh returns false when the refresh fails', async () => {
-	f.mockResolvedValue({ ok: false, status: 401, headers: new Headers(), json: async () => ({}) });
+	// Phase 4 — SDK call. Any thrown error (401, 500, network) returns
+	// `false` cleanly; the `apiProbeTransport` override guarantees no
+	// `onSessionExpired` divert on the way out.
+	sdkRefreshToken.mockRejectedValue({ response: { status: 401 } });
 	await expect(auth.tryRefresh()).resolves.toBe(false);
 });
 
@@ -565,8 +580,17 @@ describe('tryRefresh — DPoP wiring', () => {
 	});
 
 	beforeEach(async () => {
-		const actual = await vi.importActual<typeof import('$lib/api/client')>('$lib/api/client');
-		f.mockImplementation(actual.apiFetch);
+		// Phase 4 — tryRefresh now routes through the generated SDK's
+		// `refreshToken`, which the top-level `vi.mock` has stubbed as
+		// a plain `vi.fn()`. These wire-level tests need the REAL SDK
+		// call so the request actually hits the DPoP transport and the
+		// stubbed `globalThis.fetch` records the headers. Point the
+		// mocked SDK symbol at the real implementation inside this
+		// describe only; every other test still gets the plain stub.
+		const sdk = await vi.importActual<typeof import('../generated/openapi/sdk.gen')>(
+			'../generated/openapi/sdk.gen'
+		);
+		sdkRefreshToken.mockImplementation(sdk.refreshToken);
 		// Opt into DPoP-attached behaviour for this block; individual
 		// tests can still flip it back to null to check the fail-open.
 		dpopState.proof = 'proof.abc';

@@ -3,9 +3,10 @@
  * primitives here intentionally bypass it (see client.ts) so a 401 surfaces as
  * a genuine failure to the caller.
  */
-import { ApiError, apiFetch } from '$lib/api/client';
+import { ApiError, apiProbeTransport } from '$lib/api/client';
 import {
 	dpopBind,
+	getCurrentUser,
 	getSystemStatus,
 	login as sdkLogin,
 	logout as sdkLogout,
@@ -13,6 +14,7 @@ import {
 	oidcLinkStart,
 	oidcProviders,
 	oidcUnlink,
+	refreshToken as sdkRefreshToken,
 	register as sdkRegister,
 	sendMagicLink as sdkSendMagicLink,
 	setupAdmin as sdkSetupAdmin,
@@ -47,30 +49,50 @@ function apiErrorFromSdkError(e: unknown, path: string): ApiError {
 	return new ApiError(status, statusText, path, errorType, message);
 }
 
-const JSON_HEADERS = { 'Content-Type': 'application/json' };
-
 /** Probe the session without refreshing or redirecting on an ordinary 401. */
 export async function fetchMe(): Promise<SelfUser | null> {
-	const res = await apiFetch('/api/auth/me', {
-		credentials: 'same-origin',
-		retryUnauthorized: false
-	});
-	if (res.status === 401) return null;
-	if (!res.ok) throw new Error(`/api/auth/me failed: ${res.status}`);
-	return (await res.json()) as SelfUser;
+	// Phase 4 — SDK call. `/api/auth/me` is NOT in AUTH_PRIMITIVES, so the
+	// default `apiTransport` would run the full 401 → refresh → retry dance
+	// against it. For the BOOT probe that MUST NOT happen: a stale cookie
+	// on startup needs to resolve to `null` cleanly so the layout guard
+	// routes to /login, NOT silently refresh (which can succeed and leave
+	// the UI thinking the user is logged in with a session they didn't
+	// explicitly authenticate). Opt out by passing `apiProbeTransport` on
+	// the per-call `fetch` option — it has `retryUnauthorized: false`
+	// baked in and a no-op `onSessionExpired` handler, so a 401 surfaces
+	// to the caller unchanged. The pre-migration guard in d131ebc4 pins
+	// this contract from the test side.
+	try {
+		return await getCurrentUser({ fetch: apiProbeTransport, throwOnError: true });
+	} catch (e) {
+		const status = (e as { response?: { status?: number } })?.response?.status;
+		if (status === 401) return null;
+		throw e;
+	}
 }
 
 /** Startup refresh through the generated client and shared DPoP nonce handling. */
 export async function tryRefresh(): Promise<boolean> {
+	// Phase 4 — SDK call. `/api/auth/refresh` IS in AUTH_PRIMITIVES so the
+	// default transport already skips the refresh dance for it, but using
+	// `apiProbeTransport` matches the hand-written semantic more precisely:
+	// if the refresh fails for any reason (401, 500, network), we want a
+	// clean `false` return without the session-expired handler firing a
+	// divert — that's exactly what the probe transport's no-op
+	// `onSessionExpired` guarantees. DPoP nonce-attach + nonce-retry logic
+	// still lives in the transport's `withProof` wrapper either way.
+	//
+	// `body: {} as never` — same backend/annotation mismatch as logout:
+	// the handler takes `axum::body::Bytes`, cookie carries the refresh
+	// token, but the utoipa `request_body = inline(RefreshTokenDto)`
+	// generates a required field in the SDK types.
 	try {
-		const res = await apiFetch('/api/auth/refresh', {
-			method: 'POST',
-			credentials: 'same-origin',
-			retryUnauthorized: false,
-			headers: JSON_HEADERS,
-			body: '{}'
+		await sdkRefreshToken({
+			body: {} as never,
+			fetch: apiProbeTransport,
+			throwOnError: true
 		});
-		return res.ok;
+		return true;
 	} catch {
 		return false;
 	}
