@@ -573,6 +573,22 @@ touched rows on content time, which is not an ordering at all.
 Files *with* EXIF `captured_at` do not move — the first arm wins and is
 unchanged.
 
+**Measured 2026-10-17** by running §1's and §3's migrations against the dev
+database inside a transaction and rolling back (4,916 files):
+
+| statement | rows written |
+| --- | --- |
+| §1 backfill `content_modified_at = updated_at` | 4,916 (all) |
+| §1 `SET NOT NULL` + `CHECK (> 2000-01-01Z)` | passed — no pre-2000 `updated_at` |
+| §3 arm 1 (files with a `file_metadata` row) | 15 |
+| §3 arm 2 (files with none) | 4,665 |
+
+So **95% of rows move** on §3's backfill. That is not a sign of trouble — it is
+the measure of how far `media_sort_date` had drifted from the content clock
+while pinned to upload time — but it does confirm the reorder is large enough to
+need a release note rather than a changelog line. Both migrations are otherwise
+clean against the real schema and triggers.
+
 #### The backfill and the statement triggers
 
 Same trap as §1, with a better outcome. `storage.files` carries two
