@@ -652,6 +652,11 @@ fn append_folders(items: &mut Vec<SearchResourceItem>, folders: Vec<SearchFolder
             drive_id: f.drive_id,
             created_at: f.created_at,
             modified_at: f.modified_at,
+            // Search hits carry no subtree rollup, and search results are a
+            // REST surface that never emits `D:getlastmodified`, so the
+            // folder's own mtime stands in rather than a claim about
+            // descendants.
+            tree_modified_at: f.modified_at,
             is_root: f.is_root,
             // Folders carry closed-set display fields — always the
             // same three static strings. Cheap to build via `Arc::from`

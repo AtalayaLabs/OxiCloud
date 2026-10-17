@@ -488,6 +488,12 @@ fn folder_dto_from_search(
         drive_id: sr.drive_id,
         created_at: sr.created_at,
         modified_at: sr.modified_at,
+        // Search results carry no subtree rollup. This path *does* emit
+        // `D:getlastmodified` (NC REPORT), so the fallback is load-bearing:
+        // a REPORT hit keeps reporting the folder's own mtime, as it did
+        // before `tree_modified_at` existed. Wiring the rollup here means
+        // widening the search projection — tracked in the dates plan.
+        tree_modified_at: sr.modified_at,
         is_root: sr.is_root,
         icon_class: intern_display("fas fa-folder"),
         icon_special_class: intern_display("folder-icon"),

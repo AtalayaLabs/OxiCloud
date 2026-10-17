@@ -1918,6 +1918,10 @@ export type FolderDto = {
     is_shared: boolean;
     /**
      * Last modification timestamp (RFC 3339 UTC).
+     *
+     * The folder row's own `updated_at` — bumped by a rename or a move of
+     * *this* folder, not by anything happening inside it. For "did anything
+     * in this subtree change", use `tree_modified_at` below.
      */
     modified_at: string;
     /**
@@ -1932,6 +1936,19 @@ export type FolderDto = {
      * Path to the folder (relative)
      */
     path: string;
+    /**
+     * Descendant-rollup timestamp (RFC 3339 UTC): the most recent change
+     * anywhere in this folder's subtree.
+     *
+     * This is what a collection's content-modification time actually means —
+     * a folder's "content" is its children — so `D:getlastmodified` is
+     * sourced from here rather than from `modified_at`, which would report a
+     * rename of the folder itself as a content change. It is also the input
+     * to `etag` below, so the two agree by construction.
+     *
+     * See `docs/architecture/dates.md` § Collections.
+     */
+    tree_modified_at: string;
     /**
      * §14 provenance: user that performed the most recent mutation
      * that bumped `updated_at`. Authorship signal — distinct from

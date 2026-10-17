@@ -221,6 +221,12 @@ pub async fn list_favorites_resources(
                             drive_id: row.drive_id,
                             created_at: row.resource_created_at,
                             modified_at: row.modified_at,
+                            // The favorites listing carries no subtree
+                            // rollup, and it is a REST surface that never
+                            // emits `D:getlastmodified`, so the row's own
+                            // mtime stands in rather than a claim about
+                            // descendants.
+                            tree_modified_at: row.modified_at,
                             is_root: false,
                             icon_class: intern_display("fas fa-folder"),
                             icon_special_class: intern_display("folder-icon"),

@@ -180,6 +180,7 @@ impl PathResolverService {
                     drive_id,
                     created_at: epoch_to_datetime(created_at.max(0) as u64),
                     modified_at: epoch_to_datetime(modified_at.max(0) as u64),
+                    tree_modified_at: epoch_to_datetime(tree_mod),
                     is_root: false,
                     icon_class: intern_display("fas fa-folder"),
                     icon_special_class: intern_display("folder-icon"),

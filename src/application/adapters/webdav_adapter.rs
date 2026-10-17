@@ -856,7 +856,12 @@ impl WebDavAdapter {
         Self::write_creationdate(xml_writer, folder.created_at)?;
 
         // Last modified
-        Self::write_lastmodified(xml_writer, folder.modified_at)?;
+        // Collections report their SUBTREE's mtime, not the folder row's own.
+        // A folder's "content" is its children, so a rename of the folder is
+        // not a content change — RFC 4918 §15.7. This also makes
+        // `getlastmodified` agree with `getetag`, which already derives from
+        // `tree_modified_at`. See docs/architecture/dates.md § Collections.
+        Self::write_lastmodified(xml_writer, folder.tree_modified_at)?;
 
         // ETag — routes through `FolderDto::etag` (= `Folder::etag()`)
         // so every WebDAV emitter and HEAD response agree on a single
@@ -1005,7 +1010,12 @@ impl WebDavAdapter {
                         Self::write_creationdate(xml_writer, folder.created_at)?;
                     }
                     "getlastmodified" => {
-                        Self::write_lastmodified(xml_writer, folder.modified_at)?;
+                        // Collections report their SUBTREE's mtime, not the folder row's own.
+                        // A folder's "content" is its children, so a rename of the folder is
+                        // not a content change — RFC 4918 §15.7. This also makes
+                        // `getlastmodified` agree with `getetag`, which already derives from
+                        // `tree_modified_at`. See docs/architecture/dates.md § Collections.
+                        Self::write_lastmodified(xml_writer, folder.tree_modified_at)?;
                     }
                     "getetag" => {
                         Self::write_etag_quoted(xml_writer, &folder.etag)?;
@@ -1692,7 +1702,16 @@ mod wire_shape_tests {
         dto.name = "Documents".to_string();
         dto.path = "Documents".to_string();
         dto.created_at = epoch_to_datetime(1_700_000_000);
-        dto.modified_at = epoch_to_datetime(1_700_086_400);
+        // The two folder clocks are deliberately DIFFERENT here: `modified_at`
+        // is the folder row's own mtime (a rename of this folder), while
+        // `tree_modified_at` is the subtree rollup. A collection's
+        // `getlastmodified` must report the rollup — see
+        // `docs/architecture/dates.md` § Collections — so the assertion below
+        // only passes if the emitter reads `tree_modified_at`. If someone
+        // repoints it back to `modified_at`, this test fails loudly instead of
+        // silently regressing DAV conformance.
+        dto.modified_at = epoch_to_datetime(1_700_050_000);
+        dto.tree_modified_at = epoch_to_datetime(1_700_086_400);
         dto.etag = "22222222222222222222222222222222-1700086400".to_string();
         dto
     }

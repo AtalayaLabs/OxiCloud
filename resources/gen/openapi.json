@@ -14009,6 +14009,7 @@
           "drive_id",
           "created_at",
           "modified_at",
+          "tree_modified_at",
           "is_root",
           "icon_class",
           "icon_special_class",
@@ -14071,7 +14072,7 @@
           "modified_at": {
             "type": "string",
             "format": "date-time",
-            "description": "Last modification timestamp (RFC 3339 UTC)."
+            "description": "Last modification timestamp (RFC 3339 UTC).\n\nThe folder row's own `updated_at` — bumped by a rename or a move of\n*this* folder, not by anything happening inside it. For \"did anything\nin this subtree change\", use `tree_modified_at` below."
           },
           "name": {
             "type": "string",
@@ -14087,6 +14088,11 @@
           "path": {
             "type": "string",
             "description": "Path to the folder (relative)"
+          },
+          "tree_modified_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Descendant-rollup timestamp (RFC 3339 UTC): the most recent change\nanywhere in this folder's subtree.\n\nThis is what a collection's content-modification time actually means —\na folder's \"content\" is its children — so `D:getlastmodified` is\nsourced from here rather than from `modified_at`, which would report a\nrename of the folder itself as a content change. It is also the input\nto `etag` below, so the two agree by construction.\n\nSee `docs/architecture/dates.md` § Collections."
           },
           "updated_by": {
             "type": [

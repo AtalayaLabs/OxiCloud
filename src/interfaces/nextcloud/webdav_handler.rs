@@ -2103,10 +2103,14 @@ pub fn write_folder_response<W: std::io::Write>(
 
     write_text_element(xml, "d:displayname", &folder.name)?;
 
+    // Collections report their SUBTREE's mtime, not the folder row's own: a
+    // folder's "content" is its children, so renaming the folder is not a
+    // content change (RFC 4918 §15.7). Same source as `getetag` below, so the
+    // two now agree. See docs/architecture/dates.md § Collections.
     write_date_element(
         xml,
         "d:getlastmodified",
-        folder.modified_at.timestamp(),
+        folder.tree_modified_at.timestamp(),
         true,
     )?;
     // Route through `FolderDto::etag` (= `Folder::etag()`: the
@@ -2430,6 +2434,7 @@ mod tests {
             drive_id: uuid::Uuid::nil(),
             created_at: crate::application::dtos::timestamp_helpers::epoch_zero(),
             modified_at: crate::application::dtos::timestamp_helpers::epoch_zero(),
+            tree_modified_at: crate::application::dtos::timestamp_helpers::epoch_zero(),
             is_root: false,
             icon_class: std::sync::Arc::from("fas fa-folder"),
             icon_special_class: std::sync::Arc::from("folder-icon"),
