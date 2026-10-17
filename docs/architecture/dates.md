@@ -199,23 +199,25 @@ precision is what the cursor flow depends on.
 So the REST response is **not** a lossy hop. The lossy hops are `X-OC-Mtime`
 (integer seconds) and the `u64` on the `File` / `Folder` entities.
 
-### `File` and `Folder` are still `u64`
+### `File` and `Folder` keep `u64` by design
 
-Every other entity uses `DateTime<Utc>`; these two are the exception, and the
-conversion looks **deferred rather than decided** — neither field carries a doc
-comment, unlike every other non-obvious field in those structs.
+`DateTime<Utc>` lives **only at the serde boundary**. Domain entities hold epoch
+seconds, because `File::compute_etag(hash, modified_at: u64)` embeds the value
+verbatim in the ETag string — so an integer-typed entity makes "ETag input is
+integer seconds" a type-level guarantee rather than a convention, with no
+rounding step for a callsite to get wrong.
 
-The ETag is a real constraint but a narrower one than it is usually given credit
-for: `compute_etag(hash, modified_at: u64)` renders `{hash[..16]}-{modified_at}`,
-and a `DateTime<Utc>` field passing `.timestamp() as u64` would produce a
-byte-identical string. So **epoch seconds must survive in the ETag format**, but
-the field type is free. `Folder` has no ETag justification at all — its ETag
-derives from `tree_modified_at`.
+The pre-conversion layer is wider than those two structs: it also covers
+`virtual_file_etag(size, modified_at: u64)`
+(`domain/services/external_mount_id.rs:154`) and the virtual file/folder
+descriptors in `application/ports/external_mount_ports.rs:50-68`.
 
-`src/application/dtos/timestamp_helpers.rs` is the conversion boundary
-(`epoch_to_datetime`, `datetime_to_epoch`, `epoch_zero`), applied at the DTO
-mappers. See `docs/plan/normalize-file-dates.md` §2 for how a future conversion
-interacts with the repointing sweep.
+`src/application/dtos/timestamp_helpers.rs` is the single conversion point —
+`epoch_to_datetime` at the DTO mappers, `datetime_to_epoch` in reverse,
+`epoch_zero` for stub builders. The listing path additionally needs
+`datetime_to_etag_seconds` (see § ETag coupling) precisely because it starts
+from a `DateTime` and must round to match `EXTRACT(EPOCH FROM x)::bigint`; the
+entity path needs no such care.
 
 ## Trust bounds
 

@@ -32,10 +32,11 @@ heading:
 > - §7's compile-time protection is a **precondition, not a bonus** — the two
 >   sort types the frontend imports are still hand-written, so the
 >   OpenAPI→SDK→`npm run check` chain does not close yet.
-> - `File` and `Folder` are still `u64`, but that looks **deferred rather than
->   decided** — neither field is documented, and the ETag constrains only the
->   epoch-seconds *format*, not the field type. No conversion is in flight, so §2
->   proceeds unblocked; if one lands later it touches the same 32 sites.
+> - `File` and `Folder` keep `u64` **by design** (confirmed 2026-10-17):
+>   `DateTime<Utc>` lives only at the serde boundary, and an integer-typed entity
+>   makes "ETag input is integer seconds" a type-level guarantee. §2 therefore
+>   changes only the column inside each `EXTRACT(EPOCH FROM …)`, with no type
+>   churn riding along.
 >
 > The three-pattern survey is unchanged — 10 aliases, 32 `EXTRACT(EPOCH FROM …)`
 > selects, 1 cursor predicate — so §2's sizing still holds.
@@ -288,47 +289,43 @@ Search needs no reindex: `sort_enriched_files`
 `Vec<SearchFileResultDto>` in Rust, reading the DTO field — Tantivy holds no
 sort field for this axis, so the search sort follows automatically.
 
-### `File` and `Folder` are still `u64` — deferred, not principled
+### `File` and `Folder` keep `u64` — a design decision, not drift
 
-Every other entity (`user`, `notification`, `app_password`, `subject_group`,
-`calendar`, `calendar_event`, `calendar_todo`, `contact`, `face`) uses
-`DateTime<Utc>`. These two do not, and it is worth being accurate about why,
-because the usual explanation does not survive inspection:
+Confirmed by the maintainer 2026-10-17. From the `pivot/dto-timestamps-iso`
+record:
 
-- **No field comment.** Every non-obvious field in both structs is documented —
-  `blob_hash`, `created_by`, `updated_by`, `drive_id`, `tree_modified_at`. The
-  `u64` timestamps carry none, which is where a deliberate choice would be
-  recorded.
-- **The ETag constraint is narrower than it sounds, and the codebase proves it.**
-  `File::etag_for_listing` already takes a `DateTime<Utc>` and produces the same
-  ETag, rounding through `timestamp_helpers::datetime_to_etag_seconds` to match
-  `EXTRACT(EPOCH FROM x)::bigint`. So a `DateTime` field demonstrably *can* feed
-  the ETag: the constraint is on the epoch-seconds **format**, not the field's
-  type.
-- **`Folder` has no ETag justification at all.** Its ETag derives from
-  `tree_modified_at`; `folder.created_at` / `.modified_at` feed none.
+> **Domain entities keep `u64` internally.** `File::compute_etag(hash,
+> modified_at: u64)` embeds the value verbatim in the ETag string — changing
+> that would invalidate every cached ETag on upgrade.
 
-The likely explanation is that the `pivot/dto-timestamps-iso` work stopped at
-the DTO boundary because these two are the hot path — the 32
-`EXTRACT(EPOCH FROM …)` sites feed listings, DAV and ETags — and built
-`src/application/dtos/timestamp_helpers.rs` (`epoch_to_datetime`,
-`datetime_to_epoch`, `epoch_zero`) as the boundary instead.
+`DateTime<Utc>` lives **only at the serde boundary**. The conversion is
+centralised in `src/application/dtos/timestamp_helpers.rs`
+(`epoch_to_datetime`, `datetime_to_epoch`, `epoch_zero`), applied at the DTO
+mappers. The `u64` layer extends beyond these two entities — it also covers
+`virtual_file_etag(size, modified_at: u64)`
+(`domain/services/external_mount_id.rs:154`) and the virtual file/folder
+descriptors in `application/ports/external_mount_ports.rs:50-68`. That is the
+deliberate pre-conversion layer, not a set of holdouts.
 
-What that means for this sweep:
+Keeping the entity integer-typed also makes "ETag input is integer seconds" a
+**type-level guarantee** rather than a convention: there is no rounding step for
+a callsite to get wrong. The listing path needs
+`timestamp_helpers::datetime_to_etag_seconds` precisely because it starts from a
+`DateTime`; the entity path needs no such care.
 
-- **No conversion is in flight**, so §2 needs no coordination and the sites keep
-  their `EXTRACT(EPOCH FROM …)` shape — only the column inside changes. §2 stays
-  a behaviour-only commit whose inertness is easy to verify.
-- **If a conversion happens later it hits these same 32 sites**, so §2 is the
-  natural moment to decide whether to do both at once. Converting first would
-  make §2's edits smaller (`fi.content_modified_at` rather than
-  `EXTRACT(EPOCH FROM fi.content_modified_at)`).
-- **The ETag does not block that conversion** — only the epoch-seconds format
-  must survive it.
+What this means for the sweep:
 
-Cheap thing to do while in these files regardless: add the missing field
-comments, recording either the reason for `u64` or that conversion is deferred.
-Their absence is why this question keeps getting re-asked.
+- The sites keep their `EXTRACT(EPOCH FROM …)` shape — **only the column inside
+  changes.** No type churn, so §2 stays a behaviour-only commit whose inertness
+  is easy to verify.
+- Nothing to coordinate with, and nothing to decide about merging.
+- `content_modified_at` is `TIMESTAMPTZ` in the schema and reaches the entity as
+  `u64` through the same `EXTRACT`, exactly as `updated_at` does today.
+
+Worth doing while in these files: add doc comments to
+`file.rs:22-23` and `folder.rs:23-24` recording this. Every other non-obvious
+field in both structs is documented; these are not, which is why the question
+gets re-asked.
 
 ### WOPI rides the alias too
 
