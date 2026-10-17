@@ -21,16 +21,30 @@
 -- Applying `SET DEFAULT` afterwards is metadata for SUBSEQUENT inserts only and
 -- does not touch existing rows. So:
 --
---   * existing rows  → NULL, backfilled from `updated_at` by a cursor-paged
---                      job, reading as `updated_at` in the meantime (identical
---                      to today's value, hence inert)
+--   * existing rows  → backfilled from `updated_at` below, which is exactly
+--                      what every surface reports today, so the rollout is
+--                      inert: no reported mtime and no ETag changes
 --   * new rows       → NOW() automatically, without editing any of the ten-odd
 --                      `INSERT INTO storage.files` sites
 --   * overwrites     → set explicitly by `swap_blob_hash`, honouring
 --                      `X-OC-Mtime` when the client sent it
 --
--- Deliberately NOT NULL-able yet: §5 tightens it once the backfill has drained
--- fleet-wide, and only then does the `COALESCE` come out of the read paths.
+-- ── Why the backfill is here and not a background job ───────────────────────
+-- The plan originally specified a cursor-paged job to avoid delaying boot. That
+-- trade is wrong for self-hosted software: a job's drain state cannot be
+-- confirmed across deployments we do not operate, so §5 (`SET NOT NULL`, drop
+-- the `COALESCE`) would never be safely reachable and the fallback expression
+-- would live in the ETag and read paths indefinitely.
+--
+-- The `UPDATE` costs one full-table rewrite, once, on upgrade. This database is
+-- metadata only — file content lives in blobs — so the row count is modest even
+-- at the 10k-user target. Paying seconds of boot once buys a column that is
+-- dense the moment this migration completes, which makes §5 a certainty rather
+-- than an operational hope.
+--
+-- Operators with an unusually large `storage.files` should know this upgrade
+-- step is proportional to row count; if a container healthcheck is tight enough
+-- to crash-loop on it, raise the start-up grace period for this one deploy.
 -- ════════════════════════════════════════════════════════════════════════════
 
 ALTER TABLE storage.files
@@ -38,6 +52,37 @@ ALTER TABLE storage.files
 
 ALTER TABLE storage.files
     ALTER COLUMN content_modified_at SET DEFAULT NOW();
+
+-- Backfill from `updated_at`, NOT `created_at`. `updated_at` is precisely what
+-- `D:getlastmodified`, `FileDto.modified_at` and the ETag suffix resolve to
+-- today, so after this every one of them is byte-identical to before. Using
+-- `created_at` would report an OLDER mtime than today for any file touched
+-- since upload — and a sync client seeing the server copy older than its local
+-- one may answer with an upload or a conflict rather than a download.
+--
+-- `WHERE content_modified_at IS NULL` keeps this idempotent: a re-applied
+-- migration (or one resumed after a failure) skips rows already written, and
+-- never clobbers a value `swap_blob_hash` has since set.
+UPDATE storage.files
+   SET content_modified_at = updated_at
+ WHERE content_modified_at IS NULL;
+
+-- Dense as of the statement above, so tighten now rather than in a later
+-- phase. sqlx runs a migration in one transaction, so the backfill and this
+-- constraint apply together or not at all — there is no window in which the
+-- column is declared NOT NULL while a row is still NULL.
+--
+-- This is what makes the whole plan simpler: §2's reads can name the column
+-- directly instead of `COALESCE(content_modified_at, updated_at)`, so no
+-- fallback expression ever enters the ETag or the hot read path, and the
+-- separate "tighten later" phase is unnecessary.
+--
+-- The DEFAULT above stays deliberately. It is what lets the ten-odd
+-- `INSERT INTO storage.files` sites keep working without naming the column,
+-- and `NOW()` is the *correct* content-mtime for a newly created file — not a
+-- silent stand-in for a value somebody forgot to pass.
+ALTER TABLE storage.files
+    ALTER COLUMN content_modified_at SET NOT NULL;
 
 -- Defence in depth for the client-asserted lower bound. The application
 -- validates `X-OC-Mtime` first and returns 400 on violation (never clamps), so
@@ -49,7 +94,7 @@ ALTER TABLE storage.files
 
 ALTER TABLE storage.files
     ADD CONSTRAINT files_content_modified_at_floor
-    CHECK (content_modified_at IS NULL OR content_modified_at > '2000-01-01Z');
+    CHECK (content_modified_at > '2000-01-01Z');
 
 COMMENT ON COLUMN storage.files.content_modified_at IS
     'POSIX mtime: when the BYTES last changed. Bumped only by content-mutation paths (PUT, chunked complete, delta commit, upload overwrite), never by rename/move/trash/grant/favourite — those bump updated_at alone. Client-assertable via X-OC-Mtime within the trust bounds. NULL means not yet backfilled; read as COALESCE(content_modified_at, updated_at) until docs/plan/normalize-file-dates.md §5.';

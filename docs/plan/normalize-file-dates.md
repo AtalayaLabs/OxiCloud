@@ -13,11 +13,11 @@ heading:
 | phase | state |
 |---|---|
 | §0 fix the two `nc:` slots | **NOT STARTED** — 2 lines, ships alone, no behaviour change |
-| §1 add `content_modified_at`, write it, read nothing | **NOT STARTED** — backfilled from `updated_at`, so the rollout is inert |
+| §1 add `content_modified_at`, write it, read nothing | **IN PROGRESS** — migration + writers + trust bounds done (`625f089d`); integration tests remain |
 | §2 repoint the `modified_at` alias + ETag | **NOT STARTED** — one commit; no resync, see §2 |
 | §3 sort axes | **NOT STARTED** — couples to §2 |
 | §4 add `source_created_at` | **BLOCKED** — on choosing a writer, see §4. Not a pre-start blocker; §4 is last and independent |
-| §5 tighten to `NOT NULL`, drop the COALESCE | **NOT STARTED** — once §1's backfill job has drained |
+| §5 tighten to `NOT NULL` | **FOLDED INTO §1** 2026-10-17 — the migration lands it in-transaction |
 | §6 UI axes | **NOT STARTED** — one relabel; no new sort options |
 | §7 naming normalisation | **NOT STARTED** — `order_by` everywhere, typed per-endpoint enums, `deletion_date` → `expires_at`; ships independently. Compile-time protection waits on the generated-SDK redirects |
 
@@ -149,58 +149,75 @@ guards live in `nc_webdav_patch.hurl` and `webdav_patch_consistency.hurl`.
 
 ### Schema
 
-```sql
-ALTER TABLE storage.files
-    ADD COLUMN content_modified_at TIMESTAMPTZ;
-```
-
-**Nullable at first, backfilled from `updated_at`, then `NOT NULL` in §5.** The
-end state is a plain non-null column with no fallback expression anywhere.
-Getting there without disrupting a single client is the whole trick.
-
-**Backfill from `updated_at`, not `created_at`** (decided 2026-10-12). That is
-what makes the rollout inert: `updated_at` is exactly what every surface reports
-today, so once a row is backfilled its reported mtime and its ETag are unchanged.
-
-A full-table `UPDATE` inside a startup migration would block boot for as long as
-the rewrite takes, so the backfill is a cursor-paged job that never reports
-success for a row it skipped (per
-[`jobs-handling-recoverable-error.md`](jobs-handling-recoverable-error.md)).
-During the window, reads use:
+Shipped as `migrations/20261103000006_files_content_modified_at.sql`. Four
+statements, and the order is load-bearing:
 
 ```sql
-COALESCE(content_modified_at, updated_at)
+ALTER TABLE storage.files ADD COLUMN IF NOT EXISTS content_modified_at TIMESTAMPTZ;
+ALTER TABLE storage.files ALTER COLUMN content_modified_at SET DEFAULT NOW();
+
+UPDATE storage.files SET content_modified_at = updated_at
+ WHERE content_modified_at IS NULL;
+
+ALTER TABLE storage.files ALTER COLUMN content_modified_at SET NOT NULL;
 ```
 
-**with `updated_at` as the fallback, not `created_at`.** Un-backfilled rows then
-return exactly what they return today, and backfilled rows return the same
-value — so at no moment during the rollout does any client see a different mtime
-or a different ETag. A `created_at` fallback would instead produce a partial
-resync that grows as the job drains.
+**`ADD COLUMN` and `SET DEFAULT` must be separate statements.** Since PG 11 an
+added column *with* a default makes EXISTING rows read as that default without a
+rewrite — so `ADD COLUMN … DEFAULT NOW()` would have every pre-existing file
+report "modified at upgrade time", changing every ETag at once: a fleet-wide
+re-download. Applying `SET DEFAULT` afterwards is metadata for subsequent
+inserts only. That also means **none of the ten-odd `INSERT INTO storage.files`
+sites needed touching** — new rows self-populate, and `NOW()` is the correct
+content-mtime for a newly created file rather than a stand-in for a forgotten
+value.
 
-Rejected alternatives:
+**Backfill from `updated_at`, not `created_at`** (decided 2026-10-12). This is
+what makes the rollout inert: `updated_at` is exactly what
+`D:getlastmodified`, `FileDto.modified_at` and the ETag suffix resolve to today,
+so afterwards every one of them is byte-identical. `created_at` would report an
+*older* mtime than today for any file touched since upload, and a sync client
+seeing the server copy older than its local one may answer with an upload or a
+conflict rather than a download — worse than a re-download.
+`WHERE content_modified_at IS NULL` keeps it idempotent and prevents clobbering
+a value `swap_blob_hash` has since written.
 
-- `NOT NULL DEFAULT NOW()` — every pre-existing file would claim it was modified
-  at upgrade time, changing every ETag at once: a **fleet-wide re-download**.
-- Fallback to `created_at` — reports an *older* mtime than today for any file
-  touched since upload. A sync client seeing the server copy older than its
-  local one may upload or conflict rather than download, which is worse than a
-  re-download.
-- Nullable forever with no backfill — chosen on 2026-10-11, reversed on
-  2026-10-12: it leaves a fallback expression in the hot path permanently and
-  carries the same `created_at` regression above.
+**`NOT NULL` lands here, not in a later phase** (decided 2026-10-17, revising
+the original plan). The backfill was going to be a cursor-paged job to avoid
+delaying boot — but that trade is wrong for self-hosted software: a job's drain
+state cannot be confirmed across deployments we do not operate, so the
+`COALESCE(content_modified_at, updated_at)` fallback would have lived in the
+ETag and read paths **indefinitely** and the tightening phase would never have
+been safely reachable.
+
+The `UPDATE` costs one full-table rewrite, once, on upgrade. This database is
+metadata only — content lives in blobs — so the row count is modest even at the
+10k-user target. Seconds of boot, once, buys a column that is dense the moment
+the migration completes. sqlx runs a migration in one transaction, so the
+backfill and the constraint apply together or not at all; there is no window
+where the column is declared `NOT NULL` while a row is still NULL.
+
+Consequences, both simplifications:
+
+- **§2's reads name the column directly** — no fallback expression ever enters
+  the ETag or the hot read path.
+- **§5 is unnecessary** and has been folded in here.
+
+Operators with an unusually large `storage.files` should know this upgrade step
+is proportional to row count; a tight container healthcheck may need a raised
+start-up grace period for that one deploy.
 
 **Accept that backfilled values are ctime-flavoured.** A file renamed in 2024
 gets that rename time as its "content modified". The true value is
 unrecoverable — `created_at` is a lower bound, `updated_at` an upper one, neither
 correct — so this is wrong-but-stable rather than wrong-and-disruptive. Stated
 explicitly so nobody later tries to "fix" the historical data. Correctness
-begins at the first real content mutation after §1.
+begins at the first real content mutation after this migration.
 
-Optional backstop: `CHECK (content_modified_at IS NULL OR content_modified_at > '2000-01-01')`.
-The "not more than an hour in the future" bound cannot be a `CHECK` — it isn't
-immutable — so the application must validate first and return 400 either way;
-the constraint is defence in depth, not the error path.
+Backstop: `CHECK (content_modified_at > '2000-01-01Z')`. The "not more than an
+hour in the future" bound cannot be a `CHECK` — it isn't immutable — so the
+application validates first and returns 400 either way; the constraint exists so
+a future write path that forgets the check cannot persist a 1970 timestamp.
 
 ### Writers
 
@@ -244,10 +261,12 @@ EXTRACT(EPOCH FROM top.updated_at)::bigint AS updated_at
 ```
 
 which may legitimately want ctime. Every site needs a per-site verdict — *wants
-mtime* (repoint to `COALESCE(content_modified_at, updated_at)`, which §5 later
-simplifies to the bare column) or *wants ctime* (leave alone) — because a blind
-sweep would quietly convert audit-shaped reads into mtime reads. Budget the
-classification, not just the edit.
+mtime* (repoint to `content_modified_at`) or *wants ctime* (leave alone) —
+because a blind sweep would quietly convert audit-shaped reads into mtime reads.
+Budget the classification, not just the edit.
+
+The column is `NOT NULL` from §1, so these are bare column swaps — no
+`COALESCE`, no fallback expression anywhere in the ETag or the read path.
 
 `File::compute_etag` follows for free once the mtime sites move, since it reads
 `modified_at`. **But it is not the only ETag entry point**, and the other one
@@ -455,24 +474,22 @@ The end state, from `docs/architecture/dates.md § Sort axes`:
 media_sort_date = COALESCE(captured_at, source_created_at, content_modified_at)
 ```
 
-Three arms. `content_modified_at` terminates the chain because it is `NOT NULL`
-after §5 — and `media_sort_date` is itself `NOT NULL`, so the chain must end on
+Three arms. `content_modified_at` terminates the chain because §1 made it
+`NOT NULL` — and `media_sort_date` is itself `NOT NULL`, so the chain must end on
 a column that always has a value.
 
-Two transitional wrinkles, both resolved by §5:
-
-- while §4 is blocked, the `source_created_at` arm does not exist
-- until §1's backfill job drains, `content_modified_at` is still nullable
-
-so this phase lands:
+One transitional wrinkle: while §4 is blocked the `source_created_at` arm does
+not exist, so this phase lands the two-arm form and §4 inserts the middle arm:
 
 ```sql
-media_sort_date = COALESCE(captured_at, content_modified_at, updated_at)   -- interim
+media_sort_date = COALESCE(captured_at, content_modified_at)   -- interim
 ```
 
-with the same `updated_at` fallback §1 and §2 use, for the same reason: the
-value is unchanged from today, so Photos ordering does not shift during the
-rollout.
+Photos ordering does **not** shift at deploy, because §1 backfilled
+`content_modified_at` from `updated_at` — which is what `media_sort_date`
+already resolves to for a file without EXIF. The improvement arrives as files
+are modified afterwards: a non-EXIF image picks up a real content mtime instead
+of staying pinned to its upload time.
 
 Either way the **UI axis binds to the `media_sort_date` column, never to the
 expression.** It is denormalised precisely so the Photos timeline can seek:
@@ -492,15 +509,15 @@ when `storage.files.content_modified_at` changes.
 | `?order_by=updated_at` | `content_modified_at` |
 | `?order_by=created_at` | `created_at` — unchanged, admin-facing |
 
-`nc:creation_time` moves to the same interim chain as `media_sort_date` —
-`COALESCE(captured_at, content_modified_at, updated_at)` — so the displayed
-creation date and the timeline order stay the same expression at every phase.
-§4 adds the `source_created_at` arm to both together and §5 drops the
-`updated_at` tail from both.
+`nc:creation_time` moves to the same chain as `media_sort_date` —
+`COALESCE(captured_at, content_modified_at)` — so the displayed creation date
+and the timeline order stay the same expression at every phase. §4 adds the
+`source_created_at` arm to both together.
 
-Photos ordering does **not** shift at deploy: the interim chain's fallback is
-`updated_at`, which is what `media_sort_date` already resolves to for a file
-without EXIF. The improvement arrives as files are modified afterwards — a
+Photos ordering does **not** shift at deploy, because §1 backfilled
+`content_modified_at` from `updated_at`, which is what `media_sort_date` already
+resolves to for a file without EXIF. The improvement arrives as files are
+modified afterwards — a
 non-EXIF image picks up a real content mtime instead of staying pinned to its
 upload time.
 
@@ -555,24 +572,11 @@ If it does land, the sort chain gains its middle arm:
 
 ---
 
-## §5 — Tighten to `NOT NULL`, drop the COALESCE **NOT STARTED**
+## §5 — Tighten to `NOT NULL` **FOLDED INTO §1** (2026-10-17)
 
-Waits on operational signal, not on code: §1's backfill job must have drained
-fleet-wide. Confirm with
-
-```sql
-SELECT count(*) FROM storage.files WHERE content_modified_at IS NULL;
-```
-
-then:
-
-```sql
-ALTER TABLE storage.files
-    ALTER COLUMN content_modified_at SET NOT NULL;
-```
-
-and simplify every transitional read, so the final shapes are the bare column
-with no fallback anywhere:
+No separate phase. §1's migration backfills in-transaction and lands `NOT NULL`
+in the same statement sequence, so the column is dense the moment it completes
+and the end-state shapes apply immediately:
 
 ```
 D:getlastmodified = content_modified_at
@@ -580,14 +584,24 @@ ETag              = {blob_hash[..16]}-{content_modified_at}
 media_sort_date   = COALESCE(captured_at, source_created_at, content_modified_at)
 ```
 
-This is also inert: the COALESCE and the bare column already return the same
-value for every row once the job has drained.
+No fallback expression ever enters the ETag or the hot read path.
 
-> **History.** This phase was dropped on 2026-10-11, when the plan had
-> `content_modified_at` nullable forever with a `created_at` fallback, and
-> restored on 2026-10-12 when the backfill source changed to `updated_at`. The
-> `NOT NULL` constraint was never the point — removing a permanent fallback
-> expression from the ETag and the hot read path is.
+> **History, because this flip-flopped three times and the reasoning matters.**
+> Dropped 2026-10-11 (column nullable forever with a `created_at` fallback);
+> restored 2026-10-12 when the backfill source changed to `updated_at`; folded
+> into §1 on 2026-10-17 during implementation.
+>
+> The last move came from questioning why the backfill needed to be a job at
+> all. It was specified that way to avoid delaying boot — but a job's drain
+> state cannot be confirmed across self-hosted deployments we do not operate,
+> so the transitional `COALESCE` would have lived in the ETag path indefinitely
+> and this phase would never have been safely reachable. One full-table
+> `UPDATE` on a metadata-only table, once, on upgrade, buys certainty instead.
+>
+> The `NOT NULL` constraint was never the point; removing a permanent fallback
+> expression from the hot path is.
+
+Section kept rather than renumbered so §6 and §7 keep their identifiers.
 
 ---
 
@@ -983,15 +997,21 @@ must map forward, not reset the user's choice.
 Surveyed against the current schema. One trap, one real operational cost, and
 otherwise nothing measurable.
 
-**The `COALESCE` read shim is free — there is no index to lose.** The only date
-indexes on `storage.files` are the three on `media_sort_date`
-(`initial_schema.sql:582`, `files_media_timeline_by_drive_index.sql:23`,
+**No read shim to pay for.** §1 lands the column `NOT NULL`, so §2's reads name
+it directly — there is no `COALESCE` in any query plan at any point.
+
+Worth recording that it would have been free anyway: the only date indexes on
+`storage.files` are the three on `media_sort_date` (`initial_schema.sql:582`,
+`files_media_timeline_by_drive_index.sql:23`,
 `files_media_dedup_by_drive_blob_index.sql:29`). Nothing indexes `updated_at` or
 `created_at`, so `order_by=modified_at` and `order_by=created_at` are *already*
 unindexed sorts — and bounded ones, since the listing filters by parent and
-drive before sorting. Wrapping the column in `COALESCE(content_modified_at,
-updated_at)` for the §1–§5 window therefore changes no query plan. Photos is
-untouched: it keeps seeking the indexed `media_sort_date` column.
+drive before sorting. Photos is untouched either way: it keeps seeking the
+indexed `media_sort_date` column.
+
+**The one-time cost is the migration's `UPDATE`.** One full-table rewrite on
+upgrade, proportional to row count, on a metadata-only table. Plus autovacuum
+afterwards to reclaim the dead tuples.
 
 **The trigger trap: two triggers, two shapes.** The existing
 `sync_media_sort_date` is `AFTER INSERT OR UPDATE OF captured_at ON
@@ -1064,8 +1084,9 @@ grepping for ETag code and mistake for an omission.
 ## Sequencing
 
 §0, §1 and §4 are independently shippable. §2 and §3 are coupled tightly enough
-to go back to back. §5 waits on the backfill job draining — operational signal,
-not code. §7 is independent of all of them.
+to go back to back. §5 no longer exists — §1's migration lands `NOT NULL`
+in-transaction, so nothing waits on operational signal. §7 is independent of all
+of them.
 
 Because §1 backfills from `updated_at`, **no phase here carries a client-visible
 discontinuity.** The order matters for internal consistency, not for blast
