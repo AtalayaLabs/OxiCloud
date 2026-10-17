@@ -146,11 +146,21 @@ impl FileBlobWriteRepository {
     /// reference can be decremented afterwards. Compensates on failure by
     /// removing the new blob reference.
     ///
-    /// `modified_at`: if `Some`, sets `updated_at` to that Unix timestamp;
-    /// if `None`, uses `NOW()` (server time). Returns
-    /// `(new_hash, updated_at_epoch)` on success — the effective timestamp
-    /// is returned so callers can rebuild the fresh entity without
-    /// re-reading the row.
+    /// `modified_at`: if `Some`, sets `updated_at` **and**
+    /// `content_modified_at` to that Unix timestamp; if `None`, uses `NOW()`
+    /// (server time). Returns `(new_hash, updated_at_epoch)` on success — the
+    /// effective timestamp is returned so callers can rebuild the fresh entity
+    /// without re-reading the row.
+    ///
+    /// Both columns move here because this is a **content** mutation: the bytes
+    /// changed, so POSIX mtime changed, and any row touch changes ctime. The
+    /// two diverge on the paths that do *not* come through here — rename, move,
+    /// trash, grant, favourite — which bump `updated_at` alone. That split is
+    /// the whole point of `content_modified_at`; see
+    /// `docs/plan/normalize-file-dates.md` §1 and
+    /// `docs/architecture/dates.md`. Callers must have validated a
+    /// client-asserted `modified_at` against the trust bounds first (reject
+    /// more than an hour ahead, reject before 2000-01-01, 400 and never clamp).
     ///
     /// §14: `updated_by = $5` (caller_id). The caller mutated this
     /// row — not the row's owner. D2 shared drives let non-owners
@@ -195,6 +205,8 @@ impl FileBlobWriteRepository {
                                    THEN $2 ELSE f.size END,
                        updated_at = CASE WHEN $6::text IS NULL OR old.blob_hash = $6
                                          THEN COALESCE(to_timestamp($4), NOW()) ELSE f.updated_at END,
+                       content_modified_at = CASE WHEN $6::text IS NULL OR old.blob_hash = $6
+                                         THEN COALESCE(to_timestamp($4), NOW()) ELSE f.content_modified_at END,
                        updated_by = CASE WHEN $6::text IS NULL OR old.blob_hash = $6
                                          THEN $5 ELSE f.updated_by END
                   FROM old
