@@ -56,11 +56,25 @@ what pushes both server-stamped columns almost entirely out of the protocol.
 | **Behavioural** | `content_modified_at`, `folders.tree_modified_at` | Sync clients. Decides whether a file re-downloads and whether a folder is descended into — the only timestamps where being wrong changes what transfers. |
 | **Presentational** | `captured_at`, `source_created_at` | Ordering and display: the Photos timeline, `nc:creation_time`. Wrong values look wrong and cost no bandwidth. |
 | **Informational** | `created_at` | Emitted as `nc:upload_time` and `D:creationdate`; nothing acts on it. Immutable, so it stays trustworthy for audit. |
-| **Internal** | `updated_at` | Audit queries, consistency sweeps, retention. No surface asks for `ctime` — WebDAV excludes property changes, NextCloud has no equivalent — so it is emitted nowhere. |
+| **Internal** | `updated_at` (with `updated_by`) | Audit queries, consistency sweeps, retention. No surface asks for `ctime` — WebDAV excludes property changes, NextCloud has no equivalent — so it is emitted nowhere. |
 
 `updated_at` keeps its broad "any row touch" meaning precisely *because* it is
 internal. Narrowing its bumps to content changes would silently change the
 semantics of every audit and retention query already reading it.
+
+`updated_by` belongs in the same bucket, and the pair is why. `FileDto` and
+`FolderDto` do expose `updated_by` — "the principal that bumped `updated_at`" —
+so after this change the wire names *who* last touched a row while the nearest
+date means something different (content mtime, which a rename does not move). A
+client could therefore render "last changed by Alice" beside a timestamp from
+before Alice's rename.
+
+That is accepted rather than fixed: both halves are provenance, not product
+surface, and `updated_by` is consumed as an authorship signal rather than
+paired with a timestamp in any view. Adding a third date to `FileDto` to restore
+the pairing would reintroduce exactly the "which date do I show?" ambiguity this
+document exists to remove. If an audit view ever needs the pair, it should take
+an explicitly-named field — never one called `updated_at`.
 
 ## Wire mapping
 

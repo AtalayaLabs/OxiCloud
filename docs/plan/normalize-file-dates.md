@@ -14,7 +14,7 @@ heading:
 |---|---|
 | §0 fix the two `nc:` slots | **NOT STARTED** — 2 lines, ships alone, no behaviour change |
 | §1 add `content_modified_at`, write it, read nothing | **IN PROGRESS** — migration + writers + trust bounds done (`625f089d`); integration tests remain |
-| §2 repoint the `modified_at` alias + ETag | **NOT STARTED** — one commit; no resync, see §2 |
+| §2 repoint the `modified_at` alias + ETag | **IN PROGRESS** — file-side done (27 sites + cursor predicate); folder-side `getlastmodified` → `tree_modified_at` deferred, see below |
 | §3 sort axes | **NOT STARTED** — couples to §2 |
 | §4 add `source_created_at` | **BLOCKED** — on choosing a writer, see §4. Not a pre-start blocker; §4 is last and independent |
 | §5 tighten to `NOT NULL` | **FOLDED INTO §1** 2026-10-17 — the migration lands it in-transaction |
@@ -438,6 +438,33 @@ exists to point at, so do the simple fix and do not engineer around it.
   the suffix exists to catch.
 - ETag repointed without `getlastmodified` → the two properties disagree about
   when the file last changed.
+
+### Folder side deferred — the mechanism was never settled
+
+The file-side sweep is done. The folder half is **not**, because the decision
+("folder `D:getlastmodified` repoints to `tree_modified_at`") never specified
+*how*, and the two mechanisms have very different blast radius:
+
+- **Repoint the `fld.`/`fo.` aliases.** One-line change, but `modified_at` is
+  shared, so REST `FolderDto.modified_at` moves too — and a folder's "Modified"
+  column in the SPA would then change whenever *any descendant* changes. Folders
+  would bubble to the top of a date sort on every edit inside them. Arguably
+  Finder-like, arguably surprising; either way a visible product change.
+- **Change the four DAV emission sites** to read `tree_modified_at` directly
+  (`webdav_adapter.rs:857`, `:1006`; `nextcloud/webdav_handler.rs:2091` plus its
+  listing twin). DAV-only, REST untouched — but needs `tree_modified_at`
+  reachable at those callsites, which it is on the entity and is *not* on
+  `FolderDto`.
+
+The second is almost certainly right — the decision was about protocol
+conformance, not about changing what the SPA shows. But it is a product call,
+so it is left for an explicit one rather than inherited from whichever
+mechanism was convenient.
+
+Note the asymmetry that makes this safe to defer: folder ETags already derive
+from `tree_modified_at`, so folder listings are *already* invalidated correctly
+on descendant changes. Only `getlastmodified` disagrees, and nothing acts on it
+for collections.
 
 ### No resync — the deploy is inert
 

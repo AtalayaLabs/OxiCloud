@@ -124,7 +124,7 @@ impl PathResolverService {
                        NULL::text           AS parent_id,
                        fi.drive_id,
                        EXTRACT(EPOCH FROM fi.created_at)::bigint AS created_at,
-                       EXTRACT(EPOCH FROM fi.updated_at)::bigint AS modified_at,
+                       EXTRACT(EPOCH FROM fi.content_modified_at)::bigint AS modified_at,
                        fi.size,
                        fi.mime_type,
                        fi.folder_id::text,

@@ -211,7 +211,7 @@ impl FileBlobWriteRepository {
                                          THEN $5 ELSE f.updated_by END
                   FROM old
                  WHERE f.id = old.id
-                RETURNING old.blob_hash, EXTRACT(EPOCH FROM f.updated_at)::bigint,
+                RETURNING old.blob_hash, EXTRACT(EPOCH FROM f.content_modified_at)::bigint,
                           ($6::text IS NULL OR old.blob_hash = $6)
                 "#,
                 )
@@ -504,7 +504,7 @@ impl FileBlobWriteRepository {
             r#"
             SELECT f.id::text, fo.path,
                    EXTRACT(EPOCH FROM f.created_at)::bigint,
-                   EXTRACT(EPOCH FROM f.updated_at)::bigint,
+                   EXTRACT(EPOCH FROM f.content_modified_at)::bigint,
                    f.created_by, f.updated_by, f.size, f.mime_type
               FROM storage.files f
               JOIN storage.folders fo ON fo.id = f.folder_id
@@ -609,7 +609,7 @@ impl FileWritePort for FileBlobWriteRepository {
              WHERE f.id = $2::uuid AND NOT f.is_trashed
             RETURNING f.id::text, f.name, f.folder_id::text, f.size, f.mime_type,
                       EXTRACT(EPOCH FROM f.created_at)::bigint,
-                      EXTRACT(EPOCH FROM f.updated_at)::bigint,
+                      EXTRACT(EPOCH FROM f.content_modified_at)::bigint,
                       f.created_by, f.updated_by
             "#,
         )

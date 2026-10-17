@@ -821,7 +821,7 @@ impl FolderRepository for FolderDbRepository {
                  WHERE f.id = $2::uuid AND NOT f.is_trashed
                 RETURNING f.id, f.name, f.path, f.parent_id, f.drive_id,
                           EXTRACT(EPOCH FROM f.created_at)::bigint,
-                          EXTRACT(EPOCH FROM f.updated_at)::bigint,
+                          EXTRACT(EPOCH FROM f.content_modified_at)::bigint,
                           EXTRACT(EPOCH FROM f.tree_modified_at)::bigint,
                           f.created_by, f.updated_by
                 "#,
@@ -1748,7 +1748,7 @@ impl FolderDbRepository {
                 NULL::text                AS mime_type,
                 -1::bigint                AS size,
                 f.created_at,
-                f.updated_at              AS modified_at,
+                f.content_modified_at     AS modified_at,
                 f.drive_id,
                 NULL::text                AS blob_hash,
                 f.created_by,
@@ -1780,7 +1780,7 @@ impl FolderDbRepository {
                 fm.mime_type,
                 fm.size::bigint,
                 fm.created_at,
-                fm.updated_at             AS modified_at,
+                fm.content_modified_at    AS modified_at,
                 fm.drive_id,
                 fm.blob_hash,
                 fm.created_by,
@@ -1877,7 +1877,17 @@ impl FolderDbRepository {
                 };
                 let mk = |col: &str| {
                     if has_cursor {
-                        Pred(format!("({col}.updated_at, {col}.id) {op} ($4, $5::uuid)"))
+                        // MUST name the same column the ORDER BY sorts on.
+                        // The ORDER BY above uses the `modified_at` alias,
+                        // which now resolves to `content_modified_at` — if this
+                        // keyset predicate were left on `updated_at` the query
+                        // would sort by one clock and paginate against another,
+                        // silently skipping and duplicating rows across page
+                        // boundaries while page one looked perfect. See
+                        // docs/plan/normalize-file-dates.md §2 (cursor hazard).
+                        Pred(format!(
+                            "({col}.content_modified_at, {col}.id) {op} ($4, $5::uuid)"
+                        ))
                     } else {
                         All
                     }

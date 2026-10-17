@@ -190,13 +190,13 @@ fn push_criteria_filters(
     if criteria.modified_after.is_some() {
         bind_idx += 1;
         conditions.push(format!(
-            "EXTRACT(EPOCH FROM fi.updated_at)::bigint >= ${bind_idx}"
+            "EXTRACT(EPOCH FROM fi.content_modified_at)::bigint >= ${bind_idx}"
         ));
     }
     if criteria.modified_before.is_some() {
         bind_idx += 1;
         conditions.push(format!(
-            "EXTRACT(EPOCH FROM fi.updated_at)::bigint <= ${bind_idx}"
+            "EXTRACT(EPOCH FROM fi.content_modified_at)::bigint <= ${bind_idx}"
         ));
     }
     if criteria.min_size.is_some() {
@@ -332,7 +332,7 @@ impl FileBlobReadRepository {
             "SELECT fi.id, fi.name, fi.folder_id, fo.path, \
                     fi.size, fi.mime_type, \
                     EXTRACT(EPOCH FROM fi.created_at)::bigint, \
-                    EXTRACT(EPOCH FROM fi.updated_at)::bigint, \
+                    EXTRACT(EPOCH FROM fi.content_modified_at)::bigint, \
                     fi.blob_hash, \
                     \
                     fi.created_by, fi.updated_by \
@@ -386,7 +386,7 @@ impl FileBlobReadRepository {
             "SELECT fi.id, fi.name, fi.folder_id, fo.path, \
                     fi.size, fi.mime_type, \
                     EXTRACT(EPOCH FROM fi.created_at)::bigint, \
-                    EXTRACT(EPOCH FROM fi.updated_at)::bigint, \
+                    EXTRACT(EPOCH FROM fi.content_modified_at)::bigint, \
                     fi.blob_hash, \
                     \
                     fi.created_by, fi.updated_by \
@@ -692,7 +692,7 @@ impl FileBlobReadRepository {
                    top.size                                   AS size,
                    top.mime_type                              AS mime_type,
                    EXTRACT(EPOCH FROM top.created_at)::bigint AS created_at,
-                   EXTRACT(EPOCH FROM top.updated_at)::bigint AS updated_at,
+                   EXTRACT(EPOCH FROM top.content_modified_at)::bigint AS updated_at,
                    top.blob_hash                              AS blob_hash,
                    top.created_by                             AS created_by,
                    top.updated_by                             AS updated_by,
@@ -899,7 +899,7 @@ impl FileReadPort for FileBlobReadRepository {
             SELECT fi.id, fi.name, fi.folder_id, fo.path,
                    fi.size, fi.mime_type,
                    EXTRACT(EPOCH FROM fi.created_at)::bigint,
-                   EXTRACT(EPOCH FROM fi.updated_at)::bigint,
+                   EXTRACT(EPOCH FROM fi.content_modified_at)::bigint,
                    fi.blob_hash,
                    fi.created_by, fi.updated_by
               FROM storage.files fi
@@ -946,7 +946,7 @@ impl FileReadPort for FileBlobReadRepository {
             SELECT fi.id, fi.name, fi.folder_id, fo.path,
                    fi.size, fi.mime_type,
                    EXTRACT(EPOCH FROM fi.created_at)::bigint,
-                   EXTRACT(EPOCH FROM fi.updated_at)::bigint,
+                   EXTRACT(EPOCH FROM fi.content_modified_at)::bigint,
                    fi.blob_hash,
                    fi.created_by, fi.updated_by
               FROM storage.files fi
@@ -974,7 +974,7 @@ impl FileReadPort for FileBlobReadRepository {
                 SELECT fi.id, fi.name, fi.folder_id, fo.path,
                        fi.size, fi.mime_type,
                        EXTRACT(EPOCH FROM fi.created_at)::bigint,
-                       EXTRACT(EPOCH FROM fi.updated_at)::bigint,
+                       EXTRACT(EPOCH FROM fi.content_modified_at)::bigint,
                        fi.blob_hash,
 
                    fi.created_by, fi.updated_by
@@ -993,7 +993,7 @@ impl FileReadPort for FileBlobReadRepository {
                 SELECT fi.id, fi.name, fi.folder_id, fo.path,
                        fi.size, fi.mime_type,
                        EXTRACT(EPOCH FROM fi.created_at)::bigint,
-                       EXTRACT(EPOCH FROM fi.updated_at)::bigint,
+                       EXTRACT(EPOCH FROM fi.content_modified_at)::bigint,
                        fi.blob_hash,
 
                    fi.created_by, fi.updated_by
@@ -1054,7 +1054,7 @@ impl FileReadPort for FileBlobReadRepository {
             SELECT fi.id, fi.name, fi.folder_id, fo.path,
                    fi.size, fi.mime_type,
                    EXTRACT(EPOCH FROM fi.created_at)::bigint,
-                   EXTRACT(EPOCH FROM fi.updated_at)::bigint,
+                   EXTRACT(EPOCH FROM fi.content_modified_at)::bigint,
                    fi.blob_hash,
 
                fi.created_by, fi.updated_by
@@ -1234,7 +1234,7 @@ impl FileReadPort for FileBlobReadRepository {
                 SELECT fi.id, fi.name, fi.folder_id, fo.path,
                        fi.size, fi.mime_type,
                        EXTRACT(EPOCH FROM fi.created_at)::bigint,
-                       EXTRACT(EPOCH FROM fi.updated_at)::bigint,
+                       EXTRACT(EPOCH FROM fi.content_modified_at)::bigint,
                        fi.blob_hash,
                        fi.created_by, fi.updated_by
                   FROM storage.files fi
@@ -1272,7 +1272,7 @@ impl FileReadPort for FileBlobReadRepository {
                 SELECT fi.id, fi.name, fi.folder_id, fo.path,
                        fi.size, fi.mime_type,
                        EXTRACT(EPOCH FROM fi.created_at)::bigint,
-                       EXTRACT(EPOCH FROM fi.updated_at)::bigint,
+                       EXTRACT(EPOCH FROM fi.content_modified_at)::bigint,
                        fi.blob_hash,
                        fi.created_by, fi.updated_by
                   FROM storage.files fi
@@ -1318,7 +1318,7 @@ impl FileReadPort for FileBlobReadRepository {
                 SELECT fi.id, fi.name, fi.folder_id, fo.path,
                        fi.size, fi.mime_type,
                        EXTRACT(EPOCH FROM fi.created_at)::bigint,
-                       EXTRACT(EPOCH FROM fi.updated_at)::bigint,
+                       EXTRACT(EPOCH FROM fi.content_modified_at)::bigint,
                        fi.blob_hash,
                        fi.created_by, fi.updated_by
                   FROM storage.files fi
@@ -1417,7 +1417,7 @@ impl FileReadPort for FileBlobReadRepository {
             "SELECT fi.id, fi.name, fi.folder_id, fo.path, \
                     fi.size, fi.mime_type, \
                     EXTRACT(EPOCH FROM fi.created_at)::bigint, \
-                    EXTRACT(EPOCH FROM fi.updated_at)::bigint, \
+                    EXTRACT(EPOCH FROM fi.content_modified_at)::bigint, \
                     fi.blob_hash, \
                     \
                     fi.created_by, fi.updated_by, \
@@ -1577,7 +1577,7 @@ impl FileReadPort for FileBlobReadRepository {
             "SELECT fi.id, fi.name, fi.folder_id, fo.path, \
                     fi.size, fi.mime_type, \
                     EXTRACT(EPOCH FROM fi.created_at)::bigint, \
-                    EXTRACT(EPOCH FROM fi.updated_at)::bigint, \
+                    EXTRACT(EPOCH FROM fi.content_modified_at)::bigint, \
                     fi.blob_hash, \
                     \
                     fi.created_by, fi.updated_by, \
@@ -1681,7 +1681,7 @@ impl FileReadPort for FileBlobReadRepository {
                 SELECT fi.id, fi.name, fi.folder_id, fo.path,
                        fi.size, fi.mime_type,
                        EXTRACT(EPOCH FROM fi.created_at)::bigint,
-                       EXTRACT(EPOCH FROM fi.updated_at)::bigint,
+                       EXTRACT(EPOCH FROM fi.content_modified_at)::bigint,
                        fi.blob_hash,
 
                    fi.created_by, fi.updated_by
@@ -1713,7 +1713,7 @@ impl FileReadPort for FileBlobReadRepository {
                 SELECT fi.id, fi.name, fi.folder_id, fo.path,
                        fi.size, fi.mime_type,
                        EXTRACT(EPOCH FROM fi.created_at)::bigint,
-                       EXTRACT(EPOCH FROM fi.updated_at)::bigint,
+                       EXTRACT(EPOCH FROM fi.content_modified_at)::bigint,
                        fi.blob_hash,
 
                    fi.created_by, fi.updated_by

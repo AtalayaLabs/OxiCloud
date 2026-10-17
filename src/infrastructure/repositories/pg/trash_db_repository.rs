@@ -405,7 +405,7 @@ impl TrashDbRepository {
         f.mime_type,
         f.size::bigint                                       AS size,
         f.created_at                                         AS resource_created_at,
-        f.updated_at                                         AS modified_at,
+        f.content_modified_at                                AS modified_at,
         f.drive_id                                           AS drive_id,
         f.blob_hash,
         f.created_by                                         AS created_by,
