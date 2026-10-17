@@ -397,6 +397,14 @@ restarts the process and empties the table regardless — but they also show tha
 a cross-restart session is already disrupted by the deploy itself, not by the
 `Version` format. **No interlock or window is needed.**
 
+> ⚠️ **That free pass depends on a defect.** Lock ephemerality is itself a
+> lost-update hole, filed as [`durable-locks.md`](durable-locks.md): a session
+> can hold a lock, lose it to a restart, and have a second session legitimately
+> acquire the same lock — after which whoever saves second silently overwrites.
+> If that plan lands first, the `Version` → `blob_hash` change *does* need the
+> interlock dismissed above. Cheapest ordering is to do the `Version` change
+> while locks are still ephemeral.
+
 **Follow-up (not this plan): derive WOPI `Version` from `blob_hash`.** Fixes
 same-second lost-update detection and matches the protocol's requirement that
 identical content yields an identical version. Cheap, given the above.
