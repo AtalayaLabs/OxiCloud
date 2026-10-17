@@ -3025,16 +3025,22 @@ export type PhotoKind = 'all' | 'photo' | 'video';
  * The three axes serve distinct questions:
  *
  * - `CapturedAt` (default) — "when was this photo TAKEN". Orders by
- * `COALESCE(captured_at, created_at)` via the materialised
+ * `COALESCE(captured_at, content_modified_at)` via the materialised
  * `storage.files.media_sort_date` column, so uploads without EXIF
- * fall back to upload time rather than sinking to NULL.
+ * fall back to when their content last changed rather than sinking
+ * to NULL.
  * - `CreatedAt` — "when did this file ARRIVE in OxiCloud". Pure
  * `storage.files.created_at`; EXIF capture date ignored. Useful
  * for the operator-style "recently uploaded" view.
- * - `UpdatedAt` — "when was this file last TOUCHED". Pure
- * `storage.files.updated_at`; moves and renames resurface rows.
- * Useful when the user wants to find a file they recently acted
- * on, independent of when it was taken or first uploaded.
+ * - `UpdatedAt` — "when did this file's CONTENT last change". Reads
+ * `storage.files.content_modified_at`, so a rename, move or trash
+ * transition does *not* resurface a row — only a real content
+ * mutation does.
+ *
+ * The wire value is still spelled `updated_at`, which now disagrees
+ * with the column it resolves to. Plan §6 renames it to
+ * `modified_at`; until then treat the spelling as legacy, not as a
+ * description of the behaviour.
  *
  * All three axes paginate on the same `(sort_value, id)` keyset,
  * just over different columns. The cursor carries the axis so a

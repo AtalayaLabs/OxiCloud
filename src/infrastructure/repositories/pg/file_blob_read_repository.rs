@@ -583,7 +583,13 @@ impl FileBlobReadRepository {
         let sort_col = match filter.order_by {
             PhotoOrderBy::CapturedAt => "media_sort_date",
             PhotoOrderBy::CreatedAt => "created_at",
-            PhotoOrderBy::UpdatedAt => "updated_at",
+            // §3 — the content clock, not the row clock. A rename or a
+            // trash transition no longer resurfaces a photo on this axis;
+            // only a real content mutation does. The wire value is still
+            // spelled `updated_at` — plan §6 renames it to `modified_at`,
+            // which is the point at which the token stops disagreeing with
+            // the column it resolves to.
+            PhotoOrderBy::UpdatedAt => "content_modified_at",
         };
         let (dir, cmp) = if filter.reverse {
             ("ASC", ">")
@@ -1370,7 +1376,13 @@ impl FileReadPort for FileBlobReadRepository {
         // was retired 2026-07-26.
         let order_column = match criteria.sort_by.as_str() {
             "name" => "fi.name",
-            "updated_at" => "fi.updated_at",
+            // §3 — the content clock. This has to agree with
+            // `search_service::sort_enriched_files`, which re-sorts the
+            // merged page in memory on `SearchFileResultDto.modified_at`:
+            // §2 repointed that DTO field at `content_modified_at`, so a
+            // SQL page still ordered by `fi.updated_at` would be re-ordered
+            // on a different clock the moment content hits were blended in.
+            "updated_at" => "fi.content_modified_at",
             "created_at" => "fi.created_at",
             "size" => "fi.size",
             // `relevance` (or anything unrecognised) has no dedicated
@@ -1537,7 +1549,13 @@ impl FileReadPort for FileBlobReadRepository {
         // was retired 2026-07-26.
         let order_column = match criteria.sort_by.as_str() {
             "name" => "fi.name",
-            "updated_at" => "fi.updated_at",
+            // §3 — the content clock. This has to agree with
+            // `search_service::sort_enriched_files`, which re-sorts the
+            // merged page in memory on `SearchFileResultDto.modified_at`:
+            // §2 repointed that DTO field at `content_modified_at`, so a
+            // SQL page still ordered by `fi.updated_at` would be re-ordered
+            // on a different clock the moment content hits were blended in.
+            "updated_at" => "fi.content_modified_at",
             "created_at" => "fi.created_at",
             "size" => "fi.size",
             // `relevance` (or anything unrecognised) has no dedicated

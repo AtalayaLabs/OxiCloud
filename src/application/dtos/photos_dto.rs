@@ -30,16 +30,22 @@ use crate::application::dtos::grant_dto::{ResourceContentDto, ResourceTypeDto};
 /// The three axes serve distinct questions:
 ///
 /// - `CapturedAt` (default) — "when was this photo TAKEN". Orders by
-///   `COALESCE(captured_at, created_at)` via the materialised
+///   `COALESCE(captured_at, content_modified_at)` via the materialised
 ///   `storage.files.media_sort_date` column, so uploads without EXIF
-///   fall back to upload time rather than sinking to NULL.
+///   fall back to when their content last changed rather than sinking
+///   to NULL.
 /// - `CreatedAt` — "when did this file ARRIVE in OxiCloud". Pure
 ///   `storage.files.created_at`; EXIF capture date ignored. Useful
 ///   for the operator-style "recently uploaded" view.
-/// - `UpdatedAt` — "when was this file last TOUCHED". Pure
-///   `storage.files.updated_at`; moves and renames resurface rows.
-///   Useful when the user wants to find a file they recently acted
-///   on, independent of when it was taken or first uploaded.
+/// - `UpdatedAt` — "when did this file's CONTENT last change". Reads
+///   `storage.files.content_modified_at`, so a rename, move or trash
+///   transition does *not* resurface a row — only a real content
+///   mutation does.
+///
+///   The wire value is still spelled `updated_at`, which now disagrees
+///   with the column it resolves to. Plan §6 renames it to
+///   `modified_at`; until then treat the spelling as legacy, not as a
+///   description of the behaviour.
 ///
 /// All three axes paginate on the same `(sort_value, id)` keyset,
 /// just over different columns. The cursor carries the axis so a
@@ -48,15 +54,15 @@ use crate::application::dtos::grant_dto::{ResourceContentDto, ResourceTypeDto};
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PhotoOrderBy {
-    /// Default — EXIF capture date, falling back to `created_at` for
-    /// files that carry no EXIF.
+    /// Default — EXIF capture date, falling back to
+    /// `content_modified_at` for files that carry no EXIF.
     #[default]
     CapturedAt,
     /// File-row `created_at` only, no EXIF COALESCE.
     CreatedAt,
-    /// File-row `updated_at` only — surfaces the most recently
-    /// touched rows (uploads, renames, overwrites, trash
-    /// transitions) regardless of capture or arrival time.
+    /// File content clock (`content_modified_at`) only — surfaces rows
+    /// whose bytes changed, regardless of capture or arrival time.
+    /// Renames, moves and trash transitions do not count.
     UpdatedAt,
 }
 

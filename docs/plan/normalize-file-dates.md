@@ -1,6 +1,6 @@
 # Plan — Normalize file dates: one column per meaning, one wire slot each
 
-**Status:** design agreed 2026-10-11, **not started**. The end state is specified
+**Status:** design agreed 2026-10-11; §1–§3 landed 2026-10-17. The end state is specified
 in [`docs/architecture/dates.md`](../architecture/dates.md) — this plan is only
 how to get there. Triggered by a review of the four date surfaces (OxiCloud
 columns, the browser File API, NextCloud DAV, RFC 4918) which found that
@@ -15,7 +15,7 @@ heading:
 | §0 fix the two `nc:` slots | **NOT STARTED** — 2 lines, ships alone, no behaviour change |
 | §1 add `content_modified_at`, write it, read nothing | **IN PROGRESS** — migration + writers + trust bounds done (`625f089d`); integration tests remain |
 | §2 repoint the `modified_at` alias + ETag | **DONE** — file-side (27 sites + cursor predicate, `8d0631be`) and folder-side DAV-only (`2def1acb`). One gap left open: NC REPORT search, see Open decisions |
-| §3 sort axes | **NOT STARTED** — couples to §2 |
+| §3 sort axes | **DONE (interim two-arm form)** — `media_sort_date` on the content clock + both search axes repointed. §4 inserts the `source_created_at` arm |
 | §4 add `source_created_at` | **BLOCKED** — on choosing a writer, see §4. Not a pre-start blocker; §4 is last and independent |
 | §5 tighten to `NOT NULL` | **FOLDED INTO §1** 2026-10-17 — the migration lands it in-transaction |
 | §6 UI axes | **NOT STARTED** — one relabel; no new sort options |
@@ -83,10 +83,11 @@ A survey of the tree:
 | keyset cursor predicate | 1 | `folder_db_repository.rs:1880` — see the hazard below |
 
 So §2 is a **~27-site sweep of the file-side reads**, not a ten-line alias
-change — and the folder-side reads (`fo.` 10, `fld.` 3) are in scope too, since
-folder `D:getlastmodified` now repoints to `tree_modified_at` (decided
-2026-10-11). Folders get no new column; the work is pointing the property at the
-subtree clock they already have.
+change. The folder side turned out *not* to be a SQL sweep at all: folders get
+no new column, and the `fo.`/`fld.` reads were left alone, because repointing
+them would have moved REST `FolderDto.modified_at` along with DAV. The subtree
+clock reaches `D:getlastmodified` through a new `FolderDto.tree_modified_at`
+field read at the three DAV emission sites instead — see § Folder side.
 
 ### The cursor hazard
 
@@ -109,8 +110,14 @@ pagination test: list a folder whose files have divergent `updated_at` /
 exactly once.
 
 The other consequence of all reads going through `modified_at`, and the reason
-§2 and §3 are coupled: REST, both DAV surfaces and the ETag formula all move
-together. There is no way to repoint DAV only.
+§2 and §3 are coupled: for **files**, REST, both DAV surfaces and the ETag
+formula move together — there is no way to repoint DAV only, because they share
+one SQL alias.
+
+For **folders** there turned out to be, and §2 used it: add a second field to
+the DTO and read it only where DAV is emitted. That option exists for folders
+precisely because the subtree clock is a real column (`tree_modified_at`) rather
+than an alias, so surfacing it costs a field rather than a meaning change.
 
 ---
 
@@ -122,14 +129,18 @@ Independent of everything else. Two lines at
 | property | today | after |
 |---|---|---|
 | `nc:upload_time` | `file.modified_at` | `file.created_at` |
-| `nc:creation_time` | `file.created_at` | `COALESCE(captured_at, created_at)` |
+| `nc:creation_time` | `file.created_at` | `COALESCE(captured_at, content_modified_at)` |
 
 Purely presentational — no client acts on either property, so there is no
 resync. Strictly an improvement on today: EXIF capture dates start reaching
 NextCloud clients, which they currently never do.
 
-The fallback is `created_at` only until §3, which swaps it for
-`content_modified_at`; §4 then inserts `source_created_at` between the two.
+§3 has already landed, so write the `content_modified_at` form directly — the
+`created_at` fallback this phase originally called for no longer has a reason to
+exist. It must also match `media_sort_date`'s chain exactly
+(`20261103000007_media_sort_date_content_clock.sql`), so the displayed creation
+date and the timeline order stay the same expression; §4 inserts
+`source_created_at` into both together.
 
 **Change the source, never the format.** `nc:creation_time` and
 `nc:upload_time` are **integer Unix epoch seconds**, emitted via
@@ -145,7 +156,7 @@ guards live in `nc_webdav_patch.hurl` and `webdav_patch_consistency.hurl`.
 
 ---
 
-## §1 — Add `content_modified_at`, write it, read nothing **NOT STARTED**
+## §1 — Add `content_modified_at`, write it, read nothing **IN PROGRESS** (`625f089d`)
 
 ### Schema
 
@@ -510,7 +521,7 @@ is wrong today and right afterwards).
 
 ---
 
-## §3 — Sort axes **NOT STARTED**
+## §3 — Sort axes **DONE** (interim two-arm form)
 
 Couples to §2 — the REST `modified_at` field moves in the same commit, so the
 UI's "Last modified" column repoints at the same moment.
@@ -532,11 +543,52 @@ not exist, so this phase lands the two-arm form and §4 inserts the middle arm:
 media_sort_date = COALESCE(captured_at, content_modified_at)   -- interim
 ```
 
-Photos ordering does **not** shift at deploy, because §1 backfilled
-`content_modified_at` from `updated_at` — which is what `media_sort_date`
-already resolves to for a file without EXIF. The improvement arrives as files
-are modified afterwards: a non-EXIF image picks up a real content mtime instead
-of staying pinned to its upload time.
+#### Photos ordering *does* shift at deploy — corrected 2026-10-17
+
+An earlier draft of this section claimed the deploy was inert, by analogy with
+§2. **That was wrong**, and the error is worth recording because it inverts the
+rollout story.
+
+The live fallback is `created_at`, not `updated_at`:
+
+```sql
+-- migrations/20260307000000_initial_schema.sql:689
+SET media_sort_date = COALESCE(NEW.captured_at, created_at)
+```
+
+`media_sort_date` has exactly two writers — that trigger, and the column's own
+`DEFAULT CURRENT_TIMESTAMP` at insert. Nothing in `src/` writes it; the only
+Rust reference is `PhotoOrderBy::CapturedAt => "media_sort_date"`. So today a
+non-EXIF image sorts by **upload time**, permanently, no matter how often its
+content changes afterwards.
+
+Repointing the chain at `content_modified_at` therefore moves every EXIF-less
+media file that has been modified since upload. That is the intended
+improvement, not a regression — but it is a visible one-time reorder of the
+Photos timeline, so it needs a release note and the backfill has to run in the
+migration rather than being left to arrive lazily. Leaving it lazy would be
+worse than either end state: the timeline would mix old rows on upload time with
+touched rows on content time, which is not an ordering at all.
+
+Files *with* EXIF `captured_at` do not move — the first arm wins and is
+unchanged.
+
+#### The backfill and the statement triggers
+
+Same trap as §1, with a better outcome. `storage.files` carries two
+`FOR EACH STATEMENT` triggers with transition tables, and both filter
+*in-function* on a column tuple:
+
+| Trigger | Compares | Contains `media_sort_date`? |
+| --- | --- | --- |
+| `files_bump_tree_etag_upd` | `name, folder_id, blob_hash, size, mime_type, is_trashed, updated_at` | no |
+| `files_enqueue_search_upd` | `name, blob_hash, is_trashed` | no |
+
+So the backfill is **semantically** inert — neither trigger's `changed` CTE
+yields a row, no tree ETag bumps, nothing is enqueued for reindex. But the
+filtering happens *after* PostgreSQL has materialised both transition tables
+over every updated row, which is the actual cost. Suppress both around the
+`UPDATE`, exactly as §1's migration does, and for the same reason.
 
 Either way the **UI axis binds to the `media_sort_date` column, never to the
 expression.** It is denormalised precisely so the Photos timeline can seek:
@@ -545,10 +597,35 @@ expression.** It is denormalised precisely so the Photos timeline can seek:
 join to `file_metadata` for `captured_at`, could not use that index, and would
 turn the timeline into a scan.
 
-The trigger needs a **second firing condition**. Today
-`trg_sync_media_sort_date` fires only on `file_metadata.captured_at`
-(`migrations/20260307000000_initial_schema.sql:697`); it now also has to fire
-when `storage.files.content_modified_at` changes.
+#### Two triggers, not one trigger with two conditions
+
+Today `trg_sync_media_sort_date` fires only on `file_metadata.captured_at`
+(`migrations/20260307000000_initial_schema.sql:697`). The chain now has a second
+input on a *different table*, so this is a second trigger rather than a widened
+one:
+
+- **Existing, on `file_metadata`** — keep as `AFTER INSERT OR UPDATE OF
+  captured_at`, but change its body's fallback from `created_at` to
+  `content_modified_at`.
+- **New, on `storage.files`** — `BEFORE UPDATE OF content_modified_at`,
+  `FOR EACH ROW`, with `WHEN (NEW.content_modified_at IS DISTINCT FROM
+  OLD.content_modified_at)`, assigning `NEW.media_sort_date` in place.
+
+`BEFORE` + assign-to-`NEW` matters, and is not a style preference:
+
+- It writes no second statement, so it cannot re-enter the statement triggers.
+  The existing `file_metadata` trigger relies on `pg_trigger_depth() > 1` to
+  dodge the tree-ETag bump (`20260626000000:93`); the `BEFORE` form never
+  creates the depth to dodge.
+- It costs one index lookup into `file_metadata` per content mutation to read
+  `captured_at`. Content mutations are rare next to reads, and the alternative —
+  recomputing the COALESCE at query time — was already rejected above because it
+  defeats `idx_files_media_timeline_by_drive`.
+
+`INSERT` needs no trigger at all: `content_modified_at` defaults to `NOW()` and
+`media_sort_date` defaults to `CURRENT_TIMESTAMP`, so a fresh row already
+satisfies the chain. A later EXIF extraction fires the `file_metadata` trigger
+and overwrites with `captured_at`, which is the first arm and correctly wins.
 
 | query | resolves to |
 |---|---|
@@ -560,13 +637,6 @@ when `storage.files.content_modified_at` changes.
 `COALESCE(captured_at, content_modified_at)` — so the displayed creation date
 and the timeline order stay the same expression at every phase. §4 adds the
 `source_created_at` arm to both together.
-
-Photos ordering does **not** shift at deploy, because §1 backfilled
-`content_modified_at` from `updated_at`, which is what `media_sort_date` already
-resolves to for a file without EXIF. The improvement arrives as files are
-modified afterwards — a
-non-EXIF image picks up a real content mtime instead of staying pinned to its
-upload time.
 
 ---
 
