@@ -376,16 +376,35 @@ DAV clients track mtime. WOPI wants the reverse — identical bytes, identical
 `Version`. The two protocols genuinely disagree, and today both derive from
 mtime.
 
-**Keep `Version` on `content_modified_at` for this plan.** Switching it to a
-hash changes the string's *format* for every file at once, so a document open in
-Collabora across the deploy would see its `Version` change and prompt or reload
-— exactly the client-visible discontinuity that backfilling from `updated_at`
-was chosen to avoid. Take the free improvement here; make the hash version its
-own change.
+**Keep `Version` on `content_modified_at` for this plan** — but only to keep §2
+single-purpose, not because switching it is risky. It is not:
+
+`Version` is compared **only within a live editing session**. The editor calls
+`CheckFileInfo` on open, takes whatever it gets as the baseline, and re-checks
+during the session; nothing caches it across sessions. So a format change is
+invisible to every closed document — the next open just establishes a new
+baseline. The only exposure is a session spanning the restart, and those lose
+their lock to the restart anyway:
+
+```rust
+// wopi_lock_service.rs — process-local, not persisted
+:15   expires_at: Instant,                             // LockEntry: monotonic TTL
+:28   locks: Arc<RwLock<HashMap<String, LockEntry>>>,  // in-memory map
+```
+
+Locks therefore cannot be inspected to schedule the migration — a deploy
+restarts the process and empties the table regardless — but they also show that
+a cross-restart session is already disrupted by the deploy itself, not by the
+`Version` format. **No interlock or window is needed.**
 
 **Follow-up (not this plan): derive WOPI `Version` from `blob_hash`.** Fixes
-same-second lost-update detection and matches the protocol's stated requirement.
-Needs its own rollout thought, since every `Version` string changes once.
+same-second lost-update detection and matches the protocol's requirement that
+identical content yields an identical version. Cheap, given the above.
+
+**With a known successor.** If true file versioning lands, `Version` should
+become the version identifier — stable, meaningful, and exactly what the
+protocol means. A content hash is the right answer only until something better
+exists to point at, so do the simple fix and do not engineer around it.
 
 **This must be a single commit.** The two halves are not independently correct:
 
