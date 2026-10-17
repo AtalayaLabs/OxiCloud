@@ -19,7 +19,26 @@ heading:
 | §4 add `source_created_at` | **BLOCKED** — on choosing a writer, see §4. Not a pre-start blocker; §4 is last and independent |
 | §5 tighten to `NOT NULL`, drop the COALESCE | **NOT STARTED** — once §1's backfill job has drained |
 | §6 UI axes | **NOT STARTED** — one relabel; no new sort options |
-| §7 naming normalisation | **NOT STARTED** — `order_by` everywhere, typed per-endpoint enums, `deletion_date` → `expires_at`; ships independently |
+| §7 naming normalisation | **NOT STARTED** — `order_by` everywhere, typed per-endpoint enums, `deletion_date` → `expires_at`; ships independently. Compile-time protection waits on the generated-SDK redirects |
+
+> **Reassessed 2026-10-17** against the tree, after the `pivot/dto-timestamps-iso`
+> work landed. Three corrections:
+>
+> - The REST wire carries **RFC 3339 strings**, deliberately — see
+>   `docs/architecture/dates.md § Representations`. So the response is not a
+>   lossy hop; `X-OC-Mtime` and the entity `u64` are. And **sub-second precision
+>   must not be pinned**: a seconds pin was reverted because it broke
+>   `/api/notifications` cursor pagination.
+> - §7's compile-time protection is a **precondition, not a bonus** — the two
+>   sort types the frontend imports are still hand-written, so the
+>   OpenAPI→SDK→`npm run check` chain does not close yet.
+> - `File` and `Folder` are still `u64`, but that looks **deferred rather than
+>   decided** — neither field is documented, and the ETag constrains only the
+>   epoch-seconds *format*, not the field type. No conversion is in flight, so §2
+>   proceeds unblocked; if one lands later it touches the same 32 sites.
+>
+> The three-pattern survey is unchanged — 10 aliases, 32 `EXTRACT(EPOCH FROM …)`
+> selects, 1 cursor predicate — so §2's sizing still holds.
 
 ---
 
@@ -43,9 +62,15 @@ fm.updated_at  AS modified_at     ← file_metadata join
 - `infrastructure/services/path_resolver_service.rs`
 
 Everything downstream — `File.modified_at`, `FileDto.modified_at`,
-`File::compute_etag`, `D:getlastmodified`, `nc:upload_time` — reads
-`modified_at`, never `updated_at`. So no handler, service or DTO changes: the
-repointing happens entirely in the repository SQL.
+`File::compute_etag`, `D:getlastmodified`, `nc:upload_time`, and **WOPI's
+`LastModifiedTime` and `Version`** — reads `modified_at`, never `updated_at`.
+So no handler, service or DTO changes: the repointing happens entirely in the
+repository SQL.
+
+That is convenient and also the main hazard. Several protocol fields change
+meaning **without anyone editing the code that emits them**, so every one has to
+be enumerated deliberately rather than discovered afterwards. WOPI is the one
+that is easiest to miss — see §2.
 
 **But the named alias is only one of three read patterns, and it is the smallest.**
 A survey of the tree:
@@ -105,9 +130,17 @@ NextCloud clients, which they currently never do.
 The fallback is `created_at` only until §3, which swaps it for
 `content_modified_at`; §4 then inserts `source_created_at` between the two.
 
+**Change the source, never the format.** `nc:creation_time` and
+`nc:upload_time` are **integer Unix epoch seconds**, emitted via
+`common::fmt::u64_str` on `.timestamp().max(0) as u64` — not RFC 3339, unlike
+the REST wire. NextCloud desktop and mobile parse them with `(int)$value`, so an
+ISO string silently coerces to `0` and the client treats the file as never
+uploaded. This phase repoints which column feeds them and nothing else.
+
 **Verification:** a PROPFIND assertion in the NC Hurl suite that the two
 properties carry different values for a file whose `created_at` and
-`updated_at` differ.
+`updated_at` differ — and that both are still bare integers. Existing format
+guards live in `nc_webdav_patch.hurl` and `webdav_patch_consistency.hurl`.
 
 ---
 
@@ -216,12 +249,143 @@ sweep would quietly convert audit-shaped reads into mtime reads. Budget the
 classification, not just the edit.
 
 `File::compute_etag` follows for free once the mtime sites move, since it reads
-`modified_at`.
+`modified_at`. **But it is not the only ETag entry point**, and the other one
+does not ride the SQL alias.
+
+### The four `etag_for_listing` sites are part of this sweep
+
+```rust
+// file.rs:423
+pub fn etag_for_listing(blob_hash: Option<&str>, modified_at: DateTime<Utc>) -> String
+```
+
+It takes a `DateTime<Utc>` straight off a listing row, rounds via
+`timestamp_helpers::datetime_to_etag_seconds` to match
+`EXTRACT(EPOCH FROM x)::bigint`, and delegates to `compute_etag`. Four callsites
+pass `row.modified_at` directly:
+
+```
+src/application/services/trash_service.rs:998
+src/interfaces/nextcloud/report_handler.rs:439
+src/interfaces/api/handlers/recent_handler.rs:269
+src/interfaces/api/handlers/favorites_handler.rs:255
+```
+
+Each needs the same per-site verdict as the SQL reads: does this listing's
+`modified_at` come from a repointed column or not? Trash, REPORT/SEARCH, Recent
+and Favorites all show file ETags, so a miss here means one surface's ETag
+disagrees with another's for the same file.
+
+**That exact failure already happened once.** `etag_for_listing` exists because
+the three-line `compute_etag` dance was inlined per site and drifted; its
+docstring points at the captured Cyberduck regression in
+`tests/api/webdav_etag_cross_check.hurl`. Same shape as the keyset hazard above:
+one rule, computed in several places, silently diverging. That Hurl file is the
+right regression gate for this phase too.
 
 Search needs no reindex: `sort_enriched_files`
 (`src/application/services/search_service.rs:220`) sorts an in-memory
 `Vec<SearchFileResultDto>` in Rust, reading the DTO field — Tantivy holds no
 sort field for this axis, so the search sort follows automatically.
+
+### `File` and `Folder` are still `u64` — deferred, not principled
+
+Every other entity (`user`, `notification`, `app_password`, `subject_group`,
+`calendar`, `calendar_event`, `calendar_todo`, `contact`, `face`) uses
+`DateTime<Utc>`. These two do not, and it is worth being accurate about why,
+because the usual explanation does not survive inspection:
+
+- **No field comment.** Every non-obvious field in both structs is documented —
+  `blob_hash`, `created_by`, `updated_by`, `drive_id`, `tree_modified_at`. The
+  `u64` timestamps carry none, which is where a deliberate choice would be
+  recorded.
+- **The ETag constraint is narrower than it sounds, and the codebase proves it.**
+  `File::etag_for_listing` already takes a `DateTime<Utc>` and produces the same
+  ETag, rounding through `timestamp_helpers::datetime_to_etag_seconds` to match
+  `EXTRACT(EPOCH FROM x)::bigint`. So a `DateTime` field demonstrably *can* feed
+  the ETag: the constraint is on the epoch-seconds **format**, not the field's
+  type.
+- **`Folder` has no ETag justification at all.** Its ETag derives from
+  `tree_modified_at`; `folder.created_at` / `.modified_at` feed none.
+
+The likely explanation is that the `pivot/dto-timestamps-iso` work stopped at
+the DTO boundary because these two are the hot path — the 32
+`EXTRACT(EPOCH FROM …)` sites feed listings, DAV and ETags — and built
+`src/application/dtos/timestamp_helpers.rs` (`epoch_to_datetime`,
+`datetime_to_epoch`, `epoch_zero`) as the boundary instead.
+
+What that means for this sweep:
+
+- **No conversion is in flight**, so §2 needs no coordination and the sites keep
+  their `EXTRACT(EPOCH FROM …)` shape — only the column inside changes. §2 stays
+  a behaviour-only commit whose inertness is easy to verify.
+- **If a conversion happens later it hits these same 32 sites**, so §2 is the
+  natural moment to decide whether to do both at once. Converting first would
+  make §2's edits smaller (`fi.content_modified_at` rather than
+  `EXTRACT(EPOCH FROM fi.content_modified_at)`).
+- **The ETag does not block that conversion** — only the epoch-seconds format
+  must survive it.
+
+Cheap thing to do while in these files regardless: add the missing field
+comments, recording either the reason for `u64` or that conversion is deferred.
+Their absence is why this question keeps getting re-asked.
+
+### WOPI rides the alias too
+
+Two WOPI fields are sourced from `modified_at` and therefore change with no edit
+to the handler:
+
+```rust
+// src/interfaces/api/handlers/wopi_handler.rs
+:179   last_modified_time: file.modified_at.to_rfc3339()   // WOPI LastModifiedTime
+:192   version:            file.modified_at.to_string()    // WOPI Version
+```
+
+`Version` is not cosmetic. Office editors use it to detect "this document
+changed underneath me", so it carries conflict semantics and belongs in this
+phase's reasoning rather than inherited by accident.
+
+**The change is an improvement.** Today a rename bumps `updated_at`, which bumps
+`Version`, and Collabora/OnlyOffice can warn about an external edit that never
+happened. Afterwards only a real content save moves it. And because this phase
+is inert at deploy (§ No resync), a document open in an editor across the
+rollout sees no `Version` change at all.
+
+**Verification** belongs with the §2 manual pass: open a document in the office
+editor, rename it in the SPA, and confirm the editor does *not* report an
+external change — the behaviour that is wrong today.
+
+#### The two fields want different things
+
+| | WOPI requires | `updated_at` (today) | `content_modified_at` (after §2) | `blob_hash` |
+|---|---|---|---|---|
+| `LastModifiedTime` | last time the file was modified | ctime ✗ | **correct** ✓ | n/a |
+| `Version` | changes iff the file changed | bumps on rename ✗ | no rename bump ✓ | **exact** ✓ |
+
+`LastModifiedTime` lands correct for free. `Version` improves — renames stop
+moving it — but `content_modified_at` is still a second-granularity timestamp,
+so two saves inside one second collide and lost-update detection fails. That is
+true today and stays true after this phase.
+
+`blob_hash` is the strictly better source: content-addressing *is* "the same if
+the file has not changed", with no granularity problem.
+
+**Note this is the opposite requirement from the DAV ETag.** The ETag's mtime
+suffix exists deliberately so a same-bytes-new-mtime touch invalidates, because
+DAV clients track mtime. WOPI wants the reverse — identical bytes, identical
+`Version`. The two protocols genuinely disagree, and today both derive from
+mtime.
+
+**Keep `Version` on `content_modified_at` for this plan.** Switching it to a
+hash changes the string's *format* for every file at once, so a document open in
+Collabora across the deploy would see its `Version` change and prompt or reload
+— exactly the client-visible discontinuity that backfilling from `updated_at`
+was chosen to avoid. Take the free improvement here; make the hash version its
+own change.
+
+**Follow-up (not this plan): derive WOPI `Version` from `blob_hash`.** Fixes
+same-second lost-update detection and matches the protocol's stated requirement.
+Needs its own rollout thought, since every `Version` string changes once.
 
 **This must be a single commit.** The two halves are not independently correct:
 
@@ -432,6 +596,36 @@ sorts arbitrarily and reads as a bug.
 The group-by swimlanes share these dimensions (Type / Size / modifiedAt /
 createdAt), so the relabel has to land there too — easy to miss.
 
+#### The relabel is an i18n change, not a string edit
+
+There are **16 locales** (`frontend/static/locales/*.json`), reached through
+`t(key, [params], fallback)`. The exact labels to change:
+
+```ts
+// routes/files/[...path]/+page.svelte
+:1897   label: t('groupby.modifiedAt', 'Modified date'),   orderBy: 'modified_at'
+:1905   label: t('groupby.createdAt',  'Created date'),    orderBy: 'created_at'
+```
+
+So it is `groupby.createdAt` whose **value** becomes "Added date". **Keep the
+key**: it is named after the dimension, not the wording, so renaming it would
+mean touching all sixteen files to avoid sixteen missing-key fallbacks for no
+gain.
+
+The work is therefore:
+
+- change the value in **`en.json` only**, and the inline fallback beside it
+- leave the other fifteen to the existing translation backlog — the English
+  fallback carries them meanwhile
+- **do not** run `scripts/bulk_translate.mjs`: it translates without context
+
+Same treatment for Photos' three axis labels if any are reworded.
+
+**One surface needs no change at all.** The `/files` date *column* header is
+`t('files.col_modified', 'Date')` (`ResourceList.svelte:1594`, overridable via a
+`dateLabel` prop) — generic enough that it does not lie today and does not lie
+afterwards. Only the sort/group-by dimension labels carry the misleading word.
+
 ### Photos
 
 `PhotosOrderBy = 'captured_at' | 'created_at' | 'updated_at'`
@@ -608,10 +802,29 @@ renames safe end-to-end:
 1. Rust: every internal use of a renamed variant becomes a compile error, not a
    grep.
 2. OpenAPI: a serde enum emits a real `enum` schema instead of `string`.
-3. Generated TS SDK: that becomes a union type, so the frontend **cannot** send
-   a stale value — the FE fails at `npm run check` rather than silently sorting
-   by the default. That closes the same gap that let the persisted Photos
-   preference revert unnoticed.
+3. Generated TS SDK: that becomes a union type, so the frontend cannot send a
+   stale value — it fails at `npm run check` rather than silently sorting by the
+   default.
+
+**Step 3 is a precondition, not a bonus — it does not hold today.** The two sort
+types the frontend actually imports are still hand-written, and the generated
+SDK carries neither:
+
+```ts
+endpoints/photos.ts:118   export type PhotosOrderBy = 'captured_at' | 'created_at' | 'updated_at'
+types.ts:223              export type SortBy = 'relevance' | 'name' | 'size' | 'updated_at' | 'created_at'
+generated/types.gen.ts    — no SortBy, no OrderBy
+```
+
+TypeScript types are now generated from OpenAPI, but the migration off
+`types.ts` is incomplete. Until those two are redirected to the generated SDK,
+the chain breaks at the last link and the frontend can still send a retired
+value with no compile error.
+
+So §7 either waits on those redirects, or ships with steps 1–2 only — in which
+case the protection against stale values is a server-side 400 rather than a
+compile error, and the persisted-Photos-preference migration below becomes the
+*only* thing preventing a silent revert rather than a belt beside braces.
 
 Without this, a stale `order_by=updated_at` from any client is indistinguishable
 from "no preference" and sorts by the default. With it, the deprecation window is
@@ -701,6 +914,18 @@ await page.evaluate((ms) => {
 
 With a remainder below 500 the test passes under either implementation and
 proves nothing about the round-don't-truncate rule.
+
+**Where the precision is actually lost** — not on the REST wire, which carries
+RFC 3339 strings and so is sub-second capable. The lossy hops are
+`X-OC-Mtime` (integer seconds) and the entity-level `u64` on `File`. So this
+test exercises the *upload* path's rounding, and reading the value back is not
+itself lossy.
+
+That also means the assertion stays valid at **second granularity** regardless of
+whether the `u64` → `DateTime` entity conversion has landed: truncation yields
+`…662` and rounding `…663`, a whole-second difference either way. Do not assert
+sub-second precision — it is undefined until that conversion settles, and a test
+that pins it will break when the conversion lands.
 
 Then three assertions:
 
@@ -800,6 +1025,15 @@ the property at it.
 calendar row's own `updated_at`, and that is right: an event or contact has no
 separate blob, so its row change *is* its content change. Do not apply this plan
 there — stated explicitly so a later reader does not "fix" it.
+
+**External mounts.** There is a third ETag producer,
+`virtual_file_etag(size, modified_at) -> "ext-{size:x}-{modified_at}"`
+(`domain/services/external_mount_id.rs:154`, plus `virtual_folder_etag`), used
+from `mount_dto.rs:122`/`:149`, `file_handler.rs:1161` and
+`folder_handler.rs:858`. Its `modified_at` comes from the provider's `stat` or
+directory entry, **not** from `storage.files` — so there is no column to
+repoint and nothing here applies. Listed because it is easy to find while
+grepping for ETag code and mistake for an omission.
 
 ---
 

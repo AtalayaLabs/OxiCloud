@@ -162,16 +162,60 @@ enough to make the next mtime comparison flap.
 | Where | Representation | Example |
 |---|---|---|
 | Postgres columns | `TIMESTAMPTZ` | `2026-10-11 09:14:22+00` |
-| REST wire | integer epoch **seconds** (`ts_seconds`) | `1792055662` |
+| **REST wire** | **RFC 3339 string**, nullable | `"2026-10-11T09:14:22Z"` |
+| Domain entities `File` / `Folder` | `u64` epoch seconds | `1792055662` |
+| Other domain entities | `DateTime<Utc>` | — |
 | Browser File API | integer epoch **milliseconds** | `1792055662417` |
-| `X-OC-Mtime` | integer epoch seconds | `1792055662` |
+| `X-OC-Mtime` | integer epoch **seconds** | `1792055662` |
 | `nc:creation_time`, `nc:upload_time` | integer epoch seconds | `1792055662` |
 | `D:getlastmodified` | HTTP-date (rfc1123) | `Sat, 11 Oct 2026 09:14:22 GMT` |
 | `D:creationdate` | ISO-8601 / RFC 3339 | `2026-10-11T09:14:22Z` |
 
-Wire-facing `DateTime<Utc>` on any DTO deriving `Serialize + ToSchema` must ship
-as an integer via `#[serde(with = "chrono::serde::ts_seconds")]`, so the
-generated TypeScript SDK sees `number` on both sides.
+The REST wire carries **strings, not integers** — `FileDto.created_at` and
+`.modified_at` are `DateTime<Utc>` serialising to RFC 3339 by serde's default,
+and `resources/gen/openapi.json` declares them `"type": ["string", "null"]`.
+
+This is the deliberate outcome of **PR #804** (`pivot/dto-timestamps-iso`,
+merged `fc3f27a5`, 2026-10-12): RFC 3339 everywhere via chrono's default serde,
+chosen over "integer everywhere" because it is OpenAPI-standard and because
+making timestamps `string` in TypeScript surfaces every silent-arithmetic site.
+Inbound request DTOs stay lenient — `deserialize_flex_datetime_option` accepts
+integer epoch, RFC 3339, `null` or a missing key — so pre-pivot clients keep
+working.
+
+> That PR shipped the convention in code and tests but left **no design doc**,
+> so this section is its record. The commits worth reading if the reasoning
+> matters: `94edba1c` (ship RFC 3339), `6af90407` (lenient inbound),
+> `a4689620` (wire snapshot tests), `77773efe` (e2e smoke across list surfaces),
+> `dca28bad` (ETag convergence via `etag_for_listing`), and `95961545` (the
+> precision pin, reverted).
+
+**Sub-second precision is load-bearing; do not pin it.** A seconds pin was
+attempted and reverted (`95961545`): two grants created within the same
+wall-clock second collapsed to identical ISO strings, and `/api/notifications`
+cursor pagination could not advance past `?after=<ts>`. Chrono's default
+precision is what the cursor flow depends on.
+
+So the REST response is **not** a lossy hop. The lossy hops are `X-OC-Mtime`
+(integer seconds) and the `u64` on the `File` / `Folder` entities.
+
+### `File` and `Folder` are still `u64`
+
+Every other entity uses `DateTime<Utc>`; these two are the exception, and the
+conversion looks **deferred rather than decided** — neither field carries a doc
+comment, unlike every other non-obvious field in those structs.
+
+The ETag is a real constraint but a narrower one than it is usually given credit
+for: `compute_etag(hash, modified_at: u64)` renders `{hash[..16]}-{modified_at}`,
+and a `DateTime<Utc>` field passing `.timestamp() as u64` would produce a
+byte-identical string. So **epoch seconds must survive in the ETag format**, but
+the field type is free. `Folder` has no ETag justification at all — its ETag
+derives from `tree_modified_at`.
+
+`src/application/dtos/timestamp_helpers.rs` is the conversion boundary
+(`epoch_to_datetime`, `datetime_to_epoch`, `epoch_zero`), applied at the DTO
+mappers. See `docs/plan/normalize-file-dates.md` §2 for how a future conversion
+interacts with the repointing sweep.
 
 ## Trust bounds
 
@@ -239,13 +283,32 @@ media_sort_date = COALESCE(captured_at, source_created_at, content_modified_at)
 ## ETag coupling
 
 `File::compute_etag` is `{blob_hash[..16]}-{modified_at}`
-(`src/domain/entities/file.rs:371`). The suffix exists specifically to catch the
+(`src/domain/entities/file.rs:388`). The suffix exists specifically to catch the
 `X-OC-Mtime` touch-then-resync case: identical bytes, new mtime, and the ETag
 must still change or clients serve stale metadata.
 
 When mtime moves to `content_modified_at`, **the ETag suffix must move with
 it**. Leaving it on `updated_at` would make the ETag change on a rename (it
 shouldn't) and not change on a pure mtime touch (it must).
+
+**Two entry points, one rule.** Entity-path callers use `compute_etag` with
+`u64`; listing-path callers use
+
+```rust
+File::etag_for_listing(blob_hash: Option<&str>, modified_at: DateTime<Utc>)  // file.rs:423
+```
+
+which rounds through `timestamp_helpers::datetime_to_etag_seconds` so the
+`DateTime` path matches `EXTRACT(EPOCH FROM x)::bigint` exactly, and returns an
+empty string for folder rows (where `blob_hash` is `None` in the `UNION ALL`).
+It exists because the rounding was previously inlined per listing site and
+drifted — see the Cyberduck regression captured in
+`tests/api/webdav_etag_cross_check.hurl`. **Never inline the dance; always route
+through one of these two.**
+
+That helper also settles a question that recurs: a `DateTime<Utc>` field *can*
+feed the ETag with identical output, so the epoch-seconds **format** is the
+constraint, not the entity's field type.
 
 The folder formula is separate — `Folder::compute_etag(id, tree_modified_at)` —
 and unaffected.
