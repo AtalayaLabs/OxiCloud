@@ -63,9 +63,42 @@ ALTER TABLE storage.files
 -- `WHERE content_modified_at IS NULL` keeps this idempotent: a re-applied
 -- migration (or one resumed after a failure) skips rows already written, and
 -- never clobbers a value `swap_blob_hash` has since set.
+--
+-- ── Why the UPDATE triggers are suppressed around it ───────────────────────
+-- `storage.files` carries two `AFTER UPDATE … REFERENCING OLD TABLE … NEW TABLE
+-- … FOR EACH STATEMENT` triggers:
+--
+--   files_bump_tree_etag_upd    → bump_tree_from_files_stmt_upd()
+--   files_enqueue_search_upd    → enqueue_search_from_files_stmt_upd()
+--
+-- Neither would enqueue anything. They compare specific column tuples —
+-- `(name, folder_id, blob_hash, size, mime_type, is_trashed, updated_at)` and
+-- `(name, blob_hash, is_trashed)` respectively — and `content_modified_at` is
+-- in neither, so `IS DISTINCT FROM` is false for every row. No tree-etag bump,
+-- no search reindex. That is correct and intended: this backfill is invisible
+-- to DAV and to search by construction.
+--
+-- The cost is incurred before that filtering happens. Postgres materialises the
+-- OLD and NEW transition tables for the WHOLE statement up front, per trigger —
+-- so one bulk UPDATE builds two full copies of the table twice over, spilling
+-- to temp files, purely to conclude there is nothing to do. On a large
+-- `storage.files` that is the memory/time blow-up, and it is a per-statement
+-- cost rather than anything algorithmic.
+--
+-- Disabling both for the duration avoids it. This is safe and precise rather
+-- than a shortcut: we know from the tuples above that neither trigger would
+-- have fired an action. DDL is transactional in Postgres, so if anything in
+-- this migration fails the rollback restores the triggers along with
+-- everything else — there is no window where they are left disabled.
+ALTER TABLE storage.files DISABLE TRIGGER files_bump_tree_etag_upd;
+ALTER TABLE storage.files DISABLE TRIGGER files_enqueue_search_upd;
+
 UPDATE storage.files
    SET content_modified_at = updated_at
  WHERE content_modified_at IS NULL;
+
+ALTER TABLE storage.files ENABLE TRIGGER files_bump_tree_etag_upd;
+ALTER TABLE storage.files ENABLE TRIGGER files_enqueue_search_upd;
 
 -- Dense as of the statement above, so tighten now rather than in a later
 -- phase. sqlx runs a migration in one transaction, so the backfill and this

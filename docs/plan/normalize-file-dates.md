@@ -1013,6 +1013,32 @@ indexed `media_sort_date` column.
 upgrade, proportional to row count, on a metadata-only table. Plus autovacuum
 afterwards to reclaim the dead tuples.
 
+**And the trigger trap on that `UPDATE`, which is where a bulk migration
+actually blows up.** `storage.files` carries two statement-level `AFTER UPDATE`
+triggers with transition tables:
+
+| trigger | compares |
+|---|---|
+| `files_bump_tree_etag_upd` | `(name, folder_id, blob_hash, size, mime_type, is_trashed, updated_at)` |
+| `files_enqueue_search_upd` | `(name, blob_hash, is_trashed)` |
+
+`content_modified_at` is in neither tuple, so neither would enqueue anything —
+no tree-etag storm, no full Tantivy reindex. That is lucky rather than designed:
+had either keyed on "any update", this migration would have queued the entire
+table for reindexing.
+
+But both declare `REFERENCING OLD TABLE … NEW TABLE … FOR EACH STATEMENT`, and
+Postgres materialises those transition tables for the **whole statement before
+the function filters anything** — so one bulk `UPDATE` builds two full copies of
+the table, twice over, spilling to temp files, to conclude there is nothing to
+do. That is a per-statement space cost scaling with row count, not an
+algorithmic one, which is exactly how an `O(n)` migration becomes an OOM.
+
+The migration therefore disables both triggers around the `UPDATE` and
+re-enables them after. Precise rather than a shortcut — the column tuples above
+prove neither trigger had an action to take — and DDL is transactional in
+Postgres, so a failed migration rolls the triggers back with everything else.
+
 **The trigger trap: two triggers, two shapes.** The existing
 `sync_media_sort_date` is `AFTER INSERT OR UPDATE OF captured_at ON
 storage.file_metadata` and its body issues `UPDATE storage.files … WHERE id =
