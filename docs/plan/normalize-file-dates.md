@@ -14,7 +14,7 @@ heading:
 |---|---|
 | §0 fix the two `nc:` slots | **NOT STARTED** — 2 lines, ships alone, no behaviour change |
 | §1 add `content_modified_at`, write it, read nothing | **IN PROGRESS** — migration + writers + trust bounds done (`625f089d`); integration tests remain |
-| §2 repoint the `modified_at` alias + ETag | **IN PROGRESS** — file-side done (27 sites + cursor predicate); folder-side `getlastmodified` → `tree_modified_at` deferred, see below |
+| §2 repoint the `modified_at` alias + ETag | **DONE** — file-side (27 sites + cursor predicate, `8d0631be`) and folder-side DAV-only (`2def1acb`). One gap left open: NC REPORT search, see Open decisions |
 | §3 sort axes | **NOT STARTED** — couples to §2 |
 | §4 add `source_created_at` | **BLOCKED** — on choosing a writer, see §4. Not a pre-start blocker; §4 is last and independent |
 | §5 tighten to `NOT NULL` | **FOLDED INTO §1** 2026-10-17 — the migration lands it in-transaction |
@@ -249,7 +249,7 @@ they are what makes §2 safe to ship:
 
 ---
 
-## §2 — Repoint the alias and the ETag **NOT STARTED**
+## §2 — Repoint the alias and the ETag **DONE** (`8d0631be`, `2def1acb`)
 
 **Classify, then repoint — this is not a find-replace.** The ~27 file-side reads
 surveyed at the top of this plan are not all mtime-intent. At least one aliases
@@ -439,32 +439,52 @@ exists to point at, so do the simple fix and do not engineer around it.
 - ETag repointed without `getlastmodified` → the two properties disagree about
   when the file last changed.
 
-### Folder side deferred — the mechanism was never settled
+### Folder side — DAV-only, done (`2def1acb`)
 
-The file-side sweep is done. The folder half is **not**, because the decision
-("folder `D:getlastmodified` repoints to `tree_modified_at`") never specified
-*how*, and the two mechanisms have very different blast radius:
+Two mechanisms were on the table, with very different blast radius:
 
 - **Repoint the `fld.`/`fo.` aliases.** One-line change, but `modified_at` is
   shared, so REST `FolderDto.modified_at` moves too — and a folder's "Modified"
   column in the SPA would then change whenever *any descendant* changes. Folders
   would bubble to the top of a date sort on every edit inside them. Arguably
   Finder-like, arguably surprising; either way a visible product change.
-- **Change the four DAV emission sites** to read `tree_modified_at` directly
-  (`webdav_adapter.rs:857`, `:1006`; `nextcloud/webdav_handler.rs:2091` plus its
-  listing twin). DAV-only, REST untouched — but needs `tree_modified_at`
-  reachable at those callsites, which it is on the entity and is *not* on
-  `FolderDto`.
+- **Change the DAV emission sites** to read `tree_modified_at` directly.
+  DAV-only, REST untouched — but needs `tree_modified_at` reachable at those
+  callsites, which it is on the entity and was *not* on `FolderDto`.
 
-The second is almost certainly right — the decision was about protocol
-conformance, not about changing what the SPA shows. But it is a product call,
-so it is left for an explicit one rather than inherited from whichever
-mechanism was convenient.
+**Decided 2026-10-17: the second.** The decision was about protocol conformance,
+not about changing what the SPA shows, so REST keeps reporting the folder row's
+own mtime and the two clocks coexist on the wire with doc comments saying which
+is which.
 
-Note the asymmetry that makes this safe to defer: folder ETags already derive
-from `tree_modified_at`, so folder listings are *already* invalidated correctly
-on descendant changes. Only `getlastmodified` disagrees, and nothing acts on it
-for collections.
+Shipped as:
+
+- `FolderDto` gains `tree_modified_at: DateTime<Utc>` — a wire-visible addition,
+  so `resources/gen/openapi.json` and the TS SDK were regenerated in the same
+  commit (additive: one new required field on a response type, nothing the FE
+  constructs).
+- Three emission sites repointed: `webdav_adapter.rs` (both folder sites) and
+  `nextcloud/webdav_handler.rs`.
+- Folder ETag was *already* derived from the rollup, so ETag and
+  `getlastmodified` now agree by construction rather than by accident.
+
+Twelve hand-built `FolderDto` sites have no rollup in scope and fall back to the
+row's own mtime, each commented. Nine are REST-only listings (favorites,
+recents, search, trash, share-recipient, plus a test stub) where nothing emits
+DAV, so the fallback is invisible. Three are genuinely rollup-less:
+
+| Site | Why no rollup | Consequence |
+| --- | --- | --- |
+| Synthetic DAV root (`api/handlers/webdav_handler.rs`) | No row exists; all three clocks are `now()` | None — unchanged from today |
+| External mounts (`mount_dto.rs`, `folder_handler.rs`) | Backend gives one directory mtime, no subtree view | Out of scope per § Out of scope; DAV reports what it always did |
+| NC REPORT search (`nextcloud/report_handler.rs`) | Search projection doesn't select it | **Load-bearing fallback** — a REPORT hit still reports the folder's own mtime. Fixing it means widening the search projection; see Open decisions |
+
+`path_resolver_service.rs` already selected `tree_modified_at` for the folder
+ETag, so it passes the real value.
+
+The folder wire-shape test (`webdav_adapter::wire_shape_tests`) now sets the two
+clocks to *different* values, so repointing the emitter back to `modified_at`
+fails the test instead of silently regressing conformance.
 
 ### No resync — the deploy is inert
 
@@ -1094,6 +1114,24 @@ proportional to table size.
 
 ## Open decisions
 
+### Open: NC REPORT search emits the wrong folder `getlastmodified`
+
+§2's folder side left one real gap. `nextcloud/report_handler.rs` renders DAV
+responses from search results, and the search projection doesn't select
+`tree_modified_at`, so a folder hit in a NC REPORT still reports the folder
+row's own mtime while the same folder reached by PROPFIND reports the rollup.
+The same URL, two answers, depending on how the client asked.
+
+Nothing is *more* wrong than before this work — the fallback preserves today's
+behaviour exactly — but the inconsistency is new and worth closing. Fixing it
+means widening `SearchFolderResultDto` and the query behind it to carry the
+rollup, which touches the Tantivy-backed search path rather than the dates work
+proper. Deliberately not bundled into §2.
+
+Severity is low: NC desktop clients use REPORT for search results they display,
+not for sync decisions, and the ETag — which *is* load-bearing — is correct on
+both paths.
+
 ### Decided 2026-10-11
 
 **COPY sets `content_modified_at` to `NOW()`.** A copy is a new file whose
@@ -1108,11 +1146,15 @@ currently emit the folder row's `updated_at` while their ETag derives from
 children, so this is what RFC 4918 §15.7 asks for and it makes the two
 properties consistent.
 
-This brings the **folder-side reads into §2's scope** after all: `fo.` (10
-sites) and `fld.` (3 aliases) repoint to `tree_modified_at` for the
-`getlastmodified` path. Note the asymmetry — folders get no new column, because
-`tree_modified_at` already *is* the subtree-content clock; the work is pointing
-the property at it.
+This brings the **folder side into §2's scope** after all. Note the asymmetry —
+folders get no new column, because `tree_modified_at` already *is* the
+subtree-content clock; the work is pointing the property at it.
+
+> **Superseded 2026-10-17 on mechanism.** This entry assumed the `fo.`/`fld.`
+> SQL aliases would be repointed. They were not: that would have moved REST
+> `FolderDto.modified_at` too, which is a product change nobody asked for. The
+> DAV emission sites read a new `FolderDto.tree_modified_at` instead. The
+> *decision* above stands; see § Folder side for what shipped.
 
 ---
 
