@@ -263,6 +263,18 @@ pub trait FileWritePort: Send + Sync + 'static {
     /// can upload into a folder owned by someone else; the previous
     /// `created_by = parent.user_id` would have silently recorded the
     /// wrong principal.
+    ///
+    /// `content_modified_at` is the client-asserted source mtime in epoch
+    /// seconds (`X-OC-Mtime`), already validated by
+    /// `timestamp_helpers::validate_client_mtime`; `None` means "stamp NOW()".
+    /// Threading it through the CREATE path — not just the overwrite path —
+    /// is what makes an upload of a pre-existing file keep its mtime, which
+    /// is the common NextCloud-desktop case.
+    // Matches the sibling `update_file_streaming_with_perms`
+    // (`file_ports.rs:111`), which carries the same allow for the same
+    // reason: these are flat column values destined for one INSERT, not a
+    // cohesive object waiting to be extracted.
+    #[allow(clippy::too_many_arguments)]
     async fn save_file_with_blob(
         &self,
         name: String,
@@ -271,6 +283,7 @@ pub trait FileWritePort: Send + Sync + 'static {
         blob_hash: &str,
         size: u64,
         caller_id: Uuid,
+        content_modified_at: Option<i64>,
     ) -> Result<File, DomainError>;
 
     /// Moves a file to another folder. `caller_id` is stamped into

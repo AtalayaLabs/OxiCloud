@@ -153,6 +153,7 @@ impl FileWritePort for StubFileWritePort {
         _blob_hash: &str,
         _size: u64,
         _caller_id: Uuid,
+        _content_modified_at: Option<i64>,
     ) -> Result<File, DomainError> {
         Ok(File::default())
     }

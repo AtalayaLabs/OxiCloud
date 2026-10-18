@@ -302,6 +302,8 @@ impl FileBlobWriteRepository {
     /// folder's owner. In D2 shared drives a non-owner member can upload
     /// into a folder Alice owns; binding `parent.user_id` would have
     /// silently recorded Alice as the author.
+    // Flat column values for one INSERT — see the trait declarations.
+    #[allow(clippy::too_many_arguments)]
     async fn save_file_with_blob_impl(
         &self,
         name: String,
@@ -310,6 +312,7 @@ impl FileBlobWriteRepository {
         blob_hash: &str,
         size: u64,
         caller_id: Uuid,
+        content_modified_at: Option<i64>,
     ) -> Result<File, DomainError> {
         // NFC-normalize at the last touch before the DB bind. Same
         // reasoning as `folder_db_repository::create_folder`: every write
@@ -366,14 +369,16 @@ impl FileBlobWriteRepository {
                 )
                 INSERT INTO storage.files
                     (name, folder_id, drive_id, blob_hash, size,
-                     mime_type, category_order, created_by, updated_by)
+                     mime_type, category_order, created_by, updated_by,
+                     content_modified_at)
                 SELECT $1, parent.id, parent.drive_id, $3, $4,
-                       $5, $6, $7, $7
+                       $5, $6, $7, $7,
+                       COALESCE(to_timestamp($8), NOW())
                   FROM parent
                 RETURNING id::text,
                           (SELECT path FROM parent),
                           EXTRACT(EPOCH FROM created_at)::bigint,
-                          EXTRACT(EPOCH FROM updated_at)::bigint,
+                          EXTRACT(EPOCH FROM content_modified_at)::bigint,
                           created_by,
                           updated_by
                 "#,
@@ -385,6 +390,9 @@ impl FileBlobWriteRepository {
             .bind(&content_type)
             .bind(category_order_for(&name, &content_type))
             .bind(caller_id)
+            // `to_timestamp` takes double precision; NULL falls through the
+            // COALESCE to NOW(), which is the no-header case.
+            .bind(content_modified_at.map(|s| s as f64))
             .fetch_optional(self.pool.as_ref())
         })
         .await;
@@ -564,9 +572,18 @@ impl FileWritePort for FileBlobWriteRepository {
         blob_hash: &str,
         size: u64,
         caller_id: Uuid,
+        content_modified_at: Option<i64>,
     ) -> Result<File, DomainError> {
-        self.save_file_with_blob_impl(name, folder_id, content_type, blob_hash, size, caller_id)
-            .await
+        self.save_file_with_blob_impl(
+            name,
+            folder_id,
+            content_type,
+            blob_hash,
+            size,
+            caller_id,
+            content_modified_at,
+        )
+        .await
     }
 
     async fn move_file(

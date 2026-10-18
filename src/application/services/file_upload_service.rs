@@ -466,6 +466,10 @@ impl FileUploadUseCase for FileUploadService {
                 &blob.hash,
                 blob.size,
                 caller_id,
+                // This path carries no client-asserted mtime — it is the
+                // plain REST streaming upload, which has no `X-OC-Mtime`
+                // equivalent on the wire. `None` stamps NOW().
+                None,
             )
             .await?;
         let dto = FileDto::from(file);
@@ -707,6 +711,13 @@ impl FileUploadUseCase for FileUploadService {
                 &blob.hash,
                 blob.size,
                 caller_id,
+                // The CREATE half of this method must honour the client's
+                // asserted mtime exactly as the UPDATE half above does.
+                // Dropping it here meant `X-OC-Mtime` was silently ignored on
+                // a NEW file — the common NextCloud-desktop case, since a
+                // desktop client is usually uploading a file that already
+                // existed locally with a real mtime.
+                modified_at,
             )
             .await?;
         let dto = FileDto::from(created);

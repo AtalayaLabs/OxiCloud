@@ -13,7 +13,7 @@ heading:
 | phase | state |
 |---|---|
 | §0 fix the two `nc:` slots | **NOT STARTED** — 2 lines, ships alone, no behaviour change |
-| §1 add `content_modified_at`, write it, read nothing | **IN PROGRESS** — migration + writers + trust bounds done (`625f089d`); integration tests remain |
+| §1 add `content_modified_at`, write it, read nothing | **IN PROGRESS** — migration + writers + trust bounds done (`625f089d`); the CREATE-path mtime gap below is now closed too; remaining integration tests |
 | §2 repoint the `modified_at` alias + ETag | **DONE** — file-side (27 sites + cursor predicate, `8d0631be`) and folder-side DAV-only (`2def1acb`). One gap left open: NC REPORT search, see Open decisions |
 | §3 sort axes | **DONE (interim two-arm form)** — `media_sort_date` on the content clock + both search axes repointed. §4 inserts the `source_created_at` arm |
 | §4 add `source_created_at` | **BLOCKED** — on choosing a writer, see §4. Not a pre-start blocker; §4 is last and independent |

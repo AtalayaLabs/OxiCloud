@@ -856,38 +856,12 @@ async fn handle_put(
         .unwrap_or("application/octet-stream")
         .to_string();
 
-    // `X-OC-Mtime` is the client asserting the source file's POSIX mtime, which
-    // lands in `content_modified_at` (not just `updated_at`) — see
-    // docs/architecture/dates.md § Trust bounds. Validate before it reaches
-    // storage and refuse rather than clamp: a wrong client clock should be
-    // visible to whoever can fix it, not quietly absorbed into stored data.
-    let oc_mtime = match req
-        .headers()
-        .get("x-oc-mtime")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<i64>().ok())
-    {
-        None => None,
-        Some(secs) => {
-            match crate::application::dtos::timestamp_helpers::validate_client_mtime(
-                secs,
-                chrono::Utc::now().timestamp(),
-            ) {
-                Ok(valid) => Some(valid),
-                Err(rejection) => {
-                    tracing::info!(
-                        target: "audit",
-                        event = "webdav_put.mtime_rejected",
-                        reason = rejection.reason(),
-                        asserted_mtime = secs,
-                        "👮🏻‍♂️ rejected client-asserted X-OC-Mtime on NC PUT: {}",
-                        rejection.message(),
-                    );
-                    return Err(AppError::bad_request(rejection.message()));
-                }
-            }
-        }
-    };
+    // `X-OC-Mtime` is the client asserting the source file's POSIX mtime,
+    // which lands in `content_modified_at` — see
+    // `docs/architecture/dates.md` § Trust bounds. Parsed, validated and
+    // logged in one shared place so this surface and the chunked-assemble
+    // surface cannot drift apart.
+    let oc_mtime = super::parse_client_mtime(req.headers(), "webdav_put")?;
 
     // Extract before consuming `req` into the body stream further down.
     let if_header = req

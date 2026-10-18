@@ -28,6 +28,7 @@ is trusted.
 | Captured on the device | `storage.file_metadata.captured_at` | server-extracted | EXIF `DateTimeOriginal` |
 | Created at the source (pre-upload `btime`) | `storage.files.source_created_at` **new** | client-asserted, bounded | `nc:creation_time` on upload |
 | Any row touch (`ctime`) | `storage.files.updated_at` | server-stamped | every mutation |
+| Entry list last changed (directory `mtime`) | `storage.folders.content_modified_at` **new** | server-stamped | direct-child add/remove/rename triggers |
 | Subtree changed | `storage.folders.tree_modified_at` | server-stamped | `tree_etag_dirty` queue |
 
 `content_modified_at` is `NOT NULL` and read directly — no fallback expression
@@ -46,6 +47,53 @@ is whatever the client says. Keeping them apart means the trust bounds apply to
 exactly one of them, and re-running EXIF extraction can never clobber a
 client-supplied value or vice versa.
 
+### `content_modified_at` means the same thing on both tables
+
+Files and folders each carry a `content_modified_at`, and the name is shared on
+purpose: both answer *"when did this resource's own content last change"*. What
+differs is what "content" **is**.
+
+| | content is | moves when |
+|---|---|---|
+| file | its bytes | the bytes change |
+| folder | its entry list | a **direct** child is added, removed, renamed, moved in or out, trashed or restored |
+
+A folder's clock explicitly does **not** move when a child's bytes change, and
+does not propagate from anything deeper in the subtree. Those are POSIX and
+NTFS directory semantics — what `ls -l` shows — and they are the reason this is
+a separate column from `tree_modified_at` rather than a reuse of it.
+
+Two consequences worth stating, because both were learned the hard way:
+
+- **`modified_at` on the wire is now symmetric.** Before, `FileDto.modified_at`
+  was a content clock while `FolderDto.modified_at` was the row clock, so a
+  mixed listing sorted its two halves on different meanings and renaming a
+  folder looked like a content change while renaming a file did not.
+- **Every read is `<alias>.content_modified_at AS modified_at`, uniformly.**
+  When only files had the column, the correct column depended on which table an
+  alias happened to bind to — and `f.` means *files* in five repositories and
+  *folders* in one. That ambiguity shipped a broken folder-move query. Giving
+  both tables the same column name removes the choice, and so removes the bug
+  class.
+
+### Why `tree_modified_at` is not that column
+
+`tree_modified_at` is a **full recursive** rollup: it walks `lpath @>` to bump
+every ancestor to the root, and its change tuple includes `blob_hash` and
+`size`, so a content edit five levels down moves the top-level folder. It is
+maintained out-of-band through the `tree_etag_dirty` queue rather than
+synchronously.
+
+That is right for its one job — invalidating a DAV collection ETag, where
+missing a deep change serves stale data — and wrong for a human-readable
+column, because it **saturates**. Every top-level folder would read "just now"
+every day, and a date sort would stop discriminating, which is the only reason
+to offer one. The effect worsens the more collaborative the instance, and
+collaboration is this product's main axis.
+
+So the two coexist: `content_modified_at` is what a person reads,
+`tree_modified_at` is what a cache validates.
+
 ## Roles — who actually reads them
 
 Only two of the six are **behavioural**. Sorting the rest by who reads them is
@@ -53,7 +101,8 @@ what pushes both server-stamped columns almost entirely out of the protocol.
 
 | Role | Columns | Consumer, and consequence of being wrong |
 |---|---|---|
-| **Behavioural** | `content_modified_at`, `folders.tree_modified_at` | Sync clients. Decides whether a file re-downloads and whether a folder is descended into — the only timestamps where being wrong changes what transfers. |
+| **Behavioural** | `files.content_modified_at`, `folders.tree_modified_at` | Sync clients. Decides whether a file re-downloads and whether a folder is descended into — the only timestamps where being wrong changes what transfers. |
+| **Presentational** | `folders.content_modified_at` | The "Modified" column for a folder, and its `order_by=modified_at` sort. Deliberately *not* behavioural: no sync client reads it, because a collection's cache validity rides on `tree_modified_at` instead. |
 | **Presentational** | `captured_at`, `source_created_at` | Ordering and display: the Photos timeline, `nc:creation_time`. Wrong values look wrong and cost no bandwidth. |
 | **Informational** | `created_at` | Emitted as `nc:upload_time` and `D:creationdate`; nothing acts on it. Immutable, so it stays trustworthy for audit. |
 | **Internal** | `updated_at` (with `updated_by`) | Audit queries, consistency sweeps, retention. No surface asks for `ctime` — WebDAV excludes property changes, NextCloud has no equivalent — so it is emitted nowhere. |
@@ -276,8 +325,29 @@ this is both what RFC 4918 §15.7 asks for and consistent with the folder's own
 bumps `updated_at` and leaves `getlastmodified` alone — correct, because
 renaming a directory does not change what it contains.
 
-Folders get no `content_modified_at`: `tree_modified_at` already is the
-subtree-content clock.
+**Folders also carry their own `content_modified_at`** — POSIX directory
+semantics, covering the entry list only. The two folder clocks answer different
+questions and have different consumers:
+
+| | question | consumer |
+|---|---|---|
+| `content_modified_at` | did this folder's **entry list** change? | the "Modified" column, `order_by=modified_at` |
+| `tree_modified_at` | did **anything beneath** this change, recursively? | `D:getetag`, `D:getlastmodified` |
+
+An earlier revision of this document asserted that folders needed no content
+clock because `tree_modified_at` already was one. That conflated two things:
+`tree_modified_at` is a recursive rollup that includes descendants' *byte*
+changes, which is correct for cache invalidation and saturating as a displayed
+date — every top-level folder reads "just now" every day. See § The four clocks.
+
+**DAV stays on `tree_modified_at`.** `getlastmodified` and `getetag` keep
+deriving from the recursive rollup, so a collection's two properties stay
+consistent with each other and a sync client cannot miss a deep change. Pointing
+`getlastmodified` at the entry-list clock would arguably describe a
+`Depth: 1` response more precisely, but clients act on the ETag rather than on
+that property, so it would buy conformance tidiness and nothing functional. The
+divergence this creates — REST reports the entry clock, DAV the subtree clock —
+is deliberate and recorded under § Known divergences.
 
 ## Sort axes
 
@@ -331,14 +401,27 @@ and unaffected.
 
 ## Known divergences
 
-Present in the tree today, all predating this model:
+### Resolved
+
+| What | Resolved by |
+|---|---|
+| `D:getlastmodified` fed from `updated_at`, so it bumped on rename, move, trash, grant and favourite — non-conformant with RFC 4918 §15.7, and clients re-downloaded files whose bytes never moved | plan §2: all file-side reads now resolve `modified_at` from `content_modified_at` |
+| `X-OC-Mtime` parsed and validated but dropped on the CREATE path, so a client's mtime survived only when overwriting an existing file — and new-file upload is the common NextCloud-desktop case | plan §1 completion: `save_file_with_blob` now takes the asserted mtime and writes it in the INSERT. Covered by `nc_webdav_client_mtime.hurl`, which is what found it |
+
+### Deliberate
+
+| What | Why |
+|---|---|
+| REST reports a folder's entry-list clock (`folders.content_modified_at`) while DAV reports its subtree clock (`tree_modified_at`) | The two have different consumers — a person reading a "Modified" column, versus a sync client deciding whether to descend. See § Collections |
+| A malformed (non-integer) `X-OC-Mtime` is ignored with a `WARN`, while an implausible-but-parseable one is a 400 | Decided 2026-10-18. A parseable-but-wrong value is the client asserting something specific and wrong, and clamping it would bake a bad timestamp into stored data. An unparseable one carries no information, so on a compatibility surface the lenient reading wins — refusing the request over a header we can disregard would break clients that otherwise work. The `WARN` (`<surface>.mtime_ignored`) keeps the broken client visible |
+
+### Open
 
 | What | Where | Should be |
 |---|---|---|
-| `D:getlastmodified` fed from `updated_at`, so it bumps on rename, move, trash, grant and favourite — non-conformant with RFC 4918 §15.7, and clients re-download files whose bytes never moved | `webdav_adapter.rs`, `nextcloud/webdav_handler.rs` | `content_modified_at` |
 | `nc:creation_time` reads `created_at` | `nextcloud/webdav_handler.rs:2268` | `COALESCE(captured_at, source_created_at, content_modified_at)` |
 | `nc:upload_time` reads `modified_at` | `nextcloud/webdav_handler.rs:2273` | `created_at` |
-| `X-OC-Mtime` is parsed and threaded into the upload path, but lands in `modified_at` — so the first rename overwrites the client's mtime | `nextcloud/webdav_handler.rs:868` → `:1019`, `nextcloud/uploads_handler.rs:395` | `content_modified_at` |
+| NC REPORT (search) renders a folder's `getlastmodified` from a projection carrying no subtree clock, so a REPORT hit and a PROPFIND on the same folder disagree | `nextcloud/report_handler.rs` | widen the search projection |
 
 ## Rejected alternatives
 
@@ -368,9 +451,12 @@ Present in the tree today, all predating this model:
 This model governs `storage.files`. Two neighbours deliberately keep their own
 semantics:
 
-- **Folders** get no `content_modified_at` — see § Collections above; their
-  subtree clock is `tree_modified_at`, which now feeds both `D:getetag` and
-  `D:getlastmodified`.
+- **Folders** carry a `content_modified_at` of their own, but with POSIX
+  directory semantics rather than this document's byte semantics: it tracks the
+  entry list, not content, and nothing client-asserted ever writes it — so the
+  trust bounds, `X-OC-Mtime` and the rounding rules below do not apply to it.
+  Their subtree clock remains `tree_modified_at`, which feeds both `D:getetag`
+  and `D:getlastmodified`. See § Collections.
 - **CalDAV and CardDAV** feed `getlastmodified` from the calendar or contact
   row's own `updated_at` (`caldav_adapter.rs:201`), and that is correct: an
   event or a contact has no separate blob, so its row change *is* its content

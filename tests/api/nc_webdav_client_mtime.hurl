@@ -259,17 +259,18 @@ HTTP 404
 # unparseable value collapses to `None` — indistinguishable from the
 # header being absent — and the PUT succeeds with the server clock.
 #
-# This is pinned as current behaviour, not endorsed as correct. It sits
-# oddly beside D1/D2: an implausible-but-parseable value is a 400, while
-# an unparseable one is silently absorbed, which is exactly what the
-# handler's own comment ("a wrong client clock should be visible to
-# whoever can fix it, not quietly absorbed") argues against. The counter-
-# argument is Postel's law on a NextCloud-compatibility surface, where
-# leniency toward a malformed header is the safer default.
+# Decided 2026-10-18, and the asymmetry with D1/D2 is deliberate: an
+# implausible-but-parseable value is a 400 because the client told us
+# something specific and wrong, and clamping it would bake a bad
+# timestamp into stored data. An unparseable value carries no
+# information at all, so on a NextCloud-compatibility surface the
+# lenient reading wins — refusing a whole request over a header we can
+# simply disregard would break clients that otherwise work.
 #
-# Left as an open question rather than changed as a side effect of
-# adding a test — flipping it would start 400-ing clients that work
-# today. If it is ever changed, this assertion is the one to flip.
+# The broken client is not invisible, though: `parse_client_mtime`
+# emits `<surface>.mtime_ignored` at WARN with the raw value. That log
+# line is the half of this decision Hurl cannot assert — if the warn is
+# ever dropped this test still passes, so the two belong together.
 PUT {{base_url}}/remote.php/dav/files/{{username}}/nc-mtime-garbage.txt
 Content-Type: text/plain
 X-OC-Mtime: not-a-number
