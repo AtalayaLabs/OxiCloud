@@ -821,7 +821,7 @@ impl FolderRepository for FolderDbRepository {
                  WHERE f.id = $2::uuid AND NOT f.is_trashed
                 RETURNING f.id, f.name, f.path, f.parent_id, f.drive_id,
                           EXTRACT(EPOCH FROM f.created_at)::bigint,
-                          EXTRACT(EPOCH FROM f.content_modified_at)::bigint,
+                          EXTRACT(EPOCH FROM f.updated_at)::bigint,
                           EXTRACT(EPOCH FROM f.tree_modified_at)::bigint,
                           f.created_by, f.updated_by
                 "#,
@@ -1748,7 +1748,7 @@ impl FolderDbRepository {
                 NULL::text                AS mime_type,
                 -1::bigint                AS size,
                 f.created_at,
-                f.content_modified_at     AS modified_at,
+                f.updated_at              AS modified_at,
                 f.drive_id,
                 NULL::text                AS blob_hash,
                 f.created_by,
@@ -1875,24 +1875,36 @@ impl FolderDbRepository {
                 } else {
                     ("<", "ORDER BY modified_at DESC, id DESC")
                 };
-                let mk = |col: &str| {
+                // MUST name the same column the arm's ORDER BY sorts on.
+                // Both arms sort on the `modified_at` alias, but that alias
+                // is produced from a DIFFERENT column on each side: the file
+                // arm selects `fm.content_modified_at`, the folder arm
+                // `f.updated_at` (folders have no content clock — §2 left
+                // REST folder mtime on the row's own clock and routed the
+                // subtree rollup to DAV via `FolderDto.tree_modified_at`).
+                //
+                // So the source column is passed per arm rather than derived
+                // from the alias. Using one column for both is what broke the
+                // folder move path: `storage.folders` has no
+                // `content_modified_at`, and the query failed outright.
+                // Were they merely mismatched instead of nonexistent, the
+                // query would sort by one clock and paginate against another,
+                // silently skipping and duplicating rows across page
+                // boundaries while page one looked perfect. See
+                // docs/plan/normalize-file-dates.md §2 (cursor hazard).
+                let mk = |alias: &str, col: &str| {
                     if has_cursor {
-                        // MUST name the same column the ORDER BY sorts on.
-                        // The ORDER BY above uses the `modified_at` alias,
-                        // which now resolves to `content_modified_at` — if this
-                        // keyset predicate were left on `updated_at` the query
-                        // would sort by one clock and paginate against another,
-                        // silently skipping and duplicating rows across page
-                        // boundaries while page one looked perfect. See
-                        // docs/plan/normalize-file-dates.md §2 (cursor hazard).
-                        Pred(format!(
-                            "({col}.content_modified_at, {col}.id) {op} ($4, $5::uuid)"
-                        ))
+                        Pred(format!("({alias}.{col}, {alias}.id) {op} ($4, $5::uuid)"))
                     } else {
                         All
                     }
                 };
-                (mk("f"), mk("fm"), ord, ord)
+                (
+                    mk("f", "updated_at"),
+                    mk("fm", "content_modified_at"),
+                    ord,
+                    ord,
+                )
             }
             "created_at" => {
                 let (op, ord) = if reverse {
