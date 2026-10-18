@@ -20,6 +20,7 @@ heading:
 | §5 tighten to `NOT NULL` | **FOLDED INTO §1** 2026-10-17 — the migration lands it in-transaction |
 | §6 UI axes | **NOT STARTED** — one relabel; no new sort options |
 | §7 naming normalisation | **NOT STARTED** — `order_by` everywhere, typed per-endpoint enums, `deletion_date` → `expires_at`; ships independently. Compile-time protection waits on the generated-SDK redirects |
+| §8 folders get a content clock | **DESIGNED, AWAITING APPROVAL** 2026-10-18 — POSIX direct-entry semantics as `storage.folders.content_modified_at`; removes the file/folder `modified_at` asymmetry §2 left behind |
 
 > **Reassessed 2026-10-17** against the tree, after the `pivot/dto-timestamps-iso`
 > work landed. Three corrections:
@@ -1036,6 +1037,120 @@ already has the genuine past-tense field, so the correct pair is:
 Affects the `order_by` value, `TrashItemDto.deletion_date`
 (`trash_dto.rs:88`, `:181`) and `default_order_by` (`:123`) — all wire-visible,
 same deprecation window.
+
+---
+
+## §8 — Give folders a content clock **DESIGNED, AWAITING APPROVAL** (2026-10-18)
+
+### Why this exists
+
+§2 left the two resource types reporting `modified_at` from different kinds of
+clock:
+
+| | `modified_at` means | moves on a rename of itself? |
+|---|---|---|
+| file | content clock (`content_modified_at`) | no |
+| folder | row clock (`updated_at`) | **yes** |
+
+So a mixed `/files` listing sorted by "Modified" sorts the two halves on
+different semantics. That is not a data bug — every alias reads the correct
+column for its own table — but it is an inconsistency a user notices, and it
+reads as a defect.
+
+### Why not the obvious fix
+
+The tempting answer is to point folder `modified_at` at `tree_modified_at`,
+which already exists. **Rejected.** `tree_modified_at` is a *full recursive*
+rollup: `bump_tree_from_files_stmt_upd` walks `lpath @>` to bump every ancestor
+to the root, and its change tuple includes `blob_hash` and `size`, so a content
+edit five levels down moves the top-level folder.
+
+That is correct for its actual job — invalidating a DAV collection ETag — and
+wrong for a human-readable column, because it **saturates**. Every top-level
+folder shows "just now" as soon as anyone touches anything beneath it. In a
+listing of `Documents` / `Photos` / `Projects` all three show today's date,
+every day, and the column stops discriminating — which is the entire reason to
+sort by it. The failure gets worse the more collaborative the instance, and
+collaboration is this product's main axis.
+
+No reference implementation does it either. POSIX and NTFS both change a
+directory's timestamp only when its **direct** entries change — editing a file's
+contents does not touch the containing directory, and nothing propagates upward.
+
+### The design
+
+Adopt POSIX semantics, as a real column.
+
+```sql
+ALTER TABLE storage.folders
+    ADD COLUMN content_modified_at TIMESTAMPTZ;
+```
+
+**Name it `content_modified_at`, matching `storage.files`.** This is the part
+worth getting right. A folder's *content* is its entry list — that is exactly
+what POSIX means by a directory mtime — so the two tables are expressing the
+same concept, each realised for its own type. Three consequences:
+
+1. The DTO asymmetry disappears. `modified_at` means "when did this resource's
+   own content last change" for both types, with no per-type caveat.
+2. Every read becomes `<alias>.content_modified_at AS modified_at`, uniformly.
+   That kills the bug class that shipped in `8d0631be` and was caught by
+   `webdav_permissions.hurl`: the column to select depended on which table the
+   alias happened to bind to, so pattern-matching on the alias silently
+   produced a column that did not exist.
+3. The `modified_at` keyset predicate goes back to one column name for both
+   arms, undoing the per-arm split that fix required.
+
+**What bumps it** — direct entries only, no recursion, not content:
+
+| event | bumps |
+|---|---|
+| file or folder created in F | F |
+| file or folder deleted from F | F |
+| direct child renamed | F |
+| direct child moved F → G | **both** F and G |
+| direct child's bytes change | **nothing** — POSIX does not bump a directory for a content edit |
+| grandchild anything | **nothing** |
+
+Statement-level triggers with transition tables, mirroring the existing
+`files_bump_tree_etag_*` set, but bumping `folder_id` / `parent_id` directly
+instead of walking `lpath`. Strictly cheaper than the recursive trigger: one
+join to the parent, no ancestor set.
+
+**Backfill from `updated_at`**, so the deploy is inert exactly as §1's was:
+`updated_at` is what the wire reports for folders today, so every folder's
+reported `modified_at` is byte-identical before and after. Divergence begins
+with the first real entry change afterwards. Then `SET NOT NULL` in the same
+transaction, as §1 does, so no read ever needs a `COALESCE`.
+
+**Reads to repoint** — the folder-side aliases §2 deliberately left alone:
+`fld.updated_at AS modified_at` (`trash_db_repository.rs:369`,
+`favorites_pg_repository.rs:376`, `recent_items_pg_repository.rs:255`,
+`favorites_pg_repository.rs:42`'s second COALESCE arm),
+`f.updated_at AS modified_at` (`folder_db_repository.rs:1751`),
+`fo.updated_at` (`path_resolver_service.rs:104`), the folder move RETURNING
+(`folder_db_repository.rs:824`), and the keyset `mk("f", "updated_at")`.
+
+### Open sub-decision — does DAV follow?
+
+§2 shipped folder `D:getlastmodified` reading `tree_modified_at`, pinned by a
+test. §8 does **not** silently change that.
+
+There is a real argument that it should follow: a `PROPFIND Depth: 1` lists
+exactly the direct children, so a direct-children clock describes what was
+returned, and POSIX agreement is worth something. The argument against is that
+sync clients use the collection ETag — not `getlastmodified` — to decide whether
+to descend, and that ETag stays on the recursive rollup regardless, so changing
+`getlastmodified` buys conformance tidiness and nothing functional.
+
+Recommend **leaving DAV on `tree_modified_at`** and revisiting only if a client
+is observed acting on a collection's `getlastmodified`. Flagged rather than
+decided.
+
+### Not in scope
+
+`tree_modified_at` is untouched — it keeps feeding the collection ETag, which is
+the job it was built for. §8 adds a clock, it does not replace one.
 
 ---
 
