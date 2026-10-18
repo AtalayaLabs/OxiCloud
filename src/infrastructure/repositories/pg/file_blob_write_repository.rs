@@ -146,17 +146,18 @@ impl FileBlobWriteRepository {
     /// reference can be decremented afterwards. Compensates on failure by
     /// removing the new blob reference.
     ///
-    /// `modified_at`: if `Some`, sets `updated_at` **and**
-    /// `content_modified_at` to that Unix timestamp; if `None`, uses `NOW()`
-    /// (server time). Returns `(new_hash, updated_at_epoch)` on success — the
-    /// effective timestamp is returned so callers can rebuild the fresh entity
-    /// without re-reading the row.
+    /// `modified_at`: if `Some`, sets **`content_modified_at` only** to that
+    /// Unix timestamp; if `None`, that column gets `NOW()`. Either way
+    /// `updated_at` gets `NOW()` — a client-asserted value never reaches it.
+    /// Returns `(new_hash, content_modified_at_epoch)` on success, so callers
+    /// can rebuild the fresh entity without re-reading the row.
     ///
-    /// Both columns move here because this is a **content** mutation: the bytes
-    /// changed, so POSIX mtime changed, and any row touch changes ctime. The
-    /// two diverge on the paths that do *not* come through here — rename, move,
-    /// trash, grant, favourite — which bump `updated_at` alone. That split is
-    /// the whole point of `content_modified_at`; see
+    /// Both columns move here because this is a **content** mutation: the
+    /// bytes changed, so POSIX mtime changed, and any row touch changes ctime.
+    /// They move to *different values* though — see the comment on the SET
+    /// clause. The two also diverge on the paths that do not come through here
+    /// — rename, move, trash, grant, favourite — which bump `updated_at`
+    /// alone. That split is the whole point of `content_modified_at`; see
     /// `docs/plan/normalize-file-dates.md` §1 and
     /// `docs/architecture/dates.md`. Callers must have validated a
     /// client-asserted `modified_at` against the trust bounds first (reject
@@ -191,7 +192,23 @@ impl FileBlobWriteRepository {
         // caller can tell "mismatch" apart from "file not found".
         // Deadlock victims (40P01) retry before the compensation below runs —
         // a successful retry must keep the new blob reference alive.
-        let (old_hash, updated_at, matched) =
+        //
+        // The two clocks below are set from DIFFERENT expressions on purpose,
+        // and aligning them is a regression, not a tidy-up:
+        //
+        //   content_modified_at  ← COALESCE(to_timestamp($4), NOW())
+        //   updated_at           ← NOW(), always
+        //
+        // `$4` is the client-asserted `X-OC-Mtime`. It belongs in the content
+        // clock, which is what it describes. It must NOT reach `updated_at`:
+        // ctime is the one timestamp a client cannot influence, and that is
+        // precisely what makes it usable for audit, consistency sweeps and
+        // retention. POSIX draws the same line — `utimensat` sets atime and
+        // mtime, never ctime.
+        //
+        // Both arms keep the `expected_hash` CAS guard, so a failed
+        // compare-and-swap still writes neither.
+        let (old_hash, content_modified_at, matched) =
             match retry_on_deadlock("files.swap_blob_hash", || {
                 sqlx::query_as::<_, (String, i64, bool)>(
                     r#"
@@ -204,7 +221,7 @@ impl FileBlobWriteRepository {
                        size = CASE WHEN $6::text IS NULL OR old.blob_hash = $6
                                    THEN $2 ELSE f.size END,
                        updated_at = CASE WHEN $6::text IS NULL OR old.blob_hash = $6
-                                         THEN COALESCE(to_timestamp($4), NOW()) ELSE f.updated_at END,
+                                         THEN NOW() ELSE f.updated_at END,
                        content_modified_at = CASE WHEN $6::text IS NULL OR old.blob_hash = $6
                                          THEN COALESCE(to_timestamp($4), NOW()) ELSE f.content_modified_at END,
                        updated_by = CASE WHEN $6::text IS NULL OR old.blob_hash = $6
@@ -290,7 +307,7 @@ impl FileBlobWriteRepository {
             );
         }
 
-        Ok((new_hash.to_string(), updated_at))
+        Ok((new_hash.to_string(), content_modified_at))
     }
 
     /// Register a file row pointing at a blob already stored in the chunk

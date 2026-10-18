@@ -27,7 +27,7 @@ is trusted.
 | Bytes last changed (`mtime`) | `storage.files.content_modified_at` **new** | client-asserted, bounded | content-mutation paths only |
 | Captured on the device | `storage.file_metadata.captured_at` | server-extracted | EXIF `DateTimeOriginal` |
 | Created at the source (pre-upload `btime`) | `storage.files.source_created_at` **planned** | client-asserted, bounded | nothing yet — see below |
-| Any row touch (`ctime`) | `storage.files.updated_at` | server-stamped **except on the content path — see below** | every mutation through a repository write path: content **and** metadata |
+| Any row touch (`ctime`) | `storage.files.updated_at` | server-stamped, never client-assertable | every mutation through a repository write path: content **and** metadata |
 | Entry list last changed (directory `mtime`) | `storage.folders.content_modified_at` **new** | server-stamped | direct-child add/remove/rename triggers |
 | Subtree changed | `storage.folders.tree_modified_at` | server-stamped | `tree_etag_dirty` queue |
 
@@ -86,29 +86,24 @@ and leave `updated_at` alone, by design:
   with a bare `SET name = $1`. Arguably an oversight rather than a decision,
   but harmless: it runs once, offline.
 
-**Known defect — the content path lets a client set ctime.**
-`swap_blob_hash` writes *both* columns from the same expression:
+**A client cannot set ctime** (fixed 2026-10-18). `swap_blob_hash` writes the
+two clocks from deliberately different expressions:
 
 ```sql
-updated_at          = COALESCE(to_timestamp($4), NOW()),
-content_modified_at = COALESCE(to_timestamp($4), NOW()),
+updated_at          = NOW(),                              -- always
+content_modified_at = COALESCE(to_timestamp($4), NOW()),  -- $4 = X-OC-Mtime
 ```
 
-where `$4` is the client-asserted `X-OC-Mtime`. So an upload carrying that
-header backdates `updated_at` too, and the table above is wrong to call the
-column unconditionally server-stamped.
+Aligning them is a regression, not a tidy-up. Until this was fixed both read
+`COALESCE(to_timestamp($4), NOW())`, so an upload carrying `X-OC-Mtime`
+backdated ctime as well — a leftover from before §1, when the header had
+nowhere to go *but* `updated_at`. §1 added the column it belongs in and set it
+without reverting the old one.
 
-This is almost certainly a leftover. Before §1, `X-OC-Mtime` had nowhere to go
-*but* `updated_at`; §1 added the column it belongs in and set it, without
-reverting `updated_at` to `NOW()`. The effect undercuts the reason the split
-exists: ctime is supposed to be the one clock a client cannot influence, which
-is what makes it usable for audit, consistency sweeps and retention. POSIX
-does not let a process set `ctime` either — `utimensat` moves atime and mtime
-and nothing else.
-
-The fix is one line — `updated_at = NOW()` unconditionally on that path — but
-it changes what an audit column holds, so it is recorded here rather than
-applied in passing.
+The reason it matters: ctime is the one clock a client cannot influence, and
+that is exactly what makes it usable for audit, consistency sweeps and
+retention. POSIX draws the same line — `utimensat` sets atime and mtime, never
+ctime.
 
 ### `content_modified_at` means the same thing on both tables
 
