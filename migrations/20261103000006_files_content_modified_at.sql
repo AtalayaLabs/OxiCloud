@@ -125,9 +125,16 @@ ALTER TABLE storage.files
 ALTER TABLE storage.files
     DROP CONSTRAINT IF EXISTS files_content_modified_at_floor;
 
+-- `>=`, not `>`. The application gate rejects values *before* 2000-01-01Z
+-- (`secs < CLIENT_MTIME_FLOOR_SECS`), so exactly 2000-01-01T00:00:00Z is
+-- accepted by `validate_client_mtime`. A strict `>` here would let that one
+-- value pass validation and then violate the constraint — turning a clean 400
+-- into a 500, which is precisely the drift this constraint's own comment warns
+-- about. The two bounds must use the same comparison, not just the same
+-- literal.
 ALTER TABLE storage.files
     ADD CONSTRAINT files_content_modified_at_floor
-    CHECK (content_modified_at > '2000-01-01Z');
+    CHECK (content_modified_at >= '2000-01-01Z');
 
 COMMENT ON COLUMN storage.files.content_modified_at IS
     'POSIX mtime: when the BYTES last changed. Bumped only by content-mutation paths (PUT, chunked complete, delta commit, upload overwrite), never by rename/move/trash/grant/favourite — those bump updated_at alone. Client-assertable via X-OC-Mtime within the trust bounds. NULL means not yet backfilled; read as COALESCE(content_modified_at, updated_at) until docs/plan/normalize-file-dates.md §5.';

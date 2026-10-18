@@ -340,6 +340,24 @@ mod client_mtime_tests {
         // client sees a 500 instead of a 400.
         let floor = DateTime::<Utc>::from_timestamp(CLIENT_MTIME_FLOOR_SECS, 0).unwrap();
         assert_eq!(floor.to_rfc3339(), "2000-01-01T00:00:00+00:00");
+
+        // Pinning the literal is not enough — the COMPARISON has to match too.
+        // This validator rejects `secs < FLOOR`, so the floor instant itself is
+        // valid input, which is why the constraint is `>=` and not `>`. An
+        // earlier draft used `>`: the one second at exactly 2000-01-01T00:00:00Z
+        // passed validation and then violated the constraint, producing the 500
+        // the comment above warns about.
+        let now = CLIENT_MTIME_FLOOR_SECS + 86_400;
+        assert_eq!(
+            validate_client_mtime(CLIENT_MTIME_FLOOR_SECS, now),
+            Ok(CLIENT_MTIME_FLOOR_SECS),
+            "the floor instant itself must be accepted; the CHECK constraint is >= to match"
+        );
+        assert_eq!(
+            validate_client_mtime(CLIENT_MTIME_FLOOR_SECS - 1, now),
+            Err(ClientMtimeRejection::TooOld),
+            "one second before the floor must be rejected"
+        );
     }
 
     #[test]

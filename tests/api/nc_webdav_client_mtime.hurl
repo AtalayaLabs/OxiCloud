@@ -1,0 +1,314 @@
+# =============================================================
+# OxiCloud — X-OC-Mtime lands in content_modified_at, and stays
+#            there across metadata mutations
+# =============================================================
+# Covers plan §1's trust bounds and §2's repoint
+# (`docs/plan/normalize-file-dates.md`). `X-OC-Mtime` is a client
+# asserting the source file's POSIX mtime. It is accepted ONLY on the
+# two NextCloud surfaces:
+#
+#   nextcloud/webdav_handler.rs::handle_put   — plain PUT
+#   nextcloud/uploads_handler.rs::handle_assemble — chunked assemble
+#
+# Neither the REST upload endpoint nor the native `/webdav/` surface
+# accepts it, so this file stays on `/remote.php/dav/`.
+#
+# What is actually being pinned here, and why it is not covered
+# elsewhere: the existing DAV date tests
+# (`nc_multidrive_move_regression.hurl`, `webdav_patch_consistency.hurl`)
+# assert the *shape* of `D:getlastmodified` — that it is an RFC 1123
+# HTTP-date rather than RFC 3339. None of them assert its *value*. So a
+# regression that emitted a perfectly-shaped but wrong instant — the
+# upload moment instead of the client's mtime, or the rename moment
+# instead of the content moment — passes the whole existing suite.
+#
+# Four parts:
+#
+#   A. PUT with X-OC-Mtime → getlastmodified is that exact instant, and
+#      creationdate is NOT (the two clocks must be distinguishable).
+#   B. Rename the file → getlastmodified UNCHANGED. This is the single
+#      regression the dates plan exists to fix: before §2, a rename
+#      bumped `updated_at`, which every mtime read resolved to, so
+#      renaming a file told every sync client its content had changed.
+#   C. The floor instant (2000-01-01T00:00:00Z) is ACCEPTED. One second
+#      earlier is rejected. This pins the app gate and the DB CHECK to
+#      the same comparison — they were `<` and `>` at one point, so the
+#      single second at exactly the floor passed validation and then
+#      violated the constraint, turning a 400 into a 500.
+#   D. Implausible values are refused with 400, never clamped. A wrong
+#      client clock must be visible to whoever can fix it.
+#
+# Depends on migration 20261103000006 (adds content_modified_at).
+#
+# Self-contained: mints its own app password and deletes every probe
+# file plus the app password in teardown, so it can run alongside the
+# rest of the suite.
+# =============================================================
+
+
+# ─────────────────────────────────────────────────────────────
+# Setup — JWT login, then mint an NC app password (NC DAV uses
+#         Basic Auth, not the JWT bearer token).
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/auth/login
+Content-Type: application/json
+{ "username": "{{username}}", "password": "{{password}}" }
+
+HTTP 200
+[Captures]
+jwt: jsonpath "$.access_token"
+
+
+POST {{base_url}}/api/auth/app-passwords
+Authorization: Bearer {{jwt}}
+Content-Type: application/json
+{ "label": "nc_webdav_client_mtime" }
+
+HTTP 200
+[Captures]
+nc_username: jsonpath "$.username"
+nc_password: jsonpath "$.password"
+ap_id:       jsonpath "$.id"
+
+
+# ═════════════════════════════════════════════════════════════
+# Part A — PUT with X-OC-Mtime: the asserted instant is what
+#          D:getlastmodified reports
+# ═════════════════════════════════════════════════════════════
+# 1700086400 = 2023-11-15T22:13:20Z. Chosen to be unambiguously in
+# the past (so it cannot collide with the upload moment) and to have a
+# two-digit day, so the RFC 1123 rendering has no zero-padding
+# ambiguity.
+PUT {{base_url}}/remote.php/dav/files/{{username}}/nc-mtime-probe.txt
+Content-Type: text/plain
+X-OC-Mtime: 1700086400
+[BasicAuth]
+{{nc_username}}: {{nc_password}}
+```
+content with a client-asserted mtime
+```
+
+HTTP 201
+
+
+# ─────────────────────────────────────────────────────────────
+# A2 — PROPFIND: getlastmodified is the asserted mtime exactly.
+# ─────────────────────────────────────────────────────────────
+PROPFIND {{base_url}}/remote.php/dav/files/{{username}}/nc-mtime-probe.txt
+Depth: 0
+Content-Type: application/xml; charset=utf-8
+[BasicAuth]
+{{nc_username}}: {{nc_password}}
+```
+<?xml version="1.0" encoding="utf-8"?>
+<D:propfind xmlns:D="DAV:">
+  <D:prop>
+    <D:getlastmodified/>
+    <D:creationdate/>
+  </D:prop>
+</D:propfind>
+```
+
+HTTP 207
+[Asserts]
+# THE assertion of this file. 1700086400 → Wed, 15 Nov 2023 22:13:20Z.
+# The suffix alternation tolerates the ` GMT` / ` +0000` convention
+# (both are accepted by every modern sync client, and the two DAV
+# surfaces have historically differed); the instant itself is pinned.
+xpath "string(//*[local-name()='getlastmodified'])" matches "^Wed, 15 Nov 2023 22:13:20 (GMT|\\+0000)$"
+# `creationdate` is `created_at` — the upload moment, i.e. now — so it
+# must NOT be the 2023 instant. If this ever matches, the two clocks
+# have been collapsed into one column again and Part B below would
+# silently stop testing anything.
+xpath "string(//*[local-name()='creationdate'])" not matches "^2023-11-15T22:13:20"
+
+
+# ═════════════════════════════════════════════════════════════
+# Part B — A rename does NOT move the content clock
+# ═════════════════════════════════════════════════════════════
+# The regression the whole dates plan exists to fix. Before §2, every
+# mtime read resolved to `updated_at`, which a rename bumps — so
+# renaming a file announced a content change to every sync client and
+# triggered a needless re-download.
+#
+# Hurl gotcha: headers MUST precede section blocks like `[BasicAuth]`,
+# or `Destination:` is parsed as a new request's method line.
+MOVE {{base_url}}/remote.php/dav/files/{{username}}/nc-mtime-probe.txt
+Destination: {{base_url}}/remote.php/dav/files/{{username}}/nc-mtime-renamed.txt
+[BasicAuth]
+{{nc_username}}: {{nc_password}}
+
+HTTP 201
+
+
+PROPFIND {{base_url}}/remote.php/dav/files/{{username}}/nc-mtime-renamed.txt
+Depth: 0
+Content-Type: application/xml; charset=utf-8
+[BasicAuth]
+{{nc_username}}: {{nc_password}}
+```
+<?xml version="1.0" encoding="utf-8"?>
+<D:propfind xmlns:D="DAV:">
+  <D:prop>
+    <D:getlastmodified/>
+  </D:prop>
+</D:propfind>
+```
+
+HTTP 207
+[Asserts]
+# Identical to A2. The rename bumped `updated_at`; `content_modified_at`
+# must not have moved.
+xpath "string(//*[local-name()='getlastmodified'])" matches "^Wed, 15 Nov 2023 22:13:20 (GMT|\\+0000)$"
+
+
+# ═════════════════════════════════════════════════════════════
+# Part C — The floor instant is accepted, one second earlier is not
+# ═════════════════════════════════════════════════════════════
+# 946684800 = 2000-01-01T00:00:00Z, exactly `CLIENT_MTIME_FLOOR_SECS`.
+# `validate_client_mtime` rejects `secs < FLOOR`, so the floor itself is
+# valid input — which is why the DB constraint is `>=` and not `>`.
+# A `>` constraint let this exact value pass the app gate and then fail
+# the insert, producing a 500 where the client deserved either a 201 or
+# a clean 400. Pinning the accepted boundary is what catches that class
+# of drift; pinning only the rejected side would not.
+PUT {{base_url}}/remote.php/dav/files/{{username}}/nc-mtime-floor.txt
+Content-Type: text/plain
+X-OC-Mtime: 946684800
+[BasicAuth]
+{{nc_username}}: {{nc_password}}
+```
+at the floor
+```
+
+HTTP 201
+
+
+PROPFIND {{base_url}}/remote.php/dav/files/{{username}}/nc-mtime-floor.txt
+Depth: 0
+Content-Type: application/xml; charset=utf-8
+[BasicAuth]
+{{nc_username}}: {{nc_password}}
+```
+<?xml version="1.0" encoding="utf-8"?>
+<D:propfind xmlns:D="DAV:">
+  <D:prop>
+    <D:getlastmodified/>
+  </D:prop>
+</D:propfind>
+```
+
+HTTP 207
+[Asserts]
+# 2000-01-01 was a Saturday. `0?1` tolerates either day-padding
+# convention — chrono's RFC 2822 output is unpadded, but the two DAV
+# surfaces use different emitters and only the instant is load-bearing.
+xpath "string(//*[local-name()='getlastmodified'])" matches "^Sat, 0?1 Jan 2000 00:00:00 (GMT|\\+0000)$"
+
+
+# ═════════════════════════════════════════════════════════════
+# Part D — Implausible mtimes are refused, never clamped
+# ═════════════════════════════════════════════════════════════
+# D1 — 946684799 = 1999-12-31T23:59:59Z, one second below the floor.
+# Catches zero, negative and uninitialised clocks, which would
+# otherwise sort to the start of every timeline forever.
+PUT {{base_url}}/remote.php/dav/files/{{username}}/nc-mtime-too-old.txt
+Content-Type: text/plain
+X-OC-Mtime: 946684799
+[BasicAuth]
+{{nc_username}}: {{nc_password}}
+```
+should be refused
+```
+
+HTTP 400
+
+
+# D2 — 4102444800 = 2100-01-01T00:00:00Z, far beyond the one-hour
+# future slack. A fixed far-future constant rather than a computed
+# `now + 2h`, which Hurl cannot express; the assertion is unaffected by
+# when the suite runs. Catches a badly-set client clock, which would
+# otherwise pin the file to the top of every newest-first listing
+# permanently.
+PUT {{base_url}}/remote.php/dav/files/{{username}}/nc-mtime-future.txt
+Content-Type: text/plain
+X-OC-Mtime: 4102444800
+[BasicAuth]
+{{nc_username}}: {{nc_password}}
+```
+should be refused
+```
+
+HTTP 400
+
+
+# D3 — A refused PUT must not have created the file. The handler
+# validates before the write, so a 400 leaves no trace; a regression
+# that validated afterwards would leave a file with a garbage mtime
+# AND return 400, which is the worst of both.
+PROPFIND {{base_url}}/remote.php/dav/files/{{username}}/nc-mtime-too-old.txt
+Depth: 0
+[BasicAuth]
+{{nc_username}}: {{nc_password}}
+
+HTTP 404
+
+
+# D4 — A malformed (non-integer) header is currently IGNORED, not
+# refused: the parse is `.and_then(|v| v.parse::<i64>().ok())`, so an
+# unparseable value collapses to `None` — indistinguishable from the
+# header being absent — and the PUT succeeds with the server clock.
+#
+# This is pinned as current behaviour, not endorsed as correct. It sits
+# oddly beside D1/D2: an implausible-but-parseable value is a 400, while
+# an unparseable one is silently absorbed, which is exactly what the
+# handler's own comment ("a wrong client clock should be visible to
+# whoever can fix it, not quietly absorbed") argues against. The counter-
+# argument is Postel's law on a NextCloud-compatibility surface, where
+# leniency toward a malformed header is the safer default.
+#
+# Left as an open question rather than changed as a side effect of
+# adding a test — flipping it would start 400-ing clients that work
+# today. If it is ever changed, this assertion is the one to flip.
+PUT {{base_url}}/remote.php/dav/files/{{username}}/nc-mtime-garbage.txt
+Content-Type: text/plain
+X-OC-Mtime: not-a-number
+[BasicAuth]
+{{nc_username}}: {{nc_password}}
+```
+malformed header is ignored, not refused
+```
+
+HTTP 201
+
+
+# ═════════════════════════════════════════════════════════════
+# Teardown
+# ═════════════════════════════════════════════════════════════
+DELETE {{base_url}}/remote.php/dav/files/{{username}}/nc-mtime-renamed.txt
+[BasicAuth]
+{{nc_username}}: {{nc_password}}
+
+HTTP 204
+
+
+DELETE {{base_url}}/remote.php/dav/files/{{username}}/nc-mtime-floor.txt
+[BasicAuth]
+{{nc_username}}: {{nc_password}}
+
+HTTP 204
+
+
+# D4's probe DID get created (the malformed header was ignored, not
+# refused), so unlike D1/D2 it needs cleaning up.
+DELETE {{base_url}}/remote.php/dav/files/{{username}}/nc-mtime-garbage.txt
+[BasicAuth]
+{{nc_username}}: {{nc_password}}
+
+HTTP 204
+
+
+DELETE {{base_url}}/api/auth/app-passwords/{{ap_id}}
+Authorization: Bearer {{jwt}}
+
+HTTP 200
