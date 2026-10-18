@@ -163,6 +163,49 @@ xpath "string(//*[local-name()='getlastmodified'])" matches "^Wed, 15 Nov 2023 2
 
 
 # ═════════════════════════════════════════════════════════════
+# Part B2 — a CONTENT edit does move the clock
+# ═════════════════════════════════════════════════════════════
+# Part B proved a rename leaves the content clock alone. That is only
+# the right behaviour if a real content change still moves it —
+# otherwise a clock that never moves would pass Part B too.
+#
+# Asserted deterministically rather than against the wall clock: the
+# file currently reports the 2023 instant from Part A, so overwriting
+# it with NO `X-OC-Mtime` must leave it reporting something else. No
+# sleep, no same-second race — the only way this passes is if the
+# overwrite actually rewrote the column.
+PUT {{base_url}}/remote.php/dav/files/{{username}}/nc-mtime-renamed.txt
+Content-Type: text/plain
+[BasicAuth]
+{{nc_username}}: {{nc_password}}
+```
+a genuine content change, with no client-asserted mtime
+```
+
+HTTP 204
+
+
+PROPFIND {{base_url}}/remote.php/dav/files/{{username}}/nc-mtime-renamed.txt
+Depth: 0
+Content-Type: application/xml; charset=utf-8
+[BasicAuth]
+{{nc_username}}: {{nc_password}}
+```
+<?xml version="1.0" encoding="utf-8"?>
+<D:propfind xmlns:D="DAV:">
+  <D:prop>
+    <D:getlastmodified/>
+  </D:prop>
+</D:propfind>
+```
+
+HTTP 207
+[Asserts]
+# No longer the Part A instant — the bytes changed, so mtime moved.
+xpath "string(//*[local-name()='getlastmodified'])" not matches "^Wed, 15 Nov 2023 22:13:20"
+
+
+# ═════════════════════════════════════════════════════════════
 # Part C — The floor instant is accepted, one second earlier is not
 # ═════════════════════════════════════════════════════════════
 # 946684800 = 2000-01-01T00:00:00Z, exactly `CLIENT_MTIME_FLOOR_SECS`.
