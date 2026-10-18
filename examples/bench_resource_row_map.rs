@@ -126,6 +126,10 @@ fn map_before(rows: Vec<FolderResourceRow>) -> Vec<Probe> {
                     drive_id: row.drive_id,
                     created_at: row.created_at,
                     modified_at: row.modified_at,
+                    // Benchmark fixture — these rows carry no subtree
+                    // rollup, and the bench measures row→DTO mapping cost,
+                    // not DAV emission.
+                    tree_modified_at: row.modified_at,
                     is_root: false,
                     icon_class: intern_display("fas fa-folder"),
                     icon_special_class: intern_display("folder-icon"),
@@ -190,6 +194,10 @@ fn map_after(rows: Vec<FolderResourceRow>) -> Vec<Probe> {
                     drive_id: row.drive_id,
                     created_at: row.created_at,
                     modified_at: row.modified_at,
+                    // Benchmark fixture — these rows carry no subtree
+                    // rollup, and the bench measures row→DTO mapping cost,
+                    // not DAV emission.
+                    tree_modified_at: row.modified_at,
                     is_root: false,
                     icon_class: intern_display("fas fa-folder"),
                     icon_special_class: intern_display("folder-icon"),
@@ -318,6 +326,10 @@ fn fav_map_before(rows: Vec<FavoriteResourceRow>) -> Vec<FavProbe> {
                     drive_id: row.drive_id,
                     created_at: row.resource_created_at,
                     modified_at: row.modified_at,
+                    // Benchmark fixture — these rows carry no subtree
+                    // rollup, and the bench measures row→DTO mapping cost,
+                    // not DAV emission.
+                    tree_modified_at: row.modified_at,
                     is_root: false,
                     icon_class: intern_display("fas fa-folder"),
                     icon_special_class: intern_display("folder-icon"),
@@ -400,6 +412,10 @@ fn fav_map_after(rows: Vec<FavoriteResourceRow>) -> Vec<FavProbe> {
                     drive_id: row.drive_id,
                     created_at: row.resource_created_at,
                     modified_at: row.modified_at,
+                    // Benchmark fixture — these rows carry no subtree
+                    // rollup, and the bench measures row→DTO mapping cost,
+                    // not DAV emission.
+                    tree_modified_at: row.modified_at,
                     is_root: false,
                     icon_class: intern_display("fas fa-folder"),
                     icon_special_class: intern_display("folder-icon"),

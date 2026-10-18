@@ -108,6 +108,11 @@ fn fixture_folder() -> FolderDto {
         modified_at: oxicloud::application::dtos::timestamp_helpers::epoch_to_datetime(
             1_700_000_100,
         ),
+        // Distinct from `modified_at`: this is the NC chroot fixture, and NC
+        // DAV sources a collection's `getlastmodified` from the rollup.
+        tree_modified_at: oxicloud::application::dtos::timestamp_helpers::epoch_to_datetime(
+            1_700_000_200,
+        ),
         is_root: true,
         etag: "8f2e5a1c9b3d4e6f".to_string(),
         icon_class: Arc::from("fas fa-folder"),
