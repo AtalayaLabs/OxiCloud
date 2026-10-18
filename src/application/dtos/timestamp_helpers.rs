@@ -162,6 +162,25 @@ pub const CLIENT_MTIME_FUTURE_SLACK_SECS: i64 = 3_600;
 /// presentational and ordering-relevant rather than security-relevant —
 /// so the cost of a wrong-but-plausible value is a misordered timeline,
 /// and the gate only has to stop the implausible.
+/// Convert client-supplied epoch **milliseconds** to epoch **seconds**,
+/// rounding half-up.
+///
+/// The browser File API's `File.lastModified` is milliseconds, and every
+/// column and header on the other side is seconds. **Round, don't truncate**:
+/// discarding up to 999 ms reports a file a second older than the client
+/// believes it is, which is enough to make the client's next mtime comparison
+/// disagree and re-upload. Same rule, and the same half-up direction, as
+/// `datetime_to_etag_seconds` — the two must agree or a freshly uploaded file
+/// gets an ETag built from a different second than its own mtime.
+///
+/// `div_euclid` rather than `/` so the rounding stays half-up either side of
+/// the epoch. Pre-1970 values are rejected by the trust bounds anyway, but a
+/// helper that quietly changes direction at zero is a trap for the next
+/// caller.
+pub fn millis_to_seconds_rounded(millis: i64) -> i64 {
+    (millis + 500).div_euclid(1000)
+}
+
 pub fn validate_client_mtime(secs: i64, now_secs: i64) -> Result<i64, ClientMtimeRejection> {
     if secs < CLIENT_MTIME_FLOOR_SECS {
         return Err(ClientMtimeRejection::TooOld);
@@ -358,6 +377,24 @@ mod client_mtime_tests {
             Err(ClientMtimeRejection::TooOld),
             "one second before the floor must be rejected"
         );
+    }
+
+    #[test]
+    fn millis_round_half_up_not_truncate() {
+        // The plan's worked example: a remainder of 700 must round UP.
+        // Truncation would give …662 and silently report the file a second
+        // older than the browser believes it is.
+        assert_eq!(millis_to_seconds_rounded(1_792_055_662_700), 1_792_055_663);
+        // Remainder below half rounds down.
+        assert_eq!(millis_to_seconds_rounded(1_792_055_662_300), 1_792_055_662);
+        // Exactly half rounds up — the "half-up" in the name.
+        assert_eq!(millis_to_seconds_rounded(1_792_055_662_500), 1_792_055_663);
+        // Whole seconds are untouched.
+        assert_eq!(millis_to_seconds_rounded(1_700_086_400_000), 1_700_086_400);
+        // Direction does not flip across the epoch. These values are
+        // rejected by the trust bounds, but the helper must not be a trap.
+        assert_eq!(millis_to_seconds_rounded(-1_500), -1);
+        assert_eq!(millis_to_seconds_rounded(-1_600), -2);
     }
 
     #[test]
