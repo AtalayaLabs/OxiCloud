@@ -531,7 +531,7 @@ impl FolderRepository for FolderDbRepository {
             "SELECT fo.id, fo.name, fo.path, fo.parent_id, \
                     fo.drive_id, \
                     EXTRACT(EPOCH FROM fo.created_at)::bigint, \
-                    EXTRACT(EPOCH FROM fo.updated_at)::bigint, \
+                    EXTRACT(EPOCH FROM fo.content_modified_at)::bigint, \
                     EXTRACT(EPOCH FROM fo.tree_modified_at)::bigint, \
                     fo.created_by, fo.updated_by \
                FROM storage.folders fo \
@@ -694,7 +694,7 @@ impl FolderRepository for FolderDbRepository {
             "SELECT fo.id, fo.name, fo.path, fo.parent_id, \
                     fo.drive_id, \
                     EXTRACT(EPOCH FROM fo.created_at)::bigint, \
-                    EXTRACT(EPOCH FROM fo.updated_at)::bigint, \
+                    EXTRACT(EPOCH FROM fo.content_modified_at)::bigint, \
                     EXTRACT(EPOCH FROM fo.tree_modified_at)::bigint, \
                     fo.created_by, fo.updated_by, \
                     COUNT(*) OVER() AS total_count \
@@ -821,7 +821,7 @@ impl FolderRepository for FolderDbRepository {
                  WHERE f.id = $2::uuid AND NOT f.is_trashed
                 RETURNING f.id, f.name, f.path, f.parent_id, f.drive_id,
                           EXTRACT(EPOCH FROM f.created_at)::bigint,
-                          EXTRACT(EPOCH FROM f.updated_at)::bigint,
+                          EXTRACT(EPOCH FROM f.content_modified_at)::bigint,
                           EXTRACT(EPOCH FROM f.tree_modified_at)::bigint,
                           f.created_by, f.updated_by
                 "#,
@@ -1121,7 +1121,7 @@ impl FolderRepository for FolderDbRepository {
         let sql = "SELECT fo.id, fo.name, fo.path, fo.parent_id, \
                           fo.drive_id, \
                           EXTRACT(EPOCH FROM fo.created_at)::bigint, \
-                          EXTRACT(EPOCH FROM fo.updated_at)::bigint, \
+                          EXTRACT(EPOCH FROM fo.content_modified_at)::bigint, \
                           EXTRACT(EPOCH FROM fo.tree_modified_at)::bigint, \
                         fo.created_by, fo.updated_by \
                      FROM storage.folders fo \
@@ -1211,7 +1211,7 @@ impl FolderRepository for FolderDbRepository {
                 "SELECT fo.id, fo.name, fo.path, fo.parent_id, \
                         fo.drive_id, \
                         EXTRACT(EPOCH FROM fo.created_at)::bigint, \
-                        EXTRACT(EPOCH FROM fo.updated_at)::bigint, \
+                        EXTRACT(EPOCH FROM fo.content_modified_at)::bigint, \
                           EXTRACT(EPOCH FROM fo.tree_modified_at)::bigint, \
                       fo.created_by, fo.updated_by, \
                       {FAV_SHR_COLUMNS} \
@@ -1246,7 +1246,7 @@ impl FolderRepository for FolderDbRepository {
                 "SELECT fo.id, fo.name, fo.path, fo.parent_id, \
                         fo.drive_id, \
                         EXTRACT(EPOCH FROM fo.created_at)::bigint, \
-                        EXTRACT(EPOCH FROM fo.updated_at)::bigint, \
+                        EXTRACT(EPOCH FROM fo.content_modified_at)::bigint, \
                           EXTRACT(EPOCH FROM fo.tree_modified_at)::bigint, \
                       fo.created_by, fo.updated_by, \
                       {FAV_SHR_COLUMNS} \
@@ -1267,7 +1267,7 @@ impl FolderRepository for FolderDbRepository {
                 "SELECT fo.id, fo.name, fo.path, fo.parent_id, \
                         fo.drive_id, \
                         EXTRACT(EPOCH FROM fo.created_at)::bigint, \
-                        EXTRACT(EPOCH FROM fo.updated_at)::bigint, \
+                        EXTRACT(EPOCH FROM fo.content_modified_at)::bigint, \
                           EXTRACT(EPOCH FROM fo.tree_modified_at)::bigint, \
                       fo.created_by, fo.updated_by, \
                       {FAV_SHR_COLUMNS} \
@@ -1337,7 +1337,7 @@ impl FolderRepository for FolderDbRepository {
             "SELECT fo.id, fo.name, fo.path, fo.parent_id, \
                     fo.drive_id, \
                     EXTRACT(EPOCH FROM fo.created_at)::bigint, \
-                    EXTRACT(EPOCH FROM fo.updated_at)::bigint, \
+                    EXTRACT(EPOCH FROM fo.content_modified_at)::bigint, \
                     EXTRACT(EPOCH FROM fo.tree_modified_at)::bigint, \
                     fo.created_by, fo.updated_by \
                FROM storage.folders fo \
@@ -1393,7 +1393,7 @@ impl FolderRepository for FolderDbRepository {
                 r#"
                 SELECT fo.id, fo.name, fo.path, fo.parent_id, fo.drive_id,
                        EXTRACT(EPOCH FROM fo.created_at)::bigint,
-                       EXTRACT(EPOCH FROM fo.updated_at)::bigint,
+                       EXTRACT(EPOCH FROM fo.content_modified_at)::bigint,
                        EXTRACT(EPOCH FROM fo.tree_modified_at)::bigint,
                          fo.created_by, fo.updated_by
                   FROM storage.folders fo
@@ -1422,7 +1422,7 @@ impl FolderRepository for FolderDbRepository {
                 r#"
                 SELECT fo.id, fo.name, fo.path, fo.parent_id, fo.drive_id,
                        EXTRACT(EPOCH FROM fo.created_at)::bigint,
-                       EXTRACT(EPOCH FROM fo.updated_at)::bigint,
+                       EXTRACT(EPOCH FROM fo.content_modified_at)::bigint,
                        EXTRACT(EPOCH FROM fo.tree_modified_at)::bigint,
                          fo.created_by, fo.updated_by
                   FROM storage.folders fo
@@ -1748,7 +1748,7 @@ impl FolderDbRepository {
                 NULL::text                AS mime_type,
                 -1::bigint                AS size,
                 f.created_at,
-                f.updated_at              AS modified_at,
+                f.content_modified_at     AS modified_at,
                 f.drive_id,
                 NULL::text                AS blob_hash,
                 f.created_by,
@@ -1876,35 +1876,32 @@ impl FolderDbRepository {
                     ("<", "ORDER BY modified_at DESC, id DESC")
                 };
                 // MUST name the same column the arm's ORDER BY sorts on.
-                // Both arms sort on the `modified_at` alias, but that alias
-                // is produced from a DIFFERENT column on each side: the file
-                // arm selects `fm.content_modified_at`, the folder arm
-                // `f.updated_at` (folders have no content clock — §2 left
-                // REST folder mtime on the row's own clock and routed the
-                // subtree rollup to DAV via `FolderDto.tree_modified_at`).
+                // Both arms sort on the `modified_at` alias, and since §8
+                // gave folders their own `content_modified_at` that alias is
+                // produced from the same column name on both sides — so one
+                // parameterised predicate serves both again.
                 //
-                // So the source column is passed per arm rather than derived
-                // from the alias. Using one column for both is what broke the
-                // folder move path: `storage.folders` has no
-                // `content_modified_at`, and the query failed outright.
-                // Were they merely mismatched instead of nonexistent, the
-                // query would sort by one clock and paginate against another,
-                // silently skipping and duplicating rows across page
-                // boundaries while page one looked perfect. See
+                // Between §2 and §8 this took a per-arm column, because only
+                // `storage.files` had the column and `mk("f", …)` emitted a
+                // folder column that did not exist, breaking the move path
+                // outright. Naming both tables' clocks identically is what
+                // retired that whole class of mistake.
+                //
+                // Mismatching the two would be subtler and worse than the
+                // crash was: the query would sort by one clock and paginate
+                // against another, silently skipping and duplicating rows
+                // across page boundaries while page one looked perfect. See
                 // docs/plan/normalize-file-dates.md §2 (cursor hazard).
-                let mk = |alias: &str, col: &str| {
+                let mk = |col: &str| {
                     if has_cursor {
-                        Pred(format!("({alias}.{col}, {alias}.id) {op} ($4, $5::uuid)"))
+                        Pred(format!(
+                            "({col}.content_modified_at, {col}.id) {op} ($4, $5::uuid)"
+                        ))
                     } else {
                         All
                     }
                 };
-                (
-                    mk("f", "updated_at"),
-                    mk("fm", "content_modified_at"),
-                    ord,
-                    ord,
-                )
+                (mk("f"), mk("fm"), ord, ord)
             }
             "created_at" => {
                 let (op, ord) = if reverse {

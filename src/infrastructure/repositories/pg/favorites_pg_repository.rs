@@ -39,7 +39,7 @@ impl FavoritesRepositoryPort for FavoritesPgRepository {
                 f.size                                          AS "item_size",
                 f.mime_type                                     AS "item_mime_type",
                 COALESCE(f.folder_id, fld.parent_id)            AS "parent_id",
-                COALESCE(f.content_modified_at, fld.updated_at) AS "modified_at",
+                COALESCE(f.content_modified_at, fld.content_modified_at) AS "modified_at",
                 CASE
                     WHEN uf.item_type = 'folder' THEN fld.path
                     WHEN uf.item_type = 'file'   THEN COALESCE(pfld.path || '/' || f.name, f.name)
@@ -373,7 +373,7 @@ impl FavoritesRepositoryPort for FavoritesPgRepository {
         NULL::text                       AS mime_type,
         -1::bigint                       AS size,
         fld.created_at                   AS resource_created_at,
-        fld.updated_at                   AS modified_at,
+        fld.content_modified_at          AS modified_at,
         fld.drive_id                     AS drive_id,
         NULL::text                       AS blob_hash,
         fld.created_by                   AS created_by,

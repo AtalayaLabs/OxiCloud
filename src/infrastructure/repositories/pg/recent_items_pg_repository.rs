@@ -252,7 +252,7 @@ impl RecentItemsRepositoryPort for RecentItemsPgRepository {
         NULL::text                       AS mime_type,
         -1::bigint                       AS size,
         fld.created_at                   AS resource_created_at,
-        fld.updated_at                   AS modified_at,
+        fld.content_modified_at          AS modified_at,
         fld.drive_id                     AS drive_id,
         NULL::text                       AS blob_hash,
         fld.created_by                   AS created_by,

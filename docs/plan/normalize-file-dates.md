@@ -20,7 +20,7 @@ heading:
 | §5 tighten to `NOT NULL` | **FOLDED INTO §1** 2026-10-17 — the migration lands it in-transaction |
 | §6 UI axes | **NOT STARTED** — one relabel; no new sort options |
 | §7 naming normalisation | **NOT STARTED** — `order_by` everywhere, typed per-endpoint enums, `deletion_date` → `expires_at`; ships independently. Compile-time protection waits on the generated-SDK redirects |
-| §8 folders get a content clock | **DESIGNED, AWAITING APPROVAL** 2026-10-18 — POSIX direct-entry semantics as `storage.folders.content_modified_at`; removes the file/folder `modified_at` asymmetry §2 left behind |
+| §8 folders get a content clock | **DONE** 2026-10-18 — `storage.folders.content_modified_at` with POSIX entry-list semantics (migration `20261103000008`), 14 folder-side reads repointed, keyset predicate back to one column |
 
 > **Reassessed 2026-10-17** against the tree, after the `pivot/dto-timestamps-iso`
 > work landed. Three corrections:
@@ -1040,7 +1040,7 @@ same deprecation window.
 
 ---
 
-## §8 — Give folders a content clock **DESIGNED, AWAITING APPROVAL** (2026-10-18)
+## §8 — Give folders a content clock **DONE** (2026-10-18)
 
 ### Why this exists
 
@@ -1151,6 +1151,39 @@ decided.
 
 `tree_modified_at` is untouched — it keeps feeding the collection ETag, which is
 the job it was built for. §8 adds a clock, it does not replace one.
+
+### What shipped, and what the triggers were verified to do
+
+Migration `20261103000008_folders_content_modified_at.sql`, plus 14 folder-side
+reads repointed (9 positional `EXTRACT(EPOCH FROM fo.updated_at)` in
+`folder_db_repository`, the folder-move `RETURNING`, three `fld.… AS
+modified_at` aliases, the favorites COALESCE's folder arm, and
+`path_resolver_service`). The keyset predicate went back to a single
+parameterised column, undoing the per-arm split §2's bugfix had needed.
+
+Two implementation facts worth keeping, both found by running the migration
+against the dev database inside a transaction and rolling back:
+
+- **`NOT NULL` must be declared at `ADD COLUMN`, not tightened afterwards.**
+  The files migration tightens after its backfill; the same shape fails here
+  with `cannot ALTER TABLE "folders" because it has pending trigger events`,
+  because `storage.folders` carries AFTER **row** triggers that queue events
+  for the rest of the transaction. `storage.files` has only statement
+  triggers.
+- **The `pg_trigger_depth()` guard is mandatory, and the reasoning that said
+  otherwise was wrong.** The first draft omitted it, arguing the self-fire
+  would find an empty change set and stop. It does not: a `FOR EACH STATEMENT`
+  trigger fires for a statement matching **zero rows**, so the empty UPDATE
+  re-fires the trigger forever — `stack depth limit exceeded` on the first
+  run.
+
+Behaviour confirmed in that same rolled-back transaction:
+
+| event | parent | grandparent |
+|---|---|---|
+| child's `size` changes (content edit) | not bumped | not bumped |
+| child renamed | **bumped** | not bumped |
+| child moved parent → grandparent | **bumped** (source) | **bumped** (destination) |
 
 ---
 

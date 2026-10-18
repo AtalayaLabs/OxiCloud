@@ -138,6 +138,50 @@ an explicitly-named field — never one called `updated_at`.
 | `nc:creation_time` | in | `source_created_at` | see [§ Open questions](#open-questions) |
 | `nc:upload_time` | out | `created_at` | server receipt |
 
+### REST DTO fields and where they come from
+
+The table above covers the DAV and NextCloud slots. The REST DTOs the SPA reads
+are a separate surface, and this is their mapping. All are RFC 3339 UTC strings
+unless noted — see § Representations.
+
+**`FileDto`**
+
+| Field | Column | Notes |
+|---|---|---|
+| `created_at` | `files.created_at` | server receipt; immutable |
+| `modified_at` | `files.content_modified_at` | the content clock. A rename, move, trash, grant or favourite does **not** move it |
+| `etag` | `blob_hash` + `content_modified_at` | derived, not stored — see § ETag coupling |
+| *(none)* | `files.updated_at` | **deliberately absent.** ctime is internal; no REST field exposes it |
+
+**`FolderDto`**
+
+| Field | Column | Notes |
+|---|---|---|
+| `created_at` | `folders.created_at` | |
+| `modified_at` | `folders.content_modified_at` | the **entry-list** clock, POSIX directory semantics — not the byte semantics `FileDto.modified_at` has. See § Collections |
+| `tree_modified_at` | `folders.tree_modified_at` | the recursive rollup. Exposed because DAV sources a collection's `getlastmodified` and `getetag` from it; the SPA does not render it |
+| `etag` | `id` + `tree_modified_at` | derived |
+| *(none)* | `folders.updated_at` | absent, as on files |
+
+**Where the two DTOs deliberately differ:** `modified_at` means "the bytes
+changed" on a file and "the entry list changed" on a folder. Both are "this
+resource's own content changed" for the respective type — that symmetry is the
+point — but a listing that interleaves the two is interleaving two different
+*kinds* of event, which is worth knowing when reading a date sort.
+
+**Other DTOs carrying dates**
+
+| DTO | Field | Column |
+|---|---|---|
+| `PhotoResourceItemDto` | `sort_date` | `media_sort_date` (or `created_at` / `content_modified_at` when the caller picks another axis) |
+| `PhotoResourceItemDto` | `captured_at` | `file_metadata.captured_at`, null when no EXIF |
+| `TrashItemDto` | `trashed_at` | when it entered the trash |
+| `TrashItemDto` | `deletion_date` | when it will be **purged** — a future instant, not a past one. §7 renames it `expires_at` for exactly that reason |
+
+`PhotoResourceItemDto`'s two fields are **epoch seconds (`i64`)**, not RFC 3339
+strings, unlike every field above. That is a known inconsistency rather than a
+decision.
+
 ### API names are not column names
 
 One rule, because the alternative is a token that means two things:
