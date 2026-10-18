@@ -27,7 +27,7 @@ is trusted.
 | Bytes last changed (`mtime`) | `storage.files.content_modified_at` **new** | client-asserted, bounded | content-mutation paths only |
 | Captured on the device | `storage.file_metadata.captured_at` | server-extracted | EXIF `DateTimeOriginal` |
 | Created at the source (pre-upload `btime`) | `storage.files.source_created_at` **planned** | client-asserted, bounded | nothing yet — see below |
-| Any row touch (`ctime`) | `storage.files.updated_at` | server-stamped | every mutation |
+| Any row touch (`ctime`) | `storage.files.updated_at` | server-stamped **except on the content path — see below** | every mutation through a repository write path: content **and** metadata |
 | Entry list last changed (directory `mtime`) | `storage.folders.content_modified_at` **new** | server-stamped | direct-child add/remove/rename triggers |
 | Subtree changed | `storage.folders.tree_modified_at` | server-stamped | `tree_etag_dirty` queue |
 
@@ -58,6 +58,57 @@ second is the stronger option: it makes the value server-extracted and so
 removes it from the client-asserted class entirely. Until one lands, the column
 is NULL and the COALESCE chains below simply fall through it. See
 `docs/plan/normalize-file-dates.md` §4.
+
+### What exactly bumps `updated_at`
+
+"Every mutation" is imprecise in both directions, so to be exact.
+
+**It is a strict superset of the content clock.** Every content mutation bumps
+*both* columns; every metadata mutation bumps `updated_at` alone. That
+asymmetry is the entire point of the split:
+
+| Operation | `updated_at` | `content_modified_at` |
+|---|---|---|
+| PUT / chunked complete / delta commit / collab flush | ✅ | ✅ |
+| rename, move, trash, restore, grant, favourite | ✅ | — |
+
+**But it is not literally every DB write.** Three classes of write touch a row
+and leave `updated_at` alone, by design:
+
+- **Trigger-maintained denormalised columns** — `media_sort_date` is
+  recomputed by `trg_sync_media_sort_date` and
+  `trg_sync_media_sort_date_content` without bumping ctime, which is correct:
+  nothing about the file changed, only a cached projection of it.
+- **One-off backfills** — `drive_id`, `created_by`, `category_order` and the
+  two `content_modified_at` backfills are migrations, deliberately invisible
+  to ctime so a schema change does not look like user activity.
+- **The `oxicloud migrate` CLI's NFC rename** (`cli/migrate.rs`) renames rows
+  with a bare `SET name = $1`. Arguably an oversight rather than a decision,
+  but harmless: it runs once, offline.
+
+**Known defect — the content path lets a client set ctime.**
+`swap_blob_hash` writes *both* columns from the same expression:
+
+```sql
+updated_at          = COALESCE(to_timestamp($4), NOW()),
+content_modified_at = COALESCE(to_timestamp($4), NOW()),
+```
+
+where `$4` is the client-asserted `X-OC-Mtime`. So an upload carrying that
+header backdates `updated_at` too, and the table above is wrong to call the
+column unconditionally server-stamped.
+
+This is almost certainly a leftover. Before §1, `X-OC-Mtime` had nowhere to go
+*but* `updated_at`; §1 added the column it belongs in and set it, without
+reverting `updated_at` to `NOW()`. The effect undercuts the reason the split
+exists: ctime is supposed to be the one clock a client cannot influence, which
+is what makes it usable for audit, consistency sweeps and retention. POSIX
+does not let a process set `ctime` either — `utimensat` moves atime and mtime
+and nothing else.
+
+The fix is one line — `updated_at = NOW()` unconditionally on that path — but
+it changes what an audit column holds, so it is recorded here rather than
+applied in passing.
 
 ### `content_modified_at` means the same thing on both tables
 
