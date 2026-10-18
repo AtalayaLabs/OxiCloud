@@ -23,11 +23,23 @@
 # subtree. Without them this file would not distinguish the shipped
 # design from the one that was explicitly rejected for saturating.
 #
-# ── Timing ────────────────────────────────────────────────────────────
-# Comparisons are string equality on RFC 3339 values carrying sub-second
-# precision, and each step is a separate HTTP request and therefore a
-# separate transaction with its own NOW(). The "changed" assertions
-# would only mis-pass if two requests landed in the same microsecond.
+# ── Timing: why every mutation carries `delay: 1100` ──────────────────
+# A folder's `modified_at` is WHOLE SECONDS on the wire. It passes
+# through the `Folder` entity, whose timestamps are `u64` epoch seconds
+# by design (see docs/plan/normalize-file-dates.md § `File` and `Folder`
+# keep `u64`), so the serialized value looks like `2026-10-18T20:20:35Z`
+# with no fractional part — unlike a file's, which is sub-second.
+#
+# This whole file otherwise executes in ~130 ms, so without the delays
+# every request lands inside the same second and every "the clock moved"
+# assertion compares a string to itself and fails. The first draft did
+# exactly that.
+#
+# So each mutation is preceded by a 1.1 s delay, pushing it past a second
+# boundary relative to the previous reading. That makes the file take
+# ~8 s, which is the honest price of asserting on a second-resolution
+# clock; the alternative is a test that cannot distinguish "did not bump"
+# from "bumped within the same second".
 #
 # Self-contained: creates its own folder tree and deletes it in teardown.
 # =============================================================
@@ -94,6 +106,8 @@ jsonpath "$.tree_modified_at" isString
 PUT {{base_url}}/webdav/fcc-parent/probe.txt
 Authorization: Bearer {{jwt}}
 Content-Type: text/plain
+[Options]
+delay: 1100
 ```
 first revision
 ```
@@ -115,6 +129,8 @@ jsonpath "$.modified_at" != "{{parent_t0}}"
 MOVE {{base_url}}/webdav/fcc-parent/probe.txt
 Destination: {{base_url}}/webdav/fcc-parent/renamed.txt
 Authorization: Bearer {{jwt}}
+[Options]
+delay: 1100
 
 HTTP 201
 
@@ -139,6 +155,10 @@ jsonpath "$.modified_at" != "{{parent_t1}}"
 PUT {{base_url}}/webdav/fcc-parent/renamed.txt
 Authorization: Bearer {{jwt}}
 Content-Type: text/plain
+# The delay matters MORE on a negative assertion than a positive one:
+# without it, "unchanged" could just mean "same second".
+[Options]
+delay: 1100
 ```
 second revision, different length
 ```
@@ -166,6 +186,8 @@ jsonpath "$.modified_at" == "{{parent_t2}}"
 MOVE {{base_url}}/webdav/fcc-parent/renamed.txt
 Destination: {{base_url}}/webdav/fcc-parent/renamed2.txt
 Authorization: Bearer {{jwt}}
+[Options]
+delay: 1100
 
 HTTP 201
 
@@ -186,6 +208,10 @@ parent_before_grandchild: jsonpath "$.modified_at"
 PUT {{base_url}}/webdav/fcc-parent/fcc-child/deep.txt
 Authorization: Bearer {{jwt}}
 Content-Type: text/plain
+# Negative assertion follows (grandparent unchanged), so the delay is
+# load-bearing — see the timing note in the header.
+[Options]
+delay: 1100
 ```
 a file one level deeper
 ```
@@ -248,6 +274,8 @@ parent_before_move: jsonpath "$.modified_at"
 MOVE {{base_url}}/webdav/fcc-parent/renamed2.txt
 Destination: {{base_url}}/webdav/fcc-parent/fcc-child/renamed2.txt
 Authorization: Bearer {{jwt}}
+[Options]
+delay: 1100
 
 HTTP 201
 
@@ -275,6 +303,8 @@ jsonpath "$.modified_at" != "{{child_before_move}}"
 # D3 — deleting a child is an entry-list change too.
 DELETE {{base_url}}/webdav/fcc-parent/fcc-child/renamed2.txt
 Authorization: Bearer {{jwt}}
+[Options]
+delay: 1100
 
 HTTP 204
 
