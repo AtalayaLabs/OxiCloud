@@ -26,7 +26,7 @@ is trusted.
 | Server received it (`btime`-ish) | `storage.files.created_at` | server-stamped, immutable | row insert |
 | Bytes last changed (`mtime`) | `storage.files.content_modified_at` **new** | client-asserted, bounded | content-mutation paths only |
 | Captured on the device | `storage.file_metadata.captured_at` | server-extracted | EXIF `DateTimeOriginal` |
-| Created at the source (pre-upload `btime`) | `storage.files.source_created_at` **new** | client-asserted, bounded | `nc:creation_time` on upload |
+| Created at the source (pre-upload `btime`) | `storage.files.source_created_at` **planned** | client-asserted, bounded | nothing yet — see below |
 | Any row touch (`ctime`) | `storage.files.updated_at` | server-stamped | every mutation |
 | Entry list last changed (directory `mtime`) | `storage.folders.content_modified_at` **new** | server-stamped | direct-child add/remove/rename triggers |
 | Subtree changed | `storage.folders.tree_modified_at` | server-stamped | `tree_etag_dirty` queue |
@@ -46,6 +46,18 @@ comes out of the bytes and is therefore trustworthy, while `source_created_at`
 is whatever the client says. Keeping them apart means the trust bounds apply to
 exactly one of them, and re-running EXIF extraction can never clobber a
 client-supplied value or vice versa.
+
+**`source_created_at` has no writer and does not exist yet.** The column is
+unbuilt and the blocker is choosing who writes it, not a NextCloud answer:
+`nc:creation_time` is only ever *emitted* today, there is no inbound path, and
+**no browser can supply one** — the File API exposes `lastModified` (an mtime)
+and no `btime` on any platform. The two candidates are a NextCloud client that
+sends a creation time on upload, or server-side extraction from the bytes
+(OOXML `docProps/core.xml` → `dcterms:created`, PDF `/CreationDate`). The
+second is the stronger option: it makes the value server-extracted and so
+removes it from the client-asserted class entirely. Until one lands, the column
+is NULL and the COALESCE chains below simply fall through it. See
+`docs/plan/normalize-file-dates.md` §4.
 
 ### `content_modified_at` means the same thing on both tables
 
@@ -259,10 +271,25 @@ sync client has filesystem access and could supply both. `source_created_at`
 will therefore be NULL for most SPA uploads — correct, not a gap, provided NULL
 keeps meaning "unknown".
 
-Uploads send the value as `X-OC-Mtime` (protocol-aligned) or as the multipart
-field `source_modified_at`. **Round, don't truncate** on the way in: discarding
-up to 999 ms reports a file a second older than the client believes, which is
-enough to make the next mtime comparison flap.
+**None of this is wired yet** (checked 2026-10-18), and the gap is easy to
+miss because the two ends exist separately:
+
+- `X-OC-Mtime` is accepted, validated and stored — but **only** on the two
+  NextCloud surfaces (`nextcloud/webdav_handler::handle_put` and
+  `uploads_handler::handle_assemble`, both via `parse_client_mtime`).
+- The REST upload endpoints accept no mtime in any form. The multipart field
+  `source_modified_at` named below is a **planned** name, not an implemented
+  one — it appears nowhere in the tree.
+- The SPA never reads `File.lastModified` at all, so a drag-and-drop upload
+  currently discards the source mtime and the file is stamped `NOW()`.
+
+So today a NextCloud desktop client preserves mtime and a browser does not.
+Closing that needs a mtime slot on the REST upload path plus a frontend that
+fills it — at which point the rule below applies.
+
+**Round, don't truncate** on the way in: discarding up to 999 ms reports a file
+a second older than the client believes, which is enough to make the next mtime
+comparison flap.
 
 ## Representations
 
