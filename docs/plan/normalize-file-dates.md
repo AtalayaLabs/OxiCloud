@@ -18,7 +18,7 @@ heading:
 | §3 sort axes | **DONE (interim two-arm form)** — `media_sort_date` on the content clock + both search axes repointed. §4 inserts the `source_created_at` arm |
 | §4 add `source_created_at` | **BLOCKED** — on choosing a writer, see §4. Not a pre-start blocker; §4 is last and independent |
 | §5 tighten to `NOT NULL` | **FOLDED INTO §1** 2026-10-17 — the migration lands it in-transaction |
-| §6 UI axes | **NOT STARTED** — one relabel; no new sort options |
+| §6 UI axes | **DONE** 2026-10-19 — `updated_at` retired from the wire outright (no deprecation window: API too recent, SPA is the only consumer), `Created date` → `Added date`, persisted Photos preference migrated on read |
 | §7 naming normalisation | **NOT STARTED** — `order_by` everywhere, typed per-endpoint enums, `deletion_date` → `expires_at`; ships independently. Compile-time protection waits on the generated-SDK redirects |
 | §9 preserve the browser's mtime on upload | **NOT STARTED** — repository layer and helpers are ready. THREE upload paths to cover (multipart, delta, chunked); the SPA picks by file size, so covering only `/api/files/upload` would drop mtime on every large upload |
 | §8 folders get a content clock | **DONE** 2026-10-18 — `storage.folders.content_modified_at` with POSIX entry-list semantics (migration `20261103000008`), 14 folder-side reads repointed, keyset predicate back to one column |
@@ -740,7 +740,7 @@ Section kept rather than renumbered so §6 and §7 keep their identifiers.
 
 ---
 
-## §6 — UI axes **NOT STARTED**
+## §6 — UI axes **DONE** (2026-10-19)
 
 The user-visible half of §3. The axes are already the right ones — they were
 pointed at the wrong columns — so this is one repoint and one relabel, with no
@@ -876,9 +876,25 @@ So this is a rename, not an alias-forever. Live senders:
 | `lib/api/generated/types.gen.ts` | documented enum | regenerates |
 | `search_dto.rs:358` | accepted value | accept `modified_at`; `updated_at` warns |
 
-Server side: accept `modified_at` everywhere, keep `updated_at` accepted with a
-deprecation warning for one release, then remove — the same warn-now/remove-next-major
-pattern used for contradictory auth config.
+Server side: accept `modified_at` everywhere.
+
+**No deprecation window — decided 2026-10-19.** The original plan called for
+warn-now/remove-next-major, matching the contradictory-auth-config pattern. Ed
+overruled it: the API is recent enough that no third-party client plausibly
+sends `order_by`, and the only consumer is the SPA, which ships *with* the
+server. A window exists to protect clients that upgrade independently; with
+none, it is pure cost — and removing it deleted code rather than adding a
+normaliser plus a warn plus a removal task.
+
+Both acceptance points reject the old token outright now:
+
+- `PhotoOrderBy` keeps its derived `Deserialize`; the variant is `ModifiedAt`
+  and `rename_all = "snake_case"` makes the wire value `modified_at`. serde's
+  own error names the accepted values, so a stale client gets a 400 that says
+  what to send — which is what §7 wants from every sort axis anyway.
+- Search normalises nothing: `to_criteria` passes the token through and the
+  four downstream matches (two SQL `order_column`s, `sort_enriched_files`, the
+  folder in-memory sort) all read `"modified_at"`.
 
 **Easy to miss: the Photos axis is persisted.**
 `routes/photos/+page.svelte:560` compares against a *saved* `savedOrderBy`, so

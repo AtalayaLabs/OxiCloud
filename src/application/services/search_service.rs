@@ -221,8 +221,8 @@ fn sort_enriched_files(files: &mut [SearchFileResultDto], sort_by: &str, reverse
     match sort_by {
         "name" if reverse => files.sort_by_cached_key(|f| Reverse(f.name.to_lowercase())),
         "name" => files.sort_by_cached_key(|f| f.name.to_lowercase()),
-        "updated_at" if reverse => files.sort_by_key(|f| Reverse(f.modified_at)),
-        "updated_at" => files.sort_by_key(|f| f.modified_at),
+        "modified_at" if reverse => files.sort_by_key(|f| Reverse(f.modified_at)),
+        "modified_at" => files.sort_by_key(|f| f.modified_at),
         "created_at" if reverse => files.sort_by_key(|f| Reverse(f.created_at)),
         "created_at" => files.sort_by_key(|f| f.created_at),
         "size" if reverse => files.sort_by_key(|f| Reverse(f.size)),
@@ -768,10 +768,10 @@ impl SearchUseCase for SearchService {
                         ("name", true) => {
                             enriched_folders.sort_by_cached_key(|f| Reverse(f.name.to_lowercase()));
                         }
-                        ("updated_at", false) => {
+                        ("modified_at", false) => {
                             enriched_folders.sort_by_key(|f| f.modified_at);
                         }
-                        ("updated_at", true) => {
+                        ("modified_at", true) => {
                             enriched_folders.sort_by_key(|f| Reverse(f.modified_at));
                         }
                         ("created_at", false) => {
@@ -1228,7 +1228,7 @@ mod tests {
         // `size_desc`, `updated_at + reverse=false` = old `date`, etc.
         sort_enriched_files(&mut files, "size", true);
         assert_eq!(files[0].name, "a-name.txt");
-        sort_enriched_files(&mut files, "updated_at", false);
+        sort_enriched_files(&mut files, "modified_at", false);
         assert_eq!(files[0].name, "a-name.txt");
         sort_enriched_files(&mut files, "name", true);
         assert_eq!(files[0].name, "b-content.txt");

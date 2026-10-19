@@ -596,7 +596,7 @@ impl FileBlobReadRepository {
             // spelled `updated_at` — plan §6 renames it to `modified_at`,
             // which is the point at which the token stops disagreeing with
             // the column it resolves to.
-            PhotoOrderBy::UpdatedAt => "content_modified_at",
+            PhotoOrderBy::ModifiedAt => "content_modified_at",
         };
         let (dir, cmp) = if filter.reverse {
             ("ASC", ">")
@@ -1385,7 +1385,7 @@ impl FileReadPort for FileBlobReadRepository {
             // §2 repointed that DTO field at `content_modified_at`, so a
             // SQL page still ordered by `fi.updated_at` would be re-ordered
             // on a different clock the moment content hits were blended in.
-            "updated_at" => "fi.content_modified_at",
+            "modified_at" => "fi.content_modified_at",
             "created_at" => "fi.created_at",
             "size" => "fi.size",
             // `relevance` (or anything unrecognised) has no dedicated
@@ -1558,7 +1558,7 @@ impl FileReadPort for FileBlobReadRepository {
             // §2 repointed that DTO field at `content_modified_at`, so a
             // SQL page still ordered by `fi.updated_at` would be re-ordered
             // on a different clock the moment content hits were blended in.
-            "updated_at" => "fi.content_modified_at",
+            "modified_at" => "fi.content_modified_at",
             "created_at" => "fi.created_at",
             "size" => "fi.size",
             // `relevance` (or anything unrecognised) has no dedicated

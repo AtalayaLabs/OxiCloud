@@ -37,15 +37,10 @@ use crate::application::dtos::grant_dto::{ResourceContentDto, ResourceTypeDto};
 /// - `CreatedAt` — "when did this file ARRIVE in OxiCloud". Pure
 ///   `storage.files.created_at`; EXIF capture date ignored. Useful
 ///   for the operator-style "recently uploaded" view.
-/// - `UpdatedAt` — "when did this file's CONTENT last change". Reads
-///   `storage.files.content_modified_at`, so a rename, move or trash
-///   transition does *not* resurface a row — only a real content
-///   mutation does.
-///
-///   The wire value is still spelled `updated_at`, which now disagrees
-///   with the column it resolves to. Plan §6 renames it to
-///   `modified_at`; until then treat the spelling as legacy, not as a
-///   description of the behaviour.
+/// - `ModifiedAt` (`modified_at` on the wire) — "when did this file's
+///   CONTENT last change". Reads `storage.files.content_modified_at`,
+///   so a rename, move or trash transition does *not* resurface a row
+///   — only a real content mutation does.
 ///
 /// All three axes paginate on the same `(sort_value, id)` keyset,
 /// just over different columns. The cursor carries the axis so a
@@ -63,7 +58,13 @@ pub enum PhotoOrderBy {
     /// File content clock (`content_modified_at`) only — surfaces rows
     /// whose bytes changed, regardless of capture or arrival time.
     /// Renames, moves and trash transitions do not count.
-    UpdatedAt,
+    ///
+    /// Spelled **`modified_at`** on the wire. The legacy `updated_at`
+    /// spelling was removed outright rather than deprecated — see
+    /// `docs/plan/normalize-file-dates.md` §6 for why no window was
+    /// needed. serde's derived error names the accepted values, so a
+    /// client still sending it gets a 400 that says what to send.
+    ModifiedAt,
 }
 
 /// Media-kind filter for `GET /api/photos/resources` (§6).
@@ -111,7 +112,7 @@ pub struct PhotosFilter {
     pub favorite_only: bool,
     /// Sort axis (§3). Default `CapturedAt` matches today's
     /// `media_sort_date` ordering; the two other axes order by the
-    /// file row's own `created_at` / `updated_at` columns.
+    /// file row's own `created_at` / `content_modified_at` columns.
     pub order_by: PhotoOrderBy,
     /// Reverse the natural newest-first direction. Default `false`
     /// matches the historic Photos read order; `true` flips to
@@ -132,17 +133,17 @@ pub struct PhotosFilter {
 /// - `sort_value` is the full-precision `timestamptz` of the chosen
 ///   sort column — microsecond precision, exactly matching
 ///   `storage.files.media_sort_date` so the WHERE predicate can
-///   compare at column fidelity. Carrying only the item-level
-///   `sort_date: i64` (epoch seconds) here loses sub-second
-///   precision and silently drops rows that landed inside the same
-///   wall-clock second as the page boundary.
+///   compare at column fidelity. A seconds-truncated value here would
+///   silently drop rows that landed inside the same wall-clock second
+///   as the page boundary.
 /// - `file_id` is the tie-breaker on equal `sort_value` so rows that
 ///   do share an exact `media_sort_date` can still be paginated
 ///   without skipping or re-emitting.
 ///
-/// The wire-level `sort_date` on `PhotoResourceItemDto` stays epoch
-/// seconds — that's the client's view; the cursor's internal shape
-/// is a server-only concern.
+/// The wire-level `sort_date` on `PhotoResourceItemDto` carries the
+/// same instant as RFC 3339. It used to be epoch seconds, which meant
+/// the wire and the cursor needed two separate fields; normalising the
+/// wire collapsed them into one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PhotosCursor {
     pub order_by: PhotoOrderBy,
@@ -215,7 +216,7 @@ pub struct PhotoResourceItemDto {
     /// column. `order_by=captured_at` (the default) yields
     /// `media_sort_date`, i.e. `COALESCE(captured_at,
     /// content_modified_at)`; `order_by=created_at` yields
-    /// `created_at`; `order_by=updated_at` yields
+    /// `created_at`; `order_by=modified_at` yields
     /// `content_modified_at`. The cursor keys off this value.
     ///
     /// **Clients must bucket and group on this field**, precisely

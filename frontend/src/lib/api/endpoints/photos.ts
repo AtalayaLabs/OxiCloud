@@ -133,7 +133,7 @@ export type PhotosKind = 'all' | 'photo' | 'video';
 /** Sort axis on the Photos timeline (§3). `captured_at` (default) orders by
  *  EXIF capture date with upload-time fallback; `created_at` is pure upload
  *  time; `updated_at` surfaces recently-touched rows. */
-export type PhotosOrderBy = 'captured_at' | 'created_at' | 'updated_at';
+export type PhotosOrderBy = 'captured_at' | 'created_at' | 'modified_at';
 
 /** Optional filter / cursor knobs on {@link fetchPhotos}. All default
  *  to "no filter"; the resulting URL omits every absent param. */

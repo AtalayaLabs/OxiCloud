@@ -1,5 +1,5 @@
 # =============================================================
-# OxiCloud — search's `order_by=updated_at` sorts on the content clock
+# OxiCloud — search's `order_by=modified_at` sorts on the content clock
 # =============================================================
 # Covers the §3 bugfix, which shipped without a test.
 #
@@ -121,7 +121,7 @@ jsonpath "$.items" count == 2
 #
 # Positional access rather than a `[?(...)]` filter: Hurl collapses a
 # single-match filter to a bare scalar and `nth`/`count` then error.
-GET {{base_url}}/api/search?query=srchclock-needle&order_by=updated_at
+GET {{base_url}}/api/search?query=srchclock-needle&order_by=modified_at
 Authorization: Bearer {{jwt}}
 
 HTTP 200
@@ -141,7 +141,7 @@ jsonpath "$.items[1].resource.modified_at" startsWith "2023-11-15T22:13:20"
 # flips the SQL direction, and a build whose direction and column
 # disagreed would show it here rather than above.
 # ─────────────────────────────────────────────────────────────
-GET {{base_url}}/api/search?query=srchclock-needle&order_by=updated_at&reverse=true
+GET {{base_url}}/api/search?query=srchclock-needle&order_by=modified_at&reverse=true
 Authorization: Bearer {{jwt}}
 
 HTTP 200

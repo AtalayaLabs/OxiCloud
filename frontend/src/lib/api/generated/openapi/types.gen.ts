@@ -3032,22 +3032,17 @@ export type PhotoKind = 'all' | 'photo' | 'video';
  * - `CreatedAt` — "when did this file ARRIVE in OxiCloud". Pure
  * `storage.files.created_at`; EXIF capture date ignored. Useful
  * for the operator-style "recently uploaded" view.
- * - `UpdatedAt` — "when did this file's CONTENT last change". Reads
- * `storage.files.content_modified_at`, so a rename, move or trash
- * transition does *not* resurface a row — only a real content
- * mutation does.
- *
- * The wire value is still spelled `updated_at`, which now disagrees
- * with the column it resolves to. Plan §6 renames it to
- * `modified_at`; until then treat the spelling as legacy, not as a
- * description of the behaviour.
+ * - `ModifiedAt` (`modified_at` on the wire) — "when did this file's
+ * CONTENT last change". Reads `storage.files.content_modified_at`,
+ * so a rename, move or trash transition does *not* resurface a row
+ * — only a real content mutation does.
  *
  * All three axes paginate on the same `(sort_value, id)` keyset,
  * just over different columns. The cursor carries the axis so a
  * mid-scroll flip is rejected by the handler with 400 rather than
  * silently drifting pagination.
  */
-export type PhotoOrderBy = 'captured_at' | 'created_at' | 'updated_at';
+export type PhotoOrderBy = 'captured_at' | 'created_at' | 'modified_at';
 
 /**
  * One item in a `GET /api/photos/resources` page.
@@ -3122,7 +3117,7 @@ export type PhotoResourceItemDto = {
      * column. `order_by=captured_at` (the default) yields
      * `media_sort_date`, i.e. `COALESCE(captured_at,
      * content_modified_at)`; `order_by=created_at` yields
-     * `created_at`; `order_by=updated_at` yields
+     * `created_at`; `order_by=modified_at` yields
      * `content_modified_at`. The cursor keys off this value.
      *
      * **Clients must bucket and group on this field**, precisely
@@ -3553,7 +3548,7 @@ export type SearchCriteriaDto = {
     reverse?: boolean;
     /**
      * Sort dimension. Canonical set: `"relevance"` | `"name"` | `"size"`
-     * | `"updated_at"` | `"created_at"`. Direction is `reverse` below —
+     * | `"modified_at"` | `"created_at"`. Direction is `reverse` below —
      * the `_desc` suffix pattern was retired 2026-07-26 in favour of
      * a single boolean, so every consumer treats "which column" and
      * "which direction" as orthogonal concerns.
@@ -12198,7 +12193,7 @@ export type SearchResourcesData = {
          */
         cursor?: string;
         /**
-         * Sort dimension: relevance (default) | name | size | updated_at | created_at
+         * Sort dimension: relevance (default) | name | size | modified_at | created_at
          */
         order_by?: string;
         /**

@@ -9935,7 +9935,7 @@
           {
             "name": "order_by",
             "in": "query",
-            "description": "Sort dimension: relevance (default) | name | size | updated_at | created_at",
+            "description": "Sort dimension: relevance (default) | name | size | modified_at | created_at",
             "required": false,
             "schema": {
               "type": "string"
@@ -15697,11 +15697,11 @@
       },
       "PhotoOrderBy": {
         "type": "string",
-        "description": "Sort axis for `GET /api/photos/resources` (§3).\n\nThe three axes serve distinct questions:\n\n- `CapturedAt` (default) — \"when was this photo TAKEN\". Orders by\n  `COALESCE(captured_at, content_modified_at)` via the materialised\n  `storage.files.media_sort_date` column, so uploads without EXIF\n  fall back to when their content last changed rather than sinking\n  to NULL.\n- `CreatedAt` — \"when did this file ARRIVE in OxiCloud\". Pure\n  `storage.files.created_at`; EXIF capture date ignored. Useful\n  for the operator-style \"recently uploaded\" view.\n- `UpdatedAt` — \"when did this file's CONTENT last change\". Reads\n  `storage.files.content_modified_at`, so a rename, move or trash\n  transition does *not* resurface a row — only a real content\n  mutation does.\n\n  The wire value is still spelled `updated_at`, which now disagrees\n  with the column it resolves to. Plan §6 renames it to\n  `modified_at`; until then treat the spelling as legacy, not as a\n  description of the behaviour.\n\nAll three axes paginate on the same `(sort_value, id)` keyset,\njust over different columns. The cursor carries the axis so a\nmid-scroll flip is rejected by the handler with 400 rather than\nsilently drifting pagination.",
+        "description": "Sort axis for `GET /api/photos/resources` (§3).\n\nThe three axes serve distinct questions:\n\n- `CapturedAt` (default) — \"when was this photo TAKEN\". Orders by\n  `COALESCE(captured_at, content_modified_at)` via the materialised\n  `storage.files.media_sort_date` column, so uploads without EXIF\n  fall back to when their content last changed rather than sinking\n  to NULL.\n- `CreatedAt` — \"when did this file ARRIVE in OxiCloud\". Pure\n  `storage.files.created_at`; EXIF capture date ignored. Useful\n  for the operator-style \"recently uploaded\" view.\n- `ModifiedAt` (`modified_at` on the wire) — \"when did this file's\n  CONTENT last change\". Reads `storage.files.content_modified_at`,\n  so a rename, move or trash transition does *not* resurface a row\n  — only a real content mutation does.\n\nAll three axes paginate on the same `(sort_value, id)` keyset,\njust over different columns. The cursor carries the axis so a\nmid-scroll flip is rejected by the handler with 400 rather than\nsilently drifting pagination.",
         "enum": [
           "captured_at",
           "created_at",
-          "updated_at"
+          "modified_at"
         ]
       },
       "PhotoResourceItemDto": {
@@ -15757,7 +15757,7 @@
           "sort_date": {
             "type": "string",
             "format": "date-time",
-            "description": "Value of the **active sort axis** (RFC 3339 UTC) — whichever\ncolumn the server actually ordered this page by, not one fixed\ncolumn. `order_by=captured_at` (the default) yields\n`media_sort_date`, i.e. `COALESCE(captured_at,\ncontent_modified_at)`; `order_by=created_at` yields\n`created_at`; `order_by=updated_at` yields\n`content_modified_at`. The cursor keys off this value.\n\n**Clients must bucket and group on this field**, precisely\nbecause it tracks the ordering. The timeline arrives\nmonotonically newest-first, and a UI that groups on any other\ndate can see a month reopen after it closed. Doing exactly that\n— grouping on `created_at` — is what broke `/photos` with\n`each_key_duplicate` once §3 made the two axes diverge."
+            "description": "Value of the **active sort axis** (RFC 3339 UTC) — whichever\ncolumn the server actually ordered this page by, not one fixed\ncolumn. `order_by=captured_at` (the default) yields\n`media_sort_date`, i.e. `COALESCE(captured_at,\ncontent_modified_at)`; `order_by=created_at` yields\n`created_at`; `order_by=modified_at` yields\n`content_modified_at`. The cursor keys off this value.\n\n**Clients must bucket and group on this field**, precisely\nbecause it tracks the ordering. The timeline arrives\nmonotonically newest-first, and a UI that groups on any other\ndate can see a month reopen after it closed. Doing exactly that\n— grouping on `created_at` — is what broke `/photos` with\n`each_key_duplicate` once §3 made the two axes diverge."
           },
           "width": {
             "type": [
@@ -16519,7 +16519,7 @@
           },
           "sort_by": {
             "type": "string",
-            "description": "Sort dimension. Canonical set: `\"relevance\"` | `\"name\"` | `\"size\"`\n| `\"updated_at\"` | `\"created_at\"`. Direction is `reverse` below —\nthe `_desc` suffix pattern was retired 2026-07-26 in favour of\na single boolean, so every consumer treats \"which column\" and\n\"which direction\" as orthogonal concerns."
+            "description": "Sort dimension. Canonical set: `\"relevance\"` | `\"name\"` | `\"size\"`\n| `\"modified_at\"` | `\"created_at\"`. Direction is `reverse` below —\nthe `_desc` suffix pattern was retired 2026-07-26 in favour of\na single boolean, so every consumer treats \"which column\" and\n\"which direction\" as orthogonal concerns."
           }
         }
       },

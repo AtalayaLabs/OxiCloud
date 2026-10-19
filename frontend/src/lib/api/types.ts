@@ -225,7 +225,7 @@ export type { AuthResponseDto as AuthResponse } from './generated/openapi/types.
  * retired 2026-07-26; `date` was renamed to the more explicit
  * `updated_at` alongside the new `created_at`).
  */
-export type SortBy = 'relevance' | 'name' | 'size' | 'updated_at' | 'created_at';
+export type SortBy = 'relevance' | 'name' | 'size' | 'modified_at' | 'created_at';
 
 /**
  * Per-item search metadata inline on every hit in the normalized

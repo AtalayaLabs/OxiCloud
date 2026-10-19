@@ -66,7 +66,7 @@ pub struct SearchCriteriaDto {
     pub offset: usize,
 
     /// Sort dimension. Canonical set: `"relevance"` | `"name"` | `"size"`
-    /// | `"updated_at"` | `"created_at"`. Direction is `reverse` below —
+    /// | `"modified_at"` | `"created_at"`. Direction is `reverse` below —
     /// the `_desc` suffix pattern was retired 2026-07-26 in favour of
     /// a single boolean, so every consumer treats "which column" and
     /// "which direction" as orthogonal concerns.
@@ -356,11 +356,11 @@ pub struct SearchResourcesQuery {
     pub cursor: Option<String>,
 
     /// Sort dimension. Supported: `"relevance"` (default), `"name"`,
-    /// `"size"`, `"updated_at"`, `"created_at"`. Direction is the
+    /// `"size"`, `"modified_at"`, `"created_at"`. Direction is the
     /// separate `reverse` flag — the historical `_desc` suffix pattern
     /// (`name_desc`, `date_desc`, `size_desc`) was retired 2026-07-26
     /// in favour of a single boolean, and `"date"` was renamed to the
-    /// more explicit `"updated_at"` alongside the new `"created_at"`.
+    /// more explicit `"modified_at"` alongside the new `"created_at"`.
     pub order_by: Option<String>,
 
     /// Comma-separated resource types to include, e.g. `"file,folder"`.

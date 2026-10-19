@@ -278,7 +278,7 @@ Authorization: Bearer {{alice_token}}
 HTTP 200
 
 
-GET {{base_url}}/api/photos/resources?order_by=updated_at&limit=5
+GET {{base_url}}/api/photos/resources?order_by=modified_at&limit=5
 Authorization: Bearer {{alice_token}}
 
 HTTP 200

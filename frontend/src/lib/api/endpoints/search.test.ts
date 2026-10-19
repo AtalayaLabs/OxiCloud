@@ -20,12 +20,15 @@ it('builds search requests including filters', async () => {
 		fileTypes: ['mp3', 'wav'],
 		minSize: 1,
 		maxSize: 9,
-		sortBy: 'updated_at'
+		sortBy: 'modified_at'
 	}).catch(() => {});
 	expect(j).toHaveBeenCalledWith(expect.stringContaining('type=mp3%2Cwav'), expect.anything());
 	// Sort dimension is sent on the wire as `order_by`, matching the
 	// backend's `SearchResourcesQuery` (post-normalization).
-	expect(j).toHaveBeenCalledWith(expect.stringContaining('order_by=updated_at'), expect.anything());
+	expect(j).toHaveBeenCalledWith(
+		expect.stringContaining('order_by=modified_at'),
+		expect.anything()
+	);
 	await searchSuggest('q').catch(() => {});
 	await clearSearchCache().catch(() => {});
 	expect(f.mock.calls.length + j.mock.calls.length).toBeGreaterThan(1);
