@@ -731,6 +731,12 @@ So §4 stops being "add a column" and becomes "widen the extractor":
   when extraction widens; new formats simply start populating the first arm.
 - The dates plan loses its only BLOCKED phase.
 
+**Audio is explicitly out of scope** (Ed, 2026-10-19). `AudioMetadataService`
+already extracts a `year` — an integer, into its own table, not a date and not
+`captured_at` — and audio tagging is a different problem from a file's creation
+date. Do not fold it into this chain; synthesising a date from a year would
+invent a January 1st that no file claims.
+
 Mechanically this is an extension, not a rewrite:
 `MediaMetadataService::handles(mime)` gates on `image/*` | `video/*` and
 `extract_blocking` dispatches from one place, so a `.docx`/PDF branch slots in
