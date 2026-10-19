@@ -766,13 +766,13 @@ impl FileWritePort for FileBlobWriteRepository {
                               id::text AS id_text,
                               name, folder_id::text, size, mime_type,
                               EXTRACT(EPOCH FROM created_at)::bigint AS created_at,
-                              EXTRACT(EPOCH FROM content_modified_at)::bigint AS updated_at,
+                              EXTRACT(EPOCH FROM content_modified_at)::bigint AS content_modified_at,
                               blob_hash,
                               created_by,
                               updated_by
                 )
                 SELECT id_text, name, folder_id, size, mime_type,
-                       created_at, updated_at,
+                       created_at, content_modified_at,
                        blob_hash, created_by, updated_by
                   FROM new_file
                 "#,

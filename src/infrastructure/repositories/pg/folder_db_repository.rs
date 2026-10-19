@@ -1748,7 +1748,7 @@ impl FolderDbRepository {
                 NULL::text                AS mime_type,
                 -1::bigint                AS size,
                 f.created_at,
-                f.content_modified_at     AS modified_at,
+                f.content_modified_at,
                 f.drive_id,
                 NULL::text                AS blob_hash,
                 f.created_by,
@@ -1780,7 +1780,7 @@ impl FolderDbRepository {
                 fm.mime_type,
                 fm.size::bigint,
                 fm.created_at,
-                fm.content_modified_at    AS modified_at,
+                fm.content_modified_at,
                 fm.drive_id,
                 fm.blob_hash,
                 fm.created_by,
@@ -1871,9 +1871,9 @@ impl FolderDbRepository {
             }
             "modified_at" => {
                 let (op, ord) = if reverse {
-                    (">", "ORDER BY modified_at ASC, id ASC")
+                    (">", "ORDER BY content_modified_at ASC, id ASC")
                 } else {
-                    ("<", "ORDER BY modified_at DESC, id DESC")
+                    ("<", "ORDER BY content_modified_at DESC, id DESC")
                 };
                 // MUST name the same column the arm's ORDER BY sorts on.
                 // Both arms sort on the `modified_at` alias, and since §8

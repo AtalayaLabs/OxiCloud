@@ -39,7 +39,7 @@ impl FavoritesRepositoryPort for FavoritesPgRepository {
                 f.size                                          AS "item_size",
                 f.mime_type                                     AS "item_mime_type",
                 COALESCE(f.folder_id, fld.parent_id)            AS "parent_id",
-                COALESCE(f.content_modified_at, fld.content_modified_at) AS "modified_at",
+                COALESCE(f.content_modified_at, fld.content_modified_at) AS "content_modified_at",
                 CASE
                     WHEN uf.item_type = 'folder' THEN fld.path
                     WHEN uf.item_type = 'file'   THEN COALESCE(pfld.path || '/' || f.name, f.name)
@@ -98,7 +98,7 @@ impl FavoritesRepositoryPort for FavoritesPgRepository {
                         .ok()
                         .flatten()
                         .map(|u| u.to_string()),
-                    modified_at: row.try_get("modified_at").ok(),
+                    modified_at: row.try_get("content_modified_at").ok(),
                     item_path: row.try_get("item_path").ok(),
                     // Temporary defaults; with_display_fields() computes the real values
                     icon_class: String::new(),
@@ -373,7 +373,7 @@ impl FavoritesRepositoryPort for FavoritesPgRepository {
         NULL::text                       AS mime_type,
         -1::bigint                       AS size,
         fld.created_at                   AS resource_created_at,
-        fld.content_modified_at          AS modified_at,
+        fld.content_modified_at,
         fld.drive_id                     AS drive_id,
         NULL::text                       AS blob_hash,
         fld.created_by                   AS created_by,
@@ -414,7 +414,7 @@ impl FavoritesRepositoryPort for FavoritesPgRepository {
         f.mime_type,
         f.size::bigint,
         f.created_at                     AS resource_created_at,
-        f.content_modified_at            AS modified_at,
+        f.content_modified_at,
         f.drive_id                       AS drive_id,
         f.blob_hash,
         f.created_by                     AS created_by,
@@ -525,14 +525,14 @@ impl FavoritesRepositoryPort for FavoritesPgRepository {
                 "WHERE ($4::timestamptz IS NULL)
                     OR (modified_at < $4)
                     OR (modified_at = $4 AND resource_id < $5::uuid)",
-                "ORDER BY modified_at DESC, resource_id DESC",
+                "ORDER BY content_modified_at DESC, resource_id DESC",
                 false,
             ),
             ("modified_at", true) => (
                 "WHERE ($4::timestamptz IS NULL)
                     OR (modified_at > $4)
                     OR (modified_at = $4 AND resource_id > $5::uuid)",
-                "ORDER BY modified_at ASC, resource_id ASC",
+                "ORDER BY content_modified_at ASC, resource_id ASC",
                 false,
             ),
             // ── size ─────────────────────────────────────────────────────────
@@ -655,7 +655,7 @@ LIMIT $6"
                     }
                     "modified_at" => {
                         let ts: Option<chrono::DateTime<chrono::Utc>> =
-                            row.try_get("modified_at").ok();
+                            row.try_get("content_modified_at").ok();
                         (None, None, ts)
                     }
                     "owner" => {
@@ -677,7 +677,7 @@ LIMIT $6"
                     mime_type: row.try_get("mime_type").ok(),
                     size,
                     resource_created_at: row.get("resource_created_at"),
-                    modified_at: row.get("modified_at"),
+                    modified_at: row.get("content_modified_at"),
                     drive_id: row.get("drive_id"),
                     blob_hash: row.try_get("blob_hash").ok(),
                     created_by: row.try_get("created_by").ok(),

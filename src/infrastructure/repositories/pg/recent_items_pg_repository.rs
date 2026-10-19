@@ -252,7 +252,7 @@ impl RecentItemsRepositoryPort for RecentItemsPgRepository {
         NULL::text                       AS mime_type,
         -1::bigint                       AS size,
         fld.created_at                   AS resource_created_at,
-        fld.content_modified_at          AS modified_at,
+        fld.content_modified_at,
         fld.drive_id                     AS drive_id,
         NULL::text                       AS blob_hash,
         fld.created_by                   AS created_by,
@@ -296,7 +296,7 @@ impl RecentItemsRepositoryPort for RecentItemsPgRepository {
         f.mime_type,
         f.size::bigint,
         f.created_at                     AS resource_created_at,
-        f.content_modified_at            AS modified_at,
+        f.content_modified_at,
         f.drive_id                       AS drive_id,
         f.blob_hash,
         f.created_by                     AS created_by,
@@ -411,14 +411,14 @@ impl RecentItemsRepositoryPort for RecentItemsPgRepository {
                 "WHERE ($4::timestamptz IS NULL)
                     OR (modified_at < $4)
                     OR (modified_at = $4 AND resource_id < $5::uuid)",
-                "ORDER BY modified_at DESC, resource_id DESC",
+                "ORDER BY content_modified_at DESC, resource_id DESC",
                 false,
             ),
             ("modified_at", true) => (
                 "WHERE ($4::timestamptz IS NULL)
                     OR (modified_at > $4)
                     OR (modified_at = $4 AND resource_id > $5::uuid)",
-                "ORDER BY modified_at ASC, resource_id ASC",
+                "ORDER BY content_modified_at ASC, resource_id ASC",
                 false,
             ),
             // ── size ─────────────────────────────────────────────────────────
@@ -540,7 +540,7 @@ LIMIT $6"
                     }
                     "modified_at" => {
                         let ts: Option<chrono::DateTime<chrono::Utc>> =
-                            row.try_get("modified_at").ok();
+                            row.try_get("content_modified_at").ok();
                         (None, None, ts)
                     }
                     "owner" => {
@@ -566,7 +566,7 @@ LIMIT $6"
                     mime_type: row.try_get("mime_type").ok(),
                     size,
                     resource_created_at: row.get("resource_created_at"),
-                    modified_at: row.get("modified_at"),
+                    modified_at: row.get("content_modified_at"),
                     drive_id: row.get("drive_id"),
                     blob_hash: row.try_get("blob_hash").ok(),
                     created_by: row.try_get("created_by").ok(),
