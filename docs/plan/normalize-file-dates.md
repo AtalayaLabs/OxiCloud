@@ -826,6 +826,34 @@ So the honest sizing: the semantic reframing is nearly free and strictly
 simplifying; the extraction work is a separate, security-sensitive piece that
 should be scoped on its own rather than folded into a dates phase.
 
+#### Where it should live — not inside `text_extractor`
+
+Asked 2026-10-19 whether `text_extractor` should become
+`metadata_extractor`. **No, on both counts.**
+
+The name is accurate today: it extracts *text*, for the search index, and it
+sits in `search_index/` alongside `content_index_worker` and
+`tantivy_content_index` — placement that correctly says "this is a search
+concern". Renaming it fails either way: if it keeps extracting only text the
+name lies, and if it grows date extraction it conflates two concerns with
+different cost profiles and different callers.
+
+| | text | creation date |
+|---|---|---|
+| reads | the whole blob, document body | a PDF trailer dict, or OOXML `docProps/core.xml` — one small zip entry |
+| consumer | Tantivy index | `media_sort_date`, `nc:creation_time` |
+| timing | background queue (`content_index_worker`) | at or near upload |
+
+Only the **format question** is shared, and today it is unreachable:
+`enum Kind` and `fn classify` are private; just `supports` and `extract` are
+`pub`.
+
+So the move is to hoist the classifier out — out of `text_extractor` *and* out
+of `search_index/`, since a creation date is not a search concern. Something
+like `infrastructure/services/document_format.rs` owning `Kind`, `classify`
+and `supports`, with `text_extractor` and a new date extractor both depending
+on it. One format registry, two consumers, neither pretending to be the other.
+
 ---
 
 ## §5 — Tighten to `NOT NULL` **FOLDED INTO §1** (2026-10-17)
