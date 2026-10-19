@@ -781,6 +781,50 @@ It removes a column, a COALESCE arm, and the plan's only blocked phase, and it
 leaves one concept — "the date the bytes claim" — instead of two that differ
 only by provenance.
 
+#### The keying asymmetry, and what it implies for the name
+
+Worked out 2026-10-19/20, and it is the input that settles the naming — so
+it is recorded before the candidates below, which were argued without it.
+
+**The two clocks are not keyed the same way:**
+
+| | keyed by | because |
+|---|---|---|
+| `files.content_modified_at` | the **file row** | a copy gets `NOW()`; two files sharing identical bytes legitimately differ |
+| a byte-derived creation date | the **content** | the same bytes always claim the same creation date, whoever copied them |
+
+So they are not the symmetric pair `content_created_at` / `content_modified_at`
+suggests, and a name implying that symmetry would advertise a guarantee that
+does not hold.
+
+**This also tells us where the column belongs.** Separate work is moving
+`file_metadata` to blob/content keying (Ed, 2026-10-19). That makes it exactly
+the right home for a byte-derived date — not merely a convenient one — and the
+copy gap recorded above closes for free, since a copy shares the blob and
+therefore shares the metadata row.
+
+**And once the table is content-keyed, it should say so** (Ed's point): with
+the table named `storage.content_metadata`, the qualifier is carried by the
+table and the column needs no prefix at all:
+
+```
+storage.content_metadata            -- keyed by blob_hash
+  created_at    -- the date the bytes claim      (was captured_at)
+  extracted_at  -- when extraction last ran      (was created_at)
+  camera_make, orientation, latitude, width, …
+```
+
+That also fixes a misnomer already present: `file_metadata.created_at` means
+*when the extraction row was inserted*, which is why `created_at` looked
+unavailable for the real creation date. `extracted_at` is what it is — and it
+becomes load-bearing once extraction is re-runnable, because "when did we last
+extract this" is a question a recoverable job has to answer.
+
+**None of this is this plan's work.** It is input for whoever owns the
+re-keying. The dates plan's only stake is that it stops needing a naming
+decision at all: if the column ends up `content_metadata.created_at`, §4 reads
+"widen the extractor", and nothing in §0–§8 changes.
+
 #### Then `captured_at` is the wrong name
 
 Asked directly, 2026-10-19: no. A `.docx` is not *captured*; the word is photo
