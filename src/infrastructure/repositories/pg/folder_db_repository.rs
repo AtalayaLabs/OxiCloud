@@ -268,7 +268,7 @@ impl FolderDbRepository {
             r#"
             SELECT id, name, path, parent_id, drive_id,
                    EXTRACT(EPOCH FROM created_at)::bigint,
-                   EXTRACT(EPOCH FROM updated_at)::bigint,
+                   EXTRACT(EPOCH FROM content_modified_at)::bigint,
                    EXTRACT(EPOCH FROM tree_modified_at)::bigint,
                    created_by, updated_by
               FROM storage.folders
@@ -367,7 +367,7 @@ impl FolderRepository for FolderDbRepository {
                       parent_id,
                       path,
                       EXTRACT(EPOCH FROM created_at)::bigint,
-                      EXTRACT(EPOCH FROM updated_at)::bigint,
+                      EXTRACT(EPOCH FROM content_modified_at)::bigint,
                       EXTRACT(EPOCH FROM tree_modified_at)::bigint,
                       created_by,
                       updated_by
@@ -403,7 +403,7 @@ impl FolderRepository for FolderDbRepository {
             r#"
             SELECT id, name, path, parent_id, drive_id,
                    EXTRACT(EPOCH FROM created_at)::bigint,
-                   EXTRACT(EPOCH FROM updated_at)::bigint,
+                   EXTRACT(EPOCH FROM content_modified_at)::bigint,
                    EXTRACT(EPOCH FROM tree_modified_at)::bigint,
                      created_by, updated_by
               FROM storage.folders
@@ -445,7 +445,7 @@ impl FolderRepository for FolderDbRepository {
             r#"
             SELECT id, name, path, parent_id, drive_id,
                    EXTRACT(EPOCH FROM created_at)::bigint,
-                   EXTRACT(EPOCH FROM updated_at)::bigint,
+                   EXTRACT(EPOCH FROM content_modified_at)::bigint,
                        EXTRACT(EPOCH FROM tree_modified_at)::bigint,
                      created_by, updated_by
               FROM storage.folders
@@ -471,7 +471,7 @@ impl FolderRepository for FolderDbRepository {
                 r#"
                 SELECT id, name, path, parent_id, drive_id,
                        EXTRACT(EPOCH FROM created_at)::bigint,
-                       EXTRACT(EPOCH FROM updated_at)::bigint,
+                       EXTRACT(EPOCH FROM content_modified_at)::bigint,
                        EXTRACT(EPOCH FROM tree_modified_at)::bigint,
                          created_by, updated_by
                   FROM storage.folders
@@ -487,7 +487,7 @@ impl FolderRepository for FolderDbRepository {
                 r#"
                 SELECT id, name, path, parent_id, drive_id,
                        EXTRACT(EPOCH FROM created_at)::bigint,
-                       EXTRACT(EPOCH FROM updated_at)::bigint,
+                       EXTRACT(EPOCH FROM content_modified_at)::bigint,
                        EXTRACT(EPOCH FROM tree_modified_at)::bigint,
                          created_by, updated_by
                   FROM storage.folders
@@ -571,7 +571,7 @@ impl FolderRepository for FolderDbRepository {
                 r#"
                 SELECT id, name, path, parent_id, drive_id,
                        EXTRACT(EPOCH FROM created_at)::bigint,
-                       EXTRACT(EPOCH FROM updated_at)::bigint,
+                       EXTRACT(EPOCH FROM content_modified_at)::bigint,
                        EXTRACT(EPOCH FROM tree_modified_at)::bigint,
                        created_by, updated_by,
                        COUNT(*) OVER() AS total_count
@@ -591,7 +591,7 @@ impl FolderRepository for FolderDbRepository {
                 r#"
                 SELECT id, name, path, parent_id, drive_id,
                        EXTRACT(EPOCH FROM created_at)::bigint,
-                       EXTRACT(EPOCH FROM updated_at)::bigint,
+                       EXTRACT(EPOCH FROM content_modified_at)::bigint,
                        EXTRACT(EPOCH FROM tree_modified_at)::bigint,
                        created_by, updated_by,
                        COUNT(*) OVER() AS total_count
@@ -655,7 +655,7 @@ impl FolderRepository for FolderDbRepository {
         let sql = format!(
             "SELECT id, name, path, parent_id, drive_id, \
                     EXTRACT(EPOCH FROM created_at)::bigint, \
-                    EXTRACT(EPOCH FROM updated_at)::bigint, \
+                    EXTRACT(EPOCH FROM content_modified_at)::bigint, \
                     EXTRACT(EPOCH FROM tree_modified_at)::bigint, \
                     created_by, updated_by \
                FROM storage.folders \
@@ -760,7 +760,7 @@ impl FolderRepository for FolderDbRepository {
                  WHERE id = $2::uuid AND NOT is_trashed
                 RETURNING id, name, path, parent_id, drive_id,
                           EXTRACT(EPOCH FROM created_at)::bigint,
-                          EXTRACT(EPOCH FROM updated_at)::bigint,
+                          EXTRACT(EPOCH FROM content_modified_at)::bigint,
                            EXTRACT(EPOCH FROM tree_modified_at)::bigint,
                              created_by, updated_by
                 "#,

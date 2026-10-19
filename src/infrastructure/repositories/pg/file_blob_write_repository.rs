@@ -766,7 +766,7 @@ impl FileWritePort for FileBlobWriteRepository {
                               id::text AS id_text,
                               name, folder_id::text, size, mime_type,
                               EXTRACT(EPOCH FROM created_at)::bigint AS created_at,
-                              EXTRACT(EPOCH FROM updated_at)::bigint AS updated_at,
+                              EXTRACT(EPOCH FROM content_modified_at)::bigint AS updated_at,
                               blob_hash,
                               created_by,
                               updated_by
@@ -871,7 +871,14 @@ impl FileWritePort for FileBlobWriteRepository {
              WHERE id = $2::uuid AND NOT is_trashed
             RETURNING id::text, name, folder_id::text, size, mime_type,
                       EXTRACT(EPOCH FROM created_at)::bigint,
-                      EXTRACT(EPOCH FROM updated_at)::bigint,
+                      -- NOT `updated_at`, even though this statement just
+                      -- bumped it. This slot is the entity's `modified_at`,
+                      -- which is the CONTENT clock — and a rename changed
+                      -- the name, not the bytes. Returning the fresh
+                      -- `updated_at` would hand the caller a moved mtime and
+                      -- a moved ETag for untouched content: the precise
+                      -- regression §2 exists to kill.
+                      EXTRACT(EPOCH FROM content_modified_at)::bigint,
                       created_by, updated_by
             "#,
         )
@@ -999,7 +1006,7 @@ impl FileWritePort for FileBlobWriteRepository {
                     RETURNING id::text,
                               (SELECT path FROM parent),
                               EXTRACT(EPOCH FROM created_at)::bigint,
-                              EXTRACT(EPOCH FROM updated_at)::bigint,
+                              EXTRACT(EPOCH FROM content_modified_at)::bigint,
                               created_by,
                               updated_by
                     "#,
@@ -1030,7 +1037,7 @@ impl FileWritePort for FileBlobWriteRepository {
                     VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $7)
                     RETURNING id::text,
                               EXTRACT(EPOCH FROM created_at)::bigint,
-                              EXTRACT(EPOCH FROM updated_at)::bigint,
+                              EXTRACT(EPOCH FROM content_modified_at)::bigint,
                               created_by,
                               updated_by
                     "#,
