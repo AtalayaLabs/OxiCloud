@@ -2252,10 +2252,27 @@ pub fn write_file_response<W: std::io::Write>(
             "nc:creation_time",
             crate::common::fmt::u64_str(&mut buf, file.created_at.timestamp().max(0) as u64),
         )?;
+        // §0: `created_at`, NOT `modified_at`. "Upload time" is when the
+        // server received the file — `created_at` is exactly that, and it is
+        // immutable. Reading `modified_at` reported the CONTENT clock, so a
+        // file edited years after upload claimed to have been uploaded
+        // years after it was.
+        //
+        // Presentational only — no NC client acts on this property — so
+        // there is no resync, just a value that stops lying.
+        //
+        // `nc:creation_time` above still reads `created_at` and is still
+        // wrong: it should be COALESCE(captured_at, content_modified_at), but
+        // `captured_at` is not available at this emission site (FileDto
+        // carries only created_at/modified_at, and this path never joins
+        // storage.file_metadata). That half needs plumbing — see §0 in
+        // docs/plan/normalize-file-dates.md. Until it lands both slots read
+        // `created_at`, which is correct for one and unchanged-wrong for the
+        // other.
         write_text_element(
             xml,
             "nc:upload_time",
-            crate::common::fmt::u64_str(&mut buf, file.modified_at.timestamp().max(0) as u64),
+            crate::common::fmt::u64_str(&mut buf, file.created_at.timestamp().max(0) as u64),
         )?;
     }
 
@@ -2765,9 +2782,18 @@ mod wire_shape_tests {
     #[test]
     fn nc_upload_time_is_integer_unix_epoch() {
         let xml = render_file_response(fixture_file());
+        // 1700000000 is the fixture's `created_at`; 1700086400 is its
+        // `modified_at`. §0 repointed this slot from the latter to the
+        // former — "upload time" is server receipt, which is `created_at`.
+        // The fixture's two clocks differ precisely so this assertion pins
+        // the SOURCE as well as the integer format.
         assert!(
-            xml.contains("<nc:upload_time>1700086400</nc:upload_time>"),
-            "nc:upload_time not an integer Unix epoch; XML:\n{xml}"
+            xml.contains("<nc:upload_time>1700000000</nc:upload_time>"),
+            "nc:upload_time not an integer Unix epoch sourced from created_at; XML:\n{xml}"
+        );
+        assert!(
+            !xml.contains("<nc:upload_time>1700086400</nc:upload_time>"),
+            "nc:upload_time regressed to the content clock (modified_at); XML:\n{xml}"
         );
     }
 

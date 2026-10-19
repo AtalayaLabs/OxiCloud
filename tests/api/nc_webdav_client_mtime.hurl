@@ -163,6 +163,48 @@ xpath "string(//*[local-name()='getlastmodified'])" matches "^Wed, 15 Nov 2023 2
 
 
 # ═════════════════════════════════════════════════════════════
+# Part A3 — `nc:upload_time` reports RECEIPT, not content (§0)
+# ═════════════════════════════════════════════════════════════
+# This file is the ideal fixture for it: its content clock is pinned to
+# 2023 by the X-OC-Mtime above, while it was actually uploaded moments
+# ago. The two are three years apart, so the assertion needs no timing
+# care.
+#
+# §0 repointed this slot from `modified_at` to `created_at`. Before
+# that it echoed the content clock, so a file edited years after upload
+# claimed to have been uploaded years after it was — here it would have
+# reported the 2023 instant.
+#
+# `nc:creation_time` is deliberately NOT asserted: it still reads
+# `created_at` and is still wrong (it should be
+# COALESCE(captured_at, content_modified_at)), because `captured_at` is
+# not available at that emission site. Asserting it now would pin the
+# wrong behaviour. See §0 in docs/plan/normalize-file-dates.md.
+PROPFIND {{base_url}}/remote.php/dav/files/{{username}}/nc-mtime-probe.txt
+Depth: 0
+Content-Type: application/xml; charset=utf-8
+[BasicAuth]
+{{nc_username}}: {{nc_password}}
+```
+<?xml version="1.0" encoding="utf-8"?>
+<D:propfind xmlns:D="DAV:" xmlns:nc="http://nextcloud.org/ns">
+  <D:prop>
+    <nc:upload_time/>
+  </D:prop>
+</D:propfind>
+```
+
+HTTP 207
+[Asserts]
+# Integer Unix seconds — NC clients parse with `(int)$value`, so an RFC
+# 3339 string silently coerces to 0 and the file reads as never uploaded.
+xpath "string(//*[local-name()='upload_time'])" matches "^[0-9]+$"
+# NOT the asserted content mtime. 1700086400 is the X-OC-Mtime from
+# Part A; receipt happened just now, so this must be some other value.
+xpath "string(//*[local-name()='upload_time'])" != "1700086400"
+
+
+# ═════════════════════════════════════════════════════════════
 # Part B2 — a CONTENT edit does move the clock
 # ═════════════════════════════════════════════════════════════
 # Part B proved a rename leaves the content clock alone. That is only

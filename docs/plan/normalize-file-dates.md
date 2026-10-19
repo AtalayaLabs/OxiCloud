@@ -12,7 +12,7 @@ heading:
 
 | phase | state |
 |---|---|
-| §0 fix the two `nc:` slots | **NOT STARTED** — "2 lines" was wrong (corrected 2026-10-20): `nc:upload_time` is one line, but `nc:creation_time` needs `captured_at` PLUMBED to the NC PROPFIND site, which has only `FileDto`'s `created_at`/`modified_at`. Not blocked by the inbound test — that gates §4 only |
+| §0 fix the two `nc:` slots | **HALF DONE** 2026-10-20 — `nc:upload_time` → `created_at` shipped. `nc:creation_time` still needs `captured_at` PLUMBED to the NC PROPFIND site (`FileDto` has only `created_at`/`modified_at`); never blocked by the inbound test, which gates §4 only |
 | §1 add `content_modified_at`, write it, read nothing | **IN PROGRESS** — migration + writers + trust bounds done (`625f089d`); the CREATE-path mtime gap below is now closed too; remaining integration tests |
 | §2 repoint the `modified_at` alias + ETag | **DONE** — file-side (27 sites + cursor predicate, `8d0631be`) and folder-side DAV-only (`2def1acb`). One gap left open: NC REPORT search, see Open decisions |
 | §3 sort axes | **DONE (interim two-arm form)** — `media_sort_date` on the content clock + both search axes repointed. §4 inserts the `source_created_at` arm |
