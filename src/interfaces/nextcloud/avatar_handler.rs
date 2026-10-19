@@ -38,7 +38,17 @@ fn avatar_png_cache() -> &'static moka::sync::Cache<[u8; 32], Bytes> {
 fn webp_to_png(webp_bytes: &[u8]) -> Option<Vec<u8>> {
     use image::ImageFormat;
     use std::io::Cursor;
-    let img = image::load_from_memory_with_format(webp_bytes, ImageFormat::WebP).ok()?;
+    // Bounded decode. WebP is the one format that ignores `image`'s
+    // `max_alloc` default, so an unguarded `load_from_memory_with_format`
+    // here let a crafted avatar declare arbitrary dimensions and allocate
+    // without ceiling — an OOM, which no panic guard catches. Returning
+    // `None` degrades to "serve the original bytes", which is this
+    // function's existing contract for anything it cannot convert.
+    let img = crate::infrastructure::services::image_decode::decode_bounded_with_format(
+        webp_bytes,
+        ImageFormat::WebP,
+    )
+    .ok()?;
     let mut out = Vec::with_capacity(webp_bytes.len());
     img.write_to(&mut Cursor::new(&mut out), ImageFormat::Png)
         .ok()?;

@@ -838,8 +838,13 @@ fn transcode_image_blocking(
         _ => return Err(format!("Unsupported input format: {}", original_mime)),
     };
 
-    let img = image::load_from_memory_with_format(content, input_format)
-        .map_err(|e| format!("Failed to decode image: {}", e))?;
+    // Bounded decode. This path is the one that could abort the process: it
+    // runs on the rayon pool, where a panic defaults to abort, and it decodes
+    // untrusted bytes. The catch_unwind at the spawn site handles panics; the
+    // area check here handles the OOM that no unwind can catch — WebP ignores
+    // `max_alloc`, and WebP is both an input and the usual output here.
+    let img = super::image_decode::decode_bounded_with_format(content, input_format)
+        .map_err(|e| format!("Failed to decode image: {e}"))?;
 
     match target_format {
         OutputFormat::WebP => {

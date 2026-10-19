@@ -176,7 +176,10 @@ impl OnnxFaceAnalyzer {
 impl Inner {
     /// Full synchronous pipeline for one encoded image.
     fn analyze_blocking(&self, image_bytes: &[u8]) -> Result<Vec<DetectedFace>, DomainError> {
-        let orig = image::load_from_memory(image_bytes)
+        // Bounded decode — untrusted bytes, and WebP ignores the crate's
+        // `max_alloc` default, so an unguarded `load_from_memory` here is an
+        // OOM vector that no panic guard can catch.
+        let orig = crate::infrastructure::services::image_decode::decode_bounded(image_bytes)
             .map_err(|e| dom(format!("decode image: {e}")))?
             .to_rgb8();
         let (w0, h0) = (orig.width(), orig.height());
