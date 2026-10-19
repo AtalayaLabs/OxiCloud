@@ -210,19 +210,28 @@ pub struct PhotoResourceItemDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub height: Option<i32>,
 
-    /// Sort axis value, epoch seconds. Equals
-    /// `COALESCE(captured_at, created_at)` when `order_by=captured_at`
-    /// (the default); equals `created_at` when §3 lands and the
-    /// caller selects `order_by=created_at`. The cursor keys off this
-    /// value.
-    pub sort_date: i64,
+    /// Value of the **active sort axis** (RFC 3339 UTC) — whichever
+    /// column the server actually ordered this page by, not one fixed
+    /// column. `order_by=captured_at` (the default) yields
+    /// `media_sort_date`, i.e. `COALESCE(captured_at,
+    /// content_modified_at)`; `order_by=created_at` yields
+    /// `created_at`; `order_by=updated_at` yields
+    /// `content_modified_at`. The cursor keys off this value.
+    ///
+    /// **Clients must bucket and group on this field**, precisely
+    /// because it tracks the ordering. The timeline arrives
+    /// monotonically newest-first, and a UI that groups on any other
+    /// date can see a month reopen after it closed. Doing exactly that
+    /// — grouping on `created_at` — is what broke `/photos` with
+    /// `each_key_duplicate` once §3 made the two axes diverge.
+    pub sort_date: DateTime<Utc>,
 
-    /// Raw EXIF `DateTimeOriginal`, epoch seconds. `None` when the
+    /// Raw EXIF `DateTimeOriginal` (RFC 3339 UTC). `None` when the
     /// file carries no EXIF date. Lets the client distinguish "taken
-    /// on this date" from the upload-date fallback that `sort_date`
-    /// collapses into one value.
+    /// on this date" from the fallback that `sort_date` collapses into
+    /// one value — but it is NOT a sort axis, so do not group by it.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub captured_at: Option<i64>,
+    pub captured_at: Option<DateTime<Utc>>,
 
     /// Raw EXIF orientation (TIFF 1–8 enum). `None` when absent. The
     /// client applies this to the full-resolution image tile BEFORE

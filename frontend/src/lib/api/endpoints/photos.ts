@@ -16,10 +16,14 @@ import type { FileItem } from '$lib/api/types';
 export interface PhotoItem extends FileItem {
 	width?: number;
 	height?: number;
-	/** Always present on the envelope — epoch seconds; the item's sort axis value. */
-	sort_date: number;
-	/** Raw EXIF `DateTimeOriginal`, epoch seconds. Absent when the file carries no EXIF date. */
-	captured_at?: number;
+	/**
+	 * Always present on the envelope: the value of the ACTIVE sort axis,
+	 * RFC 3339 UTC. Group and bucket on THIS field — it tracks the
+	 * ordering, and grouping on any other date can reopen a closed month.
+	 */
+	sort_date: string;
+	/** Raw EXIF `DateTimeOriginal` (RFC 3339 UTC). Absent when the file carries no EXIF date. */
+	captured_at?: string;
 	/** Raw EXIF orientation (TIFF 1-8). Absent when the file carries no orientation tag. */
 	orientation?: number;
 	/** `true` when the file has both lat AND lng. Raw coordinates stay off the listing. */
@@ -48,8 +52,8 @@ interface PhotoEnvelopeItem {
 	resource: FileItem;
 	width?: number;
 	height?: number;
-	sort_date: number;
-	captured_at?: number;
+	sort_date: string;
+	captured_at?: string;
 	orientation?: number;
 	has_gps: boolean;
 	has_blob_siblings: boolean;
@@ -64,7 +68,7 @@ interface PhotosEnvelope {
 /** EXIF metadata returned by `/api/files/{id}/metadata` (subset used by the lightbox). */
 export interface FileMetadata {
 	file_id: string;
-	captured_at?: number;
+	captured_at?: string;
 	latitude?: number | null;
 	longitude?: number | null;
 	camera_make?: string | null;

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PhotoItem } from '$lib/api/endpoints/photos';
+import { photoTimestamp } from './media';
 import {
 	PhotoTimeline,
 	buildPhotoRows,
@@ -36,8 +37,9 @@ function photo(i: number): PhotoItem {
 	// Newest-first: photo 0 is most recent; ~half a day apart spans ~4 years
 	// over 3k photos, so month/day buckets are bounded (realistic library).
 	const sortDate = 1_700_000_000 - i * (DAY / 2);
-	// Wire shape (post-pivot) is RFC 3339 UTC string; the bench still needs
-	// the numeric `sort_date` to drive its stride, so keep both in sync.
+	// Every date on the wire is an RFC 3339 UTC string, `sort_date` included
+	// since the integer form was retired. The numeric `sortDate` above is
+	// just the stride generator.
 	const sortDateIso = new Date(sortDate * 1000).toISOString();
 	const w = 200 + ((i * 37) % 400);
 	const h = 200 + ((i * 53) % 300);
@@ -56,7 +58,7 @@ function photo(i: number): PhotoItem {
 		path: `/photo ${i}.jpg`,
 		size: 1000,
 		size_formatted: '1 KB',
-		sort_date: sortDate,
+		sort_date: sortDateIso,
 		etag: `e${i}`,
 		content_hash: `h${i}`,
 		width: w,
@@ -71,19 +73,13 @@ function makeConfig(
 	width: number,
 	counter?: { n: number }
 ): TimelineConfig {
+	// Delegates to the production helper rather than re-implementing the
+	// field precedence: a local copy drifted from it once already, and the
+	// bench is measuring the real grouping hot path, so it should be reading
+	// the date the real one reads.
 	const timestampOf = (p: PhotoItem): number => {
 		if (counter) counter.n++;
-		// Prefer the numeric `sort_date` test seed (seconds); fall back to
-		// the RFC 3339 `created_at` for photos without a seed. Keep the
-		// `< 1e12 ? *1000 : raw` scale so the test accepts either unit.
-		if (typeof p.sort_date === 'number' && p.sort_date > 0) {
-			return p.sort_date < 1e12 ? p.sort_date * 1000 : p.sort_date;
-		}
-		if (p.created_at) {
-			const t = Date.parse(p.created_at);
-			if (!Number.isNaN(t)) return t;
-		}
-		return 0;
+		return photoTimestamp(p);
 	};
 	// Stable label fn (reference identity matters for the config-unchanged path).
 	const labelOf = (d: Date, mode: GroupMode) =>

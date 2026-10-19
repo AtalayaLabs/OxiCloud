@@ -24,8 +24,19 @@ describe('media helpers', () => {
 		// Preferring `created_at` let a closed month reopen.
 		//
 		// Real row from the broken instance: uploaded in October, content
-		// dated July. `sort_date` 1789424375 is the July instant the server
-		// sorted on; `created_at` is the October upload.
+		// dated July. `sort_date` is the July instant the server sorted on;
+		// `created_at` is the October upload.
+		//
+		// Wire shape is RFC 3339 — the integer form was retired alongside
+		// this fix so the two fields can no longer be told apart by type,
+		// which is what made the wrong one look authoritative.
+		expect(
+			photoTimestamp({
+				created_at: '2026-10-04T17:34:32Z',
+				sort_date: '2026-09-14T22:19:35Z'
+			} as never)
+		).toBe(Date.parse('2026-09-14T22:19:35Z'));
+		// Numeric seed still honoured, for fixtures and benches.
 		expect(
 			photoTimestamp({
 				created_at: '2026-10-04T17:34:32Z',

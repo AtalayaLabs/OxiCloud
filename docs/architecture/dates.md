@@ -127,12 +127,13 @@ Two consequences worth stating, because both were learned the hard way:
   was a content clock while `FolderDto.modified_at` was the row clock, so a
   mixed listing sorted its two halves on different meanings and renaming a
   folder looked like a content change while renaming a file did not.
-- **Every read is `<alias>.content_modified_at AS modified_at`, uniformly.**
-  When only files had the column, the correct column depended on which table an
-  alias happened to bind to — and `f.` means *files* in five repositories and
+- **Every read names `content_modified_at` and never aliases it.** When only
+  files had the column, the correct column depended on which table an alias
+  happened to bind to — and `f.` means *files* in five repositories and
   *folders* in one. That ambiguity shipped a broken folder-move query. Giving
-  both tables the same column name removes the choice, and so removes the bug
-  class.
+  both tables the same column name removes the choice; not renaming it in an
+  alias means `grep content_modified_at` finds every read site, and that a
+  query's producer and its consumers cannot drift apart.
 
 ### Why `tree_modified_at` is not that column
 
@@ -236,9 +237,17 @@ point — but a listing that interleaves the two is interleaving two different
 | `TrashItemDto` | `trashed_at` | when it entered the trash |
 | `TrashItemDto` | `deletion_date` | when it will be **purged** — a future instant, not a past one. §7 renames it `expires_at` for exactly that reason |
 
-`PhotoResourceItemDto`'s two fields are **epoch seconds (`i64`)**, not RFC 3339
-strings, unlike every field above. That is a known inconsistency rather than a
-decision.
+`PhotoResourceItemDto`'s `sort_date` and `captured_at` are RFC 3339 strings
+like every field above — **normalised 2026-10-19**, having previously been
+epoch-second integers.
+
+That inconsistency was not cosmetic; it caused a crash. `sort_date` is the
+value of the active sort axis, so a client must group on it, and the integer
+form made it look like a pre-pivot leftover beside the RFC-string `created_at`.
+The SPA's `photoTimestamp` therefore preferred `created_at`, grouped the
+timeline on an axis the server had not sorted by, and `/photos` died with
+`each_key_duplicate` the moment §3 let the two diverge. One representation
+removes the tell that invited the wrong guess.
 
 ### API names are not column names
 

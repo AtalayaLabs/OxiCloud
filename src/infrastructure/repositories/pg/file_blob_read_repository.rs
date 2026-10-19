@@ -31,18 +31,23 @@ struct MediaResourceDbRow {
     updated_by: Option<Uuid>,
     is_favorite: bool,
     is_shared: bool,
-    /// Epoch seconds of the chosen sort axis — client-facing precision.
-    sort_date: i64,
-    /// Full-precision `timestamptz` of the chosen sort axis — the
-    /// opaque cursor keys off this value so the WHERE predicate can
-    /// compare at column fidelity. Carrying only `sort_date` (seconds)
-    /// drops rows that landed inside the same wall-clock second as
-    /// the page boundary.
+    /// Full-precision `timestamptz` of the chosen sort axis. Both the
+    /// opaque cursor and the client-facing `sort_date` read this, so the
+    /// cursor's WHERE predicate compares at column fidelity — a
+    /// seconds-truncated value drops rows that landed inside the same
+    /// wall-clock second as the page boundary.
+    ///
+    /// There used to be a second `sort_date: i64` column here carrying
+    /// the same instant truncated to seconds, for the wire. The wire is
+    /// RFC 3339 now, so the truncation (and the extra `EXTRACT`) is
+    /// gone.
     sort_date_ts: chrono::DateTime<chrono::Utc>,
     width: Option<i32>,
     height: Option<i32>,
-    /// Raw EXIF capture time, epoch seconds, nullable.
-    captured_at: Option<i64>,
+    /// Raw EXIF capture time, nullable. Selected as the raw
+    /// `timestamptz`; it reaches the wire as RFC 3339 like every other
+    /// timestamp.
+    captured_at: Option<chrono::DateTime<chrono::Utc>>,
     /// EXIF TIFF orientation (1-8), nullable.
     orientation: Option<i16>,
     /// `latitude IS NOT NULL AND longitude IS NOT NULL`.
@@ -62,17 +67,19 @@ struct MediaResourceDbRow {
 /// balloon the parallel-vector pattern [`list_media_files`] still uses.
 pub struct MediaResourceRow {
     pub file: File,
-    /// Sort axis value for this row, epoch seconds. Matches
-    /// `storage.files.media_sort_date` on the `CapturedAt` axis;
-    /// equal to `created_at` on the `CreatedAt` axis (reserved for §3).
-    pub sort_date: i64,
-    /// Full-precision timestamp of the chosen sort axis — the
-    /// handler uses this to build the opaque keyset cursor so the
-    /// WHERE predicate on the next page compares at column fidelity
-    /// (microsecond, not the truncated second `sort_date` exposes to
-    /// clients).
+    /// Value of the chosen sort axis for this row, at full column
+    /// fidelity. `storage.files.media_sort_date` on the `CapturedAt`
+    /// axis, `created_at` on `CreatedAt`, `content_modified_at` on
+    /// `UpdatedAt`.
+    ///
+    /// Feeds both the opaque keyset cursor and the wire `sort_date`.
+    /// The two were separate fields while the wire carried epoch
+    /// seconds — keeping microseconds for the cursor (so the next
+    /// page's WHERE does not drop rows inside the boundary second) and
+    /// a truncated copy for clients. The wire is RFC 3339 now, so one
+    /// field serves both.
     pub sort_date_ts: chrono::DateTime<chrono::Utc>,
-    pub captured_at: Option<i64>,
+    pub captured_at: Option<chrono::DateTime<chrono::Utc>>,
     pub orientation: Option<i16>,
     pub width: Option<i32>,
     pub height: Option<i32>,
@@ -713,14 +720,10 @@ impl FileBlobReadRepository {
                         WHERE g.resource_id   = top.id
                           AND g.resource_type = 'file'
                    )                                          AS is_shared,
-                   EXTRACT(EPOCH FROM top.{sort_col})::bigint AS sort_date,
                    top.{sort_col}                             AS sort_date_ts,
                    fm.width                                   AS width,
                    fm.height                                  AS height,
-                   CASE
-                       WHEN fm.captured_at IS NULL THEN NULL
-                       ELSE EXTRACT(EPOCH FROM fm.captured_at)::bigint
-                   END                                        AS captured_at,
+                   fm.captured_at                             AS captured_at,
                    fm.orientation                             AS orientation,
                    (fm.latitude IS NOT NULL AND fm.longitude IS NOT NULL) AS has_gps,
                    -- §9b Layer 1 — within-drive sibling probe. True when
@@ -797,7 +800,7 @@ impl FileBlobReadRepository {
             )?;
             out.push(MediaResourceRow {
                 file,
-                sort_date: r.sort_date,
+
                 sort_date_ts: r.sort_date_ts,
                 captured_at: r.captured_at,
                 orientation: r.orientation,

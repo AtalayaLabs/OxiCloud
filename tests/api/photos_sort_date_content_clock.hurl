@@ -20,8 +20,8 @@
 # way to set a content clock to a known PAST instant — the REST upload
 # path has no mtime slot yet (plan §9).
 #
-#   after §3  → sort_date == 1700086400      (the content clock)
-#   before §3 → sort_date ≈ now (~1.79e9)    (created_at, the upload)
+#   after §3  → sort_date == "2023-11-15T22:13:20Z"  (the content clock)
+#   before §3 → sort_date ≈ now, i.e. 2026          (created_at, the upload)
 #
 # Three decades apart, so there is no timing sensitivity at all.
 #
@@ -106,11 +106,11 @@ HTTP 200
 [Asserts]
 jsonpath "$.items" isCollection
 jsonpath "$.items[0].resource.name" == "hurl-mediaclock-probe.png"
-# 1700086400 = 2023-11-15T22:13:20Z, the asserted X-OC-Mtime. A
-# pre-§3 build reports the upload moment here instead (~1.79e9).
-jsonpath "$.items[0].sort_date" == 1700086400
+# The asserted X-OC-Mtime (1700086400), rendered RFC 3339 like every
+# other wire timestamp. A pre-§3 build reports the upload moment.
+jsonpath "$.items[0].sort_date" == "2023-11-15T22:13:20Z"
 # Which COALESCE arm won, pinned explicitly. `captured_at` is
-# `Option<i64>` with `skip_serializing_if = none`, so its ABSENCE is
+# `Option<DateTime<Utc>>` with `skip_serializing_if = none`, so its ABSENCE is
 # what proves the line above exercised the `content_modified_at`
 # fallback rather than an EXIF date that merely happened to match. A
 # fixture that ever carried real EXIF would fail here, loudly.
@@ -137,7 +137,7 @@ Authorization: Bearer {{jwt}}
 HTTP 200
 [Asserts]
 jsonpath "$.items[0].resource.name" == "hurl-mediaclock-renamed.png"
-jsonpath "$.items[0].sort_date" == 1700086400
+jsonpath "$.items[0].sort_date" == "2023-11-15T22:13:20Z"
 
 
 # ═════════════════════════════════════════════════════════════

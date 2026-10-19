@@ -30,16 +30,21 @@ export function isVideo(p: FileItem): boolean {
  * without a `sort_date` (see {@link minimalPhotoItem}, used by People and
  * Places to open the lightbox by id).
  *
- * Accepts seconds or milliseconds via the project-wide `< 1e12 ? *1000 : raw`
- * heuristic — `sort_date` is epoch SECONDS on the wire, unlike every other
- * timestamp, which is the inconsistency that made the old precedence look
- * reasonable. Returns 0 when nothing usable is present.
+ * `sort_date` is an RFC 3339 string on the wire, like every other timestamp.
+ * The numeric branch below remains only for test fixtures and benches that
+ * seed a bare number; it applies the project-wide `< 1e12 ? *1000 : raw`
+ * seconds-or-millis heuristic. Returns 0 when nothing usable is present.
  */
 export function photoTimestamp(p: FileItem): number {
 	// The axis the server sorted by. Must win.
-	const n = p.sort_date;
-	if (typeof n === 'number' && n > 0) {
-		return n < 1e12 ? n * 1000 : n;
+	const s = p.sort_date;
+	if (typeof s === 'string') {
+		const t = Date.parse(s);
+		if (!Number.isNaN(t)) return t;
+	}
+	// Fixtures and benches seed a bare number.
+	if (typeof s === 'number' && s > 0) {
+		return s < 1e12 ? s * 1000 : s;
 	}
 	// Synthesised items only — they carry no sort_date.
 	if (p.created_at) {
