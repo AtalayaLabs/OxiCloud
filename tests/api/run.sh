@@ -312,6 +312,7 @@ HURL_FILES=( \
   "$API_DIR/auth_session_lifecycle.hurl" \
   "$API_DIR/auth_magic_link_login.hurl" \
   "$API_DIR/auth_upgrade_to_internal.hurl" \
+  "$API_DIR/app_passwords.hurl" \
   "$API_DIR/registration.hurl" \
   "$API_DIR/nc_status_capabilities.hurl" \
   "$API_DIR/nc_login_flow_v2.hurl" \

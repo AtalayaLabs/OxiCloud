@@ -52,7 +52,7 @@ Comma-separated allowlist of `password`, `magic_link`, and/or `oidc`. Default (w
 | `magic_link` | Password login → 403 `PasswordLoginDisabled`. Password-based `register` → 403 `PasswordRegistrationDisabled`. Email-only signup still works |
 | `oidc` | **SSO-only** posture. Requires `OXICLOUD_OIDC_ENABLED=true` + a full OIDC config bucket; local password + magic-link both disabled |
 | `password,oidc` | Hybrid: local password + SSO, no magic-link |
-| `password,magic_link,oidc` | Everything on |
+| `password,magic_link,oidc` | Password + SSO advertised; magic-link login refused (**OIDC-master rule — see below**) despite being listed. The admin-mediated invite path still works. If you want three live login methods, OxiCloud cannot offer that: `magic_link` in this list is accepted but silently muted whenever OIDC is enabled |
 
 **Fail-fast.** Misconfiguration panics at boot instead of degrading silently:
 - Unknown token (e.g. `password,sso2`) → boot panic with `expected: password, magic_link, oidc`
@@ -189,7 +189,7 @@ The **Nextcloud Login Flow v2** browser exchange (`POST /login/v2/flow` used by 
 | Token | Effect |
 | --- | --- |
 | `permit_magic_link_for_password_users` | Allow magic-link login for accounts that also have a password. OIDC-linked users are still refused. |
-| `auto_redirect_if_standalone_oidc` | When OIDC is the ONLY working login method (no password, no magic-link — via allowlist or the OIDC-master rule), `GET /login` returns a **server-side 302** to `/api/auth/oidc/authorize` before the SPA loads (no click-to-continue button, no flash). Off by default to avoid redirect loops on IdP failure; the interceptor falls through to the SPA when `?error=…` or `?oidc_code=…` are present. Silent no-op when other methods are also live. Pair with the RP-initiated logout setup below so users on shared computers can actually log out. |
+| `auto_redirect_if_standalone_oidc` | When OIDC is the ONLY working login method, `GET /login` returns a **server-side 302** to `/api/auth/oidc/authorize` before the SPA loads (no click-to-continue button, no flash). "Only working" means ALL of: `oidc` is in `OXICLOUD_AUTH_METHODS` (operator-affirmed intent — a loose-mismatch deployment that serves OIDC via `OIDC_ENABLED=true` alone does NOT auto-redirect), the OIDC runtime is wired at request time (prevents bouncing to a dead authorize endpoint if the admin tears OIDC down after boot), and no other method is live (password + magic-link both muted via the allowlist or the OIDC-master rule). Off by default to avoid redirect loops on IdP failure; the interceptor falls through to the SPA when `?error=…` or `?oidc_code=…` are present. Silent no-op when other methods are also live. Pair with the RP-initiated logout setup below so users on shared computers can actually log out. |
 
 Unknown tokens are logged-and-skipped at startup so a typo doesn't silently zero the vector.
 

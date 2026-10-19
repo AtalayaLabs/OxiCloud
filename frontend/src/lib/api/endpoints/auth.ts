@@ -3,58 +3,149 @@
  * primitives here intentionally bypass it (see client.ts) so a 401 surfaces as
  * a genuine failure to the caller.
  */
-import { ApiError, apiFetch } from '$lib/api/client';
-import { getCsrfHeaders } from '$lib/api/csrf';
+import log from 'loglevel';
+import { ApiError, apiProbeTransport } from '$lib/api/client';
+import {
+	dpopBind,
+	getCurrentUser,
+	getSystemStatus,
+	login as sdkLogin,
+	logout as sdkLogout,
+	oidcExchange,
+	oidcLinkStart,
+	oidcProviders,
+	oidcUnlink,
+	refreshToken as sdkRefreshToken,
+	register as sdkRegister,
+	sendMagicLink as sdkSendMagicLink,
+	setupAdmin as sdkSetupAdmin,
+	upgradeToInternal as sdkUpgradeToInternal
+} from '../generated/openapi/sdk.gen';
 import type { SystemInitStatusDto } from '../generated/openapi/types.gen';
 import type { AuthResponse, SelfUser } from '$lib/api/types';
 
-/**
- * Best-effort parse of the backend `ErrorResponse` shape
- * (`{ status, error, message, error_type }`). Returns whatever it could
- * extract; never throws — a malformed body just yields undefineds.
- */
-async function parseErrorBody(res: Response): Promise<{ errorType?: string; message?: string }> {
-	try {
-		const body = (await res.clone().json()) as {
-			error_type?: unknown;
-			message?: unknown;
-			error?: unknown;
-		};
-		const errorType = typeof body.error_type === 'string' ? body.error_type : undefined;
-		const rawMessage =
-			(typeof body.message === 'string' ? body.message : undefined) ??
-			(typeof body.error === 'string' ? body.error : undefined);
-		return { errorType, message: rawMessage };
-	} catch {
-		return {};
-	}
-}
+// Dedicated logger — silent by default; operators enable in devtools with
+// `oxi.setLogLevel('oxi:auth', 'debug')` to trace fetchMe / tryRefresh /
+// login / logout and the DPoP binding dance. Follows the pattern of
+// `oxi:server-status`, `oxi:message-bus`, `oxi:config`.
+const authLog = log.getLogger('oxi:auth');
 
-const JSON_HEADERS = { 'Content-Type': 'application/json' };
+/**
+ * Map an SDK-thrown error (`throwOnError: true`) into the same `ApiError`
+ * shape the hand-written wrappers produced from `apiFetch` + `parseErrorBody`.
+ *
+ * Hey API's thrown object carries `response` (the raw Fetch Response — status,
+ * statusText) alongside `data`, which is the ALREADY-PARSED error body — no
+ * second JSON parse is needed, unlike the apiFetch path. See `transport.ts`
+ * for the matching contract: both paths share the same `ErrorResponseDto`
+ * shape on non-2xx.
+ */
+function apiErrorFromSdkError(e: unknown, path: string): ApiError {
+	const err = e as { response?: Response; data?: unknown };
+	const status = err.response?.status ?? 0;
+	const statusText = err.response?.statusText ?? '';
+	const body = (err.data ?? {}) as {
+		error_type?: unknown;
+		message?: unknown;
+		error?: unknown;
+	};
+	const errorType = typeof body.error_type === 'string' ? body.error_type : undefined;
+	const message =
+		(typeof body.message === 'string' ? body.message : undefined) ??
+		(typeof body.error === 'string' ? body.error : undefined);
+	return new ApiError(status, statusText, path, errorType, message);
+}
 
 /** Probe the session without refreshing or redirecting on an ordinary 401. */
 export async function fetchMe(): Promise<SelfUser | null> {
-	const res = await apiFetch('/api/auth/me', {
-		credentials: 'same-origin',
-		retryUnauthorized: false
-	});
-	if (res.status === 401) return null;
-	if (!res.ok) throw new Error(`/api/auth/me failed: ${res.status}`);
-	return (await res.json()) as SelfUser;
+	// Phase 4 — SDK call. `/api/auth/me` is NOT in AUTH_PRIMITIVES, so the
+	// default `apiTransport` would run the full 401 → refresh → retry dance
+	// against it. For the BOOT probe that MUST NOT happen: a stale cookie
+	// on startup needs to resolve to `null` cleanly so the layout guard
+	// routes to /login, NOT silently refresh (which can succeed and leave
+	// the UI thinking the user is logged in with a session they didn't
+	// explicitly authenticate). Opt out by passing `apiProbeTransport` on
+	// the per-call `fetch` option — it has `retryUnauthorized: false`
+	// baked in and a no-op `onSessionExpired` handler, so a 401 surfaces
+	// to the caller unchanged. The pre-migration guard in d131ebc4 pins
+	// this contract from the test side.
+	//
+	// `responseStyle: 'fields'` is DELIBERATE and load-bearing: Hey API's
+	// `throwOnError: true` path throws the PARSED BODY of the error
+	// response (e.g. `{error: 'Token not provided'}`), NOT a `{response,
+	// status}` object (see `client.gen.ts:189–198`). The 'fields' shape
+	// hands us `{response, data}` on every call, so we read
+	// `response.status` directly — same semantic as the pre-migration
+	// `apiFetch` path. If the SDK's shape ever drifts, the error paths
+	// here are the one place to re-verify.
+	const result = (await getCurrentUser({
+		fetch: apiProbeTransport,
+		responseStyle: 'fields'
+	})) as unknown as {
+		response?: Response;
+		data?: SelfUser;
+	};
+	if (!result.response) {
+		// Transport-level failure (network down, aborted) — no HTTP status
+		// to inspect. Match pre-migration behaviour: rethrow so the
+		// session store's catch surfaces it, not a false "logged out".
+		throw new Error('fetchMe: transport error (no response)');
+	}
+	if (result.response.status === 401) return null;
+	if (!result.response.ok) {
+		throw new Error(`/api/auth/me failed: ${result.response.status}`);
+	}
+	return result.data ?? null;
 }
 
 /** Startup refresh through the generated client and shared DPoP nonce handling. */
 export async function tryRefresh(): Promise<boolean> {
+	// Phase 4 — SDK call. `/api/auth/refresh` IS in AUTH_PRIMITIVES so the
+	// default transport already skips the refresh dance for it, but using
+	// `apiProbeTransport` matches the hand-written semantic more precisely:
+	// if the refresh fails for any reason (401, 500, network), we want a
+	// clean `false` return without the session-expired handler firing a
+	// divert — that's exactly what the probe transport's no-op
+	// `onSessionExpired` guarantees. DPoP nonce-attach + nonce-retry logic
+	// still lives in the transport's `withProof` wrapper either way.
+	//
+	// `responseStyle: 'fields'` is DELIBERATE and load-bearing:
+	// a `throwOnError: true` call with the default `responseStyle: 'data'`
+	// relies on Hey API parsing the response body (`response.text()` →
+	// `JSON.parse`) to resolve on 2xx. That parsing throws on malformed
+	// JSON — surfacing a 200 as a "failure" in `catch`, which here would
+	// return `false` and skip the chained `fetchMe#2` in
+	// `session.load()`. The exact regression we hit: /refresh returned
+	// 200 with fresh Set-Cookie, but tryRefresh returned false, user
+	// landed on /login. The 'fields' shape just hands us the Response
+	// object; we read `.ok` directly like the pre-migration apiFetch
+	// path did, no body parsing involved.
+	//
+	// `body: {} as never` — same backend/annotation mismatch as logout:
+	// the handler takes `axum::body::Bytes`, cookie carries the refresh
+	// token, but the utoipa `request_body = inline(RefreshTokenDto)`
+	// generates a required field in the SDK types.
 	try {
-		const res = await apiFetch('/api/auth/refresh', {
-			method: 'POST',
-			credentials: 'same-origin',
-			retryUnauthorized: false,
-			headers: JSON_HEADERS,
-			body: '{}'
-		});
-		return res.ok;
-	} catch {
+		// The generated `refreshToken` is typed with `responseStyle: 'data'`
+		// hard-coded, so a per-call `'fields'` override needs a cast — the
+		// runtime shape is `{response, data, request}`; see
+		// `client.gen.ts:139–186` for the branch that returns it.
+		const { response } = (await sdkRefreshToken({
+			body: {} as never,
+			fetch: apiProbeTransport,
+			responseStyle: 'fields'
+		})) as unknown as { response: Response };
+		if (response.ok) {
+			authLog.debug('tryRefresh: /refresh succeeded, new access cookie minted');
+		} else {
+			authLog.debug(`tryRefresh: /refresh returned ${response.status}`);
+		}
+		return response.ok;
+	} catch (err) {
+		// Transport-level failure (network down, aborted, …). Only
+		// non-HTTP errors reach here now that we stopped relying on
+		// throwOnError's body-parse branch.
+		authLog.warn('tryRefresh: transport error', err);
 		return false;
 	}
 }
@@ -76,7 +167,7 @@ async function tryBindingThumbprint(): Promise<string | null> {
 		const kp = await ensureKeypair();
 		return await computeJkt(kp.publicKey);
 	} catch (err) {
-		console.debug('dpop: keypair unavailable, logging in unbound', err);
+		authLog.debug('dpop: keypair unavailable, logging in unbound', err);
 		return null;
 	}
 }
@@ -94,31 +185,29 @@ async function tryBindingThumbprint(): Promise<string | null> {
  * typically ignore the return value; they might log it in dev.
  */
 export async function bindDpopIfPossible(): Promise<boolean> {
+	// Phase 4 — SDK call. `/api/auth/dpop/` is in AUTH_PRIMITIVES, so no
+	// refresh dance. Returns false on any failure (swallowed) — a browser
+	// that fails to bind is still usable with an unbound session, which
+	// is why the OIDC-callback / magic-link-redemption paths fall through
+	// to this best-effort call rather than aborting.
 	const jkt = await tryBindingThumbprint();
 	if (!jkt) return false;
 	try {
-		const res = await apiFetch('/api/auth/dpop/bind', {
-			method: 'POST',
-			credentials: 'same-origin',
-			headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-			body: JSON.stringify({ dpop_jkt: jkt })
-		});
-		if (res.ok) {
-			// Bind attached the thumbprint to the SESSION row — but the
-			// browser is still carrying the JWT issued at OIDC callback
-			// / magic-link redemption BEFORE that bind, so its
-			// `cnf.jkt` claim is empty. Force a refresh cycle: the
-			// `rotate_session` path preserves the DPoP binding on the
-			// new row and mints a fresh JWT whose `cnf.jkt` reflects
-			// it. Without this, downstream code that keys off
-			// `CurrentUser::dpop_jkt` (admin sessions "is_current"
-			// highlight, DPoP verifier's expected_jkt lookup) sees
-			// None and treats the caller as unbound.
-			await tryRefresh();
-		}
-		return res.ok;
+		await dpopBind({ body: { dpop_jkt: jkt }, throwOnError: true });
+		// Bind attached the thumbprint to the SESSION row — but the
+		// browser is still carrying the JWT issued at OIDC callback
+		// / magic-link redemption BEFORE that bind, so its `cnf.jkt`
+		// claim is empty. Force a refresh cycle: the `rotate_session`
+		// path preserves the DPoP binding on the new row and mints a
+		// fresh JWT whose `cnf.jkt` reflects it. Without this,
+		// downstream code that keys off `CurrentUser::dpop_jkt`
+		// (admin sessions "is_current" highlight, DPoP verifier's
+		// expected_jkt lookup) sees None and treats the caller as
+		// unbound.
+		await tryRefresh();
+		return true;
 	} catch (err) {
-		console.debug('dpop: bind endpoint call failed', err);
+		authLog.debug('dpop: bind endpoint call failed', err);
 		return false;
 	}
 }
@@ -194,24 +283,25 @@ export async function login(emailOrUsername: string, password: string): Promise<
 	}
 
 	// ── Legacy login (fallback for users without an envelope yet) ─────
-	const res = await apiFetch('/api/auth/login', {
-		method: 'POST',
-		credentials: 'same-origin',
-		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-		body: JSON.stringify({
-			username: emailOrUsername,
-			password,
-			...(dpopJkt ? { dpop_jkt: dpopJkt } : {})
-		})
-	});
-	if (!res.ok) {
-		// Surface the backend `error_type` so the login page can offer
-		// specific UX: `EmailNotVerified` → "resend verification link",
-		// `PasswordLoginDisabled` → nudge toward magic-link / SSO, etc.
-		const { errorType, message } = await parseErrorBody(res);
-		throw new ApiError(res.status, res.statusText, '/api/auth/login', errorType, message);
+	// Phase 4 — SDK call. `/api/auth/login` is in AUTH_PRIMITIVES so a
+	// 401 here surfaces as a genuine bad-credentials error, not an
+	// expired-token refresh dance. The backend's `error_type` surfaces
+	// via `apiErrorFromSdkError` so the login page can branch on
+	// `EmailNotVerified` → "resend verification link",
+	// `PasswordLoginDisabled` → nudge to magic-link / SSO, etc.
+	let auth: AuthResponse;
+	try {
+		auth = (await sdkLogin({
+			body: {
+				username: emailOrUsername,
+				password,
+				...(dpopJkt ? { dpop_jkt: dpopJkt } : {})
+			},
+			throwOnError: true
+		})) as AuthResponse;
+	} catch (e) {
+		throw apiErrorFromSdkError(e, '/api/auth/login');
 	}
-	const auth = (await res.json()) as AuthResponse;
 
 	// ── OPAQUE silent migration (Phase 2) ──────────────────────────────
 	// After a successful legacy password login, transparently mint an
@@ -283,10 +373,14 @@ export interface OidcProviders {
 
 /** Public OIDC provider info for the login page. */
 export async function getOidcProviders(): Promise<OidcProviders> {
+	// Phase 4 — SDK call via generated client. Target `/api/auth/oidc/providers`
+	// is in `transport.ts::AUTH_PRIMITIVES` so the refresh-dance isn't engaged
+	// here. The swallow-everything fallback is preserved: the login page polls
+	// this on first render and MUST NOT surface an error if the IdP config
+	// endpoint is unreachable — it just hides the OIDC-sign-in button.
 	try {
-		const res = await apiFetch('/api/auth/oidc/providers');
-		if (!res.ok) return { enabled: false };
-		return (await res.json()) as OidcProviders;
+		const data = await oidcProviders({ throwOnError: true });
+		return data as OidcProviders;
 	} catch {
 		return { enabled: false };
 	}
@@ -301,6 +395,10 @@ export type AuthStatus = SystemInitStatusDto;
  * error never strands operators on the setup wizard.
  */
 export async function getAuthStatus(): Promise<AuthStatus> {
+	// Phase 4 — SDK call. The fallback object is NOT a plausible default;
+	// it is specifically the "already-initialized, nothing-to-set-up" state
+	// so a boot probe on a transiently-unreachable `/api/auth/status`
+	// doesn't push the user into the first-run setup wizard. Preserve it.
 	const fallback: AuthStatus = {
 		initialized: true,
 		admin_count: 1,
@@ -308,8 +406,7 @@ export async function getAuthStatus(): Promise<AuthStatus> {
 		faces_enabled: false
 	};
 	try {
-		const res = await apiFetch('/api/auth/status', { credentials: 'same-origin' });
-		return res.ok ? ((await res.json()) as AuthStatus) : fallback;
+		return await getSystemStatus({ throwOnError: true });
 	} catch {
 		return fallback;
 	}
@@ -320,16 +417,23 @@ export async function getAuthStatus(): Promise<AuthStatus> {
  * user and marks the system initialized. An ordinary 401 surfaces to the caller.
  */
 export async function setupAdmin(email: string, password: string): Promise<void> {
-	const res = await apiFetch('/api/setup', {
-		retryUnauthorized: false,
-		method: 'POST',
-		credentials: 'same-origin',
-		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-		body: JSON.stringify({ username: 'admin', email, password })
-	});
-	if (!res.ok) {
-		const e = (await res.json().catch(() => ({}))) as { error?: string; message?: string };
-		throw new Error(e.error || e.message || `setup failed: ${res.status}`);
+	// Phase 4 — SDK call. `/api/setup` is in AUTH_PRIMITIVES, so no refresh
+	// dance to opt out of. Error shape stays plain `Error` (not `ApiError`)
+	// because the setup wizard renders `.message` directly and never
+	// branches on `error_type` — a semantic chosen pre-Phase-4.
+	try {
+		await sdkSetupAdmin({
+			body: { username: 'admin', email, password },
+			throwOnError: true
+		});
+	} catch (e) {
+		const err = e as { response?: { status?: number }; data?: unknown };
+		const body = (err.data ?? {}) as { error?: unknown; message?: unknown };
+		const msg =
+			(typeof body.message === 'string' && body.message) ||
+			(typeof body.error === 'string' && body.error) ||
+			`setup failed: ${err.response?.status ?? 'unknown'}`;
+		throw new Error(msg, { cause: e });
 	}
 }
 
@@ -340,16 +444,15 @@ export async function setupAdmin(email: string, password: string): Promise<void>
  * any failure so the caller can fall through to the normal login UI.
  */
 export async function exchangeOidcCode(code: string): Promise<SelfUser | null> {
+	// Phase 4 — SDK call. CSRF + Content-Type are attached by the shared
+	// transport (`transport.ts:162`), so the per-call `getCsrfHeaders()`
+	// spread + `JSON_HEADERS` disappear. Null-on-any-error preserved: the
+	// OIDC redirect-back page needs to handle an invalid/expired code
+	// gracefully (user sees "sign-in failed, try again") without a toast
+	// cascade.
 	try {
-		const res = await apiFetch('/api/auth/oidc/exchange', {
-			method: 'POST',
-			credentials: 'same-origin',
-			headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-			body: JSON.stringify({ code })
-		});
-		if (!res.ok) return null;
-		const data = (await res.json()) as { user?: SelfUser };
-		return data.user ?? null;
+		const data = await oidcExchange({ body: { code }, throwOnError: true });
+		return (data as { user?: SelfUser | null }).user ?? null;
 	} catch {
 		return null;
 	}
@@ -361,18 +464,22 @@ export async function exchangeOidcCode(code: string): Promise<SelfUser | null> {
  * Like login, registration bypasses unauthorized retry in the shared transport.
  */
 export async function register(email: string, password?: string, username?: string): Promise<void> {
+	// Phase 4 — SDK call. Target `/api/auth/register` is in AUTH_PRIMITIVES.
+	// Plain `Error` throw preserved (no `ApiError`) because the signup form
+	// renders `.message` directly, same as `setupAdmin`.
 	const body: Record<string, unknown> = { email, role: 'user' };
 	if (password) body.password = password;
 	if (username) body.username = username;
-	const res = await apiFetch('/api/auth/register', {
-		method: 'POST',
-		credentials: 'same-origin',
-		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-		body: JSON.stringify(body)
-	});
-	if (!res.ok) {
-		const e = (await res.json().catch(() => ({}))) as { error?: string; message?: string };
-		throw new Error(e.error || e.message || `register failed: ${res.status}`);
+	try {
+		await sdkRegister({ body: body as never, throwOnError: true });
+	} catch (e) {
+		const err = e as { response?: { status?: number }; data?: unknown };
+		const errBody = (err.data ?? {}) as { error?: unknown; message?: unknown };
+		const msg =
+			(typeof errBody.message === 'string' && errBody.message) ||
+			(typeof errBody.error === 'string' && errBody.error) ||
+			`register failed: ${err.response?.status ?? 'unknown'}`;
+		throw new Error(msg, { cause: e });
 	}
 }
 
@@ -393,25 +500,22 @@ export async function register(email: string, password?: string, username?: stri
  * refresh interceptor is the right response.
  */
 export async function upgradeToInternal(password?: string): Promise<SelfUser> {
+	// Phase 4 — SDK call. Caller IS authenticated; a 401 here is a genuine
+	// session expiry and the shared transport's refresh+retry is the right
+	// response (so no `fetch: apiProbeTransport` override). On non-2xx the
+	// SDK throws; `apiErrorFromSdkError` reshapes to the same `ApiError`
+	// surface the SPA already surfaces via its error-mapping modal.
 	const body: Record<string, unknown> = {};
 	if (password) body.password = password;
-	const res = await apiFetch('/api/auth/upgrade-to-internal', {
-		method: 'POST',
-		credentials: 'same-origin',
-		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-		body: JSON.stringify(body)
-	});
-	if (!res.ok) {
-		const { errorType, message } = await parseErrorBody(res);
-		throw new ApiError(
-			res.status,
-			res.statusText,
-			'/api/auth/upgrade-to-internal',
-			errorType,
-			message
-		);
+	try {
+		const data = await sdkUpgradeToInternal({
+			body: body as never,
+			throwOnError: true
+		});
+		return data as SelfUser;
+	} catch (e) {
+		throw apiErrorFromSdkError(e, '/api/auth/upgrade-to-internal');
 	}
-	return (await res.json()) as SelfUser;
 }
 
 export type MagicLinkResult = 'sent' | 'unavailable';
@@ -423,15 +527,18 @@ export type MagicLinkResult = 'sent' | 'unavailable';
  * throw so the caller can show a generic error. This auth primitive skips refresh.
  */
 export async function sendMagicLink(email: string): Promise<MagicLinkResult> {
-	const res = await apiFetch('/api/auth/magic-link/send', {
-		method: 'POST',
-		credentials: 'same-origin',
-		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-		body: JSON.stringify({ email })
-	});
-	if (res.status === 503) return 'unavailable';
-	if (!res.ok) throw new Error(`magic-link failed: ${res.status}`);
-	return 'sent';
+	// Phase 4 — SDK call. The 503 → 'unavailable' branch stays: a server
+	// without SMTP configured returns 503 by design, and the login page
+	// treats that as a soft signal ("magic-link is off, use password").
+	// All other non-2xx errors throw so the caller surfaces a toast.
+	try {
+		await sdkSendMagicLink({ body: { email }, throwOnError: true });
+		return 'sent';
+	} catch (e) {
+		const status = (e as { response?: { status?: number } })?.response?.status;
+		if (status === 503) return 'unavailable';
+		throw new Error(`magic-link failed: ${status ?? 'unknown'}`, { cause: e });
+	}
 }
 
 export interface LogoutResult {
@@ -455,21 +562,23 @@ export interface LogoutResult {
  * (safety-check refusal). See docs/plan/oidc-account-linking.md.
  */
 export async function startOidcLink(): Promise<string> {
-	const res = await apiFetch('/api/auth/oidc/link/start', {
-		method: 'POST',
-		credentials: 'same-origin',
-		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-		body: '{}'
-	});
-	if (!res.ok) {
-		const { errorType, message } = await parseErrorBody(res);
-		throw new ApiError(res.status, res.statusText, '/api/auth/oidc/link/start', errorType, message);
+	// Phase 4 — SDK call. Two distinct failure modes stay separate:
+	//   * HTTP non-2xx → ApiError (SPA renders the IdP error toast)
+	//   * HTTP 200 but no `authorize_url` → generic Error (programming
+	//     bug on the server; shouldn't be surfaced as "the IdP said no")
+	// Split as two try blocks so the second malformed-response throw
+	// isn't caught by apiErrorFromSdkError and remapped.
+	let body: unknown;
+	try {
+		body = await oidcLinkStart({ throwOnError: true });
+	} catch (e) {
+		throw apiErrorFromSdkError(e, '/api/auth/oidc/link/start');
 	}
-	const body = (await res.json()) as { authorize_url?: string };
-	if (typeof body.authorize_url !== 'string' || body.authorize_url.length === 0) {
+	const authorizeUrl = (body as { authorize_url?: unknown }).authorize_url;
+	if (typeof authorizeUrl !== 'string' || authorizeUrl.length === 0) {
 		throw new Error('malformed link/start response: missing authorize_url');
 	}
-	return body.authorize_url;
+	return authorizeUrl;
 }
 
 /**
@@ -479,15 +588,12 @@ export async function startOidcLink(): Promise<string> {
  * should offer the "set a password first" affordance in that case.
  */
 export async function unlinkOidc(): Promise<void> {
-	const res = await apiFetch('/api/auth/oidc/unlink', {
-		method: 'POST',
-		credentials: 'same-origin',
-		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-		body: '{}'
-	});
-	if (!res.ok) {
-		const { errorType, message } = await parseErrorBody(res);
-		throw new ApiError(res.status, res.statusText, '/api/auth/oidc/unlink', errorType, message);
+	// Phase 4 — SDK call. Pattern-identical to startOidcLink minus the
+	// authorize_url validation (there is no success-shape to check).
+	try {
+		await oidcUnlink({ throwOnError: true });
+	} catch (e) {
+		throw apiErrorFromSdkError(e, '/api/auth/oidc/unlink');
 	}
 }
 
@@ -497,20 +603,37 @@ export async function logout(): Promise<LogoutResult> {
 	// left ON across the goto to /login. See `client.ts::logoutInProgress`
 	// for what the gate suppresses (short-circuits ambient fetches with
 	// AbortError + blocks the session-expired divert).
-	const res = await apiFetch('/api/auth/logout', {
-		method: 'POST',
-		credentials: 'same-origin',
-		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-		body: '{}'
-	});
+	//
+	// Three phases to preserve under the SDK swap:
+	//   1. HTTP call (may fail — server down, 500, aborted mid-logout).
+	//   2. DPoP browser-state teardown — UNCONDITIONAL, runs even if
+	//      step 1 failed, so a user's logout intent never leaves a
+	//      stale keypair/nonce around.
+	//   3. post_logout_url extraction — only on success.
+	let body: { post_logout_url?: unknown } | undefined;
+	try {
+		// Empty body: the server-side handler takes `axum::body::Bytes`,
+		// not a typed Json extractor, and its own docstring states
+		// "Optional — omit when using the HttpOnly cookie". The SDK types
+		// require `refresh_token` only because the utoipa annotation on
+		// `logout_handler` declares `request_body = inline(RefreshTokenDto)`
+		// without marking it optional — a backend-side annotation fix is
+		// tracked separately. Cast through `as never` so TypeScript accepts
+		// the correct empty-body call without introducing a bogus token.
+		body = (await sdkLogout({ body: {} as never, throwOnError: true })) as {
+			post_logout_url?: unknown;
+		};
+	} catch {
+		// Server rejected logout (500, network down, aborted). The DPoP
+		// teardown below still fires — leaving a stale keypair would
+		// confuse the next login's bind step. `{}` returned at the end.
+	}
 
-	// Wipe DPoP browser state so the next login mints a fresh
-	// keypair — no correlation across the logout boundary is
-	// desirable (a new session is a new identity from the
-	// per-request-signature standpoint). Runs UNCONDITIONALLY of
-	// the logout HTTP status: even if the server call failed,
-	// the user's intent was to log out, and leaving a stale
-	// keypair around would confuse the next login's bind step.
+	// Wipe DPoP browser state so the next login mints a fresh keypair —
+	// no correlation across the logout boundary is desirable (a new
+	// session is a new identity from the per-request-signature
+	// standpoint). Runs UNCONDITIONALLY of the server response: the
+	// user's intent was to log out, period.
 	try {
 		const { clearKeypair } = await import('$lib/auth/dpop');
 		const { clearNonce } = await import('$lib/auth/dpop-proof');
@@ -522,14 +645,9 @@ export async function logout(): Promise<LogoutResult> {
 		// don't have to wait for their next 401 to notice.
 		broadcastSessionCleared();
 	} catch (err) {
-		console.debug('dpop: cleanup failed during logout', err);
+		authLog.debug('dpop: cleanup failed during logout', err);
 	}
 
-	if (!res.ok) return {};
-	try {
-		const body = (await res.json()) as { post_logout_url?: unknown };
-		return typeof body?.post_logout_url === 'string' ? { postLogoutUrl: body.post_logout_url } : {};
-	} catch {
-		return {};
-	}
+	if (!body) return {};
+	return typeof body.post_logout_url === 'string' ? { postLogoutUrl: body.post_logout_url } : {};
 }
