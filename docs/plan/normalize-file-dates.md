@@ -12,7 +12,7 @@ heading:
 
 | phase | state |
 |---|---|
-| §0 fix the two `nc:` slots | **NOT STARTED** — 2 lines, ships alone, no behaviour change |
+| §0 fix the two `nc:` slots | **NOT STARTED** — "2 lines" was wrong (corrected 2026-10-20): `nc:upload_time` is one line, but `nc:creation_time` needs `captured_at` PLUMBED to the NC PROPFIND site, which has only `FileDto`'s `created_at`/`modified_at`. Not blocked by the inbound test — that gates §4 only |
 | §1 add `content_modified_at`, write it, read nothing | **IN PROGRESS** — migration + writers + trust bounds done (`625f089d`); the CREATE-path mtime gap below is now closed too; remaining integration tests |
 | §2 repoint the `modified_at` alias + ETag | **DONE** — file-side (27 sites + cursor predicate, `8d0631be`) and folder-side DAV-only (`2def1acb`). One gap left open: NC REPORT search, see Open decisions |
 | §3 sort axes | **DONE (interim two-arm form)** — `media_sort_date` on the content clock + both search axes repointed. §4 inserts the `source_created_at` arm |
@@ -136,6 +136,27 @@ Independent of everything else. Two lines at
 Purely presentational — no client acts on either property, so there is no
 resync. Strictly an improvement on today: EXIF capture dates start reaching
 NextCloud clients, which they currently never do.
+
+### Sizing correction — it is not two lines (2026-10-20)
+
+The heading above claims two lines. That holds for one slot only:
+
+- **`nc:upload_time` → `created_at`** is genuinely one line. `FileDto` already
+  carries `created_at`, so this half can ship on its own, today, and is a
+  strict improvement: the slot currently reports the content clock.
+- **`nc:creation_time` → `COALESCE(captured_at, content_modified_at)`** cannot.
+  `captured_at` lives in `storage.file_metadata` and is **not available at the
+  emission site** — `FileDto` has only `created_at` and `modified_at`, and the
+  NC PROPFIND path never joins that table. It needs either a join in the NC
+  query or a new field threaded onto the DTO.
+
+That plumbing is independent of the metadata re-keying: it is needed whatever
+the table is named or keyed by. So the re-keying work neither blocks nor
+unblocks §0 — and conversely, waiting for it buys §0 nothing.
+
+**§0 is also not blocked by the NextCloud inbound test.** That test gates §4,
+which is about whether a *client-asserted* column must exist. §0 emits
+outbound and reads columns that already exist today.
 
 §3 has already landed, so write the `content_modified_at` form directly — the
 `created_at` fallback this phase originally called for no longer has a reason to
