@@ -20,6 +20,7 @@ heading:
 | §5 tighten to `NOT NULL` | **FOLDED INTO §1** 2026-10-17 — the migration lands it in-transaction |
 | §6 UI axes | **NOT STARTED** — one relabel; no new sort options |
 | §7 naming normalisation | **NOT STARTED** — `order_by` everywhere, typed per-endpoint enums, `deletion_date` → `expires_at`; ships independently. Compile-time protection waits on the generated-SDK redirects |
+| §9 preserve the browser's mtime on upload | **NOT STARTED** — repository layer and helpers are ready; needs a multipart slot on `/api/files/upload` and two lines in `endpoints/files.ts`. Makes the already-written drag-and-drop Playwright spec runnable |
 | §8 folders get a content clock | **DONE** 2026-10-18 — `storage.folders.content_modified_at` with POSIX entry-list semantics (migration `20261103000008`), 14 folder-side reads repointed, keyset predicate back to one column |
 
 > **Reassessed 2026-10-17** against the tree, after the `pivot/dto-timestamps-iso`
@@ -1184,6 +1185,65 @@ Behaviour confirmed in that same rolled-back transaction:
 | child's `size` changes (content edit) | not bumped | not bumped |
 | child renamed | **bumped** | not bumped |
 | child moved parent → grandparent | **bumped** (source) | **bumped** (destination) |
+
+---
+
+## §9 — Preserve the browser's mtime on upload **NOT STARTED**
+
+The plan already contains a Playwright spec asserting that a dragged file keeps
+its source mtime (§ E2E — drag-and-drop preserves the source mtime). That spec
+assumes a capability **that does not exist**, which is why it was never
+runnable: no section ever specified building it. This is that section.
+
+Today a NextCloud desktop client preserves mtime and a browser does not — a
+drag-and-drop upload silently stamps `NOW()`.
+
+### What is already done
+
+- `content_modified_at` accepts a client value on **both** the create and
+  overwrite paths (`save_file_with_blob` takes it, `swap_blob_hash` already
+  did), so the repository layer needs nothing.
+- `validate_client_mtime` enforces the trust bounds and returns a clean 400.
+- `millis_to_seconds_rounded` converts the browser's milliseconds half-up.
+
+### What is missing
+
+1. **A mtime slot on `POST /api/files/upload`.** Multipart field
+   `source_modified_at` carrying **epoch milliseconds** (`File.lastModified`
+   verbatim — convert server-side, so the browser sends what it has and only
+   one place knows the rounding rule). It must arrive **before** the `file`
+   part: that field consumes the stream, which is why `folder_id` already
+   carries the same ordering caveat. Round with
+   `millis_to_seconds_rounded`, then `validate_client_mtime`, then pass into
+   `upload_file_streaming` — which currently hard-codes `None`.
+
+2. **The frontend sending it.** Both UI paths converge, so this is small:
+
+   ```
+   file input (modal) ─┐
+   drag & drop        ─┴→ uploadBatch → uploadOneFile → uploadFileWithProgress
+   ```
+
+   `input.files` and `dataTransfer.files` both yield real `File` objects, so
+   `lastModified` is available on either path — the drag path loses nothing.
+   The change lands in `lib/api/endpoints/files.ts`, which has **two**
+   builders: `uploadFile` and `uploadFileWithProgress`. Both need the field,
+   or the capability becomes path-dependent in a way no test would notice.
+
+### Why milliseconds on the wire, not seconds
+
+`X-OC-Mtime` is seconds because ownCloud defined it that way; our own field has
+no such constraint. Sending milliseconds keeps the rounding rule in exactly one
+place (the server) instead of asking every client to implement half-up
+correctly — and truncation on the client is invisible to us.
+
+### Tests
+
+The Playwright spec already written up above becomes runnable. Add an api-test
+too: a multipart upload with `source_modified_at` set to a past instant,
+asserting the stored `modified_at` is that instant and not the upload moment —
+the same shape as `nc_webdav_client_mtime.hurl`, which is the NC-surface
+equivalent and already green.
 
 ---
 
