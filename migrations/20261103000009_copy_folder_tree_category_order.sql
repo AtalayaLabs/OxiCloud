@@ -41,9 +41,19 @@
 --
 --   * `storage.file_metadata` (EXIF: captured_at, camera, GPS, dimensions)
 --     is copied by NEITHER this function nor `copy_file_satellites`, so a
---     copied photo loses its EXIF row. `media_sort_date` being copied means
---     the timeline position survives, but People/Places lose the copy. That
---     is a product call, not a mechanical fix.
+--     copied photo loses its EXIF row. Thumbnails and previews are fine —
+--     `content_derived_blobs` is keyed `(source_hash, kind, variant)`, so a
+--     copy shares them through its identical `blob_hash`. `media_sort_date`
+--     is copied, so the timeline position survives too; what a copy loses is
+--     People/Places and camera info.
+--
+--     **Do not "fix" this here, and do not re-key the table.** Re-keying
+--     `file_metadata` to the content hash would make copies correct for
+--     free and looks like the consistent move next to
+--     `content_derived_blobs` — it is nonetheless NOT the plan.
+--     `file_metadata` stays `file_id`-keyed, and the change in this area is
+--     owned by separate work (confirmed with Ed 2026-10-19). Adding it to
+--     the copy list above, or re-keying it, would collide with that.
 --   * `source_created_at` does not exist yet (plan §4). When it lands,
 --     decide explicitly whether a copy inherits it — unlike
 --     `content_modified_at`, a source creation date arguably travels with
