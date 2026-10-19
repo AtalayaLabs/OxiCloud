@@ -12505,6 +12505,14 @@
           "name": {
             "type": "string",
             "description": "File name to create (path components are stripped)."
+          },
+          "source_modified_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "§9 — the browser's `File.lastModified`, epoch **milliseconds**.\n\nOptional, and absent means \"stamp `NOW()`\". Same unit and same\ntrust bounds as the multipart `source_modified_at` field on\n`/api/files/upload`; the server rounds half-up and rejects\nimplausible values with a 400 rather than clamping.\n\nThis endpoint needs its own slot because it is `uploadOneFile`'s\nFIRST short-circuit: re-uploading content the caller already owns\nnever reaches the multipart path, so without this a duplicate\nupload silently lost its source mtime even for a small file."
           }
         }
       },
@@ -13015,6 +13023,14 @@
               "null"
             ],
             "description": "Create mode: file name (basename)."
+          },
+          "source_modified_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "§9 — the browser's `File.lastModified`, epoch **milliseconds**.\n\nOptional; absent means \"stamp `NOW()`\". Same unit and trust bounds\nas the multipart `source_modified_at` and the by-hash field: the\nserver rounds half-up and refuses implausible values with a 400.\n\nThis path needs its own slot because the SPA chooses delta purely\nby size — everything at or above `DELTA_UPLOAD_MIN_SIZE` (8 MiB)\ncomes here and never reaches the multipart handler. Without it the\ncapability was size-dependent: small uploads kept their mtime and\nlarge ones silently lost it."
           }
         }
       },

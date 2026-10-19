@@ -205,6 +205,7 @@ impl FileUploadService {
         name: String,
         folder_id: String,
         hash: &str,
+        source_modified_at: Option<i64>,
     ) -> Result<FileDto, DomainError> {
         let Some(InstantUploadDeps {
             authz,
@@ -280,13 +281,12 @@ impl FileUploadService {
                     is_new_blob: false,
                 },
                 caller_id,
-                // By-hash instant upload. `None` because `/api/files/by-hash`
-                // has no mtime field on the wire — NOT because the client
-                // lacks one. It is `uploadOneFile`'s first short-circuit, so
-                // re-uploading content the caller already owns loses the
-                // source mtime even for a small file. One of §9's two
-                // remaining paths; see the plan.
-                None,
+                // §9 — the caller's asserted source mtime, already rounded
+                // and validated by the handler. This endpoint is
+                // `uploadOneFile`'s first short-circuit, so without its own
+                // slot a re-upload of already-owned content lost the mtime
+                // even for a small file.
+                source_modified_at,
             )
             .await?;
 
@@ -306,6 +306,7 @@ impl FileUploadService {
         caller_id: Uuid,
         file_id: &str,
         blob: StoredBlob,
+        source_modified_at: Option<i64>,
     ) -> Result<FileDto, DomainError> {
         let Some(InstantUploadDeps { authz, .. }) = &self.instant_upload else {
             return Err(DomainError::internal_error(
@@ -333,7 +334,17 @@ impl FileUploadService {
         let file = file_read.get_file(file_id).await?;
         let (new_hash, updated_at) = self
             .file_write
-            .update_file_content_with_blob(file_id, &blob.hash, blob.size, None, caller_id, None)
+            .update_file_content_with_blob(
+                file_id,
+                &blob.hash,
+                blob.size,
+                // §9 — the client's asserted source mtime. Delta UPDATE is a
+                // content replacement, so the mtime the client reports for
+                // those bytes is exactly what belongs in the content clock.
+                source_modified_at,
+                caller_id,
+                None,
+            )
             .await?;
         // The file maps to a different blob now — stale cached content must
         // never be served for the rest of its TTI window.

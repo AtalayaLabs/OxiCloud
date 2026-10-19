@@ -15,13 +15,29 @@ const JSON_HEADERS = { 'Content-Type': 'application/json' };
 export async function createFileByHash(
 	folderId: string,
 	name: string,
-	hash: string
+	hash: string,
+	/**
+	 * The browser's `File.lastModified`, epoch milliseconds — so an instant
+	 * upload preserves the source mtime like a multipart one does.
+	 *
+	 * This path is `uploadOneFile`'s FIRST short-circuit, taken whenever the
+	 * caller already owns the content, so without this a re-upload of known
+	 * bytes silently lost its mtime even for a small file. Omitted when
+	 * falsy: `lastModified` is 0 for a synthesised `File`, and 0 would be
+	 * refused by the server's pre-2000 floor.
+	 */
+	sourceModifiedAt?: number
 ): Promise<{ ok: boolean; status: number; data?: unknown }> {
 	const res = await apiFetch('/api/files/by-hash', {
 		method: 'POST',
 		credentials: 'same-origin',
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-		body: JSON.stringify({ name, folder_id: folderId, hash })
+		body: JSON.stringify({
+			name,
+			folder_id: folderId,
+			hash,
+			...(sourceModifiedAt ? { source_modified_at: sourceModifiedAt } : {})
+		})
 	});
 	const data = res.ok ? await res.json().catch(() => undefined) : undefined;
 	return { ok: res.ok, status: res.status, data };

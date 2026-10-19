@@ -719,6 +719,20 @@ export type CreateFileByHashRequest = {
      * File name to create (path components are stripped).
      */
     name: string;
+    /**
+     * §9 — the browser's `File.lastModified`, epoch **milliseconds**.
+     *
+     * Optional, and absent means "stamp `NOW()`". Same unit and same
+     * trust bounds as the multipart `source_modified_at` field on
+     * `/api/files/upload`; the server rounds half-up and rejects
+     * implausible values with a 400 rather than clamping.
+     *
+     * This endpoint needs its own slot because it is `uploadOneFile`'s
+     * FIRST short-circuit: re-uploading content the caller already owns
+     * never reaches the multipart path, so without this a duplicate
+     * upload silently lost its source mtime even for a small file.
+     */
+    source_modified_at?: number | null;
 };
 
 /**
@@ -1024,6 +1038,20 @@ export type DeltaCommitRequest = {
      * Create mode: file name (basename).
      */
     name?: string | null;
+    /**
+     * §9 — the browser's `File.lastModified`, epoch **milliseconds**.
+     *
+     * Optional; absent means "stamp `NOW()`". Same unit and trust bounds
+     * as the multipart `source_modified_at` and the by-hash field: the
+     * server rounds half-up and refuses implausible values with a 400.
+     *
+     * This path needs its own slot because the SPA chooses delta purely
+     * by size — everything at or above `DELTA_UPLOAD_MIN_SIZE` (8 MiB)
+     * comes here and never reaches the multipart handler. Without it the
+     * capability was size-dependent: small uploads kept their mtime and
+     * large ones silently lost it.
+     */
+    source_modified_at?: number | null;
 };
 
 /**

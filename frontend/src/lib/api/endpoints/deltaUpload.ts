@@ -323,7 +323,7 @@ export async function instantUploadOwned(
 	file: File,
 	hash: string
 ): Promise<DeltaUploadAnswer | null> {
-	const res = await createFileByHash(folderId, file.name, hash);
+	const res = await createFileByHash(folderId, file.name, hash, file.lastModified);
 	if (res.ok) return { ok: true, data: res.data, savedBytes: file.size };
 	if (res.status === 507) {
 		return { ok: false, isQuotaError: true, errorMsg: 'Storage quota exceeded' };

@@ -96,6 +96,19 @@ pub struct DeltaCommitRequest {
     pub folder_id: Option<String>,
     /// Update mode: file whose content is replaced (caller needs Write).
     pub file_id: Option<String>,
+    /// §9 — the browser's `File.lastModified`, epoch **milliseconds**.
+    ///
+    /// Optional; absent means "stamp `NOW()`". Same unit and trust bounds
+    /// as the multipart `source_modified_at` and the by-hash field: the
+    /// server rounds half-up and refuses implausible values with a 400.
+    ///
+    /// This path needs its own slot because the SPA chooses delta purely
+    /// by size — everything at or above `DELTA_UPLOAD_MIN_SIZE` (8 MiB)
+    /// comes here and never reaches the multipart handler. Without it the
+    /// capability was size-dependent: small uploads kept their mtime and
+    /// large ones silently lost it.
+    #[serde(default)]
+    pub source_modified_at: Option<i64>,
 }
 
 /// Response of `GET /api/files/{id}/manifest` — the recipe to rebuild the
@@ -282,6 +295,41 @@ impl DeltaUploadService {
         }
         let total_size = self.validate_chunk_list(&request.chunks)?;
 
+        // §9 — round the client's milliseconds to seconds, then apply the
+        // same trust bounds every other client-asserted mtime gets. Refuse
+        // rather than clamp, so a wrong client clock is visible to whoever
+        // can fix it instead of being absorbed into stored data.
+        //
+        // Validated here in the service rather than in the handler: this is
+        // where the rest of the commit's input validation already lives, and
+        // a `validation_error` maps to the 400 the handler returns for every
+        // other malformed field.
+        let source_modified_at = match request.source_modified_at {
+            None => None,
+            Some(millis) => {
+                let secs =
+                    crate::application::dtos::timestamp_helpers::millis_to_seconds_rounded(millis);
+                match crate::application::dtos::timestamp_helpers::validate_client_mtime(
+                    secs,
+                    chrono::Utc::now().timestamp(),
+                ) {
+                    Ok(valid) => Some(valid),
+                    Err(rejection) => {
+                        tracing::info!(
+                            target: "audit",
+                            event = "delta_commit.source_mtime_rejected",
+                            reason = rejection.reason(),
+                            asserted_millis = millis,
+                            user_id = %caller_id,
+                            "👮🏻‍♂️ rejected client-asserted source_modified_at on delta commit: {}",
+                            rejection.message(),
+                        );
+                        return Err(DomainError::validation_error(rejection.message()));
+                    }
+                }
+            }
+        };
+
         let mode = match (&request.name, &request.folder_id, &request.file_id) {
             (Some(name), Some(folder_id), None) => {
                 let name = sanitize_file_name(name)?;
@@ -363,7 +411,13 @@ impl DeltaUploadService {
                 is_new_blob: false,
             };
             let file = self
-                .register_row(caller_id, &mode, metadata.content_type, blob)
+                .register_row(
+                    caller_id,
+                    &mode,
+                    metadata.content_type,
+                    blob,
+                    source_modified_at,
+                )
                 .await?;
             return Ok(DeltaCommitOutcome::Done {
                 file,
@@ -470,7 +524,13 @@ impl DeltaUploadService {
             is_new_blob: !attached.was_deduplicated(),
         };
         let file = self
-            .register_row(caller_id, &mode, Some(content_type), blob)
+            .register_row(
+                caller_id,
+                &mode,
+                Some(content_type),
+                blob,
+                source_modified_at,
+            )
             .await?;
         Ok(DeltaCommitOutcome::Done {
             file,
@@ -643,6 +703,7 @@ impl DeltaUploadService {
         mode: &CommitMode,
         content_type: Option<String>,
         blob: StoredBlob,
+        source_modified_at: Option<i64>,
     ) -> Result<FileDto, DomainError> {
         match mode {
             CommitMode::Create { name, folder_id } => {
@@ -655,14 +716,18 @@ impl DeltaUploadService {
                         content_type,
                         blob,
                         caller_id,
-                        // Delta commit carries no mtime slot yet — see §9.
-                        None,
+                        source_modified_at,
                     )
                     .await
             }
             CommitMode::Update { file_id } => {
                 self.uploads
-                    .update_file_content_by_id_with_perms(caller_id, file_id, blob)
+                    .update_file_content_by_id_with_perms(
+                        caller_id,
+                        file_id,
+                        blob,
+                        source_modified_at,
+                    )
                     .await
             }
         }
