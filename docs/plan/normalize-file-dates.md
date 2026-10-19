@@ -13,7 +13,7 @@ heading:
 | phase | state |
 |---|---|
 | §0 fix the two `nc:` slots | **HALF DONE** 2026-10-20 — `nc:upload_time` → `created_at` shipped. `nc:creation_time` still needs `captured_at` PLUMBED to the NC PROPFIND site (`FileDto` has only `created_at`/`modified_at`); never blocked by the inbound test, which gates §4 only |
-| §1 add `content_modified_at`, write it, read nothing | **IN PROGRESS** — migration + writers + trust bounds done (`625f089d`); the CREATE-path mtime gap below is now closed too; remaining integration tests |
+| §1 add `content_modified_at`, write it, read nothing | **NEARLY DONE** — migration, writers and trust bounds shipped (`625f089d`), CREATE-path gap closed. Tests 2026-10-20: the five metadata mutations and the chunked-assemble path are covered; **delta commit is not**, and cannot be in Hurl (needs real CDC chunk hashes) — it is exercised only by `rt_bus_check.sh` |
 | §2 repoint the `modified_at` alias + ETag | **DONE** — file-side (27 sites + cursor predicate, `8d0631be`) and folder-side DAV-only (`2def1acb`). One gap left open: NC REPORT search, see Open decisions |
 | §3 sort axes | **DONE (interim two-arm form)** — `media_sort_date` on the content clock + both search axes repointed. §4 inserts the `source_created_at` arm |
 | §4 add `source_created_at` | **BLOCKED, and possibly unnecessary** — reframed 2026-10-19: if `captured_at` means "the date the bytes claim" (EXIF | OOXML | PDF) then §4 is "widen the extractor", no new column, and §3's chain is already final. Conditional on the NextCloud inbound test |

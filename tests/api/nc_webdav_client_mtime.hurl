@@ -22,10 +22,11 @@
 # upload moment instead of the client's mtime, or the rename moment
 # instead of the content moment — passes the whole existing suite.
 #
-# Four parts:
+# Five parts:
 #
 #   A. PUT with X-OC-Mtime → getlastmodified is that exact instant, and
 #      creationdate is NOT (the two clocks must be distinguishable).
+#      A3 also pins `nc:upload_time` to RECEIPT rather than content (§0).
 #   B. Rename the file → getlastmodified UNCHANGED. This is the single
 #      regression the dates plan exists to fix: before §2, a rename
 #      bumped `updated_at`, which every mtime read resolved to, so
@@ -37,6 +38,14 @@
 #      violated the constraint, turning a 400 into a 500.
 #   D. Implausible values are refused with 400, never clamped. A wrong
 #      client clock must be visible to whoever can fix it.
+#   E. The CHUNKED assemble surface honours it too — the path a real NC
+#      desktop client uses for anything large, and the one this header
+#      claimed to cover while only Part A tested it.
+#
+# **Ordering is load-bearing.** Part B renames the probe file, so every
+# step after it must use `nc-mtime-renamed.txt`. A new assertion about
+# the uploaded file belongs in Part A, before that MOVE — adding one
+# after it 404s. Part E sidesteps this by using its own fresh path.
 #
 # Depends on migration 20261103000006 (adds content_modified_at).
 #
@@ -369,8 +378,80 @@ HTTP 201
 
 
 # ═════════════════════════════════════════════════════════════
+# Part E — the CHUNKED surface honours it too
+# ═════════════════════════════════════════════════════════════
+# This file's header says `X-OC-Mtime` is accepted on two NC surfaces —
+# `webdav_handler::handle_put` and `uploads_handler::handle_assemble` —
+# and until now only tested the first. The second is the one a real
+# NextCloud desktop client actually uses for anything large, so the
+# untested path was the more important of the two.
+#
+# §1 lists "chunked upload completion" as one of the four content
+# paths that must set the clock. It shares `parse_client_mtime` and
+# `update_file_streaming_with_perms` with the plain PUT, so this is a
+# wiring assertion rather than a second implementation — but wiring is
+# exactly what was missing on the CREATE path, and that defect survived
+# until a test looked.
+#
+# Note the REST chunked endpoint (`/api/uploads/{id}/complete`) cannot
+# carry a mtime at all: it routes through
+# `upload_file_streaming_with_perms`, which takes no such parameter.
+# Only the NC assemble path can, which is why this exercises that one.
+#
+# Zero chunks on purpose: the assemble step writes an empty file, which
+# is enough to pin the clock and avoids the protocol noise of a real
+# chunk sequence. Mirrors `nc_multidrive_move_regression.hurl`, which
+# established that this shape works.
+MKCOL {{base_url}}/remote.php/dav/uploads/{{username}}/nc-mtime-chunk-session
+[BasicAuth]
+{{nc_username}}: {{nc_password}}
+
+HTTP 201
+
+
+# Hurl gotcha, same as Part B: headers MUST precede `[BasicAuth]`, or
+# `Destination:` is parsed as a new request's method line.
+MOVE {{base_url}}/remote.php/dav/uploads/{{username}}/nc-mtime-chunk-session/.file
+Destination: {{base_url}}/remote.php/dav/files/{{username}}/nc-mtime-chunked.txt
+X-OC-Mtime: 1700086400
+[BasicAuth]
+{{nc_username}}: {{nc_password}}
+
+HTTP 201
+
+
+PROPFIND {{base_url}}/remote.php/dav/files/{{username}}/nc-mtime-chunked.txt
+Depth: 0
+Content-Type: application/xml; charset=utf-8
+[BasicAuth]
+{{nc_username}}: {{nc_password}}
+```
+<?xml version="1.0" encoding="utf-8"?>
+<D:propfind xmlns:D="DAV:">
+  <D:prop>
+    <D:getlastmodified/>
+  </D:prop>
+</D:propfind>
+```
+
+HTTP 207
+[Asserts]
+# Same instant as Part A, reached through the other surface. A build
+# that parsed the header and then dropped it on assemble reports the
+# upload moment here and passes every other assertion in this file.
+xpath "string(//*[local-name()='getlastmodified'])" matches "^Wed, 15 Nov 2023 22:13:20 (GMT|\\+0000)$"
+
+
+# ═════════════════════════════════════════════════════════════
 # Teardown
 # ═════════════════════════════════════════════════════════════
+DELETE {{base_url}}/remote.php/dav/files/{{username}}/nc-mtime-chunked.txt
+[BasicAuth]
+{{nc_username}}: {{nc_password}}
+
+HTTP 204
+
+
 DELETE {{base_url}}/remote.php/dav/files/{{username}}/nc-mtime-renamed.txt
 [BasicAuth]
 {{nc_username}}: {{nc_password}}
