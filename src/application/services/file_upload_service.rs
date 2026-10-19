@@ -280,8 +280,12 @@ impl FileUploadService {
                     is_new_blob: false,
                 },
                 caller_id,
-                // By-hash instant upload: the client sent only a hash,
-                // so there is no source mtime to assert.
+                // By-hash instant upload. `None` because `/api/files/by-hash`
+                // has no mtime field on the wire — NOT because the client
+                // lacks one. It is `uploadOneFile`'s first short-circuit, so
+                // re-uploading content the caller already owns loses the
+                // source mtime even for a small file. One of §9's two
+                // remaining paths; see the plan.
                 None,
             )
             .await?;
