@@ -2004,7 +2004,7 @@ impl FolderDbRepository {
 
         let sql = format!(
             "SELECT resource_type, id, name, folder_id, mime_type, size, \
-                    created_at, modified_at, drive_id, blob_hash, \
+                    created_at, content_modified_at, drive_id, blob_hash, \
                     created_by, updated_by, \
                     is_favorite, is_shared, \
                     sort_str, type_order, folder_first \
@@ -2024,7 +2024,7 @@ impl FolderDbRepository {
         //
         // Column indices below MUST match the outer `SELECT` list
         // above (resource_type, id, name, folder_id, mime_type, size,
-        // created_at, modified_at, drive_id, blob_hash, created_by,
+        // created_at, content_modified_at, drive_id, blob_hash, created_by,
         // updated_by, is_favorite, is_shared, sort_str, type_order,
         // folder_first).
         let rows = sqlx::query(&sql)

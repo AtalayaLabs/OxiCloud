@@ -549,7 +549,7 @@ impl TrashDbRepository {
             "{cte}
 SELECT
     r.resource_type, r.resource_id, r.name, r.parent_id,
-    r.mime_type, r.size, r.resource_created_at, r.modified_at,
+    r.mime_type, r.size, r.resource_created_at, r.content_modified_at,
     r.drive_id, r.blob_hash, r.created_by, r.updated_by,
     r.is_favorite, r.is_shared,
     r.trashed_at, r.deletion_date, r.resource_path,

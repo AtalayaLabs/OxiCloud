@@ -523,15 +523,15 @@ impl FavoritesRepositoryPort for FavoritesPgRepository {
             // ── modified_at ──────────────────────────────────────────────────
             ("modified_at", false) => (
                 "WHERE ($4::timestamptz IS NULL)
-                    OR (modified_at < $4)
-                    OR (modified_at = $4 AND resource_id < $5::uuid)",
+                    OR (content_modified_at < $4)
+                    OR (content_modified_at = $4 AND resource_id < $5::uuid)",
                 "ORDER BY content_modified_at DESC, resource_id DESC",
                 false,
             ),
             ("modified_at", true) => (
                 "WHERE ($4::timestamptz IS NULL)
-                    OR (modified_at > $4)
-                    OR (modified_at = $4 AND resource_id > $5::uuid)",
+                    OR (content_modified_at > $4)
+                    OR (content_modified_at = $4 AND resource_id > $5::uuid)",
                 "ORDER BY content_modified_at ASC, resource_id ASC",
                 false,
             ),
@@ -604,7 +604,7 @@ impl FavoritesRepositoryPort for FavoritesPgRepository {
             "{cte}
 SELECT
     r.resource_type, r.resource_id, r.name, r.parent_id,
-    r.mime_type, r.size, r.resource_created_at, r.modified_at,
+    r.mime_type, r.size, r.resource_created_at, r.content_modified_at,
     r.drive_id, r.blob_hash, r.created_by, r.updated_by,
     r.is_favorite, r.is_shared,
     r.is_owner, r.favorited_at, r.resource_path,
