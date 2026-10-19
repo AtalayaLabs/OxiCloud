@@ -20,7 +20,7 @@ heading:
 | §5 tighten to `NOT NULL` | **FOLDED INTO §1** 2026-10-17 — the migration lands it in-transaction |
 | §6 UI axes | **NOT STARTED** — one relabel; no new sort options |
 | §7 naming normalisation | **NOT STARTED** — `order_by` everywhere, typed per-endpoint enums, `deletion_date` → `expires_at`; ships independently. Compile-time protection waits on the generated-SDK redirects |
-| §9 preserve the browser's mtime on upload | **NOT STARTED** — repository layer and helpers are ready; needs a multipart slot on `/api/files/upload` and two lines in `endpoints/files.ts`. Makes the already-written drag-and-drop Playwright spec runnable |
+| §9 preserve the browser's mtime on upload | **NOT STARTED** — repository layer and helpers are ready. THREE upload paths to cover (multipart, delta, chunked); the SPA picks by file size, so covering only `/api/files/upload` would drop mtime on every large upload |
 | §8 folders get a content clock | **DONE** 2026-10-18 — `storage.folders.content_modified_at` with POSIX entry-list semantics (migration `20261103000008`), 14 folder-side reads repointed, keyset predicate back to one column |
 
 > **Reassessed 2026-10-17** against the tree, after the `pivot/dto-timestamps-iso`
@@ -1206,29 +1206,60 @@ drag-and-drop upload silently stamps `NOW()`.
 - `validate_client_mtime` enforces the trust bounds and returns a clean 400.
 - `millis_to_seconds_rounded` converts the browser's milliseconds half-up.
 
+### The upload surface is three paths, not one
+
+An earlier draft of this section said "add a field to `/api/files/upload`".
+That is **wrong and would have shipped a half-working feature**: the SPA picks
+its upload path by file size, so mtime would have survived for small files and
+been silently dropped for large ones — the exact path-dependent capability this
+section warns about two paragraphs later.
+
+| SPA path | chosen when | server entry point |
+|---|---|---|
+| multipart `POST /api/files/upload` | below `DELTA_UPLOAD_MIN_SIZE` | `upload_file_streaming` |
+| **delta** `/api/files/delta/{negotiate,chunks,commit}` | **at or above `DELTA_UPLOAD_MIN_SIZE`** | create → `upload_file_streaming`<br>update → `update_file_content_by_id_with_perms` |
+| chunked `/api/uploads/{id}` + `/complete` | chunked clients | `upload_file_streaming_with_perms` |
+
+One piece of luck: **delta's create branch calls the same
+`upload_file_streaming`** as the multipart endpoint
+(`delta_upload_service::register_row`), so a single parameter there covers both
+of the common cases. Genuinely separate are delta's *update* branch and the
+chunked path.
+
+Four service entry points exist in total; the two NC ones
+(`update_file_streaming_with_perms`) already thread a client mtime, which is
+why the NextCloud surfaces work today.
+
 ### What is missing
 
-1. **A mtime slot on `POST /api/files/upload`.** Multipart field
-   `source_modified_at` carrying **epoch milliseconds** (`File.lastModified`
-   verbatim — convert server-side, so the browser sends what it has and only
-   one place knows the rounding rule). It must arrive **before** the `file`
-   part: that field consumes the stream, which is why `folder_id` already
-   carries the same ordering caveat. Round with
-   `millis_to_seconds_rounded`, then `validate_client_mtime`, then pass into
-   `upload_file_streaming` — which currently hard-codes `None`.
+1. **A mtime slot on each REST upload path.** Multipart field
+   `source_modified_at` on `/api/files/upload`, and an equivalent field on the
+   **delta commit** body — carrying **epoch milliseconds** (`File.lastModified`
+   verbatim; convert server-side so only one place knows the rounding rule).
+   On the multipart path it must arrive **before** the `file` part, which
+   consumes the stream — the same ordering caveat `folder_id` already carries.
+   Round with `millis_to_seconds_rounded`, then `validate_client_mtime`, then
+   pass down. `upload_file_streaming` currently hard-codes `None`.
 
-2. **The frontend sending it.** Both UI paths converge, so this is small:
+2. **The frontend sending it on both paths.** The two UI entry points converge
+   before the size decision, which helps:
 
    ```
    file input (modal) ─┐
-   drag & drop        ─┴→ uploadBatch → uploadOneFile → uploadFileWithProgress
+   drag & drop        ─┴→ uploadBatch → uploadOneFile ─┬→ uploadFileWithProgress  (small)
+                                                       └→ deltaUpload            (large)
    ```
 
    `input.files` and `dataTransfer.files` both yield real `File` objects, so
-   `lastModified` is available on either path — the drag path loses nothing.
-   The change lands in `lib/api/endpoints/files.ts`, which has **two**
-   builders: `uploadFile` and `uploadFileWithProgress`. Both need the field,
-   or the capability becomes path-dependent in a way no test would notice.
+   `lastModified` is available on either UI path — the drag path loses nothing.
+   But the branch below means **two** request shapes to change:
+   `lib/api/endpoints/files.ts` (which itself has two builders, `uploadFile`
+   and `uploadFileWithProgress`) and the delta commit body in
+   `lib/api/endpoints/deltaUpload.ts`.
+
+   Miss any one of these and the capability becomes size-dependent, which no
+   single-file test would notice. A test that uploads one small file passes
+   while every large upload silently loses its mtime.
 
 ### Why milliseconds on the wire, not seconds
 
@@ -1239,11 +1270,22 @@ correctly — and truncation on the client is invisible to us.
 
 ### Tests
 
-The Playwright spec already written up above becomes runnable. Add an api-test
-too: a multipart upload with `source_modified_at` set to a past instant,
-asserting the stored `modified_at` is that instant and not the upload moment —
-the same shape as `nc_webdav_client_mtime.hurl`, which is the NC-surface
+The Playwright spec already written up above becomes runnable. Note it has
+**never run** — it was written against a capability that did not exist, so
+treat it as unvalidated until it passes once.
+
+Add api-tests too, and **one per path is not optional** given the size branch:
+
+- a multipart upload with `source_modified_at` set to a past instant,
+- a delta commit carrying the same field,
+
+each asserting the stored `modified_at` is that instant and not the upload
+moment. Same shape as `nc_webdav_client_mtime.hurl`, which is the NC-surface
 equivalent and already green.
+
+The Playwright side needs **two** files for the same reason — one below
+`DELTA_UPLOAD_MIN_SIZE` and one above it. A single small fixture would pass
+against an implementation that forgot delta entirely.
 
 ---
 
