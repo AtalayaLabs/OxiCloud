@@ -15704,6 +15704,71 @@
           "updated_at"
         ]
       },
+      "PhotoResourceItemDto": {
+        "type": "object",
+        "description": "One item in a `GET /api/photos/resources` page.\n\n`resource_type` is always `ResourceTypeDto::File` — the listing is\nmedia-files-only — but the field stays for shape parity with other\n`/resources` endpoints. Clients can pattern-match on it the same\nway they do on favorites or trash items.",
+        "required": [
+          "resource_type",
+          "resource",
+          "sort_date",
+          "has_gps",
+          "has_blob_siblings"
+        ],
+        "properties": {
+          "captured_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Raw EXIF `DateTimeOriginal` (RFC 3339 UTC). `None` when the\nfile carries no EXIF date. Lets the client distinguish \"taken\non this date\" from the fallback that `sort_date` collapses into\none value — but it is NOT a sort axis, so do not group by it."
+          },
+          "has_blob_siblings": {
+            "type": "boolean",
+            "description": "`true` when at least one other non-trashed media row in the\nsame drive references the same blob hash — i.e. the §9\nwithin-drive `DISTINCT ON (blob_hash)` hid one or more\nsiblings behind this tile. §9b Layer 1 of\n`docs/plan/photos-resources-migration.md` surfaces this as the\ndelete-UX hint: a `true` tile warns the user that \"trashing\nthis removes only one copy of the content — N other copies\nstill live elsewhere in this drive\", so the gallery can offer\nthe siblings list from `GET /api/dedup/check/{hash}` (Layer 2)\nbefore committing. `false` is the common case and lets the FE\nskip the sibling fetch entirely — zero round trips when\nthere's nothing to warn about."
+          },
+          "has_gps": {
+            "type": "boolean",
+            "description": "`true` when the file has both GPS lat AND lng. Presence signal\nonly — the raw coordinates stay off the main listing. Enables\na \"📍 has location\" badge and a \"photos with location\"\nclient-side filter without disclosing per-photo coordinates on\nevery gallery tile. Important on public share links where a\nvisitor seeing GPS for every photo would often be unintended\nby the sharer. For the Places map, continue to use\n`/api/photos/geo` which clusters coords server-side; for a\nspecific photo's exact lat/lng, call `/api/files/{id}/metadata`\n— the explicit per-photo call is the right disclosure\nboundary."
+          },
+          "height": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Image/video height in pixels, from `storage.file_metadata`."
+          },
+          "orientation": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Raw EXIF orientation (TIFF 1–8 enum). `None` when absent. The\nclient applies this to the full-resolution image tile BEFORE\npixels arrive, so there is no \"appears sideways, flips\" flash\non `<img>` load in browsers that don't auto-rotate. Note:\nthumbnails already arrive display-correct — the server-side\nthumbnail generator bakes rotation into the output pixels.\nThis field is strictly for the full-res lightbox / download\nviewer."
+          },
+          "resource": {
+            "$ref": "#/components/schemas/ResourceContentDto",
+            "description": "Full file details — serialised as the inner object via\n`ResourceContentDto`'s `#[serde(untagged)]`, so consumers read\n`resource.id`, `resource.name`, … directly."
+          },
+          "resource_type": {
+            "$ref": "#/components/schemas/ResourceTypeDto"
+          },
+          "sort_date": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Value of the **active sort axis** (RFC 3339 UTC) — whichever\ncolumn the server actually ordered this page by, not one fixed\ncolumn. `order_by=captured_at` (the default) yields\n`media_sort_date`, i.e. `COALESCE(captured_at,\ncontent_modified_at)`; `order_by=created_at` yields\n`created_at`; `order_by=updated_at` yields\n`content_modified_at`. The cursor keys off this value.\n\n**Clients must bucket and group on this field**, precisely\nbecause it tracks the ordering. The timeline arrives\nmonotonically newest-first, and a UI that groups on any other\ndate can see a month reopen after it closed. Doing exactly that\n— grouping on `created_at` — is what broke `/photos` with\n`each_key_duplicate` once §3 made the two axes diverge."
+          },
+          "width": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Image/video width in pixels, from `storage.file_metadata`.\n`None` when the row has no metadata (very old uploads, or a\nformat the metadata extractor doesn't understand)."
+          }
+        }
+      },
       "PlaylistDto": {
         "type": "object",
         "required": [

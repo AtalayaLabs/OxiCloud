@@ -3049,6 +3049,98 @@ export type PhotoKind = 'all' | 'photo' | 'video';
  */
 export type PhotoOrderBy = 'captured_at' | 'created_at' | 'updated_at';
 
+/**
+ * One item in a `GET /api/photos/resources` page.
+ *
+ * `resource_type` is always `ResourceTypeDto::File` — the listing is
+ * media-files-only — but the field stays for shape parity with other
+ * `/resources` endpoints. Clients can pattern-match on it the same
+ * way they do on favorites or trash items.
+ */
+export type PhotoResourceItemDto = {
+    /**
+     * Raw EXIF `DateTimeOriginal` (RFC 3339 UTC). `None` when the
+     * file carries no EXIF date. Lets the client distinguish "taken
+     * on this date" from the fallback that `sort_date` collapses into
+     * one value — but it is NOT a sort axis, so do not group by it.
+     */
+    captured_at?: string | null;
+    /**
+     * `true` when at least one other non-trashed media row in the
+     * same drive references the same blob hash — i.e. the §9
+     * within-drive `DISTINCT ON (blob_hash)` hid one or more
+     * siblings behind this tile. §9b Layer 1 of
+     * `docs/plan/photos-resources-migration.md` surfaces this as the
+     * delete-UX hint: a `true` tile warns the user that "trashing
+     * this removes only one copy of the content — N other copies
+     * still live elsewhere in this drive", so the gallery can offer
+     * the siblings list from `GET /api/dedup/check/{hash}` (Layer 2)
+     * before committing. `false` is the common case and lets the FE
+     * skip the sibling fetch entirely — zero round trips when
+     * there's nothing to warn about.
+     */
+    has_blob_siblings: boolean;
+    /**
+     * `true` when the file has both GPS lat AND lng. Presence signal
+     * only — the raw coordinates stay off the main listing. Enables
+     * a "📍 has location" badge and a "photos with location"
+     * client-side filter without disclosing per-photo coordinates on
+     * every gallery tile. Important on public share links where a
+     * visitor seeing GPS for every photo would often be unintended
+     * by the sharer. For the Places map, continue to use
+     * `/api/photos/geo` which clusters coords server-side; for a
+     * specific photo's exact lat/lng, call `/api/files/{id}/metadata`
+     * — the explicit per-photo call is the right disclosure
+     * boundary.
+     */
+    has_gps: boolean;
+    /**
+     * Image/video height in pixels, from `storage.file_metadata`.
+     */
+    height?: number | null;
+    /**
+     * Raw EXIF orientation (TIFF 1–8 enum). `None` when absent. The
+     * client applies this to the full-resolution image tile BEFORE
+     * pixels arrive, so there is no "appears sideways, flips" flash
+     * on `<img>` load in browsers that don't auto-rotate. Note:
+     * thumbnails already arrive display-correct — the server-side
+     * thumbnail generator bakes rotation into the output pixels.
+     * This field is strictly for the full-res lightbox / download
+     * viewer.
+     */
+    orientation?: number | null;
+    /**
+     * Full file details — serialised as the inner object via
+     * `ResourceContentDto`'s `#[serde(untagged)]`, so consumers read
+     * `resource.id`, `resource.name`, … directly.
+     */
+    resource: ResourceContentDto;
+    resource_type: ResourceTypeDto;
+    /**
+     * Value of the **active sort axis** (RFC 3339 UTC) — whichever
+     * column the server actually ordered this page by, not one fixed
+     * column. `order_by=captured_at` (the default) yields
+     * `media_sort_date`, i.e. `COALESCE(captured_at,
+     * content_modified_at)`; `order_by=created_at` yields
+     * `created_at`; `order_by=updated_at` yields
+     * `content_modified_at`. The cursor keys off this value.
+     *
+     * **Clients must bucket and group on this field**, precisely
+     * because it tracks the ordering. The timeline arrives
+     * monotonically newest-first, and a UI that groups on any other
+     * date can see a month reopen after it closed. Doing exactly that
+     * — grouping on `created_at` — is what broke `/photos` with
+     * `each_key_duplicate` once §3 made the two axes diverge.
+     */
+    sort_date: string;
+    /**
+     * Image/video width in pixels, from `storage.file_metadata`.
+     * `None` when the row has no metadata (very old uploads, or a
+     * format the metadata extractor doesn't understand).
+     */
+    width?: number | null;
+};
+
 export type PlaylistDto = {
     cover_file_id?: string | null;
     created_at: string;
