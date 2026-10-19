@@ -8,22 +8,43 @@ export function isVideo(p: FileItem): boolean {
 }
 
 /**
- * EXIF-aware capture timestamp in milliseconds since the epoch. Accepts the
- * modern wire shape (`created_at` as RFC 3339 UTC string) and the legacy
- * `sort_date` numeric fallback (seconds OR milliseconds — scaled via the
- * project-wide `< 1e12 ? *1000 : raw` heuristic). Returns 0 when nothing
- * usable is present.
+ * Capture timestamp in milliseconds since the epoch, for timeline bucketing.
+ *
+ * **`sort_date` first, and this ordering is load-bearing.** `sort_date` is the
+ * server's `storage.files.media_sort_date` — `COALESCE(captured_at,
+ * content_modified_at)` — and it is the column the Photos timeline is ORDERED
+ * BY. The timeline virtualiser assumes pages arrive monotonically newest-first
+ * and only ever extends the last group, so the field used for bucketing MUST
+ * be the field the server sorted on. Bucketing on anything else lets a month
+ * reappear after it closed, which Svelte reports as
+ * `each_key_duplicate: duplicate key h:YYYY-MM`.
+ *
+ * That is exactly what happened: this function used to prefer `created_at`,
+ * and it worked only by accident, because `media_sort_date` once fell back to
+ * `created_at` for files without EXIF. Plan §3 repointed that fallback at the
+ * content clock, the two axes diverged, and /photos broke — a file uploaded in
+ * October carrying July content sorts among July's photos while `created_at`
+ * buckets it under October.
+ *
+ * `created_at` survives only as a fallback for callers that synthesise an item
+ * without a `sort_date` (see {@link minimalPhotoItem}, used by People and
+ * Places to open the lightbox by id).
+ *
+ * Accepts seconds or milliseconds via the project-wide `< 1e12 ? *1000 : raw`
+ * heuristic — `sort_date` is epoch SECONDS on the wire, unlike every other
+ * timestamp, which is the inconsistency that made the old precedence look
+ * reasonable. Returns 0 when nothing usable is present.
  */
 export function photoTimestamp(p: FileItem): number {
-	// Prefer the string wire shape (post-pivot).
-	if (p.created_at) {
-		const t = Date.parse(p.created_at);
-		if (!Number.isNaN(t)) return t;
-	}
-	// Legacy numeric `sort_date` fallback (fixtures, pre-pivot sources).
+	// The axis the server sorted by. Must win.
 	const n = p.sort_date;
 	if (typeof n === 'number' && n > 0) {
 		return n < 1e12 ? n * 1000 : n;
+	}
+	// Synthesised items only — they carry no sort_date.
+	if (p.created_at) {
+		const t = Date.parse(p.created_at);
+		if (!Number.isNaN(t)) return t;
 	}
 	return 0;
 }
