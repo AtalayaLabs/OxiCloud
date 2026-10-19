@@ -16,7 +16,7 @@ heading:
 | §1 add `content_modified_at`, write it, read nothing | **IN PROGRESS** — migration + writers + trust bounds done (`625f089d`); the CREATE-path mtime gap below is now closed too; remaining integration tests |
 | §2 repoint the `modified_at` alias + ETag | **DONE** — file-side (27 sites + cursor predicate, `8d0631be`) and folder-side DAV-only (`2def1acb`). One gap left open: NC REPORT search, see Open decisions |
 | §3 sort axes | **DONE (interim two-arm form)** — `media_sort_date` on the content clock + both search axes repointed. §4 inserts the `source_created_at` arm |
-| §4 add `source_created_at` | **BLOCKED** — on choosing a writer, see §4. Not a pre-start blocker; §4 is last and independent |
+| §4 add `source_created_at` | **BLOCKED, and possibly unnecessary** — reframed 2026-10-19: if `captured_at` means "the date the bytes claim" (EXIF | OOXML | PDF) then §4 is "widen the extractor", no new column, and §3's chain is already final. Conditional on the NextCloud inbound test |
 | §5 tighten to `NOT NULL` | **FOLDED INTO §1** 2026-10-17 — the migration lands it in-transaction |
 | §6 UI axes | **DONE** 2026-10-19 — `updated_at` retired from the wire outright (no deprecation window: API too recent, SPA is the only consumer), `Created date` → `Added date`, persisted Photos preference migrated on read |
 | §7 naming normalisation | **NOT STARTED** — `order_by` everywhere, typed per-endpoint enums, `deletion_date` → `expires_at`; ships independently. Compile-time protection waits on the generated-SDK redirects |
@@ -704,6 +704,127 @@ the behaviour when nothing writes the column is already specified: NULL forever,
 
 If it does land, the sort chain gains its middle arm:
 `COALESCE(captured_at, source_created_at, content_modified_at)`.
+
+### Reframed 2026-10-19 — `captured_at` may already BE this column
+
+Ed's observation, reviewing the `nc:creation_time` outbound chain: `captured_at`
+need not mean "EXIF capture date". It can mean **the creation date the bytes
+themselves claim** — EXIF `DateTimeOriginal` for images, `dcterms:created` in
+OOXML `docProps/core.xml`, `/CreationDate` in a PDF. One column, one meaning:
+*server-extracted creation date, from the file's own metadata, whatever the
+format*.
+
+**This is the logical conclusion of §4's own preference.** The section above
+already argued candidate 2 (server-side extraction) was the stronger option
+because "it makes the value server-extracted and so removes it from the
+client-asserted class entirely". If the writer is server-side extraction, the
+value belongs in the column that already holds server-extracted dates. A second
+column only earns its place if a *client-asserted* writer exists.
+
+So §4 stops being "add a column" and becomes "widen the extractor":
+
+- `source_created_at` is **not created**. The four-clocks table loses a row.
+- §3's chain `COALESCE(captured_at, content_modified_at)` stops being the
+  "interim two-arm form" and becomes **final** — there is no middle arm to
+  insert later.
+- `nc:creation_time` (§0) emits that same two-arm chain and needs no revisit
+  when extraction widens; new formats simply start populating the first arm.
+- The dates plan loses its only BLOCKED phase.
+
+Mechanically this is an extension, not a rewrite:
+`MediaMetadataService::handles(mime)` gates on `image/*` | `video/*` and
+`extract_blocking` dispatches from one place, so a `.docx`/PDF branch slots in
+beside the existing two. `lopdf` and `pdf_extract` are already in the tree
+(`search_index/text_extractor.rs` uses them for search text), so the parsing
+capability exists — only date extraction is missing.
+
+**It needs no re-key.** `file_metadata` stays `file_id`-keyed; only the
+*meaning* of one column widens. (Re-keying that table to the content hash is
+owned by separate work — do not pick it up here.)
+
+#### The three honest costs
+
+1. **The name becomes a misnomer.** A `.docx` is not "captured". The plan's own
+   rule for `updated_at` applies — *do not rename the column; one rule beats
+   one rename* — so document the broadened meaning instead. `file_metadata`
+   and `MediaMetadataService` acquire the same mild drift: both say "media"
+   while holding a little more.
+2. **The trust-class separation is lost.** `docs/architecture/dates.md` calls
+   the split deliberate: `captured_at` comes out of the bytes and is
+   trustworthy, `source_created_at` is whatever the client says, so the trust
+   bounds apply to exactly one of them and EXIF re-extraction can never
+   clobber a client-supplied value. Folding them is only safe while **no
+   client-asserted path exists** — which is true today, and no browser can
+   ever supply one.
+3. **Media-shaped neighbours.** A `.docx` row would populate `captured_at` and
+   leave `camera_make`, `orientation`, `latitude`, `width`, `height` NULL.
+   Mechanically fine (all nullable), but the table's shape stops matching its
+   name.
+
+#### The decision is conditional on Ed's NextCloud test
+
+The same test that gates §0 now decides §4's shape:
+
+| finding | §4 becomes |
+|---|---|
+| **no** client sends `nc:creation_time` inbound | adopt this reframing — widen the extractor, drop `source_created_at`, §3's chain is final |
+| some client **does** send it | keep both columns — the trust classes genuinely differ, and cost 2 above is a real loss rather than a theoretical one |
+
+Recommendation: adopt the reframing unless the test finds an inbound writer.
+It removes a column, a COALESCE arm, and the plan's only blocked phase, and it
+leaves one concept — "the date the bytes claim" — instead of two that differ
+only by provenance.
+
+#### Then `captured_at` is the wrong name
+
+Asked directly, 2026-10-19: no. A `.docx` is not *captured*; the word is photo
+vocabulary and the column would outlive its origin. Three candidates:
+
+| name | for | against |
+|---|---|---|
+| **`content_created_at`** | symmetric with `content_modified_at` — "the content's own two clocks", one created, one modified. Reads correctly for every format | lives on `file_metadata` while its twin lives on `storage.files`, so the symmetry is in the name but not the location |
+| `source_created_at` | semantically exact, and the name is **free** once §4 declines to create it | carries the plan's history as the *client-asserted* column; reusing it for a server-extracted one invites a wrong reading of older commits |
+| `captured_at` (keep) | zero churn; the `updated_at` precedent says document the meaning rather than rename | the misnomer compounds — the column is young, and this is the cheapest moment it will ever be to rename |
+
+`content_created_at` is the better pair, and the location asymmetry is a real
+argument for putting it on `storage.files` instead — which is where §4
+originally wanted `source_created_at`, for exactly this reason ("a source
+creation date applies to any file"). That decision is **not** taken here:
+`file_metadata` is owned by separate work, and moving a column out of it is
+that work's business, not this plan's.
+
+Note the rename is also a **wire** rename — `captured_at` is a field on
+`PhotoResourceItemDto`, so it belongs with §7's naming normalisation rather
+than being smuggled in.
+
+#### Yes — and per-format extraction is where the cost actually is
+
+Generalising the *meaning* is a doc change. Generalising the *extractor* is the
+work, and it is not small: each format needs its own parser reading its own
+metadata container — EXIF for images, `nom-exif` for video, zip + XML for
+OOXML `docProps/core.xml`, the trailer dictionary for PDF `/CreationDate`,
+`meta.xml` for ODF.
+
+**The dispatch already exists and must be reused, not rebuilt.**
+`search_index::text_extractor::classify(name, mime)` already resolves exactly
+these formats — `Pdf`, `Docx`, `Xlsx`, `Pptx`, `Odf`, `Plain` — by mime with an
+extension fallback, and `supports()` lets the worker skip I/O for the rest. A
+second format registry beside it would be the duplication AGENTS.md forbids;
+the date extractor should share that classifier.
+
+**And it inherits that module's hard-won resilience discipline.** Parsing
+untrusted documents to read one date is an attack surface, and this codebase has
+already been bitten: `extract_pdf` wraps `pdf_extract::extract_text_from_mem` in
+`catch_unwind` because a malformed PDF *panics*, pinned by both a unit test
+(`corrupt_pdf_fails_terminally_instead_of_panicking`) and an integration test
+(`broken_pdf_resilience.hurl`). Any date extractor needs the same treatment plus
+size and time bounds — a zip bomb in `docProps` must not become a worker stall.
+(Related: `panic = "abort"` must stay off release builds, or `catch_unwind`
+stops working at all.)
+
+So the honest sizing: the semantic reframing is nearly free and strictly
+simplifying; the extraction work is a separate, security-sensitive piece that
+should be scoped on its own rather than folded into a dates phase.
 
 ---
 
