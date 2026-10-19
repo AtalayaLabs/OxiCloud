@@ -124,45 +124,6 @@ xpath "string(//*[local-name()='creationdate'])" not matches "^2023-11-15T22:13:
 
 
 # ═════════════════════════════════════════════════════════════
-# Part B — A rename does NOT move the content clock
-# ═════════════════════════════════════════════════════════════
-# The regression the whole dates plan exists to fix. Before §2, every
-# mtime read resolved to `updated_at`, which a rename bumps — so
-# renaming a file announced a content change to every sync client and
-# triggered a needless re-download.
-#
-# Hurl gotcha: headers MUST precede section blocks like `[BasicAuth]`,
-# or `Destination:` is parsed as a new request's method line.
-MOVE {{base_url}}/remote.php/dav/files/{{username}}/nc-mtime-probe.txt
-Destination: {{base_url}}/remote.php/dav/files/{{username}}/nc-mtime-renamed.txt
-[BasicAuth]
-{{nc_username}}: {{nc_password}}
-
-HTTP 201
-
-
-PROPFIND {{base_url}}/remote.php/dav/files/{{username}}/nc-mtime-renamed.txt
-Depth: 0
-Content-Type: application/xml; charset=utf-8
-[BasicAuth]
-{{nc_username}}: {{nc_password}}
-```
-<?xml version="1.0" encoding="utf-8"?>
-<D:propfind xmlns:D="DAV:">
-  <D:prop>
-    <D:getlastmodified/>
-  </D:prop>
-</D:propfind>
-```
-
-HTTP 207
-[Asserts]
-# Identical to A2. The rename bumped `updated_at`; `content_modified_at`
-# must not have moved.
-xpath "string(//*[local-name()='getlastmodified'])" matches "^Wed, 15 Nov 2023 22:13:20 (GMT|\\+0000)$"
-
-
-# ═════════════════════════════════════════════════════════════
 # Part A3 — `nc:upload_time` reports RECEIPT, not content (§0)
 # ═════════════════════════════════════════════════════════════
 # This file is the ideal fixture for it: its content clock is pinned to
@@ -202,6 +163,45 @@ xpath "string(//*[local-name()='upload_time'])" matches "^[0-9]+$"
 # NOT the asserted content mtime. 1700086400 is the X-OC-Mtime from
 # Part A; receipt happened just now, so this must be some other value.
 xpath "string(//*[local-name()='upload_time'])" != "1700086400"
+
+
+# ═════════════════════════════════════════════════════════════
+# Part B — A rename does NOT move the content clock
+# ═════════════════════════════════════════════════════════════
+# The regression the whole dates plan exists to fix. Before §2, every
+# mtime read resolved to `updated_at`, which a rename bumps — so
+# renaming a file announced a content change to every sync client and
+# triggered a needless re-download.
+#
+# Hurl gotcha: headers MUST precede section blocks like `[BasicAuth]`,
+# or `Destination:` is parsed as a new request's method line.
+MOVE {{base_url}}/remote.php/dav/files/{{username}}/nc-mtime-probe.txt
+Destination: {{base_url}}/remote.php/dav/files/{{username}}/nc-mtime-renamed.txt
+[BasicAuth]
+{{nc_username}}: {{nc_password}}
+
+HTTP 201
+
+
+PROPFIND {{base_url}}/remote.php/dav/files/{{username}}/nc-mtime-renamed.txt
+Depth: 0
+Content-Type: application/xml; charset=utf-8
+[BasicAuth]
+{{nc_username}}: {{nc_password}}
+```
+<?xml version="1.0" encoding="utf-8"?>
+<D:propfind xmlns:D="DAV:">
+  <D:prop>
+    <D:getlastmodified/>
+  </D:prop>
+</D:propfind>
+```
+
+HTTP 207
+[Asserts]
+# Identical to A2. The rename bumped `updated_at`; `content_modified_at`
+# must not have moved.
+xpath "string(//*[local-name()='getlastmodified'])" matches "^Wed, 15 Nov 2023 22:13:20 (GMT|\\+0000)$"
 
 
 # ═════════════════════════════════════════════════════════════
