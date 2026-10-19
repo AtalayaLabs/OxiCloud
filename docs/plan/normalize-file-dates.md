@@ -13,7 +13,7 @@ heading:
 | phase | state |
 |---|---|
 | §0 fix the two `nc:` slots | **HALF DONE** 2026-10-20 — `nc:upload_time` → `created_at` shipped. `nc:creation_time` still needs `captured_at` PLUMBED to the NC PROPFIND site (`FileDto` has only `created_at`/`modified_at`); never blocked by the inbound test, which gates §4 only |
-| §1 add `content_modified_at`, write it, read nothing | **NEARLY DONE** — migration, writers and trust bounds shipped (`625f089d`), CREATE-path gap closed. Tests 2026-10-20: the five metadata mutations and the chunked-assemble path are covered; **delta commit is not**, and cannot be in Hurl (needs real CDC chunk hashes) — it is exercised only by `rt_bus_check.sh` |
+| §1 add `content_modified_at`, write it, read nothing | **DONE** 2026-10-20 — migration, writers and trust bounds (`625f089d`), CREATE-path gap closed, and the tests landed green. Two documented non-gaps: delta commit is not coverable in Hurl (CDC hashes — `rt_bus_check.sh` S21 covers it), and `/api/files/upload` **overwrite** was misdescribed — that endpoint only creates. See § Coverage as landed |
 | §2 repoint the `modified_at` alias + ETag | **DONE** — file-side (27 sites + cursor predicate, `8d0631be`) and folder-side DAV-only (`2def1acb`). One gap left open: NC REPORT search, see Open decisions |
 | §3 sort axes | **DONE (interim two-arm form)** — `media_sort_date` on the content clock + both search axes repointed. §4 inserts the `source_created_at` arm |
 | §4 add `source_created_at` | **BLOCKED, and possibly unnecessary** — reframed 2026-10-19: if `captured_at` means "the date the bytes claim" (EXIF | OOXML | PDF) then §4 is "widen the extractor", no new column, and §3's chain is already final. Conditional on the NextCloud inbound test |
@@ -272,6 +272,24 @@ one hour in the future, reject earlier than 2000-01-01, 400 and never clamp.
 
 Nothing reads the column in this phase, so a bug writes a wrong value somewhere
 invisible.
+
+#### Coverage as landed, 2026-10-20 — and one path that does not exist
+
+| path | status |
+|---|---|
+| WebDAV `PUT` replacing the blob | ✅ `nc_webdav_client_mtime` Part B2 |
+| chunked upload completion | ✅ `nc_webdav_client_mtime` Part E (the NC assemble surface) |
+| delta commit | ⚠️ **not coverable in Hurl** — needs real CDC chunk hashes. Exercised by `rt_bus_check.sh` S21 only |
+| `/api/files/upload` **overwrite** | ❌ **misdescribed in this plan.** That endpoint does not overwrite: `upload_file_streaming` calls `save_file_with_blob` directly — a plain INSERT, no existence check. It is a CREATE path, and it stamps `NOW()` by passing `None` |
+| the five metadata mutations | ✅ rename in `nc_webdav_client_mtime` Part B; favourite / grant / move / trash+restore in `content_clock_metadata_mutations` |
+
+Two honest caveats on the ticks. The REST chunked endpoint
+(`/api/uploads/{id}/complete`) cannot carry a mtime at all — it routes through
+`upload_file_streaming_with_perms`, which takes no such parameter — so "chunked
+upload completion" means the NC assemble path specifically. And the second half
+of the metadata-mutation requirement, *"while still bumping `updated_at`"*, is
+**not observable over HTTP**: `updated_at` is absent from every DTO by design,
+so the tests prove the content clock held and cannot prove ctime moved.
 
 **Verification — this is the phase where the tests earn their keep**, because
 they are what makes §2 safe to ship:
