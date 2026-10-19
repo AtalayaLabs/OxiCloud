@@ -191,7 +191,32 @@ enum ZipSource {
     Slides,
 }
 
+/// Panic-guarded wrapper, mirroring [`extract_pdf`].
+///
+/// `extract_pdf` has had a `catch_unwind` since a malformed PDF was found to
+/// panic `pdf_extract`; the zipped-XML path had none, even though it parses
+/// exactly as untrusted a byte stream through two more third-party parsers
+/// (`zip` for the container, the XML reader for each entry). A broken `.xlsx`
+/// or `.docx` must mark itself failed, not take the index worker down with it.
+///
+/// Unbounded *memory* is already handled separately: `max_text_bytes` caps the
+/// output and `collect_xml_text` stops reading once that cap is reached, so a
+/// zip bomb costs bounded work rather than the whole expansion. This guard is
+/// specifically about panics.
 fn extract_zipped_xml(
+    bytes: &[u8],
+    source: ZipSource,
+    max_text_bytes: usize,
+) -> Result<String, String> {
+    match catch_unwind(AssertUnwindSafe(|| {
+        extract_zipped_xml_inner(bytes, source, max_text_bytes)
+    })) {
+        Ok(result) => result,
+        Err(_) => Err("zip: extractor panicked".to_owned()),
+    }
+}
+
+fn extract_zipped_xml_inner(
     bytes: &[u8],
     source: ZipSource,
     max_text_bytes: usize,
@@ -422,6 +447,64 @@ mod tests {
         assert!(matches!(
             extract("roto.pdf", "application/pdf", b"definitely not a pdf", 4096),
             ExtractedText::Failed(_)
+        ));
+    }
+
+    /// The zipped-XML formats need the same guarantee the PDF path has had.
+    /// Each goes through two more third-party parsers on untrusted bytes —
+    /// `zip` for the container, the XML reader per entry — and until
+    /// `extract_zipped_xml` gained its `catch_unwind` a panic in either would
+    /// have taken the content-index worker down rather than marking one blob
+    /// failed.
+    ///
+    /// Garbage bytes under each of the four mime types: the container itself
+    /// is invalid, so this exercises the zip-open failure path. A panic
+    /// anywhere in it fails the test by aborting the test binary, which is
+    /// exactly the signal wanted.
+    #[test]
+    fn corrupt_office_documents_fail_terminally_instead_of_panicking() {
+        for (name, mime) in [
+            (
+                "broken.docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ),
+            (
+                "broken.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ),
+            (
+                "broken.pptx",
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            ),
+            ("broken.odt", "application/vnd.oasis.opendocument.text"),
+        ] {
+            assert!(
+                matches!(
+                    extract(name, mime, b"definitely not a zip archive", 4096),
+                    ExtractedText::Failed(_)
+                ),
+                "{name} ({mime}) should fail terminally, not panic or succeed"
+            );
+        }
+    }
+
+    /// A ZIP that opens but has none of the expected entries must also be a
+    /// clean failure — this is the shape a truncated or re-zipped office file
+    /// takes, and it reaches further into the extractor than pure garbage.
+    #[test]
+    fn valid_zip_without_expected_entries_fails_cleanly() {
+        // Smallest possible valid zip: an empty central directory.
+        let empty_zip: &[u8] = &[
+            0x50, 0x4b, 0x05, 0x06, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        assert!(matches!(
+            extract(
+                "empty.docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                empty_zip,
+                4096
+            ),
+            ExtractedText::Failed(_) | ExtractedText::Empty
         ));
     }
 }

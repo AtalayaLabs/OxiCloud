@@ -51,6 +51,25 @@ fn transcode_pool() -> &'static rayon::ThreadPool {
         rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
             .thread_name(|idx| format!("transcode-{idx}"))
+            // Rayon's default panic behaviour for this pool is to ABORT THE
+            // PROCESS ("If no panic handler is set, the default is to abort
+            // the process, under the principle that panics should not go
+            // unobserved"). Every current `spawn` on this pool already
+            // catches its own panics, so this handler should never fire — it
+            // exists so that a future `spawn` added without that care
+            // degrades to a logged warning instead of killing the server.
+            //
+            // Deliberately does not re-panic: rayon aborts if the panic
+            // handler itself panics.
+            .panic_handler(|_| {
+                tracing::error!(
+                    target: "audit",
+                    event = "transcode.pool_panic_unhandled",
+                    "🛑 panic escaped a transcode-pool task without a local \
+                     catch_unwind. Contained here, but the task's result is \
+                     lost — wrap the spawn body instead.",
+                );
+            })
             .build()
             .expect("Failed to create transcode thread pool")
     })
@@ -496,8 +515,40 @@ impl ImageTranscodeService {
 
         let (tx, rx) = tokio::sync::oneshot::channel();
 
+        // `catch_unwind` is load-bearing here, not belt-and-braces: a panic
+        // inside `rayon::ThreadPool::spawn` ABORTS THE PROCESS by default.
+        // Rayon's own docs: "If no panic handler is set, the default is to
+        // abort the process, under the principle that panics should not go
+        // unobserved." Fire-and-forget `spawn` has no caller to propagate to,
+        // so there is no softer default available.
+        //
+        // The input is untrusted image bytes and the decoder is `image`, so a
+        // malformed upload reaching this path could take the whole server
+        // down — a corrupt thumbnail is an acceptable outcome, a dead process
+        // is not. Converting the panic into the `Err(String)` this function
+        // already returns means the waiting `rx.await` gets a value and the
+        // request fails cleanly instead of the oneshot being dropped.
+        //
+        // `AssertUnwindSafe` is sound because nothing observable is shared
+        // across the boundary: `content_for_rayon` is an immutable `Bytes`
+        // and the only output leaves via `tx`.
         transcode_pool().spawn(move || {
-            let result = transcode_image_blocking(&content_for_rayon, &mime_owned, target_format);
+            let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                transcode_image_blocking(&content_for_rayon, &mime_owned, target_format)
+            })) {
+                Ok(r) => r,
+                Err(_) => {
+                    tracing::warn!(
+                        target: "audit",
+                        event = "transcode.decoder_panicked",
+                        mime = %mime_owned,
+                        bytes = content_for_rayon.len(),
+                        "⚠️  image decoder panicked on untrusted input; failing the \
+                         transcode instead of aborting the process",
+                    );
+                    Err("transcode: image decoder panicked".to_string())
+                }
+            };
             let _ = tx.send(result);
         });
 
