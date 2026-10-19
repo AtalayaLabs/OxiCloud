@@ -31,8 +31,12 @@
 #   created 1st → aaa, mtime 2023-11-15  (NEWER content clock)
 #   created 2nd → bbb, mtime 2020-07-07  (OLDER content clock)
 #
-#   after §3  → aaa, bbb   (content clock DESC)
-#   before §3 → bbb, aaa   (updated_at DESC, i.e. creation order)
+# Search defaults to ASCENDING — `reverse ? "DESC" : "ASC"` in
+# `file_blob_read_repository`, which is the OPPOSITE of the photos and
+# folder listings, where `reverse=false` means DESC. So oldest first:
+#
+#   after §3  → bbb, aaa   (content clock ASC: 2020 then 2023)
+#   before §3 → aaa, bbb   (updated_at ASC, i.e. creation order)
 #
 # Exactly reversed, three years apart, so there is no timing
 # sensitivity and no tie to break.
@@ -111,9 +115,9 @@ jsonpath "$.items" count == 2
 # ═════════════════════════════════════════════════════════════
 # THE assertion
 # ═════════════════════════════════════════════════════════════
-# Newest content clock first, which is the REVERSE of the order the
-# two files were created in. A build ordering on `updated_at` returns
-# bbb first.
+# Oldest content clock first (search's default is ASC), which is the
+# REVERSE of the order the two files were created in. A build ordering
+# on `updated_at` returns aaa first.
 #
 # Positional access rather than a `[?(...)]` filter: Hurl collapses a
 # single-match filter to a bare scalar and `nth`/`count` then error.
@@ -123,17 +127,17 @@ Authorization: Bearer {{jwt}}
 HTTP 200
 [Asserts]
 jsonpath "$.items" count == 2
-jsonpath "$.items[0].resource.name" == "aaa-srchclock-needle.txt"
-jsonpath "$.items[1].resource.name" == "bbb-srchclock-needle.txt"
+jsonpath "$.items[0].resource.name" == "bbb-srchclock-needle.txt"
+jsonpath "$.items[1].resource.name" == "aaa-srchclock-needle.txt"
 # And the reported dates are the asserted mtimes, not the upload
 # moments — so the ordering above is the content clock rather than a
 # coincidence of creation order.
-jsonpath "$.items[0].resource.modified_at" startsWith "2023-11-15T22:13:20"
-jsonpath "$.items[1].resource.modified_at" startsWith "2020-07-07T20:22:22"
+jsonpath "$.items[0].resource.modified_at" startsWith "2020-07-07T20:22:22"
+jsonpath "$.items[1].resource.modified_at" startsWith "2023-11-15T22:13:20"
 
 
 # ─────────────────────────────────────────────────────────────
-# Reversed — the same pair, oldest content clock first. `reverse`
+# Reversed — the same pair, newest content clock first. `reverse`
 # flips the SQL direction, and a build whose direction and column
 # disagreed would show it here rather than above.
 # ─────────────────────────────────────────────────────────────
@@ -143,8 +147,8 @@ Authorization: Bearer {{jwt}}
 HTTP 200
 [Asserts]
 jsonpath "$.items" count == 2
-jsonpath "$.items[0].resource.name" == "bbb-srchclock-needle.txt"
-jsonpath "$.items[1].resource.name" == "aaa-srchclock-needle.txt"
+jsonpath "$.items[0].resource.name" == "aaa-srchclock-needle.txt"
+jsonpath "$.items[1].resource.name" == "bbb-srchclock-needle.txt"
 
 
 # ═════════════════════════════════════════════════════════════

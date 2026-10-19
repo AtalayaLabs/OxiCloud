@@ -387,9 +387,35 @@ impl FileBlobWriteRepository {
                 INSERT INTO storage.files
                     (name, folder_id, drive_id, blob_hash, size,
                      mime_type, category_order, created_by, updated_by,
-                     content_modified_at)
+                     content_modified_at, media_sort_date)
                 SELECT $1, parent.id, parent.drive_id, $3, $4,
                        $5, $6, $7, $7,
+                       COALESCE(to_timestamp($8), NOW()),
+                       -- Same value as content_modified_at, and it must be
+                       -- set HERE rather than left to the column default.
+                       --
+                       -- `media_sort_date` is COALESCE(captured_at,
+                       -- content_modified_at). At INSERT no `file_metadata`
+                       -- row can exist yet (its FK points at this row), so
+                       -- the chain reduces to `content_modified_at` — and
+                       -- the column's own DEFAULT is CURRENT_TIMESTAMP,
+                       -- which is a DIFFERENT value whenever the caller
+                       -- asserted an X-OC-Mtime. That left a fresh upload
+                       -- sorted by its arrival time while reporting a 2023
+                       -- mtime, caught by
+                       -- `photos_sort_date_content_clock.hurl`.
+                       --
+                       -- Deliberately not a BEFORE INSERT trigger: that
+                       -- would also fire for `copy_folder_tree`, which
+                       -- passes an explicit `media_sort_date` copied from
+                       -- the source so a copied photo keeps its place in
+                       -- the timeline. A trigger cannot tell an explicit
+                       -- value from a defaulted one and would clobber it.
+                       --
+                       -- A later EXIF extraction fires
+                       -- `trg_sync_media_sort_date` on the `file_metadata`
+                       -- insert, which recomputes the full COALESCE — so
+                       -- the `captured_at` arm still wins once it exists.
                        COALESCE(to_timestamp($8), NOW())
                   FROM parent
                 RETURNING id::text,
