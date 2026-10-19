@@ -489,6 +489,7 @@ impl FileUploadUseCase for StubFileUploadUseCase {
         _content_type: String,
         _blob: StoredBlob,
         _caller_id: Uuid,
+        _source_modified_at: Option<i64>,
     ) -> Result<FileDto, DomainError> {
         Ok(FileDto::default())
     }

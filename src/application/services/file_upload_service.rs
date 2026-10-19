@@ -280,6 +280,9 @@ impl FileUploadService {
                     is_new_blob: false,
                 },
                 caller_id,
+                // By-hash instant upload: the client sent only a hash,
+                // so there is no source mtime to assert.
+                None,
             )
             .await?;
 
@@ -456,6 +459,7 @@ impl FileUploadUseCase for FileUploadService {
         content_type: String,
         blob: StoredBlob,
         caller_id: Uuid,
+        source_modified_at: Option<i64>,
     ) -> Result<FileDto, DomainError> {
         let file = self
             .file_write
@@ -466,10 +470,11 @@ impl FileUploadUseCase for FileUploadService {
                 &blob.hash,
                 blob.size,
                 caller_id,
-                // This path carries no client-asserted mtime — it is the
-                // plain REST streaming upload, which has no `X-OC-Mtime`
-                // equivalent on the wire. `None` stamps NOW().
-                None,
+                // §9 — the client's asserted source mtime, already rounded
+                // from milliseconds and validated against the trust bounds
+                // by the caller. `None` stamps NOW(), which is every caller
+                // that has nothing to assert.
+                source_modified_at,
             )
             .await?;
         let dto = FileDto::from(file);
@@ -542,7 +547,7 @@ impl FileUploadUseCase for FileUploadService {
                 .await?;
         }
 
-        self.upload_file_streaming(name, folder_id, content_type, blob, caller_id)
+        self.upload_file_streaming(name, folder_id, content_type, blob, caller_id, None)
             .await
     }
 

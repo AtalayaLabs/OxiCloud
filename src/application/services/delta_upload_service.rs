@@ -655,6 +655,8 @@ impl DeltaUploadService {
                         content_type,
                         blob,
                         caller_id,
+                        // Delta commit carries no mtime slot yet — see §9.
+                        None,
                     )
                     .await
             }

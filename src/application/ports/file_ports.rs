@@ -58,6 +58,7 @@ pub trait FileUploadUseCase: Send + Sync + 'static {
         content_type: String,
         blob: StoredBlob,
         caller_id: Uuid,
+        source_modified_at: Option<i64>,
     ) -> Result<FileDto, DomainError>;
 
     /// `_with_perms` variant of `upload_file_streaming` — enforces

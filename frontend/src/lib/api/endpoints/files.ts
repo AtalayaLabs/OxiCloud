@@ -47,6 +47,28 @@ export async function dedupCheckBatch(hashes: string[]): Promise<Set<string>> {
 }
 
 /**
+ * Attach the browser's `File.lastModified` so the upload preserves the
+ * source mtime instead of being stamped with the upload moment.
+ *
+ * **Must be appended BEFORE the `file` part.** The server reads multipart
+ * fields in order and the `file` field consumes the stream, so anything
+ * after it is never seen — the same ordering constraint `folder_id` has.
+ *
+ * Sent as **milliseconds**, verbatim from the File API. `X-OC-Mtime` on the
+ * NextCloud surfaces is seconds because ownCloud defined it that way; this
+ * field is ours, and handing over the raw value keeps the round-half-up rule
+ * in one place on the server rather than asking every client to implement it.
+ *
+ * `lastModified` is 0 for a `File` synthesised without one (some clipboard
+ * and share-target paths), and the server's trust bounds reject anything
+ * before 2000-01-01 with a 400 — so a falsy value is omitted rather than
+ * sent and refused.
+ */
+function appendSourceMtime(form: FormData, file: File): void {
+	if (file.lastModified) form.append('source_modified_at', String(file.lastModified));
+}
+
+/**
  * Upload a file. Resolves to the created file — the endpoint replies
  * `201` with the new row, and callers that need its id (to link to it,
  * or to offer an undo) would otherwise have to re-list the folder to
@@ -55,6 +77,7 @@ export async function dedupCheckBatch(hashes: string[]): Promise<Set<string>> {
 export async function uploadFile(folderId: string | null, file: File): Promise<FileItem | null> {
 	const form = new FormData();
 	if (folderId) form.append('folder_id', folderId);
+	appendSourceMtime(form, file);
 	form.append('file', file);
 	const res = await apiFetch('/api/files/upload', {
 		method: 'POST',
@@ -82,6 +105,7 @@ export async function uploadFileWithProgress(
 ): Promise<void> {
 	const form = new FormData();
 	if (folderId) form.append('folder_id', folderId);
+	appendSourceMtime(form, file);
 	form.append('file', file);
 	const response = await apiFetch('/api/files/upload', {
 		method: 'POST',
