@@ -849,7 +849,17 @@ jobs:
     name: WebDAV RFC 4918 — litmus (59/59)
     needs: build
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    # Pinned to 22.04 alongside build / api-test / front-test. Three
+    # alignment reasons:
+    # 1. The `litmus` apt package may not be present on 26.04 (newly-
+    #    released LTS, packaging catches up slowly). On Jammy
+    #    `apt-get install -y litmus` is a known-good `litmus 0.13-1`.
+    # 2. This job consumes the pre-built `oxicloud` binary from the
+    #    `build` job (also pinned to 22.04). Running the binary on
+    #    the OS it was built on avoids glibc backward-compat surprises.
+    # 3. Keeps the four binary-consuming jobs (build + api-test +
+    #    front-test + litmus) in one coherent Jammy cohort.
+    runs-on: ubuntu-22.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
