@@ -201,10 +201,16 @@ fn extract_zipped_xml(
     let entries: Vec<String> = match source {
         ZipSource::Fixed(name) => vec![name.to_owned()],
         ZipSource::Slides => {
+            // zip 9's `file_names()` returns `Result<Cow<'_, str>,
+            // ZipError>` items (was `&str` in zip 8). Drop entries whose
+            // name couldn't be decoded — same effect as the pre-upgrade
+            // path, which simply never saw those entries. See
+            // RUSTSEC-2026-0367/0368/0369 for the upgrade rationale.
             let mut slides: Vec<String> = archive
                 .file_names()
+                .filter_map(|r| r.ok())
                 .filter(|n| n.starts_with("ppt/slides/slide") && n.ends_with(".xml"))
-                .map(str::to_owned)
+                .map(|n| n.into_owned())
                 .collect();
             slides.sort();
             slides
