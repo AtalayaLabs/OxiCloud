@@ -173,12 +173,11 @@ async fn handle_filter_files(
         // = ANY($1) query for the whole result set. A failure degrades the
         // property to "unknown" rather than failing the REPORT, since it is
         // presentational — see `super::nc_creation_time`.
-        let file_meta = state
-            .repositories
-            .file_metadata_repository
-            .get_batch(&file_uuids)
-            .await
-            .unwrap_or_default();
+        let file_meta = crate::interfaces::nextcloud::nc_creation_times(
+            &state.repositories.file_metadata_repository,
+            &file_uuids,
+        )
+        .await;
 
         // Keep main's batched-resolution structure (one batch query
         // per type, not 2N round-trips). Hrefs use `url_user` so the
@@ -350,12 +349,11 @@ async fn handle_search(
         // = ANY($1) query for the whole result set. A failure degrades the
         // property to "unknown" rather than failing the REPORT, since it is
         // presentational — see `super::nc_creation_time`.
-        let file_meta = state
-            .repositories
-            .file_metadata_repository
-            .get_batch(&file_uuids)
-            .await
-            .unwrap_or_default();
+        let file_meta = crate::interfaces::nextcloud::nc_creation_times(
+            &state.repositories.file_metadata_repository,
+            &file_uuids,
+        )
+        .await;
 
         // Files.
         // One oc:id buffer reused across both emit loops (benches/ROUND27.md §H1).

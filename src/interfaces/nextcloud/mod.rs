@@ -16,7 +16,9 @@ use std::collections::HashMap;
 use axum::http::HeaderMap;
 
 use crate::application::dtos::timestamp_helpers::validate_client_mtime;
-use crate::infrastructure::repositories::pg::file_metadata_repository::StoredMetadata;
+use crate::infrastructure::repositories::pg::file_metadata_repository::{
+    FileMetadataRepository, StoredMetadata,
+};
 use crate::interfaces::errors::AppError;
 
 /// Epoch seconds for the `nc:creation_time` PROPFIND property, or `None`
@@ -61,6 +63,37 @@ pub(crate) fn nc_creation_time(
     file_id: &str,
 ) -> Option<i64> {
     meta.get(file_id)?.captured_at.map(|t| t.timestamp().max(0))
+}
+
+/// Batch-read the content metadata backing `nc:creation_time`, degrading
+/// to an empty map on failure.
+///
+/// Shared by all four PROPFIND/REPORT emit sites, which previously each
+/// wrote their own `.unwrap_or_default()`. Centralised for one reason
+/// beyond duplication: the degradation must be **loud**. A failed read and
+/// a file that genuinely claims no date both yield `0` on the wire, so
+/// without this warning a broken query is indistinguishable from correct
+/// "unknown" output — including to the Hurl guard, which asserts `0`.
+///
+/// Degrading rather than propagating is deliberate: the property is
+/// presentational, and no sync client acts on it, so a metadata outage
+/// must not deny a listing.
+pub(crate) async fn nc_creation_times(
+    repo: &FileMetadataRepository,
+    file_ids: &[&str],
+) -> HashMap<String, StoredMetadata> {
+    match repo.get_batch(file_ids).await {
+        Ok(map) => map,
+        Err(e) => {
+            tracing::warn!(
+                target: "oxicloud::nextcloud",
+                error = %e,
+                file_count = file_ids.len(),
+                "⚠️ content-metadata read failed; nc:creation_time degrades to 0 for these rows",
+            );
+            HashMap::new()
+        }
+    }
 }
 
 /// Parse and validate the NextCloud `X-OC-Mtime` header — the client

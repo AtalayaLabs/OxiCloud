@@ -437,13 +437,11 @@ async fn handle_propfind(
             // contract. Degrades to "unknown" on error — see
             // `super::nc_creation_time`.
             let creation_time = {
-                let ids = [file.id.as_str()];
-                let meta = state
-                    .repositories
-                    .file_metadata_repository
-                    .get_batch(&ids)
-                    .await
-                    .unwrap_or_default();
+                let meta = super::nc_creation_times(
+                    &state.repositories.file_metadata_repository,
+                    &[file.id.as_str()],
+                )
+                .await;
                 super::nc_creation_time(&meta, &file.id)
             };
 
@@ -1940,17 +1938,10 @@ fn build_nc_streaming_propfind(
                     },
                     batch_resolve_ids(file_id_svc, &file_uuids, &[]),
                     files_dead_props_map(&state.webdav_dead_props, &batch),
-                    async {
-                        // A metadata read failure must not fail the PROPFIND:
-                        // the property is presentational, so degrade to
-                        // "unknown" (0) rather than denying the listing.
-                        state
-                            .repositories
-                            .file_metadata_repository
-                            .get_batch(&file_uuids)
-                            .await
-                            .unwrap_or_default()
-                    },
+                    super::nc_creation_times(
+                        &state.repositories.file_metadata_repository,
+                        &file_uuids,
+                    ),
                 );
 
                 let mut chunk = Vec::with_capacity(batch_len * 1024);
