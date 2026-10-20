@@ -6,7 +6,7 @@ import { fetchResourcePage, type ResourcePage, type ResourcePageOpts } from './r
 import type { TrashResourceItem } from '$lib/api/types';
 
 export function fetchTrashPage(opts?: ResourcePageOpts): Promise<ResourcePage<TrashResourceItem>> {
-	return fetchResourcePage<TrashResourceItem>('/api/trash/resources', 'deletion_date', opts);
+	return fetchResourcePage<TrashResourceItem>('/api/trash/resources', 'expires_at', opts);
 }
 
 /** Days from now until `value` (negative when already past). */

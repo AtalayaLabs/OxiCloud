@@ -19,7 +19,7 @@ heading:
 | §4 add `source_created_at` | **UNBLOCKED, and now clearly necessary** — repurposed 2026-10-20: it is the store for the client-asserted creation time, NextCloud's `X-OC-CTime` (the sibling of §9's `X-OC-Mtime`/`source_modified_at`). That is a DIFFERENT value from the metadata date §0 now emits — client filesystem birthtime vs. what the bytes claim — so the two coexist rather than one replacing the other. Final chain: `COALESCE(client ctime, content metadata date, 0)`. Still gated on the inbound test, which now answers one concrete question: does the NC client actually send `X-OC-CTime`? |
 | §5 tighten to `NOT NULL` | **FOLDED INTO §1** 2026-10-17 — the migration lands it in-transaction |
 | §6 UI axes | **DONE** 2026-10-19 — `updated_at` retired from the wire outright (no deprecation window: API too recent, SPA is the only consumer), `Created date` → `Added date`, persisted Photos preference migrated on read |
-| §7 naming normalisation | **NOT STARTED** — `order_by` everywhere, typed per-endpoint enums, `deletion_date` → `expires_at`; ships independently. Compile-time protection waits on the generated-SDK redirects |
+| §7 naming normalisation | **PARTS 1–2 DONE** 2026-10-20 — part 1 (`13a24a20`): `order_by` on the two grant endpoints (the only ones that had shipped `sort_by`), `CursorQuery` template fixed, Hurl pin, plus 3 unrelated OpenAPI param gaps found by an audit. Part 2: `deletion_date` → `expires_at` through DTO + entity + SQL alias + FE. Part 3 (typed per-endpoint enums) REMAINS — note the plan's single `GrantOrderBy` is wrong, the two grant endpoints accept different sets from one shared query struct. Compile-time protection still waits on the generated-SDK redirects |
 | §9 preserve the browser's mtime on upload | **DONE** 2026-10-20 — `source_modified_at` (epoch ms) on ALL THREE upload paths: multipart `/api/files/upload`, `/api/files/by-hash` (the instant-upload short-circuit) and delta commit (both create and update modes). Both UI entry points — picker and drag, single and multi — send `File.lastModified`. Original: — repository layer and helpers are ready. THREE upload paths to cover (multipart, delta, chunked); the SPA picks by file size, so covering only `/api/files/upload` would drop mtime on every large upload |
 | §8 folders get a content clock | **DONE** 2026-10-18 — `storage.folders.content_modified_at` with POSIX entry-list semantics (migration `20261103000008`), 14 folder-side reads repointed, keyset predicate back to one column |
 
@@ -1278,6 +1278,37 @@ handler accepts `"updated_at"`, and no wire DTO selects `storage.files.updated_a
 
 Adjacent to the date work rather than part of it — ships independently, no
 column changes. Two conventions, applied everywhere.
+
+### Decided: do NOT make `CursorQuery` visible in OpenAPI (2026-10-20)
+
+Asked during part 1, and the answer is no — with the measurement that
+settles it. **There is no schema gap.** All 8 paged endpoints (the 7
+`/resources` ones plus `/api/search`) already declare `limit`, `cursor` and
+`order_by` individually, verified against `resources/gen/openapi.json`. The
+phase text below calling `CursorQuery` "wire-visible" was wrong in the other
+direction too: it has zero occurrences in the generated schema, nothing
+flattens it (`serde_urlencoded` can't), and its only live export is
+`default_limit`.
+
+So registering it would be de-duplication *inside the spec*, not a fix to the
+wire contract. Three reasons not to:
+
+1. **It contradicts typed sort axes below.** A shared `order_by` parameter
+   would have to describe one accepted set and one default, and every endpoint
+   has its own — which is the entire argument for per-endpoint enums. Part 3
+   deliberately makes `order_by` *more* endpoint-specific; sharing its
+   definition pulls the opposite way.
+2. **It would introduce a convention the spec does not use.** The document has
+   `components.parameters: 0` today. Reusable parameters would be a new
+   pattern adopted for one struct.
+3. **`limit` + `cursor` are the only honest candidates** — those two genuinely
+   are uniform across all 8 — and they are already documented correctly
+   everywhere, so the change buys nothing a caller can observe.
+
+`CursorQuery` earns its keep as the *implementer* template, not as a schema
+component. Part 1 fixed the thing that actually mattered there: its doc
+example said `sort_by`, and since that example is copy-me instructions, the
+deviation re-seeded itself into each new endpoint.
 
 ### `order_by`, not `sort_by`
 

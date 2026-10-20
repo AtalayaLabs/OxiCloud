@@ -27,7 +27,7 @@ pub struct TrashedItem {
     name: String,
     original_path: String,
     trashed_at: DateTime<Utc>,
-    deletion_date: DateTime<Utc>,
+    expires_at: DateTime<Utc>,
 }
 
 impl TrashedItem {
@@ -48,7 +48,7 @@ impl TrashedItem {
             name,
             original_path,
             trashed_at: now,
-            deletion_date: now + chrono::Duration::days(retention_days as i64),
+            expires_at: now + chrono::Duration::days(retention_days as i64),
         }
     }
 
@@ -61,7 +61,7 @@ impl TrashedItem {
         name: String,
         original_path: String,
         trashed_at: DateTime<Utc>,
-        deletion_date: DateTime<Utc>,
+        expires_at: DateTime<Utc>,
     ) -> Self {
         Self {
             id,
@@ -71,7 +71,7 @@ impl TrashedItem {
             name,
             original_path,
             trashed_at,
-            deletion_date,
+            expires_at,
         }
     }
 
@@ -105,8 +105,8 @@ impl TrashedItem {
         self.trashed_at
     }
 
-    pub fn deletion_date(&self) -> DateTime<Utc> {
-        self.deletion_date
+    pub fn expires_at(&self) -> DateTime<Utc> {
+        self.expires_at
     }
 
     /// Decompose into owned parts for DTO conversion — moves `name` /
@@ -125,6 +125,6 @@ impl TrashedItem {
 
     pub fn days_until_deletion(&self) -> i64 {
         let now = Utc::now();
-        (self.deletion_date - now).num_days().max(0)
+        (self.expires_at - now).num_days().max(0)
     }
 }

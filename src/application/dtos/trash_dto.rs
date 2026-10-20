@@ -85,7 +85,7 @@ pub struct TrashResourceRow {
     /// GC'd by `purge_expired_grants` on the 15-day grace).
     pub is_shared: bool,
     pub trashed_at: DateTime<Utc>,
-    pub deletion_date: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
     /// Original location path (for folders: `path`; for files: `parent.path || '/' || name`).
     pub path: Option<String>,
     // Pre-computed sort fields for cursor construction.
@@ -98,7 +98,7 @@ pub struct TrashResourceRow {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrashCursor {
     /// Sort dimension active when this cursor was produced.
-    /// Values: `"deletion_date"` (default), `"trashed_at"`, `"name"`, `"type"`, `"size"`.
+    /// Values: `"expires_at"` (default), `"trashed_at"`, `"name"`, `"type"`, `"size"`.
     #[serde(default = "TrashCursor::default_order")]
     pub order_by: String,
     /// UUID of the last item on the previous page (tie-breaker).
@@ -110,7 +110,7 @@ pub struct TrashCursor {
     /// size in bytes for `size`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sort_int: Option<i64>,
-    /// Timestamp for `deletion_date` and `trashed_at` sorts.
+    /// Timestamp for `expires_at` and `trashed_at` sorts.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sort_ts: Option<DateTime<Utc>>,
     /// Whether the result set was reversed — must match on every page.
@@ -120,7 +120,7 @@ pub struct TrashCursor {
 
 impl TrashCursor {
     fn default_order() -> String {
-        "deletion_date".to_owned()
+        "expires_at".to_owned()
     }
 }
 
@@ -134,7 +134,7 @@ pub struct TrashResourcesQuery {
     pub limit: u32,
     /// Opaque cursor from a previous response. Omit to start from the first page.
     pub cursor: Option<String>,
-    /// Sort / group-by dimension. Supported: `"deletion_date"` (default — soonest
+    /// Sort / group-by dimension. Supported: `"expires_at"` (default — soonest
     /// expiry first), `"trashed_at"` (most recently trashed first), `"name"`,
     /// `"type"`, `"size"`.
     pub order_by: Option<String>,
@@ -167,7 +167,7 @@ impl TrashResourcesQuery {
 
 /// One item in a `GET /api/trash/resources` page.
 ///
-/// `deletion_date` is the real timestamp at which the item will be permanently
+/// `expires_at` is the real timestamp at which the item will be permanently
 /// deleted (= `trashed_at + retention_days`). The client derives "days until
 /// deletion" itself from this + the current clock — the wire format does not
 /// duplicate that derivation. `resource.path` carries the original location
@@ -178,7 +178,7 @@ pub struct TrashResourceItemDto {
     /// When the user moved the item to trash.
     pub trashed_at: DateTime<Utc>,
     /// When the item will be permanently deleted by the retention sweeper.
-    pub deletion_date: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
     /// The drive the trashed item belongs to. Enables client-side
     /// group-by-drive in the `/trash` UI (D2b spec — see
     /// `project_trash_groupbys_d2b` memory). The drive's display name

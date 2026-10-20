@@ -6,7 +6,7 @@
 	 * — supplied by the page in a `contextMap` keyed by item id.
 	 *
 	 * Example use-cases:
-	 * - `/trash`: `date = deletion_date`, `extras = { driveId, trashedAt }`.
+	 * - `/trash`: `date = expires_at`, `extras = { driveId, trashedAt }`.
 	 * - `/recent`: `date = accessed_at`, `ownerId = updated_by`.
 	 * - `/favorites`: `ownerId = created_by`.
 	 *

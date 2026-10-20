@@ -4631,17 +4631,13 @@ export type TranslationResponseDto = {
 /**
  * One item in a `GET /api/trash/resources` page.
  *
- * `deletion_date` is the real timestamp at which the item will be permanently
+ * `expires_at` is the real timestamp at which the item will be permanently
  * deleted (= `trashed_at + retention_days`). The client derives "days until
  * deletion" itself from this + the current clock — the wire format does not
  * duplicate that derivation. `resource.path` carries the original location
  * (soft-delete preserves the row's `path` column).
  */
 export type TrashResourceItemDto = {
-    /**
-     * When the item will be permanently deleted by the retention sweeper.
-     */
-    deletion_date: string;
     /**
      * The drive the trashed item belongs to. Enables client-side
      * group-by-drive in the `/trash` UI (D2b spec — see
@@ -4650,6 +4646,10 @@ export type TrashResourceItemDto = {
      * holds in `drives.svelte` — no extra round-trip needed.
      */
     drive_id: string;
+    /**
+     * When the item will be permanently deleted by the retention sweeper.
+     */
+    expires_at: string;
     /**
      * Full resource details — shape determined by `resource_type`.
      */
@@ -12658,7 +12658,7 @@ export type GetTrashResourcesData = {
          */
         cursor?: string | null;
         /**
-         * Sort / group-by dimension. Supported: `"deletion_date"` (default — soonest
+         * Sort / group-by dimension. Supported: `"expires_at"` (default — soonest
          * expiry first), `"trashed_at"` (most recently trashed first), `"name"`,
          * `"type"`, `"size"`.
          */

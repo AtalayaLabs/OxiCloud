@@ -418,7 +418,7 @@ impl TrashRepository for MockTrashRepository {
         let mut items = self.trash_items.lock().unwrap();
         let now = Utc::now();
         let before = items.len() as u64;
-        items.retain(|_, item| item.deletion_date() > now);
+        items.retain(|_, item| item.expires_at() > now);
         let deleted = before - items.len() as u64;
         Ok((deleted, 0))
     }

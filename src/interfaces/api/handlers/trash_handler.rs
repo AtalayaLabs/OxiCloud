@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 /// Cursor-paginated list of a user's trashed resources.
 ///
-/// Sorts by `deletion_date` (default — soonest expiry first), `trashed_at`
+/// Sorts by `expires_at` (default — soonest expiry first), `trashed_at`
 /// (most recently trashed first), `name`, `type`, or `size`. Filter on
 /// `resource_types=file` or `resource_types=folder` to narrow to one kind.
 /// Items implicitly trashed as descendants of a trashed parent are excluded
@@ -53,7 +53,7 @@ pub async fn get_trash_resources(
         }
     };
 
-    let order_by = q.order_by.as_deref().unwrap_or("deletion_date").to_owned();
+    let order_by = q.order_by.as_deref().unwrap_or("expires_at").to_owned();
     let cursor_input = q.cursor.clone();
     let limit = q.limit_clamped();
 

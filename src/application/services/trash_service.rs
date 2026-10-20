@@ -937,8 +937,8 @@ impl TrashService {
 /// `reverse` is stored in the cursor so subsequent pages use the same direction.
 fn build_trash_cursor(row: &TrashResourceRow, order_by: &str, reverse: bool) -> TrashCursor {
     let order_by_owned = match order_by {
-        "deletion_date" | "trashed_at" | "name" | "type" | "size" => order_by.to_owned(),
-        _ => "deletion_date".to_owned(),
+        "expires_at" | "trashed_at" | "name" | "type" | "size" => order_by.to_owned(),
+        _ => "expires_at".to_owned(),
     };
     TrashCursor {
         order_by: order_by_owned,
@@ -986,7 +986,7 @@ fn row_to_item_dto(row: TrashResourceRow) -> TrashResourceItemDto {
         TrashResourceItemDto {
             resource_type: ResourceTypeDto::Folder,
             trashed_at: row.trashed_at,
-            deletion_date: row.deletion_date,
+            expires_at: row.expires_at,
             drive_id: row.drive_id,
             resource: ResourceContentDto::Folder(dto),
         }
@@ -1025,7 +1025,7 @@ fn row_to_item_dto(row: TrashResourceRow) -> TrashResourceItemDto {
         TrashResourceItemDto {
             resource_type: ResourceTypeDto::File,
             trashed_at: row.trashed_at,
-            deletion_date: row.deletion_date,
+            expires_at: row.expires_at,
             drive_id: row.drive_id,
             resource: ResourceContentDto::File(dto),
         }

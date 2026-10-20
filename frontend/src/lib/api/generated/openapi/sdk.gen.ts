@@ -3171,7 +3171,7 @@ export const moveFolderToTrash = <ThrowOnError extends boolean = false>(options:
 /**
  * Cursor-paginated list of a user's trashed resources.
  *
- * Sorts by `deletion_date` (default — soonest expiry first), `trashed_at`
+ * Sorts by `expires_at` (default — soonest expiry first), `trashed_at`
  * (most recently trashed first), `name`, `type`, or `size`. Filter on
  * `resource_types=file` or `resource_types=folder` to narrow to one kind.
  * Items implicitly trashed as descendants of a trashed parent are excluded

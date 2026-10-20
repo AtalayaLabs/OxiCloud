@@ -10597,7 +10597,7 @@
           "trash"
         ],
         "summary": "Cursor-paginated list of a user's trashed resources.",
-        "description": "Sorts by `deletion_date` (default — soonest expiry first), `trashed_at`\n(most recently trashed first), `name`, `type`, or `size`. Filter on\n`resource_types=file` or `resource_types=folder` to narrow to one kind.\nItems implicitly trashed as descendants of a trashed parent are excluded\n(only top-level trashed items appear).",
+        "description": "Sorts by `expires_at` (default — soonest expiry first), `trashed_at`\n(most recently trashed first), `name`, `type`, or `size`. Filter on\n`resource_types=file` or `resource_types=folder` to narrow to one kind.\nItems implicitly trashed as descendants of a trashed parent are excluded\n(only top-level trashed items appear).",
         "operationId": "get_trash_resources",
         "parameters": [
           {
@@ -10626,7 +10626,7 @@
           {
             "name": "order_by",
             "in": "query",
-            "description": "Sort / group-by dimension. Supported: `\"deletion_date\"` (default — soonest\nexpiry first), `\"trashed_at\"` (most recently trashed first), `\"name\"`,\n`\"type\"`, `\"size\"`.",
+            "description": "Sort / group-by dimension. Supported: `\"expires_at\"` (default — soonest\nexpiry first), `\"trashed_at\"` (most recently trashed first), `\"name\"`,\n`\"type\"`, `\"size\"`.",
             "required": false,
             "schema": {
               "type": [
@@ -17911,24 +17911,24 @@
       },
       "TrashResourceItemDto": {
         "type": "object",
-        "description": "One item in a `GET /api/trash/resources` page.\n\n`deletion_date` is the real timestamp at which the item will be permanently\ndeleted (= `trashed_at + retention_days`). The client derives \"days until\ndeletion\" itself from this + the current clock — the wire format does not\nduplicate that derivation. `resource.path` carries the original location\n(soft-delete preserves the row's `path` column).",
+        "description": "One item in a `GET /api/trash/resources` page.\n\n`expires_at` is the real timestamp at which the item will be permanently\ndeleted (= `trashed_at + retention_days`). The client derives \"days until\ndeletion\" itself from this + the current clock — the wire format does not\nduplicate that derivation. `resource.path` carries the original location\n(soft-delete preserves the row's `path` column).",
         "required": [
           "resource_type",
           "trashed_at",
-          "deletion_date",
+          "expires_at",
           "drive_id",
           "resource"
         ],
         "properties": {
-          "deletion_date": {
-            "type": "string",
-            "format": "date-time",
-            "description": "When the item will be permanently deleted by the retention sweeper."
-          },
           "drive_id": {
             "type": "string",
             "format": "uuid",
             "description": "The drive the trashed item belongs to. Enables client-side\ngroup-by-drive in the `/trash` UI (D2b spec — see\n`project_trash_groupbys_d2b` memory). The drive's display name\nresolves through the `/api/drives` listing the client already\nholds in `drives.svelte` — no extra round-trip needed."
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the item will be permanently deleted by the retention sweeper."
           },
           "resource": {
             "$ref": "#/components/schemas/ResourceContentDto",

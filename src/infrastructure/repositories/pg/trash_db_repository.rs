@@ -16,7 +16,7 @@ use crate::domain::entities::trashed_item::{TrashedItem, TrashedItemType};
 use crate::domain::repositories::trash_repository::TrashRepository;
 use crate::domain::services::authorization::ResourceKind;
 
-/// Default retention period (days) used when computing deletion_date.
+/// Default retention period (days) used when computing expires_at.
 const _DEFAULT_RETENTION_DAYS: i64 = 30;
 
 /// PostgreSQL-backed trash repository using soft-delete flags.
@@ -92,7 +92,7 @@ impl TrashDbRepository {
         original_path: String,
     ) -> TrashedItem {
         let trashed_at = trashed_at.unwrap_or_else(Utc::now);
-        let deletion_date = trashed_at + chrono::Duration::days(self.retention_days);
+        let expires_at = trashed_at + chrono::Duration::days(self.retention_days);
 
         let item_type_enum = match item_type.as_str() {
             "folder" => TrashedItemType::Folder,
@@ -109,7 +109,7 @@ impl TrashDbRepository {
             name.clone(),
             original_path, // parent folder path at time of trash
             trashed_at,
-            deletion_date,
+            expires_at,
         )
     }
 }
@@ -383,7 +383,7 @@ impl TrashDbRepository {
                AND g.resource_type = 'folder'
         )                                                    AS is_shared,
         fld.trashed_at                                       AS trashed_at,
-        (fld.trashed_at + ($7::int * INTERVAL '1 day'))      AS deletion_date,
+        (fld.trashed_at + ($7::int * INTERVAL '1 day'))      AS expires_at,
         fld.path::text                                       AS resource_path,
         LOWER(fld.name)                                      AS sort_str,
         0::bigint                                            AS type_order,
@@ -422,7 +422,7 @@ impl TrashDbRepository {
                AND g.resource_type = 'file'
         )                                                    AS is_shared,
         f.trashed_at                                         AS trashed_at,
-        (f.trashed_at + ($7::int * INTERVAL '1 day'))        AS deletion_date,
+        (f.trashed_at + ($7::int * INTERVAL '1 day'))        AS expires_at,
         COALESCE(pfld.path::text || '/' || f.name, f.name)   AS resource_path,
         LOWER(f.name)                                        AS sort_str,
         f.category_order::bigint                             AS type_order,
@@ -461,18 +461,18 @@ impl TrashDbRepository {
         // Binds: $1=user_id, $2=cur_str, $3=cur_int, $4=cur_ts,
         //        $5=cur_id, $6=limit, $7=retention_days.
         let (keyset, order_by_clause) = match (order_by, reverse) {
-            // ── deletion_date (DEFAULT) — ASC = expiring soonest first ───────
-            ("deletion_date", false) => (
+            // ── expires_at (DEFAULT) — ASC = expiring soonest first ───────
+            ("expires_at", false) => (
                 "WHERE ($4::timestamptz IS NULL)
-                    OR (deletion_date > $4)
-                    OR (deletion_date = $4 AND resource_id > $5::uuid)",
-                "ORDER BY deletion_date ASC, resource_id ASC",
+                    OR (expires_at > $4)
+                    OR (expires_at = $4 AND resource_id > $5::uuid)",
+                "ORDER BY expires_at ASC, resource_id ASC",
             ),
-            ("deletion_date", true) => (
+            ("expires_at", true) => (
                 "WHERE ($4::timestamptz IS NULL)
-                    OR (deletion_date < $4)
-                    OR (deletion_date = $4 AND resource_id < $5::uuid)",
-                "ORDER BY deletion_date DESC, resource_id DESC",
+                    OR (expires_at < $4)
+                    OR (expires_at = $4 AND resource_id < $5::uuid)",
+                "ORDER BY expires_at DESC, resource_id DESC",
             ),
             // ── trashed_at — DESC = most recently trashed first ──────────────
             ("trashed_at", false) => (
@@ -530,18 +530,18 @@ impl TrashDbRepository {
                     OR (size = $3 AND resource_id < $5::uuid)",
                 "ORDER BY size DESC, resource_id DESC",
             ),
-            // ── default = deletion_date ASC ─────────────────────────────────
+            // ── default = expires_at ASC ─────────────────────────────────
             (_, false) => (
                 "WHERE ($4::timestamptz IS NULL)
-                    OR (deletion_date > $4)
-                    OR (deletion_date = $4 AND resource_id > $5::uuid)",
-                "ORDER BY deletion_date ASC, resource_id ASC",
+                    OR (expires_at > $4)
+                    OR (expires_at = $4 AND resource_id > $5::uuid)",
+                "ORDER BY expires_at ASC, resource_id ASC",
             ),
             (_, true) => (
                 "WHERE ($4::timestamptz IS NULL)
-                    OR (deletion_date < $4)
-                    OR (deletion_date = $4 AND resource_id < $5::uuid)",
-                "ORDER BY deletion_date DESC, resource_id DESC",
+                    OR (expires_at < $4)
+                    OR (expires_at = $4 AND resource_id < $5::uuid)",
+                "ORDER BY expires_at DESC, resource_id DESC",
             ),
         };
 
@@ -552,7 +552,7 @@ SELECT
     r.mime_type, r.size, r.resource_created_at, r.content_modified_at,
     r.drive_id, r.blob_hash, r.created_by, r.updated_by,
     r.is_favorite, r.is_shared,
-    r.trashed_at, r.deletion_date, r.resource_path,
+    r.trashed_at, r.expires_at, r.resource_path,
     r.sort_str, r.type_order, r.folder_first
 FROM resources r
 {keyset}
@@ -589,16 +589,16 @@ LIMIT $6"
                 let folder_first: i32 = row.try_get("folder_first").unwrap_or(0);
                 let size: i64 = row.get("size");
                 let trashed_at: DateTime<Utc> = row.get("trashed_at");
-                let deletion_date: DateTime<Utc> = row.get("deletion_date");
+                let expires_at: DateTime<Utc> = row.get("expires_at");
 
                 // Pre-compute the cursor sort fields based on order_by.
                 let (c_sort_str, c_sort_int, c_sort_ts) = match order_by {
-                    "deletion_date" => (None, None, Some(deletion_date)),
+                    "expires_at" => (None, None, Some(expires_at)),
                     "trashed_at" => (None, None, Some(trashed_at)),
                     "name" => (sort_str_val, Some(folder_first as i64), None),
                     "type" => (sort_str_val, Some(type_order), None),
                     "size" => (None, Some(size), None),
-                    _ => (None, None, Some(deletion_date)),
+                    _ => (None, None, Some(expires_at)),
                 };
 
                 TrashResourceRow {
@@ -617,7 +617,7 @@ LIMIT $6"
                     is_favorite: row.try_get("is_favorite").unwrap_or(false),
                     is_shared: row.try_get("is_shared").unwrap_or(false),
                     trashed_at,
-                    deletion_date,
+                    expires_at,
                     path: row.try_get("resource_path").ok(),
                     sort_str: c_sort_str,
                     sort_int: c_sort_int,
