@@ -431,6 +431,21 @@ async fn handle_propfind(
             let file_id_svc = nc.map(|n| &n.file_ids);
 
             let dead_props = file_dead_props(&state, &file).await;
+            // Single-file PROPFIND: `get_batch` over a one-element slice
+            // rather than a second `get`-shaped query, so this path and the
+            // listing path share one SQL statement and one sparse-map
+            // contract. Degrades to "unknown" on error — see
+            // `super::nc_creation_time`.
+            let creation_time = {
+                let ids = [file.id.as_str()];
+                let meta = state
+                    .repositories
+                    .file_metadata_repository
+                    .get_batch(&ids)
+                    .await
+                    .unwrap_or_default();
+                super::nc_creation_time(&meta, &file.id)
+            };
 
             let mut buf = Vec::new();
             write_nc_file_multistatus(
@@ -440,7 +455,7 @@ async fn handle_propfind(
                 &user.username,
                 subpath,
                 file_id_svc,
-                (&favorite_ids, &dead_props),
+                (&favorite_ids, &dead_props, creation_time),
             )
             .await
             .map_err(|e| AppError::internal_error(format!("XML generation failed: {}", e)))?;
@@ -1755,6 +1770,18 @@ fn write_nc_multistatus_open<W: std::io::Write>(xml: &mut Writer<W>) -> Result<(
 /// `extras` bundles `(favorite_ids, dead_props)` — both are per-resource
 /// decorations fetched by the caller — to stay under clippy's
 /// argument-count lint.
+/// Per-row side channels for a single-file NC PROPFIND: the caller's
+/// favorites set, the file's dead properties, and the content's claimed
+/// creation time (`None` → `nc:creation_time` of `0`).
+///
+/// Bundled into one parameter because each is sourced by a separate
+/// batched read at the call site and none of them belongs on `FileDto`.
+type NcFileExtras<'a> = (
+    &'a HashSet<String>,
+    &'a [(QualifiedName, Option<String>)],
+    Option<i64>,
+);
+
 async fn write_nc_file_multistatus<W: std::io::Write>(
     writer: W,
     file: &FileDto,
@@ -1762,9 +1789,9 @@ async fn write_nc_file_multistatus<W: std::io::Write>(
     username: &str,
     subpath: &str,
     file_id_svc: Option<&Arc<NextcloudFileIdService>>,
-    extras: (&HashSet<String>, &[(QualifiedName, Option<String>)]),
+    extras: NcFileExtras<'_>,
 ) -> Result<(), String> {
-    let (favorite_ids, dead_props) = extras;
+    let (favorite_ids, dead_props, creation_time) = extras;
     let (file_id_map, _) = batch_resolve_ids(file_id_svc, &[file.id.as_str()], &[]).await;
 
     let mut xml = Writer::new(writer);
@@ -1786,6 +1813,7 @@ async fn write_nc_file_multistatus<W: std::io::Write>(
         username,
         favorite_ids,
         dead_props,
+        creation_time,
     )?;
 
     xml.write_event(Event::End(BytesEnd::new("d:multistatus")))
@@ -1884,17 +1912,23 @@ fn build_nc_streaming_propfind(
                 }
                 let batch_len = batch.len();
 
-                // Per-page enrichment: favorites + oc:fileids + dead props —
-                // three independent reads over the same id batch, overlapped
-                // with `join!` so a page pays ~max(RTT) instead of 3×RTT
-                // (each query still batched per page: DEAD-PROPS.md). The
-                // round-7 deferred "serial pairs" item, adopted for this
-                // per-page triple after the injected-latency A/B in
-                // benches/ROUND9.md showed no local-PG regression.
+                // Per-page enrichment: favorites + oc:fileids + dead props +
+                // content metadata — four independent reads over the same id
+                // batch, overlapped with `join!` so a page pays ~max(RTT)
+                // instead of 4×RTT (each query still batched per page:
+                // DEAD-PROPS.md). The round-7 deferred "serial pairs" item,
+                // adopted for this per-page group after the injected-latency
+                // A/B in benches/ROUND9.md showed no local-PG regression.
+                //
+                // The metadata read joined this group rather than widening
+                // the listing SELECT: `captured_at` lives in a different
+                // table and is sparse, and overlapping it here adds no
+                // wall-clock because it resolves alongside three reads that
+                // were already in flight.
                 let fav_items: Vec<(&str, &str)> =
                     batch.iter().map(|f| (f.id.as_str(), "file")).collect();
                 let file_uuids: Vec<&str> = batch.iter().map(|f| f.id.as_str()).collect();
-                let (favs, (file_id_map, _), file_deads) = tokio::join!(
+                let (favs, (file_id_map, _), file_deads, file_meta) = tokio::join!(
                     async {
                         if let Some(fav) = fav_svc {
                             fav.batch_check_favorites(user_id, &fav_items)
@@ -1906,6 +1940,17 @@ fn build_nc_streaming_propfind(
                     },
                     batch_resolve_ids(file_id_svc, &file_uuids, &[]),
                     files_dead_props_map(&state.webdav_dead_props, &batch),
+                    async {
+                        // A metadata read failure must not fail the PROPFIND:
+                        // the property is presentational, so degrade to
+                        // "unknown" (0) rather than denying the listing.
+                        state
+                            .repositories
+                            .file_metadata_repository
+                            .get_batch(&file_uuids)
+                            .await
+                            .unwrap_or_default()
+                    },
                 );
 
                 let mut chunk = Vec::with_capacity(batch_len * 1024);
@@ -1933,8 +1978,17 @@ fn build_nc_streaming_propfind(
                             }
                             None => None,
                         };
-                        write_file_response(&mut xml, file, &href, (fid, oc_id), &username, &favs, dead)
-                            .map_err(std::io::Error::other)?;
+                        write_file_response(
+                            &mut xml,
+                            file,
+                            &href,
+                            (fid, oc_id),
+                            &username,
+                            &favs,
+                            dead,
+                            super::nc_creation_time(&file_meta, &file.id),
+                        )
+                        .map_err(std::io::Error::other)?;
                     }
                 }
                 yield Bytes::from(chunk);
@@ -2158,6 +2212,21 @@ pub fn write_folder_response<W: std::io::Write>(
 
 /// See `write_folder_response` for why `(file_id, oc_id)` are bundled
 /// into `oc_ids`.
+///
+/// `creation_time` is the content's own claimed creation date in epoch
+/// seconds, from `super::nc_creation_time` — `None` when the content
+/// claims none, which emits `0`. It is deliberately a caller-supplied
+/// side channel rather than a `FileDto` field: it lives in
+/// `storage.file_metadata`, it is sparse (media only, until the extractor
+/// widens), and the callers already batch three other per-row reads over
+/// the same id set.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "XML emitter fed by four independent per-row side channels \
+              (oc ids, favorites, dead props, content metadata); bundling \
+              unrelated ones into tuples would obscure them at the call \
+              sites more than the count does here"
+)]
 pub fn write_file_response<W: std::io::Write>(
     xml: &mut Writer<W>,
     file: &FileDto,
@@ -2166,6 +2235,7 @@ pub fn write_file_response<W: std::io::Write>(
     owner: &str,
     favorite_ids: &HashSet<String>,
     dead_props: &[(QualifiedName, Option<String>)],
+    creation_time: Option<i64>,
 ) -> Result<(), String> {
     let (file_id, oc_id) = oc_ids;
     xml.write_event(Event::Start(BytesStart::new("d:response")))
@@ -2247,10 +2317,17 @@ pub fn write_file_response<W: std::io::Write>(
     // numbers, not RFC 3339). Convert from the DTO's `DateTime<Utc>`.
     {
         let mut buf = [0u8; 20];
+        // §0: the content's own claimed creation date, NOT a file clock.
+        // `0` is NextCloud's own "unknown" for this property (and its
+        // column default), so a file whose format carries no date says so
+        // instead of reporting the upload moment — which `nc:upload_time`
+        // already carries — or a POSIX mtime that moves on every save.
+        // See `super::nc_creation_time` for why both file clocks were
+        // rejected.
         write_text_element(
             xml,
             "nc:creation_time",
-            crate::common::fmt::u64_str(&mut buf, file.created_at.timestamp().max(0) as u64),
+            crate::common::fmt::u64_str(&mut buf, creation_time.unwrap_or(0).max(0) as u64),
         )?;
         // §0: `created_at`, NOT `modified_at`. "Upload time" is when the
         // server received the file — `created_at` is exactly that, and it is
@@ -2261,14 +2338,9 @@ pub fn write_file_response<W: std::io::Write>(
         // Presentational only — no NC client acts on this property — so
         // there is no resync, just a value that stops lying.
         //
-        // `nc:creation_time` above still reads `created_at` and is still
-        // wrong: it should be COALESCE(captured_at, content_modified_at), but
-        // `captured_at` is not available at this emission site (FileDto
-        // carries only created_at/modified_at, and this path never joins
-        // storage.file_metadata). That half needs plumbing — see §0 in
-        // docs/plan/normalize-file-dates.md. Until it lands both slots read
-        // `created_at`, which is correct for one and unchanged-wrong for the
-        // other.
+        // The two slots now answer different questions and no longer
+        // duplicate each other: this one is when WE received the bytes,
+        // `nc:creation_time` above is when the bytes say they were made.
         write_text_element(
             xml,
             "nc:upload_time",
@@ -2718,7 +2790,19 @@ mod wire_shape_tests {
     use std::io::Cursor;
     use std::sync::Arc;
 
+    /// Fixture content-metadata creation date: epoch 1_600_000_000 →
+    /// 2020-09-13T12:26:40Z. Deliberately distinct from BOTH of the
+    /// fixture's file clocks (`created_at` 1_700_000_000, `modified_at`
+    /// 1_700_086_400) so the assertions below can tell apart "reads the
+    /// content's claim" from "reads a file clock" — which is the whole of
+    /// the §0 regression.
+    const FIXTURE_CREATION_TIME: i64 = 1_600_000_000;
+
     fn render_file_response(file: FileDto) -> String {
+        render_file_response_with(file, Some(FIXTURE_CREATION_TIME))
+    }
+
+    fn render_file_response_with(file: FileDto, creation_time: Option<i64>) -> String {
         let mut buf = Cursor::new(Vec::<u8>::new());
         let mut xml = Writer::new(&mut buf);
         write_nc_multistatus_open(&mut xml).expect("multistatus open");
@@ -2730,6 +2814,7 @@ mod wire_shape_tests {
             "alice",
             &HashSet::new(),
             &[],
+            creation_time,
         )
         .expect("write_file_response");
         String::from_utf8(buf.into_inner()).expect("utf-8")
@@ -2774,8 +2859,46 @@ mod wire_shape_tests {
     fn nc_creation_time_is_integer_unix_epoch() {
         let xml = render_file_response(fixture_file());
         assert!(
-            xml.contains("<nc:creation_time>1700000000</nc:creation_time>"),
+            xml.contains("<nc:creation_time>1600000000</nc:creation_time>"),
             "nc:creation_time not an integer Unix epoch; XML:\n{xml}"
+        );
+    }
+
+    /// §0: `nc:creation_time` must report the content's own claimed
+    /// creation date, never a file clock. The fixture's three dates are
+    /// mutually distinct, so this fails if the slot regresses to either
+    /// `created_at` (1700000000) or `modified_at` (1700086400) — the
+    /// latter being exactly the bug `nc:upload_time` used to have.
+    #[test]
+    fn nc_creation_time_reads_content_claim_not_a_file_clock() {
+        let xml = render_file_response(fixture_file());
+        assert!(
+            !xml.contains("<nc:creation_time>1700000000</nc:creation_time>"),
+            "nc:creation_time regressed to created_at; XML:\n{xml}"
+        );
+        assert!(
+            !xml.contains("<nc:creation_time>1700086400</nc:creation_time>"),
+            "nc:creation_time regressed to modified_at; XML:\n{xml}"
+        );
+    }
+
+    /// §0: a file whose format carries no creation date reports `0`,
+    /// NextCloud's own "unknown" for this property (its column default,
+    /// and what its clients already see for filesystems with no
+    /// birthtime). The tempting alternatives both lie: `created_at`
+    /// would duplicate `nc:upload_time`, and `content_modified_at`
+    /// drifts forward on every save.
+    #[test]
+    fn nc_creation_time_is_zero_when_content_claims_no_date() {
+        let xml = render_file_response_with(fixture_file(), None);
+        assert!(
+            xml.contains("<nc:creation_time>0</nc:creation_time>"),
+            "nc:creation_time not 0 for unknown; XML:\n{xml}"
+        );
+        // Still an integer, and still not the upload slot's value.
+        assert!(
+            xml.contains("<nc:upload_time>1700000000</nc:upload_time>"),
+            "nc:upload_time collateral damage; XML:\n{xml}"
         );
     }
 

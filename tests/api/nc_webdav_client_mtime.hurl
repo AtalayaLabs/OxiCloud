@@ -133,23 +133,37 @@ xpath "string(//*[local-name()='creationdate'])" not matches "^2023-11-15T22:13:
 
 
 # ═════════════════════════════════════════════════════════════
-# Part A3 — `nc:upload_time` reports RECEIPT, not content (§0)
+# Part A3 — the two `nc:` date slots answer different questions (§0)
 # ═════════════════════════════════════════════════════════════
-# This file is the ideal fixture for it: its content clock is pinned to
-# 2023 by the X-OC-Mtime above, while it was actually uploaded moments
-# ago. The two are three years apart, so the assertion needs no timing
-# care.
+# This file is the ideal fixture for both: its content clock is pinned
+# to 2023 by the X-OC-Mtime above, while it was actually uploaded
+# moments ago, and being a `.txt` it carries no embedded metadata date
+# at all. Three mutually distinct values, three years apart, so the
+# assertions need no timing care.
 #
-# §0 repointed this slot from `modified_at` to `created_at`. Before
+#   nc:upload_time   = when WE received the bytes   → `created_at`
+#   nc:creation_time = when the bytes say they were made → content
+#                      metadata, or 0 when they say nothing
+#
+# §0 repointed `upload_time` from `modified_at` to `created_at`. Before
 # that it echoed the content clock, so a file edited years after upload
 # claimed to have been uploaded years after it was — here it would have
 # reported the 2023 instant.
 #
-# `nc:creation_time` is deliberately NOT asserted: it still reads
-# `created_at` and is still wrong (it should be
-# COALESCE(captured_at, content_modified_at)), because `captured_at` is
-# not available at that emission site. Asserting it now would pin the
-# wrong behaviour. See §0 in docs/plan/normalize-file-dates.md.
+# `creation_time` previously read `created_at`, which made the two slots
+# duplicate each other. It now reads the content's own claim, with 0 for
+# "unknown" — NextCloud's own value for this property when the client's
+# OS supplies no birthtime, and its column default.
+#
+# The two negative assertions below are the regressions that matter, and
+# they pull in opposite directions, which is why both are pinned:
+#   * == upload_time  → someone repointed it back at `created_at` and the
+#                       two slots duplicate each other again.
+#   * == 1700086400   → someone "fixed" the 0 by falling back to a file
+#                       clock (content_modified_at, or media_sort_date
+#                       which COALESCEs onto it). That value DRIFTS
+#                       forward on every save, so a creation date would
+#                       start moving every time the file is edited.
 PROPFIND {{base_url}}/remote.php/dav/files/{{username}}/nc-mtime-probe.txt
 Depth: 0
 Content-Type: application/xml; charset=utf-8
@@ -160,6 +174,7 @@ Content-Type: application/xml; charset=utf-8
 <D:propfind xmlns:D="DAV:" xmlns:nc="http://nextcloud.org/ns">
   <D:prop>
     <nc:upload_time/>
+    <nc:creation_time/>
   </D:prop>
 </D:propfind>
 ```
@@ -172,6 +187,14 @@ xpath "string(//*[local-name()='upload_time'])" matches "^[0-9]+$"
 # NOT the asserted content mtime. 1700086400 is the X-OC-Mtime from
 # Part A; receipt happened just now, so this must be some other value.
 xpath "string(//*[local-name()='upload_time'])" != "1700086400"
+# Bare integer too, same client-parsing reason.
+xpath "string(//*[local-name()='creation_time'])" matches "^[0-9]+$"
+# A `.txt` claims no creation date, so the honest answer is "unknown".
+# This also makes the two slots differ by construction: `upload_time` is
+# the receipt instant, asserted non-zero above.
+xpath "string(//*[local-name()='creation_time'])" == "0"
+# Never the drifting content clock.
+xpath "string(//*[local-name()='creation_time'])" != "1700086400"
 
 
 # ═════════════════════════════════════════════════════════════

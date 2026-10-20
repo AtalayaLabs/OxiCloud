@@ -11,10 +11,57 @@ pub mod trashbin_handler;
 pub mod uploads_handler;
 pub mod webdav_handler;
 
+use std::collections::HashMap;
+
 use axum::http::HeaderMap;
 
 use crate::application::dtos::timestamp_helpers::validate_client_mtime;
+use crate::infrastructure::repositories::pg::file_metadata_repository::StoredMetadata;
 use crate::interfaces::errors::AppError;
+
+/// Epoch seconds for the `nc:creation_time` PROPFIND property, or `None`
+/// when the content claims no creation date.
+///
+/// ## Why this reads metadata and not a file clock
+///
+/// `nc:creation_time` means "when did this content come into being" — a
+/// property of the **bytes**, not of our row. Only the content itself can
+/// answer it: EXIF `DateTimeOriginal` today, and once the extractor widens
+/// (`storage.content_metadata.created_at`) also OOXML `dcterms:created`
+/// and PDF `CreationDate`. That makes the value stable: different bytes are
+/// a different content row with their own claim, so it never drifts under
+/// an edit.
+///
+/// Neither file clock can stand in for it, and both candidates were
+/// rejected for a concrete reason:
+///
+/// * `content_modified_at` (and therefore `media_sort_date`, which is
+///   `COALESCE(captured_at, content_modified_at)`) **drifts**. Its triggers
+///   recompute it on every content mutation, so for any file without a
+///   metadata date it tracks the POSIX mtime forever. A creation date that
+///   advances each time you save is the same lie this plan removed from
+///   `nc:upload_time`, which used to read the content clock.
+/// * `created_at` is our receipt time, which is exactly what
+///   `nc:upload_time` already carries — using it here would make the two
+///   properties duplicate each other, the bug §0 set out to fix.
+///
+/// ## `None` is a real answer
+///
+/// A `.txt`, a `.zip`, a JPEG stripped of EXIF genuinely has no creation
+/// date to report, and the emitter writes `0` for that case — NextCloud's
+/// own representation of an unknown `creation_time` and its column default.
+/// Guessing a file clock instead would turn "unknown" into a confident
+/// wrong answer.
+///
+/// Both absence forms collapse here: no `file_metadata` row at all, and a
+/// row whose `captured_at` is NULL. A pre-epoch claim clamps to `0`, which
+/// lands in the same "unknown" bucket rather than emitting a negative.
+pub(crate) fn nc_creation_time(
+    meta: &HashMap<String, StoredMetadata>,
+    file_id: &str,
+) -> Option<i64> {
+    meta.get(file_id)?.captured_at.map(|t| t.timestamp().max(0))
+}
 
 /// Parse and validate the NextCloud `X-OC-Mtime` header — the client
 /// asserting the source file's POSIX mtime in epoch **seconds**.

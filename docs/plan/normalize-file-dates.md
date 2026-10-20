@@ -12,11 +12,11 @@ heading:
 
 | phase | state |
 |---|---|
-| §0 fix the two `nc:` slots | **HALF DONE** 2026-10-20 — `nc:upload_time` → `created_at` shipped. `nc:creation_time` still needs `captured_at` PLUMBED to the NC PROPFIND site (`FileDto` has only `created_at`/`modified_at`); never blocked by the inbound test, which gates §4 only |
+| §0 fix the two `nc:` slots | **DONE** 2026-10-20 — both slots repointed. `nc:upload_time` → `created_at`; `nc:creation_time` → the content's own claimed date (`captured_at` today, `content_metadata.created_at` once the extractor widens) with **`0` for "unknown"**, which is NC's own value for this property. The planned `COALESCE(captured_at, content_modified_at)` form was REJECTED mid-implementation — see the correction below |
 | §1 add `content_modified_at`, write it, read nothing | **DONE** 2026-10-20 — migration, writers and trust bounds (`625f089d`), CREATE-path gap closed, and the tests landed green. Two documented non-gaps: delta commit is not coverable in Hurl (CDC hashes — `rt_bus_check.sh` S21 covers it), and `/api/files/upload` **overwrite** was misdescribed — that endpoint only creates. See § Coverage as landed |
 | §2 repoint the `modified_at` alias + ETag | **DONE** — file-side (27 sites + cursor predicate, `8d0631be`) and folder-side DAV-only (`2def1acb`). One gap left open: NC REPORT search, see Open decisions |
 | §3 sort axes | **DONE (interim two-arm form)** — `media_sort_date` on the content clock + both search axes repointed. §4 inserts the `source_created_at` arm |
-| §4 add `source_created_at` | **BLOCKED, and possibly unnecessary** — reframed 2026-10-19: if `captured_at` means "the date the bytes claim" (EXIF | OOXML | PDF) then §4 is "widen the extractor", no new column, and §3's chain is already final. Conditional on the NextCloud inbound test |
+| §4 add `source_created_at` | **UNBLOCKED, and now clearly necessary** — repurposed 2026-10-20: it is the store for the client-asserted creation time, NextCloud's `X-OC-CTime` (the sibling of §9's `X-OC-Mtime`/`source_modified_at`). That is a DIFFERENT value from the metadata date §0 now emits — client filesystem birthtime vs. what the bytes claim — so the two coexist rather than one replacing the other. Final chain: `COALESCE(client ctime, content metadata date, 0)`. Still gated on the inbound test, which now answers one concrete question: does the NC client actually send `X-OC-CTime`? |
 | §5 tighten to `NOT NULL` | **FOLDED INTO §1** 2026-10-17 — the migration lands it in-transaction |
 | §6 UI axes | **DONE** 2026-10-19 — `updated_at` retired from the wire outright (no deprecation window: API too recent, SPA is the only consumer), `Created date` → `Added date`, persisted Photos preference migrated on read |
 | §7 naming normalisation | **NOT STARTED** — `order_by` everywhere, typed per-endpoint enums, `deletion_date` → `expires_at`; ships independently. Compile-time protection waits on the generated-SDK redirects |
@@ -123,7 +123,83 @@ than an alias, so surfacing it costs a field rather than a meaning change.
 
 ---
 
-## §0 — Fix the two `nc:` slots **NOT STARTED**
+## §0 — Fix the two `nc:` slots **DONE** (2026-10-20)
+
+### Correction: `COALESCE(captured_at, content_modified_at)` was wrong
+
+Everything below this box describing `nc:creation_time` as
+`COALESCE(captured_at, content_modified_at)` — matching `media_sort_date`'s
+chain — was **rejected during implementation**. It is kept for the reasoning
+trail; the shipped behaviour is the table at the end of this box.
+
+The defect: **that chain drifts.** `media_sort_date`'s two triggers recompute
+it on every content mutation
+(`20261103000007_media_sort_date_content_clock.sql`), so for any file without a
+metadata date it tracks `content_modified_at` permanently. A *creation* date
+that advances every time the file is saved is the same lie this phase removed
+from `nc:upload_time`, which used to read the content clock. Making the two
+expressions "match exactly" would have propagated the drift into a second slot
+rather than fixing anything.
+
+Both file clocks fail, in opposite directions, and neither failure is fixable
+by choosing the other:
+
+| fallback | 2019 doc uploaded today | after a later server-side edit |
+|---|---|---|
+| `content_modified_at` | 2019 ✅ (via §9) | moves to today ❌ |
+| `created_at` | today ❌ — and identical to `nc:upload_time`, the very bug §0 exists to fix | today ✅ |
+
+**What shipped instead: `0` is a real answer.** `nc:creation_time` is NOT a
+server-side clock at all. In NextCloud it is the *client's* local filesystem
+birthtime, sent on upload via `X-OC-CTime`, and it stays at its `0` default
+when the client's OS or filesystem cannot supply one. So `0` is NC's own
+representation of "unknown", and every NC client already handles it. Reporting
+`0` for a `.txt` is therefore well-formed, where guessing a file clock would
+turn "unknown" into a confident wrong answer.
+
+That also removes the fallback decision entirely, which is why §0 shipped
+without waiting on §4:
+
+| property | reads | when unknown |
+|---|---|---|
+| `nc:upload_time` | `created_at` — when WE received the bytes | n/a, always known |
+| `nc:creation_time` | the content's own claim: `captured_at` today, `content_metadata.created_at` once the extractor widens | `0` |
+
+Three consequences worth carrying forward:
+
+- **`media_sort_date` is NOT renamed.** A name like `content_created_at` was
+  considered and rejected: the column legitimately drifts, which is correct for
+  a sort axis and disqualifying for a creation date, so any `*_created_at` name
+  would lie. It keeps its name because `nc:creation_time` no longer reads it.
+- **§4 is unblocked and repurposed** — it is the store for `X-OC-CTime`. See
+  its row in the status table.
+- **Forward-compatible for free.** The emit site reads one value, so when
+  `captured_at` becomes `storage.content_metadata.created_at` that is a
+  one-line repoint, and Word/PDF/Excel creation dates reach NC clients the
+  moment the extractor widens — §0 is never revisited.
+
+**Implementation note.** The value is a per-row side channel, not a `FileDto`
+field: it lives in a different table and is sparse (media only, today). All
+four emit sites take it from `FileMetadataRepository::get_batch` — which was
+dead `pub` code until now — via `interfaces::nextcloud::nc_creation_time`. In
+the streaming PROPFIND the read joined the existing `tokio::join!`, so it adds
+no wall-clock alongside the three batched reads already in flight. A read
+failure degrades the property to `0` rather than failing the listing.
+
+**Coverage.** Four Rust wire-shape guards in `webdav_handler.rs`
+(`wire_shape_tests`), whose fixture gives `created_at`, `modified_at` and the
+metadata date three mutually distinct values so a regression to either file
+clock fails; plus Part A3 of `tests/api/nc_webdav_client_mtime.hurl`, which
+pins both slots end-to-end on a `.txt` whose content clock is three years from
+its receipt instant. **Known gap:** no end-to-end assertion that a *present*
+metadata date reaches the wire — no test fixture carries EXIF, and extraction
+is spawned off the upload (`on_file_created` is sync), so such a test would
+race. The emitter half is covered in Rust; the missing link is repository →
+wire for a non-zero value.
+
+---
+
+### Original phase text (superseded above for `creation_time`)
 
 Independent of everything else. Two lines at
 `src/interfaces/nextcloud/webdav_handler.rs:2268` and `:2273`:
