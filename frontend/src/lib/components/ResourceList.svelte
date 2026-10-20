@@ -34,10 +34,21 @@
 	 * and `labelOf` maps that key to a header label. Omitting `bucketOf` means a
 	 * flat list.
 	 */
-	export interface GroupByDef {
+	/**
+	 * A group-by option offered in the listing's dropdown.
+	 *
+	 * Generic over the sort axis (§7). It defaults to `string` so routes
+	 * whose endpoint still takes an untyped `order_by` keep compiling, but a
+	 * route whose endpoint has a published `*OrderBy` enum should
+	 * instantiate it with that union — `GroupByDef<RecentOrderBy>[]` — so a
+	 * typo or a retired axis fails `npm run check` instead of becoming a
+	 * runtime 400. `/recent` does this today; the rest follow as their
+	 * enums land.
+	 */
+	export interface GroupByDef<Axis extends string = string> {
 		key: string;
 		label: string;
-		orderBy: string;
+		orderBy: Axis;
 		/** Optional icon for the dropdown option (defaults to the group glyph). */
 		icon?: string;
 		bucketOf?: (item: FileItem | FolderItem, ctx?: ItemContext) => string | null;

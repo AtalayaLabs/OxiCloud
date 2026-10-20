@@ -145,13 +145,46 @@ pub struct RecentResourceRow {
     pub sort_ts: Option<DateTime<Utc>>,
 }
 
+/// Sort axis for `GET /api/recent/resources` (§7).
+///
+/// Typed rather than `Option<String>` so an unknown axis is refused at
+/// wire-decode time instead of silently falling back to the default. See
+/// [`crate::application::dtos::trash_dto::TrashOrderBy`] for why these are
+/// per-endpoint enums: `accessed_at` is recent's own date axis and means
+/// nothing on any other listing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RecentOrderBy {
+    /// Default — when the caller last opened it, most recent first. The
+    /// whole point of the endpoint, so it leads.
+    #[default]
+    AccessedAt,
+    /// Alphabetical, folders before files (`folder_first`).
+    Name,
+    /// Grouped by kind, then alphabetical within a kind.
+    Type,
+    /// The item's content clock (`content_modified_at`) — a rename or
+    /// move does not resurface a row, only a real content change.
+    ModifiedAt,
+    /// By byte size. Folders carry a sentinel so they cluster.
+    Size,
+    /// By owner display name — recents span drives, so this groups a
+    /// mixed list by who owns each item.
+    Owner,
+}
+
 /// Opaque keyset-pagination cursor for `GET /api/recent/resources`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecentCursor {
-    /// Sort dimension active when this cursor was produced.
-    /// Values: `"accessed_at"` (default), `"name"`, `"type"`, `"modified_at"`, `"size"`, `"owner"`.
-    #[serde(default = "RecentCursor::default_order")]
-    pub order_by: String,
+    /// Sort dimension active when this cursor was produced. Typed so the
+    /// cursor's axis and the query's axis are one type and cannot drift —
+    /// the keyset predicate and the ORDER BY must name the same column or
+    /// pagination skips or repeats rows.
+    ///
+    /// Wire-compatible with the previous `String` form: snake_case
+    /// serialises to the identical token, so existing cursors decode.
+    #[serde(default)]
+    pub order_by: RecentOrderBy,
     /// UUID of the last item on the previous page (tie-breaker).
     pub resource_id: Uuid,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -164,12 +197,6 @@ pub struct RecentCursor {
     pub reverse: bool,
 }
 
-impl RecentCursor {
-    fn default_order() -> String {
-        "accessed_at".to_owned()
-    }
-}
-
 impl PageCursor for RecentCursor {}
 
 /// Query parameters for `GET /api/recent/resources`.
@@ -180,9 +207,10 @@ pub struct RecentResourcesQuery {
     pub limit: u32,
     /// Opaque cursor from a previous response. Omit to start from the first page.
     pub cursor: Option<String>,
-    /// Sort / group-by dimension. Supported: `"accessed_at"` (default), `"name"`,
-    /// `"type"`, `"modified_at"`, `"size"`, `"owner"`.
-    pub order_by: Option<String>,
+    /// Sort / group-by dimension — see [`RecentOrderBy`]. Omit for
+    /// `accessed_at`. An unknown value is a 400 naming the accepted set,
+    /// not a silent fall back to the default.
+    pub order_by: Option<RecentOrderBy>,
     /// Comma-separated resource types to include, e.g. `"file,folder"`.
     /// Omit to include both.
     pub resource_types: Option<String>,

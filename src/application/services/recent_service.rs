@@ -1,5 +1,7 @@
 use crate::application::dtos::cursor::PageCursor;
-use crate::application::dtos::recent_dto::{RecentCursor, RecentItemDto, RecentResourceRow};
+use crate::application::dtos::recent_dto::{
+    RecentCursor, RecentItemDto, RecentOrderBy, RecentResourceRow,
+};
 use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::application::ports::recent_ports::{RecentItemsRepositoryPort, RecentItemsUseCase};
 use crate::application::ports::resource_access_hook::ResourceAccessHook;
@@ -221,7 +223,7 @@ impl RecentService {
         user_id: Uuid,
         limit: usize,
         cursor: Option<RecentCursor>,
-        order_by: &str,
+        order_by: RecentOrderBy,
         kinds: Option<&[ResourceKind]>,
         reverse: bool,
     ) -> Result<(Vec<RecentResourceRow>, Option<String>)> {
@@ -253,56 +255,40 @@ impl RecentService {
 
 /// Build the next-page cursor from the last row of the current page.
 /// `reverse` is stored in the cursor so subsequent pages use the same direction.
-fn build_recent_cursor(row: &RecentResourceRow, order_by: &str, reverse: bool) -> RecentCursor {
-    match order_by {
-        "name" => RecentCursor {
-            order_by: "name".to_owned(),
+fn build_recent_cursor(
+    row: &RecentResourceRow,
+    order_by: RecentOrderBy,
+    reverse: bool,
+) -> RecentCursor {
+    // §7: exhaustive on `RecentOrderBy`, no catch-all. The `_` arm this
+    // replaced doubled as the `accessed_at` default AND the unknown-axis
+    // case, so a typo minted an accessed_at cursor that then disagreed
+    // with whatever ORDER BY the repository picked.
+    //
+    // Only the three sort-field slots vary; the axis is just the (Copy)
+    // parameter, where each arm used to re-spell it as a literal that
+    // could drift from the arm matching it.
+    let (sort_str, sort_int, sort_ts) = match order_by {
+        // accessed_at timestamp
+        RecentOrderBy::AccessedAt => (None, None, row.sort_ts),
+        // sort_str = LOWER(name), sort_int = folder_first
+        RecentOrderBy::Name => (row.sort_str.clone(), row.sort_int, None),
+        // sort_str = LOWER(name), sort_int = type_order
+        RecentOrderBy::Type => (row.sort_str.clone(), row.sort_int, None),
+        RecentOrderBy::ModifiedAt => (None, None, row.sort_ts),
+        // size in bytes
+        RecentOrderBy::Size => (None, row.sort_int, None),
+        // sort_str = LOWER(username), accessed_at as the secondary sort
+        RecentOrderBy::Owner => (row.sort_str.clone(), None, row.sort_ts),
+    };
+    {
+        RecentCursor {
+            order_by,
             resource_id: row.resource_id,
-            sort_str: row.sort_str.clone(), // LOWER(name)
-            sort_int: row.sort_int,         // folder_first
-            sort_ts: None,
+            sort_str,
+            sort_int,
+            sort_ts,
             reverse,
-        },
-        "type" => RecentCursor {
-            order_by: "type".to_owned(),
-            resource_id: row.resource_id,
-            sort_str: row.sort_str.clone(), // LOWER(name)
-            sort_int: row.sort_int,         // type_order
-            sort_ts: None,
-            reverse,
-        },
-        "modified_at" => RecentCursor {
-            order_by: "modified_at".to_owned(),
-            resource_id: row.resource_id,
-            sort_str: None,
-            sort_int: None,
-            sort_ts: row.sort_ts, // modified_at timestamp
-            reverse,
-        },
-        "size" => RecentCursor {
-            order_by: "size".to_owned(),
-            resource_id: row.resource_id,
-            sort_str: None,
-            sort_int: row.sort_int, // size in bytes
-            sort_ts: None,
-            reverse,
-        },
-        "owner" => RecentCursor {
-            order_by: "owner".to_owned(),
-            resource_id: row.resource_id,
-            sort_str: row.sort_str.clone(), // LOWER(username)
-            sort_int: None,
-            sort_ts: row.sort_ts, // accessed_at timestamp (secondary)
-            reverse,
-        },
-        _ => RecentCursor {
-            // default: accessed_at DESC
-            order_by: "accessed_at".to_owned(),
-            resource_id: row.resource_id,
-            sort_str: None,
-            sort_int: None,
-            sort_ts: row.sort_ts, // accessed_at timestamp
-            reverse,
-        },
+        }
     }
 }

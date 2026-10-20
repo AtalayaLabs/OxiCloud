@@ -9705,12 +9705,16 @@
           {
             "name": "order_by",
             "in": "query",
-            "description": "Sort / group-by dimension. Supported: `\"accessed_at\"` (default), `\"name\"`,\n`\"type\"`, `\"modified_at\"`, `\"size\"`, `\"owner\"`.",
+            "description": "Sort / group-by dimension — see [`RecentOrderBy`]. Omit for\n`accessed_at`. An unknown value is a 400 naming the accepted set,\nnot a silent fall back to the default.",
             "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/RecentOrderBy"
+                }
               ]
             }
           },
@@ -16263,6 +16267,18 @@
             "description": "Owner user ID"
           }
         }
+      },
+      "RecentOrderBy": {
+        "type": "string",
+        "description": "Sort axis for `GET /api/recent/resources` (§7).\n\nTyped rather than `Option<String>` so an unknown axis is refused at\nwire-decode time instead of silently falling back to the default. See\n[`crate::application::dtos::trash_dto::TrashOrderBy`] for why these are\nper-endpoint enums: `accessed_at` is recent's own date axis and means\nnothing on any other listing.",
+        "enum": [
+          "accessed_at",
+          "name",
+          "type",
+          "modified_at",
+          "size",
+          "owner"
+        ]
       },
       "RecentResourceItemDto": {
         "type": "object",

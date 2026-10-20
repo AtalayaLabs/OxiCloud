@@ -3392,6 +3392,17 @@ export type RecentItemDto = {
 };
 
 /**
+ * Sort axis for `GET /api/recent/resources` (§7).
+ *
+ * Typed rather than `Option<String>` so an unknown axis is refused at
+ * wire-decode time instead of silently falling back to the default. See
+ * [`crate::application::dtos::trash_dto::TrashOrderBy`] for why these are
+ * per-endpoint enums: `accessed_at` is recent's own date axis and means
+ * nothing on any other listing.
+ */
+export type RecentOrderBy = 'accessed_at' | 'name' | 'type' | 'modified_at' | 'size' | 'owner';
+
+/**
  * One item in a `GET /api/recent/resources` page.
  */
 export type RecentResourceItemDto = {
@@ -12105,10 +12116,11 @@ export type ListRecentResourcesData = {
          */
         cursor?: string | null;
         /**
-         * Sort / group-by dimension. Supported: `"accessed_at"` (default), `"name"`,
-         * `"type"`, `"modified_at"`, `"size"`, `"owner"`.
+         * Sort / group-by dimension — see [`RecentOrderBy`]. Omit for
+         * `accessed_at`. An unknown value is a 400 naming the accepted set,
+         * not a silent fall back to the default.
          */
-        order_by?: string | null;
+        order_by?: null | RecentOrderBy;
         /**
          * Comma-separated resource types to include, e.g. `"file,folder"`.
          * Omit to include both.

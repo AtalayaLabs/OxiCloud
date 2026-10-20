@@ -251,3 +251,34 @@ Authorization: Bearer {{mallory_token}}
 HTTP 200
 [Asserts]
 jsonpath "$.items" count == 0
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 11 — §7: an unknown order_by is a 400, not a silent default.
+# ─────────────────────────────────────────────────────────────
+# `order_by` is a typed `RecentOrderBy` enum, so serde rejects anything
+# outside the six variants at wire-decode time. It was a bare String
+# re-validated at three layers, each falling back to `accessed_at`:
+# `build_recent_cursor`'s `_` arm doubled as the default AND the
+# unknown case, and the repository had `(_, false)` / `(_, true)` arms
+# plus a `_` in its cursor-field match.
+#
+# The fallbacks disagreed with each other for any axis the caller named
+# that one of them did not honour, pairing a keyset predicate on one
+# column with an ORDER BY on another — the row-skipping hazard §2 fixed
+# on the folder listing. All are gone; the matches are exhaustive.
+GET {{base_url}}/api/recent/resources?order_by=definitely-not-an-axis
+Authorization: Bearer {{mallory_token}}
+
+HTTP 400
+[Asserts]
+# serde's derived error names the accepted variants.
+body contains "accessed_at"
+
+
+# A valid non-default axis still works, so the 400 above is the enum
+# rejecting an unknown value rather than the parameter being broken.
+GET {{base_url}}/api/recent/resources?order_by=owner
+Authorization: Bearer {{mallory_token}}
+
+HTTP 200

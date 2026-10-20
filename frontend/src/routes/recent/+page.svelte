@@ -26,6 +26,7 @@
 	import type {
 		FileDto,
 		FolderDto,
+		RecentOrderBy,
 		RecentResourceItemDto
 	} from '$lib/api/generated/openapi/types.gen';
 	type RecentFileOrFolderItem = RecentResourceItemDto & {
@@ -84,7 +85,9 @@
 		preferences.hideDotfiles ? items.filter((i) => isDotfile(i.name)).length : 0
 	);
 
-	const groupBys: GroupByDef[] = [
+	// §7: typed to the generated `RecentOrderBy` union, so a typo or a
+	// retired axis is an `npm run check` failure rather than a runtime 400.
+	const groupBys: GroupByDef<RecentOrderBy>[] = [
 		{ key: '', label: t('files.name', 'Name'), orderBy: 'name', icon: 'arrow-up-a-z' },
 		{
 			key: 'owner',
@@ -121,7 +124,7 @@
 	];
 
 	// Recent defaults to most-recently-accessed first (accessed_at DESC).
-	async function load(reset = false, orderBy = 'accessed_at', rev = reversed) {
+	async function load(reset = false, orderBy: RecentOrderBy = 'accessed_at', rev = reversed) {
 		loading = true;
 		error = null;
 		try {
@@ -153,7 +156,7 @@
 		}
 	}
 
-	function orderByForGroup(): string {
+	function orderByForGroup(): RecentOrderBy {
 		return groupBys.find((g) => g.key === groupBy)?.orderBy ?? 'accessed_at';
 	}
 
@@ -435,7 +438,14 @@
 	bind:reversed
 	onreload={(orderBy, rev) => {
 		cursor = undefined;
-		load(true, orderBy, rev);
+		// `ResourceList`'s `onreload` still declares `orderBy: string`,
+		// because the component is shared with routes whose endpoints have
+		// no published `*OrderBy` enum yet. The value is sound — it is one
+		// of the `groupBys` entries this route passed in, which are typed
+		// `RecentOrderBy` — so narrow here rather than loosening `load`.
+		// §7 part 3g makes `ResourceList` generic over the axis and this
+		// assertion goes away.
+		load(true, orderBy as RecentOrderBy, rev);
 	}}
 >
 	{#snippet actions()}
