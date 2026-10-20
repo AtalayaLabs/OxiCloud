@@ -112,7 +112,7 @@ thiserror = "2.0.18"
 arc-swap = "1.9"
 
 mockall = { version = "0.14.0", optional = true }
-sqlx = { version = "0.8.6", features = ["postgres", "runtime-tokio", "tls-rustls", "chrono", "uuid", "json", "migrate"] }
+sqlx = { version = "0.8.6", features = ["postgres", "runtime-tokio", "tls-rustls-ring-native-roots", "chrono", "uuid", "json", "migrate"] }
 jsonwebtoken = { version = "10.4.0", features = ["rust_crypto"] }
 argon2 = "0.5.3"
 rand_core = { version = "0.6", features = ["std", "getrandom"] }
