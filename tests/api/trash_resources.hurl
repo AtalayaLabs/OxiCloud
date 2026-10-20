@@ -230,6 +230,31 @@ jsonpath "$.items[3].resource_type" == "file"
 
 
 # ─────────────────────────────────────────────────────────────
+# Step 9b – §7: an unknown axis is a 400, not a silent default.
+# ─────────────────────────────────────────────────────────────
+# `order_by` is a typed `TrashOrderBy` enum, so serde rejects anything
+# outside the five variants at wire-decode time. Before this, the axis
+# was a bare String and the repository's `(_, _)` match arm fell back to
+# expires_at ordering — a client typo got a 200 sorted by something it
+# did not ask for, which is indistinguishable from the server honouring
+# the request.
+#
+# Worse than cosmetic: that fallback paired an expires_at keyset
+# predicate with whatever axis the caller named, which is the
+# sort-key-versus-cursor disagreement §2 had to fix on the folder
+# listing. The arm is now gone and the match is exhaustive, so adding a
+# variant is a compile error rather than a silent fall-through.
+GET {{base_url}}/api/trash/resources?order_by=definitely-not-an-axis
+Authorization: Bearer {{token}}
+
+HTTP 400
+[Asserts]
+# serde's derived error names the accepted variants, so the caller
+# learns what to send. This is why no custom extractor was needed.
+body contains "expires_at"
+
+
+# ─────────────────────────────────────────────────────────────
 # Step 10 – resource_types=file → only files (2)
 # ─────────────────────────────────────────────────────────────
 GET {{base_url}}/api/trash/resources?resource_types=file

@@ -94,13 +94,56 @@ pub struct TrashResourceRow {
     pub sort_ts: Option<DateTime<Utc>>,
 }
 
+/// Sort axis for `GET /api/trash/resources` (§7).
+///
+/// Typed rather than `Option<String>` so an unknown axis is refused at
+/// wire-decode time instead of silently falling back to the default —
+/// which is what a bare string did, turning a client typo into "sorted by
+/// something else" with a 200. serde's derived error names the accepted
+/// variants, so the 400 tells the caller what to send; no custom extractor
+/// is involved. `PhotoOrderBy` set this precedent in §6.
+///
+/// **Per-endpoint by design, not one shared union.** `Name`/`Type`/`Size`
+/// recur across endpoints but the date axes do not — trash has
+/// `expires_at`/`trashed_at`, favorites has `favorited_at`, recent has
+/// `accessed_at`. A shared enum would accept nonsense on every endpoint
+/// but its own.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TrashOrderBy {
+    /// Default — soonest expiry first, so the items about to be purged
+    /// are the ones a user sees without scrolling. Orders by the computed
+    /// `expires_at` (`trashed_at` + retention), renamed from
+    /// `deletion_date` in §7 part 2.
+    #[default]
+    ExpiresAt,
+    /// Most recently trashed first — "what did I just delete".
+    TrashedAt,
+    /// Alphabetical, folders before files (the `folder_first` axis).
+    Name,
+    /// Grouped by kind, then alphabetical within a kind.
+    Type,
+    /// By byte size. Folders carry a `-1` sentinel so they cluster
+    /// together rather than interleaving at zero.
+    Size,
+}
+
 /// Opaque keyset-pagination cursor for `GET /api/trash/resources`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrashCursor {
-    /// Sort dimension active when this cursor was produced.
-    /// Values: `"expires_at"` (default), `"trashed_at"`, `"name"`, `"type"`, `"size"`.
-    #[serde(default = "TrashCursor::default_order")]
-    pub order_by: String,
+    /// Sort dimension active when this cursor was produced. Typed, so the
+    /// axis in a cursor and the axis in a query are the same type and
+    /// cannot drift — the keyset predicate and the ORDER BY must name the
+    /// same column or pagination silently skips or repeats rows.
+    ///
+    /// Wire-compatible with the previous `String` form: `rename_all =
+    /// "snake_case"` serialises to the identical token, so cursors minted
+    /// before this change still decode. The one exception is a cursor
+    /// minted before part 2, carrying `"deletion_date"` — that now fails
+    /// to decode and returns 400 instead of silently re-sorting the
+    /// remaining pages, which is the better of the two.
+    #[serde(default)]
+    pub order_by: TrashOrderBy,
     /// UUID of the last item on the previous page (tie-breaker).
     pub resource_id: Uuid,
     /// `LOWER(name)` for `name`/`type` sorts.
@@ -118,12 +161,6 @@ pub struct TrashCursor {
     pub reverse: bool,
 }
 
-impl TrashCursor {
-    fn default_order() -> String {
-        "expires_at".to_owned()
-    }
-}
-
 impl PageCursor for TrashCursor {}
 
 /// Query parameters for `GET /api/trash/resources`.
@@ -134,10 +171,10 @@ pub struct TrashResourcesQuery {
     pub limit: u32,
     /// Opaque cursor from a previous response. Omit to start from the first page.
     pub cursor: Option<String>,
-    /// Sort / group-by dimension. Supported: `"expires_at"` (default — soonest
-    /// expiry first), `"trashed_at"` (most recently trashed first), `"name"`,
-    /// `"type"`, `"size"`.
-    pub order_by: Option<String>,
+    /// Sort / group-by dimension — see [`TrashOrderBy`]. Omit for
+    /// `expires_at` (soonest expiry first). An unknown value is a 400
+    /// naming the accepted set, not a silent fall back to the default.
+    pub order_by: Option<TrashOrderBy>,
     /// Comma-separated resource types to include, e.g. `"file,folder"`.
     /// Omit to include both.
     pub resource_types: Option<String>,

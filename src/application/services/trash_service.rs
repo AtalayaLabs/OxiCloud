@@ -10,7 +10,7 @@ use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::FolderDto;
 use crate::application::dtos::grant_dto::{ResourceContentDto, ResourceTypeDto};
 use crate::application::dtos::trash_dto::{
-    TrashCursor, TrashResourceItemDto, TrashResourceRow, TrashedItemDto,
+    TrashCursor, TrashOrderBy, TrashResourceItemDto, TrashResourceRow, TrashedItemDto,
 };
 use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::application::ports::file_lifecycle::FileLifecycleHook;
@@ -887,7 +887,7 @@ impl TrashService {
         user_id: Uuid,
         limit: usize,
         cursor: Option<TrashCursor>,
-        order_by: &str,
+        order_by: TrashOrderBy,
         kinds: Option<&[ResourceKind]>,
         reverse: bool,
     ) -> Result<(Vec<TrashResourceItemDto>, Option<String>)> {
@@ -935,13 +935,18 @@ impl TrashService {
 
 /// Build the next-page cursor from the last row of the current page.
 /// `reverse` is stored in the cursor so subsequent pages use the same direction.
-fn build_trash_cursor(row: &TrashResourceRow, order_by: &str, reverse: bool) -> TrashCursor {
-    let order_by_owned = match order_by {
-        "expires_at" | "trashed_at" | "name" | "type" | "size" => order_by.to_owned(),
-        _ => "expires_at".to_owned(),
-    };
+fn build_trash_cursor(
+    row: &TrashResourceRow,
+    order_by: TrashOrderBy,
+    reverse: bool,
+) -> TrashCursor {
+    // §7: no sanitising arm here any more. This used to re-validate the
+    // axis and silently rewrite anything unrecognised to "expires_at",
+    // which meant a bad value produced a 200 with the wrong order. The
+    // type now makes an invalid axis unrepresentable, so the check it was
+    // performing cannot fail.
     TrashCursor {
-        order_by: order_by_owned,
+        order_by,
         resource_id: row.resource_id,
         sort_str: row.sort_str.clone(),
         sort_int: row.sort_int,

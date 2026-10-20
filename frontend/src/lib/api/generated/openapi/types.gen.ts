@@ -4629,6 +4629,24 @@ export type TranslationResponseDto = {
 };
 
 /**
+ * Sort axis for `GET /api/trash/resources` (§7).
+ *
+ * Typed rather than `Option<String>` so an unknown axis is refused at
+ * wire-decode time instead of silently falling back to the default —
+ * which is what a bare string did, turning a client typo into "sorted by
+ * something else" with a 200. serde's derived error names the accepted
+ * variants, so the 400 tells the caller what to send; no custom extractor
+ * is involved. `PhotoOrderBy` set this precedent in §6.
+ *
+ * **Per-endpoint by design, not one shared union.** `Name`/`Type`/`Size`
+ * recur across endpoints but the date axes do not — trash has
+ * `expires_at`/`trashed_at`, favorites has `favorited_at`, recent has
+ * `accessed_at`. A shared enum would accept nonsense on every endpoint
+ * but its own.
+ */
+export type TrashOrderBy = 'expires_at' | 'trashed_at' | 'name' | 'type' | 'size';
+
+/**
  * One item in a `GET /api/trash/resources` page.
  *
  * `expires_at` is the real timestamp at which the item will be permanently
@@ -12658,11 +12676,11 @@ export type GetTrashResourcesData = {
          */
         cursor?: string | null;
         /**
-         * Sort / group-by dimension. Supported: `"expires_at"` (default — soonest
-         * expiry first), `"trashed_at"` (most recently trashed first), `"name"`,
-         * `"type"`, `"size"`.
+         * Sort / group-by dimension — see [`TrashOrderBy`]. Omit for
+         * `expires_at` (soonest expiry first). An unknown value is a 400
+         * naming the accepted set, not a silent fall back to the default.
          */
-        order_by?: string | null;
+        order_by?: null | TrashOrderBy;
         /**
          * Comma-separated resource types to include, e.g. `"file,folder"`.
          * Omit to include both.

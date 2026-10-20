@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tracing::error;
 use uuid::Uuid;
 
-use crate::application::dtos::trash_dto::{TrashCursor, TrashResourceRow};
+use crate::application::dtos::trash_dto::{TrashCursor, TrashOrderBy, TrashResourceRow};
 use crate::common::errors::{DomainError, ErrorKind, Result};
 use crate::domain::entities::trashed_item::{TrashedItem, TrashedItemType};
 use crate::domain::repositories::trash_repository::TrashRepository;
@@ -340,7 +340,7 @@ impl TrashDbRepository {
         caller_id: Uuid,
         limit: usize,
         cursor: Option<&TrashCursor>,
-        order_by: &str,
+        order_by: TrashOrderBy,
         kinds: Option<&[ResourceKind]>,
         reverse: bool,
     ) -> Result<Vec<TrashResourceRow>> {
@@ -462,40 +462,40 @@ impl TrashDbRepository {
         //        $5=cur_id, $6=limit, $7=retention_days.
         let (keyset, order_by_clause) = match (order_by, reverse) {
             // ── expires_at (DEFAULT) — ASC = expiring soonest first ───────
-            ("expires_at", false) => (
+            (TrashOrderBy::ExpiresAt, false) => (
                 "WHERE ($4::timestamptz IS NULL)
                     OR (expires_at > $4)
                     OR (expires_at = $4 AND resource_id > $5::uuid)",
                 "ORDER BY expires_at ASC, resource_id ASC",
             ),
-            ("expires_at", true) => (
+            (TrashOrderBy::ExpiresAt, true) => (
                 "WHERE ($4::timestamptz IS NULL)
                     OR (expires_at < $4)
                     OR (expires_at = $4 AND resource_id < $5::uuid)",
                 "ORDER BY expires_at DESC, resource_id DESC",
             ),
             // ── trashed_at — DESC = most recently trashed first ──────────────
-            ("trashed_at", false) => (
+            (TrashOrderBy::TrashedAt, false) => (
                 "WHERE ($4::timestamptz IS NULL)
                     OR (trashed_at < $4)
                     OR (trashed_at = $4 AND resource_id < $5::uuid)",
                 "ORDER BY trashed_at DESC, resource_id DESC",
             ),
-            ("trashed_at", true) => (
+            (TrashOrderBy::TrashedAt, true) => (
                 "WHERE ($4::timestamptz IS NULL)
                     OR (trashed_at > $4)
                     OR (trashed_at = $4 AND resource_id > $5::uuid)",
                 "ORDER BY trashed_at ASC, resource_id ASC",
             ),
             // ── name — folders first ─────────────────────────────────────────
-            ("name", false) => (
+            (TrashOrderBy::Name, false) => (
                 "WHERE ($3::bigint IS NULL)
                     OR (folder_first::bigint > $3)
                     OR (folder_first::bigint = $3 AND sort_str > $2)
                     OR (folder_first::bigint = $3 AND sort_str = $2 AND resource_id > $5::uuid)",
                 "ORDER BY folder_first ASC, sort_str ASC, resource_id ASC",
             ),
-            ("name", true) => (
+            (TrashOrderBy::Name, true) => (
                 "WHERE ($3::bigint IS NULL)
                     OR (folder_first::bigint > $3)
                     OR (folder_first::bigint = $3 AND sort_str < $2)
@@ -503,14 +503,14 @@ impl TrashDbRepository {
                 "ORDER BY folder_first ASC, sort_str DESC, resource_id DESC",
             ),
             // ── type — folders get type_order=0 so they sort first naturally ─
-            ("type", false) => (
+            (TrashOrderBy::Type, false) => (
                 "WHERE ($3::bigint IS NULL)
                     OR (type_order > $3)
                     OR (type_order = $3 AND sort_str > $2)
                     OR (type_order = $3 AND sort_str = $2 AND resource_id > $5::uuid)",
                 "ORDER BY type_order ASC, sort_str ASC, resource_id ASC",
             ),
-            ("type", true) => (
+            (TrashOrderBy::Type, true) => (
                 "WHERE ($3::bigint IS NULL)
                     OR (type_order < $3)
                     OR (type_order = $3 AND sort_str < $2)
@@ -518,31 +518,27 @@ impl TrashDbRepository {
                 "ORDER BY type_order DESC, sort_str DESC, resource_id DESC",
             ),
             // ── size — folders first (via -1 sentinel grouping at top) ──────
-            ("size", false) => (
+            (TrashOrderBy::Size, false) => (
                 "WHERE ($3::bigint IS NULL)
                     OR (size > $3)
                     OR (size = $3 AND resource_id > $5::uuid)",
                 "ORDER BY size ASC, resource_id ASC",
             ),
-            ("size", true) => (
+            (TrashOrderBy::Size, true) => (
                 "WHERE ($3::bigint IS NULL)
                     OR (size < $3)
                     OR (size = $3 AND resource_id < $5::uuid)",
                 "ORDER BY size DESC, resource_id DESC",
             ),
-            // ── default = expires_at ASC ─────────────────────────────────
-            (_, false) => (
-                "WHERE ($4::timestamptz IS NULL)
-                    OR (expires_at > $4)
-                    OR (expires_at = $4 AND resource_id > $5::uuid)",
-                "ORDER BY expires_at ASC, resource_id ASC",
-            ),
-            (_, true) => (
-                "WHERE ($4::timestamptz IS NULL)
-                    OR (expires_at < $4)
-                    OR (expires_at = $4 AND resource_id < $5::uuid)",
-                "ORDER BY expires_at DESC, resource_id DESC",
-            ),
+            // §7: no catch-all arm. Every `TrashOrderBy` variant is named
+            // above, so this match is exhaustive and adding a variant is a
+            // compile error here rather than a silent fall-through to
+            // expires_at ordering. That matters more than it looks: a
+            // keyset predicate and its ORDER BY must name the SAME column,
+            // and the old `(_, _)` arm paired an expires_at predicate with
+            // whatever axis the caller asked for — the exact
+            // sort-key-versus-cursor disagreement §2 had to fix on the
+            // folder listing.
         };
 
         let sql = format!(
@@ -593,12 +589,11 @@ LIMIT $6"
 
                 // Pre-compute the cursor sort fields based on order_by.
                 let (c_sort_str, c_sort_int, c_sort_ts) = match order_by {
-                    "expires_at" => (None, None, Some(expires_at)),
-                    "trashed_at" => (None, None, Some(trashed_at)),
-                    "name" => (sort_str_val, Some(folder_first as i64), None),
-                    "type" => (sort_str_val, Some(type_order), None),
-                    "size" => (None, Some(size), None),
-                    _ => (None, None, Some(expires_at)),
+                    TrashOrderBy::ExpiresAt => (None, None, Some(expires_at)),
+                    TrashOrderBy::TrashedAt => (None, None, Some(trashed_at)),
+                    TrashOrderBy::Name => (sort_str_val, Some(folder_first as i64), None),
+                    TrashOrderBy::Type => (sort_str_val, Some(type_order), None),
+                    TrashOrderBy::Size => (None, Some(size), None),
                 };
 
                 TrashResourceRow {

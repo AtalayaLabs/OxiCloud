@@ -10626,12 +10626,16 @@
           {
             "name": "order_by",
             "in": "query",
-            "description": "Sort / group-by dimension. Supported: `\"expires_at\"` (default — soonest\nexpiry first), `\"trashed_at\"` (most recently trashed first), `\"name\"`,\n`\"type\"`, `\"size\"`.",
+            "description": "Sort / group-by dimension — see [`TrashOrderBy`]. Omit for\n`expires_at` (soonest expiry first). An unknown value is a 400\nnaming the accepted set, not a silent fall back to the default.",
             "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/TrashOrderBy"
+                }
               ]
             }
           },
@@ -17908,6 +17912,17 @@
             "description": "The translated text"
           }
         }
+      },
+      "TrashOrderBy": {
+        "type": "string",
+        "description": "Sort axis for `GET /api/trash/resources` (§7).\n\nTyped rather than `Option<String>` so an unknown axis is refused at\nwire-decode time instead of silently falling back to the default —\nwhich is what a bare string did, turning a client typo into \"sorted by\nsomething else\" with a 200. serde's derived error names the accepted\nvariants, so the 400 tells the caller what to send; no custom extractor\nis involved. `PhotoOrderBy` set this precedent in §6.\n\n**Per-endpoint by design, not one shared union.** `Name`/`Type`/`Size`\nrecur across endpoints but the date axes do not — trash has\n`expires_at`/`trashed_at`, favorites has `favorited_at`, recent has\n`accessed_at`. A shared enum would accept nonsense on every endpoint\nbut its own.",
+        "enum": [
+          "expires_at",
+          "trashed_at",
+          "name",
+          "type",
+          "size"
+        ]
       },
       "TrashResourceItemDto": {
         "type": "object",

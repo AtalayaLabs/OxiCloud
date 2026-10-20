@@ -53,7 +53,7 @@ pub async fn get_trash_resources(
         }
     };
 
-    let order_by = q.order_by.as_deref().unwrap_or("expires_at").to_owned();
+    let order_by = q.order_by.unwrap_or_default();
     let cursor_input = q.cursor.clone();
     let limit = q.limit_clamped();
 
@@ -69,7 +69,7 @@ pub async fn get_trash_resources(
             user_id,
             limit,
             cursor,
-            &order_by,
+            order_by,
             kinds.as_deref(),
             q.reverse,
         )

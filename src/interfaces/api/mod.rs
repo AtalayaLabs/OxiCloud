@@ -43,8 +43,8 @@ use crate::application::dtos::search_dto::{
 };
 use crate::application::dtos::share_dto::{CreateShareDto, ShareDto, UpdateShareDto};
 use crate::application::dtos::trash_dto::{
-    DeletePermanentlyRequest, MoveToTrashRequest, RestoreFromTrashRequest, TrashResourceItemDto,
-    TrashResourcesDto, TrashedItemDto,
+    DeletePermanentlyRequest, MoveToTrashRequest, RestoreFromTrashRequest, TrashOrderBy,
+    TrashResourceItemDto, TrashResourcesDto, TrashedItemDto,
 };
 use crate::application::dtos::user_dto::{
     AuthResponseDto, ChangePasswordDto, LoginDto, OidcExchangeDto, OidcProviderInfoDto,
@@ -482,6 +482,7 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             UpdateShareDto,
             // Trash schemas
             TrashedItemDto,
+            TrashOrderBy,
             TrashResourceItemDto,
             TrashResourcesDto,
             MoveToTrashRequest,
