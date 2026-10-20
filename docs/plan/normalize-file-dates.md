@@ -1349,15 +1349,41 @@ Seven enums, variants as the accepted values stand today with this plan's
 renames applied. Defaults differ per endpoint and must be preserved — mark the
 right variant `#[default]`:
 
-| Enum | Variants | Default |
-|---|---|---|
-| `FolderOrderBy` | `Name` `Type` `ModifiedAt` `CreatedAt` `Size` | `Name` |
-| `PhotoOrderBy` *(exists)* | `CapturedAt` `CreatedAt` `ModifiedAt` | `CapturedAt` |
-| `RecentOrderBy` | `AccessedAt` `Name` `Type` `ModifiedAt` `Size` `Owner` | `AccessedAt` |
-| `FavoritesOrderBy` | `Name` `Type` `FavoritedAt` `ModifiedAt` `Size` `Owner` | `Name` |
-| `TrashOrderBy` | `ExpiresAt` `TrashedAt` `Name` `Type` `Size` | `ExpiresAt` |
-| `SearchOrderBy` | `Relevance` `Name` `Size` `ModifiedAt` `CreatedAt` | `Relevance` |
-| `GrantOrderBy` | `GrantedAt` `GrantedBy` | `GrantedAt` |
+**Table below VERIFIED against the code 2026-10-20** — variants read out of
+each repository's ORDER BY match arms, defaults out of each handler's
+`unwrap_or`. Six of the seven rows were already right; the grant row was
+wrong in two ways and is corrected:
+
+| Enum | Variants | Default | source of truth |
+|---|---|---|---|
+| `FolderOrderBy` | `Name` `Type` `ModifiedAt` `CreatedAt` `Size` | `Name` | `folder_service.rs:1570`, `folder_handler.rs:606` |
+| `PhotoOrderBy` *(exists)* | `CapturedAt` `CreatedAt` `ModifiedAt` | `CapturedAt` | `photos_dto.rs:51` |
+| `RecentOrderBy` | `AccessedAt` `Name` `Type` `ModifiedAt` `Size` `Owner` | `AccessedAt` | `recent_items_pg_repository.rs`, `recent_handler.rs:195` |
+| `FavoritesOrderBy` | `Name` `Type` `FavoritedAt` `ModifiedAt` `Size` `Owner` | `Name` | `favorites_pg_repository.rs`, `favorites_handler.rs:175` |
+| `TrashOrderBy` | `ExpiresAt` `TrashedAt` `Name` `Type` `Size` | `ExpiresAt` | `trash_service.rs:940`, `trash_handler.rs:56` |
+| `SearchOrderBy` | `Relevance` `Name` `Size` `ModifiedAt` `CreatedAt` | `Relevance` | `file_blob_read_repository.rs:1380`, `search_dto.rs:93` |
+| `IncomingGrantOrderBy` | `GrantedAt` `GrantedBy` `Name` `Type` | `GrantedAt` | `grant_handler.rs:974` |
+| `OutgoingGrantOrderBy` | `FirstSharedAt` `Name` `Type` `Subject` `Role` | `FirstSharedAt` | `grant_handler.rs:1249` |
+
+**The grant correction, because it changes the work.** The old row claimed one
+`GrantOrderBy` with two variants. In fact there are **two endpoints with
+disjoint sets** — `/shared-with-me` (incoming) takes four values, `/shared`
+("My Shares", `fetchMyShares`) takes five, and only `Name`/`Type` overlap.
+They currently share ONE `SharedWithMeQuery` struct, with each handler
+validating its own set, which is why the mismatch went unnoticed.
+
+So typing grants means splitting that struct in two, not adding one enum. The
+duplication that costs is already the house style — `serde_urlencoded` cannot
+flatten, so every paged endpoint repeats `limit`/`cursor`/`reverse` anyway.
+
+**Also verified: the 400 comes free.** The phase text below worries that a
+typed extractor yields Axum's unhelpful "Failed to deserialize query string".
+It does not — serde's derived enum error names the accepted variants, and the
+behaviour is already pinned in production for photos:
+`photos_resources.hurl:296` asserts `order_by=bogus` → 400. So no custom
+extractor or rejection mapping is required; the remaining gap is only that the
+body carries no `error_type` key, which matters little for an axis typo the SPA
+can never send.
 
 Copy `PhotoOrderBy`'s derives verbatim — `ToSchema` is the one that matters,
 since it is what makes OpenAPI emit a real `enum` rather than `string`:
