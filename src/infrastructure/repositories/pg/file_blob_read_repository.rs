@@ -1372,12 +1372,12 @@ impl FileReadPort for FileBlobReadRepository {
         let offset = criteria.offset as i64;
         let limit = criteria.limit as i64;
 
-        // Determine sort order. Canonical `sort_by` set (matches the wire
+        // Determine sort order. Canonical `order_by` set (matches the wire
         // `SearchResourcesQuery.order_by` 1:1 — no rename at any layer):
         // `relevance | name | size | updated_at | created_at`. Direction
         // comes from `criteria.reverse`; the old `_desc`-suffix pattern
         // was retired 2026-07-26.
-        let order_column = match criteria.sort_by.as_str() {
+        let order_column = match criteria.order_by.as_str() {
             "name" => "fi.name",
             // §3 — the content clock. This has to agree with
             // `search_service::sort_enriched_files`, which re-sorts the
@@ -1545,12 +1545,12 @@ impl FileReadPort for FileBlobReadRepository {
         let offset = criteria.offset as i64;
         let limit = criteria.limit as i64;
 
-        // Determine sort order. Canonical `sort_by` set (matches the wire
+        // Determine sort order. Canonical `order_by` set (matches the wire
         // `SearchResourcesQuery.order_by` 1:1 — no rename at any layer):
         // `relevance | name | size | updated_at | created_at`. Direction
         // comes from `criteria.reverse`; the old `_desc`-suffix pattern
         // was retired 2026-07-26.
-        let order_column = match criteria.sort_by.as_str() {
+        let order_column = match criteria.order_by.as_str() {
             "name" => "fi.name",
             // §3 — the content clock. This has to agree with
             // `search_service::sort_enriched_files`, which re-sorts the

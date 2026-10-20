@@ -70,8 +70,8 @@ pub struct SearchCriteriaDto {
     /// the `_desc` suffix pattern was retired 2026-07-26 in favour of
     /// a single boolean, so every consumer treats "which column" and
     /// "which direction" as orthogonal concerns.
-    #[serde(default = "default_sort_by")]
-    pub sort_by: String,
+    #[serde(default = "default_order_by")]
+    pub order_by: String,
 
     /// Reverse the sort direction — descending for name/size/date,
     /// no-op for `relevance` (a descending relevance sort is meaningless).
@@ -89,8 +89,8 @@ fn default_limit() -> usize {
     100
 }
 
-/// Default sort_by value
-fn default_sort_by() -> String {
+/// Default order_by value
+fn default_order_by() -> String {
     "relevance".to_string()
 }
 
@@ -109,7 +109,7 @@ impl Default for SearchCriteriaDto {
             recursive: default_recursive(),
             limit: default_limit(),
             offset: 0,
-            sort_by: default_sort_by(),
+            order_by: default_order_by(),
             reverse: false,
         }
     }
@@ -277,7 +277,7 @@ pub struct SearchResultsDto {
     pub query_time_ms: u64,
 
     /// Sort order used
-    pub sort_by: String,
+    pub order_by: String,
 }
 
 impl SearchResultsDto {
@@ -291,7 +291,7 @@ impl SearchResultsDto {
             offset: 0,
             has_more: false,
             query_time_ms: 0,
-            sort_by: "relevance".to_string(),
+            order_by: "relevance".to_string(),
         }
     }
 
@@ -303,7 +303,7 @@ impl SearchResultsDto {
         offset: usize,
         total_count: Option<usize>,
         query_time_ms: u64,
-        sort_by: String,
+        order_by: String,
     ) -> Self {
         let has_more = match total_count {
             Some(total) => (offset + files.len() + folders.len()) < total,
@@ -318,7 +318,7 @@ impl SearchResultsDto {
             offset,
             has_more,
             query_time_ms,
-            sort_by,
+            order_by,
         }
     }
 }
@@ -413,7 +413,7 @@ impl SearchResourcesQuery {
     }
     /// Convert to the internal `SearchCriteriaDto` the service consumes.
     /// `limit` / `offset` come from the decoded cursor (or the query's
-    /// `limit` on the first page). `sort_by` + `reverse` pass through as
+    /// `limit` on the first page). `order_by` + `reverse` pass through as
     /// two orthogonal fields — every downstream consumer (SQL builders,
     /// in-memory folder sort) reads both.
     pub fn to_criteria(&self) -> SearchCriteriaDto {
@@ -437,7 +437,7 @@ impl SearchResourcesQuery {
             recursive: self.recursive,
             limit: self.limit_clamped(),
             offset,
-            sort_by: self.order_by.clone().unwrap_or_else(default_sort_by),
+            order_by: self.order_by.clone().unwrap_or_else(default_order_by),
             reverse: self.reverse,
         }
     }
@@ -537,7 +537,7 @@ impl SearchResourcesDto {
         results: crate::application::dtos::search_dto::SearchResultsDto,
         query: &SearchResourcesQuery,
     ) -> Self {
-        let order_by = query.order_by.clone().unwrap_or_else(default_sort_by);
+        let order_by = query.order_by.clone().unwrap_or_else(default_order_by);
         let current_offset = query.decode_cursor().map(|c| c.offset).unwrap_or(0);
         let returned = results.files.len() + results.folders.len();
 

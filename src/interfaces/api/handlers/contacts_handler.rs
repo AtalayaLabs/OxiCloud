@@ -464,6 +464,7 @@ pub async fn delete_address_book(
         ("book_id" = String, Path, description = "Address book UUID or \"system\""),
         ("limit"   = Option<i64>, Query, description = "Max results (omit for the full book; system book defaults to 100)"),
         ("offset"  = Option<i64>, Query, description = "Pagination offset (omit for none; system book defaults to 0)"),
+        ("include_self" = Option<bool>, Query, description = "System address book only — include the calling user in the results. Default false (the share-modal \"can't share with yourself\" rule); the admin drive-owner surface sets it true. Ignored for non-system books"),
     ),
     responses(
         (status = 200, body = Vec<ContactDto>, description = "List of contacts"),

@@ -969,12 +969,12 @@ pub async fn list_shared_with_me(
     // Clamp limit to 1–200.
     let limit = q.limit_clamped() as u32;
 
-    // Validate sort_by (defaults to "granted_at").
-    let sort_by = q.sort_by.as_deref().unwrap_or("granted_at");
-    if !matches!(sort_by, "granted_at" | "granted_by" | "name" | "type") {
+    // Validate order_by (defaults to "granted_at").
+    let order_by = q.order_by.as_deref().unwrap_or("granted_at");
+    if !matches!(order_by, "granted_at" | "granted_by" | "name" | "type") {
         return (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "invalid sort_by; valid values: granted_at, granted_by, name, type"})),
+            Json(serde_json::json!({"error": "invalid order_by; valid values: granted_at, granted_by, name, type"})),
         )
             .into_response();
     }
@@ -985,12 +985,12 @@ pub async fn list_shared_with_me(
     // to avoid keyset confusion across sort modes.
     let cursor = q
         .decode_cursor::<GrantCursor>()
-        .filter(|c| c.sort_by == sort_by && c.reverse == reverse);
+        .filter(|c| c.order_by == order_by && c.reverse == reverse);
 
     // Fetch paged summaries from the ACL engine.
     let (summaries, next_cursor) = match state
         .authorization
-        .list_incoming_resources_paged(subject, &kinds, limit, cursor, sort_by, reverse)
+        .list_incoming_resources_paged(subject, &kinds, limit, cursor, order_by, reverse)
         .await
     {
         Ok(r) => r,
@@ -1244,14 +1244,14 @@ pub async fn list_my_shares(
 
     let limit = q.limit_clamped() as u32;
 
-    let sort_by = q.sort_by.as_deref().unwrap_or("first_shared_at");
+    let order_by = q.order_by.as_deref().unwrap_or("first_shared_at");
     if !matches!(
-        sort_by,
+        order_by,
         "first_shared_at" | "name" | "type" | "subject" | "role"
     ) {
         return (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "invalid sort_by; valid values: first_shared_at, name, type, subject, role"})),
+            Json(serde_json::json!({"error": "invalid order_by; valid values: first_shared_at, name, type, subject, role"})),
         )
             .into_response();
     }
@@ -1260,11 +1260,11 @@ pub async fn list_my_shares(
 
     let cursor = q
         .decode_cursor::<GrantCursor>()
-        .filter(|c| c.sort_by == sort_by && c.reverse == reverse);
+        .filter(|c| c.order_by == order_by && c.reverse == reverse);
 
     let (summaries, next_cursor) = match state
         .authorization
-        .list_outgoing_resources_paged(caller_id, limit, cursor, sort_by, reverse)
+        .list_outgoing_resources_paged(caller_id, limit, cursor, order_by, reverse)
         .await
     {
         Ok(r) => r,

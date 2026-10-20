@@ -3566,6 +3566,14 @@ export type SearchCriteriaDto = {
      */
     offset?: number;
     /**
+     * Sort dimension. Canonical set: `"relevance"` | `"name"` | `"size"`
+     * | `"modified_at"` | `"created_at"`. Direction is `reverse` below —
+     * the `_desc` suffix pattern was retired 2026-07-26 in favour of
+     * a single boolean, so every consumer treats "which column" and
+     * "which direction" as orthogonal concerns.
+     */
+    order_by?: string;
+    /**
      * Whether to search recursively within subfolders (default: true)
      */
     recursive?: boolean;
@@ -3574,14 +3582,6 @@ export type SearchCriteriaDto = {
      * no-op for `relevance` (a descending relevance sort is meaningless).
      */
     reverse?: boolean;
-    /**
-     * Sort dimension. Canonical set: `"relevance"` | `"name"` | `"size"`
-     * | `"modified_at"` | `"created_at"`. Direction is `reverse` below —
-     * the `_desc` suffix pattern was retired 2026-07-26 in favour of
-     * a single boolean, so every consumer treats "which column" and
-     * "which direction" as orthogonal concerns.
-     */
-    sort_by?: string;
 };
 
 /**
@@ -3869,13 +3869,13 @@ export type SearchResultsDto = {
      */
     offset: number;
     /**
+     * Sort order used
+     */
+    order_by: string;
+    /**
      * Query execution time in milliseconds (server-side)
      */
     query_time_ms: number;
-    /**
-     * Sort order used
-     */
-    sort_by: string;
     /**
      * Total count of matching items (for pagination)
      */
@@ -5214,6 +5214,10 @@ export type ListContactsData = {
          * Pagination offset (omit for none; system book defaults to 0)
          */
         offset?: number;
+        /**
+         * System address book only — include the calling user in the results. Default false (the share-modal "can't share with yourself" rule); the admin drive-owner surface sets it true. Ignored for non-system books
+         */
+        include_self?: boolean;
     };
     url: '/api/address-books/{book_id}/contacts';
 };
@@ -10512,10 +10516,19 @@ export type ListSharedWithMeData = {
          */
         cursor?: string | null;
         /**
-         * Sort dimension. Supported values: `"granted_at"` (default),
-         * `"granted_by"` (for swimlane grouping).
+         * Sort dimension, and the accepted set depends on which endpoint this
+         * struct is extracted for — the two are NOT interchangeable:
+         *
+         * * `/api/grants/incoming/resources` — `"granted_at"` (default),
+         * `"granted_by"` (for swimlane grouping), `"name"`, `"type"`.
+         * * `/api/grants/outgoing/resources` — `"first_shared_at"` (default),
+         * `"name"`, `"type"`, `"subject"`, `"role"`.
+         *
+         * Unknown values return HTTP 400 from the handler. Renamed from
+         * `sort_by` in §7; this was the only endpoint pair that had reached the
+         * wire with the deviant name.
          */
-        sort_by?: string | null;
+        order_by?: string | null;
         /**
          * Comma-separated resource types to include, e.g. `file,folder`.
          * Omit to return all known types.
@@ -10570,10 +10583,19 @@ export type ListMySharesData = {
          */
         cursor?: string | null;
         /**
-         * Sort dimension. Supported values: `"granted_at"` (default),
-         * `"granted_by"` (for swimlane grouping).
+         * Sort dimension, and the accepted set depends on which endpoint this
+         * struct is extracted for — the two are NOT interchangeable:
+         *
+         * * `/api/grants/incoming/resources` — `"granted_at"` (default),
+         * `"granted_by"` (for swimlane grouping), `"name"`, `"type"`.
+         * * `/api/grants/outgoing/resources` — `"first_shared_at"` (default),
+         * `"name"`, `"type"`, `"subject"`, `"role"`.
+         *
+         * Unknown values return HTTP 400 from the handler. Renamed from
+         * `sort_by` in §7; this was the only endpoint pair that had reached the
+         * wire with the deviant name.
          */
-        sort_by?: string | null;
+        order_by?: string | null;
         /**
          * Comma-separated resource types to include, e.g. `file,folder`.
          * Omit to return all known types.
@@ -11601,7 +11623,20 @@ export type ListPhotosResourcesResponse = ListPhotosResourcesResponses[keyof Lis
 export type ListPlaylistsData = {
     body?: never;
     path?: never;
-    query?: never;
+    query?: {
+        /**
+         * Include playlists shared with the caller, not just owned ones
+         */
+        include_shared?: boolean;
+        /**
+         * Accepted for backwards compatibility but NOT applied — the listing is derived from the caller's grants and always returns all of them. See PlaylistQueryDto
+         */
+        limit?: number;
+        /**
+         * Accepted for backwards compatibility but NOT applied — see `limit`
+         */
+        offset?: number;
+    };
     url: '/api/playlists';
 };
 
@@ -12354,7 +12389,24 @@ export type SetupAdminResponse = SetupAdminResponses[keyof SetupAdminResponses];
 export type GetUserSharesData = {
     body?: never;
     path?: never;
-    query?: never;
+    query?: {
+        /**
+         * 1-based page number (default 1). Ignored when item_id + item_type are both given
+         */
+        page?: number;
+        /**
+         * Items per page (default 20). Ignored when item_id + item_type are both given
+         */
+        per_page?: number;
+        /**
+         * Return only shares for this item. Must be sent together with item_type
+         */
+        item_id?: string;
+        /**
+         * Item kind for item_id — `file` or `folder`. An unknown value returns 400
+         */
+        item_type?: string;
+    };
     url: '/api/shares';
 };
 

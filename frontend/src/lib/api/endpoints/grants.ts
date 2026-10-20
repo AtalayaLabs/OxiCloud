@@ -184,7 +184,11 @@ function params(opts: GrantsPageOpts): string {
 	const p = new URLSearchParams({ limit: String(limit) });
 	if (resourceTypes?.length) p.set('resource_types', resourceTypes.join(','));
 	if (cursor) p.set('cursor', cursor);
-	if (orderBy) p.set('sort_by', orderBy);
+	// §7: the wire name is `order_by`, matching every other paged endpoint.
+	// These two grant listings were the only ones that had shipped as
+	// `sort_by`; renamed with no deprecation window, same call as §6 — the
+	// API is recent and this SPA is its only consumer.
+	if (orderBy) p.set('order_by', orderBy);
 	if (reverse) p.set('reverse', 'true');
 	return p.toString();
 }

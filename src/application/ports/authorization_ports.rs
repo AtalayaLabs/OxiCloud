@@ -348,7 +348,7 @@ pub trait AuthorizationEngine: Send + Sync + 'static {
         kinds: &[ResourceKind],
         limit: u32,
         cursor: Option<GrantCursor>,
-        sort_by: &str,
+        order_by: &str,
         reverse: bool,
     ) -> Result<(Vec<IncomingGrantSummary>, Option<GrantCursor>), DomainError>;
 
@@ -371,7 +371,7 @@ pub trait AuthorizationEngine: Send + Sync + 'static {
         granted_by: Uuid,
         limit: u32,
         cursor: Option<GrantCursor>,
-        sort_by: &str,
+        order_by: &str,
         reverse: bool,
     ) -> Result<(Vec<OutgoingResourceSummary>, Option<GrantCursor>), DomainError>;
 

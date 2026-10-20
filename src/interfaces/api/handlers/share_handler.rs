@@ -145,6 +145,12 @@ pub async fn get_shared_link(
 #[utoipa::path(
     get,
     path = "/api/shares",
+    params(
+        ("page" = Option<usize>, Query, description = "1-based page number (default 1). Ignored when item_id + item_type are both given"),
+        ("per_page" = Option<usize>, Query, description = "Items per page (default 20). Ignored when item_id + item_type are both given"),
+        ("item_id" = Option<String>, Query, description = "Return only shares for this item. Must be sent together with item_type"),
+        ("item_type" = Option<String>, Query, description = "Item kind for item_id — `file` or `folder`. An unknown value returns 400"),
+    ),
     responses(
         (status = 200, description = "List of shares", body = Vec<crate::application::dtos::share_dto::ShareDto>)
     ),

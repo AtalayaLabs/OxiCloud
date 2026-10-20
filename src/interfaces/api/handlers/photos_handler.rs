@@ -29,7 +29,7 @@ use uuid::Uuid;
 
 /// Query parameters for `GET /api/photos/resources` — the normalized
 /// envelope endpoint. Deliberately NOT re-using the opaque base64 cursor
-/// via `CursorQuery`'s `sort_by: Option<String>` because photos has a
+/// via `CursorQuery`'s `order_by: Option<String>` because photos has a
 /// typed [`PhotoOrderBy`] enum we want validated at wire-decode time;
 /// `cursor` and `limit` reuse the same convention.
 #[derive(Debug, Deserialize, utoipa::IntoParams)]

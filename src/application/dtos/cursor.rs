@@ -79,7 +79,7 @@ pub trait PageCursor: Sized + Serialize + for<'de> Deserialize<'de> {
 ///     #[serde(default = "CursorQuery::default_limit")]
 ///     pub limit: u32,
 ///     pub cursor: Option<String>,
-///     pub sort_by: Option<String>,
+///     pub order_by: Option<String>,
 ///     pub status: Option<String>,    // endpoint-specific
 /// }
 /// ```
@@ -92,7 +92,14 @@ pub struct CursorQuery {
     pub cursor: Option<String>,
     /// Sort dimension.  Valid values are endpoint-defined (e.g. `"granted_at"`,
     /// `"name"`, `"granted_by"`).  Unknown values should return HTTP 400.
-    pub sort_by: Option<String>,
+    ///
+    /// **Named `order_by`, and the name is load-bearing.** This struct is the
+    /// template every paged endpoint copies — the doc example above is
+    /// literally instructions to implementers — so a deviation here re-seeds
+    /// itself into the next endpoint someone adds. `sort_by` was that
+    /// deviation, and it reached the wire on the two grant endpoints before
+    /// being normalised (§7).
+    pub order_by: Option<String>,
 }
 
 impl CursorQuery {

@@ -389,10 +389,14 @@ pub struct CreateGrantResponseDto {
 
 /// Query parameters for `GET /api/grants/incoming/resources`.
 ///
-/// `limit`, `cursor`, and `sort_by` follow the standard [`CursorQuery`]
+/// `limit`, `cursor`, and `order_by` follow the standard [`CursorQuery`]
 /// contract.  They are declared directly here rather than via
 /// `#[serde(flatten)]` because `serde_urlencoded` (Axum's query extractor)
 /// does not support flattening.
+///
+/// **Shared by both grant listing endpoints**, which accept *different*
+/// `order_by` sets — see the field doc below. That is why the accepted
+/// values are validated in each handler rather than by the type.
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct SharedWithMeQuery {
     /// Maximum number of items to return (1–200, default 50).
@@ -401,9 +405,18 @@ pub struct SharedWithMeQuery {
     /// Opaque cursor from a previous response. Omit to start from the
     /// most-recently-granted item.
     pub cursor: Option<String>,
-    /// Sort dimension. Supported values: `"granted_at"` (default),
-    /// `"granted_by"` (for swimlane grouping).
-    pub sort_by: Option<String>,
+    /// Sort dimension, and the accepted set depends on which endpoint this
+    /// struct is extracted for — the two are NOT interchangeable:
+    ///
+    /// * `/api/grants/incoming/resources` — `"granted_at"` (default),
+    ///   `"granted_by"` (for swimlane grouping), `"name"`, `"type"`.
+    /// * `/api/grants/outgoing/resources` — `"first_shared_at"` (default),
+    ///   `"name"`, `"type"`, `"subject"`, `"role"`.
+    ///
+    /// Unknown values return HTTP 400 from the handler. Renamed from
+    /// `sort_by` in §7; this was the only endpoint pair that had reached the
+    /// wire with the deviant name.
+    pub order_by: Option<String>,
     /// Comma-separated resource types to include, e.g. `file,folder`.
     /// Omit to return all known types.
     pub resource_types: Option<String>,

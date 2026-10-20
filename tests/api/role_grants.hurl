@@ -334,6 +334,64 @@ body not contains "\"role\":\"admin\""
 
 
 # ─────────────────────────────────────────────────────────────
+# Step 9b — §7: the sort parameter is `order_by`, not `sort_by`.
+# ─────────────────────────────────────────────────────────────
+# These two grant listings were the ONLY paged endpoints that had
+# reached the wire calling it `sort_by`; every other one (folders,
+# trash, recent, favorites, search, photos) already said `order_by`.
+# Renamed with no deprecation window — same call as §6, since the API
+# is recent and the SPA is its only consumer.
+#
+# `/shared` ("My Shares", `fetchMyShares`) is this outgoing endpoint;
+# `/shared-with-me` is the incoming one below. They accept DIFFERENT
+# value sets, which is why each handler validates its own.
+GET {{base_url}}/api/grants/outgoing/resources?order_by=first_shared_at
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+
+
+# An unknown value is refused, and the error names what is accepted —
+# so a client that sends a retired value learns which ones exist rather
+# than silently getting the default order.
+GET {{base_url}}/api/grants/outgoing/resources?order_by=definitely-not-an-axis
+Authorization: Bearer {{admin_token}}
+
+HTTP 400
+[Asserts]
+body contains "first_shared_at"
+
+
+# THE regression pin for the rename. `sort_by` must now be an unknown
+# query parameter, which serde ignores — so even a garbage value is
+# accepted and the endpoint falls back to its default order. If someone
+# ever re-adds `sort_by` as an alias, this starts returning 400 and
+# fails here, which is exactly the signal we want: the old name must be
+# gone, not quietly tolerated alongside the new one.
+GET {{base_url}}/api/grants/outgoing/resources?sort_by=definitely-not-an-axis
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+
+
+# Same contract on the incoming endpoint (`/shared-with-me`), whose
+# accepted set differs — `granted_at` is its default, and `granted_by`
+# drives swimlane grouping.
+GET {{base_url}}/api/grants/incoming/resources?order_by=granted_by
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+
+
+GET {{base_url}}/api/grants/incoming/resources?order_by=definitely-not-an-axis
+Authorization: Bearer {{admin_token}}
+
+HTTP 400
+[Asserts]
+body contains "granted_at"
+
+
+# ─────────────────────────────────────────────────────────────
 # Step 10 — Revoke: removing sam's grant. `engine.revoke()` DELETEs
 #           the single `storage.role_grants` row by id.
 #

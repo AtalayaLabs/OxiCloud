@@ -71,6 +71,11 @@ pub async fn get_playlist(
 #[utoipa::path(
     get,
     path = "/api/playlists",
+    params(
+        ("include_shared" = Option<bool>, Query, description = "Include playlists shared with the caller, not just owned ones"),
+        ("limit" = Option<i64>, Query, description = "Accepted for backwards compatibility but NOT applied — the listing is derived from the caller's grants and always returns all of them. See PlaylistQueryDto"),
+        ("offset" = Option<i64>, Query, description = "Accepted for backwards compatibility but NOT applied — see `limit`"),
+    ),
     responses(
         (status = 200, body = Vec<PlaylistDto>, description = "List of playlists"),
         (status = 401, description = "Unauthorized")

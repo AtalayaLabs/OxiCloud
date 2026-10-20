@@ -517,11 +517,11 @@ pub struct OutgoingResourceSummary {
 /// listing. The encoding is opaque to API callers — only the backend
 /// decodes it.
 ///
-/// The `sort_by` field must match the active sort dimension — if the caller
-/// switches sort order the handler discards any cursor whose `sort_by` does
+/// The `order_by` field must match the active sort dimension — if the caller
+/// switches sort order the handler discards any cursor whose `order_by` does
 /// not match, restarting from the first page.
 ///
-/// Sort-key fields populated per `sort_by` value:
+/// Sort-key fields populated per `order_by` value:
 /// - `"granted_at"` (default) — uses `granted_at` + `resource_id`
 /// - `"name"`        — uses `resource_name` (lowercased) + `resource_id`
 /// - `"type"`        — uses `type_order` + `resource_name` (lowercased) + `resource_id`
@@ -530,7 +530,7 @@ pub struct OutgoingResourceSummary {
 pub struct GrantCursor {
     /// Sort dimension that was active when this cursor was produced.
     #[serde(default = "GrantCursor::default_sort")]
-    pub sort_by: String,
+    pub order_by: String,
     pub granted_at: chrono::DateTime<chrono::Utc>,
     pub resource_id: Uuid,
     /// Lowercased sort string — resource name for `"name"`/`"type"`,

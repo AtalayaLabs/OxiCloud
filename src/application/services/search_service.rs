@@ -109,7 +109,7 @@ pub fn search_results_entry_weight(_key: &(Uuid, u64), value: &Arc<SearchResults
         s.as_deref().map_or(0, str::len)
     }
 
-    let mut bytes = ENTRY_OVERHEAD + value.sort_by.len();
+    let mut bytes = ENTRY_OVERHEAD + value.order_by.len();
     for f in &value.files {
         bytes += ROW_OVERHEAD
             + f.id.len()
@@ -215,10 +215,10 @@ fn content_relevance(score: f32, max_score: f32) -> u32 {
 ///
 /// Sort dimension + direction are orthogonal (matches the wire
 /// `SearchResourcesQuery` / internal `SearchCriteriaDto` split): 5
-/// canonical `sort_by` values (`relevance | name | size | updated_at |
+/// canonical `order_by` values (`relevance | name | size | updated_at |
 /// created_at`) × the boolean `reverse`.
-fn sort_enriched_files(files: &mut [SearchFileResultDto], sort_by: &str, reverse: bool) {
-    match sort_by {
+fn sort_enriched_files(files: &mut [SearchFileResultDto], order_by: &str, reverse: bool) {
+    match order_by {
         "name" if reverse => files.sort_by_cached_key(|f| Reverse(f.name.to_lowercase())),
         "name" => files.sort_by_cached_key(|f| f.name.to_lowercase()),
         "modified_at" if reverse => files.sort_by_key(|f| Reverse(f.modified_at)),
@@ -487,7 +487,7 @@ impl SearchService {
     ///   (re-applying user scope, trash state and every active filter — a
     ///   stale index id silently drops out), enriched, scored into the
     ///   content relevance band and appended;
-    /// * the merged page is re-sorted with the caller's `sort_by`.
+    /// * the merged page is re-sorted with the caller's `order_by`.
     ///
     /// Returns how many files were added (callers bump their totals by it).
     async fn merge_content_hits(
@@ -542,7 +542,7 @@ impl SearchService {
             added += 1;
         }
         if added > 0 {
-            sort_enriched_files(enriched_files, &criteria.sort_by, criteria.reverse);
+            sort_enriched_files(enriched_files, &criteria.order_by, criteria.reverse);
         }
         Ok(added)
     }
@@ -761,7 +761,7 @@ impl SearchUseCase for SearchService {
                     // + the SQL match in `file_blob_read_repository`. `size` isn't
                     // meaningful for folders (no size column), so it falls through
                     // to the relevance default.
-                    match (criteria.sort_by.as_str(), criteria.reverse) {
+                    match (criteria.order_by.as_str(), criteria.reverse) {
                         ("name", false) => {
                             enriched_folders.sort_by_cached_key(|f| f.name.to_lowercase());
                         }
@@ -826,7 +826,7 @@ impl SearchUseCase for SearchService {
                         criteria.offset,
                         Some(total_count),
                         elapsed_ms,
-                        criteria.sort_by.clone(),
+                        criteria.order_by.clone(),
                     ));
 
                     return Ok(search_results);
@@ -913,7 +913,7 @@ impl SearchUseCase for SearchService {
                     .collect();
 
                 // ── Sort folders (cached_key avoids O(N log N) temporary String allocations) ──
-                match criteria.sort_by.as_str() {
+                match criteria.order_by.as_str() {
                     "name" => {
                         enriched_folders.sort_by_cached_key(|f| f.name.to_lowercase());
                     }
@@ -970,7 +970,7 @@ impl SearchUseCase for SearchService {
                     criteria.offset,
                     Some(total_count),
                     elapsed_ms,
-                    criteria.sort_by.clone(),
+                    criteria.order_by.clone(),
                 ));
 
                 Ok(search_results)
@@ -1126,7 +1126,7 @@ mod tests {
 
     #[test]
     fn entry_weight_counts_every_owned_string_plus_overheads() {
-        // Empty page: entry overhead + sort_by ("relevance" = 9 bytes).
+        // Empty page: entry overhead + order_by ("relevance" = 9 bytes).
         let empty = Arc::new(SearchResultsDto::empty());
         let base = search_results_entry_weight(&(Uuid::nil(), 0), &empty) as usize;
         assert_eq!(base, 256 + 9);
