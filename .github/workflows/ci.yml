@@ -619,7 +619,17 @@ jobs:
 
   build:
     name: Build
-    runs-on: ubuntu-latest
+    # Pinned to 22.04 (Jammy) alongside the api-test downstream consumer
+    # — see the pin on `api-test`'s `runs-on` below for the full
+    # rationale (hurl .deb pins Jammy's libxml2 ABI; Noble renamed it).
+    # The reason the BUILD job needs the same pin is glibc backward-
+    # compatibility: Noble ships glibc 2.39, Jammy ships glibc 2.35, and
+    # a binary built against the newer symbol table ("GLIBC_2.38 not
+    # found") won't run on the older runtime. Jammy-built binaries DO
+    # run on Noble (backward-compat is one-way), so pinning the
+    # build-side alone is sufficient to make the Noble consumers
+    # (litmus, OIDC, e2e jobs on lines 836/874/912) keep working.
+    runs-on: ubuntu-22.04
     if: github.event_name == 'pull_request'
     steps:
       # `cargo build --release --features plugins` is the heaviest
@@ -662,7 +672,17 @@ jobs:
     needs: build
     if: github.event_name == 'pull_request'
     timeout-minutes: 30
-    runs-on: ubuntu-latest
+    # Pinned to 22.04 (Jammy) because Orange-OpenSource's prebuilt hurl
+    # `.deb` targets Jammy's `libxml2 (>= 2.9)` ABI. GitHub rotated
+    # `ubuntu-latest` → 24.04 (Noble) which renamed `libxml2` to
+    # `libxml2t64` after the time_t transition, so apt refuses the
+    # install ("Depends: libxml2 but it is not installable") AND the
+    # hurl binary — even from the "static" tarball variant — fails to
+    # dlopen `libxml2.so.2` at runtime because Noble ships
+    # `libxml2.so.2t64` instead. Jammy LTS supported by GitHub until
+    # ~April 2027; revisit then (either hurl ships a musl-static build
+    # or Orange-OpenSource publishes a Noble-compatible .deb).
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
