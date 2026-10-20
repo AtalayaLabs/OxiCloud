@@ -925,7 +925,19 @@ jobs:
     needs: api-test
     if: github.event_name == 'pull_request'
     timeout-minutes: 60
-    runs-on: ubuntu-latest
+    # Pinned to 22.04 (Jammy) for two reasons:
+    # 1. Playwright 1.60.0 (pinned by tests/e2e/package.json) does not ship
+    #    deps for Ubuntu 26.04 — `npx playwright install --with-deps` on
+    #    the current `ubuntu-latest` runner fails with:
+    #      ERROR: Playwright does not support chromium on ubuntu26.04-x64
+    # 2. This job consumes the pre-built `oxicloud` binary from the `build`
+    #    job (line 622, also pinned to 22.04 for its own glibc reasons).
+    #    Running the binary on the same OS it was built on avoids any
+    #    future glibc backward-compat surprises.
+    # Revisit when either (a) Playwright publishes 26.04 support in a
+    # version compatible with our test harness, or (b) we unpin the
+    # build job.
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
