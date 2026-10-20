@@ -157,6 +157,141 @@ given the full URL (`https://example.com/oxicloud/caldav/...`); to keep
 autodiscovery, have the proxy redirect the two well-known paths to the
 prefixed ones.
 
+## Outbound TLS and Trust Store
+
+Every outbound TLS connection OxiCloud makes — to PostgreSQL, SMTP, OIDC providers, webhook endpoints, Azure Blob Storage, S3-compatible storage (AWS, MinIO, Backblaze B2, Cloudflare R2, Wasabi…), WOPI editor discovery (Collabora Online / OnlyOffice), and plugin-manifest HTTP fetches — validates certificates against the **operating system's native trust store**.
+
+OxiCloud does not ship a bundled Mozilla root list. There is no OxiCloud-side CA configuration knob. The trust store is whatever the host OS says it is.
+
+### What this gives you
+
+- **Internal / corporate CAs work out of the box.** Add your CA to the OS trust store once, and OxiCloud trusts it for *every* outbound TLS surface — PG, SMTP, OIDC, webhooks, Azure, S3 — without any OxiCloud configuration change.
+- **CA distrust propagates automatically.** When a root CA gets compromised and the OS vendor ships a `ca-certificates` package update marking it distrusted, OxiCloud picks that up on the next process restart. No OxiCloud release required.
+- **One trust story across the whole stack.** The CAs trusted by your PG client, your `curl` test, and OxiCloud are the same set — fewer "it works in one place but not the other" mysteries.
+
+### Adding an internal CA — by deployment shape
+
+The CA file must be **PEM-encoded** (base64 between `-----BEGIN CERTIFICATE-----` and `-----END CERTIFICATE-----`). If your CA is in DER (binary), convert it first:
+
+```bash
+openssl x509 -inform der -in root.der -out root.crt
+```
+
+Pick the recipe that matches how you run OxiCloud.
+
+#### Linux host (bare-metal binary or systemd service)
+
+```bash
+# Debian / Ubuntu / Alpine — PEM goes under /usr/local/share/ca-certificates/
+# with a .crt extension
+sudo cp my-internal-root.crt /usr/local/share/ca-certificates/
+sudo update-ca-certificates
+
+# RHEL / Fedora / CentOS / Rocky — different directory, different refresh
+sudo cp my-internal-root.pem /etc/pki/ca-trust/source/anchors/
+sudo update-ca-trust
+
+# Restart OxiCloud so the trust store is re-read on process start
+sudo systemctl restart oxicloud
+```
+
+#### Docker (recommended — rebuild the image)
+
+```dockerfile
+FROM atalayalabs/oxicloud:latest
+COPY my-internal-root.crt /usr/local/share/ca-certificates/
+RUN update-ca-certificates
+```
+
+```bash
+docker build -t oxicloud-internal .
+docker run -d --name oxicloud oxicloud-internal
+```
+
+Clean separation: the CA is baked into your downstream image, no runtime mounts to re-create after each `docker rm`.
+
+#### Docker (quick — bind-mount the full bundle)
+
+Build a bundle on the host once, mount it over the one inside the container:
+
+```bash
+# Append your CA to a copy of the system bundle
+cat /etc/ssl/certs/ca-certificates.crt my-internal-root.crt \
+  > /etc/oxicloud/ca-bundle.crt
+
+# Mount it over the container's bundle
+docker run -d --name oxicloud \
+  -v /etc/oxicloud/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro \
+  atalayalabs/oxicloud:latest
+```
+
+No custom image build. Trade-off: regenerate the bundle whenever the host's `ca-certificates` package updates — otherwise you lose Mozilla distrust propagation.
+
+#### Docker Compose
+
+```yaml
+services:
+  oxicloud:
+    image: atalayalabs/oxicloud:latest
+    volumes:
+      - /etc/oxicloud/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
+    # …rest of the service config
+```
+
+#### Kubernetes (Helm chart)
+
+Mount your CA bundle as a `Secret` or `ConfigMap` into the pod's trust path. The Helm chart (`charts/oxicloud`) exposes `extraVolumes` / `extraVolumeMounts` for this:
+
+```yaml
+extraVolumes:
+  - name: internal-ca
+    secret:
+      secretName: oxicloud-internal-ca   # kubectl create secret generic …
+                                          #   --from-file=ca-bundle.crt=/path/…
+extraVolumeMounts:
+  - name: internal-ca
+    mountPath: /etc/ssl/certs/ca-certificates.crt
+    subPath: ca-bundle.crt
+    readOnly: true
+```
+
+### Minimal / distroless deployments
+
+OxiCloud's binary expects a populated OS trust store. If you deploy on a minimal base image that does not include CA certificates (scratch, distroless, some Alpine variants), outbound TLS fails with `certificate verify failed, no issuer certificate`. The fix is a one-line package install:
+
+- **Alpine** / Alpine-based Docker image: `apk add --no-cache ca-certificates`
+- **Debian slim / distroless-cc**: already includes `ca-certificates`
+- **scratch**: copy `/etc/ssl/certs/ca-certificates.crt` from a builder stage, or switch to `distroless-cc`
+
+The official OxiCloud Docker image already installs `ca-certificates` — no action needed if you use it as a base.
+
+### Verifying your CA is trusted
+
+The simplest smoke test is PG with full certificate verification. Point `OXICLOUD_DB_CONNECTION_STRING` at a PG whose cert chains to your internal CA with `sslmode=verify-full`:
+
+```
+OXICLOUD_DB_CONNECTION_STRING=postgres://user:pass@internal-pg.corp.lan:5432/oxicloud?sslmode=verify-full
+```
+
+Then start OxiCloud:
+
+- **Clean startup** → trust store sees your CA. Done.
+- **`certificate verify failed, unable to get local issuer certificate`** → the CA isn't where OxiCloud is looking. Re-check: PEM format, correct trust-store directory for the distribution, refresh command ran successfully, container restarted after the cert was installed.
+- **`certificate verify failed, Hostname mismatch`** → trust store is fine; your cert's `subjectAltName` doesn't match the hostname in the connection string. OxiCloud trust is working — fix the cert.
+
+The same recipe works for every other outbound surface. Replace the PG URL with any of these to verify the matching surface against your internal CA:
+
+| Surface | Env var pointing at an internal-TLS endpoint |
+|---|---|
+| **S3-compatible storage** | `OXICLOUD_S3_ENDPOINT_URL` (and `OXICLOUD_STORAGE_BACKEND=s3`) |
+| **Azure Blob storage** | `OXICLOUD_AZURE_ENDPOINT_URL` |
+| **OIDC** | `OXICLOUD_OIDC_ISSUER_URL` |
+| **SMTP** | `OXICLOUD_SMTP_HOST` + `OXICLOUD_SMTP_PORT` |
+| **Webhooks** | `OXICLOUD_WEBHOOK_URL` |
+| **WOPI (Collabora / OnlyOffice)** | `OXICLOUD_WOPI_DISCOVERY_URL` |
+
+If one surface works and another fails against the same internal CA, the gap is not OxiCloud's trust story — all eight surfaces share the OS trust store at runtime. Look at the cert chain for the failing endpoint specifically (`openssl s_client -connect host:port -showcerts`).
+
 ## Feature Dependency Matrix
 
 | Feature | Requires DB | Requires Auth | Feature Flag |
