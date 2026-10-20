@@ -897,7 +897,13 @@ jobs:
     name: CalDAV + CardDAV — python-caldav
     needs: litmus
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    # Pinned to 22.04 alongside build / api-test / litmus / front-test
+    # — the five binary-consuming jobs are now one coherent Jammy
+    # cohort. The pre-built `oxicloud` binary targets glibc 2.35; the
+    # Jammy-specific apt deps (`jq`, `python3`, `python3-venv`) ship
+    # at known-good versions; python-caldav wheels are stable across
+    # the Jammy stdlib.
+    runs-on: ubuntu-22.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
