@@ -6053,12 +6053,16 @@
           {
             "name": "order_by",
             "in": "query",
-            "description": "Sort / group-by dimension. Supported: `\"name\"` (default), `\"type\"`,\n`\"favorited_at\"`, `\"modified_at\"`, `\"size\"`, `\"owner\"`.",
+            "description": "Sort / group-by dimension — see [`FavoritesOrderBy`]. Omit for\n`name`. An unknown value is a 400 naming the accepted set, not a\nsilent fall back to the default.",
             "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/FavoritesOrderBy"
+                }
               ]
             }
           },
@@ -13828,6 +13832,18 @@
             "description": "User ID who owns this favorite"
           }
         }
+      },
+      "FavoritesOrderBy": {
+        "type": "string",
+        "description": "Sort axis for `GET /api/favorites/resources` (§7).\n\nTyped rather than `Option<String>` so an unknown axis is refused at\nwire-decode time instead of silently falling back to the default. See\n[`crate::application::dtos::trash_dto::TrashOrderBy`] for why these are\nper-endpoint enums rather than one shared union: the date axis is the\npart that differs, and favorites' is `favorited_at`, which is\nmeaningless on every other endpoint.",
+        "enum": [
+          "name",
+          "type",
+          "favorited_at",
+          "modified_at",
+          "size",
+          "owner"
+        ]
       },
       "FavoritesResourceItemDto": {
         "type": "object",

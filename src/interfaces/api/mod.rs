@@ -17,7 +17,8 @@ use crate::application::dtos::contact_dto::{
 };
 use crate::application::dtos::drive_dto::{DriveDto, DriveKindDto};
 use crate::application::dtos::favorites_dto::{
-    BatchFavoritesResult, BatchFavoritesStats, FavoriteItemDto, FavoritesResourceItemDto,
+    BatchFavoritesResult, BatchFavoritesStats, FavoriteItemDto, FavoritesOrderBy,
+    FavoritesResourceItemDto,
 };
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::{
@@ -505,6 +506,7 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             SearchSuggestionItem,
             // Favorites schemas
             FavoriteItemDto,
+            FavoritesOrderBy,
             FavoritesResourceItemDto,
             BatchFavoritesResult,
             BatchFavoritesStats,

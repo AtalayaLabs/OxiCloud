@@ -1613,6 +1613,18 @@ export type FavoriteItemDto = {
 };
 
 /**
+ * Sort axis for `GET /api/favorites/resources` (§7).
+ *
+ * Typed rather than `Option<String>` so an unknown axis is refused at
+ * wire-decode time instead of silently falling back to the default. See
+ * [`crate::application::dtos::trash_dto::TrashOrderBy`] for why these are
+ * per-endpoint enums rather than one shared union: the date axis is the
+ * part that differs, and favorites' is `favorited_at`, which is
+ * meaningless on every other endpoint.
+ */
+export type FavoritesOrderBy = 'name' | 'type' | 'favorited_at' | 'modified_at' | 'size' | 'owner';
+
+/**
  * One item in a `GET /api/favorites/resources` page.
  */
 export type FavoritesResourceItemDto = {
@@ -9557,10 +9569,11 @@ export type ListFavoritesResourcesData = {
          */
         cursor?: string | null;
         /**
-         * Sort / group-by dimension. Supported: `"name"` (default), `"type"`,
-         * `"favorited_at"`, `"modified_at"`, `"size"`, `"owner"`.
+         * Sort / group-by dimension — see [`FavoritesOrderBy`]. Omit for
+         * `name`. An unknown value is a 400 naming the accepted set, not a
+         * silent fall back to the default.
          */
-        order_by?: string | null;
+        order_by?: null | FavoritesOrderBy;
         /**
          * Comma-separated resource types to include, e.g. `"file,folder"`.
          * Omit to include both.

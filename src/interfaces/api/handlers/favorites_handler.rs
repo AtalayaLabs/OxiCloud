@@ -172,7 +172,7 @@ pub async fn list_favorites_resources(
 ) -> impl IntoResponse {
     let user_id = auth_user.id;
 
-    let order_by = q.order_by.as_deref().unwrap_or("name").to_owned();
+    let order_by = q.order_by.unwrap_or_default();
 
     // Capture the raw cursor-input string before `q` moves into the
     // decode step — the ETag mixes it in so pagination round-trips
@@ -192,7 +192,7 @@ pub async fn list_favorites_resources(
             user_id,
             limit,
             cursor,
-            &order_by,
+            order_by,
             kinds.as_deref(),
             q.reverse,
         )

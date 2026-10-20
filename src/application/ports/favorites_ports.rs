@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use uuid::Uuid;
 
 use crate::application::dtos::favorites_dto::{
-    BatchFavoritesResult, FavoriteItemDto, FavoriteResourceRow, FavoritesCursor,
+    BatchFavoritesResult, FavoriteItemDto, FavoriteResourceRow, FavoritesCursor, FavoritesOrderBy,
 };
 use crate::common::errors::Result;
 use crate::domain::services::authorization::ResourceKind;
@@ -86,7 +86,7 @@ pub trait FavoritesRepositoryPort: Send + Sync + 'static {
         user_id: Uuid,
         limit: usize,
         cursor: Option<&FavoritesCursor>,
-        order_by: &str,
+        order_by: FavoritesOrderBy,
         kinds: Option<&[ResourceKind]>,
         reverse: bool,
     ) -> Result<Vec<FavoriteResourceRow>>;

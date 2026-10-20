@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::application::dtos::cursor::PageCursor;
 use crate::application::dtos::favorites_dto::{
     BatchFavoritesResult, BatchFavoritesStats, FavoriteItemDto, FavoriteResourceRow,
-    FavoritesCursor,
+    FavoritesCursor, FavoritesOrderBy,
 };
 use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::application::ports::favorites_ports::{FavoritesRepositoryPort, FavoritesUseCase};
@@ -256,7 +256,7 @@ impl FavoritesService {
         user_id: Uuid,
         limit: usize,
         cursor: Option<FavoritesCursor>,
-        order_by: &str,
+        order_by: FavoritesOrderBy,
         kinds: Option<&[ResourceKind]>,
         reverse: bool,
     ) -> Result<(Vec<FavoriteResourceRow>, Option<String>)> {
@@ -288,60 +288,38 @@ impl FavoritesService {
 
 /// Build the next-page cursor from the last row of the current page.
 /// `reverse` is stored in the cursor so subsequent pages use the same direction.
+/// §7: exhaustive on `FavoritesOrderBy`, with no catch-all. The `_` arm
+/// this replaced doubled as both the `name` case and the
+/// unknown-axis case, so an invalid axis silently produced a `name`
+/// cursor — and that cursor then disagreed with whatever ORDER BY the
+/// repository chose. Adding a variant is now a compile error here.
+///
+/// Only the three sort-field slots vary per axis; `order_by` itself is
+/// just the (Copy) parameter, where each arm previously re-spelled it as
+/// a string literal and could typo it independently of its own match arm.
 fn build_favorites_cursor(
     row: &FavoriteResourceRow,
-    order_by: &str,
+    order_by: FavoritesOrderBy,
     reverse: bool,
 ) -> FavoritesCursor {
-    match order_by {
-        "type" => FavoritesCursor {
-            order_by: "type".to_owned(),
-            resource_id: row.resource_id,
-            sort_str: row.sort_str.clone(), // LOWER(name)
-            sort_int: row.sort_int,         // type_order
-            sort_ts: None,
-            reverse,
-        },
-        "favorited_at" => FavoritesCursor {
-            order_by: "favorited_at".to_owned(),
-            resource_id: row.resource_id,
-            sort_str: None,
-            sort_int: None,
-            sort_ts: row.sort_ts, // favorited_at timestamp
-            reverse,
-        },
-        "modified_at" => FavoritesCursor {
-            order_by: "modified_at".to_owned(),
-            resource_id: row.resource_id,
-            sort_str: None,
-            sort_int: None,
-            sort_ts: row.sort_ts, // modified_at timestamp
-            reverse,
-        },
-        "size" => FavoritesCursor {
-            order_by: "size".to_owned(),
-            resource_id: row.resource_id,
-            sort_str: None,
-            sort_int: row.sort_int, // file size in bytes
-            sort_ts: None,
-            reverse,
-        },
-        "owner" => FavoritesCursor {
-            order_by: "owner".to_owned(),
-            resource_id: row.resource_id,
-            sort_str: row.sort_str.clone(), // LOWER(username)
-            sort_int: None,
-            sort_ts: row.sort_ts, // favorited_at (secondary sort)
-            reverse,
-        },
-        _ => FavoritesCursor {
-            // "name" (default): sort_str = LOWER(name), sort_int = folder_first (0 = folder, 1 = file)
-            order_by: "name".to_owned(),
-            resource_id: row.resource_id,
-            sort_str: row.sort_str.clone(),
-            sort_int: row.sort_int, // folder_first
-            sort_ts: None,
-            reverse,
-        },
+    let (sort_str, sort_int, sort_ts) = match order_by {
+        // sort_str = LOWER(name), sort_int = folder_first (0 = folder, 1 = file)
+        FavoritesOrderBy::Name => (row.sort_str.clone(), row.sort_int, None),
+        // sort_str = LOWER(name), sort_int = type_order
+        FavoritesOrderBy::Type => (row.sort_str.clone(), row.sort_int, None),
+        FavoritesOrderBy::FavoritedAt => (None, None, row.sort_ts),
+        FavoritesOrderBy::ModifiedAt => (None, None, row.sort_ts),
+        // file size in bytes
+        FavoritesOrderBy::Size => (None, row.sort_int, None),
+        // sort_str = LOWER(username), favorited_at as the secondary sort
+        FavoritesOrderBy::Owner => (row.sort_str.clone(), None, row.sort_ts),
+    };
+    FavoritesCursor {
+        order_by,
+        resource_id: row.resource_id,
+        sort_str,
+        sort_int,
+        sort_ts,
+        reverse,
     }
 }
