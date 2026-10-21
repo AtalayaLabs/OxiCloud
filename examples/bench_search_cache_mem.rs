@@ -39,7 +39,9 @@ use std::hint::black_box;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use oxicloud::application::dtos::search_dto::{SearchFileResultDto, SearchResultsDto};
+use oxicloud::application::dtos::search_dto::{
+    SearchFileResultDto, SearchOrderBy, SearchResultsDto,
+};
 use oxicloud::application::services::search_service::{
     build_search_results_cache, search_results_entry_weight,
 };
@@ -164,7 +166,7 @@ fn synth_entry(idx: u64) -> Arc<SearchResultsDto> {
         0,
         Some(12_345),
         3,
-        "relevance".to_string(),
+        SearchOrderBy::Relevance,
     ))
 }
 

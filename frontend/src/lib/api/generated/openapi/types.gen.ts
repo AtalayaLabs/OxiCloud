@@ -3604,13 +3604,12 @@ export type SearchCriteriaDto = {
      */
     offset?: number;
     /**
-     * Sort dimension. Canonical set: `"relevance"` | `"name"` | `"size"`
-     * | `"modified_at"` | `"created_at"`. Direction is `reverse` below —
-     * the `_desc` suffix pattern was retired 2026-07-26 in favour of
-     * a single boolean, so every consumer treats "which column" and
+     * Sort dimension — see [`SearchOrderBy`]. Direction is `reverse`
+     * below; the `_desc` suffix pattern was retired 2026-07-26 in favour
+     * of a single boolean, so every consumer treats "which column" and
      * "which direction" as orthogonal concerns.
      */
-    order_by?: string;
+    order_by?: SearchOrderBy;
     /**
      * Whether to search recursively within subfolders (default: true)
      */
@@ -3835,6 +3834,27 @@ export type SearchMeta = {
 };
 
 /**
+ * Sort axis for `GET /api/search` (§7).
+ *
+ * Typed rather than `String` so an unknown axis is refused at
+ * wire-decode time instead of silently falling back to the default. See
+ * [`crate::application::dtos::trash_dto::TrashOrderBy`] for why these are
+ * per-endpoint enums rather than one shared union — `Relevance` only
+ * exists here, and is meaningless on every other listing.
+ *
+ * Direction is the orthogonal `reverse` boolean, NOT a `_desc` suffix on
+ * the axis. That pattern was retired 2026-07-26; typing the axis is what
+ * finally made the leftover `name_desc` / `date` / `date_desc` arms in
+ * the recursive search path impossible to leave lying around (§7 part
+ * 3e — they were dead spellings whose presence hid a real bug, see
+ * `sort_enriched_folders`).
+ *
+ * `Hash` is required: this rides on `SearchCriteriaDto`, which is hashed
+ * to key the search result cache.
+ */
+export type SearchOrderBy = 'relevance' | 'name' | 'size' | 'modified_at' | 'created_at';
+
+/**
  * One search result — same `resource_type + resource` shape as the
  * `*resources` envelopes so `ResourceList` consumes it as-is, plus
  * the inline `meta` for search-specific enrichment.
@@ -3909,7 +3929,7 @@ export type SearchResultsDto = {
     /**
      * Sort order used
      */
-    order_by: string;
+    order_by: SearchOrderBy;
     /**
      * Query execution time in milliseconds (server-side)
      */

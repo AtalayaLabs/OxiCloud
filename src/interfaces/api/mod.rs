@@ -39,8 +39,9 @@ use crate::application::dtos::pagination::{PaginationDto, PaginationRequestDto};
 use crate::application::dtos::photos_dto::{PhotoKind, PhotoOrderBy, PhotoResourceItemDto};
 use crate::application::dtos::recent_dto::{RecentItemDto, RecentOrderBy, RecentResourceItemDto};
 use crate::application::dtos::search_dto::{
-    SearchCriteriaDto, SearchFileResultDto, SearchFolderResultDto, SearchMeta, SearchResourceItem,
-    SearchResourcesDto, SearchResultsDto, SearchSuggestionItem, SearchSuggestionsDto,
+    SearchCriteriaDto, SearchFileResultDto, SearchFolderResultDto, SearchMeta, SearchOrderBy,
+    SearchResourceItem, SearchResourcesDto, SearchResultsDto, SearchSuggestionItem,
+    SearchSuggestionsDto,
 };
 use crate::application::dtos::share_dto::{CreateShareDto, ShareDto, UpdateShareDto};
 use crate::application::dtos::trash_dto::{
@@ -500,6 +501,7 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             SearchResourceItem,
             SearchMeta,
             SearchCriteriaDto,
+            SearchOrderBy,
             SearchResultsDto,
             SearchFileResultDto,
             SearchFolderResultDto,

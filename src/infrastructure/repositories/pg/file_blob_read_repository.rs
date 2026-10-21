@@ -103,7 +103,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::application::dtos::geo_dto::{GeoBounds, GeoCluster};
-use crate::application::dtos::search_dto::SearchCriteriaDto;
+use crate::application::dtos::search_dto::{SearchCriteriaDto, SearchOrderBy};
 use crate::application::ports::storage_ports::FileReadPort;
 use crate::common::errors::DomainError;
 use crate::domain::entities::file::File;
@@ -1377,22 +1377,23 @@ impl FileReadPort for FileBlobReadRepository {
         // `relevance | name | size | updated_at | created_at`. Direction
         // comes from `criteria.reverse`; the old `_desc`-suffix pattern
         // was retired 2026-07-26.
-        let order_column = match criteria.order_by.as_str() {
-            "name" => "fi.name",
+        let order_column = match criteria.order_by {
+            SearchOrderBy::Name => "fi.name",
             // §3 — the content clock. This has to agree with
             // `search_service::sort_enriched_files`, which re-sorts the
             // merged page in memory on `SearchFileResultDto.modified_at`:
             // §2 repointed that DTO field at `content_modified_at`, so a
             // SQL page still ordered by `fi.updated_at` would be re-ordered
             // on a different clock the moment content hits were blended in.
-            "modified_at" => "fi.content_modified_at",
-            "created_at" => "fi.created_at",
-            "size" => "fi.size",
-            // `relevance` (or anything unrecognised) has no dedicated
-            // column here — the recursive/non-recursive services blend
-            // in content-index hits and re-sort in memory. Falling back
-            // to name keeps the SQL page stable.
-            _ => "fi.name",
+            SearchOrderBy::ModifiedAt => "fi.content_modified_at",
+            SearchOrderBy::CreatedAt => "fi.created_at",
+            SearchOrderBy::Size => "fi.size",
+            // `relevance` has no dedicated column here — the
+            // recursive/non-recursive services blend in content-index
+            // hits and re-sort in memory. Falling back to name keeps the
+            // SQL page stable. §7: named explicitly, so a new axis is a
+            // compile error that must choose its own column.
+            SearchOrderBy::Relevance => "fi.name",
         };
         let order_dir = if criteria.reverse { "DESC" } else { "ASC" };
 
@@ -1550,22 +1551,23 @@ impl FileReadPort for FileBlobReadRepository {
         // `relevance | name | size | updated_at | created_at`. Direction
         // comes from `criteria.reverse`; the old `_desc`-suffix pattern
         // was retired 2026-07-26.
-        let order_column = match criteria.order_by.as_str() {
-            "name" => "fi.name",
+        let order_column = match criteria.order_by {
+            SearchOrderBy::Name => "fi.name",
             // §3 — the content clock. This has to agree with
             // `search_service::sort_enriched_files`, which re-sorts the
             // merged page in memory on `SearchFileResultDto.modified_at`:
             // §2 repointed that DTO field at `content_modified_at`, so a
             // SQL page still ordered by `fi.updated_at` would be re-ordered
             // on a different clock the moment content hits were blended in.
-            "modified_at" => "fi.content_modified_at",
-            "created_at" => "fi.created_at",
-            "size" => "fi.size",
-            // `relevance` (or anything unrecognised) has no dedicated
-            // column here — the recursive/non-recursive services blend
-            // in content-index hits and re-sort in memory. Falling back
-            // to name keeps the SQL page stable.
-            _ => "fi.name",
+            SearchOrderBy::ModifiedAt => "fi.content_modified_at",
+            SearchOrderBy::CreatedAt => "fi.created_at",
+            SearchOrderBy::Size => "fi.size",
+            // `relevance` has no dedicated column here — the
+            // recursive/non-recursive services blend in content-index
+            // hits and re-sort in memory. Falling back to name keeps the
+            // SQL page stable. §7: named explicitly, so a new axis is a
+            // compile error that must choose its own column.
+            SearchOrderBy::Relevance => "fi.name",
         };
         let order_dir = if criteria.reverse { "DESC" } else { "ASC" };
 

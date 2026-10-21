@@ -16657,8 +16657,8 @@
             "minimum": 0
           },
           "order_by": {
-            "type": "string",
-            "description": "Sort dimension. Canonical set: `\"relevance\"` | `\"name\"` | `\"size\"`\n| `\"modified_at\"` | `\"created_at\"`. Direction is `reverse` below —\nthe `_desc` suffix pattern was retired 2026-07-26 in favour of\na single boolean, so every consumer treats \"which column\" and\n\"which direction\" as orthogonal concerns."
+            "$ref": "#/components/schemas/SearchOrderBy",
+            "description": "Sort dimension — see [`SearchOrderBy`]. Direction is `reverse`\nbelow; the `_desc` suffix pattern was retired 2026-07-26 in favour\nof a single boolean, so every consumer treats \"which column\" and\n\"which direction\" as orthogonal concerns."
           },
           "recursive": {
             "type": "boolean",
@@ -16914,6 +16914,17 @@
           }
         }
       },
+      "SearchOrderBy": {
+        "type": "string",
+        "description": "Sort axis for `GET /api/search` (§7).\n\nTyped rather than `String` so an unknown axis is refused at\nwire-decode time instead of silently falling back to the default. See\n[`crate::application::dtos::trash_dto::TrashOrderBy`] for why these are\nper-endpoint enums rather than one shared union — `Relevance` only\nexists here, and is meaningless on every other listing.\n\nDirection is the orthogonal `reverse` boolean, NOT a `_desc` suffix on\nthe axis. That pattern was retired 2026-07-26; typing the axis is what\nfinally made the leftover `name_desc` / `date` / `date_desc` arms in\nthe recursive search path impossible to leave lying around (§7 part\n3e — they were dead spellings whose presence hid a real bug, see\n`sort_enriched_folders`).\n\n`Hash` is required: this rides on `SearchCriteriaDto`, which is hashed\nto key the search result cache.",
+        "enum": [
+          "relevance",
+          "name",
+          "size",
+          "modified_at",
+          "created_at"
+        ]
+      },
       "SearchResourceItem": {
         "type": "object",
         "description": "One search result — same `resource_type + resource` shape as the\n`/*/resources` envelopes so `ResourceList` consumes it as-is, plus\nthe inline `meta` for search-specific enrichment.",
@@ -17015,7 +17026,7 @@
             "minimum": 0
           },
           "order_by": {
-            "type": "string",
+            "$ref": "#/components/schemas/SearchOrderBy",
             "description": "Sort order used"
           },
           "query_time_ms": {
