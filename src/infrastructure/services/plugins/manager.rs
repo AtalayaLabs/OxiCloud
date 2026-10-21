@@ -483,10 +483,16 @@ impl PluginManagementPort for ExtismPluginManager {
 
         // Locate `plugin.toml` — at the archive root or under a single wrapping
         // folder (e.g. `myplugin/plugin.toml`).
+        // zip 9's `file_names()` returns `Result<Cow<'_, str>,
+        // ZipError>` items (was `&str` in zip 8). Skip undecodeable
+        // entries — matches the pre-upgrade "we never saw it" behaviour
+        // and preserves the `bad_zip` → `Rejected` surface for genuinely
+        // malformed bundles that fail at `ZipArchive::new` upstream.
         let manifest_name = archive
             .file_names()
-            .find(|n| !n.ends_with('/') && (*n == "plugin.toml" || n.ends_with("/plugin.toml")))
-            .map(str::to_owned)
+            .filter_map(|r| r.ok())
+            .find(|n| !n.ends_with('/') && (n == "plugin.toml" || n.ends_with("/plugin.toml")))
+            .map(|n| n.into_owned())
             .ok_or(PluginMgmtError::Rejected("no_manifest_in_zip"))?;
 
         let mut manifest_toml = String::new();

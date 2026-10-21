@@ -619,7 +619,17 @@ jobs:
 
   build:
     name: Build
-    runs-on: ubuntu-latest
+    # Pinned to 22.04 (Jammy) alongside the api-test downstream consumer
+    # — see the pin on `api-test`'s `runs-on` below for the full
+    # rationale (hurl .deb pins Jammy's libxml2 ABI; Noble renamed it).
+    # The reason the BUILD job needs the same pin is glibc backward-
+    # compatibility: Noble ships glibc 2.39, Jammy ships glibc 2.35, and
+    # a binary built against the newer symbol table ("GLIBC_2.38 not
+    # found") won't run on the older runtime. Jammy-built binaries DO
+    # run on Noble (backward-compat is one-way), so pinning the
+    # build-side alone is sufficient to make the Noble consumers
+    # (litmus, OIDC, e2e jobs on lines 836/874/912) keep working.
+    runs-on: ubuntu-22.04
     if: github.event_name == 'pull_request'
     steps:
       # `cargo build --release --features plugins` is the heaviest
@@ -638,6 +648,20 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Namespace the cache by the pinned runner version.
+          # Swatinem/rust-cache's default key uses `${{ runner.os }}` =
+          # "Linux" and does NOT distinguish ubuntu-22.04 from
+          # ubuntu-latest/ubuntu-24.04. A Noble-warmed cache reused on a
+          # Jammy-pinned job gets its .o files from glibc 2.39 (symbols
+          # like `__isoc23_strtol` baked into libmimalloc-sys /
+          # aws-lc-sys build-script output). The link step then runs on
+          # Jammy's glibc 2.35 and fails with "undefined symbol:
+          # __isoc23_strtol". Prefix-keying by the specific runner
+          # version isolates the cache namespace so Noble ↔ Jammy swaps
+          # don't poison each other. Bump the suffix if the ABI needs
+          # another forced invalidation.
+          prefix-key: "v1-ubuntu-22.04"
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -662,7 +686,17 @@ jobs:
     needs: build
     if: github.event_name == 'pull_request'
     timeout-minutes: 30
-    runs-on: ubuntu-latest
+    # Pinned to 22.04 (Jammy) because Orange-OpenSource's prebuilt hurl
+    # `.deb` targets Jammy's `libxml2 (>= 2.9)` ABI. GitHub rotated
+    # `ubuntu-latest` → 24.04 (Noble) which renamed `libxml2` to
+    # `libxml2t64` after the time_t transition, so apt refuses the
+    # install ("Depends: libxml2 but it is not installable") AND the
+    # hurl binary — even from the "static" tarball variant — fails to
+    # dlopen `libxml2.so.2` at runtime because Noble ships
+    # `libxml2.so.2t64` instead. Jammy LTS supported by GitHub until
+    # ~April 2027; revisit then (either hurl ships a musl-static build
+    # or Orange-OpenSource publishes a Noble-compatible .deb).
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -815,7 +849,17 @@ jobs:
     name: WebDAV RFC 4918 — litmus (59/59)
     needs: build
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    # Pinned to 22.04 alongside build / api-test / front-test. Three
+    # alignment reasons:
+    # 1. The `litmus` apt package may not be present on 26.04 (newly-
+    #    released LTS, packaging catches up slowly). On Jammy
+    #    `apt-get install -y litmus` is a known-good `litmus 0.13-1`.
+    # 2. This job consumes the pre-built `oxicloud` binary from the
+    #    `build` job (also pinned to 22.04). Running the binary on
+    #    the OS it was built on avoids glibc backward-compat surprises.
+    # 3. Keeps the four binary-consuming jobs (build + api-test +
+    #    front-test + litmus) in one coherent Jammy cohort.
+    runs-on: ubuntu-22.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -853,7 +897,13 @@ jobs:
     name: CalDAV + CardDAV — python-caldav
     needs: litmus
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    # Pinned to 22.04 alongside build / api-test / litmus / front-test
+    # — the five binary-consuming jobs are now one coherent Jammy
+    # cohort. The pre-built `oxicloud` binary targets glibc 2.35; the
+    # Jammy-specific apt deps (`jq`, `python3`, `python3-venv`) ship
+    # at known-good versions; python-caldav wheels are stable across
+    # the Jammy stdlib.
+    runs-on: ubuntu-22.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -891,7 +941,19 @@ jobs:
     needs: api-test
     if: github.event_name == 'pull_request'
     timeout-minutes: 60
-    runs-on: ubuntu-latest
+    # Pinned to 22.04 (Jammy) for two reasons:
+    # 1. Playwright 1.60.0 (pinned by tests/e2e/package.json) does not ship
+    #    deps for Ubuntu 26.04 — `npx playwright install --with-deps` on
+    #    the current `ubuntu-latest` runner fails with:
+    #      ERROR: Playwright does not support chromium on ubuntu26.04-x64
+    # 2. This job consumes the pre-built `oxicloud` binary from the `build`
+    #    job (line 622, also pinned to 22.04 for its own glibc reasons).
+    #    Running the binary on the same OS it was built on avoids any
+    #    future glibc backward-compat surprises.
+    # Revisit when either (a) Playwright publishes 26.04 support in a
+    # version compatible with our test harness, or (b) we unpin the
+    # build job.
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
