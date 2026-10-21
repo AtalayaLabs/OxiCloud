@@ -1060,6 +1060,55 @@ The user-visible half of §3. The axes are already the right ones — they were
 pointed at the wrong columns — so this is one repoint and one relabel, with no
 new sort options anywhere.
 
+### Follow-up: `/files` has no "Added" column (recorded 2026-10-21)
+
+**Not a bug today, and deliberately not fixed here** — recorded so the decision
+is already made if anyone adds the column.
+
+Ed hit the question from the API side: a file uploaded today but authored in
+June returns `created_at` 2026-10-21 and `modified_at` 2026-06-06, so
+`created_at > modified_at`, which reads wrong. **It is not wrong, and the field
+should not be renamed.** The two values have different *subjects* — when the
+row was born on this server, versus when the content last changed — so their
+ordering carries no meaning. POSIX produces the same pair daily: `cp -p` gives
+btime=now with mtime=old, and `ls -l` shows it without anyone calling it a
+defect.
+
+`uploaded_at` was considered and REJECTED as the new name. It is false for most
+rows that carry the field:
+
+- folders are never uploaded, and `FolderDto.created_at` exists — a single
+  `/files` listing would show `uploaded_at` on files beside `created_at` on
+  folders;
+- `copy_folder_tree` stamps `DEFAULT NOW()` ("the copy is a new row"), as do
+  `MKCOL`, collab-created files, and `/api/files/by-hash` — where *zero*
+  content bytes cross the wire, making "uploaded" the one word that certainly
+  does not apply;
+- `D:creationdate` (RFC 4918 §15.1) reads this exact column at four emit sites,
+  so renaming makes the wire and the DAV property disagree;
+- it is a codebase-wide convention — 21 `created_at` fields across 14 DTOs.
+
+If a rename is ever taken anyway, **`added_at`, not `uploaded_at`**: true for
+every row that carries it, and consistent with the UI label already shipped.
+
+**What IS a real (latent) gap.** `/files` offers a group-by called **"Added
+date"** (`groupby.createdAt`, buckets on `item.created_at` —
+`routes/files/[...path]/+page.svelte`), but the listing's date column is
+hard-labelled "Modified" (`dateLabel={t('files.col_modified', 'Modified')}`)
+and renders `dateOf()`, which is `ctx?.date ?? item.modified_at` —
+`/files` passes no context date, so it is always the content clock. Group by
+"Added date" and you see Modified values: you cannot see the dates you are
+grouped by.
+
+Harmless while the column is fixed, because nothing claims otherwise. **The
+rule if the column is ever added or made axis-aware:** the header follows the
+selected axis and the `created_at` case is labelled **"Added"**, never "Created"
+— which is exactly why §6 relabelled the group-by option that way rather than
+renaming the field. Every other listing already does this correctly, each
+labelling its own axis: `/favorites` "Added", `/recent` "Opened", `/trash`
+"Expires at", `/shared-with-me` "Shared". `/files` is the only one with two
+date axes and one fixed header, which is why it is the only one with the gap.
+
 ### `/files`
 
 `SortField = 'name' | 'type' | 'size' | 'modified_at' | 'created_at'`

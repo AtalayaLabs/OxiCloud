@@ -163,8 +163,40 @@ what pushes both server-stamped columns almost entirely out of the protocol.
 | **Behavioural** | `files.content_modified_at`, `folders.tree_modified_at` | Sync clients. Decides whether a file re-downloads and whether a folder is descended into — the only timestamps where being wrong changes what transfers. |
 | **Presentational** | `folders.content_modified_at` | The "Modified" column for a folder, and its `order_by=modified_at` sort. Deliberately *not* behavioural: no sync client reads it, because a collection's cache validity rides on `tree_modified_at` instead. |
 | **Presentational** | `captured_at`, `source_created_at` | Ordering and display: the Photos timeline, `nc:creation_time`. Wrong values look wrong and cost no bandwidth. |
-| **Informational** | `created_at` | Emitted as `nc:upload_time` and `D:creationdate`; nothing acts on it. Immutable, so it stays trustworthy for audit. |
+| **Informational** | `created_at` | Emitted as `nc:upload_time` and `D:creationdate`; nothing acts on it. Immutable, so it stays trustworthy for audit. **`created_at` later than `modified_at` is normal, not a bug** — see below. |
 | **Internal** | `updated_at` (with `updated_by`) | Audit queries, consistency sweeps, retention. No surface asks for `ctime` — WebDAV excludes property changes, NextCloud has no equivalent — so it is emitted nowhere. |
+
+### Why `created_at` is often LATER than `modified_at`
+
+This looks wrong and is not. Upload a file today that you authored in June and
+the API returns:
+
+```json
+"created_at":  "2026-10-21T18:45:02Z",   // we received the bytes today
+"modified_at": "2026-06-06T15:37:43Z"    // the content was last changed in June
+```
+
+The two values have different **subjects** — when the row was born *on this
+server*, versus when the *content* last changed — so the ordering between them
+carries no information. POSIX does exactly this: `cp -p` leaves btime=now with
+mtime=old, and `ls -l` reports a modify time older than the inode's birth
+without anyone treating it as a defect. Since §9, an upload preserves the
+browser's `File.lastModified`, so this is now the *common* case rather than an
+edge one.
+
+**`created_at` is deliberately not renamed to `uploaded_at`.** That name is
+false for most rows carrying the field: folders are never uploaded, and neither
+is a copy (`copy_folder_tree` stamps `DEFAULT NOW()`), a `MKCOL`, a
+collab-created file, or `/api/files/by-hash` — where zero content bytes cross
+the wire. `D:creationdate` (RFC 4918 §15.1) also reads this column, and 21
+`created_at` fields across 14 DTOs share the convention. If it is ever renamed,
+the name is `added_at`.
+
+In the UI the label for this field is **"Added"**, never "Created" — that is
+where the human-readability fix belongs, and `/favorites` already uses it. See
+§6 in `docs/plan/normalize-file-dates.md` for the one place this is still
+latent: `/files` offers an "Added date" group-by while its date column is
+hard-labelled "Modified".
 
 `updated_at` keeps its broad "any row touch" meaning precisely *because* it is
 internal. Narrowing its bumps to content changes would silently change the
