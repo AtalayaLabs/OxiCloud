@@ -3,8 +3,8 @@ use crate::application::dtos::drive_dto::DriveKindDto;
 use crate::application::dtos::folder_dto::{
     AccessSourceDriveDto, AccessSourceDto, AccessSourceKind, AccessSourceSubjectDto,
     AccessSourceSubjectKind, CreateFolderDto, EffectiveLinkDto, FolderAncestorDto,
-    FolderAncestorsDto, FolderDto, FolderResourceCursor, FolderResourceRow, ListResourcesOptions,
-    MoveFolderDto, RenameFolderDto,
+    FolderAncestorsDto, FolderDto, FolderOrderBy, FolderResourceCursor, FolderResourceRow,
+    ListResourcesOptions, MoveFolderDto, RenameFolderDto,
 };
 use crate::application::dtos::grant_dto::{GrantDto, RoleDto};
 use crate::application::ports::authorization_ports::AuthorizationEngine;
@@ -1516,7 +1516,7 @@ impl FolderService {
 fn paginate_mount_entries(
     mut entries: Vec<MountEntry>,
     kinds: Option<&[ResourceKind]>,
-    order_by: &str,
+    order_by: FolderOrderBy,
     reverse: bool,
     limit: usize,
     cursor_name: Option<&str>,
@@ -1563,16 +1563,20 @@ fn paginate_mount_entries(
 /// Sort mount entries in place. Folders sort before files for the `name`/`type`
 /// dimensions; otherwise by the requested key with name as the tie-breaker.
 /// `reverse` flips the final order.
-fn sort_mount_entries(entries: &mut [MountEntry], order_by: &str, reverse: bool) {
+fn sort_mount_entries(entries: &mut [MountEntry], order_by: FolderOrderBy, reverse: bool) {
     use std::cmp::Ordering;
     let name_key = |e: &MountEntry| e.name.to_lowercase();
     entries.sort_by(|a, b| {
         let primary = match order_by {
-            "modified_at" => a.modified_at.cmp(&b.modified_at),
-            "created_at" => a.created_at.cmp(&b.created_at),
-            "size" => a.size.cmp(&b.size),
-            // "name" / "type" / anything else: folders first, then by name.
-            _ => b.is_dir.cmp(&a.is_dir),
+            FolderOrderBy::ModifiedAt => a.modified_at.cmp(&b.modified_at),
+            FolderOrderBy::CreatedAt => a.created_at.cmp(&b.created_at),
+            FolderOrderBy::Size => a.size.cmp(&b.size),
+            // `name` and `type` both mean folders first, then by name —
+            // an external mount exposes no category to order by, so the
+            // two collapse here. Spelled out rather than left as `_` so a
+            // new axis is a compile error that must decide what a mount
+            // listing should do with it.
+            FolderOrderBy::Name | FolderOrderBy::Type => b.is_dir.cmp(&a.is_dir),
         };
         let ord = primary.then_with(|| name_key(a).cmp(&name_key(b)));
         if ord == Ordering::Equal {
@@ -1589,51 +1593,37 @@ fn sort_mount_entries(entries: &mut [MountEntry], order_by: &str, reverse: bool)
 /// `reverse` is stored in the cursor so subsequent pages use the same order.
 fn build_folder_resource_cursor(
     row: &FolderResourceRow,
-    order_by: &str,
+    order_by: FolderOrderBy,
     reverse: bool,
 ) -> FolderResourceCursor {
-    match order_by {
-        "type" => FolderResourceCursor {
-            order_by: "type".to_owned(),
-            resource_id: row.id,
-            sort_str: Some(row.sort_str.clone()),
-            sort_int: Some(row.type_order),
-            sort_ts: None,
-            reverse,
-        },
-        "modified_at" => FolderResourceCursor {
-            order_by: "modified_at".to_owned(),
-            resource_id: row.id,
-            sort_str: None,
-            sort_int: None,
-            sort_ts: Some(row.modified_at),
-            reverse,
-        },
-        "created_at" => FolderResourceCursor {
-            order_by: "created_at".to_owned(),
-            resource_id: row.id,
-            sort_str: None,
-            sort_int: None,
-            sort_ts: Some(row.created_at),
-            reverse,
-        },
-        "size" => FolderResourceCursor {
-            order_by: "size".to_owned(),
-            resource_id: row.id,
-            sort_str: None,
-            sort_int: Some(row.size),
-            sort_ts: None,
-            reverse,
-        },
-        _ => FolderResourceCursor {
-            // "name" (default): sort_int = folder_first (0 or 1)
-            order_by: "name".to_owned(),
-            resource_id: row.id,
-            sort_str: Some(row.sort_str.clone()),
-            sort_int: Some(i64::from(row.folder_first)),
-            sort_ts: None,
-            reverse,
-        },
+    // §7: exhaustive on `FolderOrderBy`, no catch-all. The `_` arm this
+    // replaced doubled as the `name` default AND the unknown-axis case, so
+    // an invalid axis minted a name cursor whose sort_int held
+    // `folder_first` while the repository ordered by something else — the
+    // keyset/ORDER BY mismatch §2 fixed on this very endpoint.
+    //
+    // Only the three sort-field slots vary; the axis is just the (Copy)
+    // parameter, where each arm used to re-spell it as a literal that
+    // could drift from the arm matching it.
+    let (sort_str, sort_int, sort_ts) = match order_by {
+        // sort_int = folder_first (0 = folder, 1 = file)
+        FolderOrderBy::Name => (
+            Some(row.sort_str.clone()),
+            Some(i64::from(row.folder_first)),
+            None,
+        ),
+        FolderOrderBy::Type => (Some(row.sort_str.clone()), Some(row.type_order), None),
+        FolderOrderBy::ModifiedAt => (None, None, Some(row.modified_at)),
+        FolderOrderBy::CreatedAt => (None, None, Some(row.created_at)),
+        FolderOrderBy::Size => (None, Some(row.size), None),
+    };
+    FolderResourceCursor {
+        order_by,
+        resource_id: row.id,
+        sort_str,
+        sort_int,
+        sort_ts,
+        reverse,
     }
 }
 
@@ -1839,7 +1829,7 @@ impl UserLifecycleHook for PersonalDriveLifecycleHook {
 mod mount_listing_tests {
     use super::{paginate_mount_entries, sort_mount_entries};
     use crate::application::dtos::cursor::PageCursor;
-    use crate::application::dtos::folder_dto::FolderResourceCursor;
+    use crate::application::dtos::folder_dto::{FolderOrderBy, FolderResourceCursor};
     use crate::application::ports::external_mount_ports::MountEntry;
     use crate::domain::services::authorization::ResourceKind;
     use crate::domain::services::external_mount_id::NodeId;
@@ -1867,7 +1857,7 @@ mod mount_listing_tests {
             entry("Cherry", true, 0, 1),
             entry("almond.txt", false, 1, 1),
         ];
-        sort_mount_entries(&mut e, "name", false);
+        sort_mount_entries(&mut e, FolderOrderBy::Name, false);
         assert_eq!(names(&e), ["apple", "Cherry", "almond.txt", "Banana.txt"]);
     }
 
@@ -1878,7 +1868,7 @@ mod mount_listing_tests {
             entry("b", false, 1, 1),
             entry("d", true, 0, 1),
         ];
-        sort_mount_entries(&mut e, "name", true);
+        sort_mount_entries(&mut e, FolderOrderBy::Name, true);
         // folders-first then name, reversed.
         assert_eq!(names(&e), ["b", "a", "d"]);
     }
@@ -1890,7 +1880,7 @@ mod mount_listing_tests {
             entry("small", false, 1, 1),
             entry("mid", false, 50, 1),
         ];
-        sort_mount_entries(&mut by_size, "size", false);
+        sort_mount_entries(&mut by_size, FolderOrderBy::Size, false);
         assert_eq!(names(&by_size), ["small", "mid", "big"]);
 
         let mut by_mtime = vec![
@@ -1898,25 +1888,31 @@ mod mount_listing_tests {
             entry("old", false, 1, 100),
             entry("mid", false, 1, 200),
         ];
-        sort_mount_entries(&mut by_mtime, "modified_at", false);
+        sort_mount_entries(&mut by_mtime, FolderOrderBy::ModifiedAt, false);
         assert_eq!(names(&by_mtime), ["old", "mid", "new"]);
 
         let mut by_ctime = vec![entry("z", false, 1, 9), entry("a", false, 1, 5)];
-        sort_mount_entries(&mut by_ctime, "created_at", false);
+        sort_mount_entries(&mut by_ctime, FolderOrderBy::CreatedAt, false);
         assert_eq!(names(&by_ctime), ["a", "z"]);
     }
 
     #[test]
     fn filters_by_kind() {
         let make = || vec![entry("dir", true, 0, 1), entry("file.txt", false, 1, 1)];
-        let (files_only, _) =
-            paginate_mount_entries(make(), Some(&[ResourceKind::File]), "name", false, 50, None);
+        let (files_only, _) = paginate_mount_entries(
+            make(),
+            Some(&[ResourceKind::File]),
+            FolderOrderBy::Name,
+            false,
+            50,
+            None,
+        );
         assert_eq!(names(&files_only), ["file.txt"]);
 
         let (folders_only, _) = paginate_mount_entries(
             make(),
             Some(&[ResourceKind::Folder]),
-            "name",
+            FolderOrderBy::Name,
             false,
             50,
             None,
@@ -1926,7 +1922,7 @@ mod mount_listing_tests {
         let (both, _) = paginate_mount_entries(
             make(),
             Some(&[ResourceKind::File, ResourceKind::Folder]),
-            "name",
+            FolderOrderBy::Name,
             false,
             50,
             None,
@@ -1947,7 +1943,7 @@ mod mount_listing_tests {
         };
 
         // Page 1: limit 2 → [a, b], cursor present.
-        let (p1, c1) = paginate_mount_entries(all(), None, "name", false, 2, None);
+        let (p1, c1) = paginate_mount_entries(all(), None, FolderOrderBy::Name, false, 2, None);
         assert_eq!(names(&p1), ["a", "b"]);
         let c1 = c1.expect("cursor after first page");
         let decoded = FolderResourceCursor::decode(&c1).expect("decodes");
@@ -1955,12 +1951,14 @@ mod mount_listing_tests {
         assert!(!decoded.reverse);
 
         // Page 2: resume after "b" → [c, d], cursor present.
-        let (p2, c2) = paginate_mount_entries(all(), None, "name", false, 2, Some("b"));
+        let (p2, c2) =
+            paginate_mount_entries(all(), None, FolderOrderBy::Name, false, 2, Some("b"));
         assert_eq!(names(&p2), ["c", "d"]);
         assert!(c2.is_some());
 
         // Page 3: resume after "d" → [e], no further cursor.
-        let (p3, c3) = paginate_mount_entries(all(), None, "name", false, 2, Some("d"));
+        let (p3, c3) =
+            paginate_mount_entries(all(), None, FolderOrderBy::Name, false, 2, Some("d"));
         assert_eq!(names(&p3), ["e"]);
         assert!(c3.is_none());
     }
@@ -1968,7 +1966,7 @@ mod mount_listing_tests {
     #[test]
     fn no_cursor_when_page_is_last() {
         let e = vec![entry("a", false, 1, 1), entry("b", false, 1, 1)];
-        let (page, cursor) = paginate_mount_entries(e, None, "name", false, 50, None);
+        let (page, cursor) = paginate_mount_entries(e, None, FolderOrderBy::Name, false, 50, None);
         assert_eq!(page.len(), 2);
         assert!(cursor.is_none());
     }
@@ -1977,13 +1975,15 @@ mod mount_listing_tests {
     fn deleted_cursor_entry_restarts_best_effort() {
         // Cursor names "zzz" which is not present → start from the top.
         let e = vec![entry("a", false, 1, 1), entry("b", false, 1, 1)];
-        let (page, _) = paginate_mount_entries(e, None, "name", false, 50, Some("zzz"));
+        let (page, _) =
+            paginate_mount_entries(e, None, FolderOrderBy::Name, false, 50, Some("zzz"));
         assert_eq!(names(&page), ["a", "b"]);
     }
 
     #[test]
     fn empty_directory_yields_empty_page() {
-        let (page, cursor) = paginate_mount_entries(vec![], None, "name", false, 50, None);
+        let (page, cursor) =
+            paginate_mount_entries(vec![], None, FolderOrderBy::Name, false, 50, None);
         assert!(page.is_empty());
         assert!(cursor.is_none());
     }
@@ -1991,7 +1991,7 @@ mod mount_listing_tests {
     #[test]
     fn limit_larger_than_len_returns_all_without_cursor() {
         let e = vec![entry("a", false, 1, 1), entry("b", false, 1, 1)];
-        let (page, cursor) = paginate_mount_entries(e, None, "name", false, 100, None);
+        let (page, cursor) = paginate_mount_entries(e, None, FolderOrderBy::Name, false, 100, None);
         assert_eq!(page.len(), 2);
         assert!(cursor.is_none());
     }
@@ -1999,8 +1999,14 @@ mod mount_listing_tests {
     #[test]
     fn kind_filter_excluding_all_yields_empty() {
         let e = vec![entry("only_dir", true, 0, 1)];
-        let (page, cursor) =
-            paginate_mount_entries(e, Some(&[ResourceKind::File]), "name", false, 50, None);
+        let (page, cursor) = paginate_mount_entries(
+            e,
+            Some(&[ResourceKind::File]),
+            FolderOrderBy::Name,
+            false,
+            50,
+            None,
+        );
         assert!(page.is_empty());
         assert!(cursor.is_none());
     }
@@ -2012,17 +2018,17 @@ mod mount_listing_tests {
             entry("b", false, 1, 1),
             entry("c", false, 1, 1),
         ];
-        let (_p, c) = paginate_mount_entries(e, None, "name", true, 1, None);
+        let (_p, c) = paginate_mount_entries(e, None, FolderOrderBy::Name, true, 1, None);
         let decoded = FolderResourceCursor::decode(&c.unwrap()).unwrap();
         assert!(decoded.reverse);
-        assert_eq!(decoded.order_by, "name");
+        assert_eq!(decoded.order_by, FolderOrderBy::Name);
     }
 }
 
 #[cfg(all(test, integration_tests))]
 mod mount_authz_integration {
     use super::*;
-    use crate::application::dtos::folder_dto::ListResourcesOptions;
+    use crate::application::dtos::folder_dto::{FolderOrderBy, ListResourcesOptions};
     use crate::application::services::external_mount_router::{MountRouter, ResolvedId};
     use crate::application::services::file_retrieval_service::FileRetrievalService;
     use crate::application::services::mount_registry::MountRegistry;
@@ -2044,7 +2050,7 @@ mod mount_authz_integration {
         ListResourcesOptions {
             limit: 50,
             cursor: None,
-            order_by: "name",
+            order_by: FolderOrderBy::Name,
             kinds: None,
             reverse: false,
         }

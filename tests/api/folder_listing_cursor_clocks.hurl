@@ -247,6 +247,39 @@ jsonpath "$.items[1].resource.name" == "a.txt"
 
 
 # ═════════════════════════════════════════════════════════════
+# §7 — an unknown order_by is a 400, not a silent default
+# ═════════════════════════════════════════════════════════════
+# Belongs in THIS file because it closes the hole the rest of the file
+# tests. §2 found a keyset predicate here reading one column while the
+# ORDER BY named another; the cause was an untyped axis with a
+# fall-back-to-name arm in both the query builder and the cursor
+# builder, which could pick different columns for the same request.
+#
+# `order_by` is now a typed `FolderOrderBy`, both matches are
+# exhaustive with no catch-all, and an axis outside the five variants
+# is refused at wire-decode time instead of quietly becoming `name`.
+GET {{base_url}}/api/folders/{{root_id}}/resources?order_by=definitely-not-an-axis
+Authorization: Bearer {{jwt}}
+
+HTTP 400
+[Asserts]
+# serde's derived error names the accepted variants, so a client that
+# sends a retired axis learns which ones exist.
+body contains "modified_at"
+
+
+# Every valid axis still serves a page, so the 400 above is the enum
+# rejecting an unknown value rather than the parameter being broken.
+# `created_at` is the one axis no other test in this file exercises.
+GET {{base_url}}/api/folders/{{root_id}}/resources?order_by=created_at
+Authorization: Bearer {{jwt}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.items" isCollection
+
+
+# ═════════════════════════════════════════════════════════════
 # Teardown
 # ═════════════════════════════════════════════════════════════
 DELETE {{base_url}}/api/folders/{{root_id}}

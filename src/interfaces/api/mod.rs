@@ -24,7 +24,7 @@ use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::{
     AccessSourceDriveDto, AccessSourceDto, AccessSourceKind, AccessSourceSubjectDto,
     AccessSourceSubjectKind, CreateFolderDto, FolderAncestorDto, FolderAncestorsDto, FolderDto,
-    FolderResourceItemDto, MoveFolderDto, RenameFolderDto,
+    FolderOrderBy, FolderResourceItemDto, MoveFolderDto, RenameFolderDto,
 };
 use crate::application::dtos::folder_listing_dto::FolderListingDto;
 use crate::application::dtos::grant_dto::{
@@ -377,6 +377,7 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         schemas(
             // Folder schemas
             FolderDto,
+            FolderOrderBy,
             CreateFolderDto,
             RenameFolderDto,
             MoveFolderDto,

@@ -7287,12 +7287,16 @@
           {
             "name": "order_by",
             "in": "query",
-            "description": "Sort / group-by dimension. Supported: `\"name\"` (default), `\"type\"`,\n`\"modified_at\"`, `\"created_at\"`, `\"size\"`.",
+            "description": "Sort / group-by dimension — see [`FolderOrderBy`]. Omit for\n`name`. An unknown value is a 400 naming the accepted set, not a\nsilent fall back to the default.",
             "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/FolderOrderBy"
+                }
               ]
             }
           },
@@ -14263,6 +14267,17 @@
             "description": "Ids in this listing the caller has an outgoing share/grant on (incl.\npublic links). Sorted for a stable response / ETag."
           }
         }
+      },
+      "FolderOrderBy": {
+        "type": "string",
+        "description": "Sort axis for `GET /api/folders/{id}/resources` (§7).\n\nTyped rather than `Option<String>` so an unknown axis is refused at\nwire-decode time instead of silently falling back to the default. See\n[`crate::application::dtos::trash_dto::TrashOrderBy`] for why these are\nper-endpoint enums rather than one shared union.\n\nThis is the folder-contents listing — the hot path behind `/files` —\nand the endpoint where §2 found a keyset predicate reading one column\nwhile the ORDER BY named another. Typing the axis is what stops the\nquery builder and the cursor builder disagreeing about it.",
+        "enum": [
+          "name",
+          "type",
+          "modified_at",
+          "created_at",
+          "size"
+        ]
       },
       "FolderResourceItemDto": {
         "type": "object",

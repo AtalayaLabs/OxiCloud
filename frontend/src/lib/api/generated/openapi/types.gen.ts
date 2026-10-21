@@ -2025,6 +2025,21 @@ export type FolderListingDto = {
 };
 
 /**
+ * Sort axis for `GET /api/folders/{id}/resources` (§7).
+ *
+ * Typed rather than `Option<String>` so an unknown axis is refused at
+ * wire-decode time instead of silently falling back to the default. See
+ * [`crate::application::dtos::trash_dto::TrashOrderBy`] for why these are
+ * per-endpoint enums rather than one shared union.
+ *
+ * This is the folder-contents listing — the hot path behind `/files` —
+ * and the endpoint where §2 found a keyset predicate reading one column
+ * while the ORDER BY named another. Typing the axis is what stops the
+ * query builder and the cursor builder disagreeing about it.
+ */
+export type FolderOrderBy = 'name' | 'type' | 'modified_at' | 'created_at' | 'size';
+
+/**
  * One item in a `/resources` page — a file or folder with a `resource_type` tag.
  * Re-uses [`ResourceContentDto`] so the shape is identical to `SharedWithMeItemDto.resource`.
  */
@@ -10436,10 +10451,11 @@ export type ListFolderResourcesData = {
          */
         cursor?: string | null;
         /**
-         * Sort / group-by dimension. Supported: `"name"` (default), `"type"`,
-         * `"modified_at"`, `"created_at"`, `"size"`.
+         * Sort / group-by dimension — see [`FolderOrderBy`]. Omit for
+         * `name`. An unknown value is a 400 naming the accepted set, not a
+         * silent fall back to the default.
          */
-        order_by?: string | null;
+        order_by?: null | FolderOrderBy;
         /**
          * Comma-separated resource types to include, e.g. `"file,folder"`.
          * Omit to include both.

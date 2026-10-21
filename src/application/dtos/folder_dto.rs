@@ -315,15 +315,54 @@ pub struct FolderResourceRow {
     pub folder_first: i32,
 }
 
+/// Sort axis for `GET /api/folders/{id}/resources` (§7).
+///
+/// Typed rather than `Option<String>` so an unknown axis is refused at
+/// wire-decode time instead of silently falling back to the default. See
+/// [`crate::application::dtos::trash_dto::TrashOrderBy`] for why these are
+/// per-endpoint enums rather than one shared union.
+///
+/// This is the folder-contents listing — the hot path behind `/files` —
+/// and the endpoint where §2 found a keyset predicate reading one column
+/// while the ORDER BY named another. Typing the axis is what stops the
+/// query builder and the cursor builder disagreeing about it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FolderOrderBy {
+    /// Default — alphabetical with folders before files (`folder_first`),
+    /// which is what a file browser is expected to do.
+    #[default]
+    Name,
+    /// Grouped by category (`category_order`: Folder, Image, …) then
+    /// alphabetical within a category.
+    Type,
+    /// The item's content clock (`content_modified_at`) — §2 repointed
+    /// this off `updated_at`, so a rename or move no longer resurfaces a
+    /// row; only a real content change does.
+    ModifiedAt,
+    /// When the row was created on this server (immutable).
+    CreatedAt,
+    /// By byte size. Folders carry a `-1` sentinel so they cluster
+    /// together rather than interleaving at zero.
+    Size,
+}
+
 /// Opaque keyset-pagination cursor for `/api/folders/{id}/resources`.
 ///
 /// Encoded as base64url-JSON (same scheme as [`GrantCursor`]).
 /// Fields are sparse: only the sort-relevant ones are serialised.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FolderResourceCursor {
-    /// Sort dimension active when this cursor was produced.
-    #[serde(default = "FolderResourceCursor::default_order")]
-    pub order_by: String,
+    /// Sort dimension active when this cursor was produced. Typed so the
+    /// cursor's axis and the query's axis are one type and cannot drift —
+    /// the keyset predicate and the ORDER BY must name the same column or
+    /// pagination skips or repeats rows. This endpoint is where §2 found
+    /// that hazard, so the type matters more here than anywhere else.
+    ///
+    /// Wire-compatible with the previous `String` form: snake_case
+    /// serialises to the identical token, so existing cursors decode.
+    #[serde(default)]
+    pub order_by: FolderOrderBy,
     /// UUID of the last item on the previous page (tie-breaker).
     pub resource_id: Uuid,
     /// `LOWER(name)` for `name`/`type` sorts.
@@ -342,12 +381,6 @@ pub struct FolderResourceCursor {
     /// Must be passed unchanged on subsequent page requests.
     #[serde(default)]
     pub reverse: bool,
-}
-
-impl FolderResourceCursor {
-    fn default_order() -> String {
-        "name".to_owned()
-    }
 }
 
 impl PageCursor for FolderResourceCursor {}
@@ -380,9 +413,10 @@ pub struct FolderResourcesQuery {
     pub limit: u32,
     /// Opaque cursor from a previous response. Omit to start from the top.
     pub cursor: Option<String>,
-    /// Sort / group-by dimension. Supported: `"name"` (default), `"type"`,
-    /// `"modified_at"`, `"created_at"`, `"size"`.
-    pub order_by: Option<String>,
+    /// Sort / group-by dimension — see [`FolderOrderBy`]. Omit for
+    /// `name`. An unknown value is a 400 naming the accepted set, not a
+    /// silent fall back to the default.
+    pub order_by: Option<FolderOrderBy>,
     /// Comma-separated resource types to include, e.g. `"file,folder"`.
     /// Omit to include both.
     pub resource_types: Option<String>,
@@ -424,7 +458,7 @@ impl FolderResourcesQuery {
 pub struct ListResourcesOptions<'a> {
     pub limit: usize,
     pub cursor: Option<FolderResourceCursor>,
-    pub order_by: &'a str,
+    pub order_by: FolderOrderBy,
     pub kinds: Option<&'a [ResourceKind]>,
     pub reverse: bool,
 }
