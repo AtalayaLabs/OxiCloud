@@ -28,9 +28,9 @@ use crate::application::dtos::folder_dto::{
 };
 use crate::application::dtos::folder_listing_dto::FolderListingDto;
 use crate::application::dtos::grant_dto::{
-    CreateGrantDto, GrantDto, OutgoingResourceItemDto, PermissionDto, ResourceContentDto,
-    ResourceDto, ResourceTypeDto, RoleDto, SharedWithMeDto, SharedWithMeItemDto, SubjectDto,
-    SubjectTypeDto, UpdateGrantRoleDto,
+    CreateGrantDto, GrantDto, IncomingGrantOrderBy, OutgoingGrantOrderBy, OutgoingResourceItemDto,
+    PermissionDto, ResourceContentDto, ResourceDto, ResourceTypeDto, RoleDto, SharedWithMeDto,
+    SharedWithMeItemDto, SubjectDto, SubjectTypeDto, UpdateGrantRoleDto,
 };
 use crate::application::dtos::i18n_dto::{
     LocaleDto, TranslationErrorDto, TranslationRequestDto, TranslationResponseDto,
@@ -576,6 +576,8 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             CreateGrantDto,
             UpdateGrantRoleDto,
             GrantDto,
+            IncomingGrantOrderBy,
+            OutgoingGrantOrderBy,
             SharedWithMeDto,
             SharedWithMeItemDto,
             OutgoingResourceItemDto,

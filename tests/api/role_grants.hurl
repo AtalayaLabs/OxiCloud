@@ -392,6 +392,78 @@ body contains "granted_at"
 
 
 # ─────────────────────────────────────────────────────────────
+# Step 9c — §7 part 3f: the two sets are DISJOINT and enforced.
+# ─────────────────────────────────────────────────────────────
+# This is the property the old shared `SharedWithMeQuery` could not
+# express. Both endpoints extracted ONE struct with
+# `order_by: Option<String>`, and each handler validated its own set by
+# hand — so the sets existed only as `matches!` guards in prose, which
+# is how the plan's spec came to list two of the four values the
+# incoming endpoint actually accepts.
+#
+# Each endpoint now has its own query type and its own enum, so an axis
+# that is valid on the SIBLING endpoint is refused here. Neither of the
+# four requests below could have been written against the old shape:
+# every one of these values was "valid" to the shared struct and only
+# the handler's guard distinguished them.
+
+# `first_shared_at` / `subject` / `role` are OUTGOING-only.
+GET {{base_url}}/api/grants/incoming/resources?order_by=first_shared_at
+Authorization: Bearer {{admin_token}}
+
+HTTP 400
+
+
+GET {{base_url}}/api/grants/incoming/resources?order_by=subject
+Authorization: Bearer {{admin_token}}
+
+HTTP 400
+
+
+# `granted_at` / `granted_by` are INCOMING-only — `granted_at` being
+# the sharper case, since it is the incoming DEFAULT and so the value
+# most likely to be sent to the wrong endpoint by a copy-paste.
+GET {{base_url}}/api/grants/outgoing/resources?order_by=granted_at
+Authorization: Bearer {{admin_token}}
+
+HTTP 400
+
+
+GET {{base_url}}/api/grants/outgoing/resources?order_by=granted_by
+Authorization: Bearer {{admin_token}}
+
+HTTP 400
+
+
+# `name` and `type` are the only overlap, and must still work on BOTH.
+GET {{base_url}}/api/grants/incoming/resources?order_by=type
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+
+
+GET {{base_url}}/api/grants/outgoing/resources?order_by=type
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+
+
+# The outgoing-only axes still serve pages on their own endpoint, so the
+# 400s above are the enum rejecting a cross-set value rather than those
+# axes being broken.
+GET {{base_url}}/api/grants/outgoing/resources?order_by=role
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+
+
+GET {{base_url}}/api/grants/outgoing/resources?order_by=subject
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+
+
+# ─────────────────────────────────────────────────────────────
 # Step 10 — Revoke: removing sam's grant. `engine.revoke()` DELETEs
 #           the single `storage.role_grants` row by id.
 #

@@ -2396,6 +2396,20 @@ export type HolderHeader = {
 };
 
 /**
+ * Sort axis for `GET /api/grants/incoming/resources` — the `/shared-with-me`
+ * listing (§7).
+ *
+ * **Separate from [`OutgoingGrantOrderBy`] on purpose.** The two grant
+ * listings accept disjoint sets apart from `Name`/`Type`: "who granted this
+ * to me" only exists on the incoming side, "who did I grant it to" only on
+ * the outgoing side. They shared one `Option<String>` field until §7 part
+ * 3f, with each handler validating its own set by hand — which is how the
+ * plan's own spec came to list only two of the four values this endpoint
+ * actually accepts.
+ */
+export type IncomingGrantOrderBy = 'granted_at' | 'granted_by' | 'name' | 'type';
+
+/**
  * What a favorite points at. The server emits exactly these two values
  * today; the dedicated enum (rather than the 6-value `ResourceTypeDto`)
  * matches reality — favorites hold a file or a folder, nothing else —
@@ -2934,6 +2948,13 @@ export type OpsBannerInput = {
  * is `#[non_exhaustive]` so adding one is additive.
  */
 export type OpsBannerSeverity = 'warning' | 'notification';
+
+/**
+ * Sort axis for `GET /api/grants/outgoing/resources` — the `/shared`
+ * ("My Shares") listing (§7). See [`IncomingGrantOrderBy`] for why the two
+ * are separate types.
+ */
+export type OutgoingGrantOrderBy = 'first_shared_at' | 'name' | 'type' | 'subject' | 'role';
 
 /**
  * One (subject, permissions) entry within an outgoing resource item.
@@ -10594,19 +10615,10 @@ export type ListSharedWithMeData = {
          */
         cursor?: string | null;
         /**
-         * Sort dimension, and the accepted set depends on which endpoint this
-         * struct is extracted for — the two are NOT interchangeable:
-         *
-         * * `/api/grants/incoming/resources` — `"granted_at"` (default),
-         * `"granted_by"` (for swimlane grouping), `"name"`, `"type"`.
-         * * `/api/grants/outgoing/resources` — `"first_shared_at"` (default),
-         * `"name"`, `"type"`, `"subject"`, `"role"`.
-         *
-         * Unknown values return HTTP 400 from the handler. Renamed from
-         * `sort_by` in §7; this was the only endpoint pair that had reached the
-         * wire with the deviant name.
+         * Sort dimension — see [`IncomingGrantOrderBy`]. Omit for
+         * `granted_at`. An unknown value is a 400 naming the accepted set.
          */
-        order_by?: string | null;
+        order_by?: null | IncomingGrantOrderBy;
         /**
          * Comma-separated resource types to include, e.g. `file,folder`.
          * Omit to return all known types.
@@ -10657,23 +10669,14 @@ export type ListMySharesData = {
         limit?: number;
         /**
          * Opaque cursor from a previous response. Omit to start from the
-         * most-recently-granted item.
+         * most-recently-shared item.
          */
         cursor?: string | null;
         /**
-         * Sort dimension, and the accepted set depends on which endpoint this
-         * struct is extracted for — the two are NOT interchangeable:
-         *
-         * * `/api/grants/incoming/resources` — `"granted_at"` (default),
-         * `"granted_by"` (for swimlane grouping), `"name"`, `"type"`.
-         * * `/api/grants/outgoing/resources` — `"first_shared_at"` (default),
-         * `"name"`, `"type"`, `"subject"`, `"role"`.
-         *
-         * Unknown values return HTTP 400 from the handler. Renamed from
-         * `sort_by` in §7; this was the only endpoint pair that had reached the
-         * wire with the deviant name.
+         * Sort dimension — see [`OutgoingGrantOrderBy`]. Omit for
+         * `first_shared_at`. An unknown value is a 400 naming the accepted set.
          */
-        order_by?: string | null;
+        order_by?: null | OutgoingGrantOrderBy;
         /**
          * Comma-separated resource types to include, e.g. `file,folder`.
          * Omit to return all known types.
@@ -10681,8 +10684,6 @@ export type ListMySharesData = {
         resource_types?: string | null;
         /**
          * Reverse the sort order. Default `false` (normal order).
-         * Must be the same on all pages of the same result set — the cursor
-         * carries this flag so the server can validate consistency.
          */
         reverse?: boolean;
     };

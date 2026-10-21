@@ -7500,12 +7500,16 @@
           {
             "name": "order_by",
             "in": "query",
-            "description": "Sort dimension, and the accepted set depends on which endpoint this\nstruct is extracted for — the two are NOT interchangeable:\n\n* `/api/grants/incoming/resources` — `\"granted_at\"` (default),\n  `\"granted_by\"` (for swimlane grouping), `\"name\"`, `\"type\"`.\n* `/api/grants/outgoing/resources` — `\"first_shared_at\"` (default),\n  `\"name\"`, `\"type\"`, `\"subject\"`, `\"role\"`.\n\nUnknown values return HTTP 400 from the handler. Renamed from\n`sort_by` in §7; this was the only endpoint pair that had reached the\nwire with the deviant name.",
+            "description": "Sort dimension — see [`IncomingGrantOrderBy`]. Omit for\n`granted_at`. An unknown value is a 400 naming the accepted set.",
             "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/IncomingGrantOrderBy"
+                }
               ]
             }
           },
@@ -7599,7 +7603,7 @@
           {
             "name": "cursor",
             "in": "query",
-            "description": "Opaque cursor from a previous response. Omit to start from the\nmost-recently-granted item.",
+            "description": "Opaque cursor from a previous response. Omit to start from the\nmost-recently-shared item.",
             "required": false,
             "schema": {
               "type": [
@@ -7611,12 +7615,16 @@
           {
             "name": "order_by",
             "in": "query",
-            "description": "Sort dimension, and the accepted set depends on which endpoint this\nstruct is extracted for — the two are NOT interchangeable:\n\n* `/api/grants/incoming/resources` — `\"granted_at\"` (default),\n  `\"granted_by\"` (for swimlane grouping), `\"name\"`, `\"type\"`.\n* `/api/grants/outgoing/resources` — `\"first_shared_at\"` (default),\n  `\"name\"`, `\"type\"`, `\"subject\"`, `\"role\"`.\n\nUnknown values return HTTP 400 from the handler. Renamed from\n`sort_by` in §7; this was the only endpoint pair that had reached the\nwire with the deviant name.",
+            "description": "Sort dimension — see [`OutgoingGrantOrderBy`]. Omit for\n`first_shared_at`. An unknown value is a 400 naming the accepted set.",
             "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/OutgoingGrantOrderBy"
+                }
               ]
             }
           },
@@ -7635,7 +7643,7 @@
           {
             "name": "reverse",
             "in": "query",
-            "description": "Reverse the sort order. Default `false` (normal order).\nMust be the same on all pages of the same result set — the cursor\ncarries this flag so the server can validate consistency.",
+            "description": "Reverse the sort order. Default `false` (normal order).",
             "required": false,
             "schema": {
               "type": "boolean"
@@ -14805,6 +14813,16 @@
           }
         }
       },
+      "IncomingGrantOrderBy": {
+        "type": "string",
+        "description": "Sort axis for `GET /api/grants/incoming/resources` — the `/shared-with-me`\nlisting (§7).\n\n**Separate from [`OutgoingGrantOrderBy`] on purpose.** The two grant\nlistings accept disjoint sets apart from `Name`/`Type`: \"who granted this\nto me\" only exists on the incoming side, \"who did I grant it to\" only on\nthe outgoing side. They shared one `Option<String>` field until §7 part\n3f, with each handler validating its own set by hand — which is how the\nplan's own spec came to list only two of the four values this endpoint\nactually accepts.",
+        "enum": [
+          "granted_at",
+          "granted_by",
+          "name",
+          "type"
+        ]
+      },
       "ItemKind": {
         "type": "string",
         "description": "What a favorite points at. The server emits exactly these two values\ntoday; the dedicated enum (rather than the 6-value `ResourceTypeDto`)\nmatches reality — favorites hold a file or a folder, nothing else —\nso clients don't have to carry impossible branches for drives,\ncalendars, address books or playlists. If a future product decision\npermits favoriting one of those, add the variant here and the TS SDK\nsurfaces it on regen.",
@@ -15610,6 +15628,17 @@
         "enum": [
           "warning",
           "notification"
+        ]
+      },
+      "OutgoingGrantOrderBy": {
+        "type": "string",
+        "description": "Sort axis for `GET /api/grants/outgoing/resources` — the `/shared`\n(\"My Shares\") listing (§7). See [`IncomingGrantOrderBy`] for why the two\nare separate types.",
+        "enum": [
+          "first_shared_at",
+          "name",
+          "type",
+          "subject",
+          "role"
         ]
       },
       "OutgoingResourceGrantDto": {

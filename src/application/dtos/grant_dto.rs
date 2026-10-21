@@ -387,16 +387,118 @@ pub struct CreateGrantResponseDto {
 // Shared-with-me DTOs  (GET /api/grants/incoming/resources)
 // ════════════════════════════════════════════════════════════════════════════
 
-/// Query parameters for `GET /api/grants/incoming/resources`.
+/// Sort axis for `GET /api/grants/incoming/resources` — the `/shared-with-me`
+/// listing (§7).
+///
+/// **Separate from [`OutgoingGrantOrderBy`] on purpose.** The two grant
+/// listings accept disjoint sets apart from `Name`/`Type`: "who granted this
+/// to me" only exists on the incoming side, "who did I grant it to" only on
+/// the outgoing side. They shared one `Option<String>` field until §7 part
+/// 3f, with each handler validating its own set by hand — which is how the
+/// plan's own spec came to list only two of the four values this endpoint
+/// actually accepts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum IncomingGrantOrderBy {
+    /// Default — most recently granted first, i.e. "what did I just get
+    /// access to".
+    #[default]
+    GrantedAt,
+    /// By the granting user's display name. Drives the swimlane grouping
+    /// in the `/shared-with-me` UI.
+    GrantedBy,
+    /// Alphabetical by resource name.
+    Name,
+    /// Grouped by resource kind (`category_order`), then by name.
+    Type,
+}
+
+/// Sort axis for `GET /api/grants/outgoing/resources` — the `/shared`
+/// ("My Shares") listing (§7). See [`IncomingGrantOrderBy`] for why the two
+/// are separate types.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OutgoingGrantOrderBy {
+    /// Default — most recently shared first. Named for the aggregate it
+    /// orders by: one resource can carry several grants, so this is the
+    /// FIRST time it was shared with anyone, not any single grant's
+    /// timestamp.
+    #[default]
+    FirstSharedAt,
+    /// Alphabetical by resource name.
+    Name,
+    /// Grouped by resource kind (`category_order`), then by name.
+    Type,
+    /// By recipient display name — "who have I shared things with".
+    Subject,
+    /// By the role granted (viewer / editor / owner).
+    Role,
+}
+
+impl IncomingGrantOrderBy {
+    /// Wire spelling, matching `#[serde(rename_all = "snake_case")]`.
+    ///
+    /// Exists because `PgAclEngine` still takes the axis as `&str`: its two
+    /// matches (keyset SQL and cursor construction) were verified aligned in
+    /// §7 part 3f, so there is no cursor/ORDER-BY drift to close there and
+    /// threading the type through would mean making `GrantCursor` generic
+    /// across two port signatures and two large engine methods for no
+    /// behavioural gain. **This conversion is the compile-time hook**: a new
+    /// variant fails to build here, which is the prompt to add the matching
+    /// engine arm.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::GrantedAt => "granted_at",
+            Self::GrantedBy => "granted_by",
+            Self::Name => "name",
+            Self::Type => "type",
+        }
+    }
+}
+
+impl OutgoingGrantOrderBy {
+    /// Wire spelling — see [`IncomingGrantOrderBy::as_str`] for why this
+    /// conversion exists and what it guards.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::FirstSharedAt => "first_shared_at",
+            Self::Name => "name",
+            Self::Type => "type",
+            Self::Subject => "subject",
+            Self::Role => "role",
+        }
+    }
+}
+
+/// `limit` / `cursor` handling shared by the two grant listing queries.
+///
+/// The field declarations are repeated in each struct — `serde_urlencoded`
+/// cannot flatten, which is why every paged endpoint in this codebase
+/// repeats `limit`/`cursor`/`reverse` — but the *logic* lives here once.
+pub trait GrantsPageQuery {
+    /// Raw `limit` as received.
+    fn limit_raw(&self) -> u32;
+    /// Raw `cursor` as received.
+    fn cursor_raw(&self) -> Option<&str>;
+
+    /// Returns `limit` clamped to `[1, 200]`.
+    fn limit_clamped(&self) -> usize {
+        self.limit_raw().clamp(1, 200) as usize
+    }
+
+    /// Decode the optional cursor string. Invalid cursor → start from top.
+    fn decode_cursor<C: PageCursor>(&self) -> Option<C> {
+        self.cursor_raw().and_then(C::decode)
+    }
+}
+
+/// Query parameters for `GET /api/grants/incoming/resources`
+/// (`/shared-with-me`).
 ///
 /// `limit`, `cursor`, and `order_by` follow the standard [`CursorQuery`]
 /// contract.  They are declared directly here rather than via
 /// `#[serde(flatten)]` because `serde_urlencoded` (Axum's query extractor)
 /// does not support flattening.
-///
-/// **Shared by both grant listing endpoints**, which accept *different*
-/// `order_by` sets — see the field doc below. That is why the accepted
-/// values are validated in each handler rather than by the type.
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct SharedWithMeQuery {
     /// Maximum number of items to return (1–200, default 50).
@@ -405,18 +507,9 @@ pub struct SharedWithMeQuery {
     /// Opaque cursor from a previous response. Omit to start from the
     /// most-recently-granted item.
     pub cursor: Option<String>,
-    /// Sort dimension, and the accepted set depends on which endpoint this
-    /// struct is extracted for — the two are NOT interchangeable:
-    ///
-    /// * `/api/grants/incoming/resources` — `"granted_at"` (default),
-    ///   `"granted_by"` (for swimlane grouping), `"name"`, `"type"`.
-    /// * `/api/grants/outgoing/resources` — `"first_shared_at"` (default),
-    ///   `"name"`, `"type"`, `"subject"`, `"role"`.
-    ///
-    /// Unknown values return HTTP 400 from the handler. Renamed from
-    /// `sort_by` in §7; this was the only endpoint pair that had reached the
-    /// wire with the deviant name.
-    pub order_by: Option<String>,
+    /// Sort dimension — see [`IncomingGrantOrderBy`]. Omit for
+    /// `granted_at`. An unknown value is a 400 naming the accepted set.
+    pub order_by: Option<IncomingGrantOrderBy>,
     /// Comma-separated resource types to include, e.g. `file,folder`.
     /// Omit to return all known types.
     pub resource_types: Option<String>,
@@ -427,15 +520,48 @@ pub struct SharedWithMeQuery {
     pub reverse: bool,
 }
 
-impl SharedWithMeQuery {
-    /// Returns `limit` clamped to `[1, 200]`.
-    pub fn limit_clamped(&self) -> usize {
-        self.limit.clamp(1, 200) as usize
+impl GrantsPageQuery for SharedWithMeQuery {
+    fn limit_raw(&self) -> u32 {
+        self.limit
     }
+    fn cursor_raw(&self) -> Option<&str> {
+        self.cursor.as_deref()
+    }
+}
 
-    /// Decode the optional cursor string.  Invalid cursor → start from top.
-    pub fn decode_cursor<C: PageCursor>(&self) -> Option<C> {
-        self.cursor.as_deref().and_then(C::decode)
+/// Query parameters for `GET /api/grants/outgoing/resources` (`/shared`,
+/// "My Shares").
+///
+/// Field-for-field identical to [`SharedWithMeQuery`] except for the
+/// `order_by` type, which is the whole point: the two endpoints accept
+/// disjoint axis sets, and sharing one struct meant neither could be
+/// expressed in the type system — each handler validated its own set by
+/// hand instead (§7 part 3f).
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct SharedByMeQuery {
+    /// Maximum number of items to return (1–200, default 50).
+    #[serde(default = "CursorQuery::default_limit")]
+    pub limit: u32,
+    /// Opaque cursor from a previous response. Omit to start from the
+    /// most-recently-shared item.
+    pub cursor: Option<String>,
+    /// Sort dimension — see [`OutgoingGrantOrderBy`]. Omit for
+    /// `first_shared_at`. An unknown value is a 400 naming the accepted set.
+    pub order_by: Option<OutgoingGrantOrderBy>,
+    /// Comma-separated resource types to include, e.g. `file,folder`.
+    /// Omit to return all known types.
+    pub resource_types: Option<String>,
+    /// Reverse the sort order. Default `false` (normal order).
+    #[serde(default)]
+    pub reverse: bool,
+}
+
+impl GrantsPageQuery for SharedByMeQuery {
+    fn limit_raw(&self) -> u32 {
+        self.limit
+    }
+    fn cursor_raw(&self) -> Option<&str> {
+        self.cursor.as_deref()
     }
 }
 
