@@ -438,14 +438,10 @@
 	bind:reversed
 	onreload={(orderBy, rev) => {
 		cursor = undefined;
-		// `ResourceList`'s `onreload` still declares `orderBy: string`,
-		// because the component is shared with routes whose endpoints have
-		// no published `*OrderBy` enum yet. The value is sound — it is one
-		// of the `groupBys` entries this route passed in, which are typed
-		// `RecentOrderBy` — so narrow here rather than loosening `load`.
-		// §7 part 3g makes `ResourceList` generic over the axis and this
-		// assertion goes away.
-		load(true, orderBy as RecentOrderBy, rev);
+		// §7 part 3g: `ResourceList` is generic over the axis now, so
+		// `orderBy` arrives already typed as `RecentOrderBy` — the
+		// `as RecentOrderBy` assertion that stood here is gone.
+		load(true, orderBy, rev);
 	}}
 >
 	{#snippet actions()}

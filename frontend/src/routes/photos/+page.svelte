@@ -9,9 +9,11 @@
 		batchTrash,
 		fetchPhotos,
 		type PhotoItem,
-		type PhotosKind,
-		type PhotosOrderBy
+		type PhotosKind
 	} from '$lib/api/endpoints/photos';
+	// §7 part 3g: the axis comes from the SDK now. `endpoints/photos.ts`
+	// used to re-declare it as `PhotosOrderBy`, identical to this union.
+	import type { PhotoOrderBy } from '$lib/api/generated/openapi/types.gen';
 	import { fetchHashSiblings, type HashSibling } from '$lib/api/endpoints/dedup';
 	import DedupSiblingsDialog from '$lib/components/DedupSiblingsDialog.svelte';
 	import { peopleEnabled } from '$lib/api/endpoints/people';
@@ -119,7 +121,7 @@
 	 * so a change here MUST reset-and-reload (same as kind / drive /
 	 * favourites).
 	 */
-	let orderBy = $state<PhotosOrderBy>('captured_at');
+	let orderBy = $state<PhotoOrderBy>('captured_at');
 	let reverse = $state(false);
 	/** Open/close for the order-by dropdown trigger. */
 	let orderByOpen = $state(false);
@@ -350,7 +352,7 @@
 		void resetAndReload();
 	}
 
-	function setOrderBy(axis: PhotosOrderBy) {
+	function setOrderBy(axis: PhotoOrderBy) {
 		if (orderBy === axis) return;
 		orderBy = axis;
 		if (typeof localStorage !== 'undefined') {

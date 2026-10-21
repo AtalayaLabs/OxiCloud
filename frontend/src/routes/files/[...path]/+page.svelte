@@ -57,6 +57,7 @@
 		isFile,
 		type GroupByDef as RLGroupByDef
 	} from '$lib/components/ResourceList.svelte';
+	import type { FolderOrderBy } from '$lib/api/generated/openapi/types.gen';
 	import { lazyComponent } from '$lib/composables/lazyComponent.svelte';
 	import { useFolderTopic } from '$lib/composables/useFolderTopic.svelte';
 	import log from 'loglevel';
@@ -1799,8 +1800,11 @@
 	// (the previous `$state` + two `$effect` mirror was fragile — a
 	// programmatic write to either side triggered an update on the
 	// other, and eslint's `prefer-writable-derived` rightly flagged it).
-	type SortField = 'name' | 'type' | 'size' | 'modified_at' | 'created_at';
-	let sortField = $state<SortField>('name');
+	// §7 part 3g: was a hand-written union identical to the generated
+	// `FolderOrderBy`. Deleted rather than kept in sync — a local copy of
+	// an SDK type is a silent drift waiting to happen the next time the
+	// server's accepted set changes.
+	let sortField = $state<FolderOrderBy>('name');
 	let reversed = $state(false);
 
 	// Server does the sort (order_by=sortField, reverse=reversed on every
@@ -1862,7 +1866,7 @@
 			if (key === NEW_KEY) return labelForNew;
 			return inner ? inner(key) : key;
 		};
-	const rlGroupBys = $derived<RLGroupByDef[]>([
+	const rlGroupBys = $derived<RLGroupByDef<FolderOrderBy>[]>([
 		{
 			key: '',
 			label: t('files.name', 'Name'),
@@ -2262,7 +2266,8 @@
 		hasMore={pageCursor !== undefined}
 		onloadmore={loadMore}
 		onreload={(orderBy) => {
-			sortField = orderBy as SortField;
+			// Typed by `ResourceList<FolderOrderBy>` — no assertion needed.
+			sortField = orderBy;
 		}}
 		onopen={rlOnOpen}
 		onfavorite={rlOnFavorite}

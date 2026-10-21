@@ -93,7 +93,7 @@
 	}
 </script>
 
-<script lang="ts">
+<script lang="ts" generics="Axis extends string = string">
 	import type { Snippet } from 'svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 	import Icon from '$lib/icons/Icon.svelte';
@@ -234,13 +234,20 @@
 		/** Right-click / overflow context-menu actions. */
 		contextActions?: ContextAction[];
 		/** Group-by dimensions; when provided, a swimlane selector is shown. */
-		groupBys?: GroupByDef[];
+		groupBys?: GroupByDef<Axis>[];
 		/** Active group-by key (bind:groupBy from the page). */
 		groupBy?: string;
 		/** Reverse sort toggle state (bind:reversed from the page). */
 		reversed?: boolean;
-		/** Called when group-by or direction changes; page should reload page 1. */
-		onreload?: (orderBy: string, reversed: boolean) => void;
+		/**
+		 * Called when group-by or direction changes; page should reload page 1.
+		 *
+		 * `orderBy` is one of the `groupBys` entries' axes, so it carries the
+		 * page's `Axis` type (§7 part 3g) rather than a bare string — a route
+		 * whose endpoint has a published `*OrderBy` enum can pass this
+		 * straight into its loader with no cast.
+		 */
+		onreload?: (orderBy: Axis, reversed: boolean) => void;
 		onopen?: (item: FileItem | FolderItem) => void;
 		/** Per-item favorite star toggle. */
 		onfavorite?: (item: FileItem | FolderItem) => void;
@@ -610,12 +617,29 @@
 		if (groupBy === key) return;
 		groupBy = key;
 		const def = groupBys?.find((g) => g.key === key);
-		onreload?.(def?.orderBy ?? 'name', reversed);
+		requestReload(def?.orderBy);
 	}
 
 	function toggleDirection() {
 		reversed = !reversed;
-		onreload?.(activeGroup?.orderBy ?? 'name', reversed);
+		requestReload(activeGroup?.orderBy);
+	}
+
+	/**
+	 * Fire `onreload` with a valid axis, or not at all.
+	 *
+	 * §7 part 3g: the two call sites above used to fall back to the literal
+	 * `'name'`, which is not a valid `Axis` for every endpoint — `/photos`
+	 * has no `name` axis at all — so a typed component cannot hardcode it.
+	 * The first `groupBys` entry is the page's own default (its `key` is
+	 * `''`, the no-grouping state), which makes it the correct typed
+	 * fallback. With no `groupBys` there is no axis to sort by, so the
+	 * reload is skipped rather than invented; every route that passes
+	 * `onreload` passes `groupBys` too.
+	 */
+	function requestReload(axis: Axis | undefined) {
+		const resolved = axis ?? groupBys?.[0]?.orderBy;
+		if (resolved !== undefined) onreload?.(resolved, reversed);
 	}
 
 	/**

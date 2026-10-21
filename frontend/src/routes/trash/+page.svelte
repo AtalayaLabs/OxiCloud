@@ -23,6 +23,7 @@
 		type ItemContext
 	} from '$lib/components/ResourceList.svelte';
 	import { confirmDialog } from '$lib/stores/dialogs.svelte';
+	import type { TrashOrderBy } from '$lib/api/generated/openapi/types.gen';
 	import { t } from '$lib/i18n/index.svelte';
 	import { drives as drivesStore } from '$lib/stores/drives.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
@@ -77,7 +78,10 @@
 		return driveLabel(driveId);
 	}
 
-	const groupBys: GroupByDef[] = [
+	// §7 part 3g: typed to the generated union — part 2 renamed this
+	// endpoint's default axis from `deletion_date` to `expires_at`, and
+	// nothing in the build would have caught a missed site.
+	const groupBys: GroupByDef<TrashOrderBy>[] = [
 		{ key: '', label: t('files.name', 'Name'), orderBy: 'name', icon: 'arrow-up-a-z' },
 		{
 			key: 'drive',
@@ -119,11 +123,11 @@
 		}
 	];
 
-	function orderByForGroup(): string {
+	function orderByForGroup(): TrashOrderBy {
 		return groupBys.find((g) => g.key === groupBy)?.orderBy ?? 'expires_at';
 	}
 
-	async function load(reset = false, orderBy = 'expires_at', rev = reversed) {
+	async function load(reset = false, orderBy: TrashOrderBy = 'expires_at', rev = reversed) {
 		loading = true;
 		error = null;
 		try {

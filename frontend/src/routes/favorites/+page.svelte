@@ -27,6 +27,7 @@
 	} from '$lib/components/ResourceList.svelte';
 	import { confirmDialog, promptDialog } from '$lib/stores/dialogs.svelte';
 	import { folderAccessCached, probeFolderAccess } from '$lib/utils/folderAccess';
+	import type { FavoritesOrderBy } from '$lib/api/generated/openapi/types.gen';
 	import { t } from '$lib/i18n/index.svelte';
 
 	let raw = $state<FavoritesResourceItem[]>([]);
@@ -58,7 +59,9 @@
 	// on every infinite-scroll page.
 	const contextMap = new SvelteMap<string, ItemContext>();
 
-	const groupBys: GroupByDef[] = [
+	// §7 part 3g: typed to the generated union, so a retired axis fails
+	// `npm run check` instead of becoming a runtime 400.
+	const groupBys: GroupByDef<FavoritesOrderBy>[] = [
 		{ key: '', label: t('files.name', 'Name'), orderBy: 'name', icon: 'arrow-up-a-z' },
 		{
 			key: 'owner',
@@ -94,7 +97,7 @@
 		}
 	];
 
-	async function load(reset = false, orderBy = 'name', rev = reversed) {
+	async function load(reset = false, orderBy: FavoritesOrderBy = 'name', rev = reversed) {
 		loading = true;
 		error = null;
 		try {
@@ -119,7 +122,7 @@
 		}
 	}
 
-	function orderByForGroup(): string {
+	function orderByForGroup(): FavoritesOrderBy {
 		return groupBys.find((g) => g.key === groupBy)?.orderBy ?? 'name';
 	}
 
