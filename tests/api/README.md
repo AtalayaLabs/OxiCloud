@@ -65,7 +65,7 @@ hurl --variables-file tests/api/test.env --test --report-html /tmp/hurl-report t
 | 8 | Browse home folder – assert exactly 1 sub-folder (`test1`) |
 | 9 | Browse `test1` – assert exactly 1 sub-folder (`test2`), assert `parent_id` |
 | 10 | Upload `fixtures/hello.txt` into `test2` – capture `file_id`, assert name/size/mime_type/folder_id |
-| 11 | List files in `test2` – assert count=1, `mime_type == text/plain`, `icon_class == fas fa-file-alt` |
+| 11 | List files in `test2` – assert count=1, `mime_type == text/plain`, `category == Text`, and that `icon_class` / `icon_special_class` / `size_formatted` are absent |
 | 12 | Move `test2` from `test1` into home folder – assert `parent_id` == `home_folder_id` |
 | 13 | Browse `test1` – assert empty (no more children) |
 | 14 | Browse home folder – assert 2 sub-folders (`test1` and `test2`) |
@@ -73,7 +73,7 @@ hurl --variables-file tests/api/test.env --test --report-html /tmp/hurl-report t
 | 16 | Rename `hello.txt` → `hello-renamed.txt` – assert new name, `folder_id` unchanged |
 | 17 | Rename `hello-renamed.txt` to `"."` – assert HTTP 400, `error_type == "Invalid Input"` |
 | 18 | Upload `fixtures/oxicloud-logo.jpg` into home folder – capture `logo_id`, assert `mime_type == image/jpeg` |
-| 19 | List files in home folder – assert count=1, `icon_class == fas fa-file-image` |
+| 19 | List files in home folder – assert count=1, `category == Image` |
 | 20 | `GET /api/files/{logo_id}/thumbnail/icon` → HTTP 200 |
 | 21 | `GET /api/files/{logo_id}/thumbnail/preview` → HTTP 200 |
 | 22 | `GET /api/files/{logo_id}/thumbnail/large` → HTTP 200 |
