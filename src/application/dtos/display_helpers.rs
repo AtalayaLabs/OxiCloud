@@ -12,6 +12,8 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::{Arc, LazyLock};
 
+use crate::application::dtos::search_dto::SearchTypeFilter;
+
 // ─── Arc<str> interning for closed-set display values ────────────────
 //
 // `FileDto` / `FolderDto` store their display fields as `Arc<str>` so DTO
@@ -597,6 +599,57 @@ pub fn category_order_for(name: &str, mime: &str) -> i16 {
         "Text" => 1100,
         "Installer" => 1200,
         _ => 9999, // Other / unknown
+    }
+}
+
+/// The `category_order` values a coarse UI type filter maps to.
+///
+/// Lives here, immediately below [`category_order_for`], because the two MUST
+/// agree: this function answers "which stored values count as `documents`"
+/// and that one decides what gets stored. Split them across files and they
+/// drift — the mapping already exists in Rust and in the backfill of
+/// `20260527000001_files_category_order.sql`, and a third copy is what
+/// `20261103000009` deliberately avoided when `copy_folder_tree` needed it.
+///
+/// **Server-side only.** The SPA sends one coarse token (`documents`) and
+/// never sees these integers; putting the expansion in the client would just
+/// move the guess from file extensions to magic numbers.
+///
+/// `Folders` and `All` are absent on purpose — neither maps to a
+/// `storage.files` value. A folder has no row in that table at all, so those
+/// two cases are handled by selecting which UNION branches run, not by a
+/// predicate. See `docs/plan/search-type-filter-by-category.md`.
+///
+/// `0` and `1`–`99` are reserved (folder sentinel + headroom) and must never
+/// appear here — see `docs/architecture/resource-listing.md`.
+///
+/// Takes the typed [`SearchTypeFilter`], not a `&str`, so this match is
+/// **exhaustive**: adding a filter variant is a compile error here, which is
+/// the whole point of the enum. A stringly-typed version would need a
+/// catch-all, and that arm would silently return "no categories" for the new
+/// variant — an empty result page with no error, the exact failure mode §7
+/// spent seven commits removing.
+pub fn category_orders_for_filter(filter: SearchTypeFilter) -> &'static [i16] {
+    use SearchTypeFilter as F;
+    match filter {
+        F::Image => &[100],
+        F::Video => &[200],
+        F::Audio => &[300],
+        // The UI's single "Documents" affordance is coarser than the DB's
+        // grouping on purpose: a user picking Documents wants the PDF, the
+        // spreadsheet and the README, not three separate filters.
+        F::Document => &[400, 500, 600, 700, 1000, 1100],
+        F::Archive => &[800],
+        F::Code => &[900],
+        // Unknown/undetected mime. Surfaced because an operator chasing a
+        // broken type detection needs a way to list these; left out of the
+        // SPA's own picker until someone asks for it.
+        F::Other => &[9999],
+        // Neither maps to a `storage.files` value — they select which UNION
+        // branches run instead. Named rather than left to a catch-all so the
+        // reader sees that the omission is deliberate, and so a new variant
+        // cannot hide in this arm.
+        F::All | F::Folders => &[],
     }
 }
 

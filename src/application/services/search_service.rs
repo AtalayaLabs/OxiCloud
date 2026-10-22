@@ -738,12 +738,25 @@ impl SearchUseCase for SearchService {
                     // to be known before the file query is issued).
                     let (content_hits, folders_res) = tokio::join!(
                         self.lookup_content_hits(&criteria, user_id),
-                        self.folder_repository.search_folders(
-                            criteria.folder_id.as_deref(),
-                            criteria.name_contains.as_deref(),
-                            user_id,
-                            false,
-                        ),
+                        // Skip the folder query entirely when the type filter
+                        // excludes folders — `search_folders` cannot narrow by
+                        // type, so not running it IS the filter. Returning an
+                        // empty pair rather than filtering afterwards avoids a
+                        // query whose every row would be discarded.
+                        async {
+                            if criteria.type_filter.includes_folders() {
+                                self.folder_repository
+                                    .search_folders(
+                                        criteria.folder_id.as_deref(),
+                                        criteria.name_contains.as_deref(),
+                                        user_id,
+                                        false,
+                                    )
+                                    .await
+                            } else {
+                                Ok((Vec::new(), Vec::new()))
+                            }
+                        },
                     );
                     let (folders, folder_flags) = folders_res?;
 
@@ -758,14 +771,23 @@ impl SearchUseCase for SearchService {
                     file_criteria.offset = file_offset;
                     file_criteria.limit = file_limit_probe;
 
-                    let (files, file_flags, total_file_count) = self
-                        .file_repository
-                        .search_files_paginated(
-                            criteria.folder_id.as_deref(),
-                            &file_criteria,
-                            user_id,
-                        )
-                        .await?;
+                    // `type=folders` suppresses the FILE branch. Load-bearing:
+                    // that variant maps to an EMPTY category set, and an
+                    // empty set contributes no SQL predicate — so without
+                    // this gate the query would return every file rather
+                    // than none.
+                    let (files, file_flags, total_file_count) =
+                        if criteria.type_filter.includes_files() {
+                            self.file_repository
+                                .search_files_paginated(
+                                    criteria.folder_id.as_deref(),
+                                    &file_criteria,
+                                    user_id,
+                                )
+                                .await?
+                        } else {
+                            (Vec::new(), Vec::new(), 0)
+                        };
 
                     // Convert to DTOs and enrich with metadata — one fused
                     // pass, no intermediate Vec<FileDto> materialization.
@@ -879,12 +901,23 @@ impl SearchUseCase for SearchService {
                 // total_count column projects nowhere → false zero).
                 let (content_hits, folders_res) = tokio::join!(
                     self.lookup_content_hits(&criteria, user_id),
-                    self.folder_repository.search_folders(
-                        criteria.folder_id.as_deref(),
-                        criteria.name_contains.as_deref(),
-                        user_id,
-                        true,
-                    ),
+                    // Same gate as the non-recursive branch above: a type
+                    // filter that excludes folders skips the query rather
+                    // than discarding its rows.
+                    async {
+                        if criteria.type_filter.includes_folders() {
+                            self.folder_repository
+                                .search_folders(
+                                    criteria.folder_id.as_deref(),
+                                    criteria.name_contains.as_deref(),
+                                    user_id,
+                                    true,
+                                )
+                                .await
+                        } else {
+                            Ok((Vec::new(), Vec::new()))
+                        }
+                    },
                 );
                 let (found_folders, folder_flags): (Vec<Folder>, Vec<(bool, bool)>) = folders_res?;
 
@@ -901,10 +934,20 @@ impl SearchUseCase for SearchService {
                 file_criteria.offset = file_offset;
                 file_criteria.limit = file_limit_probe;
 
-                let (found_files, file_flags, total_file_count) = self
-                    .file_repository
-                    .search_files_in_subtree(criteria.folder_id.as_deref(), &file_criteria, user_id)
-                    .await?;
+                // Same suppression as the non-recursive branch: `type=folders`
+                // must not fall through to an unfiltered file query.
+                let (found_files, file_flags, total_file_count) =
+                    if criteria.type_filter.includes_files() {
+                        self.file_repository
+                            .search_files_in_subtree(
+                                criteria.folder_id.as_deref(),
+                                &file_criteria,
+                                user_id,
+                            )
+                            .await?
+                    } else {
+                        (Vec::new(), Vec::new(), 0)
+                    };
 
                 // ── Convert to DTOs and enrich with server-computed metadata ──
                 // Fused single pass: no intermediate DTO Vec materialization.

@@ -102,6 +102,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::application::dtos::display_helpers::category_orders_for_filter;
 use crate::application::dtos::geo_dto::{GeoBounds, GeoCluster};
 use crate::application::dtos::search_dto::{SearchCriteriaDto, SearchOrderBy};
 use crate::application::ports::storage_ports::FileReadPort;
@@ -174,13 +175,18 @@ fn push_criteria_filters(
     mut bind_idx: u32,
     criteria: &SearchCriteriaDto,
 ) -> u32 {
-    if let Some(types) = &criteria.file_types
-        && !types.is_empty()
-    {
+    // Category filter on the indexed `storage.files.category_order` rather
+    // than re-deriving an extension from the filename. The old predicate was
+    // `LOWER(SUBSTRING(fi.name FROM '\.([^.]+)$')) = ANY($n)`, which could
+    // never match a file without a dot in its name — even when its mime was
+    // known — and depended on the SPA shipping a complete extension list.
+    //
+    // An empty slice means the filter contributes no predicate: that is `All`
+    // and `Folders`, neither of which narrows the FILE branch (`Folders`
+    // suppresses it entirely, upstream in the service).
+    if !category_orders_for_filter(criteria.type_filter).is_empty() {
         bind_idx += 1;
-        conditions.push(format!(
-            "LOWER(SUBSTRING(fi.name FROM '\\.([^.]+)$')) = ANY(${bind_idx})"
-        ));
+        conditions.push(format!("fi.category_order = ANY(${bind_idx})"));
     }
     if criteria.created_after.is_some() {
         bind_idx += 1;
@@ -223,11 +229,12 @@ fn bind_criteria_filters<'q, O>(
     mut query: sqlx::query::QueryAs<'q, sqlx::Postgres, O, sqlx::postgres::PgArguments>,
     criteria: &SearchCriteriaDto,
 ) -> sqlx::query::QueryAs<'q, sqlx::Postgres, O, sqlx::postgres::PgArguments> {
-    if let Some(types) = &criteria.file_types
-        && !types.is_empty()
-    {
-        let lower_types: Vec<String> = types.iter().map(|t| t.to_lowercase()).collect();
-        query = query.bind(lower_types);
+    // Mirror of the predicate in `push_criteria_filters` — the two must bind
+    // the same number of parameters in the same order, so the emptiness test
+    // here has to match that one exactly.
+    let category_orders = category_orders_for_filter(criteria.type_filter);
+    if !category_orders.is_empty() {
+        query = query.bind(category_orders.to_vec());
     }
     if let Some(v) = criteria.created_after {
         query = query.bind(v as i64);

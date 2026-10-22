@@ -16,7 +16,7 @@
 	import { addFavorite, removeFavorite } from '$lib/api/endpoints/favorites';
 	import { dateBucket, sizeBucket } from '$lib/utils/resourceBuckets';
 	import type { FileItem, FolderItem, SearchResourceItem } from '$lib/api/types';
-	import type { SearchOrderBy } from '$lib/api/generated/openapi/types.gen';
+	import type { SearchOrderBy, SearchTypeFilter } from '$lib/api/generated/openapi/types.gen';
 	import { lazyComponent } from '$lib/composables/lazyComponent.svelte';
 	import { folderAccessCached, probeFolderAccess } from '$lib/utils/folderAccess';
 	import Icon from '$lib/icons/Icon.svelte';
@@ -148,35 +148,31 @@
 	}
 
 	// Filters
-	type TypeKey = 'all' | 'image' | 'video' | 'document' | 'audio' | 'archive';
+	// Typed off the generated union, so a token the server would reject is a
+	// `npm run check` failure rather than a runtime 400. `other` is accepted
+	// by the API but deliberately not offered in the picker — it is an
+	// operator affordance for files whose mime was never detected.
+	type TypeKey = Exclude<SearchTypeFilter, 'other'>;
 	type SizeKey = 'all' | 'small' | 'medium' | 'large';
 	type DateKey = 'all' | 'day' | 'week' | 'month' | 'year';
 	let typeFilter = $state<TypeKey>('all');
 	let sizeFilter = $state<SizeKey>('all');
 	let dateFilter = $state<DateKey>('all');
 
-	const TYPE_EXT: Record<Exclude<TypeKey, 'all'>, string[]> = {
-		image: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'heic', 'avif', 'tiff'],
-		video: ['mp4', 'mov', 'mkv', 'avi', 'webm', 'm4v', 'wmv', 'flv'],
-		document: [
-			'pdf',
-			'doc',
-			'docx',
-			'xls',
-			'xlsx',
-			'ppt',
-			'pptx',
-			'txt',
-			'md',
-			'odt',
-			'rtf',
-			'csv'
-		],
-		audio: ['mp3', 'wav', 'flac', 'aac', 'ogg', 'm4a', 'opus'],
-		archive: ['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz']
-	};
+	// `TYPE_EXT` lived here: a per-category extension list (12 image, 7 audio,
+	// …) that this SPA sent as `type=mp3,wav,flac,…`. Deleted — the server now
+	// classifies from `mime_type` against the indexed
+	// `storage.files.category_order`. Three defects went with it: an extension
+	// we forgot to list dropped the file from its own category, a file with no
+	// extension could never match anything, and folders were never filtered.
 	const TYPES: { v: TypeKey; l: string }[] = [
 		{ v: 'all', l: t('search.type.all', 'All types') },
+		// The option that fixes the reported defect. Before this, folders were
+		// returned by EVERY filter because `search_folders` cannot narrow by
+		// type — so picking "Images" still listed matching folders. Now a
+		// non-folder filter skips the folder query entirely, and this value
+		// inverts it.
+		{ v: 'folders', l: t('search.type.folders', 'Folders') },
 		{ v: 'image', l: t('search.type.image', 'Images') },
 		{ v: 'video', l: t('search.type.video', 'Videos') },
 		{ v: 'document', l: t('search.type.document', 'Documents') },
@@ -306,7 +302,7 @@
 			sortBy: orderByForGroup(),
 			reverse: reversed,
 			folderId,
-			fileTypes: typeFilter === 'all' ? undefined : TYPE_EXT[typeFilter],
+			typeFilter,
 			...sizeBounds(sizeFilter),
 			modifiedAfter: dateBound(dateFilter)
 		};

@@ -9995,10 +9995,10 @@
           {
             "name": "order_by",
             "in": "query",
-            "description": "Sort dimension: relevance (default) | name | size | modified_at | created_at",
+            "description": "Sort axis; direction is the separate `reverse` flag",
             "required": false,
             "schema": {
-              "type": "string"
+              "$ref": "#/components/schemas/SearchOrderBy"
             }
           },
           {
@@ -10022,10 +10022,10 @@
           {
             "name": "type",
             "in": "query",
-            "description": "Filter by file extensions (comma-separated)",
+            "description": "Narrow to one resource category; `folders` returns folders only",
             "required": false,
             "schema": {
-              "type": "string"
+              "$ref": "#/components/schemas/SearchTypeFilter"
             }
           },
           {
@@ -16615,16 +16615,6 @@
             "description": "Optional maximum creation date (seconds since epoch)",
             "minimum": 0
           },
-          "file_types": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "type": "string"
-            },
-            "description": "Optional list of file extensions to include (e.g., \"pdf\", \"jpg\")"
-          },
           "folder_id": {
             "type": [
               "string",
@@ -16696,6 +16686,10 @@
           "reverse": {
             "type": "boolean",
             "description": "Reverse the sort direction — descending for name/size/date,\nno-op for `relevance` (a descending relevance sort is meaningless)."
+          },
+          "type_filter": {
+            "$ref": "#/components/schemas/SearchTypeFilter",
+            "description": "Resource-category narrowing — see [`SearchTypeFilter`].\n\nWas `file_types: Option<Vec<String>>`, a list of filename extensions\nthe SPA assembled. Carrying the category instead keeps the\nextension→category table on the server (one copy, next to\n`category_order_for`) and lets the SQL filter on the indexed\n`storage.files.category_order` rather than re-deriving an extension\nfrom the name at query time.\n\nNot `Option`: `All` is the honest default, and a `Copy` enum also\nmakes this struct's `Hash` — which keys the search result cache —\ncheaper and stabler than a `Vec<String>` whose order could vary."
           }
         }
       },
@@ -17141,6 +17135,21 @@
             "description": "Suggested file/folder names matching the query prefix"
           }
         }
+      },
+      "SearchTypeFilter": {
+        "type": "string",
+        "description": "Resource-category filter for `GET /api/search` (`?type=`).\n\nReplaces a comma-separated **extension** list (`type=pdf,docx`) matched\nagainst the filename. That shape had three defects, all fixed by moving the\nclassification server-side:\n\n* the category→extension table lived in the SPA (12 image and 7 audio\n  extensions hardcoded), so a missed extension silently dropped a file from\n  its own category;\n* extensionless files could never match — the predicate was\n  `SUBSTRING(name FROM '\\.([^.]+)$')`, NULL without a dot, even when\n  `mime_type` was known;\n* folders were never filtered at all, which is the defect a user saw.\n\n`All` and `Folders` deliberately map to no `storage.files` value: a folder\nhas no row in that table, so those two cases select which UNION branches\nrun rather than contributing a predicate. Every other variant resolves\nthrough [`category_orders_for_filter`], which is exhaustive over this enum\nso a new variant is a compile error there.",
+        "enum": [
+          "all",
+          "folders",
+          "image",
+          "video",
+          "audio",
+          "document",
+          "archive",
+          "code",
+          "other"
+        ]
       },
       "SelfUserDto": {
         "type": "object",

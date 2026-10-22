@@ -41,7 +41,7 @@ use crate::application::dtos::recent_dto::{RecentItemDto, RecentOrderBy, RecentR
 use crate::application::dtos::search_dto::{
     SearchCriteriaDto, SearchFileResultDto, SearchFolderResultDto, SearchMeta, SearchOrderBy,
     SearchResourceItem, SearchResourcesDto, SearchResultsDto, SearchSuggestionItem,
-    SearchSuggestionsDto,
+    SearchSuggestionsDto, SearchTypeFilter,
 };
 use crate::application::dtos::share_dto::{CreateShareDto, ShareDto, UpdateShareDto};
 use crate::application::dtos::trash_dto::{
@@ -502,6 +502,7 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             SearchMeta,
             SearchCriteriaDto,
             SearchOrderBy,
+            SearchTypeFilter,
             SearchResultsDto,
             SearchFileResultDto,
             SearchFolderResultDto,

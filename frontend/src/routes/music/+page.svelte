@@ -421,7 +421,6 @@
 	}
 
 	// ── Add tracks dialog ──────────────────────────────────────────────────────
-	const AUDIO_TYPES = ['mp3', 'ogg', 'flac', 'wav', 'aac', 'm4a', 'wma', 'opus', 'webm'];
 	let addOpen = $state(false);
 	let addQuery = $state('');
 	let addResults = $state<FileItem[]>([]);
@@ -434,23 +433,31 @@
 		try {
 			const res = await searchResources(query.trim(), {
 				recursive: true,
-				fileTypes: AUDIO_TYPES,
+				// Was `fileTypes: AUDIO_TYPES` — a THIRD copy of the audio
+				// extension table (the search page had its own, the server has
+				// `category_for`), and the three disagreed: this list carried
+				// `wma`/`webm` that search's did not. The server now narrows on
+				// `mime_type LIKE 'audio/%'` via the indexed `category_order`,
+				// so there is nothing here to keep in sync.
+				typeFilter: 'audio',
 				resourceTypes: ['file'],
 				limit: 200
 			});
-			// Belt-and-braces: keep only audio mime types. The envelope
-			// items are `{resource_type, resource}` — resourceTypes:['file']
-			// already restricts to files, but re-narrow here so the
-			// downstream `FileItem[]` cast is honest even if the wire
-			// ordering ever surfaces a folder.
+			// The `resource_type === 'file'` filter stays — it is what makes
+			// the `FileItem` cast below honest even if the wire ever surfaces
+			// a folder.
+			//
+			// The audio re-narrow that followed it is GONE. It tested
+			// `mime_type.startsWith('audio/') || AUDIO_TYPES.includes(ext)`,
+			// and with `typeFilter: 'audio'` the server already guarantees
+			// `category_order = 300`. Worse, keeping only the mime half would
+			// have been a regression: the server's classifier falls back to
+			// the extension when the mime is generic, so a `.flac` stored as
+			// `application/octet-stream` is legitimately audio and a mime-only
+			// client filter would have dropped it.
 			addResults = res.items
 				.filter((it) => it.resource_type === 'file')
-				.map((it) => it.resource as FileItem)
-				.filter(
-					(f) =>
-						(f.mime_type ?? '').startsWith('audio/') ||
-						AUDIO_TYPES.some((e) => f.name.toLowerCase().endsWith(`.${e}`))
-				);
+				.map((it) => it.resource as FileItem);
 		} catch (e) {
 			errorToast(e);
 			addResults = [];

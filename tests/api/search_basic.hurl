@@ -303,6 +303,96 @@ Authorization: Bearer {{admin_token}}
 HTTP 200
 
 
+# ═════════════════════════════════════════════════════════════
+# 6b — `?type=` filters by CATEGORY, derived from mime server-side
+# ═════════════════════════════════════════════════════════════
+# Replaces a comma-separated extension list the SPA assembled
+# (`type=mp3,wav,flac,…`) and matched against the filename with
+# `LOWER(SUBSTRING(name FROM '\.([^.]+)$'))`. The fixture below is chosen
+# to be unmatchable by that predicate: the filename has **no dot at all**,
+# so the old SQL yielded NULL for it and no category filter could ever
+# return it — even though its mime is known.
+#
+# Uploaded with an explicit `audio/mpeg` content type, which the handler
+# stores verbatim as `mime_type`, so `category_order_for` classifies it
+# Audio (300) from the mime alone.
+POST {{base_url}}/api/files/upload
+Authorization: Bearer {{admin_token}}
+[MultipartFormData]
+folder_id: {{search_folder_id}}
+file: file,fixtures/searchcat-no-extension; audio/mpeg
+
+HTTP 201
+
+
+# Let the search index/cache settle — the cache was flushed above.
+GET {{base_url}}/api/search?query=searchcat&type=audio
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+[Asserts]
+# THE assertion of this block: an extensionless file is reachable under
+# its mime-derived category. Under the old extension predicate this was
+# impossible — the file could not match any category filter at all.
+jsonpath "$.items[*].resource.name" contains "searchcat-no-extension"
+
+
+# The same file must NOT come back under a different category. Proves the
+# filter narrows rather than being ignored — a filter that silently did
+# nothing would pass the assertion above on its own.
+GET {{base_url}}/api/search?query=searchcat&type=image
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.items[*].resource.name" not contains "searchcat-no-extension"
+
+
+# `type=folders` returns folders only. This is the defect Ed reported:
+# `search_folders` takes no type parameter, so folders used to be returned
+# by EVERY filter. The fix is to skip the folder query unless the filter
+# is `all` or `folders` — and to skip the FILE query for `folders`, which
+# matters because that variant maps to an empty category set and an empty
+# set contributes no SQL predicate.
+GET {{base_url}}/api/search?query=searchcat&type=folders
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+[Asserts]
+# No file rows at all — not even the audio one that matches the query.
+jsonpath "$.items[*].resource_type" not contains "file"
+
+
+# A non-folder filter must exclude folders. The complement of the above,
+# and the half a user actually noticed.
+GET {{base_url}}/api/search?query=searchcat&type=audio
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.items[*].resource_type" not contains "folder"
+
+
+# Unknown category → 400 naming the accepted values, because `type` is a
+# typed `SearchTypeFilter` enum rather than free text. The old shape
+# accepted any string and silently matched nothing.
+GET {{base_url}}/api/search?query=searchcat&type=definitely-not-a-category
+Authorization: Bearer {{admin_token}}
+
+HTTP 400
+[Asserts]
+body contains "folders"
+
+
+# The retired extension form is refused too, rather than quietly matching
+# nothing. A client still sending `type=mp3` learns that the contract
+# changed instead of seeing an empty page.
+GET {{base_url}}/api/search?query=searchcat&type=mp3
+Authorization: Bearer {{admin_token}}
+
+HTTP 400
+
+
 # ─────────────────────────────────────────────────────────────
 # 7 — Teardown: removing the folder recursively takes the files
 #     with it, so a single DELETE is enough.
