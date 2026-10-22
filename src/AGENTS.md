@@ -32,6 +32,21 @@ Non-obvious rules that trip up new code. Terse on purpose.
 - **Persistent state = backend**, not `<storage_path>/*` sidecars. Local sidecars (`.thumbnails/`, `.transcoded/`, `.blob-cache/`, `.search-index/`, `.plugin-logs/`, `.uploads/`) are only for caches (regenerable) or truly-temp scratch (deleted on drop). Anything a user would notice losing → blob backend. Tier-2 migration plan: `docs/plan/derived-blobs.md`.
 - **Temp files use `OXICLOUD_TEMP_DIR`** via the shared config path (`AppConfig::temp_dir`) — not raw `std::env::temp_dir()`. Ops point it at real disk on RAM-constrained Linux deployments (default `/tmp` = tmpfs = RAM).
 
+## Outbound TLS and trust store
+
+- **OxiCloud trusts the OS native cert store for every outbound TLS surface — never bundled roots.** `webpki-roots` is treated as compile-time dead code: it may land in the lockfile transitively, but no OxiCloud code path configures a `rustls::ClientConfig` from it. The invariant is a product-posture decision ("enterprise operators MUST be able to add their own CA"), not a style choice — see `docs/config/deployment.md § Outbound TLS and Trust Store` for the operator-facing contract.
+- **For every new outbound TLS surface, use native roots.** Rules by crate shape:
+  - **sqlx** → `tls-rustls-ring-native-roots` (or `tls-rustls-aws-lc-native-roots`), NEVER `tls-rustls` / `tls-rustls-ring` alone (both pull webpki-roots as the default trust source).
+  - **reqwest** → `rustls-tls-native-roots` only, NEVER `rustls-tls-webpki-roots`. Both features on simultaneously makes rustls trust the UNION, defeating the point (and historically the exact RUSTSEC-2026-0381 failure mode: OS distrusted a root that the bundled list still accepted).
+  - **lettre** → `tokio1-rustls-tls` + `rustls-native-certs`, NEVER `tokio1-rustls-tls` alone.
+  - **aws-sdk-\*** → `default-https-client` (SDK default is `TlsContext::default()` → `TrustStore::default()` → `enable_native_roots: true`). Do not pass a custom `HttpClient` unless there's a non-trust reason (proxy, latency injection); if you do, start from `aws-smithy-http-client::Builder::new()` and keep the default `TrustStore`.
+  - **azure_\*** → `enable_reqwest_rustls` (delegates to our reqwest instance which is already native-only).
+  - **tokio-tungstenite / tungstenite** (client-side WS over `wss://`) → `rustls-tls-native-roots` feature family; same posture as reqwest.
+  - **Any new client** → start from `rustls::ClientConfig::builder().with_root_certificates(…)` where the roots come from `rustls_native_certs::load_native_certs()`. Never `webpki_roots::TLS_SERVER_ROOTS`.
+- **New Cargo.toml dep entries must declare `default-features = false`** when adding any TLS-using crate, so a default-feature bump upstream doesn't silently reintroduce `webpki-roots` without a visible diff.
+- **Inbound TLS is NOT our concern.** OxiCloud serves plain HTTP(S)/WS; TLS termination for the SPA / API / WebDAV / CalDAV / CardDAV / WOPI / `/api/rt/ws` is the operator's reverse proxy (nginx / traefik / caddy / cloud LB). Do not add a cert-reading knob to OxiCloud itself.
+- **If a new upstream crate exposes NO native-roots feature**, raise it to Ed before merging — do NOT silently ship bundled-roots behavior to buy a dep. Precedent: the aws-sdk-s3 → aws-smithy-http-client chain already uses native by SDK default; a crate that cannot be configured to native is a scope-exit discussion, not a merge decision.
+
 ## OpenAPI
 
 - **Every new `#[utoipa::path(...)]` handler MUST also be added to the `paths(...)` list in `src/interfaces/api/mod.rs`.** utoipa emits ONLY registered paths; the annotation alone is invisible to `resources/gen/openapi.json`. Historical drift found 21 annotated handlers that never reached the spec (admin drives, admin jobs pause/findings/purge, admin SMTP, admin storage rotate, admin promote-to-internal, admin sessions list/revoke, all OPAQUE endpoints, DPoP bind, magic-link send, profile PATCH, upgrade-to-internal, drive delete/members/policies/quota, grant notify, trash per-drive, user profile, dedup check-batch) — they all had valid `#[utoipa::path]` blocks but nobody registered them.
