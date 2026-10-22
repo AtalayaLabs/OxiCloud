@@ -3,6 +3,7 @@ import { apiFetch, apiJson } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import { rememberFolderName } from '$lib/utils/folderCache';
 import type { FileItem, FolderAncestorsResponse, FolderItem, ItemType } from '$lib/api/types';
+import type { FolderOrderBy } from '$lib/api/generated/openapi/types.gen';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 const NO_CACHE: RequestInit = {
@@ -144,7 +145,10 @@ export interface FolderPage {
 export async function fetchFolderPage(
 	folderId: string,
 	opts: {
-		orderBy?: string;
+		// §7 part 3g: the generated `FolderOrderBy` union. `/files` is the
+		// hot listing and the endpoint where §2 found the keyset/ORDER BY
+		// mismatch, so a stale axis here is worth catching at build time.
+		orderBy?: FolderOrderBy;
 		reverse?: boolean;
 		cursor?: string;
 		limit?: number;

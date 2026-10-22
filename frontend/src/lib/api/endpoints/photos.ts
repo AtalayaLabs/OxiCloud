@@ -2,7 +2,7 @@
 import { apiFetch } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import type { FileItem } from '$lib/api/types';
-import type { PhotoResourceItemDto } from '$lib/api/generated/openapi/types.gen';
+import type { PhotoOrderBy, PhotoResourceItemDto } from '$lib/api/generated/openapi/types.gen';
 
 /**
  * A timeline photo/video. The `/api/photos/resources` envelope carries file
@@ -130,10 +130,15 @@ const BATCH_CHUNK_SIZE = 1000;
  *  short on the default view. */
 export type PhotosKind = 'all' | 'photo' | 'video';
 
-/** Sort axis on the Photos timeline (§3). `captured_at` (default) orders by
- *  EXIF capture date with upload-time fallback; `created_at` is pure upload
- *  time; `updated_at` surfaces recently-touched rows. */
-export type PhotosOrderBy = 'captured_at' | 'created_at' | 'modified_at';
+// §7 part 3g: the hand-written `PhotosOrderBy` union lived here and was
+// character-for-character the generated `PhotoOrderBy`. DELETED rather
+// than aliased — one concept, one name — so this module and its route
+// import the SDK type directly.
+//
+// The axis semantics now live on the Rust enum's doc comment, which
+// utoipa carries into the schema: `captured_at` (default) orders by
+// `COALESCE(captured_at, content_modified_at)`, `created_at` is pure
+// arrival time, `modified_at` is the content clock.
 
 /** Optional filter / cursor knobs on {@link fetchPhotos}. All default
  *  to "no filter"; the resulting URL omits every absent param. */
@@ -147,7 +152,7 @@ export interface FetchPhotosOptions {
 	/** Narrow to the caller's favourited rows only. `false`/omitted keeps the full feed. */
 	favoriteOnly?: boolean;
 	/** Sort axis (§3). Default `captured_at`; absent query param on default. */
-	orderBy?: PhotosOrderBy;
+	orderBy?: PhotoOrderBy;
 	/** Flip to oldest-first on whichever axis `orderBy` selects. */
 	reverse?: boolean;
 }

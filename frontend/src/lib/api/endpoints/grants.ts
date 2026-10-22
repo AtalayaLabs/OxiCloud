@@ -2,6 +2,10 @@
 import { apiFetch, apiJson } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import type { ItemType } from '$lib/api/types';
+import type {
+	IncomingGrantOrderBy,
+	OutgoingGrantOrderBy
+} from '$lib/api/generated/openapi/types.gen';
 import type { ResourceBody, ResourcePage } from './resources';
 
 /**
@@ -171,26 +175,40 @@ export interface OutgoingGrantItem {
 	grants: OutgoingResourceGrant[];
 }
 
-interface GrantsPageOpts {
+// §7 part 3g: generic over the axis, because the two grant listings accept
+// DISJOINT sets — part 3f split the backend query struct for the same
+// reason. `IncomingGrantOrderBy` is granted_at|granted_by|name|type;
+// `OutgoingGrantOrderBy` is first_shared_at|name|type|subject|role. Only
+// `name` and `type` overlap, so one shared `string` could express neither,
+// and sending an axis to the wrong endpoint is now a build error here
+// instead of a 400 at runtime.
+interface GrantsPageOpts<Axis extends string = string> {
 	cursor?: string;
-	orderBy?: string;
+	orderBy?: Axis;
 	limit?: number;
 	reverse?: boolean;
 	resourceTypes?: ItemType[];
 }
 
-function params(opts: GrantsPageOpts): string {
+export type SharedWithMePageOpts = GrantsPageOpts<IncomingGrantOrderBy>;
+export type MySharesPageOpts = GrantsPageOpts<OutgoingGrantOrderBy>;
+
+function params(opts: GrantsPageOpts<string>): string {
 	const { cursor, orderBy, limit = 50, reverse = false, resourceTypes } = opts;
 	const p = new URLSearchParams({ limit: String(limit) });
 	if (resourceTypes?.length) p.set('resource_types', resourceTypes.join(','));
 	if (cursor) p.set('cursor', cursor);
-	if (orderBy) p.set('sort_by', orderBy);
+	// §7: the wire name is `order_by`, matching every other paged endpoint.
+	// These two grant listings were the only ones that had shipped as
+	// `sort_by`; renamed with no deprecation window, same call as §6 — the
+	// API is recent and this SPA is its only consumer.
+	if (orderBy) p.set('order_by', orderBy);
 	if (reverse) p.set('reverse', 'true');
 	return p.toString();
 }
 
 export async function fetchSharedWithMe(
-	opts: GrantsPageOpts = {}
+	opts: SharedWithMePageOpts = {}
 ): Promise<ResourcePage<IncomingGrantItem>> {
 	const res = await apiFetch(
 		`/api/grants/incoming/resources?${params({ resourceTypes: ['file', 'folder'], ...opts })}`,
@@ -201,7 +219,7 @@ export async function fetchSharedWithMe(
 }
 
 export async function fetchMyShares(
-	opts: GrantsPageOpts = {}
+	opts: MySharesPageOpts = {}
 ): Promise<ResourcePage<OutgoingGrantItem>> {
 	const res = await apiFetch(`/api/grants/outgoing/resources?${params(opts)}`, {
 		credentials: 'same-origin'

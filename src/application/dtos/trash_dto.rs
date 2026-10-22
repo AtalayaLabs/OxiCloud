@@ -85,7 +85,7 @@ pub struct TrashResourceRow {
     /// GC'd by `purge_expired_grants` on the 15-day grace).
     pub is_shared: bool,
     pub trashed_at: DateTime<Utc>,
-    pub deletion_date: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
     /// Original location path (for folders: `path`; for files: `parent.path || '/' || name`).
     pub path: Option<String>,
     // Pre-computed sort fields for cursor construction.
@@ -94,13 +94,56 @@ pub struct TrashResourceRow {
     pub sort_ts: Option<DateTime<Utc>>,
 }
 
+/// Sort axis for `GET /api/trash/resources` (§7).
+///
+/// Typed rather than `Option<String>` so an unknown axis is refused at
+/// wire-decode time instead of silently falling back to the default —
+/// which is what a bare string did, turning a client typo into "sorted by
+/// something else" with a 200. serde's derived error names the accepted
+/// variants, so the 400 tells the caller what to send; no custom extractor
+/// is involved. `PhotoOrderBy` set this precedent in §6.
+///
+/// **Per-endpoint by design, not one shared union.** `Name`/`Type`/`Size`
+/// recur across endpoints but the date axes do not — trash has
+/// `expires_at`/`trashed_at`, favorites has `favorited_at`, recent has
+/// `accessed_at`. A shared enum would accept nonsense on every endpoint
+/// but its own.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TrashOrderBy {
+    /// Default — soonest expiry first, so the items about to be purged
+    /// are the ones a user sees without scrolling. Orders by the computed
+    /// `expires_at` (`trashed_at` + retention), renamed from
+    /// `deletion_date` in §7 part 2.
+    #[default]
+    ExpiresAt,
+    /// Most recently trashed first — "what did I just delete".
+    TrashedAt,
+    /// Alphabetical, folders before files (the `folder_first` axis).
+    Name,
+    /// Grouped by kind, then alphabetical within a kind.
+    Type,
+    /// By byte size. Folders carry a `-1` sentinel so they cluster
+    /// together rather than interleaving at zero.
+    Size,
+}
+
 /// Opaque keyset-pagination cursor for `GET /api/trash/resources`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrashCursor {
-    /// Sort dimension active when this cursor was produced.
-    /// Values: `"deletion_date"` (default), `"trashed_at"`, `"name"`, `"type"`, `"size"`.
-    #[serde(default = "TrashCursor::default_order")]
-    pub order_by: String,
+    /// Sort dimension active when this cursor was produced. Typed, so the
+    /// axis in a cursor and the axis in a query are the same type and
+    /// cannot drift — the keyset predicate and the ORDER BY must name the
+    /// same column or pagination silently skips or repeats rows.
+    ///
+    /// Wire-compatible with the previous `String` form: `rename_all =
+    /// "snake_case"` serialises to the identical token, so cursors minted
+    /// before this change still decode. The one exception is a cursor
+    /// minted before part 2, carrying `"deletion_date"` — that now fails
+    /// to decode and returns 400 instead of silently re-sorting the
+    /// remaining pages, which is the better of the two.
+    #[serde(default)]
+    pub order_by: TrashOrderBy,
     /// UUID of the last item on the previous page (tie-breaker).
     pub resource_id: Uuid,
     /// `LOWER(name)` for `name`/`type` sorts.
@@ -110,18 +153,12 @@ pub struct TrashCursor {
     /// size in bytes for `size`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sort_int: Option<i64>,
-    /// Timestamp for `deletion_date` and `trashed_at` sorts.
+    /// Timestamp for `expires_at` and `trashed_at` sorts.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sort_ts: Option<DateTime<Utc>>,
     /// Whether the result set was reversed — must match on every page.
     #[serde(default)]
     pub reverse: bool,
-}
-
-impl TrashCursor {
-    fn default_order() -> String {
-        "deletion_date".to_owned()
-    }
 }
 
 impl PageCursor for TrashCursor {}
@@ -134,10 +171,10 @@ pub struct TrashResourcesQuery {
     pub limit: u32,
     /// Opaque cursor from a previous response. Omit to start from the first page.
     pub cursor: Option<String>,
-    /// Sort / group-by dimension. Supported: `"deletion_date"` (default — soonest
-    /// expiry first), `"trashed_at"` (most recently trashed first), `"name"`,
-    /// `"type"`, `"size"`.
-    pub order_by: Option<String>,
+    /// Sort / group-by dimension — see [`TrashOrderBy`]. Omit for
+    /// `expires_at` (soonest expiry first). An unknown value is a 400
+    /// naming the accepted set, not a silent fall back to the default.
+    pub order_by: Option<TrashOrderBy>,
     /// Comma-separated resource types to include, e.g. `"file,folder"`.
     /// Omit to include both.
     pub resource_types: Option<String>,
@@ -167,7 +204,7 @@ impl TrashResourcesQuery {
 
 /// One item in a `GET /api/trash/resources` page.
 ///
-/// `deletion_date` is the real timestamp at which the item will be permanently
+/// `expires_at` is the real timestamp at which the item will be permanently
 /// deleted (= `trashed_at + retention_days`). The client derives "days until
 /// deletion" itself from this + the current clock — the wire format does not
 /// duplicate that derivation. `resource.path` carries the original location
@@ -178,7 +215,7 @@ pub struct TrashResourceItemDto {
     /// When the user moved the item to trash.
     pub trashed_at: DateTime<Utc>,
     /// When the item will be permanently deleted by the retention sweeper.
-    pub deletion_date: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
     /// The drive the trashed item belongs to. Enables client-side
     /// group-by-drive in the `/trash` UI (D2b spec — see
     /// `project_trash_groupbys_d2b` memory). The drive's display name

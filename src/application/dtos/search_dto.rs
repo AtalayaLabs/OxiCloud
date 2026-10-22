@@ -8,6 +8,44 @@ use uuid::Uuid;
 use crate::application::dtos::cursor::PageCursor;
 use crate::application::dtos::grant_dto::{ResourceContentDto, ResourceTypeDto};
 
+/// Sort axis for `GET /api/search` (§7).
+///
+/// Typed rather than `String` so an unknown axis is refused at
+/// wire-decode time instead of silently falling back to the default. See
+/// [`crate::application::dtos::trash_dto::TrashOrderBy`] for why these are
+/// per-endpoint enums rather than one shared union — `Relevance` only
+/// exists here, and is meaningless on every other listing.
+///
+/// Direction is the orthogonal `reverse` boolean, NOT a `_desc` suffix on
+/// the axis. That pattern was retired 2026-07-26; typing the axis is what
+/// finally made the leftover `name_desc` / `date` / `date_desc` arms in
+/// the recursive search path impossible to leave lying around (§7 part
+/// 3e — they were dead spellings whose presence hid a real bug, see
+/// `sort_enriched_folders`).
+///
+/// `Hash` is required: this rides on `SearchCriteriaDto`, which is hashed
+/// to key the search result cache.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchOrderBy {
+    /// Default — best text match first. `reverse` is a no-op here: a
+    /// least-relevant-first ordering has no use.
+    #[default]
+    Relevance,
+    /// Alphabetical. The only axis where folders are grouped before
+    /// files, matching the file-manager convention.
+    Name,
+    /// By byte size. Not meaningful for folders (no size column), so
+    /// folder rows keep relevance order on this axis.
+    Size,
+    /// The item's content clock (`content_modified_at`) — §2 repointed
+    /// this off `updated_at`, so a rename or move no longer resurfaces a
+    /// row; only a real content change does.
+    ModifiedAt,
+    /// When the row was created on this server (immutable).
+    CreatedAt,
+}
+
 /**
  * Data Transfer Object for file search criteria.
  *
@@ -65,13 +103,12 @@ pub struct SearchCriteriaDto {
     #[serde(default)]
     pub offset: usize,
 
-    /// Sort dimension. Canonical set: `"relevance"` | `"name"` | `"size"`
-    /// | `"modified_at"` | `"created_at"`. Direction is `reverse` below —
-    /// the `_desc` suffix pattern was retired 2026-07-26 in favour of
-    /// a single boolean, so every consumer treats "which column" and
+    /// Sort dimension — see [`SearchOrderBy`]. Direction is `reverse`
+    /// below; the `_desc` suffix pattern was retired 2026-07-26 in favour
+    /// of a single boolean, so every consumer treats "which column" and
     /// "which direction" as orthogonal concerns.
-    #[serde(default = "default_sort_by")]
-    pub sort_by: String,
+    #[serde(default)]
+    pub order_by: SearchOrderBy,
 
     /// Reverse the sort direction — descending for name/size/date,
     /// no-op for `relevance` (a descending relevance sort is meaningless).
@@ -89,11 +126,6 @@ fn default_limit() -> usize {
     100
 }
 
-/// Default sort_by value
-fn default_sort_by() -> String {
-    "relevance".to_string()
-}
-
 impl Default for SearchCriteriaDto {
     fn default() -> Self {
         Self {
@@ -109,7 +141,7 @@ impl Default for SearchCriteriaDto {
             recursive: default_recursive(),
             limit: default_limit(),
             offset: 0,
-            sort_by: default_sort_by(),
+            order_by: SearchOrderBy::default(),
             reverse: false,
         }
     }
@@ -277,7 +309,7 @@ pub struct SearchResultsDto {
     pub query_time_ms: u64,
 
     /// Sort order used
-    pub sort_by: String,
+    pub order_by: SearchOrderBy,
 }
 
 impl SearchResultsDto {
@@ -291,7 +323,7 @@ impl SearchResultsDto {
             offset: 0,
             has_more: false,
             query_time_ms: 0,
-            sort_by: "relevance".to_string(),
+            order_by: SearchOrderBy::Relevance,
         }
     }
 
@@ -303,7 +335,7 @@ impl SearchResultsDto {
         offset: usize,
         total_count: Option<usize>,
         query_time_ms: u64,
-        sort_by: String,
+        order_by: SearchOrderBy,
     ) -> Self {
         let has_more = match total_count {
             Some(total) => (offset + files.len() + folders.len()) < total,
@@ -318,7 +350,7 @@ impl SearchResultsDto {
             offset,
             has_more,
             query_time_ms,
-            sort_by,
+            order_by,
         }
     }
 }
@@ -361,7 +393,7 @@ pub struct SearchResourcesQuery {
     /// (`name_desc`, `date_desc`, `size_desc`) was retired 2026-07-26
     /// in favour of a single boolean, and `"date"` was renamed to the
     /// more explicit `"modified_at"` alongside the new `"created_at"`.
-    pub order_by: Option<String>,
+    pub order_by: Option<SearchOrderBy>,
 
     /// Comma-separated resource types to include, e.g. `"file,folder"`.
     /// Absent = both. Matches the `FolderResourcesQuery` idiom.
@@ -413,7 +445,7 @@ impl SearchResourcesQuery {
     }
     /// Convert to the internal `SearchCriteriaDto` the service consumes.
     /// `limit` / `offset` come from the decoded cursor (or the query's
-    /// `limit` on the first page). `sort_by` + `reverse` pass through as
+    /// `limit` on the first page). `order_by` + `reverse` pass through as
     /// two orthogonal fields — every downstream consumer (SQL builders,
     /// in-memory folder sort) reads both.
     pub fn to_criteria(&self) -> SearchCriteriaDto {
@@ -437,7 +469,7 @@ impl SearchResourcesQuery {
             recursive: self.recursive,
             limit: self.limit_clamped(),
             offset,
-            sort_by: self.order_by.clone().unwrap_or_else(default_sort_by),
+            order_by: self.order_by.unwrap_or_default(),
             reverse: self.reverse,
         }
     }
@@ -465,7 +497,10 @@ impl SearchResourcesQuery {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResourceCursor {
     pub offset: usize,
-    pub order_by: String,
+    /// §7: typed, so a cursor minted on one axis cannot be replayed
+    /// against another without the handler noticing.
+    #[serde(default)]
+    pub order_by: SearchOrderBy,
 }
 impl PageCursor for SearchResourceCursor {}
 
@@ -537,7 +572,7 @@ impl SearchResourcesDto {
         results: crate::application::dtos::search_dto::SearchResultsDto,
         query: &SearchResourcesQuery,
     ) -> Self {
-        let order_by = query.order_by.clone().unwrap_or_else(default_sort_by);
+        let order_by = query.order_by.unwrap_or_default();
         let current_offset = query.decode_cursor().map(|c| c.offset).unwrap_or(0);
         let returned = results.files.len() + results.folders.len();
 
@@ -545,7 +580,7 @@ impl SearchResourcesDto {
             Some(
                 SearchResourceCursor {
                     offset: current_offset + returned,
-                    order_by: order_by.clone(),
+                    order_by,
                 }
                 .encode(),
             )
@@ -567,7 +602,11 @@ impl SearchResourcesDto {
             .as_deref()
             .map(|s| s.to_lowercase())
             .unwrap_or_default();
-        let folders_first = matches!(order_by.as_str(), "name" | "name_desc");
+        // §7: `name` is the only axis that groups folders before files —
+        // the file-manager convention. The retired `"name_desc"` spelling
+        // was still listed here; direction is the orthogonal `reverse`
+        // flag and never part of the axis.
+        let folders_first = order_by == SearchOrderBy::Name;
 
         if folders_first {
             append_folders(&mut items, results.folders);
@@ -580,7 +619,7 @@ impl SearchResourcesDto {
             // for size/date since the two arrays are individually ordered.
             append_folders(&mut items, results.folders);
             append_files(&mut items, results.files, &query_lower);
-            if order_by == "relevance" {
+            if order_by == SearchOrderBy::Relevance {
                 items.sort_by_key(|item| std::cmp::Reverse(item.meta.score));
             }
         }

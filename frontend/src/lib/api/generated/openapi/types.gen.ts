@@ -1613,6 +1613,18 @@ export type FavoriteItemDto = {
 };
 
 /**
+ * Sort axis for `GET /api/favorites/resources` (§7).
+ *
+ * Typed rather than `Option<String>` so an unknown axis is refused at
+ * wire-decode time instead of silently falling back to the default. See
+ * [`crate::application::dtos::trash_dto::TrashOrderBy`] for why these are
+ * per-endpoint enums rather than one shared union: the date axis is the
+ * part that differs, and favorites' is `favorited_at`, which is
+ * meaningless on every other endpoint.
+ */
+export type FavoritesOrderBy = 'name' | 'type' | 'favorited_at' | 'modified_at' | 'size' | 'owner';
+
+/**
  * One item in a `GET /api/favorites/resources` page.
  */
 export type FavoritesResourceItemDto = {
@@ -2013,6 +2025,21 @@ export type FolderListingDto = {
 };
 
 /**
+ * Sort axis for `GET /api/folders/{id}/resources` (§7).
+ *
+ * Typed rather than `Option<String>` so an unknown axis is refused at
+ * wire-decode time instead of silently falling back to the default. See
+ * [`crate::application::dtos::trash_dto::TrashOrderBy`] for why these are
+ * per-endpoint enums rather than one shared union.
+ *
+ * This is the folder-contents listing — the hot path behind `/files` —
+ * and the endpoint where §2 found a keyset predicate reading one column
+ * while the ORDER BY named another. Typing the axis is what stops the
+ * query builder and the cursor builder disagreeing about it.
+ */
+export type FolderOrderBy = 'name' | 'type' | 'modified_at' | 'created_at' | 'size';
+
+/**
  * One item in a `/resources` page — a file or folder with a `resource_type` tag.
  * Re-uses [`ResourceContentDto`] so the shape is identical to `SharedWithMeItemDto.resource`.
  */
@@ -2367,6 +2394,20 @@ export type HolderHeader = {
      */
     kind: string;
 };
+
+/**
+ * Sort axis for `GET /api/grants/incoming/resources` — the `/shared-with-me`
+ * listing (§7).
+ *
+ * **Separate from [`OutgoingGrantOrderBy`] on purpose.** The two grant
+ * listings accept disjoint sets apart from `Name`/`Type`: "who granted this
+ * to me" only exists on the incoming side, "who did I grant it to" only on
+ * the outgoing side. They shared one `Option<String>` field until §7 part
+ * 3f, with each handler validating its own set by hand — which is how the
+ * plan's own spec came to list only two of the four values this endpoint
+ * actually accepts.
+ */
+export type IncomingGrantOrderBy = 'granted_at' | 'granted_by' | 'name' | 'type';
 
 /**
  * What a favorite points at. The server emits exactly these two values
@@ -2909,6 +2950,13 @@ export type OpsBannerInput = {
 export type OpsBannerSeverity = 'warning' | 'notification';
 
 /**
+ * Sort axis for `GET /api/grants/outgoing/resources` — the `/shared`
+ * ("My Shares") listing (§7). See [`IncomingGrantOrderBy`] for why the two
+ * are separate types.
+ */
+export type OutgoingGrantOrderBy = 'first_shared_at' | 'name' | 'type' | 'subject' | 'role';
+
+/**
  * One (subject, permissions) entry within an outgoing resource item.
  */
 export type OutgoingResourceGrantDto = {
@@ -3380,6 +3428,17 @@ export type RecentItemDto = {
 };
 
 /**
+ * Sort axis for `GET /api/recent/resources` (§7).
+ *
+ * Typed rather than `Option<String>` so an unknown axis is refused at
+ * wire-decode time instead of silently falling back to the default. See
+ * [`crate::application::dtos::trash_dto::TrashOrderBy`] for why these are
+ * per-endpoint enums: `accessed_at` is recent's own date axis and means
+ * nothing on any other listing.
+ */
+export type RecentOrderBy = 'accessed_at' | 'name' | 'type' | 'modified_at' | 'size' | 'owner';
+
+/**
  * One item in a `GET /api/recent/resources` page.
  */
 export type RecentResourceItemDto = {
@@ -3566,6 +3625,13 @@ export type SearchCriteriaDto = {
      */
     offset?: number;
     /**
+     * Sort dimension — see [`SearchOrderBy`]. Direction is `reverse`
+     * below; the `_desc` suffix pattern was retired 2026-07-26 in favour
+     * of a single boolean, so every consumer treats "which column" and
+     * "which direction" as orthogonal concerns.
+     */
+    order_by?: SearchOrderBy;
+    /**
      * Whether to search recursively within subfolders (default: true)
      */
     recursive?: boolean;
@@ -3574,14 +3640,6 @@ export type SearchCriteriaDto = {
      * no-op for `relevance` (a descending relevance sort is meaningless).
      */
     reverse?: boolean;
-    /**
-     * Sort dimension. Canonical set: `"relevance"` | `"name"` | `"size"`
-     * | `"modified_at"` | `"created_at"`. Direction is `reverse` below —
-     * the `_desc` suffix pattern was retired 2026-07-26 in favour of
-     * a single boolean, so every consumer treats "which column" and
-     * "which direction" as orthogonal concerns.
-     */
-    sort_by?: string;
 };
 
 /**
@@ -3797,6 +3855,27 @@ export type SearchMeta = {
 };
 
 /**
+ * Sort axis for `GET /api/search` (§7).
+ *
+ * Typed rather than `String` so an unknown axis is refused at
+ * wire-decode time instead of silently falling back to the default. See
+ * [`crate::application::dtos::trash_dto::TrashOrderBy`] for why these are
+ * per-endpoint enums rather than one shared union — `Relevance` only
+ * exists here, and is meaningless on every other listing.
+ *
+ * Direction is the orthogonal `reverse` boolean, NOT a `_desc` suffix on
+ * the axis. That pattern was retired 2026-07-26; typing the axis is what
+ * finally made the leftover `name_desc` / `date` / `date_desc` arms in
+ * the recursive search path impossible to leave lying around (§7 part
+ * 3e — they were dead spellings whose presence hid a real bug, see
+ * `sort_enriched_folders`).
+ *
+ * `Hash` is required: this rides on `SearchCriteriaDto`, which is hashed
+ * to key the search result cache.
+ */
+export type SearchOrderBy = 'relevance' | 'name' | 'size' | 'modified_at' | 'created_at';
+
+/**
  * One search result — same `resource_type + resource` shape as the
  * `*resources` envelopes so `ResourceList` consumes it as-is, plus
  * the inline `meta` for search-specific enrichment.
@@ -3869,13 +3948,13 @@ export type SearchResultsDto = {
      */
     offset: number;
     /**
+     * Sort order used
+     */
+    order_by: SearchOrderBy;
+    /**
      * Query execution time in milliseconds (server-side)
      */
     query_time_ms: number;
-    /**
-     * Sort order used
-     */
-    sort_by: string;
     /**
      * Total count of matching items (for pagination)
      */
@@ -4629,19 +4708,33 @@ export type TranslationResponseDto = {
 };
 
 /**
+ * Sort axis for `GET /api/trash/resources` (§7).
+ *
+ * Typed rather than `Option<String>` so an unknown axis is refused at
+ * wire-decode time instead of silently falling back to the default —
+ * which is what a bare string did, turning a client typo into "sorted by
+ * something else" with a 200. serde's derived error names the accepted
+ * variants, so the 400 tells the caller what to send; no custom extractor
+ * is involved. `PhotoOrderBy` set this precedent in §6.
+ *
+ * **Per-endpoint by design, not one shared union.** `Name`/`Type`/`Size`
+ * recur across endpoints but the date axes do not — trash has
+ * `expires_at`/`trashed_at`, favorites has `favorited_at`, recent has
+ * `accessed_at`. A shared enum would accept nonsense on every endpoint
+ * but its own.
+ */
+export type TrashOrderBy = 'expires_at' | 'trashed_at' | 'name' | 'type' | 'size';
+
+/**
  * One item in a `GET /api/trash/resources` page.
  *
- * `deletion_date` is the real timestamp at which the item will be permanently
+ * `expires_at` is the real timestamp at which the item will be permanently
  * deleted (= `trashed_at + retention_days`). The client derives "days until
  * deletion" itself from this + the current clock — the wire format does not
  * duplicate that derivation. `resource.path` carries the original location
  * (soft-delete preserves the row's `path` column).
  */
 export type TrashResourceItemDto = {
-    /**
-     * When the item will be permanently deleted by the retention sweeper.
-     */
-    deletion_date: string;
     /**
      * The drive the trashed item belongs to. Enables client-side
      * group-by-drive in the `/trash` UI (D2b spec — see
@@ -4650,6 +4743,10 @@ export type TrashResourceItemDto = {
      * holds in `drives.svelte` — no extra round-trip needed.
      */
     drive_id: string;
+    /**
+     * When the item will be permanently deleted by the retention sweeper.
+     */
+    expires_at: string;
     /**
      * Full resource details — shape determined by `resource_type`.
      */
@@ -5214,6 +5311,10 @@ export type ListContactsData = {
          * Pagination offset (omit for none; system book defaults to 0)
          */
         offset?: number;
+        /**
+         * System address book only — include the calling user in the results. Default false (the share-modal "can't share with yourself" rule); the admin drive-owner surface sets it true. Ignored for non-system books
+         */
+        include_self?: boolean;
     };
     url: '/api/address-books/{book_id}/contacts';
 };
@@ -9535,10 +9636,11 @@ export type ListFavoritesResourcesData = {
          */
         cursor?: string | null;
         /**
-         * Sort / group-by dimension. Supported: `"name"` (default), `"type"`,
-         * `"favorited_at"`, `"modified_at"`, `"size"`, `"owner"`.
+         * Sort / group-by dimension — see [`FavoritesOrderBy`]. Omit for
+         * `name`. An unknown value is a 400 naming the accepted set, not a
+         * silent fall back to the default.
          */
-        order_by?: string | null;
+        order_by?: null | FavoritesOrderBy;
         /**
          * Comma-separated resource types to include, e.g. `"file,folder"`.
          * Omit to include both.
@@ -10390,10 +10492,11 @@ export type ListFolderResourcesData = {
          */
         cursor?: string | null;
         /**
-         * Sort / group-by dimension. Supported: `"name"` (default), `"type"`,
-         * `"modified_at"`, `"created_at"`, `"size"`.
+         * Sort / group-by dimension — see [`FolderOrderBy`]. Omit for
+         * `name`. An unknown value is a 400 naming the accepted set, not a
+         * silent fall back to the default.
          */
-        order_by?: string | null;
+        order_by?: null | FolderOrderBy;
         /**
          * Comma-separated resource types to include, e.g. `"file,folder"`.
          * Omit to include both.
@@ -10512,10 +10615,10 @@ export type ListSharedWithMeData = {
          */
         cursor?: string | null;
         /**
-         * Sort dimension. Supported values: `"granted_at"` (default),
-         * `"granted_by"` (for swimlane grouping).
+         * Sort dimension — see [`IncomingGrantOrderBy`]. Omit for
+         * `granted_at`. An unknown value is a 400 naming the accepted set.
          */
-        sort_by?: string | null;
+        order_by?: null | IncomingGrantOrderBy;
         /**
          * Comma-separated resource types to include, e.g. `file,folder`.
          * Omit to return all known types.
@@ -10566,14 +10669,14 @@ export type ListMySharesData = {
         limit?: number;
         /**
          * Opaque cursor from a previous response. Omit to start from the
-         * most-recently-granted item.
+         * most-recently-shared item.
          */
         cursor?: string | null;
         /**
-         * Sort dimension. Supported values: `"granted_at"` (default),
-         * `"granted_by"` (for swimlane grouping).
+         * Sort dimension — see [`OutgoingGrantOrderBy`]. Omit for
+         * `first_shared_at`. An unknown value is a 400 naming the accepted set.
          */
-        sort_by?: string | null;
+        order_by?: null | OutgoingGrantOrderBy;
         /**
          * Comma-separated resource types to include, e.g. `file,folder`.
          * Omit to return all known types.
@@ -10581,8 +10684,6 @@ export type ListMySharesData = {
         resource_types?: string | null;
         /**
          * Reverse the sort order. Default `false` (normal order).
-         * Must be the same on all pages of the same result set — the cursor
-         * carries this flag so the server can validate consistency.
          */
         reverse?: boolean;
     };
@@ -11601,7 +11702,20 @@ export type ListPhotosResourcesResponse = ListPhotosResourcesResponses[keyof Lis
 export type ListPlaylistsData = {
     body?: never;
     path?: never;
-    query?: never;
+    query?: {
+        /**
+         * Include playlists shared with the caller, not just owned ones
+         */
+        include_shared?: boolean;
+        /**
+         * Accepted for backwards compatibility but NOT applied — the listing is derived from the caller's grants and always returns all of them. See PlaylistQueryDto
+         */
+        limit?: number;
+        /**
+         * Accepted for backwards compatibility but NOT applied — see `limit`
+         */
+        offset?: number;
+    };
     url: '/api/playlists';
 };
 
@@ -12039,10 +12153,11 @@ export type ListRecentResourcesData = {
          */
         cursor?: string | null;
         /**
-         * Sort / group-by dimension. Supported: `"accessed_at"` (default), `"name"`,
-         * `"type"`, `"modified_at"`, `"size"`, `"owner"`.
+         * Sort / group-by dimension — see [`RecentOrderBy`]. Omit for
+         * `accessed_at`. An unknown value is a 400 naming the accepted set,
+         * not a silent fall back to the default.
          */
-        order_by?: string | null;
+        order_by?: null | RecentOrderBy;
         /**
          * Comma-separated resource types to include, e.g. `"file,folder"`.
          * Omit to include both.
@@ -12354,7 +12469,24 @@ export type SetupAdminResponse = SetupAdminResponses[keyof SetupAdminResponses];
 export type GetUserSharesData = {
     body?: never;
     path?: never;
-    query?: never;
+    query?: {
+        /**
+         * 1-based page number (default 1). Ignored when item_id + item_type are both given
+         */
+        page?: number;
+        /**
+         * Items per page (default 20). Ignored when item_id + item_type are both given
+         */
+        per_page?: number;
+        /**
+         * Return only shares for this item. Must be sent together with item_type
+         */
+        item_id?: string;
+        /**
+         * Item kind for item_id — `file` or `folder`. An unknown value returns 400
+         */
+        item_type?: string;
+    };
     url: '/api/shares';
 };
 
@@ -12606,11 +12738,11 @@ export type GetTrashResourcesData = {
          */
         cursor?: string | null;
         /**
-         * Sort / group-by dimension. Supported: `"deletion_date"` (default — soonest
-         * expiry first), `"trashed_at"` (most recently trashed first), `"name"`,
-         * `"type"`, `"size"`.
+         * Sort / group-by dimension — see [`TrashOrderBy`]. Omit for
+         * `expires_at` (soonest expiry first). An unknown value is a 400
+         * naming the accepted set, not a silent fall back to the default.
          */
-        order_by?: string | null;
+        order_by?: null | TrashOrderBy;
         /**
          * Comma-separated resource types to include, e.g. `"file,folder"`.
          * Omit to include both.

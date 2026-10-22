@@ -6,7 +6,7 @@
 	 * — supplied by the page in a `contextMap` keyed by item id.
 	 *
 	 * Example use-cases:
-	 * - `/trash`: `date = deletion_date`, `extras = { driveId, trashedAt }`.
+	 * - `/trash`: `date = expires_at`, `extras = { driveId, trashedAt }`.
 	 * - `/recent`: `date = accessed_at`, `ownerId = updated_by`.
 	 * - `/favorites`: `ownerId = created_by`.
 	 *
@@ -34,10 +34,21 @@
 	 * and `labelOf` maps that key to a header label. Omitting `bucketOf` means a
 	 * flat list.
 	 */
-	export interface GroupByDef {
+	/**
+	 * A group-by option offered in the listing's dropdown.
+	 *
+	 * Generic over the sort axis (§7). It defaults to `string` so routes
+	 * whose endpoint still takes an untyped `order_by` keep compiling, but a
+	 * route whose endpoint has a published `*OrderBy` enum should
+	 * instantiate it with that union — `GroupByDef<RecentOrderBy>[]` — so a
+	 * typo or a retired axis fails `npm run check` instead of becoming a
+	 * runtime 400. `/recent` does this today; the rest follow as their
+	 * enums land.
+	 */
+	export interface GroupByDef<Axis extends string = string> {
 		key: string;
 		label: string;
-		orderBy: string;
+		orderBy: Axis;
 		/** Optional icon for the dropdown option (defaults to the group glyph). */
 		icon?: string;
 		bucketOf?: (item: FileItem | FolderItem, ctx?: ItemContext) => string | null;
@@ -82,7 +93,7 @@
 	}
 </script>
 
-<script lang="ts">
+<script lang="ts" generics="Axis extends string = string">
 	import type { Snippet } from 'svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 	import Icon from '$lib/icons/Icon.svelte';
@@ -223,13 +234,20 @@
 		/** Right-click / overflow context-menu actions. */
 		contextActions?: ContextAction[];
 		/** Group-by dimensions; when provided, a swimlane selector is shown. */
-		groupBys?: GroupByDef[];
+		groupBys?: GroupByDef<Axis>[];
 		/** Active group-by key (bind:groupBy from the page). */
 		groupBy?: string;
 		/** Reverse sort toggle state (bind:reversed from the page). */
 		reversed?: boolean;
-		/** Called when group-by or direction changes; page should reload page 1. */
-		onreload?: (orderBy: string, reversed: boolean) => void;
+		/**
+		 * Called when group-by or direction changes; page should reload page 1.
+		 *
+		 * `orderBy` is one of the `groupBys` entries' axes, so it carries the
+		 * page's `Axis` type (§7 part 3g) rather than a bare string — a route
+		 * whose endpoint has a published `*OrderBy` enum can pass this
+		 * straight into its loader with no cast.
+		 */
+		onreload?: (orderBy: Axis, reversed: boolean) => void;
 		onopen?: (item: FileItem | FolderItem) => void;
 		/** Per-item favorite star toggle. */
 		onfavorite?: (item: FileItem | FolderItem) => void;
@@ -599,12 +617,29 @@
 		if (groupBy === key) return;
 		groupBy = key;
 		const def = groupBys?.find((g) => g.key === key);
-		onreload?.(def?.orderBy ?? 'name', reversed);
+		requestReload(def?.orderBy);
 	}
 
 	function toggleDirection() {
 		reversed = !reversed;
-		onreload?.(activeGroup?.orderBy ?? 'name', reversed);
+		requestReload(activeGroup?.orderBy);
+	}
+
+	/**
+	 * Fire `onreload` with a valid axis, or not at all.
+	 *
+	 * §7 part 3g: the two call sites above used to fall back to the literal
+	 * `'name'`, which is not a valid `Axis` for every endpoint — `/photos`
+	 * has no `name` axis at all — so a typed component cannot hardcode it.
+	 * The first `groupBys` entry is the page's own default (its `key` is
+	 * `''`, the no-grouping state), which makes it the correct typed
+	 * fallback. With no `groupBys` there is no axis to sort by, so the
+	 * reload is skipped rather than invented; every route that passes
+	 * `onreload` passes `groupBys` too.
+	 */
+	function requestReload(axis: Axis | undefined) {
+		const resolved = axis ?? groupBys?.[0]?.orderBy;
+		if (resolved !== undefined) onreload?.(resolved, reversed);
 	}
 
 	/**

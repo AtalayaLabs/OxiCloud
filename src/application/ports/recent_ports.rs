@@ -1,6 +1,6 @@
 use uuid::Uuid;
 
-use crate::application::dtos::recent_dto::RecentItemDto;
+use crate::application::dtos::recent_dto::{RecentItemDto, RecentOrderBy};
 use crate::common::errors::Result;
 
 /// Defines operations for managing user recent items
@@ -62,7 +62,7 @@ pub trait RecentItemsRepositoryPort: Send + Sync + 'static {
         user_id: Uuid,
         limit: usize,
         cursor: Option<&crate::application::dtos::recent_dto::RecentCursor>,
-        order_by: &str,
+        order_by: RecentOrderBy,
         kinds: Option<&[crate::domain::services::authorization::ResourceKind]>,
         reverse: bool,
     ) -> Result<Vec<crate::application::dtos::recent_dto::RecentResourceRow>>;

@@ -152,6 +152,50 @@ jsonpath "$.items[1].resource.name" == "bbb-srchclock-needle.txt"
 
 
 # ═════════════════════════════════════════════════════════════
+# §7 — an unknown order_by is a 400, not a silent default
+# ═════════════════════════════════════════════════════════════
+# `order_by` is a typed `SearchOrderBy` enum, so serde refuses anything
+# outside the five variants at wire-decode time. It used to be a bare
+# String with a catch-all in every match, and that catch-all was hiding
+# a real bug — see §7 part 3e: the recursive search path (the DEFAULT,
+# `recursive` defaults to true) still matched the `_desc` spellings
+# retired in 2026-07, so folder rows ignored `modified_at`,
+# `created_at`, `size` AND `reverse`, falling through to relevance
+# while files on the same page honoured the request.
+GET {{base_url}}/api/search?query=srchclock-needle&order_by=definitely-not-an-axis
+Authorization: Bearer {{jwt}}
+
+HTTP 400
+[Asserts]
+# serde's derived error names the accepted variants.
+body contains "relevance"
+
+
+# The retired `_desc` suffix is refused too, rather than being quietly
+# accepted and treated as the default. This is the spelling the dead
+# recursive-branch arms matched, so a client still sending it now learns
+# that direction is the orthogonal `reverse` flag.
+GET {{base_url}}/api/search?query=srchclock-needle&order_by=name_desc
+Authorization: Bearer {{jwt}}
+
+HTTP 400
+
+
+# Every valid axis still serves a page. `created_at` and `size` are the
+# two this file does not otherwise exercise.
+GET {{base_url}}/api/search?query=srchclock-needle&order_by=created_at
+Authorization: Bearer {{jwt}}
+
+HTTP 200
+
+
+GET {{base_url}}/api/search?query=srchclock-needle&order_by=size&reverse=true
+Authorization: Bearer {{jwt}}
+
+HTTP 200
+
+
+# ═════════════════════════════════════════════════════════════
 # Teardown
 # ═════════════════════════════════════════════════════════════
 DELETE {{base_url}}/remote.php/dav/files/{{username}}/aaa-srchclock-needle.txt

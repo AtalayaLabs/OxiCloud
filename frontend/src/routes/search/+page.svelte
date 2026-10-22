@@ -15,7 +15,8 @@
 	import { renameFolder, deleteFolder } from '$lib/api/endpoints/folders';
 	import { addFavorite, removeFavorite } from '$lib/api/endpoints/favorites';
 	import { dateBucket, sizeBucket } from '$lib/utils/resourceBuckets';
-	import type { FileItem, FolderItem, SearchResourceItem, SortBy } from '$lib/api/types';
+	import type { FileItem, FolderItem, SearchResourceItem } from '$lib/api/types';
+	import type { SearchOrderBy } from '$lib/api/generated/openapi/types.gen';
 	import { lazyComponent } from '$lib/composables/lazyComponent.svelte';
 	import { folderAccessCached, probeFolderAccess } from '$lib/utils/folderAccess';
 	import Icon from '$lib/icons/Icon.svelte';
@@ -243,7 +244,10 @@
 	// `orderBy` values map 1:1 to the backend `SearchResourcesQuery.order_by`.
 	// The asc/desc button binds to `reversed` and passes through to the
 	// backend `reverse` flag.
-	const groupBys: GroupByDef[] = [
+	// §7 part 3g: typed to the generated `SearchOrderBy` — `relevance` is
+	// unique to this endpoint, and part 3e proved how easily a dead axis
+	// spelling survives when nothing checks it.
+	const groupBys: GroupByDef<SearchOrderBy>[] = [
 		{
 			key: '',
 			label: t('search.sort.relevance', 'Relevance'),
@@ -271,7 +275,7 @@
 		}
 	];
 
-	function orderByForGroup(): string {
+	function orderByForGroup(): SearchOrderBy {
 		return groupBys.find((g) => g.key === groupBy)?.orderBy ?? 'relevance';
 	}
 
@@ -297,7 +301,9 @@
 				: undefined;
 		return {
 			recursive: true,
-			sortBy: orderByForGroup() as SortBy,
+			// §7 part 3g: `orderByForGroup` returns `SearchOrderBy` now, so the
+			// `as SortBy` assertion that stood here is gone.
+			sortBy: orderByForGroup(),
 			reverse: reversed,
 			folderId,
 			fileTypes: typeFilter === 'all' ? undefined : TYPE_EXT[typeFilter],

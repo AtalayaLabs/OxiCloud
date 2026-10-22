@@ -25,6 +25,7 @@
 	import ListToolbar from '$lib/components/ListToolbar.svelte';
 	import { lazyComponent } from '$lib/composables/lazyComponent.svelte';
 	import UserVignette from '$lib/components/UserVignette.svelte';
+	import type { OutgoingGrantOrderBy } from '$lib/api/generated/openapi/types.gen';
 	import { t } from '$lib/i18n/index.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 	import { formatDate, iconNameFromClass } from '$lib/utils/display';
@@ -32,7 +33,9 @@
 
 	type GroupBy = 'items' | 'sharedWith';
 
-	const GROUP_BYS: { key: GroupBy; label: string; orderBy: string }[] = [
+	// §7 part 3g: `orderBy` is the generated OUTGOING union — `subject` is
+	// valid only on this endpoint, and the type now says so.
+	const GROUP_BYS: { key: GroupBy; label: string; orderBy: OutgoingGrantOrderBy }[] = [
 		{ key: 'items', label: t('groupby.byFiles', 'By files'), orderBy: 'type' },
 		{ key: 'sharedWith', label: t('groupby.sharedWith', 'Shared with'), orderBy: 'subject' }
 	];

@@ -22,6 +22,7 @@
 		type ItemContext
 	} from '$lib/components/ResourceList.svelte';
 	import UserAvatar from '$lib/components/UserAvatar.svelte';
+	import type { IncomingGrantOrderBy } from '$lib/api/generated/openapi/types.gen';
 	import { t } from '$lib/i18n/index.svelte';
 	import { session } from '$lib/stores/session.svelte';
 
@@ -64,7 +65,10 @@
 	// the A-Z icon flags it as "sort, not group" so users don't read it as
 	// a real bucket dimension. The remaining three are honest groupings and
 	// get the default layer-group icon.
-	const groupBys: GroupByDef[] = [
+	// §7 part 3g: typed to the INCOMING union. The sibling /shared route
+	// accepts a disjoint set, so this is the half of part 3f's split that
+	// the frontend can now enforce too.
+	const groupBys: GroupByDef<IncomingGrantOrderBy>[] = [
 		{ key: '', label: t('files.name', 'Name'), orderBy: 'name', icon: 'arrow-up-a-z' },
 		{
 			key: 'sharedBy',
@@ -88,11 +92,11 @@
 		}
 	];
 
-	function orderByForGroup(): string {
+	function orderByForGroup(): IncomingGrantOrderBy {
 		return groupBys.find((g) => g.key === groupBy)?.orderBy ?? 'granted_at';
 	}
 
-	async function load(reset = false, orderBy = 'granted_at', rev = reversed) {
+	async function load(reset = false, orderBy: IncomingGrantOrderBy = 'granted_at', rev = reversed) {
 		loading = true;
 		error = null;
 		try {

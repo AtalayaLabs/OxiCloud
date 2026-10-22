@@ -7,7 +7,7 @@
 # Verifies:
 #   - Empty trash returns items:[] and no next_cursor
 #   - 401 without auth
-#   - Default order_by = deletion_date (soonest-expiring first)
+#   - Default order_by = expires_at (soonest-expiring first)
 #   - order_by=name groups folders before files
 #   - order_by=size: folders cluster via -1 sentinel
 #   - resource_types=file / =folder filters narrow the result set
@@ -163,7 +163,7 @@ HTTP 200
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 7 – Default listing: 4 items, all carry trashed_at + deletion_date
+# Step 7 – Default listing: 4 items, all carry trashed_at + expires_at
 #          + drive_id (D2b — enables per-drive grouping in the UI).
 #          The listing is also drive-membership scoped (D2b stage 2): the
 #          admin sees their own personal drive's trashed items, just as
@@ -175,8 +175,16 @@ Authorization: Bearer {{token}}
 HTTP 200
 [Asserts]
 jsonpath "$.items" count == 4
+# §7: the two axes are a past/future pair — `trashed_at` is when the item
+# went to the bin, `expires_at` is when it will be purged. The latter was
+# called `deletion_date`, which read as a past event while holding a future
+# instant; renamed with no deprecation window (same call as §6).
 jsonpath "$.items[0].trashed_at" isString
-jsonpath "$.items[0].deletion_date" isString
+jsonpath "$.items[0].expires_at" isString
+# The old name must be GONE from the payload, not emitted alongside the new
+# one — an alias would let the SPA keep reading the stale field and the
+# rename would silently never complete.
+jsonpath "$.items[0].deletion_date" not exists
 # D2b: drive_id is non-null on every trashed item.
 jsonpath "$.items[0].drive_id" isString
 jsonpath "$.items[1].drive_id" isString
@@ -219,6 +227,31 @@ jsonpath "$.items[0].resource_type" == "folder"
 jsonpath "$.items[1].resource_type" == "folder"
 jsonpath "$.items[2].resource_type" == "file"
 jsonpath "$.items[3].resource_type" == "file"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 9b – §7: an unknown axis is a 400, not a silent default.
+# ─────────────────────────────────────────────────────────────
+# `order_by` is a typed `TrashOrderBy` enum, so serde rejects anything
+# outside the five variants at wire-decode time. Before this, the axis
+# was a bare String and the repository's `(_, _)` match arm fell back to
+# expires_at ordering — a client typo got a 200 sorted by something it
+# did not ask for, which is indistinguishable from the server honouring
+# the request.
+#
+# Worse than cosmetic: that fallback paired an expires_at keyset
+# predicate with whatever axis the caller named, which is the
+# sort-key-versus-cursor disagreement §2 had to fix on the folder
+# listing. The arm is now gone and the match is exhaustive, so adding a
+# variant is a compile error rather than a silent fall-through.
+GET {{base_url}}/api/trash/resources?order_by=definitely-not-an-axis
+Authorization: Bearer {{token}}
+
+HTTP 400
+[Asserts]
+# serde's derived error names the accepted variants, so the caller
+# learns what to send. This is why no custom extractor was needed.
+body contains "expires_at"
 
 
 # ─────────────────────────────────────────────────────────────

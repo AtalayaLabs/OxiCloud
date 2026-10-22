@@ -192,7 +192,7 @@ pub async fn list_recent_resources(
 ) -> impl IntoResponse {
     let user_id = auth_user.id;
 
-    let order_by = q.order_by.as_deref().unwrap_or("accessed_at").to_owned();
+    let order_by = q.order_by.unwrap_or_default();
 
     // Snapshot the raw cursor + limit for the ETag — captured BEFORE
     // the decode step consumes `q.cursor`, matching the pattern on
@@ -213,7 +213,7 @@ pub async fn list_recent_resources(
             user_id,
             q.limit_clamped(),
             cursor,
-            &order_by,
+            order_by,
             kinds.as_deref(),
             q.reverse,
         )

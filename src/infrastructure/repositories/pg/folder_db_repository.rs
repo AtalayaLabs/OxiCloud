@@ -15,7 +15,9 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use super::transaction_utils::retry_on_deadlock;
-use crate::application::dtos::folder_dto::{FolderResourceCursor, FolderResourceRow};
+use crate::application::dtos::folder_dto::{
+    FolderOrderBy, FolderResourceCursor, FolderResourceRow,
+};
 use crate::common::errors::DomainError;
 use crate::domain::entities::folder::Folder;
 use crate::domain::repositories::folder_repository::FolderRepository;
@@ -1724,7 +1726,7 @@ impl FolderDbRepository {
         caller: Subject,
         limit: usize,
         cursor: Option<&FolderResourceCursor>,
-        order_by: &str,
+        order_by: FolderOrderBy,
         kinds: Option<&[ResourceKind]>,
         reverse: bool,
     ) -> Result<Vec<FolderResourceRow>, DomainError> {
@@ -1840,7 +1842,7 @@ impl FolderDbRepository {
         // (folder-branch cursor, file-branch cursor, per-branch ORDER BY on
         //  the branch's output aliases, outer merge ORDER BY)
         let (folder_cur, file_cur, branch_order, outer_order) = match order_by {
-            "type" => {
+            FolderOrderBy::Type => {
                 let (op, ord) = if reverse {
                     ("<", "ORDER BY type_order DESC, sort_str DESC, id DESC")
                 } else {
@@ -1869,7 +1871,7 @@ impl FolderDbRepository {
                 };
                 (folder_cur, file_cur, ord, ord)
             }
-            "modified_at" => {
+            FolderOrderBy::ModifiedAt => {
                 let (op, ord) = if reverse {
                     (">", "ORDER BY content_modified_at ASC, id ASC")
                 } else {
@@ -1903,7 +1905,7 @@ impl FolderDbRepository {
                 };
                 (mk("f"), mk("fm"), ord, ord)
             }
-            "created_at" => {
+            FolderOrderBy::CreatedAt => {
                 let (op, ord) = if reverse {
                     (">", "ORDER BY created_at ASC, id ASC")
                 } else {
@@ -1918,7 +1920,7 @@ impl FolderDbRepository {
                 };
                 (mk("f"), mk("fm"), ord, ord)
             }
-            "size" => {
+            FolderOrderBy::Size => {
                 let (op, ord) = if reverse {
                     ("<", "ORDER BY size DESC, id DESC")
                 } else {
@@ -1945,8 +1947,13 @@ impl FolderDbRepository {
                 };
                 (folder_cur, file_cur, ord, ord)
             }
-            _ => {
-                // "name" (default): folder_first stays ASC so folders always
+            FolderOrderBy::Name => {
+                // §7: named explicitly, not a catch-all, so the match is
+                // exhaustive and a new axis is a compile error here rather
+                // than silently getting name ordering with a cursor built
+                // for a different axis.
+                //
+                // folder_first stays ASC so folders always
                 // precede files; only the alpha order within each group flips
                 // when reversed. cursor_int carries folder_first (0|1).
                 let op = if reverse { "<" } else { ">" };

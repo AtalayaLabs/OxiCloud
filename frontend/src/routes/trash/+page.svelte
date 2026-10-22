@@ -23,6 +23,7 @@
 		type ItemContext
 	} from '$lib/components/ResourceList.svelte';
 	import { confirmDialog } from '$lib/stores/dialogs.svelte';
+	import type { TrashOrderBy } from '$lib/api/generated/openapi/types.gen';
 	import { t } from '$lib/i18n/index.svelte';
 	import { drives as drivesStore } from '$lib/stores/drives.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
@@ -44,7 +45,7 @@
 	// applies to any future "review before destructive action" surface.
 	//
 	// Items go to ResourceList as raw `FileItem | FolderItem`; the trash
-	// envelope's extra fields (`deletion_date`, `trashed_at`, `drive_id`)
+	// envelope's extra fields (`expires_at`, `trashed_at`, `drive_id`)
 	// travel through `contextMap`, which page-provided group-by / render
 	// callbacks read via the `ctx` parameter.
 	const items = $derived(raw.map((it) => it.resource as FileItem | FolderItem));
@@ -77,7 +78,10 @@
 		return driveLabel(driveId);
 	}
 
-	const groupBys: GroupByDef[] = [
+	// §7 part 3g: typed to the generated union — part 2 renamed this
+	// endpoint's default axis from `deletion_date` to `expires_at`, and
+	// nothing in the build would have caught a missed site.
+	const groupBys: GroupByDef<TrashOrderBy>[] = [
 		{ key: '', label: t('files.name', 'Name'), orderBy: 'name', icon: 'arrow-up-a-z' },
 		{
 			key: 'drive',
@@ -92,7 +96,7 @@
 		{
 			key: 'remainingDays',
 			label: t('trash.groupby.remaining_days', 'Remaining days'),
-			orderBy: 'deletion_date',
+			orderBy: 'expires_at',
 			bucketOf: (_item, ctx) => remainingDaysBucket(ctx?.date)
 		},
 		{
@@ -119,11 +123,11 @@
 		}
 	];
 
-	function orderByForGroup(): string {
-		return groupBys.find((g) => g.key === groupBy)?.orderBy ?? 'deletion_date';
+	function orderByForGroup(): TrashOrderBy {
+		return groupBys.find((g) => g.key === groupBy)?.orderBy ?? 'expires_at';
 	}
 
-	async function load(reset = false, orderBy = 'deletion_date', rev = reversed) {
+	async function load(reset = false, orderBy: TrashOrderBy = 'expires_at', rev = reversed) {
 		loading = true;
 		error = null;
 		try {
@@ -136,7 +140,7 @@
 			raw = reset ? page.items : [...raw, ...page.items];
 			primeContextPage(contextMap, reset, page.items, (it) => [
 				it.resource.id,
-				{ date: it.deletion_date, extras: { driveId: it.drive_id, trashedAt: it.trashed_at } }
+				{ date: it.expires_at, extras: { driveId: it.drive_id, trashedAt: it.trashed_at } }
 			]);
 			cursor = page.next_cursor;
 		} catch (e) {

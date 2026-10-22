@@ -21,10 +21,10 @@ use uuid::Uuid;
 use crate::application::dtos::cursor::PageCursor;
 use crate::application::dtos::drive_dto::DriveDto;
 use crate::application::dtos::grant_dto::{
-    CreateGrantDto, CreateGrantResponseDto, GrantDto, MySharesDto, NotifyOutcomeSetDto,
-    OutgoingResourceGrantDto, OutgoingResourceItemDto, ResourceContentDto, ResourceDto,
-    ResourceTypeDto, SharedWithMeDto, SharedWithMeItemDto, SharedWithMeQuery, SubjectDto,
-    SubjectInputDto, UpdateGrantRoleDto, role_from_permissions,
+    CreateGrantDto, CreateGrantResponseDto, GrantDto, GrantsPageQuery, MySharesDto,
+    NotifyOutcomeSetDto, OutgoingResourceGrantDto, OutgoingResourceItemDto, ResourceContentDto,
+    ResourceDto, ResourceTypeDto, SharedByMeQuery, SharedWithMeDto, SharedWithMeItemDto,
+    SharedWithMeQuery, SubjectDto, SubjectInputDto, UpdateGrantRoleDto, role_from_permissions,
 };
 use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::application::services::recipient_notification_service::NotifyTrigger;
@@ -969,15 +969,13 @@ pub async fn list_shared_with_me(
     // Clamp limit to 1–200.
     let limit = q.limit_clamped() as u32;
 
-    // Validate sort_by (defaults to "granted_at").
-    let sort_by = q.sort_by.as_deref().unwrap_or("granted_at");
-    if !matches!(sort_by, "granted_at" | "granted_by" | "name" | "type") {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "invalid sort_by; valid values: granted_at, granted_by, name, type"})),
-        )
-            .into_response();
-    }
+    // §7: `order_by` is a typed `IncomingGrantOrderBy`, so the
+    // hand-written `matches!` guard and its 400 are gone — serde refuses
+    // an unknown axis at wire-decode time and names the accepted
+    // variants. The old guard duplicated, in prose, a set the type now
+    // owns; keeping both is how they drift.
+    let order_by = q.order_by.unwrap_or_default();
+    let order_by_wire = order_by.as_str();
 
     let reverse = q.reverse;
 
@@ -985,12 +983,12 @@ pub async fn list_shared_with_me(
     // to avoid keyset confusion across sort modes.
     let cursor = q
         .decode_cursor::<GrantCursor>()
-        .filter(|c| c.sort_by == sort_by && c.reverse == reverse);
+        .filter(|c| c.order_by == order_by_wire && c.reverse == reverse);
 
     // Fetch paged summaries from the ACL engine.
     let (summaries, next_cursor) = match state
         .authorization
-        .list_incoming_resources_paged(subject, &kinds, limit, cursor, sort_by, reverse)
+        .list_incoming_resources_paged(subject, &kinds, limit, cursor, order_by_wire, reverse)
         .await
     {
         Ok(r) => r,
@@ -1223,7 +1221,7 @@ pub async fn list_on_resource(
 #[utoipa::path(
     get,
     path = "/api/grants/outgoing/resources",
-    params(SharedWithMeQuery),
+    params(SharedByMeQuery),
     responses(
         (status = 200,
          description = "Cursor-paginated resources the caller has shared with others. \
@@ -1238,33 +1236,28 @@ pub async fn list_on_resource(
 pub async fn list_my_shares(
     State(state): State<AppStateRef>,
     auth_user: AuthUser,
-    Query(q): Query<SharedWithMeQuery>,
+    Query(q): Query<SharedByMeQuery>,
 ) -> impl IntoResponse {
     let caller_id = auth_user.id;
 
     let limit = q.limit_clamped() as u32;
 
-    let sort_by = q.sort_by.as_deref().unwrap_or("first_shared_at");
-    if !matches!(
-        sort_by,
-        "first_shared_at" | "name" | "type" | "subject" | "role"
-    ) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "invalid sort_by; valid values: first_shared_at, name, type, subject, role"})),
-        )
-            .into_response();
-    }
+    // §7: `SharedByMeQuery` — its OWN type, not the incoming one. The two
+    // endpoints accept disjoint axis sets, so sharing a struct meant
+    // neither could be typed and each handler hand-validated its own set.
+    // The `matches!` guard that used to live here is now the enum.
+    let order_by = q.order_by.unwrap_or_default();
+    let order_by_wire = order_by.as_str();
 
     let reverse = q.reverse;
 
     let cursor = q
         .decode_cursor::<GrantCursor>()
-        .filter(|c| c.sort_by == sort_by && c.reverse == reverse);
+        .filter(|c| c.order_by == order_by_wire && c.reverse == reverse);
 
     let (summaries, next_cursor) = match state
         .authorization
-        .list_outgoing_resources_paged(caller_id, limit, cursor, sort_by, reverse)
+        .list_outgoing_resources_paged(caller_id, limit, cursor, order_by_wire, reverse)
         .await
     {
         Ok(r) => r,

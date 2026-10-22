@@ -238,3 +238,38 @@ Authorization: Bearer {{mallory_token}}
 HTTP 200
 [Asserts]
 jsonpath "$.items" count == 0
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 13 — §7: an unknown order_by is a 400, not a silent default.
+# ─────────────────────────────────────────────────────────────
+# `order_by` is a typed `FavoritesOrderBy` enum, so serde rejects
+# anything outside the six variants at wire-decode time. Before this it
+# was a bare String re-validated at three layers, each with its own
+# silent fallback to `name`:
+#
+#   * `build_favorites_cursor`'s `_` arm doubled as the `name` case AND
+#     the unknown case, so a typo minted a `name` cursor
+#   * the repository's `(_, false)` / `(_, true)` arms ordered by name
+#
+# The two then disagreed with each other for any axis the caller named
+# but the fallback did not honour — a keyset predicate on one column
+# with an ORDER BY on another skips or repeats rows, which is the
+# hazard §2 had to fix on the folder listing. Both arms are gone and
+# both matches are exhaustive, so a new axis is a compile error.
+GET {{base_url}}/api/favorites/resources?order_by=definitely-not-an-axis
+Authorization: Bearer {{mallory_token}}
+
+HTTP 400
+[Asserts]
+# serde's derived error names the accepted variants, so the caller
+# learns what to send — no custom extractor needed.
+body contains "favorited_at"
+
+
+# A valid non-default axis still works, so the 400 above is the enum
+# rejecting an unknown value rather than the parameter being broken.
+GET {{base_url}}/api/favorites/resources?order_by=favorited_at
+Authorization: Bearer {{mallory_token}}
+
+HTTP 200

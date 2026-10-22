@@ -4,9 +4,20 @@ import { getCsrfHeaders } from '$lib/api/csrf';
 import { t } from '$lib/i18n/index.svelte';
 import { fetchResourcePage, type ResourcePage, type ResourcePageOpts } from './resources';
 import type { TrashResourceItem } from '$lib/api/types';
+import type { TrashOrderBy } from '$lib/api/generated/openapi/types.gen';
 
-export function fetchTrashPage(opts?: ResourcePageOpts): Promise<ResourcePage<TrashResourceItem>> {
-	return fetchResourcePage<TrashResourceItem>('/api/trash/resources', 'deletion_date', opts);
+// §7 part 3g: the axis is the generated `TrashOrderBy` union, so the
+// `'expires_at'` default below and every caller's `orderBy` are checked
+// against the server's accepted set at build time. This is the field that
+// part 2 renamed from `deletion_date`.
+export type TrashPageOpts = ResourcePageOpts<TrashOrderBy>;
+
+export function fetchTrashPage(opts?: TrashPageOpts): Promise<ResourcePage<TrashResourceItem>> {
+	return fetchResourcePage<TrashResourceItem, TrashOrderBy>(
+		'/api/trash/resources',
+		'expires_at',
+		opts
+	);
 }
 
 /** Days from now until `value` (negative when already past). */

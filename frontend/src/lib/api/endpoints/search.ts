@@ -1,6 +1,7 @@
 // Search endpoint — hits the normalized `/*/resources` envelope shape.
 import { apiFetch, apiJson } from '$lib/api/client';
-import type { ItemType, SearchResourcesResponse, SortBy } from '$lib/api/types';
+import type { ItemType, SearchResourcesResponse } from '$lib/api/types';
+import type { SearchOrderBy } from '$lib/api/generated/openapi/types.gen';
 
 export interface SearchOptions {
 	folderId?: string;
@@ -24,7 +25,7 @@ export interface SearchOptions {
 	 */
 	cursor?: string;
 	/** Sort dimension; maps to backend `order_by`. */
-	sortBy?: SortBy;
+	sortBy?: SearchOrderBy;
 	/** Reverse sort direction; maps to backend `reverse`. */
 	reverse?: boolean;
 	/** Restrict to files, folders, or both (default). */

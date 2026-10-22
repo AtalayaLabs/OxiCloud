@@ -188,14 +188,48 @@ pub struct FavoriteResourceRow {
     pub sort_ts: Option<DateTime<Utc>>,
 }
 
+/// Sort axis for `GET /api/favorites/resources` (§7).
+///
+/// Typed rather than `Option<String>` so an unknown axis is refused at
+/// wire-decode time instead of silently falling back to the default. See
+/// [`crate::application::dtos::trash_dto::TrashOrderBy`] for why these are
+/// per-endpoint enums rather than one shared union: the date axis is the
+/// part that differs, and favorites' is `favorited_at`, which is
+/// meaningless on every other endpoint.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FavoritesOrderBy {
+    /// Default — alphabetical, folders before files (`folder_first`).
+    #[default]
+    Name,
+    /// Grouped by kind, then alphabetical within a kind.
+    Type,
+    /// When the caller starred it, most recent first.
+    FavoritedAt,
+    /// The item's content clock (`content_modified_at`) — a rename or
+    /// move does not resurface a row, only a real content change.
+    ModifiedAt,
+    /// By byte size. Folders carry a sentinel so they cluster rather
+    /// than interleaving at zero.
+    Size,
+    /// By owner display name — favorites span drives, so this groups a
+    /// mixed list by who owns each item.
+    Owner,
+}
+
 /// Opaque keyset-pagination cursor for `GET /api/favorites/resources`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FavoritesCursor {
-    /// Sort dimension active when this cursor was produced.
-    /// Values: `"name"` (default), `"type"`, `"favorited_at"`, `"modified_at"`,
-    /// `"size"`, `"owner"`.
-    #[serde(default = "FavoritesCursor::default_order")]
-    pub order_by: String,
+    /// Sort dimension active when this cursor was produced. Typed so the
+    /// cursor's axis and the query's axis are one type and cannot drift —
+    /// the keyset predicate and the ORDER BY must name the same column or
+    /// pagination skips or repeats rows.
+    ///
+    /// Wire-compatible with the previous `String` form: snake_case
+    /// serialises to the identical token, so cursors minted before this
+    /// change still decode.
+    #[serde(default)]
+    pub order_by: FavoritesOrderBy,
     /// UUID of the last item on the previous page (tie-breaker).
     pub resource_id: Uuid,
     /// `LOWER(name)` for `name`/`type` sorts; `LOWER(username)` for `owner`.
@@ -213,12 +247,6 @@ pub struct FavoritesCursor {
     pub reverse: bool,
 }
 
-impl FavoritesCursor {
-    fn default_order() -> String {
-        "name".to_owned()
-    }
-}
-
 impl PageCursor for FavoritesCursor {}
 
 /// Query parameters for `GET /api/favorites/resources`.
@@ -229,9 +257,10 @@ pub struct FavoritesResourcesQuery {
     pub limit: u32,
     /// Opaque cursor from a previous response. Omit to start from the first page.
     pub cursor: Option<String>,
-    /// Sort / group-by dimension. Supported: `"name"` (default), `"type"`,
-    /// `"favorited_at"`, `"modified_at"`, `"size"`, `"owner"`.
-    pub order_by: Option<String>,
+    /// Sort / group-by dimension — see [`FavoritesOrderBy`]. Omit for
+    /// `name`. An unknown value is a 400 naming the accepted set, not a
+    /// silent fall back to the default.
+    pub order_by: Option<FavoritesOrderBy>,
     /// Comma-separated resource types to include, e.g. `"file,folder"`.
     /// Omit to include both.
     pub resource_types: Option<String>,

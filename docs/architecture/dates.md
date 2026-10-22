@@ -267,7 +267,7 @@ point — but a listing that interleaves the two is interleaving two different
 | `PhotoResourceItemDto` | `sort_date` | `media_sort_date` (or `created_at` / `content_modified_at` when the caller picks another axis) |
 | `PhotoResourceItemDto` | `captured_at` | `file_metadata.captured_at`, null when no EXIF |
 | `TrashItemDto` | `trashed_at` | when it entered the trash |
-| `TrashItemDto` | `deletion_date` | when it will be **purged** — a future instant, not a past one. §7 renames it `expires_at` for exactly that reason |
+| `TrashItemDto` | `expires_at` | when it will be **purged** — a future instant, not a past one. Called `deletion_date` until §7, which renamed it for exactly that reason: it read as a past event while holding a future value. Pairs with `trashed_at` (past) |
 
 `PhotoResourceItemDto`'s `sort_date` and `captured_at` are RFC 3339 strings
 like every field above — **normalised 2026-10-19**, having previously been

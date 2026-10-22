@@ -603,7 +603,7 @@ pub async fn list_folder_resources(
         Err(err) => return AppError::from(err).into_response(),
     };
 
-    let order_by = q.order_by.clone().unwrap_or_else(|| "name".to_owned());
+    let order_by = q.order_by.unwrap_or_default();
     let kinds = q.resource_kinds();
     // Snapshot cursor + limit for the shared ETag engine (§2).
     let cursor_input = q.cursor.clone();
@@ -611,7 +611,7 @@ pub async fn list_folder_resources(
     let opts = ListResourcesOptions {
         limit,
         cursor: q.decode_cursor(),
-        order_by: &order_by,
+        order_by,
         kinds: kinds.as_deref(),
         reverse: q.reverse,
     };

@@ -137,7 +137,10 @@ struct RedeemQuery {
 #[utoipa::path(
     get,
     path = "/magic/v1/{token}",
-    params(("token" = String, Path, description = "Opaque magic-link token")),
+    params(
+        ("token" = String, Path, description = "Opaque magic-link token"),
+        ("confirm" = Option<String>, Query, description = "Set to `1` when the user clicked Continue on the cross-browser confirmation prompt; the service then skips the challenge-cookie check on this re-entry"),
+    ),
     responses(
         (status = 200, description = "Cross-browser confirmation prompt (HTML page)"),
         (status = 302, description = "Redemption succeeded — redirects to the resource or to /shared-with-me"),

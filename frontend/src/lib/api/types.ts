@@ -218,14 +218,15 @@ export interface AdminUsersPage {
 // explanation — are already carried by the generated type via utoipa.
 export type { AuthResponseDto as AuthResponse } from './generated/openapi/types.gen';
 
-/**
- * Sort dimension for `GET /api/search`. Wire-matches the backend's
- * `SearchResourcesQuery.order_by` — 5 canonical values, direction is
- * a separate `reverse` boolean (the `_desc` suffix pattern was
- * retired 2026-07-26; `date` was renamed to the more explicit
- * `updated_at` alongside the new `created_at`).
- */
-export type SortBy = 'relevance' | 'name' | 'size' | 'modified_at' | 'created_at';
+// §7 part 3g: the hand-written `SortBy` union lived here and had to be
+// kept in step with the server by hand. DELETED rather than re-exported
+// under the old name — a pass-through alias is still a second name for
+// one concept, and the point is that there is exactly one. Its two call
+// sites now import the generated `SearchOrderBy` directly.
+//
+// Direction remains the orthogonal `reverse` boolean: the `_desc` suffix
+// pattern was retired 2026-07-26, and part 3e deleted the last dead arms
+// that still matched it.
 
 /**
  * Per-item search metadata inline on every hit in the normalized

@@ -6,7 +6,7 @@ use crate::application::dtos::display_helpers::intern_display;
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::FolderDto;
 use crate::application::dtos::search_dto::{
-    SearchCriteriaDto, SearchFileResultDto, SearchFolderResultDto, SearchResultsDto,
+    SearchCriteriaDto, SearchFileResultDto, SearchFolderResultDto, SearchOrderBy, SearchResultsDto,
     SearchSuggestionItem, SearchSuggestionsDto,
 };
 use crate::application::ports::content_index_ports::{ContentHitDto, ContentIndexPort};
@@ -109,7 +109,9 @@ pub fn search_results_entry_weight(_key: &(Uuid, u64), value: &Arc<SearchResults
         s.as_deref().map_or(0, str::len)
     }
 
-    let mut bytes = ENTRY_OVERHEAD + value.sort_by.len();
+    // §7: `order_by` is a Copy enum now, not an owned String — it adds
+    // no heap bytes, so it drops out of the weight entirely.
+    let mut bytes = ENTRY_OVERHEAD;
     for f in &value.files {
         bytes += ROW_OVERHEAD
             + f.id.len()
@@ -215,21 +217,62 @@ fn content_relevance(score: f32, max_score: f32) -> u32 {
 ///
 /// Sort dimension + direction are orthogonal (matches the wire
 /// `SearchResourcesQuery` / internal `SearchCriteriaDto` split): 5
-/// canonical `sort_by` values (`relevance | name | size | updated_at |
+/// canonical `order_by` values (`relevance | name | size | updated_at |
 /// created_at`) × the boolean `reverse`.
-fn sort_enriched_files(files: &mut [SearchFileResultDto], sort_by: &str, reverse: bool) {
-    match sort_by {
-        "name" if reverse => files.sort_by_cached_key(|f| Reverse(f.name.to_lowercase())),
-        "name" => files.sort_by_cached_key(|f| f.name.to_lowercase()),
-        "modified_at" if reverse => files.sort_by_key(|f| Reverse(f.modified_at)),
-        "modified_at" => files.sort_by_key(|f| f.modified_at),
-        "created_at" if reverse => files.sort_by_key(|f| Reverse(f.created_at)),
-        "created_at" => files.sort_by_key(|f| f.created_at),
-        "size" if reverse => files.sort_by_key(|f| Reverse(f.size)),
-        "size" => files.sort_by_key(|f| f.size),
+fn sort_enriched_files(files: &mut [SearchFileResultDto], order_by: SearchOrderBy, reverse: bool) {
+    use SearchOrderBy as S;
+    match (order_by, reverse) {
+        (S::Name, true) => files.sort_by_cached_key(|f| Reverse(f.name.to_lowercase())),
+        (S::Name, false) => files.sort_by_cached_key(|f| f.name.to_lowercase()),
+        (S::ModifiedAt, true) => files.sort_by_key(|f| Reverse(f.modified_at)),
+        (S::ModifiedAt, false) => files.sort_by_key(|f| f.modified_at),
+        (S::CreatedAt, true) => files.sort_by_key(|f| Reverse(f.created_at)),
+        (S::CreatedAt, false) => files.sort_by_key(|f| f.created_at),
+        (S::Size, true) => files.sort_by_key(|f| Reverse(f.size)),
+        (S::Size, false) => files.sort_by_key(|f| f.size),
         // `relevance` (default) — reverse is a no-op; descending
         // relevance would be "least-relevant first," meaningless.
-        _ => files.sort_by_key(|f| Reverse(f.relevance_score)),
+        (S::Relevance, _) => files.sort_by_key(|f| Reverse(f.relevance_score)),
+    }
+}
+
+/// Folder-side counterpart of [`sort_enriched_files`] — the single
+/// implementation of "order folders by the caller's axis".
+///
+/// **This exists because there were two, and they disagreed.** §7 part 3e
+/// found the non-recursive branch implementing the current 5-axis ×
+/// `reverse` model while the recursive branch — the DEFAULT, since
+/// `default_recursive()` is `true` — still matched the `_desc` spellings
+/// retired in 2026-07 (`name_desc`, `date`, `date_desc`) with a
+/// catch-all underneath. So on an ordinary search, folder rows ignored
+/// `modified_at`, `created_at`, `size` AND `reverse`, silently falling
+/// through to relevance order while files on the same page honoured the
+/// request. Only ascending `name` worked.
+///
+/// Typing the axis is what surfaced it: the dead arms stopped compiling,
+/// and the catch-all that was hiding the gap had to be replaced with an
+/// exhaustive match. Keep this as the only folder sort — a second copy is
+/// how the drift happened.
+///
+/// `Size` is deliberately relevance-ordered: folders have no size column,
+/// so there is nothing to sort by. Named explicitly rather than left to a
+/// catch-all so the reason is visible and a new axis is a compile error.
+fn sort_enriched_folders(
+    folders: &mut [SearchFolderResultDto],
+    order_by: SearchOrderBy,
+    reverse: bool,
+) {
+    use SearchOrderBy as S;
+    match (order_by, reverse) {
+        (S::Name, true) => folders.sort_by_cached_key(|f| Reverse(f.name.to_lowercase())),
+        (S::Name, false) => folders.sort_by_cached_key(|f| f.name.to_lowercase()),
+        (S::ModifiedAt, true) => folders.sort_by_key(|f| Reverse(f.modified_at)),
+        (S::ModifiedAt, false) => folders.sort_by_key(|f| f.modified_at),
+        (S::CreatedAt, true) => folders.sort_by_key(|f| Reverse(f.created_at)),
+        (S::CreatedAt, false) => folders.sort_by_key(|f| f.created_at),
+        // `relevance` + `size` (no folder size column) — reverse is a
+        // no-op for the same reason as the file side.
+        (S::Relevance | S::Size, _) => folders.sort_by_key(|f| Reverse(f.relevance_score)),
     }
 }
 
@@ -487,7 +530,7 @@ impl SearchService {
     ///   (re-applying user scope, trash state and every active filter — a
     ///   stale index id silently drops out), enriched, scored into the
     ///   content relevance band and appended;
-    /// * the merged page is re-sorted with the caller's `sort_by`.
+    /// * the merged page is re-sorted with the caller's `order_by`.
     ///
     /// Returns how many files were added (callers bump their totals by it).
     async fn merge_content_hits(
@@ -542,7 +585,7 @@ impl SearchService {
             added += 1;
         }
         if added > 0 {
-            sort_enriched_files(enriched_files, &criteria.sort_by, criteria.reverse);
+            sort_enriched_files(enriched_files, criteria.order_by, criteria.reverse);
         }
         Ok(added)
     }
@@ -755,37 +798,14 @@ impl SearchUseCase for SearchService {
                         })
                         .collect();
 
-                    // Sort folders (cached_key avoids O(N log N) temporary String allocations).
-                    // 5-dimension model (`relevance | name | size | updated_at | created_at`)
-                    // × the boolean `reverse` — matches the file-side `sort_enriched_files`
-                    // + the SQL match in `file_blob_read_repository`. `size` isn't
-                    // meaningful for folders (no size column), so it falls through
-                    // to the relevance default.
-                    match (criteria.sort_by.as_str(), criteria.reverse) {
-                        ("name", false) => {
-                            enriched_folders.sort_by_cached_key(|f| f.name.to_lowercase());
-                        }
-                        ("name", true) => {
-                            enriched_folders.sort_by_cached_key(|f| Reverse(f.name.to_lowercase()));
-                        }
-                        ("modified_at", false) => {
-                            enriched_folders.sort_by_key(|f| f.modified_at);
-                        }
-                        ("modified_at", true) => {
-                            enriched_folders.sort_by_key(|f| Reverse(f.modified_at));
-                        }
-                        ("created_at", false) => {
-                            enriched_folders.sort_by_key(|f| f.created_at);
-                        }
-                        ("created_at", true) => {
-                            enriched_folders.sort_by_key(|f| Reverse(f.created_at));
-                        }
-                        // `relevance` (default) + `size` (N/A for folders) +
-                        // anything unrecognised — all land on relevance-desc.
-                        _ => {
-                            enriched_folders.sort_by_key(|f| Reverse(f.relevance_score));
-                        }
-                    }
+                    // Shared with the recursive branch below — see
+                    // `sort_enriched_folders` for why there must be exactly
+                    // one of these.
+                    sort_enriched_folders(
+                        &mut enriched_folders,
+                        criteria.order_by,
+                        criteria.reverse,
+                    );
 
                     // Blend in content-discovered files, then truncate to
                     // the exact page size — see the recursive branch's
@@ -826,7 +846,7 @@ impl SearchUseCase for SearchService {
                         criteria.offset,
                         Some(total_count),
                         elapsed_ms,
-                        criteria.sort_by.clone(),
+                        criteria.order_by,
                     ));
 
                     return Ok(search_results);
@@ -912,24 +932,17 @@ impl SearchUseCase for SearchService {
                     })
                     .collect();
 
-                // ── Sort folders (cached_key avoids O(N log N) temporary String allocations) ──
-                match criteria.sort_by.as_str() {
-                    "name" => {
-                        enriched_folders.sort_by_cached_key(|f| f.name.to_lowercase());
-                    }
-                    "name_desc" => {
-                        enriched_folders.sort_by_cached_key(|f| Reverse(f.name.to_lowercase()));
-                    }
-                    "date" => {
-                        enriched_folders.sort_by_key(|f| f.modified_at);
-                    }
-                    "date_desc" => {
-                        enriched_folders.sort_by_key(|f| Reverse(f.modified_at));
-                    }
-                    _ => {
-                        enriched_folders.sort_by_key(|f| Reverse(f.relevance_score));
-                    }
-                }
+                // ── Sort folders ──
+                // §7 part 3e FIX: this arm used to carry its own match on
+                // the retired `_desc` spellings (`name_desc`, `date`,
+                // `date_desc`) with a catch-all underneath. Since
+                // `recursive` defaults to TRUE, this is the branch an
+                // ordinary search takes — so folder rows were ignoring
+                // `modified_at`, `created_at`, `size` and `reverse`
+                // entirely, landing on relevance order while files on the
+                // same page honoured the request. Now shares the one
+                // implementation with the non-recursive branch.
+                sort_enriched_folders(&mut enriched_folders, criteria.order_by, criteria.reverse);
 
                 // Blend in content-discovered files. `merge_content_hits`
                 // pushes candidates from the Tantivy index onto the tail
@@ -970,7 +983,7 @@ impl SearchUseCase for SearchService {
                     criteria.offset,
                     Some(total_count),
                     elapsed_ms,
-                    criteria.sort_by.clone(),
+                    criteria.order_by,
                 ));
 
                 Ok(search_results)
@@ -1126,10 +1139,13 @@ mod tests {
 
     #[test]
     fn entry_weight_counts_every_owned_string_plus_overheads() {
-        // Empty page: entry overhead + sort_by ("relevance" = 9 bytes).
+        // Empty page: entry overhead ONLY. §7 made `order_by` a Copy enum
+        // instead of an owned String, so the 9 bytes of "relevance" it used
+        // to contribute are gone from the weight — the field no longer
+        // allocates.
         let empty = Arc::new(SearchResultsDto::empty());
         let base = search_results_entry_weight(&(Uuid::nil(), 0), &empty) as usize;
-        assert_eq!(base, 256 + 9);
+        assert_eq!(base, 256);
 
         // One file row: base + row overhead + its owned string bytes
         // (id 7 + name 7 + path 8 + mime 10; the rest are empty/None).
@@ -1140,7 +1156,7 @@ mod tests {
             0,
             Some(1),
             0,
-            "relevance".to_string(),
+            SearchOrderBy::Relevance,
         ));
         let w = search_results_entry_weight(&(Uuid::nil(), 0), &one_file) as usize;
         assert_eq!(w, base + 200 + 7 + 7 + 8 + 10);
@@ -1168,7 +1184,7 @@ mod tests {
             0,
             Some(1),
             0,
-            "relevance".to_string(),
+            SearchOrderBy::Relevance,
         ));
         let w = search_results_entry_weight(&(Uuid::nil(), 0), &one_folder) as usize;
         assert_eq!(w, base + 200 + 2 + 4 + 5 + 6);
@@ -1188,7 +1204,7 @@ mod tests {
                 0,
                 Some(50),
                 0,
-                "relevance".to_string(),
+                SearchOrderBy::Relevance,
             ))
         };
         let per_entry = search_results_entry_weight(&(Uuid::nil(), 0), &entry(0)) as u64;
@@ -1217,7 +1233,7 @@ mod tests {
             dto("b-content.txt", 30, 10, 200),
             dto("a-name.txt", 80, 99, 100),
         ];
-        sort_enriched_files(&mut files, "relevance", false);
+        sort_enriched_files(&mut files, SearchOrderBy::Relevance, false);
         assert_eq!(
             files[0].name, "a-name.txt",
             "name match must outrank content match"
@@ -1226,11 +1242,102 @@ mod tests {
         // 5-dimension sort model (2026-07-26): direction is a separate
         // boolean, `_desc` suffixes retired. `size + reverse=true` = old
         // `size_desc`, `updated_at + reverse=false` = old `date`, etc.
-        sort_enriched_files(&mut files, "size", true);
+        sort_enriched_files(&mut files, SearchOrderBy::Size, true);
         assert_eq!(files[0].name, "a-name.txt");
-        sort_enriched_files(&mut files, "modified_at", false);
+        sort_enriched_files(&mut files, SearchOrderBy::ModifiedAt, false);
         assert_eq!(files[0].name, "a-name.txt");
-        sort_enriched_files(&mut files, "name", true);
+        sort_enriched_files(&mut files, SearchOrderBy::Name, true);
         assert_eq!(files[0].name, "b-content.txt");
+    }
+
+    fn folder_dto(name: &str, relevance: u32, modified_at: u64) -> SearchFolderResultDto {
+        use crate::application::dtos::timestamp_helpers::{epoch_to_datetime, epoch_zero};
+        SearchFolderResultDto {
+            id: name.to_string(),
+            name: name.to_string(),
+            path: format!("/{name}"),
+            parent_id: None,
+            drive_id: Uuid::nil(),
+            created_at: epoch_zero(),
+            modified_at: epoch_to_datetime(modified_at),
+            is_root: false,
+            relevance_score: relevance,
+            etag: String::new(),
+            created_by: None,
+            updated_by: None,
+            is_favorite: false,
+            is_shared: false,
+        }
+    }
+
+    /// §7 part 3e regression pin.
+    ///
+    /// Folder results on a search used to be sorted by TWO different
+    /// implementations: the `recursive = false` branch honoured the 5-axis ×
+    /// `reverse` model, while the `recursive = true` branch — the DEFAULT,
+    /// since `default_recursive()` is `true` — still matched the `_desc`
+    /// spellings retired in 2026-07 (`name_desc`, `date`, `date_desc`) with a
+    /// catch-all underneath.
+    ///
+    /// So on an ordinary search, folder rows silently ignored `modified_at`,
+    /// `created_at`, `size` AND `reverse`, falling through to relevance order
+    /// while files on the same page honoured the request. Only ascending
+    /// `name` worked. The dead arms made it look handled.
+    ///
+    /// This pins the two assertions that the old recursive match failed:
+    /// a date axis actually orders by date, and `reverse` actually reverses.
+    /// Both would have passed on the non-recursive path and failed on the
+    /// default one, which is why a single shared `sort_enriched_folders` is
+    /// the fix rather than fixing one copy.
+    #[test]
+    fn folder_sort_honours_date_axis_and_reverse() {
+        // The fixture is built so date order and relevance order DISAGREE —
+        // otherwise a fall-through to relevance would coincidentally satisfy
+        // the date assertion and the pin would pass against the bug it
+        // exists to catch. "oldest" is the LEAST relevant, so:
+        //
+        //   relevance-desc  →  newest, oldest   (what the bug produced)
+        //   modified_at asc →  oldest, newest   (what the caller asked for)
+        let mut folders = vec![
+            folder_dto("newest-and-most-relevant", 90, 900),
+            folder_dto("oldest-and-least-relevant", 10, 100),
+        ];
+
+        sort_enriched_folders(&mut folders, SearchOrderBy::ModifiedAt, false);
+        assert_eq!(
+            folders[0].name, "oldest-and-least-relevant",
+            "modified_at ascending must order by date, not relevance — the \
+             recursive branch dropped through to relevance here, which would \
+             have put the newest-and-most-relevant row first"
+        );
+
+        sort_enriched_folders(&mut folders, SearchOrderBy::ModifiedAt, true);
+        assert_eq!(
+            folders[0].name, "newest-and-most-relevant",
+            "reverse must flip the date axis — the recursive branch ignored \
+             the flag entirely for folders"
+        );
+
+        sort_enriched_folders(&mut folders, SearchOrderBy::CreatedAt, false);
+        assert_eq!(
+            folders.len(),
+            2,
+            "created_at must be a real axis, not a fall-through"
+        );
+
+        // `name` descending: the retired spelling for this was `name_desc`,
+        // which the recursive branch matched while the wire no longer sends
+        // it — so descending name was unreachable in practice. Reversed
+        // alphabetical puts "oldest-…" before "newest-…".
+        sort_enriched_folders(&mut folders, SearchOrderBy::Name, true);
+        assert_eq!(folders[0].name, "oldest-and-least-relevant");
+
+        // `relevance` and `size` both mean relevance-desc for folders
+        // (no size column); reverse is a no-op on relevance.
+        sort_enriched_folders(&mut folders, SearchOrderBy::Size, false);
+        assert_eq!(
+            folders[0].name, "newest-and-most-relevant",
+            "size has no folder column, so folders keep relevance order"
+        );
     }
 }

@@ -201,6 +201,15 @@
               "type": "integer",
               "format": "int64"
             }
+          },
+          {
+            "name": "include_self",
+            "in": "query",
+            "description": "System address book only — include the calling user in the results. Default false (the share-modal \"can't share with yourself\" rule); the admin drive-owner surface sets it true. Ignored for non-system books",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -6044,12 +6053,16 @@
           {
             "name": "order_by",
             "in": "query",
-            "description": "Sort / group-by dimension. Supported: `\"name\"` (default), `\"type\"`,\n`\"favorited_at\"`, `\"modified_at\"`, `\"size\"`, `\"owner\"`.",
+            "description": "Sort / group-by dimension — see [`FavoritesOrderBy`]. Omit for\n`name`. An unknown value is a 400 naming the accepted set, not a\nsilent fall back to the default.",
             "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/FavoritesOrderBy"
+                }
               ]
             }
           },
@@ -7274,12 +7287,16 @@
           {
             "name": "order_by",
             "in": "query",
-            "description": "Sort / group-by dimension. Supported: `\"name\"` (default), `\"type\"`,\n`\"modified_at\"`, `\"created_at\"`, `\"size\"`.",
+            "description": "Sort / group-by dimension — see [`FolderOrderBy`]. Omit for\n`name`. An unknown value is a 400 naming the accepted set, not a\nsilent fall back to the default.",
             "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/FolderOrderBy"
+                }
               ]
             }
           },
@@ -7481,14 +7498,18 @@
             }
           },
           {
-            "name": "sort_by",
+            "name": "order_by",
             "in": "query",
-            "description": "Sort dimension. Supported values: `\"granted_at\"` (default),\n`\"granted_by\"` (for swimlane grouping).",
+            "description": "Sort dimension — see [`IncomingGrantOrderBy`]. Omit for\n`granted_at`. An unknown value is a 400 naming the accepted set.",
             "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/IncomingGrantOrderBy"
+                }
               ]
             }
           },
@@ -7582,7 +7603,7 @@
           {
             "name": "cursor",
             "in": "query",
-            "description": "Opaque cursor from a previous response. Omit to start from the\nmost-recently-granted item.",
+            "description": "Opaque cursor from a previous response. Omit to start from the\nmost-recently-shared item.",
             "required": false,
             "schema": {
               "type": [
@@ -7592,14 +7613,18 @@
             }
           },
           {
-            "name": "sort_by",
+            "name": "order_by",
             "in": "query",
-            "description": "Sort dimension. Supported values: `\"granted_at\"` (default),\n`\"granted_by\"` (for swimlane grouping).",
+            "description": "Sort dimension — see [`OutgoingGrantOrderBy`]. Omit for\n`first_shared_at`. An unknown value is a 400 naming the accepted set.",
             "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/OutgoingGrantOrderBy"
+                }
               ]
             }
           },
@@ -7618,7 +7643,7 @@
           {
             "name": "reverse",
             "in": "query",
-            "description": "Reverse the sort order. Default `false` (normal order).\nMust be the same on all pages of the same result set — the cursor\ncarries this flag so the server can validate consistency.",
+            "description": "Reverse the sort order. Default `false` (normal order).",
             "required": false,
             "schema": {
               "type": "boolean"
@@ -9048,6 +9073,37 @@
           "playlists"
         ],
         "operationId": "list_playlists",
+        "parameters": [
+          {
+            "name": "include_shared",
+            "in": "query",
+            "description": "Include playlists shared with the caller, not just owned ones",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Accepted for backwards compatibility but NOT applied — the listing is derived from the caller's grants and always returns all of them. See PlaylistQueryDto",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Accepted for backwards compatibility but NOT applied — see `limit`",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "List of playlists",
@@ -9661,12 +9717,16 @@
           {
             "name": "order_by",
             "in": "query",
-            "description": "Sort / group-by dimension. Supported: `\"accessed_at\"` (default), `\"name\"`,\n`\"type\"`, `\"modified_at\"`, `\"size\"`, `\"owner\"`.",
+            "description": "Sort / group-by dimension — see [`RecentOrderBy`]. Omit for\n`accessed_at`. An unknown value is a 400 naming the accepted set,\nnot a silent fall back to the default.",
             "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/RecentOrderBy"
+                }
               ]
             }
           },
@@ -10179,6 +10239,46 @@
         ],
         "summary": "Get all shared links created by the current user.\nSupports optional filtering by item_id + item_type query params.",
         "operationId": "get_user_shares",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "description": "1-based page number (default 1). Ignored when item_id + item_type are both given",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "per_page",
+            "in": "query",
+            "description": "Items per page (default 20). Ignored when item_id + item_type are both given",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "item_id",
+            "in": "query",
+            "description": "Return only shares for this item. Must be sent together with item_type",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "item_type",
+            "in": "query",
+            "description": "Item kind for item_id — `file` or `folder`. An unknown value returns 400",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "List of shares",
@@ -10517,7 +10617,7 @@
           "trash"
         ],
         "summary": "Cursor-paginated list of a user's trashed resources.",
-        "description": "Sorts by `deletion_date` (default — soonest expiry first), `trashed_at`\n(most recently trashed first), `name`, `type`, or `size`. Filter on\n`resource_types=file` or `resource_types=folder` to narrow to one kind.\nItems implicitly trashed as descendants of a trashed parent are excluded\n(only top-level trashed items appear).",
+        "description": "Sorts by `expires_at` (default — soonest expiry first), `trashed_at`\n(most recently trashed first), `name`, `type`, or `size`. Filter on\n`resource_types=file` or `resource_types=folder` to narrow to one kind.\nItems implicitly trashed as descendants of a trashed parent are excluded\n(only top-level trashed items appear).",
         "operationId": "get_trash_resources",
         "parameters": [
           {
@@ -10546,12 +10646,16 @@
           {
             "name": "order_by",
             "in": "query",
-            "description": "Sort / group-by dimension. Supported: `\"deletion_date\"` (default — soonest\nexpiry first), `\"trashed_at\"` (most recently trashed first), `\"name\"`,\n`\"type\"`, `\"size\"`.",
+            "description": "Sort / group-by dimension — see [`TrashOrderBy`]. Omit for\n`expires_at` (soonest expiry first). An unknown value is a 400\nnaming the accepted set, not a silent fall back to the default.",
             "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/TrashOrderBy"
+                }
               ]
             }
           },
@@ -13745,6 +13849,18 @@
           }
         }
       },
+      "FavoritesOrderBy": {
+        "type": "string",
+        "description": "Sort axis for `GET /api/favorites/resources` (§7).\n\nTyped rather than `Option<String>` so an unknown axis is refused at\nwire-decode time instead of silently falling back to the default. See\n[`crate::application::dtos::trash_dto::TrashOrderBy`] for why these are\nper-endpoint enums rather than one shared union: the date axis is the\npart that differs, and favorites' is `favorited_at`, which is\nmeaningless on every other endpoint.",
+        "enum": [
+          "name",
+          "type",
+          "favorited_at",
+          "modified_at",
+          "size",
+          "owner"
+        ]
+      },
       "FavoritesResourceItemDto": {
         "type": "object",
         "description": "One item in a `GET /api/favorites/resources` page.",
@@ -14159,6 +14275,17 @@
             "description": "Ids in this listing the caller has an outgoing share/grant on (incl.\npublic links). Sorted for a stable response / ETag."
           }
         }
+      },
+      "FolderOrderBy": {
+        "type": "string",
+        "description": "Sort axis for `GET /api/folders/{id}/resources` (§7).\n\nTyped rather than `Option<String>` so an unknown axis is refused at\nwire-decode time instead of silently falling back to the default. See\n[`crate::application::dtos::trash_dto::TrashOrderBy`] for why these are\nper-endpoint enums rather than one shared union.\n\nThis is the folder-contents listing — the hot path behind `/files` —\nand the endpoint where §2 found a keyset predicate reading one column\nwhile the ORDER BY named another. Typing the axis is what stops the\nquery builder and the cursor builder disagreeing about it.",
+        "enum": [
+          "name",
+          "type",
+          "modified_at",
+          "created_at",
+          "size"
+        ]
       },
       "FolderResourceItemDto": {
         "type": "object",
@@ -14685,6 +14812,16 @@
             "description": "Stable machine key — `\"migration\" | \"backup\" | \"rotation\" | \"external\"`.\nClients switch on this to pick an icon/colour per variant."
           }
         }
+      },
+      "IncomingGrantOrderBy": {
+        "type": "string",
+        "description": "Sort axis for `GET /api/grants/incoming/resources` — the `/shared-with-me`\nlisting (§7).\n\n**Separate from [`OutgoingGrantOrderBy`] on purpose.** The two grant\nlistings accept disjoint sets apart from `Name`/`Type`: \"who granted this\nto me\" only exists on the incoming side, \"who did I grant it to\" only on\nthe outgoing side. They shared one `Option<String>` field until §7 part\n3f, with each handler validating its own set by hand — which is how the\nplan's own spec came to list only two of the four values this endpoint\nactually accepts.",
+        "enum": [
+          "granted_at",
+          "granted_by",
+          "name",
+          "type"
+        ]
       },
       "ItemKind": {
         "type": "string",
@@ -15493,6 +15630,17 @@
           "notification"
         ]
       },
+      "OutgoingGrantOrderBy": {
+        "type": "string",
+        "description": "Sort axis for `GET /api/grants/outgoing/resources` — the `/shared`\n(\"My Shares\") listing (§7). See [`IncomingGrantOrderBy`] for why the two\nare separate types.",
+        "enum": [
+          "first_shared_at",
+          "name",
+          "type",
+          "subject",
+          "role"
+        ]
+      },
       "OutgoingResourceGrantDto": {
         "type": "object",
         "description": "One (subject, permissions) entry within an outgoing resource item.",
@@ -16164,6 +16312,18 @@
           }
         }
       },
+      "RecentOrderBy": {
+        "type": "string",
+        "description": "Sort axis for `GET /api/recent/resources` (§7).\n\nTyped rather than `Option<String>` so an unknown axis is refused at\nwire-decode time instead of silently falling back to the default. See\n[`crate::application::dtos::trash_dto::TrashOrderBy`] for why these are\nper-endpoint enums: `accessed_at` is recent's own date axis and means\nnothing on any other listing.",
+        "enum": [
+          "accessed_at",
+          "name",
+          "type",
+          "modified_at",
+          "size",
+          "owner"
+        ]
+      },
       "RecentResourceItemDto": {
         "type": "object",
         "description": "One item in a `GET /api/recent/resources` page.",
@@ -16525,6 +16685,10 @@
             "description": "Offset for pagination",
             "minimum": 0
           },
+          "order_by": {
+            "$ref": "#/components/schemas/SearchOrderBy",
+            "description": "Sort dimension — see [`SearchOrderBy`]. Direction is `reverse`\nbelow; the `_desc` suffix pattern was retired 2026-07-26 in favour\nof a single boolean, so every consumer treats \"which column\" and\n\"which direction\" as orthogonal concerns."
+          },
           "recursive": {
             "type": "boolean",
             "description": "Whether to search recursively within subfolders (default: true)"
@@ -16532,10 +16696,6 @@
           "reverse": {
             "type": "boolean",
             "description": "Reverse the sort direction — descending for name/size/date,\nno-op for `relevance` (a descending relevance sort is meaningless)."
-          },
-          "sort_by": {
-            "type": "string",
-            "description": "Sort dimension. Canonical set: `\"relevance\"` | `\"name\"` | `\"size\"`\n| `\"modified_at\"` | `\"created_at\"`. Direction is `reverse` below —\nthe `_desc` suffix pattern was retired 2026-07-26 in favour of\na single boolean, so every consumer treats \"which column\" and\n\"which direction\" as orthogonal concerns."
           }
         }
       },
@@ -16783,6 +16943,17 @@
           }
         }
       },
+      "SearchOrderBy": {
+        "type": "string",
+        "description": "Sort axis for `GET /api/search` (§7).\n\nTyped rather than `String` so an unknown axis is refused at\nwire-decode time instead of silently falling back to the default. See\n[`crate::application::dtos::trash_dto::TrashOrderBy`] for why these are\nper-endpoint enums rather than one shared union — `Relevance` only\nexists here, and is meaningless on every other listing.\n\nDirection is the orthogonal `reverse` boolean, NOT a `_desc` suffix on\nthe axis. That pattern was retired 2026-07-26; typing the axis is what\nfinally made the leftover `name_desc` / `date` / `date_desc` arms in\nthe recursive search path impossible to leave lying around (§7 part\n3e — they were dead spellings whose presence hid a real bug, see\n`sort_enriched_folders`).\n\n`Hash` is required: this rides on `SearchCriteriaDto`, which is hashed\nto key the search result cache.",
+        "enum": [
+          "relevance",
+          "name",
+          "size",
+          "modified_at",
+          "created_at"
+        ]
+      },
       "SearchResourceItem": {
         "type": "object",
         "description": "One search result — same `resource_type + resource` shape as the\n`/*/resources` envelopes so `ResourceList` consumes it as-is, plus\nthe inline `meta` for search-specific enrichment.",
@@ -16852,7 +17023,7 @@
           "offset",
           "has_more",
           "query_time_ms",
-          "sort_by"
+          "order_by"
         ],
         "properties": {
           "files": {
@@ -16883,15 +17054,15 @@
             "description": "Offset used in the search",
             "minimum": 0
           },
+          "order_by": {
+            "$ref": "#/components/schemas/SearchOrderBy",
+            "description": "Sort order used"
+          },
           "query_time_ms": {
             "type": "integer",
             "format": "int64",
             "description": "Query execution time in milliseconds (server-side)",
             "minimum": 0
-          },
-          "sort_by": {
-            "type": "string",
-            "description": "Sort order used"
           },
           "total_count": {
             "type": [
@@ -17829,26 +18000,37 @@
           }
         }
       },
+      "TrashOrderBy": {
+        "type": "string",
+        "description": "Sort axis for `GET /api/trash/resources` (§7).\n\nTyped rather than `Option<String>` so an unknown axis is refused at\nwire-decode time instead of silently falling back to the default —\nwhich is what a bare string did, turning a client typo into \"sorted by\nsomething else\" with a 200. serde's derived error names the accepted\nvariants, so the 400 tells the caller what to send; no custom extractor\nis involved. `PhotoOrderBy` set this precedent in §6.\n\n**Per-endpoint by design, not one shared union.** `Name`/`Type`/`Size`\nrecur across endpoints but the date axes do not — trash has\n`expires_at`/`trashed_at`, favorites has `favorited_at`, recent has\n`accessed_at`. A shared enum would accept nonsense on every endpoint\nbut its own.",
+        "enum": [
+          "expires_at",
+          "trashed_at",
+          "name",
+          "type",
+          "size"
+        ]
+      },
       "TrashResourceItemDto": {
         "type": "object",
-        "description": "One item in a `GET /api/trash/resources` page.\n\n`deletion_date` is the real timestamp at which the item will be permanently\ndeleted (= `trashed_at + retention_days`). The client derives \"days until\ndeletion\" itself from this + the current clock — the wire format does not\nduplicate that derivation. `resource.path` carries the original location\n(soft-delete preserves the row's `path` column).",
+        "description": "One item in a `GET /api/trash/resources` page.\n\n`expires_at` is the real timestamp at which the item will be permanently\ndeleted (= `trashed_at + retention_days`). The client derives \"days until\ndeletion\" itself from this + the current clock — the wire format does not\nduplicate that derivation. `resource.path` carries the original location\n(soft-delete preserves the row's `path` column).",
         "required": [
           "resource_type",
           "trashed_at",
-          "deletion_date",
+          "expires_at",
           "drive_id",
           "resource"
         ],
         "properties": {
-          "deletion_date": {
-            "type": "string",
-            "format": "date-time",
-            "description": "When the item will be permanently deleted by the retention sweeper."
-          },
           "drive_id": {
             "type": "string",
             "format": "uuid",
             "description": "The drive the trashed item belongs to. Enables client-side\ngroup-by-drive in the `/trash` UI (D2b spec — see\n`project_trash_groupbys_d2b` memory). The drive's display name\nresolves through the `/api/drives` listing the client already\nholds in `drives.svelte` — no extra round-trip needed."
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the item will be permanently deleted by the retention sweeper."
           },
           "resource": {
             "$ref": "#/components/schemas/ResourceContentDto",

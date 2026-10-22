@@ -1819,7 +1819,7 @@ impl AuthorizationEngine for PgAclEngine {
         kinds: &[ResourceKind],
         limit: u32,
         cursor: Option<GrantCursor>,
-        sort_by: &str,
+        order_by: &str,
         reverse: bool,
     ) -> Result<(Vec<IncomingGrantSummary>, Option<GrantCursor>), DomainError> {
         // ── Common setup ──────────────────────────────────────────────────────
@@ -1895,15 +1895,15 @@ impl AuthorizationEngine for PgAclEngine {
         // "name" and "type" share the same LEFT JOINs; only sort_int_expr,
         // the cursor WHERE condition, and ORDER BY differ.
         // Each branch emits two variants selected by `reverse`.
-        let sql = match sort_by {
+        let sql = match order_by {
             "name" | "type" => {
-                let sort_int_expr = if sort_by == "type" {
+                let sort_int_expr = if order_by == "type" {
                     "CASE WHEN agg.resource_type = 'folder' THEN 0 ELSE fi.category_order::bigint END"
                 } else {
                     "NULL::bigint"
                 };
                 // Normal vs reversed keyset + ORDER BY.
-                let (where_clause, order_clause) = if sort_by == "type" {
+                let (where_clause, order_clause) = if order_by == "type" {
                     if reverse {
                         (
                             r#"(  $5::integer IS NULL
@@ -2048,7 +2048,7 @@ impl AuthorizationEngine for PgAclEngine {
             .map_err(|e| {
                 DomainError::internal_error(
                     "PgAcl",
-                    format!("list_incoming_resources_paged ({sort_by}): {e}"),
+                    format!("list_incoming_resources_paged ({order_by}): {e}"),
                 )
             })?;
 
@@ -2059,9 +2059,9 @@ impl AuthorizationEngine for PgAclEngine {
         let next_cursor = if has_next {
             rows.last().map(|r| {
                 let sort_str_lc = r.5.as_deref().map(str::to_lowercase);
-                match sort_by {
+                match order_by {
                     "name" => GrantCursor {
-                        sort_by: "name".to_owned(),
+                        order_by: "name".to_owned(),
                         granted_at: r.3,
                         resource_id: r.1,
                         resource_name: sort_str_lc,
@@ -2069,7 +2069,7 @@ impl AuthorizationEngine for PgAclEngine {
                         reverse,
                     },
                     "type" => GrantCursor {
-                        sort_by: "type".to_owned(),
+                        order_by: "type".to_owned(),
                         granted_at: r.3,
                         resource_id: r.1,
                         resource_name: sort_str_lc,
@@ -2077,7 +2077,7 @@ impl AuthorizationEngine for PgAclEngine {
                         reverse,
                     },
                     "granted_by" => GrantCursor {
-                        sort_by: "granted_by".to_owned(),
+                        order_by: "granted_by".to_owned(),
                         granted_at: r.3,
                         resource_id: r.1,
                         resource_name: r.5.clone(), // already lowercased by SQL
@@ -2085,7 +2085,7 @@ impl AuthorizationEngine for PgAclEngine {
                         reverse,
                     },
                     _ => GrantCursor {
-                        sort_by: "granted_at".to_owned(),
+                        order_by: "granted_at".to_owned(),
                         granted_at: r.3,
                         resource_id: r.1,
                         resource_name: None,
@@ -2176,7 +2176,7 @@ impl AuthorizationEngine for PgAclEngine {
         granted_by: Uuid,
         limit: u32,
         cursor: Option<GrantCursor>,
-        sort_by: &str,
+        order_by: &str,
         reverse: bool,
     ) -> Result<(Vec<OutgoingResourceSummary>, Option<GrantCursor>), DomainError> {
         let fetch_limit = (limit as i64) + 1;
@@ -2234,14 +2234,14 @@ impl AuthorizationEngine for PgAclEngine {
         // $4 = cursor_at    (first_shared_at)
         // $5 = cursor_id    (resource_id)
         // $6 = fetch_limit
-        let sql = match sort_by {
+        let sql = match order_by {
             "name" | "type" => {
-                let sort_int_expr = if sort_by == "type" {
+                let sort_int_expr = if order_by == "type" {
                     "CASE WHEN ag.resource_type = 'folder' THEN 0 ELSE fi.category_order::bigint END"
                 } else {
                     "NULL::bigint"
                 };
-                let (page_where, page_order) = if sort_by == "type" {
+                let (page_where, page_order) = if order_by == "type" {
                     if reverse {
                         (
                             r#"(  $3::integer IS NULL
@@ -2578,14 +2578,14 @@ impl AuthorizationEngine for PgAclEngine {
             .map_err(|e| {
                 DomainError::internal_error(
                     "PgAcl",
-                    format!("list_outgoing_resources_paged ({sort_by}): {e}"),
+                    format!("list_outgoing_resources_paged ({order_by}): {e}"),
                 )
             })?;
 
         // ── Subject / Role sorts: page on (resource_id, subject_id) pairs ───────
         // Each pair becomes one OutgoingResourceSummary with exactly one grant,
         // preserving the SQL-ordered swimlane sequence across cursor pages.
-        if matches!(sort_by, "subject" | "role") {
+        if matches!(order_by, "subject" | "role") {
             let mut seen_pairs: Vec<(Uuid, Uuid)> = Vec::new();
             let mut seen_pair_set: std::collections::HashSet<(Uuid, Uuid)> =
                 std::collections::HashSet::new();
@@ -2604,7 +2604,7 @@ impl AuthorizationEngine for PgAclEngine {
                 last_row.map(|r| {
                     let resource_name = r.10.clone(); // LOWER(subject_display) for both subject and role sort
                     GrantCursor {
-                        sort_by: sort_by.to_owned(),
+                        order_by: order_by.to_owned(),
                         granted_at: r.2,
                         resource_id: r.1,
                         resource_name,
@@ -2701,9 +2701,9 @@ impl AuthorizationEngine for PgAclEngine {
         let next_cursor = if has_next {
             last_row.map(|r| {
                 let sort_str_lc = r.10.as_deref().map(str::to_lowercase);
-                match sort_by {
+                match order_by {
                     "name" => GrantCursor {
-                        sort_by: "name".to_owned(),
+                        order_by: "name".to_owned(),
                         granted_at: r.2,
                         resource_id: r.1,
                         resource_name: sort_str_lc,
@@ -2711,7 +2711,7 @@ impl AuthorizationEngine for PgAclEngine {
                         reverse,
                     },
                     "type" => GrantCursor {
-                        sort_by: "type".to_owned(),
+                        order_by: "type".to_owned(),
                         granted_at: r.2,
                         resource_id: r.1,
                         resource_name: sort_str_lc,
@@ -2719,7 +2719,7 @@ impl AuthorizationEngine for PgAclEngine {
                         reverse,
                     },
                     _ => GrantCursor {
-                        sort_by: "first_shared_at".to_owned(),
+                        order_by: "first_shared_at".to_owned(),
                         granted_at: r.2,
                         resource_id: r.1,
                         resource_name: None,

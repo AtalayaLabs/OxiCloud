@@ -19,7 +19,7 @@ heading:
 | §4 add `source_created_at` | **UNBLOCKED, and now clearly necessary** — repurposed 2026-10-20: it is the store for the client-asserted creation time, NextCloud's `X-OC-CTime` (the sibling of §9's `X-OC-Mtime`/`source_modified_at`). That is a DIFFERENT value from the metadata date §0 now emits — client filesystem birthtime vs. what the bytes claim — so the two coexist rather than one replacing the other. Final chain: `COALESCE(client ctime, content metadata date, 0)`. Still gated on the inbound test, which now answers one concrete question: does the NC client actually send `X-OC-CTime`? |
 | §5 tighten to `NOT NULL` | **FOLDED INTO §1** 2026-10-17 — the migration lands it in-transaction |
 | §6 UI axes | **DONE** 2026-10-19 — `updated_at` retired from the wire outright (no deprecation window: API too recent, SPA is the only consumer), `Created date` → `Added date`, persisted Photos preference migrated on read |
-| §7 naming normalisation | **NOT STARTED** — `order_by` everywhere, typed per-endpoint enums, `deletion_date` → `expires_at`; ships independently. Compile-time protection waits on the generated-SDK redirects |
+| §7 naming normalisation | **DONE** 2026-10-21 — part 1 (`13a24a20`) `order_by` everywhere + 3 OpenAPI param gaps; part 2 (`11246953`) `deletion_date` → `expires_at`; part 3 typed sort axes, one endpoint per commit: trash `084d3473`, favorites `ae137ca3`, recent `885c7c65`, folders `a678403f`, search `5249b87a` (**found and fixed a real bug** — folder sorting ignored `modified_at`/`created_at`/`size`/`reverse` on the default recursive path), grants `408712ac` (split `SharedWithMeQuery` in two — disjoint sets), frontend `1b3382d0`. Two decisions recorded below: `CursorQuery` stays out of OpenAPI, and the compile-time protection did NOT need the `types.ts` redirect as a precondition |
 | §9 preserve the browser's mtime on upload | **DONE** 2026-10-20 — `source_modified_at` (epoch ms) on ALL THREE upload paths: multipart `/api/files/upload`, `/api/files/by-hash` (the instant-upload short-circuit) and delta commit (both create and update modes). Both UI entry points — picker and drag, single and multi — send `File.lastModified`. Original: — repository layer and helpers are ready. THREE upload paths to cover (multipart, delta, chunked); the SPA picks by file size, so covering only `/api/files/upload` would drop mtime on every large upload |
 | §8 folders get a content clock | **DONE** 2026-10-18 — `storage.folders.content_modified_at` with POSIX entry-list semantics (migration `20261103000008`), 14 folder-side reads repointed, keyset predicate back to one column |
 
@@ -1279,6 +1279,37 @@ handler accepts `"updated_at"`, and no wire DTO selects `storage.files.updated_a
 Adjacent to the date work rather than part of it — ships independently, no
 column changes. Two conventions, applied everywhere.
 
+### Decided: do NOT make `CursorQuery` visible in OpenAPI (2026-10-20)
+
+Asked during part 1, and the answer is no — with the measurement that
+settles it. **There is no schema gap.** All 8 paged endpoints (the 7
+`/resources` ones plus `/api/search`) already declare `limit`, `cursor` and
+`order_by` individually, verified against `resources/gen/openapi.json`. The
+phase text below calling `CursorQuery` "wire-visible" was wrong in the other
+direction too: it has zero occurrences in the generated schema, nothing
+flattens it (`serde_urlencoded` can't), and its only live export is
+`default_limit`.
+
+So registering it would be de-duplication *inside the spec*, not a fix to the
+wire contract. Three reasons not to:
+
+1. **It contradicts typed sort axes below.** A shared `order_by` parameter
+   would have to describe one accepted set and one default, and every endpoint
+   has its own — which is the entire argument for per-endpoint enums. Part 3
+   deliberately makes `order_by` *more* endpoint-specific; sharing its
+   definition pulls the opposite way.
+2. **It would introduce a convention the spec does not use.** The document has
+   `components.parameters: 0` today. Reusable parameters would be a new
+   pattern adopted for one struct.
+3. **`limit` + `cursor` are the only honest candidates** — those two genuinely
+   are uniform across all 8 — and they are already documented correctly
+   everywhere, so the change buys nothing a caller can observe.
+
+`CursorQuery` earns its keep as the *implementer* template, not as a schema
+component. Part 1 fixed the thing that actually mattered there: its doc
+example said `sort_by`, and since that example is copy-me instructions, the
+deviation re-seeded itself into each new endpoint.
+
 ### `order_by`, not `sort_by`
 
 Five of seven paged endpoints already say `order_by`; grants and search's
@@ -1318,15 +1349,41 @@ Seven enums, variants as the accepted values stand today with this plan's
 renames applied. Defaults differ per endpoint and must be preserved — mark the
 right variant `#[default]`:
 
-| Enum | Variants | Default |
-|---|---|---|
-| `FolderOrderBy` | `Name` `Type` `ModifiedAt` `CreatedAt` `Size` | `Name` |
-| `PhotoOrderBy` *(exists)* | `CapturedAt` `CreatedAt` `ModifiedAt` | `CapturedAt` |
-| `RecentOrderBy` | `AccessedAt` `Name` `Type` `ModifiedAt` `Size` `Owner` | `AccessedAt` |
-| `FavoritesOrderBy` | `Name` `Type` `FavoritedAt` `ModifiedAt` `Size` `Owner` | `Name` |
-| `TrashOrderBy` | `ExpiresAt` `TrashedAt` `Name` `Type` `Size` | `ExpiresAt` |
-| `SearchOrderBy` | `Relevance` `Name` `Size` `ModifiedAt` `CreatedAt` | `Relevance` |
-| `GrantOrderBy` | `GrantedAt` `GrantedBy` | `GrantedAt` |
+**Table below VERIFIED against the code 2026-10-20** — variants read out of
+each repository's ORDER BY match arms, defaults out of each handler's
+`unwrap_or`. Six of the seven rows were already right; the grant row was
+wrong in two ways and is corrected:
+
+| Enum | Variants | Default | source of truth |
+|---|---|---|---|
+| `FolderOrderBy` | `Name` `Type` `ModifiedAt` `CreatedAt` `Size` | `Name` | `folder_service.rs:1570`, `folder_handler.rs:606` |
+| `PhotoOrderBy` *(exists)* | `CapturedAt` `CreatedAt` `ModifiedAt` | `CapturedAt` | `photos_dto.rs:51` |
+| `RecentOrderBy` | `AccessedAt` `Name` `Type` `ModifiedAt` `Size` `Owner` | `AccessedAt` | `recent_items_pg_repository.rs`, `recent_handler.rs:195` |
+| `FavoritesOrderBy` | `Name` `Type` `FavoritedAt` `ModifiedAt` `Size` `Owner` | `Name` | `favorites_pg_repository.rs`, `favorites_handler.rs:175` |
+| `TrashOrderBy` | `ExpiresAt` `TrashedAt` `Name` `Type` `Size` | `ExpiresAt` | `trash_service.rs:940`, `trash_handler.rs:56` |
+| `SearchOrderBy` | `Relevance` `Name` `Size` `ModifiedAt` `CreatedAt` | `Relevance` | `file_blob_read_repository.rs:1380`, `search_dto.rs:93` |
+| `IncomingGrantOrderBy` | `GrantedAt` `GrantedBy` `Name` `Type` | `GrantedAt` | `grant_handler.rs:974` |
+| `OutgoingGrantOrderBy` | `FirstSharedAt` `Name` `Type` `Subject` `Role` | `FirstSharedAt` | `grant_handler.rs:1249` |
+
+**The grant correction, because it changes the work.** The old row claimed one
+`GrantOrderBy` with two variants. In fact there are **two endpoints with
+disjoint sets** — `/shared-with-me` (incoming) takes four values, `/shared`
+("My Shares", `fetchMyShares`) takes five, and only `Name`/`Type` overlap.
+They currently share ONE `SharedWithMeQuery` struct, with each handler
+validating its own set, which is why the mismatch went unnoticed.
+
+So typing grants means splitting that struct in two, not adding one enum. The
+duplication that costs is already the house style — `serde_urlencoded` cannot
+flatten, so every paged endpoint repeats `limit`/`cursor`/`reverse` anyway.
+
+**Also verified: the 400 comes free.** The phase text below worries that a
+typed extractor yields Axum's unhelpful "Failed to deserialize query string".
+It does not — serde's derived enum error names the accepted variants, and the
+behaviour is already pinned in production for photos:
+`photos_resources.hurl:296` asserts `order_by=bogus` → 400. So no custom
+extractor or rejection mapping is required; the remaining gap is only that the
+body carries no `error_type` key, which matters little for an axis typo the SPA
+can never send.
 
 Copy `PhotoOrderBy`'s derives verbatim — `ToSchema` is the one that matters,
 since it is what makes OpenAPI emit a real `enum` rather than `string`:
@@ -1357,6 +1414,22 @@ renames safe end-to-end:
 3. Generated TS SDK: that becomes a union type, so the frontend cannot send a
    stale value — it fails at `npm run check` rather than silently sorting by the
    default.
+
+> **CORRECTION (2026-10-21, part 3g).** The paragraph below calls the
+> `types.ts` redirect a *precondition* for compile-time protection. It is not.
+> Part 3c proved the opposite by accident: `/recent` already called the
+> generated SDK directly, so the moment `RecentOrderBy` was published,
+> `npm run check` failed with `Type 'string' is not assignable to type
+> 'RecentOrderBy'` — three slices before any redirect. **Any route already on
+> the generated SDK gets the protection as soon as its enum ships.** What the
+> hand-written unions actually blocked was the routes still going through the
+> untyped `resources.ts` helper, which is a narrower claim.
+>
+> Both hand-written unions are now **deleted** rather than redirected — along
+> with a third the plan never noticed, `type SortField` in
+> `files/[...path]/+page.svelte`, which was character-for-character
+> `FolderOrderBy`. A pass-through alias under the old name would still be a
+> second name for one concept, so the call sites import the SDK type directly.
 
 **Step 3 is a precondition, not a bonus — it does not hold today.** The two sort
 types the frontend actually imports are still hand-written, and the generated

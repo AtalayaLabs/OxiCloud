@@ -17,6 +17,7 @@ import {
 	type ResourcePageOpts
 } from './resources';
 import type { ItemType } from '$lib/api/types';
+import type { FavoritesOrderBy } from '$lib/api/generated/openapi/types.gen';
 
 export interface FavoritesResourceItem {
 	resource_type: ItemType;
@@ -24,10 +25,19 @@ export interface FavoritesResourceItem {
 	resource: ResourceBody;
 }
 
+// §7 part 3g: axis pinned to the generated `FavoritesOrderBy` union — a
+// retired or misspelled axis now fails `npm run check` rather than
+// reaching the server as a 400.
+export type FavoritesPageOpts = ResourcePageOpts<FavoritesOrderBy>;
+
 export function fetchFavoritesPage(
-	opts?: ResourcePageOpts
+	opts?: FavoritesPageOpts
 ): Promise<ResourcePage<FavoritesResourceItem>> {
-	return fetchResourcePage<FavoritesResourceItem>('/api/favorites/resources', 'name', opts);
+	return fetchResourcePage<FavoritesResourceItem, FavoritesOrderBy>(
+		'/api/favorites/resources',
+		'name',
+		opts
+	);
 }
 
 export async function addFavorite(type: ItemType, id: string): Promise<void> {
