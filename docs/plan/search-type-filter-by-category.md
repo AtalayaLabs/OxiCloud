@@ -79,11 +79,24 @@ commit, collab-created files, and any migration that inserts. The column being
 clean on one instance today is not evidence the paths are all correct — it is
 evidence that the paths exercised on that instance are.
 
-A cheap durable guard, cheaper than the audit staying true: a
-`CHECK (category_order <> 0)` or a consistency-job detector counting rows whose
-stored value disagrees with `category_order_for(name, mime)`. Prefer the
-detector — per house rules it is discovery-only, and it catches drift in the
-mapping as well as missing writes.
+A cheap durable guard was proposed here — a `CHECK (category_order <> 0)` or a
+consistency-job detector counting rows whose stored value disagrees with
+`category_order_for(name, mime)`.
+
+> **SUPERSEDED (2026-10-22). Do not build the detector.** The `content_rescan`
+> job in `docs/plan/blob-resniff.md` §B recomputes mime per content and so must
+> recompute this same expression anyway — it both detects and *corrects*, where
+> a detector only reports. Two readers of one denormalised column is how the two
+> drift, which is the failure this guard was meant to prevent. The ownership of
+> `category_order` freshness is recorded there, including why the fan-out has to
+> be per row rather than per hash.
+>
+> The audit above also came back clean on a live instance (4093 rows, 0 NULL,
+> 0 defaulted), and the column default is `9999` ("Other"), **not** `0` — so a
+> missed write path degrades to Other and can never collide with the reserved
+> folder sentinel. The detector guarded a hypothesis; `content_rescan` creates
+> the real staleness, because retyping a file's mime without its category makes
+> that row invisible under its own category in this very filter.
 
 ## Wire change
 
