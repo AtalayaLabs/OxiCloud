@@ -177,7 +177,11 @@
 		{ v: 'video', l: t('search.type.video', 'Videos') },
 		{ v: 'document', l: t('search.type.document', 'Documents') },
 		{ v: 'audio', l: t('search.type.audio', 'Audio') },
-		{ v: 'archive', l: t('search.type.archive', 'Archives') }
+		{ v: 'archive', l: t('search.type.archive', 'Archives') },
+		// Category 900 — json/js/ts/html/sql/py/rust/… The server has always
+		// classified these; the picker simply never offered the filter, so
+		// `TypeKey` accepted a value no affordance could produce.
+		{ v: 'code', l: t('search.type.code', 'Code') }
 	];
 	const SIZES: { v: SizeKey; l: string }[] = [
 		{ v: 'all', l: t('search.size.all', 'Any size') },
