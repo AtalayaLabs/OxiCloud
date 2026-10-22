@@ -120,6 +120,7 @@ flowchart TB
     CDB["<b>storage.content_derived_blobs</b><br/>(source_hash, kind, variant) PK<br/>blob_hash<br/><i>pure f(content) · dedupes</i>"]
     BET["<b>storage.blob_extracted_text</b><br/>blob_hash PK"]
     FACES["<b>faces.faces</b><br/>blob_hash"]
+    ACM["<b>audio.content_metadata</b> (ID3)<br/>source_hash PK<br/><i>re-keyed 2026-10-22</i>"]
   end
 
   BLOB["<b>BLOB</b> — the content of a file<br/>BLAKE3 of plaintext<br/><b>storage.chunk_manifests</b><br/>file_hash PK · chunk_hashes[]<br/><b>ref_count</b>"]
@@ -135,6 +136,7 @@ flowchart TB
   FAB -->|"blob_hash"| BLOB
   BET -.->|"dependent cache"| BLOB
   FACES -.->|"dependent cache"| BLOB
+  ACM -.->|"dependent facts"| BLOB
   BLOB -->|"chunk_hashes[] · 1..N ordered"| CHUNK
   CHUNK -->|bytes| BACKEND
 ```
@@ -201,7 +203,8 @@ was attached to, never by content.
 | transcode | `f(blob bytes, target)` | ✅ |
 | extracted text | `f(blob bytes)` | ✅ — `storage.blob_extracted_text` |
 | face vectors | `f(blob bytes)` | ✅ — `faces.faces` |
-| audio tags (ID3/Vorbis) | `f(blob bytes)` | ✅ in principle — but `audio.file_metadata` is **file**-keyed today. See the TODO below |
+| audio tags (ID3/Vorbis) | `f(blob bytes)` | ✅ — `audio.content_metadata`, re-keyed 2026-10-22 |
+| EXIF / capture metadata | `f(blob bytes)` | ✅ in principle — but `storage.file_metadata` is **file**-keyed today. See the TODO below |
 | client-uploaded preview | `f(user's choice)` | ❌ **must be file-keyed** — `storage.file_attached_blobs`, see below |
 
 This isn't a new pattern: `storage.blob_extracted_text` already
@@ -1933,11 +1936,18 @@ Scope for this rename: ~23 files touch the SQL, plus a migration
 for the table rename. Not free. Ship AFTER the tier-2 write-side
 lands so we don't stack schema changes.
 
-## TODO — `audio.file_metadata` is keyed to the file, not the content
+## TODO — content-keying the metadata tables — audio **DONE 2026-10-22**
 
-Found 2026-10-06 while tracing playlist authorization. Not scheduled;
-recorded here because this doc owns the content-vs-file keying rule and
-this table predates it.
+Found 2026-10-06 while tracing playlist authorization. **The audio half
+shipped 2026-10-22** as `audio.content_metadata`
+(`migrations/20261104000000_audio_metadata_content_keyed.sql`); both clone
+paths and the five dead repository methods went with it, and
+`BlobHandler::purge_content_facts` now reaps the rows. **The EXIF half
+(`storage.file_metadata`) is still outstanding** and is bigger than this
+section assumed — see the note at the end.
+
+The analysis below stands as written: it is why the audio change was made,
+and the security constraint in it outlives the migration.
 
 `audio.file_metadata` (ID3 / Vorbis tags: title, artist, album, genre,
 track number, duration, bitrate, …) is keyed `file_id UUID PRIMARY KEY
@@ -2010,6 +2020,54 @@ Two things to keep true, though:
 | Readers | two — `get_audio_metadata`, and the enriched playlist listing's `LEFT JOIN`, which joins via `pi.file_id → files.blob_hash` |
 | Lifecycle | **the careful part.** Like `content_derived_blobs`, rows become a dependent reference holding no ref_count, so they need the same reap hook in `dedup_gc` / `manifests_consistency`. Without it the rows leak after the source blob is reaped — the exact failure class the satellites plan exists to prevent |
 | Bonus | `AudioMetadataPgRepository::{create_or_update, delete, list_by_artist, list_by_album, list_by_genre}` are already dead — no callers, because the service does its own SQL against the pool. So there is no browse-by-artist/album/genre feature, and all four `idx_audio_metadata_{artist,album,genre,year}` indexes are maintained on every write for reads nobody performs. `year` is the starkest: no query references it even in the dead code |
+
+All of the above is **done for audio**. What actually landed matched this
+table, with one correction worth recording: the reap hook went into
+`BlobHandler::purge_derived_blobs` as a sibling
+(`purge_content_facts`), not into `dedup_gc` / `manifests_consistency`.
+`purge_derived_blobs` is already called from both reap sites and already
+means "drop everything derived from this Blob", so hanging the new delete
+there leaves exactly one place to forget when the next content-keyed table
+arrives. The distinction it draws is the useful one: `content_derived_blobs`
+rows point at an *artifact* and must release a reference, whereas these rows
+are *facts* and simply go.
+
+### ⚠ The EXIF half is bigger than this section assumed
+
+`storage.file_metadata` has two dependencies the audio table did not, found
+while scoping it:
+
+1. **`trg_sync_media_sort_date`** fires on its upsert and writes
+   `storage.files.media_sort_date`, so a second trigger is needed.
+   **`docs/plan/normalize-file-dates.md` §4 already specifies this, and
+   specifies it better than an earlier draft of this note did — follow that,
+   not this paragraph.** Two corrections it makes:
+
+   - The new trigger is **`BEFORE UPDATE OF content_modified_at` on
+     `storage.files`, assigning `NEW.media_sort_date` in place** — not an
+     `INSERT` trigger seeding from existing metadata, which is what this note
+     originally guessed. `INSERT` needs no trigger at all: both columns
+     default, so a fresh row already satisfies the chain.
+   - `BEFORE` + assign-to-`NEW` is load-bearing, not style. It writes no
+     second statement, so it cannot re-enter the statement triggers — the
+     existing `file_metadata` trigger has to dodge the tree-ETag bump with
+     `pg_trigger_depth() > 1`, and the `BEFORE` form never creates the depth
+     to dodge.
+
+   Also note that plan reserves **`content_metadata.created_at` for the
+   content's own claimed creation date** (what `nc:creation_time` reads once
+   the extractor widens). `audio.content_metadata` therefore names its
+   bookkeeping column `extracted_at`; the EXIF table must not reintroduce the
+   clash.
+2. **The Places viewport query** (`file_blob_read_repository.rs:685`) joins
+   `storage.files fi ON fi.id = fm.file_id` and takes
+   `min(fm.file_id) AS sample_id`. Content-keyed there is no file id on the
+   row to take, so both the join and the sample have to come from `fi` —
+   in a query whose shape was benchmarked (ROUND11 §Q4) — plus the
+   `idx_file_metadata_geo` partial index has to move with the table.
+
+Neither is hard; both are reasons it is its own change rather than a
+continuation of the audio one.
 
 ## Non-goals
 
