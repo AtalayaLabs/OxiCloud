@@ -144,6 +144,38 @@ coarse filter's shipped `other` value is renamed to `unknown` in the same pass
 so one bucket has one name — safe because that value exists only on an
 unmerged branch.
 
+### Target: mime is the source of truth, and the extension fallback dies
+
+Ed's direction, and it reshapes the end state: **once mime is normalised, the
+category derives from mime alone.** `category_for(name, mime)` consults both
+today only because a stored mime could be generic — `application/octet-stream`
+with the real type recoverable only from the filename. Content sniffing on the
+upload path (`refine_content_type`) already removed that for new rows, and
+`content_rescan` removes it for old ones.
+
+So the signature target is `category_for(mime)`, with the extension arms of
+`category_with_ext` deleted rather than kept forever. Two things unlock when
+that lands, and both are things I recorded as permanent constraints elsewhere:
+
+1. **The `content_rescan` fan-out can stay per-hash.** `blob-resniff.md` §B says
+   `category_order` must be computed **per row** because the classifier takes
+   `(name, mime)` and so is not computable from the content hash alone. That is
+   TRANSITIONAL, not permanent — a mime-only classifier is one value per
+   content, so the fan-out reverts to the simpler "bind the hash, not
+   `file_ids`" shape that section prefers everywhere else.
+2. **`category_order` could move to a content-keyed table.** §A.1's re-keying
+   excluded it for the same name-dependence reason. Mime-only removes the
+   objection, though whether it is worth moving is a separate question — it is
+   cheap to read where it is.
+
+**Sequencing.** Do not delete the extension arms in this plan. They are the only
+thing classifying legacy rows whose mime is still generic, and that population
+is non-zero until `content_rescan` has converged — the same convergence
+condition the legacy-blob work waits on. The order is: type the enum here (with
+`(name, mime)` intact), let `content_rescan` normalise mime and backfill, then
+drop the name parameter and the extension arms as a follow-up once a count of
+generic-mime rows reads zero.
+
 ### Migration consequence — the backfill is not SQL-able
 
 Rows already stored carry `category_order = 500` for unknown files, and the
