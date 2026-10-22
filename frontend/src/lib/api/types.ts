@@ -233,21 +233,27 @@ export type { AuthResponseDto as AuthResponse } from './generated/openapi/types.
  * `/api/search` envelope. Mirrors backend `SearchMeta` — see
  * `application/dtos/search_dto.rs`.
  */
-// Shapes authoritative on the generated SDK — re-exported here so
-// consumers importing from `$lib/api/types` keep working. The
-// generated `SearchResourceItem.resource` is `ResourceContentDto`
-// (a `FileDto | FolderDto | DriveDto` untagged union) rather than
-// the pre-SDK `FileItem | FolderItem` hand-written union: a search
-// result CAN now be a Drive. Consumers that discriminated on
-// `resource_type` already handle the broader union correctly; those
-// that pattern-matched on the two-arm shape need updating at the
-// call site (TS surfaces the delta).
+// `SearchMeta` and `SearchResourceItem` were re-exported here purely so
+// consumers importing from `$lib/api/types` kept working across the SDK
+// migration. Both are gone: a pass-through alias is a second name for one
+// concept, and the point of the generated SDK is that there is exactly
+// one. `SearchResourceItem` had a single consumer (the /search route,
+// now importing it directly) and `SearchMeta` had none at all.
 //
-// `SearchResourcesResponse` maps to the generated `SearchResourcesDto`
-// — the openapi-ts-emitted `SearchResourcesResponse` is a status-code
-// wrapper (`{ 200: SearchResourcesDto }[keyof …]`), not the payload
-// shape the FE wants.
-export type { SearchMeta, SearchResourceItem } from './generated/openapi/types.gen';
+// Worth keeping in mind at the call site, since this comment used to
+// carry it: the generated `SearchResourceItem.resource` is
+// `ResourceContentDto` — a `FileDto | FolderDto | DriveDto` untagged
+// union, not the pre-SDK two-arm `FileItem | FolderItem`. A search
+// result CAN be a Drive. Code that discriminates on `resource_type`
+// handles the wider union already; code that pattern-matched on two
+// arms needs updating, and TS surfaces the delta.
+//
+// `SearchResourcesResponse` STAYS an alias rather than a pass-through:
+// it renames a different type. openapi-ts emits its own
+// `SearchResourcesResponse` as a status-code wrapper
+// (`{ 200: SearchResourcesDto }[keyof …]`), not the payload shape, so
+// importing that name directly from the SDK would give callers the
+// wrong thing. The alias resolves a genuine name collision.
 export type { SearchResourcesDto as SearchResourcesResponse } from './generated/openapi/types.gen';
 
 export type DriveKind = 'personal' | 'shared';

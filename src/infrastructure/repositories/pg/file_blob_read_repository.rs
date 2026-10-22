@@ -102,6 +102,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::application::dtos::display_helpers::category_orders_for_filter;
 use crate::application::dtos::geo_dto::{GeoBounds, GeoCluster};
 use crate::application::dtos::search_dto::{SearchCriteriaDto, SearchOrderBy};
 use crate::application::ports::storage_ports::FileReadPort;
@@ -174,13 +175,18 @@ fn push_criteria_filters(
     mut bind_idx: u32,
     criteria: &SearchCriteriaDto,
 ) -> u32 {
-    if let Some(types) = &criteria.file_types
-        && !types.is_empty()
-    {
+    // Category filter on the indexed `storage.files.category_order` rather
+    // than re-deriving an extension from the filename. The old predicate was
+    // `LOWER(SUBSTRING(fi.name FROM '\.([^.]+)$')) = ANY($n)`, which could
+    // never match a file without a dot in its name — even when its mime was
+    // known — and depended on the SPA shipping a complete extension list.
+    //
+    // An empty slice means the filter contributes no predicate: that is `All`
+    // and `Folders`, neither of which narrows the FILE branch (`Folders`
+    // suppresses it entirely, upstream in the service).
+    if !category_orders_for_filter(criteria.type_filter).is_empty() {
         bind_idx += 1;
-        conditions.push(format!(
-            "LOWER(SUBSTRING(fi.name FROM '\\.([^.]+)$')) = ANY(${bind_idx})"
-        ));
+        conditions.push(format!("fi.category_order = ANY(${bind_idx})"));
     }
     if criteria.created_after.is_some() {
         bind_idx += 1;
@@ -223,11 +229,12 @@ fn bind_criteria_filters<'q, O>(
     mut query: sqlx::query::QueryAs<'q, sqlx::Postgres, O, sqlx::postgres::PgArguments>,
     criteria: &SearchCriteriaDto,
 ) -> sqlx::query::QueryAs<'q, sqlx::Postgres, O, sqlx::postgres::PgArguments> {
-    if let Some(types) = &criteria.file_types
-        && !types.is_empty()
-    {
-        let lower_types: Vec<String> = types.iter().map(|t| t.to_lowercase()).collect();
-        query = query.bind(lower_types);
+    // Mirror of the predicate in `push_criteria_filters` — the two must bind
+    // the same number of parameters in the same order, so the emptiness test
+    // here has to match that one exactly.
+    let category_orders = category_orders_for_filter(criteria.type_filter);
+    if !category_orders.is_empty() {
+        query = query.bind(category_orders.to_vec());
     }
     if let Some(v) = criteria.created_after {
         query = query.bind(v as i64);
@@ -1415,6 +1422,20 @@ impl FileReadPort for FileBlobReadRepository {
             bind_idx += 1;
             conditions.push(format!("fi.name ILIKE ${bind_idx}"));
         }
+        // This call was MISSING, and that was a real bug — not just for the
+        // category filter this change adds.
+        //
+        // `search_files_in_subtree` delegates here whenever `folder_id` is
+        // None (its first `match` arm), so this function serves EVERY global
+        // search. Without the shared filters it applied only `folder_id` and
+        // `name ILIKE`, which meant a search with no folder scope silently
+        // ignored the category, size AND date filters — all three of which
+        // the `/search` UI offers. Narrowing by "Images" or "Last week"
+        // returned the unfiltered set and looked like the filter did nothing.
+        //
+        // `search_files_in_subtree` already called this; only the delegating
+        // path did not.
+        bind_idx = push_criteria_filters(&mut conditions, bind_idx, criteria);
 
         let where_clause = conditions.join(" AND ");
         let limit_bind = bind_idx + 1;
@@ -1486,6 +1507,12 @@ impl FileReadPort for FileBlobReadRepository {
         {
             query = query.bind(super::like_escape(name));
         }
+        // Must sit here: after the name bind and BEFORE limit/offset, mirroring
+        // the order `push_criteria_filters` appended its placeholders above.
+        // Binding out of order would silently compare the wrong columns —
+        // `limit_bind`/`offset_bind` are computed from the advanced `bind_idx`,
+        // so the two sides only line up if this stays between them.
+        query = bind_criteria_filters(query, criteria);
         query = query.bind(limit).bind(offset);
 
         // ── Execute single query ─────────────────────────────────────────

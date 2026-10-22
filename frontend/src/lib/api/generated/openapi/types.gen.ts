@@ -3589,10 +3589,6 @@ export type SearchCriteriaDto = {
      */
     created_before?: number | null;
     /**
-     * Optional list of file extensions to include (e.g., "pdf", "jpg")
-     */
-    file_types?: Array<string> | null;
-    /**
      * Optional folder ID to limit search scope
      */
     folder_id?: string | null;
@@ -3640,6 +3636,21 @@ export type SearchCriteriaDto = {
      * no-op for `relevance` (a descending relevance sort is meaningless).
      */
     reverse?: boolean;
+    /**
+     * Resource-category narrowing — see [`SearchTypeFilter`].
+     *
+     * Was `file_types: Option<Vec<String>>`, a list of filename extensions
+     * the SPA assembled. Carrying the category instead keeps the
+     * extension→category table on the server (one copy, next to
+     * `category_order_for`) and lets the SQL filter on the indexed
+     * `storage.files.category_order` rather than re-deriving an extension
+     * from the name at query time.
+     *
+     * Not `Option`: `All` is the honest default, and a `Copy` enum also
+     * makes this struct's `Hash` — which keys the search result cache —
+     * cheaper and stabler than a `Vec<String>` whose order could vary.
+     */
+    type_filter?: SearchTypeFilter;
 };
 
 /**
@@ -4008,6 +4019,29 @@ export type SearchSuggestionsDto = {
      */
     suggestions: Array<SearchSuggestionItem>;
 };
+
+/**
+ * Resource-category filter for `GET /api/search` (`?type=`).
+ *
+ * Replaces a comma-separated **extension** list (`type=pdf,docx`) matched
+ * against the filename. That shape had three defects, all fixed by moving the
+ * classification server-side:
+ *
+ * * the category→extension table lived in the SPA (12 image and 7 audio
+ * extensions hardcoded), so a missed extension silently dropped a file from
+ * its own category;
+ * * extensionless files could never match — the predicate was
+ * `SUBSTRING(name FROM '\.([^.]+)$')`, NULL without a dot, even when
+ * `mime_type` was known;
+ * * folders were never filtered at all, which is the defect a user saw.
+ *
+ * `All` and `Folders` deliberately map to no `storage.files` value: a folder
+ * has no row in that table, so those two cases select which UNION branches
+ * run rather than contributing a predicate. Every other variant resolves
+ * through [`category_orders_for_filter`], which is exhaustive over this enum
+ * so a new variant is a compile error there.
+ */
+export type SearchTypeFilter = 'all' | 'folder' | 'image' | 'video' | 'audio' | 'document' | 'archive' | 'code' | 'other';
 
 /**
  * Self view — everything the caller may see about themselves.
@@ -12336,9 +12370,9 @@ export type SearchResourcesData = {
          */
         cursor?: string;
         /**
-         * Sort dimension: relevance (default) | name | size | modified_at | created_at
+         * Sort axis; direction is the separate `reverse` flag
          */
-        order_by?: string;
+        order_by?: SearchOrderBy;
         /**
          * Comma-separated: file, folder (both by default)
          */
@@ -12348,9 +12382,9 @@ export type SearchResourcesData = {
          */
         reverse?: boolean;
         /**
-         * Filter by file extensions (comma-separated)
+         * Narrow to one resource category; `folders` returns folders only
          */
-        type?: string;
+        type?: SearchTypeFilter;
         /**
          * Restrict search to this folder
          */

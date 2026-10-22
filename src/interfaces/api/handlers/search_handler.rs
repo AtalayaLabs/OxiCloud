@@ -7,7 +7,7 @@ use serde_json::json;
 use tracing::{error, info};
 
 use crate::application::dtos::search_dto::{
-    SearchResourcesDto, SearchResourcesQuery, SearchSuggestionsDto,
+    SearchOrderBy, SearchResourcesDto, SearchResourcesQuery, SearchSuggestionsDto, SearchTypeFilter,
 };
 use crate::application::ports::inbound::SearchUseCase;
 use crate::common::di::AppState;
@@ -257,10 +257,15 @@ pub struct SuggestParams {
         ("query" = Option<String>, Query, description = "Text to search in names / content"),
         ("limit" = Option<u32>, Query, description = "Max items per page (1–200, default 50)"),
         ("cursor" = Option<String>, Query, description = "Opaque cursor from a previous response"),
-        ("order_by" = Option<String>, Query, description = "Sort dimension: relevance (default) | name | size | modified_at | created_at"),
+        // Typed, not Option<String>: §7 made these enums on the DTO, but this
+        // endpoint hand-declares its params rather than deriving IntoParams,
+        // so the schema kept advertising a free-text string. The accepted
+        // values now come from the enum itself instead of this description
+        // drifting away from them.
+        ("order_by" = Option<SearchOrderBy>, Query, description = "Sort axis; direction is the separate `reverse` flag"),
         ("resource_types" = Option<String>, Query, description = "Comma-separated: file, folder (both by default)"),
         ("reverse" = Option<bool>, Query, description = "Reverse the sort order"),
-        ("type" = Option<String>, Query, description = "Filter by file extensions (comma-separated)"),
+        ("type" = Option<SearchTypeFilter>, Query, description = "Narrow to one resource category; `folders` returns folders only"),
         ("folder_id" = Option<String>, Query, description = "Restrict search to this folder"),
         ("recursive" = Option<bool>, Query, description = "Recurse into subfolders (default true)"),
         ("created_after" = Option<u64>, Query, description = "Minimum creation timestamp (unix seconds)"),

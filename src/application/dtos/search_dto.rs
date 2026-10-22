@@ -8,6 +8,71 @@ use uuid::Uuid;
 use crate::application::dtos::cursor::PageCursor;
 use crate::application::dtos::grant_dto::{ResourceContentDto, ResourceTypeDto};
 
+/// Resource-category filter for `GET /api/search` (`?type=`).
+///
+/// Replaces a comma-separated **extension** list (`type=pdf,docx`) matched
+/// against the filename. That shape had three defects, all fixed by moving the
+/// classification server-side:
+///
+/// * the category→extension table lived in the SPA (12 image and 7 audio
+///   extensions hardcoded), so a missed extension silently dropped a file from
+///   its own category;
+/// * extensionless files could never match — the predicate was
+///   `SUBSTRING(name FROM '\.([^.]+)$')`, NULL without a dot, even when
+///   `mime_type` was known;
+/// * folders were never filtered at all, which is the defect a user saw.
+///
+/// `All` and `Folders` deliberately map to no `storage.files` value: a folder
+/// has no row in that table, so those two cases select which UNION branches
+/// run rather than contributing a predicate. Every other variant resolves
+/// through [`category_orders_for_filter`], which is exhaustive over this enum
+/// so a new variant is a compile error there.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchTypeFilter {
+    /// Default — no narrowing; files and folders both.
+    #[default]
+    All,
+    /// Folders only. The value that fixes the leak: with any variant other
+    /// than this or `All`, the folder branch is skipped entirely.
+    Folder,
+    Image,
+    Video,
+    Audio,
+    /// Coarser than the DB's grouping on purpose — PDF, office formats,
+    /// markdown and plain text. A user picking Documents wants all of them.
+    Document,
+    Archive,
+    Code,
+    /// Unknown or undetected mime. Useful to an operator chasing broken type
+    /// detection; the SPA does not offer it until someone asks.
+    Other,
+}
+
+impl SearchTypeFilter {
+    /// Whether folder rows belong in the result set.
+    ///
+    /// This is the fix for the reported defect: `search_folders` has no type
+    /// parameter, so a folder could never be *narrowed* — the only correct
+    /// behaviour is to include folders or not run the folder query at all.
+    /// Picking "Images" therefore excludes folders, which is what the
+    /// affordance means to a user.
+    pub fn includes_folders(self) -> bool {
+        matches!(self, Self::All | Self::Folder)
+    }
+
+    /// Whether file rows belong in the result set.
+    ///
+    /// Load-bearing for `Folders`: that variant maps to an EMPTY
+    /// `category_order` set, and an empty set contributes no SQL predicate —
+    /// so without this gate the file branch would return *every* file rather
+    /// than none. The empty slice means "no narrowing", never "nothing
+    /// matches".
+    pub fn includes_files(self) -> bool {
+        !matches!(self, Self::Folder)
+    }
+}
+
 /// Sort axis for `GET /api/search` (§7).
 ///
 /// Typed rather than `String` so an unknown axis is refused at
@@ -59,9 +124,20 @@ pub struct SearchCriteriaDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name_contains: Option<String>,
 
-    /// Optional list of file extensions to include (e.g., "pdf", "jpg")
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub file_types: Option<Vec<String>>,
+    /// Resource-category narrowing — see [`SearchTypeFilter`].
+    ///
+    /// Was `file_types: Option<Vec<String>>`, a list of filename extensions
+    /// the SPA assembled. Carrying the category instead keeps the
+    /// extension→category table on the server (one copy, next to
+    /// `category_order_for`) and lets the SQL filter on the indexed
+    /// `storage.files.category_order` rather than re-deriving an extension
+    /// from the name at query time.
+    ///
+    /// Not `Option`: `All` is the honest default, and a `Copy` enum also
+    /// makes this struct's `Hash` — which keys the search result cache —
+    /// cheaper and stabler than a `Vec<String>` whose order could vary.
+    #[serde(default)]
+    pub type_filter: SearchTypeFilter,
 
     /// Optional minimum creation date (seconds since epoch)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -130,7 +206,7 @@ impl Default for SearchCriteriaDto {
     fn default() -> Self {
         Self {
             name_contains: None,
-            file_types: None,
+            type_filter: SearchTypeFilter::All,
             created_after: None,
             created_before: None,
             modified_after: None,
@@ -403,9 +479,12 @@ pub struct SearchResourcesQuery {
     #[serde(default)]
     pub reverse: bool,
 
-    /// Comma-separated file extensions filter, e.g. `"pdf,docx"`.
+    /// Resource-category filter — see [`SearchTypeFilter`]. Omit for `all`.
+    ///
+    /// Was a comma-separated **extension** list (`type=pdf,docx`); the enum's
+    /// doc records why that shape was replaced.
     #[serde(rename = "type")]
-    pub type_filter: Option<String>,
+    pub type_filter: Option<SearchTypeFilter>,
 
     /// Restrict search to this folder.
     pub folder_id: Option<String>,
@@ -450,15 +529,12 @@ impl SearchResourcesQuery {
     /// in-memory folder sort) reads both.
     pub fn to_criteria(&self) -> SearchCriteriaDto {
         let offset = self.decode_cursor().map(|c| c.offset).unwrap_or(0);
-        let file_types = self.type_filter.as_deref().map(|s| {
-            s.split(',')
-                .map(|t| t.trim().to_string())
-                .filter(|t| !t.is_empty())
-                .collect()
-        });
+        // No splitting or trimming any more: the wire carries one typed
+        // category token, so serde has already validated it and an absent
+        // value means `All`.
         SearchCriteriaDto {
             name_contains: self.query.clone(),
-            file_types,
+            type_filter: self.type_filter.unwrap_or_default(),
             created_after: self.created_after,
             created_before: self.created_before,
             modified_after: self.modified_after,
