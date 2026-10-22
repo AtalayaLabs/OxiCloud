@@ -128,6 +128,12 @@ tests/caldav/.venv/
 tests/caldav/__pycache__/
 tests/caldav/.pytest_cache/
 tests/caldav/server.log
+tests/nextcloudcmd/storage/
+tests/nextcloudcmd/.venv/
+tests/nextcloudcmd/.work/
+tests/nextcloudcmd/__pycache__/
+tests/nextcloudcmd/.pytest_cache/
+tests/nextcloudcmd/server.log
 
 # Test fixtures generated on-the-fly by tests/api/run.sh
 tests/fixtures/chunk-over-cap-*.bin
