@@ -115,7 +115,6 @@ fn fixture_folder() -> FolderDto {
         ),
         is_root: true,
         etag: "8f2e5a1c9b3d4e6f".to_string(),
-        icon_class: Arc::from("fas fa-folder"),
         category: Arc::from("Folder"),
         created_by: None,
         updated_by: None,

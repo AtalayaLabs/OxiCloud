@@ -54,7 +54,6 @@ function withOneFile() {
 				resource: {
 					category: 'Document',
 					created_at: 0,
-					icon_class: 'fa-file',
 					id: 'r1',
 					mime_type: 'text/plain',
 					modified_at: 0,

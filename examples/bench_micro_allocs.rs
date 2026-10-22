@@ -31,9 +31,7 @@ use chrono::{TimeZone, Utc};
 use oxicloud::application::adapters::carddav_adapter::{CardDavAdapter, CardDavReportType};
 use oxicloud::application::adapters::webdav_adapter::QualifiedName;
 use oxicloud::application::dtos::contact_dto::ContactDto;
-use oxicloud::application::dtos::display_helpers::{
-    category_for, icon_class_for, intern_display, intern_mime,
-};
+use oxicloud::application::dtos::display_helpers::{category_for, intern_display, intern_mime};
 use oxicloud::application::dtos::file_dto::FileDto;
 use oxicloud::application::dtos::search_dto::SearchSuggestionItem;
 use oxicloud::domain::entities::drive::{Drive, DriveKind};
@@ -138,9 +136,7 @@ fn suggest_before(files: &[File], q: &str) -> Vec<SearchSuggestionItem> {
             // `.into()` bridges the round-9 `Arc<str>` field type; the
             // conversion is identical on both arms so the round-5 delta
             // this bench gates (clone vs move) is unaffected.
-            icon_class: icon_class_for(&file_dto.name, &file_dto.mime_type)
-                .to_string()
-                .into(),
+            mime_type: file_dto.mime_type.to_string().into(),
             relevance_score: score,
         });
     }
@@ -154,14 +150,14 @@ fn suggest_after(files: Vec<File>, q: &str) -> Vec<SearchSuggestionItem> {
     for file in files {
         let file_dto = FileDto::from(file);
         let score = compute_relevance(&file_dto.name, &query_lower);
-        let icon_class = icon_class_for(&file_dto.name, &file_dto.mime_type).to_string();
         out.push(SearchSuggestionItem {
             name: file_dto.name,
             item_type: "file".to_string(),
             id: file_dto.id,
             path: file_dto.path,
-            // Same `.into()` bridge as the BEFORE arm — see note there.
-            icon_class: icon_class.into(),
+            // The shipped shape moves the interned `Arc<str>` straight
+            // across — no conversion at all, which is the point of the arm.
+            mime_type: file_dto.mime_type,
             relevance_score: score,
         });
     }
@@ -355,7 +351,7 @@ fn main() {
         let g_a = suggest_after(files.clone(), "doc");
         let same = g_b.len() == g_a.len()
             && g_b.iter().zip(&g_a).all(|(x, y)| {
-                x.name == y.name && x.id == y.id && x.path == y.path && x.icon_class == y.icon_class
+                x.name == y.name && x.id == y.id && x.path == y.path && x.mime_type == y.mime_type
             });
         if !same {
             eprintln!("GATE FAIL suggest");
@@ -418,17 +414,10 @@ fn main() {
         let row_before = |name: &str| {
             (
                 Arc::<str>::from(mime),
-                Arc::<str>::from(icon_class_for(name, mime)),
                 Arc::<str>::from(category_for(name, mime)),
             )
         };
-        let row_after = |name: &str| {
-            (
-                intern_mime(mime),
-                intern_display(icon_class_for(name, mime)),
-                intern_display(category_for(name, mime)),
-            )
-        };
+        let row_after = |name: &str| (intern_mime(mime), intern_display(category_for(name, mime)));
         let t_b = time_passes(passes, || {
             for n in &names {
                 black_box(row_before(n));
@@ -443,16 +432,16 @@ fn main() {
             * 1000.0;
         let a_b = allocs_of(|| row_before(&names[0]));
         let a_a = allocs_of(|| row_after(&names[0]));
-        let (bm, bi, bc) = row_before(&names[0]);
-        let (am, ai, ac) = row_after(&names[0]);
-        if *bm != *am || *bi != *ai || *bc != *ac {
+        let (bm, bc) = row_before(&names[0]);
+        let (am, ac) = row_after(&names[0]);
+        if *bm != *am || *bc != *ac {
             eprintln!("GATE FAIL interning content");
             ok = false;
         }
         println!("[3] listing closed-set fields             ns/row   allocs/row");
-        println!("    BEFORE (Arc::from ×3)                {t_b:8.1}   {a_b:7}");
+        println!("    BEFORE (Arc::from ×2)                {t_b:8.1}   {a_b:7}");
         println!(
-            "    AFTER  (intern lookups ×3)           {t_a:8.1}   {a_a:7}   {:.1}x",
+            "    AFTER  (intern lookups ×2)           {t_a:8.1}   {a_a:7}   {:.1}x",
             t_b / t_a
         );
     }

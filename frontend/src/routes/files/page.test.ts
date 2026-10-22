@@ -111,7 +111,6 @@ function fileItem(id: string, name: string) {
 	return {
 		category: 'Document',
 		created_at: 0,
-		icon_class: 'fa-file',
 		id,
 		mime_type: 'text/plain',
 		modified_at: 0,
@@ -130,7 +129,6 @@ function folderItem(id: string, name: string) {
 	return {
 		category: 'Folder',
 		created_at: 0,
-		icon_class: 'fa-folder',
 		id,
 		is_root: false,
 		modified_at: 0,

@@ -1,49 +1,52 @@
-//! Shared display helpers for DTOs.
-//!
-//! These functions centralise the mime→icon / mime→category / size→human-string
-//! logic so that every API response carries pre-computed display fields and the
-//! frontend does **not** need to duplicate these mappings.
+//! Shared display helpers for DTOs — the mime→category mapping and the
+//! `Arc<str>` interning that keeps it cheap per row.
 //!
 //! The approach is: try MIME first (specific matches beat prefix matches),
 //! then fall back to the file extension when the MIME is generic
-//! (`application/octet-stream` or empty).
+//! (`application/octet-stream` or empty). The extension half is transitional:
+//! once content sniffing has normalised stored MIME
+//! (`docs/plan/blob-resniff.md`) the classifier becomes mime-only. See the
+//! `ResourceCategory` section of
+//! `docs/plan/retire-precomputed-display-fields.md`.
+//!
+//! **This module used to also own mime→icon and size→human-string**, on the
+//! stated principle that "every API response carries pre-computed display
+//! fields and the frontend does **not** need to duplicate these mappings".
+//! That principle was reversed deliberately, not drifted away from:
+//! `icon_special_class` named a stylesheet that no longer existed,
+//! `icon_class` was a CSS class the SPA only ever parsed a glyph name back
+//! out of, and `size_formatted` had two disagreeing implementations here
+//! while the SPA rendered its own string anyway. All three are gone
+//! (`retire-precomputed-display-fields.md`, steps 2/4/5) and the icon
+//! mapping now lives in `frontend/src/lib/utils/display.ts`.
+//!
+//! `category` stays server-side on purpose: `category_order_for` turns it
+//! into `storage.files.category_order`, the indexed `type` sort key, so the
+//! FE's buckets and the server's `ORDER BY` must agree. Deriving it in the
+//! client would let them disagree.
 
 use std::collections::HashMap;
-use std::fmt::Write as _;
 use std::sync::{Arc, LazyLock};
 
 use crate::application::dtos::search_dto::SearchTypeFilter;
 
 // ─── Arc<str> interning for closed-set display values ────────────────
 //
-// `FileDto` / `FolderDto` store their display fields as `Arc<str>` so DTO
-// clones are O(1). But `Arc::<str>::from(&str)` always allocates + copies,
-// so building the DTO paid 3-4 heap allocations per row even though the
-// value space is a small closed set. Interning turns each conversion into
-// a HashMap lookup + refcount bump.
+// `FileDto` / `FolderDto` store `category` and `mime_type` as `Arc<str>` so
+// DTO clones are O(1). But `Arc::<str>::from(&str)` always allocates +
+// copies, so building the DTO paid a heap allocation per field per row even
+// though the value space is a small closed set. Interning turns each
+// conversion into a HashMap lookup + refcount bump. (It paid 3-4 before the
+// icon and size fields left the wire.)
 
-/// Every `&'static str` that [`icon_class_for`] and [`category_for`] can
-/// return, plus the folder-DTO constants.
+/// Every `&'static str` that [`category_for`] can return, plus the
+/// folder-DTO constant.
 ///
 /// Keep this table in sync when adding a value to those functions — a
 /// missing entry is not a bug (callers fall back to `Arc::from`, same
 /// bytes, one extra allocation), just a lost optimization.
 static DISPLAY_INTERN: LazyLock<HashMap<&'static str, Arc<str>>> = LazyLock::new(|| {
     const CLOSED_SET: &[&str] = &[
-        // icon_class_for
-        "fas fa-file-pdf",
-        "fas fa-file-word",
-        "fas fa-file-excel",
-        "fas fa-file-powerpoint",
-        "fas fa-file-archive",
-        "fas fa-file-code",
-        "fas fa-hdd",
-        "fas fa-file-image",
-        "fas fa-file-video",
-        "fas fa-file-audio",
-        "fas fa-file-alt",
-        "fas fa-terminal",
-        "fas fa-file",
         // category_for
         "PDF",
         "Document",
@@ -57,17 +60,16 @@ static DISPLAY_INTERN: LazyLock<HashMap<&'static str, Arc<str>>> = LazyLock::new
         "Audio",
         "Markdown",
         "Text",
-        // FolderDto constants
-        "fas fa-folder",
+        // FolderDto constant
         "Folder",
     ];
     CLOSED_SET.iter().map(|s| (*s, Arc::from(*s))).collect()
 });
 
-/// Returns a shared `Arc<str>` for a display value from the closed sets
-/// above (icon class, category). Lookup + refcount bump instead of
-/// alloc + copy; unknown values (future additions not yet in the table)
-/// fall back to `Arc::from` with identical bytes.
+/// Returns a shared `Arc<str>` for a closed-set display value (category, or
+/// the folder constant). Lookup + refcount bump instead of alloc + copy;
+/// unknown values (future additions not yet in the table) fall back to
+/// `Arc::from` with identical bytes.
 pub fn intern_display(s: &'static str) -> Arc<str> {
     DISPLAY_INTERN
         .get(s)
@@ -180,147 +182,14 @@ fn lower_ext_into<'b>(ext: &str, buf: &'b mut [u8; MAX_CLASSIFIED_EXT]) -> Optio
     std::str::from_utf8(&buf[..bytes.len()]).ok()
 }
 
-/// The display classifications for one `(name, mime)` pair.
-pub struct DisplayClass {
-    pub icon_class: &'static str,
-    pub category: &'static str,
-}
-
-/// Run both classifiers over one `(name, mime)` pair, lowering the
-/// extension **once into a stack buffer** instead of each classifier
-/// allocating its own `to_ascii_lowercase()` String on the fallback path
-/// (generic/empty MIME rows — common for code and unknown types). Each
-/// decision tree is byte-for-byte the classifier it replaces
-/// (benches/ROUND11.md §21 gates the equivalence over a corpus).
-pub fn classify_display(name: &str, mime: &str) -> DisplayClass {
-    let mut buf = [0u8; MAX_CLASSIFIED_EXT];
-    let ext = ext_of(name).and_then(|e| lower_ext_into(e, &mut buf));
-    DisplayClass {
-        icon_class: icon_class_with_ext(mime, ext),
-        category: category_with_ext(mime, ext),
-    }
-}
-
-// ─── Icon class (FontAwesome) ────────────────────────────────────────
-
-/// Returns the FontAwesome icon class for a file, considering both MIME
-/// and filename extension as fallback.
-///
-/// Use this instead of the old `mime_to_icon_class` whenever the filename
-/// is available.
-pub fn icon_class_for(name: &str, mime: &str) -> &'static str {
-    let mut buf = [0u8; MAX_CLASSIFIED_EXT];
-    let ext = ext_of(name).and_then(|e| lower_ext_into(e, &mut buf));
-    icon_class_with_ext(mime, ext)
-}
-
-fn icon_class_with_ext(mime: &str, ext: Option<&str>) -> &'static str {
-    // 1. Try specific MIME matches first
-    match mime {
-        "application/pdf" => return "fas fa-file-pdf",
-        // MS Office & OpenDocument – Word
-        "application/msword"
-        | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        | "application/vnd.oasis.opendocument.text" => return "fas fa-file-word",
-        // Excel
-        "application/vnd.ms-excel"
-        | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        | "application/vnd.oasis.opendocument.spreadsheet"
-        | "text/csv" => return "fas fa-file-excel",
-        // PowerPoint
-        "application/vnd.ms-powerpoint"
-        | "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-        | "application/vnd.oasis.opendocument.presentation" => return "fas fa-file-powerpoint",
-        // Archives
-        "application/zip"
-        | "application/x-rar-compressed"
-        | "application/vnd.rar"
-        | "application/x-7z-compressed"
-        | "application/gzip"
-        | "application/x-gzip"
-        | "application/x-tar"
-        | "application/x-bzip2"
-        | "application/x-xz"
-        | "application/x-compress" => return "fas fa-file-archive",
-        // JSON / JavaScript / code transported as application/*
-        "application/json"
-        | "application/ld+json"
-        | "application/javascript"
-        | "application/typescript"
-        | "application/x-httpd-php"
-        | "application/xml"
-        | "application/xhtml+xml"
-        | "application/sql"
-        | "application/x-yaml"
-        | "application/toml"
-        | "application/x-sh"
-        | "application/x-shellscript"
-        | "application/x-csh" => return "fas fa-file-code",
-        // Installers / disk images
-        "application/x-apple-diskimage"
-        | "application/x-ms-dos-executable"
-        | "application/x-msdownload"
-        | "application/x-msi"
-        | "application/vnd.debian.binary-package"
-        | "application/x-rpm"
-        | "application/vnd.appimage" => return "fas fa-hdd",
-        _ => {}
-    }
-
-    // 2. MIME prefix matches
-    if mime.starts_with("image/") {
-        return "fas fa-file-image";
-    } else if mime.starts_with("video/") {
-        return "fas fa-file-video";
-    } else if mime.starts_with("audio/") {
-        return "fas fa-file-audio";
-    } else if mime.starts_with("text/x-script")
-        || mime.starts_with("text/x-python")
-        || mime.starts_with("text/x-java")
-        || mime.starts_with("text/x-c")
-        || mime.starts_with("text/x-rust")
-        || mime.starts_with("text/x-go")
-        || mime.starts_with("text/x-ruby")
-        || mime.starts_with("text/x-shellscript")
-        || mime.starts_with("text/x-php")
-        || mime.contains("javascript")
-        || mime.contains("typescript")
-    {
-        return "fas fa-file-code";
-    } else if mime.starts_with("text/") {
-        return "fas fa-file-alt";
-    }
-
-    // 3. Extension-based fallback (for application/octet-stream, empty, etc.)
-    if let Some(ext) = ext {
-        return match ext {
-            "pdf" => "fas fa-file-pdf",
-            "doc" | "docx" | "odt" | "rtf" => "fas fa-file-word",
-            "xls" | "xlsx" | "ods" | "csv" => "fas fa-file-excel",
-            "ppt" | "pptx" | "odp" | "key" => "fas fa-file-powerpoint",
-            "jpg" | "jpeg" | "png" | "gif" | "bmp" | "svg" | "webp" | "ico" | "tiff" | "tif"
-            | "heic" | "heif" | "avif" => "fas fa-file-image",
-            "mp4" | "avi" | "mkv" | "mov" | "wmv" | "flv" | "webm" | "m4v" => "fas fa-file-video",
-            "mp3" | "wav" | "ogg" | "flac" | "aac" | "wma" | "m4a" | "opus" => "fas fa-file-audio",
-            "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" | "zst" | "lz4" => {
-                "fas fa-file-archive"
-            }
-            "exe" | "msi" | "dmg" | "deb" | "rpm" | "appimage" | "pkg" | "snap" | "flatpak" => {
-                "fas fa-hdd"
-            }
-            "js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx" | "py" | "pyw" | "rs" | "go" | "java"
-            | "kt" | "kts" | "scala" | "c" | "h" | "cpp" | "hpp" | "cc" | "cxx" | "cs" | "rb"
-            | "php" | "swift" | "r" | "lua" | "pl" | "pm" | "html" | "htm" | "css" | "scss"
-            | "sass" | "less" | "json" | "xml" | "yaml" | "yml" | "toml" | "ini" | "cfg"
-            | "conf" | "sql" | "graphql" | "proto" | "vue" | "svelte" => "fas fa-file-code",
-            "sh" | "bash" | "zsh" | "fish" | "ps1" | "bat" | "cmd" => "fas fa-terminal",
-            "md" | "markdown" | "rst" | "txt" => "fas fa-file-alt",
-            _ => "fas fa-file",
-        };
-    }
-
-    "fas fa-file"
-}
+// `DisplayClass` / `classify_display` lived here: a fused pass that lowered
+// the extension once into a stack buffer and ran all three display
+// classifiers off it, instead of each allocating its own
+// `to_ascii_lowercase()` on the generic-MIME fallback path (ROUND11 §21,
+// 2.12x). Steps 2 and 4 of `retire-precomputed-display-fields.md` retired
+// `icon_special_class` and `icon_class` from the wire, leaving `category_for`
+// as the only classifier — there is nothing left to fuse, so the struct and
+// the wrapper are gone and callers use `category_for` directly.
 
 // ─── Category label ──────────────────────────────────────────────────
 
@@ -488,43 +357,11 @@ pub fn category_orders_for_filter(filter: SearchTypeFilter) -> &'static [i16] {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_icon_class_for_with_extension_fallback() {
-        // Specific MIME types
-        assert_eq!(
-            icon_class_for("doc.pdf", "application/pdf"),
-            "fas fa-file-pdf"
-        );
-        assert_eq!(
-            icon_class_for(
-                "file.docx",
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            ),
-            "fas fa-file-word"
-        );
-
-        // Extension fallback when MIME is generic
-        assert_eq!(
-            icon_class_for("script.py", "application/octet-stream"),
-            "fas fa-file-code"
-        );
-        assert_eq!(
-            icon_class_for("app.dmg", "application/octet-stream"),
-            "fas fa-hdd"
-        );
-        assert_eq!(
-            icon_class_for("archive.zip", "application/octet-stream"),
-            "fas fa-file-archive"
-        );
-        assert_eq!(
-            icon_class_for("data.xlsx", "application/octet-stream"),
-            "fas fa-file-excel"
-        );
-        assert_eq!(
-            icon_class_for("run.sh", "application/octet-stream"),
-            "fas fa-terminal"
-        );
-    }
+    // `test_icon_class_for_with_extension_fallback` lived here. The
+    // equivalent coverage now sits in `frontend/src/lib/utils/display.test.ts`
+    // against `iconNameFor`, which is where the classifier moved — same
+    // corpus (specific MIME, generic MIME + extension, shell scripts), same
+    // resolution order, asserting registry names instead of CSS classes.
 
     #[test]
     fn test_category_for() {
@@ -553,19 +390,13 @@ mod tests {
     #[test]
     fn test_intern_display_covers_closed_sets_and_shares_storage() {
         for s in [
-            "fas fa-file-pdf",
-            "fas fa-file",
-            "fas fa-terminal",
-            "fas fa-folder",
-            // `"code-icon rust-icon"`, `"folder-icon"` and `""` were here
-            // until `icon_special_class` left the wire. They were that
-            // classifier's values exclusively — `icon_class_for` bottoms out
-            // at "fas fa-file" and `category_for` at "Document", so neither
-            // can return them, and `intern_display("")` now has no callers.
-            "PDF",
-            "Folder",
-            "Document",
-            "Markdown",
+            // The `fas fa-*` glyph classes and the `*-icon` CSS classes were
+            // both here until steps 2 and 4 of
+            // `retire-precomputed-display-fields.md` took `icon_special_class`
+            // and `icon_class` off the wire. `category_for` is the only
+            // closed-set classifier left, so the table is its values plus the
+            // folder constant.
+            "PDF", "Folder", "Document", "Markdown",
         ] {
             let a = intern_display(s);
             let b = intern_display(s);

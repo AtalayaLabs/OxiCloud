@@ -3,9 +3,9 @@
 //! The listing maps each `FolderResourceRow` into a `FolderResourceItemDto`.
 //! BEFORE cloned `row.name` into the DTO (`name: row.name.clone()`) even
 //! though the row is owned by the mapping closure — one avoidable `String`
-//! heap alloc per listed folder/file. AFTER computes the name-derived icon /
-//! category classes first (they borrow `&row.name`), then MOVES `row.name`
-//! into the DTO — the same output, one fewer alloc per row.
+//! heap alloc per listed folder/file. AFTER computes the name-derived
+//! category first (it borrows `&row.name`), then MOVES `row.name` into the
+//! DTO — the same output, one fewer alloc per row.
 //!
 //! Section 2 (round 9): the SAME clone-vs-move port applied to the
 //! favorites/recents listings (`/api/favorites/resources`,
@@ -25,9 +25,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use chrono::{DateTime, TimeZone, Utc};
-use oxicloud::application::dtos::display_helpers::{
-    category_for, icon_class_for, intern_display, intern_mime,
-};
+use oxicloud::application::dtos::display_helpers::{category_for, intern_display, intern_mime};
 use oxicloud::application::dtos::favorites_dto::FavoriteResourceRow;
 use oxicloud::application::dtos::file_dto::FileDto;
 use oxicloud::application::dtos::folder_dto::{FolderDto, FolderResourceRow};
@@ -106,9 +104,9 @@ fn rows(n: usize) -> Vec<FolderResourceRow> {
         .collect()
 }
 
-/// (name, icon_class, category) triple extracted from each produced DTO — the
+/// (name, category) pair extracted from each produced DTO — the
 /// fields the move-vs-clone touches. Used for the equivalence gate.
-type Probe = (String, std::sync::Arc<str>, std::sync::Arc<str>);
+type Probe = (String, std::sync::Arc<str>);
 
 /// BEFORE — verbatim: `name: row.name.clone()` in both branches.
 fn map_before(rows: Vec<FolderResourceRow>) -> Vec<Probe> {
@@ -130,14 +128,13 @@ fn map_before(rows: Vec<FolderResourceRow>) -> Vec<Probe> {
                     // not DAV emission.
                     tree_modified_at: row.modified_at,
                     is_root: false,
-                    icon_class: intern_display("fas fa-folder"),
                     category: intern_display("Folder"),
                     created_by: None,
                     updated_by: None,
                     is_favorite: false,
                     is_shared: false,
                 };
-                (dto.name, dto.icon_class, dto.category)
+                (dto.name, dto.category)
             } else {
                 let mime = row
                     .mime_type
@@ -160,7 +157,6 @@ fn map_before(rows: Vec<FolderResourceRow>) -> Vec<Probe> {
                     folder_id: row.parent_id.map(|u| u.to_string()),
                     created_at: row.created_at,
                     modified_at: row.modified_at,
-                    icon_class: intern_display(icon_class_for(&row.name, mime)),
                     category: intern_display(category_for(&row.name, mime)),
                     content_hash,
                     etag,
@@ -169,13 +165,13 @@ fn map_before(rows: Vec<FolderResourceRow>) -> Vec<Probe> {
                     is_favorite: false,
                     is_shared: false,
                 };
-                (dto.name, dto.icon_class, dto.category)
+                (dto.name, dto.category)
             }
         })
         .collect()
 }
 
-/// AFTER — icons/category first (borrow `&row.name`), then move `row.name`.
+/// AFTER — category first (borrows `&row.name`), then move `row.name`.
 fn map_after(rows: Vec<FolderResourceRow>) -> Vec<Probe> {
     rows.into_iter()
         .map(|row| {
@@ -195,14 +191,13 @@ fn map_after(rows: Vec<FolderResourceRow>) -> Vec<Probe> {
                     // not DAV emission.
                     tree_modified_at: row.modified_at,
                     is_root: false,
-                    icon_class: intern_display("fas fa-folder"),
                     category: intern_display("Folder"),
                     created_by: None,
                     updated_by: None,
                     is_favorite: false,
                     is_shared: false,
                 };
-                (dto.name, dto.icon_class, dto.category)
+                (dto.name, dto.category)
             } else {
                 let mime = row
                     .mime_type
@@ -216,7 +211,6 @@ fn map_after(rows: Vec<FolderResourceRow>) -> Vec<Probe> {
                 } else {
                     File::compute_etag(&content_hash, modified_at_u)
                 };
-                let icon_class = intern_display(icon_class_for(&row.name, mime));
                 let category = intern_display(category_for(&row.name, mime));
                 let dto = FileDto {
                     id: row.id.to_string(),
@@ -227,7 +221,6 @@ fn map_after(rows: Vec<FolderResourceRow>) -> Vec<Probe> {
                     folder_id: row.parent_id.map(|u| u.to_string()),
                     created_at: row.created_at,
                     modified_at: row.modified_at,
-                    icon_class,
                     category,
                     content_hash,
                     etag,
@@ -236,7 +229,7 @@ fn map_after(rows: Vec<FolderResourceRow>) -> Vec<Probe> {
                     is_favorite: false,
                     is_shared: false,
                 };
-                (dto.name, dto.icon_class, dto.category)
+                (dto.name, dto.category)
             }
         })
         .collect()
@@ -287,15 +280,9 @@ fn fav_rows(n: usize) -> Vec<FavoriteResourceRow> {
         .collect()
 }
 
-/// (name, path, content_hash, icon_class, category) — every field the
+/// (name, path, content_hash, category) — every field the
 /// clone→move rewrite touches on the favorites/recents mapping.
-type FavProbe = (
-    String,
-    String,
-    String,
-    std::sync::Arc<str>,
-    std::sync::Arc<str>,
-);
+type FavProbe = (String, String, String, std::sync::Arc<str>);
 
 /// BEFORE — verbatim favorites/recents mapping: `row.path.clone()`,
 /// `row.name.clone()` (both branches) and `row.blob_hash.clone()`.
@@ -323,20 +310,13 @@ fn fav_map_before(rows: Vec<FavoriteResourceRow>) -> Vec<FavProbe> {
                     // not DAV emission.
                     tree_modified_at: row.modified_at,
                     is_root: false,
-                    icon_class: intern_display("fas fa-folder"),
                     category: intern_display("Folder"),
                     created_by: None,
                     updated_by: None,
                     is_favorite: false,
                     is_shared: false,
                 };
-                (
-                    dto.name,
-                    dto.path,
-                    String::new(),
-                    dto.icon_class,
-                    dto.category,
-                )
+                (dto.name, dto.path, String::new(), dto.category)
             } else {
                 let mime = row
                     .mime_type
@@ -359,7 +339,6 @@ fn fav_map_before(rows: Vec<FavoriteResourceRow>) -> Vec<FavProbe> {
                     folder_id: row.parent_id.map(|u| u.to_string()),
                     created_at: row.resource_created_at,
                     modified_at: row.modified_at,
-                    icon_class: intern_display(icon_class_for(&row.name, mime)),
                     category: intern_display(category_for(&row.name, mime)),
                     content_hash,
                     etag,
@@ -368,13 +347,7 @@ fn fav_map_before(rows: Vec<FavoriteResourceRow>) -> Vec<FavProbe> {
                     is_favorite: false,
                     is_shared: false,
                 };
-                (
-                    dto.name,
-                    dto.path,
-                    dto.content_hash,
-                    dto.icon_class,
-                    dto.category,
-                )
+                (dto.name, dto.path, dto.content_hash, dto.category)
             }
         })
         .collect()
@@ -406,20 +379,13 @@ fn fav_map_after(rows: Vec<FavoriteResourceRow>) -> Vec<FavProbe> {
                     // not DAV emission.
                     tree_modified_at: row.modified_at,
                     is_root: false,
-                    icon_class: intern_display("fas fa-folder"),
                     category: intern_display("Folder"),
                     created_by: None,
                     updated_by: None,
                     is_favorite: false,
                     is_shared: false,
                 };
-                (
-                    dto.name,
-                    dto.path,
-                    String::new(),
-                    dto.icon_class,
-                    dto.category,
-                )
+                (dto.name, dto.path, String::new(), dto.category)
             } else {
                 let mime = row
                     .mime_type
@@ -433,7 +399,6 @@ fn fav_map_after(rows: Vec<FavoriteResourceRow>) -> Vec<FavProbe> {
                 } else {
                     File::compute_etag(&content_hash, modified_at_u)
                 };
-                let icon_class = intern_display(icon_class_for(&row.name, mime));
                 let category = intern_display(category_for(&row.name, mime));
                 let dto = FileDto {
                     id: row.resource_id.to_string(),
@@ -444,7 +409,6 @@ fn fav_map_after(rows: Vec<FavoriteResourceRow>) -> Vec<FavProbe> {
                     folder_id: row.parent_id.map(|u| u.to_string()),
                     created_at: row.resource_created_at,
                     modified_at: row.modified_at,
-                    icon_class,
                     category,
                     content_hash,
                     etag,
@@ -453,13 +417,7 @@ fn fav_map_after(rows: Vec<FavoriteResourceRow>) -> Vec<FavProbe> {
                     is_favorite: false,
                     is_shared: false,
                 };
-                (
-                    dto.name,
-                    dto.path,
-                    dto.content_hash,
-                    dto.icon_class,
-                    dto.category,
-                )
+                (dto.name, dto.path, dto.content_hash, dto.category)
             }
         })
         .collect()
@@ -468,7 +426,7 @@ fn fav_map_after(rows: Vec<FavoriteResourceRow>) -> Vec<FavProbe> {
 fn main() {
     let n: usize = env_or("BENCH_ROWS", 500);
 
-    // Equivalence gate: identical (name, icon_class, category) for every row.
+    // Equivalence gate: identical (name, category) for every row.
     if map_before(rows(n)) != map_after(rows(n)) {
         eprintln!("EQUIVALENCE GATE FAILED: mapping output differs");
         std::process::exit(1);

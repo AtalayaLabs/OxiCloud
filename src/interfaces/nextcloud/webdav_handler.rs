@@ -2490,7 +2490,6 @@ mod tests {
             modified_at: crate::application::dtos::timestamp_helpers::epoch_zero(),
             tree_modified_at: crate::application::dtos::timestamp_helpers::epoch_zero(),
             is_root: false,
-            icon_class: std::sync::Arc::from("fas fa-folder"),
             category: std::sync::Arc::from("Folder"),
             etag: String::new(),
             // §14 provenance not relevant to path-mapper tests.

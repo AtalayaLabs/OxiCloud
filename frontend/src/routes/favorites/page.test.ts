@@ -45,7 +45,6 @@ function withOneFile() {
 				resource: {
 					category: 'Image',
 					created_at: 0,
-					icon_class: 'fa-file',
 					id: 'f1',
 					mime_type: 'image/png',
 					modified_at: 0,

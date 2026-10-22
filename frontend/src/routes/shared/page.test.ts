@@ -40,7 +40,6 @@ function grantItem() {
 		resource: {
 			category: 'Folder',
 			created_at: 0,
-			icon_class: 'fa-folder',
 			id: 'r1',
 			is_root: false,
 			modified_at: 0,

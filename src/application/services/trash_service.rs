@@ -3,7 +3,7 @@ use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
 use crate::application::dtos::cursor::PageCursor;
-use crate::application::dtos::display_helpers::{classify_display, intern_display, intern_mime};
+use crate::application::dtos::display_helpers::{category_for, intern_display, intern_mime};
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::FolderDto;
 use crate::application::dtos::grant_dto::{ResourceContentDto, ResourceTypeDto};
@@ -126,16 +126,12 @@ impl TrashService {
         // Calculate days_until_deletion before moving item fields
         let days_until_deletion = item.days_until_deletion();
 
-        // Determine display fields based on item type
-        let (category, icon_class) = match item.item_type() {
-            TrashedItemType::Folder => ("Folder".to_string(), "fas fa-folder".to_string()),
-            TrashedItemType::File => {
-                // Use empty MIME type to leverage extension fallback; one
-                // fused pass lowers the extension once instead of twice
-                // (benches/ROUND11.md §21).
-                let classes = classify_display(item.name(), "");
-                (classes.category.to_string(), classes.icon_class.to_string())
-            }
+        // Determine the display field based on item type
+        let category = match item.item_type() {
+            TrashedItemType::Folder => "Folder".to_string(),
+            // Empty MIME type, so the classifier falls through to the
+            // extension arms — trash rows carry no stored mime.
+            TrashedItemType::File => category_for(item.name(), "").to_string(),
         };
 
         // Move the owned Strings out of the consumed item — the getter
@@ -153,7 +149,6 @@ impl TrashService {
             trashed_at: parts.trashed_at,
             days_until_deletion,
             category,
-            icon_class,
         }
     }
 }
@@ -969,7 +964,6 @@ fn row_to_item_dto(row: TrashResourceRow) -> TrashResourceItemDto {
             // stands in rather than a claim about descendants.
             tree_modified_at: row.modified_at,
             is_root: false,
-            icon_class: intern_display("fas fa-folder"),
             category: intern_display("Folder"),
             created_by: row.created_by,
             updated_by: row.updated_by,
@@ -994,7 +988,8 @@ fn row_to_item_dto(row: TrashResourceRow) -> TrashResourceItemDto {
         // may conditional-request it immediately after.
         let etag = File::etag_for_listing(row.blob_hash.as_deref(), row.modified_at);
         let content_hash = row.blob_hash.unwrap_or_default();
-        let classes = classify_display(&row.name, mime);
+        // Compute before the literal moves `row.name` out.
+        let category = intern_display(category_for(&row.name, mime));
         let dto = FileDto {
             id: row.resource_id.to_string(),
             name: row.name,
@@ -1004,8 +999,7 @@ fn row_to_item_dto(row: TrashResourceRow) -> TrashResourceItemDto {
             folder_id: row.parent_id.map(|u| u.to_string()),
             created_at: row.resource_created_at,
             modified_at: row.modified_at,
-            icon_class: intern_display(classes.icon_class),
-            category: intern_display(classes.category),
+            category,
             content_hash,
             etag,
             created_by: row.created_by,

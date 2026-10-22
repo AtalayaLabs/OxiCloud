@@ -255,10 +255,11 @@ pub struct SearchFileResultDto {
     pub modified_at: DateTime<Utc>,
     /// Relevance score (0-100) computed server-side
     pub relevance_score: u32,
-    /// CSS icon class for the file type (e.g., "fas fa-file-pdf")
-    #[schema(value_type = String)]
-    pub icon_class: Arc<str>,
-    /// Content category: "document", "image", "video", "audio", "archive", "code", "other"
+    /// Coarse content category — a stable machine key, not display text.
+    /// Carried through from `FileDto::category`; see that field for the full
+    /// contract. (This comment used to claim lowercase values — "document",
+    /// "image", … — which it never carried: `enrich_file` copies the
+    /// capitalised `category_for` output verbatim.)
     #[schema(value_type = String)]
     pub category: Arc<str>,
     /// Raw BLAKE3 content hash. Feeds `FileDto::content_hash` and
@@ -728,7 +729,6 @@ fn append_files(
             folder_id: f.folder_id,
             created_at: f.created_at,
             modified_at: f.modified_at,
-            icon_class: f.icon_class,
             category: f.category,
             content_hash: f.blob_hash,
             etag: f.etag,
@@ -766,10 +766,9 @@ fn append_folders(items: &mut Vec<SearchResourceItem>, folders: Vec<SearchFolder
             // descendants.
             tree_modified_at: f.modified_at,
             is_root: f.is_root,
-            // Folders carry closed-set display fields — always the
-            // same static strings. Cheap to build via `Arc::from`
-            // (interning-worthy but not on the search hot path).
-            icon_class: Arc::from("fas fa-folder"),
+            // Folders carry a closed-set display field — always the same
+            // static string. Cheap to build via `Arc::from` (interning-worthy
+            // but not on the search hot path).
             category: Arc::from("Folder"),
             etag: f.etag,
             created_by: f.created_by,
@@ -812,9 +811,14 @@ pub struct SearchSuggestionItem {
     pub id: String,
     /// Path for context
     pub path: String,
-    /// CSS icon class
+    /// MIME type, so the client can pick its own glyph.
+    ///
+    /// Replaced `icon_class` (a CSS class string) in step 4 of
+    /// `docs/plan/retire-precomputed-display-fields.md`. Folders carry
+    /// `"directory"`, matching the convention elsewhere in the storage layer —
+    /// clients branch on `item_type` for those and never consult this.
     #[schema(value_type = String)]
-    pub icon_class: Arc<str>,
+    pub mime_type: Arc<str>,
     /// Relevance score
     pub relevance_score: u32,
 }

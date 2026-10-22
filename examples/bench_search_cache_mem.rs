@@ -144,7 +144,6 @@ fn synth_entry(idx: u64) -> Arc<SearchResultsDto> {
                 1_752_800_000,
             ),
             relevance_score: 50,
-            icon_class: "fas fa-file-pdf".into(),
             category: "document".into(),
             blob_hash: pseudo_hex(&mut rng, 64),
             snippet: content_hit.then(|| SNIPPET.to_string()),

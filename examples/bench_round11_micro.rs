@@ -1493,95 +1493,18 @@ fn section_20(iters: u64) {
     });
 }
 
-// ─── §21 display classifier fusion ──────────────────────────────────────────
-
-fn section_21(iters: u64) {
-    use oxicloud::application::dtos::display_helpers::{
-        category_for, classify_display, icon_class_for,
-    };
-    println!("  §21 display double-classify (per listing row)");
-    // Was a TRIPLE classify when ROUND11 measured 2.12x: `icon_special_class`
-    // was retired from the wire (retire-precomputed-display-fields.md step 2),
-    // so the fusion now covers two trees and the delta below is correspondingly
-    // smaller than the archived figure. The archived number is left as-is in
-    // ROUND11.md — it records what was true when the fusion landed.
-
-    // Corpus spanning: specific MIME, prefix MIME, octet-stream + ext
-    // fallback (lower/UPPER), no-ext, >16-byte ext, non-ASCII ext, dotfile.
-    let corpus: &[(&str, &str)] = &[
-        ("IMG_2026.JPG", "image/jpeg"),
-        ("informe.pdf", "application/pdf"),
-        ("main.rs", "application/octet-stream"),
-        ("ARCHIVO.TXT", ""),
-        ("setup.AppImage", "application/octet-stream"),
-        ("video.mkv", "video/x-matroska"),
-        ("script.PY", ""),
-        ("no_extension", "application/octet-stream"),
-        ("weird.extensionlongerthansixteen", ""),
-        ("acentuado.ñml", ""),
-        (".bashrc", "text/plain"),
-        ("data.json", "application/json"),
-        ("song.FLAC", "application/octet-stream"),
-    ];
-
-    // Gate 1: fused output identical to the public classifiers.
-    let mut ok = true;
-    for (name, mime) in corpus {
-        let c = classify_display(name, mime);
-        ok &= c.icon_class == icon_class_for(name, mime) && c.category == category_for(name, mime);
-    }
-    gate("fused == separate classifiers (corpus)", ok);
-    // Gate 2: the historical heap-lowered ext hits the same arms — for
-    // ≤16-byte exts the stack lowering equals `to_ascii_lowercase()`; a
-    // >16-byte ext must land on the same defaults the old `_` arms gave.
-    let long = classify_display("weird.extensionlongerthansixteen", "");
-    gate(
-        "long-ext defaults match old `_` arms",
-        long.icon_class == "fas fa-file" && long.category == "Document",
-    );
-
-    // BEFORE replica: per-classifier ext_of + heap to_ascii_lowercase (the
-    // shipped trees are shared, so the delta measured is exactly the
-    // plumbing the fusion removed).
-    fn ext_of(name: &str) -> Option<&str> {
-        let name = name.rsplit('/').next().unwrap_or(name);
-        let after_dot = name.rsplit('.').next()?;
-        if after_dot.len() == name.len() || after_dot.is_empty() {
-            return None;
-        }
-        Some(after_dot)
-    }
-
-    let it = (iters / 10).max(1000);
-    measure("BEFORE 2× classify (heap ext on fallback)", it, || {
-        let mut acc = 0usize;
-        for (name, mime) in corpus {
-            // The pre-fusion code heap-lowercased the ext INSIDE each
-            // classifier, but only on rows that fell through to the
-            // extension fallback (generic/empty MIME) — replicate exactly
-            // that alloc profile next to the shared decision trees.
-            let falls_back = mime.is_empty() || *mime == "application/octet-stream";
-            if falls_back {
-                let _l = ext_of(name).map(|e| e.to_ascii_lowercase());
-            }
-            let a = icon_class_for(name, mime);
-            if falls_back {
-                let _l = ext_of(name).map(|e| e.to_ascii_lowercase());
-            }
-            let c = category_for(name, mime);
-            acc += a.len() + c.len();
-        }
-        acc
-    });
-    measure("AFTER  fused classify_display", it, || {
-        let mut acc = 0usize;
-        for (name, mime) in corpus {
-            let c = classify_display(name, mime);
-            acc += c.icon_class.len() + c.category.len();
-        }
-        acc
-    });
-}
+// ─── §21 display classifier fusion — REMOVED ────────────────────────────────
+//
+// `section_21` measured `classify_display`, the fused pass that lowered the
+// extension once and ran all three display classifiers off it (2.12x, recorded
+// in ROUND11.md). Steps 2 and 4 of `retire-precomputed-display-fields.md` took
+// `icon_special_class` and `icon_class` off the wire, leaving `category_for`
+// alone — with one tree there is nothing to fuse, so `classify_display` and
+// the section that benchmarked it are both gone.
+//
+// The ROUND11.md entry stays as written: it records a real measurement of a
+// shape that really shipped. Section numbers are deliberately NOT renumbered,
+// so §20 → §22 in the output and every archived number keeps its label.
 
 // ─── main ───────────────────────────────────────────────────────────────────
 
@@ -1608,7 +1531,7 @@ fn main() {
     section_18(iters);
     section_19(iters);
     section_20(iters);
-    section_21(iters);
+    // section_21 removed with `classify_display` — see the note above.
 
     println!("\ndone");
 }

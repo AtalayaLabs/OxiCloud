@@ -34,7 +34,7 @@
 	// to every open tab via the message-bus push + version-diff
 	// refetch. No client-side per-user state → no stale-id leak.
 	import Icon from '$lib/icons/Icon.svelte';
-	import { dateTimeFormatFor, iconNameFromClass } from '$lib/utils/display';
+	import { dateTimeFormatFor, iconNameFor } from '$lib/utils/display';
 	import { userInitials, avatarColorIndex } from '$lib/utils/avatar';
 	import { i18n, LANGUAGES, setLocale, t, type Locale } from '$lib/i18n/index.svelte';
 	import { serverConfig } from '$lib/stores/serverConfig.svelte';
@@ -878,7 +878,7 @@
 										{#if s.kind === 'folder'}
 											<Icon name="folder" />
 										{:else}
-											<Icon name={iconNameFromClass(s.item.icon_class)} />
+											<Icon name={iconNameFor(s.item.name, s.item.mime_type)} />
 										{/if}
 									</span>
 									<span class="suggest__name">{s.item.name}</span>

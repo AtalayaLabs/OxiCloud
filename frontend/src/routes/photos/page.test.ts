@@ -29,7 +29,6 @@ function photo(id: string) {
 	return {
 		category: 'Image',
 		created_at: 0,
-		icon_class: 'fa-image',
 		id,
 		mime_type: 'image/jpeg',
 		modified_at: 0,

@@ -1,12 +1,14 @@
 /**
  * Shared "is this filename a text-shaped file?" test.
  *
- * The extension list mirrors the server-side
- * `display_helpers.rs::icon_class_with_ext` "code / script / prose"
- * families (its `fas fa-file-code`, `fas fa-terminal` and
- * `fas fa-file-alt` arms) — anything the backend classifies as
- * text-shaped for its icon picker qualifies here too. Two consumers
- * today:
+ * The extension list is the sibling of `utils/display.ts`'s
+ * `ICON_BY_EXT` — its `file-code`, `terminal` and `file-alt` groups are
+ * the same "code / script / prose" families this regex accepts. Both
+ * used to mirror a server-side classifier
+ * (`display_helpers.rs::icon_class_with_ext`) by comment alone; that
+ * classifier is gone and the icon table now lives next door, so
+ * `display.test.ts` asserts that every extension here has a glyph
+ * there. Two consumers today:
  *
  *   1. `FileViewer.svelte` decides whether to mount the collab editor
  *      (the alternative branches — video / octet-stream — mis-play
@@ -16,12 +18,9 @@
  *      (`test.jpg` should almost certainly not go through the collab
  *      editor).
  *
- * Adding an extension: update the regex here AND
- * `display_helpers.rs::icon_class_with_ext` in the same change so the
- * FE gate and the backend classifier stay aligned. (This pointed at
- * `icon_special_class_with_ext` until that classifier was deleted with
- * the `icon_special_class` wire field — it had the finer per-language
- * table, but the same extension families.)
+ * Adding an extension: update the regex here AND `ICON_BY_EXT` in
+ * `utils/display.ts`, or `display.test.ts` fails — which is how the
+ * missing `.log` glyph was found when that assertion was first written.
  * (The follow-up in `project_mime_guess_overrides_pending` removes
  * this duplication entirely — the FE will fall back to a
  * `mime.startsWith('text/')` check once the server-side MIME table

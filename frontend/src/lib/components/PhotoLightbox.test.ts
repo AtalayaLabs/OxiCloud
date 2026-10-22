@@ -28,7 +28,6 @@ function item(id: string, size = 1) {
 		modified_at: 0,
 		created_at: 0,
 		sort_date: 0,
-		icon_class: '',
 		etag: '',
 		content_hash: ''
 	} as never;

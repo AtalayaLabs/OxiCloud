@@ -1,21 +1,48 @@
 # Retire the pre-computed display fields from the wire
 
-Status: **steps 1, 2, 5 shipped**; 3, 4, 6 open. Written 2026-10-22 from Ed's
-question: are `icon_class`, `icon_special_class` and `size_formatted` actually
-used in the UI, and can the FE compute them instead?
+Status: **all six steps shipped.** Written 2026-10-22 from Ed's question: are
+`icon_class`, `icon_special_class` and `size_formatted` actually used in the
+UI, and can the FE compute them instead?
 
 | Step | What | Status |
 |---|---|---|
 | 1 | i18n fix — `ResourceList` type-cell through `typeLabel` | ✅ shipped |
 | 2 | Drop `icon_special_class` (6 DTOs, zero consumers) | ✅ shipped |
-| 3 | FE derives the icon from `mime_type` + extension | open |
-| 4 | Drop `icon_class` — **blocked on 3** | open |
+| 3 | FE derives the icon from `mime_type` + extension | ✅ shipped |
+| 4 | Drop `icon_class` | ✅ shipped |
 | 5 | `PhotoLightbox` → `formatBytes`, drop `size_formatted` | ✅ shipped |
-| 6 | Document `category` as a machine key | open |
+| 6 | Document `category` as a machine key | ✅ shipped |
 
-Step 5 was taken out of order: it is independent of 3/4 and of the mime work,
-so there was no reason to hold it behind the icon chain. What remains is the
-icon pair plus the `category` doc note.
+Step 5 was taken out of order — it is independent of 3/4 and of the mime work,
+so there was no reason to hold it behind the icon chain. Steps 3 and 4 shipped
+together, in that order within the commit.
+
+**The `ResourceCategory` enum section below is NOT implemented.** It is the
+remaining follow-up, and it is deliberately deferred — see *Sequencing*.
+Everything above it describes shipped state.
+
+### What landed beyond the six steps
+
+- `DisplayClass` / `classify_display` are **gone**. The fused classifier
+  existed to lower the extension once for three decision trees (ROUND11 §21,
+  2.12x); with only `category_for` left there is nothing to fuse. Callers take
+  `category_for` directly, and `bench_round11_micro`'s §21 section was removed
+  with its subject (section numbers are not renumbered, so archived figures
+  keep their labels).
+- `search_service`'s private `format_bytes` and
+  `display_helpers::format_file_size` are both gone, leaving `formatBytes` as
+  the only size formatter in the product.
+- `SearchSuggestionItem.icon_class` became `mime_type` — it had no MIME field,
+  so suggestions would otherwise have been classifiable by filename alone.
+- A real pre-existing bug surfaced: `.log` was in `TEXTY_EXT_RE` (so the SPA
+  opens log files in the collab editor) but in **neither** icon table,
+  including the Rust one, so `foo.log` drew the generic glyph. Found by the new
+  `textyExtensionsWithoutIcon()` drift assertion on its first run, and fixed.
+- Three stale doc comments were corrected rather than carried forward: the
+  `display_helpers` module header (which stated the now-reversed principle that
+  the server pre-computes display fields so the FE need not duplicate them),
+  `format_file_size`'s parity claim, and `SearchFileResultDto.category`'s
+  lowercase value list.
 
 The `ResourceCategory` enum section below is unstarted, and deliberately so —
 see **Sequencing**.
@@ -117,26 +144,30 @@ through `typeLabel` too, which makes the English value purely internal.
 
 ## What the FE needs in exchange
 
-`mime_type` is already on every relevant DTO (`file`, `folder`, `favorites`,
-`recent`, `trash`, `search`), and `name` carries the extension — which is
-exactly the input `display_helpers::classify_display(name, mime)` takes. So no
-new field is required; the classification moves, it does not grow.
+`mime_type` was already on every relevant DTO (`file`, `folder`, `favorites`,
+`recent`, `trash`), and `name` carries the extension — exactly the input the
+classifier takes. So no new field was required; the classification moved, it
+did not grow. **One exception surfaced:** `SearchSuggestionItem` had no
+`mime_type`, so step 4 swapped `icon_class` for it rather than leaving
+suggestions classifiable by filename alone.
 
-**The hard constraint: do not create a third copy of the mapping.** It exists
-today in `display_helpers.rs` (Rust) and partially in `utils/display.ts` +
-`utils/textyExt.ts` (TS — whose comment says it mirrors the Rust classifier's
-code/script/prose extension families; step 2 repointed that comment from
-`icon_special_class_with_ext` to `icon_class_with_ext`, which carries the same
-families on coarser glyphs). The server cannot simply delete its copy:
-`category_order_for` depends on `category_for` for the `type` sort axis, which
-is server-side by necessity (see `docs/architecture/resource-listing.md`).
+**The hard constraint was: do not create a third copy of the mapping.** It
+lived in `display_helpers.rs` (Rust) and partially in `utils/display.ts` +
+`utils/textyExt.ts` (TS). The outcome is two copies, not three: the Rust icon
+tables were **deleted**, and `utils/display.ts::iconNameFor` is now the only
+icon classifier, with `textyExt.ts` as its sibling — and the two are held in
+step by an assertion (`textyExtensionsWithoutIcon`) rather than by a comment,
+which is how the `.log` gap was found. The server could not delete its
+*category* copy: `category_order_for` depends on `category_for` for the `type`
+sort axis, which is server-side by necessity (see
+`docs/architecture/resource-listing.md`).
 
-So the end state is deliberately asymmetric, and that asymmetry must be
-documented or it will read as an accident:
+The end state is deliberately asymmetric, and that asymmetry is documented on
+`FileDto::category` itself (step 6) so it cannot read as an accident:
 
 - **Server keeps** `category_for` / `category_order_for` — needed for
   `storage.files.category_order`, the indexed `type` sort key.
-- **Server stops emitting** the three presentational strings.
+- **Server no longer emits** the three presentational strings.
 - **FE owns** glyph + colour + byte formatting, derived from `mime_type` and
   `name`.
 - **`category` stays on the wire** as the machine key, because the sort and the

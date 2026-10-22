@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use super::display_helpers::{classify_display, intern_display, intern_mime};
+use super::display_helpers::{category_for, intern_display, intern_mime};
 use super::timestamp_helpers::{datetime_to_epoch, epoch_to_datetime, epoch_zero};
 
 /// DTO for file responses
@@ -39,11 +39,22 @@ pub struct FileDto {
     pub modified_at: DateTime<Utc>,
 
     // ── Pre-computed display fields (Arc<str>: values come from static tables) ──
-    /// FontAwesome icon CSS class (e.g. "fas fa-file-image")
-    #[schema(value_type = String)]
-    pub icon_class: Arc<str>,
-
-    /// Human-readable file category (e.g. "Image", "Document")
+    /// Coarse content category — a **stable machine key**, not display text.
+    ///
+    /// Values are the English identifiers `category_for` returns ("Image",
+    /// "Document", "Spreadsheet", …). Clients must treat them as opaque keys:
+    /// the SPA's only legitimate consumer path is
+    /// `utils/resourceBuckets.ts::typeLabel`, which maps them to localised
+    /// labels, plus the group-by buckets keyed off the same values. Rendering
+    /// this field directly is the i18n bug step 1 of
+    /// `docs/plan/retire-precomputed-display-fields.md` fixed — it showed
+    /// untranslated English in the Type column for every non-English locale.
+    ///
+    /// This is the one display field that stays server-side, and the reason is
+    /// not symmetry with the others: `category_order_for` turns it into
+    /// `storage.files.category_order`, the indexed `type` sort key. Deriving
+    /// it client-side would let the FE's buckets disagree with the server's
+    /// `ORDER BY`. See `docs/architecture/resource-listing.md`.
     #[schema(value_type = String)]
     pub category: Arc<str>,
 
@@ -113,12 +124,10 @@ impl From<File> for FileDto {
         // hydration). `etag` is still computed first from the live entity.
         let parts = file.into_parts();
 
-        // Display fields come from closed static tables and MIME values
-        // repeat massively across rows — intern instead of allocating a
-        // fresh Arc<str> per row (`Arc::from(&str)` always allocs+copies).
-        let classes = classify_display(&parts.name, &parts.mime_type);
-        let icon_class = intern_display(classes.icon_class);
-        let category = intern_display(classes.category);
+        // `category` comes from a closed static table and MIME values repeat
+        // massively across rows — intern instead of allocating a fresh
+        // Arc<str> per row (`Arc::from(&str)` always allocs+copies).
+        let category = intern_display(category_for(&parts.name, &parts.mime_type));
         let mime_type = intern_mime(&parts.mime_type);
 
         Self {
@@ -133,7 +142,6 @@ impl From<File> for FileDto {
             // RFC 3339 UTC — convert once at the DTO boundary.
             created_at: epoch_to_datetime(parts.created_at),
             modified_at: epoch_to_datetime(parts.modified_at),
-            icon_class,
             category,
             content_hash: parts.blob_hash,
             etag,
@@ -151,8 +159,8 @@ impl From<File> for FileDto {
 // To convert from FileDto to File for batch handlers
 impl From<FileDto> for File {
     fn from(dto: FileDto) -> Self {
-        // Display fields (icon_class, category) are not part of the
-        // domain entity and are ignored.
+        // `category` is a display field, not part of the domain entity,
+        // and is ignored.
         // Domain entity keeps timestamps as epoch seconds; DTO holds
         // RFC 3339 UTC. See `timestamp_helpers` for the rationale.
         File::from_dto(
@@ -207,7 +215,6 @@ impl FileDto {
             folder_id: None,
             created_at: epoch_zero(),
             modified_at: epoch_zero(),
-            icon_class: intern_display("fas fa-file"),
             category: intern_display("Document"),
             content_hash: String::new(),
             etag: String::new(),

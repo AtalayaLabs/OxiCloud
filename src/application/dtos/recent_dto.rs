@@ -4,7 +4,7 @@ use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 use super::cursor::{CursorListResponse, CursorQuery, PageCursor};
-use super::display_helpers::classify_display;
+use super::display_helpers::category_for;
 use super::favorites_dto::ItemKind;
 use super::grant_dto::{ResourceContentDto, ResourceTypeDto};
 use crate::domain::services::authorization::ResourceKind;
@@ -52,20 +52,17 @@ pub struct RecentItemDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub item_path: Option<String>,
 
-    // ── Pre-computed display fields ──
-    /// FontAwesome icon CSS class (e.g. "fas fa-file-image", "fas fa-folder")
-    pub icon_class: String,
-
-    /// Human-readable category (e.g. "Image", "Folder")
+    // ── Pre-computed display field ──
+    /// Content category — a stable machine key, not display text (e.g.
+    /// "Image", "Folder"). See `FileDto::category`.
     pub category: String,
 }
 
 impl RecentItemDto {
-    /// Populate display fields from the enriched metadata.
+    /// Populate the display field from the enriched metadata.
     /// Call this after constructing from the SQL row.
     pub fn with_display_fields(mut self) -> Self {
         if matches!(self.item_type, ItemKind::Folder) {
-            self.icon_class = "fas fa-folder".to_string();
             self.category = "Folder".to_string();
         } else {
             let name = self.item_name.as_deref().unwrap_or("");
@@ -73,9 +70,7 @@ impl RecentItemDto {
                 .item_mime_type
                 .as_deref()
                 .unwrap_or("application/octet-stream");
-            let classes = classify_display(name, mime);
-            self.icon_class = classes.icon_class.to_string();
-            self.category = classes.category.to_string();
+            self.category = category_for(name, mime).to_string();
         }
         self
     }

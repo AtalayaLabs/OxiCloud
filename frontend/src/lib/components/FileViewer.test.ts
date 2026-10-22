@@ -58,7 +58,6 @@ function file(over: Record<string, unknown> = {}) {
 		modified_at: 0,
 		created_at: 0,
 		sort_date: 0,
-		icon_class: '',
 		etag: '',
 		content_hash: '',
 		...over

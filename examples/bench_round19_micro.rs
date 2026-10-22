@@ -511,7 +511,7 @@ fn m4_before(row: BenchTrashRow) -> BenchFileDto {
     } else {
         compute_etag(&content_hash, 1_752_753_434)
     };
-    let _classes = row.name.len(); // stands in for classify_display(&row.name, …)
+    let _classes = row.name.len(); // stands in for category_for(&row.name, …)
     BenchFileDto {
         id: row.resource_id.to_string(),
         name: row.name.clone(),

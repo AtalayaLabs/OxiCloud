@@ -86,11 +86,8 @@ pub struct FolderDto {
     pub is_root: bool,
 
     // ── Pre-computed display fields (Arc<str>: always identical values) ──
-    /// FontAwesome icon CSS class (always "fas fa-folder")
-    #[schema(value_type = String)]
-    pub icon_class: Arc<str>,
-
-    /// Human-readable category (always "Folder")
+    /// Content category — a stable machine key, not display text; always
+    /// "Folder". See `FileDto::category` for the contract.
     #[schema(value_type = String)]
     pub category: Arc<str>,
 
@@ -151,9 +148,8 @@ impl From<Folder> for FolderDto {
             modified_at: epoch_to_datetime(parts.modified_at),
             tree_modified_at: epoch_to_datetime(parts.tree_modified_at),
             is_root,
-            // Constant display fields: refcount bump on interned statics
-            // instead of fresh Arc allocations per row.
-            icon_class: intern_display("fas fa-folder"),
+            // Constant display field: refcount bump on an interned static
+            // instead of a fresh Arc allocation per row.
             category: intern_display("Folder"),
             etag,
             created_by: parts.created_by,
@@ -170,8 +166,8 @@ impl From<Folder> for FolderDto {
 // To convert from FolderDto to Folder for batch handlers
 impl From<FolderDto> for Folder {
     fn from(dto: FolderDto) -> Self {
-        // Display fields (icon_class, category) are not part of the
-        // domain entity and are ignored.
+        // `category` is a display field, not part of the domain entity,
+        // and is ignored.
         Folder::from_dto(
             dto.id,
             dto.name,
@@ -236,7 +232,6 @@ impl FolderDto {
             modified_at: epoch_zero(),
             tree_modified_at: epoch_zero(),
             is_root: true,
-            icon_class: intern_display("fas fa-folder"),
             category: intern_display("Folder"),
             etag: String::new(),
             created_by: None,

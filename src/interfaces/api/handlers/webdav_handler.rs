@@ -574,7 +574,6 @@ async fn handle_propfind(
                 // for the root collection's `getlastmodified`.
                 tree_modified_at: Utc::now(),
                 is_root: true,
-                icon_class: intern_display("fas fa-folder"),
                 category: intern_display("Folder"),
                 created_by: None,
                 updated_by: None,

@@ -116,7 +116,7 @@
 	import { files as filesStore } from '$lib/stores/files.svelte';
 	import { preferences } from '$lib/stores/preferences.svelte';
 	import { formatBytes } from '$lib/utils/format';
-	import { formatDate, iconNameFromClass, fileIconKindClass } from '$lib/utils/display';
+	import { formatDate, iconNameFor, fileIconKindClass } from '$lib/utils/display';
 	import { gridColumns } from '$lib/utils/grid';
 	import { ResourceSectionsBuilder } from '$lib/utils/resourceSections';
 	import { ItemIndexBuilder } from '$lib/utils/itemIndex';
@@ -527,9 +527,6 @@
 	}
 	function mimeOf(item: FileItem | FolderItem): string | null {
 		return isFile(item) ? item.mime_type : null;
-	}
-	function iconClassOf(item: FileItem | FolderItem): string {
-		return item.icon_class;
 	}
 
 	// ── Dotfile filter ────────────────────────────────────────────────────────
@@ -1144,7 +1141,7 @@
 
 {#snippet row(item: FileItem | FolderItem)}
 	{@const kind = isFile(item) ? 'file' : 'folder'}
-	{@const iconName = kind === 'folder' ? 'folder' : iconNameFromClass(iconClassOf(item))}
+	{@const iconName = kind === 'folder' ? 'folder' : iconNameFor(item.name, mimeOf(item))}
 	{@const ctx = ctxOf(item.id)}
 	{@const ownerId = ownerIdOf(item)}
 	{@const dateVal = dateOf(item)}

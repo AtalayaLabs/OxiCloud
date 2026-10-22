@@ -7,7 +7,7 @@ use axum::{
 use std::sync::Arc;
 use tracing::info;
 
-use crate::application::dtos::display_helpers::{classify_display, intern_display, intern_mime};
+use crate::application::dtos::display_helpers::{category_for, intern_display, intern_mime};
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::FolderDto;
 use crate::application::dtos::grant_dto::{ResourceContentDto, ResourceTypeDto};
@@ -246,7 +246,6 @@ pub async fn list_recent_resources(
                             // stands in rather than a claim about descendants.
                             tree_modified_at: row.modified_at,
                             is_root: false,
-                            icon_class: intern_display("fas fa-folder"),
                             category: intern_display("Folder"),
                             created_by: row.created_by,
                             updated_by: row.updated_by,
@@ -270,11 +269,9 @@ pub async fn list_recent_resources(
                         let etag =
                             File::etag_for_listing(row.blob_hash.as_deref(), row.modified_at);
                         let content_hash = row.blob_hash.unwrap_or_default();
-                        // Name-derived display classes borrow `row.name`;
-                        // compute them before the name moves into the DTO.
-                        let classes = classify_display(&row.name, mime);
-                        let icon_class = intern_display(classes.icon_class);
-                        let category = intern_display(classes.category);
+                        // The name-derived category borrows `row.name`;
+                        // compute it before the name moves into the DTO.
+                        let category = intern_display(category_for(&row.name, mime));
                         let dto = FileDto {
                             id: row.resource_id.to_string(),
                             name: row.name,
@@ -284,7 +281,6 @@ pub async fn list_recent_resources(
                             folder_id: row.parent_id.map(|u| u.to_string()),
                             created_at: row.resource_created_at,
                             modified_at: row.modified_at,
-                            icon_class,
                             category,
                             content_hash,
                             etag,

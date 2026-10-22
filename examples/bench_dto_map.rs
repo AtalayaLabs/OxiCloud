@@ -78,7 +78,7 @@ static GLOBAL: CountingAlloc = CountingAlloc;
 mod before {
     use std::sync::Arc;
 
-    use oxicloud::application::dtos::display_helpers::{category_for, icon_class_for};
+    use oxicloud::application::dtos::display_helpers::category_for;
     use oxicloud::application::dtos::file_dto::FileDto;
     use oxicloud::application::dtos::folder_dto::FolderDto;
     use oxicloud::domain::entities::file::File;
@@ -111,7 +111,6 @@ mod before {
 
         let parts = file.into_parts();
 
-        let icon_class: Arc<str> = Arc::from(icon_class_for(&parts.name, &parts.mime_type));
         let category: Arc<str> = Arc::from(category_for(&parts.name, &parts.mime_type));
         let mime_type: Arc<str> = Arc::from(parts.mime_type.as_str());
 
@@ -128,7 +127,6 @@ mod before {
             modified_at: oxicloud::application::dtos::timestamp_helpers::epoch_to_datetime(
                 parts.modified_at,
             ),
-            icon_class,
             category,
             content_hash,
             etag,
@@ -162,7 +160,6 @@ mod before {
                 folder.tree_modified_at(),
             ),
             is_root,
-            icon_class: Arc::from("fas fa-folder"),
             category: Arc::from("Folder"),
             etag,
             created_by: folder.created_by(),
@@ -383,7 +380,6 @@ fn diff_file(i: usize, b: &FileDto, a: &FileDto, diffs: &mut u64) {
     cmp_field!(*diffs, i, "file", b, a, folder_id);
     cmp_field!(*diffs, i, "file", b, a, created_at);
     cmp_field!(*diffs, i, "file", b, a, modified_at);
-    cmp_field!(*diffs, i, "file", b, a, icon_class);
     cmp_field!(*diffs, i, "file", b, a, category);
     cmp_field!(*diffs, i, "file", b, a, content_hash);
     cmp_field!(*diffs, i, "file", b, a, etag);
@@ -400,7 +396,6 @@ fn diff_folder(i: usize, b: &FolderDto, a: &FolderDto, diffs: &mut u64) {
     cmp_field!(*diffs, i, "folder", b, a, created_at);
     cmp_field!(*diffs, i, "folder", b, a, modified_at);
     cmp_field!(*diffs, i, "folder", b, a, is_root);
-    cmp_field!(*diffs, i, "folder", b, a, icon_class);
     cmp_field!(*diffs, i, "folder", b, a, category);
     cmp_field!(*diffs, i, "folder", b, a, etag);
     cmp_field!(*diffs, i, "folder", b, a, created_by);

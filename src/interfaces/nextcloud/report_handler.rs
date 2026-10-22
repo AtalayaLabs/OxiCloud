@@ -463,13 +463,12 @@ fn file_dto_from_search(fr: &crate::application::dtos::search_dto::SearchFileRes
         path: fr.path.clone(),
         size: fr.size,
         // Interned `Arc<str>` carried through from enrichment — refcount
-        // bumps; the old code re-ran all three display classifiers and
+        // bumps; the old code re-ran every display classifier and
         // re-allocated each value per converted search row.
         mime_type: fr.mime_type.clone(),
         folder_id: fr.folder_id.clone(),
         created_at: fr.created_at,
         modified_at: fr.modified_at,
-        icon_class: fr.icon_class.clone(),
         category: fr.category.clone(),
         content_hash: fr.blob_hash.clone(),
         etag,
@@ -513,7 +512,6 @@ fn folder_dto_from_search(
         // widening the search projection — tracked in the dates plan.
         tree_modified_at: sr.modified_at,
         is_root: sr.is_root,
-        icon_class: intern_display("fas fa-folder"),
         category: intern_display("Folder"),
         // §14 provenance not selected by search results.
         created_by: None,

@@ -19,7 +19,7 @@
 	import { copyShareLink, deleteShare, getShareById, updateShare } from '$lib/api/endpoints/shares';
 	import { ensureResolvers, resolveLabel } from '$lib/api/endpoints/recipients';
 	import { fileInlineUrl } from '$lib/api/endpoints/files';
-	import type { FileItem, FolderItem } from '$lib/api/types';
+	import type { FileItem } from '$lib/api/types';
 	import type { GrantResourceType } from '$lib/api/endpoints/grants';
 	import Icon from '$lib/icons/Icon.svelte';
 	import ListToolbar from '$lib/components/ListToolbar.svelte';
@@ -28,7 +28,7 @@
 	import type { OutgoingGrantOrderBy } from '$lib/api/generated/openapi/types.gen';
 	import { t } from '$lib/i18n/index.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
-	import { formatDate, iconNameFromClass } from '$lib/utils/display';
+	import { formatDate, iconNameFor } from '$lib/utils/display';
 	import { SharedLanesBuilder, type LaneGrouping } from '$lib/utils/sharedLanes';
 
 	type GroupBy = 'items' | 'sharedWith';
@@ -462,9 +462,9 @@
 		// and drive both grant access to a tree, but the scope is very
 		// different.
 		if (item.resource_type === 'drive') return 'hdd';
-		return item.resource_type === 'folder'
-			? 'folder'
-			: iconNameFromClass((item.resource as FileItem | FolderItem).icon_class);
+		if (item.resource_type === 'folder') return 'folder';
+		const file = item.resource as FileItem;
+		return iconNameFor(file.name, file.mime_type);
 	}
 
 	const isEmpty = $derived(!loading && raw.length === 0 && !error);

@@ -46,7 +46,6 @@ function photo(i: number): PhotoItem {
 	return {
 		category: 'image',
 		created_at: sortDateIso,
-		icon_class: '',
 		id: `p-${i.toString().padStart(6, '0')}`,
 		mime_type: 'image/jpeg',
 		modified_at: sortDateIso,

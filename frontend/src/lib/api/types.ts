@@ -34,7 +34,6 @@ export interface FileItem {
 	category: string;
 	/** RFC 3339 UTC timestamp (wire form after the DTO ISO-8601 pivot). */
 	created_at: string;
-	icon_class: string;
 	id: string;
 	mime_type: string;
 	/** RFC 3339 UTC timestamp. */
@@ -126,9 +125,9 @@ export type { FavoriteItem, RecentItem };
 // (6-value union — all legitimate trash kinds are a strict subset so
 // current `.resource_type` switches still cover reality), and
 // `resource: FileItem | FolderItem` widens to `ResourceContentDto`
-// (= FileDto | FolderDto | DriveDto). The display-enriched fields
-// (`icon_class`, `category`) are present on both
-// FileDto and FolderDto, so UI rows that read them keep working;
+// (= FileDto | FolderDto | DriveDto). The display-enriched field
+// (`category`) is present on both
+// FileDto and FolderDto, so UI rows that read it keep working;
 // DriveDto is a phantom branch — drives never go into trash, so a
 // `kind === 'drive'` match is dead code at runtime but legal at the
 // type level.

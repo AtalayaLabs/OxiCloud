@@ -6,9 +6,7 @@ use axum::{
 };
 use std::sync::Arc;
 
-use crate::application::dtos::display_helpers::{
-    category_for, classify_display, icon_class_for, intern_display, intern_mime,
-};
+use crate::application::dtos::display_helpers::{category_for, intern_display, intern_mime};
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::{
     AncestorsQuery, CreateFolderDto, FolderAncestorsDto, FolderDto, FolderResourceItemDto,
@@ -681,7 +679,6 @@ pub async fn list_folder_resources(
                             // mtime stands in.
                             tree_modified_at: row.modified_at,
                             is_root: false,
-                            icon_class: intern_display("fas fa-folder"),
                             category: intern_display("Folder"),
                             created_by: row.created_by,
                             updated_by: row.updated_by,
@@ -712,13 +709,11 @@ pub async fn list_folder_resources(
                         let etag =
                             File::etag_for_listing(row.blob_hash.as_deref(), row.modified_at);
                         let content_hash = row.blob_hash.unwrap_or_default();
-                        // Compute the name-derived icon/category classes first
-                        // (they borrow `&row.name`), so `name` can be moved into
-                        // the DTO below instead of cloned — one fewer String
-                        // alloc per file row (benches/ROUND7.md).
-                        let classes = classify_display(&row.name, mime);
-                        let icon_class = intern_display(classes.icon_class);
-                        let category = intern_display(classes.category);
+                        // Compute the name-derived category first (it borrows
+                        // `&row.name`), so `name` can be moved into the DTO
+                        // below instead of cloned — one fewer String alloc per
+                        // file row (benches/ROUND7.md).
+                        let category = intern_display(category_for(&row.name, mime));
                         let dto = FileDto {
                             id: row.id.to_string(),
                             name: row.name,
@@ -728,7 +723,6 @@ pub async fn list_folder_resources(
                             folder_id: row.parent_id.map(|u| u.to_string()),
                             created_at: row.created_at,
                             modified_at: row.modified_at,
-                            icon_class,
                             category,
                             content_hash,
                             etag,
@@ -826,7 +820,6 @@ fn mount_entry_to_item(
             // `mount_dto::mount_folder_dto`.
             tree_modified_at: epoch_to_datetime(entry.modified_at),
             is_root: false,
-            icon_class: Arc::from("fas fa-folder"),
             category: Arc::from("Folder"),
             created_by: Some(cfg.owner_id),
             updated_by: Some(cfg.owner_id),
@@ -852,7 +845,6 @@ fn mount_entry_to_item(
             folder_id: Some(parent_id.to_owned()),
             created_at: epoch_to_datetime(entry.created_at),
             modified_at: epoch_to_datetime(entry.modified_at),
-            icon_class: Arc::from(icon_class_for(&entry.name, &mime)),
             category: Arc::from(category_for(&entry.name, &mime)),
             content_hash: String::new(),
             etag: virtual_file_etag(entry.size, entry.modified_at),
