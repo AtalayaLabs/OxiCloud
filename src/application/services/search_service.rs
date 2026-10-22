@@ -436,7 +436,7 @@ impl SearchService {
         // `fetch_files_by_ids_filtered`, whose category predicate is built
         // from `category_orders_for_filter` — and `Folders` maps to an EMPTY
         // set, which contributes NO predicate. So every content-matched file
-        // would pass and be appended, which is exactly the "type=folders
+        // would pass and be appended, which is exactly the "type=folder
         // returns files too" bug Ed hit. Same empty-set trap as the file
         // branch, in a path the first fix did not cover.
         //
@@ -789,7 +789,7 @@ impl SearchUseCase for SearchService {
                     file_criteria.offset = file_offset;
                     file_criteria.limit = file_limit_probe;
 
-                    // `type=folders` suppresses the FILE branch. Load-bearing:
+                    // `type=folder` suppresses the FILE branch. Load-bearing:
                     // that variant maps to an EMPTY category set, and an
                     // empty set contributes no SQL predicate — so without
                     // this gate the query would return every file rather
@@ -952,7 +952,7 @@ impl SearchUseCase for SearchService {
                 file_criteria.offset = file_offset;
                 file_criteria.limit = file_limit_probe;
 
-                // Same suppression as the non-recursive branch: `type=folders`
+                // Same suppression as the non-recursive branch: `type=folder`
                 // must not fall through to an unfiltered file query.
                 let (found_files, file_flags, total_file_count) =
                     if criteria.type_filter.includes_files() {
