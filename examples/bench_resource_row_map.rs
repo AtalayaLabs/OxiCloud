@@ -127,7 +127,6 @@ fn map_before(rows: Vec<FolderResourceRow>) -> Vec<Probe> {
                     // rollup, and the bench measures row→DTO mapping cost,
                     // not DAV emission.
                     tree_modified_at: row.modified_at,
-                    is_root: false,
                     category: intern_display("Folder"),
                     created_by: None,
                     updated_by: None,
@@ -190,7 +189,6 @@ fn map_after(rows: Vec<FolderResourceRow>) -> Vec<Probe> {
                     // rollup, and the bench measures row→DTO mapping cost,
                     // not DAV emission.
                     tree_modified_at: row.modified_at,
-                    is_root: false,
                     category: intern_display("Folder"),
                     created_by: None,
                     updated_by: None,
@@ -309,7 +307,6 @@ fn fav_map_before(rows: Vec<FavoriteResourceRow>) -> Vec<FavProbe> {
                     // rollup, and the bench measures row→DTO mapping cost,
                     // not DAV emission.
                     tree_modified_at: row.modified_at,
-                    is_root: false,
                     category: intern_display("Folder"),
                     created_by: None,
                     updated_by: None,
@@ -378,7 +375,6 @@ fn fav_map_after(rows: Vec<FavoriteResourceRow>) -> Vec<FavProbe> {
                     // rollup, and the bench measures row→DTO mapping cost,
                     // not DAV emission.
                     tree_modified_at: row.modified_at,
-                    is_root: false,
                     category: intern_display("Folder"),
                     created_by: None,
                     updated_by: None,

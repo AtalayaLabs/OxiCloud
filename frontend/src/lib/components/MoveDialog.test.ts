@@ -52,7 +52,6 @@ function folder(id: string, name: string) {
 		category: 'Folder',
 		created_at: 0,
 		id,
-		is_root: false,
 		modified_at: 0,
 		name,
 		created_by: 'me',

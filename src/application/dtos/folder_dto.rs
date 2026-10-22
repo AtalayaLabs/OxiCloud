@@ -82,9 +82,6 @@ pub struct FolderDto {
     /// See `docs/architecture/dates.md` § Collections.
     pub tree_modified_at: DateTime<Utc>,
 
-    /// Whether this is a root folder
-    pub is_root: bool,
-
     // ── Pre-computed display fields (Arc<str>: always identical values) ──
     /// Content category — a stable machine key, not display text; always
     /// "Folder". See `FileDto::category` for the contract.
@@ -129,7 +126,6 @@ impl From<Folder> for FolderDto {
         // for id, name, path, parent_id (previously 3-4× .to_string()).
         let parts = folder.into_parts();
 
-        let is_root = parts.parent_id.is_none();
         // Single-allocation ETag straight from the owned parts. The old
         // shape (`folder.etag().to_string()`) built the String and then
         // cloned it — a pure double-alloc.
@@ -147,7 +143,6 @@ impl From<Folder> for FolderDto {
             created_at: epoch_to_datetime(parts.created_at),
             modified_at: epoch_to_datetime(parts.modified_at),
             tree_modified_at: epoch_to_datetime(parts.tree_modified_at),
-            is_root,
             // Constant display field: refcount bump on an interned static
             // instead of a fresh Arc allocation per row.
             category: intern_display("Folder"),
@@ -231,7 +226,6 @@ impl FolderDto {
             created_at: epoch_zero(),
             modified_at: epoch_zero(),
             tree_modified_at: epoch_zero(),
-            is_root: true,
             category: intern_display("Folder"),
             etag: String::new(),
             created_by: None,

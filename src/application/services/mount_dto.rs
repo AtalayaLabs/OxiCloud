@@ -64,7 +64,6 @@ pub fn mount_folder_dto(cfg: &MountConfig, parent_id: &str, stat: &MountStat) ->
         // backend gives us one directory mtime and no subtree rollup, so DAV
         // keeps reporting exactly what it reported before.
         tree_modified_at: epoch_to_datetime(stat.modified_at),
-        is_root: false,
         category: Arc::from("Folder"),
         created_by: Some(cfg.owner_id),
         updated_by: Some(cfg.owner_id),
@@ -90,7 +89,6 @@ pub fn mount_entry_folder_dto(cfg: &MountConfig, parent_id: &str, entry: &MountE
         modified_at: epoch_to_datetime(entry.modified_at),
         // See `mount_folder_dto` — no subtree rollup from a mount backend.
         tree_modified_at: epoch_to_datetime(entry.modified_at),
-        is_root: false,
         category: Arc::from("Folder"),
         created_by: Some(cfg.owner_id),
         updated_by: Some(cfg.owner_id),

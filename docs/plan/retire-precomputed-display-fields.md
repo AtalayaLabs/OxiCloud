@@ -12,6 +12,7 @@ UI, and can the FE compute them instead?
 | 4 | Drop `icon_class` | ✅ shipped |
 | 5 | `PhotoLightbox` → `formatBytes`, drop `size_formatted` | ✅ shipped |
 | 6 | Document `category` as a machine key | ✅ shipped |
+| — | `is_root` — adjacent removal, not an original step | ✅ shipped |
 
 Step 5 was taken out of order — it is independent of 3/4 and of the mime work,
 so there was no reason to hold it behind the icon chain. Steps 3 and 4 shipped
@@ -173,6 +174,52 @@ The end state is deliberately asymmetric, and that asymmetry is documented on
 - **`category` stays on the wire** as the machine key, because the sort and the
   bucketing must agree with the server's grouping. Deriving it client-side would
   let the FE's buckets disagree with the server's `ORDER BY type`.
+
+## Adjacent removal: `is_root` (shipped 2026-10-23)
+
+Not one of the six steps, and not a presentational string — recorded here
+because it was found by running this plan's audit question ("who actually reads
+this?") against the next field along, and it came back with the same answer.
+
+| | |
+|---|---|
+| FE consumers | **0** — `FolderBreadcrumb`'s `isRootTheLeaf` is a local derived off `visibleCrumbs.length`, unrelated to the field; the other hits were fixtures |
+| `tests/` assertions | **0** — no Hurl, no e2e |
+| Rust reads | **1** — a unit assert in `folder_handler`'s mount tests |
+
+It was also derivable from a field on the same object: `FolderDto::from`
+computed it as `parts.parent_id.is_none()`, and `parent_id` stays on the wire,
+so a client that wants it writes `parent_id === null`.
+
+**The reason it had to go rather than stay is that it was unreliable, not just
+redundant.** Only `FolderDto::from` derived it. Four production sites hardcoded
+`is_root: false` while taking `parent_id` from a nullable column:
+
+| site | `parent_id` | `is_root` |
+|---|---|---|
+| `folder_dto.rs` | `parts.parent_id` | **derived** ✓ |
+| `path_resolver_service.rs` | `fo.parent_id::text` (nullable) | hardcoded `false` |
+| `trash_service.rs` | `row.parent_id.map(…)` | hardcoded `false` |
+| `recent_handler.rs` | `row.parent_id.map(…)` | hardcoded `false` |
+| `favorites_handler.rs` | `row.parent_id.map(…)` | hardcoded `false` |
+
+`path_resolver_service` is the clearest case: its query is `WHERE fo.path = $1`
+over `storage.folders` with no parent filter, so resolving a drive root's path
+returned `parent_id: None` next to `is_root: false` — the field contradicting
+the field it summarises. Deleting it removes that class of bug outright;
+keeping it would have meant fixing the derivation at four callsites to maintain
+a field with no readers.
+
+No test pins this, for the same reason step 2 had none: a field with zero
+readers has no behaviour to regress. The oasdiff spec diff is the guard, with
+13 signals enumerated per-signal so any OTHER property vanishing from those
+endpoints still fails the gate.
+
+**Follow-up worth doing, not done here:** the same audit question has not been
+asked of `tree_modified_at`, `etag`, `path` or `drive_id` on the same two DTOs.
+`is_root` turned up because someone wondered aloud about it, which is not a
+reliable discovery mechanism — one sweep would produce a single list to decide
+from instead of finding these one at a time.
 
 ## `ResourceCategory` — type the machine key (added 2026-10-22)
 

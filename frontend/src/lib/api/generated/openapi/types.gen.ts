@@ -1933,10 +1933,6 @@ export type FolderDto = {
      */
     is_favorite: boolean;
     /**
-     * Whether this is a root folder
-     */
-    is_root: boolean;
-    /**
      * Resource-scoped: `true` when the folder has ANY explicit
      * role-grant on it. Same wire contract as `is_favorite`.
      */
@@ -3770,10 +3766,6 @@ export type SearchFolderResultDto = {
      * this folder. EXISTS on `auth.user_favorites`.
      */
     is_favorite?: boolean;
-    /**
-     * Whether it is a root folder
-     */
-    is_root: boolean;
     /**
      * Resource-scoped: `true` when the folder has any explicit
      * role-grant. EXISTS on `storage.role_grants`.

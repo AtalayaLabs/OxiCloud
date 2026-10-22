@@ -325,8 +325,6 @@ pub struct SearchFolderResultDto {
     pub created_at: DateTime<Utc>,
     /// Last modification timestamp (RFC 3339 UTC).
     pub modified_at: DateTime<Utc>,
-    /// Whether it is a root folder
-    pub is_root: bool,
     /// Relevance score (0-100) computed server-side
     pub relevance_score: u32,
     /// HTTP ETag — folders derive theirs from the tree-etag propagator.
@@ -765,7 +763,6 @@ fn append_folders(items: &mut Vec<SearchResourceItem>, folders: Vec<SearchFolder
             // folder's own mtime stands in rather than a claim about
             // descendants.
             tree_modified_at: f.modified_at,
-            is_root: f.is_root,
             // Folders carry a closed-set display field — always the same
             // static string. Cheap to build via `Arc::from` (interning-worthy
             // but not on the search hot path).

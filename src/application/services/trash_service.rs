@@ -963,7 +963,6 @@ fn row_to_item_dto(row: TrashResourceRow) -> TrashResourceItemDto {
             // folders are never reachable over DAV, so the row's own mtime
             // stands in rather than a claim about descendants.
             tree_modified_at: row.modified_at,
-            is_root: false,
             category: intern_display("Folder"),
             created_by: row.created_by,
             updated_by: row.updated_by,

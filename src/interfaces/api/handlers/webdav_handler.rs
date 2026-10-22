@@ -573,7 +573,6 @@ async fn handle_propfind(
                 // the same "now" the other two clocks get. DAV reads this
                 // for the root collection's `getlastmodified`.
                 tree_modified_at: Utc::now(),
-                is_root: true,
                 category: intern_display("Folder"),
                 created_by: None,
                 updated_by: None,

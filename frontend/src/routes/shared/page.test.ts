@@ -41,7 +41,6 @@ function grantItem() {
 			category: 'Folder',
 			created_at: 0,
 			id: 'r1',
-			is_root: false,
 			modified_at: 0,
 			name: 'Docs',
 			created_by: 'me',

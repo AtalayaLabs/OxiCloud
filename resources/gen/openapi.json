@@ -14112,7 +14112,6 @@
           "created_at",
           "modified_at",
           "tree_modified_at",
-          "is_root",
           "category",
           "etag",
           "is_favorite",
@@ -14152,10 +14151,6 @@
           "is_favorite": {
             "type": "boolean",
             "description": "Caller-scoped: `true` when the requesting user has favorited\nthis folder. See `FileDto::is_favorite` for the full wire\ncontract note (always present, never null; enrichment path\ncovers listing rows via inline `EXISTS` and single-item\nendpoints via the `caller_flags` helper)."
-          },
-          "is_root": {
-            "type": "boolean",
-            "description": "Whether this is a root folder"
           },
           "is_shared": {
             "type": "boolean",
@@ -16760,7 +16755,6 @@
           "drive_id",
           "created_at",
           "modified_at",
-          "is_root",
           "relevance_score"
         ],
         "properties": {
@@ -16793,10 +16787,6 @@
           "is_favorite": {
             "type": "boolean",
             "description": "Caller-scoped: `true` when the requesting user has favorited\nthis folder. EXISTS on `auth.user_favorites`."
-          },
-          "is_root": {
-            "type": "boolean",
-            "description": "Whether it is a root folder"
           },
           "is_shared": {
             "type": "boolean",

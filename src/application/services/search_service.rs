@@ -381,7 +381,6 @@ impl SearchService {
             drive_id: folder.drive_id,
             created_at: folder.created_at,
             modified_at: folder.modified_at,
-            is_root: folder.is_root,
             relevance_score: relevance,
             // Phase 1-plus (see sibling `enrich_file`): carry the
             // FolderDto fields the old enrich shape dropped.
@@ -1206,7 +1205,6 @@ mod tests {
                 drive_id: Uuid::nil(),
                 created_at: crate::application::dtos::timestamp_helpers::epoch_zero(),
                 modified_at: crate::application::dtos::timestamp_helpers::epoch_zero(),
-                is_root: false,
                 relevance_score: 50,
                 etag: String::new(),
                 created_by: None,
@@ -1294,7 +1292,6 @@ mod tests {
             drive_id: Uuid::nil(),
             created_at: epoch_zero(),
             modified_at: epoch_to_datetime(modified_at),
-            is_root: false,
             relevance_score: relevance,
             etag: String::new(),
             created_by: None,

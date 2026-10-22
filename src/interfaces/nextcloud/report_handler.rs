@@ -511,7 +511,6 @@ fn folder_dto_from_search(
         // before `tree_modified_at` existed. Wiring the rollup here means
         // widening the search projection — tracked in the dates plan.
         tree_modified_at: sr.modified_at,
-        is_root: sr.is_root,
         category: intern_display("Folder"),
         // §14 provenance not selected by search results.
         created_by: None,

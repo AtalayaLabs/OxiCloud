@@ -179,7 +179,6 @@ impl PathResolverService {
                     created_at: epoch_to_datetime(created_at.max(0) as u64),
                     modified_at: epoch_to_datetime(modified_at.max(0) as u64),
                     tree_modified_at: epoch_to_datetime(tree_mod),
-                    is_root: false,
                     category: intern_display("Folder"),
                     // §14 provenance not selected by this resolver path —
                     // it's used for existence/type discrimination, not

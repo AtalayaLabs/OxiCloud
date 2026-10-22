@@ -678,7 +678,6 @@ pub async fn list_folder_resources(
                             // emits `D:getlastmodified`, so the row's own
                             // mtime stands in.
                             tree_modified_at: row.modified_at,
-                            is_root: false,
                             category: intern_display("Folder"),
                             created_by: row.created_by,
                             updated_by: row.updated_by,
@@ -819,7 +818,6 @@ fn mount_entry_to_item(
             // External mount entry — no subtree rollup available. See
             // `mount_dto::mount_folder_dto`.
             tree_modified_at: epoch_to_datetime(entry.modified_at),
-            is_root: false,
             category: Arc::from("Folder"),
             created_by: Some(cfg.owner_id),
             updated_by: Some(cfg.owner_id),
@@ -911,7 +909,9 @@ mod mount_mapping_tests {
         assert_eq!(dto.parent_id.as_deref(), Some(parent.as_str()));
         assert_eq!(dto.etag, virtual_folder_etag(1234));
         assert_eq!(dto.drive_id, cfg.drive_id);
-        assert!(!dto.is_root);
+        // `assert!(!dto.is_root)` stood here. The field is gone, and the
+        // `parent_id` assert four lines up is the same statement — `is_root`
+        // only ever meant `parent_id.is_none()`.
         // Hierarchy is intentionally cleared on this listing.
         assert_eq!(dto.path, "");
     }

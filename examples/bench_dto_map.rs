@@ -141,7 +141,6 @@ mod before {
     /// clones, `folder.etag().to_string()` (etag built then cloned — the
     /// verbatim double alloc) and 3 fresh `Arc::from` constants per row.
     pub fn folder_to_dto(folder: Folder) -> FolderDto {
-        let is_root = folder.parent_id().is_none();
         let etag = folder_compute_etag(folder.id(), folder.tree_modified_at()).to_string();
 
         FolderDto {
@@ -159,7 +158,6 @@ mod before {
             tree_modified_at: oxicloud::application::dtos::timestamp_helpers::epoch_to_datetime(
                 folder.tree_modified_at(),
             ),
-            is_root,
             category: Arc::from("Folder"),
             etag,
             created_by: folder.created_by(),
@@ -395,7 +393,6 @@ fn diff_folder(i: usize, b: &FolderDto, a: &FolderDto, diffs: &mut u64) {
     cmp_field!(*diffs, i, "folder", b, a, drive_id);
     cmp_field!(*diffs, i, "folder", b, a, created_at);
     cmp_field!(*diffs, i, "folder", b, a, modified_at);
-    cmp_field!(*diffs, i, "folder", b, a, is_root);
     cmp_field!(*diffs, i, "folder", b, a, category);
     cmp_field!(*diffs, i, "folder", b, a, etag);
     cmp_field!(*diffs, i, "folder", b, a, created_by);

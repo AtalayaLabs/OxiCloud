@@ -115,7 +115,6 @@ mod before {
         pub drive_id: uuid::Uuid,
         pub created_at: u64,
         pub modified_at: u64,
-        pub is_root: bool,
         pub relevance_score: u32,
     }
 
@@ -191,7 +190,6 @@ mod before {
             modified_at: oxicloud::application::dtos::timestamp_helpers::datetime_to_epoch(
                 folder.modified_at,
             ),
-            is_root: folder.is_root,
             relevance_score: relevance,
         }
     }
@@ -281,7 +279,6 @@ fn folder_dtos(n: usize) -> Vec<FolderDto> {
             tree_modified_at: oxicloud::application::dtos::timestamp_helpers::epoch_to_datetime(
                 1_700_000_200,
             ),
-            is_root: false,
             etag: format!("{i:032x}"),
             category: Arc::from("Folder"),
             created_by: None,
@@ -349,7 +346,6 @@ fn main() {
                     == oxicloud::application::dtos::timestamp_helpers::datetime_to_epoch(
                         new.modified_at,
                     )
-                && old.is_root == new.is_root
                 && old.relevance_score == new.relevance_score;
             if !same {
                 eprintln!("EQUIVALENCE GATE FAILED (folder): {} differs", old.name);

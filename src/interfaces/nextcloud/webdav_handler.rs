@@ -2489,7 +2489,6 @@ mod tests {
             created_at: crate::application::dtos::timestamp_helpers::epoch_zero(),
             modified_at: crate::application::dtos::timestamp_helpers::epoch_zero(),
             tree_modified_at: crate::application::dtos::timestamp_helpers::epoch_zero(),
-            is_root: false,
             category: std::sync::Arc::from("Folder"),
             etag: String::new(),
             // §14 provenance not relevant to path-mapper tests.

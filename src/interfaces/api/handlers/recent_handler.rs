@@ -245,7 +245,6 @@ pub async fn list_recent_resources(
                             // `D:getlastmodified`, so the row's own mtime
                             // stands in rather than a claim about descendants.
                             tree_modified_at: row.modified_at,
-                            is_root: false,
                             category: intern_display("Folder"),
                             created_by: row.created_by,
                             updated_by: row.updated_by,
