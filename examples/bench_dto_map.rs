@@ -181,6 +181,9 @@ mod before {
             modified_at: oxicloud::application::dtos::timestamp_helpers::epoch_to_datetime(
                 folder.modified_at(),
             ),
+            tree_modified_at: oxicloud::application::dtos::timestamp_helpers::epoch_to_datetime(
+                folder.tree_modified_at(),
+            ),
             is_root,
             icon_class: Arc::from("fas fa-folder"),
             icon_special_class: Arc::from("folder-icon"),

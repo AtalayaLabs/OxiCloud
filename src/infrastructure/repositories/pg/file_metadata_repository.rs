@@ -130,9 +130,20 @@ impl FileMetadataRepository {
     }
 
     /// Get metadata for multiple files in a single query.
+    /// Batch-read metadata for a set of files, keyed by file id.
+    ///
+    /// **Sparse by construction**: files with no `storage.file_metadata`
+    /// row are simply absent from the map, and a present row may still
+    /// carry `captured_at = NULL`. Callers must treat both as "the
+    /// content claims no date" rather than defaulting to a file clock —
+    /// see `nc_creation_time` in `interfaces/nextcloud`.
+    ///
+    /// Takes `&[&str]` rather than `&[String]` because the callers are
+    /// PROPFIND/REPORT row loops that already hold borrowed ids and are
+    /// deliberately allocation-free per row (benches/ROUND19.md §M6).
     pub async fn get_batch(
         &self,
-        file_ids: &[String],
+        file_ids: &[&str],
     ) -> Result<HashMap<String, StoredMetadata>, DomainError> {
         if file_ids.is_empty() {
             return Ok(HashMap::new());

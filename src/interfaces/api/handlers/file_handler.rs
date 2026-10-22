@@ -139,6 +139,36 @@ impl FileHandler {
             )
             .into_response();
         }
+
+        // §9 — round the client's milliseconds to seconds, then apply the
+        // same trust bounds as every other client-asserted mtime. Refuse,
+        // never clamp: a wrong client clock must be visible to whoever can
+        // fix it rather than quietly absorbed into stored data.
+        let source_modified_at = match request.source_modified_at {
+            None => None,
+            Some(millis) => {
+                let secs =
+                    crate::application::dtos::timestamp_helpers::millis_to_seconds_rounded(millis);
+                match crate::application::dtos::timestamp_helpers::validate_client_mtime(
+                    secs,
+                    chrono::Utc::now().timestamp(),
+                ) {
+                    Ok(valid) => Some(valid),
+                    Err(rejection) => {
+                        tracing::info!(
+                            target: "audit",
+                            event = "by_hash.source_mtime_rejected",
+                            reason = rejection.reason(),
+                            asserted_millis = millis,
+                            user_id = %auth_user.id,
+                            "👮🏻‍♂️ rejected client-asserted source_modified_at on by-hash upload: {}",
+                            rejection.message(),
+                        );
+                        return AppError::bad_request(rejection.message()).into_response();
+                    }
+                }
+            }
+        };
         // Basename only — same path-traversal guard as the multipart upload.
         let filename = request
             .name
@@ -161,6 +191,7 @@ impl FileHandler {
                 filename,
                 request.folder_id,
                 &request.hash,
+                source_modified_at,
             )
             .await
         {
@@ -216,6 +247,7 @@ impl FileHandler {
     ) -> Result<(crate::application::dtos::file_dto::FileDto, String), Response<Body>> {
         let upload_service = &state.applications.file_upload_service;
         let mut folder_id: Option<String> = None;
+        let mut source_modified_at: Option<i64> = None;
 
         tracing::debug!("📤 Processing streaming file upload (hash-on-write)");
 
@@ -227,6 +259,67 @@ impl FileHandler {
                 let v = field.text().await.unwrap_or_default();
                 if !v.is_empty() {
                     folder_id = Some(v);
+                }
+                continue;
+            }
+
+            // §9 — the browser's `File.lastModified`, so a drag-and-drop
+            // upload preserves the source mtime instead of being stamped
+            // with the upload moment.
+            //
+            // **Milliseconds on the wire**, unlike `X-OC-Mtime`'s seconds.
+            // That header is seconds because ownCloud defined it so; this
+            // field is ours, and taking `File.lastModified` verbatim keeps
+            // the rounding rule in exactly one place (here) instead of
+            // asking every client to implement half-up correctly. A client
+            // that truncated locally would be invisible to us.
+            //
+            // Must arrive BEFORE the `file` part — that field consumes the
+            // stream, which is why `folder_id` already carries the same
+            // caveat above.
+            if name == "source_modified_at" {
+                let raw = field.text().await.unwrap_or_default();
+                if !raw.is_empty() {
+                    let Ok(millis) = raw.parse::<i64>() else {
+                        // Unparseable is refused here, unlike the NC
+                        // header's lenient path: this field is ours, has no
+                        // compatibility surface to protect, and only our own
+                        // frontend sends it — so garbage means a bug worth
+                        // surfacing, not an old client worth tolerating.
+                        return Err((
+                            StatusCode::BAD_REQUEST,
+                            Json(serde_json::json!({
+                                "error": "source_modified_at must be an integer (epoch milliseconds)"
+                            })),
+                        )
+                            .into_response());
+                    };
+                    let secs =
+                        crate::application::dtos::timestamp_helpers::millis_to_seconds_rounded(
+                            millis,
+                        );
+                    match crate::application::dtos::timestamp_helpers::validate_client_mtime(
+                        secs,
+                        chrono::Utc::now().timestamp(),
+                    ) {
+                        Ok(valid) => source_modified_at = Some(valid),
+                        Err(rejection) => {
+                            tracing::info!(
+                                target: "audit",
+                                event = "upload.source_mtime_rejected",
+                                reason = rejection.reason(),
+                                asserted_millis = millis,
+                                user_id = %auth_user.id,
+                                "👮🏻‍♂️ rejected client-asserted source_modified_at on REST upload: {}",
+                                rejection.message(),
+                            );
+                            return Err((
+                                StatusCode::BAD_REQUEST,
+                                Json(serde_json::json!({ "error": rejection.message() })),
+                            )
+                                .into_response());
+                        }
+                    }
                 }
                 continue;
             }
@@ -396,6 +489,7 @@ impl FileHandler {
                         ingested.content_type.clone(),
                         ingested.stored(),
                         auth_user.id,
+                        source_modified_at,
                     )
                     .await
                 {
@@ -1702,6 +1796,19 @@ pub struct CreateFileByHashRequest {
     pub folder_id: String,
     /// BLAKE3 hash (64 hex chars) of content the caller already owns.
     pub hash: String,
+    /// §9 — the browser's `File.lastModified`, epoch **milliseconds**.
+    ///
+    /// Optional, and absent means "stamp `NOW()`". Same unit and same
+    /// trust bounds as the multipart `source_modified_at` field on
+    /// `/api/files/upload`; the server rounds half-up and rejects
+    /// implausible values with a 400 rather than clamping.
+    ///
+    /// This endpoint needs its own slot because it is `uploadOneFile`'s
+    /// FIRST short-circuit: re-uploading content the caller already owns
+    /// never reaches the multipart path, so without this a duplicate
+    /// upload silently lost its source mtime even for a small file.
+    #[serde(default)]
+    pub source_modified_at: Option<i64>,
 }
 
 #[utoipa::path(

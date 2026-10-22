@@ -257,7 +257,7 @@ pub struct SuggestParams {
         ("query" = Option<String>, Query, description = "Text to search in names / content"),
         ("limit" = Option<u32>, Query, description = "Max items per page (1–200, default 50)"),
         ("cursor" = Option<String>, Query, description = "Opaque cursor from a previous response"),
-        ("order_by" = Option<String>, Query, description = "Sort dimension: relevance (default) | name | size | updated_at | created_at"),
+        ("order_by" = Option<String>, Query, description = "Sort dimension: relevance (default) | name | size | modified_at | created_at"),
         ("resource_types" = Option<String>, Query, description = "Comma-separated: file, folder (both by default)"),
         ("reverse" = Option<bool>, Query, description = "Reverse the sort order"),
         ("type" = Option<String>, Query, description = "Filter by file extensions (comma-separated)"),

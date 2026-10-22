@@ -153,6 +153,7 @@ impl FileWritePort for StubFileWritePort {
         _blob_hash: &str,
         _size: u64,
         _caller_id: Uuid,
+        _content_modified_at: Option<i64>,
     ) -> Result<File, DomainError> {
         Ok(File::default())
     }
@@ -488,6 +489,7 @@ impl FileUploadUseCase for StubFileUploadUseCase {
         _content_type: String,
         _blob: StoredBlob,
         _caller_id: Uuid,
+        _source_modified_at: Option<i64>,
     ) -> Result<FileDto, DomainError> {
         Ok(FileDto::default())
     }

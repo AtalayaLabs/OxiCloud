@@ -31,18 +31,23 @@ struct MediaResourceDbRow {
     updated_by: Option<Uuid>,
     is_favorite: bool,
     is_shared: bool,
-    /// Epoch seconds of the chosen sort axis — client-facing precision.
-    sort_date: i64,
-    /// Full-precision `timestamptz` of the chosen sort axis — the
-    /// opaque cursor keys off this value so the WHERE predicate can
-    /// compare at column fidelity. Carrying only `sort_date` (seconds)
-    /// drops rows that landed inside the same wall-clock second as
-    /// the page boundary.
+    /// Full-precision `timestamptz` of the chosen sort axis. Both the
+    /// opaque cursor and the client-facing `sort_date` read this, so the
+    /// cursor's WHERE predicate compares at column fidelity — a
+    /// seconds-truncated value drops rows that landed inside the same
+    /// wall-clock second as the page boundary.
+    ///
+    /// There used to be a second `sort_date: i64` column here carrying
+    /// the same instant truncated to seconds, for the wire. The wire is
+    /// RFC 3339 now, so the truncation (and the extra `EXTRACT`) is
+    /// gone.
     sort_date_ts: chrono::DateTime<chrono::Utc>,
     width: Option<i32>,
     height: Option<i32>,
-    /// Raw EXIF capture time, epoch seconds, nullable.
-    captured_at: Option<i64>,
+    /// Raw EXIF capture time, nullable. Selected as the raw
+    /// `timestamptz`; it reaches the wire as RFC 3339 like every other
+    /// timestamp.
+    captured_at: Option<chrono::DateTime<chrono::Utc>>,
     /// EXIF TIFF orientation (1-8), nullable.
     orientation: Option<i16>,
     /// `latitude IS NOT NULL AND longitude IS NOT NULL`.
@@ -62,17 +67,19 @@ struct MediaResourceDbRow {
 /// balloon the parallel-vector pattern [`list_media_files`] still uses.
 pub struct MediaResourceRow {
     pub file: File,
-    /// Sort axis value for this row, epoch seconds. Matches
-    /// `storage.files.media_sort_date` on the `CapturedAt` axis;
-    /// equal to `created_at` on the `CreatedAt` axis (reserved for §3).
-    pub sort_date: i64,
-    /// Full-precision timestamp of the chosen sort axis — the
-    /// handler uses this to build the opaque keyset cursor so the
-    /// WHERE predicate on the next page compares at column fidelity
-    /// (microsecond, not the truncated second `sort_date` exposes to
-    /// clients).
+    /// Value of the chosen sort axis for this row, at full column
+    /// fidelity. `storage.files.media_sort_date` on the `CapturedAt`
+    /// axis, `created_at` on `CreatedAt`, `content_modified_at` on
+    /// `UpdatedAt`.
+    ///
+    /// Feeds both the opaque keyset cursor and the wire `sort_date`.
+    /// The two were separate fields while the wire carried epoch
+    /// seconds — keeping microseconds for the cursor (so the next
+    /// page's WHERE does not drop rows inside the boundary second) and
+    /// a truncated copy for clients. The wire is RFC 3339 now, so one
+    /// field serves both.
     pub sort_date_ts: chrono::DateTime<chrono::Utc>,
-    pub captured_at: Option<i64>,
+    pub captured_at: Option<chrono::DateTime<chrono::Utc>>,
     pub orientation: Option<i16>,
     pub width: Option<i32>,
     pub height: Option<i32>,
@@ -190,13 +197,13 @@ fn push_criteria_filters(
     if criteria.modified_after.is_some() {
         bind_idx += 1;
         conditions.push(format!(
-            "EXTRACT(EPOCH FROM fi.updated_at)::bigint >= ${bind_idx}"
+            "EXTRACT(EPOCH FROM fi.content_modified_at)::bigint >= ${bind_idx}"
         ));
     }
     if criteria.modified_before.is_some() {
         bind_idx += 1;
         conditions.push(format!(
-            "EXTRACT(EPOCH FROM fi.updated_at)::bigint <= ${bind_idx}"
+            "EXTRACT(EPOCH FROM fi.content_modified_at)::bigint <= ${bind_idx}"
         ));
     }
     if criteria.min_size.is_some() {
@@ -332,7 +339,7 @@ impl FileBlobReadRepository {
             "SELECT fi.id, fi.name, fi.folder_id, fo.path, \
                     fi.size, fi.mime_type, \
                     EXTRACT(EPOCH FROM fi.created_at)::bigint, \
-                    EXTRACT(EPOCH FROM fi.updated_at)::bigint, \
+                    EXTRACT(EPOCH FROM fi.content_modified_at)::bigint, \
                     fi.blob_hash, \
                     \
                     fi.created_by, fi.updated_by \
@@ -386,7 +393,7 @@ impl FileBlobReadRepository {
             "SELECT fi.id, fi.name, fi.folder_id, fo.path, \
                     fi.size, fi.mime_type, \
                     EXTRACT(EPOCH FROM fi.created_at)::bigint, \
-                    EXTRACT(EPOCH FROM fi.updated_at)::bigint, \
+                    EXTRACT(EPOCH FROM fi.content_modified_at)::bigint, \
                     fi.blob_hash, \
                     \
                     fi.created_by, fi.updated_by \
@@ -583,7 +590,13 @@ impl FileBlobReadRepository {
         let sort_col = match filter.order_by {
             PhotoOrderBy::CapturedAt => "media_sort_date",
             PhotoOrderBy::CreatedAt => "created_at",
-            PhotoOrderBy::UpdatedAt => "updated_at",
+            // §3 — the content clock, not the row clock. A rename or a
+            // trash transition no longer resurfaces a photo on this axis;
+            // only a real content mutation does. The wire value is still
+            // spelled `updated_at` — plan §6 renames it to `modified_at`,
+            // which is the point at which the token stops disagreeing with
+            // the column it resolves to.
+            PhotoOrderBy::ModifiedAt => "content_modified_at",
         };
         let (dir, cmp) = if filter.reverse {
             ("ASC", ">")
@@ -692,7 +705,7 @@ impl FileBlobReadRepository {
                    top.size                                   AS size,
                    top.mime_type                              AS mime_type,
                    EXTRACT(EPOCH FROM top.created_at)::bigint AS created_at,
-                   EXTRACT(EPOCH FROM top.updated_at)::bigint AS updated_at,
+                   EXTRACT(EPOCH FROM top.content_modified_at)::bigint AS updated_at,
                    top.blob_hash                              AS blob_hash,
                    top.created_by                             AS created_by,
                    top.updated_by                             AS updated_by,
@@ -707,14 +720,10 @@ impl FileBlobReadRepository {
                         WHERE g.resource_id   = top.id
                           AND g.resource_type = 'file'
                    )                                          AS is_shared,
-                   EXTRACT(EPOCH FROM top.{sort_col})::bigint AS sort_date,
                    top.{sort_col}                             AS sort_date_ts,
                    fm.width                                   AS width,
                    fm.height                                  AS height,
-                   CASE
-                       WHEN fm.captured_at IS NULL THEN NULL
-                       ELSE EXTRACT(EPOCH FROM fm.captured_at)::bigint
-                   END                                        AS captured_at,
+                   fm.captured_at                             AS captured_at,
                    fm.orientation                             AS orientation,
                    (fm.latitude IS NOT NULL AND fm.longitude IS NOT NULL) AS has_gps,
                    -- §9b Layer 1 — within-drive sibling probe. True when
@@ -791,7 +800,7 @@ impl FileBlobReadRepository {
             )?;
             out.push(MediaResourceRow {
                 file,
-                sort_date: r.sort_date,
+
                 sort_date_ts: r.sort_date_ts,
                 captured_at: r.captured_at,
                 orientation: r.orientation,
@@ -899,7 +908,7 @@ impl FileReadPort for FileBlobReadRepository {
             SELECT fi.id, fi.name, fi.folder_id, fo.path,
                    fi.size, fi.mime_type,
                    EXTRACT(EPOCH FROM fi.created_at)::bigint,
-                   EXTRACT(EPOCH FROM fi.updated_at)::bigint,
+                   EXTRACT(EPOCH FROM fi.content_modified_at)::bigint,
                    fi.blob_hash,
                    fi.created_by, fi.updated_by
               FROM storage.files fi
@@ -946,7 +955,7 @@ impl FileReadPort for FileBlobReadRepository {
             SELECT fi.id, fi.name, fi.folder_id, fo.path,
                    fi.size, fi.mime_type,
                    EXTRACT(EPOCH FROM fi.created_at)::bigint,
-                   EXTRACT(EPOCH FROM fi.updated_at)::bigint,
+                   EXTRACT(EPOCH FROM fi.content_modified_at)::bigint,
                    fi.blob_hash,
                    fi.created_by, fi.updated_by
               FROM storage.files fi
@@ -974,7 +983,7 @@ impl FileReadPort for FileBlobReadRepository {
                 SELECT fi.id, fi.name, fi.folder_id, fo.path,
                        fi.size, fi.mime_type,
                        EXTRACT(EPOCH FROM fi.created_at)::bigint,
-                       EXTRACT(EPOCH FROM fi.updated_at)::bigint,
+                       EXTRACT(EPOCH FROM fi.content_modified_at)::bigint,
                        fi.blob_hash,
 
                    fi.created_by, fi.updated_by
@@ -993,7 +1002,7 @@ impl FileReadPort for FileBlobReadRepository {
                 SELECT fi.id, fi.name, fi.folder_id, fo.path,
                        fi.size, fi.mime_type,
                        EXTRACT(EPOCH FROM fi.created_at)::bigint,
-                       EXTRACT(EPOCH FROM fi.updated_at)::bigint,
+                       EXTRACT(EPOCH FROM fi.content_modified_at)::bigint,
                        fi.blob_hash,
 
                    fi.created_by, fi.updated_by
@@ -1054,7 +1063,7 @@ impl FileReadPort for FileBlobReadRepository {
             SELECT fi.id, fi.name, fi.folder_id, fo.path,
                    fi.size, fi.mime_type,
                    EXTRACT(EPOCH FROM fi.created_at)::bigint,
-                   EXTRACT(EPOCH FROM fi.updated_at)::bigint,
+                   EXTRACT(EPOCH FROM fi.content_modified_at)::bigint,
                    fi.blob_hash,
 
                fi.created_by, fi.updated_by
@@ -1234,7 +1243,7 @@ impl FileReadPort for FileBlobReadRepository {
                 SELECT fi.id, fi.name, fi.folder_id, fo.path,
                        fi.size, fi.mime_type,
                        EXTRACT(EPOCH FROM fi.created_at)::bigint,
-                       EXTRACT(EPOCH FROM fi.updated_at)::bigint,
+                       EXTRACT(EPOCH FROM fi.content_modified_at)::bigint,
                        fi.blob_hash,
                        fi.created_by, fi.updated_by
                   FROM storage.files fi
@@ -1272,7 +1281,7 @@ impl FileReadPort for FileBlobReadRepository {
                 SELECT fi.id, fi.name, fi.folder_id, fo.path,
                        fi.size, fi.mime_type,
                        EXTRACT(EPOCH FROM fi.created_at)::bigint,
-                       EXTRACT(EPOCH FROM fi.updated_at)::bigint,
+                       EXTRACT(EPOCH FROM fi.content_modified_at)::bigint,
                        fi.blob_hash,
                        fi.created_by, fi.updated_by
                   FROM storage.files fi
@@ -1318,7 +1327,7 @@ impl FileReadPort for FileBlobReadRepository {
                 SELECT fi.id, fi.name, fi.folder_id, fo.path,
                        fi.size, fi.mime_type,
                        EXTRACT(EPOCH FROM fi.created_at)::bigint,
-                       EXTRACT(EPOCH FROM fi.updated_at)::bigint,
+                       EXTRACT(EPOCH FROM fi.content_modified_at)::bigint,
                        fi.blob_hash,
                        fi.created_by, fi.updated_by
                   FROM storage.files fi
@@ -1370,7 +1379,13 @@ impl FileReadPort for FileBlobReadRepository {
         // was retired 2026-07-26.
         let order_column = match criteria.sort_by.as_str() {
             "name" => "fi.name",
-            "updated_at" => "fi.updated_at",
+            // §3 — the content clock. This has to agree with
+            // `search_service::sort_enriched_files`, which re-sorts the
+            // merged page in memory on `SearchFileResultDto.modified_at`:
+            // §2 repointed that DTO field at `content_modified_at`, so a
+            // SQL page still ordered by `fi.updated_at` would be re-ordered
+            // on a different clock the moment content hits were blended in.
+            "modified_at" => "fi.content_modified_at",
             "created_at" => "fi.created_at",
             "size" => "fi.size",
             // `relevance` (or anything unrecognised) has no dedicated
@@ -1417,7 +1432,7 @@ impl FileReadPort for FileBlobReadRepository {
             "SELECT fi.id, fi.name, fi.folder_id, fo.path, \
                     fi.size, fi.mime_type, \
                     EXTRACT(EPOCH FROM fi.created_at)::bigint, \
-                    EXTRACT(EPOCH FROM fi.updated_at)::bigint, \
+                    EXTRACT(EPOCH FROM fi.content_modified_at)::bigint, \
                     fi.blob_hash, \
                     \
                     fi.created_by, fi.updated_by, \
@@ -1537,7 +1552,13 @@ impl FileReadPort for FileBlobReadRepository {
         // was retired 2026-07-26.
         let order_column = match criteria.sort_by.as_str() {
             "name" => "fi.name",
-            "updated_at" => "fi.updated_at",
+            // §3 — the content clock. This has to agree with
+            // `search_service::sort_enriched_files`, which re-sorts the
+            // merged page in memory on `SearchFileResultDto.modified_at`:
+            // §2 repointed that DTO field at `content_modified_at`, so a
+            // SQL page still ordered by `fi.updated_at` would be re-ordered
+            // on a different clock the moment content hits were blended in.
+            "modified_at" => "fi.content_modified_at",
             "created_at" => "fi.created_at",
             "size" => "fi.size",
             // `relevance` (or anything unrecognised) has no dedicated
@@ -1577,7 +1598,7 @@ impl FileReadPort for FileBlobReadRepository {
             "SELECT fi.id, fi.name, fi.folder_id, fo.path, \
                     fi.size, fi.mime_type, \
                     EXTRACT(EPOCH FROM fi.created_at)::bigint, \
-                    EXTRACT(EPOCH FROM fi.updated_at)::bigint, \
+                    EXTRACT(EPOCH FROM fi.content_modified_at)::bigint, \
                     fi.blob_hash, \
                     \
                     fi.created_by, fi.updated_by, \
@@ -1681,7 +1702,7 @@ impl FileReadPort for FileBlobReadRepository {
                 SELECT fi.id, fi.name, fi.folder_id, fo.path,
                        fi.size, fi.mime_type,
                        EXTRACT(EPOCH FROM fi.created_at)::bigint,
-                       EXTRACT(EPOCH FROM fi.updated_at)::bigint,
+                       EXTRACT(EPOCH FROM fi.content_modified_at)::bigint,
                        fi.blob_hash,
 
                    fi.created_by, fi.updated_by
@@ -1713,7 +1734,7 @@ impl FileReadPort for FileBlobReadRepository {
                 SELECT fi.id, fi.name, fi.folder_id, fo.path,
                        fi.size, fi.mime_type,
                        EXTRACT(EPOCH FROM fi.created_at)::bigint,
-                       EXTRACT(EPOCH FROM fi.updated_at)::bigint,
+                       EXTRACT(EPOCH FROM fi.content_modified_at)::bigint,
                        fi.blob_hash,
 
                    fi.created_by, fi.updated_by

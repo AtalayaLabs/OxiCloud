@@ -307,6 +307,11 @@ fn folder_dtos(n: usize) -> Vec<FolderDto> {
             modified_at: oxicloud::application::dtos::timestamp_helpers::epoch_to_datetime(
                 1_700_000_100,
             ),
+            // Benchmark fixture — distinct from `modified_at` so the bench
+            // never accidentally depends on the two being equal.
+            tree_modified_at: oxicloud::application::dtos::timestamp_helpers::epoch_to_datetime(
+                1_700_000_200,
+            ),
             is_root: false,
             etag: format!("{i:032x}"),
             icon_class: Arc::from("fas fa-folder"),

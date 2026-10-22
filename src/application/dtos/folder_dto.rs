@@ -64,7 +64,23 @@ pub struct FolderDto {
     pub created_at: DateTime<Utc>,
 
     /// Last modification timestamp (RFC 3339 UTC).
+    ///
+    /// The folder row's own `updated_at` — bumped by a rename or a move of
+    /// *this* folder, not by anything happening inside it. For "did anything
+    /// in this subtree change", use `tree_modified_at` below.
     pub modified_at: DateTime<Utc>,
+
+    /// Descendant-rollup timestamp (RFC 3339 UTC): the most recent change
+    /// anywhere in this folder's subtree.
+    ///
+    /// This is what a collection's content-modification time actually means —
+    /// a folder's "content" is its children — so `D:getlastmodified` is
+    /// sourced from here rather than from `modified_at`, which would report a
+    /// rename of the folder itself as a content change. It is also the input
+    /// to `etag` below, so the two agree by construction.
+    ///
+    /// See `docs/architecture/dates.md` § Collections.
+    pub tree_modified_at: DateTime<Utc>,
 
     /// Whether this is a root folder
     pub is_root: bool,
@@ -137,6 +153,7 @@ impl From<Folder> for FolderDto {
             // the DTO boundary. See `timestamp_helpers` for the rationale.
             created_at: epoch_to_datetime(parts.created_at),
             modified_at: epoch_to_datetime(parts.modified_at),
+            tree_modified_at: epoch_to_datetime(parts.tree_modified_at),
             is_root,
             // Constant display fields: refcount bump on interned statics
             // instead of 3 fresh Arc allocations per row.
@@ -222,6 +239,7 @@ impl FolderDto {
             drive_id: Uuid::nil(),
             created_at: epoch_zero(),
             modified_at: epoch_zero(),
+            tree_modified_at: epoch_zero(),
             is_root: true,
             icon_class: intern_display("fas fa-folder"),
             icon_special_class: intern_display("folder-icon"),

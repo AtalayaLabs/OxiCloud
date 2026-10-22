@@ -417,6 +417,15 @@ HURL_FILES=( \
   "$API_DIR/webdav_patch_consistency.hurl" \
   "$API_DIR/nc_webdav_patch_consistency.hurl" \
   "$API_DIR/nc_webdav_put_gaps.hurl" \
+  "$API_DIR/nc_webdav_client_mtime.hurl" \
+  "$API_DIR/folder_content_clock.hurl" \
+  "$API_DIR/folder_listing_cursor_clocks.hurl" \
+  "$API_DIR/webdav_etag_rename_stability.hurl" \
+  "$API_DIR/copy_preserves_category_order.hurl" \
+  "$API_DIR/photos_sort_date_content_clock.hurl" \
+  "$API_DIR/search_sort_content_clock.hurl" \
+  "$API_DIR/content_clock_metadata_mutations.hurl" \
+  "$API_DIR/rest_upload_source_mtime.hurl" \
   "$API_DIR/webdav_drive_root.hurl" \
   "$API_DIR/webdav_permissions.hurl" \
   "$API_DIR/webdav_nested_move_cascade.hurl" \

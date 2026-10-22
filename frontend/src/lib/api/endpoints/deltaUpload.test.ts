@@ -159,7 +159,12 @@ describe('instantUploadOwned (zero-byte create)', () => {
 		byHashMock.mockResolvedValue({ ok: true, status: 201, data: { id: 'f1' } });
 		const r = await instantUploadOwned('folder', fakeFile(2 * MB, 'a'), hashOf('a'));
 		expect(r).toEqual({ ok: true, data: { id: 'f1' }, savedBytes: 2 * MB });
-		expect(byHashMock).toHaveBeenCalledWith('folder', 'a', hashOf('a'));
+		// 4th arg is §9's source mtime, forwarded from `file.lastModified`.
+		// `fakeFile` does not set one, so it arrives as undefined — which is
+		// the correct behaviour: `createFileByHash` omits the field entirely
+		// rather than sending a falsy value the server would reject as
+		// pre-2000.
+		expect(byHashMock).toHaveBeenCalledWith('folder', 'a', hashOf('a'), undefined);
 	});
 
 	it('falls back (null) when the blob vanished (404)', async () => {

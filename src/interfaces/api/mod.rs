@@ -35,7 +35,7 @@ use crate::application::dtos::i18n_dto::{
     LocaleDto, TranslationErrorDto, TranslationRequestDto, TranslationResponseDto,
 };
 use crate::application::dtos::pagination::{PaginationDto, PaginationRequestDto};
-use crate::application::dtos::photos_dto::{PhotoKind, PhotoOrderBy};
+use crate::application::dtos::photos_dto::{PhotoKind, PhotoOrderBy, PhotoResourceItemDto};
 use crate::application::dtos::recent_dto::{RecentItemDto, RecentResourceItemDto};
 use crate::application::dtos::search_dto::{
     SearchCriteriaDto, SearchFileResultDto, SearchFolderResultDto, SearchMeta, SearchResourceItem,
@@ -534,6 +534,18 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             // missing their TS types.
             PhotoKind,
             PhotoOrderBy,
+            // The response item itself. `PhotosResourcesDto` is a generic
+            // alias (`CursorListResponse<PhotoResourceItemDto>`) and aliases
+            // are not registered here — the item type is, exactly as
+            // `FolderResourceItemDto` is for its own listing.
+            //
+            // Omitting it had a real cost: `/api/photos/resources` declares
+            // `body = PhotosResourcesDto`, so the path appeared in the spec
+            // while its item schema did not, the generated SDK carried no TS
+            // type for it, and the frontend kept a HAND-WRITTEN `PhotoItem`
+            // with no drift guard. That is how `captured_at` stayed typed
+            // `number` long after the server began sending RFC 3339.
+            PhotoResourceItemDto,
             // Contacts / address-book schemas
             AddressBookResponse,
             CreateAddressBookRequest,

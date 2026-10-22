@@ -30,16 +30,17 @@ use crate::application::dtos::grant_dto::{ResourceContentDto, ResourceTypeDto};
 /// The three axes serve distinct questions:
 ///
 /// - `CapturedAt` (default) — "when was this photo TAKEN". Orders by
-///   `COALESCE(captured_at, created_at)` via the materialised
+///   `COALESCE(captured_at, content_modified_at)` via the materialised
 ///   `storage.files.media_sort_date` column, so uploads without EXIF
-///   fall back to upload time rather than sinking to NULL.
+///   fall back to when their content last changed rather than sinking
+///   to NULL.
 /// - `CreatedAt` — "when did this file ARRIVE in OxiCloud". Pure
 ///   `storage.files.created_at`; EXIF capture date ignored. Useful
 ///   for the operator-style "recently uploaded" view.
-/// - `UpdatedAt` — "when was this file last TOUCHED". Pure
-///   `storage.files.updated_at`; moves and renames resurface rows.
-///   Useful when the user wants to find a file they recently acted
-///   on, independent of when it was taken or first uploaded.
+/// - `ModifiedAt` (`modified_at` on the wire) — "when did this file's
+///   CONTENT last change". Reads `storage.files.content_modified_at`,
+///   so a rename, move or trash transition does *not* resurface a row
+///   — only a real content mutation does.
 ///
 /// All three axes paginate on the same `(sort_value, id)` keyset,
 /// just over different columns. The cursor carries the axis so a
@@ -48,16 +49,22 @@ use crate::application::dtos::grant_dto::{ResourceContentDto, ResourceTypeDto};
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PhotoOrderBy {
-    /// Default — EXIF capture date, falling back to `created_at` for
-    /// files that carry no EXIF.
+    /// Default — EXIF capture date, falling back to
+    /// `content_modified_at` for files that carry no EXIF.
     #[default]
     CapturedAt,
     /// File-row `created_at` only, no EXIF COALESCE.
     CreatedAt,
-    /// File-row `updated_at` only — surfaces the most recently
-    /// touched rows (uploads, renames, overwrites, trash
-    /// transitions) regardless of capture or arrival time.
-    UpdatedAt,
+    /// File content clock (`content_modified_at`) only — surfaces rows
+    /// whose bytes changed, regardless of capture or arrival time.
+    /// Renames, moves and trash transitions do not count.
+    ///
+    /// Spelled **`modified_at`** on the wire. The legacy `updated_at`
+    /// spelling was removed outright rather than deprecated — see
+    /// `docs/plan/normalize-file-dates.md` §6 for why no window was
+    /// needed. serde's derived error names the accepted values, so a
+    /// client still sending it gets a 400 that says what to send.
+    ModifiedAt,
 }
 
 /// Media-kind filter for `GET /api/photos/resources` (§6).
@@ -105,7 +112,7 @@ pub struct PhotosFilter {
     pub favorite_only: bool,
     /// Sort axis (§3). Default `CapturedAt` matches today's
     /// `media_sort_date` ordering; the two other axes order by the
-    /// file row's own `created_at` / `updated_at` columns.
+    /// file row's own `created_at` / `content_modified_at` columns.
     pub order_by: PhotoOrderBy,
     /// Reverse the natural newest-first direction. Default `false`
     /// matches the historic Photos read order; `true` flips to
@@ -126,17 +133,17 @@ pub struct PhotosFilter {
 /// - `sort_value` is the full-precision `timestamptz` of the chosen
 ///   sort column — microsecond precision, exactly matching
 ///   `storage.files.media_sort_date` so the WHERE predicate can
-///   compare at column fidelity. Carrying only the item-level
-///   `sort_date: i64` (epoch seconds) here loses sub-second
-///   precision and silently drops rows that landed inside the same
-///   wall-clock second as the page boundary.
+///   compare at column fidelity. A seconds-truncated value here would
+///   silently drop rows that landed inside the same wall-clock second
+///   as the page boundary.
 /// - `file_id` is the tie-breaker on equal `sort_value` so rows that
 ///   do share an exact `media_sort_date` can still be paginated
 ///   without skipping or re-emitting.
 ///
-/// The wire-level `sort_date` on `PhotoResourceItemDto` stays epoch
-/// seconds — that's the client's view; the cursor's internal shape
-/// is a server-only concern.
+/// The wire-level `sort_date` on `PhotoResourceItemDto` carries the
+/// same instant as RFC 3339. It used to be epoch seconds, which meant
+/// the wire and the cursor needed two separate fields; normalising the
+/// wire collapsed them into one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PhotosCursor {
     pub order_by: PhotoOrderBy,
@@ -204,19 +211,28 @@ pub struct PhotoResourceItemDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub height: Option<i32>,
 
-    /// Sort axis value, epoch seconds. Equals
-    /// `COALESCE(captured_at, created_at)` when `order_by=captured_at`
-    /// (the default); equals `created_at` when §3 lands and the
-    /// caller selects `order_by=created_at`. The cursor keys off this
-    /// value.
-    pub sort_date: i64,
+    /// Value of the **active sort axis** (RFC 3339 UTC) — whichever
+    /// column the server actually ordered this page by, not one fixed
+    /// column. `order_by=captured_at` (the default) yields
+    /// `media_sort_date`, i.e. `COALESCE(captured_at,
+    /// content_modified_at)`; `order_by=created_at` yields
+    /// `created_at`; `order_by=modified_at` yields
+    /// `content_modified_at`. The cursor keys off this value.
+    ///
+    /// **Clients must bucket and group on this field**, precisely
+    /// because it tracks the ordering. The timeline arrives
+    /// monotonically newest-first, and a UI that groups on any other
+    /// date can see a month reopen after it closed. Doing exactly that
+    /// — grouping on `created_at` — is what broke `/photos` with
+    /// `each_key_duplicate` once §3 made the two axes diverge.
+    pub sort_date: DateTime<Utc>,
 
-    /// Raw EXIF `DateTimeOriginal`, epoch seconds. `None` when the
+    /// Raw EXIF `DateTimeOriginal` (RFC 3339 UTC). `None` when the
     /// file carries no EXIF date. Lets the client distinguish "taken
-    /// on this date" from the upload-date fallback that `sort_date`
-    /// collapses into one value.
+    /// on this date" from the fallback that `sort_date` collapses into
+    /// one value — but it is NOT a sort axis, so do not group by it.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub captured_at: Option<i64>,
+    pub captured_at: Option<DateTime<Utc>>,
 
     /// Raw EXIF orientation (TIFF 1–8 enum). `None` when absent. The
     /// client applies this to the full-resolution image tile BEFORE

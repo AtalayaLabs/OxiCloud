@@ -970,6 +970,10 @@ fn row_to_item_dto(row: TrashResourceRow) -> TrashResourceItemDto {
             drive_id: row.drive_id,
             created_at: row.resource_created_at,
             modified_at: row.modified_at,
+            // The trash listing carries no subtree rollup, and trashed
+            // folders are never reachable over DAV, so the row's own mtime
+            // stands in rather than a claim about descendants.
+            tree_modified_at: row.modified_at,
             is_root: false,
             icon_class: intern_display("fas fa-folder"),
             icon_special_class: intern_display("folder-icon"),

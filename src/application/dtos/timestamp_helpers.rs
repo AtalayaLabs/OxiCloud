@@ -137,6 +137,97 @@ mod etag_seconds_tests {
 //   - A JSON integer → treated as Unix epoch seconds
 //   - `null` or missing → `None`
 //
+/// Earliest instant a client may assert as a content mtime, as epoch
+/// seconds: `2000-01-01T00:00:00Z`. Mirrored by the
+/// `files_content_modified_at_floor` CHECK constraint.
+pub const CLIENT_MTIME_FLOOR_SECS: i64 = 946_684_800;
+
+/// How far ahead of server time a client-asserted mtime may sit. Clocks
+/// drift and timezones get mishandled; an hour absorbs that without
+/// admitting a value from next year.
+pub const CLIENT_MTIME_FUTURE_SLACK_SECS: i64 = 3_600;
+
+/// Validate a client-asserted content mtime (`X-OC-Mtime`, or the
+/// multipart `source_modified_at` field) in epoch seconds.
+///
+/// Returns the value unchanged when it is plausible, or `Err` with a
+/// stable reason key when it is not. **Callers must reject with 400 and
+/// must never clamp** — a wrong client clock should be visible to whoever
+/// can fix it, not silently absorbed into stored data. See
+/// `docs/architecture/dates.md` § Trust bounds.
+///
+/// Bounds are deliberately loose: this is a sanity gate against garbage
+/// and obvious forgery, not an attempt to verify a timestamp we have no
+/// way of verifying. The value lands in `content_modified_at`, which is
+/// presentational and ordering-relevant rather than security-relevant —
+/// so the cost of a wrong-but-plausible value is a misordered timeline,
+/// and the gate only has to stop the implausible.
+/// Convert client-supplied epoch **milliseconds** to epoch **seconds**,
+/// rounding half-up.
+///
+/// The browser File API's `File.lastModified` is milliseconds, and every
+/// column and header on the other side is seconds. **Round, don't truncate**:
+/// discarding up to 999 ms reports a file a second older than the client
+/// believes it is, which is enough to make the client's next mtime comparison
+/// disagree and re-upload. Same rule, and the same half-up direction, as
+/// `datetime_to_etag_seconds` — the two must agree or a freshly uploaded file
+/// gets an ETag built from a different second than its own mtime.
+///
+/// `div_euclid` rather than `/` so the rounding stays half-up either side of
+/// the epoch. Pre-1970 values are rejected by the trust bounds anyway, but a
+/// helper that quietly changes direction at zero is a trap for the next
+/// caller.
+pub fn millis_to_seconds_rounded(millis: i64) -> i64 {
+    (millis + 500).div_euclid(1000)
+}
+
+pub fn validate_client_mtime(secs: i64, now_secs: i64) -> Result<i64, ClientMtimeRejection> {
+    if secs < CLIENT_MTIME_FLOOR_SECS {
+        return Err(ClientMtimeRejection::TooOld);
+    }
+    if secs > now_secs + CLIENT_MTIME_FUTURE_SLACK_SECS {
+        return Err(ClientMtimeRejection::TooFarFuture);
+    }
+    Ok(secs)
+}
+
+/// Why a client-asserted mtime was refused. The `reason` strings are
+/// stable keys for audit lines and log filters — do not reword them, and
+/// add a new variant rather than repurposing one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientMtimeRejection {
+    /// Before `2000-01-01Z`. Catches zero, negative and uninitialised
+    /// clocks, which would otherwise sort to the start of every timeline.
+    TooOld,
+    /// More than an hour ahead of server time. Catches a badly set client
+    /// clock, which would otherwise pin the file to the top of every
+    /// "newest first" listing permanently.
+    TooFarFuture,
+}
+
+impl ClientMtimeRejection {
+    /// Stable machine-readable key for the `reason` field of an audit line.
+    pub fn reason(self) -> &'static str {
+        match self {
+            Self::TooOld => "mtime_before_2000",
+            Self::TooFarFuture => "mtime_too_far_future",
+        }
+    }
+
+    /// Operator- and user-facing explanation. Names the bound that was
+    /// violated so the client author can fix it without reading our source.
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::TooOld => {
+                "X-OC-Mtime is before 2000-01-01Z; send a plausible modification time or omit the header"
+            }
+            Self::TooFarFuture => {
+                "X-OC-Mtime is more than one hour in the future; check the client clock or omit the header"
+            }
+        }
+    }
+}
+
 // Output stays canonical: chrono's default `Serialize` for
 // `DateTime<Utc>` always emits RFC 3339, so GET responses are
 // unchanged. These helpers are inbound-only — a server-to-client
@@ -207,5 +298,111 @@ mod lenient_tests {
     fn rejects_garbage_string() {
         let err = serde_json::from_str::<Row>(r#"{"at": "not-a-date"}"#).unwrap_err();
         assert!(err.to_string().contains("RFC 3339"));
+    }
+}
+
+#[cfg(test)]
+mod client_mtime_tests {
+    use super::*;
+
+    /// 2026-10-17T00:00:00Z — a fixed "now" so these never depend on the
+    /// wall clock.
+    const NOW: i64 = 1_792_195_200;
+
+    #[test]
+    fn accepts_a_plausible_past_mtime() {
+        // A 2015 photo being uploaded today: the whole point of the header.
+        assert_eq!(validate_client_mtime(1_420_070_400, NOW), Ok(1_420_070_400));
+    }
+
+    #[test]
+    fn accepts_now_and_the_slack_window() {
+        assert_eq!(validate_client_mtime(NOW, NOW), Ok(NOW));
+        let edge = NOW + CLIENT_MTIME_FUTURE_SLACK_SECS;
+        assert_eq!(validate_client_mtime(edge, NOW), Ok(edge));
+    }
+
+    #[test]
+    fn rejects_just_past_the_future_slack() {
+        let over = NOW + CLIENT_MTIME_FUTURE_SLACK_SECS + 1;
+        assert_eq!(
+            validate_client_mtime(over, NOW),
+            Err(ClientMtimeRejection::TooFarFuture)
+        );
+    }
+
+    #[test]
+    fn rejects_zero_negative_and_pre_2000() {
+        // Zero is what an uninitialised clock sends, and it would sort to
+        // the start of every timeline.
+        for bad in [0, -1, CLIENT_MTIME_FLOOR_SECS - 1] {
+            assert_eq!(
+                validate_client_mtime(bad, NOW),
+                Err(ClientMtimeRejection::TooOld),
+                "expected {bad} to be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_the_floor_itself() {
+        assert_eq!(
+            validate_client_mtime(CLIENT_MTIME_FLOOR_SECS, NOW),
+            Ok(CLIENT_MTIME_FLOOR_SECS)
+        );
+    }
+
+    #[test]
+    fn floor_matches_the_check_constraint() {
+        // `files_content_modified_at_floor` compares against '2000-01-01Z'.
+        // If these drift apart, the DB rejects what the app accepted and the
+        // client sees a 500 instead of a 400.
+        let floor = DateTime::<Utc>::from_timestamp(CLIENT_MTIME_FLOOR_SECS, 0).unwrap();
+        assert_eq!(floor.to_rfc3339(), "2000-01-01T00:00:00+00:00");
+
+        // Pinning the literal is not enough — the COMPARISON has to match too.
+        // This validator rejects `secs < FLOOR`, so the floor instant itself is
+        // valid input, which is why the constraint is `>=` and not `>`. An
+        // earlier draft used `>`: the one second at exactly 2000-01-01T00:00:00Z
+        // passed validation and then violated the constraint, producing the 500
+        // the comment above warns about.
+        let now = CLIENT_MTIME_FLOOR_SECS + 86_400;
+        assert_eq!(
+            validate_client_mtime(CLIENT_MTIME_FLOOR_SECS, now),
+            Ok(CLIENT_MTIME_FLOOR_SECS),
+            "the floor instant itself must be accepted; the CHECK constraint is >= to match"
+        );
+        assert_eq!(
+            validate_client_mtime(CLIENT_MTIME_FLOOR_SECS - 1, now),
+            Err(ClientMtimeRejection::TooOld),
+            "one second before the floor must be rejected"
+        );
+    }
+
+    #[test]
+    fn millis_round_half_up_not_truncate() {
+        // The plan's worked example: a remainder of 700 must round UP.
+        // Truncation would give …662 and silently report the file a second
+        // older than the browser believes it is.
+        assert_eq!(millis_to_seconds_rounded(1_792_055_662_700), 1_792_055_663);
+        // Remainder below half rounds down.
+        assert_eq!(millis_to_seconds_rounded(1_792_055_662_300), 1_792_055_662);
+        // Exactly half rounds up — the "half-up" in the name.
+        assert_eq!(millis_to_seconds_rounded(1_792_055_662_500), 1_792_055_663);
+        // Whole seconds are untouched.
+        assert_eq!(millis_to_seconds_rounded(1_700_086_400_000), 1_700_086_400);
+        // Direction does not flip across the epoch. These values are
+        // rejected by the trust bounds, but the helper must not be a trap.
+        assert_eq!(millis_to_seconds_rounded(-1_500), -1);
+        assert_eq!(millis_to_seconds_rounded(-1_600), -2);
+    }
+
+    #[test]
+    fn reason_keys_are_distinct_and_stable() {
+        assert_eq!(ClientMtimeRejection::TooOld.reason(), "mtime_before_2000");
+        assert_eq!(
+            ClientMtimeRejection::TooFarFuture.reason(),
+            "mtime_too_far_future"
+        );
     }
 }

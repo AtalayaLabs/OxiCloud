@@ -140,9 +140,9 @@ impl ThumbnailCacheKey {
     }
 }
 
-/// Maximum pixel count before rejecting decode (50 megapixels → ~200 MB RGBA).
-/// Images above this are silently skipped — protects against single-image OOM.
-const MAX_DECODE_PIXELS: u64 = 50_000_000;
+/// Re-exported from `image_decode`, which is now the single home for the
+/// decode bound so the transcode and face-analysis paths share this policy.
+use crate::infrastructure::services::image_decode::MAX_DECODE_PIXELS;
 
 /// JPEG quality for the fallback codec.
 const JPEG_QUALITY: u8 = 80;
@@ -972,7 +972,11 @@ impl ThumbnailService {
             }
 
             // ── Slow path: decode, resize, re-encode to JPEG ─────────
-            let img = image::load_from_memory(&data)
+            // `decode_bounded`, not `image::load_from_memory`: this path took
+            // untrusted bytes straight into a decode with no area check,
+            // unlike `decode_oriented` below. WebP ignores `max_alloc`
+            // entirely, so the crate default was no protection here.
+            let img = crate::infrastructure::services::image_decode::decode_bounded(&data)
                 .map_err(|e| ThumbnailError::ImageError(format!("Invalid image data: {e}")))?;
 
             let (w, h) = (img.width(), img.height());
@@ -1059,6 +1063,10 @@ impl ThumbnailService {
             )));
         }
         let img =
+            // Raw `load_from_memory` is safe HERE and only here: the
+            // MAX_DECODE_PIXELS check immediately above already read the
+            // header and rejected oversized images, so routing through
+            // `decode_bounded` would re-read the dimensions for nothing.
             image::load_from_memory(data).map_err(|e| ThumbnailError::ImageError(e.to_string()))?;
         Ok(Self::apply_exif_orientation(data, img))
     }

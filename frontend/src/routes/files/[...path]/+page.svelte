@@ -1902,7 +1902,7 @@
 		},
 		{
 			key: 'createdAt',
-			label: t('groupby.createdAt', 'Created date'),
+			label: t('groupby.createdAt', 'Added date'),
 			orderBy: 'created_at',
 			icon: 'layer-group',
 			bucketOf: wrapNew((item) => dateBucket(item.created_at)),

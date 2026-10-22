@@ -15,13 +15,29 @@ const JSON_HEADERS = { 'Content-Type': 'application/json' };
 export async function createFileByHash(
 	folderId: string,
 	name: string,
-	hash: string
+	hash: string,
+	/**
+	 * The browser's `File.lastModified`, epoch milliseconds — so an instant
+	 * upload preserves the source mtime like a multipart one does.
+	 *
+	 * This path is `uploadOneFile`'s FIRST short-circuit, taken whenever the
+	 * caller already owns the content, so without this a re-upload of known
+	 * bytes silently lost its mtime even for a small file. Omitted when
+	 * falsy: `lastModified` is 0 for a synthesised `File`, and 0 would be
+	 * refused by the server's pre-2000 floor.
+	 */
+	sourceModifiedAt?: number
 ): Promise<{ ok: boolean; status: number; data?: unknown }> {
 	const res = await apiFetch('/api/files/by-hash', {
 		method: 'POST',
 		credentials: 'same-origin',
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
-		body: JSON.stringify({ name, folder_id: folderId, hash })
+		body: JSON.stringify({
+			name,
+			folder_id: folderId,
+			hash,
+			...(sourceModifiedAt ? { source_modified_at: sourceModifiedAt } : {})
+		})
 	});
 	const data = res.ok ? await res.json().catch(() => undefined) : undefined;
 	return { ok: res.ok, status: res.status, data };
@@ -47,6 +63,28 @@ export async function dedupCheckBatch(hashes: string[]): Promise<Set<string>> {
 }
 
 /**
+ * Attach the browser's `File.lastModified` so the upload preserves the
+ * source mtime instead of being stamped with the upload moment.
+ *
+ * **Must be appended BEFORE the `file` part.** The server reads multipart
+ * fields in order and the `file` field consumes the stream, so anything
+ * after it is never seen — the same ordering constraint `folder_id` has.
+ *
+ * Sent as **milliseconds**, verbatim from the File API. `X-OC-Mtime` on the
+ * NextCloud surfaces is seconds because ownCloud defined it that way; this
+ * field is ours, and handing over the raw value keeps the round-half-up rule
+ * in one place on the server rather than asking every client to implement it.
+ *
+ * `lastModified` is 0 for a `File` synthesised without one (some clipboard
+ * and share-target paths), and the server's trust bounds reject anything
+ * before 2000-01-01 with a 400 — so a falsy value is omitted rather than
+ * sent and refused.
+ */
+function appendSourceMtime(form: FormData, file: File): void {
+	if (file.lastModified) form.append('source_modified_at', String(file.lastModified));
+}
+
+/**
  * Upload a file. Resolves to the created file — the endpoint replies
  * `201` with the new row, and callers that need its id (to link to it,
  * or to offer an undo) would otherwise have to re-list the folder to
@@ -55,6 +93,7 @@ export async function dedupCheckBatch(hashes: string[]): Promise<Set<string>> {
 export async function uploadFile(folderId: string | null, file: File): Promise<FileItem | null> {
 	const form = new FormData();
 	if (folderId) form.append('folder_id', folderId);
+	appendSourceMtime(form, file);
 	form.append('file', file);
 	const res = await apiFetch('/api/files/upload', {
 		method: 'POST',
@@ -82,6 +121,7 @@ export async function uploadFileWithProgress(
 ): Promise<void> {
 	const form = new FormData();
 	if (folderId) form.append('folder_id', folderId);
+	appendSourceMtime(form, file);
 	form.append('file', file);
 	const response = await apiFetch('/api/files/upload', {
 		method: 'POST',

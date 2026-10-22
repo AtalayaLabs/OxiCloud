@@ -254,7 +254,7 @@ pub async fn list_photos_resources(
                 resource: ResourceContentDto::File(dto),
                 width: r.width,
                 height: r.height,
-                sort_date: r.sort_date,
+                sort_date: r.sort_date_ts,
                 captured_at: r.captured_at,
                 orientation: r.orientation,
                 has_gps: r.has_gps,

@@ -719,6 +719,20 @@ export type CreateFileByHashRequest = {
      * File name to create (path components are stripped).
      */
     name: string;
+    /**
+     * §9 — the browser's `File.lastModified`, epoch **milliseconds**.
+     *
+     * Optional, and absent means "stamp `NOW()`". Same unit and same
+     * trust bounds as the multipart `source_modified_at` field on
+     * `/api/files/upload`; the server rounds half-up and rejects
+     * implausible values with a 400 rather than clamping.
+     *
+     * This endpoint needs its own slot because it is `uploadOneFile`'s
+     * FIRST short-circuit: re-uploading content the caller already owns
+     * never reaches the multipart path, so without this a duplicate
+     * upload silently lost its source mtime even for a small file.
+     */
+    source_modified_at?: number | null;
 };
 
 /**
@@ -1024,6 +1038,20 @@ export type DeltaCommitRequest = {
      * Create mode: file name (basename).
      */
     name?: string | null;
+    /**
+     * §9 — the browser's `File.lastModified`, epoch **milliseconds**.
+     *
+     * Optional; absent means "stamp `NOW()`". Same unit and trust bounds
+     * as the multipart `source_modified_at` and the by-hash field: the
+     * server rounds half-up and refuses implausible values with a 400.
+     *
+     * This path needs its own slot because the SPA chooses delta purely
+     * by size — everything at or above `DELTA_UPLOAD_MIN_SIZE` (8 MiB)
+     * comes here and never reaches the multipart handler. Without it the
+     * capability was size-dependent: small uploads kept their mtime and
+     * large ones silently lost it.
+     */
+    source_modified_at?: number | null;
 };
 
 /**
@@ -1918,6 +1946,10 @@ export type FolderDto = {
     is_shared: boolean;
     /**
      * Last modification timestamp (RFC 3339 UTC).
+     *
+     * The folder row's own `updated_at` — bumped by a rename or a move of
+     * *this* folder, not by anything happening inside it. For "did anything
+     * in this subtree change", use `tree_modified_at` below.
      */
     modified_at: string;
     /**
@@ -1932,6 +1964,19 @@ export type FolderDto = {
      * Path to the folder (relative)
      */
     path: string;
+    /**
+     * Descendant-rollup timestamp (RFC 3339 UTC): the most recent change
+     * anywhere in this folder's subtree.
+     *
+     * This is what a collection's content-modification time actually means —
+     * a folder's "content" is its children — so `D:getlastmodified` is
+     * sourced from here rather than from `modified_at`, which would report a
+     * rename of the folder itself as a content change. It is also the input
+     * to `etag` below, so the two agree by construction.
+     *
+     * See `docs/architecture/dates.md` § Collections.
+     */
+    tree_modified_at: string;
     /**
      * §14 provenance: user that performed the most recent mutation
      * that bumped `updated_at`. Authorship signal — distinct from
@@ -3008,23 +3053,116 @@ export type PhotoKind = 'all' | 'photo' | 'video';
  * The three axes serve distinct questions:
  *
  * - `CapturedAt` (default) — "when was this photo TAKEN". Orders by
- * `COALESCE(captured_at, created_at)` via the materialised
+ * `COALESCE(captured_at, content_modified_at)` via the materialised
  * `storage.files.media_sort_date` column, so uploads without EXIF
- * fall back to upload time rather than sinking to NULL.
+ * fall back to when their content last changed rather than sinking
+ * to NULL.
  * - `CreatedAt` — "when did this file ARRIVE in OxiCloud". Pure
  * `storage.files.created_at`; EXIF capture date ignored. Useful
  * for the operator-style "recently uploaded" view.
- * - `UpdatedAt` — "when was this file last TOUCHED". Pure
- * `storage.files.updated_at`; moves and renames resurface rows.
- * Useful when the user wants to find a file they recently acted
- * on, independent of when it was taken or first uploaded.
+ * - `ModifiedAt` (`modified_at` on the wire) — "when did this file's
+ * CONTENT last change". Reads `storage.files.content_modified_at`,
+ * so a rename, move or trash transition does *not* resurface a row
+ * — only a real content mutation does.
  *
  * All three axes paginate on the same `(sort_value, id)` keyset,
  * just over different columns. The cursor carries the axis so a
  * mid-scroll flip is rejected by the handler with 400 rather than
  * silently drifting pagination.
  */
-export type PhotoOrderBy = 'captured_at' | 'created_at' | 'updated_at';
+export type PhotoOrderBy = 'captured_at' | 'created_at' | 'modified_at';
+
+/**
+ * One item in a `GET /api/photos/resources` page.
+ *
+ * `resource_type` is always `ResourceTypeDto::File` — the listing is
+ * media-files-only — but the field stays for shape parity with other
+ * `/resources` endpoints. Clients can pattern-match on it the same
+ * way they do on favorites or trash items.
+ */
+export type PhotoResourceItemDto = {
+    /**
+     * Raw EXIF `DateTimeOriginal` (RFC 3339 UTC). `None` when the
+     * file carries no EXIF date. Lets the client distinguish "taken
+     * on this date" from the fallback that `sort_date` collapses into
+     * one value — but it is NOT a sort axis, so do not group by it.
+     */
+    captured_at?: string | null;
+    /**
+     * `true` when at least one other non-trashed media row in the
+     * same drive references the same blob hash — i.e. the §9
+     * within-drive `DISTINCT ON (blob_hash)` hid one or more
+     * siblings behind this tile. §9b Layer 1 of
+     * `docs/plan/photos-resources-migration.md` surfaces this as the
+     * delete-UX hint: a `true` tile warns the user that "trashing
+     * this removes only one copy of the content — N other copies
+     * still live elsewhere in this drive", so the gallery can offer
+     * the siblings list from `GET /api/dedup/check/{hash}` (Layer 2)
+     * before committing. `false` is the common case and lets the FE
+     * skip the sibling fetch entirely — zero round trips when
+     * there's nothing to warn about.
+     */
+    has_blob_siblings: boolean;
+    /**
+     * `true` when the file has both GPS lat AND lng. Presence signal
+     * only — the raw coordinates stay off the main listing. Enables
+     * a "📍 has location" badge and a "photos with location"
+     * client-side filter without disclosing per-photo coordinates on
+     * every gallery tile. Important on public share links where a
+     * visitor seeing GPS for every photo would often be unintended
+     * by the sharer. For the Places map, continue to use
+     * `/api/photos/geo` which clusters coords server-side; for a
+     * specific photo's exact lat/lng, call `/api/files/{id}/metadata`
+     * — the explicit per-photo call is the right disclosure
+     * boundary.
+     */
+    has_gps: boolean;
+    /**
+     * Image/video height in pixels, from `storage.file_metadata`.
+     */
+    height?: number | null;
+    /**
+     * Raw EXIF orientation (TIFF 1–8 enum). `None` when absent. The
+     * client applies this to the full-resolution image tile BEFORE
+     * pixels arrive, so there is no "appears sideways, flips" flash
+     * on `<img>` load in browsers that don't auto-rotate. Note:
+     * thumbnails already arrive display-correct — the server-side
+     * thumbnail generator bakes rotation into the output pixels.
+     * This field is strictly for the full-res lightbox / download
+     * viewer.
+     */
+    orientation?: number | null;
+    /**
+     * Full file details — serialised as the inner object via
+     * `ResourceContentDto`'s `#[serde(untagged)]`, so consumers read
+     * `resource.id`, `resource.name`, … directly.
+     */
+    resource: ResourceContentDto;
+    resource_type: ResourceTypeDto;
+    /**
+     * Value of the **active sort axis** (RFC 3339 UTC) — whichever
+     * column the server actually ordered this page by, not one fixed
+     * column. `order_by=captured_at` (the default) yields
+     * `media_sort_date`, i.e. `COALESCE(captured_at,
+     * content_modified_at)`; `order_by=created_at` yields
+     * `created_at`; `order_by=modified_at` yields
+     * `content_modified_at`. The cursor keys off this value.
+     *
+     * **Clients must bucket and group on this field**, precisely
+     * because it tracks the ordering. The timeline arrives
+     * monotonically newest-first, and a UI that groups on any other
+     * date can see a month reopen after it closed. Doing exactly that
+     * — grouping on `created_at` — is what broke `/photos` with
+     * `each_key_duplicate` once §3 made the two axes diverge.
+     */
+    sort_date: string;
+    /**
+     * Image/video width in pixels, from `storage.file_metadata`.
+     * `None` when the row has no metadata (very old uploads, or a
+     * format the metadata extractor doesn't understand).
+     */
+    width?: number | null;
+};
 
 export type PlaylistDto = {
     cover_file_id?: string | null;
@@ -3438,7 +3576,7 @@ export type SearchCriteriaDto = {
     reverse?: boolean;
     /**
      * Sort dimension. Canonical set: `"relevance"` | `"name"` | `"size"`
-     * | `"updated_at"` | `"created_at"`. Direction is `reverse` below —
+     * | `"modified_at"` | `"created_at"`. Direction is `reverse` below —
      * the `_desc` suffix pattern was retired 2026-07-26 in favour of
      * a single boolean, so every consumer treats "which column" and
      * "which direction" as orthogonal concerns.
@@ -12083,7 +12221,7 @@ export type SearchResourcesData = {
          */
         cursor?: string;
         /**
-         * Sort dimension: relevance (default) | name | size | updated_at | created_at
+         * Sort dimension: relevance (default) | name | size | modified_at | created_at
          */
         order_by?: string;
         /**

@@ -81,7 +81,7 @@ impl PathResolverService {
                 Option<String>, // parent_id
                 Uuid,           // drive_id
                 i64,            // created_at
-                i64,            // modified_at
+                i64,            // content_modified_at → entity `modified_at`
                 Option<i64>,    // size
                 Option<String>, // mime_type
                 Option<String>, // folder_id
@@ -91,7 +91,7 @@ impl PathResolverService {
         >(
             r#"
             SELECT resource_type, id, name, path, parent_id, drive_id,
-                   created_at, modified_at, size, mime_type, folder_id,
+                   created_at, content_modified_at, size, mime_type, folder_id,
                    blob_hash, tree_modified_at
               FROM (
                 SELECT 'folder'::text       AS resource_type,
@@ -101,7 +101,7 @@ impl PathResolverService {
                        fo.parent_id::text,
                        fo.drive_id,
                        EXTRACT(EPOCH FROM fo.created_at)::bigint AS created_at,
-                       EXTRACT(EPOCH FROM fo.updated_at)::bigint AS modified_at,
+                       EXTRACT(EPOCH FROM fo.content_modified_at)::bigint AS content_modified_at,
                        NULL::bigint         AS size,
                        NULL::text           AS mime_type,
                        NULL::text           AS folder_id,
@@ -124,7 +124,7 @@ impl PathResolverService {
                        NULL::text           AS parent_id,
                        fi.drive_id,
                        EXTRACT(EPOCH FROM fi.created_at)::bigint AS created_at,
-                       EXTRACT(EPOCH FROM fi.updated_at)::bigint AS modified_at,
+                       EXTRACT(EPOCH FROM fi.content_modified_at)::bigint AS content_modified_at,
                        fi.size,
                        fi.mime_type,
                        fi.folder_id::text,
@@ -180,6 +180,7 @@ impl PathResolverService {
                     drive_id,
                     created_at: epoch_to_datetime(created_at.max(0) as u64),
                     modified_at: epoch_to_datetime(modified_at.max(0) as u64),
+                    tree_modified_at: epoch_to_datetime(tree_mod),
                     is_root: false,
                     icon_class: intern_display("fas fa-folder"),
                     icon_special_class: intern_display("folder-icon"),

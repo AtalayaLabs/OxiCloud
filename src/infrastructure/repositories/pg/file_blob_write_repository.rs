@@ -146,11 +146,22 @@ impl FileBlobWriteRepository {
     /// reference can be decremented afterwards. Compensates on failure by
     /// removing the new blob reference.
     ///
-    /// `modified_at`: if `Some`, sets `updated_at` to that Unix timestamp;
-    /// if `None`, uses `NOW()` (server time). Returns
-    /// `(new_hash, updated_at_epoch)` on success — the effective timestamp
-    /// is returned so callers can rebuild the fresh entity without
-    /// re-reading the row.
+    /// `modified_at`: if `Some`, sets **`content_modified_at` only** to that
+    /// Unix timestamp; if `None`, that column gets `NOW()`. Either way
+    /// `updated_at` gets `NOW()` — a client-asserted value never reaches it.
+    /// Returns `(new_hash, content_modified_at_epoch)` on success, so callers
+    /// can rebuild the fresh entity without re-reading the row.
+    ///
+    /// Both columns move here because this is a **content** mutation: the
+    /// bytes changed, so POSIX mtime changed, and any row touch changes ctime.
+    /// They move to *different values* though — see the comment on the SET
+    /// clause. The two also diverge on the paths that do not come through here
+    /// — rename, move, trash, grant, favourite — which bump `updated_at`
+    /// alone. That split is the whole point of `content_modified_at`; see
+    /// `docs/plan/normalize-file-dates.md` §1 and
+    /// `docs/architecture/dates.md`. Callers must have validated a
+    /// client-asserted `modified_at` against the trust bounds first (reject
+    /// more than an hour ahead, reject before 2000-01-01, 400 and never clamp).
     ///
     /// §14: `updated_by = $5` (caller_id). The caller mutated this
     /// row — not the row's owner. D2 shared drives let non-owners
@@ -181,7 +192,23 @@ impl FileBlobWriteRepository {
         // caller can tell "mismatch" apart from "file not found".
         // Deadlock victims (40P01) retry before the compensation below runs —
         // a successful retry must keep the new blob reference alive.
-        let (old_hash, updated_at, matched) =
+        //
+        // The two clocks below are set from DIFFERENT expressions on purpose,
+        // and aligning them is a regression, not a tidy-up:
+        //
+        //   content_modified_at  ← COALESCE(to_timestamp($4), NOW())
+        //   updated_at           ← NOW(), always
+        //
+        // `$4` is the client-asserted `X-OC-Mtime`. It belongs in the content
+        // clock, which is what it describes. It must NOT reach `updated_at`:
+        // ctime is the one timestamp a client cannot influence, and that is
+        // precisely what makes it usable for audit, consistency sweeps and
+        // retention. POSIX draws the same line — `utimensat` sets atime and
+        // mtime, never ctime.
+        //
+        // Both arms keep the `expected_hash` CAS guard, so a failed
+        // compare-and-swap still writes neither.
+        let (old_hash, content_modified_at, matched) =
             match retry_on_deadlock("files.swap_blob_hash", || {
                 sqlx::query_as::<_, (String, i64, bool)>(
                     r#"
@@ -194,12 +221,14 @@ impl FileBlobWriteRepository {
                        size = CASE WHEN $6::text IS NULL OR old.blob_hash = $6
                                    THEN $2 ELSE f.size END,
                        updated_at = CASE WHEN $6::text IS NULL OR old.blob_hash = $6
-                                         THEN COALESCE(to_timestamp($4), NOW()) ELSE f.updated_at END,
+                                         THEN NOW() ELSE f.updated_at END,
+                       content_modified_at = CASE WHEN $6::text IS NULL OR old.blob_hash = $6
+                                         THEN COALESCE(to_timestamp($4), NOW()) ELSE f.content_modified_at END,
                        updated_by = CASE WHEN $6::text IS NULL OR old.blob_hash = $6
                                          THEN $5 ELSE f.updated_by END
                   FROM old
                  WHERE f.id = old.id
-                RETURNING old.blob_hash, EXTRACT(EPOCH FROM f.updated_at)::bigint,
+                RETURNING old.blob_hash, EXTRACT(EPOCH FROM f.content_modified_at)::bigint,
                           ($6::text IS NULL OR old.blob_hash = $6)
                 "#,
                 )
@@ -278,7 +307,7 @@ impl FileBlobWriteRepository {
             );
         }
 
-        Ok((new_hash.to_string(), updated_at))
+        Ok((new_hash.to_string(), content_modified_at))
     }
 
     /// Register a file row pointing at a blob already stored in the chunk
@@ -290,6 +319,8 @@ impl FileBlobWriteRepository {
     /// folder's owner. In D2 shared drives a non-owner member can upload
     /// into a folder Alice owns; binding `parent.user_id` would have
     /// silently recorded Alice as the author.
+    // Flat column values for one INSERT — see the trait declarations.
+    #[allow(clippy::too_many_arguments)]
     async fn save_file_with_blob_impl(
         &self,
         name: String,
@@ -298,6 +329,7 @@ impl FileBlobWriteRepository {
         blob_hash: &str,
         size: u64,
         caller_id: Uuid,
+        content_modified_at: Option<i64>,
     ) -> Result<File, DomainError> {
         // NFC-normalize at the last touch before the DB bind. Same
         // reasoning as `folder_db_repository::create_folder`: every write
@@ -354,14 +386,42 @@ impl FileBlobWriteRepository {
                 )
                 INSERT INTO storage.files
                     (name, folder_id, drive_id, blob_hash, size,
-                     mime_type, category_order, created_by, updated_by)
+                     mime_type, category_order, created_by, updated_by,
+                     content_modified_at, media_sort_date)
                 SELECT $1, parent.id, parent.drive_id, $3, $4,
-                       $5, $6, $7, $7
+                       $5, $6, $7, $7,
+                       COALESCE(to_timestamp($8), NOW()),
+                       -- Same value as content_modified_at, and it must be
+                       -- set HERE rather than left to the column default.
+                       --
+                       -- `media_sort_date` is COALESCE(captured_at,
+                       -- content_modified_at). At INSERT no `file_metadata`
+                       -- row can exist yet (its FK points at this row), so
+                       -- the chain reduces to `content_modified_at` — and
+                       -- the column's own DEFAULT is CURRENT_TIMESTAMP,
+                       -- which is a DIFFERENT value whenever the caller
+                       -- asserted an X-OC-Mtime. That left a fresh upload
+                       -- sorted by its arrival time while reporting a 2023
+                       -- mtime, caught by
+                       -- `photos_sort_date_content_clock.hurl`.
+                       --
+                       -- Deliberately not a BEFORE INSERT trigger: that
+                       -- would also fire for `copy_folder_tree`, which
+                       -- passes an explicit `media_sort_date` copied from
+                       -- the source so a copied photo keeps its place in
+                       -- the timeline. A trigger cannot tell an explicit
+                       -- value from a defaulted one and would clobber it.
+                       --
+                       -- A later EXIF extraction fires
+                       -- `trg_sync_media_sort_date` on the `file_metadata`
+                       -- insert, which recomputes the full COALESCE — so
+                       -- the `captured_at` arm still wins once it exists.
+                       COALESCE(to_timestamp($8), NOW())
                   FROM parent
                 RETURNING id::text,
                           (SELECT path FROM parent),
                           EXTRACT(EPOCH FROM created_at)::bigint,
-                          EXTRACT(EPOCH FROM updated_at)::bigint,
+                          EXTRACT(EPOCH FROM content_modified_at)::bigint,
                           created_by,
                           updated_by
                 "#,
@@ -373,6 +433,9 @@ impl FileBlobWriteRepository {
             .bind(&content_type)
             .bind(category_order_for(&name, &content_type))
             .bind(caller_id)
+            // `to_timestamp` takes double precision; NULL falls through the
+            // COALESCE to NOW(), which is the no-header case.
+            .bind(content_modified_at.map(|s| s as f64))
             .fetch_optional(self.pool.as_ref())
         })
         .await;
@@ -492,7 +555,7 @@ impl FileBlobWriteRepository {
             r#"
             SELECT f.id::text, fo.path,
                    EXTRACT(EPOCH FROM f.created_at)::bigint,
-                   EXTRACT(EPOCH FROM f.updated_at)::bigint,
+                   EXTRACT(EPOCH FROM f.content_modified_at)::bigint,
                    f.created_by, f.updated_by, f.size, f.mime_type
               FROM storage.files f
               JOIN storage.folders fo ON fo.id = f.folder_id
@@ -552,9 +615,18 @@ impl FileWritePort for FileBlobWriteRepository {
         blob_hash: &str,
         size: u64,
         caller_id: Uuid,
+        content_modified_at: Option<i64>,
     ) -> Result<File, DomainError> {
-        self.save_file_with_blob_impl(name, folder_id, content_type, blob_hash, size, caller_id)
-            .await
+        self.save_file_with_blob_impl(
+            name,
+            folder_id,
+            content_type,
+            blob_hash,
+            size,
+            caller_id,
+            content_modified_at,
+        )
+        .await
     }
 
     async fn move_file(
@@ -597,7 +669,7 @@ impl FileWritePort for FileBlobWriteRepository {
              WHERE f.id = $2::uuid AND NOT f.is_trashed
             RETURNING f.id::text, f.name, f.folder_id::text, f.size, f.mime_type,
                       EXTRACT(EPOCH FROM f.created_at)::bigint,
-                      EXTRACT(EPOCH FROM f.updated_at)::bigint,
+                      EXTRACT(EPOCH FROM f.content_modified_at)::bigint,
                       f.created_by, f.updated_by
             "#,
         )
@@ -720,13 +792,13 @@ impl FileWritePort for FileBlobWriteRepository {
                               id::text AS id_text,
                               name, folder_id::text, size, mime_type,
                               EXTRACT(EPOCH FROM created_at)::bigint AS created_at,
-                              EXTRACT(EPOCH FROM updated_at)::bigint AS updated_at,
+                              EXTRACT(EPOCH FROM content_modified_at)::bigint AS content_modified_at,
                               blob_hash,
                               created_by,
                               updated_by
                 )
                 SELECT id_text, name, folder_id, size, mime_type,
-                       created_at, updated_at,
+                       created_at, content_modified_at,
                        blob_hash, created_by, updated_by
                   FROM new_file
                 "#,
@@ -825,7 +897,14 @@ impl FileWritePort for FileBlobWriteRepository {
              WHERE id = $2::uuid AND NOT is_trashed
             RETURNING id::text, name, folder_id::text, size, mime_type,
                       EXTRACT(EPOCH FROM created_at)::bigint,
-                      EXTRACT(EPOCH FROM updated_at)::bigint,
+                      -- NOT `updated_at`, even though this statement just
+                      -- bumped it. This slot is the entity's `modified_at`,
+                      -- which is the CONTENT clock — and a rename changed
+                      -- the name, not the bytes. Returning the fresh
+                      -- `updated_at` would hand the caller a moved mtime and
+                      -- a moved ETag for untouched content: the precise
+                      -- regression §2 exists to kill.
+                      EXTRACT(EPOCH FROM content_modified_at)::bigint,
                       created_by, updated_by
             "#,
         )
@@ -953,7 +1032,7 @@ impl FileWritePort for FileBlobWriteRepository {
                     RETURNING id::text,
                               (SELECT path FROM parent),
                               EXTRACT(EPOCH FROM created_at)::bigint,
-                              EXTRACT(EPOCH FROM updated_at)::bigint,
+                              EXTRACT(EPOCH FROM content_modified_at)::bigint,
                               created_by,
                               updated_by
                     "#,
@@ -984,7 +1063,7 @@ impl FileWritePort for FileBlobWriteRepository {
                     VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $7)
                     RETURNING id::text,
                               EXTRACT(EPOCH FROM created_at)::bigint,
-                              EXTRACT(EPOCH FROM updated_at)::bigint,
+                              EXTRACT(EPOCH FROM content_modified_at)::bigint,
                               created_by,
                               updated_by
                     "#,

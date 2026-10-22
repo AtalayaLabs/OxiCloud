@@ -66,7 +66,7 @@ pub struct SearchCriteriaDto {
     pub offset: usize,
 
     /// Sort dimension. Canonical set: `"relevance"` | `"name"` | `"size"`
-    /// | `"updated_at"` | `"created_at"`. Direction is `reverse` below —
+    /// | `"modified_at"` | `"created_at"`. Direction is `reverse` below —
     /// the `_desc` suffix pattern was retired 2026-07-26 in favour of
     /// a single boolean, so every consumer treats "which column" and
     /// "which direction" as orthogonal concerns.
@@ -356,11 +356,11 @@ pub struct SearchResourcesQuery {
     pub cursor: Option<String>,
 
     /// Sort dimension. Supported: `"relevance"` (default), `"name"`,
-    /// `"size"`, `"updated_at"`, `"created_at"`. Direction is the
+    /// `"size"`, `"modified_at"`, `"created_at"`. Direction is the
     /// separate `reverse` flag — the historical `_desc` suffix pattern
     /// (`name_desc`, `date_desc`, `size_desc`) was retired 2026-07-26
     /// in favour of a single boolean, and `"date"` was renamed to the
-    /// more explicit `"updated_at"` alongside the new `"created_at"`.
+    /// more explicit `"modified_at"` alongside the new `"created_at"`.
     pub order_by: Option<String>,
 
     /// Comma-separated resource types to include, e.g. `"file,folder"`.
@@ -652,6 +652,11 @@ fn append_folders(items: &mut Vec<SearchResourceItem>, folders: Vec<SearchFolder
             drive_id: f.drive_id,
             created_at: f.created_at,
             modified_at: f.modified_at,
+            // Search hits carry no subtree rollup, and search results are a
+            // REST surface that never emits `D:getlastmodified`, so the
+            // folder's own mtime stands in rather than a claim about
+            // descendants.
+            tree_modified_at: f.modified_at,
             is_root: f.is_root,
             // Folders carry closed-set display fields — always the
             // same three static strings. Cheap to build via `Arc::from`

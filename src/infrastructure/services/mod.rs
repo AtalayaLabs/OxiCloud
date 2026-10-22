@@ -33,6 +33,7 @@ pub mod file_system_i18n_service;
 pub mod files_consistency_service;
 pub mod folders_consistency_service;
 pub mod grant_cleanup_service;
+pub mod image_decode;
 pub mod image_transcode_service;
 pub mod in_process_message_bus;
 pub mod job_runs_cleanup_service;

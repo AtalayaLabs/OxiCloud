@@ -390,11 +390,14 @@ async fn handle_assemble(
         .ok_or_else(|| AppError::bad_request("Missing Destination header"))?
         .to_string();
 
-    let oc_mtime = req
-        .headers()
-        .get("x-oc-mtime")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<i64>().ok());
+    // `X-OC-Mtime` is the client asserting the source file's POSIX mtime,
+    // which lands in `content_modified_at` — see
+    // `docs/architecture/dates.md` § Trust bounds. Shared with
+    // `webdav_handler::handle_put`; the `"upload"` prefix preserves the
+    // established `upload.mtime_rejected` event key, which aggregators
+    // filter on. `user_id` is not passed explicitly — the request-scope
+    // span already carries it.
+    let oc_mtime = super::parse_client_mtime(req.headers(), "upload")?;
 
     // Strip the destination URL prefix using the SESSION's raw username
     // (`admin~<drive-uuid>` on non-home drives), NOT `user.username`

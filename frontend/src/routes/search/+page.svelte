@@ -260,7 +260,7 @@
 		{
 			key: 'modifiedAt',
 			label: t('groupby.modifiedAt', 'Modified date'),
-			orderBy: 'updated_at',
+			orderBy: 'modified_at',
 			bucketOf: (item) => dateBucket(item.modified_at)
 		},
 		{

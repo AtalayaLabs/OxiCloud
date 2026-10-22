@@ -50,15 +50,20 @@ export interface FileItem {
 	size: number;
 	size_formatted: string;
 	/**
-	 * Deprecated — `sort_date` moved to the item-level envelope on
-	 * `/api/photos/resources` (§1 of
-	 * `docs/plan/photos-resources-migration.md`). The field was only
-	 * ever populated by the legacy `/api/photos` route, which §4
-	 * removed. Kept optional so test fixtures that still spell
-	 * `sort_date: 0` compile unchanged; delete it the next time this
-	 * interface is touched for an unrelated reason.
+	 * Deprecated on `FileItem` — `sort_date` moved to the item-level
+	 * envelope on `/api/photos/resources` (§1 of
+	 * `docs/plan/photos-resources-migration.md`), where `PhotoItem`
+	 * declares it as a required RFC 3339 string. The field was only ever
+	 * populated here by the legacy `/api/photos` route, which §4
+	 * removed.
+	 *
+	 * Typed `string | number` solely so the two can coexist: `PhotoItem
+	 * extends FileItem` must narrow to something assignable to this, and
+	 * existing test fixtures and benches seed a bare number. The wire
+	 * only ever sends the string — see {@link photoTimestamp}, which
+	 * accepts both for that reason and prefers neither silently.
 	 */
-	sort_date?: number;
+	sort_date?: string | number;
 	etag: string;
 	content_hash: string;
 	/** See `FolderItem.is_favorite` — same wire contract. */
@@ -220,7 +225,7 @@ export type { AuthResponseDto as AuthResponse } from './generated/openapi/types.
  * retired 2026-07-26; `date` was renamed to the more explicit
  * `updated_at` alongside the new `created_at`).
  */
-export type SortBy = 'relevance' | 'name' | 'size' | 'updated_at' | 'created_at';
+export type SortBy = 'relevance' | 'name' | 'size' | 'modified_at' | 'created_at';
 
 /**
  * Per-item search metadata inline on every hit in the normalized

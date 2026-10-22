@@ -554,10 +554,16 @@
 			favoriteFilter = true;
 		const savedOrderBy =
 			typeof localStorage !== 'undefined' ? localStorage.getItem(ORDER_BY_KEY) : null;
-		if (
+		// §6 renamed the `updated_at` axis to `modified_at`. This preference
+		// is PERSISTED, so stored values outlive the deploy: anyone who had
+		// picked "Last modified" has `updated_at` in localStorage, which now
+		// matches no axis and would silently fall back to the default —
+		// changing their view for no visible reason. Map it on read.
+		if (savedOrderBy === 'updated_at') orderBy = 'modified_at';
+		else if (
 			savedOrderBy === 'captured_at' ||
 			savedOrderBy === 'created_at' ||
-			savedOrderBy === 'updated_at'
+			savedOrderBy === 'modified_at'
 		)
 			orderBy = savedOrderBy;
 		if (typeof localStorage !== 'undefined' && localStorage.getItem(REVERSE_KEY) === 'true')
@@ -958,10 +964,10 @@
 							<button
 								type="button"
 								class="group-by-option"
-								class:active={orderBy === 'updated_at'}
+								class:active={orderBy === 'modified_at'}
 								data-testid="photos-order-by-updated-at"
 								onclick={() => {
-									setOrderBy('updated_at');
+									setOrderBy('modified_at');
 									orderByOpen = false;
 								}}
 							>

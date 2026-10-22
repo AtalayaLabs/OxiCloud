@@ -1473,9 +1473,17 @@ if [[ "$status" -lt 200 || "$status" -ge 300 ]]; then
   die "S21: .md upload failed with HTTP $status"
 fi
 s21_file_id=$(jq -r '.id' "$upload_resp")
+# Baseline content clock, straight off the upload's own FileDto. A collab
+# flush is a content mutation, so `content_modified_at` must move — see
+# docs/architecture/dates.md § What bumps content_modified_at. Captured
+# here rather than with an extra GET because the upload response already
+# carries it.
+s21_mtime_before=$(jq -r '.modified_at' "$upload_resp")
 rm -f "$upload_resp"
 [[ -n "$s21_file_id" && "$s21_file_id" != "null" ]] \
   || die "S21: could not extract file id"
+[[ -n "$s21_mtime_before" && "$s21_mtime_before" != "null" ]] \
+  || die "S21: upload response carried no modified_at"
 
 s21_content="Hello OxiCloud from S21"
 if ! "$HELPER_BIN" collab-fanout-write \
@@ -1503,7 +1511,31 @@ if [[ "$downloaded" != "$s21_content" ]]; then
   printf 'expected: %s\ngot     : %s\n' "$s21_content" "$downloaded" >&2
   die "S21: downloaded body does not match CRDT text — debouncer/writer regression?"
 fi
-log "S21 OK (blob updated to CRDT text within 3 s)"
+# The bytes changed, so the content clock must have moved with them.
+# Without this, a flush that rewrote the blob but left
+# `content_modified_at` untouched would pass the byte-exact check above
+# and still break every sync client: the file would report the same
+# mtime and the same ETag (which is `blob_hash` + `content_modified_at`)
+# while holding different content, so nothing would re-download it.
+#
+# Read back through the folder listing — `/api/files/{id}/metadata`
+# returns EXIF metadata, not the FileDto, so it has no `modified_at`.
+# `.resource` is `#[serde(untagged)]`, hence the flat field access.
+s21_listing=$(curl -sS -H "Authorization: Bearer $user1_token" \
+  "$base_url/api/folders/$folder_a/resources")
+s21_mtime_after=$(printf '%s' "$s21_listing" \
+  | jq -r '.items[] | select(.resource.name == "s21.md") | .resource.modified_at')
+
+if [[ -z "$s21_mtime_after" || "$s21_mtime_after" == "null" ]]; then
+  printf '%s\n' "$s21_listing" >&2
+  die "S21: could not read s21.md modified_at back from the folder listing"
+fi
+if [[ "$s21_mtime_after" == "$s21_mtime_before" ]]; then
+  printf 'before: %s\nafter : %s\n' "$s21_mtime_before" "$s21_mtime_after" >&2
+  die "S21: collab flush rewrote the blob but left content_modified_at unchanged — the file now reports stale mtime and a stale ETag for new content"
+fi
+
+log "S21 OK (blob updated to CRDT text within 3 s; content_modified_at moved $s21_mtime_before → $s21_mtime_after)"
 
 # ── Scenario 22 — Explicit flush via WS `rt.collab_flush` ───────────────────
 # The FE editor's "on tab close" path: the client knows better than
