@@ -428,6 +428,24 @@ impl SearchService {
         use crate::application::ports::authorization_ports::AuthorizationEngine;
         use crate::domain::services::authorization::Subject;
 
+        // Content hits are FILE hits — the index holds no folders. A type
+        // filter that excludes files must therefore skip this entirely.
+        //
+        // Gated here rather than at the two call sites because the merge is
+        // the dangerous half: `merge_content_hits` hydrates leftovers through
+        // `fetch_files_by_ids_filtered`, whose category predicate is built
+        // from `category_orders_for_filter` — and `Folders` maps to an EMPTY
+        // set, which contributes NO predicate. So every content-matched file
+        // would pass and be appended, which is exactly the "type=folders
+        // returns files too" bug Ed hit. Same empty-set trap as the file
+        // branch, in a path the first fix did not cover.
+        //
+        // Returning early also saves the Tantivy query and its authz
+        // re-verification, which would have been pure waste.
+        if !criteria.type_filter.includes_files() {
+            return Vec::new();
+        }
+
         let Some(index) = &self.content_index else {
             return Vec::new();
         };

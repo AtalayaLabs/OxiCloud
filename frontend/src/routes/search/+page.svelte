@@ -176,7 +176,7 @@
 		// type — so picking "Images" still listed matching folders. Now a
 		// non-folder filter skips the folder query entirely, and this value
 		// inverts it.
-		{ v: 'folders', l: t('search.type.folders', 'Folders') },
+		{ v: 'folder', l: t('search.type.folder', 'Folders') },
 		{ v: 'image', l: t('search.type.image', 'Images') },
 		{ v: 'video', l: t('search.type.video', 'Videos') },
 		{ v: 'document', l: t('search.type.document', 'Documents') },

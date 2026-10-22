@@ -4041,7 +4041,7 @@ export type SearchSuggestionsDto = {
  * through [`category_orders_for_filter`], which is exhaustive over this enum
  * so a new variant is a compile error there.
  */
-export type SearchTypeFilter = 'all' | 'folders' | 'image' | 'video' | 'audio' | 'document' | 'archive' | 'code' | 'other';
+export type SearchTypeFilter = 'all' | 'folder' | 'image' | 'video' | 'audio' | 'document' | 'archive' | 'code' | 'other';
 
 /**
  * Self view — everything the caller may see about themselves.

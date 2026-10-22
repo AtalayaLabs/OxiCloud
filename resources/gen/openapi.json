@@ -17141,7 +17141,7 @@
         "description": "Resource-category filter for `GET /api/search` (`?type=`).\n\nReplaces a comma-separated **extension** list (`type=pdf,docx`) matched\nagainst the filename. That shape had three defects, all fixed by moving the\nclassification server-side:\n\n* the category→extension table lived in the SPA (12 image and 7 audio\n  extensions hardcoded), so a missed extension silently dropped a file from\n  its own category;\n* extensionless files could never match — the predicate was\n  `SUBSTRING(name FROM '\\.([^.]+)$')`, NULL without a dot, even when\n  `mime_type` was known;\n* folders were never filtered at all, which is the defect a user saw.\n\n`All` and `Folders` deliberately map to no `storage.files` value: a folder\nhas no row in that table, so those two cases select which UNION branches\nrun rather than contributing a predicate. Every other variant resolves\nthrough [`category_orders_for_filter`], which is exhaustive over this enum\nso a new variant is a compile error there.",
         "enum": [
           "all",
-          "folders",
+          "folder",
           "image",
           "video",
           "audio",

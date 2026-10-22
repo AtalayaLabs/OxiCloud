@@ -244,6 +244,33 @@ jsonpath "$.items" count >= 1
 body contains "{{canary_file_id}}"
 
 
+# `type=folder` must return NO files even when the query matches file
+# CONTENT. This is the assertion that would have caught the bug Ed hit
+# in the UI, and the reason it belongs *here* rather than with the other
+# type-filter cases below: those fixtures match by NAME only, so
+# `lookup_content_hits` never fires for them and the leak stayed
+# invisible. Ed's UI query matched content, which is why he saw files
+# under the Folders filter while the name-only assertions passed.
+#
+# The leak was the same empty-set trap as the file branch:
+# `merge_content_hits` hydrates its leftovers through
+# `fetch_files_by_ids_filtered`, whose category predicate comes from
+# `category_orders_for_filter` — and `folder` maps to an EMPTY set,
+# which contributes no predicate, so every content-matched file passed
+# and was appended after the folder branch had been suppressed. Fixed by
+# returning early from `lookup_content_hits` when the filter excludes
+# files, which also saves the Tantivy query and its authz re-check.
+#
+# No `delay` needed: the request above already drained the worker.
+GET {{base_url}}/api/search?query=ContentIndexCanaryXyzzy2026Drive&type=folder
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.items[*].resource_type" not includes "file"
+body not contains "{{canary_file_id}}"
+
+
 GET {{base_url}}/api/search?query=ContentIndexCanaryXyzzy2026Drive
 Authorization: Bearer {{bob_token}}
 
@@ -332,11 +359,27 @@ HTTP 201
 # classified it. So a `.wma` was findable from /music and invisible under
 # search's "Audio".
 #
-# Uploaded with `application/octet-stream` on purpose, so the mime says
-# nothing and classification MUST come from the extension fallback in
-# `category_for`. That exercises the opposite path from the
-# extensionless fixture above, which has a specific mime and no
-# extension — between them the two cover both arms of the classifier.
+# Uploaded as `application/octet-stream`, which is what a legacy or
+# dumb client sends. Note what that does NOT test, because it is easy to
+# assume otherwise: it does not reach `category_for`'s extension
+# fallback. `refine_content_type` (`src/common/mime_detect.rs`) resolves
+# generic claims as magic bytes → `mime_guess::from_path` → claimed, and
+# this fixture's bytes are plain text, so `infer` stays silent and
+# `mime_guess` maps `.wma` to `audio/x-ms-wma`. The row therefore lands
+# with a real audio mime and is classified by the MIME arm.
+#
+# That makes the pin a different and still useful one: the whole chain
+# from a generic-mime upload through sniffing to the category filter.
+# `wma` is the right extension for it because the SPA's old audio list
+# omitted it while /music's carried it — so this file used to be
+# findable from /music and invisible under search's "Audio".
+#
+# Corollary worth knowing: since content sniffing landed on the upload
+# path, `category_for`'s extension fallback is reachable only for rows
+# whose mime is STILL generic — i.e. unrecognisable bytes AND an
+# extension `mime_guess` does not know. Those are legacy rows, and
+# `content_rescan` (docs/plan/blob-resniff.md §B) is what will retire
+# them. No fixture here can exercise that arm through the upload API.
 POST {{base_url}}/api/files/upload
 Authorization: Bearer {{admin_token}}
 [MultipartFormData]
@@ -408,12 +451,12 @@ HTTP 200
 jsonpath "$.items" count == 0
 
 
-# `type=folders` returns the folder and no files — including no audio
+# `type=folder` returns the folder and no files — including no audio
 # file, even though it matches the query. The file half is load-bearing:
 # `folders` maps to an EMPTY category set, and an empty set contributes
 # no SQL predicate, so without the `includes_files()` gate this would
 # return every file rather than none.
-GET {{base_url}}/api/search?query=searchcat&type=folders
+GET {{base_url}}/api/search?query=searchcat&type=folder
 Authorization: Bearer {{admin_token}}
 
 HTTP 200
@@ -441,7 +484,7 @@ Authorization: Bearer {{admin_token}}
 
 HTTP 400
 [Asserts]
-body contains "folders"
+body contains "folder"
 
 
 # The retired extension form is refused too, rather than quietly matching

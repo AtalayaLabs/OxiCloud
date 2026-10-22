@@ -649,7 +649,7 @@ pub fn category_orders_for_filter(filter: SearchTypeFilter) -> &'static [i16] {
         // branches run instead. Named rather than left to a catch-all so the
         // reader sees that the omission is deliberate, and so a new variant
         // cannot hide in this arm.
-        F::All | F::Folders => &[],
+        F::All | F::Folder => &[],
     }
 }
 

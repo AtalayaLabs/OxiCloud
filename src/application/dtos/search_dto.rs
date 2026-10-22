@@ -35,7 +35,7 @@ pub enum SearchTypeFilter {
     All,
     /// Folders only. The value that fixes the leak: with any variant other
     /// than this or `All`, the folder branch is skipped entirely.
-    Folders,
+    Folder,
     Image,
     Video,
     Audio,
@@ -58,7 +58,7 @@ impl SearchTypeFilter {
     /// Picking "Images" therefore excludes folders, which is what the
     /// affordance means to a user.
     pub fn includes_folders(self) -> bool {
-        matches!(self, Self::All | Self::Folders)
+        matches!(self, Self::All | Self::Folder)
     }
 
     /// Whether file rows belong in the result set.
@@ -69,7 +69,7 @@ impl SearchTypeFilter {
     /// than none. The empty slice means "no narrowing", never "nothing
     /// matches".
     pub fn includes_files(self) -> bool {
-        !matches!(self, Self::Folders)
+        !matches!(self, Self::Folder)
     }
 }
 
