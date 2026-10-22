@@ -90,6 +90,94 @@ documented or it will read as an accident:
   bucketing must agree with the server's grouping. Deriving it client-side would
   let the FE's buckets disagree with the server's `ORDER BY type`.
 
+## `ResourceCategory` — type the machine key (added 2026-10-22)
+
+Decided with Ed while starting this plan: **two enums, the search filter being
+the aggregated view of the other.** Not one — collapsing them makes something
+worse in both directions.
+
+| | values | drives | typed today |
+|---|---|---|---|
+| **fine** `ResourceCategory` | Image, Video, Audio, Pdf, Document, Spreadsheet, Presentation, Archive, Code, Markdown, Text, Installer, Folder, **Unknown** | the "Type" column, group-by buckets, the `category` wire field, `category_order_for` | ❌ `&'static str` → `Arc<str>` → TS `string` |
+| **coarse** `SearchTypeFilter` | all, folder, image, video, audio, document, archive, code, unknown | the search filter picker | ✅ already an enum |
+
+One enum cannot serve both: the coarse `document` deliberately spans Pdf +
+Document + Spreadsheet + Presentation + Markdown + Text, so merging would either
+coarsen the Type column (users lose "Spreadsheet" vs "PDF") or inflate the
+picker to fourteen options.
+
+What IS worth unifying is the *relationship*. Today the coarse→fine mapping is
+expressed in **integers** — `category_orders_for_filter` returns
+`[400,500,600,700,1000,1100]` — a second encoding of a mapping that already
+exists in `category_order_for`. With a typed fine category the filter maps
+coarse → fine **categories**, and `category_order_for` becomes the only place
+those integers appear.
+
+### The defect this exposes — unknown files are labelled "Document"
+
+Found while sizing the work, and the reason the fine set needs an explicit
+`Unknown`. Both catch-alls in `category_with_ext` return `"Document"`: the
+unknown-extension arm and the no-extension arm. Measured:
+
+```
+blob.xyzzy  application/octet-stream  ->  Document / 500
+noext                                 ->  Document / 500
+a.qqq                                 ->  Document / 500
+```
+
+Three things are wrong at once:
+
+1. The Type column calls an unidentifiable blob a **"Document"**.
+2. `category_order_for`'s `_ => 9999` arm, commented *"Other / unknown"*, is
+   **unreachable** — it keys off `category_for`, which never returns anything
+   outside the twelve named values.
+3. `9999` therefore only ever arrives from the column DEFAULT, which is why the
+   live instance showed zero rows at 9999 — and why `type=unknown` in search
+   finds no unknown files, only rows nobody wrote a category for.
+
+Typing the enum forces this into the open: a `ResourceCategory::Unknown` variant
+makes the fallback name itself instead of borrowing `Document`.
+
+**On the name.** `Unknown` over `Other`, Ed's call: it is less friendly as a
+column label but it is the truth, where "Document" is a confident lie. The
+coarse filter's shipped `other` value is renamed to `unknown` in the same pass
+so one bucket has one name — safe because that value exists only on an
+unmerged branch.
+
+### Migration consequence — the backfill is not SQL-able
+
+Rows already stored carry `category_order = 500` for unknown files, and the
+stored integer cannot distinguish "genuinely a Document" from "unknown that fell
+back to Document". Recovering the truth means recomputing from `(name, mime)`,
+and that mapping lives in Rust — so no migration can do it.
+
+**`content_rescan` (`docs/plan/blob-resniff.md` §B) owns this backfill**, for the
+same reason it owns `category_order` freshness: it already recomputes
+`category_order_for(name, mime)` per row. Add it to that job's scope rather than
+inventing a second mechanism. Until it runs, unknown files keep reading
+"Document" — a display wart, not data loss.
+
+### Why this belongs on top of `fix/search-type`
+
+`SearchTypeFilter` and `category_orders_for_filter` live there and both get
+refactored. This branch was rebased onto it for that reason.
+
+### Scope
+
+- `ResourceCategory` in `display_helpers.rs`, `ToSchema` + registered in
+  `interfaces/api/mod.rs` (`ToSchema` alone emits a dangling `$ref` — see
+  `project_openapi_enum_gotchas`).
+- `category_for` / `category_with_ext` return it; `category_order_for` matches on
+  it **exhaustively**, no `_` arm.
+- `category_orders_for_filter` maps `SearchTypeFilter` → `&[ResourceCategory]`,
+  so the integers appear once.
+- `DisplayClass.category`, the 6 DTO `category` fields, `mount_dto` (×2),
+  `folder_handler` (×1) and the `Folder` constant on `FolderDto`.
+- FE: `typeLabel` becomes exhaustive over the generated union, removing its
+  `?? category` fallback — the silent English-passthrough that step 1 is about.
+- Wire change: `category` goes `string` → enum, so it needs its own
+  `breaking-allow.conf` entry with a delete-on-merge note.
+
 ## Steps
 
 1. **Fix the i18n bug first, standalone.** Route `ResourceList`'s type-cell
