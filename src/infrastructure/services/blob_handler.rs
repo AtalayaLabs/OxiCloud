@@ -1387,6 +1387,52 @@ impl BlobHandler {
                 );
             }
         }
+
+        self.purge_content_facts(source_hash).await;
+    }
+
+    /// Delete the content-keyed satellite ROWS for a dying Blob.
+    ///
+    /// Distinct from the loop above, and the distinction is the whole
+    /// point. `content_derived_blobs` rows point at a derived *artifact*
+    /// and therefore hold a reference that must be released; these tables
+    /// are columns — facts parsed out of the bytes — so there is nothing to
+    /// release and the row simply goes.
+    ///
+    /// They are dependent references holding no `ref_count`
+    /// (`20261104000000_audio_metadata_content_keyed.sql`), so nothing else
+    /// will ever collect them: no FK, no cascade. Called from here rather
+    /// than from each reap site so there is exactly one place that can be
+    /// forgotten when the next content-keyed table is added.
+    ///
+    /// Best-effort by design, matching the loop above: a failure here
+    /// leaves a recoverable orphan that `satellites_consistency` reports,
+    /// whereas propagating would abort a reap that has already deleted
+    /// bytes. Loud, not fatal.
+    async fn purge_content_facts(&self, source_hash: &str) {
+        match sqlx::query("DELETE FROM audio.content_metadata WHERE source_hash = $1")
+            .bind(source_hash)
+            .execute(self.pool.as_ref())
+            .await
+        {
+            Ok(r) if r.rows_affected() > 0 => {
+                tracing::info!(
+                    target: "oxicloud::dedup",
+                    rows = r.rows_affected(),
+                    "purge_content_facts: dropped audio metadata for {}",
+                    &source_hash[..source_hash.len().min(12)],
+                );
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(
+                    target: "oxicloud::dedup",
+                    error = %e,
+                    "failed to purge audio metadata for {}",
+                    &source_hash[..source_hash.len().min(12)],
+                );
+            }
+        }
     }
 
     fn fire_blob_hooks(&self, hash: &str) {

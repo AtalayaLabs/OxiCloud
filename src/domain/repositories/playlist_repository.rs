@@ -58,31 +58,20 @@ pub trait PlaylistItemRepository: Send + Sync + 'static {
 
 pub type AudioMetadataRepositoryResult<T> = Result<T, DomainError>;
 
+/// Read side of `audio.content_metadata`.
+///
+/// One method, deliberately. `create_or_update` / `delete` /
+/// `list_by_{artist,album,genre}` lived here and had no callers:
+/// `AudioMetadataService` writes with its own SQL against the pool, and
+/// there is no browse-by-artist feature for the list methods to serve.
+/// They went with the content re-key rather than being ported to it —
+/// porting dead code is how it survives another round.
 pub trait AudioMetadataRepository: Send + Sync + 'static {
-    async fn create_or_update(
-        &self,
-        metadata: AudioFileMetadata,
-    ) -> AudioMetadataRepositoryResult<AudioFileMetadata>;
-
+    /// Tags for the content behind one file. Resolves file → `blob_hash`
+    /// internally; the returned entity carries the requested `file_id`,
+    /// not the hash, so callers keep a file-shaped answer.
     async fn find_by_file_id(
         &self,
         file_id: &Uuid,
     ) -> AudioMetadataRepositoryResult<Option<AudioFileMetadata>>;
-
-    async fn delete(&self, file_id: &Uuid) -> AudioMetadataRepositoryResult<()>;
-
-    async fn list_by_artist(
-        &self,
-        artist: &str,
-    ) -> AudioMetadataRepositoryResult<Vec<AudioFileMetadata>>;
-
-    async fn list_by_album(
-        &self,
-        album: &str,
-    ) -> AudioMetadataRepositoryResult<Vec<AudioFileMetadata>>;
-
-    async fn list_by_genre(
-        &self,
-        genre: &str,
-    ) -> AudioMetadataRepositoryResult<Vec<AudioFileMetadata>>;
 }

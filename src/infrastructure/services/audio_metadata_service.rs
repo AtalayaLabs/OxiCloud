@@ -1,20 +1,13 @@
 use futures::StreamExt;
 use id3::{Tag, TagLike};
-use sqlx::{FromRow, PgPool};
+use sqlx::PgPool;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{info, warn};
-use uuid::Uuid;
 
 use crate::application::ports::file_lifecycle::FileLifecycleHook;
 use crate::common::errors::DomainError;
 use crate::infrastructure::services::blob_handler::BlobHandler;
-
-#[derive(Debug, FromRow)]
-pub struct AudioFileRow {
-    pub file_id: Uuid,
-    pub blob_hash: String,
-}
 
 pub struct AudioMetadataService {
     pool: Arc<PgPool>,
@@ -40,24 +33,28 @@ impl AudioMetadataService {
         mime_type.starts_with("audio/")
     }
 
-    pub fn spawn_extraction_background(service: Arc<Self>, file_id: Uuid, blob_hash: String) {
+    pub fn spawn_extraction_background(service: Arc<Self>, source_hash: String) {
         tokio::spawn(async move {
-            tracing::info!("🎵 Extracting audio metadata for: {}", file_id);
-            if let Err(e) = service.extract_and_save(&file_id, &blob_hash).await {
+            tracing::info!("🎵 Extracting audio metadata for content: {}", source_hash);
+            if let Err(e) = service.extract_and_save(&source_hash).await {
                 tracing::warn!("Failed to extract audio metadata: {}", e);
             }
         });
     }
 
-    pub fn spawn_extraction_with_delete_background(
-        service: Arc<Self>,
-        file_id: Uuid,
-        blob_hash: String,
-    ) {
+    /// Re-extract, discarding whatever was stored for this content first.
+    ///
+    /// Used on overwrite, where the file keeps its identity but points at
+    /// new bytes. The delete is keyed on the NEW content hash, not the old
+    /// one: the previous hash may still be referenced by other files whose
+    /// tags must survive. Dropping the row for content we are about to
+    /// re-parse anyway just guarantees stale columns cannot linger if the
+    /// new parse yields fewer fields than the old one.
+    pub fn spawn_extraction_with_delete_background(service: Arc<Self>, source_hash: String) {
         tokio::spawn(async move {
-            tracing::info!("🎵 Updating audio metadata for: {}", file_id);
-            let _ = service.delete_metadata(&file_id).await;
-            if let Err(e) = service.extract_and_save(&file_id, &blob_hash).await {
+            tracing::info!("🎵 Updating audio metadata for content: {}", source_hash);
+            let _ = service.delete_metadata_for_content(&source_hash).await;
+            if let Err(e) = service.extract_and_save(&source_hash).await {
                 tracing::warn!("Failed to update audio metadata: {}", e);
             }
         });
@@ -107,15 +104,17 @@ impl AudioMetadataService {
         })
     }
 
-    pub async fn extract_and_save(
-        &self,
-        file_id: &Uuid,
-        blob_hash: &str,
-    ) -> Result<(), DomainError> {
+    /// Parse tags out of one blob and store them against its content hash.
+    ///
+    /// Keyed by CONTENT, not by file: tags are a pure function of the bytes,
+    /// so N copies of a song cost one extraction and a copy costs nothing.
+    /// See `migrations/20261104000000_audio_metadata_content_keyed.sql`.
+    pub async fn extract_and_save(&self, source_hash: &str) -> Result<(), DomainError> {
         info!(
-            "AudioMetadataService: extracting file_id={}, blob_hash={}",
-            file_id, blob_hash,
+            "AudioMetadataService: extracting source_hash={}",
+            source_hash,
         );
+        let blob_hash = source_hash;
 
         // Stream the blob (CDC-aware — chunks concatenated on the fly for
         // chunked files; wrapper stack handles encryption + retry + cache)
@@ -148,19 +147,22 @@ impl AudioMetadataService {
         };
 
         info!(
-            "Extracted audio metadata for file {}: title={:?}, artist={:?}, album={:?}, duration={}s",
-            file_id, m.title, m.artist, m.album, m.duration_secs
+            "Extracted audio metadata for content {}: title={:?}, artist={:?}, album={:?}, duration={}s",
+            source_hash, m.title, m.artist, m.album, m.duration_secs
         );
 
-        info!("Saving metadata to database for file_id={}", file_id);
+        info!(
+            "Saving metadata to database for source_hash={}",
+            source_hash
+        );
 
         sqlx::query(
             r#"
-            INSERT INTO audio.file_metadata
-                (file_id, title, artist, album, album_artist, genre, track_number, disc_number,
+            INSERT INTO audio.content_metadata
+                (source_hash, title, artist, album, album_artist, genre, track_number, disc_number,
                  year, duration_secs, format)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-            ON CONFLICT (file_id) DO UPDATE SET
+            ON CONFLICT (source_hash) DO UPDATE SET
                 title = EXCLUDED.title,
                 artist = EXCLUDED.artist,
                 album = EXCLUDED.album,
@@ -174,7 +176,7 @@ impl AudioMetadataService {
                 updated_at = CURRENT_TIMESTAMP
             "#,
         )
-        .bind(file_id)
+        .bind(source_hash)
         .bind(&m.title)
         .bind(&m.artist)
         .bind(&m.album)
@@ -194,9 +196,14 @@ impl AudioMetadataService {
         Ok(())
     }
 
-    pub async fn delete_metadata(&self, file_id: &Uuid) -> Result<(), DomainError> {
-        sqlx::query("DELETE FROM audio.file_metadata WHERE file_id = $1")
-            .bind(file_id)
+    /// Drop the tags for one content hash.
+    ///
+    /// Content-keyed, so this affects every file sharing those bytes — which
+    /// is the point. Called when a re-sniff moves a file's type *away* from
+    /// audio, and by the reap-time purge when the source blob goes.
+    pub async fn delete_metadata_for_content(&self, source_hash: &str) -> Result<(), DomainError> {
+        sqlx::query("DELETE FROM audio.content_metadata WHERE source_hash = $1")
+            .bind(source_hash)
             .execute(&*self.pool)
             .await
             .map_err(|e| {
@@ -208,12 +215,18 @@ impl AudioMetadataService {
     pub async fn reextract_all_audio_metadata(
         &self,
     ) -> Result<MetadataExtractionResult, DomainError> {
+        // DISTINCT blob_hash, not one row per file. Now that extraction is
+        // content-keyed, re-parsing the same bytes once per file that
+        // references them would be pure waste — on a library with any
+        // duplication that is the difference between one pass and N.
+        //
         // Stream rows one-by-one instead of fetch_all to keep memory O(1).
-        let mut stream = sqlx::query_as::<_, AudioFileRow>(
+        let mut stream = sqlx::query_as::<_, (String,)>(
             r#"
-            SELECT id as file_id, blob_hash
+            SELECT DISTINCT blob_hash
             FROM storage.files
             WHERE mime_type LIKE 'audio/%'
+              AND NOT is_trashed
             "#,
         )
         .fetch(&*self.pool);
@@ -222,23 +235,17 @@ impl AudioMetadataService {
         let mut processed: usize = 0;
         let mut failed: usize = 0;
 
-        info!("Starting streaming metadata extraction for audio files");
+        info!("Starting streaming metadata extraction for audio content");
 
         while let Some(row) = stream.next().await {
             total += 1;
-            let audio_file = row.map_err(|e| {
-                DomainError::database_error(format!("Failed to fetch audio file row: {}", e))
+            let (source_hash,) = row.map_err(|e| {
+                DomainError::database_error(format!("Failed to fetch audio content row: {}", e))
             })?;
-            match self
-                .extract_and_save(&audio_file.file_id, &audio_file.blob_hash)
-                .await
-            {
+            match self.extract_and_save(&source_hash).await {
                 Ok(()) => processed += 1,
                 Err(e) => {
-                    warn!(
-                        "Failed to extract metadata for file {}: {}",
-                        audio_file.file_id, e
-                    );
+                    warn!("Failed to extract metadata for blob {}: {}", source_hash, e);
                     failed += 1;
                 }
             }
@@ -256,99 +263,16 @@ impl AudioMetadataService {
         })
     }
 
-    /// Copy audio metadata from an existing file that shares the same blob.
-    ///
-    /// Used when `is_new_blob=false` (copy/dedup hit): instead of re-parsing
-    /// the blob, clone the existing metadata row for `new_file_id`. Falls back
-    /// Clones audio metadata from a known source file, falling back to
-    /// [`clone_or_extract_background`] if the source has not been processed yet.
-    pub fn clone_from_source_background(
-        service: Arc<Self>,
-        new_file_id: Uuid,
-        source_file_id: Uuid,
-        blob_hash: String,
-    ) {
-        tokio::spawn(async move {
-            let result = sqlx::query(
-                r#"
-                INSERT INTO audio.file_metadata
-                    (file_id, title, artist, album, album_artist, genre,
-                     track_number, disc_number, year, duration_secs, format)
-                SELECT $1, title, artist, album, album_artist, genre,
-                    track_number, disc_number, year, duration_secs, format
-                FROM audio.file_metadata
-                WHERE file_id = $2
-                ON CONFLICT (file_id) DO NOTHING
-                "#,
-            )
-            .bind(new_file_id)
-            .bind(source_file_id)
-            .execute(&*service.pool)
-            .await;
-
-            match result {
-                Ok(r) if r.rows_affected() > 0 => {
-                    info!(
-                        "Cloned audio metadata from {} to {}",
-                        source_file_id, new_file_id
-                    );
-                }
-                Ok(_) => {
-                    // Source not yet processed — fall back to blob-hash lookup or extraction.
-                    Self::clone_or_extract_background(service, new_file_id, blob_hash);
-                }
-                Err(e) => {
-                    warn!(
-                        "Failed to clone audio metadata from {} to {}: {}",
-                        source_file_id, new_file_id, e
-                    );
-                }
-            }
-        });
-    }
-
-    /// to full extraction if no existing row is found (race: original not yet
-    /// processed).
-    pub fn clone_or_extract_background(service: Arc<Self>, new_file_id: Uuid, blob_hash: String) {
-        tokio::spawn(async move {
-            let rows_inserted = sqlx::query(
-                r#"
-                INSERT INTO audio.file_metadata
-                    (file_id, title, artist, album, album_artist, genre,
-                     track_number, disc_number, year, duration_secs, format)
-                SELECT $1, title, artist, album, album_artist, genre,
-                    track_number, disc_number, year, duration_secs, format
-                FROM audio.file_metadata am
-                JOIN storage.files sf ON sf.id = am.file_id
-                WHERE sf.blob_hash = $2
-                LIMIT 1
-                ON CONFLICT (file_id) DO NOTHING
-                "#,
-            )
-            .bind(new_file_id)
-            .bind(&blob_hash)
-            .execute(&*service.pool)
-            .await;
-
-            match rows_inserted {
-                Ok(result) if result.rows_affected() > 0 => {
-                    info!("Cloned audio metadata for file {}", new_file_id);
-                }
-                Ok(_) => {
-                    // No existing metadata found — original not yet processed; fall back.
-                    if let Err(e) = service.extract_and_save(&new_file_id, &blob_hash).await {
-                        warn!(
-                            "Failed to extract audio metadata for {}: {}",
-                            new_file_id, e
-                        );
-                    }
-                }
-                Err(e) => {
-                    warn!("Failed to clone audio metadata for {}: {}", new_file_id, e);
-                }
-            }
-        });
-    }
+    // `clone_from_source_background` and `clone_or_extract_background` used
+    // to live here. Both existed ONLY to compensate for file-keying: they
+    // copied a metadata row to each new file that shared a blob, with a
+    // fallback chain for the race where the source had not been parsed yet.
+    //
+    // Content-keyed, the row is already there — so a copy is a no-op and a
+    // dedup hit is a no-op. See the migration
+    // `20261104000000_audio_metadata_content_keyed.sql`, and compare
+    // `ThumbnailRefreshHook`, which has always been able to return early on
+    // `!is_new_blob` for exactly this reason.
 }
 
 /// Extracted audio metadata fields transferred from the blocking thread.
@@ -376,7 +300,7 @@ pub struct MetadataExtractionResult {
 impl FileLifecycleHook for AudioMetadataService {
     fn on_file_created(
         &self,
-        file_id: &str,
+        _file_id: &str,
         blob_hash: &str,
         content_type: &str,
         is_new_blob: bool,
@@ -384,54 +308,44 @@ impl FileLifecycleHook for AudioMetadataService {
         if !Self::is_audio_file(content_type) {
             return;
         }
-        let Ok(uuid) = file_id.parse::<Uuid>() else {
-            warn!("on_file_created: invalid file_id UUID: {}", file_id);
+        // Content-keyed: a dedup hit means these tags already exist, so
+        // there is nothing to do and nothing to copy. Same early return
+        // `ThumbnailRefreshHook` has always had — it was only ever this
+        // hook's file-keying that forced a clone-or-extract fallback here.
+        if !is_new_blob {
             return;
-        };
+        }
         let service = Arc::new(Self {
             pool: self.pool.clone(),
             dedup: self.dedup.clone(),
             temp_dir: self.temp_dir.clone(),
         });
-        if is_new_blob {
-            Self::spawn_extraction_background(service, uuid, blob_hash.to_string());
-        } else {
-            Self::clone_or_extract_background(service, uuid, blob_hash.to_string());
-        }
+        Self::spawn_extraction_background(service, blob_hash.to_string());
     }
 
     fn on_file_copied(
         &self,
-        file_id: &str,
-        blob_hash: &str,
-        content_type: &str,
-        source_file_id: &str,
+        _file_id: &str,
+        _blob_hash: &str,
+        _content_type: &str,
+        _source_file_id: &str,
     ) {
-        if !Self::is_audio_file(content_type) {
-            return;
-        }
-        let Ok(uuid) = file_id.parse::<Uuid>() else {
-            warn!("on_file_copied: invalid file_id UUID: {}", file_id);
-            return;
-        };
-        let Ok(source_uuid) = source_file_id.parse::<Uuid>() else {
-            warn!(
-                "on_file_copied: invalid source_file_id UUID: {}",
-                source_file_id
-            );
-            return;
-        };
-        let service = Arc::new(Self {
-            pool: self.pool.clone(),
-            dedup: self.dedup.clone(),
-            temp_dir: self.temp_dir.clone(),
-        });
-        Self::clone_from_source_background(service, uuid, source_uuid, blob_hash.to_string());
+        // No-op: a copy shares the source's blob, so the content-keyed row
+        // is already there. This used to run `clone_from_source_background`
+        // to duplicate the row per copy — pure compensation for the old
+        // key, and the clearest sign it was the wrong one.
+        //
+        // This also fixes the recursive folder copy for free: the WebDAV
+        // `COPY Depth: infinity` path is pure SQL
+        // (`initial_schema.sql` atomic copy) and fires no Rust hooks at
+        // all, so file-keyed metadata was simply never created for
+        // recursively-copied files. Content-keyed, the copy resolves to
+        // the existing row with no code involved.
     }
 
     fn on_file_updated(
         &self,
-        file_id: &str,
+        _file_id: &str,
         blob_hash: &str,
         content_type: &str,
         _source: crate::application::ports::file_lifecycle::WriteSource,
@@ -439,16 +353,16 @@ impl FileLifecycleHook for AudioMetadataService {
         if !Self::is_audio_file(content_type) {
             return;
         }
-        let Ok(uuid) = file_id.parse::<Uuid>() else {
-            warn!("on_file_updated: invalid file_id UUID: {}", file_id);
-            return;
-        };
         let service = Arc::new(Self {
             pool: self.pool.clone(),
             dedup: self.dedup.clone(),
             temp_dir: self.temp_dir.clone(),
         });
-        Self::spawn_extraction_with_delete_background(service, uuid, blob_hash.to_string());
+        // `blob_hash` here is the NEW content. Keying the delete on it
+        // rather than on the file means other files still pointing at the
+        // OLD content keep their tags, which is correct — their bytes did
+        // not change.
+        Self::spawn_extraction_with_delete_background(service, blob_hash.to_string());
     }
 
     fn on_file_deleted(&self, _file_id: &str) {

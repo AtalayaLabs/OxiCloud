@@ -13,11 +13,12 @@ heading:
 | item | state |
 |---|---|
 | §0 envelope narrowing in `refine_content_type` | ✅ **DONE 2026-10-07** — `1e41f1b9` (carve-out + `upload_mime_sniffing.hurl`), `a7caafab` (widened to the vendor tree, measured on Apache Tika's 826-file corpus: 541 → 576 correctly typed), `ef6a3243` + `e40dcc38` (everyday + phone-camera type coverage). api-test green |
-| §A.1 migrations — both tables keyed by content | **NOT STARTED** |
-| §A.2 the two `media_sort_date` triggers | **NOT STARTED** — one is new and currently missing |
-| §A.3 writers, readers, dead-code deletions | **NOT STARTED** |
-| §A.4 reap hook + orphan sweep | **NOT STARTED** — hard prerequisite for §B |
-| §B `content_rescan` job | **NOT STARTED** |
+| §A.1 migration — **audio** keyed by content | ✅ **DONE 2026-10-22** — `audio.content_metadata`, backfilled `DISTINCT ON (blob_hash)`, old table + its 4 dead indexes dropped |
+| §A.1 migration — **EXIF** keyed by content | **NOT STARTED** — larger than planned: the `media_sort_date` triggers (§A.2) and the Places viewport query both depend on `fm.file_id` |
+| §A.2 the two `media_sort_date` triggers | **NOT STARTED** — EXIF-only; one is new and currently missing. Audio has no trigger |
+| §A.3 writers, readers, dead-code deletions | ✅ **DONE for audio** — both clone paths, 5 dead repo methods, `AudioFileRow`; `reextract_all` now walks `DISTINCT blob_hash` |
+| §A.4 reap hook + orphan sweep | 🟡 **reap hook DONE** — `BlobHandler::purge_content_facts`, called from `purge_derived_blobs` so there is one place to forget. Orphan-sweep backstop in `satellites_consistency` still outstanding |
+| §B `content_rescan` job | **NOT STARTED** — scope grew 2026-10-22: the fan-out UPDATE must also move `storage.files.category_order`, in the SAME statement and **per row** (the classifier takes `(name, mime)`, so it is not computable per hash). It is the column the search type filter now reads, so retyping mime without it makes a row invisible under its own category. Supersedes the detector proposed in `search-type-filter-by-category.md` |
 | §B.7 delete the two reextract endpoints | **NOT STARTED** |
 | §C.1/C.2 the two diagrams | **NOT STARTED** — both become wrong with §A |
 | §C.3 smaller doc edits | **NOT STARTED** |
@@ -386,6 +387,65 @@ Bind the **hash**, not `file_ids`: re-reading under the UPDATE's own snapshot
 picks up files inserted since the page was fetched, and `IS DISTINCT FROM`
 makes it idempotent. Same trick as `manifests_consistency_service.rs:110-116`.
 
+#### `category_order` must move in the SAME statement
+
+`storage.files.category_order` is a denormalised `smallint` derived from
+`display_helpers::category_order_for(name, mime)` and indexed as
+`idx_files_category_order`. **It is no longer optional bookkeeping.** Since the
+search type filter landed it is the column the filter *reads*
+(`fi.category_order = ANY($n)`), not merely the `type` sort key — so a row whose
+mime is retyped while its category is not becomes invisible under its own
+category. A `.bin` resniffed to `audio/mpeg` keeps `9999` (Other) and never
+again appears under "Audio".
+
+Three constraints, in order of how easily they are got wrong:
+
+1. **Same `UPDATE`, not a follow-up statement.** A separate write leaves a
+   window — and, if the job is cancelled between the two, a permanent state —
+   where `mime_type` and `category_order` disagree, so the filter contradicts
+   the mime the API reports for that row.
+2. **`category_order_for` takes `(name, mime)`, not just mime — for now.** The
+   resniffer learns the new mime per *content*, but the category also depends on
+   the file *name*: the classifier falls back to the extension when the mime is
+   generic. So one value per hash is not computable — it is **per row**. Compute
+   it in Rust per file id and fan out with a `VALUES` join. This is the one place
+   the "bind the hash, not `file_ids`" rule above has to bend, and the statement
+   needs each row's `name` regardless.
+
+   **This constraint is TRANSITIONAL and this job is what retires it.** Ed's
+   direction (2026-10-22) is that mime becomes the source of truth once
+   normalised, at which point `category_for` drops its `name` parameter and the
+   extension arms go. A mime-only classifier is one value per *content*, so the
+   fan-out reverts to the plain per-hash shape and this bullet disappears.
+   Sequencing: ship the per-row form here, because the extension fallback is the
+   only thing classifying legacy rows whose mime is still generic — exactly the
+   population this job exists to drain. Revisit once a count of generic-mime
+   rows reads zero. Same reasoning applies to §A.1's exclusion of
+   `category_order` from content-keying: name-dependence is the stated
+   objection, and it expires with the fallback.
+3. **Do not re-encode the mapping in SQL.** `category_order_for` is the single
+   source of truth; the only other copy is the backfill in
+   `20260527000001_files_category_order.sql`, and a third will drift. Precedent:
+   `20261103000009`, where `copy_folder_tree` needed the value and derived it
+   from a sibling row with the same mime rather than duplicating the table.
+   **`0` and `1`–`99` are reserved** — folder sentinel plus headroom for future
+   non-file resource kinds; see `docs/architecture/resource-listing.md`.
+
+This also settles a question §A.1 would otherwise raise: `category_order` can
+**not** move to a content-keyed table despite being mime-derived, because it
+also depends on the per-file name. It stays on `storage.files`, refreshed per
+row when the content's mime changes — the same asymmetry `name` itself has.
+
+**This supersedes the `category_order` consistency detector** proposed in
+`docs/plan/search-type-filter-by-category.md`. That plan wanted a
+discovery-only detector for rows whose stored value disagrees with
+`category_order_for(name, mime)`. This job recomputes that same expression and
+can *correct* it, so a detector would be a second reader of one denormalised
+column — which is how two readers drift. The audit behind that plan found the
+column clean on a live instance (4093 rows, 0 NULL, 0 defaulted), so the
+detector guarded a hypothesis; **this** job creates the real staleness and
+therefore owns the fix.
+
 **Do not touch `updated_at`** — the content did not change, only our
 description of it. Bumping it would make every WebDAV and sync client re-fetch
 the corpus.
@@ -484,6 +544,11 @@ Counters via `checkpoint_counters` **every batch** (absolute, not delta —
 `extra_stats` on `Completed` only covers the last segment after a pause). Five:
 
 `head_reads` · `mime_changed` · `files_retyped` · `rederived` · `failures`
+
+`files_retyped` counts rows whose `mime_type` **and** `category_order` moved
+together — see the fan-out UPDATE above for why the two cannot be counted
+separately. A sixth counter for the category alone would only ever equal this
+one, or indicate a bug that belongs in `failures`.
 
 An earlier draft had thirteen. `infer_silent` / `mime_agreed` are the
 uninteresting majority and are implied by `head_reads - mime_changed`;
