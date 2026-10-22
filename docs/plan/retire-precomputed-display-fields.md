@@ -287,8 +287,23 @@ refactored. This branch was rebased onto it for that reason.
   it **exhaustively**, no `_` arm.
 - `category_orders_for_filter` maps `SearchTypeFilter` → `&[ResourceCategory]`,
   so the integers appear once.
-- `DisplayClass.category`, the 6 DTO `category` fields, `mount_dto` (×2),
-  `folder_handler` (×1) and the `Folder` constant on `FolderDto`.
+- The 6 DTO `category` fields (`file`, `folder`, `search`, `trash`, `recent`,
+  `favorites`) and every producer. Recounted after steps 2–5, since
+  `DisplayClass` no longer exists — this list was written when it did:
+  - **13 `category_for` callsites**: `file_dto`, `recent_dto`,
+    `favorites_dto`, `mount_dto` (×2), `trash_service` (×2, one via
+    `trash_service_test`), `path_resolver_service`, `recent_handler`,
+    `favorites_handler`, `folder_handler` (×2).
+  - **13 `"Folder"` constants**: `folder_dto` (×2), `search_dto`, `mount_dto`
+    (×2), `trash_service`, `path_resolver_service`, `report_handler`,
+    `nextcloud/webdav_handler`, `api/webdav_handler`, `favorites_handler`,
+    `recent_handler`, `folder_handler` (×2). These become
+    `ResourceCategory::Folder` and stop being stringly-typed — which is half
+    the value of the change, since a typo in any one of them is currently
+    silent.
+  - `category_order_for` already matches on `category_for`'s output
+    (`display_helpers.rs:288`), so it is the natural place for the exhaustive
+    match.
 - FE: `typeLabel` becomes exhaustive over the generated union, removing its
   `?? category` fallback — the silent English-passthrough that step 1 is about.
 - Wire change: `category` goes `string` → enum, so it needs its own
