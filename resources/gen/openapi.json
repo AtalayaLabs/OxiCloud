@@ -13761,8 +13761,7 @@
           "item_type",
           "created_at",
           "icon_class",
-          "category",
-          "size_formatted"
+          "category"
         ],
         "properties": {
           "category": {
@@ -13833,10 +13832,6 @@
               "null"
             ],
             "description": "Parent folder ID (folder_id for files, parent_id for folders)"
-          },
-          "size_formatted": {
-            "type": "string",
-            "description": "Formatted file size (e.g. \"3.27 MB\"); \"--\" for folders"
           },
           "user_id": {
             "type": "string",
@@ -13959,7 +13954,6 @@
           "modified_at",
           "icon_class",
           "category",
-          "size_formatted",
           "content_hash",
           "etag",
           "is_favorite",
@@ -14036,10 +14030,6 @@
             "format": "int64",
             "description": "Size in bytes",
             "minimum": 0
-          },
-          "size_formatted": {
-            "type": "string",
-            "description": "Human-readable formatted size (e.g. \"3.27 MB\")"
           },
           "updated_by": {
             "type": [
@@ -16217,8 +16207,7 @@
           "item_type",
           "accessed_at",
           "icon_class",
-          "category",
-          "size_formatted"
+          "category"
         ],
         "properties": {
           "accessed_at": {
@@ -16281,10 +16270,6 @@
               "null"
             ],
             "description": "Parent folder ID (folder_id for files, parent_id for folders)"
-          },
-          "size_formatted": {
-            "type": "string",
-            "description": "Formatted file size (e.g. \"3.27 MB\"); \"--\" for folders"
           },
           "user_id": {
             "type": "string",
@@ -16685,7 +16670,6 @@
           "created_at",
           "modified_at",
           "relevance_score",
-          "size_formatted",
           "icon_class",
           "category"
         ],
@@ -16773,10 +16757,6 @@
             "format": "int64",
             "description": "Size in bytes",
             "minimum": 0
-          },
-          "size_formatted": {
-            "type": "string",
-            "description": "Human-readable file size (e.g., \"2.5 MB\")"
           },
           "snippet": {
             "type": [

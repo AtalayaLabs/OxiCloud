@@ -40,7 +40,6 @@ interface TestFile {
 	folder_id: string;
 	path: string;
 	size: number;
-	size_formatted: string;
 	sort_date: number;
 	etag: string;
 	content_hash: string;
@@ -62,7 +61,6 @@ function fileItem(i: number): TestFile {
 		folder_id: 'home',
 		path: `/file-${i}.txt`,
 		size: 4,
-		size_formatted: '4 B',
 		sort_date: 0,
 		etag: 'e',
 		content_hash: 'h',

@@ -18,6 +18,7 @@
 	import { t } from '$lib/i18n/index.svelte';
 	import { errorToast } from '$lib/utils/errors';
 	import { dateTimeFormatFor } from '$lib/utils/display';
+	import { formatBytes } from '$lib/utils/format';
 	import { isVideo, photoTimestamp } from '$lib/utils/media';
 
 	interface Props {
@@ -92,7 +93,18 @@
 			hour: '2-digit',
 			minute: '2-digit'
 		}).format(photoTimestamp(p));
-		return p.size_formatted ? `${dateStr} · ${p.size_formatted}` : dateStr;
+		// Formatted client-side from `size`. This used to read the server's
+		// `size_formatted`, which made the lightbox the only place in the SPA
+		// showing a size the backend had rendered — and it disagreed with the
+		// grid behind it: `ResourceList` has always used `formatBytes`, so the
+		// same file read "3.27 MB" here and "3.3 MB" one Escape away.
+		//
+		// `size > 0` carries over the old `size_formatted ?` guard rather than
+		// formatting unconditionally. It is not about zero-byte files: it is
+		// the `minimalPhotoItem` stub (`utils/media.ts`), which People and
+		// Places use to open the lightbox by id with `size: 0` before the real
+		// metadata arrives. Formatting unconditionally would flash "0 B" there.
+		return p.size > 0 ? `${dateStr} · ${formatBytes(p.size)}` : dateStr;
 	}
 
 	function applyMetadata(p: FileItem, md: FileMetadata) {
@@ -261,7 +273,7 @@
 	>
 		<div class="lb__info">
 			<div class="lb__filename">{item.name}</div>
-			<div class="lb__meta">{meta}</div>
+			<div class="lb__meta" data-testid="photo-lightbox-meta">{meta}</div>
 		</div>
 
 		<button

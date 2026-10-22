@@ -9,9 +9,7 @@ use std::sync::Arc;
 use tracing::info;
 use utoipa::ToSchema;
 
-use crate::application::dtos::display_helpers::{
-    classify_display, format_file_size, intern_display, intern_mime,
-};
+use crate::application::dtos::display_helpers::{classify_display, intern_display, intern_mime};
 use crate::application::dtos::favorites_dto::{
     FavoritesResourceItemDto, FavoritesResourcesDto, FavoritesResourcesQuery,
 };
@@ -275,7 +273,6 @@ pub async fn list_favorites_resources(
                             modified_at: row.modified_at,
                             icon_class,
                             category,
-                            size_formatted: format_file_size(size_bytes),
                             content_hash,
                             etag,
                             created_by: row.created_by,

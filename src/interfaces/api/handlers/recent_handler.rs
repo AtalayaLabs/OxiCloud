@@ -7,9 +7,7 @@ use axum::{
 use std::sync::Arc;
 use tracing::info;
 
-use crate::application::dtos::display_helpers::{
-    classify_display, format_file_size, intern_display, intern_mime,
-};
+use crate::application::dtos::display_helpers::{classify_display, intern_display, intern_mime};
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::FolderDto;
 use crate::application::dtos::grant_dto::{ResourceContentDto, ResourceTypeDto};
@@ -288,7 +286,6 @@ pub async fn list_recent_resources(
                             modified_at: row.modified_at,
                             icon_class,
                             category,
-                            size_formatted: format_file_size(size_bytes),
                             content_hash,
                             etag,
                             created_by: row.created_by,

@@ -85,9 +85,7 @@ fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
 
 #[allow(clippy::all)]
 mod before {
-    use oxicloud::application::dtos::display_helpers::{
-        category_for, format_file_size, icon_class_for,
-    };
+    use oxicloud::application::dtos::display_helpers::{category_for, icon_class_for};
     use oxicloud::application::dtos::file_dto::FileDto;
     use oxicloud::application::dtos::folder_dto::FolderDto;
     use oxicloud::domain::entities::file::File;
@@ -103,7 +101,6 @@ mod before {
         pub created_at: u64,
         pub modified_at: u64,
         pub relevance_score: u32,
-        pub size_formatted: String,
         pub icon_class: String,
         pub category: String,
         pub blob_hash: String,
@@ -129,23 +126,6 @@ mod before {
     }
     fn get_category(name: &str, mime: &str) -> String {
         category_for(name, mime).to_string()
-    }
-
-    /// Verbatim copy of the service's private `format_bytes` (unchanged by
-    /// round 9; the equivalence gate asserts it still matches production).
-    pub fn format_bytes(bytes: u64) -> String {
-        const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
-        if bytes == 0 {
-            return "0 B".to_string();
-        }
-        let exp = (bytes as f64).log(1024.0).floor() as usize;
-        let exp = exp.min(UNITS.len() - 1);
-        let value = bytes as f64 / 1024_f64.powi(exp as i32);
-        if exp == 0 {
-            format!("{} B", bytes)
-        } else {
-            format!("{:.1} {}", value, UNITS[exp])
-        }
     }
 
     /// Verbatim copy of the service's private `compute_relevance` (unchanged
@@ -188,7 +168,6 @@ mod before {
                 file.modified_at,
             ),
             relevance_score: relevance,
-            size_formatted: format_bytes(file.size),
             icon_class: get_icon_class(&file.name, &file.mime_type),
             category: get_category(&file.name, &file.mime_type),
             blob_hash: file.content_hash.clone(),
@@ -245,7 +224,6 @@ mod before {
             ),
             icon_class: icon_class_for(&fr.name, &fr.mime_type).to_string().into(),
             category: category_for(&fr.name, &fr.mime_type).to_string().into(),
-            size_formatted: format_file_size(fr.size),
             content_hash: fr.blob_hash.clone(),
             etag,
             created_by: None,
@@ -352,7 +330,6 @@ fn main() {
                         new.modified_at,
                     )
                 && old.relevance_score == new.relevance_score
-                && old.size_formatted == new.size_formatted
                 && old.icon_class == *new.icon_class
                 && old.category == *new.category
                 && old.blob_hash == new.blob_hash
@@ -406,7 +383,6 @@ fn main() {
                 && old_conv.mime_type == new_conv.mime_type
                 && old_conv.icon_class == new_conv.icon_class
                 && old_conv.category == new_conv.category
-                && old_conv.size_formatted == new_conv.size_formatted
                 && old_conv.etag == new_conv.etag
                 && old_conv.content_hash == new_conv.content_hash;
             if !same {

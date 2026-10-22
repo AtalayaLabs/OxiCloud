@@ -74,7 +74,6 @@ export function minimalPhotoItem(id: string): FileItem {
 		folder_id: '',
 		path: '',
 		size: 0,
-		size_formatted: '',
 		sort_date: 0,
 		etag: '',
 		content_hash: '',

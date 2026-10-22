@@ -119,7 +119,6 @@ pub fn search_results_entry_weight(_key: &(Uuid, u64), value: &Arc<SearchResults
             + f.path.len()
             + f.mime_type.len()
             + opt_len(&f.folder_id)
-            + f.size_formatted.len()
             + f.icon_class.len()
             + f.category.len()
             + f.blob_hash.len()
@@ -275,22 +274,6 @@ fn sort_enriched_folders(
     }
 }
 
-/// Format bytes into a human-readable string (e.g. "2.5 MB").
-fn format_bytes(bytes: u64) -> String {
-    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
-    if bytes == 0 {
-        return "0 B".to_string();
-    }
-    let exp = (bytes as f64).log(1024.0).floor() as usize;
-    let exp = exp.min(UNITS.len() - 1);
-    let value = bytes as f64 / 1024_f64.powi(exp as i32);
-    if exp == 0 {
-        format!("{} B", bytes)
-    } else {
-        format!("{:.1} {}", value, UNITS[exp])
-    }
-}
-
 // ─── SearchService implementation ───────────────────────────────────────
 
 impl SearchService {
@@ -359,7 +342,6 @@ impl SearchService {
             created_at: file.created_at,
             modified_at: file.modified_at,
             relevance_score: relevance,
-            size_formatted: format_bytes(file.size),
             icon_class: file.icon_class,
             category: file.category,
             // Carry the content hash through so REPORT/SEARCH
@@ -1179,7 +1161,6 @@ mod tests {
             created_at: epoch_zero(),
             modified_at: epoch_to_datetime(modified_at),
             relevance_score: relevance,
-            size_formatted: String::new(),
             icon_class: "".into(),
             category: "".into(),
             blob_hash: String::new(),

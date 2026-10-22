@@ -26,7 +26,7 @@ use std::time::Instant;
 
 use chrono::{DateTime, TimeZone, Utc};
 use oxicloud::application::dtos::display_helpers::{
-    category_for, format_file_size, icon_class_for, intern_display, intern_mime,
+    category_for, icon_class_for, intern_display, intern_mime,
 };
 use oxicloud::application::dtos::favorites_dto::FavoriteResourceRow;
 use oxicloud::application::dtos::file_dto::FileDto;
@@ -162,7 +162,6 @@ fn map_before(rows: Vec<FolderResourceRow>) -> Vec<Probe> {
                     modified_at: row.modified_at,
                     icon_class: intern_display(icon_class_for(&row.name, mime)),
                     category: intern_display(category_for(&row.name, mime)),
-                    size_formatted: format_file_size(size_bytes),
                     content_hash,
                     etag,
                     created_by: None,
@@ -230,7 +229,6 @@ fn map_after(rows: Vec<FolderResourceRow>) -> Vec<Probe> {
                     modified_at: row.modified_at,
                     icon_class,
                     category,
-                    size_formatted: format_file_size(size_bytes),
                     content_hash,
                     etag,
                     created_by: None,
@@ -363,7 +361,6 @@ fn fav_map_before(rows: Vec<FavoriteResourceRow>) -> Vec<FavProbe> {
                     modified_at: row.modified_at,
                     icon_class: intern_display(icon_class_for(&row.name, mime)),
                     category: intern_display(category_for(&row.name, mime)),
-                    size_formatted: format_file_size(size_bytes),
                     content_hash,
                     etag,
                     created_by: None,
@@ -449,7 +446,6 @@ fn fav_map_after(rows: Vec<FavoriteResourceRow>) -> Vec<FavProbe> {
                     modified_at: row.modified_at,
                     icon_class,
                     category,
-                    size_formatted: format_file_size(size_bytes),
                     content_hash,
                     etag,
                     created_by: None,

@@ -103,7 +103,6 @@ impl FavoritesRepositoryPort for FavoritesPgRepository {
                     // Temporary defaults; with_display_fields() computes the real values
                     icon_class: String::new(),
                     category: String::new(),
-                    size_formatted: String::new(),
                 }
                 .with_display_fields())
             })

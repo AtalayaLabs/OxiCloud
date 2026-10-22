@@ -39,7 +39,6 @@ function photo(id: string) {
 		folder_id: 'home',
 		path: '/' + id + '.jpg',
 		size: 100,
-		size_formatted: '100 B',
 		sort_date: 1_700_000_000,
 		etag: 'e',
 		content_hash: 'h',

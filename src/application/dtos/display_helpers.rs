@@ -484,56 +484,9 @@ pub fn category_orders_for_filter(filter: SearchTypeFilter) -> &'static [i16] {
     }
 }
 
-/// Formats a byte count into a human-readable string (1024-based).
-///
-/// Matches the JavaScript `formatFileSize()` output exactly so the frontend
-/// does not need its own per-file formatting.
-///
-/// Examples: `"0 Bytes"`, `"1.5 KB"`, `"3.27 MB"`.
-pub fn format_file_size(bytes: u64) -> String {
-    if bytes == 0 {
-        return "0 Bytes".to_string();
-    }
-
-    const K: f64 = 1024.0;
-    const SIZES: [&str; 5] = ["Bytes", "KB", "MB", "GB", "TB"];
-
-    let i = ((bytes as f64).ln() / K.ln()).floor() as usize;
-    let i = i.min(SIZES.len() - 1);
-
-    let value = bytes as f64 / K.powi(i as i32);
-
-    // Single buffer: write the 2-decimal value, strip trailing zeros in
-    // place (matches JS parseFloat behaviour), then append the unit.
-    // 16 chars covers the worst case ("16777216 TB" for u64::MAX,
-    // "1023.99 Bytes" for the longest unit), so no realloc occurs.
-    let mut out = String::with_capacity(16);
-    let _ = write!(out, "{:.2}", value);
-    while out.ends_with('0') {
-        out.pop();
-    }
-    if out.ends_with('.') {
-        out.pop();
-    }
-    out.push(' ');
-    out.push_str(SIZES[i]);
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_format_file_size() {
-        assert_eq!(format_file_size(0), "0 Bytes");
-        assert_eq!(format_file_size(500), "500 Bytes");
-        assert_eq!(format_file_size(1024), "1 KB");
-        assert_eq!(format_file_size(1536), "1.5 KB");
-        assert_eq!(format_file_size(1_048_576), "1 MB");
-        assert_eq!(format_file_size(3_423_744), "3.27 MB");
-        assert_eq!(format_file_size(1_073_741_824), "1 GB");
-    }
 
     #[test]
     fn test_icon_class_for_with_extension_fallback() {

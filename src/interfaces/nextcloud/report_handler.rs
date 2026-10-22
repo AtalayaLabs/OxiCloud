@@ -10,7 +10,7 @@ use quick_xml::{
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::application::dtos::display_helpers::{format_file_size, intern_display};
+use crate::application::dtos::display_helpers::intern_display;
 use crate::application::dtos::favorites_dto::ItemKind;
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::FolderDto;
@@ -471,7 +471,6 @@ fn file_dto_from_search(fr: &crate::application::dtos::search_dto::SearchFileRes
         modified_at: fr.modified_at,
         icon_class: fr.icon_class.clone(),
         category: fr.category.clone(),
-        size_formatted: format_file_size(fr.size),
         content_hash: fr.blob_hash.clone(),
         etag,
         // §14 provenance not selected by the search result DTO.

@@ -9,9 +9,7 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::application::dtos::display_helpers::{
-    classify_display, format_file_size, intern_display, intern_mime,
-};
+use crate::application::dtos::display_helpers::{classify_display, intern_display, intern_mime};
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::FolderDto;
 use crate::application::dtos::timestamp_helpers::epoch_to_datetime;
@@ -218,7 +216,6 @@ impl PathResolverService {
                     modified_at: epoch_to_datetime(modified_at_u),
                     icon_class: intern_display(classes.icon_class),
                     category: intern_display(classes.category),
-                    size_formatted: format_file_size(sz),
                     content_hash: hash,
                     etag,
                     // §14 provenance not selected by this resolver path

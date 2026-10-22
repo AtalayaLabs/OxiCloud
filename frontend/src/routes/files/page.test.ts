@@ -121,7 +121,6 @@ function fileItem(id: string, name: string) {
 		folder_id: 'home',
 		path: '/' + name,
 		size: 4,
-		size_formatted: '4 B',
 		sort_date: 0,
 		etag: 'e',
 		content_hash: 'h'

@@ -64,7 +64,6 @@ function withOneFile() {
 					folder_id: 'root',
 					path: '/notes.txt',
 					size: 4,
-					size_formatted: '4 B',
 					sort_date: 0,
 					etag: 'e',
 					content_hash: 'h'

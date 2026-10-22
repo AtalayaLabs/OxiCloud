@@ -1599,10 +1599,6 @@ export type FavoriteItemDto = {
      */
     parent_id?: string | null;
     /**
-     * Formatted file size (e.g. "3.27 MB"); "--" for folders
-     */
-    size_formatted: string;
-    /**
      * User ID who owns this favorite
      */
     user_id: string;
@@ -1799,10 +1795,6 @@ export type FileDto = {
      * Size in bytes
      */
     size: number;
-    /**
-     * Human-readable formatted size (e.g. "3.27 MB")
-     */
-    size_formatted: string;
     /**
      * §14 provenance: user that performed the most recent mutation
      * that bumped `updated_at`. Authorship signal — distinct from
@@ -3402,10 +3394,6 @@ export type RecentItemDto = {
      */
     parent_id?: string | null;
     /**
-     * Formatted file size (e.g. "3.27 MB"); "--" for folders
-     */
-    size_formatted: string;
-    /**
      * Owner user ID
      */
     user_id: string;
@@ -3732,10 +3720,6 @@ export type SearchFileResultDto = {
      * Size in bytes
      */
     size: number;
-    /**
-     * Human-readable file size (e.g., "2.5 MB")
-     */
-    size_formatted: string;
     /**
      * Plain-text fragment around the first content match, present only for
      * hits discovered through the full-text content index.

@@ -255,8 +255,6 @@ pub struct SearchFileResultDto {
     pub modified_at: DateTime<Utc>,
     /// Relevance score (0-100) computed server-side
     pub relevance_score: u32,
-    /// Human-readable file size (e.g., "2.5 MB")
-    pub size_formatted: String,
     /// CSS icon class for the file type (e.g., "fas fa-file-pdf")
     #[schema(value_type = String)]
     pub icon_class: Arc<str>,
@@ -717,10 +715,10 @@ fn append_files(
             snippet: f.snippet.clone(),
             via: f.match_source.clone(),
         };
-        // Reconstruct FileDto from the enriched search result. `size_formatted`
-        // and display fields were already computed by `enrich_file`; the
-        // Phase 1-plus extensions (etag / created_by / updated_by /
-        // is_favorite / is_shared) carry through so the DTO is complete.
+        // Reconstruct FileDto from the enriched search result. The display
+        // fields were already computed by `enrich_file`; the Phase 1-plus
+        // extensions (etag / created_by / updated_by / is_favorite /
+        // is_shared) carry through so the DTO is complete.
         let file_dto = crate::application::dtos::file_dto::FileDto {
             id: f.id,
             name: f.name,
@@ -732,7 +730,6 @@ fn append_files(
             modified_at: f.modified_at,
             icon_class: f.icon_class,
             category: f.category,
-            size_formatted: f.size_formatted,
             content_hash: f.blob_hash,
             etag: f.etag,
             created_by: f.created_by,

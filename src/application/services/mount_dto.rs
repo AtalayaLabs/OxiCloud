@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use crate::application::dtos::display_helpers::{category_for, format_file_size, icon_class_for};
+use crate::application::dtos::display_helpers::{category_for, icon_class_for};
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::FolderDto;
 use crate::application::dtos::timestamp_helpers::epoch_to_datetime;
@@ -118,7 +118,6 @@ pub fn mount_entry_file_dto(cfg: &MountConfig, parent_id: &str, entry: &MountEnt
         modified_at: epoch_to_datetime(entry.modified_at),
         icon_class: Arc::from(icon_class_for(name, &mime)),
         category: Arc::from(category_for(name, &mime)),
-        size_formatted: format_file_size(entry.size),
         content_hash: String::new(),
         etag: virtual_file_etag(entry.size, entry.modified_at),
         created_by: Some(cfg.owner_id),
@@ -144,7 +143,6 @@ pub fn mount_file_dto(cfg: &MountConfig, parent_id: &str, stat: &MountStat) -> F
         modified_at: epoch_to_datetime(stat.modified_at),
         icon_class: Arc::from(icon_class_for(name, mime)),
         category: Arc::from(category_for(name, mime)),
-        size_formatted: format_file_size(stat.size),
         content_hash: String::new(),
         etag: virtual_file_etag(stat.size, stat.modified_at),
         created_by: Some(cfg.owner_id),

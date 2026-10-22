@@ -4,7 +4,7 @@ use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 use super::cursor::{CursorListResponse, CursorQuery, PageCursor};
-use super::display_helpers::{classify_display, format_file_size};
+use super::display_helpers::classify_display;
 use super::favorites_dto::ItemKind;
 use super::grant_dto::{ResourceContentDto, ResourceTypeDto};
 use crate::domain::services::authorization::ResourceKind;
@@ -58,9 +58,6 @@ pub struct RecentItemDto {
 
     /// Human-readable category (e.g. "Image", "Folder")
     pub category: String,
-
-    /// Formatted file size (e.g. "3.27 MB"); "--" for folders
-    pub size_formatted: String,
 }
 
 impl RecentItemDto {
@@ -70,7 +67,6 @@ impl RecentItemDto {
         if matches!(self.item_type, ItemKind::Folder) {
             self.icon_class = "fas fa-folder".to_string();
             self.category = "Folder".to_string();
-            self.size_formatted = "--".to_string();
         } else {
             let name = self.item_name.as_deref().unwrap_or("");
             let mime = self
@@ -80,7 +76,6 @@ impl RecentItemDto {
             let classes = classify_display(name, mime);
             self.icon_class = classes.icon_class.to_string();
             self.category = classes.category.to_string();
-            self.size_formatted = format_file_size(self.item_size.unwrap_or(0) as u64);
         }
         self
     }

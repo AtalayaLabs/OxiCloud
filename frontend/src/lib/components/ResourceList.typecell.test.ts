@@ -48,7 +48,6 @@ function fileItem(category: string) {
 		folder_id: 'home',
 		path: '/budget.xlsx',
 		size: 4,
-		size_formatted: '4 B',
 		etag: 'e',
 		content_hash: 'h',
 		is_favorite: false,

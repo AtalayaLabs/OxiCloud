@@ -1,6 +1,6 @@
 # Retire the pre-computed display fields from the wire
 
-Status: **steps 1–2 shipped**, 3–6 open. Written 2026-10-22 from Ed's
+Status: **steps 1, 2, 5 shipped**; 3, 4, 6 open. Written 2026-10-22 from Ed's
 question: are `icon_class`, `icon_special_class` and `size_formatted` actually
 used in the UI, and can the FE compute them instead?
 
@@ -10,8 +10,12 @@ used in the UI, and can the FE compute them instead?
 | 2 | Drop `icon_special_class` (6 DTOs, zero consumers) | ✅ shipped |
 | 3 | FE derives the icon from `mime_type` + extension | open |
 | 4 | Drop `icon_class` — **blocked on 3** | open |
-| 5 | `PhotoLightbox` → `formatBytes`, drop `size_formatted` | open |
+| 5 | `PhotoLightbox` → `formatBytes`, drop `size_formatted` | ✅ shipped |
 | 6 | Document `category` as a machine key | open |
+
+Step 5 was taken out of order: it is independent of 3/4 and of the mime work,
+so there was no reason to hold it behind the icon chain. What remains is the
+icon pair plus the `category` doc note.
 
 The `ResourceCategory` enum section below is unstarted, and deliberately so —
 see **Sequencing**.
@@ -58,12 +62,37 @@ that is never used as a CSS class.
 The FE already owns the next hop — `fileIconKind(iconName)` maps names to
 `--file-kind-*` colour buckets — so half the table is client-side already.
 
-### `size_formatted` — duplicated by construction
+### `size_formatted` — duplicated by construction, and already divergent
 
 One consumer, `PhotoLightbox.svelte:95`. `utils/format.ts::formatBytes()`
-already exists, and `display_helpers::format_file_size`'s own doc says it
-matches the JavaScript output *exactly*. Two implementations kept in step by
-hand, while `size` is already on the wire. The parity comment is the admission.
+already exists, and `size` is already on the wire.
+
+**Correction, found while implementing step 5.** This section originally cited
+`display_helpers::format_file_size`'s doc comment — "Matches the JavaScript
+`formatFileSize()` output exactly" — as evidence the swap was a no-op. It is
+not. That comment refers to the *vanilla* frontend's helper, which went away
+with `static/` in `54639d46`; the SvelteKit `formatBytes` is a different
+function. Worse, the backend had **two** formatters feeding this one field:
+
+| bytes | `display_helpers::format_file_size` | `search_service::format_bytes` | FE `formatBytes` |
+|---|---|---|---|
+| 0 | `0 Bytes` | `0 B` | `0 B` |
+| 500 | `500 Bytes` | `500 B` | `500 B` |
+| 1024 | `1 KB` | `1.0 KB` | `1.0 KB` |
+| 3 423 744 | `3.27 MB` | `3.3 MB` | `3.3 MB` |
+
+So `/api/files` and `/api/search` disagreed about the same file in the same
+field, and the search one silently matched the FE. Step 5 deletes both and the
+field, leaving `formatBytes` as the only size formatter in the product.
+(`storage_usage_service::format_bytes` survives — it renders quota-exceeded
+error messages, not a DTO field.)
+
+One visible consequence, accepted deliberately: the photo lightbox caption
+reads "3.3 MB" where it read "3.27 MB". That is the value the grid behind it
+always showed — `ResourceList` has always rendered `formatBytes(size)` — so
+this closes an inconsistency rather than opening one. Pinned in
+`PhotoLightbox.test.ts`, including the `size > 0` guard, which exists for the
+`minimalPhotoItem` stub that People/Places open the lightbox with.
 
 ### `category` — keep the data, and fix the bug it exposed
 

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use super::display_helpers::{classify_display, format_file_size, intern_display, intern_mime};
+use super::display_helpers::{classify_display, intern_display, intern_mime};
 use super::timestamp_helpers::{datetime_to_epoch, epoch_to_datetime, epoch_zero};
 
 /// DTO for file responses
@@ -46,9 +46,6 @@ pub struct FileDto {
     /// Human-readable file category (e.g. "Image", "Document")
     #[schema(value_type = String)]
     pub category: Arc<str>,
-
-    /// Human-readable formatted size (e.g. "3.27 MB")
-    pub size_formatted: String,
 
     /// Raw BLAKE3 content hash. Populated from `File::content_hash()`.
     /// Exposed in REST JSON so API consumers can use it for
@@ -122,7 +119,6 @@ impl From<File> for FileDto {
         let classes = classify_display(&parts.name, &parts.mime_type);
         let icon_class = intern_display(classes.icon_class);
         let category = intern_display(classes.category);
-        let size_formatted = format_file_size(parts.size);
         let mime_type = intern_mime(&parts.mime_type);
 
         Self {
@@ -139,7 +135,6 @@ impl From<File> for FileDto {
             modified_at: epoch_to_datetime(parts.modified_at),
             icon_class,
             category,
-            size_formatted,
             content_hash: parts.blob_hash,
             etag,
             created_by: parts.created_by,
@@ -156,8 +151,8 @@ impl From<File> for FileDto {
 // To convert from FileDto to File for batch handlers
 impl From<FileDto> for File {
     fn from(dto: FileDto) -> Self {
-        // Display fields (icon_class, category, size_formatted) are not
-        // part of the domain entity and are ignored.
+        // Display fields (icon_class, category) are not part of the
+        // domain entity and are ignored.
         // Domain entity keeps timestamps as epoch seconds; DTO holds
         // RFC 3339 UTC. See `timestamp_helpers` for the rationale.
         File::from_dto(
@@ -214,7 +209,6 @@ impl FileDto {
             modified_at: epoch_zero(),
             icon_class: intern_display("fas fa-file"),
             category: intern_display("Document"),
-            size_formatted: "0 Bytes".to_string(),
             content_hash: String::new(),
             etag: String::new(),
             created_by: None,

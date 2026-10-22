@@ -47,7 +47,6 @@ export interface FileItem {
 	folder_id: string;
 	path: string;
 	size: number;
-	size_formatted: string;
 	/**
 	 * Deprecated on `FileItem` — `sort_date` moved to the item-level
 	 * envelope on `/api/photos/resources` (§1 of
@@ -128,7 +127,7 @@ export type { FavoriteItem, RecentItem };
 // current `.resource_type` switches still cover reality), and
 // `resource: FileItem | FolderItem` widens to `ResourceContentDto`
 // (= FileDto | FolderDto | DriveDto). The display-enriched fields
-// (`icon_class`, `category`, `size_formatted`, …) are present on both
+// (`icon_class`, `category`) are present on both
 // FileDto and FolderDto, so UI rows that read them keep working;
 // DriveDto is a phantom branch — drives never go into trash, so a
 // `kind === 'drive'` match is dead code at runtime but legal at the

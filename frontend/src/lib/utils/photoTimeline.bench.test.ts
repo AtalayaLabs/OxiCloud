@@ -56,7 +56,6 @@ function photo(i: number): PhotoItem {
 		folder_id: 'f',
 		path: `/photo ${i}.jpg`,
 		size: 1000,
-		size_formatted: '1 KB',
 		sort_date: sortDateIso,
 		etag: `e${i}`,
 		content_hash: `h${i}`,

@@ -55,7 +55,6 @@ function withOneFile() {
 					folder_id: 'root',
 					path: '/photo.png',
 					size: 10,
-					size_formatted: '10 B',
 					sort_date: 0,
 					etag: 'e',
 					content_hash: 'h'

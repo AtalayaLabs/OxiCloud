@@ -3,9 +3,7 @@ use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
 use crate::application::dtos::cursor::PageCursor;
-use crate::application::dtos::display_helpers::{
-    classify_display, format_file_size, intern_display, intern_mime,
-};
+use crate::application::dtos::display_helpers::{classify_display, intern_display, intern_mime};
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::FolderDto;
 use crate::application::dtos::grant_dto::{ResourceContentDto, ResourceTypeDto};
@@ -1008,7 +1006,6 @@ fn row_to_item_dto(row: TrashResourceRow) -> TrashResourceItemDto {
             modified_at: row.modified_at,
             icon_class: intern_display(classes.icon_class),
             category: intern_display(classes.category),
-            size_formatted: format_file_size(size_bytes),
             content_hash,
             etag,
             created_by: row.created_by,

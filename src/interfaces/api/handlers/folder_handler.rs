@@ -7,7 +7,7 @@ use axum::{
 use std::sync::Arc;
 
 use crate::application::dtos::display_helpers::{
-    category_for, classify_display, format_file_size, icon_class_for, intern_display, intern_mime,
+    category_for, classify_display, icon_class_for, intern_display, intern_mime,
 };
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::{
@@ -730,7 +730,6 @@ pub async fn list_folder_resources(
                             modified_at: row.modified_at,
                             icon_class,
                             category,
-                            size_formatted: format_file_size(size_bytes),
                             content_hash,
                             etag,
                             created_by: row.created_by,
@@ -855,7 +854,6 @@ fn mount_entry_to_item(
             modified_at: epoch_to_datetime(entry.modified_at),
             icon_class: Arc::from(icon_class_for(&entry.name, &mime)),
             category: Arc::from(category_for(&entry.name, &mime)),
-            size_formatted: format_file_size(entry.size),
             content_hash: String::new(),
             etag: virtual_file_etag(entry.size, entry.modified_at),
             created_by: Some(cfg.owner_id),
