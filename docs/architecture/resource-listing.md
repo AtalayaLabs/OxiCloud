@@ -371,9 +371,14 @@ Three rules for implementers:
   bound app-side at three sites in `file_blob_write_repository.rs`. Any new path
   that INSERTs into `storage.files` must set it — `copy_folder_tree` did not,
   and carried the default until `20261103000009` fixed it.
-- **It is a sort key, not a filter key — yet.** Filtering search by category is
-  planned in `docs/plan/search-type-filter-by-category.md`, which also covers
-  why the UI's coarse "Documents" maps to a *set* of these values server-side.
+- **It is a sort key AND a filter key.** `GET /api/search?type=` narrows on it
+  (`fi.category_order = ANY($n)`), so a stale value does not merely mis-sort a
+  row — it makes that row invisible under its own category. Anything that
+  rewrites `mime_type` must rewrite this in the same statement; that obligation
+  is recorded in `docs/plan/blob-resniff.md` §B for the `content_rescan` job.
+  The UI's coarse "Documents" maps to a *set* of these values, expanded
+  server-side only, in `category_orders_for_filter` next to
+  `category_order_for` — see `docs/plan/search-type-filter-by-category.md`.
 
 Only expose axes meaningful for the resource type. `order_by` must always exist
 in the query struct even when one value is supported today, so adding a second

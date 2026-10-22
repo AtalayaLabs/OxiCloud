@@ -325,6 +325,27 @@ file: file,fixtures/searchcat-no-extension; audio/mpeg
 HTTP 201
 
 
+# A second audio file, this one covering the OTHER defect the old shape
+# had: the SPA's per-category extension list could be incomplete. Its
+# audio list was mp3/wav/flac/aac/ogg/m4a/opus — `wma` was missing, even
+# though /music's own list carried it and the server has always
+# classified it. So a `.wma` was findable from /music and invisible under
+# search's "Audio".
+#
+# Uploaded with `application/octet-stream` on purpose, so the mime says
+# nothing and classification MUST come from the extension fallback in
+# `category_for`. That exercises the opposite path from the
+# extensionless fixture above, which has a specific mime and no
+# extension — between them the two cover both arms of the classifier.
+POST {{base_url}}/api/files/upload
+Authorization: Bearer {{admin_token}}
+[MultipartFormData]
+folder_id: {{search_folder_id}}
+file: file,fixtures/searchcat-legacy.wma; application/octet-stream
+
+HTTP 201
+
+
 # A folder matching the same query, so the folder assertions below prove
 # inclusion/exclusion rather than passing vacuously on an empty page.
 POST {{base_url}}/api/folders
@@ -344,23 +365,33 @@ HTTP 201
 # so `$.items[*].resource.name not contains "x"` silently changes meaning
 # with the number of results. Counting is unambiguous either way.
 #
-# `query=searchcat` matches exactly two things: the extensionless audio
-# file and the folder created above.
+# `query=searchcat` matches exactly three things: the two audio files and
+# the folder created above.
 GET {{base_url}}/api/search?query=searchcat&type=audio
 Authorization: Bearer {{admin_token}}
 
 HTTP 200
 [Asserts]
-# THE assertion of this block: an extensionless file is reachable under
-# its mime-derived category. Under the old extension predicate this was
-# impossible — `SUBSTRING(name FROM '\.([^.]+)$')` is NULL without a dot,
-# so the file could not match any category filter at all.
-jsonpath "$.items" count == 1
-jsonpath "$.items[0].resource.name" == "searchcat-no-extension"
+# THE assertions of this block, one per classifier arm:
+#
+#   * `searchcat-no-extension` — specific mime, NO extension. Under the
+#     old predicate this was unmatchable: `SUBSTRING(name FROM
+#     '\.([^.]+)$')` is NULL without a dot, so the file could not appear
+#     under any category filter at all.
+#   * `searchcat-legacy.wma` — generic mime, classified by EXTENSION.
+#     `wma` was absent from the SPA's audio list, so it was invisible
+#     under search's "Audio" while /music (whose list had it) found it.
+#
+# Both are audio; the folder is not. Counting rather than using
+# `contains` — Hurl collapses a single-element result to a scalar, where
+# `contains` silently becomes substring matching.
+jsonpath "$.items" count == 2
+jsonpath "$.items[*].resource.name" includes "searchcat-no-extension"
+jsonpath "$.items[*].resource.name" includes "searchcat-legacy.wma"
 # And the folder is excluded — the defect Ed reported. `search_folders`
 # cannot narrow by type, so the fix is to skip the folder query entirely
 # for any filter other than `all` / `folders`.
-jsonpath "$.items[0].resource_type" == "file"
+jsonpath "$.items[*].resource_type" not includes "folder"
 
 
 # The same file must NOT come back under a different category. Proves the
@@ -393,13 +424,13 @@ jsonpath "$.items[0].resource.name" == "searchcat-subfolder"
 
 
 # `all` (the default) still returns both kinds — so the gates above narrow
-# rather than having broken the unfiltered path.
+# rather than having broken the unfiltered path. Two files + one folder.
 GET {{base_url}}/api/search?query=searchcat
 Authorization: Bearer {{admin_token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.items" count == 2
+jsonpath "$.items" count == 3
 
 
 # Unknown category → 400 naming the accepted values, because `type` is a

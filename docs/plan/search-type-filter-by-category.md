@@ -1,6 +1,33 @@
 # Search type filter — categories, not extensions
 
-Status: **PLAN**, nothing implemented. Written 2026-10-22 from Ed's UX report.
+Status: **IMPLEMENTED** 2026-10-22 on `fix/search-type`. Written from Ed's UX
+report; kept for the reasoning, with the outcome recorded per step below.
+
+| step | state |
+|---|---|
+| 1 audit + guard | ✅ audit green — default is `9999` (Other), **not** `0`, so a missed write path can never collide with the folder sentinel; live instance 4093 rows, 0 NULL, 0 defaulted. The detector is **superseded**, see the box in that section |
+| 2 `SearchTypeFilter` enum | ✅ `bf211155` — registered in `interfaces/api/mod.rs`, not just `ToSchema`-derived |
+| 3 category → `Vec<i16>` | ✅ `bf211155` — takes the ENUM, so the match is exhaustive and a new variant is a compile error |
+| 4 swap the predicate | ✅ `bf211155` in both helpers… and `ad162016` added the call that was **missing entirely** from `search_files_paginated` |
+| 5 skip the folder branch | ✅ `bf211155` — plus an `includes_files()` gate the plan did not anticipate, see below |
+| 6 SPA | ✅ `bf211155` (+ `404f5d9e` for the `code` option, `c2a8ec3c` for the type imports) |
+| 7 tests | ✅ `ad162016` / this commit — both fixtures the step asked for |
+
+Three things the implementation found that this plan did not predict:
+
+- **`folders` needed a second gate.** It maps to an EMPTY category set, and an
+  empty set contributes no SQL predicate — so suppressing only the folder query
+  would have left the file branch returning *every* file. Hence
+  `includes_files()` alongside `includes_folders()`.
+- **The filter was inert on every GLOBAL search, and so were the size and date
+  filters.** `search_files_in_subtree` delegates to `search_files_paginated`
+  when `folder_id` is None, and that function never called
+  `push_criteria_filters` — it applied only `folder_id` and `name ILIKE`. Ed's
+  "search by type does not work" was the visible corner of a three-filter hole,
+  pre-dating this work.
+- **`/api/search` hand-declares its utoipa params**, so §7's typed
+  `SearchOrderBy` had never reached its schema either; both params now
+  reference the real enums.
 
 ## What triggered this
 
