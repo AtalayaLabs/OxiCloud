@@ -325,7 +325,27 @@ file: file,fixtures/searchcat-no-extension; audio/mpeg
 HTTP 201
 
 
-# Let the search index/cache settle — the cache was flushed above.
+# A folder matching the same query, so the folder assertions below prove
+# inclusion/exclusion rather than passing vacuously on an empty page.
+POST {{base_url}}/api/folders
+Authorization: Bearer {{admin_token}}
+Content-Type: application/json
+{
+  "name": "searchcat-subfolder",
+  "parent_id": "{{search_folder_id}}"
+}
+
+HTTP 201
+
+
+# Every assertion below counts rows and indexes into them rather than
+# using `contains`. Deliberate: Hurl collapses a single-element JSONPath
+# result to a SCALAR, and `contains` on a string is SUBSTRING matching —
+# so `$.items[*].resource.name not contains "x"` silently changes meaning
+# with the number of results. Counting is unambiguous either way.
+#
+# `query=searchcat` matches exactly two things: the extensionless audio
+# file and the folder created above.
 GET {{base_url}}/api/search?query=searchcat&type=audio
 Authorization: Bearer {{admin_token}}
 
@@ -333,44 +353,53 @@ HTTP 200
 [Asserts]
 # THE assertion of this block: an extensionless file is reachable under
 # its mime-derived category. Under the old extension predicate this was
-# impossible — the file could not match any category filter at all.
-jsonpath "$.items[*].resource.name" contains "searchcat-no-extension"
+# impossible — `SUBSTRING(name FROM '\.([^.]+)$')` is NULL without a dot,
+# so the file could not match any category filter at all.
+jsonpath "$.items" count == 1
+jsonpath "$.items[0].resource.name" == "searchcat-no-extension"
+# And the folder is excluded — the defect Ed reported. `search_folders`
+# cannot narrow by type, so the fix is to skip the folder query entirely
+# for any filter other than `all` / `folders`.
+jsonpath "$.items[0].resource_type" == "file"
 
 
 # The same file must NOT come back under a different category. Proves the
 # filter narrows rather than being ignored — a filter that silently did
-# nothing would pass the assertion above on its own.
+# nothing would satisfy the block above on its own, which is exactly what
+# happened before `search_files_paginated` gained the shared filters: a
+# search with no folder scope delegates there, and it applied neither the
+# category NOR the size NOR the date criteria.
 GET {{base_url}}/api/search?query=searchcat&type=image
 Authorization: Bearer {{admin_token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.items[*].resource.name" not contains "searchcat-no-extension"
+jsonpath "$.items" count == 0
 
 
-# `type=folders` returns folders only. This is the defect Ed reported:
-# `search_folders` takes no type parameter, so folders used to be returned
-# by EVERY filter. The fix is to skip the folder query unless the filter
-# is `all` or `folders` — and to skip the FILE query for `folders`, which
-# matters because that variant maps to an empty category set and an empty
-# set contributes no SQL predicate.
+# `type=folders` returns the folder and no files — including no audio
+# file, even though it matches the query. The file half is load-bearing:
+# `folders` maps to an EMPTY category set, and an empty set contributes
+# no SQL predicate, so without the `includes_files()` gate this would
+# return every file rather than none.
 GET {{base_url}}/api/search?query=searchcat&type=folders
 Authorization: Bearer {{admin_token}}
 
 HTTP 200
 [Asserts]
-# No file rows at all — not even the audio one that matches the query.
-jsonpath "$.items[*].resource_type" not contains "file"
+jsonpath "$.items" count == 1
+jsonpath "$.items[0].resource_type" == "folder"
+jsonpath "$.items[0].resource.name" == "searchcat-subfolder"
 
 
-# A non-folder filter must exclude folders. The complement of the above,
-# and the half a user actually noticed.
-GET {{base_url}}/api/search?query=searchcat&type=audio
+# `all` (the default) still returns both kinds — so the gates above narrow
+# rather than having broken the unfiltered path.
+GET {{base_url}}/api/search?query=searchcat
 Authorization: Bearer {{admin_token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.items[*].resource_type" not contains "folder"
+jsonpath "$.items" count == 2
 
 
 # Unknown category → 400 naming the accepted values, because `type` is a

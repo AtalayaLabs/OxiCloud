@@ -1422,6 +1422,20 @@ impl FileReadPort for FileBlobReadRepository {
             bind_idx += 1;
             conditions.push(format!("fi.name ILIKE ${bind_idx}"));
         }
+        // This call was MISSING, and that was a real bug — not just for the
+        // category filter this change adds.
+        //
+        // `search_files_in_subtree` delegates here whenever `folder_id` is
+        // None (its first `match` arm), so this function serves EVERY global
+        // search. Without the shared filters it applied only `folder_id` and
+        // `name ILIKE`, which meant a search with no folder scope silently
+        // ignored the category, size AND date filters — all three of which
+        // the `/search` UI offers. Narrowing by "Images" or "Last week"
+        // returned the unfiltered set and looked like the filter did nothing.
+        //
+        // `search_files_in_subtree` already called this; only the delegating
+        // path did not.
+        bind_idx = push_criteria_filters(&mut conditions, bind_idx, criteria);
 
         let where_clause = conditions.join(" AND ");
         let limit_bind = bind_idx + 1;
@@ -1493,6 +1507,12 @@ impl FileReadPort for FileBlobReadRepository {
         {
             query = query.bind(super::like_escape(name));
         }
+        // Must sit here: after the name bind and BEFORE limit/offset, mirroring
+        // the order `push_criteria_filters` appended its placeholders above.
+        // Binding out of order would silently compare the wrong columns —
+        // `limit_bind`/`offset_bind` are computed from the advanced `bind_idx`,
+        // so the two sides only line up if this stays between them.
+        query = bind_criteria_filters(query, criteria);
         query = query.bind(limit).bind(offset);
 
         // ── Execute single query ─────────────────────────────────────────
