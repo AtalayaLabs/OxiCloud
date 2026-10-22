@@ -15,8 +15,12 @@
 	import { renameFolder, deleteFolder } from '$lib/api/endpoints/folders';
 	import { addFavorite, removeFavorite } from '$lib/api/endpoints/favorites';
 	import { dateBucket, sizeBucket } from '$lib/utils/resourceBuckets';
-	import type { FileItem, FolderItem, SearchResourceItem } from '$lib/api/types';
-	import type { SearchOrderBy, SearchTypeFilter } from '$lib/api/generated/openapi/types.gen';
+	import type { FileItem, FolderItem } from '$lib/api/types';
+	import type {
+		SearchOrderBy,
+		SearchResourceItem,
+		SearchTypeFilter
+	} from '$lib/api/generated/openapi/types.gen';
 	import { lazyComponent } from '$lib/composables/lazyComponent.svelte';
 	import { folderAccessCached, probeFolderAccess } from '$lib/utils/folderAccess';
 	import Icon from '$lib/icons/Icon.svelte';
