@@ -1031,12 +1031,15 @@ async fn handle_put(
         StatusCode::CREATED
     };
 
-    Ok(Response::builder()
-        .status(status)
-        .header(header::ETAG, format!("\"{}\"", stored.etag))
-        .header("oc-etag", format!("\"{}\"", stored.etag))
-        .body(Body::empty())
-        .unwrap())
+    Ok(with_nc_write_headers(
+        Response::builder().status(status),
+        &stored,
+        oc_mtime,
+        state.nextcloud.as_ref().map(|n| &n.file_ids),
+    )
+    .await
+    .body(Body::empty())
+    .unwrap())
 }
 
 // ──────────────────── PATCH ────────────────────
@@ -1245,16 +1248,19 @@ async fn handle_patch(
     // untouched suffix, if any, may have shifted when the body's length
     // differs from the replaced span).
     let range_end = new_size.saturating_sub(1);
-    Ok(Response::builder()
-        .status(StatusCode::NO_CONTENT)
-        .header(header::ETAG, format!("\"{}\"", stored.etag))
-        .header("oc-etag", format!("\"{}\"", stored.etag))
-        .header(
-            header::CONTENT_RANGE,
-            format!("bytes {}-{}/{}", start, range_end, new_size),
-        )
-        .body(Body::empty())
-        .unwrap())
+    Ok(with_nc_write_headers(
+        Response::builder().status(StatusCode::NO_CONTENT),
+        &stored,
+        None,
+        state.nextcloud.as_ref().map(|n| &n.file_ids),
+    )
+    .await
+    .header(
+        header::CONTENT_RANGE,
+        format!("bytes {}-{}/{}", start, range_end, new_size),
+    )
+    .body(Body::empty())
+    .unwrap())
 }
 
 // ──────────────────── MKCOL ────────────────────
@@ -2447,6 +2453,49 @@ pub fn format_oc_id(id: i64, svc: Option<&Arc<NextcloudFileIdService>>) -> Strin
         Some(s) => s.format_oc_id(id),
         None => format!("{:08}ocnca", id),
     }
+}
+
+/// Response headers the Nextcloud sync engine reads off a content write
+/// (PUT, PATCH, chunked-upload assembly MOVE): `ETag` / `OC-ETag`,
+/// `OC-FileId` in the same `oc:id` form PROPFIND reports, and
+/// `X-OC-MTime: accepted` when the client's `X-OC-Mtime` is the mtime
+/// actually stored. That is decided from the stored value, not from the
+/// request, so a write that did not apply the mtime never tells the
+/// client it survived.
+///
+/// `OC-FileId` is not optional for the client: without it a chunked
+/// (NG) upload is reported as "Missing File ID from server" and the file
+/// is marked failed even though the server committed it. If the id cannot
+/// be resolved the header is left out rather than failing a write that
+/// already landed — the next PROPFIND carries the id anyway.
+pub async fn with_nc_write_headers(
+    builder: axum::http::response::Builder,
+    file: &FileDto,
+    requested_mtime: Option<i64>,
+    file_ids: Option<&Arc<NextcloudFileIdService>>,
+) -> axum::http::response::Builder {
+    let (file_id, etag) = (file.id.as_str(), file.etag.as_str());
+    let mut builder = builder
+        .header(header::ETAG, format!("\"{etag}\""))
+        .header("oc-etag", format!("\"{etag}\""));
+    if requested_mtime == Some(file.modified_at.timestamp()) {
+        builder = builder.header("x-oc-mtime", "accepted");
+    }
+    if let Some(svc) = file_ids {
+        match svc.get_or_create_file_ids(&[file_id]).await {
+            Ok(map) => {
+                if let Some(id) = nc_id_of(&map, file_id) {
+                    builder = builder.header("oc-fileid", svc.format_oc_id(id));
+                }
+            }
+            Err(e) => tracing::warn!(
+                file_id,
+                error = %e,
+                "could not resolve NC file id for write response; OC-FileId omitted"
+            ),
+        }
+    }
+    builder
 }
 
 /// Write `oc:id` (`{:08}{instance_id}`) into a caller-provided buffer reused
