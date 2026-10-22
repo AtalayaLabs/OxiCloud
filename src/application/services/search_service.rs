@@ -121,7 +121,6 @@ pub fn search_results_entry_weight(_key: &(Uuid, u64), value: &Arc<SearchResults
             + opt_len(&f.folder_id)
             + f.size_formatted.len()
             + f.icon_class.len()
-            + f.icon_special_class.len()
             + f.category.len()
             + f.blob_hash.len()
             + opt_len(&f.snippet)
@@ -337,7 +336,7 @@ impl SearchService {
     /// Enrich a FileDto → SearchFileResultDto with server-computed metadata.
     ///
     /// Consumes the DTO: every `String` moves and the interned display
-    /// fields (`mime_type`/`icon_class`/`icon_special_class`/`category`,
+    /// fields (`mime_type`/`icon_class`/`category`,
     /// already computed once in `FileDto::from`) transfer as refcount
     /// bumps — the old borrow-based version cloned all of them AND re-ran
     /// the three display classifiers per result row.
@@ -362,7 +361,6 @@ impl SearchService {
             relevance_score: relevance,
             size_formatted: format_bytes(file.size),
             icon_class: file.icon_class,
-            icon_special_class: file.icon_special_class,
             category: file.category,
             // Carry the content hash through so REPORT/SEARCH
             // responses on the NC surface can emit the same ETag
@@ -658,7 +656,6 @@ impl SearchService {
                 // Interned in `FileDto::from` — reuse instead of re-running
                 // the display classifiers per keystroke suggestion.
                 icon_class: file_dto.icon_class,
-                icon_special_class: file_dto.icon_special_class,
                 relevance_score: score,
             });
         }
@@ -672,7 +669,6 @@ impl SearchService {
                 id: folder_dto.id,
                 path: folder_dto.path,
                 icon_class: intern_display("fas fa-folder"),
-                icon_special_class: intern_display("folder-icon"),
                 relevance_score: score,
             });
         }
@@ -1185,7 +1181,6 @@ mod tests {
             relevance_score: relevance,
             size_formatted: String::new(),
             icon_class: "".into(),
-            icon_special_class: "".into(),
             category: "".into(),
             blob_hash: String::new(),
             snippet: None,

@@ -2,9 +2,11 @@
  * Shared "is this filename a text-shaped file?" test.
  *
  * The extension list mirrors the server-side
- * `display_helpers.rs::icon_special_class_with_ext` "code / script /
- * prose" families — anything the backend classifies as text-shaped for
- * its icon picker qualifies here too. Two consumers today:
+ * `display_helpers.rs::icon_class_with_ext` "code / script / prose"
+ * families (its `fas fa-file-code`, `fas fa-terminal` and
+ * `fas fa-file-alt` arms) — anything the backend classifies as
+ * text-shaped for its icon picker qualifies here too. Two consumers
+ * today:
  *
  *   1. `FileViewer.svelte` decides whether to mount the collab editor
  *      (the alternative branches — video / octet-stream — mis-play
@@ -15,8 +17,11 @@
  *      editor).
  *
  * Adding an extension: update the regex here AND
- * `display_helpers.rs::icon_special_class_with_ext` in the same
- * change so the FE gate and the backend classifier stay aligned.
+ * `display_helpers.rs::icon_class_with_ext` in the same change so the
+ * FE gate and the backend classifier stay aligned. (This pointed at
+ * `icon_special_class_with_ext` until that classifier was deleted with
+ * the `icon_special_class` wire field — it had the finer per-language
+ * table, but the same extension families.)
  * (The follow-up in `project_mime_guess_overrides_pending` removes
  * this duplication entirely — the FE will fall back to a
  * `mime.startsWith('text/')` check once the server-side MIME table

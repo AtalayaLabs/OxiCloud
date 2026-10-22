@@ -7,8 +7,7 @@ use axum::{
 use std::sync::Arc;
 
 use crate::application::dtos::display_helpers::{
-    category_for, classify_display, format_file_size, icon_class_for, icon_special_class_for,
-    intern_display, intern_mime,
+    category_for, classify_display, format_file_size, icon_class_for, intern_display, intern_mime,
 };
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::{
@@ -683,7 +682,6 @@ pub async fn list_folder_resources(
                             tree_modified_at: row.modified_at,
                             is_root: false,
                             icon_class: intern_display("fas fa-folder"),
-                            icon_special_class: intern_display("folder-icon"),
                             category: intern_display("Folder"),
                             created_by: row.created_by,
                             updated_by: row.updated_by,
@@ -720,7 +718,6 @@ pub async fn list_folder_resources(
                         // alloc per file row (benches/ROUND7.md).
                         let classes = classify_display(&row.name, mime);
                         let icon_class = intern_display(classes.icon_class);
-                        let icon_special_class = intern_display(classes.icon_special_class);
                         let category = intern_display(classes.category);
                         let dto = FileDto {
                             id: row.id.to_string(),
@@ -732,7 +729,6 @@ pub async fn list_folder_resources(
                             created_at: row.created_at,
                             modified_at: row.modified_at,
                             icon_class,
-                            icon_special_class,
                             category,
                             size_formatted: format_file_size(size_bytes),
                             content_hash,
@@ -832,7 +828,6 @@ fn mount_entry_to_item(
             tree_modified_at: epoch_to_datetime(entry.modified_at),
             is_root: false,
             icon_class: Arc::from("fas fa-folder"),
-            icon_special_class: Arc::from("folder-icon"),
             category: Arc::from("Folder"),
             created_by: Some(cfg.owner_id),
             updated_by: Some(cfg.owner_id),
@@ -859,7 +854,6 @@ fn mount_entry_to_item(
             created_at: epoch_to_datetime(entry.created_at),
             modified_at: epoch_to_datetime(entry.modified_at),
             icon_class: Arc::from(icon_class_for(&entry.name, &mime)),
-            icon_special_class: Arc::from(icon_special_class_for(&entry.name, &mime)),
             category: Arc::from(category_for(&entry.name, &mime)),
             size_formatted: format_file_size(entry.size),
             content_hash: String::new(),

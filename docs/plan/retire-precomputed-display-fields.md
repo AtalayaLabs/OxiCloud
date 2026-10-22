@@ -1,8 +1,20 @@
 # Retire the pre-computed display fields from the wire
 
-Status: **PLAN**, nothing implemented. Written 2026-10-22 from Ed's question:
-are `icon_class`, `icon_special_class` and `size_formatted` actually used in
-the UI, and can the FE compute them instead?
+Status: **steps 1–2 shipped**, 3–6 open. Written 2026-10-22 from Ed's
+question: are `icon_class`, `icon_special_class` and `size_formatted` actually
+used in the UI, and can the FE compute them instead?
+
+| Step | What | Status |
+|---|---|---|
+| 1 | i18n fix — `ResourceList` type-cell through `typeLabel` | ✅ shipped |
+| 2 | Drop `icon_special_class` (6 DTOs, zero consumers) | ✅ shipped |
+| 3 | FE derives the icon from `mime_type` + extension | open |
+| 4 | Drop `icon_class` — **blocked on 3** | open |
+| 5 | `PhotoLightbox` → `formatBytes`, drop `size_formatted` | open |
+| 6 | Document `category` as a machine key | open |
+
+The `ResourceCategory` enum section below is unstarted, and deliberately so —
+see **Sequencing**.
 
 Answer: yes to the second. Audited every consumer in `frontend/src`
 (excluding `/generated/` and test fixtures). The fields are not merely
@@ -23,6 +35,16 @@ dead, and the audit surfaced a live i18n bug.
 Its only non-test reference is `lib/utils/media.ts:68`, which sets it to `''`
 when synthesising a `FileItem` from a photo DTO. That is a *producer* filling a
 required field, not a consumer. Nothing reads it.
+
+**And it was dead at the root, not just unread.** The strings it emitted
+("pdf-icon", "code-icon js-icon") named CSS rules in `static/css/style.css`,
+and that file was deleted wholesale with the legacy vanilla frontend in
+`54639d46` (2026-06-21). The classes are defined nowhere in the repo — not in
+`frontend/src`, not in any remaining stylesheet. So for four months the server
+ran a ~120-line decision tree per row and serialised a class name for a
+stylesheet that no longer existed. Nothing could have flagged it: the producer
+compiled, the field was required, and the only evidence was a stylesheet's
+absence.
 
 ### `icon_class` — a round-trip the FE immediately undoes
 
@@ -73,8 +95,10 @@ new field is required; the classification moves, it does not grow.
 
 **The hard constraint: do not create a third copy of the mapping.** It exists
 today in `display_helpers.rs` (Rust) and partially in `utils/display.ts` +
-`utils/textyExt.ts` (TS — whose comment already says it mirrors
-`icon_special_class_with_ext`). The server cannot simply delete its copy:
+`utils/textyExt.ts` (TS — whose comment says it mirrors the Rust classifier's
+code/script/prose extension families; step 2 repointed that comment from
+`icon_special_class_with_ext` to `icon_class_with_ext`, which carries the same
+families on coarser glyphs). The server cannot simply delete its copy:
 `category_order_for` depends on `category_for` for the `type` sort axis, which
 is server-side by necessity (see `docs/architecture/resource-listing.md`).
 
@@ -234,16 +258,32 @@ Unlike those, a stale client here degrades rather than errors — a missing
 `icon_class` yields the `'file'` fallback in `iconNameFromClass`, so an old
 build shows generic glyphs instead of failing.
 
-## Worth measuring before step 2
+## Measured: this is not a bandwidth win (settled)
 
 These fields are `Arc<str>`-interned precisely *because* they repeat per row
-(`intern_display`), which is itself evidence of the payload cost — but nobody
-has measured the saving. A 50-row page carries roughly `icon_class` (~15 B) +
-`icon_special_class` (~0–12 B) + `size_formatted` (~7 B) per row, so order
-1–2 KB per page before compression, and gzip will eat most of the repetition.
+(`intern_display`), which looks like evidence of payload cost. Step 2 measured
+it instead of assuming. Two synthetic 50-row `/api/files` pages built to the
+real DTO shape, with and without `icon_special_class`, gzip -9:
 
-So **do not sell this as a bandwidth win.** The real wins are: one fewer
-classification table to keep in sync across two languages, three fewer fields
-on six DTOs, and the `Arc<str>` interning machinery in `display_helpers` becomes
-dead weight that can go with them. Measure the page size before and after
-anyway, so the claim in the PR is a number rather than an assumption.
+| Page | raw | gzip -9 | per row (gzip) |
+|---|---|---|---|
+| uniform (50 PDFs, one repeated value) | −1600 B (−5.6%) | **−11 B (−1.2%)** | 0.22 B |
+| mixed (20 distinct values) | −1900 B (−6.7%) | **−117 B (−10.7%)** | 2.34 B |
+
+So the real-world saving is **0.2–2.3 bytes per row after compression**. The raw
+figure (~32–38 B/row) is the one that looks impressive and the one that never
+reaches the wire — the repetition that justified interning is exactly what
+DEFLATE removes. Note the uniform page compresses the field almost entirely
+away while the mixed page keeps ~10%: the saving scales with value diversity,
+which is the opposite of the intuition that repeated fields cost the most.
+
+**Do not sell any of these three removals as a bandwidth win.** The real wins
+are: one fewer classification table to keep in sync across two languages, three
+fewer fields on six DTOs, and the `Arc<str>` interning machinery in
+`display_helpers` becoming dead weight that goes with them. Step 2 alone
+deleted ~120 lines of decision tree and 28 intern-table entries.
+
+(Figures are from constructed payloads, not a live instance — measuring against
+the running sandbox is off limits. The DTO field set and value distribution are
+taken from the real serialiser, so the per-row deltas are exact; only the
+row mix is synthetic.)

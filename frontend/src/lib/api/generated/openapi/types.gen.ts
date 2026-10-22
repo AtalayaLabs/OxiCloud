@@ -1559,10 +1559,6 @@ export type FavoriteItemDto = {
      */
     icon_class: string;
     /**
-     * Extra CSS class for icon styling (e.g. "image-icon", "folder-icon")
-     */
-    icon_special_class: string;
-    /**
      * Unique identifier for the favorite entry
      */
     id: string;
@@ -1758,10 +1754,6 @@ export type FileDto = {
      */
     icon_class: string;
     /**
-     * Extra CSS class for icon styling (e.g. "image-icon", "" when default)
-     */
-    icon_special_class: string;
-    /**
      * File ID
      */
     id: string;
@@ -1931,10 +1923,6 @@ export type FolderDto = {
      * FontAwesome icon CSS class (always "fas fa-folder")
      */
     icon_class: string;
-    /**
-     * Extra CSS class for icon styling (always "folder-icon")
-     */
-    icon_special_class: string;
     /**
      * Folder ID
      */
@@ -3379,10 +3367,6 @@ export type RecentItemDto = {
      */
     icon_class: string;
     /**
-     * Extra CSS class for icon styling (e.g. "image-icon", "folder-icon")
-     */
-    icon_special_class: string;
-    /**
      * Unique identifier for the recent item
      */
     id: string;
@@ -3703,10 +3687,6 @@ export type SearchFileResultDto = {
      */
     icon_class: string;
     /**
-     * Extra CSS class for icon styling (e.g., "pdf-icon", "code-icon js-icon")
-     */
-    icon_special_class: string;
-    /**
      * File ID
      */
     id: string;
@@ -3980,10 +3960,6 @@ export type SearchSuggestionItem = {
      * CSS icon class
      */
     icon_class: string;
-    /**
-     * Extra CSS class for icon styling
-     */
-    icon_special_class: string;
     /**
      * Item ID for navigation
      */
@@ -4805,10 +4781,6 @@ export type TrashedItemDto = {
      * FontAwesome icon class for the file type
      */
     icon_class: string;
-    /**
-     * Special CSS class for icon styling (e.g., "image-icon", "pdf-icon")
-     */
-    icon_special_class: string;
     id: string;
     item_type: string;
     name: string;

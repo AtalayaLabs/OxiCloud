@@ -575,7 +575,6 @@ async fn handle_propfind(
                 tree_modified_at: Utc::now(),
                 is_root: true,
                 icon_class: intern_display("fas fa-folder"),
-                icon_special_class: intern_display("folder-icon"),
                 category: intern_display("Folder"),
                 created_by: None,
                 updated_by: None,

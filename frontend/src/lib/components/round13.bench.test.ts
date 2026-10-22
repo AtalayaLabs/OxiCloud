@@ -30,7 +30,6 @@ interface TestFile {
 	/** RFC 3339 UTC — matches the FileItem wire shape post-pivot. */
 	created_at: string;
 	icon_class: string;
-	icon_special_class: string;
 	id: string;
 	mime_type: string;
 	/** RFC 3339 UTC — matches the FileItem wire shape post-pivot. */
@@ -54,7 +53,6 @@ function fileItem(i: number): TestFile {
 		category: 'Document',
 		created_at: '1970-01-01T00:00:00Z',
 		icon_class: 'fa-file',
-		icon_special_class: '',
 		id: `f${i}`,
 		mime_type: 'text/plain',
 		modified_at: '1970-01-01T00:00:00Z',

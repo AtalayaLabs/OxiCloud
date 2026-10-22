@@ -90,10 +90,6 @@ pub struct FolderDto {
     #[schema(value_type = String)]
     pub icon_class: Arc<str>,
 
-    /// Extra CSS class for icon styling (always "folder-icon")
-    #[schema(value_type = String)]
-    pub icon_special_class: Arc<str>,
-
     /// Human-readable category (always "Folder")
     #[schema(value_type = String)]
     pub category: Arc<str>,
@@ -156,9 +152,8 @@ impl From<Folder> for FolderDto {
             tree_modified_at: epoch_to_datetime(parts.tree_modified_at),
             is_root,
             // Constant display fields: refcount bump on interned statics
-            // instead of 3 fresh Arc allocations per row.
+            // instead of fresh Arc allocations per row.
             icon_class: intern_display("fas fa-folder"),
-            icon_special_class: intern_display("folder-icon"),
             category: intern_display("Folder"),
             etag,
             created_by: parts.created_by,
@@ -175,8 +170,8 @@ impl From<Folder> for FolderDto {
 // To convert from FolderDto to Folder for batch handlers
 impl From<FolderDto> for Folder {
     fn from(dto: FolderDto) -> Self {
-        // Display fields (icon_class, icon_special_class, category)
-        // are not part of the domain entity and are ignored.
+        // Display fields (icon_class, category) are not part of the
+        // domain entity and are ignored.
         Folder::from_dto(
             dto.id,
             dto.name,
@@ -242,7 +237,6 @@ impl FolderDto {
             tree_modified_at: epoch_zero(),
             is_root: true,
             icon_class: intern_display("fas fa-folder"),
-            icon_special_class: intern_display("folder-icon"),
             category: intern_display("Folder"),
             etag: String::new(),
             created_by: None,

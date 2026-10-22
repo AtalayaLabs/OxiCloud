@@ -26,8 +26,7 @@ use std::time::Instant;
 
 use chrono::{DateTime, TimeZone, Utc};
 use oxicloud::application::dtos::display_helpers::{
-    category_for, format_file_size, icon_class_for, icon_special_class_for, intern_display,
-    intern_mime,
+    category_for, format_file_size, icon_class_for, intern_display, intern_mime,
 };
 use oxicloud::application::dtos::favorites_dto::FavoriteResourceRow;
 use oxicloud::application::dtos::file_dto::FileDto;
@@ -132,7 +131,6 @@ fn map_before(rows: Vec<FolderResourceRow>) -> Vec<Probe> {
                     tree_modified_at: row.modified_at,
                     is_root: false,
                     icon_class: intern_display("fas fa-folder"),
-                    icon_special_class: intern_display("folder-icon"),
                     category: intern_display("Folder"),
                     created_by: None,
                     updated_by: None,
@@ -163,7 +161,6 @@ fn map_before(rows: Vec<FolderResourceRow>) -> Vec<Probe> {
                     created_at: row.created_at,
                     modified_at: row.modified_at,
                     icon_class: intern_display(icon_class_for(&row.name, mime)),
-                    icon_special_class: intern_display(icon_special_class_for(&row.name, mime)),
                     category: intern_display(category_for(&row.name, mime)),
                     size_formatted: format_file_size(size_bytes),
                     content_hash,
@@ -200,7 +197,6 @@ fn map_after(rows: Vec<FolderResourceRow>) -> Vec<Probe> {
                     tree_modified_at: row.modified_at,
                     is_root: false,
                     icon_class: intern_display("fas fa-folder"),
-                    icon_special_class: intern_display("folder-icon"),
                     category: intern_display("Folder"),
                     created_by: None,
                     updated_by: None,
@@ -222,7 +218,6 @@ fn map_after(rows: Vec<FolderResourceRow>) -> Vec<Probe> {
                     File::compute_etag(&content_hash, modified_at_u)
                 };
                 let icon_class = intern_display(icon_class_for(&row.name, mime));
-                let icon_special_class = intern_display(icon_special_class_for(&row.name, mime));
                 let category = intern_display(category_for(&row.name, mime));
                 let dto = FileDto {
                     id: row.id.to_string(),
@@ -234,7 +229,6 @@ fn map_after(rows: Vec<FolderResourceRow>) -> Vec<Probe> {
                     created_at: row.created_at,
                     modified_at: row.modified_at,
                     icon_class,
-                    icon_special_class,
                     category,
                     size_formatted: format_file_size(size_bytes),
                     content_hash,
@@ -332,7 +326,6 @@ fn fav_map_before(rows: Vec<FavoriteResourceRow>) -> Vec<FavProbe> {
                     tree_modified_at: row.modified_at,
                     is_root: false,
                     icon_class: intern_display("fas fa-folder"),
-                    icon_special_class: intern_display("folder-icon"),
                     category: intern_display("Folder"),
                     created_by: None,
                     updated_by: None,
@@ -369,7 +362,6 @@ fn fav_map_before(rows: Vec<FavoriteResourceRow>) -> Vec<FavProbe> {
                     created_at: row.resource_created_at,
                     modified_at: row.modified_at,
                     icon_class: intern_display(icon_class_for(&row.name, mime)),
-                    icon_special_class: intern_display(icon_special_class_for(&row.name, mime)),
                     category: intern_display(category_for(&row.name, mime)),
                     size_formatted: format_file_size(size_bytes),
                     content_hash,
@@ -418,7 +410,6 @@ fn fav_map_after(rows: Vec<FavoriteResourceRow>) -> Vec<FavProbe> {
                     tree_modified_at: row.modified_at,
                     is_root: false,
                     icon_class: intern_display("fas fa-folder"),
-                    icon_special_class: intern_display("folder-icon"),
                     category: intern_display("Folder"),
                     created_by: None,
                     updated_by: None,
@@ -446,7 +437,6 @@ fn fav_map_after(rows: Vec<FavoriteResourceRow>) -> Vec<FavProbe> {
                     File::compute_etag(&content_hash, modified_at_u)
                 };
                 let icon_class = intern_display(icon_class_for(&row.name, mime));
-                let icon_special_class = intern_display(icon_special_class_for(&row.name, mime));
                 let category = intern_display(category_for(&row.name, mime));
                 let dto = FileDto {
                     id: row.resource_id.to_string(),
@@ -458,7 +448,6 @@ fn fav_map_after(rows: Vec<FavoriteResourceRow>) -> Vec<FavProbe> {
                     created_at: row.resource_created_at,
                     modified_at: row.modified_at,
                     icon_class,
-                    icon_special_class,
                     category,
                     size_formatted: format_file_size(size_bytes),
                     content_hash,

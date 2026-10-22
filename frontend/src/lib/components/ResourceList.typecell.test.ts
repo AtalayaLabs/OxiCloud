@@ -39,7 +39,6 @@ function fileItem(category: string) {
 		category,
 		created_at: '1970-01-01T00:00:00Z',
 		icon_class: 'fa-file',
-		icon_special_class: '',
 		id: 'f1',
 		mime_type: 'application/vnd.ms-excel',
 		modified_at: '1970-01-01T00:00:00Z',

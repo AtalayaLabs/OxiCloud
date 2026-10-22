@@ -1497,9 +1497,14 @@ fn section_20(iters: u64) {
 
 fn section_21(iters: u64) {
     use oxicloud::application::dtos::display_helpers::{
-        category_for, classify_display, icon_class_for, icon_special_class_for,
+        category_for, classify_display, icon_class_for,
     };
-    println!("  §21 display triple-classify (per listing row)");
+    println!("  §21 display double-classify (per listing row)");
+    // Was a TRIPLE classify when ROUND11 measured 2.12x: `icon_special_class`
+    // was retired from the wire (retire-precomputed-display-fields.md step 2),
+    // so the fusion now covers two trees and the delta below is correspondingly
+    // smaller than the archived figure. The archived number is left as-is in
+    // ROUND11.md — it records what was true when the fusion landed.
 
     // Corpus spanning: specific MIME, prefix MIME, octet-stream + ext
     // fallback (lower/UPPER), no-ext, >16-byte ext, non-ASCII ext, dotfile.
@@ -1519,24 +1524,20 @@ fn section_21(iters: u64) {
         ("song.FLAC", "application/octet-stream"),
     ];
 
-    // Gate 1: fused output identical to the three public classifiers.
+    // Gate 1: fused output identical to the public classifiers.
     let mut ok = true;
     for (name, mime) in corpus {
         let c = classify_display(name, mime);
-        ok &= c.icon_class == icon_class_for(name, mime)
-            && c.icon_special_class == icon_special_class_for(name, mime)
-            && c.category == category_for(name, mime);
+        ok &= c.icon_class == icon_class_for(name, mime) && c.category == category_for(name, mime);
     }
-    gate("fused == three classifiers (corpus)", ok);
+    gate("fused == separate classifiers (corpus)", ok);
     // Gate 2: the historical heap-lowered ext hits the same arms — for
     // ≤16-byte exts the stack lowering equals `to_ascii_lowercase()`; a
     // >16-byte ext must land on the same defaults the old `_` arms gave.
     let long = classify_display("weird.extensionlongerthansixteen", "");
     gate(
         "long-ext defaults match old `_` arms",
-        long.icon_class == "fas fa-file"
-            && long.icon_special_class.is_empty()
-            && long.category == "Document",
+        long.icon_class == "fas fa-file" && long.category == "Document",
     );
 
     // BEFORE replica: per-classifier ext_of + heap to_ascii_lowercase (the
@@ -1552,7 +1553,7 @@ fn section_21(iters: u64) {
     }
 
     let it = (iters / 10).max(1000);
-    measure("BEFORE 3× classify (heap ext on fallback)", it, || {
+    measure("BEFORE 2× classify (heap ext on fallback)", it, || {
         let mut acc = 0usize;
         for (name, mime) in corpus {
             // The pre-fusion code heap-lowercased the ext INSIDE each
@@ -1567,12 +1568,8 @@ fn section_21(iters: u64) {
             if falls_back {
                 let _l = ext_of(name).map(|e| e.to_ascii_lowercase());
             }
-            let b = icon_special_class_for(name, mime);
-            if falls_back {
-                let _l = ext_of(name).map(|e| e.to_ascii_lowercase());
-            }
             let c = category_for(name, mime);
-            acc += a.len() + b.len() + c.len();
+            acc += a.len() + c.len();
         }
         acc
     });
@@ -1580,7 +1577,7 @@ fn section_21(iters: u64) {
         let mut acc = 0usize;
         for (name, mime) in corpus {
             let c = classify_display(name, mime);
-            acc += c.icon_class.len() + c.icon_special_class.len() + c.category.len();
+            acc += c.icon_class.len() + c.category.len();
         }
         acc
     });

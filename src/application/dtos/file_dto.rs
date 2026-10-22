@@ -43,10 +43,6 @@ pub struct FileDto {
     #[schema(value_type = String)]
     pub icon_class: Arc<str>,
 
-    /// Extra CSS class for icon styling (e.g. "image-icon", "" when default)
-    #[schema(value_type = String)]
-    pub icon_special_class: Arc<str>,
-
     /// Human-readable file category (e.g. "Image", "Document")
     #[schema(value_type = String)]
     pub category: Arc<str>,
@@ -125,7 +121,6 @@ impl From<File> for FileDto {
         // fresh Arc<str> per row (`Arc::from(&str)` always allocs+copies).
         let classes = classify_display(&parts.name, &parts.mime_type);
         let icon_class = intern_display(classes.icon_class);
-        let icon_special_class = intern_display(classes.icon_special_class);
         let category = intern_display(classes.category);
         let size_formatted = format_file_size(parts.size);
         let mime_type = intern_mime(&parts.mime_type);
@@ -143,7 +138,6 @@ impl From<File> for FileDto {
             created_at: epoch_to_datetime(parts.created_at),
             modified_at: epoch_to_datetime(parts.modified_at),
             icon_class,
-            icon_special_class,
             category,
             size_formatted,
             content_hash: parts.blob_hash,
@@ -162,8 +156,8 @@ impl From<File> for FileDto {
 // To convert from FileDto to File for batch handlers
 impl From<FileDto> for File {
     fn from(dto: FileDto) -> Self {
-        // Display fields (icon_class, icon_special_class, category, size_formatted)
-        // are not part of the domain entity and are ignored.
+        // Display fields (icon_class, category, size_formatted) are not
+        // part of the domain entity and are ignored.
         // Domain entity keeps timestamps as epoch seconds; DTO holds
         // RFC 3339 UTC. See `timestamp_helpers` for the rationale.
         File::from_dto(
@@ -219,7 +213,6 @@ impl FileDto {
             created_at: epoch_zero(),
             modified_at: epoch_zero(),
             icon_class: intern_display("fas fa-file"),
-            icon_special_class: intern_display(""),
             category: intern_display("Document"),
             size_formatted: "0 Bytes".to_string(),
             content_hash: String::new(),

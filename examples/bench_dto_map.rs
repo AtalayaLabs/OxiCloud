@@ -79,9 +79,7 @@ static GLOBAL: CountingAlloc = CountingAlloc;
 mod before {
     use std::sync::Arc;
 
-    use oxicloud::application::dtos::display_helpers::{
-        category_for, icon_class_for, icon_special_class_for,
-    };
+    use oxicloud::application::dtos::display_helpers::{category_for, icon_class_for};
     use oxicloud::application::dtos::file_dto::FileDto;
     use oxicloud::application::dtos::folder_dto::FolderDto;
     use oxicloud::domain::entities::file::File;
@@ -130,8 +128,6 @@ mod before {
         let parts = file.into_parts();
 
         let icon_class: Arc<str> = Arc::from(icon_class_for(&parts.name, &parts.mime_type));
-        let icon_special_class: Arc<str> =
-            Arc::from(icon_special_class_for(&parts.name, &parts.mime_type));
         let category: Arc<str> = Arc::from(category_for(&parts.name, &parts.mime_type));
         let size_formatted = format_file_size(parts.size);
         let mime_type: Arc<str> = Arc::from(parts.mime_type.as_str());
@@ -150,7 +146,6 @@ mod before {
                 parts.modified_at,
             ),
             icon_class,
-            icon_special_class,
             category,
             size_formatted,
             content_hash,
@@ -186,7 +181,6 @@ mod before {
             ),
             is_root,
             icon_class: Arc::from("fas fa-folder"),
-            icon_special_class: Arc::from("folder-icon"),
             category: Arc::from("Folder"),
             etag,
             created_by: folder.created_by(),
@@ -408,7 +402,6 @@ fn diff_file(i: usize, b: &FileDto, a: &FileDto, diffs: &mut u64) {
     cmp_field!(*diffs, i, "file", b, a, created_at);
     cmp_field!(*diffs, i, "file", b, a, modified_at);
     cmp_field!(*diffs, i, "file", b, a, icon_class);
-    cmp_field!(*diffs, i, "file", b, a, icon_special_class);
     cmp_field!(*diffs, i, "file", b, a, category);
     cmp_field!(*diffs, i, "file", b, a, size_formatted);
     cmp_field!(*diffs, i, "file", b, a, content_hash);
@@ -427,7 +420,6 @@ fn diff_folder(i: usize, b: &FolderDto, a: &FolderDto, diffs: &mut u64) {
     cmp_field!(*diffs, i, "folder", b, a, modified_at);
     cmp_field!(*diffs, i, "folder", b, a, is_root);
     cmp_field!(*diffs, i, "folder", b, a, icon_class);
-    cmp_field!(*diffs, i, "folder", b, a, icon_special_class);
     cmp_field!(*diffs, i, "folder", b, a, category);
     cmp_field!(*diffs, i, "folder", b, a, etag);
     cmp_field!(*diffs, i, "folder", b, a, created_by);

@@ -102,7 +102,6 @@ impl FavoritesRepositoryPort for FavoritesPgRepository {
                     item_path: row.try_get("item_path").ok(),
                     // Temporary defaults; with_display_fields() computes the real values
                     icon_class: String::new(),
-                    icon_special_class: String::new(),
                     category: String::new(),
                     size_formatted: String::new(),
                 }

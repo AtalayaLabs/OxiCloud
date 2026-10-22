@@ -92,9 +92,6 @@ pub struct FavoriteItemDto {
     /// FontAwesome icon CSS class (e.g. "fas fa-file-image", "fas fa-folder")
     pub icon_class: String,
 
-    /// Extra CSS class for icon styling (e.g. "image-icon", "folder-icon")
-    pub icon_special_class: String,
-
     /// Human-readable category (e.g. "Image", "Folder")
     pub category: String,
 
@@ -108,7 +105,6 @@ impl FavoriteItemDto {
     pub fn with_display_fields(mut self) -> Self {
         if matches!(self.item_type, ItemKind::Folder) {
             self.icon_class = "fas fa-folder".to_string();
-            self.icon_special_class = "folder-icon".to_string();
             self.category = "Folder".to_string();
             self.size_formatted = "--".to_string();
         } else {
@@ -119,7 +115,6 @@ impl FavoriteItemDto {
                 .unwrap_or("application/octet-stream");
             let classes = classify_display(name, mime);
             self.icon_class = classes.icon_class.to_string();
-            self.icon_special_class = classes.icon_special_class.to_string();
             self.category = classes.category.to_string();
             self.size_formatted = format_file_size(self.item_size.unwrap_or(0) as u64);
         }

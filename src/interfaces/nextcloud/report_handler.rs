@@ -470,7 +470,6 @@ fn file_dto_from_search(fr: &crate::application::dtos::search_dto::SearchFileRes
         created_at: fr.created_at,
         modified_at: fr.modified_at,
         icon_class: fr.icon_class.clone(),
-        icon_special_class: fr.icon_special_class.clone(),
         category: fr.category.clone(),
         size_formatted: format_file_size(fr.size),
         content_hash: fr.blob_hash.clone(),
@@ -516,7 +515,6 @@ fn folder_dto_from_search(
         tree_modified_at: sr.modified_at,
         is_root: sr.is_root,
         icon_class: intern_display("fas fa-folder"),
-        icon_special_class: intern_display("folder-icon"),
         category: intern_display("Folder"),
         // §14 provenance not selected by search results.
         created_by: None,

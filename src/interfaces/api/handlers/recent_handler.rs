@@ -249,7 +249,6 @@ pub async fn list_recent_resources(
                             tree_modified_at: row.modified_at,
                             is_root: false,
                             icon_class: intern_display("fas fa-folder"),
-                            icon_special_class: intern_display("folder-icon"),
                             category: intern_display("Folder"),
                             created_by: row.created_by,
                             updated_by: row.updated_by,
@@ -277,7 +276,6 @@ pub async fn list_recent_resources(
                         // compute them before the name moves into the DTO.
                         let classes = classify_display(&row.name, mime);
                         let icon_class = intern_display(classes.icon_class);
-                        let icon_special_class = intern_display(classes.icon_special_class);
                         let category = intern_display(classes.category);
                         let dto = FileDto {
                             id: row.resource_id.to_string(),
@@ -289,7 +287,6 @@ pub async fn list_recent_resources(
                             created_at: row.resource_created_at,
                             modified_at: row.modified_at,
                             icon_class,
-                            icon_special_class,
                             category,
                             size_formatted: format_file_size(size_bytes),
                             content_hash,

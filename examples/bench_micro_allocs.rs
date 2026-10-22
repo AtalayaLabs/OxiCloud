@@ -32,7 +32,7 @@ use oxicloud::application::adapters::carddav_adapter::{CardDavAdapter, CardDavRe
 use oxicloud::application::adapters::webdav_adapter::QualifiedName;
 use oxicloud::application::dtos::contact_dto::ContactDto;
 use oxicloud::application::dtos::display_helpers::{
-    category_for, icon_class_for, icon_special_class_for, intern_display, intern_mime,
+    category_for, icon_class_for, intern_display, intern_mime,
 };
 use oxicloud::application::dtos::file_dto::FileDto;
 use oxicloud::application::dtos::search_dto::SearchSuggestionItem;
@@ -141,9 +141,6 @@ fn suggest_before(files: &[File], q: &str) -> Vec<SearchSuggestionItem> {
             icon_class: icon_class_for(&file_dto.name, &file_dto.mime_type)
                 .to_string()
                 .into(),
-            icon_special_class: icon_special_class_for(&file_dto.name, &file_dto.mime_type)
-                .to_string()
-                .into(),
             relevance_score: score,
         });
     }
@@ -158,8 +155,6 @@ fn suggest_after(files: Vec<File>, q: &str) -> Vec<SearchSuggestionItem> {
         let file_dto = FileDto::from(file);
         let score = compute_relevance(&file_dto.name, &query_lower);
         let icon_class = icon_class_for(&file_dto.name, &file_dto.mime_type).to_string();
-        let icon_special_class =
-            icon_special_class_for(&file_dto.name, &file_dto.mime_type).to_string();
         out.push(SearchSuggestionItem {
             name: file_dto.name,
             item_type: "file".to_string(),
@@ -167,7 +162,6 @@ fn suggest_after(files: Vec<File>, q: &str) -> Vec<SearchSuggestionItem> {
             path: file_dto.path,
             // Same `.into()` bridge as the BEFORE arm — see note there.
             icon_class: icon_class.into(),
-            icon_special_class: icon_special_class.into(),
             relevance_score: score,
         });
     }
@@ -425,7 +419,6 @@ fn main() {
             (
                 Arc::<str>::from(mime),
                 Arc::<str>::from(icon_class_for(name, mime)),
-                Arc::<str>::from(icon_special_class_for(name, mime)),
                 Arc::<str>::from(category_for(name, mime)),
             )
         };
@@ -433,7 +426,6 @@ fn main() {
             (
                 intern_mime(mime),
                 intern_display(icon_class_for(name, mime)),
-                intern_display(icon_special_class_for(name, mime)),
                 intern_display(category_for(name, mime)),
             )
         };
@@ -451,16 +443,16 @@ fn main() {
             * 1000.0;
         let a_b = allocs_of(|| row_before(&names[0]));
         let a_a = allocs_of(|| row_after(&names[0]));
-        let (bm, bi, bs, bc) = row_before(&names[0]);
-        let (am, ai, as_, ac) = row_after(&names[0]);
-        if *bm != *am || *bi != *ai || *bs != *as_ || *bc != *ac {
+        let (bm, bi, bc) = row_before(&names[0]);
+        let (am, ai, ac) = row_after(&names[0]);
+        if *bm != *am || *bi != *ai || *bc != *ac {
             eprintln!("GATE FAIL interning content");
             ok = false;
         }
         println!("[3] listing closed-set fields             ns/row   allocs/row");
-        println!("    BEFORE (Arc::from ×4)                {t_b:8.1}   {a_b:7}");
+        println!("    BEFORE (Arc::from ×3)                {t_b:8.1}   {a_b:7}");
         println!(
-            "    AFTER  (intern lookups ×4)           {t_a:8.1}   {a_a:7}   {:.1}x",
+            "    AFTER  (intern lookups ×3)           {t_a:8.1}   {a_a:7}   {:.1}x",
             t_b / t_a
         );
     }

@@ -35,7 +35,6 @@ export interface FileItem {
 	/** RFC 3339 UTC timestamp (wire form after the DTO ISO-8601 pivot). */
 	created_at: string;
 	icon_class: string;
-	icon_special_class: string;
 	id: string;
 	mime_type: string;
 	/** RFC 3339 UTC timestamp. */

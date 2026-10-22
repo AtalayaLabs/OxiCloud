@@ -13761,7 +13761,6 @@
           "item_type",
           "created_at",
           "icon_class",
-          "icon_special_class",
           "category",
           "size_formatted"
         ],
@@ -13778,10 +13777,6 @@
           "icon_class": {
             "type": "string",
             "description": "FontAwesome icon CSS class (e.g. \"fas fa-file-image\", \"fas fa-folder\")"
-          },
-          "icon_special_class": {
-            "type": "string",
-            "description": "Extra CSS class for icon styling (e.g. \"image-icon\", \"folder-icon\")"
           },
           "id": {
             "type": "string",
@@ -13963,7 +13958,6 @@
           "created_at",
           "modified_at",
           "icon_class",
-          "icon_special_class",
           "category",
           "size_formatted",
           "content_hash",
@@ -14007,10 +14001,6 @@
           "icon_class": {
             "type": "string",
             "description": "FontAwesome icon CSS class (e.g. \"fas fa-file-image\")"
-          },
-          "icon_special_class": {
-            "type": "string",
-            "description": "Extra CSS class for icon styling (e.g. \"image-icon\", \"\" when default)"
           },
           "id": {
             "type": "string",
@@ -14144,7 +14134,6 @@
           "tree_modified_at",
           "is_root",
           "icon_class",
-          "icon_special_class",
           "category",
           "etag",
           "is_favorite",
@@ -14180,10 +14169,6 @@
           "icon_class": {
             "type": "string",
             "description": "FontAwesome icon CSS class (always \"fas fa-folder\")"
-          },
-          "icon_special_class": {
-            "type": "string",
-            "description": "Extra CSS class for icon styling (always \"folder-icon\")"
           },
           "id": {
             "type": "string",
@@ -16232,7 +16217,6 @@
           "item_type",
           "accessed_at",
           "icon_class",
-          "icon_special_class",
           "category",
           "size_formatted"
         ],
@@ -16249,10 +16233,6 @@
           "icon_class": {
             "type": "string",
             "description": "FontAwesome icon CSS class (e.g. \"fas fa-file-image\", \"fas fa-folder\")"
-          },
-          "icon_special_class": {
-            "type": "string",
-            "description": "Extra CSS class for icon styling (e.g. \"image-icon\", \"folder-icon\")"
           },
           "id": {
             "type": "string",
@@ -16707,7 +16687,6 @@
           "relevance_score",
           "size_formatted",
           "icon_class",
-          "icon_special_class",
           "category"
         ],
         "properties": {
@@ -16746,10 +16725,6 @@
           "icon_class": {
             "type": "string",
             "description": "CSS icon class for the file type (e.g., \"fas fa-file-pdf\")"
-          },
-          "icon_special_class": {
-            "type": "string",
-            "description": "Extra CSS class for icon styling (e.g., \"pdf-icon\", \"code-icon js-icon\")"
           },
           "id": {
             "type": "string",
@@ -17077,17 +17052,12 @@
           "id",
           "path",
           "icon_class",
-          "icon_special_class",
           "relevance_score"
         ],
         "properties": {
           "icon_class": {
             "type": "string",
             "description": "CSS icon class"
-          },
-          "icon_special_class": {
-            "type": "string",
-            "description": "Extra CSS class for icon styling"
           },
           "id": {
             "type": "string",
@@ -18067,8 +18037,7 @@
           "trashed_at",
           "days_until_deletion",
           "category",
-          "icon_class",
-          "icon_special_class"
+          "icon_class"
         ],
         "properties": {
           "category": {
@@ -18082,10 +18051,6 @@
           "icon_class": {
             "type": "string",
             "description": "FontAwesome icon class for the file type"
-          },
-          "icon_special_class": {
-            "type": "string",
-            "description": "Special CSS class for icon styling (e.g., \"image-icon\", \"pdf-icon\")"
           },
           "id": {
             "type": "string"

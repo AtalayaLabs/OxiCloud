@@ -260,9 +260,6 @@ pub struct SearchFileResultDto {
     /// CSS icon class for the file type (e.g., "fas fa-file-pdf")
     #[schema(value_type = String)]
     pub icon_class: Arc<str>,
-    /// Extra CSS class for icon styling (e.g., "pdf-icon", "code-icon js-icon")
-    #[schema(value_type = String)]
-    pub icon_special_class: Arc<str>,
     /// Content category: "document", "image", "video", "audio", "archive", "code", "other"
     #[schema(value_type = String)]
     pub category: Arc<str>,
@@ -734,7 +731,6 @@ fn append_files(
             created_at: f.created_at,
             modified_at: f.modified_at,
             icon_class: f.icon_class,
-            icon_special_class: f.icon_special_class,
             category: f.category,
             size_formatted: f.size_formatted,
             content_hash: f.blob_hash,
@@ -774,10 +770,9 @@ fn append_folders(items: &mut Vec<SearchResourceItem>, folders: Vec<SearchFolder
             tree_modified_at: f.modified_at,
             is_root: f.is_root,
             // Folders carry closed-set display fields — always the
-            // same three static strings. Cheap to build via `Arc::from`
+            // same static strings. Cheap to build via `Arc::from`
             // (interning-worthy but not on the search hot path).
             icon_class: Arc::from("fas fa-folder"),
-            icon_special_class: Arc::from("folder-icon"),
             category: Arc::from("Folder"),
             etag: f.etag,
             created_by: f.created_by,
@@ -823,9 +818,6 @@ pub struct SearchSuggestionItem {
     /// CSS icon class
     #[schema(value_type = String)]
     pub icon_class: Arc<str>,
-    /// Extra CSS class for icon styling
-    #[schema(value_type = String)]
-    pub icon_special_class: Arc<str>,
     /// Relevance score
     pub relevance_score: u32,
 }

@@ -55,7 +55,6 @@ function withOneFile() {
 					category: 'Document',
 					created_at: 0,
 					icon_class: 'fa-file',
-					icon_special_class: '',
 					id: 'r1',
 					mime_type: 'text/plain',
 					modified_at: 0,

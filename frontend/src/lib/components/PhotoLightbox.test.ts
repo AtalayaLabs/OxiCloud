@@ -29,7 +29,6 @@ function item(id: string) {
 		created_at: 0,
 		sort_date: 0,
 		icon_class: '',
-		icon_special_class: '',
 		size_formatted: '1 B',
 		etag: '',
 		content_hash: ''

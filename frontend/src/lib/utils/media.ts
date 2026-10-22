@@ -65,7 +65,6 @@ export function minimalPhotoItem(id: string): FileItem {
 		// `new Date(iso)` which parses this as 1970-01-01T00:00:00Z.
 		created_at: '1970-01-01T00:00:00Z',
 		icon_class: '',
-		icon_special_class: '',
 		id,
 		mime_type: 'image/jpeg',
 		modified_at: '1970-01-01T00:00:00Z',

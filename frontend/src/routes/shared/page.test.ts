@@ -41,7 +41,6 @@ function grantItem() {
 			category: 'Folder',
 			created_at: 0,
 			icon_class: 'fa-folder',
-			icon_special_class: '',
 			id: 'r1',
 			is_root: false,
 			modified_at: 0,

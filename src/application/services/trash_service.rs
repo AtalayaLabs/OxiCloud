@@ -129,22 +129,14 @@ impl TrashService {
         let days_until_deletion = item.days_until_deletion();
 
         // Determine display fields based on item type
-        let (category, icon_class, icon_special_class) = match item.item_type() {
-            TrashedItemType::Folder => (
-                "Folder".to_string(),
-                "fas fa-folder".to_string(),
-                "folder-icon".to_string(),
-            ),
+        let (category, icon_class) = match item.item_type() {
+            TrashedItemType::Folder => ("Folder".to_string(), "fas fa-folder".to_string()),
             TrashedItemType::File => {
                 // Use empty MIME type to leverage extension fallback; one
-                // fused pass lowers the extension once instead of three
-                // times (benches/ROUND11.md §21).
+                // fused pass lowers the extension once instead of twice
+                // (benches/ROUND11.md §21).
                 let classes = classify_display(item.name(), "");
-                (
-                    classes.category.to_string(),
-                    classes.icon_class.to_string(),
-                    classes.icon_special_class.to_string(),
-                )
+                (classes.category.to_string(), classes.icon_class.to_string())
             }
         };
 
@@ -164,7 +156,6 @@ impl TrashService {
             days_until_deletion,
             category,
             icon_class,
-            icon_special_class,
         }
     }
 }
@@ -981,7 +972,6 @@ fn row_to_item_dto(row: TrashResourceRow) -> TrashResourceItemDto {
             tree_modified_at: row.modified_at,
             is_root: false,
             icon_class: intern_display("fas fa-folder"),
-            icon_special_class: intern_display("folder-icon"),
             category: intern_display("Folder"),
             created_by: row.created_by,
             updated_by: row.updated_by,
@@ -1017,7 +1007,6 @@ fn row_to_item_dto(row: TrashResourceRow) -> TrashResourceItemDto {
             created_at: row.resource_created_at,
             modified_at: row.modified_at,
             icon_class: intern_display(classes.icon_class),
-            icon_special_class: intern_display(classes.icon_special_class),
             category: intern_display(classes.category),
             size_formatted: format_file_size(size_bytes),
             content_hash,
