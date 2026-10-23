@@ -33,8 +33,44 @@ import {
 	type IncomingFrame,
 	type RtWriteDeniedParams
 } from './frames';
-import type RtEventParams from '$lib/api/generated/asyncapi/RtEventParams';
+// Public types + the `MessageBusClient` interface live in a separate
+// module so the Gate 2 SharedWorker bridge can implement them without
+// pulling the per-tab runtime behaviour. See
+// `docs/plan/message-bus-via-shared-worker.md § One core, two harnesses`.
+import type {
+	ConnectionState,
+	EventHandler,
+	MessageBusClient,
+	MessageBusError,
+	ReconnectHandler,
+	RevokedHandler,
+	RtCollabCapabilities,
+	RtSubscribeAck,
+	SubscribeAckHandler,
+	UnsubscribeHandle
+} from './client-interface';
+// Still referenced internally by `#failSubscribe` for the synthetic
+// `subscribe_denied` revoked frame — pull it in here so the type is
+// available after the type-exports moved to `client-interface.ts`.
 import type RtRevokedParams from '$lib/api/generated/asyncapi/RtRevokedParams';
+
+// Re-export the public surface so existing consumers that import these
+// names from `./client.svelte` keep working. The seven call sites across
+// composables / components / collab use `import { messageBus }` + a few
+// use `import type { UnsubscribeHandle }` — both forms stay valid after
+// the extraction.
+export type {
+	ConnectionState,
+	EventHandler,
+	MessageBusClient,
+	MessageBusError,
+	ReconnectHandler,
+	RevokedHandler,
+	RtCollabCapabilities,
+	RtSubscribeAck,
+	SubscribeAckHandler,
+	UnsubscribeHandle
+};
 
 /** Response body from `POST /api/rt/ticket`. Matches the Rust
  *  `RtTicketResponse` shape — see `handlers/rt_ticket_handler.rs`. */
@@ -53,75 +89,6 @@ interface RtTicketResponse {
 /** Logger namespace — matches `frontend/AGENTS.md § Logging`. Users
  *  tune with `oxi.setLogLevel('oxi:message-bus', 'debug')`. */
 const busLog = log.getLogger('oxi:message-bus');
-
-/** Reactive connection state. `idle` before the first `subscribe`;
- *  `connecting` while the handshake is in flight; `connected` once
- *  the server has accepted the upgrade; `disconnected` after any
- *  close (reconnect fires from the client); `unavailable` after the
- *  reconnect circuit breaker trips — the client has stopped
- *  auto-retrying, and the UI should invite the user to refresh. */
-export type ConnectionState = 'idle' | 'connecting' | 'connected' | 'disconnected' | 'unavailable';
-
-/** Callback invoked for every `rt.event` notification on a topic. */
-export type EventHandler = (params: RtEventParams) => void;
-
-/** Shape of the `result` object in a successful `rt.subscribe` reply.
- *  `subscribed` echoes the topic wire form; `capabilities` is present
- *  today only on `collab:{fileId}` topics and carries the caller's
- *  per-file editing capabilities (see `RtCollabCapabilities`). Absent
- *  on every other topic. */
-export interface RtSubscribeAck {
-	subscribed: string;
-	capabilities?: RtCollabCapabilities;
-}
-
-/** Per-file editing capabilities the server surfaces on a
- *  `collab:{fileId}` subscribe ack. `can_write` reflects the caller's
- *  `Permission::Update` on the file at subscribe time — the FE gates
- *  CodeMirror between edit and read-only modes on this flag. */
-export interface RtCollabCapabilities {
-	can_write: boolean;
-}
-
-/** Called with the `rt.subscribe` reply's `result` when the server
- *  acks the topic. Fired once per full subscribe cycle — the initial
- *  ack AND every replay after reconnect. Consumers that only care
- *  about the initial ack should self-latch after the first fire. */
-export type SubscribeAckHandler = (result: RtSubscribeAck) => void;
-
-/** Callback invoked when the server sends `rt.revoked` for a topic —
- *  the subscription is already gone server-side by the time the frame
- *  arrives; the client removes it from the local refcount map and
- *  fires this so the consumer can toast / redirect / whatever. */
-export type RevokedHandler = (params: RtRevokedParams) => void;
-
-/** Callback invoked when the WS reconnects AFTER a prior disconnect —
- *  never on the first connect. Fires after client-side sub replay has
- *  been kicked off (`#sendSubscribe` for every known topic), so the
- *  handler can safely call `reload()`-style refetches knowing the
- *  post-reconnect event stream is armed. Bridges the "events published
- *  during the disconnect window are lost" gap — see
- *  `project_message_bus_reconnect_gap` memory. */
-export type ReconnectHandler = () => void;
-
-/** Handle returned by `subscribe`. Call to release one refcount on the
- *  topic; the client unsubscribes over the wire only when the last
- *  refcount drops. Idempotent — calling twice from the same subscriber
- *  is safe (second call is a no-op). */
-export type UnsubscribeHandle = () => void;
-
-/**
- * Shape returned by a rejected JSON-RPC call. Structurally a superset
- * of `RtErrorObject` — every server-side error slots in, and this
- * type also lets the client raise synthetic errors (`ws_closed`,
- * `send_failed`, `not_connected`) whose `message` is a plain string
- * outside the wire's `RtErrorMessage` enum.
- */
-export interface MessageBusError {
-	code: number;
-	message: string;
-	data?: unknown;
-}
 
 /** Reconnect backoff — 250 ms doubling with full jitter, capped at 30 s.
  *  Same shape as the HTTP retry we use in the fetch interceptor. */
@@ -188,7 +155,17 @@ interface PendingCall {
 	reject: (error: MessageBusError) => void;
 }
 
-export class MessageBusClient {
+/**
+ * Per-tab implementation of the message-bus client.
+ *
+ * Owns one `/api/rt/ws` connection scoped to this tab's lifetime.
+ * Will be joined by a `SharedWorkerBridge` in Gate 2 that implements
+ * the same `MessageBusClient` interface over a port to a shared
+ * worker holding ONE WS for the whole browser. Both carry the same
+ * public API — the two names are the two harnesses in "one core,
+ * two harnesses" from `docs/plan/message-bus-via-shared-worker.md`.
+ */
+export class PerTabMessageBusClient implements MessageBusClient {
 	/** Reactive connection state — exposed for a debug indicator or
 	 *  Playwright test. Not consumed by the composables directly. */
 	state = $state<ConnectionState>('idle');
@@ -1276,4 +1253,15 @@ export class MessageBusClient {
  * until the first `subscribe`. Exported for `useTopic` to consume;
  * app code should reach for the composables instead.
  */
-export const messageBus = new MessageBusClient();
+/**
+ * The one message-bus consumers reach for.
+ *
+ * Typed against the `MessageBusClient` interface — Gate 2 may swap the
+ * concrete implementation to the SharedWorker bridge at module load,
+ * but every consumer only knows the interface.
+ *
+ * Export also kept under the legacy name `MessageBusClient` (type-only)
+ * so the single Vitest file that imports the class value
+ * (`anonymous.test.ts`) switches to `PerTabMessageBusClient`.
+ */
+export const messageBus: MessageBusClient = new PerTabMessageBusClient();
