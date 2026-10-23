@@ -4,7 +4,7 @@ use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 use super::cursor::{CursorListResponse, CursorQuery, PageCursor};
-use super::display_helpers::{classify_display, format_file_size};
+use super::display_helpers::category_for;
 use super::favorites_dto::ItemKind;
 use super::grant_dto::{ResourceContentDto, ResourceTypeDto};
 use crate::domain::services::authorization::ResourceKind;
@@ -52,40 +52,25 @@ pub struct RecentItemDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub item_path: Option<String>,
 
-    // ── Pre-computed display fields ──
-    /// FontAwesome icon CSS class (e.g. "fas fa-file-image", "fas fa-folder")
-    pub icon_class: String,
-
-    /// Extra CSS class for icon styling (e.g. "image-icon", "folder-icon")
-    pub icon_special_class: String,
-
-    /// Human-readable category (e.g. "Image", "Folder")
+    // ── Pre-computed display field ──
+    /// Content category — a stable machine key, not display text (e.g.
+    /// "Image", "Folder"). See `FileDto::category`.
     pub category: String,
-
-    /// Formatted file size (e.g. "3.27 MB"); "--" for folders
-    pub size_formatted: String,
 }
 
 impl RecentItemDto {
-    /// Populate display fields from the enriched metadata.
+    /// Populate the display field from the enriched metadata.
     /// Call this after constructing from the SQL row.
     pub fn with_display_fields(mut self) -> Self {
         if matches!(self.item_type, ItemKind::Folder) {
-            self.icon_class = "fas fa-folder".to_string();
-            self.icon_special_class = "folder-icon".to_string();
             self.category = "Folder".to_string();
-            self.size_formatted = "--".to_string();
         } else {
             let name = self.item_name.as_deref().unwrap_or("");
             let mime = self
                 .item_mime_type
                 .as_deref()
                 .unwrap_or("application/octet-stream");
-            let classes = classify_display(name, mime);
-            self.icon_class = classes.icon_class.to_string();
-            self.icon_special_class = classes.icon_special_class.to_string();
-            self.category = classes.category.to_string();
-            self.size_formatted = format_file_size(self.item_size.unwrap_or(0) as u64);
+            self.category = category_for(name, mime).to_string();
         }
         self
     }

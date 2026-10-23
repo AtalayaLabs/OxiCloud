@@ -1,79 +1,52 @@
-//! Shared display helpers for DTOs.
-//!
-//! These functions centralise the mime→icon / mime→category / size→human-string
-//! logic so that every API response carries pre-computed display fields and the
-//! frontend does **not** need to duplicate these mappings.
+//! Shared display helpers for DTOs — the mime→category mapping and the
+//! `Arc<str>` interning that keeps it cheap per row.
 //!
 //! The approach is: try MIME first (specific matches beat prefix matches),
 //! then fall back to the file extension when the MIME is generic
-//! (`application/octet-stream` or empty).
+//! (`application/octet-stream` or empty). The extension half is transitional:
+//! once content sniffing has normalised stored MIME
+//! (`docs/plan/blob-resniff.md`) the classifier becomes mime-only. See the
+//! `ResourceCategory` section of
+//! `docs/plan/retire-precomputed-display-fields.md`.
+//!
+//! **This module used to also own mime→icon and size→human-string**, on the
+//! stated principle that "every API response carries pre-computed display
+//! fields and the frontend does **not** need to duplicate these mappings".
+//! That principle was reversed deliberately, not drifted away from:
+//! `icon_special_class` named a stylesheet that no longer existed,
+//! `icon_class` was a CSS class the SPA only ever parsed a glyph name back
+//! out of, and `size_formatted` had two disagreeing implementations here
+//! while the SPA rendered its own string anyway. All three are gone
+//! (`retire-precomputed-display-fields.md`, steps 2/4/5) and the icon
+//! mapping now lives in `frontend/src/lib/utils/display.ts`.
+//!
+//! `category` stays server-side on purpose: `category_order_for` turns it
+//! into `storage.files.category_order`, the indexed `type` sort key, so the
+//! FE's buckets and the server's `ORDER BY` must agree. Deriving it in the
+//! client would let them disagree.
 
 use std::collections::HashMap;
-use std::fmt::Write as _;
 use std::sync::{Arc, LazyLock};
 
 use crate::application::dtos::search_dto::SearchTypeFilter;
 
 // ─── Arc<str> interning for closed-set display values ────────────────
 //
-// `FileDto` / `FolderDto` store their display fields as `Arc<str>` so DTO
-// clones are O(1). But `Arc::<str>::from(&str)` always allocates + copies,
-// so building the DTO paid 3-4 heap allocations per row even though the
-// value space is a small closed set. Interning turns each conversion into
-// a HashMap lookup + refcount bump.
+// `FileDto` / `FolderDto` store `category` and `mime_type` as `Arc<str>` so
+// DTO clones are O(1). But `Arc::<str>::from(&str)` always allocates +
+// copies, so building the DTO paid a heap allocation per field per row even
+// though the value space is a small closed set. Interning turns each
+// conversion into a HashMap lookup + refcount bump. (It paid 3-4 before the
+// icon and size fields left the wire.)
 
-/// Every `&'static str` that [`icon_class_for`], [`icon_special_class_for`]
-/// and [`category_for`] can return, plus the folder-DTO constants.
+/// Every `&'static str` that [`category_for`] can return, plus the
+/// folder-DTO constant.
 ///
 /// Keep this table in sync when adding a value to those functions — a
 /// missing entry is not a bug (callers fall back to `Arc::from`, same
 /// bytes, one extra allocation), just a lost optimization.
 static DISPLAY_INTERN: LazyLock<HashMap<&'static str, Arc<str>>> = LazyLock::new(|| {
     const CLOSED_SET: &[&str] = &[
-        // icon_class_for
-        "fas fa-file-pdf",
-        "fas fa-file-word",
-        "fas fa-file-excel",
-        "fas fa-file-powerpoint",
-        "fas fa-file-archive",
-        "fas fa-file-code",
-        "fas fa-hdd",
-        "fas fa-file-image",
-        "fas fa-file-video",
-        "fas fa-file-audio",
-        "fas fa-file-alt",
-        "fas fa-terminal",
-        "fas fa-file",
-        // icon_special_class_for
-        "pdf-icon",
-        "doc-icon",
-        "spreadsheet-icon",
-        "presentation-icon",
-        "archive-icon",
-        "code-icon json-icon",
-        "code-icon js-icon",
-        "code-icon ts-icon",
-        "code-icon html-icon",
-        "code-icon sql-icon",
-        "code-icon config-icon",
-        "code-icon php-icon",
-        "script-icon",
-        "installer-icon",
-        "image-icon",
-        "video-icon",
-        "audio-icon",
-        "code-icon py-icon",
-        "code-icon rust-icon",
-        "code-icon",
-        "code-icon go-icon",
-        "code-icon ruby-icon",
-        "code-icon md-icon",
-        "code-icon css-icon",
-        "code-icon java-icon",
-        "code-icon c-icon",
-        "code-icon cs-icon",
-        "code-icon swift-icon",
-        "",
         // category_for
         "PDF",
         "Document",
@@ -87,18 +60,16 @@ static DISPLAY_INTERN: LazyLock<HashMap<&'static str, Arc<str>>> = LazyLock::new
         "Audio",
         "Markdown",
         "Text",
-        // FolderDto constants
-        "fas fa-folder",
-        "folder-icon",
+        // FolderDto constant
         "Folder",
     ];
     CLOSED_SET.iter().map(|s| (*s, Arc::from(*s))).collect()
 });
 
-/// Returns a shared `Arc<str>` for a display value from the closed sets
-/// above (icon class, icon special class, category). Lookup + refcount
-/// bump instead of alloc + copy; unknown values (future additions not
-/// yet in the table) fall back to `Arc::from` with identical bytes.
+/// Returns a shared `Arc<str>` for a closed-set display value (category, or
+/// the folder constant). Lookup + refcount bump instead of alloc + copy;
+/// unknown values (future additions not yet in the table) fall back to
+/// `Arc::from` with identical bytes.
 pub fn intern_display(s: &'static str) -> Arc<str> {
     DISPLAY_INTERN
         .get(s)
@@ -211,285 +182,14 @@ fn lower_ext_into<'b>(ext: &str, buf: &'b mut [u8; MAX_CLASSIFIED_EXT]) -> Optio
     std::str::from_utf8(&buf[..bytes.len()]).ok()
 }
 
-/// The three display classifications for one `(name, mime)` pair.
-pub struct DisplayClass {
-    pub icon_class: &'static str,
-    pub icon_special_class: &'static str,
-    pub category: &'static str,
-}
-
-/// Run all three classifiers over one `(name, mime)` pair, lowering the
-/// extension **once into a stack buffer** instead of each classifier
-/// allocating its own `to_ascii_lowercase()` String on the fallback path
-/// (generic/empty MIME rows — common for code and unknown types). Each
-/// decision tree is byte-for-byte the classifier it replaces
-/// (benches/ROUND11.md §21 gates the equivalence over a corpus).
-pub fn classify_display(name: &str, mime: &str) -> DisplayClass {
-    let mut buf = [0u8; MAX_CLASSIFIED_EXT];
-    let ext = ext_of(name).and_then(|e| lower_ext_into(e, &mut buf));
-    DisplayClass {
-        icon_class: icon_class_with_ext(mime, ext),
-        icon_special_class: icon_special_class_with_ext(mime, ext),
-        category: category_with_ext(mime, ext),
-    }
-}
-
-// ─── Icon class (FontAwesome) ────────────────────────────────────────
-
-/// Returns the FontAwesome icon class for a file, considering both MIME
-/// and filename extension as fallback.
-///
-/// Use this instead of the old `mime_to_icon_class` whenever the filename
-/// is available.
-pub fn icon_class_for(name: &str, mime: &str) -> &'static str {
-    let mut buf = [0u8; MAX_CLASSIFIED_EXT];
-    let ext = ext_of(name).and_then(|e| lower_ext_into(e, &mut buf));
-    icon_class_with_ext(mime, ext)
-}
-
-fn icon_class_with_ext(mime: &str, ext: Option<&str>) -> &'static str {
-    // 1. Try specific MIME matches first
-    match mime {
-        "application/pdf" => return "fas fa-file-pdf",
-        // MS Office & OpenDocument – Word
-        "application/msword"
-        | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        | "application/vnd.oasis.opendocument.text" => return "fas fa-file-word",
-        // Excel
-        "application/vnd.ms-excel"
-        | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        | "application/vnd.oasis.opendocument.spreadsheet"
-        | "text/csv" => return "fas fa-file-excel",
-        // PowerPoint
-        "application/vnd.ms-powerpoint"
-        | "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-        | "application/vnd.oasis.opendocument.presentation" => return "fas fa-file-powerpoint",
-        // Archives
-        "application/zip"
-        | "application/x-rar-compressed"
-        | "application/vnd.rar"
-        | "application/x-7z-compressed"
-        | "application/gzip"
-        | "application/x-gzip"
-        | "application/x-tar"
-        | "application/x-bzip2"
-        | "application/x-xz"
-        | "application/x-compress" => return "fas fa-file-archive",
-        // JSON / JavaScript / code transported as application/*
-        "application/json"
-        | "application/ld+json"
-        | "application/javascript"
-        | "application/typescript"
-        | "application/x-httpd-php"
-        | "application/xml"
-        | "application/xhtml+xml"
-        | "application/sql"
-        | "application/x-yaml"
-        | "application/toml"
-        | "application/x-sh"
-        | "application/x-shellscript"
-        | "application/x-csh" => return "fas fa-file-code",
-        // Installers / disk images
-        "application/x-apple-diskimage"
-        | "application/x-ms-dos-executable"
-        | "application/x-msdownload"
-        | "application/x-msi"
-        | "application/vnd.debian.binary-package"
-        | "application/x-rpm"
-        | "application/vnd.appimage" => return "fas fa-hdd",
-        _ => {}
-    }
-
-    // 2. MIME prefix matches
-    if mime.starts_with("image/") {
-        return "fas fa-file-image";
-    } else if mime.starts_with("video/") {
-        return "fas fa-file-video";
-    } else if mime.starts_with("audio/") {
-        return "fas fa-file-audio";
-    } else if mime.starts_with("text/x-script")
-        || mime.starts_with("text/x-python")
-        || mime.starts_with("text/x-java")
-        || mime.starts_with("text/x-c")
-        || mime.starts_with("text/x-rust")
-        || mime.starts_with("text/x-go")
-        || mime.starts_with("text/x-ruby")
-        || mime.starts_with("text/x-shellscript")
-        || mime.starts_with("text/x-php")
-        || mime.contains("javascript")
-        || mime.contains("typescript")
-    {
-        return "fas fa-file-code";
-    } else if mime.starts_with("text/") {
-        return "fas fa-file-alt";
-    }
-
-    // 3. Extension-based fallback (for application/octet-stream, empty, etc.)
-    if let Some(ext) = ext {
-        return match ext {
-            "pdf" => "fas fa-file-pdf",
-            "doc" | "docx" | "odt" | "rtf" => "fas fa-file-word",
-            "xls" | "xlsx" | "ods" | "csv" => "fas fa-file-excel",
-            "ppt" | "pptx" | "odp" | "key" => "fas fa-file-powerpoint",
-            "jpg" | "jpeg" | "png" | "gif" | "bmp" | "svg" | "webp" | "ico" | "tiff" | "tif"
-            | "heic" | "heif" | "avif" => "fas fa-file-image",
-            "mp4" | "avi" | "mkv" | "mov" | "wmv" | "flv" | "webm" | "m4v" => "fas fa-file-video",
-            "mp3" | "wav" | "ogg" | "flac" | "aac" | "wma" | "m4a" | "opus" => "fas fa-file-audio",
-            "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" | "zst" | "lz4" => {
-                "fas fa-file-archive"
-            }
-            "exe" | "msi" | "dmg" | "deb" | "rpm" | "appimage" | "pkg" | "snap" | "flatpak" => {
-                "fas fa-hdd"
-            }
-            "js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx" | "py" | "pyw" | "rs" | "go" | "java"
-            | "kt" | "kts" | "scala" | "c" | "h" | "cpp" | "hpp" | "cc" | "cxx" | "cs" | "rb"
-            | "php" | "swift" | "r" | "lua" | "pl" | "pm" | "html" | "htm" | "css" | "scss"
-            | "sass" | "less" | "json" | "xml" | "yaml" | "yml" | "toml" | "ini" | "cfg"
-            | "conf" | "sql" | "graphql" | "proto" | "vue" | "svelte" => "fas fa-file-code",
-            "sh" | "bash" | "zsh" | "fish" | "ps1" | "bat" | "cmd" => "fas fa-terminal",
-            "md" | "markdown" | "rst" | "txt" => "fas fa-file-alt",
-            _ => "fas fa-file",
-        };
-    }
-
-    "fas fa-file"
-}
-
-// ─── Icon special class (CSS styling) ────────────────────────────────
-
-/// Returns the CSS class for styling the icon container, considering both
-/// MIME and filename extension.
-///
-/// The returned class maps to CSS rules in `style.css` that set colours,
-/// backgrounds and decorative pseudo-elements per file type.
-pub fn icon_special_class_for(name: &str, mime: &str) -> &'static str {
-    let mut buf = [0u8; MAX_CLASSIFIED_EXT];
-    let ext = ext_of(name).and_then(|e| lower_ext_into(e, &mut buf));
-    icon_special_class_with_ext(mime, ext)
-}
-
-fn icon_special_class_with_ext(mime: &str, ext: Option<&str>) -> &'static str {
-    // 1. Specific MIME matches
-    match mime {
-        "application/pdf" => return "pdf-icon",
-        "application/msword"
-        | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        | "application/vnd.oasis.opendocument.text" => return "doc-icon",
-        "application/vnd.ms-excel"
-        | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        | "application/vnd.oasis.opendocument.spreadsheet"
-        | "text/csv" => return "spreadsheet-icon",
-        "application/vnd.ms-powerpoint"
-        | "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-        | "application/vnd.oasis.opendocument.presentation" => return "presentation-icon",
-        "application/zip"
-        | "application/x-rar-compressed"
-        | "application/vnd.rar"
-        | "application/x-7z-compressed"
-        | "application/gzip"
-        | "application/x-gzip"
-        | "application/x-tar"
-        | "application/x-bzip2"
-        | "application/x-xz"
-        | "application/x-compress" => return "archive-icon",
-        "application/json" | "application/ld+json" => return "code-icon json-icon",
-        "application/javascript" => return "code-icon js-icon",
-        "application/typescript" => return "code-icon ts-icon",
-        "application/xml" | "application/xhtml+xml" => return "code-icon html-icon",
-        "application/sql" => return "code-icon sql-icon",
-        "application/x-yaml" | "application/toml" => return "code-icon config-icon",
-        "application/x-httpd-php" => return "code-icon php-icon",
-        "application/x-sh" | "application/x-shellscript" | "application/x-csh" => {
-            return "script-icon";
-        }
-        "application/x-apple-diskimage"
-        | "application/x-ms-dos-executable"
-        | "application/x-msdownload"
-        | "application/x-msi"
-        | "application/vnd.debian.binary-package"
-        | "application/x-rpm"
-        | "application/vnd.appimage" => return "installer-icon",
-        _ => {}
-    }
-
-    // 2. MIME prefix matches
-    if mime.starts_with("image/") {
-        return "image-icon";
-    } else if mime.starts_with("video/") {
-        return "video-icon";
-    } else if mime.starts_with("audio/") {
-        return "audio-icon";
-    } else if mime.starts_with("text/x-python") {
-        return "code-icon py-icon";
-    } else if mime.starts_with("text/x-rust") {
-        return "code-icon rust-icon";
-    } else if mime.starts_with("text/x-java") || mime.starts_with("text/x-c") {
-        return "code-icon";
-    } else if mime.starts_with("text/x-go") {
-        return "code-icon go-icon";
-    } else if mime.starts_with("text/x-ruby") {
-        return "code-icon ruby-icon";
-    } else if mime.starts_with("text/x-shellscript") {
-        return "script-icon";
-    } else if mime.starts_with("text/x-script") || mime.starts_with("text/x-php") {
-        return "code-icon";
-    } else if mime.starts_with("text/markdown") {
-        return "code-icon md-icon";
-    } else if mime.starts_with("text/html") {
-        return "code-icon html-icon";
-    } else if mime.starts_with("text/css") {
-        return "code-icon css-icon";
-    } else if mime.contains("javascript") {
-        return "code-icon js-icon";
-    } else if mime.contains("typescript") {
-        return "code-icon ts-icon";
-    } else if mime.starts_with("text/") {
-        return "doc-icon";
-    }
-
-    // 3. Extension-based fallback
-    if let Some(ext) = ext {
-        return match ext {
-            "pdf" => "pdf-icon",
-            "doc" | "docx" | "odt" | "rtf" => "doc-icon",
-            "xls" | "xlsx" | "ods" | "csv" => "spreadsheet-icon",
-            "ppt" | "pptx" | "odp" | "key" => "presentation-icon",
-            "jpg" | "jpeg" | "png" | "gif" | "bmp" | "svg" | "webp" | "ico" | "tiff" | "tif"
-            | "heic" | "heif" | "avif" => "image-icon",
-            "mp4" | "avi" | "mkv" | "mov" | "wmv" | "flv" | "webm" | "m4v" => "video-icon",
-            "mp3" | "wav" | "ogg" | "flac" | "aac" | "wma" | "m4a" | "opus" => "audio-icon",
-            "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" | "zst" | "lz4" => "archive-icon",
-            "exe" | "msi" | "dmg" | "deb" | "rpm" | "appimage" | "pkg" | "snap" | "flatpak" => {
-                "installer-icon"
-            }
-            "py" | "pyw" => "code-icon py-icon",
-            "rs" => "code-icon rust-icon",
-            "go" => "code-icon go-icon",
-            "java" | "kt" | "kts" | "scala" => "code-icon java-icon",
-            "js" | "jsx" | "mjs" | "cjs" => "code-icon js-icon",
-            "ts" | "tsx" => "code-icon ts-icon",
-            "c" | "h" | "cpp" | "hpp" | "cc" | "cxx" => "code-icon c-icon",
-            "cs" => "code-icon cs-icon",
-            "rb" => "code-icon ruby-icon",
-            "php" => "code-icon php-icon",
-            "swift" => "code-icon swift-icon",
-            "r" | "lua" | "pl" | "pm" => "code-icon",
-            "html" | "htm" => "code-icon html-icon",
-            "css" | "scss" | "sass" | "less" => "code-icon css-icon",
-            "json" => "code-icon json-icon",
-            "xml" => "code-icon html-icon",
-            "yaml" | "yml" | "toml" | "ini" | "cfg" | "conf" => "code-icon config-icon",
-            "sql" | "graphql" | "proto" => "code-icon sql-icon",
-            "vue" | "svelte" => "code-icon js-icon",
-            "sh" | "bash" | "zsh" | "fish" | "ps1" | "bat" | "cmd" => "script-icon",
-            "md" | "markdown" | "rst" => "code-icon md-icon",
-            "txt" => "doc-icon",
-            _ => "",
-        };
-    }
-
-    ""
-}
+// `DisplayClass` / `classify_display` lived here: a fused pass that lowered
+// the extension once into a stack buffer and ran all three display
+// classifiers off it, instead of each allocating its own
+// `to_ascii_lowercase()` on the generic-MIME fallback path (ROUND11 §21,
+// 2.12x). Steps 2 and 4 of `retire-precomputed-display-fields.md` retired
+// `icon_special_class` and `icon_class` from the wire, leaving `category_for`
+// as the only classifier — there is nothing left to fuse, so the struct and
+// the wrapper are gone and callers use `category_for` directly.
 
 // ─── Category label ──────────────────────────────────────────────────
 
@@ -653,131 +353,15 @@ pub fn category_orders_for_filter(filter: SearchTypeFilter) -> &'static [i16] {
     }
 }
 
-/// Formats a byte count into a human-readable string (1024-based).
-///
-/// Matches the JavaScript `formatFileSize()` output exactly so the frontend
-/// does not need its own per-file formatting.
-///
-/// Examples: `"0 Bytes"`, `"1.5 KB"`, `"3.27 MB"`.
-pub fn format_file_size(bytes: u64) -> String {
-    if bytes == 0 {
-        return "0 Bytes".to_string();
-    }
-
-    const K: f64 = 1024.0;
-    const SIZES: [&str; 5] = ["Bytes", "KB", "MB", "GB", "TB"];
-
-    let i = ((bytes as f64).ln() / K.ln()).floor() as usize;
-    let i = i.min(SIZES.len() - 1);
-
-    let value = bytes as f64 / K.powi(i as i32);
-
-    // Single buffer: write the 2-decimal value, strip trailing zeros in
-    // place (matches JS parseFloat behaviour), then append the unit.
-    // 16 chars covers the worst case ("16777216 TB" for u64::MAX,
-    // "1023.99 Bytes" for the longest unit), so no realloc occurs.
-    let mut out = String::with_capacity(16);
-    let _ = write!(out, "{:.2}", value);
-    while out.ends_with('0') {
-        out.pop();
-    }
-    if out.ends_with('.') {
-        out.pop();
-    }
-    out.push(' ');
-    out.push_str(SIZES[i]);
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_format_file_size() {
-        assert_eq!(format_file_size(0), "0 Bytes");
-        assert_eq!(format_file_size(500), "500 Bytes");
-        assert_eq!(format_file_size(1024), "1 KB");
-        assert_eq!(format_file_size(1536), "1.5 KB");
-        assert_eq!(format_file_size(1_048_576), "1 MB");
-        assert_eq!(format_file_size(3_423_744), "3.27 MB");
-        assert_eq!(format_file_size(1_073_741_824), "1 GB");
-    }
-
-    #[test]
-    fn test_icon_class_for_with_extension_fallback() {
-        // Specific MIME types
-        assert_eq!(
-            icon_class_for("doc.pdf", "application/pdf"),
-            "fas fa-file-pdf"
-        );
-        assert_eq!(
-            icon_class_for(
-                "file.docx",
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            ),
-            "fas fa-file-word"
-        );
-
-        // Extension fallback when MIME is generic
-        assert_eq!(
-            icon_class_for("script.py", "application/octet-stream"),
-            "fas fa-file-code"
-        );
-        assert_eq!(
-            icon_class_for("app.dmg", "application/octet-stream"),
-            "fas fa-hdd"
-        );
-        assert_eq!(
-            icon_class_for("archive.zip", "application/octet-stream"),
-            "fas fa-file-archive"
-        );
-        assert_eq!(
-            icon_class_for("data.xlsx", "application/octet-stream"),
-            "fas fa-file-excel"
-        );
-        assert_eq!(
-            icon_class_for("run.sh", "application/octet-stream"),
-            "fas fa-terminal"
-        );
-    }
-
-    #[test]
-    fn test_icon_special_class_for() {
-        // MIME-based
-        assert_eq!(icon_special_class_for("", "image/png"), "image-icon");
-        assert_eq!(icon_special_class_for("", "application/pdf"), "pdf-icon");
-        assert_eq!(
-            icon_special_class_for("", "application/json"),
-            "code-icon json-icon"
-        );
-
-        // Extension-based fallback
-        assert_eq!(
-            icon_special_class_for("main.py", "application/octet-stream"),
-            "code-icon py-icon"
-        );
-        assert_eq!(
-            icon_special_class_for("lib.rs", "application/octet-stream"),
-            "code-icon rust-icon"
-        );
-        assert_eq!(
-            icon_special_class_for("style.css", "application/octet-stream"),
-            "code-icon css-icon"
-        );
-        assert_eq!(
-            icon_special_class_for("data.xlsx", "application/octet-stream"),
-            "spreadsheet-icon"
-        );
-        assert_eq!(
-            icon_special_class_for("backup.tar", "application/octet-stream"),
-            "archive-icon"
-        );
-        assert_eq!(
-            icon_special_class_for("setup.dmg", "application/octet-stream"),
-            "installer-icon"
-        );
-    }
+    // `test_icon_class_for_with_extension_fallback` lived here. The
+    // equivalent coverage now sits in `frontend/src/lib/utils/display.test.ts`
+    // against `iconNameFor`, which is where the classifier moved — same
+    // corpus (specific MIME, generic MIME + extension, shell scripts), same
+    // resolution order, asserting registry names instead of CSS classes.
 
     #[test]
     fn test_category_for() {
@@ -806,17 +390,13 @@ mod tests {
     #[test]
     fn test_intern_display_covers_closed_sets_and_shares_storage() {
         for s in [
-            "fas fa-file-pdf",
-            "fas fa-file",
-            "fas fa-terminal",
-            "fas fa-folder",
-            "code-icon rust-icon",
-            "folder-icon",
-            "",
-            "PDF",
-            "Folder",
-            "Document",
-            "Markdown",
+            // The `fas fa-*` glyph classes and the `*-icon` CSS classes were
+            // both here until steps 2 and 4 of
+            // `retire-precomputed-display-fields.md` took `icon_special_class`
+            // and `icon_class` off the wire. `category_for` is the only
+            // closed-set classifier left, so the table is its values plus the
+            // folder constant.
+            "PDF", "Folder", "Document", "Markdown",
         ] {
             let a = intern_display(s);
             let b = intern_display(s);

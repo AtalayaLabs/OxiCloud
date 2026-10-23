@@ -1547,21 +1547,14 @@ export type FaceBoxDto = {
  */
 export type FavoriteItemDto = {
     /**
-     * Human-readable category (e.g. "Image", "Folder")
+     * Content category — a stable machine key, not display text (e.g.
+     * "Image", "Folder"). See `FileDto::category`.
      */
     category: string;
     /**
      * When the item was added to favorites
      */
     created_at: string;
-    /**
-     * FontAwesome icon CSS class (e.g. "fas fa-file-image", "fas fa-folder")
-     */
-    icon_class: string;
-    /**
-     * Extra CSS class for icon styling (e.g. "image-icon", "folder-icon")
-     */
-    icon_special_class: string;
     /**
      * Unique identifier for the favorite entry
      */
@@ -1602,10 +1595,6 @@ export type FavoriteItemDto = {
      * Parent folder ID (folder_id for files, parent_id for folders)
      */
     parent_id?: string | null;
-    /**
-     * Formatted file size (e.g. "3.27 MB"); "--" for folders
-     */
-    size_formatted: string;
     /**
      * User ID who owns this favorite
      */
@@ -1720,7 +1709,22 @@ export type FederationKindDto = 'magic_link' | 'ocm' | 'oidc';
  */
 export type FileDto = {
     /**
-     * Human-readable file category (e.g. "Image", "Document")
+     * Coarse content category — a **stable machine key**, not display text.
+     *
+     * Values are the English identifiers `category_for` returns ("Image",
+     * "Document", "Spreadsheet", …). Clients must treat them as opaque keys:
+     * the SPA's only legitimate consumer path is
+     * `utils/resourceBuckets.ts::typeLabel`, which maps them to localised
+     * labels, plus the group-by buckets keyed off the same values. Rendering
+     * this field directly is the i18n bug step 1 of
+     * `docs/plan/retire-precomputed-display-fields.md` fixed — it showed
+     * untranslated English in the Type column for every non-English locale.
+     *
+     * This is the one display field that stays server-side, and the reason is
+     * not symmetry with the others: `category_order_for` turns it into
+     * `storage.files.category_order`, the indexed `type` sort key. Deriving
+     * it client-side would let the FE's buckets disagree with the server's
+     * `ORDER BY`. See `docs/architecture/resource-listing.md`.
      */
     category: string;
     /**
@@ -1753,14 +1757,6 @@ export type FileDto = {
      * Parent folder ID
      */
     folder_id?: string | null;
-    /**
-     * FontAwesome icon CSS class (e.g. "fas fa-file-image")
-     */
-    icon_class: string;
-    /**
-     * Extra CSS class for icon styling (e.g. "image-icon", "" when default)
-     */
-    icon_special_class: string;
     /**
      * File ID
      */
@@ -1807,10 +1803,6 @@ export type FileDto = {
      * Size in bytes
      */
     size: number;
-    /**
-     * Human-readable formatted size (e.g. "3.27 MB")
-     */
-    size_formatted: string;
     /**
      * §14 provenance: user that performed the most recent mutation
      * that bumped `updated_at`. Authorship signal — distinct from
@@ -1899,7 +1891,8 @@ export type FolderAncestorsDto = {
  */
 export type FolderDto = {
     /**
-     * Human-readable category (always "Folder")
+     * Content category — a stable machine key, not display text; always
+     * "Folder". See `FileDto::category` for the contract.
      */
     category: string;
     /**
@@ -1928,14 +1921,6 @@ export type FolderDto = {
      */
     etag: string;
     /**
-     * FontAwesome icon CSS class (always "fas fa-folder")
-     */
-    icon_class: string;
-    /**
-     * Extra CSS class for icon styling (always "folder-icon")
-     */
-    icon_special_class: string;
-    /**
      * Folder ID
      */
     id: string;
@@ -1947,10 +1932,6 @@ export type FolderDto = {
      * endpoints via the `caller_flags` helper).
      */
     is_favorite: boolean;
-    /**
-     * Whether this is a root folder
-     */
-    is_root: boolean;
     /**
      * Resource-scoped: `true` when the folder has ANY explicit
      * role-grant on it. Same wire contract as `is_favorite`.
@@ -3371,17 +3352,10 @@ export type RecentItemDto = {
      */
     accessed_at: string;
     /**
-     * Human-readable category (e.g. "Image", "Folder")
+     * Content category — a stable machine key, not display text (e.g.
+     * "Image", "Folder"). See `FileDto::category`.
      */
     category: string;
-    /**
-     * FontAwesome icon CSS class (e.g. "fas fa-file-image", "fas fa-folder")
-     */
-    icon_class: string;
-    /**
-     * Extra CSS class for icon styling (e.g. "image-icon", "folder-icon")
-     */
-    icon_special_class: string;
     /**
      * Unique identifier for the recent item
      */
@@ -3417,10 +3391,6 @@ export type RecentItemDto = {
      * Parent folder ID (folder_id for files, parent_id for folders)
      */
     parent_id?: string | null;
-    /**
-     * Formatted file size (e.g. "3.27 MB"); "--" for folders
-     */
-    size_formatted: string;
     /**
      * Owner user ID
      */
@@ -3675,7 +3645,11 @@ export type SearchFileResultDto = {
      */
     blob_hash?: string;
     /**
-     * Content category: "document", "image", "video", "audio", "archive", "code", "other"
+     * Coarse content category — a stable machine key, not display text.
+     * Carried through from `FileDto::category`; see that field for the full
+     * contract. (This comment used to claim lowercase values — "document",
+     * "image", … — which it never carried: `enrich_file` copies the
+     * capitalised `category_for` output verbatim.)
      */
     category: string;
     /**
@@ -3698,14 +3672,6 @@ export type SearchFileResultDto = {
      * Parent folder ID
      */
     folder_id?: string | null;
-    /**
-     * CSS icon class for the file type (e.g., "fas fa-file-pdf")
-     */
-    icon_class: string;
-    /**
-     * Extra CSS class for icon styling (e.g., "pdf-icon", "code-icon js-icon")
-     */
-    icon_special_class: string;
     /**
      * File ID
      */
@@ -3752,10 +3718,6 @@ export type SearchFileResultDto = {
      * Size in bytes
      */
     size: number;
-    /**
-     * Human-readable file size (e.g., "2.5 MB")
-     */
-    size_formatted: string;
     /**
      * Plain-text fragment around the first content match, present only for
      * hits discovered through the full-text content index.
@@ -3804,10 +3766,6 @@ export type SearchFolderResultDto = {
      * this folder. EXISTS on `auth.user_favorites`.
      */
     is_favorite?: boolean;
-    /**
-     * Whether it is a root folder
-     */
-    is_root: boolean;
     /**
      * Resource-scoped: `true` when the folder has any explicit
      * role-grant. EXISTS on `storage.role_grants`.
@@ -3977,14 +3935,6 @@ export type SearchResultsDto = {
  */
 export type SearchSuggestionItem = {
     /**
-     * CSS icon class
-     */
-    icon_class: string;
-    /**
-     * Extra CSS class for icon styling
-     */
-    icon_special_class: string;
-    /**
      * Item ID for navigation
      */
     id: string;
@@ -3992,6 +3942,15 @@ export type SearchSuggestionItem = {
      * Type: "file" or "folder"
      */
     item_type: string;
+    /**
+     * MIME type, so the client can pick its own glyph.
+     *
+     * Replaced `icon_class` (a CSS class string) in step 4 of
+     * `docs/plan/retire-precomputed-display-fields.md`. Folders carry
+     * `"directory"`, matching the convention elsewhere in the storage layer —
+     * clients branch on `item_type` for those and never consult this.
+     */
+    mime_type: string;
     /**
      * The suggested name
      */
@@ -4797,18 +4756,11 @@ export type TrashResourceItemDto = {
  */
 export type TrashedItemDto = {
     /**
-     * Human-readable category (e.g., "Image", "Folder", "Document")
+     * Content category — a stable machine key, not display text (e.g.
+     * "Image", "Folder", "Document"). See `FileDto::category`.
      */
     category: string;
     days_until_deletion: number;
-    /**
-     * FontAwesome icon class for the file type
-     */
-    icon_class: string;
-    /**
-     * Special CSS class for icon styling (e.g., "image-icon", "pdf-icon")
-     */
-    icon_special_class: string;
     id: string;
     item_type: string;
     name: string;

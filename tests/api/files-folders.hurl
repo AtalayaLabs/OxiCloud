@@ -187,9 +187,18 @@ jsonpath "$.updated_by" == "{{admin_user_id}}"
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 11 – test2 contains exactly hello.txt; verify mime and icon
-#            icon_class is only available in the full FileDto
-#            returned by the listing endpoint
+# Step 11 – test2 contains exactly hello.txt; verify mime + category
+#            This asserted `icon_class == "fas fa-file-alt"` until
+#            retire-precomputed-display-fields.md step 4 took that field
+#            off the wire — it was a CSS class the SPA only ever parsed a
+#            glyph name back out of, and the glyph is now derived
+#            client-side from `mime_type` + `name`
+#            (frontend/src/lib/utils/display.ts, pinned in
+#            display.test.ts). `category` is the display field that
+#            REMAINS server-side, because `category_order_for` turns it
+#            into the indexed `type` sort key — so it is the right thing
+#            to pin here: a wire-shape guard on the one classifier the
+#            server still owns.
 # ─────────────────────────────────────────────────────────────
 GET {{base_url}}/api/files?folder_id={{test2_id}}
 Authorization: Bearer {{token}}
@@ -200,7 +209,16 @@ jsonpath "$" count == 1
 jsonpath "$[0].id" == {{file_id}}
 jsonpath "$[0].name" == "hello.txt"
 jsonpath "$[0].mime_type" == "text/plain"
-jsonpath "$[0].icon_class" == "fas fa-file-alt"
+jsonpath "$[0].category" == "Text"
+# The retired fields must stay gone — a reintroduction would mean the
+# server resumed computing presentation the client already owns.
+# `not exists` rather than `not contains`: `contains` is a string/collection
+# predicate, and Hurl collapses a single-element jsonpath result to a scalar,
+# so `not contains` on an object reads as substring matching and passes for
+# the wrong reason.
+jsonpath "$[0].icon_class" not exists
+jsonpath "$[0].icon_special_class" not exists
+jsonpath "$[0].size_formatted" not exists
 
 
 # ─────────────────────────────────────────────────────────────
@@ -312,8 +330,9 @@ jsonpath "$.folder_id" == {{home_folder_id}}
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 19 – Home folder file listing: verify icon class for JPEG
-#            (icon_class is only present in the listing response)
+# Step 19 – Home folder file listing: verify the category for JPEG
+#            Was `icon_class == "fas fa-file-image"` — see step 11 for
+#            why that field is gone and why `category` is the right pin.
 # ─────────────────────────────────────────────────────────────
 GET {{base_url}}/api/files?folder_id={{home_folder_id}}
 Authorization: Bearer {{token}}
@@ -323,7 +342,7 @@ HTTP 200
 jsonpath "$" count == 1
 jsonpath "$[0].name" == "oxicloud-logo.jpg"
 jsonpath "$[0].mime_type" == "image/jpeg"
-jsonpath "$[0].icon_class" == "fas fa-file-image"
+jsonpath "$[0].category" == "Image"
 
 
 # ─────────────────────────────────────────────────────────────

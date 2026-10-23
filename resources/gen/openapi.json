@@ -13760,28 +13760,17 @@
           "item_id",
           "item_type",
           "created_at",
-          "icon_class",
-          "icon_special_class",
-          "category",
-          "size_formatted"
+          "category"
         ],
         "properties": {
           "category": {
             "type": "string",
-            "description": "Human-readable category (e.g. \"Image\", \"Folder\")"
+            "description": "Content category — a stable machine key, not display text (e.g.\n\"Image\", \"Folder\"). See `FileDto::category`."
           },
           "created_at": {
             "type": "string",
             "format": "date-time",
             "description": "When the item was added to favorites"
-          },
-          "icon_class": {
-            "type": "string",
-            "description": "FontAwesome icon CSS class (e.g. \"fas fa-file-image\", \"fas fa-folder\")"
-          },
-          "icon_special_class": {
-            "type": "string",
-            "description": "Extra CSS class for icon styling (e.g. \"image-icon\", \"folder-icon\")"
           },
           "id": {
             "type": "string",
@@ -13838,10 +13827,6 @@
               "null"
             ],
             "description": "Parent folder ID (folder_id for files, parent_id for folders)"
-          },
-          "size_formatted": {
-            "type": "string",
-            "description": "Formatted file size (e.g. \"3.27 MB\"); \"--\" for folders"
           },
           "user_id": {
             "type": "string",
@@ -13962,10 +13947,7 @@
           "mime_type",
           "created_at",
           "modified_at",
-          "icon_class",
-          "icon_special_class",
           "category",
-          "size_formatted",
           "content_hash",
           "etag",
           "is_favorite",
@@ -13974,7 +13956,7 @@
         "properties": {
           "category": {
             "type": "string",
-            "description": "Human-readable file category (e.g. \"Image\", \"Document\")"
+            "description": "Coarse content category — a **stable machine key**, not display text.\n\nValues are the English identifiers `category_for` returns (\"Image\",\n\"Document\", \"Spreadsheet\", …). Clients must treat them as opaque keys:\nthe SPA's only legitimate consumer path is\n`utils/resourceBuckets.ts::typeLabel`, which maps them to localised\nlabels, plus the group-by buckets keyed off the same values. Rendering\nthis field directly is the i18n bug step 1 of\n`docs/plan/retire-precomputed-display-fields.md` fixed — it showed\nuntranslated English in the Type column for every non-English locale.\n\nThis is the one display field that stays server-side, and the reason is\nnot symmetry with the others: `category_order_for` turns it into\n`storage.files.category_order`, the indexed `type` sort key. Deriving\nit client-side would let the FE's buckets disagree with the server's\n`ORDER BY`. See `docs/architecture/resource-listing.md`."
           },
           "content_hash": {
             "type": "string",
@@ -14003,14 +13985,6 @@
               "null"
             ],
             "description": "Parent folder ID"
-          },
-          "icon_class": {
-            "type": "string",
-            "description": "FontAwesome icon CSS class (e.g. \"fas fa-file-image\")"
-          },
-          "icon_special_class": {
-            "type": "string",
-            "description": "Extra CSS class for icon styling (e.g. \"image-icon\", \"\" when default)"
           },
           "id": {
             "type": "string",
@@ -14046,10 +14020,6 @@
             "format": "int64",
             "description": "Size in bytes",
             "minimum": 0
-          },
-          "size_formatted": {
-            "type": "string",
-            "description": "Human-readable formatted size (e.g. \"3.27 MB\")"
           },
           "updated_by": {
             "type": [
@@ -14142,9 +14112,6 @@
           "created_at",
           "modified_at",
           "tree_modified_at",
-          "is_root",
-          "icon_class",
-          "icon_special_class",
           "category",
           "etag",
           "is_favorite",
@@ -14153,7 +14120,7 @@
         "properties": {
           "category": {
             "type": "string",
-            "description": "Human-readable category (always \"Folder\")"
+            "description": "Content category — a stable machine key, not display text; always\n\"Folder\". See `FileDto::category` for the contract."
           },
           "created_at": {
             "type": "string",
@@ -14177,14 +14144,6 @@
             "type": "string",
             "description": "Opaque ETag for HTTP responses. Populated from `Folder::etag()`\nat conversion time so every WebDAV / NextCloud handler emits\nthe same value, and exposed in REST JSON so the frontend can\npass it back through `If-Match` on rename / move endpoints\nwithout a separate HEAD round-trip."
           },
-          "icon_class": {
-            "type": "string",
-            "description": "FontAwesome icon CSS class (always \"fas fa-folder\")"
-          },
-          "icon_special_class": {
-            "type": "string",
-            "description": "Extra CSS class for icon styling (always \"folder-icon\")"
-          },
           "id": {
             "type": "string",
             "description": "Folder ID"
@@ -14192,10 +14151,6 @@
           "is_favorite": {
             "type": "boolean",
             "description": "Caller-scoped: `true` when the requesting user has favorited\nthis folder. See `FileDto::is_favorite` for the full wire\ncontract note (always present, never null; enrichment path\ncovers listing rows via inline `EXISTS` and single-item\nendpoints via the `caller_flags` helper)."
-          },
-          "is_root": {
-            "type": "boolean",
-            "description": "Whether this is a root folder"
           },
           "is_shared": {
             "type": "boolean",
@@ -16231,10 +16186,7 @@
           "item_id",
           "item_type",
           "accessed_at",
-          "icon_class",
-          "icon_special_class",
-          "category",
-          "size_formatted"
+          "category"
         ],
         "properties": {
           "accessed_at": {
@@ -16244,15 +16196,7 @@
           },
           "category": {
             "type": "string",
-            "description": "Human-readable category (e.g. \"Image\", \"Folder\")"
-          },
-          "icon_class": {
-            "type": "string",
-            "description": "FontAwesome icon CSS class (e.g. \"fas fa-file-image\", \"fas fa-folder\")"
-          },
-          "icon_special_class": {
-            "type": "string",
-            "description": "Extra CSS class for icon styling (e.g. \"image-icon\", \"folder-icon\")"
+            "description": "Content category — a stable machine key, not display text (e.g.\n\"Image\", \"Folder\"). See `FileDto::category`."
           },
           "id": {
             "type": "string",
@@ -16301,10 +16245,6 @@
               "null"
             ],
             "description": "Parent folder ID (folder_id for files, parent_id for folders)"
-          },
-          "size_formatted": {
-            "type": "string",
-            "description": "Formatted file size (e.g. \"3.27 MB\"); \"--\" for folders"
           },
           "user_id": {
             "type": "string",
@@ -16705,9 +16645,6 @@
           "created_at",
           "modified_at",
           "relevance_score",
-          "size_formatted",
-          "icon_class",
-          "icon_special_class",
           "category"
         ],
         "properties": {
@@ -16717,7 +16654,7 @@
           },
           "category": {
             "type": "string",
-            "description": "Content category: \"document\", \"image\", \"video\", \"audio\", \"archive\", \"code\", \"other\""
+            "description": "Coarse content category — a stable machine key, not display text.\nCarried through from `FileDto::category`; see that field for the full\ncontract. (This comment used to claim lowercase values — \"document\",\n\"image\", … — which it never carried: `enrich_file` copies the\ncapitalised `category_for` output verbatim.)"
           },
           "created_at": {
             "type": "string",
@@ -16742,14 +16679,6 @@
               "null"
             ],
             "description": "Parent folder ID"
-          },
-          "icon_class": {
-            "type": "string",
-            "description": "CSS icon class for the file type (e.g., \"fas fa-file-pdf\")"
-          },
-          "icon_special_class": {
-            "type": "string",
-            "description": "Extra CSS class for icon styling (e.g., \"pdf-icon\", \"code-icon js-icon\")"
           },
           "id": {
             "type": "string",
@@ -16799,10 +16728,6 @@
             "description": "Size in bytes",
             "minimum": 0
           },
-          "size_formatted": {
-            "type": "string",
-            "description": "Human-readable file size (e.g., \"2.5 MB\")"
-          },
           "snippet": {
             "type": [
               "string",
@@ -16830,7 +16755,6 @@
           "drive_id",
           "created_at",
           "modified_at",
-          "is_root",
           "relevance_score"
         ],
         "properties": {
@@ -16863,10 +16787,6 @@
           "is_favorite": {
             "type": "boolean",
             "description": "Caller-scoped: `true` when the requesting user has favorited\nthis folder. EXISTS on `auth.user_favorites`."
-          },
-          "is_root": {
-            "type": "boolean",
-            "description": "Whether it is a root folder"
           },
           "is_shared": {
             "type": "boolean",
@@ -17076,19 +16996,10 @@
           "item_type",
           "id",
           "path",
-          "icon_class",
-          "icon_special_class",
+          "mime_type",
           "relevance_score"
         ],
         "properties": {
-          "icon_class": {
-            "type": "string",
-            "description": "CSS icon class"
-          },
-          "icon_special_class": {
-            "type": "string",
-            "description": "Extra CSS class for icon styling"
-          },
           "id": {
             "type": "string",
             "description": "Item ID for navigation"
@@ -17096,6 +17007,10 @@
           "item_type": {
             "type": "string",
             "description": "Type: \"file\" or \"folder\""
+          },
+          "mime_type": {
+            "type": "string",
+            "description": "MIME type, so the client can pick its own glyph.\n\nReplaced `icon_class` (a CSS class string) in step 4 of\n`docs/plan/retire-precomputed-display-fields.md`. Folders carry\n`\"directory\"`, matching the convention elsewhere in the storage layer —\nclients branch on `item_type` for those and never consult this."
           },
           "name": {
             "type": "string",
@@ -18066,26 +17981,16 @@
           "original_path",
           "trashed_at",
           "days_until_deletion",
-          "category",
-          "icon_class",
-          "icon_special_class"
+          "category"
         ],
         "properties": {
           "category": {
             "type": "string",
-            "description": "Human-readable category (e.g., \"Image\", \"Folder\", \"Document\")"
+            "description": "Content category — a stable machine key, not display text (e.g.\n\"Image\", \"Folder\", \"Document\"). See `FileDto::category`."
           },
           "days_until_deletion": {
             "type": "integer",
             "format": "int64"
-          },
-          "icon_class": {
-            "type": "string",
-            "description": "FontAwesome icon class for the file type"
-          },
-          "icon_special_class": {
-            "type": "string",
-            "description": "Special CSS class for icon styling (e.g., \"image-icon\", \"pdf-icon\")"
           },
           "id": {
             "type": "string"

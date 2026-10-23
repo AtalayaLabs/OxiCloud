@@ -111,8 +111,6 @@ function fileItem(id: string, name: string) {
 	return {
 		category: 'Document',
 		created_at: 0,
-		icon_class: 'fa-file',
-		icon_special_class: '',
 		id,
 		mime_type: 'text/plain',
 		modified_at: 0,
@@ -122,7 +120,6 @@ function fileItem(id: string, name: string) {
 		folder_id: 'home',
 		path: '/' + name,
 		size: 4,
-		size_formatted: '4 B',
 		sort_date: 0,
 		etag: 'e',
 		content_hash: 'h'
@@ -132,10 +129,7 @@ function folderItem(id: string, name: string) {
 	return {
 		category: 'Folder',
 		created_at: 0,
-		icon_class: 'fa-folder',
-		icon_special_class: '',
 		id,
-		is_root: false,
 		modified_at: 0,
 		name,
 		created_by: 'me',

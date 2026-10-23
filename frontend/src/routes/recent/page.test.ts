@@ -54,8 +54,6 @@ function withOneFile() {
 				resource: {
 					category: 'Document',
 					created_at: 0,
-					icon_class: 'fa-file',
-					icon_special_class: '',
 					id: 'r1',
 					mime_type: 'text/plain',
 					modified_at: 0,
@@ -65,7 +63,6 @@ function withOneFile() {
 					folder_id: 'root',
 					path: '/notes.txt',
 					size: 4,
-					size_formatted: '4 B',
 					sort_date: 0,
 					etag: 'e',
 					content_hash: 'h'

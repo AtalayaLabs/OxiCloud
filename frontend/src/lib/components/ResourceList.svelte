@@ -96,6 +96,12 @@
 <script lang="ts" generics="Axis extends string = string">
 	import type { Snippet } from 'svelte';
 	import { SvelteSet } from 'svelte/reactivity';
+	// The "Type" column renders `item.category`, which is the server's
+	// ENGLISH machine key ("Image", "Spreadsheet") — not display text.
+	// `typeLabel` maps it to the localised label. Without this the column
+	// showed raw English on every listing that sets `showType`, while
+	// `/files` was already routing its group-by through the same function.
+	import { typeLabel } from '$lib/utils/resourceBuckets';
 	import Icon from '$lib/icons/Icon.svelte';
 	import EmptyState from '$lib/components/EmptyState.svelte';
 	import SkeletonList from '$lib/components/SkeletonList.svelte';
@@ -110,7 +116,7 @@
 	import { files as filesStore } from '$lib/stores/files.svelte';
 	import { preferences } from '$lib/stores/preferences.svelte';
 	import { formatBytes } from '$lib/utils/format';
-	import { formatDate, iconNameFromClass, fileIconKindClass } from '$lib/utils/display';
+	import { formatDate, iconNameFor, fileIconKindClass } from '$lib/utils/display';
 	import { gridColumns } from '$lib/utils/grid';
 	import { ResourceSectionsBuilder } from '$lib/utils/resourceSections';
 	import { ItemIndexBuilder } from '$lib/utils/itemIndex';
@@ -521,9 +527,6 @@
 	}
 	function mimeOf(item: FileItem | FolderItem): string | null {
 		return isFile(item) ? item.mime_type : null;
-	}
-	function iconClassOf(item: FileItem | FolderItem): string {
-		return item.icon_class;
 	}
 
 	// ── Dotfile filter ────────────────────────────────────────────────────────
@@ -1138,7 +1141,7 @@
 
 {#snippet row(item: FileItem | FolderItem)}
 	{@const kind = isFile(item) ? 'file' : 'folder'}
-	{@const iconName = kind === 'folder' ? 'folder' : iconNameFromClass(iconClassOf(item))}
+	{@const iconName = kind === 'folder' ? 'folder' : iconNameFor(item.name, mimeOf(item))}
 	{@const ctx = ctxOf(item.id)}
 	{@const ownerId = ownerIdOf(item)}
 	{@const dateVal = dateOf(item)}
@@ -1244,7 +1247,9 @@
 			</div>
 		{/if}
 		{#if showPath}<div class="path-cell">{item.path ?? ''}</div>{/if}
-		{#if showType}<div class="type-cell">{item.category ?? ''}</div>{/if}
+		{#if showType}<div class="type-cell" data-testid="type-cell">
+				{item.category ? typeLabel(item.category) : ''}
+			</div>{/if}
 		{#if showSize}
 			<div class="size-cell">{sizeVal != null ? formatBytes(sizeVal) : '—'}</div>
 		{/if}

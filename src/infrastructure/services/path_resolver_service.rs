@@ -9,9 +9,7 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::application::dtos::display_helpers::{
-    classify_display, format_file_size, intern_display, intern_mime,
-};
+use crate::application::dtos::display_helpers::{category_for, intern_display, intern_mime};
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::FolderDto;
 use crate::application::dtos::timestamp_helpers::epoch_to_datetime;
@@ -181,9 +179,6 @@ impl PathResolverService {
                     created_at: epoch_to_datetime(created_at.max(0) as u64),
                     modified_at: epoch_to_datetime(modified_at.max(0) as u64),
                     tree_modified_at: epoch_to_datetime(tree_mod),
-                    is_root: false,
-                    icon_class: intern_display("fas fa-folder"),
-                    icon_special_class: intern_display("folder-icon"),
                     category: intern_display("Folder"),
                     // §14 provenance not selected by this resolver path —
                     // it's used for existence/type discrimination, not
@@ -207,7 +202,6 @@ impl PathResolverService {
                 let hash = blob_hash.unwrap_or_default();
                 let modified_at_u = modified_at as u64;
                 let etag = File::compute_etag(&hash, modified_at_u);
-                let classes = classify_display(&name, &mime);
                 Ok(ResolvedResource::File(FileDto {
                     id,
                     name: name.clone(),
@@ -217,10 +211,7 @@ impl PathResolverService {
                     folder_id,
                     created_at: epoch_to_datetime(created_at.max(0) as u64),
                     modified_at: epoch_to_datetime(modified_at_u),
-                    icon_class: intern_display(classes.icon_class),
-                    icon_special_class: intern_display(classes.icon_special_class),
-                    category: intern_display(classes.category),
-                    size_formatted: format_file_size(sz),
+                    category: intern_display(category_for(&name, &mime)),
                     content_hash: hash,
                     etag,
                     // §14 provenance not selected by this resolver path

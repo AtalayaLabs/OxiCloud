@@ -51,10 +51,7 @@ function folder(id: string, name: string) {
 	return {
 		category: 'Folder',
 		created_at: 0,
-		icon_class: 'fa-folder',
-		icon_special_class: '',
 		id,
-		is_root: false,
 		modified_at: 0,
 		name,
 		created_by: 'me',

@@ -9,9 +9,7 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use crate::application::dtos::display_helpers::{
-    category_for, format_file_size, icon_class_for, icon_special_class_for,
-};
+use crate::application::dtos::display_helpers::category_for;
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::FolderDto;
 use crate::application::dtos::timestamp_helpers::epoch_to_datetime;
@@ -66,9 +64,6 @@ pub fn mount_folder_dto(cfg: &MountConfig, parent_id: &str, stat: &MountStat) ->
         // backend gives us one directory mtime and no subtree rollup, so DAV
         // keeps reporting exactly what it reported before.
         tree_modified_at: epoch_to_datetime(stat.modified_at),
-        is_root: false,
-        icon_class: Arc::from("fas fa-folder"),
-        icon_special_class: Arc::from("folder-icon"),
         category: Arc::from("Folder"),
         created_by: Some(cfg.owner_id),
         updated_by: Some(cfg.owner_id),
@@ -94,9 +89,6 @@ pub fn mount_entry_folder_dto(cfg: &MountConfig, parent_id: &str, entry: &MountE
         modified_at: epoch_to_datetime(entry.modified_at),
         // See `mount_folder_dto` — no subtree rollup from a mount backend.
         tree_modified_at: epoch_to_datetime(entry.modified_at),
-        is_root: false,
-        icon_class: Arc::from("fas fa-folder"),
-        icon_special_class: Arc::from("folder-icon"),
         category: Arc::from("Folder"),
         created_by: Some(cfg.owner_id),
         updated_by: Some(cfg.owner_id),
@@ -120,10 +112,7 @@ pub fn mount_entry_file_dto(cfg: &MountConfig, parent_id: &str, entry: &MountEnt
         folder_id: Some(parent_id.to_owned()),
         created_at: epoch_to_datetime(entry.created_at),
         modified_at: epoch_to_datetime(entry.modified_at),
-        icon_class: Arc::from(icon_class_for(name, &mime)),
-        icon_special_class: Arc::from(icon_special_class_for(name, &mime)),
         category: Arc::from(category_for(name, &mime)),
-        size_formatted: format_file_size(entry.size),
         content_hash: String::new(),
         etag: virtual_file_etag(entry.size, entry.modified_at),
         created_by: Some(cfg.owner_id),
@@ -147,10 +136,7 @@ pub fn mount_file_dto(cfg: &MountConfig, parent_id: &str, stat: &MountStat) -> F
         folder_id: Some(parent_id.to_owned()),
         created_at: epoch_to_datetime(stat.created_at),
         modified_at: epoch_to_datetime(stat.modified_at),
-        icon_class: Arc::from(icon_class_for(name, mime)),
-        icon_special_class: Arc::from(icon_special_class_for(name, mime)),
         category: Arc::from(category_for(name, mime)),
-        size_formatted: format_file_size(stat.size),
         content_hash: String::new(),
         etag: virtual_file_etag(stat.size, stat.modified_at),
         created_by: Some(cfg.owner_id),

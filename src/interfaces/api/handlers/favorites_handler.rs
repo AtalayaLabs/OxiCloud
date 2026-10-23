@@ -9,9 +9,7 @@ use std::sync::Arc;
 use tracing::info;
 use utoipa::ToSchema;
 
-use crate::application::dtos::display_helpers::{
-    classify_display, format_file_size, intern_display, intern_mime,
-};
+use crate::application::dtos::display_helpers::{category_for, intern_display, intern_mime};
 use crate::application::dtos::favorites_dto::{
     FavoritesResourceItemDto, FavoritesResourcesDto, FavoritesResourcesQuery,
 };
@@ -227,9 +225,6 @@ pub async fn list_favorites_resources(
                             // mtime stands in rather than a claim about
                             // descendants.
                             tree_modified_at: row.modified_at,
-                            is_root: false,
-                            icon_class: intern_display("fas fa-folder"),
-                            icon_special_class: intern_display("folder-icon"),
                             category: intern_display("Folder"),
                             created_by: row.created_by,
                             updated_by: row.updated_by,
@@ -260,12 +255,9 @@ pub async fn list_favorites_resources(
                         let etag =
                             File::etag_for_listing(row.blob_hash.as_deref(), row.modified_at);
                         let content_hash = row.blob_hash.unwrap_or_default();
-                        // Name-derived display classes borrow `row.name`;
-                        // compute them before the name moves into the DTO.
-                        let classes = classify_display(&row.name, mime);
-                        let icon_class = intern_display(classes.icon_class);
-                        let icon_special_class = intern_display(classes.icon_special_class);
-                        let category = intern_display(classes.category);
+                        // The name-derived category borrows `row.name`;
+                        // compute it before the name moves into the DTO.
+                        let category = intern_display(category_for(&row.name, mime));
                         let dto = FileDto {
                             id: row.resource_id.to_string(),
                             name: row.name,
@@ -275,10 +267,7 @@ pub async fn list_favorites_resources(
                             folder_id: row.parent_id.map(|u| u.to_string()),
                             created_at: row.resource_created_at,
                             modified_at: row.modified_at,
-                            icon_class,
-                            icon_special_class,
                             category,
-                            size_formatted: format_file_size(size_bytes),
                             content_hash,
                             etag,
                             created_by: row.created_by,

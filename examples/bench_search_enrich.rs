@@ -2,20 +2,25 @@
 //!
 //! `SearchService::enrich_file` took `&FileDto`, cloned every owned `String`
 //! out of it (id/name/path/folder_id/content_hash), allocated fresh `String`s
-//! for `mime_type` + the three display fields, and RE-RAN the three display
-//! classifiers (`icon_class_for` / `icon_special_class_for` / `category_for`)
-//! whose results the `FileDto` already carried interned (`Arc<str>`, computed
-//! once in `FileDto::from`). The recursive search branch runs this map over
-//! the ENTIRE pre-pagination match set, so a subtree query matching thousands
-//! of files paid ~11 allocs + 3 classifier passes per row. `enrich_folder`
-//! cloned its 4 strings the same way, and the NC REPORT conversion
-//! (`file_dto_from_search`) re-ran all three classifiers a SECOND time per
-//! emitted row.
+//! for `mime_type` + the display fields, and RE-RAN the display classifier
+//! (`category_for`) whose result the `FileDto` already
+//! carried interned (`Arc<str>`, computed once in `FileDto::from`). The
+//! recursive search branch runs this map over the ENTIRE pre-pagination match
+//! set, so a subtree query matching thousands of files paid ~11 allocs + a
+//! classifier pass per field per row. `enrich_folder` cloned its 4 strings the
+//! same way, and the NC REPORT conversion (`file_dto_from_search`) re-ran
+//! every classifier a SECOND time per emitted row.
 //!
-//! Round 9 changes `SearchFileResultDto.{mime_type,icon_class,
-//! icon_special_class,category}` to `Arc<str>`, makes both enrichers consume
-//! their DTO (strings move, interned fields transfer as refcount bumps), and
-//! has the NC conversion reuse the carried values.
+//! Round 9 changes `SearchFileResultDto.{mime_type,category}` to
+//! `Arc<str>`, makes both enrichers consume their DTO (strings move, interned
+//! fields transfer as refcount bumps), and has the NC conversion reuse the
+//! carried values.
+//!
+//! Round 9 measured THREE display fields; `icon_special_class` was later
+//! retired from the wire (retire-precomputed-display-fields.md step 2) and is
+//! gone from both arms here, so the per-row delta is smaller than the figure
+//! archived in ROUND9.md. The gates below still compare BEFORE against the
+//! shipped shape field-for-field — only the field count shrank.
 //!
 //! `mod before` holds the pre-round-9 logic verbatim (old struct shape
 //! included); the equivalence gate asserts field-by-field identical output
@@ -80,9 +85,7 @@ fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
 
 #[allow(clippy::all)]
 mod before {
-    use oxicloud::application::dtos::display_helpers::{
-        category_for, format_file_size, icon_class_for, icon_special_class_for,
-    };
+    use oxicloud::application::dtos::display_helpers::category_for;
     use oxicloud::application::dtos::file_dto::FileDto;
     use oxicloud::application::dtos::folder_dto::FolderDto;
     use oxicloud::domain::entities::file::File;
@@ -98,9 +101,6 @@ mod before {
         pub created_at: u64,
         pub modified_at: u64,
         pub relevance_score: u32,
-        pub size_formatted: String,
-        pub icon_class: String,
-        pub icon_special_class: String,
         pub category: String,
         pub blob_hash: String,
         pub snippet: Option<String>,
@@ -115,36 +115,12 @@ mod before {
         pub drive_id: uuid::Uuid,
         pub created_at: u64,
         pub modified_at: u64,
-        pub is_root: bool,
         pub relevance_score: u32,
     }
 
     // Verbatim copies of the old private helpers.
-    fn get_icon_class(name: &str, mime: &str) -> String {
-        icon_class_for(name, mime).to_string()
-    }
-    fn get_icon_special_class(name: &str, mime: &str) -> String {
-        icon_special_class_for(name, mime).to_string()
-    }
     fn get_category(name: &str, mime: &str) -> String {
         category_for(name, mime).to_string()
-    }
-
-    /// Verbatim copy of the service's private `format_bytes` (unchanged by
-    /// round 9; the equivalence gate asserts it still matches production).
-    pub fn format_bytes(bytes: u64) -> String {
-        const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
-        if bytes == 0 {
-            return "0 B".to_string();
-        }
-        let exp = (bytes as f64).log(1024.0).floor() as usize;
-        let exp = exp.min(UNITS.len() - 1);
-        let value = bytes as f64 / 1024_f64.powi(exp as i32);
-        if exp == 0 {
-            format!("{} B", bytes)
-        } else {
-            format!("{:.1} {}", value, UNITS[exp])
-        }
     }
 
     /// Verbatim copy of the service's private `compute_relevance` (unchanged
@@ -187,9 +163,6 @@ mod before {
                 file.modified_at,
             ),
             relevance_score: relevance,
-            size_formatted: format_bytes(file.size),
-            icon_class: get_icon_class(&file.name, &file.mime_type),
-            icon_special_class: get_icon_special_class(&file.name, &file.mime_type),
             category: get_category(&file.name, &file.mime_type),
             blob_hash: file.content_hash.clone(),
             snippet: None,
@@ -217,7 +190,6 @@ mod before {
             modified_at: oxicloud::application::dtos::timestamp_helpers::datetime_to_epoch(
                 folder.modified_at,
             ),
-            is_root: folder.is_root,
             relevance_score: relevance,
         }
     }
@@ -243,12 +215,7 @@ mod before {
             modified_at: oxicloud::application::dtos::timestamp_helpers::epoch_to_datetime(
                 fr.modified_at,
             ),
-            icon_class: icon_class_for(&fr.name, &fr.mime_type).to_string().into(),
-            icon_special_class: icon_special_class_for(&fr.name, &fr.mime_type)
-                .to_string()
-                .into(),
             category: category_for(&fr.name, &fr.mime_type).to_string().into(),
-            size_formatted: format_file_size(fr.size),
             content_hash: fr.blob_hash.clone(),
             etag,
             created_by: None,
@@ -312,10 +279,7 @@ fn folder_dtos(n: usize) -> Vec<FolderDto> {
             tree_modified_at: oxicloud::application::dtos::timestamp_helpers::epoch_to_datetime(
                 1_700_000_200,
             ),
-            is_root: false,
             etag: format!("{i:032x}"),
-            icon_class: Arc::from("fas fa-folder"),
-            icon_special_class: Arc::from("folder-icon"),
             category: Arc::from("Folder"),
             created_by: None,
             updated_by: None,
@@ -356,9 +320,6 @@ fn main() {
                         new.modified_at,
                     )
                 && old.relevance_score == new.relevance_score
-                && old.size_formatted == new.size_formatted
-                && old.icon_class == *new.icon_class
-                && old.icon_special_class == *new.icon_special_class
                 && old.category == *new.category
                 && old.blob_hash == new.blob_hash
                 && old.snippet == new.snippet
@@ -385,7 +346,6 @@ fn main() {
                     == oxicloud::application::dtos::timestamp_helpers::datetime_to_epoch(
                         new.modified_at,
                     )
-                && old.is_root == new.is_root
                 && old.relevance_score == new.relevance_score;
             if !same {
                 eprintln!("EQUIVALENCE GATE FAILED (folder): {} differs", old.name);
@@ -409,10 +369,7 @@ fn main() {
             let same = old_conv.id == new_conv.id
                 && old_conv.name == new_conv.name
                 && old_conv.mime_type == new_conv.mime_type
-                && old_conv.icon_class == new_conv.icon_class
-                && old_conv.icon_special_class == new_conv.icon_special_class
                 && old_conv.category == new_conv.category
-                && old_conv.size_formatted == new_conv.size_formatted
                 && old_conv.etag == new_conv.etag
                 && old_conv.content_hash == new_conv.content_hash;
             if !same {

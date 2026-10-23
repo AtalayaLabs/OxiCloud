@@ -45,8 +45,6 @@ function withOneFile() {
 				resource: {
 					category: 'Image',
 					created_at: 0,
-					icon_class: 'fa-file',
-					icon_special_class: '',
 					id: 'f1',
 					mime_type: 'image/png',
 					modified_at: 0,
@@ -56,7 +54,6 @@ function withOneFile() {
 					folder_id: 'root',
 					path: '/photo.png',
 					size: 10,
-					size_formatted: '10 B',
 					sort_date: 0,
 					etag: 'e',
 					content_hash: 'h'

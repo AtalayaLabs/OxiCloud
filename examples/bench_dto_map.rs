@@ -7,7 +7,6 @@
 //!     vs interned `Arc<str>` lookups (`intern_display` / `intern_mime`).
 //!   • `File::compute_etag` / `Folder::compute_etag` — `chars().take(16)
 //!     .collect::<String>()` + `format!` (2 allocs) vs one sized buffer.
-//!   • `format_file_size` — two `format!` calls per row vs one buffer.
 //!   • `Folder → FolderDto` — per-getter `.to_string()` clones + a
 //!     double-allocated etag vs `into_parts()` moves.
 //!
@@ -72,16 +71,14 @@ static GLOBAL: CountingAlloc = CountingAlloc;
 
 /// Pre-optimization reference implementation. Copied verbatim from the old
 /// `From<File> for FileDto` / `From<Folder> for FolderDto` bodies, the old
-/// `File::compute_etag` / `Folder::compute_etag` formulas and the old
-/// `format_file_size` — kept byte-for-byte in behaviour so the equivalence
-/// gate proves the optimized paths change nothing observable.
+/// `File::compute_etag` / `Folder::compute_etag` formulas — kept
+/// byte-for-byte in behaviour so the equivalence gate proves the optimized
+/// paths change nothing observable.
 #[allow(clippy::all)]
 mod before {
     use std::sync::Arc;
 
-    use oxicloud::application::dtos::display_helpers::{
-        category_for, icon_class_for, icon_special_class_for,
-    };
+    use oxicloud::application::dtos::display_helpers::category_for;
     use oxicloud::application::dtos::file_dto::FileDto;
     use oxicloud::application::dtos::folder_dto::FolderDto;
     use oxicloud::domain::entities::file::File;
@@ -100,40 +97,21 @@ mod before {
         format!("{}-{}", prefix, tree_modified_at)
     }
 
-    /// Old `format_file_size`: two `format!` calls per row.
-    fn format_file_size(bytes: u64) -> String {
-        if bytes == 0 {
-            return "0 Bytes".to_string();
-        }
-
-        const K: f64 = 1024.0;
-        const SIZES: [&str; 5] = ["Bytes", "KB", "MB", "GB", "TB"];
-
-        let i = ((bytes as f64).ln() / K.ln()).floor() as usize;
-        let i = i.min(SIZES.len() - 1);
-
-        let value = bytes as f64 / K.powi(i as i32);
-
-        let formatted = format!("{:.2}", value);
-        let formatted = formatted.trim_end_matches('0').trim_end_matches('.');
-
-        format!("{} {}", formatted, SIZES[i])
-    }
-
-    /// Old `From<File> for FileDto` body: `Arc::from(&str)` for the three
-    /// display fields and the mime type (alloc + copy each), 2-alloc etag,
-    /// 2-format size string.
+    /// Old `From<File> for FileDto` body: `Arc::from(&str)` for the
+    /// display fields and the mime type (alloc + copy each), 2-alloc etag.
+    ///
+    /// Round 7 also measured a `format_file_size` arm here (two `format!`
+    /// calls per row vs one sized buffer). `size_formatted` has since left
+    /// the wire entirely — step 5 of retire-precomputed-display-fields.md —
+    /// so the formatter and both arms are gone. The archived figure in
+    /// ROUND7.md covers the shape as it was then.
     pub fn file_to_dto(file: File) -> FileDto {
         let etag = file_compute_etag(file.content_hash(), file.modified_at());
         let content_hash = file.content_hash().to_string();
 
         let parts = file.into_parts();
 
-        let icon_class: Arc<str> = Arc::from(icon_class_for(&parts.name, &parts.mime_type));
-        let icon_special_class: Arc<str> =
-            Arc::from(icon_special_class_for(&parts.name, &parts.mime_type));
         let category: Arc<str> = Arc::from(category_for(&parts.name, &parts.mime_type));
-        let size_formatted = format_file_size(parts.size);
         let mime_type: Arc<str> = Arc::from(parts.mime_type.as_str());
 
         FileDto {
@@ -149,10 +127,7 @@ mod before {
             modified_at: oxicloud::application::dtos::timestamp_helpers::epoch_to_datetime(
                 parts.modified_at,
             ),
-            icon_class,
-            icon_special_class,
             category,
-            size_formatted,
             content_hash,
             etag,
             created_by: parts.created_by,
@@ -166,7 +141,6 @@ mod before {
     /// clones, `folder.etag().to_string()` (etag built then cloned — the
     /// verbatim double alloc) and 3 fresh `Arc::from` constants per row.
     pub fn folder_to_dto(folder: Folder) -> FolderDto {
-        let is_root = folder.parent_id().is_none();
         let etag = folder_compute_etag(folder.id(), folder.tree_modified_at()).to_string();
 
         FolderDto {
@@ -184,9 +158,6 @@ mod before {
             tree_modified_at: oxicloud::application::dtos::timestamp_helpers::epoch_to_datetime(
                 folder.tree_modified_at(),
             ),
-            is_root,
-            icon_class: Arc::from("fas fa-folder"),
-            icon_special_class: Arc::from("folder-icon"),
             category: Arc::from("Folder"),
             etag,
             created_by: folder.created_by(),
@@ -407,10 +378,7 @@ fn diff_file(i: usize, b: &FileDto, a: &FileDto, diffs: &mut u64) {
     cmp_field!(*diffs, i, "file", b, a, folder_id);
     cmp_field!(*diffs, i, "file", b, a, created_at);
     cmp_field!(*diffs, i, "file", b, a, modified_at);
-    cmp_field!(*diffs, i, "file", b, a, icon_class);
-    cmp_field!(*diffs, i, "file", b, a, icon_special_class);
     cmp_field!(*diffs, i, "file", b, a, category);
-    cmp_field!(*diffs, i, "file", b, a, size_formatted);
     cmp_field!(*diffs, i, "file", b, a, content_hash);
     cmp_field!(*diffs, i, "file", b, a, etag);
     cmp_field!(*diffs, i, "file", b, a, created_by);
@@ -425,9 +393,6 @@ fn diff_folder(i: usize, b: &FolderDto, a: &FolderDto, diffs: &mut u64) {
     cmp_field!(*diffs, i, "folder", b, a, drive_id);
     cmp_field!(*diffs, i, "folder", b, a, created_at);
     cmp_field!(*diffs, i, "folder", b, a, modified_at);
-    cmp_field!(*diffs, i, "folder", b, a, is_root);
-    cmp_field!(*diffs, i, "folder", b, a, icon_class);
-    cmp_field!(*diffs, i, "folder", b, a, icon_special_class);
     cmp_field!(*diffs, i, "folder", b, a, category);
     cmp_field!(*diffs, i, "folder", b, a, etag);
     cmp_field!(*diffs, i, "folder", b, a, created_by);

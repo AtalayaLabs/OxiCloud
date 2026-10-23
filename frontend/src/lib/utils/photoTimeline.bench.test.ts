@@ -46,8 +46,6 @@ function photo(i: number): PhotoItem {
 	return {
 		category: 'image',
 		created_at: sortDateIso,
-		icon_class: '',
-		icon_special_class: '',
 		id: `p-${i.toString().padStart(6, '0')}`,
 		mime_type: 'image/jpeg',
 		modified_at: sortDateIso,
@@ -57,7 +55,6 @@ function photo(i: number): PhotoItem {
 		folder_id: 'f',
 		path: `/photo ${i}.jpg`,
 		size: 1000,
-		size_formatted: '1 KB',
 		sort_date: sortDateIso,
 		etag: `e${i}`,
 		content_hash: `h${i}`,

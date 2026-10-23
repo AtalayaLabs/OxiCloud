@@ -255,15 +255,11 @@ pub struct SearchFileResultDto {
     pub modified_at: DateTime<Utc>,
     /// Relevance score (0-100) computed server-side
     pub relevance_score: u32,
-    /// Human-readable file size (e.g., "2.5 MB")
-    pub size_formatted: String,
-    /// CSS icon class for the file type (e.g., "fas fa-file-pdf")
-    #[schema(value_type = String)]
-    pub icon_class: Arc<str>,
-    /// Extra CSS class for icon styling (e.g., "pdf-icon", "code-icon js-icon")
-    #[schema(value_type = String)]
-    pub icon_special_class: Arc<str>,
-    /// Content category: "document", "image", "video", "audio", "archive", "code", "other"
+    /// Coarse content category — a stable machine key, not display text.
+    /// Carried through from `FileDto::category`; see that field for the full
+    /// contract. (This comment used to claim lowercase values — "document",
+    /// "image", … — which it never carried: `enrich_file` copies the
+    /// capitalised `category_for` output verbatim.)
     #[schema(value_type = String)]
     pub category: Arc<str>,
     /// Raw BLAKE3 content hash. Feeds `FileDto::content_hash` and
@@ -329,8 +325,6 @@ pub struct SearchFolderResultDto {
     pub created_at: DateTime<Utc>,
     /// Last modification timestamp (RFC 3339 UTC).
     pub modified_at: DateTime<Utc>,
-    /// Whether it is a root folder
-    pub is_root: bool,
     /// Relevance score (0-100) computed server-side
     pub relevance_score: u32,
     /// HTTP ETag — folders derive theirs from the tree-etag propagator.
@@ -720,10 +714,10 @@ fn append_files(
             snippet: f.snippet.clone(),
             via: f.match_source.clone(),
         };
-        // Reconstruct FileDto from the enriched search result. `size_formatted`
-        // and display fields were already computed by `enrich_file`; the
-        // Phase 1-plus extensions (etag / created_by / updated_by /
-        // is_favorite / is_shared) carry through so the DTO is complete.
+        // Reconstruct FileDto from the enriched search result. The display
+        // fields were already computed by `enrich_file`; the Phase 1-plus
+        // extensions (etag / created_by / updated_by / is_favorite /
+        // is_shared) carry through so the DTO is complete.
         let file_dto = crate::application::dtos::file_dto::FileDto {
             id: f.id,
             name: f.name,
@@ -733,10 +727,7 @@ fn append_files(
             folder_id: f.folder_id,
             created_at: f.created_at,
             modified_at: f.modified_at,
-            icon_class: f.icon_class,
-            icon_special_class: f.icon_special_class,
             category: f.category,
-            size_formatted: f.size_formatted,
             content_hash: f.blob_hash,
             etag: f.etag,
             created_by: f.created_by,
@@ -772,12 +763,9 @@ fn append_folders(items: &mut Vec<SearchResourceItem>, folders: Vec<SearchFolder
             // folder's own mtime stands in rather than a claim about
             // descendants.
             tree_modified_at: f.modified_at,
-            is_root: f.is_root,
-            // Folders carry closed-set display fields — always the
-            // same three static strings. Cheap to build via `Arc::from`
-            // (interning-worthy but not on the search hot path).
-            icon_class: Arc::from("fas fa-folder"),
-            icon_special_class: Arc::from("folder-icon"),
+            // Folders carry a closed-set display field — always the same
+            // static string. Cheap to build via `Arc::from` (interning-worthy
+            // but not on the search hot path).
             category: Arc::from("Folder"),
             etag: f.etag,
             created_by: f.created_by,
@@ -820,12 +808,14 @@ pub struct SearchSuggestionItem {
     pub id: String,
     /// Path for context
     pub path: String,
-    /// CSS icon class
+    /// MIME type, so the client can pick its own glyph.
+    ///
+    /// Replaced `icon_class` (a CSS class string) in step 4 of
+    /// `docs/plan/retire-precomputed-display-fields.md`. Folders carry
+    /// `"directory"`, matching the convention elsewhere in the storage layer —
+    /// clients branch on `item_type` for those and never consult this.
     #[schema(value_type = String)]
-    pub icon_class: Arc<str>,
-    /// Extra CSS class for icon styling
-    #[schema(value_type = String)]
-    pub icon_special_class: Arc<str>,
+    pub mime_type: Arc<str>,
     /// Relevance score
     pub relevance_score: u32,
 }
