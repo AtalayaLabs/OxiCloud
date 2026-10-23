@@ -15,8 +15,8 @@ spawned by a service factory in `src/common/di.rs` at startup:
 | `tree_etag_flush_job` | every ~500 ms | Fixed interval, no per-run state |
 | `content_index` worker | continuous | Fixed interval, no per-run state |
 | Blob storage backend migration | admin-triggered | Long-running, cursor, resumable, in-memory state today |
-| `admin/audio/metadata/reextract` | admin-triggered | Long-running, blocks HTTP request today |
-| `admin/photos/metadata/reextract` | admin-triggered | Long-running, blocks HTTP request today |
+| ~~`admin/audio/metadata/reextract`~~ | — | **Replaced 2026-10-23 by `content_rescan`** (`docs/plan/blob-resniff.md` §B) |
+| ~~`admin/photos/metadata/reextract`~~ | — | **Replaced 2026-10-23 by `content_rescan`** — one job, walking distinct CONTENT rather than files, so N copies cost one parse |
 | `ConsistencyCheck` runs (see `docs/plan/consistency-check.md`) | admin-triggered v1 | Long-running, cursor, resumable, needs DB state |
 
 Two shapes bleed together in the current codebase but shouldn't. Each
@@ -100,8 +100,8 @@ what decides.
 | `content_index` worker | No — continuous drain, no discrete invocation | Core worker, unchanged |
 | `db_pool_monitor` | No — "log stats now" is either grep-existing-logs or attach-a-debugger, not a scheduled job trigger | Core worker, unchanged |
 | Blob storage backend migration | Yes — already admin-triggered | Part 2 |
-| `admin/audio/metadata/reextract` | Yes — currently admin-triggered (synchronously) | Part 2 |
-| `admin/photos/metadata/reextract` | Yes — currently admin-triggered (synchronously) | Part 2 |
+| ~~`admin/audio/metadata/reextract`~~ | **Done, as `content_rescan`** — recoverable, cursor, cancellable, detached | Shipped 2026-10-23 |
+| ~~`admin/photos/metadata/reextract`~~ | **Done, as `content_rescan`** — the two collapsed into one job | Shipped 2026-10-23 |
 | `ConsistencyCheck` runs | Yes — needs a trigger endpoint | Part 2 |
 
 The `db_pool_monitor` case is illustrative: cadence-wise it *could*
