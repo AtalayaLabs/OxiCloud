@@ -114,8 +114,15 @@ Two consequences, both easy to get wrong:
   DELETE CASCADE` becomes expressible. It is also the better design: a
   guarantee the database enforces beats one every future reap path has
   to remember. At that point the sweep becomes belt-and-braces rather
-  than the enforcement, and `content_derived_blobs.source_hash` should
-  gain the same FK for the same reason.
+  than the enforcement.
+
+  **The cascade suits this shape and only this shape.** `DERIVED` must
+  not get it: deleting that row is only half of what its reap does — the
+  other half releases the artifact's `blob_hash` reference — so a
+  cascade would leave the artifact pinned with nothing pointing at it,
+  which is the exact leak that table was built to avoid. Holding no
+  reference is what makes the cascade safe here. Sequence and
+  preconditions: `docs/plan/storage-consistency.md`.
 
 ## Why two tables and not one with a `kind` column
 

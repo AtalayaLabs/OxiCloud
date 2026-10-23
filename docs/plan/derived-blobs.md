@@ -1987,11 +1987,22 @@ proposal — it is one more item that unlocks at the same moment, and the
 strongest argument yet for finishing the convergence: a guarantee the
 database enforces beats one every future reap path must remember.
 
-Two caveats for whoever picks it up. The FK makes extraction ordering
-load-bearing — an upsert whose manifest has just been reaped turns a
-benign no-op into a constraint violation, so the insert needs to tolerate
-that. And the migration adding it will fail loudly on any instance still
-holding one legacy blob, which is a feature: it is the convergence check.
+Three caveats for whoever picks it up; the full trigger sequence lives in
+`docs/plan/storage-consistency.md`.
+
+1. **Facts tables only.** `content_derived_blobs` must NOT get
+   `ON DELETE CASCADE`: deleting that row is half of its reap, the other
+   half being `remove_reference` on the artifact's `blob_hash`. A cascade
+   would do the first and skip the second, pinning the artifact forever —
+   reintroducing the leak by way of the mechanism meant to prevent it.
+   Holding no reference is exactly what makes the cascade safe on the
+   facts tables.
+2. **Orphans must be cleared first**, or the migration fails on precisely
+   the rows `satellites_consistency` phase 3 exists to find. The sweep is
+   a prerequisite for the FK, not just a stopgap until it.
+3. **Extraction ordering becomes load-bearing** — an upsert whose manifest
+   has just been reaped turns a benign no-op into a constraint violation,
+   so the insert needs to tolerate that.
 
 That it can be forgotten is established, not theoretical: the bulk
 manifest reap once omitted `purge_derived_blobs` and leaked three blobs
