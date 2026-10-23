@@ -73,7 +73,45 @@ const proxy = {
 	'/logo': p(BACKEND)
 };
 
+// `__OXI_WORKER_VERSION__` is injected into the SharedWorker bundle so
+// the worker's `hello-ack` can report its build identity. A tab whose
+// expected version doesn't match renders a "reload all tabs" invite —
+// the escape hatch for a stale worker holding the port after a deploy.
+//
+// The value is read from `OXI_WORKER_VERSION` at build time (CI sets
+// it to the commit SHA); otherwise falls back to the current ms
+// timestamp so local dev builds get unique identities too.
+const WORKER_VERSION = process.env.OXI_WORKER_VERSION ?? `dev-${Math.floor(Date.now() / 1000)}`;
+
 export default defineConfig({
+	define: {
+		// JSON.stringify so the value is embedded as a string literal in
+		// the bundle. Without it, `__OXI_WORKER_VERSION__` would be
+		// substituted literally (e.g. `v1`) and break every file that
+		// references it.
+		__OXI_WORKER_VERSION__: JSON.stringify(WORKER_VERSION)
+	},
+	// `worker.format: 'es'` is Vite's default for module workers; being
+	// explicit here keeps the SharedWorker entry (loaded via
+	// `new SharedWorker(new URL('./worker.ts', import.meta.url),
+	// { type: 'module' })`) on the ES-module path. The classic-worker
+	// fallback would strip `import`/`export` and break the module
+	// graph.
+	worker: {
+		format: 'es'
+	},
+	build: {
+		// Top-level `await` in `src/lib/message-bus/client.svelte.ts`
+		// (the factory that resolves to a SharedWorker-backed bridge
+		// or a per-tab client) requires baseline ≥ Safari 15 / Chrome
+		// 89 / Firefox 89. OxiCloud's SharedWorker support matrix is
+		// Safari ≥ 16.4 anyway (see docs/plan/message-bus-via-shared-
+		// worker.md § compatibility matrix); users on older browsers
+		// hit the per-tab fallback via `typeof SharedWorker ===
+		// 'undefined'` detection, but the module has to parse first
+		// for that path to run — bump the target so it does.
+		target: ['chrome89', 'edge89', 'firefox89', 'safari15']
+	},
 	plugins: [
 		sveltekit(),
 		// Compiles Svelte components in client mode for Vitest component tests

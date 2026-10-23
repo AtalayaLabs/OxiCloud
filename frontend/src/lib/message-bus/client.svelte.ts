@@ -1249,19 +1249,62 @@ export class PerTabMessageBusClient implements MessageBusClient {
 }
 
 /**
- * Process-wide singleton — one WebSocket per tab. Lazy: nothing opens
- * until the first `subscribe`. Exported for `useTopic` to consume;
- * app code should reach for the composables instead.
- */
-/**
  * The one message-bus consumers reach for.
  *
- * Typed against the `MessageBusClient` interface — Gate 2 may swap the
- * concrete implementation to the SharedWorker bridge at module load,
- * but every consumer only knows the interface.
+ * Resolves to a `SharedWorkerBridge` when the browser supports it +
+ * the handshake succeeds; otherwise falls back to a
+ * `PerTabMessageBusClient`. The decision is made at module load via a
+ * top-level await — every consumer that imports `messageBus` gets a
+ * resolved instance, no proxy, no deferred-call queue.
  *
- * Export also kept under the legacy name `MessageBusClient` (type-only)
- * so the single Vitest file that imports the class value
- * (`anonymous.test.ts`) switches to `PerTabMessageBusClient`.
+ * SSR safety: during SvelteKit SSR, `window` is undefined. The branch
+ * below short-circuits to a `PerTabMessageBusClient` whose constructor
+ * guards `typeof document !== 'undefined'`, so no DOM access happens
+ * on the server.
+ *
+ * The up-to-1 s delay (handshake timeout) overlaps with other initial
+ * page loads (`/api/auth/me`, `/api/config`), so the perceived cost
+ * is bounded.
  */
-export const messageBus: MessageBusClient = new PerTabMessageBusClient();
+export const messageBus: MessageBusClient = await makeMessageBus();
+
+/** Build the one `MessageBusClient` for this tab. Returns a shared
+ *  bridge if detection + handshake succeed; otherwise a per-tab
+ *  client. See `./detect.ts` for the three-step detection. */
+async function makeMessageBus(): Promise<MessageBusClient> {
+	// SSR / non-browser: short-circuit to per-tab. The per-tab client's
+	// constructor already guards `typeof document !== 'undefined'`.
+	if (typeof window === 'undefined') return new PerTabMessageBusClient();
+
+	// Dev / forced-fallback escape hatch — `?shared_worker=0` on any
+	// URL disables shared mode for the whole session. Useful for
+	// debugging a routing issue by comparing against per-tab.
+	try {
+		const url = new URL(window.location.href);
+		if (url.searchParams.get('shared_worker') === '0') {
+			return new PerTabMessageBusClient();
+		}
+	} catch {
+		// Non-URL-parseable location; proceed to detection.
+	}
+
+	// Lazy-load `detect` so a browser that never reaches shared mode
+	// (Safari < 16.4, enterprise CSP) doesn't pay the bundle cost for
+	// `worker-core` + `shared-worker-bridge` chunks on first paint.
+	const { trySharedWorker } = await import('./detect');
+	// Vite only rewrites the worker-URL pattern at the LITERAL
+	// `new SharedWorker(new URL('./worker.ts', import.meta.url), ...)`
+	// site — passing the URL through a function as a string would ship
+	// the worker as raw .ts and the browser would refuse the MIME.
+	// So the factory encapsulates the exact construction expression.
+	const bridge = await trySharedWorker(
+		() =>
+			new SharedWorker(new URL('./worker.ts', import.meta.url), {
+				type: 'module',
+				name: 'oxi-bus'
+			})
+	);
+	if (bridge) return bridge;
+
+	return new PerTabMessageBusClient();
+}
