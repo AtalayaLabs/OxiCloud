@@ -105,11 +105,64 @@ scenario_names() {
   } | sort -u
 }
 
+# ── Drift guard: a .hurl on disk that nothing runs ────────────────────────────
+#
+# Writing the scenario and forgetting to wire it in costs nothing at the time
+# and everything later: the file sits in the tree looking like coverage, passes
+# review as coverage, and is never executed once. Eight files had accumulated
+# that way before this check existed — including ones a plan document lists as
+# shipped deliverables.
+#
+# This dies rather than warns, for the reason the rest of the codebase prefers
+# a loud failure to a silent skip: a warning in a few hundred lines of suite
+# output is a warning nobody reads.
+#
+# Entries below are the pre-existing backlog, grandfathered so the suite stays
+# green while they are triaged one at a time. Each needs a decision — wire it
+# in, or delete it — and the list should only ever shrink. Do NOT add to it to
+# silence a new file; wire the file in instead.
+UNWIRED_KNOWN=(
+  admin_advisories              # expects specific OXICLOUD_* vars in server.env
+  backend_write_lock
+  caldav_tzid
+  caldav_vtodo
+  lowercase_usernames           # docs/plan/username-lowercase.md lists it as shipped
+  ops_banners
+  webdav_carddav_param_encoding
+  webdav_etag_cross_check       # cited as authoritative by docs/architecture/dates.md
+)
+
+check_no_unwired_scenarios() {
+  local wired unwired=() base
+  wired="$(grep -oE '\$API_DIR/[a-z0-9_-]+\.hurl' "$0" | sed 's|.*/||; s|\.hurl$||' | sort -u)"
+  for f in "$API_DIR"/*.hurl; do
+    base="$(basename "$f" .hurl)"
+    [[ "$base" == *_diag ]] && continue
+    printf '%s\n' "$wired" | grep -qx "$base" && continue
+    # shellcheck disable=SC2076
+    [[ " ${UNWIRED_KNOWN[*]} " == *" $base "* ]] && continue
+    unwired+=("$base")
+  done
+  if (( ${#unwired[@]} > 0 )); then
+    echo "[api-test] ERROR: scenario file(s) present but not wired into run.sh:" >&2
+    printf '  %s\n' "${unwired[@]}" >&2
+    echo "Add each to the scenario list so it actually runs." >&2
+    exit 1
+  fi
+}
+
+check_no_unwired_scenarios
+
 # Answered before anything is started — a listing that needs docker, postgres
 # and a server build is not a listing.
 if (( LIST_ONLY )); then
   echo "Selectable scenarios (substring match):"
   scenario_names | sed 's/^/  /'
+  if (( ${#UNWIRED_KNOWN[@]} > 0 )); then
+    echo
+    echo "Present but NOT run (backlog — see UNWIRED_KNOWN in run.sh):"
+    printf '  %s\n' "${UNWIRED_KNOWN[@]}"
+  fi
   exit 0
 fi
 
