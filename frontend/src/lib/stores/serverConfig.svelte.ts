@@ -41,7 +41,14 @@ const DEFAULT_FEATURES: ServerFeatures = {
 	faces: false,
 	video_thumbnails: true,
 	external_mounts: false,
-	markdown_collab: false
+	markdown_collab: false,
+	// Shared-worker bus — on by default (opt-out). The flag gates FE
+	// behaviour only; a client that can't reach the server to read it
+	// should default to the same mode the server would advertise.
+	// Browsers that can't actually run shared mode still fall back to
+	// per-tab via `trySharedWorker` detection — the flag never bypasses
+	// capability checks.
+	shared_worker_bus: true
 };
 
 const DEFAULT_STATUS: ServerStatus = {

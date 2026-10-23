@@ -1684,6 +1684,16 @@ export type FeaturesDto = {
      */
     search: boolean;
     /**
+     * Shared-worker-backed message bus — one `/api/rt/ws`
+     * connection per BROWSER rather than per tab. Server-side wire
+     * shape is identical; the flag gates FE behaviour only.
+     * Default `true` (opt-out). See
+     * `FeaturesConfig::enable_shared_worker_bus` and
+     * `docs/plan/message-bus-via-shared-worker.md` for the rollout
+     * story and fallback matrix.
+     */
+    shared_worker_bus: boolean;
+    /**
      * File sharing (public share links + user-to-user grants). See
      * `FeaturesConfig::enable_file_sharing`.
      */

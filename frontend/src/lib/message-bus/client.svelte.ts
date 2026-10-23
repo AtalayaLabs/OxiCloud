@@ -1288,6 +1288,26 @@ async function makeMessageBus(): Promise<MessageBusClient> {
 		// Non-URL-parseable location; proceed to detection.
 	}
 
+	// Operator opt-out via `OXICLOUD_ENABLE_SHARED_WORKER_BUS=false` —
+	// read directly from `/api/config` because this factory runs at
+	// module load, before `serverConfig.load()` is called by
+	// hooks.client.ts. Two same-origin fetches of /api/config (one
+	// here, one from serverConfig) are tolerable for a boot-time
+	// decision; the browser's HTTP cache usually elides the second.
+	// A fetch failure falls through to the default (on) — the server
+	// reports off explicitly, and failing-open to the richer mode
+	// matches the "opt-out" semantics.
+	try {
+		const { getConfig } = await import('$lib/api/generated/openapi/sdk.gen');
+		const cfg = await getConfig({ throwOnError: true });
+		if (cfg.features.shared_worker_bus === false) {
+			return new PerTabMessageBusClient();
+		}
+	} catch {
+		// Transient /api/config failure — proceed to detection. The
+		// mandatory fallback catches a per-tab-only browser anyway.
+	}
+
 	// Lazy-load `detect` so a browser that never reaches shared mode
 	// (Safari < 16.4, enterprise CSP) doesn't pay the bundle cost for
 	// `worker-core` + `shared-worker-bridge` chunks on first paint.

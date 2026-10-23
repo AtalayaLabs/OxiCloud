@@ -13897,7 +13897,8 @@
           "faces",
           "video_thumbnails",
           "external_mounts",
-          "markdown_collab"
+          "markdown_collab",
+          "shared_worker_bus"
         ],
         "properties": {
           "external_mounts": {
@@ -13927,6 +13928,10 @@
           "search": {
             "type": "boolean",
             "description": "Full-text and metadata search (`/api/search/*`). See\n`FeaturesConfig::enable_search`."
+          },
+          "shared_worker_bus": {
+            "type": "boolean",
+            "description": "Shared-worker-backed message bus — one `/api/rt/ws`\nconnection per BROWSER rather than per tab. Server-side wire\nshape is identical; the flag gates FE behaviour only.\nDefault `true` (opt-out). See\n`FeaturesConfig::enable_shared_worker_bus` and\n`docs/plan/message-bus-via-shared-worker.md` for the rollout\nstory and fallback matrix."
           },
           "sharing": {
             "type": "boolean",

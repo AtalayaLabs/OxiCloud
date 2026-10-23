@@ -1271,6 +1271,22 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
             );
         }
 
+        // Shared-worker bus — opt-out via `OXICLOUD_ENABLE_SHARED_WORKER_BUS=false`.
+        // The flag gates FE behaviour only; routes are unchanged. Log
+        // the resolved state only when it diverges from the default
+        // (`true`), so operators debugging a user report can grep for
+        // the explicit override without wading through per-boot
+        // noise on default-configured instances.
+        if !app_state.core.config.features.enable_shared_worker_bus {
+            tracing::info!(
+                target: "audit",
+                event = "config.feature_disabled",
+                feature = "shared_worker_bus",
+                "shared-worker bus disabled (OXICLOUD_ENABLE_SHARED_WORKER_BUS=false) — \
+                 clients will open one WebSocket per tab, not per browser",
+            );
+        }
+
         // Mount Nextcloud routes (uses its own Basic Auth middleware).
         // **Merged BEFORE the trace + request-id layers** so NC requests
         // get the same `request_id` / `user_id` / `client_ip` span
