@@ -48,6 +48,7 @@
 //! content the user has asked to delete.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -63,6 +64,7 @@ use crate::infrastructure::scheduler::{
 };
 use crate::infrastructure::services::audio_metadata_service::AudioMetadataService;
 use crate::infrastructure::services::blob_handler::BlobHandler;
+use crate::infrastructure::services::container_probe_service::{self, ContainerProbe};
 use crate::infrastructure::services::media_metadata_service::MediaMetadataService;
 
 pub const CONTENT_RESCAN_JOB_NAME: &str = "content_rescan";
@@ -225,6 +227,15 @@ pub struct ContentRescan {
     dedup: Arc<BlobHandler>,
     audio: Option<Arc<AudioMetadataService>>,
     media: Arc<MediaMetadataService>,
+    /// Resolves audio-vs-video for the four container types where magic
+    /// bytes cannot. `None` when ffprobe is absent — the container
+    /// default then stands and a later run picks it up, the same posture
+    /// video thumbnails already take.
+    probe: Option<Arc<ContainerProbe>>,
+    /// Tier-1 scratch for the probe's tempfile. ffprobe needs a real
+    /// path, and an MP4's `moov` atom may be at the END of the file, so
+    /// the head this job already read is not enough.
+    temp_dir: PathBuf,
 }
 
 impl ContentRescan {
@@ -233,13 +244,53 @@ impl ContentRescan {
         dedup: Arc<BlobHandler>,
         audio: Option<Arc<AudioMetadataService>>,
         media: Arc<MediaMetadataService>,
+        probe: Option<Arc<ContainerProbe>>,
+        temp_dir: PathBuf,
     ) -> Self {
         Self {
             pool,
             dedup,
             audio,
             media,
+            probe,
+            temp_dir,
         }
+    }
+
+    /// Resolve the audio-vs-video ambiguity for one content, returning
+    /// the corrected type when the probe disagrees with `mime`.
+    ///
+    /// Unlike every other correction in this job, this one is NOT driven
+    /// by a disagreement between detected and stored: an audio-only MP4
+    /// is stored as `video/mp4` and `infer` says `video/mp4` too, so the
+    /// two agree and are both wrong. The probe therefore has to run on
+    /// types that look settled — which is why it is keyed on the
+    /// EFFECTIVE type rather than on a mismatch.
+    ///
+    /// Cost is honest: a full blob fetch per ambiguous content per run,
+    /// because `moov` can be at the end of the file. Bounded by the four
+    /// types in the table and by `MAX_DERIVE_BYTES`.
+    async fn resolve_container_ambiguity(
+        &self,
+        hash: &str,
+        mime: &str,
+        size: i64,
+    ) -> Result<Option<&'static str>, DomainError> {
+        let Some(probe) = &self.probe else {
+            return Ok(None);
+        };
+        if !container_probe_service::is_ambiguous_container(mime) || size > MAX_DERIVE_BYTES {
+            return Ok(None);
+        }
+
+        let named = self
+            .dedup
+            .stream_blob_to_tempfile(hash, &self.temp_dir, ".media")
+            .await?;
+        let has_video = probe.has_video_stream(named.path()).await?;
+        drop(named);
+
+        Ok(container_probe_service::corrected_mime(mime, has_video))
     }
 
     pub async fn register_recoverable_job(
@@ -648,6 +699,69 @@ impl RecoverableJobHandler for ContentRescan {
                     targets.clear();
                 }
 
+                // ── Container ambiguity ──────────────────────────────
+                // Runs on the EFFECTIVE type, not on a mismatch: an
+                // audio-only MP4 is stored `video/mp4` and detected
+                // `video/mp4`, so everything above agrees and both are
+                // wrong. Only a stream probe can tell, so this is the
+                // one correction that fires on content the rest of the
+                // job considers settled.
+                let effective = targets
+                    .first()
+                    .map(|(_, m, _)| m.clone())
+                    .or_else(|| row.stored_types.first().cloned())
+                    .unwrap_or_default();
+
+                let mut container_corrected = false;
+                match self
+                    .resolve_container_ambiguity(&row.content_hash, &effective, row.size)
+                    .await
+                {
+                    Ok(Some(fixed)) => {
+                        container_corrected = true;
+                        // Per CONTENT, not per file: whether a stream
+                        // table holds video is a property of the bytes,
+                        // so unlike the envelope case the filename has
+                        // no say.
+                        targets = row
+                            .file_ids
+                            .iter()
+                            .zip(row.file_names.iter())
+                            .map(|(id, name)| {
+                                (*id, fixed.to_string(), category_order_for(name, fixed))
+                            })
+                            .collect();
+                    }
+                    Ok(None) => {}
+                    Err(e) if e.is_transient() => {
+                        return RunOutcome::from_domain_error(
+                            settled.as_ref().map(|c| c.as_bytes()),
+                            "container probe",
+                            &e,
+                        );
+                    }
+                    Err(e) => {
+                        // A probe that cannot read this one file is not
+                        // a reason to abandon the sweep, and not a
+                        // reason to guess: the container default stands.
+                        failures += 1;
+                        record_or_log(
+                            store,
+                            CONTENT_RESCAN_JOB_NAME,
+                            "container_probe_failed",
+                            "anomaly",
+                            None,
+                            serde_json::json!({
+                                "content_hash": row.content_hash,
+                                "mime_type":    effective,
+                                "error":        e.to_string(),
+                                "note": "audio-vs-video left at the container default",
+                            }),
+                        )
+                        .await;
+                    }
+                }
+
                 if targets.is_empty() {
                     if rederive == Rederive::Always {
                         let mime = row.stored_types.first().cloned().unwrap_or_default();
@@ -740,7 +854,14 @@ impl RecoverableJobHandler for ContentRescan {
                                             .collect::<Vec<_>>(),
                         "files_updated": affected,
                         "corrected":     !dry_run,
-                        "reason": if container_disambiguated {
+                        "reason": if container_corrected {
+                            // Resolved by reading the stream table, not
+                            // the signature. Both show up as a changed
+                            // container type and have different causes,
+                            // so an operator reading findings needs them
+                            // distinguished.
+                            "stream_probe"
+                        } else if container_disambiguated {
                             "container_extension"
                         } else {
                             "magic_bytes"
@@ -1067,6 +1188,8 @@ mod tests {
                 Arc::new(BlobHandler::new_for_test(pool.clone())),
                 std::env::temp_dir(),
             )),
+            None,
+            std::env::temp_dir(),
         );
         assert!(
             job.is_backend_writer(),
@@ -1224,8 +1347,14 @@ mod integration_tests {
             dedup.clone(),
             std::env::temp_dir(),
         ));
-        let handler: Arc<dyn RecoverableJobHandler> =
-            Arc::new(ContentRescan::new(pool.clone(), dedup, None, media));
+        let handler: Arc<dyn RecoverableJobHandler> = Arc::new(ContentRescan::new(
+            pool.clone(),
+            dedup,
+            None,
+            media,
+            None,
+            std::env::temp_dir(),
+        ));
         let outcome =
             crate::infrastructure::scheduler::run_or_resume(handler, provider, args).await;
         assert!(outcome.is_ok(), "run must complete: {outcome:?}");
@@ -1355,8 +1484,14 @@ mod integration_tests {
             dedup.clone(),
             std::env::temp_dir(),
         ));
-        let handler: Arc<dyn RecoverableJobHandler> =
-            Arc::new(ContentRescan::new(pool.clone(), dedup, None, media));
+        let handler: Arc<dyn RecoverableJobHandler> = Arc::new(ContentRescan::new(
+            pool.clone(),
+            dedup,
+            None,
+            media,
+            None,
+            std::env::temp_dir(),
+        ));
         let args = JobRunArgs::new(
             [(
                 "rederive".to_string(),

@@ -70,6 +70,7 @@ use crate::infrastructure::repositories::pg::{
 use crate::infrastructure::services::audio_metadata_service::AudioMetadataService;
 use crate::infrastructure::services::blob_handler::BlobHandler;
 use crate::infrastructure::services::chunked_upload_service::ChunkedUploadService;
+use crate::infrastructure::services::container_probe_service::ContainerProbe;
 use crate::infrastructure::services::ffmpeg_video_frame_service::{
     FfmpegVideoFrameService, NoopVideoFrameService,
 };
@@ -1726,12 +1727,43 @@ impl AppServiceFactory {
         // the job carries no extraction logic of its own. Audio is
         // `Option` because the feature can be off; the job then simply
         // skips the audio arm.
+        //
+        // The container probe is Option for the same reason video
+        // thumbnails are: ffprobe may not be installed. Absent, the four
+        // ambiguous container types keep their default reading and a
+        // later run corrects them — nothing fails and nothing is
+        // guessed.
+        let container_probe = {
+            let ffprobe_path =
+                ContainerProbe::path_from_ffmpeg(&self.config.video_thumbnails.ffmpeg_path);
+            if ContainerProbe::is_available(&ffprobe_path) {
+                tracing::info!(
+                    "🎚️  content_rescan can resolve audio-vs-video containers (ffprobe '{}')",
+                    ffprobe_path
+                );
+                Some(Arc::new(ContainerProbe::new(
+                    ffprobe_path,
+                    2,
+                    std::time::Duration::from_secs(self.config.video_thumbnails.timeout_secs),
+                )))
+            } else {
+                tracing::info!(
+                    "🎚️  ffprobe not found at '{}' — content_rescan will leave audio-only \
+                     MP4/WebM/Matroska and Theora-in-Ogg at their container default",
+                    ffprobe_path
+                );
+                None
+            }
+        };
+
         let _ = Arc::new(
             crate::infrastructure::services::content_rescan_service::ContentRescan::new(
                 maintenance_pool.clone(),
                 core.blob_handler.clone(),
                 core.audio_metadata_service.clone(),
                 core.media_metadata_service.clone(),
+                container_probe,
+                self.config.temp_dir.clone(),
             ),
         )
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
