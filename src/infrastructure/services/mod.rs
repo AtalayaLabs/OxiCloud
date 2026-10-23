@@ -14,6 +14,7 @@ pub mod chunked_upload_service;
 pub mod collab_idle_gc_service;
 pub mod compression_service;
 pub mod consistency_batch_service;
+pub mod content_rescan_service;
 pub mod db_pool_monitor;
 pub mod device_codes_cleanup_service;
 pub mod dpop_nonce_service;

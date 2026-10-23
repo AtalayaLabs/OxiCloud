@@ -3820,8 +3820,13 @@ pub async fn trigger_job(
 /// hardcoded allowlist (rather than a flag on `JobEntry`) until
 /// there's a second long-running tenant that justifies the plumbing.
 /// See the comment in `trigger_job` for why detach matters.
+///
+/// `content_rescan` is that second tenant: it reads the head of every
+/// distinct content in the corpus, so a synchronous trigger would block
+/// the request for the length of a full-corpus sweep — which is the bug
+/// it exists to fix in the two re-extract endpoints it replaces.
 fn is_detached_job(name: &str) -> bool {
-    matches!(name, "backend_migration")
+    matches!(name, "backend_migration" | "content_rescan")
 }
 
 /// `POST /api/admin/jobs/{name}/cancel` — cooperative cancel of the
