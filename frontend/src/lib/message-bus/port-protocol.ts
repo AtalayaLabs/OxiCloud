@@ -117,6 +117,22 @@ export interface SetLogLevelMessage {
 	level: LogLevel;
 }
 
+/** Tab hands the worker a ready-to-use `Sec-WebSocket-Protocol` value
+ *  for the next WS upgrade. The tab fetched the ticket itself via
+ *  `apiFetch` — DPoP, CSRF, session cookie, refresh-on-401 all handled
+ *  on the tab side where the browser's auth machinery lives. The
+ *  worker never speaks HTTP.
+ *
+ *  `nonce === 0` indicates the initial ticket sent at handshake time.
+ *  Non-zero values echo a `need-ticket` nonce: the worker uses them
+ *  to ignore a late reply from a port after another port already
+ *  provided a ticket for the same reconnect round. */
+export interface ProvideTicketMessage {
+	kind: 'provide-ticket';
+	subprotocol: string;
+	nonce: number;
+}
+
 export type PortTabToWorkerMessage =
 	| HelloMessage
 	| SubscribeMessage
@@ -128,7 +144,8 @@ export type PortTabToWorkerMessage =
 	| SendBinaryMessage
 	| CallMessage
 	| PingMessage
-	| SetLogLevelMessage;
+	| SetLogLevelMessage
+	| ProvideTicketMessage;
 
 // ============================================================
 // Worker → Tab envelopes
@@ -207,6 +224,16 @@ export interface PingPongMessage {
 	latencyMs: number;
 }
 
+/** Worker asks a connected port to fetch a fresh `/api/rt/ticket` and
+ *  reply with a `provide-ticket` envelope. Sent on every reconnect
+ *  attempt — the previous ticket is already consumed by the dropped
+ *  WS. `nonce` must round-trip in the reply so the worker can ignore
+ *  late replies after another port already served this round. */
+export interface NeedTicketMessage {
+	kind: 'need-ticket';
+	nonce: number;
+}
+
 /** Worker-side `busLog` fan-out. The worker replaces its `loglevel`
  *  handler with an emitter that packages every log call as this
  *  envelope and sends it to every connected port. Each tab's bridge
@@ -239,7 +266,8 @@ export type PortWorkerToTabMessage =
 	| BinaryMessage
 	| WriteDeniedMessage
 	| PingPongMessage
-	| LogMessage;
+	| LogMessage
+	| NeedTicketMessage;
 
 /** Full union of every port envelope — tab-to-worker and
  *  worker-to-tab. The runtime typeguard `parsePortMessage` returns
@@ -266,7 +294,8 @@ const TAB_TO_WORKER_KINDS = new Set<string>([
 	'send-binary',
 	'call',
 	'ping',
-	'set-log-level'
+	'set-log-level',
+	'provide-ticket'
 ]);
 
 const WORKER_TO_TAB_KINDS = new Set<string>([
@@ -279,7 +308,8 @@ const WORKER_TO_TAB_KINDS = new Set<string>([
 	'binary',
 	'write-denied',
 	'ping-pong',
-	'log'
+	'log',
+	'need-ticket'
 ]);
 
 const LOG_LEVELS = new Set<string>(['trace', 'debug', 'info', 'warn', 'error']);
@@ -359,6 +389,11 @@ export function parsePortMessage(raw: unknown): PortMessage | null {
 			if (!LOG_LEVELS.has(obj.level)) return null;
 			return raw as SetLogLevelMessage;
 		}
+		case 'provide-ticket': {
+			if (typeof obj.subprotocol !== 'string') return null;
+			if (typeof obj.nonce !== 'number') return null;
+			return raw as ProvideTicketMessage;
+		}
 		case 'hello-ack': {
 			if (typeof obj.reqId !== 'number') return null;
 			if (typeof obj.state !== 'string') return null;
@@ -414,6 +449,10 @@ export function parsePortMessage(raw: unknown): PortMessage | null {
 			if (!Array.isArray(obj.args)) return null;
 			if (typeof obj.ts !== 'number') return null;
 			return raw as LogMessage;
+		}
+		case 'need-ticket': {
+			if (typeof obj.nonce !== 'number') return null;
+			return raw as NeedTicketMessage;
 		}
 	}
 	// The `TAB_TO_WORKER_KINDS.has(kind) || WORKER_TO_TAB_KINDS.has(kind)` fast-reject above

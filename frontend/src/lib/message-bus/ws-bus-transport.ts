@@ -1,7 +1,14 @@
 // `BusTransport` implementation that drives one real `/api/rt/ws`
-// connection, with ticket exchange + reconnect/backoff/circuit
-// breaker. Lives inside the SharedWorker (`worker.ts` instantiates
-// it and passes it to `WorkerCore`).
+// connection with reconnect/backoff/circuit-breaker. Lives inside
+// the SharedWorker (`worker.ts` instantiates it and passes it to
+// `WorkerCore`).
+//
+// The transport makes NO HTTP calls. The ticket for the next WS
+// upgrade arrives from the tab side via `provideTicket(subprotocol)`
+// — the tab fetched it through `apiFetch` (DPoP + CSRF + session
+// cookie + refresh-on-401 all handled on the tab side where the
+// auth machinery lives). On reconnect the transport fires
+// `onNeedTicket(nonce)` to ask any attached port for a fresh one.
 //
 // Mirrors the per-tab client's connection logic in
 // `client.svelte.ts`, minus:
@@ -14,10 +21,8 @@
 //   * Page visibility — a shared worker has no `document`; a
 //     backgrounded tab shouldn't drop the shared WS for the OTHER
 //     tabs on the browser.
-//   * `apiJson` / `getCsrfHeaders` / `session.load()` — the worker
-//     has no document.cookie / Svelte stores. The tab bridge
-//     forwards the CSRF token on `hello` (Gate 2b2's wiring);
-//     this transport takes it in the constructor.
+//   * HTTP / cookies / CSRF / DPoP — all handled on the tab side.
+//     The worker speaks WS only, with a tab-forwarded ticket.
 //
 // Companions:
 //   * `worker-core.ts`     — the layer above (port routing).
@@ -43,13 +48,6 @@ import type RtRevokedParams from '$lib/api/generated/asyncapi/RtRevokedParams';
 
 const busLog = log.getLogger('oxi:message-bus:worker');
 
-/** Response body from `POST /api/rt/ticket`. */
-interface RtTicketResponse {
-	ticket: string;
-	expires_in_seconds: number;
-	subprotocol: string;
-}
-
 /** Reconnect backoff — 250 ms doubling with full jitter, cap 30 s.
  *  Lifted verbatim from the per-tab client so the two paths' retry
  *  cadence stays identical. */
@@ -64,30 +62,28 @@ const MAX_CONSECUTIVE_FAILURES = 10;
  *  circuit-breaker counters. */
 const MIN_STABLE_MS = 3_000;
 
+/** How long we wait for a tab to answer `need-ticket` before giving
+ *  up and scheduling another reconnect round. The tab's ticket POST
+ *  itself has its own timeout; this is the port round-trip budget. */
+const NEED_TICKET_TIMEOUT_MS = 5_000;
+
 interface PendingCall {
 	resolve: (result: unknown) => void;
 	reject: (error: MessageBusError) => void;
 }
 
-/** Factory options for the transport. Everything is injectable so
- *  Vitest can drive the implementation against a mocked WS + fetch. */
+/** Factory options. The WS URL is the only mandatory config; the
+ *  constructor + listener registration are both injectable so Vitest
+ *  can drive the implementation against a fake. */
 export interface WsBusTransportOptions {
 	/** `wss://host/api/rt/ws`. */
 	wsUrl: string;
-	/** `https://host/api/rt/ticket`. */
-	ticketUrl: string;
-	/** CSRF token the tab forwarded via `hello`. May be the empty
-	 *  string if the tab is unauthenticated; the ticket POST then
-	 *  takes a 403 and the circuit breaker trips on its own. */
-	csrfToken: string;
 	/** Injectable WebSocket constructor; tests pass a stub. */
 	WebSocketCtor?: typeof WebSocket;
-	/** Injectable fetch; tests pass a stub. */
-	fetchFn?: typeof fetch;
 }
 
 /**
- * Single `/api/rt/ws` connection with ticket-based upgrade and the
+ * Single `/api/rt/ws` connection with ticket-via-port upgrade and the
  * same reconnect contract as the per-tab client.
  */
 export class WsBusTransport implements BusTransport {
@@ -104,26 +100,25 @@ export class WsBusTransport implements BusTransport {
 	#consecutiveFailures = 0;
 	#stableTimer: ReturnType<typeof setTimeout> | null = null;
 
-	// JSON-RPC pending — a flat Map keyed by upstream reqId. The
-	// transport owns its own reqId space (not shared with the tab
-	// side), so no port disambiguation is needed.
+	// Nonce space for `need-ticket` round-trips. Each `#askForTicket`
+	// bumps it; the matching `provideTicket(nonce)` call must echo
+	// the current nonce or the transport ignores the late reply.
+	// Marked -1 after consumption so a duplicate `provideTicket` for
+	// the same nonce (two tabs both answering a `need-ticket` fan-out)
+	// doesn't open a second WS.
+	#ticketNonce = 0;
+	#ticketConsumed = false;
+	/** Timer that fires if no tab replies to `need-ticket` within
+	 *  `NEED_TICKET_TIMEOUT_MS`. Cleared on reply or on close. */
+	#needTicketTimer: ReturnType<typeof setTimeout> | null = null;
+
 	readonly #pending = new Map<number, PendingCall>();
 	#nextId = 1;
 
-	// Known-active topics. Tracked so a reconnect replays them.
-	// Not refcounted — the WorkerCore above handles that; this
-	// is just "what are we subscribed to upstream right now".
 	readonly #activeTopics = new Set<string>();
 
-	// reqId → topic lookup for in-flight subscribe frames. On a
-	// `success` response the dispatcher consults this map first;
-	// a hit resolves the topic waiter below, a miss falls through
-	// to the generic `#pending` dispatch.
 	readonly #pendingSubscribeFrames = new Map<number, string>();
 
-	// topic → resolver for `.subscribe(topic)`. One in-flight
-	// waiter per topic; `.subscribe()` returns the existing promise
-	// if a prior caller is already waiting on the same topic.
 	readonly #topicWaiters = new Map<
 		string,
 		{
@@ -133,27 +128,19 @@ export class WsBusTransport implements BusTransport {
 		}
 	>();
 
-	// Listener registries. Multiple WorkerCore wirings is unusual
-	// (we expect exactly one), but the interface promises a disposer
-	// so support N for free.
 	readonly #eventListeners = new Set<(topic: string, params: RtEventParams) => void>();
 	readonly #revokedListeners = new Set<(topic: string, params: RtRevokedParams) => void>();
 	readonly #binaryListeners = new Set<(fileId: string, bytes: ArrayBuffer) => void>();
 	readonly #writeDeniedListeners = new Set<(fileId: string, params: RtWriteDeniedParams) => void>();
 	readonly #stateListeners = new Set<(s: ConnectionState) => void>();
+	/** `onNeedTicket` listeners — fired when the transport needs a tab
+	 *  to fetch and provide a fresh ticket. The nonce the callback
+	 *  receives MUST be echoed back in `provideTicket(sp, nonce)`. */
+	readonly #needTicketListeners = new Set<(nonce: number) => void>();
 
 	constructor(options: WsBusTransportOptions) {
 		this.#opts = {
 			WebSocketCtor: WebSocket,
-			// The generated API client can't live in a SharedWorker —
-			// it depends on Svelte stores (session, serverStatus) that
-			// have no counterpart here. The worker makes exactly one
-			// authenticated POST (`/api/rt/ticket`); the DPoP service
-			// worker intercepts and signs it, and the cookie is
-			// auto-included on same-origin. Nothing else goes through
-			// `fetch` from this file.
-			// eslint-disable-next-line no-restricted-globals
-			fetchFn: fetch.bind(globalThis),
 			...options
 		};
 	}
@@ -172,9 +159,6 @@ export class WsBusTransport implements BusTransport {
 
 	subscribe(topic: string): Promise<RtSubscribeAck> {
 		this.#activeTopics.add(topic);
-		// Collapse concurrent subscribe(topic) calls into one in-flight
-		// promise. The second caller gets the same ack as the first —
-		// matches the per-tab client's `#subs` entry reuse.
 		const existing = this.#topicWaiters.get(topic);
 		if (existing) return existing.promise;
 
@@ -189,10 +173,8 @@ export class WsBusTransport implements BusTransport {
 		if (this.#state === 'connected') {
 			this.#sendSubscribeFrame(topic);
 		} else if (this.#state === 'idle' || this.#state === 'disconnected') {
-			this.#connect();
-			// #onOpen will send the subscribe frame when it fires.
+			this.#askForTicket();
 		} else if (this.#state === 'unavailable') {
-			// Circuit breaker is tripped; reject synchronously (next tick).
 			queueMicrotask(() => {
 				const w = this.#topicWaiters.get(topic);
 				if (!w) return;
@@ -200,8 +182,6 @@ export class WsBusTransport implements BusTransport {
 				w.reject(synthError('not_connected'));
 			});
 		}
-		// state === 'connecting' — the subscribe frame will fire on
-		// #onOpen; nothing more to do here.
 		return promise;
 	}
 
@@ -287,49 +267,89 @@ export class WsBusTransport implements BusTransport {
 	}
 
 	// ========================================================
+	// Ticket flow — the tab provides, the worker consumes.
+	// ========================================================
+
+	/** Register a listener for `need-ticket` events. The listener's
+	 *  caller (`WorkerCore`) picks a port and sends a `need-ticket`
+	 *  envelope carrying the nonce; the port replies via
+	 *  `provideTicket(subprotocol, nonce)`. */
+	onNeedTicket(cb: (nonce: number) => void): () => void {
+		this.#needTicketListeners.add(cb);
+		return () => this.#needTicketListeners.delete(cb);
+	}
+
+	/** Hand the transport a ready-to-use `Sec-WebSocket-Protocol`
+	 *  value. `nonce` must echo the current ticket round — late
+	 *  replies after another port already served are ignored.
+	 *  nonce === 0 is the initial hello-time ticket. */
+	provideTicket(subprotocol: string, nonce: number): void {
+		if (nonce !== 0 && nonce !== this.#ticketNonce) {
+			busLog.debug('provideTicket ignored — superseded nonce', {
+				supplied: nonce,
+				current: this.#ticketNonce
+			});
+			return;
+		}
+		if (this.#ticketConsumed) {
+			busLog.debug('provideTicket ignored — ticket already consumed this round', {
+				supplied: nonce,
+				current: this.#ticketNonce
+			});
+			return;
+		}
+		if (this.#state !== 'connecting' && this.#state !== 'idle' && this.#state !== 'disconnected') {
+			busLog.debug('provideTicket ignored — not in a connect window', { state: this.#state });
+			return;
+		}
+		this.#ticketConsumed = true;
+		// Clear the pending need-ticket timeout; a port answered.
+		if (this.#needTicketTimer !== null) {
+			clearTimeout(this.#needTicketTimer);
+			this.#needTicketTimer = null;
+		}
+		this.#openWithSubprotocol(subprotocol);
+	}
+
+	// ========================================================
 	// Connection management
 	// ========================================================
 
-	#connect(): void {
+	/** Ask the above layer (WorkerCore → one port) for a ticket. */
+	#askForTicket(): void {
 		if (this.#state === 'connecting' || this.#state === 'connected') return;
 		if (this.#state === 'unavailable') return;
 		this.#setState('connecting');
-		const gen = ++this.#connectGen;
-		void this.#exchangeAndOpen(gen);
-	}
-
-	async #exchangeAndOpen(gen: number): Promise<void> {
-		let subprotocol: string;
-		try {
-			const res = await this.#opts.fetchFn(this.#opts.ticketUrl, {
-				method: 'POST',
-				credentials: 'include',
-				headers: {
-					'Content-Type': 'application/json',
-					...(this.#opts.csrfToken ? { 'X-CSRF-Token': this.#opts.csrfToken } : {})
-				}
-			});
-			if (!res.ok) {
-				const err = { status: res.status, message: `ticket_${res.status}` };
-				if (gen === this.#connectGen) this.#onTicketFailure(err);
+		this.#ticketNonce += 1;
+		this.#ticketConsumed = false;
+		const n = this.#ticketNonce;
+		for (const cb of this.#needTicketListeners) {
+			try {
+				cb(n);
+			} catch (err) {
+				busLog.warn('need-ticket listener threw', { err });
+			}
+		}
+		if (this.#needTicketTimer !== null) clearTimeout(this.#needTicketTimer);
+		this.#needTicketTimer = setTimeout(() => {
+			this.#needTicketTimer = null;
+			if (this.#state !== 'connecting') return;
+			// No port answered in time. Count as a failure and retry
+			// through the normal backoff path — a port might attach
+			// in the meantime.
+			this.#consecutiveFailures += 1;
+			busLog.warn('need-ticket timed out', { nonce: n });
+			if (this.#consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+				this.#setState('unavailable');
 				return;
 			}
-			const body = (await res.json()) as RtTicketResponse;
-			subprotocol = body.subprotocol;
-			busLog.debug('ticket issued', { expires_in_seconds: body.expires_in_seconds });
-		} catch (err) {
-			if (gen === this.#connectGen) this.#onTicketFailure(err);
-			return;
-		}
-		if (this.#state !== 'connecting' || gen !== this.#connectGen) {
-			busLog.debug('ticket exchange superseded — discarding', {
-				state: this.#state,
-				gen,
-				current: this.#connectGen
-			});
-			return;
-		}
+			this.#setState('disconnected');
+			if (this.#activeTopics.size > 0) this.#scheduleReconnect();
+		}, NEED_TICKET_TIMEOUT_MS);
+	}
 
+	#openWithSubprotocol(subprotocol: string): void {
+		const gen = ++this.#connectGen;
 		let ws: WebSocket;
 		try {
 			ws = new this.#opts.WebSocketCtor(this.#opts.wsUrl, [subprotocol]);
@@ -341,7 +361,7 @@ export class WsBusTransport implements BusTransport {
 		}
 		this.#ws = ws;
 		ws.binaryType = 'arraybuffer';
-		const isLive = () => this.#ws === ws;
+		const isLive = () => this.#ws === ws && gen === this.#connectGen;
 		ws.onopen = () => {
 			if (!isLive()) {
 				busLog.debug('onopen from superseded socket — closing it');
@@ -363,30 +383,9 @@ export class WsBusTransport implements BusTransport {
 		};
 	}
 
-	#onTicketFailure(err: unknown): void {
-		// 403 = terminal, same as per-tab client. 401 falls through to
-		// the reconnect path — a session may be restored in another
-		// tab and we recover.
-		if ((err as { status?: number } | null)?.status === 403) {
-			busLog.warn('ticket refused — not retrying', { err });
-			this.#setState('unavailable');
-			return;
-		}
-		busLog.warn('ticket exchange failed — reconnect scheduled', { err });
-		this.#setState('disconnected');
-		this.#consecutiveFailures += 1;
-		if (this.#consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-			this.#setState('unavailable');
-			return;
-		}
-		if (this.#activeTopics.size > 0) this.#scheduleReconnect();
-	}
-
 	#onOpen(): void {
 		busLog.debug('connected');
 		this.#setState('connected');
-		// Stable-connection timer: reset counters only after
-		// MIN_STABLE_MS to keep the circuit breaker meaningful.
 		if (this.#stableTimer !== null) clearTimeout(this.#stableTimer);
 		this.#stableTimer = setTimeout(() => {
 			this.#stableTimer = null;
@@ -396,10 +395,6 @@ export class WsBusTransport implements BusTransport {
 				busLog.debug('stable connection — reconnect counters reset');
 			}
 		}, MIN_STABLE_MS);
-		// Send subscribe for every active topic. First-connect: the
-		// topic waiter in `#topicWaiters` resolves when the ack
-		// arrives. Reconnect: no waiter (previous subscribe already
-		// resolved before the drop), the ack is logged.
 		for (const topic of this.#activeTopics) {
 			this.#sendSubscribeFrame(topic);
 		}
@@ -428,8 +423,6 @@ export class WsBusTransport implements BusTransport {
 			clearTimeout(this.#stableTimer);
 			this.#stableTimer = null;
 		}
-		// Reject every pending call AND any topic waiter still
-		// awaiting its ack.
 		const closed = synthError('ws_closed');
 		for (const { reject } of this.#pending.values()) reject(closed);
 		this.#pending.clear();
@@ -451,14 +444,13 @@ export class WsBusTransport implements BusTransport {
 		this.#reconnectTimer = setTimeout(() => {
 			this.#reconnectTimer = null;
 			if (this.#state === 'unavailable') return;
-			this.#connect();
+			this.#askForTicket();
 		}, d);
 	}
 
 	#backoffWithJitter(): number {
 		const base = Math.min(this.#backoffMs, RECONNECT_MAX_MS);
 		this.#backoffMs = Math.min(base * 2, RECONNECT_MAX_MS);
-		// Full jitter: pick in [0, base].
 		return Math.floor(Math.random() * base);
 	}
 
@@ -482,15 +474,12 @@ export class WsBusTransport implements BusTransport {
 			this.#dispatchBinary(ev.data);
 			return;
 		}
-		// `Blob` fallback — shouldn't happen (we set binaryType), but
-		// handle defensively.
 		busLog.debug('unexpected message type', { data: ev.data });
 	}
 
 	#dispatchJson(frame: IncomingFrame): void {
 		switch (frame.kind) {
 			case 'success': {
-				// Subscribe acks route to the per-topic waiter first.
 				const topic = this.#pendingSubscribeFrames.get(frame.id);
 				if (topic !== undefined) {
 					this.#pendingSubscribeFrames.delete(frame.id);
@@ -499,8 +488,6 @@ export class WsBusTransport implements BusTransport {
 						this.#topicWaiters.delete(topic);
 						w.resolve(frame.result as RtSubscribeAck);
 					} else {
-						// Replay ack after an earlier successful subscribe
-						// — nobody waiting; log and drop.
 						busLog.debug('subscribe replay acked', { topic });
 					}
 					return;
@@ -516,7 +503,6 @@ export class WsBusTransport implements BusTransport {
 					busLog.warn('server-sent error with null id', { err: frame.error });
 					return;
 				}
-				// Subscribe errors also route to the per-topic waiter.
 				const topic = this.#pendingSubscribeFrames.get(frame.id);
 				if (topic !== undefined) {
 					this.#pendingSubscribeFrames.delete(frame.id);
@@ -544,9 +530,6 @@ export class WsBusTransport implements BusTransport {
 				return;
 			}
 			case 'event': {
-				// Topic lives inside params — the frame envelope carries
-				// no top-level topic field. Same shape the per-tab client
-				// dispatches against.
 				const topic = (frame.params as unknown as { topic?: string }).topic;
 				if (typeof topic !== 'string') {
 					busLog.debug('event missing params.topic', { frame });
@@ -561,7 +544,6 @@ export class WsBusTransport implements BusTransport {
 					busLog.debug('revoked missing params.topic', { frame });
 					return;
 				}
-				// Mirror the server's side effect — the sub is gone upstream.
 				this.#activeTopics.delete(topic);
 				for (const l of this.#revokedListeners) l(topic, frame.params);
 				return;
@@ -575,11 +557,6 @@ export class WsBusTransport implements BusTransport {
 		}
 	}
 
-	/** Binary wire format is 1 byte `kind` + 16 bytes UUID + payload.
-	 *  Pull the file-id out of bytes [1..17] without pulling in the
-	 *  whole `wireCodec` module — the worker bundle stays dep-free
-	 *  of the collab layer the per-tab client already keeps isolated
-	 *  the same way (see `#formatUuidFromBytes` there). */
 	#dispatchBinary(bytes: ArrayBuffer): void {
 		const u8 = new Uint8Array(bytes);
 		if (u8.length < 17) {

@@ -65,6 +65,8 @@ describe('parsePortMessage — roundtrip for every envelope kind', () => {
 			namespace: 'oxi:message-bus',
 			level: 'debug'
 		} satisfies SetLogLevelMessage,
+		{ kind: 'provide-ticket', subprotocol: 'oxi.ticket.abc', nonce: 1 },
+		{ kind: 'provide-ticket', subprotocol: 'oxi.ticket.primer', nonce: 0 },
 		// Worker → Tab
 		{
 			kind: 'hello-ack',
@@ -102,7 +104,8 @@ describe('parsePortMessage — roundtrip for every envelope kind', () => {
 			namespace: 'oxi:message-bus',
 			args: ['subscribed', { topic: 'folder:abc' }],
 			ts: 1_700_000_000_000
-		} satisfies LogMessage
+		} satisfies LogMessage,
+		{ kind: 'need-ticket', nonce: 1 }
 	];
 
 	for (const sample of samples) {
