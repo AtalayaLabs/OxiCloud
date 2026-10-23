@@ -89,6 +89,18 @@ COMMENT ON COLUMN audio.content_metadata.extracted_at IS
 -- Rows whose file has since vanished cannot be mapped to content at all
 -- (the join drops them); they were already unreachable through the readers,
 -- which all resolve file → hash.
+--
+-- ⚠ The timeout lift is not optional. Migrations run on the PRIMARY pool,
+-- which sets `statement_timeout = 30s` by default
+-- (`OXICLOUD_DB_STATEMENT_TIMEOUT_SECS`, `infrastructure/db.rs`), and this
+-- INSERT sorts the whole metadata table — unbounded in corpus size. Exceeding
+-- it rolls the migration back and the server never finishes booting, on every
+-- restart. That is not hypothetical: `20261017000002_repair_existing_refcount_drift`
+-- carries the same lift for the same reason, after it happened to an operator.
+-- `SET LOCAL` is transaction-scoped and resets at COMMIT, so later migrations
+-- and the running app keep the safety net.
+SET LOCAL statement_timeout = 0;
+
 INSERT INTO audio.content_metadata
     (source_hash, title, artist, album, album_artist, genre, track_number,
      disc_number, year, duration_secs, bitrate, sample_rate, channels,
