@@ -498,6 +498,11 @@ HURL_FILES=( \
   "$API_DIR/caldav_vtodo.hurl" \
   "$API_DIR/caldav_calendar_query.hurl" \
   "$API_DIR/playlists.hurl" \
+  # Adjacent to playlists.hurl because it drives the same
+  # /api/playlists/audio-metadata endpoint — but it is about the
+  # EXTRACTION behind it: that ID3 tags reach the wire at all, and that
+  # one parse serves every copy of the content.
+  "$API_DIR/audio_id3_extraction.hurl" \
   "$API_DIR/public_shares.hurl" \
   "$API_DIR/anonymous_share_session.hurl" \
   "$API_DIR/permissions.hurl" \
