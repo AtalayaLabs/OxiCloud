@@ -714,6 +714,25 @@ DI (`src/common/di.rs`, template `:1550-1557`): `maintenance_pool`,
 **Changelog note:** `rederive=always` is the faithful replacement of the two
 buttons; the default `changed` deliberately does far less.
 
+⚠ **Say that loudly, because there is already a case where the default does
+nothing at all.** The ID3v2.4 year fix (`5466a9f7`) left every existing
+`audio.content_metadata` row with `year = NULL`: `id3::Tag::year()` reads
+only the v2.3 TYER, so the value was silently dropped for anything a modern
+encoder wrote. Those rows need re-deriving — but the MIME type of an MP3
+was always `audio/mpeg` and does not change, so `rederive=changed` skips
+every one of them. Only `rederive=always` repairs it.
+
+Nor does the corpus self-heal: `on_file_created` early-returns on
+`!is_new_blob`, so re-uploading the same song is a dedup hit that never
+re-extracts. Until this job ships the repair path is
+`POST /api/admin/audio/metadata/reextract`, which already walks
+`DISTINCT blob_hash` and whose upsert overwrites `year` — it just blocks
+the HTTP request while it runs.
+
+The general lesson for the changelog: a fix to an EXTRACTOR is invisible to
+`changed`, which keys on the sniffed type. Every such fix has to tell
+operators to run `always`.
+
 ## B.8 Verification
 
 **Unit (no DB)** — these catch the real bugs:
