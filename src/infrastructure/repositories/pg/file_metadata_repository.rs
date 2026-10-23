@@ -50,6 +50,30 @@ impl FileMetadataRepository {
         Self { pool }
     }
 
+    /// Can content of this type legitimately HAVE a row in
+    /// `storage.content_metadata`?
+    ///
+    /// This is the table's own question, which is why it lives on the
+    /// repository that owns the table rather than on whichever service
+    /// happens to extract today. `content_rescan` consults it to decide
+    /// whether a retyped content's existing row has become a lie and
+    /// must be dropped — so a `false` here is a DELETE.
+    ///
+    /// ⚠ **Extend this the moment a new extractor writes this table.**
+    /// Document creation dates are the known next case: a `.docx` date is
+    /// the same fact as an EXIF capture date and lands in the same
+    /// `created_at` column — which is exactly why the table and column
+    /// are named for content rather than for photos. Add the predicate
+    /// here *in the same change* as the extractor, or `content_rescan`
+    /// will delete every document's metadata on its next sweep, silently
+    /// and corpus-wide, because the type is not image/video.
+    ///
+    /// The failure mode is one-directional and quiet: nothing errors, the
+    /// rows simply stop existing.
+    pub fn applies_to(mime: &str) -> bool {
+        mime.starts_with("image/") || mime.starts_with("video/")
+    }
+
     /// Insert or update the facts parsed from one blob's content.
     ///
     /// Keyed by CONTENT: N copies of a photo share one row, and a copy

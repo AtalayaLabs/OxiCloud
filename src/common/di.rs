@@ -1712,6 +1712,31 @@ impl AppServiceFactory {
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
         .await;
 
+        // Re-identify stored content from its magic bytes and correct the
+        // type (plus the category it sorts and filters under), then
+        // re-extract metadata for whatever moved.
+        //
+        // **Interval `None` — on demand only.** A run can read the head of
+        // every distinct content in the corpus, which on a metered backend
+        // is a bill. Its name deliberately avoids the `_consistency`
+        // suffix for the same reason: `consistency_batch_service`
+        // auto-enrols anything ending that way into the weekly sweep.
+        //
+        // Takes both metadata services and calls their public methods —
+        // the job carries no extraction logic of its own. Audio is
+        // `Option` because the feature can be off; the job then simply
+        // skips the audio arm.
+        let _ = Arc::new(
+            crate::infrastructure::services::content_rescan_service::ContentRescan::new(
+                maintenance_pool.clone(),
+                core.blob_handler.clone(),
+                core.audio_metadata_service.clone(),
+                core.media_metadata_service.clone(),
+            ),
+        )
+        .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)
+        .await;
+
         // Its file-keyed twin: `ext-{file_id}.jpg` previews the user uploaded,
         // which no copy path duplicates today. Separate job, separate keying —
         // routing these into the content-keyed table would share one user's

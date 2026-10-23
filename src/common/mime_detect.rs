@@ -90,6 +90,16 @@ fn generic_envelope(detected: &str) -> bool {
 /// proved the envelope, so the only thing a claim or an extension can do
 /// here is name which flavour of that envelope it is. `text/html` does not
 /// specialise `application/zip`, so no claim can turn zip bytes into markup.
+/// The same whitelist, for the `content_rescan` job.
+///
+/// Re-exported rather than copied because the two layers MUST agree: an
+/// upload and a later rescan that disagreed about the same bytes would
+/// flip a file's type back and forth on every run. A second copy of this
+/// table is how that happens.
+pub fn specialises_for_rescan(candidate: &str, generic: &str) -> bool {
+    specialises(candidate, generic)
+}
+
 fn specialises(candidate: &str, generic: &str) -> bool {
     // Strip any `; charset=…` parameter before comparing.
     let c = candidate.split(';').next().unwrap_or(candidate).trim();
