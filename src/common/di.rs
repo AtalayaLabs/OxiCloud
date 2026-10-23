@@ -3794,7 +3794,7 @@ pub struct CoreServices {
     /// spins up the supervisor loop at the end of `build_app_state`.
     pub job_registry: Arc<JobRegistry>,
     /// PG-backed provider for `jobs.recoverable_runs`. Recoverable
-    /// tenants (storage migration, reextract, consistency checks —
+    /// tenants (storage migration, content_rescan, consistency checks —
     /// Part 2 of `docs/plan/job-registry.md`) plug into this via
     /// `svc.register_recoverable_job(&registry, &job_store_provider).await`.
     /// Boot-time crash-recovery sweep is run in `build_app_state` right
