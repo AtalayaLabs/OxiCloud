@@ -274,7 +274,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_four_containers_are_probed() {
+    fn only_the_four_containers_are_probed_unit() {
         assert!(is_ambiguous_container("video/mp4"));
         assert!(is_ambiguous_container("audio/ogg"));
         assert!(!is_ambiguous_container("audio/mpeg"));
@@ -282,5 +282,89 @@ mod tests {
         // Cheap probes only: every extra entry here is a full blob
         // download per content per run.
         assert_eq!(AMBIGUOUS.len(), 4);
+    }
+}
+
+// Requires `ffmpeg` (which ships `ffprobe`) on PATH:
+//   just test-integration container_probe
+//
+// These cover the one thing the unit tests above cannot: the ffprobe
+// INVOCATION. The argument list is eight fixed strings, and changing
+// one — `-show_entries`, the `-of json` selector, the
+// `stream_disposition` key — leaves every JSON-parsing test passing
+// while the real probe returns something useless. The unit tests pin
+// how we read the answer; these pin that we asked the question.
+//
+// A broken invocation degrades safely in production (Err → a
+// `container_probe_failed` finding → the container default stands), so
+// this catches it at CI time rather than preventing damage.
+#[cfg(integration_tests)]
+mod integration_tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn probe() -> ContainerProbe {
+        ContainerProbe::new(
+            ContainerProbe::path_from_ffmpeg("ffmpeg"),
+            1,
+            Duration::from_secs(30),
+        )
+    }
+
+    /// Both answers, against real files, through the real binary.
+    ///
+    /// One test rather than two so the controls cannot drift apart: a
+    /// probe that always answered `false` would pass a cover-art-only
+    /// test, and one that always answered `true` would pass a
+    /// video-only test. Only the pair means anything.
+    ///
+    /// ⚠ The cover-art half is the one that matters. That file carries
+    /// a genuine mjpeg video stream, separated from real video ONLY by
+    /// `disposition.attached_pic`. Get it wrong and every tagged track
+    /// in a music library is promoted to `video/*` and silently drops
+    /// out of audio extraction.
+    #[tokio::test]
+    async fn the_real_binary_answers_both_ways() {
+        assert!(
+            ContainerProbe::is_available(&ContainerProbe::path_from_ffmpeg("ffmpeg")),
+            "ffprobe is required for the integration suite — install ffmpeg",
+        );
+        let p = probe();
+
+        let video = std::path::Path::new("tests/fixtures/container-video.mp4");
+        assert!(
+            p.has_video_stream(video).await.expect("probe the video"),
+            "a real video track was not detected — the ffprobe invocation \
+             is wrong, or -show_entries no longer returns codec_type",
+        );
+
+        let art = std::path::Path::new("tests/fixtures/container-cover-art.m4a");
+        assert!(
+            !p.has_video_stream(art).await.expect("probe the cover art"),
+            "embedded album art was counted as a video stream — every \
+             tagged track in a music library would be promoted out of \
+             audio extraction",
+        );
+    }
+
+    /// End to end over the correction table: what the probe reports has
+    /// to turn into the right stored type.
+    #[tokio::test]
+    async fn a_probed_answer_maps_to_the_corrected_type() {
+        let p = probe();
+
+        // Audio hiding in a video wrapper. The cover-art fixture is an
+        // M4A, so read it as if it had arrived labelled `video/mp4` —
+        // which is exactly what a brand-less audio MP4 does.
+        let art = std::path::Path::new("tests/fixtures/container-cover-art.m4a");
+        let has_video = p.has_video_stream(art).await.expect("probe");
+        assert_eq!(corrected_mime("video/mp4", has_video), Some("audio/mp4"));
+
+        // Real video stays put…
+        let video = std::path::Path::new("tests/fixtures/container-video.mp4");
+        let has_video = p.has_video_stream(video).await.expect("probe");
+        assert_eq!(corrected_mime("video/mp4", has_video), None);
+        // …and the same reading promotes a Theora-in-Ogg.
+        assert_eq!(corrected_mime("audio/ogg", has_video), Some("video/ogg"));
     }
 }
