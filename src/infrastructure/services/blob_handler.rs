@@ -1410,27 +1410,45 @@ impl BlobHandler {
     /// whereas propagating would abort a reap that has already deleted
     /// bytes. Loud, not fatal.
     async fn purge_content_facts(&self, source_hash: &str) {
-        match sqlx::query("DELETE FROM audio.content_metadata WHERE source_hash = $1")
-            .bind(source_hash)
-            .execute(self.pool.as_ref())
-            .await
-        {
-            Ok(r) if r.rows_affected() > 0 => {
-                tracing::info!(
-                    target: "oxicloud::dedup",
-                    rows = r.rows_affected(),
-                    "purge_content_facts: dropped audio metadata for {}",
-                    &source_hash[..source_hash.len().min(12)],
-                );
-            }
-            Ok(_) => {}
-            Err(e) => {
-                tracing::warn!(
-                    target: "oxicloud::dedup",
-                    error = %e,
-                    "failed to purge audio metadata for {}",
-                    &source_hash[..source_hash.len().min(12)],
-                );
+        // One list, so adding the next content-keyed table is one line
+        // rather than another copy of this match.
+        for (table, sql) in [
+            (
+                "audio metadata",
+                "DELETE FROM audio.content_metadata WHERE source_hash = $1",
+            ),
+            (
+                "capture metadata",
+                "DELETE FROM storage.content_metadata WHERE source_hash = $1",
+            ),
+        ] {
+            match sqlx::query(sql)
+                .bind(source_hash)
+                .execute(self.pool.as_ref())
+                .await
+            {
+                Ok(r) if r.rows_affected() > 0 => {
+                    tracing::info!(
+                        target: "oxicloud::dedup",
+                        rows = r.rows_affected(),
+                        "purge_content_facts: dropped {} for {}",
+                        table,
+                        &source_hash[..source_hash.len().min(12)],
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    // Keep going: one failing table must not strand the
+                    // other, and neither should abort a reap that has
+                    // already deleted bytes.
+                    tracing::warn!(
+                        target: "oxicloud::dedup",
+                        error = %e,
+                        "failed to purge {} for {}",
+                        table,
+                        &source_hash[..source_hash.len().min(12)],
+                    );
+                }
             }
         }
     }
