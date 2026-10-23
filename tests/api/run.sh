@@ -391,6 +391,7 @@ HURL_FILES=( \
   "$API_DIR/admin_user_ops.hurl" \
   "$API_DIR/admin_role_hierarchy.hurl" \
   "$API_DIR/dto_shape_regression_guards.hurl" \
+  "$API_DIR/shared_worker_bus_discovery.hurl" \
   "$API_DIR/device_auth_flow.hurl" \
   "$API_DIR/external_mounts.hurl" \
   "$API_DIR/chunked_upload_cap.hurl" \

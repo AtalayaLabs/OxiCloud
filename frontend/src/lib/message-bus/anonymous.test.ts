@@ -20,7 +20,13 @@ vi.mock('$lib/api/csrf', () => ({ getCsrfHeaders: () => ({}) }));
 vi.mock('$app/paths', () => ({ base: '' }));
 vi.mock('$lib/stores/session.svelte', () => ({ session: sess }));
 
-import { MessageBusClient } from './client.svelte';
+// After the Gate-1 split the class was renamed to clarify its role
+// alongside the Gate-2 SharedWorker bridge. The construction test
+// below runs on the per-tab implementation specifically — the
+// anonymous guard is a per-tab-connect property, so the harness
+// targets the concrete class, not the shared `MessageBusClient`
+// interface.
+import { PerTabMessageBusClient } from './client.svelte';
 
 class FakeSocket {
 	readyState = 0;
@@ -34,7 +40,7 @@ class FakeSocket {
 }
 
 const newBus = () =>
-	new MessageBusClient({
+	new PerTabMessageBusClient({
 		url: 'ws://test/rt',
 		WebSocketCtor: FakeSocket as unknown as typeof WebSocket
 	});
