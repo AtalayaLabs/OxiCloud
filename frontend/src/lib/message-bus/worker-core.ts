@@ -90,6 +90,13 @@ export interface BusTransport {
 	/** Register a listener for `state` changes. Fires immediately
 	 *  with the current value then on every change. Returns a disposer. */
 	onStateChange(cb: (state: ConnectionState) => void): () => void;
+	/** Register a listener for ticket requests. The callback's nonce
+	 *  MUST be echoed back in `provideTicket(subprotocol, nonce)`. */
+	onNeedTicket(cb: (nonce: number) => void): () => void;
+	/** Hand the transport a `Sec-WebSocket-Protocol` value for the
+	 *  next WS upgrade. nonce === 0 is the initial hello-time ticket;
+	 *  other values must echo the nonce from `onNeedTicket`. */
+	provideTicket(subprotocol: string, nonce: number): void;
 }
 
 /** Internal routing entry for one topic subscription. */
@@ -176,6 +183,23 @@ export class WorkerCore {
 		this.#transport.onBinary((fileId, bytes) => this.#fanoutBinary(fileId, bytes));
 		this.#transport.onWriteDenied((fileId, params) => this.#fanoutWriteDenied(fileId, params));
 		this.#transport.onStateChange((state) => this.#broadcastState(state));
+		this.#transport.onNeedTicket((nonce) => this.#askPortForTicket(nonce));
+	}
+
+	/** Pick any currently-connected port and ask it to fetch a fresh
+	 *  ticket. The port replies via `provide-ticket` carrying the
+	 *  same nonce. If zero ports are attached (impossible in practice
+	 *  — the SharedWorker dies with its last port — but defensive):
+	 *  the transport's own `need-ticket` timeout fires and the
+	 *  reconnect backoff restarts. */
+	#askPortForTicket(nonce: number): void {
+		// First connected port wins. Rotating would spread load across
+		// tabs but doesn't change correctness; keep it simple.
+		for (const port of this.#ports) {
+			this.#send(port, { kind: 'need-ticket', nonce });
+			return;
+		}
+		this.#warn('need-ticket emitted but no ports attached', { nonce });
 	}
 
 	/** Called by the SharedWorker entry on each `connect` event. The
@@ -293,6 +317,9 @@ export class WorkerCore {
 				return;
 			case 'set-log-level':
 				this.#handleSetLogLevel(port, msg.level);
+				return;
+			case 'provide-ticket':
+				this.#transport.provideTicket(msg.subprotocol, msg.nonce);
 				return;
 		}
 	}
@@ -596,6 +623,7 @@ export class WorkerCore {
 			case 'call':
 			case 'ping':
 			case 'set-log-level':
+			case 'provide-ticket':
 				return true;
 			default:
 				return false;

@@ -49,6 +49,7 @@ function makeFakeTransport(initialState: ConnectionState = 'connected'): {
 	fireRevoked: (topic: string, params: RtRevokedParams) => void;
 	fireBinary: (fileId: string, bytes: ArrayBuffer) => void;
 	fireWriteDenied: (fileId: string, params: RtWriteDeniedParams) => void;
+	fireNeedTicket: (nonce: number) => void;
 	setState: (s: ConnectionState) => void;
 	subscribeMock: ReturnType<typeof vi.fn>;
 	unsubscribeMock: ReturnType<typeof vi.fn>;
@@ -56,6 +57,7 @@ function makeFakeTransport(initialState: ConnectionState = 'connected'): {
 	pingMock: ReturnType<typeof vi.fn>;
 	sendBinaryMock: ReturnType<typeof vi.fn>;
 	reconnectMock: ReturnType<typeof vi.fn>;
+	provideTicketMock: ReturnType<typeof vi.fn>;
 } {
 	let state: ConnectionState = initialState;
 	const eventListeners = new Set<(topic: string, params: RtEventParams) => void>();
@@ -74,6 +76,9 @@ function makeFakeTransport(initialState: ConnectionState = 'connected'): {
 	const pingMock = vi.fn<() => Promise<number>>(async () => 7);
 	const sendBinaryMock = vi.fn<(bytes: ArrayBuffer) => boolean>(() => true);
 	const reconnectMock = vi.fn<() => void>();
+
+	const needTicketListeners = new Set<(n: number) => void>();
+	const provideTicketMock = vi.fn<(subprotocol: string, nonce: number) => void>();
 
 	const transport: BusTransport = {
 		get state() {
@@ -108,7 +113,12 @@ function makeFakeTransport(initialState: ConnectionState = 'connected'): {
 			stateListeners.add(cb);
 			cb(state);
 			return () => stateListeners.delete(cb);
-		}
+		},
+		onNeedTicket: (cb) => {
+			needTicketListeners.add(cb);
+			return () => needTicketListeners.delete(cb);
+		},
+		provideTicket: (sp, n) => provideTicketMock(sp, n)
 	};
 
 	return {
@@ -129,12 +139,16 @@ function makeFakeTransport(initialState: ConnectionState = 'connected'): {
 			state = s;
 			for (const l of stateListeners) l(s);
 		},
+		fireNeedTicket: (n) => {
+			for (const l of needTicketListeners) l(n);
+		},
 		subscribeMock,
 		unsubscribeMock,
 		callMock,
 		pingMock,
 		sendBinaryMock,
-		reconnectMock
+		reconnectMock,
+		provideTicketMock
 	};
 }
 

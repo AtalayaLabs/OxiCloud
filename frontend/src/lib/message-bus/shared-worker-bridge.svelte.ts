@@ -15,6 +15,8 @@
 
 import log from 'loglevel';
 
+import { apiJson } from '$lib/api/client';
+import { getCsrfHeaders } from '$lib/api/csrf';
 import type {
 	ConnectionState,
 	EventHandler,
@@ -37,6 +39,13 @@ import {
 	type PortTabToWorkerMessage,
 	type PortWorkerToTabMessage
 } from './port-protocol';
+
+/** Response body from `POST /api/rt/ticket`. */
+interface RtTicketResponse {
+	ticket: string;
+	expires_in_seconds: number;
+	subprotocol: string;
+}
 
 /** Logger — mirrors the per-tab client's `oxi:message-bus` namespace
  *  so a tab with debug on sees the bridge-side log stream in the
@@ -144,6 +153,53 @@ export class SharedWorkerBridge implements MessageBusClient {
 			reqId,
 			wantedLogLevel: opts?.wantedLogLevel ?? 'info'
 		});
+
+		// Pre-fetch a ticket and provide it to the worker so the WS
+		// opens as soon as the first subscribe arrives. The worker
+		// also knows how to ASK for one via `need-ticket` on reconnect;
+		// this is just the eager primer so the first open doesn't
+		// wait a round-trip.
+		//
+		// nonce === 0 marks this as the initial, unsolicited ticket —
+		// the worker's `#askForTicket` has not run yet, so no nonce
+		// to echo.
+		void this.#fetchAndProvideTicket(0);
+	}
+
+	// ============================================================
+	// Ticket flow — the bridge owns the HTTP side; the worker owns
+	// the WS side. The two cooperate via port envelopes.
+	// ============================================================
+
+	/** Fetch a fresh ticket from `/api/rt/ticket` via `apiFetch`
+	 *  (DPoP + CSRF + session cookie + refresh-on-401 all handled)
+	 *  and forward the resulting subprotocol to the worker via
+	 *  `provide-ticket`. */
+	async #fetchAndProvideTicket(nonce: number): Promise<void> {
+		try {
+			const res = await apiJson<RtTicketResponse>('/api/rt/ticket', {
+				method: 'POST',
+				headers: getCsrfHeaders()
+			});
+			this.#post({
+				kind: 'provide-ticket',
+				subprotocol: res.subprotocol,
+				nonce
+			});
+		} catch (err) {
+			// A 403 here (anonymous session, revoked, etc.) is terminal.
+			// A 401 would have been retried-with-refresh by apiFetch
+			// already — if it got here, the refresh also failed. Either
+			// way: don't send a provide-ticket, let the worker's own
+			// need-ticket timeout fire so it bumps the circuit breaker
+			// on its own clock. Users of a logged-out tab see the same
+			// `state === 'unavailable'` UX the per-tab client already
+			// surfaces.
+			busLog.warn('ticket fetch failed — worker will time out on need-ticket', {
+				nonce,
+				err
+			});
+		}
 	}
 
 	// ============================================================
@@ -478,6 +534,13 @@ export class SharedWorkerBridge implements MessageBusClient {
 			case 'log':
 				this.#onLog(msg);
 				return;
+			case 'need-ticket':
+				// Worker needs a fresh ticket for the next WS upgrade.
+				// Fire-and-forget: the worker also runs its own
+				// `need-ticket` timeout so a failed fetch here surfaces
+				// as a reconnect-cycle delay, not a hang.
+				void this.#fetchAndProvideTicket(msg.nonce);
+				return;
 		}
 	}
 
@@ -602,6 +665,7 @@ export class SharedWorkerBridge implements MessageBusClient {
 			case 'write-denied':
 			case 'ping-pong':
 			case 'log':
+			case 'need-ticket':
 				return true;
 			default:
 				return false;
