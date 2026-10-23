@@ -2496,6 +2496,41 @@ pub struct FeaturesConfig {
     /// Env: `OXICLOUD_ENABLE_MARKDOWN_COLLAB` (default `true`).
     pub enable_markdown_collab: bool,
 
+    /// Shared-worker bus — one `/api/rt/ws` per BROWSER instead of
+    /// one per tab.
+    ///
+    /// When `true`, the SPA attempts a `SharedWorker` + handshake
+    /// probe at boot. On success, every tab in the same browser
+    /// multiplexes topic subscriptions, binary collab frames, and
+    /// JSON-RPC calls through one shared WebSocket. On failure
+    /// (Safari < 16.4, enterprise CSP, iOS PWA quirks, 1 s
+    /// handshake timeout) the SPA silently falls back to the per-
+    /// tab client. The fallback is tested in Gate 2a's Vitest and
+    /// cannot be disabled.
+    ///
+    /// When `false`, the SPA skips the detection + handshake and
+    /// goes straight to the per-tab client — one WS per tab, same
+    /// as before the shared-worker migration. Operators choose this
+    /// explicitly: a specific instance where the SharedWorker is
+    /// known to misbehave, or a workaround for an in-the-wild
+    /// regression while the FE is still shipping fixes.
+    ///
+    /// **Default: `true` (opt-out).** The feature exists to reduce
+    /// WS fan-out at scale (10k users × multiple tabs → 10k WS,
+    /// not 50k+); shipping it off by default would mean the whole
+    /// motivation stays unrealised on most instances. The
+    /// mandatory, handshake-tested fallback bounds the blast
+    /// radius — a browser that can't run shared mode just lands on
+    /// per-tab, zero events lost.
+    ///
+    /// Server-side wire shape is identical in both modes. The flag
+    /// gates FE behaviour only; `/api/rt/ws` + `/api/rt/ticket` are
+    /// still registered (gated by `enable_message_bus`).
+    ///
+    /// Env: `OXICLOUD_ENABLE_SHARED_WORKER_BUS` (default `true`).
+    /// See `docs/plan/message-bus-via-shared-worker.md`.
+    pub enable_shared_worker_bus: bool,
+
     /// Background purge of expired `storage.role_grants` rows.
     ///
     /// The AuthZ engine already filters expired grants out of every
@@ -2994,6 +3029,14 @@ impl Default for FeaturesConfig {
             // pair can only be inconsistent through an explicit
             // operator override.
             enable_markdown_collab: true,
+            // Shared-worker bus — on by default (opt-out). See the
+            // field docstring for the rationale: the whole motivation
+            // is to reduce WS fan-out at scale, and the mandatory
+            // fallback contains the blast radius for browsers that
+            // can't run shared mode (Safari < 16.4, enterprise CSP,
+            // iOS PWA). Operators who need a per-tab-only deployment
+            // set OXICLOUD_ENABLE_SHARED_WORKER_BUS=false and restart.
+            enable_shared_worker_bus: true,
             grant_cleanup: GrantCleanupConfig::default(),
             notifications_retention_days: 30, // 30 days is the plan's default
         }
@@ -4214,6 +4257,20 @@ impl AppConfig {
                  socket to route Yjs frames on. Either enable the message bus \
                  or disable markdown collab."
             );
+        }
+
+        // Shared-worker bus — see the field docstring for the
+        // opt-out rationale. The flag only gates FE behaviour (one
+        // WS per browser vs. one per tab); the server-side WS
+        // endpoint is always available when `enable_message_bus`
+        // is on. No cross-flag panic — if the message bus itself
+        // is off, this flag is naturally a no-op (the FE sees
+        // `message_bus: false` first and skips WS setup entirely).
+        if let Ok(enable_shared_worker_bus) =
+            env::var("OXICLOUD_ENABLE_SHARED_WORKER_BUS").map(|v| v.parse::<bool>())
+            && let Ok(val) = enable_shared_worker_bus
+        {
+            config.features.enable_shared_worker_bus = val;
         }
 
         // Slice E — notification retention. Read as u32 so a
