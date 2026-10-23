@@ -1,9 +1,12 @@
 # Plan — Re-sniffing content: content-keyed metadata and the `content_rescan` job
 
-**Status:** design captured 2026-10-07; §0 and all of Part A shipped and
-**verified green** (unit + integration + api-test, 2026-10-23), the job itself
-(Part B) is still to build and is no longer gated — §A.4's orphan sweep landed
-as `satellites_consistency` phase 3. Triggered by
+**Status:** design captured 2026-10-07; **§0, Part A and Part B all shipped**
+(2026-10-24). Part A verified green across unit + integration + api-test;
+`content_rescan` has unit, DB-integration and real-ffprobe coverage, and the
+two endpoints it replaces are gone. Remaining: an api-test scenario for the
+job's wire surface, and the mime-only `category_order` rework — deliberately
+later, since the extension fallback is what classifies the generic-mime rows
+this job exists to drain. Triggered by
 `d5f37514` (`fix(security): sniff the content type before trusting the
 uploader's claim`), which fixed MIME detection on the *inflow* and surfaced
 three things it cannot fix: rows already stored, rows invalidated by content
@@ -25,7 +28,7 @@ heading:
 | §B `content_rescan` job | 🟡 **CORE SHIPPED 2026-10-23** — walk, head sniff, `decide()`, fan-out UPDATE carrying `category_order`, re-derive (`changed`/`always`/`never`), stale-metadata drop, 3 params, 5 counters, 3 finding kinds, DI + detached trigger. **Deferred:** the ffprobe ambiguous-container correction (below) and §B.7's endpoint removal. Two things the plan did not specify, both found while building: transient errors pause at the last *settled* content instead of becoming findings (a backend outage would otherwise emit N findings and report Completed), and `is_backend_writer` is **true** despite no backend writes — it is the only gate on a job that reads the whole corpus, and with no interval the admin trigger is its only path. Original scope note follows:|
 | | scope grew 2026-10-22: the fan-out UPDATE must also move `storage.files.category_order`, in the SAME statement and **per row** (the classifier takes `(name, mime)`, so it is not computable per hash). It is the column the search type filter now reads, so retyping mime without it makes a row invisible under its own category. Supersedes the detector proposed in `search-type-filter-by-category.md` |
 | §B ambiguous containers (ffprobe) | ✅ **DONE 2026-10-23** — `container_probe_service`, bidirectional (Ogg promotes, the other three demote), optional like video thumbnails, path derived from `OXICLOUD_FFMPEG_PATH`. The correction is NOT driven by a detected-vs-stored mismatch: an audio-only MP4 is stored AND detected `video/mp4`, so it runs on content the rest of the job considers settled. Cover art is a real video stream — only `disposition.attached_pic` separates it, and getting that wrong would promote a whole music library out of audio extraction, so it is pinned twice (captured JSON + two committed fixtures through the real binary, with ffmpeg added to the CI integration job) |
-| §B.7 delete the two reextract endpoints | **NOT STARTED** — the removal surface is 6 code files plus `admin.reextract_*` across 16 locales. Must land with a changelog line: until now these were the ONLY repair path for the ID3v2.4 year bug, and `rederive=always` is their replacement (`changed` would skip every affected row) |
+| §B.7 delete the two reextract endpoints | ✅ **DONE 2026-10-24** — routes, handlers, both service methods, `MetadataExtractionResult` ×2, `MediaFileRow`, the FE wrappers/buttons/state, and `admin.reextract_*` across 16 locales (translations of `maintenance_hint` kept — en.json only, per the house rule). The `files_consistency` `mime_type_reconciliation` idea is marked settled-elsewhere in the same change. **Changelog must say `rederive=always`**: these were the only repair path for the ID3v2.4 year bug and the default `changed` skips every affected row |
 | §C.1/C.2 the two diagrams | ✅ **DONE 2026-10-23** — `derived-blobs.md` moves both metadata tables into the content layer with dashed dependent edges; `derived-and-attached-blobs.md` gains `CONTENT_FACTS`, the third satellite shape (per-content, **no** artifact, **no** reference) |
 | §C.3 smaller doc edits | 🟡 **mostly** — keying tables + content-keying TODO in `derived-blobs.md`, stale `storage.file_metadata` references in code comments, `job-registry.md` (both endpoints marked replaced), and `jobs.md` (which turned out to list only the plain-`JobHandler` tenants — now says so, since every long-running job including this one is a `RecoverableJobHandler` and none of them appear in that table). Outstanding: the `files_consistency_service.rs:47` pointer, which ships with §B.7 |
 
