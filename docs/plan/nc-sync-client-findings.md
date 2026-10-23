@@ -13,7 +13,7 @@ operations rewrote a file's mtime and ETag) and F6 (creates ignored
 |---|---|---|
 | F2 | Chunked-upload assembly answered without `OC-FileId` | fixed — `tests/api/nc_write_response_headers.hurl` |
 | F3 | Writes never answered `X-OC-MTime: accepted` | fixed — same pin |
-| F4 | Folder ETag bumps trail the change by up to one flush interval | by design; noted |
+| F4 | Folder ETag bumps trail the change by up to one flush interval | fixed for folder changes — `folder_db_repository.rs` integration pins |
 | F5 | Capabilities do not advertise `files.chunked_upload.max_size` | fixed — `tests/api/nc_status_capabilities.hurl` |
 
 ## F2 / F3 — fixed
@@ -42,6 +42,21 @@ on the next poll (clients poll every ~30 s), but a large folder moved at
 the wrong moment costs a full re-download. The suite waits out two flush
 intervals before every sync, so it tests convergence rather than the
 width of the window.
+
+**Fixed for structural folder changes** (migration
+`20261104000000_tree_etag_immediate_folder_bumps`): folder create, rename,
+move, trash, restore and delete now bump their ancestor chain inside the
+writing statement, so the listing and the collection ETags commit
+together. The state lives only in the database, so it holds with several
+app instances (HA). The bump takes `FOR NO KEY UPDATE SKIP LOCKED` and
+never waits; any ancestor it cannot lock is enqueued and the flusher
+completes it, so the window only reopens under contention on that exact
+row. Only a statement's top-level rows bump immediately — the inside of a
+trashed or restored subtree stays on the queue. File writes are
+unchanged: still queue-only, so uploads keep taking no folder-row locks,
+and a new or changed file can still trail its folder ETag by one
+interval (no re-download results from that). Pinned by
+`tree_etag_immediate_bump_tests` in `folder_db_repository.rs`.
 
 ## F5 — chunk size not advertised
 
