@@ -121,6 +121,11 @@ scenario_names() {
 # green while they are triaged one at a time. Each needs a decision — wire it
 # in, or delete it — and the list should only ever shrink. Do NOT add to it to
 # silence a new file; wire the file in instead.
+#
+# This whole mechanism is a backstop for a hand-kept registry. The fix is
+# `docs/plan/api-test-phase-folders.md`: numbered phase folders the runner
+# globs, so a file cannot be forgotten by construction rather than being
+# caught afterwards. Triaging this list is the prerequisite for that move.
 UNWIRED_KNOWN=(
   admin_advisories              # expects specific OXICLOUD_* vars in server.env
   backend_write_lock
