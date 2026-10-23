@@ -98,11 +98,24 @@ Two consequences, both easy to get wrong:
   invariant is enforced at reap time by
   `BlobHandler::purge_content_facts`.
 
-  ⚠ **That hook is currently the only enforcement.** `DERIVED` and
-  `ATTACHED` additionally have `satellites_consistency` to find rows
-  whose source vanished by a path that ran no reap; content facts have
-  no equivalent sweep yet, so a missed reap leaks silently. Adding a
-  discovery arm there is tracked in `docs/plan/derived-blobs.md`.
+  There is **no FK to cascade from**, and today none is possible: a Blob
+  is either a `chunk_manifests` row (CDC) or a bare `storage.blobs` row
+  (legacy whole-file), and a foreign key must name exactly one table —
+  either choice would reject half the corpus. So the lifetime is
+  enforced in code, and `satellites_consistency` sweeps for rows a
+  forgotten reap path left behind (`content_facts_orphan`, severity
+  `anomaly`; deletion only under `?repair=true`).
+
+  **This is temporary.** `backend_rechunk` converts legacy whole-file
+  blobs to manifests, and once it has converged — the same gate as the
+  already-decided NEXT-MAJOR removal of the legacy paths, see
+  `docs/plan/derived-blobs.md` — every Blob is a `chunk_manifests` row
+  and `source_hash REFERENCES storage.chunk_manifests(file_hash) ON
+  DELETE CASCADE` becomes expressible. It is also the better design: a
+  guarantee the database enforces beats one every future reap path has
+  to remember. At that point the sweep becomes belt-and-braces rather
+  than the enforcement, and `content_derived_blobs.source_hash` should
+  gain the same FK for the same reason.
 
 ## Why two tables and not one with a `kind` column
 
