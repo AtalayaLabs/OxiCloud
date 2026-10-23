@@ -1085,3 +1085,291 @@ mod tests {
         assert!(!CONTENT_RESCAN_JOB_NAME.ends_with("_consistency"));
     }
 }
+
+// Requires a test PG on 5433 with `oxicloud_test`, schema applied via
+// `tests/common/init-test-schema.sh`:
+//   just test-integration content_rescan
+//
+// Everything that matters here needs a database AND real bytes on a
+// backend: the `unnest` fan-out, the alignment between `file_ids` and
+// `file_names` inside `array_agg`, the keyset cursor, and the dedup
+// guarantee that N files on one content cost ONE head read. None of it
+// is reachable from a unit test, and the job rewrites `mime_type`
+// corpus-wide by default — so "it compiles" is a long way from "it is
+// safe to trigger".
+#[cfg(integration_tests)]
+#[allow(dead_code, unused_imports)]
+mod integration_tests {
+    use super::*;
+    use sqlx::postgres::PgPoolOptions;
+
+    async fn test_pool() -> Arc<sqlx::PgPool> {
+        let url = crate::integration_test_support::test_db_url();
+        Arc::new(
+            PgPoolOptions::new()
+                .max_connections(4)
+                .connect(&url)
+                .await
+                .expect("connect to test DB — run tests/common/spawn-db.sh first"),
+        )
+    }
+
+    /// A real PNG on the backend, plus THREE files on that one content —
+    /// all claiming `image/jpeg`, all with the Other category (9999).
+    ///
+    /// Three rather than one is the point: it is what makes
+    /// `head_reads == 1` meaningful, and it is the exact waste the two
+    /// file-iterating endpoints this job replaces could not avoid.
+    async fn seed(pool: &sqlx::PgPool, dedup: &BlobHandler, tag: &str) -> (String, Vec<Uuid>) {
+        // Smallest valid PNG: signature + IHDR. `infer` keys off the
+        // 8-byte signature, so this is genuinely detected rather than
+        // pattern-matched by length.
+        let png: &[u8] = &[
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1F, 0x15, 0xC4, 0x89,
+        ];
+        let hash = format!("c7{tag}{}", "0".repeat(64 - 2 - tag.len()));
+
+        // The local backend shards by hash prefix and does not create
+        // parents on write — `initialize()` is what lays out the 256
+        // shard directories, and the boot flow calls it. A test that
+        // skips it fails with a bare ENOENT from deep inside the write.
+        dedup
+            .backend()
+            .initialize()
+            .await
+            .expect("initialize the test backend");
+
+        dedup
+            .backend()
+            .put_blob_from_bytes(&hash, bytes::Bytes::from(png.to_vec()))
+            .await
+            .expect("seed blob bytes");
+
+        // Legacy whole-file shape (no manifest), so the job reads the
+        // head from the content hash directly — the `first_chunk_hashes`
+        // miss path.
+        sqlx::query(
+            "INSERT INTO storage.blobs (hash, size, ref_count)
+             VALUES ($1, $2, 3) ON CONFLICT (hash) DO NOTHING",
+        )
+        .bind(&hash)
+        .bind(png.len() as i64)
+        .execute(pool)
+        .await
+        .expect("seed blobs row");
+
+        let user = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO auth.users (id, username, email, password_hash, role,
+                                     storage_quota_bytes, storage_used_bytes)
+             VALUES ($1, $2, $3, 'x', 'user', 0, 0)",
+        )
+        .bind(user)
+        .bind(format!("cr-{tag}"))
+        .bind(format!("cr-{tag}@test.local"))
+        .execute(pool)
+        .await
+        .expect("seed user");
+
+        let drive = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO storage.drives (id, kind, default_for_user) VALUES ($1, 'personal', $2)",
+        )
+        .bind(drive)
+        .bind(user)
+        .execute(pool)
+        .await
+        .expect("seed drive");
+
+        let mut ids = Vec::new();
+        for i in 0..3 {
+            let id = Uuid::new_v4();
+            sqlx::query(
+                "INSERT INTO storage.files
+                     (id, name, drive_id, blob_hash, mime_type, size,
+                      category_order, created_by, updated_by)
+                 VALUES ($1, $2, $3, $4, 'image/jpeg', $5, 9999, $6, $6)",
+            )
+            .bind(id)
+            .bind(format!("shot-{tag}-{i}.bin"))
+            .bind(drive)
+            .bind(&hash)
+            .bind(png.len() as i64)
+            .bind(user)
+            .execute(pool)
+            .await
+            .expect("seed file");
+            ids.push(id);
+        }
+        (hash, ids)
+    }
+
+    async fn types_and_categories(pool: &sqlx::PgPool, ids: &[Uuid]) -> Vec<(String, i16)> {
+        sqlx::query_as("SELECT mime_type, category_order FROM storage.files WHERE id = ANY($1)")
+            .bind(ids)
+            .fetch_all(pool)
+            .await
+            .expect("read back types")
+    }
+
+    async fn run_job(pool: &Arc<sqlx::PgPool>, args: &JobRunArgs) -> serde_json::Value {
+        let provider: Arc<dyn JobStoreProvider> = Arc::new(
+            crate::infrastructure::scheduler::PgJobStoreProvider::new(pool.clone()),
+        );
+        let dedup = Arc::new(BlobHandler::new_for_test(pool.clone()));
+        let media = Arc::new(MediaMetadataService::new(
+            pool.clone(),
+            dedup.clone(),
+            std::env::temp_dir(),
+        ));
+        let handler: Arc<dyn RecoverableJobHandler> =
+            Arc::new(ContentRescan::new(pool.clone(), dedup, None, media));
+        let outcome =
+            crate::infrastructure::scheduler::run_or_resume(handler, provider, args).await;
+        assert!(outcome.is_ok(), "run must complete: {outcome:?}");
+
+        let crate::infrastructure::scheduler::JobOutcome::Ok { extra, .. } = outcome else {
+            panic!("expected Ok");
+        };
+        // `is_ok()` alone is not proof: `open_or_start` permits one
+        // non-terminal run per job, so a caller arriving while another
+        // run is open gets a successful "already running" envelope with
+        // no dispatch at all — indistinguishable from a clean run that
+        // found nothing.
+        assert_eq!(
+            extra.get("completed").and_then(|v| v.as_bool()),
+            Some(true),
+            "the run did not dispatch — another run was probably still open: {extra}",
+        );
+        extra
+    }
+
+    /// Counters live at `extra.extra_stats.<key>`, not at `extra.<key>`:
+    /// the recoverable engine nests a handler's `extra_stats` one level
+    /// down inside the outcome envelope. Reading the wrong level yields
+    /// `None`, which an `assert_eq!(…, Some(0))` happily accepts — so
+    /// this helper exists to keep every assertion honest about where the
+    /// number comes from.
+    fn stat(extra: &serde_json::Value, key: &str) -> Option<u64> {
+        extra.get("extra_stats")?.get(key)?.as_u64()
+    }
+
+    async fn cleanup(pool: &sqlx::PgPool, hash: &str) {
+        let _ = sqlx::query("DELETE FROM storage.files WHERE blob_hash = $1")
+            .bind(hash)
+            .execute(pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM storage.blobs WHERE hash = $1")
+            .bind(hash)
+            .execute(pool)
+            .await;
+    }
+
+    /// All phases in ONE test, for the reason `satellites_consistency`
+    /// documents: cargo runs tests in parallel, `open_or_start` permits
+    /// one non-terminal run per job name, and the loser attaches to the
+    /// winner's run rather than dispatching — so a second `#[tokio::test]`
+    /// would pass without ever executing.
+    #[tokio::test]
+    async fn it_retypes_every_copy_from_one_read_and_moves_the_category() {
+        let pool = test_pool().await;
+        let dedup = BlobHandler::new_for_test(pool.clone());
+        let (hash, ids) = seed(&pool, &dedup, "a1").await;
+
+        // ── Phase 1: dry_run reports and writes nothing ──────────────
+        let args = JobRunArgs::new(
+            [(
+                "dry_run".to_string(),
+                crate::infrastructure::scheduler::JobParamValue::Boolean(true),
+            )]
+            .into_iter()
+            .collect(),
+        );
+        let extra = run_job(&pool, &args).await;
+        assert_eq!(
+            stat(&extra, "files_retyped"),
+            Some(0),
+            "a dry run wrote something",
+        );
+        for (mime, cat) in types_and_categories(&pool, &ids).await {
+            assert_eq!(mime, "image/jpeg", "dry run changed a stored type");
+            assert_eq!(cat, 9999, "dry run changed a category");
+        }
+
+        // ── Phase 2: the real run ────────────────────────────────────
+        let extra = run_job(&pool, &JobRunArgs::default()).await;
+
+        for (mime, cat) in types_and_categories(&pool, &ids).await {
+            assert_eq!(mime, "image/png", "the stored type was not corrected");
+            // 100 = Image. The whole reason this moves in the same
+            // statement: the search type filter reads this column, so a
+            // retyped row that kept 9999 would be invisible under its
+            // own category.
+            assert_eq!(cat, 100, "category_order did not follow the mime");
+        }
+        assert_eq!(
+            stat(&extra, "files_retyped"),
+            Some(3),
+            "all three copies must be retyped by the fan-out",
+        );
+        // THE dedup guarantee, and the reason this job walks content
+        // rather than files: three files, one read.
+        assert_eq!(
+            stat(&extra, "head_reads"),
+            Some(1),
+            "three files on one content cost more than one backend read",
+        );
+        assert_eq!(stat(&extra, "mime_changed"), Some(1));
+
+        // ── Phase 3: idempotent ──────────────────────────────────────
+        let extra = run_job(&pool, &JobRunArgs::default()).await;
+        assert_eq!(
+            stat(&extra, "files_retyped"),
+            Some(0),
+            "a second run rewrote rows that already agreed — `IS DISTINCT \
+             FROM` is not holding, and every run would churn the tree ETag",
+        );
+        assert_eq!(
+            stat(&extra, "mime_changed"),
+            Some(0),
+            "a second run still reported the content as mismatched",
+        );
+
+        cleanup(&pool, &hash).await;
+    }
+
+    /// A typo must fail the run before any work, not silently select the
+    /// cheap mode — otherwise a requested full backfill does nothing and
+    /// reports success.
+    #[tokio::test]
+    async fn an_unknown_rederive_mode_fails_the_run() {
+        let pool = test_pool().await;
+        let provider: Arc<dyn JobStoreProvider> = Arc::new(
+            crate::infrastructure::scheduler::PgJobStoreProvider::new(pool.clone()),
+        );
+        let dedup = Arc::new(BlobHandler::new_for_test(pool.clone()));
+        let media = Arc::new(MediaMetadataService::new(
+            pool.clone(),
+            dedup.clone(),
+            std::env::temp_dir(),
+        ));
+        let handler: Arc<dyn RecoverableJobHandler> =
+            Arc::new(ContentRescan::new(pool.clone(), dedup, None, media));
+        let args = JobRunArgs::new(
+            [(
+                "rederive".to_string(),
+                crate::infrastructure::scheduler::JobParamValue::String(Some("alwyas".to_string())),
+            )]
+            .into_iter()
+            .collect(),
+        );
+        let outcome =
+            crate::infrastructure::scheduler::run_or_resume(handler, provider, &args).await;
+        assert!(
+            !outcome.is_ok(),
+            "a typo'd rederive mode ran anyway: {outcome:?}",
+        );
+    }
+}
