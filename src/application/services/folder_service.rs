@@ -594,6 +594,42 @@ impl FolderUseCase for FolderService {
         after_name: Option<&str>,
         limit: usize,
     ) -> Result<Vec<FolderDto>, DomainError> {
+        // External mount: list subdirectories from the provider. This is the
+        // folder half of the WebDAV / NextCloud PROPFIND Depth:1 loop; the file
+        // half lives in `FileRetrievalService::list_files_batch_with_perms` and
+        // already branched here. The keyset refactor dropped this branch from
+        // the batch path (#792) — Depth:1 on a mount listed files but no
+        // directories. Authz collapses on the mount root; provider order is
+        // not guaranteed, so sort before slicing on `after_name`.
+        if let Some(pid) = parent_id
+            && let Some((cfg, node)) = self.mount_node_for(pid)
+        {
+            self.require_mount_perm(&cfg, Permission::Read, caller_id)
+                .await?;
+            let mut dirs: Vec<_> = cfg
+                .provider
+                .list_dir(&node)
+                .await?
+                .into_iter()
+                .filter(|e| e.is_dir)
+                .collect();
+            dirs.sort_by_key(|e| e.name.to_lowercase());
+            let start = match after_name {
+                Some(name) => dirs
+                    .iter()
+                    .position(|e| name.eq_ignore_ascii_case(&e.name))
+                    .map(|i| i + 1)
+                    .unwrap_or(0),
+                None => 0,
+            };
+            return Ok(dirs
+                .into_iter()
+                .skip(start)
+                .take(limit)
+                .map(|e| mount_entry_folder_dto(&cfg, pid, &e))
+                .collect());
+        }
+
         match parent_id {
             Some(pid) => {
                 self.authz
@@ -2456,6 +2492,63 @@ mod mount_authz_integration {
         let stranger = make_user(&pool, "stranger").await;
         let err = folder_service
             .list_mount_dir_with_perms(&cfg, &NodeId::default(), stranger, opts())
+            .await
+            .expect_err("stranger must be denied");
+        assert_eq!(err.kind, crate::domain::errors::ErrorKind::NotFound);
+    }
+
+    /// #792 regression pin: the keyset (batch) folder listing — the folder
+    /// half of the WebDAV / NextCloud PROPFIND Depth:1 loop — must branch to
+    /// the provider for mount directories exactly like the file half does.
+    /// Before the fix it queried `storage.folders` for children of the mount
+    /// root, found none, and Depth:1 listed files but no subdirectories.
+    /// Covers the mount root, an `ext:` child, the `after_name` cursor and the
+    /// stranger-denied path (NotFound — anti-enumeration).
+    #[tokio::test]
+    async fn batch_folder_listing_descends_into_mount() {
+        let (_c, pool) = fresh_db().await;
+        let host = tempfile::tempdir().unwrap();
+        std::fs::create_dir(host.path().join("beta")).unwrap();
+        std::fs::create_dir(host.path().join("Alpha")).unwrap();
+        std::fs::create_dir(host.path().join("Alpha").join("nested")).unwrap();
+        std::fs::write(host.path().join("file.txt"), b"not a folder").unwrap();
+        let (fs, mount_id, owner) = wire_mount(&pool, host.path()).await;
+
+        // Mount root: directories only, case-insensitive name order.
+        let page = fs
+            .list_folders_batch_with_perms(Some(&mount_id), owner, None, 50)
+            .await
+            .expect("owner may list");
+        let names: Vec<_> = page.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["Alpha", "beta"]);
+        assert!(
+            page.iter()
+                .all(|f| f.parent_id.as_deref() == Some(mount_id.as_str())),
+            "children of the mount root point back at the root UUID"
+        );
+
+        // Keyset cursor resumes after the named entry.
+        let rest = fs
+            .list_folders_batch_with_perms(Some(&mount_id), owner, Some("Alpha"), 50)
+            .await
+            .expect("owner may page");
+        let names: Vec<_> = rest.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["beta"]);
+
+        // An `ext:` child directory lists ITS subdirectories (#794's PROPFIND
+        // on a path below the root relies on this once the handler resolves it).
+        let child_id = encode_child_id(Uuid::parse_str(&mount_id).unwrap(), "Alpha");
+        let nested = fs
+            .list_folders_batch_with_perms(Some(&child_id), owner, None, 50)
+            .await
+            .expect("owner may list child");
+        let names: Vec<_> = nested.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["nested"]);
+
+        // No grant on the mount root → denied, as NotFound.
+        let stranger = make_user(&pool, "stranger").await;
+        let err = fs
+            .list_folders_batch_with_perms(Some(&mount_id), stranger, None, 50)
             .await
             .expect_err("stranger must be denied");
         assert_eq!(err.kind, crate::domain::errors::ErrorKind::NotFound);
