@@ -631,6 +631,13 @@ mod tests {
             ("tests/fixtures/free_video_over_1MB.mp4", "video/mp4"),
             ("tests/fixtures/broken.pdf", "application/pdf"),
             ("tests/e2e/fixtures/tone.wav", "audio/x-wav"),
+            // An ID3v2-prefixed MP3 — the shape every tagged file in a
+            // real library has, and the one where the magic bytes are the
+            // TAG rather than an MPEG frame sync. Detection here is a
+            // GATE: `AudioMetadataService` parses tags only for
+            // `is_audio_file(stored_type)`, so getting this wrong costs a
+            // whole music library its titles, silently.
+            ("tests/fixtures/id3-sample.mp3", "audio/mpeg"),
         ] {
             let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("{path}: {e}"));
             let head = &bytes[..bytes.len().min(MAGIC_BYTES_LEN)];

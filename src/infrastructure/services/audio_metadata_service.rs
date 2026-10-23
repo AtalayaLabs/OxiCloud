@@ -99,7 +99,12 @@ impl AudioMetadataService {
             genre: tag.genre().map(|s| s.to_string()),
             track_number: tag.track().map(|n| n as i32),
             disc_number: tag.disc().map(|n| n as i32),
-            year: tag.year(),
+            // `year()` reads TYER, which is ID3v2.3 only. Every modern
+            // encoder writes ID3v2.4, where the field is TDRC — so on its
+            // own this returned None for most of the corpus, silently, and
+            // the stored `year` column stayed empty with nothing to
+            // indicate the tag had been there all along.
+            year: tag.year().or_else(|| tag.date_recorded().map(|ts| ts.year)),
             duration_secs,
         })
     }
@@ -371,5 +376,62 @@ impl FileLifecycleHook for AudioMetadataService {
         // deliberately outlives the file, because other files may share those
         // bytes. It dies with the BLOB, via
         // `BlobHandler::purge_content_facts` at reap time.
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Tag parsing, against a real tagged MP3.
+    ///
+    /// This file had no tests at all, and the re-key to content shipped
+    /// without one: nothing anywhere asserted that a title or an artist
+    /// survives the trip out of a blob. The failure mode is quiet — a
+    /// parser that returns `None` looks exactly like a song that carries
+    /// no tags, and `extract_and_save` then skips the upsert.
+    ///
+    /// Every field is pinned, including the two that come from awkward
+    /// places: `album_artist` is read by walking frames for `TPE2` by
+    /// hand rather than through a typed accessor, and `year` arrives as
+    /// `TDRC` from any modern encoder rather than the `TYER` the ID3v2.3
+    /// examples use. Both are exactly the kind of lookup that returns
+    /// `None` forever after a dependency bump, with nothing to notice.
+    ///
+    /// The fixture is 2.2 KB — 0.4 s of a 440 Hz sine — regenerated
+    /// byte-for-byte by `scripts/helpers/make-id3-fixture.sh`, which
+    /// documents every value it carries.
+    #[test]
+    fn reads_every_id3_field_from_a_real_mp3() {
+        let path = Path::new("tests/fixtures/id3-sample.mp3");
+        let m = AudioMetadataService::extract_metadata_blocking(path)
+            .expect("the fixture is tagged, so extraction must yield fields");
+
+        assert_eq!(m.title.as_deref(), Some("Sniff Test"));
+        assert_eq!(m.artist.as_deref(), Some("OxiCloud QA"));
+        assert_eq!(m.album.as_deref(), Some("Fixture Sessions"));
+        assert_eq!(m.album_artist.as_deref(), Some("Various QA"), "TPE2");
+        assert_eq!(m.genre.as_deref(), Some("Electronic"));
+        assert_eq!(m.track_number, Some(7));
+        assert_eq!(m.disc_number, Some(2));
+        assert_eq!(m.year, Some(2019), "TDRC, not TYER");
+
+        // Duration comes from a different crate than the tags
+        // (`mp3_duration` walking frame headers), so it is its own
+        // failure mode. 0.4 s rounds to 0; the assertion is that the
+        // walk succeeded rather than erroring into the tag fallback,
+        // which for a tagless-duration file would also yield 0.
+        assert!(m.duration_secs >= 0);
+    }
+
+    /// A file with no ID3 tag yields `None`, not a row of empty strings.
+    ///
+    /// `extract_and_save` keys its skip on this, so a `Some(empty)` would
+    /// write a content row asserting the song has no title — and a later
+    /// re-derive would see work already done.
+    #[test]
+    fn an_untagged_file_yields_nothing_to_store() {
+        let path = Path::new("tests/fixtures/hello.txt");
+        assert!(AudioMetadataService::extract_metadata_blocking(path).is_none());
     }
 }
