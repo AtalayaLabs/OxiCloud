@@ -14,7 +14,7 @@ operations rewrote a file's mtime and ETag) and F6 (creates ignored
 | F2 | Chunked-upload assembly answered without `OC-FileId` | fixed — `tests/api/nc_write_response_headers.hurl` |
 | F3 | Writes never answered `X-OC-MTime: accepted` | fixed — same pin |
 | F4 | Folder ETag bumps trail the change by up to one flush interval | by design; noted |
-| F5 | Capabilities do not advertise `files.chunked_upload.max_size` | open, low priority |
+| F5 | Capabilities do not advertise `files.chunked_upload.max_size` | fixed — `tests/api/nc_status_capabilities.hurl` |
 
 ## F2 / F3 — fixed
 
@@ -52,3 +52,10 @@ who lowers it — or `OXICLOUD_CHUNK_MAX_BYTES` — below the client's default
 chunk size makes desktop uploads fail with 413, because the client has no
 way to learn the limit. (The test environment sets both to 4 MiB; the suite
 forces 2 MB client chunks via `OWNCLOUD_CHUNK_SIZE` for that reason.)
+
+**Fixed:** capabilities now advertise
+`files.chunked_upload.max_size = min(OXICLOUD_CHUNK_MAX_BYTES,
+OXICLOUD_DIRECT_PUT_MAX_BYTES)` — the smaller cap, because the client
+PUTs a file whole when it fits in one chunk. Pinned in
+`tests/api/nc_status_capabilities.hurl` (A3/A4) and the inline tests in
+`src/interfaces/nextcloud/ocs_handler.rs`.

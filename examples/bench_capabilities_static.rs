@@ -62,12 +62,19 @@ fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
 
 const EMULATED: (u32, u32, u32) = (28, 0, 4);
 const VERSION_STRING: &str = "28.0.4";
+const MAX_CHUNK_SIZE: u64 = 100 * 1024 * 1024;
 
 /// BEFORE flow, verbatim shape: env lookup + tree build + serialize per poll.
 fn before_poll(ocs_version: u8) -> Vec<u8> {
     let base_url =
         env::var("OXICLOUD_BASE_URL").unwrap_or_else(|_| "http://localhost:8086".to_string());
-    let payload = capabilities_payload_for_bench(&base_url, EMULATED, VERSION_STRING, ocs_version);
+    let payload = capabilities_payload_for_bench(
+        &base_url,
+        EMULATED,
+        VERSION_STRING,
+        MAX_CHUNK_SIZE,
+        ocs_version,
+    );
     serde_json::to_vec(&payload).expect("serialize")
 }
 
@@ -82,6 +89,7 @@ fn after_poll(cache: &OnceLock<[Bytes; 2]>, ocs_version: u8) -> Bytes {
                     &base_url,
                     EMULATED,
                     VERSION_STRING,
+                    MAX_CHUNK_SIZE,
                     v,
                 ))
                 .expect("serialize"),

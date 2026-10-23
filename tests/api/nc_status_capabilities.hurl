@@ -51,6 +51,11 @@ jsonpath "$.ocs.meta.message"          == "OK"
 jsonpath "$.ocs.data.version.major"    exists
 jsonpath "$.ocs.data.capabilities"     exists
 jsonpath "$.ocs.data.capabilities.theming.name" == "OxiCloud"
+# F5 (docs/plan/nc-sync-client-findings.md): the NC client sizes its chunks
+# from this value; without it a lowered OXICLOUD_CHUNK_MAX_BYTES /
+# OXICLOUD_DIRECT_PUT_MAX_BYTES turned every desktop upload into a 413.
+# Test env sets both caps to 4 MiB, so the smaller of them is 4194304.
+jsonpath "$.ocs.data.capabilities.files.chunked_upload.max_size" == 4194304
 
 
 # ─────────────────────────────────────────────────────────────
@@ -69,3 +74,8 @@ jsonpath "$.ocs.meta.message"          == "OK"
 jsonpath "$.ocs.data.version.major"    exists
 jsonpath "$.ocs.data.capabilities"     exists
 jsonpath "$.ocs.data.capabilities.theming.name" == "OxiCloud"
+# F5 (docs/plan/nc-sync-client-findings.md): the NC client sizes its chunks
+# from this value; without it a lowered OXICLOUD_CHUNK_MAX_BYTES /
+# OXICLOUD_DIRECT_PUT_MAX_BYTES turned every desktop upload into a 413.
+# Test env sets both caps to 4 MiB, so the smaller of them is 4194304.
+jsonpath "$.ocs.data.capabilities.files.chunked_upload.max_size" == 4194304
