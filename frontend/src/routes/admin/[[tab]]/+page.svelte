@@ -25,8 +25,6 @@
 		revokeAdminSession,
 		getUserAdmin,
 		migrationAction,
-		reextractAudioMetadata,
-		reextractPhotoMetadata,
 		promoteUserToInternal,
 		resetUserPassword,
 		saveOidc,
@@ -68,7 +66,6 @@
 		type PluginInfo,
 		type PluginLogEntry,
 		type PluginRetention,
-		type ReextractResult,
 		addDriveMemberAdmin,
 		deleteDriveAdmin,
 		listAllDrives,
@@ -1216,24 +1213,6 @@
 		errorToast(e);
 	}
 
-	// ── Maintenance: bulk metadata re-extraction ─────────────────────────────
-	let audioBusy = $state(false);
-	let audioResult = $state<ReextractResult | null>(null);
-	let photoBusy = $state(false);
-	let photoResult = $state<ReextractResult | null>(null);
-
-	async function runAudioReindex() {
-		audioBusy = true;
-		audioResult = null;
-		try {
-			audioResult = await reextractAudioMetadata();
-		} catch (e) {
-			reportError(e);
-		} finally {
-			audioBusy = false;
-		}
-	}
-
 	// ── Ops banners ──────────────────────────────────────────────
 	// Admin list + create form. Edit MVP is "delete and recreate" —
 	// an operator who wants to tweak severity on a live banner that
@@ -1410,18 +1389,6 @@
 			};
 		} finally {
 			consistencyBatchBusy = false;
-		}
-	}
-
-	async function runPhotoReindex() {
-		photoBusy = true;
-		photoResult = null;
-		try {
-			photoResult = await reextractPhotoMetadata();
-		} catch (e) {
-			reportError(e);
-		} finally {
-			photoBusy = false;
 		}
 	}
 
@@ -2270,10 +2237,9 @@
 			void loadDashboard();
 		} else if (tab === 'maintenance') {
 			// New home for the backend write-lock (moved from
-			// /admin/storage) + the metadata re-extract buttons
-			// (moved from /admin/dashboard). loadWriteLock +
-			// loadBanners are the async pulls; reextract state
-			// is purely local until the operator clicks a button.
+			// /admin/storage). loadWriteLock + loadBanners are the
+			// async pulls; the consistency-sweep trigger below keeps
+			// its state locally until the operator clicks it.
 			void loadWriteLock();
 			void loadBanners();
 		} else if (tab === 'notification') {
@@ -3834,61 +3800,20 @@
 			</form>
 		</section>
 
-		<!-- Metadata re-extract — moved from /admin/dashboard. State
-		     + handlers (audioBusy, photoBusy, runAudioReindex,
-		     runPhotoReindex) are unchanged; only the location is.
-		     Dashboard still shows the dashboard DTO summary; this is
-		     where the TRIGGER lives. -->
+		<!-- Routine sweeps. The two metadata re-extract buttons that
+		     used to live here were retired with the endpoints behind
+		     them: re-identifying content is now the content_rescan
+		     job, which reports progress, can be cancelled and resumed,
+		     and walks distinct CONTENT rather than every file. It is
+		     triggered from /admin/jobs like any other job. -->
 		<div class="card">
 			<h2>{t('admin.maintenance', 'Maintenance')}</h2>
 			<p class="muted">
 				{t(
 					'admin.maintenance_hint',
-					'Re-scan existing files to backfill metadata. Safe to re-run; processes the whole library and may take a while.'
+					'Routine sweeps over existing data. Re-identifying file content now lives in the content_rescan job — trigger it from Jobs, where it reports progress and can be cancelled.'
 				)}
 			</p>
-			<div class="maint-row">
-				<button class="btn btn-secondary" disabled={audioBusy} onclick={runAudioReindex}>
-					<Icon name="music" />
-					{audioBusy
-						? t('admin.running', 'Running…')
-						: t('admin.reextract_audio', 'Re-extract audio metadata')}
-				</button>
-				{#if audioResult}
-					<span class="muted maint-result">
-						{t(
-							'admin.reextract_done',
-							{
-								processed: audioResult.processed,
-								total: audioResult.total,
-								failed: audioResult.failed
-							},
-							'{{processed}}/{{total}} processed · {{failed}} failed'
-						)}
-					</span>
-				{/if}
-			</div>
-			<div class="maint-row">
-				<button class="btn btn-secondary" disabled={photoBusy} onclick={runPhotoReindex}>
-					<Icon name="images" />
-					{photoBusy
-						? t('admin.running', 'Running…')
-						: t('admin.reextract_photos', 'Re-extract photo & video capture dates')}
-				</button>
-				{#if photoResult}
-					<span class="muted maint-result">
-						{t(
-							'admin.reextract_done',
-							{
-								processed: photoResult.processed,
-								total: photoResult.total,
-								failed: photoResult.failed
-							},
-							'{{processed}}/{{total}} processed · {{failed}} failed'
-						)}
-					</span>
-				{/if}
-			</div>
 			<!-- consistency_batch trigger — the one-click button for
 			     "sweep every *_consistency detector once". Full
 			     per-check breakdown + run history + findings drawer

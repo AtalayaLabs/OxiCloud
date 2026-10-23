@@ -1753,7 +1753,8 @@ impl super::registry::JobRegistry {
     /// - `Some(dur)` — supervisor fires it periodically (and admin
     ///   triggers land on the same `run_or_resume` dispatch).
     /// - `None` — admin-triggered only. Typical for long-running
-    ///   tenants (storage migration, reextract, consistency checks).
+    ///   tenants (storage migration, content_rescan, consistency
+    ///   checks).
     ///
     /// Timeout is force-None — recoverable jobs use cooperative
     /// cancellation via `store.status()` polling, NOT wall-clock

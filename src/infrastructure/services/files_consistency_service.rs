@@ -44,9 +44,15 @@
 //! * `drive_id_parent_mismatch` — `files.drive_id` differs from
 //!   `parent.drive_id`. The join already loads it; adding this once
 //!   drive-membership rules stabilise post-D7 costs one branch.
-//! * `mime_type_reconciliation` — compare `files.mime_type` against
-//!   the blob's `content_type`. Requires deciding which is
-//!   authoritative first.
+//! * ~~`mime_type_reconciliation`~~ — **settled elsewhere, do not build
+//!   it here.** The open question was which of `files.mime_type` and the
+//!   blob's `content_type` is authoritative; `content_rescan` answers it
+//!   from a third source — the magic bytes — and corrects `mime_type` in
+//!   place. A detector here would be a second reader of a column that job
+//!   writes, which is how two readers drift. It also deliberately leaves
+//!   `chunk_manifests.content_type` alone: that column is write-once and
+//!   its only reader is a diagnostics DTO, so reconciling it buys nothing
+//!   operationally. See `docs/plan/blob-resniff.md` §B.
 
 use std::sync::Arc;
 

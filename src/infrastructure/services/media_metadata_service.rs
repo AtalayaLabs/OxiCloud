@@ -29,32 +29,16 @@
 //!   timezone-aware. No EXIF exists for video.
 
 use chrono::{DateTime, FixedOffset, Utc};
-use futures::StreamExt;
-use sqlx::{FromRow, PgPool};
+use sqlx::PgPool;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{info, warn};
-use uuid::Uuid;
 
 use crate::application::ports::file_lifecycle::FileLifecycleHook;
 use crate::common::errors::DomainError;
 use crate::infrastructure::repositories::pg::file_metadata_repository::FileMetadataRepository;
 use crate::infrastructure::services::blob_handler::BlobHandler;
 use crate::infrastructure::services::exif_service::{ExifMetadata, ExifService};
-
-#[derive(Debug, FromRow)]
-pub struct MediaFileRow {
-    pub file_id: Uuid,
-    pub blob_hash: String,
-    pub mime_type: String,
-}
-
-#[derive(Debug, serde::Serialize)]
-pub struct MetadataExtractionResult {
-    pub total: usize,
-    pub processed: usize,
-    pub failed: usize,
-}
 
 pub struct MediaMetadataService {
     pool: Arc<PgPool>,
@@ -260,67 +244,6 @@ impl MediaMetadataService {
     // Content-keyed the row is already there, so a copy and a dedup hit are
     // both no-ops. See
     // `migrations/20261105000000_exif_metadata_content_keyed.sql`.
-
-    /// Backfill: re-extract capture metadata for every existing image/video.
-    /// Streams rows (O(1) memory); failures are logged and skipped, never abort
-    /// the batch. Each upsert fires the DB trigger that recomputes
-    /// `media_sort_date`, so the Photos timeline re-buckets afterwards.
-    pub async fn reextract_all_image_metadata(
-        &self,
-    ) -> Result<MetadataExtractionResult, DomainError> {
-        // DISTINCT content, not one row per file. Extraction is content-keyed
-        // now, so re-parsing the same bytes once per referencing file would be
-        // pure waste — on a library with any duplication that is the
-        // difference between one pass and N.
-        //
-        // `min(mime_type)` because one blob can be referenced by files with
-        // differing stored types; any of them picks the same parser branch,
-        // since the grouping below only distinguishes image from video.
-        let mut stream = sqlx::query_as::<_, (String, String)>(
-            r#"
-            SELECT blob_hash, min(mime_type) AS mime_type
-            FROM storage.files
-            WHERE (mime_type LIKE 'image/%' OR mime_type LIKE 'video/%')
-              AND NOT is_trashed
-            GROUP BY blob_hash
-            "#,
-        )
-        .fetch(&*self.pool);
-
-        let mut total: usize = 0;
-        let mut processed: usize = 0;
-        let mut failed: usize = 0;
-
-        info!("Starting streaming capture-metadata backfill for image/video files");
-
-        while let Some(row) = stream.next().await {
-            total += 1;
-            let (source_hash, mime_type) = row.map_err(|e| {
-                DomainError::database_error(format!("Failed to fetch media content row: {}", e))
-            })?;
-            match self.extract_and_save(&source_hash, &mime_type).await {
-                Ok(()) => processed += 1,
-                Err(e) => {
-                    warn!(
-                        "Failed to extract capture metadata for blob {}: {}",
-                        source_hash, e
-                    );
-                    failed += 1;
-                }
-            }
-        }
-
-        info!(
-            "Capture-metadata backfill complete: {} processed, {} failed out of {} total",
-            processed, failed, total
-        );
-
-        Ok(MetadataExtractionResult {
-            total,
-            processed,
-            failed,
-        })
-    }
 }
 
 /// Capture date + GPS extracted via `nom-exif`.

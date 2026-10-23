@@ -1,4 +1,3 @@
-use futures::StreamExt;
 use id3::{Tag, TagLike};
 use sqlx::PgPool;
 use std::path::{Path, PathBuf};
@@ -217,57 +216,6 @@ impl AudioMetadataService {
         Ok(())
     }
 
-    pub async fn reextract_all_audio_metadata(
-        &self,
-    ) -> Result<MetadataExtractionResult, DomainError> {
-        // DISTINCT blob_hash, not one row per file. Now that extraction is
-        // content-keyed, re-parsing the same bytes once per file that
-        // references them would be pure waste — on a library with any
-        // duplication that is the difference between one pass and N.
-        //
-        // Stream rows one-by-one instead of fetch_all to keep memory O(1).
-        let mut stream = sqlx::query_as::<_, (String,)>(
-            r#"
-            SELECT DISTINCT blob_hash
-            FROM storage.files
-            WHERE mime_type LIKE 'audio/%'
-              AND NOT is_trashed
-            "#,
-        )
-        .fetch(&*self.pool);
-
-        let mut total: usize = 0;
-        let mut processed: usize = 0;
-        let mut failed: usize = 0;
-
-        info!("Starting streaming metadata extraction for audio content");
-
-        while let Some(row) = stream.next().await {
-            total += 1;
-            let (source_hash,) = row.map_err(|e| {
-                DomainError::database_error(format!("Failed to fetch audio content row: {}", e))
-            })?;
-            match self.extract_and_save(&source_hash).await {
-                Ok(()) => processed += 1,
-                Err(e) => {
-                    warn!("Failed to extract metadata for blob {}: {}", source_hash, e);
-                    failed += 1;
-                }
-            }
-        }
-
-        info!(
-            "Metadata extraction complete: {} processed, {} failed out of {} total",
-            processed, failed, total
-        );
-
-        Ok(MetadataExtractionResult {
-            total,
-            processed,
-            failed,
-        })
-    }
-
     // `clone_from_source_background` and `clone_or_extract_background` used
     // to live here. Both existed ONLY to compensate for file-keying: they
     // copied a metadata row to each new file that shared a blob, with a
@@ -291,13 +239,6 @@ struct AudioMetadataFields {
     disc_number: Option<i32>,
     year: Option<i32>,
     duration_secs: i32,
-}
-
-#[derive(Debug, serde::Serialize)]
-pub struct MetadataExtractionResult {
-    pub total: usize,
-    pub processed: usize,
-    pub failed: usize,
 }
 
 // ─── FileLifecycleHook ───────────────────────────────────────────────────────

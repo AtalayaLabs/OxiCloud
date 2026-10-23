@@ -1245,8 +1245,6 @@
     "running": "جري…",
     "maintenance": "صيانة",
     "maintenance_hint": "أعد فحص الملفات الموجودة لملء البيانات الوصفية. آمن لإعادة التشغيل؛ يعالج المكتبة بأكملها وقد يستغرق بعض الوقت.",
-    "reextract_audio": "إعادة استخراج البيانات الوصفية الصوتية",
-    "reextract_photos": "إعادة استخراج مواعيد التقاط الصور والفيديو",
     "encryption": "التشفير",
     "encryption_hint": "أنشئ مفتاح AES-256 لتشفير blob غير المستقر، ثم قم بتعيينه كـ OXICLOUD_STORAGE_ENCRYPTION_KEY في بيئة الخادم لديك.",
     "gen_key": "توليد المفتاح",
@@ -1351,7 +1349,6 @@
     },
     "oidc": "OIDC / SSO",
     "oidc_discover": "اختبار / اكتشاف",
-    "reextract_done": "{{processed}}/{{total}} تمت معالجته · {{failed}} فشل",
     "sessions": {
       "filter_user": "المستخدم (UUID)",
       "include_revoked": "تضمين الملغاة / المنتهية",

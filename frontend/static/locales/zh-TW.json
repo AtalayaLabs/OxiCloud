@@ -1227,8 +1227,6 @@
     "running": "跑步…",
     "maintenance": "維護",
     "maintenance_hint": "重新掃描現有文件以回填元資料。可以安全地重新運行；處理整個庫，可能需要一段時間。",
-    "reextract_audio": "重新提取音訊元數據",
-    "reextract_photos": "重新提取照片和影片拍攝日期",
     "encryption": "加密",
     "encryption_hint": "產生靜態 blob 加密的 AES-256 金鑰，然後在伺服器環境中將其設定為 OXICLOUD_STORAGE_ENCRYPTION_KEY。",
     "gen_key": "產生金鑰",
@@ -1333,7 +1331,6 @@
     },
     "oidc": "OIDC / SSO",
     "oidc_discover": "測試 / 探索",
-    "reextract_done": "{{processed}}/{{total}} 已處理 · {{failed}} 失敗",
     "sessions": {
       "filter_user": "使用者 (UUID)",
       "include_revoked": "包含已撤銷 / 已過期",
