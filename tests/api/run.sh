@@ -485,6 +485,12 @@ HURL_FILES=( \
   "$API_DIR/webdav_etag_rename_stability.hurl" \
   "$API_DIR/copy_preserves_category_order.hurl" \
   "$API_DIR/photos_sort_date_content_clock.hurl" \
+  # Deliberately next to the file above, which asserts `captured_at`
+  # is ABSENT to prove its content-clock fallback arm. This one is the
+  # other half: a fixture that really does carry EXIF, so the date,
+  # camera and GPS are asserted PRESENT. Read together they pin both
+  # arms of the same COALESCE.
+  "$API_DIR/photos_exif_extraction.hurl" \
   "$API_DIR/search_sort_content_clock.hurl" \
   "$API_DIR/content_clock_metadata_mutations.hurl" \
   "$API_DIR/rest_upload_source_mtime.hurl" \
