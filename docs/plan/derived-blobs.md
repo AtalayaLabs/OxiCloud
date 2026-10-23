@@ -113,7 +113,6 @@ flowchart TB
   subgraph RES["RESOURCE LAYER · keyed by UUID"]
     FILES["<b>storage.files</b><br/>id UUID PK<br/>blob_hash VARCHAR(64)<br/>name · folder_id · mime_type"]
     FAB["<b>storage.file_attached_blobs</b><br/>(file_id, kind, variant) PK<br/>blob_hash · uploaded_by<br/><i>user-supplied · never shared</i>"]
-    FMD["<b>storage.file_metadata</b> (EXIF)<br/>file_id PK<br/><i>⚠ content-derived, file-keyed</i>"]
   end
 
   subgraph CON["CONTENT LAYER · keyed by BLAKE3 of source bytes"]
@@ -121,6 +120,7 @@ flowchart TB
     BET["<b>storage.blob_extracted_text</b><br/>blob_hash PK"]
     FACES["<b>faces.faces</b><br/>blob_hash"]
     ACM["<b>audio.content_metadata</b> (ID3)<br/>source_hash PK<br/><i>re-keyed 2026-10-22</i>"]
+    SCM["<b>storage.content_metadata</b><br/>(capture date · GPS · camera · dims)<br/>source_hash PK<br/><i>re-keyed 2026-10-23</i>"]
   end
 
   BLOB["<b>BLOB</b> — the content of a file<br/>BLAKE3 of plaintext<br/><b>storage.chunk_manifests</b><br/>file_hash PK · chunk_hashes[]<br/><b>ref_count</b>"]
@@ -128,7 +128,6 @@ flowchart TB
   BACKEND[("<b>BlobStorageBackend</b><br/>Local .blobs/ · S3 · Azure<br/>+encryption +retry +cache")]
 
   FILES -->|"FK file_id · CASCADE"| FAB
-  FILES -->|"FK file_id · CASCADE"| FMD
   FILES -->|"blob_hash"| BLOB
   FILES -.->|"legacy pre-CDC · no manifest"| CHUNK
   CDB -.->|"source_hash · dependent"| BLOB
@@ -137,11 +136,12 @@ flowchart TB
   BET -.->|"dependent cache"| BLOB
   FACES -.->|"dependent cache"| BLOB
   ACM -.->|"dependent facts"| BLOB
+  SCM -.->|"dependent facts"| BLOB
   BLOB -->|"chunk_hashes[] · 1..N ordered"| CHUNK
   CHUNK -->|bytes| BACKEND
 ```
 
-Three things to read off it:
+Four things to read off it:
 
 1. **`content_derived_blobs` touches the Blob layer twice with
    opposite meanings** — `source_hash` is a dependent (it keeps
@@ -155,6 +155,15 @@ Three things to read off it:
    all: it reaches a file only by sharing that file's `blob_hash`.
    That is exactly what makes it dedupe across files — and exactly why
    it must never hold user-chosen bytes.
+4. **The content layer has no solid arrow out of the metadata tables.**
+   `audio.content_metadata`, `storage.content_metadata`,
+   `blob_extracted_text` and `faces.faces` are columns, not artifacts:
+   they hold no `ref_count`, keep no blob alive, and have no FK to
+   `storage.files` to cascade from. They therefore outlive the last file
+   on their content on purpose, and die when the BLOB is reaped, via
+   `BlobHandler::purge_content_facts` — which is today their *only*
+   enforcement, unlike the satellite tables, which also have an orphan
+   sweep. See the TODO below.
 
 ## Multi-instance driver
 
@@ -204,7 +213,7 @@ was attached to, never by content.
 | extracted text | `f(blob bytes)` | ✅ — `storage.blob_extracted_text` |
 | face vectors | `f(blob bytes)` | ✅ — `faces.faces` |
 | audio tags (ID3/Vorbis) | `f(blob bytes)` | ✅ — `audio.content_metadata`, re-keyed 2026-10-22 |
-| EXIF / capture metadata | `f(blob bytes)` | ✅ in principle — but `storage.file_metadata` is **file**-keyed today. See the TODO below |
+| capture date / GPS / camera / dimensions | `f(blob bytes)` | ✅ — `storage.content_metadata`, re-keyed 2026-10-23. Not EXIF-specific: a document's creation date is the same fact and lands in the same column |
 | client-uploaded preview | `f(user's choice)` | ❌ **must be file-keyed** — `storage.file_attached_blobs`, see below |
 
 This isn't a new pattern: `storage.blob_extracted_text` already
@@ -768,7 +777,7 @@ getting either wrong is silent data loss:
 | previews, subtitles, cover art | file (→ *version*, see below) | **duplicate** + take a reference | **invalidate** / attach to the new version |
 | comments | file | **do NOT duplicate** — a copy is a new artifact; the discussion belongs to the original | unaffected — a conversation spans versions |
 | WebDAV dead properties | file | duplicate (RFC 4918 §8.8) | unaffected — properties describe the resource |
-| EXIF (`storage.file_metadata`) | content ⚠ *file-keyed today* | would be free | would be free |
+| capture facts (`storage.content_metadata`) | content | free — shares hash | free — the new hash gets its own extraction |
 
 **`on_file_copied` stops being a no-op.** It is one today only because
 every derived artifact is content-keyed, so a copy shares them for
@@ -1936,18 +1945,36 @@ Scope for this rename: ~23 files touch the SQL, plus a migration
 for the table rename. Not free. Ship AFTER the tier-2 write-side
 lands so we don't stack schema changes.
 
-## TODO — content-keying the metadata tables — audio **DONE 2026-10-22**
+## Content-keying the metadata tables — **DONE 2026-10-23**
 
-Found 2026-10-06 while tracing playlist authorization. **The audio half
-shipped 2026-10-22** as `audio.content_metadata`
-(`migrations/20261104000000_audio_metadata_content_keyed.sql`); both clone
-paths and the five dead repository methods went with it, and
-`BlobHandler::purge_content_facts` now reaps the rows. **The EXIF half
-(`storage.file_metadata`) is still outstanding** and is bigger than this
-section assumed — see the note at the end.
+Found 2026-10-06 while tracing playlist authorization. Both halves have
+now shipped:
 
-The analysis below stands as written: it is why the audio change was made,
-and the security constraint in it outlives the migration.
+- **Audio, 2026-10-22** — `audio.content_metadata`
+  (`migrations/20261104000000_audio_metadata_content_keyed.sql`). Both
+  clone paths and the five dead repository methods went with it.
+- **Capture facts, 2026-10-23** — `storage.content_metadata`
+  (`migrations/20261105000000_exif_metadata_content_keyed.sql`), with the
+  two extra dependencies this section had not anticipated: the
+  `media_sort_date` trigger chain and the Places viewport query. See the
+  note at the end for both.
+
+`BlobHandler::purge_content_facts` reaps both tables at blob-reap time —
+the lifetime invariant these tables need, since neither holds a
+`ref_count` nor cascades from a file.
+
+**Still open: the orphan sweep.** `satellites_consistency` finds
+`content_derived_blobs` / `file_attached_blobs` rows whose source
+vanished by a path that ran no reap; it does not look at the two
+`content_metadata` tables, so for them the reap hook is the only
+enforcement and a missed reap leaks silently. Add a discovery-only arm
+(no silent `DELETE` — precedent `ContentIndexWorker::sweep_orphaned_text`).
+Low urgency while rows are created one-per-upload; it becomes a
+prerequisite before `content_rescan` ships, because that job creates
+rows corpus-wide.
+
+The analysis below stands as written: it is why the change was made, and
+the security constraint in it outlives the migration.
 
 `audio.file_metadata` (ID3 / Vorbis tags: title, artist, album, genre,
 track number, duration, bitrate, …) is keyed `file_id UUID PRIMARY KEY
@@ -2032,10 +2059,12 @@ arrives. The distinction it draws is the useful one: `content_derived_blobs`
 rows point at an *artifact* and must release a reference, whereas these rows
 are *facts* and simply go.
 
-### ⚠ The EXIF half is bigger than this section assumed
+### The capture-facts half was bigger — **shipped 2026-10-23**
 
-`storage.file_metadata` has two dependencies the audio table did not, found
-while scoping it:
+`storage.file_metadata` had two dependencies the audio table did not, found
+while scoping it. Both are handled in
+`migrations/20261105000000_exif_metadata_content_keyed.sql`; what follows
+is the scoping, with what actually landed recorded under each.
 
 1. **`trg_sync_media_sort_date`** fires on its upsert and writes
    `storage.files.media_sort_date`, so a second trigger is needed.
@@ -2059,15 +2088,37 @@ while scoping it:
    the extractor widens). `audio.content_metadata` therefore names its
    bookkeeping column `extracted_at`; the EXIF table must not reintroduce the
    clash.
-2. **The Places viewport query** (`file_blob_read_repository.rs:685`) joins
-   `storage.files fi ON fi.id = fm.file_id` and takes
-   `min(fm.file_id) AS sample_id`. Content-keyed there is no file id on the
-   row to take, so both the join and the sample have to come from `fi` —
-   in a query whose shape was benchmarked (ROUND11 §Q4) — plus the
-   `idx_file_metadata_geo` partial index has to move with the table.
 
-Neither is hard; both are reasons it is its own change rather than a
-continuation of the audio one.
+   **What shipped: three triggers, not two, and the extra one is the whole
+   point.** The dates plan's "`INSERT` needs no trigger at all" is sound
+   under *file*-keying and false under content-keying, which is a trap worth
+   naming because the argument looks untouched by the re-key. Its second
+   half was "a later extraction fires trigger 1 and overwrites with the
+   capture date". Content-keyed, a new file on **already-known content
+   produces no upsert** — the row is already there — so trigger 1 never
+   fires, and the file keeps `media_sort_date = NOW()` permanently. Every
+   copy, and every re-upload of a photo already in the system, would land in
+   the timeline at upload date. Silently: nothing is missing, the date is
+   just wrong.
+
+   The fix reuses the dates plan's `BEFORE`/assign-to-`NEW` function on a
+   second trigger, `BEFORE INSERT ON storage.files`, gated by a
+   `WHEN (NEW.mime_type LIKE 'image/%' OR 'video/%')` so bulk non-media
+   inserts pay nothing. Two triggers rather than one `INSERT OR UPDATE`
+   because a `WHEN` clause cannot test `TG_OP`, and `OLD` does not exist on
+   the `INSERT` side.
+2. **The Places viewport query** (`file_blob_read_repository.rs`) joined
+   `storage.files fi ON fi.id = fm.file_id` and took
+   `min(fm.file_id) AS sample_id`. Content-keyed there is no file id on the
+   row to take, so both the join and the sample now come from `fi`
+   (`min(fi.id::text)`) — which is also the safer side, since `fi` is the
+   drive-filtered one and a sample drawn from `fm` could have named a file
+   the caller cannot see. The query shape is otherwise untouched
+   (benchmarked, ROUND11 §Q4), and `idx_file_metadata_geo` moved with the
+   table as `idx_content_metadata_geo`.
+
+Both are why it was its own change rather than a continuation of the audio
+one.
 
 ## Non-goals
 

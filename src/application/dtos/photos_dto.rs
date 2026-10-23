@@ -202,12 +202,12 @@ pub struct PhotoResourceItemDto {
     /// `resource.id`, `resource.name`, … directly.
     pub resource: ResourceContentDto,
 
-    /// Image/video width in pixels, from `storage.file_metadata`.
+    /// Image/video width in pixels, from `storage.content_metadata`.
     /// `None` when the row has no metadata (very old uploads, or a
     /// format the metadata extractor doesn't understand).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub width: Option<i32>,
-    /// Image/video height in pixels, from `storage.file_metadata`.
+    /// Image/video height in pixels, from `storage.content_metadata`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub height: Option<i32>,
 

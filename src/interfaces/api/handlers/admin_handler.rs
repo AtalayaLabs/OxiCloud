@@ -2368,7 +2368,7 @@ async fn reextract_audio_metadata(
 }
 
 /// Backfill image/video capture dates (EXIF / container creation time) into
-/// `storage.file_metadata` for every existing media file, re-bucketing the
+/// `storage.content_metadata` for every distinct media content, re-bucketing the
 /// Photos timeline by real capture date. Safe to re-run (idempotent upsert).
 async fn reextract_image_metadata(
     State(state): State<Arc<AppState>>,

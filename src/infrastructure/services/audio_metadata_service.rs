@@ -366,6 +366,10 @@ impl FileLifecycleHook for AudioMetadataService {
     }
 
     fn on_file_deleted(&self, _file_id: &str) {
-        // audio.file_metadata has ON DELETE CASCADE on file_id — DB handles cleanup.
+        // Nothing to do, and NOT for the old reason. `audio.content_metadata`
+        // is keyed by content, so it has no `file_id` and no cascade: the row
+        // deliberately outlives the file, because other files may share those
+        // bytes. It dies with the BLOB, via
+        // `BlobHandler::purge_content_facts` at reap time.
     }
 }

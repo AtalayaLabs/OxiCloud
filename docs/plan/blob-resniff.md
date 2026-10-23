@@ -1,6 +1,7 @@
 # Plan — Re-sniffing content: content-keyed metadata and the `content_rescan` job
 
-**Status:** design captured 2026-10-07, nothing implemented. Triggered by
+**Status:** design captured 2026-10-07; §0 and all of Part A shipped, the job
+itself (Part B) is still to build. Triggered by
 `d5f37514` (`fix(security): sniff the content type before trusting the
 uploader's claim`), which fixed MIME detection on the *inflow* and surfaced
 three things it cannot fix: rows already stored, rows invalidated by content
@@ -14,14 +15,14 @@ heading:
 |---|---|
 | §0 envelope narrowing in `refine_content_type` | ✅ **DONE 2026-10-07** — `1e41f1b9` (carve-out + `upload_mime_sniffing.hurl`), `a7caafab` (widened to the vendor tree, measured on Apache Tika's 826-file corpus: 541 → 576 correctly typed), `ef6a3243` + `e40dcc38` (everyday + phone-camera type coverage). api-test green |
 | §A.1 migration — **audio** keyed by content | ✅ **DONE 2026-10-22** — `audio.content_metadata`, backfilled `DISTINCT ON (blob_hash)`, old table + its 4 dead indexes dropped |
-| §A.1 migration — **EXIF** keyed by content | **NOT STARTED** — larger than planned: the `media_sort_date` triggers (§A.2) and the Places viewport query both depend on `fm.file_id` |
-| §A.2 the two `media_sort_date` triggers | **NOT STARTED** — EXIF-only; one is new and currently missing. Audio has no trigger |
-| §A.3 writers, readers, dead-code deletions | ✅ **DONE for audio** — both clone paths, 5 dead repo methods, `AudioFileRow`; `reextract_all` now walks `DISTINCT blob_hash` |
-| §A.4 reap hook + orphan sweep | 🟡 **reap hook DONE** — `BlobHandler::purge_content_facts`, called from `purge_derived_blobs` so there is one place to forget. Orphan-sweep backstop in `satellites_consistency` still outstanding |
+| §A.1 migration — **capture facts** keyed by content | ✅ **DONE 2026-10-23** — `storage.content_metadata`, same `DISTINCT ON (blob_hash)` backfill, old table + geo index moved. `captured_at` → `created_at` per `normalize-file-dates.md`; bookkeeping is `extracted_at` |
+| §A.2 the `media_sort_date` triggers | ✅ **DONE 2026-10-23** — **three**, not two. Trigger 1 fans out on `blob_hash`; the dates plan's `BEFORE UPDATE`/assign-`NEW` function is reused by a **new `BEFORE INSERT`** arm, because content-keying falsifies that plan's "`INSERT` needs no trigger": a copy of known content produces no upsert, so nothing would ever overwrite `media_sort_date = NOW()`. Two triggers share one function — a `WHEN` clause cannot test `TG_OP` |
+| §A.3 writers, readers, dead-code deletions | ✅ **DONE** — audio 2026-10-22, capture facts 2026-10-23: both clone paths and `on_file_copied` gone on each, repository re-keyed, `reextract_all` walks `DISTINCT blob_hash`, Places viewport + media listing joins repointed (sample id now from the drive-filtered side) |
+| §A.4 reap hook + orphan sweep | 🟡 **reap hook DONE** — `BlobHandler::purge_content_facts` covers **both** tables, called from `purge_derived_blobs` so there is one place to forget. Orphan-sweep backstop in `satellites_consistency` still outstanding, and is a **hard prerequisite for §B**, which creates rows corpus-wide |
 | §B `content_rescan` job | **NOT STARTED** — scope grew 2026-10-22: the fan-out UPDATE must also move `storage.files.category_order`, in the SAME statement and **per row** (the classifier takes `(name, mime)`, so it is not computable per hash). It is the column the search type filter now reads, so retyping mime without it makes a row invisible under its own category. Supersedes the detector proposed in `search-type-filter-by-category.md` |
 | §B.7 delete the two reextract endpoints | **NOT STARTED** |
-| §C.1/C.2 the two diagrams | **NOT STARTED** — both become wrong with §A |
-| §C.3 smaller doc edits | **NOT STARTED** |
+| §C.1/C.2 the two diagrams | ✅ **DONE 2026-10-23** — `derived-blobs.md` moves both metadata tables into the content layer with dashed dependent edges; `derived-and-attached-blobs.md` gains `CONTENT_FACTS`, the third satellite shape (per-content, **no** artifact, **no** reference) |
+| §C.3 smaller doc edits | 🟡 **partly** — the keying tables and the content-keying TODO in `derived-blobs.md` are updated, as are the stale `storage.file_metadata` references in code comments. `job-registry.md`, `jobs.md` and the `files_consistency_service.rs:47` pointer ship with §B |
 
 Related: `infer` was bumped 0.19 → 0.22 alongside this design. It gains exactly
 two formats (`application/x-qemu-disk`, `image/vnd.dwg`), so it is hygiene
@@ -445,6 +446,63 @@ column — which is how two readers drift. The audit behind that plan found the
 column clean on a live instance (4093 rows, 0 NULL, 0 defaulted), so the
 detector guarded a hypothesis; **this** job creates the real staleness and
 therefore owns the fix.
+
+#### Ambiguous containers: correct the mime, do not add a flag
+
+Decided 2026-10-23. A container signature says what the wrapper is, not what
+is inside it, and `infer` matches signatures — so for four shapes the stored
+type is a coin flip, **in both directions**:
+
+| container | stored today | should be |
+|---|---|---|
+| audio-only MP4 (brand not `M4A`) | `video/mp4` | `audio/mp4` |
+| audio-only WebM | `video/webm` | `audio/webm` |
+| audio-only Matroska | `video/x-matroska` | `audio/x-matroska` |
+| Theora in Ogg | **`audio/ogg`** | `video/ogg` |
+
+`infer` cannot fix this and should not be asked to: it distinguishes only
+`.m4a`, by `ftyp` brand, and has no `video/ogg` entry at all. Knowing the
+answer requires reading the stream table.
+
+**The fix is to correct `mime_type`, NOT to store an audio-vs-video flag
+beside it.** A flag was considered and rejected for the reason the
+`category_order` section above already establishes: a denormalised value needs
+exactly one writer. Every gate in the system is a mime-prefix test —
+`AudioMetadataService::is_audio_file`,
+`FfmpegVideoFrameService::is_supported_video`,
+`MediaMetadataService::handles` — so a flag would force each to choose which
+source to believe, and `Content-Type` on download, WebDAV `getcontenttype`
+and the future `category_for(mime)` would *still* be wrong. Correcting the
+mime fixes all five at once and keeps "mime is the source of truth" literally
+true. All four target values are registered; nothing is invented.
+
+**When it can be known splits the work:**
+
+- **At upload** `refine_content_type` sees only the first 8 KiB, and an MP4's
+  `moov` atom is routinely past that. The container default is often the best
+  answer available, so this is not reliably fixable at ingest.
+- **At rescan** the blob is already open, so the probe is nearly free. This is
+  where the backlog gets drained, and it rides along with the fan-out UPDATE
+  above rather than being a separate pass.
+- **The gap between them** is newly-uploaded audio-only MP4s, which would sit
+  as `video/mp4` and miss audio extraction until a rescan. Worth closing in
+  the lifecycle hook, which already opens the blob asynchronously — probe for
+  the four ambiguous mimes only, correct, then dispatch.
+
+⚠ **The ordering trap.** The gates run BEFORE the extractor
+(`on_file_created → is_audio_file(mime)? → audio extractor`), so an audio-only
+MP4 stored as `video/mp4` never reaches the code that could discover it is
+audio. The information is locked behind the decision it would correct. Any
+implementation has to probe *outside* the gate, not inside an extractor the
+gate may never call.
+
+**Probe with `ffprobe`.** ffmpeg is already an optional configured dependency
+(`OXICLOUD_FFMPEG_PATH`) and video thumbnails already degrade gracefully when
+it is absent; the same posture applies — probe when available, otherwise keep
+the container default and leave it for a later run. The alternative is
+hand-parsing `moov`/`trak` handler types, Ogg codec headers and EBML
+`TrackType`: three parsers for four formats, when the dependency is already
+present and already optional.
 
 **Do not touch `updated_at`** — the content did not change, only our
 description of it. Bumping it would make every WebDAV and sync client re-fetch

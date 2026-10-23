@@ -19,17 +19,25 @@ Both point into the same blob store underneath (see
 [Backend Storage](./backend-storage.md)). The keying is what separates
 them.
 
+A **third shape** shares the content keying but holds no artifact at
+all — see [Content facts](#content-facts-the-third-shape) below.
+
 ```mermaid
 erDiagram
     FILES  ||--o{ ATTACHED : "file_id — per FILE"
     FILES  }o--|| BLOBS    : "blob_hash (its content)"
     BLOBS  ||--o{ DERIVED  : "source_hash — per CONTENT"
+    BLOBS  ||--o{ CONTENT_FACTS : "source_hash — per CONTENT"
     DERIVED  }o--o| ARTIFACT : "blob_hash (NULL = negative)"
     ATTACHED }o--|| ARTIFACT : "blob_hash"
 
     FILES {
         uuid id PK
         text blob_hash
+    }
+    CONTENT_FACTS {
+        text source_hash PK
+        text columns "parsed values — NO blob_hash"
     }
     DERIVED {
         text source_hash  PK
@@ -52,7 +60,49 @@ erDiagram
 
 Read the two arrows into `ARTIFACT`: `DERIVED` reaches it from
 **content**, `ATTACHED` from a **file**. Everything below follows from
-that.
+that. `CONTENT_FACTS` has no such arrow, which is its defining
+property.
+
+## Content facts — the third shape
+
+Some things parsed out of content are **columns, not artifacts**: a
+photo's capture date and GPS, a song's ID3 tags, a document's extracted
+text, a face vector. They are keyed by content for the same reason
+`DERIVED` is — identical bytes yield identical values, so one parse
+serves every copy — but there is no second blob to point at, because
+the result fits in the row.
+
+| | holds a `blob_hash`? | holds a `ref_count`? | dies when |
+|---|---|---|---|
+| `DERIVED` | yes (or NULL = negative) | yes, via its artifact | its source blob is reaped |
+| `ATTACHED` | yes | yes, via its artifact | its file is deleted (FK cascade) |
+| `CONTENT_FACTS` | **no** | **no** | its source blob is reaped |
+
+Today: `storage.content_metadata` (capture date, GPS, camera,
+dimensions), `audio.content_metadata` (ID3 / Vorbis tags),
+`storage.blob_extracted_text`, `faces.faces`.
+
+Two consequences, both easy to get wrong:
+
+- **They keep nothing alive.** Holding a reference would be a bug, not
+  an omission: a blob pinned by its own metadata could never be reaped,
+  because deleting every file on it would leave the row behind holding
+  it open. They are *dependents* — the same role `DERIVED.source_hash`
+  plays, without the `blob_hash` half.
+- **They outlive the last file on their content, on purpose.** There is
+  no FK and no cascade, because the row belongs to the bytes. Deleting
+  one of N copies of a photo must not drop the EXIF the other N−1 still
+  need, and deleting the last one leaves the row until the blob itself
+  goes. That is not a leak and not a privacy regression: the row's
+  lifetime is the blob's lifetime, and the blob is the photo. The
+  invariant is enforced at reap time by
+  `BlobHandler::purge_content_facts`.
+
+  ⚠ **That hook is currently the only enforcement.** `DERIVED` and
+  `ATTACHED` additionally have `satellites_consistency` to find rows
+  whose source vanished by a path that ran no reap; content facts have
+  no equivalent sweep yet, so a missed reap leaks silently. Adding a
+  discovery arm there is tracked in `docs/plan/derived-blobs.md`.
 
 ## Why two tables and not one with a `kind` column
 

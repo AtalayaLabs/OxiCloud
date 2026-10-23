@@ -2205,7 +2205,7 @@ pub fn write_folder_response<W: std::io::Write>(
 /// seconds, from `super::nc_creation_time` — `None` when the content
 /// claims none, which emits `0`. It is deliberately a caller-supplied
 /// side channel rather than a `FileDto` field: it lives in
-/// `storage.file_metadata`, it is sparse (media only, until the extractor
+/// `storage.content_metadata`, it is sparse (media only, until the extractor
 /// widens), and the callers already batch three other per-row reads over
 /// the same id set.
 #[allow(

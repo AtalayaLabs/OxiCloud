@@ -1,11 +1,18 @@
 //! Capture-metadata extraction for images **and** videos.
 //!
-//! Populates `storage.file_metadata.captured_at` (and, for images, GPS / camera
-//! / orientation / dimensions) so the Photos timeline can group by the real
-//! capture date instead of the upload time. A DB trigger
-//! (`trg_sync_media_sort_date`) keeps `storage.files.media_sort_date =
-//! COALESCE(captured_at, created_at)` in sync, so writing `captured_at` is all
-//! that is needed — the query/DTO/frontend already consume it.
+//! Populates `storage.content_metadata.created_at` (and, for images, GPS /
+//! camera / orientation / dimensions) so the Photos timeline can group by the
+//! real capture date instead of the upload time. DB triggers keep
+//! `storage.files.media_sort_date` in sync — fanning out over every file
+//! sharing the content on write, and seeding a new file from the existing
+//! content row on INSERT — so writing the date is all that is needed; the
+//! query/DTO/frontend already consume it.
+//!
+//! **Keyed by CONTENT, not by file.** These facts are a pure function of the
+//! bytes, so N copies of a photo cost one extraction and a copy costs
+//! nothing. The row holds no `ref_count` and no FK: it deliberately outlives
+//! the file and dies with the BLOB, via `BlobHandler::purge_content_facts`.
+//! See `migrations/20261105000000_exif_metadata_content_keyed.sql`.
 //!
 //! Mirrors [`AudioMetadataService`](super::audio_metadata_service): it is a
 //! [`FileLifecycleHook`] wired into the upload pipeline, runs extraction off the
@@ -145,12 +152,18 @@ impl MediaMetadataService {
     /// `std::fs::read(path)` for images, `nom-exif` video track reader
     /// for videos — both are path-based). Peak process-heap = one chunk
     /// (~1 MiB) regardless of media size.
+    /// Parse capture facts out of one blob and store them against its
+    /// content hash.
+    ///
+    /// Keyed by CONTENT, not by file: EXIF is a pure function of the bytes,
+    /// so N copies of a photo cost one extraction and a copy costs nothing.
+    /// See `migrations/20261105000000_exif_metadata_content_keyed.sql`.
     pub async fn extract_and_save(
         &self,
-        file_id: &Uuid,
-        blob_hash: &str,
+        source_hash: &str,
         mime_type: &str,
     ) -> Result<(), DomainError> {
+        let blob_hash = source_hash;
         // File-extension hint for the tempfile suffix — helps
         // `nom-exif`'s content sniffer land the right parser branch.
         let suffix = if Self::is_video_file(mime_type) {
@@ -181,160 +194,72 @@ impl MediaMetadataService {
         };
 
         FileMetadataRepository::new(self.pool.clone())
-            .upsert(&file_id.to_string(), &meta)
+            .upsert(source_hash, &meta)
             .await?;
         info!(
-            "Saved capture metadata for file {} (captured_at={:?})",
-            file_id, meta.captured_at
+            "Saved capture metadata for content {} (captured_at={:?})",
+            source_hash, meta.captured_at
         );
         Ok(())
     }
 
-    pub async fn delete_metadata(&self, file_id: &Uuid) -> Result<(), DomainError> {
-        sqlx::query("DELETE FROM storage.file_metadata WHERE file_id = $1")
-            .bind(file_id)
+    /// Drop the capture facts for one content hash.
+    ///
+    /// Content-keyed, so this affects every file sharing those bytes —
+    /// which is the point. Called by the reap-time purge, and when a
+    /// re-sniff moves a file's type away from media.
+    pub async fn delete_metadata_for_content(&self, source_hash: &str) -> Result<(), DomainError> {
+        sqlx::query("DELETE FROM storage.content_metadata WHERE source_hash = $1")
+            .bind(source_hash)
             .execute(&*self.pool)
             .await
             .map_err(|e| {
-                DomainError::database_error(format!("Failed to delete file metadata: {}", e))
+                DomainError::database_error(format!("Failed to delete content metadata: {}", e))
             })?;
         Ok(())
     }
 
-    pub fn spawn_extraction_background(
-        service: Arc<Self>,
-        file_id: Uuid,
-        blob_hash: String,
-        mime_type: String,
-    ) {
+    pub fn spawn_extraction_background(service: Arc<Self>, source_hash: String, mime_type: String) {
         tokio::spawn(async move {
-            tracing::info!("📷 Extracting capture metadata for: {}", file_id);
-            if let Err(e) = service
-                .extract_and_save(&file_id, &blob_hash, &mime_type)
-                .await
-            {
+            tracing::info!(
+                "📷 Extracting capture metadata for content: {}",
+                source_hash
+            );
+            if let Err(e) = service.extract_and_save(&source_hash, &mime_type).await {
                 tracing::warn!("Failed to extract capture metadata: {}", e);
             }
         });
     }
 
+    /// Re-extract, discarding whatever was stored for this content first.
+    ///
+    /// The delete is keyed on the NEW content hash, not the old one: other
+    /// files may still point at the previous bytes and their facts must
+    /// survive. Clearing the row we are about to rewrite just stops stale
+    /// columns lingering when the new parse yields fewer fields.
     pub fn spawn_extraction_with_delete_background(
         service: Arc<Self>,
-        file_id: Uuid,
-        blob_hash: String,
+        source_hash: String,
         mime_type: String,
     ) {
         tokio::spawn(async move {
-            tracing::info!("📷 Updating capture metadata for: {}", file_id);
-            let _ = service.delete_metadata(&file_id).await;
-            if let Err(e) = service
-                .extract_and_save(&file_id, &blob_hash, &mime_type)
-                .await
-            {
+            tracing::info!("📷 Updating capture metadata for content: {}", source_hash);
+            let _ = service.delete_metadata_for_content(&source_hash).await;
+            if let Err(e) = service.extract_and_save(&source_hash, &mime_type).await {
                 tracing::warn!("Failed to update capture metadata: {}", e);
             }
         });
     }
 
-    /// Clone metadata from a known source file (explicit copy); falls back to a
-    /// blob-hash lookup or fresh extraction if the source is not yet processed.
-    pub fn clone_from_source_background(
-        service: Arc<Self>,
-        new_file_id: Uuid,
-        source_file_id: Uuid,
-        blob_hash: String,
-        mime_type: String,
-    ) {
-        tokio::spawn(async move {
-            let result = sqlx::query(
-                r#"
-                INSERT INTO storage.file_metadata
-                    (file_id, captured_at, latitude, longitude, camera_make,
-                     camera_model, orientation, width, height)
-                SELECT $1, captured_at, latitude, longitude, camera_make,
-                       camera_model, orientation, width, height
-                FROM storage.file_metadata
-                WHERE file_id = $2
-                ON CONFLICT (file_id) DO NOTHING
-                "#,
-            )
-            .bind(new_file_id)
-            .bind(source_file_id)
-            .execute(&*service.pool)
-            .await;
-
-            match result {
-                Ok(r) if r.rows_affected() > 0 => {
-                    info!(
-                        "Cloned capture metadata from {} to {}",
-                        source_file_id, new_file_id
-                    );
-                }
-                Ok(_) => {
-                    Self::clone_or_extract_background(service, new_file_id, blob_hash, mime_type);
-                }
-                Err(e) => {
-                    warn!(
-                        "Failed to clone capture metadata from {} to {}: {}",
-                        source_file_id, new_file_id, e
-                    );
-                }
-            }
-        });
-    }
-
-    /// Clone metadata from any file sharing the same blob; falls back to fresh
-    /// extraction if no processed sibling exists yet.
-    pub fn clone_or_extract_background(
-        service: Arc<Self>,
-        new_file_id: Uuid,
-        blob_hash: String,
-        mime_type: String,
-    ) {
-        tokio::spawn(async move {
-            let rows_inserted = sqlx::query(
-                r#"
-                INSERT INTO storage.file_metadata
-                    (file_id, captured_at, latitude, longitude, camera_make,
-                     camera_model, orientation, width, height)
-                SELECT $1, fm.captured_at, fm.latitude, fm.longitude, fm.camera_make,
-                       fm.camera_model, fm.orientation, fm.width, fm.height
-                FROM storage.file_metadata fm
-                JOIN storage.files sf ON sf.id = fm.file_id
-                WHERE sf.blob_hash = $2
-                LIMIT 1
-                ON CONFLICT (file_id) DO NOTHING
-                "#,
-            )
-            .bind(new_file_id)
-            .bind(&blob_hash)
-            .execute(&*service.pool)
-            .await;
-
-            match rows_inserted {
-                Ok(result) if result.rows_affected() > 0 => {
-                    info!("Cloned capture metadata for file {}", new_file_id);
-                }
-                Ok(_) => {
-                    if let Err(e) = service
-                        .extract_and_save(&new_file_id, &blob_hash, &mime_type)
-                        .await
-                    {
-                        warn!(
-                            "Failed to extract capture metadata for {}: {}",
-                            new_file_id, e
-                        );
-                    }
-                }
-                Err(e) => {
-                    warn!(
-                        "Failed to clone capture metadata for {}: {}",
-                        new_file_id, e
-                    );
-                }
-            }
-        });
-    }
+    // `clone_from_source_background` and `clone_or_extract_background` used
+    // to live here, mirroring the pair deleted from AudioMetadataService.
+    // Both existed ONLY to compensate for file-keying: they copied a
+    // metadata row to each new file sharing a blob, with a fallback chain
+    // for the race where the source had not been parsed yet.
+    //
+    // Content-keyed the row is already there, so a copy and a dedup hit are
+    // both no-ops. See
+    // `migrations/20261105000000_exif_metadata_content_keyed.sql`.
 
     /// Backfill: re-extract capture metadata for every existing image/video.
     /// Streams rows (O(1) memory); failures are logged and skipped, never abort
@@ -343,11 +268,21 @@ impl MediaMetadataService {
     pub async fn reextract_all_image_metadata(
         &self,
     ) -> Result<MetadataExtractionResult, DomainError> {
-        let mut stream = sqlx::query_as::<_, MediaFileRow>(
+        // DISTINCT content, not one row per file. Extraction is content-keyed
+        // now, so re-parsing the same bytes once per referencing file would be
+        // pure waste — on a library with any duplication that is the
+        // difference between one pass and N.
+        //
+        // `min(mime_type)` because one blob can be referenced by files with
+        // differing stored types; any of them picks the same parser branch,
+        // since the grouping below only distinguishes image from video.
+        let mut stream = sqlx::query_as::<_, (String, String)>(
             r#"
-            SELECT id as file_id, blob_hash, mime_type
+            SELECT blob_hash, min(mime_type) AS mime_type
             FROM storage.files
-            WHERE mime_type LIKE 'image/%' OR mime_type LIKE 'video/%'
+            WHERE (mime_type LIKE 'image/%' OR mime_type LIKE 'video/%')
+              AND NOT is_trashed
+            GROUP BY blob_hash
             "#,
         )
         .fetch(&*self.pool);
@@ -360,18 +295,15 @@ impl MediaMetadataService {
 
         while let Some(row) = stream.next().await {
             total += 1;
-            let media = row.map_err(|e| {
-                DomainError::database_error(format!("Failed to fetch media file row: {}", e))
+            let (source_hash, mime_type) = row.map_err(|e| {
+                DomainError::database_error(format!("Failed to fetch media content row: {}", e))
             })?;
-            match self
-                .extract_and_save(&media.file_id, &media.blob_hash, &media.mime_type)
-                .await
-            {
+            match self.extract_and_save(&source_hash, &mime_type).await {
                 Ok(()) => processed += 1,
                 Err(e) => {
                     warn!(
-                        "Failed to extract capture metadata for file {}: {}",
-                        media.file_id, e
+                        "Failed to extract capture metadata for blob {}: {}",
+                        source_hash, e
                     );
                     failed += 1;
                 }
@@ -540,7 +472,7 @@ fn merge_image_metadata(kamadak: Option<ExifMetadata>, nom: NomExif) -> Option<E
 impl FileLifecycleHook for MediaMetadataService {
     fn on_file_created(
         &self,
-        file_id: &str,
+        _file_id: &str,
         blob_hash: &str,
         content_type: &str,
         is_new_blob: bool,
@@ -548,61 +480,42 @@ impl FileLifecycleHook for MediaMetadataService {
         if !Self::handles(content_type) {
             return;
         }
-        let Ok(uuid) = file_id.parse::<Uuid>() else {
-            warn!("on_file_created: invalid file_id UUID: {}", file_id);
-            return;
-        };
-        let service = self.arc();
-        if is_new_blob {
-            Self::spawn_extraction_background(
-                service,
-                uuid,
-                blob_hash.to_string(),
-                content_type.to_string(),
-            );
-        } else {
-            Self::clone_or_extract_background(
-                service,
-                uuid,
-                blob_hash.to_string(),
-                content_type.to_string(),
-            );
-        }
-    }
-
-    fn on_file_copied(
-        &self,
-        file_id: &str,
-        blob_hash: &str,
-        content_type: &str,
-        source_file_id: &str,
-    ) {
-        if !Self::handles(content_type) {
+        // Content-keyed: a dedup hit means these facts already exist, so
+        // there is nothing to extract and nothing to copy. The new file
+        // still gets its `media_sort_date` — the BEFORE INSERT trigger
+        // added by this change reads the existing content row, which is
+        // the case the old clone-or-extract path was covering in Rust.
+        if !is_new_blob {
             return;
         }
-        let Ok(uuid) = file_id.parse::<Uuid>() else {
-            warn!("on_file_copied: invalid file_id UUID: {}", file_id);
-            return;
-        };
-        let Ok(source_uuid) = source_file_id.parse::<Uuid>() else {
-            warn!(
-                "on_file_copied: invalid source_file_id UUID: {}",
-                source_file_id
-            );
-            return;
-        };
-        Self::clone_from_source_background(
+        Self::spawn_extraction_background(
             self.arc(),
-            uuid,
-            source_uuid,
             blob_hash.to_string(),
             content_type.to_string(),
         );
     }
 
+    fn on_file_copied(
+        &self,
+        _file_id: &str,
+        _blob_hash: &str,
+        _content_type: &str,
+        _source_file_id: &str,
+    ) {
+        // No-op: a copy shares the source's blob, so the content-keyed row
+        // is already there. This used to clone the row per copy — pure
+        // compensation for the old key.
+        //
+        // It also fixes the recursive folder copy, which fires no Rust
+        // hooks at all (the WebDAV `COPY Depth: infinity` path is pure
+        // SQL), so file-keyed EXIF was simply never created for
+        // recursively-copied photos. Content-keyed, the copy resolves to
+        // the existing row with no code involved.
+    }
+
     fn on_file_updated(
         &self,
-        file_id: &str,
+        _file_id: &str,
         blob_hash: &str,
         content_type: &str,
         _source: crate::application::ports::file_lifecycle::WriteSource,
@@ -610,20 +523,22 @@ impl FileLifecycleHook for MediaMetadataService {
         if !Self::handles(content_type) {
             return;
         }
-        let Ok(uuid) = file_id.parse::<Uuid>() else {
-            warn!("on_file_updated: invalid file_id UUID: {}", file_id);
-            return;
-        };
+        // `blob_hash` is the NEW content. Keying the delete on it rather
+        // than on the file means other files still pointing at the OLD
+        // content keep their facts — their bytes did not change.
         Self::spawn_extraction_with_delete_background(
             self.arc(),
-            uuid,
             blob_hash.to_string(),
             content_type.to_string(),
         );
     }
 
     fn on_file_deleted(&self, _file_id: &str) {
-        // storage.file_metadata has ON DELETE CASCADE on file_id — DB handles cleanup.
+        // Nothing to do, and NOT for the old reason.
+        // `storage.content_metadata` is keyed by content, so it has no
+        // `file_id` and no cascade: the row deliberately outlives the
+        // file, because other files may share those bytes. It dies with
+        // the BLOB, via `BlobHandler::purge_content_facts` at reap time.
     }
 }
 
