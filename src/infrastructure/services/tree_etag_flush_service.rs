@@ -31,12 +31,17 @@ use crate::infrastructure::repositories::pg::transaction_utils::retry_on_deadloc
 ///     `Folder::compute_etag`); two flushes inside the same wall-clock
 ///     second must still produce two distinct ETags or a client polling
 ///     between them would permanently miss the second change.
-///   * The flusher is the ONLY writer of `tree_modified_at`, runs as a
-///     single instance, and locks victims in id order — so it cannot
-///     deadlock against itself. It can still lose a race against a folder
-///     move's descendant lpath cascade, which is why the statement runs
-///     under [`retry_on_deadlock`]; a retried flush re-drains the intact
-///     queue, invisible to users.
+///   * The flusher locks victims in id order, so it cannot deadlock
+///     against itself. It can still lose a race against a folder move's
+///     descendant lpath cascade, which is why the statement runs under
+///     [`retry_on_deadlock`]; a retried flush re-drains the intact queue,
+///     invisible to users.
+///   * The flusher is not the only writer of `tree_modified_at`: structural
+///     folder changes bump their ancestor chain in the writing statement
+///     (`storage.tree_etag_bump_or_enqueue`, migration
+///     `20261104000000_tree_etag_immediate_folder_bumps`). That bump uses
+///     `SKIP LOCKED` and never waits, so the flusher may wait on it but
+///     not the reverse; anything it skips is enqueued and lands here.
 pub struct TreeEtagFlushService {
     pool: Arc<PgPool>,
     interval_ms: u64,
