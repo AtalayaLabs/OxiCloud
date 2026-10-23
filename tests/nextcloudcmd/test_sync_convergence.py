@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import random
 import time
+from typing import TextIO
 
 from conftest import DIR, Local, Pair, Remote, Tree, sha256
 
@@ -242,8 +243,14 @@ def test_interrupted_download_resumes_to_identical_content(pair: Pair) -> None:
 # same folder in one round, so the correct outcome is fully determined and
 # kept in `model`; conflicts are covered by the deterministic tests above.
 #
-# Reproduce a failure with the seed printed in the assertion:
-#   NCC_SEED=<seed> bash tests/nextcloudcmd/run.sh -k churn
+# Every operation comes from one seeded RNG over sorted candidate lists, so
+# a seed replays the identical sequence. A failure (of any kind) carries a
+# note with the replay command, and `churn-ops.txt` next to the sync logs
+# lists every operation by round and side — the raw material for turning a
+# failure into a deterministic test above:
+#   NCC_SEED=<seed> NCC_CHURN_ROUNDS=<failing round + 1> \
+#       bash tests/nextcloudcmd/run.sh -k churn
+# (fewer rounds replay the same prefix and stop right after the failure).
 # ─────────────────────────────────────────────────────────────
 
 TOP_DIRS = [f"area{i}" for i in range(5)]
@@ -252,10 +259,16 @@ OPS_PER_DIR = 4
 
 
 class Churn:
-    def __init__(self, rng: random.Random, model: Tree):
+    def __init__(self, rng: random.Random, model: Tree, trace: TextIO):
         self.rng = rng
         self.model = model
         self.counter = 0
+        self.trace = trace
+
+    def log(self, side: Local | Remote, *op: str) -> None:
+        who = "local" if isinstance(side, Local) else "server"
+        self.trace.write(f"  {who:6} {' '.join(op)}\n")
+        self.trace.flush()
 
     def name(self, prefix: str) -> str:
         self.counter += 1
@@ -280,35 +293,42 @@ class Churn:
         if choice == "create" or (not files and choice in ("modify", "rename", "move", "delete")):
             path = f"{rng.choice(self.dirs_in(top))}/{self.name('f')}.txt"
             data = blob(path + str(self.counter), rng.randint(0, 5000))
+            self.log(side, "create", path, f"{len(data)}B")
             side.put(path, data)
             model[path] = sha256(data)
         elif choice == "modify":
             path = rng.choice(files)
             data = blob(path + str(self.counter), rng.randint(0, 5000))
+            self.log(side, "modify", path, f"{len(data)}B")
             side.put(path, data)
             model[path] = sha256(data)
         elif choice in ("rename", "move"):
             src = rng.choice(files)
             parent = src.rsplit("/", 1)[0] if choice == "rename" else rng.choice(self.dirs_in(top))
             dst = f"{parent}/{self.name('r')}.txt"
+            self.log(side, choice, src, "->", dst)
             side.move(src, dst)
             model[dst] = model.pop(src)
         elif choice == "delete":
             path = rng.choice(files)
+            self.log(side, "delete", path)
             side.delete(path)
             del model[path]
         elif choice == "mkdir" or not subdirs:
             path = f"{rng.choice(self.dirs_in(top))}/{self.name('d')}"
+            self.log(side, "mkdir", path)
             side.mkcol(path)
             model[path] = DIR
         elif choice == "rename_dir":
             src = rng.choice(subdirs)
             dst = f"{src.rsplit('/', 1)[0]}/{self.name('d')}"
+            self.log(side, "rename_dir", src, "->", dst)
             side.move(src, dst)
             for p in [p for p in model if p == src or p.startswith(src + "/")]:
                 model[dst + p[len(src):]] = model.pop(p)
         else:  # delete_dir
             path = rng.choice(subdirs)
+            self.log(side, "delete_dir", path)
             side.delete(path)
             for p in [p for p in model if p == path or p.startswith(path + "/")]:
                 del model[p]
@@ -316,25 +336,42 @@ class Churn:
 
 def test_bidirectional_churn_converges_to_model(pair: Pair) -> None:
     seed = int(os.environ.get("NCC_SEED", random.randrange(2**32)))
+    print(f"churn: NCC_SEED={seed} NCC_CHURN_ROUNDS={ROUNDS}")
     rng = random.Random(seed)
     model: Tree = {}
-    churn = Churn(rng, model)
-    for top in TOP_DIRS:
-        pair.server.mkcol(top)
-        model[top] = DIR
-    pair.client.sync()
-
-    for rnd in range(ROUNDS):
-        for top in TOP_DIRS:
-            owner = rng.choice(["local", "server", None])
-            if owner is None:
-                continue
-            side = pair.local if owner == "local" else pair.server
-            for _ in range(OPS_PER_DIR):
-                churn.op(side, top)
-        pair.client.sync()
+    trace_path = pair.client.log_dir / "churn-ops.txt"
+    rnd = -1
+    with trace_path.open("w") as trace:
+        trace.write(f"NCC_SEED={seed} NCC_CHURN_ROUNDS={ROUNDS}\n")
+        churn = Churn(rng, model, trace)
         try:
-            pair.assert_converged(dict(model))
-        except AssertionError as e:
-            raise AssertionError(f"NCC_SEED={seed} round {rnd}: {e}") from None
+            for top in TOP_DIRS:
+                pair.server.mkcol(top)
+                model[top] = DIR
+            pair.client.sync()
+
+            for rnd in range(ROUNDS):
+                trace.write(f"round {rnd}\n")
+                for top in TOP_DIRS:
+                    owner = rng.choice(["local", "server", None])
+                    if owner is None:
+                        continue
+                    side = pair.local if owner == "local" else pair.server
+                    for _ in range(OPS_PER_DIR):
+                        churn.op(side, top)
+                pair.client.sync()
+                pair.assert_converged(dict(model))
+        except Exception as e:
+            # Any failure — a convergence assert, a sync crash, an HTTP
+            # error from a side — must say how to replay it.
+            where = "setup" if rnd < 0 else f"round {rnd}"
+            note = (
+                f"churn failed in {where}; replay: NCC_SEED={seed} "
+                f"NCC_CHURN_ROUNDS={rnd + 1} bash tests/nextcloudcmd/run.sh -k churn"
+                f"\noperations: {trace_path}"
+            )
+            print(note)  # captured stdout is shown with the failure
+            if hasattr(e, "add_note"):  # Python 3.11+
+                e.add_note(note)
+            raise
 
