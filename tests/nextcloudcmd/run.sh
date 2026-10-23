@@ -17,7 +17,10 @@
 #
 # Knobs:
 #   NCC_SEED=<n>           replay one churn run (the seed is in the failure)
-#   NCC_CHURN_ROUNDS=<n>   churn rounds (default 8)
+#   NCC_CHURN_ROUNDS=<n>   churn rounds (default 8); with NCC_SEED, a smaller
+#                          value replays the same prefix and stops there
+#   Every churn run writes its operations to .work/<test>/logs/churn-ops.txt
+#   (kept until the next run); a failure prints the replay command + path.
 #
 # Requires: docker, python3 (>= 3.10), curl, jq
 
