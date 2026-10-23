@@ -33,13 +33,17 @@ const HANDSHAKE_TIMEOUT_MS = 1_000;
  * Try to spin up a SharedWorker-backed bridge. Returns `null` if ANY
  * step fails — the caller falls back to the per-tab client.
  *
- * `workerUrl` is the Vite-produced URL for the compiled worker
- * entry. The caller passes it in rather than constructing a `new
- * URL(..., import.meta.url)` here so `detect.ts` stays pure and the
- * caller's Vite config is the single source of truth about the
- * worker module graph.
+ * `workerFactory` constructs the SharedWorker. The caller supplies
+ * the function (rather than a URL string) because Vite only
+ * recognises `new SharedWorker(new URL('./worker.ts', import.meta.url),
+ * { type: 'module' })` as a worker-import at the literal construction
+ * site; passing the URL through this file as a string would collapse
+ * the pattern Vite rewrites and the worker bundle would ship as
+ * raw .ts source.
  */
-export async function trySharedWorker(workerUrl: string): Promise<SharedWorkerBridge | null> {
+export async function trySharedWorker(
+	workerFactory: () => SharedWorker
+): Promise<SharedWorkerBridge | null> {
 	// (1) API presence.
 	if (typeof SharedWorker === 'undefined') {
 		busLog.info('SharedWorker not available — falling back to per-tab bus', {
@@ -53,7 +57,7 @@ export async function trySharedWorker(workerUrl: string): Promise<SharedWorkerBr
 	// `allow-same-origin`) throws synchronously here.
 	let worker: SharedWorker;
 	try {
-		worker = new SharedWorker(workerUrl, { type: 'module', name: 'oxi-bus' });
+		worker = workerFactory();
 	} catch (err) {
 		busLog.info('SharedWorker construction threw — falling back to per-tab bus', {
 			reason: 'construct_threw',
