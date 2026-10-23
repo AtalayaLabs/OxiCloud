@@ -1963,15 +1963,40 @@ now shipped:
 the lifetime invariant these tables need, since neither holds a
 `ref_count` nor cascades from a file.
 
-**Still open: the orphan sweep.** `satellites_consistency` finds
-`content_derived_blobs` / `file_attached_blobs` rows whose source
-vanished by a path that ran no reap; it does not look at the two
-`content_metadata` tables, so for them the reap hook is the only
-enforcement and a missed reap leaks silently. Add a discovery-only arm
-(no silent `DELETE` — precedent `ContentIndexWorker::sweep_orphaned_text`).
-Low urgency while rows are created one-per-upload; it becomes a
-prerequisite before `content_rescan` ships, because that job creates
-rows corpus-wide.
+**The orphan sweep landed 2026-10-23** as `satellites_consistency`
+phase 3 (`content_facts_orphan`, severity `anomaly`), walking both
+`content_metadata` tables for rows whose source Blob is gone.
+Discovery-only, with deletion behind `?repair=true` — no silent repair.
+
+There is **no FK to cascade from**, and today that is not an omission: a
+Blob is either a `chunk_manifests` row (CDC) or a bare `storage.blobs`
+row (legacy whole-file), and a foreign key must name exactly one table.
+Pointing it at either would reject half the corpus — which is why
+`blob_exists!` probes both, and why `content_derived_blobs.source_hash`
+has no FK either. The lifetime is therefore enforced in code, and the
+sweep is what catches a path that forgets.
+
+**The FK becomes possible on legacy removal — fold it into that change.**
+`backend_rechunk` has shipped and converts whole-file blobs to manifests;
+once it has converged, every Blob IS a `chunk_manifests` row and
+`source_hash REFERENCES storage.chunk_manifests(file_hash) ON DELETE
+CASCADE` expresses exactly the invariant this section argues for. That is
+the same gate as the NEXT-MAJOR legacy-path removal decided 2026-10-04
+(migration terminated **and** a major release), so it is not a separate
+proposal — it is one more item that unlocks at the same moment, and the
+strongest argument yet for finishing the convergence: a guarantee the
+database enforces beats one every future reap path must remember.
+
+Two caveats for whoever picks it up. The FK makes extraction ordering
+load-bearing — an upsert whose manifest has just been reaped turns a
+benign no-op into a constraint violation, so the insert needs to tolerate
+that. And the migration adding it will fail loudly on any instance still
+holding one legacy blob, which is a feature: it is the convergence check.
+
+That it can be forgotten is established, not theoretical: the bulk
+manifest reap once omitted `purge_derived_blobs` and leaked three blobs
+per deleted image, permanently — GC was thereafter *correct* to refuse
+them. See the comment at that call site.
 
 The analysis below stands as written: it is why the change was made, and
 the security constraint in it outlives the migration.

@@ -322,6 +322,22 @@ target is 1.0.
 Until then the tags are the whole deliverable: when the gates open, removal
 is a grep rather than an excavation.
 
+**One thing the gates also unlock, worth claiming at the same time.** While
+a Blob can be *either* a `chunk_manifests` row or a bare `storage.blobs`
+row, no content-keyed satellite can carry a foreign key — a FK names one
+table, and either choice rejects half the corpus. That is why
+`content_derived_blobs.source_hash`, `audio.content_metadata` and
+`storage.content_metadata` all enforce their lifetime in Rust
+(`BlobHandler::purge_content_facts`) with `satellites_consistency` sweeping
+for paths that forget. Post-convergence every Blob is a manifest, so
+`REFERENCES storage.chunk_manifests(file_hash) ON DELETE CASCADE` becomes
+expressible and the database enforces what three reap paths currently have
+to remember. The omission has already bitten once: the bulk manifest reap
+shipped without `purge_derived_blobs` and leaked three blobs per deleted
+image, permanently. Fold the FK into the removal change — and note the
+migration that adds it fails loudly on any instance still holding a legacy
+blob, which makes it a convergence check in its own right.
+
 **As implemented (1a–1c)** — three things the plan had not specified, each from a
 review question worth recording:
 

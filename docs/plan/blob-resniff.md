@@ -2,8 +2,8 @@
 
 **Status:** design captured 2026-10-07; §0 and all of Part A shipped and
 **verified green** (unit + integration + api-test, 2026-10-23), the job itself
-(Part B) is still to build. One item from Part A is deliberately still open and
-gates Part B: the orphan sweep in §A.4. Triggered by
+(Part B) is still to build and is no longer gated — §A.4's orphan sweep landed
+as `satellites_consistency` phase 3. Triggered by
 `d5f37514` (`fix(security): sniff the content type before trusting the
 uploader's claim`), which fixed MIME detection on the *inflow* and surfaced
 three things it cannot fix: rows already stored, rows invalidated by content
@@ -20,7 +20,7 @@ heading:
 | §A.1 migration — **capture facts** keyed by content | ✅ **DONE 2026-10-23** — `storage.content_metadata`, same `DISTINCT ON (blob_hash)` backfill, old table + geo index moved. `captured_at` → `created_at` per `normalize-file-dates.md`; bookkeeping is `extracted_at` |
 | §A.2 the `media_sort_date` triggers | ✅ **DONE 2026-10-23** — **three**, not two. Trigger 1 fans out on `blob_hash`; the dates plan's `BEFORE UPDATE`/assign-`NEW` function is reused by a **new `BEFORE INSERT`** arm, because content-keying falsifies that plan's "`INSERT` needs no trigger": a copy of known content produces no upsert, so nothing would ever overwrite `media_sort_date = NOW()`. Two triggers share one function — a `WHEN` clause cannot test `TG_OP` |
 | §A.3 writers, readers, dead-code deletions | ✅ **DONE** — audio 2026-10-22, capture facts 2026-10-23: both clone paths and `on_file_copied` gone on each, repository re-keyed, `reextract_all` walks `DISTINCT blob_hash`, Places viewport + media listing joins repointed (sample id now from the drive-filtered side) |
-| §A.4 reap hook + orphan sweep | 🟡 **reap hook DONE** — `BlobHandler::purge_content_facts` covers **both** tables, called from `purge_derived_blobs` so there is one place to forget. Orphan-sweep backstop in `satellites_consistency` still outstanding, and is a **hard prerequisite for §B**, which creates rows corpus-wide |
+| §A.4 reap hook + orphan sweep | ✅ **DONE 2026-10-23** — `BlobHandler::purge_content_facts` covers **both** tables, called from `purge_derived_blobs` so there is one place to forget; every reap path reaches it (single-blob via `reap_blob`, and the bulk manifest sweep, which calls it directly). The backstop is `satellites_consistency` phase 3, `content_facts_orphan` (`anomaly`), discovery-only with repair behind `?repair=true`. **§B is no longer gated** |
 | §A coverage — extraction, end to end | ✅ **DONE 2026-10-23** — the re-key shipped against tests that asserted no VALUE: no fixture carried EXIF or ID3, so nothing pinned that a capture date or an artist survives the trip out of a blob. `exif-sample.jpg` + `id3-sample.mp3` (with generators in `scripts/helpers/`), unit tests on both extractors, and `photos_exif_extraction.hurl` / `audio_id3_extraction.hurl` pinning the content-keying property itself: same bytes twice → one extraction serves both files, and deleting one copy does not strip the other. The MP3 found a live bug on its first run — `id3::Tag::year()` reads only TYER, so the release year had been silently NULL for every ID3v2.4 file |
 | §B `content_rescan` job | **NOT STARTED** — scope grew 2026-10-22: the fan-out UPDATE must also move `storage.files.category_order`, in the SAME statement and **per row** (the classifier takes `(name, mime)`, so it is not computable per hash). It is the column the search type filter now reads, so retyping mime without it makes a row invisible under its own category. Supersedes the detector proposed in `search-type-filter-by-category.md` |
 | §B.7 delete the two reextract endpoints | **NOT STARTED** |
