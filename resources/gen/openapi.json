@@ -15856,7 +15856,7 @@
               "null"
             ],
             "format": "int32",
-            "description": "Image/video height in pixels, from `storage.file_metadata`."
+            "description": "Image/video height in pixels, from `storage.content_metadata`."
           },
           "orientation": {
             "type": [
@@ -15884,7 +15884,7 @@
               "null"
             ],
             "format": "int32",
-            "description": "Image/video width in pixels, from `storage.file_metadata`.\n`None` when the row has no metadata (very old uploads, or a\nformat the metadata extractor doesn't understand)."
+            "description": "Image/video width in pixels, from `storage.content_metadata`.\n`None` when the row has no metadata (very old uploads, or a\nformat the metadata extractor doesn't understand)."
           }
         }
       },
