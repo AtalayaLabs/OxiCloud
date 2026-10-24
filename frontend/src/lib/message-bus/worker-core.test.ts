@@ -667,3 +667,169 @@ describe('WorkerCore — malformed envelopes do not crash the core', () => {
 		expect(warned).toBe(true);
 	});
 });
+
+describe('WorkerCore — zombie-port heartbeat', () => {
+	// Chrome's `MessagePort.close` event fires unreliably when a tab is
+	// closed, so dead ports accumulate in `#ports` until the next
+	// outbound postMessage happens to throw. Observed 2026-10-24 as a
+	// worker with 4 ports but only 2 real tabs — the stale ones kept
+	// winning the `need-ticket` first-port-wins lottery (before we
+	// moved to broadcast fan-out), hanging reconnects after a server
+	// restart.
+	//
+	// The heartbeat forces the question: every `livenessIntervalMs`
+	// the worker sends `port-ping` to every port; a port that fails to
+	// reply with `port-pong` within `livenessTimeoutMs` gets
+	// deregistered as if its tab had closed.
+	//
+	// These tests run with REAL timers because Node's `MessagePort`
+	// delivery goes through libuv, not through `setTimeout`, and
+	// Vitest fake timers can't drain libuv. We feed WorkerCore
+	// small (50 ms / 25 ms) interval+timeout via its test-only
+	// options so the heartbeat is observable in test wall-clock.
+
+	const SHORT_INTERVAL_MS = 50;
+	const SHORT_TIMEOUT_MS = 25;
+	const SHORT_OPTS = {
+		livenessIntervalMs: SHORT_INTERVAL_MS,
+		livenessTimeoutMs: SHORT_TIMEOUT_MS
+	};
+	/** Real-clock wait for message delivery + timer firings. 10 ms is
+	 *  enough on CI; small enough that the overall test still runs in
+	 *  < 500 ms per case. */
+	const waitMs = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+	it('a live port replies to port-ping and stays registered', async () => {
+		const fixture = makeFakeTransport('connected');
+		const core = new WorkerCore(fixture.transport, 'v', SHORT_OPTS);
+		const { in: inbox, out } = newChannel();
+		const received = collect(inbox);
+		core.registerPort(out);
+
+		// Wait one interval past; one `port-ping` should land.
+		await waitMs(SHORT_INTERVAL_MS + 10);
+		const pings = received.filter((m) => m.kind === 'port-ping') as Array<{
+			kind: 'port-ping';
+			nonce: number;
+		}>;
+		expect(pings).toHaveLength(1);
+		const nonce = pings[0].nonce;
+
+		// Reply with the echoed nonce — simulates a live bridge.
+		await core.handlePortMessage(out, { kind: 'port-pong', nonce });
+
+		// Wait past the liveness timeout — the port must NOT
+		// have been deregistered.
+		await waitMs(SHORT_TIMEOUT_MS + 20);
+		const beforeState = received.length;
+		fixture.setState('disconnected');
+		await waitMs(5);
+		const stateMsgs = received.slice(beforeState).filter((m) => m.kind === 'state');
+		expect(stateMsgs).toHaveLength(1);
+
+		core.stop();
+	});
+
+	it('a silent port is deregistered after the liveness timeout', async () => {
+		const fixture = makeFakeTransport('connected');
+		const core = new WorkerCore(fixture.transport, 'v', SHORT_OPTS);
+		const { in: inbox, out } = newChannel();
+		const received = collect(inbox);
+		core.registerPort(out);
+
+		await waitMs(SHORT_INTERVAL_MS + 10);
+		expect(received.some((m) => m.kind === 'port-ping')).toBe(true);
+
+		// Push past the liveness deadline — port must be gone.
+		await waitMs(SHORT_TIMEOUT_MS + 20);
+
+		// Observable: a state fan-out no longer reaches this port.
+		const before = received.length;
+		fixture.setState('disconnected');
+		await waitMs(5);
+		const stateFanouts = received.slice(before).filter((m) => m.kind === 'state');
+		expect(stateFanouts).toHaveLength(0);
+
+		core.stop();
+	});
+
+	it('a mixed set reaps only the silent port — the live one survives', async () => {
+		const fixture = makeFakeTransport('connected');
+		const core = new WorkerCore(fixture.transport, 'v', SHORT_OPTS);
+		const { in: inAlive, out: alive } = newChannel();
+		const { in: inZombie, out: zombie } = newChannel();
+		const receivedAlive = collect(inAlive);
+		const receivedZombie = collect(inZombie);
+		core.registerPort(alive);
+		core.registerPort(zombie);
+
+		await waitMs(SHORT_INTERVAL_MS + 10);
+
+		// Both ports got a ping — pin that first, so a regression
+		// that stops probing more than one port at a time trips.
+		const alivePings = receivedAlive.filter((m) => m.kind === 'port-ping') as Array<{
+			kind: 'port-ping';
+			nonce: number;
+		}>;
+		const zombiePings = receivedZombie.filter((m) => m.kind === 'port-ping') as Array<{
+			kind: 'port-ping';
+			nonce: number;
+		}>;
+		expect(alivePings).toHaveLength(1);
+		expect(zombiePings).toHaveLength(1);
+
+		// Alive replies; zombie stays silent.
+		await core.handlePortMessage(alive, {
+			kind: 'port-pong',
+			nonce: alivePings[0].nonce
+		});
+
+		await waitMs(SHORT_TIMEOUT_MS + 20);
+
+		// Observable: a state fan-out hits alive but not zombie.
+		const beforeAlive = receivedAlive.length;
+		const beforeZombie = receivedZombie.length;
+		fixture.setState('disconnected');
+		await waitMs(5);
+		expect(receivedAlive.slice(beforeAlive).filter((m) => m.kind === 'state')).toHaveLength(1);
+		expect(receivedZombie.slice(beforeZombie).filter((m) => m.kind === 'state')).toHaveLength(0);
+
+		core.stop();
+	});
+
+	// A stale pong — one carrying a prior round's nonce — must NOT
+	// satisfy the current round's deadline. If `#handlePortPong`
+	// cleared the pending entry regardless of nonce match, a sloppy
+	// bridge echoing an old ping could keep a dead port alive.
+	it('a stale-nonce pong does not satisfy the current round', async () => {
+		const fixture = makeFakeTransport('connected');
+		const core = new WorkerCore(fixture.transport, 'v', SHORT_OPTS);
+		const { in: inbox, out } = newChannel();
+		const received = collect(inbox);
+		core.registerPort(out);
+
+		await waitMs(SHORT_INTERVAL_MS + 10);
+		const pings1 = received.filter((m) => m.kind === 'port-ping') as Array<{
+			kind: 'port-ping';
+			nonce: number;
+		}>;
+		expect(pings1).toHaveLength(1);
+		const realNonce = pings1[0].nonce;
+
+		// Reply with a WRONG nonce (realNonce + 999) — simulates a
+		// stale echo from a prior round that never arrived.
+		await core.handlePortMessage(out, {
+			kind: 'port-pong',
+			nonce: realNonce + 999
+		});
+
+		// Deadline elapses — port should still be reaped.
+		await waitMs(SHORT_TIMEOUT_MS + 20);
+		const before = received.length;
+		fixture.setState('disconnected');
+		await waitMs(5);
+		expect(received.slice(before).filter((m) => m.kind === 'state')).toHaveLength(0);
+
+		core.stop();
+	});
+});

@@ -35,6 +35,20 @@ import {
 
 /** Priority order for log levels — higher wins. Used by the filter
  *  push-down to compute `maxLevelWantedByAnyTab` across all ports. */
+/** How often the worker probes attached ports for liveness. Chrome's
+ *  `MessagePort.close` event doesn't fire reliably on tab close, so
+ *  stale ports accumulate; this periodic probe reaps them. 60 s is a
+ *  balance: aggressive enough that a dead port doesn't linger more
+ *  than ~75 s, cheap enough that normal operation adds negligible
+ *  port traffic. */
+const PORT_LIVENESS_INTERVAL_MS = 60_000;
+
+/** How long we wait for a `port-pong` reply before declaring the port
+ *  dead. Live bridges reply in sub-millisecond (synchronous
+ *  postMessage). 15 s is generous for a CPU-blocked legit tab;
+ *  anything slower is almost certainly dead. */
+const PORT_LIVENESS_TIMEOUT_MS = 15_000;
+
 const LOG_LEVEL_ORDER: Record<LogLevel, number> = {
 	error: 50,
 	warn: 40,
@@ -102,6 +116,15 @@ export interface BusTransport {
 	 *  failure immediately rather than waiting the 5 s need-ticket
 	 *  budget. Stale nonces (bridge replies late) are ignored. */
 	ticketFetchFailed(nonce: number): void;
+}
+
+/** Test-only knobs for timing — production code passes nothing and
+ *  gets the module-level defaults. Overriding under 50 ms is viable
+ *  for unit tests; a browser would see unnecessary port chatter at
+ *  that cadence. */
+export interface WorkerCoreOptions {
+	livenessIntervalMs?: number;
+	livenessTimeoutMs?: number;
 }
 
 /** Internal routing entry for one topic subscription. */
@@ -176,9 +199,33 @@ export class WorkerCore {
 	 *  firing N postMessages to tabs that would discard every one. */
 	#maxWantedLogLevel: LogLevel = 'info';
 
-	constructor(transport: BusTransport, workerVersion: string) {
+	/** Monotonic nonce for liveness probes. Each `port-ping` carries
+	 *  one; the `port-pong` reply must echo it, so a stale pong from
+	 *  a prior round can't satisfy the current round's deadline. */
+	#nextPortPingNonce = 1;
+
+	/** port → outstanding liveness probe for THIS port. Cleared when
+	 *  the pong arrives; the pending-timer deregisters the port on
+	 *  expiry. */
+	readonly #pendingPortPongs = new WeakMap<
+		MessagePort,
+		{ nonce: number; timer: ReturnType<typeof setTimeout> }
+	>();
+
+	/** Interval handle for the periodic probe. */
+	#livenessInterval: ReturnType<typeof setInterval> | null = null;
+
+	/** Timing config. Production uses the module-level constants; tests
+	 *  override via `WorkerCoreOptions` to run the heartbeat at ms
+	 *  granularity under real timers. */
+	readonly #livenessIntervalMs: number;
+	readonly #livenessTimeoutMs: number;
+
+	constructor(transport: BusTransport, workerVersion: string, options?: WorkerCoreOptions) {
 		this.#transport = transport;
 		this.#workerVersion = workerVersion;
+		this.#livenessIntervalMs = options?.livenessIntervalMs ?? PORT_LIVENESS_INTERVAL_MS;
+		this.#livenessTimeoutMs = options?.livenessTimeoutMs ?? PORT_LIVENESS_TIMEOUT_MS;
 
 		// Wire the transport's event streams to this worker's fan-out
 		// helpers. Each listener survives for the lifetime of the
@@ -189,6 +236,21 @@ export class WorkerCore {
 		this.#transport.onWriteDenied((fileId, params) => this.#fanoutWriteDenied(fileId, params));
 		this.#transport.onStateChange((state) => this.#broadcastState(state));
 		this.#transport.onNeedTicket((nonce) => this.#askPortForTicket(nonce));
+
+		// Periodic zombie-port reaper. See constant docstrings.
+		this.#livenessInterval = setInterval(() => this.#probeAllPorts(), this.#livenessIntervalMs);
+	}
+
+	/** Stop the periodic probe. Needed by tests that construct a
+	 *  WorkerCore outside the SharedWorker lifecycle — in production
+	 *  the worker lives for the browser's lifetime and the probe
+	 *  dies with it. */
+	stop(): void {
+		if (this.#livenessInterval !== null) {
+			clearInterval(this.#livenessInterval);
+			this.#livenessInterval = null;
+		}
+		for (const { timer } of this.#drainPendingPongs()) clearTimeout(timer);
 	}
 
 	/** Broadcast `need-ticket` to ALL connected ports. Any live
@@ -300,6 +362,94 @@ export class WorkerCore {
 		// Recompute the push-down filter in case this port was the
 		// one holding the max log level up.
 		this.#recomputeMaxWantedLogLevel();
+
+		// Clear any in-flight liveness probe for this port — the
+		// probe's deregister-on-timeout callback would double-call
+		// deregisterPort otherwise. Idempotent by design (via the
+		// `#perPort.get(port)` early return at the top) but better
+		// to not fire the stale timer at all.
+		const pending = this.#pendingPortPongs.get(port);
+		if (pending) {
+			clearTimeout(pending.timer);
+			this.#pendingPortPongs.delete(port);
+		}
+	}
+
+	// ============================================================
+	// Zombie-port heartbeat
+	//
+	// Chrome's `MessagePort` doesn't reliably emit `close` when its
+	// owner tab goes away — the SharedWorker ends up with ports in
+	// `#ports` that will never respond again. The worker-entry's
+	// `postMessage`-throws-on-closed-port path catches some of these
+	// (via `#send`'s try/catch deregistering), but a port can be
+	// "dead" without ever being written to, and nothing moves it off
+	// the set until the next outbound frame tries and fails.
+	//
+	// This heartbeat forces the question: every PORT_LIVENESS_INTERVAL_MS
+	// the worker sends `port-ping` to each port and waits up to
+	// PORT_LIVENESS_TIMEOUT_MS for `port-pong`. A port that doesn't
+	// reply gets deregistered — same as if its tab had closed cleanly.
+	// Each probe carries a monotonic nonce so a late pong from a
+	// previous round can't satisfy the current round's deadline.
+	// ============================================================
+
+	/** Send `port-ping` to every connected port. If a port is already
+	 *  being probed (prior round's timer still armed), that pending
+	 *  entry stays — a port that was slow last round AND slow this
+	 *  round still deserves eviction, so we don't reset the timer. */
+	#probeAllPorts(): void {
+		if (this.#ports.size === 0) return;
+		for (const port of this.#ports) {
+			if (this.#pendingPortPongs.has(port)) continue;
+			const nonce = this.#nextPortPingNonce++;
+			const timer = setTimeout(() => {
+				// Timer fires only if the port never replied. Deregister
+				// drops it from the index + clears the pending entry;
+				// we don't need to clear here. If the port was already
+				// deregistered via another path (close event, send
+				// failure), the entry is gone and deregisterPort is a
+				// no-op.
+				this.#warn('port-ping timed out — deregistering zombie port', {
+					nonce,
+					portCount: this.#ports.size
+				});
+				this.deregisterPort(port);
+			}, this.#livenessTimeoutMs);
+			this.#pendingPortPongs.set(port, { nonce, timer });
+			this.#send(port, { kind: 'port-ping', nonce });
+		}
+	}
+
+	/** Clear the pending-pong entry for a port when its reply arrives
+	 *  with the matching nonce. A stale nonce (from a prior round, or
+	 *  from a port that posted a bogus pong) is ignored — the current
+	 *  round's timer continues to run and will evict the port if the
+	 *  real reply never arrives. */
+	#handlePortPong(port: MessagePort, nonce: number): void {
+		const pending = this.#pendingPortPongs.get(port);
+		if (!pending) return;
+		if (pending.nonce !== nonce) {
+			this.#warn('port-pong with stale nonce — ignoring', {
+				expected: pending.nonce,
+				got: nonce
+			});
+			return;
+		}
+		clearTimeout(pending.timer);
+		this.#pendingPortPongs.delete(port);
+	}
+
+	/** Iterator over currently-pending liveness probes. WeakMap is
+	 *  not iterable; we walk `#ports` to find any pending entry.
+	 *  Used by `stop()` to clear every outstanding timer. */
+	*#drainPendingPongs(): Iterable<{ nonce: number; timer: ReturnType<typeof setTimeout> }> {
+		for (const port of this.#ports) {
+			const pending = this.#pendingPortPongs.get(port);
+			if (!pending) continue;
+			this.#pendingPortPongs.delete(port);
+			yield pending;
+		}
 	}
 
 	/** Called by the SharedWorker entry on every port `message`. */
@@ -362,6 +512,9 @@ export class WorkerCore {
 				return;
 			case 'ticket-fetch-failed':
 				this.#transport.ticketFetchFailed(msg.nonce);
+				return;
+			case 'port-pong':
+				this.#handlePortPong(port, msg.nonce);
 				return;
 		}
 	}
@@ -688,6 +841,8 @@ export class WorkerCore {
 			case 'set-log-level':
 			case 'provide-ticket':
 			case 'request-reconnect':
+			case 'ticket-fetch-failed':
+			case 'port-pong':
 				return true;
 			default:
 				return false;

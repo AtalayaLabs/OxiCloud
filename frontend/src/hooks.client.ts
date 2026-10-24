@@ -177,8 +177,7 @@ export async function init(): Promise<void> {
 				// cases falling back to the raw constructor name is the
 				// least bad option — it's at least non-null, callers
 				// can see "KA" and know to rebuild.
-				const impl: string =
-					window.__oxi_bus_impl ?? messageBus.constructor.name;
+				const impl: string = window.__oxi_bus_impl ?? messageBus.constructor.name;
 				// `workerVersion` only exists on the SharedWorker bridge;
 				// null in per-tab mode. The optional chain + the ?? null
 				// keep both impls' return shape identical.

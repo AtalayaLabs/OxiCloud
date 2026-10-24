@@ -160,6 +160,13 @@ export interface TicketFetchFailedMessage {
 	nonce: number;
 }
 
+/** Tab replies to the worker's periodic liveness probe. See
+ *  `PortPingMessage` for the full rationale. */
+export interface PortPongMessage {
+	kind: 'port-pong';
+	nonce: number;
+}
+
 export type PortTabToWorkerMessage =
 	| HelloMessage
 	| SubscribeMessage
@@ -174,7 +181,8 @@ export type PortTabToWorkerMessage =
 	| SetLogLevelMessage
 	| ProvideTicketMessage
 	| RequestReconnectMessage
-	| TicketFetchFailedMessage;
+	| TicketFetchFailedMessage
+	| PortPongMessage;
 
 // ============================================================
 // Worker → Tab envelopes
@@ -263,6 +271,30 @@ export interface NeedTicketMessage {
 	nonce: number;
 }
 
+/** Worker's periodic liveness probe for its attached ports. Chrome's
+ *  `MessagePort` `close` event does not fire reliably when a tab
+ *  closes, so stale ports accumulate in the worker's registry. The
+ *  broadcast-to-all-ports fallback (`#askPortForTicket`) works
+ *  around their presence for the critical paths, but the stale
+ *  entries still pay memory (per-port `#perPort` entries, routing-
+ *  table port sets) and get log-fan-out envelopes posted at them
+ *  (silently dropped — ports are closed server-side).
+ *
+ *  Periodically the worker sends every port a `port-ping` and
+ *  expects a `port-pong` within a short deadline. Any port that
+ *  doesn't reply gets deregistered as a zombie. Live bridges
+ *  reply immediately with no side effects.
+ *
+ *  Period: 60 s (worker-side `PORT_LIVENESS_INTERVAL_MS`).
+ *  Deadline: 15 s per pong (worker-side `PORT_LIVENESS_TIMEOUT_MS`).
+ *  Generous enough that a CPU-blocked legit tab doesn't get
+ *  orphaned; aggressive enough that a tab closed by the browser's
+ *  tab-manager gets reaped within ~75 s. */
+export interface PortPingMessage {
+	kind: 'port-ping';
+	nonce: number;
+}
+
 /** Worker-side `busLog` fan-out. The worker replaces its `loglevel`
  *  handler with an emitter that packages every log call as this
  *  envelope and sends it to every connected port. Each tab's bridge
@@ -296,7 +328,8 @@ export type PortWorkerToTabMessage =
 	| WriteDeniedMessage
 	| PingPongMessage
 	| LogMessage
-	| NeedTicketMessage;
+	| NeedTicketMessage
+	| PortPingMessage;
 
 /** Full union of every port envelope — tab-to-worker and
  *  worker-to-tab. The runtime typeguard `parsePortMessage` returns
@@ -326,7 +359,8 @@ const TAB_TO_WORKER_KINDS = new Set<string>([
 	'set-log-level',
 	'provide-ticket',
 	'request-reconnect',
-	'ticket-fetch-failed'
+	'ticket-fetch-failed',
+	'port-pong'
 ]);
 
 const WORKER_TO_TAB_KINDS = new Set<string>([
@@ -340,7 +374,8 @@ const WORKER_TO_TAB_KINDS = new Set<string>([
 	'write-denied',
 	'ping-pong',
 	'log',
-	'need-ticket'
+	'need-ticket',
+	'port-ping'
 ]);
 
 const LOG_LEVELS = new Set<string>(['trace', 'debug', 'info', 'warn', 'error']);
@@ -433,6 +468,10 @@ export function parsePortMessage(raw: unknown): PortMessage | null {
 			if (typeof obj.nonce !== 'number') return null;
 			return raw as TicketFetchFailedMessage;
 		}
+		case 'port-pong': {
+			if (typeof obj.nonce !== 'number') return null;
+			return raw as PortPongMessage;
+		}
 		case 'hello-ack': {
 			if (typeof obj.reqId !== 'number') return null;
 			if (typeof obj.state !== 'string') return null;
@@ -492,6 +531,10 @@ export function parsePortMessage(raw: unknown): PortMessage | null {
 		case 'need-ticket': {
 			if (typeof obj.nonce !== 'number') return null;
 			return raw as NeedTicketMessage;
+		}
+		case 'port-ping': {
+			if (typeof obj.nonce !== 'number') return null;
+			return raw as PortPingMessage;
 		}
 	}
 	// The `TAB_TO_WORKER_KINDS.has(kind) || WORKER_TO_TAB_KINDS.has(kind)` fast-reject above

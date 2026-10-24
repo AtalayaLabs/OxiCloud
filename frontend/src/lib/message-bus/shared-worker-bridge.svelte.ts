@@ -356,10 +356,10 @@ export class SharedWorkerBridge implements MessageBusClient {
 					]);
 					const msg = err?.message;
 					if (typeof msg === 'string' && transientMsgs.has(msg)) {
-						busLog.debug(
-							'subscribe interrupted by transport — will replay on reconnect',
-							{ topic, error: err }
-						);
+						busLog.debug('subscribe interrupted by transport — will replay on reconnect', {
+							topic,
+							error: err
+						});
 						return;
 					}
 					busLog.warn('subscribe failed', { topic, error: err });
@@ -643,6 +643,14 @@ export class SharedWorkerBridge implements MessageBusClient {
 				// as a reconnect-cycle delay, not a hang.
 				void this.#fetchAndProvideTicket(msg.nonce);
 				return;
+			case 'port-ping':
+				// Worker's zombie-port heartbeat. Reply synchronously
+				// with the echoed nonce; failing to reply within
+				// PORT_LIVENESS_TIMEOUT_MS gets this port deregistered.
+				// We don't log — fires every PORT_LIVENESS_INTERVAL_MS
+				// per tab, pure noise.
+				this.#post({ kind: 'port-pong', nonce: msg.nonce });
+				return;
 		}
 	}
 
@@ -768,6 +776,7 @@ export class SharedWorkerBridge implements MessageBusClient {
 			case 'ping-pong':
 			case 'log':
 			case 'need-ticket':
+			case 'port-ping':
 				return true;
 			default:
 				return false;
