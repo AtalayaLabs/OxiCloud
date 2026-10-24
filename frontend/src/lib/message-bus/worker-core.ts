@@ -97,6 +97,11 @@ export interface BusTransport {
 	 *  next WS upgrade. nonce === 0 is the initial hello-time ticket;
 	 *  other values must echo the nonce from `onNeedTicket`. */
 	provideTicket(subprotocol: string, nonce: number): void;
+	/** Tell the transport that the ticket fetch for `nonce` failed
+	 *  synchronously (apiJson throw). Lets the transport count the
+	 *  failure immediately rather than waiting the 5 s need-ticket
+	 *  budget. Stale nonces (bridge replies late) are ignored. */
+	ticketFetchFailed(nonce: number): void;
 }
 
 /** Internal routing entry for one topic subscription. */
@@ -341,6 +346,9 @@ export class WorkerCore {
 				return;
 			case 'request-reconnect':
 				this.#transport.reconnect();
+				return;
+			case 'ticket-fetch-failed':
+				this.#transport.ticketFetchFailed(msg.nonce);
 				return;
 		}
 	}

@@ -146,6 +146,20 @@ export interface RequestReconnectMessage {
 	kind: 'request-reconnect';
 }
 
+/** Tab tells the worker that its ticket fetch failed synchronously
+ *  (apiJson threw — network error, 401 after refresh failed, 403,
+ *  etc.) instead of silently timing out. Lets the worker count the
+ *  failure immediately rather than waiting for the 5 s
+ *  `NEED_TICKET_TIMEOUT_MS` budget.
+ *
+ *  Carries the `nonce` of the failed need-ticket so stale replies
+ *  (bridge sends ticket-fetch-failed late after the worker already
+ *  moved to the next cycle) can be ignored. */
+export interface TicketFetchFailedMessage {
+	kind: 'ticket-fetch-failed';
+	nonce: number;
+}
+
 export type PortTabToWorkerMessage =
 	| HelloMessage
 	| SubscribeMessage
@@ -159,7 +173,8 @@ export type PortTabToWorkerMessage =
 	| PingMessage
 	| SetLogLevelMessage
 	| ProvideTicketMessage
-	| RequestReconnectMessage;
+	| RequestReconnectMessage
+	| TicketFetchFailedMessage;
 
 // ============================================================
 // Worker → Tab envelopes
@@ -310,7 +325,8 @@ const TAB_TO_WORKER_KINDS = new Set<string>([
 	'ping',
 	'set-log-level',
 	'provide-ticket',
-	'request-reconnect'
+	'request-reconnect',
+	'ticket-fetch-failed'
 ]);
 
 const WORKER_TO_TAB_KINDS = new Set<string>([
@@ -412,6 +428,10 @@ export function parsePortMessage(raw: unknown): PortMessage | null {
 		case 'request-reconnect': {
 			// Body-less envelope; the kind IS the signal.
 			return raw as RequestReconnectMessage;
+		}
+		case 'ticket-fetch-failed': {
+			if (typeof obj.nonce !== 'number') return null;
+			return raw as TicketFetchFailedMessage;
 		}
 		case 'hello-ack': {
 			if (typeof obj.reqId !== 'number') return null;

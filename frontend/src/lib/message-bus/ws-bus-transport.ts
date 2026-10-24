@@ -316,6 +316,34 @@ export class WsBusTransport implements BusTransport {
 	 *  value. `nonce` must echo the current ticket round — late
 	 *  replies after another port already served are ignored.
 	 *  nonce === 0 is the initial hello-time ticket. */
+	/** Bridge-synchronous failure signal — the ticket POST threw before
+	 *  we got a provide-ticket. Count the failure immediately instead
+	 *  of waiting for the 5 s need-ticket timeout. Stale nonces (reply
+	 *  arrives after the worker already moved to a new round) are
+	 *  ignored for the same reason provideTicket ignores them. */
+	ticketFetchFailed(nonce: number): void {
+		if (nonce !== this.#ticketNonce) {
+			busLog.debug('ticketFetchFailed ignored — superseded nonce', {
+				supplied: nonce,
+				current: this.#ticketNonce
+			});
+			return;
+		}
+		if (this.#state !== 'connecting') return;
+		if (this.#needTicketTimer !== null) {
+			clearTimeout(this.#needTicketTimer);
+			this.#needTicketTimer = null;
+		}
+		this.#consecutiveFailures += 1;
+		busLog.warn('ticket fetch failed (fast-path)', { nonce });
+		if (this.#consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+			this.#setState('unavailable');
+			return;
+		}
+		this.#setState('disconnected');
+		if (this.#activeTopics.size > 0) this.#scheduleReconnect();
+	}
+
 	provideTicket(subprotocol: string, nonce: number): void {
 		if (nonce !== 0 && nonce !== this.#ticketNonce) {
 			busLog.debug('provideTicket ignored — superseded nonce', {

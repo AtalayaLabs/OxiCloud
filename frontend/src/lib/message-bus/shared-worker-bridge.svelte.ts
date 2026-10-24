@@ -200,7 +200,10 @@ export class SharedWorkerBridge implements MessageBusClient {
 	/** Fetch a fresh ticket from `/api/rt/ticket` via `apiFetch`
 	 *  (DPoP + CSRF + session cookie + refresh-on-401 all handled)
 	 *  and forward the resulting subprotocol to the worker via
-	 *  `provide-ticket`. */
+	 *  `provide-ticket`. On throw, signal the worker synchronously
+	 *  via `ticket-fetch-failed` so the circuit breaker counts the
+	 *  failure immediately instead of waiting the 5 s need-ticket
+	 *  budget. */
 	async #fetchAndProvideTicket(nonce: number): Promise<void> {
 		try {
 			const res = await apiJson<RtTicketResponse>('/api/rt/ticket', {
@@ -213,18 +216,17 @@ export class SharedWorkerBridge implements MessageBusClient {
 				nonce
 			});
 		} catch (err) {
-			// A 403 here (anonymous session, revoked, etc.) is terminal.
-			// A 401 would have been retried-with-refresh by apiFetch
-			// already — if it got here, the refresh also failed. Either
-			// way: don't send a provide-ticket, let the worker's own
-			// need-ticket timeout fire so it bumps the circuit breaker
-			// on its own clock. Users of a logged-out tab see the same
-			// `state === 'unavailable'` UX the per-tab client already
-			// surfaces.
-			busLog.warn('ticket fetch failed — worker will time out on need-ticket', {
+			// A 403 here (anonymous session, revoked, etc.) is terminal
+			// at the auth layer; the worker's circuit breaker trips on
+			// repeated failures. A 401 would have been retried-with-
+			// refresh by apiFetch already — if it got here, the refresh
+			// also failed. Either way, tell the worker RIGHT NOW so it
+			// doesn't sit on the 5 s need-ticket timeout.
+			busLog.warn('ticket fetch failed — signalling worker (fast path)', {
 				nonce,
 				err
 			});
+			this.#post({ kind: 'ticket-fetch-failed', nonce });
 		}
 	}
 

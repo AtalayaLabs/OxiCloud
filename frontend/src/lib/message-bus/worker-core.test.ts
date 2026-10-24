@@ -79,6 +79,7 @@ function makeFakeTransport(initialState: ConnectionState = 'connected'): {
 
 	const needTicketListeners = new Set<(n: number) => void>();
 	const provideTicketMock = vi.fn<(subprotocol: string, nonce: number) => void>();
+	const ticketFetchFailedMock = vi.fn<(nonce: number) => void>();
 
 	const transport: BusTransport = {
 		get state() {
@@ -118,7 +119,8 @@ function makeFakeTransport(initialState: ConnectionState = 'connected'): {
 			needTicketListeners.add(cb);
 			return () => needTicketListeners.delete(cb);
 		},
-		provideTicket: (sp, n) => provideTicketMock(sp, n)
+		provideTicket: (sp, n) => provideTicketMock(sp, n),
+		ticketFetchFailed: (n) => ticketFetchFailedMock(n)
 	};
 
 	return {
