@@ -154,16 +154,28 @@ export class SharedWorkerBridge implements MessageBusClient {
 			wantedLogLevel: opts?.wantedLogLevel ?? 'info'
 		});
 
-		// Pre-fetch a ticket and provide it to the worker so the WS
-		// opens as soon as the first subscribe arrives. The worker
-		// also knows how to ASK for one via `need-ticket` on reconnect;
-		// this is just the eager primer so the first open doesn't
-		// wait a round-trip.
+		// NO eager ticket primer. The bridge is constructed on every
+		// page load, including unauthenticated routes (/login,
+		// /register, /s/<share-token>). An eager `POST /api/rt/ticket`
+		// on an anonymous session would 401 → apiFetch's refresh
+		// interceptor retries → 401 → terminal auth failure handler
+		// redirects to `/login?source=session_expired` → page
+		// reload → bridge reconstructs → ticket POST → redirect →
+		// infinite loop (observed 2026-10-24 on a fresh Chrome profile).
 		//
-		// nonce === 0 marks this as the initial, unsolicited ticket —
-		// the worker's `#askForTicket` has not run yet, so no nonce
-		// to echo.
-		void this.#fetchAndProvideTicket(0);
+		// The ticket POST happens ONLY on-demand — the first consumer
+		// `.subscribe()` call drives the worker's `need-ticket` fan-out
+		// to this port, and only then do we hit `/api/rt/ticket`.
+		// Consumers are gated on `useTopic` / `useReconnect` which
+		// skip when `serverConfig.features.message_bus === false`,
+		// and in practice only run after login (AppShell etc.), so
+		// unauthenticated pages never generate the first subscribe.
+		//
+		// Trade-off vs. the earlier eager primer: the first subscribe
+		// pays one `need-ticket` round-trip (~5 ms over the local
+		// MessagePort) before the WS can open. On the same page, that
+		// cost is dwarfed by the subscribe's own RTT; invisible to
+		// users.
 	}
 
 	// ============================================================
