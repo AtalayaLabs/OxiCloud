@@ -331,12 +331,82 @@ explicitly.
 
 ---
 
+## Browser modes — per-tab vs shared-worker
+
+The browser can run the message-bus client in one of two modes.
+Both are supported and the choice is runtime-detected per tab;
+operators flip a server flag to decide which mode is **tried**
+first.
+
+### Per-tab mode (default)
+
+Every open browser tab holds its own WebSocket to `/api/rt/ws`.
+Simple, uniform, works on every browser OxiCloud supports —
+including Safari < 16.4, enterprise Chromium with
+`SharedWorkerAllowed=false`, iOS PWA, and sandboxed iframes.
+
+A user with five tabs open holds five sockets. `admin.active_ws_sessions`
+on the dashboard reads roughly `users × tabs`.
+
+### Shared-worker mode (opt-in)
+
+Enabled by setting `OXICLOUD_ENABLE_SHARED_WORKER_BUS=true` and
+restarting. On browsers that support `SharedWorker` + a CSP that
+allows it, the whole browser runs a single `SharedWorker` that
+owns ONE WebSocket; every tab holds a `MessagePort` into that
+worker and the worker fans events out to the matching tabs via
+the port protocol.
+
+Server-side `active_ws_sessions` drops from `users × tabs` to
+`users`. Per-user DPoP ticket exchange runs once per browser
+session, not once per tab. Reconnect fires once for the browser,
+not N.
+
+**The fallback is mandatory and automatic.** The runtime does a
+handshake (hello → hello-ack within 1 s) and falls back to per-tab
+mode silently on any failure — missing API, CSP block, construct
+throw, handshake timeout. Operators who flip the flag never ship
+a worse experience to browsers that can't run shared mode; they
+just stop getting the fan-out savings on those sessions.
+
+**Why opt-in, not on-by-default.** Shared-worker behaviour varies
+subtly across browsers, extensions and tab-lifecycle events (Chrome
+`MessagePort.close` reliability, PWA policy differences, enterprise
+CSP). Shipping off-by-default lets early opt-in operators collect
+observation data before the direction flips back.
+
+### What this means for operators
+
+- **`admin.active_ws_sessions` interpretation**: in per-tab mode
+  it tracks `users × tabs`; in shared-worker mode `users` × (one
+  WS per shared-mode browser). An opt-in instance with a mix of
+  real browsers and PWAs sees a number somewhere in between
+  — the PWA / Safari-15 sessions still land on per-tab.
+- **Diagnosing why a user is on per-tab mode**: `window.oxi.checkBusChain()`
+  in their DevTools console returns `impl: 'SharedWorkerBridge'`
+  (shared) or `impl: 'PerTabMessageBusClient'` (fallback). The
+  FE emits `oxi:message-bus` info lines with stable `reason:` keys
+  (`typeof_undefined`, `construct_threw`, `handshake_timeout`,
+  `server_flag_off`) so operators can count fallback engagements
+  across the fleet.
+- **Rollback is boot-level**: unset the env (or set to `false`)
+  and restart. New tabs land on per-tab mode on first load.
+  Already-running SharedWorkers finish their session on shared
+  mode until the user's last tab closes.
+
+See the plan doc `docs/plan/message-bus-via-shared-worker.md` for
+the full design (routing table, port protocol, failure modes).
+Flag details are documented in `docs/config/env.md § Message bus`.
+
+---
+
 ## Tab-visibility grace-close — reducing idle connections
 
-Every open browser tab holds one WebSocket to the server. A user
-with five tabs open holds five sockets. A user who leaves a tab
-open all day but only uses one holds five sockets, four of them
-serving nothing.
+Every open browser tab holds one WebSocket to the server (in
+per-tab mode) OR one `MessagePort` into the browser's shared
+worker (in shared mode). A user with five tabs open holds five
+sockets in per-tab mode. A user who leaves a tab open all day but
+only uses one holds five sockets, four of them serving nothing.
 
 The frontend closes the WebSocket **after 60 seconds of tab
 hidden** and reopens it when the tab becomes visible again. The

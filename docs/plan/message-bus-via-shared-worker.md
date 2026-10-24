@@ -1,11 +1,19 @@
 # Message bus via SharedWorker — one WebSocket per browser
 
-**Status**: **DRAFT (2026-09-21).** Design record. No code yet. Owner:
-TBD. Companions: `docs/architecture/message-bus-and-notifications.md`
+**Status**: **✅ SHIPPED (2026-10-24).** All Gates 0–5 landed on
+`feat/message-bus-via-shared-worker`. Default `OXICLOUD_ENABLE_SHARED_WORKER_BUS=false`
+(opt-in while in observation phase). Each gate carries a 🚦 status
+marker inline below naming what shipped and where reality diverged
+from this plan; a **🔧 Delta from plan** section at the end collects
+beyond-plan work (AbortController deadline, zombie-port heartbeat,
+dev helpers) that was shipped but is not in the original design.
+
+Companions: `docs/architecture/message-bus-and-notifications.md`
 (wire protocol reference), `docs/plan/dpop.md` (Gate C describes the
 Service Worker that co-exists with the SharedWorker introduced here),
 `docs/plan/markdown-collab.md` (largest current consumer of the WS
-data-plane).
+data-plane). Operator-facing documentation of the feature flag:
+`docs/config/env.md § Message bus` and `example.env`.
 
 ## Motivation
 
@@ -99,6 +107,20 @@ line on each side of the port protocol — never a duplicate
 implementation. Drift is caught at compile time by the conformance
 type.
 
+> 🚦 **Reality (2026-10-24)**: this design decision landed PARTIALLY.
+> The port protocol + conformance type DID prevent envelope-shape
+> drift as intended (adding a new envelope kind is a compile error
+> on both sides until handled). But the backoff / reconnect / ticket
+> code is NOT shared — reality has two parallel implementations:
+> `PerTabMessageBusClient` in `client.svelte.ts` and
+> `WsBusTransport` + `WorkerCore` in the worker. Each carries its
+> own `MAX_CONSECUTIVE_FAILURES = 10` constant and its own backoff
+> loop. The transports can drift silently. Mitigation: both are
+> covered by Vitest, and the behaviour is pinned by the Playwright
+> `message-bus-reconnect*` specs end-to-end. A future refactor
+> could extract the shared transport logic into a dedicated module;
+> deferred until drift actually hurts.
+
 **No server-side changes.** The wire protocol (`rt.subscribe` /
 `rt.event` / `rt.revoked` / `rt.write_denied` / `rt.collab_flush`
 / binary Yjs frames) is identical from the server's perspective.
@@ -170,6 +192,20 @@ to the server via WS.
 
 ### Routing state inside the worker
 
+> 🚦 **Reality (2026-10-24)**: the shipped shape in `worker-core.ts`
+> diverges from the pseudocode below. Reality has: `#topics`
+> (`TopicEntry` with both `cachedAck` AND `cachedError` so a late
+> joiner sees the same outcome as the first subscriber), `#binaryByFile`,
+> **separate** `#writeDeniedByFile` (collab needs two fan-out tables,
+> not one), `#perPort` + `#ports` (WeakMap + Set because WeakMap
+> isn't iterable), plus `#pendingPortPongs` + `#livenessInterval` for
+> the zombie-port heartbeat added in the 🔧 Delta. No shared
+> `pending` map: per-call closures capture the originating port
+> instead, so Tab A reqId=1 and Tab B reqId=1 can both be in flight
+> without collision. The pseudocode below is kept for context on
+> the design intent; the file-level docstring of `worker-core.ts`
+> carries the current shape.
+
 Four maps, keyed by port for cleanup:
 
 ```typescript
@@ -206,9 +242,15 @@ dies.
 
 ### Port protocol
 
-Everything on the port is a JSON envelope. Roughly 15 message
-types, defined in `lib/message-bus/port-protocol.ts` with runtime
-typeguards:
+Everything on the port is a JSON envelope, defined in
+`lib/message-bus/port-protocol.ts` with runtime typeguards.
+
+> 🚦 **Reality (2026-10-24)**: the shipped protocol has grown beyond
+> the original listing. The additions below (marked `← added …`) came
+> from the ticket-forwarding inversion (Gate 2c), the fast-failure
+> signal, the request-reconnect dedicated envelope, and the
+> zombie-port heartbeat (🔧 Delta). The authoritative list is in
+> `port-protocol.ts`'s discriminated unions.
 
 ```typescript
 // Tab → Worker
@@ -223,9 +265,13 @@ typeguards:
 | { kind: 'call'; reqId: number; method: string; params?: object }
 | { kind: 'ping'; reqId: number }
 | { kind: 'set-log-level'; namespace: string; level: LogLevel }
+| { kind: 'provide-ticket'; subprotocol: string; nonce: number }    // ← added by Gate 2c (bridge POSTs ticket, forwards to worker)
+| { kind: 'ticket-fetch-failed'; nonce: number }                    // ← added: fast-failure signal (apiJson threw or aborted)
+| { kind: 'request-reconnect' }                                     // ← added: dedicated reconnect envelope (replaced the rt.reconnect JSON-RPC call that the server rejected)
+| { kind: 'port-pong'; nonce: number }                              // ← added: zombie-port heartbeat reply (🔧 Delta)
 
 // Worker → Tab
-| { kind: 'hello-ack'; reqId: number; state: ConnectionState }
+| { kind: 'hello-ack'; reqId: number; state: ConnectionState; workerVersion: string }   // ← workerVersion field added for diagnostics (window.oxi.checkBusChain)
 | { kind: 'state'; state: ConnectionState }
 | { kind: 'ack'; reqId: number; result: unknown }
 | { kind: 'nack'; reqId: number; error: RtErrorObject }
@@ -235,6 +281,8 @@ typeguards:
 | { kind: 'write-denied'; fileId: string; params: RtWriteDeniedParams }
 | { kind: 'ping-pong'; reqId: number; latencyMs: number }
 | { kind: 'log'; level: LogLevel; namespace: string; args: unknown[]; ts: number }
+| { kind: 'need-ticket'; nonce: number }                            // ← added by Gate 2c (worker asks all ports to source a ticket; first provide-ticket wins)
+| { kind: 'port-ping'; nonce: number }                              // ← added: zombie-port heartbeat probe (🔧 Delta)
 ```
 
 Every envelope has a runtime typeguard. Envelopes with `reqId`
@@ -315,9 +363,16 @@ worker debug lines to every port at all times is a real cost when
 no tab wants debug. Bridge tells worker its desired level on
 handshake and on any `oxi.setLogLevel` call; worker keeps a
 `maxLevelWantedByAnyTab` and only emits envelopes at ≤ that level.
-Off by default in Gate 2 (worker just emits everything at info+
-so debug hides unless someone flips it); wire the push-down in Gate
-5 alongside reconnect testing.
+
+> 🚦 **Reality (2026-10-24)**: push-down shipped IN Gate 2 as
+> `WorkerCore.#maxWantedLogLevel` + `#recomputeMaxWantedLogLevel`,
+> not deferred to Gate 5 as originally planned. Each `hello` and
+> `set-log-level` envelope triggers recomputation; `emitLog`
+> short-circuits below the threshold. Default `wantedLogLevel` is
+> `trace` so the worker admits everything, and each tab's own
+> `loglevel` filter decides what actually prints. A later tuning
+> pass can lift the default back to `info` if port traffic
+> measurably matters.
 
 **Diagnostic guardrail**: log every log-envelope drop when a port's
 send fails (dead port, structured-clone incompatibility). Worker
@@ -348,11 +403,19 @@ local — they don't cross the port.
 
 ## Gate 0 — Design record
 
+> 🚦 **✅ SHIPPED** · commit `e210bdf2`. This document.
+
 - This document.
 - No code.
 - **Deliverable**: PR-reviewable design doc.
 
 ## Gate 1 — Port protocol module + conformance type
+
+> 🚦 **✅ SHIPPED** · commit `171b2f74`. Delivered as planned.
+> The conformance type `Assert<SharedWorkerBridge extends
+> MessageBusClient>` compiles against the extracted interface;
+> adding a method to the interface without implementing it in the
+> bridge is a `tsc` failure.
 
 - New file `frontend/src/lib/message-bus/port-protocol.ts`:
   - Discriminated union of every envelope kind (as above).
@@ -374,6 +437,34 @@ local — they don't cross the port.
   existing tests pass.
 
 ## Gate 2 — SharedWorker script and bridge (dev-only)
+
+> 🚦 **✅ SHIPPED** · split into three substages:
+>
+> - **Gate 2a** (`93c394b1`) — `worker-core.ts` (routing core
+>   factored out of `worker.ts` so it's unit-testable without
+>   `new SharedWorker`), `shared-worker-bridge.svelte.ts`,
+>   `detect.ts` with 3-step detection + 1 s handshake timeout.
+> - **Gate 2b** (`1d46301e`) — real `WsBusTransport` wrapping
+>   `/api/rt/ws`, `worker.ts` entry calling `WorkerCore`,
+>   `makeMessageBus` factory in `client.svelte.ts` with
+>   top-level await, Vite config bumping build target to Safari
+>   15 (for top-level await) and using the LITERAL
+>   `new SharedWorker(new URL('./worker.ts', import.meta.url), {type: 'module'})`
+>   pattern — Vite's native worker-URL rewriting; no
+>   `?sharedworker` import, no manual chunk config.
+> - **Gate 2c** (`48adfda9`) — ticket forwarding inversion:
+>   bridge POSTs `/api/rt/ticket` via `apiFetch` and forwards the
+>   subprotocol over `provide-ticket`. The worker makes **zero**
+>   HTTP calls. Solved the CSRF problem (worker can't read
+>   `document.cookie`) + simplified error-handling (apiFetch's
+>   refresh retry + DPoP SW signing cover it).
+>
+> Test coverage shipped (Vitest, 90+ tests across the message-bus
+> module alone): `worker-core.test.ts` (23 pins incl. routing +
+> fan-out + cleanup + log push-down + zombie heartbeat),
+> `shared-worker-bridge.test.ts`, `factory.test.ts`,
+> `detect.test.ts`, `port-protocol.test.ts` (envelope roundtrip +
+> typeguards + direction guards).
 
 - New file `frontend/src/lib/message-bus/worker.ts`:
   - `self.onconnect = (event) => { … }` — accepts a new port,
@@ -425,6 +516,14 @@ local — they don't cross the port.
   test still passes.
 
 ## Gate 3 — Server-side feature flag + opt-IN rollout
+
+> 🚦 **✅ SHIPPED** · commit `925bb994` (initial as opt-OUT) +
+> `4070e599` (flipped to opt-IN per observation-phase decision) +
+> `0c6e0312` (operator docs: env.md + example.env). The flag
+> direction evolved: originally shipped as `true` by default
+> (opt-out), then re-decided to default `false` (opt-in) while
+> cross-browser behaviour is still being observed. The gate text
+> below reflects the final shipped direction.
 
 - New field on `FeaturesConfig`: `shared_worker_bus: bool`
   (**default `false`**). Env `OXICLOUD_ENABLE_SHARED_WORKER_BUS`.
@@ -498,6 +597,18 @@ close every browser tab before resuming.
 
 ## Gate 4 — Cross-tab correctness tests
 
+> 🚦 **✅ SHIPPED** · six Playwright specs under `tests/e2e/spa/`:
+>
+> - `message-bus-shared-worker.spec.ts` (commit `376773ff`) — two tabs → 1 WS.
+> - `message-bus-fallback.spec.ts` (`376773ff`) — fallback via `addInitScript({ delete window.SharedWorker })`.
+> - `message-bus-reconnect.spec.ts` (`06bd1709`) — concurrent reconnect → 1 WS.
+> - `message-bus-collab-shared.spec.ts` (`de30245b`) — two tabs collab same file converge.
+> - `message-bus-collab-isolated.spec.ts` (`ff5be378`) — two tabs collab different files, no cross-talk.
+> - `message-bus-folder-fanout.spec.ts` (`259ebd95`) — folder-topic `file_created` fans out to both tabs.
+>
+> Vitest coverage pins the envelope roundtrip + typeguards +
+> conformance type (see Gate 2 note).
+
 - **Playwright: two tabs, one WS.** Open two tabs of the files
   listing, count `active_ws_sessions` on the server via the admin
   endpoint. Assert `1` under shared mode, `2` under per-tab mode.
@@ -509,22 +620,23 @@ close every browser tab before resuming.
 - **Playwright: collab two tabs different files.** Two tabs each
   open a distinct `.md`, each gets its own subscribe, each sees
   only its own file's UPDATEs (no cross-talk on the port routing).
-- **Playwright: force-fallback path.** Boot with the Chromium flag
-  `--disable-features=SharedWorkerAPI` plus a throwaway
-  `--user-data-dir`; assert the app comes up in per-tab mode
+- **Playwright: force-fallback path.** `addInitScript({ delete
+  window.SharedWorker })` inside Playwright. Asserts the app
+  comes up in per-tab mode
   (`window.messageBus.constructor.name === 'PerTabMessageBusClient'`,
   admin `active_ws_sessions === tabCount`) and every existing
-  scenario still passes.
+  scenario still passes. See `message-bus-fallback.spec.ts`.
 
-  **Flag verified in-the-wild 2026-10-24**: a manual run with
-  `--disable-features=SharedWorkerAPI --user-data-dir=/tmp/<name>`
-  produced 2 tabs → 2 active WS per the admin panel, exactly as
-  shared-mode-disabled expects. Playwright's `launchOptions.args`
-  reproduces this cleanly.
-
-  Alternative: `addInitScript({ delete window.SharedWorker })`
-  inside Playwright — same outcome, no OS-level flag needed,
-  easier to toggle per-test.
+  > 🚦 **Reality**: the originally-planned
+  > `--disable-features=SharedWorkerAPI` + throwaway `--user-data-dir`
+  > approach works on **real** Google Chrome (verified manually
+  > 2026-10-24: 2 tabs → 2 active WS) but is NOT honoured by
+  > Playwright's bundled Chromium. The `addInitScript` approach
+  > — originally listed as "Alternative" — became the only path
+  > that works in the test harness, and shipped as the primary.
+  > The real-Chrome launch-flag technique remains documented
+  > here for operators who want to reproduce the fallback locally
+  > with a real browser.
 - **Vitest: port protocol roundtrip.** Every envelope kind
   serialised → parsed → typeguard passes → structurally equal.
 - **Vitest: conformance type.** `SharedWorkerBridge extends
@@ -532,6 +644,25 @@ close every browser tab before resuming.
   breaks compilation (guarded by a `// @ts-expect-error` test).
 
 ## Gate 5 — Reconnect + backoff behaviour under shared mode
+
+> 🚦 **✅ SHIPPED** · two Playwright specs:
+>
+> - `message-bus-reconnect.spec.ts` (`06bd1709`) — concurrent
+>   `oxi.reconnectBus()` from both tabs leaves ONE WebSocket, not
+>   N. Pins the architectural property.
+> - `message-bus-reconnect-state-restored.spec.ts` (`259ebd95`) —
+>   upload F1, reconnect, upload F2, assert both tabs see F2.
+>   Pins the state-restoration property: subs are replayed, fan-out
+>   works post-reconnect.
+>
+> **Why not a scripted server kill-and-restart**: Playwright's
+> `webServer` config launches the backend once at suite start.
+> `oxi.reconnectBus()` drives the SAME `transport.reconnect()`
+> code path (aggressive-reset + close + schedule-immediate-retry)
+> a server restart would trigger via `#onClose` — the property
+> under test is identical. Playwright's `context.setOffline(true)`
+> also doesn't help: it blocks NEW connections but leaves existing
+> WS open in Chromium (verified 2026-10-24).
 
 - Verify that when the WS drops (server restart), the SharedWorker
   fires the `state` broadcast to every port, every tab shows the
@@ -601,6 +732,102 @@ close every browser tab before resuming.
 
 **Rollback is boot-level**: no server-side schema change, no wire
 change, no FE rebuild. Flip the env and restart.
+
+## 🔧 Delta from plan — beyond-plan work shipped
+
+Items that landed on `feat/message-bus-via-shared-worker` but are
+NOT in the original gate list. Pinned here so future readers see
+what the plan missed on contact with reality.
+
+### AbortController 2 s deadline on bridge ticket POST (`101889c2`)
+
+The bridge POSTs `/api/rt/ticket` via `apiJson` when the worker
+asks for a ticket. On a dead-but-not-refusing server the browser's
+native TCP-connect timeout is ~75 s, which kept `apiJson` hanging
+through every reconnect cycle — the worker's `NEED_TICKET_TIMEOUT_MS`
+(5 s) was the only backstop. A client-side `AbortController`
+tripping at 2 s cuts the outage-cycle time to <2 s. On abort the
+bridge catches the `AbortError` and posts `ticket-fetch-failed`
+(see protocol listing); the worker counts the failure immediately
+instead of waiting for its own timer.
+
+### Zombie-port heartbeat (`cafee328`)
+
+Chrome's `MessagePort.close` event fires unreliably when a tab is
+closed, so dead ports accumulate in `WorkerCore.#ports` until the
+next outbound `postMessage` happens to throw. Observed as a worker
+with 4 ports but only 2 real tabs — stale ports kept winning the
+`need-ticket` first-port-wins lottery (fixed separately by
+broadcasting `need-ticket` to all ports), hanging reconnects.
+
+The heartbeat forces the question: every 60 s the worker sends
+`port-ping` to every attached port; ports that fail to reply with
+`port-pong` within 15 s get deregistered as if their tab had
+closed cleanly. Monotonic nonce prevents stale pongs from a prior
+round satisfying the current round. Vitest coverage: alive port
+stays, silent port is reaped, mixed set reaps only the silent one,
+stale-nonce pong does NOT satisfy.
+
+### Latent bugs collected along the way
+
+- **`ticket-fetch-failed` wrong direction** (fixed in `cafee328`):
+  added to the handler but missed in `WorkerCore.#isTabToWorker`
+  — fast-failure signals were being dropped as "wrong direction"
+  instead of routing to `transport.ticketFetchFailed()`.
+- **Eager ticket-primer login loop** (`98885939`): bridge's
+  construction-time `#fetchAndProvideTicket(0)` fired on
+  unauthenticated pages → 401 → session-expired redirect →
+  `/login` reload → bridge reconstructs → infinite loop. Fixed
+  by removing the eager primer; ticket POST happens only on
+  worker's `need-ticket`.
+- **Logger-rebuild after factory swap** (`c581ca03`): `loglevel`
+  method factory applies only to loggers created AFTER the swap;
+  existing loggers kept their old methods. Fixed by iterating
+  `log.getLoggers()` after installing the fan-out factory.
+- **Transient-error filter in bridge subscribe** (`37890261`):
+  bridge was treating `ws_closed` / `not_connected` / `send_failed`
+  / `reconnect` / `bridge_closed` as permanent subscribe denials,
+  tearing down UI state that would come right back on reconnect.
+  Fixed by matching the per-tab client's `#failSubscribe` filter.
+- **`need-ticket` broadcast** (`2f868e35`): originally first-port-
+  wins; a zombie first port silently dropped the envelope and the
+  5 s need-ticket timer was the only backstop. Broadcast to all
+  ports instead — the one live bridge still wins the race because
+  the transport consumes the first `provide-ticket` reply.
+- **Aggressive reset in `transport.reconnect()`** (`924da425`):
+  manual reconnect without clearing timers / counters left the
+  state machine in an inconsistent half-state. Now closes the WS
+  idempotently + clears timers + zeros counters + schedules an
+  immediate retry.
+- **Auto-recover from tripped circuit on port join** (`9179a17c`):
+  when a new tab opens an already-tripped shared worker (circuit
+  breaker at `unavailable` after 10 consecutive failures), the
+  tab-join event clears the counter and schedules an immediate
+  attempt. In per-tab mode, a page reload naturally re-arms the
+  machinery — shared mode needed this hook to match.
+
+### Operator / support helpers
+
+- `window.oxi.checkBusChain()` — returns `{ok, impl, state,
+  workerVersion, latencyMs}`. Reads a stable `window.__oxi_bus_impl`
+  discriminator so the result survives terser minification of
+  class names in production builds.
+- `window.oxi.reconnectBus()` — triggers `request-reconnect`,
+  returns a confirmation string. Used by both support
+  (`oxi.reconnectBus()` in the browser console) and Playwright
+  (deterministic reconnect without `context.setOffline`).
+- Dev-only `?shared_worker=0` query-param forces per-tab mode on
+  an opt-in instance without a server-side flag flip (documented
+  in `env.md`).
+
+### Documentation shipped
+
+- `docs/architecture/ui-diagnostics.md` — `impl` field,
+  `active_ws_sessions` interpretation per mode, fallback-reason
+  log counts.
+- `docs/config/env.md § Message bus` — `OXICLOUD_ENABLE_SHARED_WORKER_BUS`
+  table entry with opt-in semantics, rollback, `?shared_worker=0`.
+- `example.env` — commented flag with prose rationale.
 
 ## What NOT to build
 
