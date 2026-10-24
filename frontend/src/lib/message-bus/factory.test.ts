@@ -1,12 +1,13 @@
-// Pins the Gate-3 opt-out semantics of the `messageBus` factory.
+// Pins the Gate-3 opt-IN semantics of the `messageBus` factory.
 //
 // The factory in `client.svelte.ts` reads `/api/config` before
-// `trySharedWorker()`; when `features.shared_worker_bus === false`
-// it must return a `PerTabMessageBusClient` without touching
-// `new SharedWorker`. A regression that collapsed this branch
-// would silently defeat an operator who set
-// `OXICLOUD_ENABLE_SHARED_WORKER_BUS=false` — their users would
-// land on shared mode anyway, with no observable failure.
+// `trySharedWorker()`; shared mode is attempted only when
+// `features.shared_worker_bus === true`. Every other outcome —
+// `false`, missing, undefined, or a /api/config throw — returns a
+// `PerTabMessageBusClient` without touching `new SharedWorker`. A
+// regression that collapsed this gate would silently enable the
+// feature on operators who had not opted in — invisible to them
+// until a user hit a browser or extension edge case.
 //
 // The factory also runs at module-load time (top-level await), so
 // the import of `./client.svelte` here IS the invocation under
@@ -49,9 +50,9 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
-describe('messageBus factory — opt-out via shared_worker_bus flag', () => {
-	it('returns the per-tab client when /api/config says shared_worker_bus=false', async () => {
-		// Server opted out — factory must honour it regardless of
+describe('messageBus factory — opt-in via shared_worker_bus flag', () => {
+	it('returns the per-tab client when /api/config says shared_worker_bus=false (default)', async () => {
+		// Server at default — factory must stay per-tab regardless of
 		// browser capability.
 		getConfigMock.mockResolvedValue({
 			version: 'test',
@@ -84,15 +85,14 @@ describe('messageBus factory — opt-out via shared_worker_bus flag', () => {
 		expect(throwIfCalled).not.toHaveBeenCalled();
 	});
 
-	it('attempts shared mode when shared_worker_bus=true (default)', async () => {
-		// Server advertises the default — factory proceeds to
-		// detection. Detection fails here (no SharedWorker in jsdom)
-		// → factory lands on per-tab via the handshake fallback, not
-		// via the server flag. The distinction matters: the FALLBACK
-		// path logs a different reason, and operators who read logs
-		// to understand "why is my user on per-tab mode" need the
-		// flag path and the capability path to be observably
-		// different.
+	it('attempts shared mode when shared_worker_bus=true (operator opt-in)', async () => {
+		// Operator opted in — factory proceeds to detection. Detection
+		// fails here (no SharedWorker in jsdom) → factory lands on
+		// per-tab via the handshake fallback, not via the server
+		// flag. The distinction matters: the FALLBACK path logs a
+		// different reason, and operators who read logs to understand
+		// "why is my user on per-tab mode" need the flag path and
+		// the capability path to be observably different.
 		getConfigMock.mockResolvedValue({
 			version: 'test',
 			features: {
@@ -119,19 +119,23 @@ describe('messageBus factory — opt-out via shared_worker_bus flag', () => {
 		expect(getConfigMock).toHaveBeenCalled();
 	});
 
-	it('fails open — a /api/config fetch error does NOT disable shared mode', async () => {
-		// Opt-out semantics: a transient /api/config failure must not
-		// silently downgrade the user to per-tab mode. The server
-		// reports off explicitly or not at all; failing to the richer
-		// mode matches "default on, operator opts out".
+	it('fails closed — a /api/config fetch error returns per-tab without attempting shared mode', async () => {
+		// Opt-in semantics: a transient /api/config failure MUST
+		// downgrade to per-tab. Going shared on an unverified
+		// instance would silently enable a feature the operator may
+		// not have turned on; per-tab is the mode that works on
+		// every browser and is the conservative default.
 		getConfigMock.mockRejectedValue(new Error('transient-500'));
+		// Prove the factory did NOT reach `new SharedWorker` — would
+		// throw and fail the test on any path that tried.
+		const throwIfCalled = vi.fn(() => {
+			throw new Error('factory reached SharedWorker on /api/config failure');
+		});
+		vi.stubGlobal('SharedWorker', throwIfCalled);
 
 		const mod = await import('./client.svelte');
-		// Detection still fails (no SharedWorker in jsdom) → per-tab.
-		// What we're pinning here is "the factory didn't BAIL on the
-		// /api/config throw"; the per-tab outcome is from detection,
-		// not from the flag.
 		expect(mod.messageBus.constructor.name).toBe('PerTabMessageBusClient');
 		expect(getConfigMock).toHaveBeenCalled();
+		expect(throwIfCalled).not.toHaveBeenCalled();
 	});
 });

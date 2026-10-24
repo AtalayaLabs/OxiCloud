@@ -424,54 +424,58 @@ local — they don't cross the port.
   assert factory returns the per-tab client and every existing
   test still passes.
 
-## Gate 3 — Server-side feature flag + opt-OUT rollout
+## Gate 3 — Server-side feature flag + opt-IN rollout
 
 - New field on `FeaturesConfig`: `shared_worker_bus: bool`
-  (**default `true`**). Env `OXICLOUD_ENABLE_SHARED_WORKER_BUS`.
+  (**default `false`**). Env `OXICLOUD_ENABLE_SHARED_WORKER_BUS`.
   Emitted on `/api/config.features.shared_worker_bus`.
 - FE factory (Gate 2) reads it before `trySharedWorker`. When `true`
-  + handshake passes, shared mode is live; when `false`, the factory
-  returns `PerTabMessageBusClient` without touching detection. The
-  mandatory fallback engages the same way for every browser that
-  can't run shared mode even when the flag is on.
+  + handshake passes, shared mode is live; when `false` (default)
+  or when `/api/config` is unreachable, the factory returns
+  `PerTabMessageBusClient` without touching detection. The mandatory
+  fallback engages the same way for every browser that can't run
+  shared mode even when the flag is on.
 - Boot-time audit log on the non-default case:
-  `tracing::info!(target: "audit", event = "config.feature_disabled",
-   feature = "shared_worker_bus", ...)` — operators debugging a
-  user report can grep boot logs to confirm an explicit opt-out
-  without reading env or `/api/config`.
+  `tracing::info!(target: "audit", event = "config.feature_enabled",
+   feature = "shared_worker_bus", ...)` — operators who turned the
+  feature on can see the choice reflected in boot logs without
+  reading env or `/api/config`.
 
-### Why opt-OUT, not opt-in
+### Why opt-IN, not opt-out
 
-The feature exists specifically to reduce N tabs × WebSocket to one
-per browser. Shipping off-by-default would mean the feature exists
-but doesn't help anyone unless an operator proactively flips a flag
-— which, for a self-hosted product where the operator is often also
-the user, with poor env-var discovery, most won't. The feature
-wasn't built to sit on the shelf.
+The feature exists to reduce N tabs × WebSocket to one per browser —
+a real win at the 10k-user target — but production behaviour across
+browsers, extensions and tab-lifecycle quirks is still being
+observed (Chrome `MessagePort.close` reliability, PWA policy
+differences, long-tail CSP configurations). On-by-default would reach
+the goal faster but surfaces any shared-worker edge case on every
+operator at once. Off-by-default means the win stays unrealised on
+instances where the operator never flips the flag, and the mandatory
+fallback (Gate 2a–2c) remains the contain-the-blast-radius mechanism
+on the browsers that can't run shared mode even when the flag is on.
 
-The risk is bounded by the mandatory fallback (Gate 2a-2c). We spent
-three gates building a handshake-tested, silently-engaged per-tab
-path for every browser that can't run shared mode (Safari < 16.4,
-enterprise CSP, iOS PWA, 1 s handshake timeout). That IS the
-contain-the-blast-radius mechanism — we trust it. The fallback stays
-supported forever; dropping per-tab mode is out of scope.
+The default direction is explicitly reversible: once observation
+data from early opt-in operators is in and no new edge cases have
+surfaced for a release cycle, a future PR can flip the default back
+to `true` with the fallback unchanged.
 
 ### Rollout plan
 
-- Ship as `true` from the first release carrying the feature.
-- Watch two signals over one release cycle:
+- Ship as `false` from the first release carrying the feature.
+  Early opt-in operators flip
+  `OXICLOUD_ENABLE_SHARED_WORKER_BUS=true` to try it.
+- Watch two signals on opt-in instances:
   1. `admin.active_ws_sessions` gauge should drop proportionally
-     to the tab-per-user ratio on every production instance.
+     to the tab-per-user ratio.
   2. The FE's `oxi:message-bus` fallback-reason log counts
      (`typeof_undefined`, `construct_threw`, `handshake_timeout`)
      — the baseline should be dominated by `typeof_undefined`
      (actual old browsers). A spike of `construct_threw` or
-     `handshake_timeout` is a real-world problem we didn't
-     anticipate — operators roll back with
-     `OXICLOUD_ENABLE_SHARED_WORKER_BUS=false` and restart.
-- After one quiet release cycle, propose tombstoning the FLAG
-  entirely in a future major (keeping the per-tab fallback code
-  forever, just removing the ops-tunable knob). Not scoped here.
+     `handshake_timeout` is a real-world problem; opt-in operators
+     roll back with `OXICLOUD_ENABLE_SHARED_WORKER_BUS=false`
+     (or unset) and restart.
+- After one or more quiet release cycles with opt-in uptake, revisit
+  flipping the default to `true`. Not scoped here.
 
 ### Rollback semantics
 
@@ -575,21 +579,25 @@ close every browser tab before resuming.
 
 ## Migration path from an operator's perspective
 
-1. Upgrade OxiCloud. Feature ships **on by default** (opt-out). On
-   browsers that support SharedWorker + CSP that allows it, users
-   immediately drop from N WS per tab to 1 WS per browser. Browsers
-   that can't run shared mode fall back silently to the per-tab
-   client — no user-visible breakage.
-2. `admin.active_ws_sessions` drops proportionally to the
-   tab-per-user ratio across the fleet. The FE emits an
+1. Upgrade OxiCloud. Feature ships **off by default** (opt-in) while
+   production behaviour across browsers, extensions and tab
+   lifecycle is being observed. Users stay on the per-tab client,
+   same as the pre-release behaviour — no visible change.
+2. Opt in by setting `OXICLOUD_ENABLE_SHARED_WORKER_BUS=true` and
+   restarting. On browsers that support SharedWorker + CSP that
+   allows it, users drop from N WS per tab to 1 WS per browser.
+   Browsers that can't run shared mode fall back silently to the
+   per-tab client — no user-visible breakage.
+3. `admin.active_ws_sessions` drops proportionally to the
+   tab-per-user ratio once opt-in. The FE emits an
    `oxi:message-bus` `info` line on every fallback engagement with a
    stable `reason:` key so operators can count how many sessions
    went per-tab vs. shared.
-3. On any incident, opt OUT by setting
-   `OXICLOUD_ENABLE_SHARED_WORKER_BUS=false` and restarting. New
-   tabs land on per-tab mode immediately; already-open tabs with a
-   live SharedWorker finish their session on shared mode until
-   closed (the worker outlives its last port close only).
+4. On any incident, roll back by unsetting the env (or setting
+   it to `false`) and restarting. New tabs land on per-tab mode
+   immediately; already-open tabs with a live SharedWorker finish
+   their session on shared mode until closed (the worker outlives
+   its last port close only).
 
 **Rollback is boot-level**: no server-side schema change, no wire
 change, no FE rebuild. Flip the env and restart.

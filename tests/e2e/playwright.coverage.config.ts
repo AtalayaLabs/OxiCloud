@@ -94,6 +94,14 @@ export default defineConfig({
       // Enable the WASM plugin runtime so the admin Plugins tab is exercisable
       // (the suite installs the example hello plugin fixture).
       OXICLOUD_ENABLE_PLUGINS: 'true',
+      // The shared-worker bus ships OFF by default (opt-in while
+      // production behaviour is being observed); the Gate-4
+      // Playwright specs assert `SharedWorkerBridge` is live, so
+      // explicitly opt the test backend in. The `no-shared-worker`
+      // project doesn't need the flag flipped: it deletes
+      // `window.SharedWorker` via `addInitScript` and asserts the
+      // mandatory fallback engages regardless of the server flag.
+      OXICLOUD_ENABLE_SHARED_WORKER_BUS: 'true',
       // OPAQUE + DPoP both inherit `migrate` and `required`
       // respectively from `tests/common/server.env` — production-
       // shape end-to-end. All specs in `spa/` drive the SPA through

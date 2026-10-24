@@ -1312,24 +1312,30 @@ async function makeMessageBus(): Promise<MessageBusClient> {
 		// Non-URL-parseable location; proceed to detection.
 	}
 
-	// Operator opt-out via `OXICLOUD_ENABLE_SHARED_WORKER_BUS=false` —
+	// Operator opt-in via `OXICLOUD_ENABLE_SHARED_WORKER_BUS=true` —
 	// read directly from `/api/config` because this factory runs at
 	// module load, before `serverConfig.load()` is called by
 	// hooks.client.ts. Two same-origin fetches of /api/config (one
 	// here, one from serverConfig) are tolerable for a boot-time
 	// decision; the browser's HTTP cache usually elides the second.
-	// A fetch failure falls through to the default (on) — the server
-	// reports off explicitly, and failing-open to the richer mode
-	// matches the "opt-out" semantics.
+	// A fetch failure falls through to the default (off): server
+	// unreachable means the browser can't be told the opt-in flag is
+	// on, so the conservative choice is per-tab mode.
 	try {
 		const { getConfig } = await import('$lib/api/generated/openapi/sdk.gen');
 		const cfg = await getConfig({ throwOnError: true });
-		if (cfg.features.shared_worker_bus === false) {
+		if (cfg.features.shared_worker_bus !== true) {
 			return assign(new PerTabMessageBusClient(), 'PerTabMessageBusClient');
 		}
 	} catch {
-		// Transient /api/config failure — proceed to detection. The
-		// mandatory fallback catches a per-tab-only browser anyway.
+		// Transient /api/config failure — fall back to per-tab. In
+		// opt-in semantics "can't confirm the flag is on" means off:
+		// going shared on an unverified instance would silently enable
+		// a feature its operator may not want yet. Per-tab works on
+		// every browser, so the conservative choice costs nothing but
+		// the fan-out reduction, which is exactly what the opt-in
+		// gate controls.
+		return assign(new PerTabMessageBusClient(), 'PerTabMessageBusClient');
 	}
 
 	// Lazy-load `detect` so a browser that never reaches shared mode

@@ -194,7 +194,7 @@ Three fields discriminate the shape of a failure:
 
 | Field | What it tells you |
 | --- | --- |
-| `impl` | `SharedWorkerBridge` → shared mode is live. `PerTabMessageBusClient` → fallback engaged (Safari < 16.4, enterprise CSP `SharedWorkerAllowed=false`, iOS PWA quirks, handshake timeout, `?shared_worker=0` URL override, or `OXICLOUD_ENABLE_SHARED_WORKER_BUS=false` on the server). |
+| `impl` | `SharedWorkerBridge` → shared mode is live (operator set `OXICLOUD_ENABLE_SHARED_WORKER_BUS=true`). `PerTabMessageBusClient` → default (opt-in flag off), or fallback engaged (Safari < 16.4, enterprise CSP `SharedWorkerAllowed=false`, iOS PWA quirks, handshake timeout, `?shared_worker=0` URL override, or `/api/config` unreachable at factory time). |
 | `state` | `connected` (healthy) \| `connecting` (handshake / ticket in flight) \| `disconnected` (reconnect scheduled) \| `unavailable` (circuit breaker tripped) \| `idle` (no subscribe yet) |
 | `latencyMs` | Full-chain round-trip in ms. Numbers in the single digits are normal on localhost; typical production is 10–50 ms. |
 

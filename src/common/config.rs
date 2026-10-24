@@ -2515,19 +2515,27 @@ pub struct FeaturesConfig {
     /// known to misbehave, or a workaround for an in-the-wild
     /// regression while the FE is still shipping fixes.
     ///
-    /// **Default: `true` (opt-out).** The feature exists to reduce
+    /// **Default: `false` (opt-in).** The feature exists to reduce
     /// WS fan-out at scale (10k users × multiple tabs → 10k WS,
-    /// not 50k+); shipping it off by default would mean the whole
-    /// motivation stays unrealised on most instances. The
-    /// mandatory, handshake-tested fallback bounds the blast
-    /// radius — a browser that can't run shared mode just lands on
-    /// per-tab, zero events lost.
+    /// not 50k+), but it is in an observation phase while production
+    /// behaviour across browsers, extensions and tab-lifecycle quirks
+    /// is still being gathered. Operators who want the fan-out
+    /// reduction today opt in explicitly; everyone else gets the
+    /// per-tab mode that has been in the field longest.
+    ///
+    /// The flip-direction trade-off is deliberate: on-by-default
+    /// would reach the fan-out goal sooner but surfaces any
+    /// shared-worker edge case on every operator at once. Off-by-
+    /// default means the win is unrealised until each operator
+    /// turns it on, and the mandatory handshake-tested fallback
+    /// still bounds the blast radius for browsers that can't run
+    /// shared mode (Safari < 16.4, enterprise CSP, iOS PWA).
     ///
     /// Server-side wire shape is identical in both modes. The flag
     /// gates FE behaviour only; `/api/rt/ws` + `/api/rt/ticket` are
     /// still registered (gated by `enable_message_bus`).
     ///
-    /// Env: `OXICLOUD_ENABLE_SHARED_WORKER_BUS` (default `true`).
+    /// Env: `OXICLOUD_ENABLE_SHARED_WORKER_BUS` (default `false`).
     /// See `docs/plan/message-bus-via-shared-worker.md`.
     pub enable_shared_worker_bus: bool,
 
@@ -3029,14 +3037,15 @@ impl Default for FeaturesConfig {
             // pair can only be inconsistent through an explicit
             // operator override.
             enable_markdown_collab: true,
-            // Shared-worker bus — on by default (opt-out). See the
-            // field docstring for the rationale: the whole motivation
-            // is to reduce WS fan-out at scale, and the mandatory
-            // fallback contains the blast radius for browsers that
-            // can't run shared mode (Safari < 16.4, enterprise CSP,
-            // iOS PWA). Operators who need a per-tab-only deployment
-            // set OXICLOUD_ENABLE_SHARED_WORKER_BUS=false and restart.
-            enable_shared_worker_bus: true,
+            // Shared-worker bus — OFF by default (opt-in). See the
+            // field docstring: the fan-out reduction win is real, but
+            // production behaviour across browsers, extensions and
+            // tab-lifecycle quirks is still being observed. Operators
+            // who want the win today set
+            // OXICLOUD_ENABLE_SHARED_WORKER_BUS=true and restart; the
+            // mandatory handshake-tested fallback bounds blast radius
+            // on any browser that can't run shared mode.
+            enable_shared_worker_bus: false,
             grant_cleanup: GrantCleanupConfig::default(),
             notifications_retention_days: 30, // 30 days is the plan's default
         }

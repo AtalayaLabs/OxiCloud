@@ -1271,19 +1271,21 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
             );
         }
 
-        // Shared-worker bus — opt-out via `OXICLOUD_ENABLE_SHARED_WORKER_BUS=false`.
-        // The flag gates FE behaviour only; routes are unchanged. Log
-        // the resolved state only when it diverges from the default
-        // (`true`), so operators debugging a user report can grep for
-        // the explicit override without wading through per-boot
-        // noise on default-configured instances.
-        if !app_state.core.config.features.enable_shared_worker_bus {
+        // Shared-worker bus — opt-in via `OXICLOUD_ENABLE_SHARED_WORKER_BUS=true`
+        // while production behaviour across browsers, extensions and
+        // tab lifecycle is in observation. The flag gates FE behaviour
+        // only; routes are unchanged. Log the resolved state only when
+        // it diverges from the default (`false`), so operators who
+        // consciously enabled the feature can see the choice reflected
+        // without flooding default-configured instances with per-boot
+        // noise.
+        if app_state.core.config.features.enable_shared_worker_bus {
             tracing::info!(
                 target: "audit",
-                event = "config.feature_disabled",
+                event = "config.feature_enabled",
                 feature = "shared_worker_bus",
-                "shared-worker bus disabled (OXICLOUD_ENABLE_SHARED_WORKER_BUS=false) — \
-                 clients will open one WebSocket per tab, not per browser",
+                "shared-worker bus enabled (OXICLOUD_ENABLE_SHARED_WORKER_BUS=true) — \
+                 clients will open one WebSocket per browser, not per tab",
             );
         }
 
