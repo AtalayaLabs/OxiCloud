@@ -156,8 +156,29 @@ export async function init(): Promise<void> {
 			// hooks.client.ts (it's already loaded elsewhere; the
 			// dynamic import returns the cached singleton).
 			async checkBusChain() {
+				// Dynamic import awaits the module's top-level await
+				// (`messageBus = await makeMessageBus()`), guaranteeing
+				// the factory has run and `window.__oxi_bus_impl` is
+				// set by the time we read it below. Without this await
+				// ordering, a very early `checkBusChain()` call could
+				// read `undefined` and fall through to the mangled
+				// `constructor.name`.
 				const { messageBus } = await import('$lib/message-bus/client.svelte');
-				const impl = messageBus.constructor.name;
+
+				// `__oxi_bus_impl` is a stable string literal the factory
+				// stamps on `window` at construction time — survives
+				// minification (`messageBus.constructor.name` gets
+				// mangled to e.g. `"KA"` in production builds, which
+				// defeats introspection code AND Playwright specs).
+				//
+				// If the window field is unset at this point, EITHER
+				// (a) the bundle is pre-fix (needs rebuild), OR (b)
+				// the factory took the SSR branch (no window). In both
+				// cases falling back to the raw constructor name is the
+				// least bad option — it's at least non-null, callers
+				// can see "KA" and know to rebuild.
+				const impl: string =
+					window.__oxi_bus_impl ?? messageBus.constructor.name;
 				// `workerVersion` only exists on the SharedWorker bridge;
 				// null in per-tab mode. The optional chain + the ?? null
 				// keep both impls' return shape identical.

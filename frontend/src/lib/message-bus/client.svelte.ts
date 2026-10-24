@@ -1268,13 +1268,37 @@ export class PerTabMessageBusClient implements MessageBusClient {
  */
 export const messageBus: MessageBusClient = await makeMessageBus();
 
+/** The factory's chosen implementation label, exposed via a stable
+ *  window field so introspection code (`oxi.checkBusChain().impl`,
+ *  Playwright specs) survives minification of the class names.
+ *  Terser mangles `Class.constructor.name` into opaque short strings
+ *  (`"KA"` observed in production builds); the string literals here
+ *  are preserved verbatim as values. */
+export type MessageBusImpl = 'SharedWorkerBridge' | 'PerTabMessageBusClient';
+
+declare global {
+	interface Window {
+		__oxi_bus_impl?: MessageBusImpl;
+	}
+}
+
 /** Build the one `MessageBusClient` for this tab. Returns a shared
  *  bridge if detection + handshake succeed; otherwise a per-tab
- *  client. See `./detect.ts` for the three-step detection. */
+ *  client. See `./detect.ts` for the three-step detection.
+ *
+ *  Sets `window.__oxi_bus_impl` to the chosen variant for every
+ *  branch — the stable discriminator introspection code reads. */
 async function makeMessageBus(): Promise<MessageBusClient> {
+	const assign = <T extends MessageBusClient>(bus: T, impl: MessageBusImpl): T => {
+		if (typeof window !== 'undefined') window.__oxi_bus_impl = impl;
+		return bus;
+	};
+
 	// SSR / non-browser: short-circuit to per-tab. The per-tab client's
 	// constructor already guards `typeof document !== 'undefined'`.
-	if (typeof window === 'undefined') return new PerTabMessageBusClient();
+	if (typeof window === 'undefined') {
+		return new PerTabMessageBusClient();
+	}
 
 	// Dev / forced-fallback escape hatch — `?shared_worker=0` on any
 	// URL disables shared mode for the whole session. Useful for
@@ -1282,7 +1306,7 @@ async function makeMessageBus(): Promise<MessageBusClient> {
 	try {
 		const url = new URL(window.location.href);
 		if (url.searchParams.get('shared_worker') === '0') {
-			return new PerTabMessageBusClient();
+			return assign(new PerTabMessageBusClient(), 'PerTabMessageBusClient');
 		}
 	} catch {
 		// Non-URL-parseable location; proceed to detection.
@@ -1301,7 +1325,7 @@ async function makeMessageBus(): Promise<MessageBusClient> {
 		const { getConfig } = await import('$lib/api/generated/openapi/sdk.gen');
 		const cfg = await getConfig({ throwOnError: true });
 		if (cfg.features.shared_worker_bus === false) {
-			return new PerTabMessageBusClient();
+			return assign(new PerTabMessageBusClient(), 'PerTabMessageBusClient');
 		}
 	} catch {
 		// Transient /api/config failure — proceed to detection. The
@@ -1324,7 +1348,7 @@ async function makeMessageBus(): Promise<MessageBusClient> {
 				name: 'oxi-bus'
 			})
 	);
-	if (bridge) return bridge;
+	if (bridge) return assign(bridge, 'SharedWorkerBridge');
 
-	return new PerTabMessageBusClient();
+	return assign(new PerTabMessageBusClient(), 'PerTabMessageBusClient');
 }

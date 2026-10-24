@@ -45,7 +45,33 @@ export default defineConfig({
       : {},
   },
 
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  projects: [
+    {
+      name: 'chromium',
+      use: { ...devices['Desktop Chrome'] },
+      // The main suite runs on the SPA's happy path — SharedWorker
+      // enabled, bus takes the shared path. The fallback-mode spec
+      // runs under its own project with the Chromium flag that
+      // disables SharedWorker; keep it OUT of this project so a
+      // typeof-SharedWorker regression there doesn't poison the
+      // broader run.
+      testIgnore: /message-bus-fallback\.spec\.ts/
+    },
+    {
+      // Runs the fallback spec. The force-fallback mechanism is
+      // `addInitScript({ delete window.SharedWorker })` INSIDE the
+      // spec, not a browser launch flag — the latter
+      // (`--disable-features=SharedWorkerAPI`) works on stable
+      // Google Chrome but not reliably on Playwright's bundled
+      // Chromium (observed 2026-10-24: `typeof SharedWorker`
+      // was still `'function'` under the flag). The spec can
+      // still coexist in its own project so the per-test shim
+      // doesn't leak into other specs that assume shared mode.
+      name: 'chromium-no-shared-worker',
+      use: { ...devices['Desktop Chrome'] },
+      testMatch: /message-bus-fallback\.spec\.ts/
+    }
+  ],
 
   webServer: {
     command: process.env.BUILD_TARGET
