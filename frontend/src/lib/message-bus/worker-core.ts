@@ -191,20 +191,33 @@ export class WorkerCore {
 		this.#transport.onNeedTicket((nonce) => this.#askPortForTicket(nonce));
 	}
 
-	/** Pick any currently-connected port and ask it to fetch a fresh
-	 *  ticket. The port replies via `provide-ticket` carrying the
-	 *  same nonce. If zero ports are attached (impossible in practice
-	 *  — the SharedWorker dies with its last port — but defensive):
-	 *  the transport's own `need-ticket` timeout fires and the
-	 *  reconnect backoff restarts. */
+	/** Broadcast `need-ticket` to ALL connected ports. Any live
+	 *  bridge replies with `provide-ticket` carrying the matching
+	 *  nonce; the transport's `provideTicket()` consumes the FIRST
+	 *  reply and ignores later ones (`#ticketConsumed` guard).
+	 *
+	 *  Why broadcast, not first-port-wins: Chrome's `MessagePort`
+	 *  `close` event doesn't fire reliably when a tab closes
+	 *  — stale ports accumulate in `#ports`. If `#askPortForTicket`
+	 *  picked the FIRST port and that port was a zombie, the
+	 *  envelope would silently drop (postMessage on a closed port
+	 *  is a spec no-op, not a throw), and the transport's 5 s timer
+	 *  would be the only backstop. Observed 2026-10-24: a worker
+	 *  with 4 ports but 2 real tabs couldn't recover from server
+	 *  restart because the stale port kept being selected.
+	 *
+	 *  Broadcast costs N extra `postMessage` calls per cycle; cheap
+	 *  (envelope is 24 bytes). The one live bridge still wins the
+	 *  race because the transport consumes the first provide-ticket
+	 *  reply. */
 	#askPortForTicket(nonce: number): void {
-		// First connected port wins. Rotating would spread load across
-		// tabs but doesn't change correctness; keep it simple.
-		for (const port of this.#ports) {
-			this.#send(port, { kind: 'need-ticket', nonce });
+		if (this.#ports.size === 0) {
+			this.#warn('need-ticket emitted but no ports attached', { nonce });
 			return;
 		}
-		this.#warn('need-ticket emitted but no ports attached', { nonce });
+		for (const port of this.#ports) {
+			this.#send(port, { kind: 'need-ticket', nonce });
+		}
 	}
 
 	/** Called by the SharedWorker entry on each `connect` event. The
