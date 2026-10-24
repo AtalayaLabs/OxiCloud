@@ -319,11 +319,14 @@ export class SharedWorkerBridge implements MessageBusClient {
 	}
 
 	reconnect(): void {
-		// Forwarded through a `call` so the worker side can drive its
-		// own reconnect path (and so every tab's state rune picks up
-		// the subsequent transitions through the normal broadcast).
-		const reqId = this.#allocReqId();
-		this.#post({ kind: 'call', reqId, method: 'rt.reconnect' });
+		// Dedicated port envelope — NOT a JSON-RPC `call`. An earlier
+		// revision used `{ kind: 'call', method: 'rt.reconnect' }`,
+		// which the server rejected as an unknown method and the
+		// worker never actually ran its own reconnect. The subsequent
+		// state transitions still fan out via the worker's existing
+		// `onStateChange` broadcast, so every tab's state rune
+		// updates on the next cycle.
+		this.#post({ kind: 'request-reconnect' });
 	}
 
 	close(): void {

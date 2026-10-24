@@ -585,6 +585,55 @@ describe('WorkerCore — state broadcast', () => {
 	});
 });
 
+describe('WorkerCore — auto-recovery on new port join', () => {
+	// Regression pin for the 2026-10-24 case Ed hit: server stopped
+	// + restarted, the circuit tripped on the server-down window,
+	// state latched to `unavailable`, and page refresh didn't help
+	// because the SharedWorker outlives the page lifecycle. The fix:
+	// when a port joins and the transport is in `unavailable`, the
+	// core calls `transport.reconnect()` to re-arm the circuit so a
+	// user-initiated page refresh works like it does in per-tab mode.
+	it('calls transport.reconnect() when a port joins and state === unavailable', () => {
+		const fixture = makeFakeTransport('unavailable');
+		const core = new WorkerCore(fixture.transport, 'v');
+		expect(fixture.reconnectMock).not.toHaveBeenCalled();
+		const { out } = newChannel();
+		core.registerPort(out);
+		expect(fixture.reconnectMock).toHaveBeenCalledTimes(1);
+	});
+
+	it('does NOT call transport.reconnect() when a port joins and state is healthy', () => {
+		// Positive control: the auto-recover must trigger ONLY in the
+		// tripped state, not on every port join. Firing reconnect on a
+		// healthy port join would cause spurious WS churn whenever a
+		// new tab opens.
+		const fixture = makeFakeTransport('connected');
+		const core = new WorkerCore(fixture.transport, 'v');
+		const { out } = newChannel();
+		core.registerPort(out);
+		expect(fixture.reconnectMock).not.toHaveBeenCalled();
+	});
+});
+
+describe('WorkerCore — request-reconnect envelope', () => {
+	// Regression pin for the bridge.reconnect() wiring. The earlier
+	// (broken) revision sent `{ kind: 'call', method: 'rt.reconnect' }`
+	// — a JSON-RPC call the server rejected as an unknown method,
+	// so the WORKER never actually ran its own reconnect(). The
+	// dedicated envelope routes directly to transport.reconnect().
+	it('routes `request-reconnect` to transport.reconnect()', async () => {
+		const fixture = makeFakeTransport('disconnected');
+		const core = new WorkerCore(fixture.transport, 'v');
+		const { out } = newChannel();
+		core.registerPort(out);
+		// `registerPort` on a disconnected (not unavailable) state
+		// must NOT auto-reconnect — pin that first.
+		expect(fixture.reconnectMock).not.toHaveBeenCalled();
+		await core.handlePortMessage(out, { kind: 'request-reconnect' });
+		expect(fixture.reconnectMock).toHaveBeenCalledTimes(1);
+	});
+});
+
 describe('WorkerCore — malformed envelopes do not crash the core', () => {
 	it('drops a wrong-direction envelope with a warn log', async () => {
 		const fixture = makeFakeTransport('connected');

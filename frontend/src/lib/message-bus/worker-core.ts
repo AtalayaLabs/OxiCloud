@@ -215,6 +215,24 @@ export class WorkerCore {
 			// still sees warn/error without opting in.
 			wantedLogLevel: 'info'
 		});
+
+		// Auto-recover from a tripped circuit when a new port joins.
+		// The per-tab client is constructed fresh on every page load,
+		// so a server-restart + page-refresh naturally re-arms the
+		// backoff machinery there. In shared mode the worker outlives
+		// the page refresh, so without this hook the user would see
+		// `state === 'unavailable'` → "Server unreachable" banner
+		// stuck on across every refresh until all tabs close and the
+		// worker dies.
+		//
+		// A port joining IS the signal that the user re-engaged with
+		// the app — they opened a tab, refreshed, or clicked the
+		// banner's Refresh button. Treat it as if they explicitly
+		// asked for `reconnect()`: clear the circuit-breaker counter,
+		// schedule an immediate attempt.
+		if (this.#transport.state === 'unavailable') {
+			this.#transport.reconnect();
+		}
 	}
 
 	/** Called by the SharedWorker entry when a port's `close` event
@@ -320,6 +338,9 @@ export class WorkerCore {
 				return;
 			case 'provide-ticket':
 				this.#transport.provideTicket(msg.subprotocol, msg.nonce);
+				return;
+			case 'request-reconnect':
+				this.#transport.reconnect();
 				return;
 		}
 	}
@@ -624,6 +645,7 @@ export class WorkerCore {
 			case 'ping':
 			case 'set-log-level':
 			case 'provide-ticket':
+			case 'request-reconnect':
 				return true;
 			default:
 				return false;

@@ -67,6 +67,7 @@ describe('parsePortMessage — roundtrip for every envelope kind', () => {
 		} satisfies SetLogLevelMessage,
 		{ kind: 'provide-ticket', subprotocol: 'oxi.ticket.abc', nonce: 1 },
 		{ kind: 'provide-ticket', subprotocol: 'oxi.ticket.primer', nonce: 0 },
+		{ kind: 'request-reconnect' },
 		// Worker → Tab
 		{
 			kind: 'hello-ack',

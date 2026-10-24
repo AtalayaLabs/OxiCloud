@@ -133,6 +133,19 @@ export interface ProvideTicketMessage {
 	nonce: number;
 }
 
+/** Tab asks the worker to force a fresh reconnect of its single WS.
+ *  Carries no body — the request is the signal. Routes through to
+ *  `BusTransport.reconnect()`, which zeroes the circuit-breaker
+ *  counter and schedules an immediate attempt.
+ *
+ *  NOT a server-side JSON-RPC call (an earlier revision confusingly
+ *  used `{ kind: 'call', method: 'rt.reconnect' }`, which the server
+ *  rejects as an unknown method — the worker never ran its own
+ *  reconnect). This envelope is worker-local plumbing. */
+export interface RequestReconnectMessage {
+	kind: 'request-reconnect';
+}
+
 export type PortTabToWorkerMessage =
 	| HelloMessage
 	| SubscribeMessage
@@ -145,7 +158,8 @@ export type PortTabToWorkerMessage =
 	| CallMessage
 	| PingMessage
 	| SetLogLevelMessage
-	| ProvideTicketMessage;
+	| ProvideTicketMessage
+	| RequestReconnectMessage;
 
 // ============================================================
 // Worker → Tab envelopes
@@ -295,7 +309,8 @@ const TAB_TO_WORKER_KINDS = new Set<string>([
 	'call',
 	'ping',
 	'set-log-level',
-	'provide-ticket'
+	'provide-ticket',
+	'request-reconnect'
 ]);
 
 const WORKER_TO_TAB_KINDS = new Set<string>([
@@ -393,6 +408,10 @@ export function parsePortMessage(raw: unknown): PortMessage | null {
 			if (typeof obj.subprotocol !== 'string') return null;
 			if (typeof obj.nonce !== 'number') return null;
 			return raw as ProvideTicketMessage;
+		}
+		case 'request-reconnect': {
+			// Body-less envelope; the kind IS the signal.
+			return raw as RequestReconnectMessage;
 		}
 		case 'hello-ack': {
 			if (typeof obj.reqId !== 'number') return null;
