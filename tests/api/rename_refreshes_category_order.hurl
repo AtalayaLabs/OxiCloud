@@ -175,6 +175,8 @@ Authorization: Bearer {{token}}
 HTTP 200
 [Asserts]
 jsonpath "$.items[0].resource.name" == "a-canary.txt"
+jsonpath "$.items[0].resource.mime_type" == "text/plain"
+jsonpath "$.items[0].resource.category" == "Text"
 jsonpath "$.items[1].resource.name" == "hello.txt"
 
 

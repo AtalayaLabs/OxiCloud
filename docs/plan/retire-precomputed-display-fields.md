@@ -511,5 +511,19 @@ have re-opened the raw-key hole the union just closed.
   executables-vs-archives. They share the `Archive` bucket, which is a
   compromise: a `.deb` is a package and a `.exe` is not an archive. The
   alternative was leaving them unfindable.
+* **Align the "type" / "category" vocabulary.** The wire uses "type" for
+  two different things — the coarse filter group (`?type=document`) and
+  the fine category's sort rank (`?order_by=type`) — while the value
+  itself is called "category" (`resource.category`). Noted by Ed
+  2026-10-24.
+
+  The split has a rationale: "type" is the user-facing word (the column
+  header and the picker both say Type) and "category" is the machine
+  word. But it is the same one-word-two-meanings shape that
+  `Document` → `WordProcessor` was renamed to avoid, and nothing
+  documented it, so the module doc of `display_helpers` now states which
+  word means what. Renaming to align them is wire-breaking on three
+  surfaces the SPA consumes, so it needs its own change and a decision on
+  which word wins.
 * `Font` and `Unknown` exist as filter values but are not offered in the SPA
   picker — the pattern the design already set for `Unknown`.

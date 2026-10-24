@@ -20,6 +20,33 @@
 //! (`retire-precomputed-display-fields.md`, steps 2/4/5) and the icon
 //! mapping now lives in `frontend/src/lib/utils/display.ts`.
 //!
+//! ## "type" vs "category" — three names, three meanings
+//!
+//! The wire is not consistent here, and the inconsistency is worth
+//! knowing before reading either enum:
+//!
+//! | wire surface | word | what it actually is |
+//! |---|---|---|
+//! | `GET /api/search?type=document` | **type** | a COARSE GROUP of categories (`SearchTypeFilter`) — `document` spans Pdf, WordProcessor, Spreadsheet, Presentation, Markdown, Text and Ebook |
+//! | `?order_by=type` | **type** | sort by the FINE category's rank (`storage.files.category_order`) |
+//! | `resource.category` | **category** | the FINE category itself (`ResourceCategory`) |
+//!
+//! So "type" means the coarse group in one place and the fine rank in
+//! another, while the value those ranks come from is called "category".
+//!
+//! The split is defensible rather than accidental: **"type" is the
+//! user-facing word** — the listing column header and the filter picker
+//! both say Type — and **"category" is the machine word**, which is why
+//! the DTO field and the enum carry it. What is NOT defensible is that
+//! nothing said so until now, so a reader meeting `?type=` and
+//! `category` had no way to tell whether they were the same thing at
+//! different granularities (they are not) or the same granularity under
+//! two names (they are not that either).
+//!
+//! Renaming to align them would be wire-breaking on three surfaces the
+//! SPA consumes, so it is recorded rather than done — see the *Not done*
+//! section of `docs/plan/retire-precomputed-display-fields.md`.
+//!
 //! `category` stays server-side on purpose: `category_order_for` turns it
 //! into `storage.files.category_order`, the indexed `type` sort key, so the
 //! FE's buckets and the server's `ORDER BY` must agree. Deriving it in the
