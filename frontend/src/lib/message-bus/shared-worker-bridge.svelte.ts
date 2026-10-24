@@ -290,12 +290,45 @@ export class SharedWorkerBridge implements MessageBusClient {
 						}
 					}
 				})
-				.catch((err) => {
+				.catch((err: { code?: number; message?: string } | undefined) => {
+					// Transient transport errors → the sub is interrupted
+					// mid-flight, NOT permanently denied. On the next
+					// successful WS the worker replays its `activeTopics`
+					// set upstream and we get an ack via the normal
+					// subscribe-ack dispatch path (the bridge-local
+					// `#subs` entry is intact — we haven't deleted it).
+					// Firing `revokedHandlers` on a transient would make
+					// `useTopic` + `useFolderTopic` + `collabDoc` tear
+					// down UI state that will come right back on
+					// reconnect, causing folder reloads and collab
+					// editor flapping.
+					//
+					// Mirrors the per-tab client's `#failSubscribe`
+					// discriminator (`err.message === 'ws_closed' |
+					// 'not_connected' | 'send_failed'`). Adds
+					// `'reconnect'` and `'bridge_closed'` because the
+					// transport's aggressive reset throws those on
+					// pending topic waiters when manually re-armed.
+					const transientMsgs = new Set([
+						'ws_closed',
+						'not_connected',
+						'send_failed',
+						'reconnect',
+						'bridge_closed'
+					]);
+					const msg = err?.message;
+					if (typeof msg === 'string' && transientMsgs.has(msg)) {
+						busLog.debug(
+							'subscribe interrupted by transport — will replay on reconnect',
+							{ topic, error: err }
+						);
+						return;
+					}
 					busLog.warn('subscribe failed', { topic, error: err });
 					const live = this.#subs.get(topic);
 					if (!live) return;
-					// Match the per-tab client's revoked-on-subscribe-denied
-					// semantic — consumers rely on it to drop their state.
+					// Permanent denial — consumers rely on
+					// `revokedHandlers` to drop their state.
 					const synthetic = {
 						topic,
 						reason: 'subscribe_denied'
