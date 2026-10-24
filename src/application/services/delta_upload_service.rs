@@ -496,10 +496,10 @@ impl DeltaUploadService {
             CommitMode::Create { name, .. } => name.clone(),
             CommitMode::Update { file_id } => file_id.clone(),
         };
-        let content_type = match refine_content_type(&head, &display_name, "") {
-            ct if ct.is_empty() => "application/octet-stream".to_string(),
-            ct => ct,
-        };
+        // No empty-string guard here any more: `refine_content_type` owns
+        // that fallback, so the one upload path that lacked it is covered
+        // too rather than this one being covered twice.
+        let content_type = refine_content_type(&head, &display_name, "");
         // `request.chunks` is owned and dead after this line (only
         // `request.file_hash` is read below), so move the hashes out instead of
         // cloning each 64-char hash a third time — the distinct set and the

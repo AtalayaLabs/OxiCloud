@@ -1296,7 +1296,11 @@ mod integration_tests {
     /// Three rather than one is the point: it is what makes
     /// `head_reads == 1` meaningful, and it is the exact waste the two
     /// file-iterating endpoints this job replaces could not avoid.
-    async fn seed(pool: &sqlx::PgPool, dedup: &BlobHandler, tag: &str) -> (String, Vec<Uuid>) {
+    async fn seed(
+        pool: &sqlx::PgPool,
+        dedup: &BlobHandler,
+        tag: &str,
+    ) -> (String, Vec<Uuid>, Uuid, Uuid) {
         // Smallest valid PNG: signature + IHDR. `infer` keys off the
         // 8-byte signature, so this is genuinely detected rather than
         // pattern-matched by length.
@@ -1379,7 +1383,48 @@ mod integration_tests {
             .expect("seed file");
             ids.push(id);
         }
-        (hash, ids)
+        (hash, ids, user, drive)
+    }
+
+    /// A manifest with NO chunks, which is what a zero-byte file has.
+    ///
+    /// `chunk_hashes[1]` on an empty array is NULL, and decoding that as a
+    /// `String` made `first_chunk_hashes` fail — taking the whole sweep
+    /// with it, because the manifest probe runs once per PAGE. So a single
+    /// empty file stopped the job for the entire corpus. Found on a real
+    /// instance, not here: the seeded fixtures all had content.
+    ///
+    /// Returns a hash referenced by one file, so the walk actually visits
+    /// it.
+    async fn seed_chunkless(pool: &sqlx::PgPool, tag: &str, user: Uuid, drive: Uuid) -> String {
+        let hash = format!("e0{tag}{}", "0".repeat(64 - 2 - tag.len()));
+        sqlx::query(
+            "INSERT INTO storage.chunk_manifests
+                 (file_hash, chunk_hashes, chunk_sizes, total_size, chunk_count, ref_count)
+             VALUES ($1, '{}', '{}', 0, 0, 1)
+             ON CONFLICT (file_hash) DO NOTHING",
+        )
+        .bind(&hash)
+        .execute(pool)
+        .await
+        .expect("seed chunkless manifest");
+
+        sqlx::query(
+            "INSERT INTO storage.files
+                 (id, name, drive_id, blob_hash, mime_type, size,
+                  category_order, created_by, updated_by)
+             VALUES (gen_random_uuid(), $1, $2, $3, 'application/octet-stream', 0,
+                     9999, $4, $4)",
+        )
+        .bind(format!("empty-{tag}.bin"))
+        .bind(drive)
+        .bind(&hash)
+        .bind(user)
+        .execute(pool)
+        .await
+        .expect("seed chunkless file");
+
+        hash
     }
 
     async fn types_and_categories(pool: &sqlx::PgPool, ids: &[Uuid]) -> Vec<(String, i16)> {
@@ -1443,6 +1488,10 @@ mod integration_tests {
             .bind(hash)
             .execute(pool)
             .await;
+        let _ = sqlx::query("DELETE FROM storage.chunk_manifests WHERE file_hash = $1")
+            .bind(hash)
+            .execute(pool)
+            .await;
         let _ = sqlx::query("DELETE FROM storage.blobs WHERE hash = $1")
             .bind(hash)
             .execute(pool)
@@ -1458,7 +1507,10 @@ mod integration_tests {
     async fn it_retypes_every_copy_from_one_read_and_moves_the_category() {
         let pool = test_pool().await;
         let dedup = BlobHandler::new_for_test(pool.clone());
-        let (hash, ids) = seed(&pool, &dedup, "a1").await;
+        let (hash, ids, user, drive) = seed(&pool, &dedup, "a1").await;
+        // One zero-byte file in the same corpus. Its manifest has no
+        // chunks, which used to abort the entire sweep.
+        let empty_hash = seed_chunkless(&pool, "a1", user, drive).await;
 
         // ── Phase 1: dry_run reports and writes nothing ──────────────
         let args = JobRunArgs::new(
@@ -1520,6 +1572,7 @@ mod integration_tests {
         );
 
         cleanup(&pool, &hash).await;
+        cleanup(&pool, &empty_hash).await;
     }
 
     /// A typo must fail the run before any work, not silently select the

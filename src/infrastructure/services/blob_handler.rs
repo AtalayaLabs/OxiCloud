@@ -1648,7 +1648,13 @@ impl BlobHandler {
         if hashes.is_empty() {
             return Ok(HashMap::new());
         }
-        let rows: Vec<(String, String, i64)> = sqlx::query_as(
+        // `chunk_hashes[1]` is NULLABLE, and not as an edge case: PostgreSQL
+        // subscripting an EMPTY array yields NULL, and a zero-byte file has
+        // a manifest with no chunks at all. Decoding it as `String` made the
+        // whole job fail on the first such row with "unexpected null; try
+        // decoding as an `Option`" — found on a real corpus, where it took
+        // one empty file to stop a corpus-wide sweep.
+        let rows: Vec<(String, Option<String>, i64)> = sqlx::query_as(
             "SELECT file_hash, chunk_hashes[1], total_size
                FROM storage.chunk_manifests
               WHERE file_hash = ANY($1)",
@@ -1658,9 +1664,14 @@ impl BlobHandler {
         .await
         .map_err(|e| DomainError::internal_error("Dedup", format!("first_chunk_hashes: {e}")))?;
 
+        // A chunkless manifest is simply left OUT of the map, which the
+        // contract already covers: absent means "no first chunk to read
+        // from", and the caller falls back to the Blob hash. There is
+        // nothing to sniff in zero bytes either way, so `infer` stays
+        // silent and the content is correctly left alone.
         Ok(rows
             .into_iter()
-            .map(|(h, first, size)| (h, (first, size)))
+            .filter_map(|(h, first, size)| first.map(|f| (h, (f, size))))
             .collect())
     }
 

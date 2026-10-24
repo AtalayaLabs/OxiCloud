@@ -252,6 +252,59 @@ jsonpath "$.mime_type" == "image/png"
 
 
 # ─────────────────────────────────────────────────────────────
+# Step 9 – Zero-byte files: the name is the ONLY signal.
+#
+# `touch plop` found this. With no content there is nothing for
+# `infer` to match — not "no match found", but no bytes at all — so
+# every empty upload falls through magic detection to the extension,
+# permanently. The same place source code sits.
+#
+# The second case is the defect this pins. No extension AND a generic
+# claim used to store `""`, which is not a Content-Type: it went into
+# a column whose own DEFAULT is application/octet-stream, back out as
+# the download `Content-Type`, and into every WebDAV
+# `getcontenttype`. Two upload paths guarded the blank locally and the
+# one every byte upload funnels through did not.
+#
+# Not `inode/x-empty` either, which is what `file --mime` reports:
+# `inode` is not an IANA top-level type and means nothing to a client.
+#
+# `category` is asserted alongside because emptiness is NOT a category
+# of its own — size is a separate axis, and the file browser already
+# has an "Empty (0 B)" size bucket. An empty .txt is Text like any
+# other .txt. Unit coverage: `mime_detect.rs::
+# an_empty_file_is_typed_by_its_name_and_never_by_an_empty_string`.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/files/upload
+Authorization: Bearer {{token}}
+[MultipartFormData]
+folder_id: {{folder_id}}
+file: file,fixtures/sniff-empty.txt; application/octet-stream
+
+HTTP 201
+[Asserts]
+jsonpath "$.size" == 0
+jsonpath "$.mime_type" == "text/plain"
+jsonpath "$.category" == "Text"
+
+
+# ⚠ Nothing to go on: no bytes, no extension, a generic claim.
+POST {{base_url}}/api/files/upload
+Authorization: Bearer {{token}}
+[MultipartFormData]
+folder_id: {{folder_id}}
+file: file,fixtures/sniff-empty-noext; application/octet-stream
+
+HTTP 201
+[Asserts]
+jsonpath "$.size" == 0
+jsonpath "$.mime_type" == "application/octet-stream"
+jsonpath "$.mime_type" != ""
+jsonpath "$.mime_type" != "inode/x-empty"
+jsonpath "$.category" == "Unknown"
+
+
+# ─────────────────────────────────────────────────────────────
 # Teardown – the suite shares one database; leave nothing behind.
 # ─────────────────────────────────────────────────────────────
 DELETE {{base_url}}/api/folders/{{folder_id}}

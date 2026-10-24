@@ -148,6 +148,8 @@ tests/fixtures/sniff-*.docx
 tests/fixtures/sniff-*.epub
 tests/fixtures/sniff-*.zip
 tests/fixtures/sniff-*.svg
+tests/fixtures/sniff-empty.txt
+tests/fixtures/sniff-empty-noext
 wasm/oxicloud-hash/target/
 
 # devenv / direnv

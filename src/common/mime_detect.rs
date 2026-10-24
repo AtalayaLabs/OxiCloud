@@ -37,7 +37,13 @@ pub fn filename_from_path(path: &str) -> &str {
 /// Whether a claimed Content-Type is too generic to trust — these trigger
 /// magic-byte detection on the upload path.
 pub fn is_generic_mime(claimed: &str) -> bool {
-    claimed.is_empty() || claimed == "application/octet-stream" || claimed == "binary/octet-stream"
+    // `trim().is_empty()`, not `is_empty()`: a whitespace-only header is no
+    // information either, and treating it as SPECIFIC meant it short-
+    // circuited the extension step and got stored verbatim — so a client
+    // sending `Content-Type:   ` had its blank accepted as the file's type.
+    claimed.trim().is_empty()
+        || claimed == "application/octet-stream"
+        || claimed == "binary/octet-stream"
 }
 
 /// Detections that describe the **envelope** rather than the content.
@@ -241,7 +247,30 @@ pub fn refine_content_type(buf: &[u8], filename: &str, claimed: &str) -> String 
         return mime.to_string();
     }
 
-    // 4. Give the claim back verbatim (generic or empty).
+    // 4. Give the claim back — but never an EMPTY string.
+    //
+    // Nothing above answered: no signature, no usable claim, no extension.
+    // `touch plop` uploaded through WebDAV with no `Content-Type` header
+    // reaches exactly this — zero bytes and no name to go on. A browser
+    // does not: it sets `application/octet-stream` on a part it cannot
+    // type. Non-browser DAV clients (`curl -T`, rclone, sync agents) send
+    // no header at all.
+    //
+    // This fallback used to live at the CALL SITES — `delta_upload_service`
+    // and `file_upload_service` both carried the same four-line
+    // `ct.is_empty() => octet-stream` match — while `upload_ingest`, which
+    // every byte-upload path funnels through, carried none. So the one
+    // path that could actually be reached by an unguarded client was the
+    // one left unguarded. One copy here replaces two there.
+    //
+    // `application/octet-stream` is the registered way to say "unknown
+    // bytes", and is already this column's DEFAULT. NOT `inode/x-empty`,
+    // which `file(1)` reports for an empty file: `inode` is not an IANA
+    // top-level type at all — it is a libmagic convention for filesystem
+    // objects, beside `inode/directory` — so it means nothing to a client.
+    if claimed.trim().is_empty() {
+        return "application/octet-stream".to_string();
+    }
     claimed.to_string()
 }
 
@@ -467,6 +496,46 @@ mod tests {
         );
     }
 
+    /// A zero-byte file: the NAME is the only signal, and there will never
+    /// be bytes to contradict it.
+    ///
+    /// `touch plop` is the shape that found this. For empty content `infer`
+    /// is silent by definition, so the extension decides — the same
+    /// situation source code is in, permanently. `content_rescan` reads
+    /// zero bytes, stays silent, and correctly leaves these alone.
+    ///
+    /// The last case is the defect: no extension AND no claim used to
+    /// return `""`, which is not a Content-Type. It went into a column
+    /// whose own DEFAULT is `application/octet-stream`, onto the wire, and
+    /// into every DAV `getcontenttype`. Two upload paths guarded it
+    /// locally and the one every byte upload funnels through did not.
+    #[test]
+    fn an_empty_file_is_typed_by_its_name_and_never_by_an_empty_string() {
+        // The extension answers, exactly as it would for a non-empty file.
+        assert_eq!(refine_content_type(b"", "empty.txt", ""), "text/plain");
+        assert_eq!(refine_content_type(b"", "empty.jpg", ""), "image/jpeg");
+        // A generic claim does not beat the extension.
+        assert_eq!(
+            refine_content_type(b"", "empty.txt", "application/octet-stream"),
+            "text/plain"
+        );
+
+        // ⚠ No extension, no claim — a DAV `PUT /webdav/plop` with no
+        // `Content-Type`. Never `""`.
+        assert_eq!(
+            refine_content_type(b"", "plop", ""),
+            "application/octet-stream"
+        );
+        // Whitespace-only is the same nothing.
+        assert_eq!(
+            refine_content_type(b"", "plop", "   "),
+            "application/octet-stream"
+        );
+        // NOT `inode/x-empty`: `file(1)` reports that, but `inode` is not
+        // an IANA top-level type and means nothing to a client.
+        assert_ne!(refine_content_type(b"", "plop", ""), "inode/x-empty");
+    }
+
     #[test]
     fn without_magic_or_a_claim_the_extension_decides() {
         let got = refine_content_type(
@@ -481,8 +550,16 @@ mod tests {
     }
 
     #[test]
-    fn with_nothing_to_go_on_the_claim_is_returned_verbatim() {
-        assert_eq!(refine_content_type(&[], "no-extension", ""), "");
+    fn with_nothing_to_go_on_the_type_is_octet_stream() {
+        // This test used to be `…the_claim_is_returned_verbatim` and
+        // asserted `""` for the empty claim. That was pinning a defect:
+        // the empty string is not a Content-Type, and it reached the
+        // column (whose own DEFAULT is `application/octet-stream`), the
+        // wire, and DAV `getcontenttype`. See step 4.
+        assert_eq!(
+            refine_content_type(&[], "no-extension", ""),
+            "application/octet-stream"
+        );
         assert_eq!(
             refine_content_type(&[], "no-extension", "application/octet-stream"),
             "application/octet-stream"

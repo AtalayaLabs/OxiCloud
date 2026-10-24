@@ -461,6 +461,12 @@ z.close()
 PYEOF
 fi
 
+# Zero-byte fixtures for upload_mime_sniffing.hurl step 9. Written every
+# run rather than guarded: the guard above is `-s` (size > 0), which an
+# empty file can never satisfy. `: >` is idempotent and costs nothing.
+: > "$REPO_ROOT/tests/fixtures/sniff-empty.txt"
+: > "$REPO_ROOT/tests/fixtures/sniff-empty-noext"
+
 # ── 4. Run Hurl tests ─────────────────────────────────────────────────────────
 
 log "Running Hurl tests..."

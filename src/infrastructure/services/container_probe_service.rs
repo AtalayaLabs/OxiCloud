@@ -298,7 +298,12 @@ mod tests {
 // A broken invocation degrades safely in production (Err → a
 // `container_probe_failed` finding → the container default stands), so
 // this catches it at CI time rather than preventing damage.
+// `allow(dead_code)`: the gate is `integration_tests`, not `test`, so a
+// non-test build carrying that cfg strips the `#[test]` functions and
+// leaves `probe()` with no callers. Same reason
+// `satellites_consistency_service`'s integration module carries it.
 #[cfg(integration_tests)]
+#[allow(dead_code, unused_imports)]
 mod integration_tests {
     use super::*;
     use std::time::Duration;
