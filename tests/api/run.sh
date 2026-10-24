@@ -482,6 +482,12 @@ HURL_FILES=( \
   "$API_DIR/dedup_admin_gate.hurl" \
   "$API_DIR/admin_jobs.hurl" \
   "$API_DIR/recoverable_jobs.hurl" \
+  # Adjacent to recoverable_jobs.hurl, which pins the INLINE trigger
+  # envelope. This one pins the DETACHED one (202 + dispatched) plus
+  # parameter rejection — and every run it makes is dry_run or scoped
+  # to a mime prefix nothing has, because content_rescan rewrites
+  # mime_type corpus-wide and the suite shares one database.
+  "$API_DIR/content_rescan_job.hurl" \
   "$API_DIR/jobs_notify.hurl" \
   "$API_DIR/storage_multi_entry.hurl" \
   "$API_DIR/default_caldav_carddav.hurl" \
