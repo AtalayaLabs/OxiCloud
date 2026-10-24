@@ -99,8 +99,13 @@ declare global {
 			 *  is `disconnected`, `unavailable`, or stuck in a
 			 *  `connecting` cycle. No-op when already `connected`.
 			 *  Routes through the `request-reconnect` port envelope in
-			 *  shared mode. */
-			reconnectBus: () => Promise<void>;
+			 *  shared mode.
+			 *
+			 *  Returns a confirmation string naming the before/after
+			 *  state (sampled synchronously; use `checkBusChain()` to
+			 *  verify the eventual `connected` state after the WS
+			 *  re-opens). */
+			reconnectBus: () => Promise<string>;
 		};
 	}
 }
@@ -187,9 +192,18 @@ export async function init(): Promise<void> {
 			// out of a `state === 'unavailable'` without reloading the
 			// page, and shortens the long-backoff tail during
 			// `disconnected` cycles.
+			//
+			// Returns a confirmation string summarising the requested
+			// transition and the fresh state (sampled synchronously
+			// after reconnect() returns — before the WS actually
+			// re-opens, so expect `connecting` here even on a
+			// successful reconnect; follow up with checkBusChain() to
+			// confirm `connected`).
 			async reconnectBus() {
 				const { messageBus } = await import('$lib/message-bus/client.svelte');
+				const before = messageBus.state;
 				messageBus.reconnect();
+				return `reconnect requested — was ${before}, now ${messageBus.state}`;
 			}
 		};
 		// UPLOAD_BATCH_BYTES: getter reads live from localStorage so any
