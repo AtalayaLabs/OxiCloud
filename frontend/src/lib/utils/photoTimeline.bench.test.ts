@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import type { ResourceCategory } from '$lib/api/types';
 import type { PhotoItem } from '$lib/api/endpoints/photos';
 import { photoTimestamp } from './media';
 import {

@@ -109,7 +109,7 @@ export function typeLabel(category: ResourceCategory): string {
 		Image: t('category.images', 'Images'),
 		Video: t('category.videos', 'Videos'),
 		Audio: t('category.audio', 'Audio'),
-		'PDF': 'PDF',
+		PDF: 'PDF',
 		WordProcessor: t('category.documents', 'Documents'),
 		Spreadsheet: t('category.spreadsheets', 'Spreadsheets'),
 		Presentation: t('category.presentations', 'Presentations'),
@@ -128,4 +128,3 @@ export function typeLabel(category: ResourceCategory): string {
 	};
 	return labels[category];
 }
-

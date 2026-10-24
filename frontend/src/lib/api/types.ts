@@ -12,36 +12,22 @@
 // cycle. Type-only imports are erased entirely, leaving nothing to cycle.
 import type { Grant } from './endpoints/grants';
 
-/** Server-side resource classification — the `ResourceCategory` enum.
- *
- * A machine key, never display text: route it through `typeLabel` to get a
- * localised string. Mirrors `display_helpers::ResourceCategory`, and the
- * server registers it in the OpenAPI schema, so this union is the wire
- * contract rather than a convenience.
- *
- * `Unknown` is reachable: content the server could not identify used to be
- * labelled `Document`, which was a confident lie.
- */
-export type ResourceCategory =
-	| 'Image'
-	| 'Video'
-	| 'Audio'
-	| 'PDF'
-	| 'WordProcessor'
-	| 'Spreadsheet'
-	| 'Presentation'
-	| 'Archive'
-	| 'Code'
-	| 'Markdown'
-	| 'Text'
-	| 'Package'
-	| 'Config'
-	| 'DiskImage'
-	| 'Font'
-	| 'Ebook'
-	| 'Executable'
-	| 'Folder'
-	| 'Unknown';
+// Server-side resource classification, re-exported from the generated SDK
+// rather than written out here.
+//
+// A machine key, never display text: route it through `typeLabel` for a
+// localised string. `Unknown` is reachable — content the server could not
+// identify used to be labelled `Document`, which was a confident lie.
+//
+// It WAS hand-written as a 19-member union, and `check-types-overlap`
+// rejected it: a hand-written twin of a generated type is drift waiting to
+// happen, because a server-side change regenerates one and leaves the other
+// stale while `$lib/api/types` imports resolve to the stale one. Since this
+// union is generated from `display_helpers::ResourceCategory` via the
+// OpenAPI schema, the generated copy is the only one that can be right.
+// Same pattern as `FolderItem` below.
+import type { ResourceCategory } from './generated/openapi/types.gen';
+export type { ResourceCategory };
 
 export type ItemType = 'file' | 'folder';
 
