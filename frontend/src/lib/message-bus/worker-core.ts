@@ -375,6 +375,14 @@ export class WorkerCore {
 		return this.#maxWantedLogLevel;
 	}
 
+	/** Debug variant of #warn — same fan-out path, debug level. For
+	 *  diagnostic lines that help in-the-wild debugging but are
+	 *  noise during normal operation (fires on every port join,
+	 *  state transition, etc.). */
+	#debug(message: string, context: Record<string, unknown>): void {
+		this.emitLog('debug', 'oxi:message-bus:worker', [message, context]);
+	}
+
 	/** Fire a worker log line out to every connected port whose
 	 *  wantedLogLevel includes `level`. Non-cloneable arg values are
 	 *  stripped — `postMessage` would throw otherwise and we'd lose
@@ -409,11 +417,15 @@ export class WorkerCore {
 		const index = this.#perPort.get(port);
 		if (index) index.wantedLogLevel = wantedLogLevel;
 		this.#recomputeMaxWantedLogLevel();
-		// Diagnostic warn — pins the "worker→port→bridge→tab-console"
+		// Diagnostic debug — pins the "worker→port→bridge→tab-console"
 		// fan-out chain. Fires on every new port join (page refresh,
-		// new tab). A tab that doesn't see this in its console AFTER
-		// a page refresh indicates the fan-out chain is broken.
-		this.#warn('hello received — port registered', {
+		// new tab). Debug level so it's quiet by default; operators
+		// enabling `oxi.setLogLevel('oxi:message-bus:worker', 'debug')`
+		// see it + can verify the chain. Was warn during initial
+		// debugging — downgraded because every page refresh produced
+		// one warn, which was noise for anyone not actively
+		// diagnosing.
+		this.#debug('hello received — port registered', {
 			wantedLogLevel,
 			portCount: this.#ports.size,
 			state: this.#transport.state
