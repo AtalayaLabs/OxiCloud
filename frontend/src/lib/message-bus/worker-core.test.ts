@@ -194,7 +194,12 @@ describe('WorkerCore — port registration + hello', () => {
 			wantedLogLevel: 'info'
 		} satisfies HelloMessage);
 		await flushAsync();
-		expect(received).toEqual([
+		// Filter out the diagnostic `log` envelope `#handleHello` emits
+		// (added for in-the-wild debugging of the fan-out chain). The
+		// pin here is on the hello-ack shape, not on the number of
+		// envelopes that fly on a hello.
+		const acks = received.filter((m) => m.kind === 'hello-ack');
+		expect(acks).toEqual([
 			{ kind: 'hello-ack', reqId: 1, state: 'connected', workerVersion: 'test-worker-v1' }
 		]);
 	});

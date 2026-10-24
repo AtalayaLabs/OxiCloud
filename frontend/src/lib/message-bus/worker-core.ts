@@ -388,6 +388,15 @@ export class WorkerCore {
 		const index = this.#perPort.get(port);
 		if (index) index.wantedLogLevel = wantedLogLevel;
 		this.#recomputeMaxWantedLogLevel();
+		// Diagnostic warn — pins the "worker→port→bridge→tab-console"
+		// fan-out chain. Fires on every new port join (page refresh,
+		// new tab). A tab that doesn't see this in its console AFTER
+		// a page refresh indicates the fan-out chain is broken.
+		this.#warn('hello received — port registered', {
+			wantedLogLevel,
+			portCount: this.#ports.size,
+			state: this.#transport.state
+		});
 		this.#send(port, {
 			kind: 'hello-ack',
 			reqId,
