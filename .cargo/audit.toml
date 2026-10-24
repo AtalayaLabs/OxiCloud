@@ -283,4 +283,44 @@ ignore = [
     "RUSTSEC-2026-0112",
     "RUSTSEC-2026-0113",
     "RUSTSEC-2026-0066",
+
+    # crypto-bigint 0.5.5 — "Multiple timing variability issues in operations
+    # intended to be constant-time" (RUSTSEC-2026-0387, fixed in >=0.7.6).
+    #
+    # NO UPGRADE PATH, and the blocker is one crate:
+    #
+    #   crypto-bigint 0.5.5
+    #     <- elliptic-curve 0.13.8  (requires crypto-bigint ^0.5)
+    #          <- opaque-ke 3.0.0   (requires elliptic-curve ^0.13)  [direct dep]
+    #          <- p256 0.13 / p384 0.13 <- jsonwebtoken 10.4.0
+    #     <- aws-sigv4 1.6.0 <- aws-sdk-s3
+    #
+    # `cargo update -p crypto-bigint --precise 0.7.6` fails on
+    # elliptic-curve's `^0.5` requirement. The rest of the stack HAS moved
+    # (elliptic-curve 0.14.2, p256 0.14.0, jsonwebtoken 11.1.0,
+    # aws-sigv4 1.6.3), but bumping those does not help: cargo would resolve
+    # crypto-bigint 0.7.x ALONGSIDE 0.5.5, which stays in the tree for
+    # opaque-ke, so the advisory still fires. opaque-ke's only release newer
+    # than 3.0.0 is 4.1.0-pre.2 — a pre-release, and this is the
+    # password-authentication path, so adopting unaudited pre-release crypto
+    # to retire a timing-variability advisory is the worse side of the trade.
+    #
+    # EXPOSURE, by whether the path has a secret operand:
+    #   * opaque-ke / OPAQUE PAKE — the one that matters. Secret scalars
+    #     derived from password material.
+    #   * aws-sigv4 `sigv4a` — private-key ECDSA. The feature is enabled in
+    #     Cargo.toml, but only exercised if an S3 backend actually signs with
+    #     sigv4a (multi-region access points).
+    #   * jsonwebtoken ES256/ES384 — negligible. `oidc_service.rs` maps JWKS
+    #     key algorithms, i.e. VERIFICATION against the IdP's public keys;
+    #     no secret operand. Our own tokens are HS256.
+    #
+    # Exploiting timing variability needs low-noise measurement of those
+    # operations — realistically a co-located attacker on a self-hosted box,
+    # not a remote one.
+    #
+    # UNBLOCK CONDITION: opaque-ke 4.x stable -> elliptic-curve 0.14 ->
+    # crypto-bigint >=0.7.6. Tracked in AtalayaLabs/OxiCloud#834; re-check
+    # whenever `cargo search opaque-ke` shows a non-pre-release 4.x.
+    "RUSTSEC-2026-0387",
 ]
