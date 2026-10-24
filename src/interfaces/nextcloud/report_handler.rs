@@ -10,7 +10,7 @@ use quick_xml::{
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::application::dtos::display_helpers::intern_display;
+use crate::application::dtos::display_helpers::ResourceCategory;
 use crate::application::dtos::favorites_dto::ItemKind;
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::FolderDto;
@@ -469,7 +469,7 @@ fn file_dto_from_search(fr: &crate::application::dtos::search_dto::SearchFileRes
         folder_id: fr.folder_id.clone(),
         created_at: fr.created_at,
         modified_at: fr.modified_at,
-        category: fr.category.clone(),
+        category: fr.category,
         content_hash: fr.blob_hash.clone(),
         etag,
         // §14 provenance not selected by the search result DTO.
@@ -511,7 +511,7 @@ fn folder_dto_from_search(
         // before `tree_modified_at` existed. Wiring the rollup here means
         // widening the search projection — tracked in the dates plan.
         tree_modified_at: sr.modified_at,
-        category: intern_display("Folder"),
+        category: ResourceCategory::Folder,
         // §14 provenance not selected by search results.
         created_by: None,
         updated_by: None,

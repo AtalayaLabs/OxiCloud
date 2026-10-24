@@ -1,6 +1,7 @@
 # Retire the pre-computed display fields from the wire
 
-Status: **all six steps shipped.** Written 2026-10-22 from Ed's question: are
+Status: **complete — all six steps plus the `ResourceCategory` follow-up
+shipped** (2026-10-24). Written 2026-10-22 from Ed's question: are
 `icon_class`, `icon_special_class` and `size_formatted` actually used in the
 UI, and can the FE compute them instead?
 
@@ -13,14 +14,20 @@ UI, and can the FE compute them instead?
 | 5 | `PhotoLightbox` → `formatBytes`, drop `size_formatted` | ✅ shipped |
 | 6 | Document `category` as a machine key | ✅ shipped |
 | — | `is_root` — adjacent removal, not an original step | ✅ shipped |
+| 7 | `ResourceCategory` enum, server + wire + SPA | ✅ shipped 2026-10-24 |
 
 Step 5 was taken out of order — it is independent of 3/4 and of the mime work,
 so there was no reason to hold it behind the icon chain. Steps 3 and 4 shipped
 together, in that order within the commit.
 
-**The `ResourceCategory` enum section below is NOT implemented.** It is the
-remaining follow-up, and it is deliberately deferred — see *Sequencing*.
-Everything above it describes shipped state.
+**The `ResourceCategory` enum section below IS now implemented** (2026-10-24)
+— the section is kept as the design record, with what actually landed noted
+under *As implemented* at its end. Everything above it also describes shipped
+state.
+
+One part of it did NOT land, and deliberately: the *Sequencing* note's final
+step, dropping `name` from `category_for`. That turned out to be unreachable
+rather than merely distant — see *As implemented*.
 
 ### What landed beyond the six steps
 
@@ -409,3 +416,100 @@ deleted ~120 lines of decision tree and 28 intern-table entries.
 the running sandbox is off limits. The DTO field set and value distribution are
 taken from the real serialiser, so the per-row deltas are exact; only the
 row mix is synthetic.)
+
+### As implemented (2026-10-24)
+
+Nineteen categories, not fourteen. The design listed Image, Video, Audio,
+Pdf, Document, Spreadsheet, Presentation, Archive, Code, Markdown, Text,
+Installer, Folder, Unknown. What shipped renames two and adds five, each
+for a reason found while building:
+
+| change | why |
+|---|---|
+| `Document` → `WordProcessor` | `SearchTypeFilter::Document` is the COARSE bucket spanning Pdf + this + Spreadsheet + Presentation + Markdown + Text. One word for two sets is how a reader concludes the filter returns only `.docx`. `TextDocument` was rejected: `Text` already exists and most desktops call a `.txt` a "text document" |
+| `Installer` → `Package` | once `.exe` moved to `Executable`, what remained really is the package formats (`.deb`, `.rpm`, `.dmg`, `.msi`, `.pkg`), all of which ARE separable by content |
+| + `Executable` | `.exe` was filed as an installer, and ELF / Mach-O / wasm / Java class had no category at all. NOT named `Application`: `application/` is the MIME top-level type for most formats in that file, so the name would mean two things at once |
+| + `Font` | `font/*` was in no arm, so every font read as Unknown |
+| + `Ebook` | `application/epub+zip` matched neither the zip arm (which is exact-match) nor any prefix, so EPUBs read as Unknown |
+| + `Config` | JSON/YAML/TOML/INI split out of `Code` — a deployment's worth of `.yaml` is not what a user means by code, and it is what an operator searches for |
+| + `DiskImage` | ISO / qcow2 / VMDK / VDI, previously Unknown |
+
+**`name` cannot leave `category_for`, and the plan's sequencing for it was
+wrong.** It said: normalise mime with `content_rescan`, then drop the
+extension arms once a count of generic-mime rows reads zero. That count can
+never reach zero. Source code has NO magic bytes — `infer` returns `None`
+for every language and always will — and `mime_guess` has no entry for
+`.go` at all, so such a file is stored `application/octet-stream`
+permanently and the extension is the only signal it will ever have.
+Separately, `mime_guess` maps `.c`, `.cpp` and `.py` to `text/plain`, which
+is true and useless: only the name separates a C file from a shopping list.
+So the extension arms are permanent, narrowed to the cases MIME provably
+cannot answer, and documented as such at the callsite.
+
+**The consequence for `blob-resniff.md` §B is the opposite of what both
+plans said.** Both recorded the per-row `category_order` fan-out as
+TRANSITIONAL, reverting to a per-hash UPDATE once the classifier went
+mime-only. It does not: the classifier stays name-dependent, so the fan-out
+stays per row, permanently.
+
+#### Bugs this exposed, all pre-existing
+
+Typing the set was supposed to be a tidy-up. It found six real defects:
+
+1. **`text/plain` source files were categorised Text, not Code.** The
+   `text/` prefix arm returned before the extension was consulted, so every
+   `.c`, `.cpp` and `.py` in the corpus was Text. Invisible, because Text is
+   a plausible answer for a text file.
+2. **`Installer` was in no `SearchTypeFilter` bucket**, so `.msi` / `.dmg`
+   could not be found by any type filter. The hand-written integer list
+   `[400,500,600,700,1000,1100]` omitted 1200 the same way. Caught by
+   `every_category_is_reachable_from_some_filter` on its first run.
+3. **The `Installer` MIME arm was dead for `.exe`**: it named
+   `application/x-msdownload`, but `infer` emits
+   `application/vnd.microsoft.portable-executable`. Verified against real
+   magic bytes rather than assumed.
+4. **`minimalPhotoItem` set `category: 'image'`** — lowercase, so it never
+   matched `typeLabel`'s map and the Type cell rendered the raw key. A test
+   pinned the wrong value.
+5. **Four group-by definitions used `item.category ?? 'other'`** — `'other'`
+   was never a category, so `typeLabel` passed it through and the group
+   header read a literal lowercase "other".
+6. **`.txt` was a word-processor document** when its mime was unrecognised
+   but Text when it was `text/plain` — the same file categorised two ways
+   depending on the client's Content-Type.
+
+#### Drift guards
+
+Five tests, because the mapping now lives in three places (variant list,
+`order_of`, `categories_for_filter`) and the wire key in two (`as_str` and
+serde):
+
+* `the_variant_list_is_complete` — `order_of` is an exhaustive match so a new
+  variant breaks the build there, but it would NOT break the test-local `ALL`
+  list that every other guard iterates. The count pins it.
+* `as_str_matches_the_serialised_key` and `the_wire_key_round_trips` — two
+  hand-written copies of the same wire key, with `Pdf`/`"PDF"` the likeliest
+  casualty since it is the one variant whose key is not its Rust name.
+* `every_category_has_its_own_order` — a shared integer would silently merge
+  two categories in the Type sort AND make the filter return the other one's
+  rows.
+* `every_category_is_reachable_from_some_filter` — a category in no bucket is
+  unfindable by type. This is the one that found defect 2.
+
+On the SPA side `typeLabel` is `Record<ResourceCategory, string>`, so a new
+server category fails the type-check rather than rendering its raw English
+key. Group-by keys arrive as plain `string`, so `typeLabelOf` narrows at
+runtime and falls back to the localised Unknown label — a cast there would
+have re-opened the raw-key hole the union just closed.
+
+#### Not done
+
+* `category_order` could now move to a content-keyed table (the design noted
+  this unlocks with mime-only). It does NOT unlock, per the name-dependence
+  above.
+* A dedicated `SearchTypeFilter` option for packages / executables /
+  executables-vs-archives. They share the `Archive` bucket, which is a
+  compromise: a `.deb` is a package and a `.exe` is not an archive. The
+  alternative was leaving them unfindable.
+* `Font` and `Unknown` exist as filter values but are not offered in the SPA
+  picker — the pattern the design already set for `Unknown`.

@@ -1,3 +1,4 @@
+use crate::application::dtos::display_helpers::ResourceCategory;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
@@ -55,7 +56,7 @@ pub struct RecentItemDto {
     // ── Pre-computed display field ──
     /// Content category — a stable machine key, not display text (e.g.
     /// "Image", "Folder"). See `FileDto::category`.
-    pub category: String,
+    pub category: ResourceCategory,
 }
 
 impl RecentItemDto {
@@ -63,14 +64,14 @@ impl RecentItemDto {
     /// Call this after constructing from the SQL row.
     pub fn with_display_fields(mut self) -> Self {
         if matches!(self.item_type, ItemKind::Folder) {
-            self.category = "Folder".to_string();
+            self.category = ResourceCategory::Folder;
         } else {
             let name = self.item_name.as_deref().unwrap_or("");
             let mime = self
                 .item_mime_type
                 .as_deref()
                 .unwrap_or("application/octet-stream");
-            self.category = category_for(name, mime).to_string();
+            self.category = category_for(name, mime);
         }
         self
     }

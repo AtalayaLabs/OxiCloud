@@ -2463,6 +2463,7 @@ pub fn format_oc_id_into(out: &mut String, id: i64, svc: Option<&Arc<NextcloudFi
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::dtos::display_helpers::ResourceCategory;
 
     // ── nc_to_internal_path ──
     //
@@ -2486,7 +2487,7 @@ mod tests {
             created_at: crate::application::dtos::timestamp_helpers::epoch_zero(),
             modified_at: crate::application::dtos::timestamp_helpers::epoch_zero(),
             tree_modified_at: crate::application::dtos::timestamp_helpers::epoch_zero(),
-            category: std::sync::Arc::from("Folder"),
+            category: ResourceCategory::Folder,
             etag: String::new(),
             // §14 provenance not relevant to path-mapper tests.
             created_by: None,

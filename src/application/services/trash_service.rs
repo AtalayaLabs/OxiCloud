@@ -3,7 +3,7 @@ use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
 use crate::application::dtos::cursor::PageCursor;
-use crate::application::dtos::display_helpers::{category_for, intern_display, intern_mime};
+use crate::application::dtos::display_helpers::{ResourceCategory, category_for, intern_mime};
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::FolderDto;
 use crate::application::dtos::grant_dto::{ResourceContentDto, ResourceTypeDto};
@@ -128,10 +128,10 @@ impl TrashService {
 
         // Determine the display field based on item type
         let category = match item.item_type() {
-            TrashedItemType::Folder => "Folder".to_string(),
+            TrashedItemType::Folder => ResourceCategory::Folder,
             // Empty MIME type, so the classifier falls through to the
             // extension arms — trash rows carry no stored mime.
-            TrashedItemType::File => category_for(item.name(), "").to_string(),
+            TrashedItemType::File => category_for(item.name(), ""),
         };
 
         // Move the owned Strings out of the consumed item — the getter
@@ -963,7 +963,7 @@ fn row_to_item_dto(row: TrashResourceRow) -> TrashResourceItemDto {
             // folders are never reachable over DAV, so the row's own mtime
             // stands in rather than a claim about descendants.
             tree_modified_at: row.modified_at,
-            category: intern_display("Folder"),
+            category: ResourceCategory::Folder,
             created_by: row.created_by,
             updated_by: row.updated_by,
             is_favorite: row.is_favorite,
@@ -988,7 +988,7 @@ fn row_to_item_dto(row: TrashResourceRow) -> TrashResourceItemDto {
         let etag = File::etag_for_listing(row.blob_hash.as_deref(), row.modified_at);
         let content_hash = row.blob_hash.unwrap_or_default();
         // Compute before the literal moves `row.name` out.
-        let category = intern_display(category_for(&row.name, mime));
+        let category = category_for(&row.name, mime);
         let dto = FileDto {
             id: row.resource_id.to_string(),
             name: row.name,

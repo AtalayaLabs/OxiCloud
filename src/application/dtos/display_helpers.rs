@@ -30,6 +30,153 @@ use std::sync::{Arc, LazyLock};
 
 use crate::application::dtos::search_dto::SearchTypeFilter;
 
+/// The resource categories the server classifies into — the fine set.
+///
+/// `SearchTypeFilter` is the COARSE view of this, and the two are
+/// deliberately separate: the filter's `Document` spans Pdf, Document,
+/// Spreadsheet, Presentation, Markdown and Text, so collapsing them would
+/// either coarsen the Type column (users lose "Spreadsheet" vs "PDF") or
+/// inflate the picker to fourteen options. What IS unified is the
+/// relationship — `category_orders_for_filter` maps coarse to fine
+/// *categories*, so the sort integers appear in exactly one place
+/// ([`category_order_for`]).
+///
+/// On the wire this is a machine key, never display text: the SPA's
+/// `typeLabel` maps it to a localised string. Rendering it raw is the i18n
+/// bug that step 1 of `retire-precomputed-display-fields.md` fixed.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, utoipa::ToSchema,
+)]
+pub enum ResourceCategory {
+    Image,
+    Video,
+    Audio,
+    #[serde(rename = "PDF")]
+    Pdf,
+    /// Word-processor documents — `.doc`, `.docx`, `.odt`, `.rtf`.
+    ///
+    /// NOT named `Document`, deliberately. `SearchTypeFilter::Document` is
+    /// the COARSE bucket that spans this plus Pdf, Spreadsheet,
+    /// Presentation, Markdown and Text — one word for two different sets
+    /// is how a reader ends up believing the filter returns only these.
+    /// `TextDocument` was considered and rejected: `Text` already exists
+    /// for plain text, and most desktops call a `.txt` a "text document".
+    WordProcessor,
+    Spreadsheet,
+    Presentation,
+    Archive,
+    Code,
+    Markdown,
+    Text,
+    /// Distributable packages — `.deb`, `.rpm`, `.dmg`, `.msi`, `.pkg`.
+    ///
+    /// Renamed from `Installer` once `.exe` moved to `Executable`: what is
+    /// left really is the package formats, and all of them are separable
+    /// by content (`.msi` is OLE2, `.deb` is an `ar` archive, `.rpm` and
+    /// `.dmg` carry their own signatures). They are deliberately NOT
+    /// `Archive`, even though several are archives underneath — a user
+    /// extracts an archive and installs a package.
+    Package,
+    /// Configuration and structured-data files — JSON, YAML, TOML, INI.
+    ///
+    /// Split out of `Code` because a deployment's worth of `.yaml` is not
+    /// what someone means by "code", and these are the files an operator
+    /// actually goes looking for. The arms must sit BEFORE the `text/x-`
+    /// prefix: `mime_guess` maps `.yaml` to `text/x-yaml` and `.toml` to
+    /// `text/x-toml`, both of which that prefix would otherwise claim.
+    Config,
+    /// Disk and VM images.
+    ///
+    /// ⚠ Mostly NOT content-detectable, and the reason is structural: an
+    /// ISO's `CD001` marker lives at offset 32769, far past the 8 KiB head
+    /// `content_rescan` reads, so `infer` returns None and `mime_guess`
+    /// offers only `application/octet-stream`. `.iso` and `.img` are
+    /// therefore extension-only, permanently. qcow2, VMDK and VDI do have
+    /// real signatures and are matched by MIME.
+    DiskImage,
+    /// Fonts.
+    ///
+    /// Both naming families are matched, and that is not belt-and-braces:
+    /// `infer` returns the LEGACY `application/font-woff` /
+    /// `application/font-sfnt` for real font bytes, while `mime_guess`
+    /// returns the modern `font/ttf` and `font/woff2` for the same files
+    /// by extension. Matching only `font/` would miss everything the
+    /// sniffer produces — verified against real signatures.
+    Font,
+    /// Ebooks — EPUB, MOBI, AZW3, FB2.
+    ///
+    /// EPUB is a ZIP whose first stored entry is `mimetype`, the same
+    /// trick ODF uses, so `infer` identifies it as `application/epub+zip`
+    /// rather than a bare zip. AZW3 and FB2 have no signature and arrive
+    /// by extension only.
+    Ebook,
+    /// Compiled binaries and bytecode — PE, Mach-O, WebAssembly, Java
+    /// class files, shared libraries.
+    ///
+    /// Distinct from `Installer`: a `.deb` or `.msi` is a package you
+    /// install, a `.so` or `.dll` is neither. They were conflated, with
+    /// `.exe` filed as an installer.
+    ///
+    /// NOT named `Application`, deliberately — `application/` is the MIME
+    /// top-level type for PDF, zip and most formats in this file, so the
+    /// name would mean two things at once, which is the problem
+    /// `WordProcessor` was renamed to avoid. The user-facing label is a
+    /// locale string and may well read "Applications".
+    ///
+    /// ⚠ ELF is NOT detectable here: `infer` carries no ELF signature
+    /// (verified), `.so` guesses `application/octet-stream` and `.elf` /
+    /// `.dylib` guess nothing at all. Linux binaries therefore classify as
+    /// `Unknown` and no rescan can improve them — the gap is in the
+    /// sniffer, not in this table.
+    Executable,
+    /// Not a file category — the constant every folder DTO carries. It was
+    /// the bare string `"Folder"` in thirteen places, where a typo in any
+    /// one of them was silent.
+    Folder,
+    /// Genuinely unidentifiable content.
+    ///
+    /// This variant is the point of typing the set. Both catch-alls used to
+    /// return `Document`, so the Type column called an unidentifiable blob
+    /// a "Document" — a confident lie — and `category_order_for`'s
+    /// `_ => 9999` arm was UNREACHABLE, which is why `type=unknown` in
+    /// search found nothing but rows whose column still held the DEFAULT.
+    /// `Unknown` over `Other`: less friendly as a label, but true.
+    Unknown,
+}
+
+impl ResourceCategory {
+    /// The stable machine key, identical to the serialised form.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Image => "Image",
+            Self::Video => "Video",
+            Self::Audio => "Audio",
+            Self::Pdf => "PDF",
+            Self::WordProcessor => "WordProcessor",
+            Self::Spreadsheet => "Spreadsheet",
+            Self::Presentation => "Presentation",
+            Self::Archive => "Archive",
+            Self::Code => "Code",
+            Self::Markdown => "Markdown",
+            Self::Text => "Text",
+            Self::Package => "Package",
+            Self::Config => "Config",
+            Self::DiskImage => "DiskImage",
+            Self::Font => "Font",
+            Self::Ebook => "Ebook",
+            Self::Executable => "Executable",
+            Self::Folder => "Folder",
+            Self::Unknown => "Unknown",
+        }
+    }
+}
+
+impl std::fmt::Display for ResourceCategory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 // ─── Arc<str> interning for closed-set display values ────────────────
 //
 // `FileDto` / `FolderDto` store `category` and `mime_type` as `Arc<str>` so
@@ -39,43 +186,19 @@ use crate::application::dtos::search_dto::SearchTypeFilter;
 // conversion into a HashMap lookup + refcount bump. (It paid 3-4 before the
 // icon and size fields left the wire.)
 
-/// Every `&'static str` that [`category_for`] can return, plus the
-/// folder-DTO constant.
-///
-/// Keep this table in sync when adding a value to those functions — a
-/// missing entry is not a bug (callers fall back to `Arc::from`, same
-/// bytes, one extra allocation), just a lost optimization.
-static DISPLAY_INTERN: LazyLock<HashMap<&'static str, Arc<str>>> = LazyLock::new(|| {
-    const CLOSED_SET: &[&str] = &[
-        // category_for
-        "PDF",
-        "Document",
-        "Spreadsheet",
-        "Presentation",
-        "Archive",
-        "Code",
-        "Installer",
-        "Image",
-        "Video",
-        "Audio",
-        "Markdown",
-        "Text",
-        // FolderDto constant
-        "Folder",
-    ];
-    CLOSED_SET.iter().map(|s| (*s, Arc::from(*s))).collect()
-});
-
-/// Returns a shared `Arc<str>` for a closed-set display value (category, or
-/// the folder constant). Lookup + refcount bump instead of alloc + copy;
-/// unknown values (future additions not yet in the table) fall back to
-/// `Arc::from` with identical bytes.
-pub fn intern_display(s: &'static str) -> Arc<str> {
-    DISPLAY_INTERN
-        .get(s)
-        .cloned()
-        .unwrap_or_else(|| Arc::from(s))
-}
+// `DISPLAY_INTERN` / `intern_display` lived here. They existed so the
+// `category` DTO field — a small closed set repeated on every row — cost a
+// HashMap lookup and a refcount bump instead of an allocation and a copy.
+//
+// Typing the set as `ResourceCategory` removed the problem rather than
+// optimising it: the enum is `Copy` and one byte, so there is no allocation
+// left to avoid and no table to keep in sync. The comment above that asked
+// readers to "keep this table in sync when adding a value" is gone with
+// it — a missed entry used to be a silently lost optimization, and now the
+// compiler decides.
+//
+// `MIME_INTERN` below stays: `mime_type` is an open set of arbitrary
+// strings, so it still benefits.
 
 /// The MIME types that dominate real storage rows. Exotic types fall back
 /// to a per-row `Arc::from` — correctness is unaffected, only the alloc is.
@@ -194,65 +317,100 @@ fn lower_ext_into<'b>(ext: &str, buf: &'b mut [u8; MAX_CLASSIFIED_EXT]) -> Optio
 // ─── Category label ──────────────────────────────────────────────────
 
 /// Returns a human-readable category label, considering MIME + extension.
-pub fn category_for(name: &str, mime: &str) -> &'static str {
+pub fn category_for(name: &str, mime: &str) -> ResourceCategory {
     let mut buf = [0u8; MAX_CLASSIFIED_EXT];
     let ext = ext_of(name).and_then(|e| lower_ext_into(e, &mut buf));
     category_with_ext(mime, ext)
 }
 
-fn category_with_ext(mime: &str, ext: Option<&str>) -> &'static str {
+fn category_with_ext(mime: &str, ext: Option<&str>) -> ResourceCategory {
     // 1. Specific MIME matches
     match mime {
-        "application/pdf" => return "PDF",
+        "application/pdf" => return ResourceCategory::Pdf,
         "application/msword"
         | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        | "application/vnd.oasis.opendocument.text" => return "Document",
+        | "application/vnd.oasis.opendocument.text" => return ResourceCategory::WordProcessor,
         "application/vnd.ms-excel"
         | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         | "application/vnd.oasis.opendocument.spreadsheet"
-        | "text/csv" => return "Spreadsheet",
+        | "text/csv" => return ResourceCategory::Spreadsheet,
         "application/vnd.ms-powerpoint"
         | "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-        | "application/vnd.oasis.opendocument.presentation" => return "Presentation",
+        | "application/vnd.oasis.opendocument.presentation" => {
+            return ResourceCategory::Presentation;
+        }
         "application/zip"
         | "application/x-rar-compressed"
         | "application/vnd.rar"
         | "application/x-7z-compressed"
         | "application/gzip"
-        | "application/x-tar" => return "Archive",
-        "application/json"
-        | "application/javascript"
+        | "application/x-tar" => return ResourceCategory::Archive,
+        // Config FIRST: `text/x-yaml` and `text/x-toml` would otherwise be
+        // swallowed by the `text/x-` prefix arm below, and
+        // `application/json` by the Code arm.
+        "application/json" | "text/x-yaml" | "text/x-toml" | "application/toml" => {
+            return ResourceCategory::Config;
+        }
+        "application/x-qemu-disk"
+        | "application/x-virtualbox-vmdk"
+        | "application/x-virtualbox-vdi"
+        | "application/x-iso9660-image" => return ResourceCategory::DiskImage,
+        "application/javascript"
         | "application/typescript"
         | "application/xml"
         | "application/sql"
         | "application/x-sh"
-        | "application/x-shellscript" => return "Code",
+        | "application/x-shellscript" => return ResourceCategory::Code,
+        "application/epub+zip" | "application/x-mobipocket-ebook" => {
+            return ResourceCategory::Ebook;
+        }
+        // `infer` emits the legacy `application/font-*` names; `mime_guess`
+        // emits the modern `font/*` ones (handled by the prefix arm
+        // below). Both reach real files, so both are matched.
+        "application/font-woff" | "application/font-sfnt" | "application/vnd.ms-fontobject" => {
+            return ResourceCategory::Font;
+        }
         "application/x-apple-diskimage"
-        | "application/x-ms-dos-executable"
-        | "application/x-msdownload"
-        | "application/x-msi" => return "Installer",
+        | "application/x-msi"
+        | "application/vnd.debian.binary-package"
+        | "application/x-rpm" => return ResourceCategory::Package,
+        // These are the strings `infer` actually produces, verified
+        // against real magic bytes. The old list named
+        // `application/x-ms-dos-executable` and `application/x-msdownload`
+        // for `.exe` — neither is what `infer` returns, so that arm was
+        // dead and a sniffed executable only reached a category via its
+        // extension.
+        "application/vnd.microsoft.portable-executable"
+        | "application/x-mach-binary"
+        | "application/wasm"
+        | "application/java"
+        | "application/x-executable"
+        | "application/x-sharedlib"
+        | "application/x-msdownload" => return ResourceCategory::Executable,
         _ => {}
     }
 
     // 2. MIME prefix
-    if mime.starts_with("image/") {
-        return "Image";
+    if mime.starts_with("font/") {
+        return ResourceCategory::Font;
+    } else if mime.starts_with("image/") {
+        return ResourceCategory::Image;
     } else if mime.starts_with("video/") {
-        return "Video";
+        return ResourceCategory::Video;
     } else if mime.starts_with("audio/") {
-        return "Audio";
+        return ResourceCategory::Audio;
     } else if mime.starts_with("text/x-") || mime.contains("script") || mime.contains("javascript")
     {
-        return "Code";
+        return ResourceCategory::Code;
     } else if mime.starts_with("text/markdown") {
-        return "Markdown";
+        return ResourceCategory::Markdown;
     } else if mime.starts_with("text/html") || mime.starts_with("text/css") {
-        return "Code";
+        return ResourceCategory::Code;
     }
 
     // 3. The extension, for the cases MIME provably cannot answer.
     //
-    // ⚠ `text/plain` used to return "Text" in step 2, ABOVE this point,
+    // ⚠ `text/plain` used to return ResourceCategory::Text in step 2, ABOVE this point,
     // which meant the extension was never consulted for it. `mime_guess`
     // maps `.c`, `.cpp` and `.py` to `text/plain` — so every C, C++ and
     // Python file was categorised Text rather than Code, invisibly,
@@ -266,33 +424,66 @@ fn category_with_ext(mime: &str, ext: Option<&str>) -> &'static str {
     // list. The extension is the only signal, permanently.
     if let Some(ext) = ext {
         return match ext {
-            "pdf" => "PDF",
-            "doc" | "docx" | "odt" | "rtf" | "txt" => "Document",
-            "xls" | "xlsx" | "ods" | "csv" => "Spreadsheet",
-            "ppt" | "pptx" | "odp" | "key" => "Presentation",
+            "pdf" => ResourceCategory::Pdf,
+            "doc" | "docx" | "odt" | "rtf" => ResourceCategory::WordProcessor,
+            // `.txt` moved out of the word-processor bucket: a
+            // `text/plain` .txt already classified as Text, so the same
+            // file got two different categories depending on whether its
+            // stored mime happened to be known.
+            "txt" | "text" | "log" => ResourceCategory::Text,
+            "xls" | "xlsx" | "ods" | "csv" => ResourceCategory::Spreadsheet,
+            "ppt" | "pptx" | "odp" | "key" => ResourceCategory::Presentation,
             "jpg" | "jpeg" | "png" | "gif" | "bmp" | "svg" | "webp" | "ico" | "tiff" | "heic"
-            | "avif" => "Image",
-            "mp4" | "avi" | "mkv" | "mov" | "wmv" | "flv" | "webm" | "m4v" => "Video",
-            "mp3" | "wav" | "ogg" | "flac" | "aac" | "wma" | "m4a" | "opus" => "Audio",
-            "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" => "Archive",
-            "exe" | "msi" | "dmg" | "deb" | "rpm" | "appimage" => "Installer",
+            | "avif" => ResourceCategory::Image,
+            "mp4" | "avi" | "mkv" | "mov" | "wmv" | "flv" | "webm" | "m4v" => {
+                ResourceCategory::Video
+            }
+            "mp3" | "wav" | "ogg" | "flac" | "aac" | "wma" | "m4a" | "opus" => {
+                ResourceCategory::Audio
+            }
+            "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" => ResourceCategory::Archive,
+            // The Installer/Executable split is a PACKAGING convention,
+            // not a content distinction, and `.appimage` is the case that
+            // proves it: an AppImage is an ELF binary with a squashfs
+            // appended — byte-for-byte the same magic as any other ELF. So
+            // it sits with the executables, since running it is what you
+            // do, while the formats that genuinely are packages keep their
+            // own bucket. Those are separable by content (`.msi` is OLE2,
+            // `.deb` is an `ar` archive, `.rpm` and `.dmg` have their own
+            // signatures); AppImage is not, which is why it moved here.
+            "msi" | "dmg" | "deb" | "rpm" | "pkg" => ResourceCategory::Package,
+            "ttf" | "otf" | "woff" | "woff2" | "eot" | "ttc" => ResourceCategory::Font,
+            // `.iso` / `.img` can only ever be classified here — see the
+            // variant's note on the 32769-byte offset.
+            "iso" | "img" | "qcow2" | "vmdk" | "vdi" | "vhd" | "vhdx" => {
+                ResourceCategory::DiskImage
+            }
+            "json" | "yaml" | "yml" | "toml" | "ini" | "cfg" | "conf" | "env" | "properties" => {
+                ResourceCategory::Config
+            }
+            "epub" | "mobi" | "azw" | "azw3" | "fb2" | "cbz" | "cbr" => ResourceCategory::Ebook,
+            "exe" | "dll" | "so" | "dylib" | "elf" | "appimage" | "wasm" | "class" | "jar"
+            | "o" => ResourceCategory::Executable,
             "js" | "jsx" | "ts" | "tsx" | "py" | "rs" | "go" | "java" | "c" | "h" | "cpp"
             | "hpp" | "cc" | "cs" | "rb" | "php" | "swift" | "kt" | "scala" | "r" | "lua"
-            | "pl" | "html" | "htm" | "css" | "scss" | "json" | "xml" | "yaml" | "yml" | "toml"
-            | "sql" | "sh" | "bash" | "bat" | "ps1" | "vue" | "svelte" => "Code",
-            "md" | "markdown" | "rst" => "Markdown",
+            | "pl" | "html" | "htm" | "css" | "scss" | "xml" | "sql" | "sh" | "bash" | "bat"
+            | "ps1" | "vue" | "svelte" => ResourceCategory::Code,
+            "md" | "markdown" | "rst" => ResourceCategory::Markdown,
             // `text/plain` with an extension we do not classify is still
             // text, and must not become "Document".
-            _ if mime.starts_with("text/") => "Text",
-            _ => "Document",
+            _ if mime.starts_with("text/") => ResourceCategory::Text,
+            // UNKNOWN, not Document. An unidentifiable blob used to be
+            // labelled "Document" in the Type column, which is a
+            // confident lie, and it made the 9999 sort arm unreachable.
+            _ => ResourceCategory::Unknown,
         };
     }
 
     if mime.starts_with("text/") {
-        return "Text";
+        return ResourceCategory::Text;
     }
 
-    "Document"
+    ResourceCategory::Unknown
 }
 
 /// Returns the sort order for a file category, stored as `category_order` in `storage.files`.
@@ -303,25 +494,39 @@ fn category_with_ext(mime: &str, ext: Option<&str>) -> &'static str {
 ///
 /// This function delegates to [`category_for`] so the two are always in sync.
 pub fn category_order_for(name: &str, mime: &str) -> i16 {
-    match category_for(name, mime) {
-        "Image" => 100,
-        "Video" => 200,
-        "Audio" => 300,
-        "PDF" => 400,
-        "Document" => 500,
-        "Spreadsheet" => 600,
-        "Presentation" => 700,
-        "Archive" => 800,
-        "Code" => 900,
-        "Markdown" => 1000,
-        "Text" => 1100,
-        "Installer" => 1200,
-        _ => 9999, // Other / unknown
+    order_of(category_for(name, mime))
+}
+
+/// The sort integers, in the ONE place they are written.
+///
+/// Exhaustive on purpose — no `_` arm. A new `ResourceCategory` variant
+/// must fail to compile here rather than silently landing in a catch-all,
+/// which is how `Unknown` stayed unreachable for so long.
+pub fn order_of(category: ResourceCategory) -> i16 {
+    use ResourceCategory as C;
+    match category {
+        C::Folder => 0,
+        C::Image => 100,
+        C::Video => 200,
+        C::Audio => 300,
+        C::Pdf => 400,
+        C::WordProcessor => 500,
+        C::Spreadsheet => 600,
+        C::Presentation => 700,
+        C::Archive => 800,
+        C::Code => 900,
+        C::Markdown => 1000,
+        C::Text => 1100,
+        C::Package => 1200,
+        C::Config => 950,
+        C::Font => 1250,
+        C::DiskImage => 1350,
+        C::Ebook => 450,
+        C::Executable => 1300,
+        C::Unknown => 9999,
     }
 }
 
-/// The `category_order` values a coarse UI type filter maps to.
-///
 /// Lives here, immediately below [`category_order_for`], because the two MUST
 /// agree: this function answers "which stored values count as `documents`"
 /// and that one decides what gets stored. Split them across files and they
@@ -347,28 +552,69 @@ pub fn category_order_for(name: &str, mime: &str) -> i16 {
 /// catch-all, and that arm would silently return "no categories" for the new
 /// variant — an empty result page with no error, the exact failure mode §7
 /// spent seven commits removing.
-pub fn category_orders_for_filter(filter: SearchTypeFilter) -> &'static [i16] {
+pub fn categories_for_filter(filter: SearchTypeFilter) -> &'static [ResourceCategory] {
+    use ResourceCategory as C;
     use SearchTypeFilter as F;
     match filter {
-        F::Image => &[100],
-        F::Video => &[200],
-        F::Audio => &[300],
+        F::Image => &[C::Image],
+        F::Video => &[C::Video],
+        F::Audio => &[C::Audio],
         // The UI's single "Documents" affordance is coarser than the DB's
         // grouping on purpose: a user picking Documents wants the PDF, the
         // spreadsheet and the README, not three separate filters.
-        F::Document => &[400, 500, 600, 700, 1000, 1100],
-        F::Archive => &[800],
-        F::Code => &[900],
-        // Unknown/undetected mime. Surfaced because an operator chasing a
+        F::Document => &[
+            C::Pdf,
+            C::WordProcessor,
+            C::Spreadsheet,
+            C::Presentation,
+            C::Markdown,
+            C::Text,
+            // An ebook is something you read, so it belongs with the
+            // documents rather than needing its own picker option.
+            C::Ebook,
+        ],
+        // Installer rides with Archive, and the grouping is a compromise
+        // rather than a truth: a `.deb` is a package, a `.exe` is not an
+        // archive at all. It is here because the alternative is what
+        // shipped before — `Installer` in NO bucket, so a `.msi` could not
+        // be found by any type filter. Found by
+        // `every_category_is_reachable_from_some_filter` on its first run;
+        // the old hand-written integer list `[400,500,600,700,1000,1100]`
+        // omitted 1200 the same way. A dedicated picker option would be
+        // better, and needs a `SearchTypeFilter` variant plus SPA work.
+        F::Archive => &[C::Archive, C::Package, C::Executable, C::DiskImage],
+        // Server-side only, exactly like `Unknown`: it exists so a
+        // font library IS filterable, without adding a niche option
+        // to the SPA picker until someone asks.
+        F::Font => &[C::Font],
+        // Config rides with Code: someone filtering for code wants
+        // the repo yaml and toml alongside its sources.
+        F::Code => &[C::Code, C::Config],
+        // Unidentifiable content. Surfaced because an operator chasing
         // broken type detection needs a way to list these; left out of the
         // SPA's own picker until someone asks for it.
-        F::Other => &[9999],
+        F::Unknown => &[C::Unknown],
         // Neither maps to a `storage.files` value — they select which UNION
         // branches run instead. Named rather than left to a catch-all so the
         // reader sees that the omission is deliberate, and so a new variant
         // cannot hide in this arm.
         F::All | F::Folder => &[],
     }
+}
+
+/// The same mapping, as the integers the SQL filter binds.
+///
+/// Derived from [`categories_for_filter`] rather than written out, so the
+/// coarse-to-fine relationship lives in ONE place and the integers in
+/// another ([`order_of`]). Before this, the filter listed
+/// `[400,500,600,700,1000,1100]` — a second encoding of a mapping that
+/// already existed, free to drift from it.
+pub fn category_orders_for_filter(filter: SearchTypeFilter) -> Vec<i16> {
+    categories_for_filter(filter)
+        .iter()
+        .copied()
+        .map(order_of)
+        .collect()
 }
 
 #[cfg(test)]
@@ -394,74 +640,226 @@ mod tests {
     /// This also pins why the name cannot leave the signature: source
     /// code has no magic bytes, so `infer` is silent for every language
     /// and `content_rescan` can never improve these rows.
+    /// Every variant, so the drift guards below cannot silently skip one.
+    ///
+    /// Hand-written rather than derived: there is no `strum`-style iterator
+    /// here, so the list is the one thing a new variant does NOT update
+    /// automatically. The length assertion is what forces the issue — add a
+    /// variant and this fails until you list it.
+    const ALL: &[ResourceCategory] = &[
+        ResourceCategory::Image,
+        ResourceCategory::Video,
+        ResourceCategory::Audio,
+        ResourceCategory::Pdf,
+        ResourceCategory::WordProcessor,
+        ResourceCategory::Spreadsheet,
+        ResourceCategory::Presentation,
+        ResourceCategory::Archive,
+        ResourceCategory::Code,
+        ResourceCategory::Markdown,
+        ResourceCategory::Text,
+        ResourceCategory::Package,
+        ResourceCategory::Config,
+        ResourceCategory::DiskImage,
+        ResourceCategory::Font,
+        ResourceCategory::Ebook,
+        ResourceCategory::Executable,
+        ResourceCategory::Folder,
+        ResourceCategory::Unknown,
+    ];
+
+    #[test]
+    fn the_variant_list_is_complete() {
+        // `order_of` is an exhaustive match, so a new variant breaks the
+        // build there — but it would NOT break `ALL`, and every guard
+        // below iterates `ALL`. Pin the count so it does.
+        assert_eq!(ALL.len(), 19, "a variant was added without updating ALL");
+    }
+
+    /// `as_str` and the serde representation are two hand-written copies of
+    /// the same wire key, and the serialised form is what the SPA switches
+    /// on. If they drift, the server sorts by one name and the client reads
+    /// another — with `Pdf`/`"PDF"` the likeliest casualty, since it is the
+    /// one variant whose key is not its Rust name.
+    #[test]
+    fn as_str_matches_the_serialised_key() {
+        for &c in ALL {
+            let json = serde_json::to_string(&c).expect("serialise");
+            let expected = format!("\"{}\"", c.as_str());
+            assert_eq!(json, expected, "{c:?}: as_str and serde disagree");
+        }
+    }
+
+    /// The round trip, so `Deserialize` cannot drift from `Serialize`
+    /// either — DTOs on the request side parse this.
+    #[test]
+    fn the_wire_key_round_trips() {
+        for &c in ALL {
+            let json = serde_json::to_string(&c).expect("serialise");
+            let back: ResourceCategory = serde_json::from_str(&json).expect("deserialise");
+            assert_eq!(back, c);
+        }
+    }
+
+    /// Distinct orders, and the documented sparse-hundreds shape.
+    ///
+    /// Two categories sharing an integer would silently merge in the "Type"
+    /// sort AND make the search filter return the other one's rows — the
+    /// column is what the filter matches on, not the category.
+    #[test]
+    fn every_category_has_its_own_order() {
+        let mut seen: Vec<(i16, ResourceCategory)> = Vec::new();
+        for &c in ALL {
+            let o = order_of(c);
+            if let Some((_, other)) = seen.iter().find(|(x, _)| *x == o) {
+                panic!("{c:?} and {other:?} share order {o}");
+            }
+            seen.push((o, c));
+        }
+        // Folders sort first and files never collide with them; the
+        // migration's backfill and `copy_folder_tree` both rely on 0 being
+        // the folder sentinel.
+        assert_eq!(order_of(ResourceCategory::Folder), 0);
+        // 1..=99 are reserved for future non-file resource kinds — see
+        // docs/architecture/resource-listing.md.
+        for &c in ALL {
+            let o = order_of(c);
+            assert!(
+                o == 0 || o >= 100,
+                "{c:?} has order {o}, inside the reserved 1..=99 band",
+            );
+        }
+    }
+
+    /// The coarse filter must reach every fine category, or a file becomes
+    /// unfindable by type.
+    ///
+    /// `Folder` is excluded because `SearchTypeFilter::Folder` selects a
+    /// different UNION branch rather than a `category_order` value — see
+    /// `categories_for_filter`'s last arm.
+    #[test]
+    fn every_category_is_reachable_from_some_filter() {
+        use SearchTypeFilter as F;
+        const FILTERS: &[F] = &[
+            F::All,
+            F::Folder,
+            F::Image,
+            F::Video,
+            F::Audio,
+            F::Document,
+            F::Archive,
+            F::Code,
+            F::Font,
+            F::Unknown,
+        ];
+        for &c in ALL {
+            if c == ResourceCategory::Folder {
+                continue;
+            }
+            let reachable = FILTERS
+                .iter()
+                .any(|&f| categories_for_filter(f).contains(&c));
+            assert!(
+                reachable,
+                "{c:?} is in no SearchTypeFilter bucket — files of this \
+                 category cannot be found by type",
+            );
+        }
+    }
+
+    /// The integers the SQL binds are derived from the category mapping,
+    /// not written twice. This pins that they agree, which is the drift the
+    /// old hand-written `[400,500,600,700,1000,1100]` invited.
+    #[test]
+    fn filter_orders_are_derived_from_the_categories() {
+        use SearchTypeFilter as F;
+        for &f in &[
+            F::Image,
+            F::Video,
+            F::Audio,
+            F::Document,
+            F::Archive,
+            F::Code,
+            F::Unknown,
+        ] {
+            let from_categories: Vec<i16> = categories_for_filter(f)
+                .iter()
+                .copied()
+                .map(order_of)
+                .collect();
+            assert_eq!(category_orders_for_filter(f), from_categories, "{f:?}");
+        }
+        // The two that map to no column value at all.
+        assert!(category_orders_for_filter(F::All).is_empty());
+        assert!(category_orders_for_filter(F::Folder).is_empty());
+    }
+
     #[test]
     fn text_plain_source_files_are_code() {
         for name in ["a.c", "x.cpp", "t.py", "h.h", "m.cc"] {
             assert_eq!(
                 category_for(name, "text/plain"),
-                "Code",
+                ResourceCategory::Code,
                 "{name} stored as text/plain must classify as Code",
             );
         }
 
         // Still Text when the extension says nothing useful, and when
-        // there is no extension at all.
-        assert_eq!(category_for("notes.txt", "text/plain"), "Document");
-        assert_eq!(category_for("README", "text/plain"), "Text");
-        assert_eq!(category_for("data.weird", "text/plain"), "Text");
+        // there is no extension at all. `.txt` is Text rather than a
+        // word-processor document — it used to be the latter, so the same
+        // file was categorised two different ways depending on whether its
+        // stored mime happened to be recognised.
+        assert_eq!(
+            category_for("notes.txt", "text/plain"),
+            ResourceCategory::Text
+        );
+        assert_eq!(category_for("README", "text/plain"), ResourceCategory::Text);
+        assert_eq!(
+            category_for("data.weird", "text/plain"),
+            ResourceCategory::Text
+        );
 
         // Markdown keeps its own bucket rather than collapsing to Code.
-        assert_eq!(category_for("r.rst", "text/plain"), "Markdown");
+        assert_eq!(
+            category_for("r.rst", "text/plain"),
+            ResourceCategory::Markdown
+        );
 
         // A mime that DOES know better still wins — the extension is a
         // fallback, not an override.
-        assert_eq!(category_for("evil.c", "image/png"), "Image");
+        assert_eq!(category_for("evil.c", "image/png"), ResourceCategory::Image);
     }
 
     #[test]
     fn test_category_for() {
         // MIME-based
-        assert_eq!(category_for("", "image/jpeg"), "Image");
-        assert_eq!(category_for("", "video/webm"), "Video");
-        assert_eq!(category_for("", "audio/ogg"), "Audio");
-        assert_eq!(category_for("", "application/pdf"), "PDF");
-        assert_eq!(category_for("", "application/zip"), "Archive");
+        assert_eq!(category_for("", "image/jpeg"), ResourceCategory::Image);
+        assert_eq!(category_for("", "video/webm"), ResourceCategory::Video);
+        assert_eq!(category_for("", "audio/ogg"), ResourceCategory::Audio);
+        assert_eq!(category_for("", "application/pdf"), ResourceCategory::Pdf);
+        assert_eq!(
+            category_for("", "application/zip"),
+            ResourceCategory::Archive
+        );
 
         // Extension-based fallback
-        assert_eq!(category_for("main.rs", "application/octet-stream"), "Code");
+        assert_eq!(
+            category_for("main.rs", "application/octet-stream"),
+            ResourceCategory::Code
+        );
         assert_eq!(
             category_for("photo.jpg", "application/octet-stream"),
-            "Image"
+            ResourceCategory::Image
         );
         assert_eq!(
             category_for("notes.md", "application/octet-stream"),
-            "Markdown"
+            ResourceCategory::Markdown
         );
     }
 
     /// Every value the closed-set display functions can return must hit
     /// the intern table (same bytes, shared allocation) — a miss is only
     /// a lost optimization, but this test keeps the table in sync.
-    #[test]
-    fn test_intern_display_covers_closed_sets_and_shares_storage() {
-        for s in [
-            // The `fas fa-*` glyph classes and the `*-icon` CSS classes were
-            // both here until steps 2 and 4 of
-            // `retire-precomputed-display-fields.md` took `icon_special_class`
-            // and `icon_class` off the wire. `category_for` is the only
-            // closed-set classifier left, so the table is its values plus the
-            // folder constant.
-            "PDF", "Folder", "Document", "Markdown",
-        ] {
-            let a = intern_display(s);
-            let b = intern_display(s);
-            assert_eq!(&*a, s, "interned bytes must be identical");
-            assert!(
-                Arc::ptr_eq(&a, &b),
-                "closed-set value {s:?} must come from the intern table"
-            );
-        }
-    }
 
     #[test]
     fn test_intern_mime_common_hits_table_exotic_falls_back() {

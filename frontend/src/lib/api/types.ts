@@ -12,6 +12,37 @@
 // cycle. Type-only imports are erased entirely, leaving nothing to cycle.
 import type { Grant } from './endpoints/grants';
 
+/** Server-side resource classification — the `ResourceCategory` enum.
+ *
+ * A machine key, never display text: route it through `typeLabel` to get a
+ * localised string. Mirrors `display_helpers::ResourceCategory`, and the
+ * server registers it in the OpenAPI schema, so this union is the wire
+ * contract rather than a convenience.
+ *
+ * `Unknown` is reachable: content the server could not identify used to be
+ * labelled `Document`, which was a confident lie.
+ */
+export type ResourceCategory =
+	| 'Image'
+	| 'Video'
+	| 'Audio'
+	| 'PDF'
+	| 'WordProcessor'
+	| 'Spreadsheet'
+	| 'Presentation'
+	| 'Archive'
+	| 'Code'
+	| 'Markdown'
+	| 'Text'
+	| 'Package'
+	| 'Config'
+	| 'DiskImage'
+	| 'Font'
+	| 'Ebook'
+	| 'Executable'
+	| 'Folder'
+	| 'Unknown';
+
 export type ItemType = 'file' | 'folder';
 
 export interface LightItem {
@@ -31,7 +62,7 @@ import type { FolderDto as FolderItem } from './generated/openapi/types.gen';
 export type { FolderItem };
 
 export interface FileItem {
-	category: string;
+	category: ResourceCategory;
 	/** RFC 3339 UTC timestamp (wire form after the DTO ISO-8601 pivot). */
 	created_at: string;
 	id: string;

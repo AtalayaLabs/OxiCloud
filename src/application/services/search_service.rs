@@ -119,7 +119,10 @@ pub fn search_results_entry_weight(_key: &(Uuid, u64), value: &Arc<SearchResults
             + f.path.len()
             + f.mime_type.len()
             + opt_len(&f.folder_id)
-            + f.category.len()
+            // `category` is NOT counted: it became the `Copy` one-byte
+            // `ResourceCategory` enum, so it owns no heap bytes and is
+            // already inside ROW_OVERHEAD. Counting `as_str().len()` here
+            // would charge the cache for a static string it does not own.
             + f.blob_hash.len()
             + opt_len(&f.snippet)
             + opt_len(&f.match_source);
@@ -1134,6 +1137,7 @@ impl SearchService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::dtos::display_helpers::ResourceCategory;
 
     #[test]
     fn content_relevance_stays_below_name_contains_band() {
@@ -1158,7 +1162,7 @@ mod tests {
             created_at: epoch_zero(),
             modified_at: epoch_to_datetime(modified_at),
             relevance_score: relevance,
-            category: "".into(),
+            category: ResourceCategory::Unknown,
             blob_hash: String::new(),
             snippet: None,
             match_source: None,

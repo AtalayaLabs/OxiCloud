@@ -7,7 +7,7 @@
 	import { page } from '$app/state';
 	import { onMount, untrack } from 'svelte';
 	import { addFavorite, removeFavorite } from '$lib/api/endpoints/favorites';
-	import { dateBucket, typeLabel } from '$lib/utils/resourceBuckets';
+	import { dateBucket, typeLabelOf } from '$lib/utils/resourceBuckets';
 	import { resolveOwnerName } from '$lib/utils/ownerName';
 	import { fileDownloadUrl } from '$lib/api/endpoints/files';
 	import { folderZipUrl } from '$lib/api/endpoints/folders';
@@ -81,8 +81,8 @@
 			key: 'type',
 			label: t('groupby.type', 'Type'),
 			orderBy: 'type',
-			bucketOf: (item) => item.category ?? 'other',
-			labelOf: (k) => typeLabel(k)
+			bucketOf: (item) => item.category ?? 'Unknown',
+			labelOf: (k) => typeLabelOf(k)
 		},
 		{
 			key: 'sharedAt',

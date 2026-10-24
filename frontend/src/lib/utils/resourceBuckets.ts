@@ -12,6 +12,7 @@
  * these helpers already live in a stable home.
  */
 import { t } from '$lib/i18n/index.svelte';
+import type { ResourceCategory } from '$lib/api/types';
 
 /**
  * Coarse "how long ago" bucket for date group-bys (favorited /
@@ -48,22 +49,83 @@ export function sizeBucket(bytes: number | null | undefined): string {
 	return t('sizeBucket.huge', '> 5 GB');
 }
 
-/** Human label for a resource `category` / type group-by bucket. */
-export function typeLabel(category: string): string {
-	const labels: Record<string, string> = {
-		Folder: t('groupby.folders', 'Folders'),
+/** Every `ResourceCategory` the server can send, as a runtime list.
+ *
+ * Needed because a type union does not exist at runtime and group-by
+ * bucket keys arrive as plain strings. `satisfies` ties it to the union,
+ * so a category added server-side fails the type-check here too.
+ */
+const CATEGORIES = [
+	'Image',
+	'Video',
+	'Audio',
+	'PDF',
+	'WordProcessor',
+	'Spreadsheet',
+	'Presentation',
+	'Archive',
+	'Code',
+	'Markdown',
+	'Text',
+	'Package',
+	'Config',
+	'DiskImage',
+	'Font',
+	'Ebook',
+	'Executable',
+	'Folder',
+	'Unknown'
+] as const satisfies readonly ResourceCategory[];
+
+/** Label a group-by bucket key that is only known to be a string.
+ *
+ * The group-by machinery keys buckets by `string` — owner names, date and
+ * size buckets all share that path — so the `type` group-by cannot hand
+ * `typeLabel` a narrowed value. Rather than casting (which would let an
+ * unexpected value render as a raw English key again, the exact bug the
+ * typed union closed), this narrows at runtime and falls back to the
+ * localised Unknown label.
+ */
+export function typeLabelOf(key: string): string {
+	return (CATEGORIES as readonly string[]).includes(key)
+		? typeLabel(key as ResourceCategory)
+		: t('category.unknown', 'Unknown');
+}
+
+/** Human label for a resource `category` / type group-by bucket.
+ *
+ * `Record<ResourceCategory, string>` rather than `Record<string, string>`:
+ * the map must be EXHAUSTIVE, so adding a server-side category fails the
+ * type-check here instead of silently rendering its raw English key. That
+ * passthrough was the i18n bug step 1 of
+ * `retire-precomputed-display-fields.md` fixed, and an inexhaustive map
+ * would reintroduce it one category at a time.
+ *
+ * The label is a free choice — the enum value is a machine key, so
+ * `Executable` can read "Applications" without touching the wire.
+ */
+export function typeLabel(category: ResourceCategory): string {
+	const labels: Record<ResourceCategory, string> = {
 		Image: t('category.images', 'Images'),
 		Video: t('category.videos', 'Videos'),
 		Audio: t('category.audio', 'Audio'),
-		PDF: 'PDF',
-		Document: t('category.documents', 'Documents'),
+		'PDF': 'PDF',
+		WordProcessor: t('category.documents', 'Documents'),
 		Spreadsheet: t('category.spreadsheets', 'Spreadsheets'),
 		Presentation: t('category.presentations', 'Presentations'),
 		Archive: t('category.archives', 'Archives'),
 		Code: t('category.code', 'Code'),
 		Markdown: t('category.markdown', 'Markdown'),
 		Text: t('category.text', 'Text'),
-		Installer: t('category.installers', 'Installers')
+		Package: t('category.packages', 'Packages'),
+		Config: t('category.config', 'Configuration'),
+		DiskImage: t('category.disk_images', 'Disk images'),
+		Font: t('category.fonts', 'Fonts'),
+		Ebook: t('category.ebooks', 'Ebooks'),
+		Executable: t('category.executables', 'Applications'),
+		Folder: t('groupby.folders', 'Folders'),
+		Unknown: t('category.unknown', 'Unknown')
 	};
-	return labels[category] ?? category;
+	return labels[category];
 }
+

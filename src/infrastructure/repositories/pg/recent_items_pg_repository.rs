@@ -1,3 +1,4 @@
+use crate::application::dtos::display_helpers::ResourceCategory;
 use sqlx::{PgPool, Row};
 use std::sync::Arc;
 use tracing::error;
@@ -98,7 +99,7 @@ impl RecentItemsRepositoryPort for RecentItemsPgRepository {
                         .map(|u| u.to_string()),
                     item_path: row.try_get("item_path").ok(),
                     // Temporary defaults; with_display_fields() computes the real values
-                    category: String::new(),
+                    category: ResourceCategory::Unknown,
                 }
                 .with_display_fields())
             })

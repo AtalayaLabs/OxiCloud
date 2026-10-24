@@ -422,17 +422,33 @@ Three constraints, in order of how easily they are got wrong:
    the "bind the hash, not `file_ids`" rule above has to bend, and the statement
    needs each row's `name` regardless.
 
-   **This constraint is TRANSITIONAL and this job is what retires it.** Ed's
-   direction (2026-10-22) is that mime becomes the source of truth once
-   normalised, at which point `category_for` drops its `name` parameter and the
-   extension arms go. A mime-only classifier is one value per *content*, so the
-   fan-out reverts to the plain per-hash shape and this bullet disappears.
-   Sequencing: ship the per-row form here, because the extension fallback is the
-   only thing classifying legacy rows whose mime is still generic — exactly the
-   population this job exists to drain. Revisit once a count of generic-mime
-   rows reads zero. Same reasoning applies to §A.1's exclusion of
-   `category_order` from content-keying: name-dependence is the stated
-   objection, and it expires with the fallback.
+   **This constraint is PERMANENT — corrected 2026-10-24.** It was recorded
+   here as transitional, on the plan that mime becomes the source of truth
+   once normalised, `category_for` drops its `name` parameter, and the
+   fan-out reverts to the plain per-hash shape "once a count of generic-mime
+   rows reads zero".
+
+   That count can never reach zero, so the reversion never comes. Source
+   code has NO magic bytes — `infer` returns `None` for every language and
+   always will, so this job cannot improve those rows — and `mime_guess` has
+   no entry for `.go` at all, leaving such a file `application/octet-stream`
+   permanently with the extension as its only signal. Separately,
+   `mime_guess` maps `.c`, `.cpp` and `.py` to `text/plain`, which is true
+   and useless: only the name separates a C file from a shopping list.
+   Measured, not assumed — see the *As implemented* section of
+   `retire-precomputed-display-fields.md`.
+
+   So: the per-row `VALUES` join stays, `category_order` stays on
+   `storage.files` rather than moving to a content-keyed table, and §A.1's
+   exclusion of it from content-keying is permanent for the same reason
+   rather than expiring with the fallback.
+
+   One thing this job DOES own, added 2026-10-24: it rewrites
+   `category_order` when the row's stored value disagrees with
+   `category_order_for(name, mime)` even if the MIME did not change. That
+   makes it the back-fill for a CLASSIFIER change — without it the job would
+   refuse to repair its own classifier, and the search type filter reads the
+   column, not the mime.
 3. **Do not re-encode the mapping in SQL.** `category_order_for` is the single
    source of truth; the only other copy is the backfill in
    `20260527000001_files_category_order.sql`, and a third will drift. Precedent:

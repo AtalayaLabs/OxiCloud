@@ -38,6 +38,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use axum::extract::FromRequestParts;
+use oxicloud::application::dtos::display_helpers::ResourceCategory;
 use oxicloud::application::dtos::folder_dto::FolderDto;
 use oxicloud::interfaces::middleware::auth::CurrentUser;
 use oxicloud::interfaces::nextcloud::session::{NcSession, SharedNcSession};
@@ -114,7 +115,7 @@ fn fixture_folder() -> FolderDto {
             1_700_000_200,
         ),
         etag: "8f2e5a1c9b3d4e6f".to_string(),
-        category: Arc::from("Folder"),
+        category: ResourceCategory::Folder,
         created_by: None,
         updated_by: None,
         is_favorite: false,

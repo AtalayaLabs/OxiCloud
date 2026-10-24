@@ -5,6 +5,7 @@
  * in `endpoints/favorites.test.ts` and were migrated verbatim.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type { ResourceCategory } from '$lib/api/types';
 import { dateBucket, sizeBucket, typeLabel } from './resourceBuckets';
 
 describe('dateBucket', () => {
@@ -44,9 +45,39 @@ describe('sizeBucket', () => {
 });
 
 describe('typeLabel', () => {
-	it('maps known categories and passes through unknown ones', () => {
+	it('maps every category to a label, with no raw-key passthrough', () => {
 		expect(typeLabel('PDF')).toBe('PDF');
 		expect(typeLabel('Image')).toBeTruthy();
-		expect(typeLabel('Weird')).toBe('Weird');
+
+		// Every value the server can send must have a label. The map is
+		// `Record<ResourceCategory, string>`, so a missing one is a
+		// type error rather than a raw English key leaking into the UI —
+		// which is what `typeLabel('Weird') === 'Weird'` used to assert.
+		// An unknown STRING is no longer representable here: that is the
+		// point of typing the union.
+		const all: ResourceCategory[] = [
+			'Image',
+			'Video',
+			'Audio',
+			'PDF',
+			'WordProcessor',
+			'Spreadsheet',
+			'Presentation',
+			'Archive',
+			'Code',
+			'Markdown',
+			'Text',
+			'Package',
+			'Config',
+			'DiskImage',
+			'Font',
+			'Ebook',
+			'Executable',
+			'Folder',
+			'Unknown'
+		];
+		for (const c of all) {
+			expect(typeLabel(c), c).toBeTruthy();
+		}
 	});
 });

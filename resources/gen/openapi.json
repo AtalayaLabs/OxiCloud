@@ -13764,7 +13764,7 @@
         ],
         "properties": {
           "category": {
-            "type": "string",
+            "$ref": "#/components/schemas/ResourceCategory",
             "description": "Content category — a stable machine key, not display text (e.g.\n\"Image\", \"Folder\"). See `FileDto::category`."
           },
           "created_at": {
@@ -13960,7 +13960,7 @@
         ],
         "properties": {
           "category": {
-            "type": "string",
+            "$ref": "#/components/schemas/ResourceCategory",
             "description": "Coarse content category — a **stable machine key**, not display text.\n\nValues are the English identifiers `category_for` returns (\"Image\",\n\"Document\", \"Spreadsheet\", …). Clients must treat them as opaque keys:\nthe SPA's only legitimate consumer path is\n`utils/resourceBuckets.ts::typeLabel`, which maps them to localised\nlabels, plus the group-by buckets keyed off the same values. Rendering\nthis field directly is the i18n bug step 1 of\n`docs/plan/retire-precomputed-display-fields.md` fixed — it showed\nuntranslated English in the Type column for every non-English locale.\n\nThis is the one display field that stays server-side, and the reason is\nnot symmetry with the others: `category_order_for` turns it into\n`storage.files.category_order`, the indexed `type` sort key. Deriving\nit client-side would let the FE's buckets disagree with the server's\n`ORDER BY`. See `docs/architecture/resource-listing.md`."
           },
           "content_hash": {
@@ -14124,7 +14124,7 @@
         ],
         "properties": {
           "category": {
-            "type": "string",
+            "$ref": "#/components/schemas/ResourceCategory",
             "description": "Content category — a stable machine key, not display text; always\n\"Folder\". See `FileDto::category` for the contract."
           },
           "created_at": {
@@ -16200,7 +16200,7 @@
             "description": "When the item was accessed"
           },
           "category": {
-            "type": "string",
+            "$ref": "#/components/schemas/ResourceCategory",
             "description": "Content category — a stable machine key, not display text (e.g.\n\"Image\", \"Folder\"). See `FileDto::category`."
           },
           "id": {
@@ -16366,6 +16366,31 @@
             }
           }
         }
+      },
+      "ResourceCategory": {
+        "type": "string",
+        "description": "The resource categories the server classifies into — the fine set.\n\n`SearchTypeFilter` is the COARSE view of this, and the two are\ndeliberately separate: the filter's `Document` spans Pdf, Document,\nSpreadsheet, Presentation, Markdown and Text, so collapsing them would\neither coarsen the Type column (users lose \"Spreadsheet\" vs \"PDF\") or\ninflate the picker to fourteen options. What IS unified is the\nrelationship — `category_orders_for_filter` maps coarse to fine\n*categories*, so the sort integers appear in exactly one place\n([`category_order_for`]).\n\nOn the wire this is a machine key, never display text: the SPA's\n`typeLabel` maps it to a localised string. Rendering it raw is the i18n\nbug that step 1 of `retire-precomputed-display-fields.md` fixed.",
+        "enum": [
+          "Image",
+          "Video",
+          "Audio",
+          "PDF",
+          "WordProcessor",
+          "Spreadsheet",
+          "Presentation",
+          "Archive",
+          "Code",
+          "Markdown",
+          "Text",
+          "Package",
+          "Config",
+          "DiskImage",
+          "Font",
+          "Ebook",
+          "Executable",
+          "Folder",
+          "Unknown"
+        ]
       },
       "ResourceContentDto": {
         "oneOf": [
@@ -16658,7 +16683,7 @@
             "description": "Raw BLAKE3 content hash. Feeds `FileDto::content_hash` and\n`File::compute_etag` when search results are converted to\n`FileDto` (NC REPORT/SEARCH response). Defaults to `String::new()`\nfor backward-compatible deserialisation of cached results\nthat pre-date the column."
           },
           "category": {
-            "type": "string",
+            "$ref": "#/components/schemas/ResourceCategory",
             "description": "Coarse content category — a stable machine key, not display text.\nCarried through from `FileDto::category`; see that field for the full\ncontract. (This comment used to claim lowercase values — \"document\",\n\"image\", … — which it never carried: `enrich_file` copies the\ncapitalised `category_for` output verbatim.)"
           },
           "created_at": {
@@ -17068,7 +17093,8 @@
           "document",
           "archive",
           "code",
-          "other"
+          "font",
+          "unknown"
         ]
       },
       "SelfUserDto": {
@@ -17990,7 +18016,7 @@
         ],
         "properties": {
           "category": {
-            "type": "string",
+            "$ref": "#/components/schemas/ResourceCategory",
             "description": "Content category — a stable machine key, not display text (e.g.\n\"Image\", \"Folder\", \"Document\"). See `FileDto::category`."
           },
           "days_until_deletion": {

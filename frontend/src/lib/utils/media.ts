@@ -60,7 +60,11 @@ export function photoTimestamp(p: FileItem): number {
  */
 export function minimalPhotoItem(id: string): FileItem {
 	return {
-		category: 'image',
+		// 'Image', not 'image': the server's key is PascalCase, so the
+		// lowercase value never matched `typeLabel`'s map and fell
+		// through to its raw-key passthrough. The typed union is what
+		// surfaced it — the passthrough is now gone.
+		category: 'Image',
 		// Sentinel ISO timestamp — downstream display sites use
 		// `new Date(iso)` which parses this as 1970-01-01T00:00:00Z.
 		created_at: '1970-01-01T00:00:00Z',

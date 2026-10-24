@@ -12,7 +12,7 @@
 		remainingDaysBucket,
 		restoreTrashItem
 	} from '$lib/api/endpoints/trash';
-	import { dateBucket, sizeBucket, typeLabel } from '$lib/utils/resourceBuckets';
+	import { dateBucket, sizeBucket, typeLabelOf } from '$lib/utils/resourceBuckets';
 	import { formatDate } from '$lib/utils/display';
 	import type { Drive, FileItem, FolderItem, TrashResourceItem } from '$lib/api/types';
 	import Icon from '$lib/icons/Icon.svelte';
@@ -103,8 +103,8 @@
 			key: 'type',
 			label: t('groupby.type', 'Type'),
 			orderBy: 'type',
-			bucketOf: (item) => item.category ?? 'other',
-			labelOf: (k) => typeLabel(k)
+			bucketOf: (item) => item.category ?? 'Unknown',
+			labelOf: (k) => typeLabelOf(k)
 		},
 		{
 			key: 'size',
