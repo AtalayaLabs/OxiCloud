@@ -226,6 +226,11 @@ export class WsBusTransport implements BusTransport {
 	}
 
 	reconnect(): void {
+		// Aggressive reset — explicit user intent, zero every piece of
+		// pending state. Without this, a user calling reconnect() while
+		// state === 'connecting' (ticket POST in flight) would hit
+		// #askForTicket's early-return guard and the schedule
+		// would silently no-op; the stuck cycle persists.
 		if (this.#ws) {
 			try {
 				this.#ws.close();
@@ -234,9 +239,37 @@ export class WsBusTransport implements BusTransport {
 			}
 			this.#ws = null;
 		}
+		if (this.#reconnectTimer !== null) {
+			clearTimeout(this.#reconnectTimer);
+			this.#reconnectTimer = null;
+		}
+		if (this.#needTicketTimer !== null) {
+			clearTimeout(this.#needTicketTimer);
+			this.#needTicketTimer = null;
+		}
+		if (this.#stableTimer !== null) {
+			clearTimeout(this.#stableTimer);
+			this.#stableTimer = null;
+		}
 		this.#backoffMs = RECONNECT_MIN_MS;
 		this.#consecutiveFailures = 0;
-		if (this.#state === 'unavailable') this.#setState('disconnected');
+		this.#ticketConsumed = false;
+		// Reject any pending topic waiters so their callers unblock —
+		// subscribe() will create a fresh waiter on the next cycle.
+		const closed = synthError('reconnect');
+		for (const w of this.#topicWaiters.values()) w.reject(closed);
+		this.#topicWaiters.clear();
+		this.#pendingSubscribeFrames.clear();
+		// Drop pending calls too — their replies would reference the
+		// now-dead WS id-space.
+		for (const { reject } of this.#pending.values()) reject(closed);
+		this.#pending.clear();
+		// Force state out of 'connecting'/'connected' so #askForTicket
+		// doesn't early-return. The subsequent scheduleReconnect(0)
+		// kicks a fresh attempt.
+		if (this.#state !== 'disconnected') {
+			this.#setState('disconnected');
+		}
 		this.#scheduleReconnect(0);
 	}
 
