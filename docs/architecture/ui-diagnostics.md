@@ -277,6 +277,32 @@ oxi.setLogLevel('oxi:message-bus', 'debug')
 oxi.setLogLevel('oxi:message-bus:worker', 'debug')
 ```
 
+#### Where worker logs appear
+
+Worker-side log lines (`oxi:message-bus:worker`) go to TWO places:
+
+1. **The worker's OWN DevTools console**, always.
+   Access via **`chrome://inspect/#shared-workers`** → find `oxi-bus` →
+   click **"inspect"** → Console tab. This is the authoritative
+   view — every `busLog.*(...)` call in worker code hits here
+   regardless of what any tab is doing, what loglevel is set, or
+   whether any tabs are even open. **Primary debugging path**
+   when you're not sure if the fan-out is reaching your tab.
+
+2. **Each live tab's DevTools console**, fanned out via port
+   envelopes. Gated by that tab's own `loglevel` setting for the
+   namespace. Convenient — you don't have to switch tabs — but
+   not authoritative: if a tab's loglevel is at `warn` and you
+   want debug lines, you won't see them; if a stale port is in
+   the worker's registry, envelopes posted to it drop silently
+   on the floor; if `#maxWantedLogLevel` is above the line's
+   level, no port gets the envelope.
+
+**When the two differ, trust the worker's console.** Fan-out
+failures to a specific tab are a UX issue (easier access),
+never a correctness one — the real log already landed in
+chrome://inspect.
+
 Expected sequences:
 
 **Healthy startup (shared mode)**:
