@@ -16,6 +16,7 @@ oxi.log                            // raw `loglevel` module
 oxi.setLogLevel(ns, level)         // toggle a namespace's level
 oxi.listLogLevels()                // enumerate persisted overrides
 oxi.UPLOAD_BATCH_BYTES             // get/set per-PUT byte cap for delta upload
+await oxi.checkBusChain()          // round-trip the message bus end-to-end
 ```
 
 `oxi.setLogLevel` returns a confirmation string (`"oxi:upload → debug"`)
@@ -33,6 +34,9 @@ them independently.
 | Namespace   | Emitted by                                                         |
 | ----------- | ------------------------------------------------------------------ |
 | `oxi:upload` | Delta + direct upload pipeline (`lib/api/endpoints/deltaUpload.ts`, `static/workers/deltaWorker.js`) |
+| `oxi:message-bus` | Tab-side bus client — the `MessageBusClient` interface (per-tab OR the SharedWorker bridge). Logs subscribe lifecycle, reconnect handlers, dispatch errors. Emitted by `lib/message-bus/client.svelte.ts` + `lib/message-bus/shared-worker-bridge.svelte.ts`. |
+| `oxi:message-bus:worker` | **SharedWorker-internal state** — the connection state machine, ticket flow, backoff cycles, binary dispatch. The worker fans these out as port envelopes; each tab replays them into tab-local `loglevel`. In shared mode they appear in every tab that enabled this namespace, from a single bus running once per browser. Emitted by `lib/message-bus/worker-core.ts` + `lib/message-bus/ws-bus-transport.ts`. |
+| `oxi:collab` | Collab (Yjs) document lifecycle — sync-step state, awareness peers, write-denied falls, debouncer flush. Emitted by `lib/collab/collabDoc.ts`. |
 
 New namespaces should follow the `oxi:<subsystem>` shape so a wildcard
 filter across the whole app remains meaningful.
@@ -159,6 +163,183 @@ Console tab (filter: `oxi:upload`), run `oxi.setLogLevel('oxi:upload',
 'debug')`, retry the failing upload, and share the output. The last
 line before the "Upload failed" toast names the actual failure.
 
+## Message bus — probe + state
+
+The real-time bus multiplexes topic subscriptions, binary collab
+frames, and JSON-RPC calls over a single `/api/rt/ws`. Depending on
+browser support and server config, that WebSocket is either one per
+tab (`PerTabMessageBusClient`) or one per BROWSER
+(`SharedWorkerBridge`), with the shared variant backed by a
+SharedWorker that outlives any single tab's lifecycle. The
+`checkBusChain()` helper + namespaced logs are the first stop when
+anything "live" stops updating.
+
+### `oxi.checkBusChain()` — one-shot end-to-end probe
+
+Round-trips a `rt.ping` through the full chain and returns a
+structured snapshot:
+
+```js
+await oxi.checkBusChain()
+// {
+//   ok: true,
+//   impl: 'SharedWorkerBridge',
+//   state: 'connected',
+//   workerVersion: 'dev-1792800537',
+//   latencyMs: 7
+// }
+```
+
+Three fields discriminate the shape of a failure:
+
+| Field | What it tells you |
+| --- | --- |
+| `impl` | `SharedWorkerBridge` → shared mode is live. `PerTabMessageBusClient` → fallback engaged (Safari < 16.4, enterprise CSP `SharedWorkerAllowed=false`, iOS PWA quirks, handshake timeout, `?shared_worker=0` URL override, or `OXICLOUD_ENABLE_SHARED_WORKER_BUS=false` on the server). |
+| `state` | `connected` (healthy) \| `connecting` (handshake / ticket in flight) \| `disconnected` (reconnect scheduled) \| `unavailable` (circuit breaker tripped) \| `idle` (no subscribe yet) |
+| `latencyMs` | Full-chain round-trip in ms. Numbers in the single digits are normal on localhost; typical production is 10–50 ms. |
+
+On a broken chain the helper **doesn't throw** — easier to read in
+DevTools:
+
+```js
+await oxi.checkBusChain()
+// {
+//   ok: false,
+//   impl: 'SharedWorkerBridge',
+//   state: 'unavailable',
+//   workerVersion: 'dev-...',
+//   latencyMs: null,
+//   error: { code: -32603, message: 'not_connected' }
+// }
+```
+
+`error.message` is a stable key:
+- `'not_connected'` — worker's WS is down (circuit tripped OR server unreachable).
+- `'ws_closed'` — the WS dropped mid-ping (transient; retry).
+- Anything else — the server returned an error with its own `code`.
+
+### Connection states
+
+| State | Meaning | Recovery path |
+| --- | --- | --- |
+| `idle` | Nothing has subscribed yet; WS not opened. | A `.subscribe(...)` kicks the connect flow. |
+| `connecting` | Ticket fetch + WS upgrade in flight. | Expected transient. |
+| `connected` | WS open and acked. | — |
+| `disconnected` | WS dropped; backoff timer running. | Automatic — jittered exponential backoff (250 ms doubling to a 30 s cap). |
+| `unavailable` | Circuit breaker tripped (10 consecutive failures). | **User action required**: refresh the page, OR `window.messageBus.reconnect()`. In shared mode, the worker auto-recovers on new port join (page refresh in any tab works). |
+
+### Shared-mode-specific wrinkles
+
+**The SharedWorker outlives page refresh.** State is held in the
+worker, not the tab. A tab refresh does NOT reset the circuit
+breaker on its own — the fix landed as auto-recovery on new port
+join: when a port attaches to a worker in `unavailable` state, the
+worker calls `transport.reconnect()` to re-arm.
+
+**The worker script is cached by the browser.** Updating
+`frontend/src/lib/message-bus/worker.ts` + rebuilding does NOT
+reload the worker in a running browser. The script only refreshes
+when every port disconnects. Three ways to force a restart during
+development:
+
+1. `chrome://inspect/#shared-workers` → find `oxi-bus` →
+   **Terminate**. Next tab load spawns a fresh worker.
+2. Close every tab of the site; reopen one.
+3. DevTools → Application → Storage → **Clear site data** (nuclear).
+
+**`workerVersion` as a staleness signal.** `oxi.checkBusChain()`
+reports the worker's build identity. If an operator deployed
+updates but a user's tab still reports an older `workerVersion`,
+the user is still talking to a stale worker from before the
+deploy; a tab close is required.
+
+### Fallback detection reasons
+
+When shared mode isn't available, the factory emits an
+`oxi:message-bus` info line naming the specific reason:
+
+| Reason | Trigger |
+| --- | --- |
+| `typeof_undefined` | Browser has no `SharedWorker` API (Safari < 16.4, some sandboxed contexts). |
+| `construct_threw` | `new SharedWorker(...)` threw at construction — enterprise CSP `SharedWorkerAllowed=false`, sandboxed iframe without `allow-same-origin`. |
+| `handshake_timeout` | Worker script loaded but didn't ack `hello` within 1 s — 404, MIME mismatch, iOS PWA storage sandboxing. Possible network block too (CSP `worker-src` or `connect-src` disallowed). |
+
+Operators can grep these in client-side bug reports — `jsonpath
+"$.reason"` style — to count how many users fell back vs ran shared
+mode.
+
+### Log signatures by scenario
+
+Enable both namespaces when triaging:
+
+```js
+oxi.setLogLevel('oxi:message-bus', 'debug')
+oxi.setLogLevel('oxi:message-bus:worker', 'debug')
+```
+
+Expected sequences:
+
+**Healthy startup (shared mode)**:
+```
+[oxi:message-bus] info: SharedWorker handshake complete — shared bus is live
+                       { workerVersion: 'dev-<ts>' }
+[oxi:message-bus:worker] debug: connected
+[oxi:message-bus:worker] debug: stable connection — reconnect counters reset
+```
+
+**Server stop + restart (within the 2-min circuit-breaker budget)**:
+```
+[oxi:message-bus:worker] debug: ws closed { code: 1006, reason: 'abnormal' }
+[oxi:message-bus:worker] warn:  need-ticket timed out { nonce: 1 }    // after 5 s
+[oxi:message-bus:worker] warn:  need-ticket timed out { nonce: 2 }
+...                                                                     // on recovery:
+[oxi:message-bus:worker] debug: connected
+[oxi:message-bus:worker] debug: stable connection — reconnect counters reset
+```
+
+**Circuit tripped (server down past the 10-failure budget, ~2 min)**:
+```
+[oxi:message-bus:worker] warn:  need-ticket timed out { nonce: 10 }
+                                                                        // state → 'unavailable'
+                                                                        // UI banner: "Server unreachable"
+                                                                        // After user refresh:
+                                                                        // worker auto-reconnect:
+[oxi:message-bus:worker] debug: connected
+```
+
+**Fallback engaged**:
+```
+[oxi:message-bus] info: SharedWorker not available — falling back to per-tab bus
+                       { reason: 'typeof_undefined' }
+```
+
+### Common failure signatures — message bus
+
+| Log line | Meaning | What to try |
+| --- | --- | --- |
+| `SharedWorker handshake timed out — falling back to per-tab bus` | Worker script failed to load or ack `hello` within 1 s. | Check Network tab for the worker URL (`_app/immutable/workers/worker-<hash>.js`); check CSP `worker-src`. If the worker loaded but didn't ack, inspect `chrome://inspect/#shared-workers` for errors. |
+| `SharedWorker construction threw` | CSP block or sandboxed iframe. | `reason.err` names the throw; typically `SecurityError`. Operator-side CSP tweak if enterprise policy; cannot fix client-side. |
+| `need-ticket timed out { nonce }` | Tab's ticket POST failed (server down OR 401-with-failed-refresh). | Check network tab for `POST /api/rt/ticket` — status 0 is network error, 401 is auth. |
+| `ticket fetch failed — worker will time out on need-ticket` | Bridge's ticket POST threw. | Same as above; look at the `err` field for the cause. |
+| `incoming parse failed` | A server frame wasn't valid JSON-RPC. | Server-side logs; grep for the WS session id. |
+| `subscribe failed { topic, error }` | Server denied the subscribe. | `error.code` + `error.message` name the denial — `TOPIC_FORBIDDEN`, `SUB_LIMIT`, etc. |
+
+### Admin-side counterpart
+
+The server exposes `GET /api/admin/settings → active_ws_sessions`
+— one WS per browser in shared mode, N per browser in per-tab
+mode. Mismatch between expected shape and observed count is a
+strong signal:
+
+- `active_ws_sessions` = tabs → every user is in per-tab mode
+  (shared mode isn't engaging anywhere → check
+  `OXICLOUD_ENABLE_SHARED_WORKER_BUS` or the browser matrix).
+- `active_ws_sessions` = browsers (lower than tabs) → shared mode
+  working.
+- `active_ws_sessions` = 0 while users are editing → every
+  session's circuit tripped (server was down past 2 min OR
+  endpoint misconfig).
+
 ## Interrupted uploads
 
 Two coordinated behaviours help users recover from an accidental page
@@ -204,6 +385,13 @@ doesn't get nagged on reopen.
 | Direct upload (fallback path)       | `frontend/src/lib/api/endpoints/files.ts::uploadFileWithProgress` |
 | Interrupted-upload registry         | `frontend/src/lib/upload/interruption.ts`                       |
 | Reload-time toast wiring            | `frontend/src/routes/+layout.svelte` (`onMount`)                |
+| Message-bus factory + bridge        | `frontend/src/lib/message-bus/client.svelte.ts` + `shared-worker-bridge.svelte.ts` |
+| Message-bus WS transport            | `frontend/src/lib/message-bus/ws-bus-transport.ts`              |
+| SharedWorker entry + routing        | `frontend/src/lib/message-bus/worker.ts` + `worker-core.ts`     |
+| SharedWorker detection + handshake  | `frontend/src/lib/message-bus/detect.ts`                        |
 
 Server-side counterpart for delta upload:
 [Delta upload protocol](../delta-upload-protocol.md).
+
+Message-bus design + rollout:
+[SharedWorker-backed message bus](../plan/message-bus-via-shared-worker.md).

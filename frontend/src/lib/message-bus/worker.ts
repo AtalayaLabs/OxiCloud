@@ -69,12 +69,22 @@ function installLoglevelFanout(c: WorkerCore): void {
 	// `oxi.setLogLevel('oxi:message-bus:worker', 'debug')` in a tab
 	// would silently do nothing.
 	//
-	// The push-down filter in WorkerCore.emitLog + per-port
-	// wantedLogLevel optimises OUTBOUND port traffic (don't send
-	// envelopes to tabs that don't want them), but it also needs the
-	// worker's own emission to happen first. These two together are
-	// what wire tab-level filtering end-to-end.
+	// IMPORTANT: `log.methodFactory` only applies to loggers that
+	// REBUILD their method cache AFTER the swap. Named loggers
+	// instantiated at module import (`log.getLogger('oxi:message-bus:
+	// worker')` at the top of `ws-bus-transport.ts`, same for
+	// `worker-core.ts`) were cached BEFORE this function ran. Iterate
+	// every known logger and `.setLevel()` to force a rebuild —
+	// without this step, the fan-out replacement is dead code and
+	// the tab sees nothing.
+	//
+	// `log.setLevel()` on the root does NOT propagate to child
+	// loggers; each must be rebuilt explicitly.
 	log.setLevel('trace');
+	const children = log.getLoggers();
+	for (const name of Object.keys(children)) {
+		children[name].setLevel('trace');
+	}
 }
 
 // ============================================================
