@@ -248,11 +248,22 @@ fn category_with_ext(mime: &str, ext: Option<&str>) -> &'static str {
         return "Markdown";
     } else if mime.starts_with("text/html") || mime.starts_with("text/css") {
         return "Code";
-    } else if mime.starts_with("text/") {
-        return "Text";
     }
 
-    // 3. Extension fallback
+    // 3. The extension, for the cases MIME provably cannot answer.
+    //
+    // ⚠ `text/plain` used to return "Text" in step 2, ABOVE this point,
+    // which meant the extension was never consulted for it. `mime_guess`
+    // maps `.c`, `.cpp` and `.py` to `text/plain` — so every C, C++ and
+    // Python file was categorised Text rather than Code, invisibly,
+    // because "Text" is a plausible answer for a text file. Found
+    // 2026-10-24 while scoping the mime-only work; see the test.
+    //
+    // This is also why the name cannot be dropped from the signature.
+    // Source code has NO magic bytes — `infer` returns None for every
+    // language and always will, so `content_rescan` can never improve
+    // these rows — and `text/plain` cannot tell a C file from a shopping
+    // list. The extension is the only signal, permanently.
     if let Some(ext) = ext {
         return match ext {
             "pdf" => "PDF",
@@ -265,13 +276,20 @@ fn category_with_ext(mime: &str, ext: Option<&str>) -> &'static str {
             "mp3" | "wav" | "ogg" | "flac" | "aac" | "wma" | "m4a" | "opus" => "Audio",
             "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" => "Archive",
             "exe" | "msi" | "dmg" | "deb" | "rpm" | "appimage" => "Installer",
-            "js" | "jsx" | "ts" | "tsx" | "py" | "rs" | "go" | "java" | "c" | "cpp" | "cs"
-            | "rb" | "php" | "swift" | "kt" | "scala" | "r" | "lua" | "pl" | "html" | "htm"
-            | "css" | "scss" | "json" | "xml" | "yaml" | "yml" | "toml" | "sql" | "sh" | "bash"
-            | "bat" | "ps1" | "vue" | "svelte" => "Code",
+            "js" | "jsx" | "ts" | "tsx" | "py" | "rs" | "go" | "java" | "c" | "h" | "cpp"
+            | "hpp" | "cc" | "cs" | "rb" | "php" | "swift" | "kt" | "scala" | "r" | "lua"
+            | "pl" | "html" | "htm" | "css" | "scss" | "json" | "xml" | "yaml" | "yml" | "toml"
+            | "sql" | "sh" | "bash" | "bat" | "ps1" | "vue" | "svelte" => "Code",
             "md" | "markdown" | "rst" => "Markdown",
+            // `text/plain` with an extension we do not classify is still
+            // text, and must not become "Document".
+            _ if mime.starts_with("text/") => "Text",
             _ => "Document",
         };
+    }
+
+    if mime.starts_with("text/") {
+        return "Text";
     }
 
     "Document"
@@ -362,6 +380,43 @@ mod tests {
     // against `iconNameFor`, which is where the classifier moved — same
     // corpus (specific MIME, generic MIME + extension, shell scripts), same
     // resolution order, asserting registry names instead of CSS classes.
+
+    /// ⚠ `text/plain` source files are Code, not Text.
+    ///
+    /// `mime_guess` maps `.c`, `.cpp` and `.py` to `text/plain`, and the
+    /// classifier used to return "Text" for any `text/` prefix BEFORE
+    /// consulting the extension — so every C, C++ and Python file in the
+    /// corpus was categorised Text. Invisible in the UI, because "Text"
+    /// is a plausible answer for a text file; it surfaced only when
+    /// probing what `refine_content_type` actually stores for source
+    /// files (2026-10-24).
+    ///
+    /// This also pins why the name cannot leave the signature: source
+    /// code has no magic bytes, so `infer` is silent for every language
+    /// and `content_rescan` can never improve these rows.
+    #[test]
+    fn text_plain_source_files_are_code() {
+        for name in ["a.c", "x.cpp", "t.py", "h.h", "m.cc"] {
+            assert_eq!(
+                category_for(name, "text/plain"),
+                "Code",
+                "{name} stored as text/plain must classify as Code",
+            );
+        }
+
+        // Still Text when the extension says nothing useful, and when
+        // there is no extension at all.
+        assert_eq!(category_for("notes.txt", "text/plain"), "Document");
+        assert_eq!(category_for("README", "text/plain"), "Text");
+        assert_eq!(category_for("data.weird", "text/plain"), "Text");
+
+        // Markdown keeps its own bucket rather than collapsing to Code.
+        assert_eq!(category_for("r.rst", "text/plain"), "Markdown");
+
+        // A mime that DOES know better still wins — the extension is a
+        // fallback, not an override.
+        assert_eq!(category_for("evil.c", "image/png"), "Image");
+    }
 
     #[test]
     fn test_category_for() {

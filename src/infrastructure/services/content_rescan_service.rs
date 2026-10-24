@@ -218,6 +218,11 @@ struct ContentRow {
     content_hash: String,
     file_ids: Vec<Uuid>,
     file_names: Vec<String>,
+    /// Per-file current values, aligned with `file_ids` by the shared
+    /// `ORDER BY f.id`. Needed because `category_order` can be stale while
+    /// `mime_type` is correct — see `desired_rows`.
+    file_mimes: Vec<String>,
+    file_categories: Vec<i16>,
     stored_types: Vec<String>,
     size: i64,
 }
@@ -312,9 +317,11 @@ impl ContentRescan {
     /// pinned so `file_ids[i]` and `file_names[i]` describe the same row.
     const PAGE_SQL: &'static str = "
         SELECT f.blob_hash                        AS content_hash,
-               array_agg(f.id   ORDER BY f.id)    AS file_ids,
-               array_agg(f.name ORDER BY f.id)    AS file_names,
-               array_agg(DISTINCT f.mime_type)    AS stored_types,
+               array_agg(f.id   ORDER BY f.id)             AS file_ids,
+               array_agg(f.name ORDER BY f.id)             AS file_names,
+               array_agg(f.mime_type ORDER BY f.id)        AS file_mimes,
+               array_agg(f.category_order ORDER BY f.id)   AS file_categories,
+               array_agg(DISTINCT f.mime_type)             AS stored_types,
                max(f.size)                        AS size
           FROM storage.files f
          WHERE ($1::text IS NULL OR f.blob_hash > $1)
@@ -672,6 +679,9 @@ impl RecoverableJobHandler for ContentRescan {
                 // `report.docx` from `backup.zip` on identical bytes.
                 let mut targets: Vec<(Uuid, String, i16)> = Vec::new();
                 let mut container_disambiguated = false;
+                // True when the only thing being corrected is the
+                // denormalised category, with every mime already right.
+                let mut category_only = false;
                 match &decision {
                     Decision::Leave => {}
                     Decision::Retype(mime) => {
@@ -697,6 +707,39 @@ impl RecoverableJobHandler for ContentRescan {
                         .all(|(_, m, _)| row.stored_types.iter().all(|s| s == m))
                 {
                     targets.clear();
+                }
+
+                // ── Stale `category_order` with a CORRECT mime ───────
+                //
+                // `category_order = f(name, mime)`, so it goes stale when
+                // either input moves — and also when the CLASSIFIER moves,
+                // which is the case nothing else can repair. Example: the
+                // 2026-10-24 fix that made `text/plain` source files Code
+                // instead of Text changed the answer for every `.c`, `.cpp`
+                // and `.py` row in the corpus without changing one mime.
+                //
+                // So the retype set cannot be keyed on "did the mime
+                // change". Rebuild it from what actually DIFFERS per row,
+                // leaving the mime alone where it is already right. Without
+                // this the job silently refuses to backfill its own
+                // classifier, and the search type filter — which reads this
+                // column, not the mime — keeps hiding those files under the
+                // wrong category.
+                if targets.is_empty() {
+                    for (i, id) in row.file_ids.iter().enumerate() {
+                        let Some(name) = row.file_names.get(i) else {
+                            continue;
+                        };
+                        let Some(mime) = row.file_mimes.get(i) else {
+                            continue;
+                        };
+                        let want = category_order_for(name, mime);
+                        if row.file_categories.get(i) != Some(&want) {
+                            targets.push((*id, mime.clone(), want));
+                        }
+                    }
+                    // Not a mime finding — the type was right all along.
+                    category_only = !targets.is_empty();
                 }
 
                 // ── Container ambiguity ──────────────────────────────
@@ -803,7 +846,12 @@ impl RecoverableJobHandler for ContentRescan {
                     continue;
                 }
 
-                mime_changed += 1;
+                // `mime_changed` counts CONTENT re-identified, so a
+                // category-only backfill must not inflate it — otherwise a
+                // classifier change reads as a corpus-wide mis-detection.
+                if !category_only {
+                    mime_changed += 1;
+                }
                 let new_mime = targets[0].1.clone();
 
                 let affected = if dry_run {
@@ -854,7 +902,12 @@ impl RecoverableJobHandler for ContentRescan {
                                             .collect::<Vec<_>>(),
                         "files_updated": affected,
                         "corrected":     !dry_run,
-                        "reason": if container_corrected {
+                        "reason": if category_only {
+                            // The mime was already right; only the
+                            // denormalised category had drifted, which
+                            // happens when the classifier changes.
+                            "category_backfill"
+                        } else if container_corrected {
                             // Resolved by reading the stream table, not
                             // the signature. Both show up as a changed
                             // container type and have different causes,
