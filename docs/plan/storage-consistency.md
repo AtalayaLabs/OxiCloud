@@ -322,6 +322,66 @@ target is 1.0.
 Until then the tags are the whole deliverable: when the gates open, removal
 is a grep rather than an excavation.
 
+### What else the gates unlock: the satellite foreign key
+
+While a Blob can be *either* a `chunk_manifests` row or a bare
+`storage.blobs` row, no content-keyed satellite can carry a foreign key — a
+FK names one table, and either choice rejects half the corpus. That is why
+`audio.content_metadata`, `storage.content_metadata` and
+`content_derived_blobs` all enforce their lifetime in Rust
+(`BlobHandler::purge_content_facts` / `purge_derived_blobs`), with
+`satellites_consistency` sweeping for paths that forget. The omission has
+already bitten once: the bulk manifest reap shipped without
+`purge_derived_blobs` and leaked three blobs per deleted image,
+permanently.
+
+Post-convergence every Blob is a manifest, so
+`REFERENCES storage.chunk_manifests(file_hash) ON DELETE CASCADE` becomes
+expressible and the database enforces what three reap paths currently have
+to remember.
+
+**⚠ Facts tables only — NOT `content_derived_blobs`.** The cascade is safe
+exactly where the row holds no reference. `purge_derived_blobs` does two
+things: deletes the mapping *and* calls `remove_reference` on each
+artifact's `blob_hash`. A DB cascade would do only the first, leaving the
+artifact pinned at `ref_count = 1` with nothing pointing at it — the very
+leak that table exists to avoid, reintroduced by the mechanism meant to
+prevent it. If `content_derived_blobs` ever gets this FK it must be
+`NO ACTION`, which turns it into a guard that *refuses* a manifest delete
+until the purge has run — and that requires reordering the bulk reap to
+purge before deleting, not after. Separate change, separate thought.
+
+#### Trigger sequence
+
+Four conditions, and the order inside the release is load-bearing:
+
+1. **Convergence on the instance.** Not fleet-wide — that is unknowable and
+   is why gate 2 exists. Per-instance is checkable, and the upgrade checks
+   it rather than trusting it.
+2. **The release is the major** (1.0), per the two gates above.
+3. **Legacy code removal ships in the same binary.** This must land with or
+   before the FK, never after: while the legacy write path exists, a new
+   whole-file blob can still be created, and the first satellite row
+   written against it fails its insert.
+4. **The FK migration runs last.**
+
+Within the major's migration chain, in order:
+
+| # | migration | why here |
+|---|---|---|
+| A | **Refuse the upgrade** if any legacy whole-file blob remains: `RAISE EXCEPTION` naming the count and `backend_rechunk`. | First, before anything destructive. The operator must learn this from a sentence naming the fix, not from a FK violation on a table they have never heard of. The legacy *read* path is already gone from the binary at this point, so surviving blobs are unreadable either way — failing early at least says so. |
+| B | **Delete orphaned satellite rows.** `RAISE NOTICE` with the count. | They would violate the FK, and they are exactly what `satellites_consistency` phase 3 reports: rows whose source Blob no longer exists. Deleting rather than refusing is the right call *here* specifically — the rows are provably unreachable, and blocking a major upgrade on housekeeping helps nobody. This is not a loosening of the no-silent-repair rule: a major upgrade is operator-initiated and the count is announced. |
+| C | **Add the FK**, `ON DELETE CASCADE`, to the two facts tables. | Only now can it succeed. |
+
+Note what B means: **the sweep is a prerequisite for the FK, not merely a
+stopgap until it.** Without the orphan cleanup, migration C fails on
+precisely the rows the sweep was built to find.
+
+Afterwards, `purge_content_facts` becomes belt-and-braces (harmless, and
+cheaper to keep than to prove removable), and phase 3 of
+`satellites_consistency` should find nothing — at which point it is worth
+keeping purely as the regression detector for the FK being dropped.
+
 **As implemented (1a–1c)** — three things the plan had not specified, each from a
 review question worth recording:
 

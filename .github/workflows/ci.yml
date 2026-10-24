@@ -572,6 +572,19 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
+      # ffprobe (shipped by the ffmpeg package) for the container-probe
+      # integration tests, which resolve audio-vs-video for the four
+      # container types magic bytes cannot separate.
+      #
+      # Those tests ASSERT the binary is present rather than skipping
+      # without it. A self-skipping test is worse than no test: it
+      # reports green on a runner that never executed it, which is how
+      # the eight unwired Hurl scenarios went unnoticed. The cost is one
+      # apt install on the integration job only — the unit tests cover
+      # the JSON parsing with captured output and need nothing.
+      - name: Install ffmpeg (provides ffprobe)
+        run: sudo apt-get update -q && sudo apt-get install -y ffmpeg
+
       # `--all-features` enables `bundled-assets`, whose build.rs guard
       # requires `static-dist/index.html` at compile time. Build the SPA
       # first so tests can compile the embed code paths. ~90 s, cached.

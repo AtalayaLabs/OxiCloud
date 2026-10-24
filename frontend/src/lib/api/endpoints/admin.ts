@@ -50,25 +50,6 @@ async function postJson<T>(url: string): Promise<T> {
 
 // ── Maintenance ───────────────────────────────────────────────────────────
 
-/** Outcome of a bulk metadata re-extraction run. */
-export interface ReextractResult {
-	message: string;
-	total: number;
-	processed: number;
-	failed: number;
-}
-
-/** Re-scan every audio file and backfill its tag metadata (idempotent). */
-export function reextractAudioMetadata(): Promise<ReextractResult> {
-	return postJson<ReextractResult>('/api/admin/audio/metadata/reextract');
-}
-
-/** Backfill EXIF / container capture dates for all media, re-bucketing the
- *  Photos timeline by real capture date (idempotent). */
-export function reextractPhotoMetadata(): Promise<ReextractResult> {
-	return postJson<ReextractResult>('/api/admin/photos/metadata/reextract');
-}
-
 /** A freshly generated AES-256 at-rest blob-encryption key (base64) plus a
  *  data-loss warning authored by the server. The `fingerprint` is the
  *  SSH-style colon-hex render the boot log / admin pair-chain / rotate

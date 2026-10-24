@@ -730,7 +730,7 @@ impl FileBlobReadRepository {
                    top.{sort_col}                             AS sort_date_ts,
                    fm.width                                   AS width,
                    fm.height                                  AS height,
-                   fm.captured_at                             AS captured_at,
+                   fm.created_at                              AS captured_at,
                    fm.orientation                             AS orientation,
                    (fm.latitude IS NOT NULL AND fm.longitude IS NOT NULL) AS has_gps,
                    -- §9b Layer 1 — within-drive sibling probe. True when
@@ -774,7 +774,7 @@ impl FileBlobReadRepository {
                  LIMIT $4
               ) top
               LEFT JOIN storage.folders fo ON fo.id = top.folder_id
-              LEFT JOIN storage.file_metadata fm ON fm.file_id = top.id
+              LEFT JOIN storage.content_metadata fm ON fm.source_hash = top.blob_hash
              ORDER BY top.{sort_col} {dir}, top.id {dir}
             "#,
         );
@@ -845,14 +845,21 @@ impl FileBlobReadRepository {
             SELECT count(*)              AS n,
                    avg(fm.longitude)     AS clng,
                    avg(fm.latitude)      AS clat,
-                   -- NOTE: `min(fm.file_id)::text` (cast per cluster, not
-                   -- per row) was attempted in ROUND11 §Q4 and REJECTED by
-                   -- its benchmark gate: PostgreSQL has no `min(uuid)`
+                   -- The sample comes from `fi`, not `fm`: metadata is
+                   -- content-keyed, so the row has no file id to take —
+                   -- one content row backs every copy of the photo. It
+                   -- MUST come from the joined, drive-filtered side
+                   -- anyway, or the cluster could name a file the caller
+                   -- cannot see.
+                   --
+                   -- NOTE: `min(...)::text` (cast per cluster, not per
+                   -- row) was attempted in ROUND11 §Q4 and REJECTED by its
+                   -- benchmark gate: PostgreSQL has no `min(uuid)`
                    -- aggregate, and adding a custom one is schema surface
                    -- this viewport query doesn't justify.
-                   min(fm.file_id::text) AS sample_id
-              FROM storage.file_metadata fm
-              JOIN storage.files fi ON fi.id = fm.file_id
+                   min(fi.id::text)      AS sample_id
+              FROM storage.content_metadata fm
+              JOIN storage.files fi ON fi.blob_hash = fm.source_hash
              WHERE fi.drive_id IN (
                      -- Same `storage.caller_accessible_drives` the Photos
                      -- timeline runs through — the two surfaces MUST agree

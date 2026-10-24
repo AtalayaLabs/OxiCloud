@@ -1387,6 +1387,70 @@ impl BlobHandler {
                 );
             }
         }
+
+        self.purge_content_facts(source_hash).await;
+    }
+
+    /// Delete the content-keyed satellite ROWS for a dying Blob.
+    ///
+    /// Distinct from the loop above, and the distinction is the whole
+    /// point. `content_derived_blobs` rows point at a derived *artifact*
+    /// and therefore hold a reference that must be released; these tables
+    /// are columns — facts parsed out of the bytes — so there is nothing to
+    /// release and the row simply goes.
+    ///
+    /// They are dependent references holding no `ref_count`
+    /// (`20261104000000_audio_metadata_content_keyed.sql`), so nothing else
+    /// will ever collect them: no FK, no cascade. Called from here rather
+    /// than from each reap site so there is exactly one place that can be
+    /// forgotten when the next content-keyed table is added.
+    ///
+    /// Best-effort by design, matching the loop above: a failure here
+    /// leaves a recoverable orphan that `satellites_consistency` reports,
+    /// whereas propagating would abort a reap that has already deleted
+    /// bytes. Loud, not fatal.
+    async fn purge_content_facts(&self, source_hash: &str) {
+        // One list, so adding the next content-keyed table is one line
+        // rather than another copy of this match.
+        for (table, sql) in [
+            (
+                "audio metadata",
+                "DELETE FROM audio.content_metadata WHERE source_hash = $1",
+            ),
+            (
+                "capture metadata",
+                "DELETE FROM storage.content_metadata WHERE source_hash = $1",
+            ),
+        ] {
+            match sqlx::query(sql)
+                .bind(source_hash)
+                .execute(self.pool.as_ref())
+                .await
+            {
+                Ok(r) if r.rows_affected() > 0 => {
+                    tracing::info!(
+                        target: "oxicloud::dedup",
+                        rows = r.rows_affected(),
+                        "purge_content_facts: dropped {} for {}",
+                        table,
+                        &source_hash[..source_hash.len().min(12)],
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    // Keep going: one failing table must not strand the
+                    // other, and neither should abort a reap that has
+                    // already deleted bytes.
+                    tracing::warn!(
+                        target: "oxicloud::dedup",
+                        error = %e,
+                        "failed to purge {} for {}",
+                        table,
+                        &source_hash[..source_hash.len().min(12)],
+                    );
+                }
+            }
+        }
     }
 
     fn fire_blob_hooks(&self, hash: &str) {
@@ -1509,6 +1573,95 @@ impl BlobHandler {
     /// Return a reference to the underlying blob storage backend.
     pub fn backend(&self) -> &Arc<dyn BlobStorageBackend> {
         &self.backend
+    }
+
+    /// Read the first `len` bytes of one stored OBJECT, bypassing the
+    /// disk cache.
+    ///
+    /// `object_hash` is a *storage* address — a chunk hash for CDC
+    /// content, a whole-file hash for legacy. Not a Blob hash: resolving
+    /// manifest → first chunk is the caller's job (see
+    /// [`Self::first_chunk_hashes`]), because the caller has a whole page
+    /// of hashes to resolve in one query and this would otherwise do it
+    /// one at a time.
+    ///
+    /// **Uncached on purpose.** `CachedBlobBackend` fills on a miss by
+    /// downloading the WHOLE object into its LRU and then serving the
+    /// range. A corpus-wide sweep is ~100 % miss, so reading through the
+    /// cache would pull every byte of every blob *and* evict the entire
+    /// hot working set to do it. Only the cache is peeled; the decryptor
+    /// stays, so what comes back is plaintext and the magic bytes are
+    /// real. Same `uncached()` posture as `backend_consistency`'s deep
+    /// mode.
+    pub async fn read_object_head_uncached(
+        &self,
+        object_hash: &str,
+        len: u64,
+    ) -> Result<Bytes, DomainError> {
+        let backend = self
+            .backend
+            .uncached()
+            .unwrap_or_else(|| self.backend.clone());
+
+        let mut stream = backend
+            .get_blob_range_stream(object_hash, 0, Some(len))
+            .await?;
+
+        // Accumulate rather than take the first chunk: the backend
+        // decides its own framing, and a 4 KiB first frame would
+        // silently halve the sniff window.
+        let mut head = Vec::with_capacity(len as usize);
+        while let Some(frame) = stream.next().await {
+            let frame = frame.map_err(|e| {
+                DomainError::internal_error("Dedup", format!("read object head: {e}"))
+            })?;
+            head.extend_from_slice(&frame);
+            if head.len() as u64 >= len {
+                head.truncate(len as usize);
+                break;
+            }
+        }
+        Ok(Bytes::from(head))
+    }
+
+    /// Resolve Blob hashes to `(first chunk hash, total size)` for the
+    /// CDC ones, in a single query on the maintenance pool.
+    ///
+    /// A hash ABSENT from the result is legacy whole-file content, whose
+    /// storage address is the Blob hash itself — so the caller reads the
+    /// head from `hash` directly. Returning a sparse map rather than an
+    /// entry per input is what makes that distinction available to the
+    /// caller without a second query.
+    ///
+    /// Reading the first CHUNK rather than the Blob is a real saving on
+    /// encrypted backends: `EncryptedBlobBackend::get_blob_range_stream`
+    /// decrypts the entire object before slicing it, so targeting the
+    /// first chunk caps that at one chunk instead of the whole file.
+    ///
+    /// Deliberately NOT routed through `manifest_cached`: that moka is
+    /// sized for the live read path, and a full-corpus walk would evict
+    /// it wholesale for entries it will never look at twice.
+    pub async fn first_chunk_hashes(
+        &self,
+        hashes: &[String],
+    ) -> Result<HashMap<String, (String, i64)>, DomainError> {
+        if hashes.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let rows: Vec<(String, String, i64)> = sqlx::query_as(
+            "SELECT file_hash, chunk_hashes[1], total_size
+               FROM storage.chunk_manifests
+              WHERE file_hash = ANY($1)",
+        )
+        .bind(hashes)
+        .fetch_all(self.maintenance_pool.as_ref())
+        .await
+        .map_err(|e| DomainError::internal_error("Dedup", format!("first_chunk_hashes: {e}")))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(h, first, size)| (h, (first, size)))
+            .collect())
     }
 
     // ── Path helpers ─────────────────────────────────────────────

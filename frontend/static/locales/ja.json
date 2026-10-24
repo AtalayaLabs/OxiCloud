@@ -1245,8 +1245,6 @@
     "running": "実行中…",
     "maintenance": "メンテナンス",
     "maintenance_hint": "既存のファイルを再スキャンしてメタデータをバックフィルします。安全に再実行できます。ライブラリ全体を処理するため、時間がかかる場合があります。",
-    "reextract_audio": "オーディオメタデータを再抽出する",
-    "reextract_photos": "写真とビデオの撮影日を再抽出する",
     "encryption": "暗号化",
     "encryption_hint": "保存時の BLOB 暗号化用の AES-256 キーを生成し、サーバー環境でそれを OXICLOUD_STORAGE_ENCRYPTION_KEY として設定します。",
     "gen_key": "キーの生成",
@@ -1351,7 +1349,6 @@
     },
     "oidc": "OIDC / SSO",
     "oidc_discover": "テスト / 検出",
-    "reextract_done": "{{processed}}/{{total}} 処理済み · {{failed}} 失敗",
     "sessions": {
       "filter_user": "ユーザー (UUID)",
       "include_revoked": "取り消し済み / 期限切れを含む",

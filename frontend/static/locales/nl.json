@@ -1245,8 +1245,6 @@
     "running": "Rennen…",
     "maintenance": "Onderhoud",
     "maintenance_hint": "Scan bestaande bestanden opnieuw om metagegevens aan te vullen. Veilig om opnieuw uit te voeren; verwerkt de hele bibliotheek en kan even duren.",
-    "reextract_audio": "Extraheer de audiometadata opnieuw",
-    "reextract_photos": "Extraheer de opnamedatums van foto's en video's opnieuw",
     "encryption": "Encryptie",
     "encryption_hint": "Genereer een AES-256-sleutel voor blob-versleuteling in rust en stel deze vervolgens in als OXICLOUD_STORAGE_ENCRYPTION_KEY in uw serveromgeving.",
     "gen_key": "Sleutel genereren",
@@ -1351,7 +1349,6 @@
     },
     "oidc": "OIDC / SSO",
     "oidc_discover": "Testen / ontdekken",
-    "reextract_done": "{{processed}}/{{total}} verwerkt · {{failed}} mislukt",
     "sessions": {
       "filter_user": "Gebruiker (UUID)",
       "include_revoked": "Ingetrokken / verlopen tonen",

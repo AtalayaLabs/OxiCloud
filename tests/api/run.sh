@@ -105,11 +105,69 @@ scenario_names() {
   } | sort -u
 }
 
+# ── Drift guard: a .hurl on disk that nothing runs ────────────────────────────
+#
+# Writing the scenario and forgetting to wire it in costs nothing at the time
+# and everything later: the file sits in the tree looking like coverage, passes
+# review as coverage, and is never executed once. Eight files had accumulated
+# that way before this check existed — including ones a plan document lists as
+# shipped deliverables.
+#
+# This dies rather than warns, for the reason the rest of the codebase prefers
+# a loud failure to a silent skip: a warning in a few hundred lines of suite
+# output is a warning nobody reads.
+#
+# Entries below are the pre-existing backlog, grandfathered so the suite stays
+# green while they are triaged one at a time. Each needs a decision — wire it
+# in, or delete it — and the list should only ever shrink. Do NOT add to it to
+# silence a new file; wire the file in instead.
+#
+# This whole mechanism is a backstop for a hand-kept registry. The fix is
+# `docs/plan/api-test-phase-folders.md`: numbered phase folders the runner
+# globs, so a file cannot be forgotten by construction rather than being
+# caught afterwards. Triaging this list is the prerequisite for that move.
+UNWIRED_KNOWN=(
+  admin_advisories              # expects specific OXICLOUD_* vars in server.env
+  backend_write_lock
+  caldav_tzid
+  caldav_vtodo
+  lowercase_usernames           # docs/plan/username-lowercase.md lists it as shipped
+  ops_banners
+  webdav_carddav_param_encoding
+  webdav_etag_cross_check       # cited as authoritative by docs/architecture/dates.md
+)
+
+check_no_unwired_scenarios() {
+  local wired unwired=() base
+  wired="$(grep -oE '\$API_DIR/[a-z0-9_-]+\.hurl' "$0" | sed 's|.*/||; s|\.hurl$||' | sort -u)"
+  for f in "$API_DIR"/*.hurl; do
+    base="$(basename "$f" .hurl)"
+    [[ "$base" == *_diag ]] && continue
+    printf '%s\n' "$wired" | grep -qx "$base" && continue
+    # shellcheck disable=SC2076
+    [[ " ${UNWIRED_KNOWN[*]} " == *" $base "* ]] && continue
+    unwired+=("$base")
+  done
+  if (( ${#unwired[@]} > 0 )); then
+    echo "[api-test] ERROR: scenario file(s) present but not wired into run.sh:" >&2
+    printf '  %s\n' "${unwired[@]}" >&2
+    echo "Add each to the scenario list so it actually runs." >&2
+    exit 1
+  fi
+}
+
+check_no_unwired_scenarios
+
 # Answered before anything is started — a listing that needs docker, postgres
 # and a server build is not a listing.
 if (( LIST_ONLY )); then
   echo "Selectable scenarios (substring match):"
   scenario_names | sed 's/^/  /'
+  if (( ${#UNWIRED_KNOWN[@]} > 0 )); then
+    echo
+    echo "Present but NOT run (backlog — see UNWIRED_KNOWN in run.sh):"
+    printf '  %s\n' "${UNWIRED_KNOWN[@]}"
+  fi
   exit 0
 fi
 
@@ -291,6 +349,67 @@ if [[ ! -s "$OVER_CAP_FIXTURE" ]]; then
   dd if=/dev/zero of="$OVER_CAP_FIXTURE" bs=1024 count=5120 status=none
 fi
 
+# upload_mime_sniffing.hurl needs real ZIP-family archives. Generated
+# rather than committed for the same reason as above, and because the
+# interesting one has to be built to a precise shape (see below).
+SNIFF_FIXTURE="$REPO_ROOT/tests/fixtures/sniff-padded.docx"
+if [[ ! -s "$SNIFF_FIXTURE" ]]; then
+  log "Generating MIME-sniffing archive fixtures → $REPO_ROOT/tests/fixtures/sniff-*"
+  python3 - "$REPO_ROOT/tests/fixtures" <<'PYEOF'
+import sys, zipfile
+from pathlib import Path
+
+out = Path(sys.argv[1])
+out.mkdir(parents=True, exist_ok=True)
+
+# ── sniff-padded.docx — the case the carve-out exists for ──────────────
+#
+# A .docx IS a zip. `infer` tries to look inside: check_msooml walks the
+# local file headers looking for a `word/` entry. That works only while
+# the entry falls inside the bytes we peeked (MAGIC_BYTES_LEN = 8 KiB).
+#
+# This archive is a VALID docx whose [Content_Types].xml is padded past
+# that window with ZIP_STORED (deflate would squash the padding back to
+# nothing and defeat the point), so `word/document.xml` lands beyond the
+# peek and detection degrades to application/zip. Without the
+# generic-envelope carve-out in common/mime_detect.rs the server stores
+# it as a bare archive.
+z = zipfile.ZipFile(out / "sniff-padded.docx", "w", zipfile.ZIP_DEFLATED)
+z.writestr(
+    zipfile.ZipInfo("[Content_Types].xml"),
+    '<?xml version="1.0"?><Types xmlns="x">' + " " * 20000 + "</Types>",
+    compress_type=zipfile.ZIP_STORED,
+)
+z.writestr("_rels/.rels", '<?xml version="1.0"?><Relationships/>')
+z.writestr("word/document.xml", '<?xml version="1.0"?><document/>')
+z.close()
+
+# ── sniff-plain.zip — the inverse. Must STAY application/zip ──────────
+z = zipfile.ZipFile(out / "sniff-plain.zip", "w", zipfile.ZIP_DEFLATED)
+z.writestr("readme.txt", "just an archive\n")
+z.close()
+
+# ── sniff-book.epub — mimetype first and STORED, per the EPUB spec,
+# which exists precisely so sniffers can read it. infer should get this
+# one unaided; the assertion guards the day it cannot.
+z = zipfile.ZipFile(out / "sniff-book.epub", "w", zipfile.ZIP_DEFLATED)
+z.writestr(
+    zipfile.ZipInfo("mimetype"), "application/epub+zip",
+    compress_type=zipfile.ZIP_STORED,
+)
+z.writestr("META-INF/container.xml", '<?xml version="1.0"?><container/>')
+z.close()
+
+# ── sniff-logo.svg — starts with <?xml, so infer answers text/xml.
+# There is no SVG matcher in infer at all.
+(out / "sniff-logo.svg").write_text(
+    '<?xml version="1.0" encoding="UTF-8"?>\n'
+    '<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4">'
+    '<rect width="4" height="4" fill="#0a0"/></svg>\n'
+)
+PYEOF
+fi
+
 # ── 4. Run Hurl tests ─────────────────────────────────────────────────────────
 
 log "Running Hurl tests..."
@@ -358,10 +477,17 @@ HURL_FILES=( \
   "$API_DIR/transcode_cache.hurl" \
   "$API_DIR/cache_header.hurl" \
   "$API_DIR/broken_pdf_resilience.hurl" \
+  "$API_DIR/upload_mime_sniffing.hurl" \
   "$API_DIR/transcode_import.hurl" \
   "$API_DIR/dedup_admin_gate.hurl" \
   "$API_DIR/admin_jobs.hurl" \
   "$API_DIR/recoverable_jobs.hurl" \
+  # Adjacent to recoverable_jobs.hurl, which pins the INLINE trigger
+  # envelope. This one pins the DETACHED one (202 + dispatched) plus
+  # parameter rejection — and every run it makes is dry_run or scoped
+  # to a mime prefix nothing has, because content_rescan rewrites
+  # mime_type corpus-wide and the suite shares one database.
+  "$API_DIR/content_rescan_job.hurl" \
   "$API_DIR/jobs_notify.hurl" \
   "$API_DIR/storage_multi_entry.hurl" \
   "$API_DIR/default_caldav_carddav.hurl" \
@@ -373,6 +499,11 @@ HURL_FILES=( \
   "$API_DIR/caldav_recurring.hurl" \
   "$API_DIR/caldav_calendar_query.hurl" \
   "$API_DIR/playlists.hurl" \
+  # Adjacent to playlists.hurl because it drives the same
+  # /api/playlists/audio-metadata endpoint — but it is about the
+  # EXTRACTION behind it: that ID3 tags reach the wire at all, and that
+  # one parse serves every copy of the content.
+  "$API_DIR/audio_id3_extraction.hurl" \
   "$API_DIR/public_shares.hurl" \
   "$API_DIR/anonymous_share_session.hurl" \
   "$API_DIR/permissions.hurl" \
@@ -423,6 +554,12 @@ HURL_FILES=( \
   "$API_DIR/webdav_etag_rename_stability.hurl" \
   "$API_DIR/copy_preserves_category_order.hurl" \
   "$API_DIR/photos_sort_date_content_clock.hurl" \
+  # Deliberately next to the file above, which asserts `captured_at`
+  # is ABSENT to prove its content-clock fallback arm. This one is the
+  # other half: a fixture that really does carry EXIF, so the date,
+  # camera and GPS are asserted PRESENT. Read together they pin both
+  # arms of the same COALESCE.
+  "$API_DIR/photos_exif_extraction.hurl" \
   "$API_DIR/search_sort_content_clock.hurl" \
   "$API_DIR/content_clock_metadata_mutations.hurl" \
   "$API_DIR/rest_upload_source_mtime.hurl" \

@@ -3147,7 +3147,7 @@ export type PhotoResourceItemDto = {
      */
     has_gps: boolean;
     /**
-     * Image/video height in pixels, from `storage.file_metadata`.
+     * Image/video height in pixels, from `storage.content_metadata`.
      */
     height?: number | null;
     /**
@@ -3186,7 +3186,7 @@ export type PhotoResourceItemDto = {
      */
     sort_date: string;
     /**
-     * Image/video width in pixels, from `storage.file_metadata`.
+     * Image/video width in pixels, from `storage.content_metadata`.
      * `None` when the row has no metadata (very old uploads, or a
      * format the metadata extractor doesn't understand).
      */

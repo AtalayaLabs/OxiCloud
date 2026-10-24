@@ -1245,8 +1245,6 @@
     "running": "Corsa…",
     "maintenance": "Manutenzione",
     "maintenance_hint": "Eseguire nuovamente la scansione dei file esistenti per eseguire il backfill dei metadati. Sicuro da eseguire nuovamente; elabora l'intera libreria e potrebbe richiedere del tempo.",
-    "reextract_audio": "Riestrarre i metadati audio",
-    "reextract_photos": "Riestrarre le date di acquisizione di foto e video",
     "encryption": "Crittografia",
     "encryption_hint": "Genera una chiave AES-256 per la crittografia dei BLOB inattivi, quindi impostala come OXICLOUD_STORAGE_ENCRYPTION_KEY nell'ambiente server.",
     "gen_key": "Genera chiave",
@@ -1351,7 +1349,6 @@
     },
     "oidc": "OIDC / SSO",
     "oidc_discover": "Prova / scopri",
-    "reextract_done": "{{processed}}/{{total}} elaborati · {{failed}} falliti",
     "sessions": {
       "filter_user": "Utente (UUID)",
       "include_revoked": "Includi revocate / scadute",
