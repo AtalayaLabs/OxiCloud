@@ -4,9 +4,11 @@
 (2026-10-24). Part A verified green across unit + integration + api-test;
 `content_rescan` has unit, DB-integration and real-ffprobe coverage, and the
 two endpoints it replaces are gone, and `content_rescan_job.hurl` pins the
-wire surface. Remaining: only the mime-only `category_order` rework —
-deliberately later, since the extension fallback is what classifies the
-generic-mime rows this job exists to drain. Triggered by
+wire surface. **Nothing is outstanding.** The one item this header used to
+list as "remaining" — the mime-only `category_order` rework — turned out to
+be IMPOSSIBLE rather than pending: see §B.2, where the per-row fan-out is now
+recorded as permanent. Source code has no magic bytes, so the extension is
+the only signal those rows will ever have. Triggered by
 `d5f37514` (`fix(security): sniff the content type before trusting the
 uploader's claim`), which fixed MIME detection on the *inflow* and surfaced
 three things it cannot fix: rows already stored, rows invalidated by content
