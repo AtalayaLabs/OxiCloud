@@ -64,7 +64,19 @@ Content-Type: application/octet-stream
 
 HTTP 201
 [Captures]
-webdav_etag: header "ETag"
+# Strip the RFC 7232 quotes at capture time. The DAV header is
+# `"<tag>"`; the REST JSON `etag` field stores the inner unquoted form.
+# Capturing the raw header and leaning on `contains` to absorb the
+# difference (what this file did until 2026-10-24) cannot work: the
+# actual is the SHORTER unquoted string, and `contains` asks whether the
+# actual contains the expected, so a 29-char value can never contain its
+# own 31-char quoted form. Normalising here lets the comparison below be
+# an exact `==`, which is what a cross-check wants anyway.
+#
+# The optional quotes in the pattern keep this working either way, so a
+# future change to the header's quoting does not silently skip the
+# assertion.
+webdav_etag: header "ETag" regex "\"?([^\"]+)\"?"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -80,10 +92,13 @@ HTTP 200
 [Asserts]
 # The listing echoes the file's ETag at `.items[?(name=="etag-cross-check.bin")].resource.etag`.
 # jsonpath filter syntax: find the item whose name matches, pluck its etag.
-# `contains {{webdav_etag}}` tolerates the quote-wrapping difference between
-# PUT's raw header value and the JSON string (PUT returns `"<tag>"` on the
-# header, JSON stores the inner unquoted form).
-jsonpath "$.items[?(@.resource.name=='etag-cross-check.bin')].resource.etag" contains {{webdav_etag}}
+#
+# Exact equality, not `contains`: the capture above already stripped the
+# header's quotes, and this file exists to prove the two surfaces agree
+# BYTE-FOR-BYTE (the Cyberduck bug was a half-second rounding difference,
+# which a substring match could mask — `...-1792876242` contains
+# `...-179287624`).
+jsonpath "$.items[?(@.resource.name=='etag-cross-check.bin')].resource.etag" == "{{webdav_etag}}"
 
 
 # ─────────────────────────────────────────────────────────────
