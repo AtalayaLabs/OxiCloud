@@ -94,6 +94,13 @@ declare global {
 				latencyMs: number | null;
 				error?: { code: number; message: string };
 			}>;
+			/** Force the message bus to re-arm its circuit breaker and
+			 *  schedule an immediate reconnect. Works whether the state
+			 *  is `disconnected`, `unavailable`, or stuck in a
+			 *  `connecting` cycle. No-op when already `connected`.
+			 *  Routes through the `request-reconnect` port envelope in
+			 *  shared mode. */
+			reconnectBus: () => Promise<void>;
 		};
 	}
 }
@@ -174,6 +181,15 @@ export async function init(): Promise<void> {
 						}
 					};
 				}
+			},
+			// Manual reconnect — forces the bus to re-arm its circuit
+			// breaker and schedule an immediate attempt. Easiest way
+			// out of a `state === 'unavailable'` without reloading the
+			// page, and shortens the long-backoff tail during
+			// `disconnected` cycles.
+			async reconnectBus() {
+				const { messageBus } = await import('$lib/message-bus/client.svelte');
+				messageBus.reconnect();
 			}
 		};
 		// UPLOAD_BATCH_BYTES: getter reads live from localStorage so any
