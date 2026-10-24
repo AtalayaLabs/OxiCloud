@@ -505,10 +505,22 @@ close every browser tab before resuming.
 - **Playwright: collab two tabs different files.** Two tabs each
   open a distinct `.md`, each gets its own subscribe, each sees
   only its own file's UPDATEs (no cross-talk on the port routing).
-- **Playwright: force-fallback path.** Boot with a Chromium flag
-  that disables SharedWorker (`--disable-features=SharedWorkerAPI`);
-  assert the app comes up in per-tab mode and every existing
+- **Playwright: force-fallback path.** Boot with the Chromium flag
+  `--disable-features=SharedWorkerAPI` plus a throwaway
+  `--user-data-dir`; assert the app comes up in per-tab mode
+  (`window.messageBus.constructor.name === 'PerTabMessageBusClient'`,
+  admin `active_ws_sessions === tabCount`) and every existing
   scenario still passes.
+
+  **Flag verified in-the-wild 2026-10-24**: a manual run with
+  `--disable-features=SharedWorkerAPI --user-data-dir=/tmp/<name>`
+  produced 2 tabs → 2 active WS per the admin panel, exactly as
+  shared-mode-disabled expects. Playwright's `launchOptions.args`
+  reproduces this cleanly.
+
+  Alternative: `addInitScript({ delete window.SharedWorker })`
+  inside Playwright — same outcome, no OS-level flag needed,
+  easier to toggle per-test.
 - **Vitest: port protocol roundtrip.** Every envelope kind
   serialised → parsed → typeguard passes → structurally equal.
 - **Vitest: conformance type.** `SharedWorkerBridge extends
