@@ -332,7 +332,14 @@ impl FolderUseCase for FolderService {
         permission: Permission,
         folder_id: &str,
     ) -> Result<Subject, DomainError> {
-        let resource = Self::folder_resource(folder_id)?;
+        // Mount ids (root UUID and `ext:` children) authorise against the
+        // mount-root folder grant (#793) — the REST prechecks on folder
+        // listing, folder metadata and uploads into a mount subfolder all
+        // pass through here.
+        let resource = self
+            .mount_router
+            .folder_authz_resource(folder_id)
+            .ok_or_else(|| DomainError::not_found("Folder", folder_id))?;
         self.authz.require_any(callers, permission, resource).await
     }
 
@@ -446,6 +453,20 @@ impl FolderUseCase for FolderService {
         id: &str,
         caller: Subject,
     ) -> Result<FolderDto, DomainError> {
+        // An `ext:` mount directory has no `storage.folders` row: authorise
+        // on the mount root and stat it on the provider (#793). The mount
+        // root itself is a real row and falls through.
+        if let ResolvedId::MountChild { cfg, node_id } = self.mount_router.classify(id) {
+            self.authz
+                .require(caller, Permission::Read, Resource::Folder(cfg.mount_id))
+                .await?;
+            let stat = cfg.provider.stat(&node_id).await?;
+            if !stat.is_dir {
+                return Err(DomainError::not_found("Folder", id));
+            }
+            let parent = mount_parent_id(&cfg, stat.node_id.as_str());
+            return Ok(mount_folder_dto(&cfg, &parent, &stat));
+        }
         self.authz
             .require(caller, Permission::Read, Self::folder_resource(id)?)
             .await?;
@@ -2551,6 +2572,67 @@ mod mount_authz_integration {
             .list_folders_batch_with_perms(Some(&mount_id), stranger, None, 50)
             .await
             .expect_err("stranger must be denied");
+        assert_eq!(err.kind, crate::domain::errors::ErrorKind::NotFound);
+    }
+
+    /// #793 regression pin: the REST prechecks (`require_permission`) and
+    /// `get_folder_with_perms` must accept `ext:` mount ids. Before the fix
+    /// both parsed the id as a UUID and answered NotFound, so the SPA could
+    /// open a mount root but not a single subfolder (or upload into one).
+    #[tokio::test]
+    async fn rest_prechecks_accept_mount_child_ids() {
+        let (_c, pool) = fresh_db().await;
+        let host = tempfile::tempdir().unwrap();
+        std::fs::create_dir(host.path().join("sub")).unwrap();
+        std::fs::write(host.path().join("sub").join("f.txt"), b"x").unwrap();
+        let (fs, mount_id, owner) = wire_mount(&pool, host.path()).await;
+        let mount_uuid = Uuid::parse_str(&mount_id).unwrap();
+        let sub = encode_child_id(mount_uuid, "sub");
+
+        // Precheck passes for the owner, on the root UUID and on the child.
+        for id in [mount_id.as_str(), sub.as_str()] {
+            let granted = fs
+                .require_permission(&[Subject::User(owner)], Permission::Read, id)
+                .await
+                .expect("owner passes the precheck");
+            assert_eq!(granted, Subject::User(owner));
+        }
+
+        // Folder metadata of a mount subdirectory comes from the provider.
+        let dto = fs
+            .get_folder_with_perms(&sub, Subject::User(owner))
+            .await
+            .expect("owner reads mount subfolder");
+        assert_eq!(dto.name, "sub");
+        assert_eq!(dto.id, sub);
+        assert_eq!(dto.parent_id.as_deref(), Some(mount_id.as_str()));
+
+        // A file id is not a folder.
+        let file_as_folder = encode_child_id(mount_uuid, "sub/f.txt");
+        let err = fs
+            .get_folder_with_perms(&file_as_folder, Subject::User(owner))
+            .await
+            .expect_err("file is not a folder");
+        assert_eq!(err.kind, crate::domain::errors::ErrorKind::NotFound);
+
+        // Stranger: denied on both paths, as NotFound.
+        let stranger = make_user(&pool, "stranger").await;
+        let err = fs
+            .require_permission(&[Subject::User(stranger)], Permission::Read, &sub)
+            .await
+            .expect_err("stranger denied");
+        assert_eq!(err.kind, crate::domain::errors::ErrorKind::NotFound);
+        let err = fs
+            .get_folder_with_perms(&sub, Subject::User(stranger))
+            .await
+            .expect_err("stranger denied");
+        assert_eq!(err.kind, crate::domain::errors::ErrorKind::NotFound);
+
+        // Garbage ids still NotFound, never 500.
+        let err = fs
+            .require_permission(&[Subject::User(owner)], Permission::Read, "garbage")
+            .await
+            .expect_err("garbage id");
         assert_eq!(err.kind, crate::domain::errors::ErrorKind::NotFound);
     }
 
