@@ -624,6 +624,11 @@ HURL_FILES=( \
   "$API_DIR/webdav_etag_rename_stability.hurl" \
   "$API_DIR/webdav_etag_cross_check.hurl" \
   "$API_DIR/copy_preserves_category_order.hurl" \
+  # Beside the copy pin because both guard `category_order`, the
+  # denormalised rank the search type filter MATCHES on. Copy was
+  # dropping it; rename was not refreshing it when the extension
+  # changed the category while the MIME stayed put.
+  "$API_DIR/rename_refreshes_category_order.hurl" \
   "$API_DIR/photos_sort_date_content_clock.hurl" \
   # Deliberately next to the file above, which asserts `captured_at`
   # is ABSENT to prove its content-clock fallback arm. This one is the

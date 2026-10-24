@@ -144,6 +144,41 @@ fn specialises(candidate: &str, generic: &str) -> bool {
     }
 }
 
+/// Extensions where `mime_guess`'s answer is wrong often enough to cause
+/// real damage, with the value to use instead.
+///
+/// This exists because `mime_guess` resolves a shared extension to
+/// whichever registration it happens to hold, and for a few extensions
+/// that is a format nobody has produced in twenty years. The stored MIME
+/// is not cosmetic — it GATES derived features — so a wrong answer does
+/// not merely mislabel, it routes the file into the wrong pipeline.
+///
+/// Applied at the extension step only. A specific client claim still
+/// wins (step 2), and magic bytes still win over everything (step 1), so
+/// this never overrides better information — it replaces a guess with a
+/// better guess.
+///
+/// ⚠ Entries must be formats `infer` CANNOT detect, or the override is
+/// dead code: step 1 would have answered first. Both of the cases
+/// considered here are invisible to `infer` (verified), which is exactly
+/// why the extension is load-bearing for them.
+fn extension_override(ext: &str) -> Option<&'static str> {
+    match ext {
+        // `.rpm` resolves to `audio/x-pn-realaudio-plugin` — a RealAudio
+        // plugin, a format from the 1990s. RPM packages are ubiquitous and
+        // RealAudio plugins are extinct, so the mapping is wrong in
+        // essentially every real case.
+        //
+        // And it is not a cosmetic wrong: `audio/*` passes
+        // `AudioMetadataService::is_audio_file`, so uploading an RPM ran
+        // the ID3 tag parser over a package, and the Type column called it
+        // Audio. `infer` has no RPM signature, so nothing downstream could
+        // correct it either.
+        "rpm" => Some("application/x-rpm"),
+        _ => None,
+    }
+}
+
 /// Refine a claimed MIME type using magic bytes and filename extension.
 ///
 /// This is a synchronous function — the caller should already have the first
@@ -194,7 +229,13 @@ pub fn refine_content_type(buf: &[u8], filename: &str, claimed: &str) -> String 
         return claimed.to_string();
     }
 
-    // 3. Extension, when the client told us nothing usable.
+    // 3. Extension, when the client told us nothing usable — with the
+    //    known-bad mappings corrected first. See `extension_override`.
+    if let Some(ext) = filename.rsplit_once('.').map(|(_, e)| e)
+        && let Some(fixed) = extension_override(&ext.to_ascii_lowercase())
+    {
+        return fixed.to_string();
+    }
     let guess = mime_guess::from_path(filename);
     if let Some(mime) = guess.first() {
         return mime.to_string();
@@ -365,6 +406,52 @@ mod tests {
         assert_eq!(
             refine_content_type(mp3, "track.bin", "application/octet-stream"),
             "audio/mpeg"
+        );
+    }
+
+    /// ⚠ `.rpm` is a package, not a RealAudio plugin.
+    ///
+    /// `mime_guess` resolves `rpm` to `audio/x-pn-realaudio-plugin`, a
+    /// 1990s format, and `infer` has no RPM signature — so with no client
+    /// claim an uploaded RPM was stored as `audio/*` on every path. That
+    /// passes `AudioMetadataService::is_audio_file`, so the ID3 tag parser
+    /// ran over a package, and the Type column called it Audio.
+    ///
+    /// Found 2026-10-24 while checking what the classifier actually sees
+    /// for package extensions.
+    #[test]
+    fn a_package_extension_is_not_audio() {
+        // No claim, no signature: the override is the only thing standing
+        // between an RPM and the audio pipeline.
+        assert_eq!(
+            refine_content_type(b"\xed\xab\xee\xdb", "nginx-1.0.rpm", ""),
+            "application/x-rpm"
+        );
+        // Also with a useless generic claim, which is what most clients
+        // send for an unknown extension.
+        assert_eq!(
+            refine_content_type(b"zzz", "pkg.rpm", "application/octet-stream"),
+            "application/x-rpm"
+        );
+        // Case-insensitive, like every other extension path here.
+        assert_eq!(
+            refine_content_type(b"zzz", "PKG.RPM", ""),
+            "application/x-rpm"
+        );
+
+        // ⚠ The override must NOT outrank better information. A specific
+        // claim is the caller telling us something the table cannot know,
+        // and magic bytes are a fact about the content.
+        assert_eq!(
+            refine_content_type(b"zzz", "weird.rpm", "audio/x-pn-realaudio-plugin"),
+            "audio/x-pn-realaudio-plugin",
+            "a deliberate claim must still win over the override"
+        );
+        let png: &[u8] = &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        assert_eq!(
+            refine_content_type(png, "mislabelled.rpm", ""),
+            "image/png",
+            "magic bytes must still win over the override"
         );
     }
 
