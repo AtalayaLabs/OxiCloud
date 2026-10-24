@@ -68,6 +68,32 @@ declare global {
 			setLogLevel: (namespace: string, level: log.LogLevelDesc) => string;
 			listLogLevels: () => Record<string, string>;
 			UPLOAD_BATCH_BYTES: number;
+			/** End-to-end diagnostic for the message bus. Round-trips a
+			 *  `rt.ping` across the full chain (tab → worker in shared
+			 *  mode, OR tab-local in per-tab mode → server → back) and
+			 *  returns a structured snapshot:
+			 *
+			 *    await oxi.checkBusChain()
+			 *    // {
+			 *    //   ok: true,
+			 *    //   impl: 'SharedWorkerBridge',
+			 *    //   state: 'connected',
+			 *    //   workerVersion: 'dev-1792800537',
+			 *    //   latencyMs: 7
+			 *    // }
+			 *
+			 *  `ok: false` with `error: {code, message}` is returned
+			 *  instead of throwing — easier to read in DevTools when
+			 *  the WS is down. `message === 'not_connected'` is the
+			 *  common signal that the worker lost its WS. */
+			checkBusChain: () => Promise<{
+				ok: boolean;
+				impl: string;
+				state: string;
+				workerVersion: string | null;
+				latencyMs: number | null;
+				error?: { code: number; message: string };
+			}>;
 		};
 	}
 }
@@ -110,6 +136,44 @@ export async function init(): Promise<void> {
 					}
 				}
 				return out;
+			},
+			// End-to-end bus diagnostic — see the Window.oxi JSDoc above
+			// for the full return shape and failure modes. Dynamic
+			// import so the main `window.oxi` setup stays sync and the
+			// message-bus module graph isn't eagerly pulled in by
+			// hooks.client.ts (it's already loaded elsewhere; the
+			// dynamic import returns the cached singleton).
+			async checkBusChain() {
+				const { messageBus } = await import('$lib/message-bus/client.svelte');
+				const impl = messageBus.constructor.name;
+				// `workerVersion` only exists on the SharedWorker bridge;
+				// null in per-tab mode. The optional chain + the ?? null
+				// keep both impls' return shape identical.
+				const workerVersion =
+					(messageBus as unknown as { workerVersion?: string | null }).workerVersion ?? null;
+				try {
+					const latencyMs = await messageBus.ping();
+					return {
+						ok: true,
+						impl,
+						state: messageBus.state,
+						workerVersion,
+						latencyMs
+					};
+				} catch (err) {
+					const e = err as { code?: number; message?: string };
+					return {
+						ok: false,
+						impl,
+						state: messageBus.state,
+						workerVersion,
+						latencyMs: null,
+						error: {
+							code: typeof e.code === 'number' ? e.code : -1,
+							message: typeof e.message === 'string' ? e.message : String(err)
+						}
+					};
+				}
 			}
 		};
 		// UPLOAD_BATCH_BYTES: getter reads live from localStorage so any

@@ -62,7 +62,19 @@ function installLoglevelFanout(c: WorkerCore): void {
 			}
 		};
 	};
-	log.setLevel(log.getLevel());
+	// Worker emits ALL log levels unconditionally; filtering happens
+	// on the tab side (per-tab `loglevel`). Without this, loglevel's
+	// default `warn` would make `.debug()` a no-op INSIDE the worker,
+	// so the fan-out never gets a chance to run and
+	// `oxi.setLogLevel('oxi:message-bus:worker', 'debug')` in a tab
+	// would silently do nothing.
+	//
+	// The push-down filter in WorkerCore.emitLog + per-port
+	// wantedLogLevel optimises OUTBOUND port traffic (don't send
+	// envelopes to tabs that don't want them), but it also needs the
+	// worker's own emission to happen first. These two together are
+	// what wire tab-level filtering end-to-end.
+	log.setLevel('trace');
 }
 
 // ============================================================

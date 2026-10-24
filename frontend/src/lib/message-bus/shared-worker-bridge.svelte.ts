@@ -147,11 +147,25 @@ export class SharedWorkerBridge implements MessageBusClient {
 		// Fire `hello` — tells the worker about this port's wanted log
 		// level up-front so the push-down filter is correct from the
 		// first log line.
+		//
+		// Default is `trace` (the lowest level) so the worker's push-
+		// down filter admits everything by default; each tab's local
+		// `loglevel` setting is what actually decides what prints to
+		// its console. Without this, a tab calling
+		// `oxi.setLogLevel('oxi:message-bus:worker', 'debug')` would
+		// still get no debug lines because the port-level filter
+		// defaulted to `info` and would reject them before fan-out.
+		//
+		// Trade-off vs. the earlier `info` default: slightly more
+		// port traffic when no tab wants debug. For OxiCloud's log
+		// volume this is negligible; a proper `set-log-level`
+		// propagation wire belongs in a follow-up if the trade ever
+		// becomes measurable.
 		const reqId = this.#allocReqId();
 		this.#post({
 			kind: 'hello',
 			reqId,
-			wantedLogLevel: opts?.wantedLogLevel ?? 'info'
+			wantedLogLevel: opts?.wantedLogLevel ?? 'trace'
 		});
 
 		// NO eager ticket primer. The bridge is constructed on every
