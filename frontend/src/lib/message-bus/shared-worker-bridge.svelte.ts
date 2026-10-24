@@ -52,6 +52,21 @@ interface RtTicketResponse {
  *  same channel as the worker-side one. */
 const busLog = log.getLogger('oxi:message-bus');
 
+/** Client-side deadline for the ticket POST. The browser's native
+ *  TCP-connect timeout is ~75 s, which keeps `apiJson` hanging on
+ *  a dead-but-not-refusing server for the whole window — the worker
+ *  only hears about failure via its own `NEED_TICKET_TIMEOUT_MS`
+ *  backstop (5 s), so EVERY cycle during an outage costs 5 s even
+ *  if the real failure would surface instantly. A 2 s client-side
+ *  deadline closes that gap: on expiry we abort the fetch, catch
+ *  the AbortError, and post `ticket-fetch-failed` so the worker
+ *  schedules the next cycle immediately.
+ *
+ *  2 s is well above the P99 for healthy requests (localhost
+ *  5–20 ms, behind a reverse proxy 50–200 ms, slow mobile network
+ *  500 ms–1 s) and well below the browser's native timeout. */
+const TICKET_FETCH_TIMEOUT_MS = 2_000;
+
 /** Topic → local handlers. Refcounted the same way `PerTabMessageBusClient`
  *  refcounts — multiple consumers on the same topic share one upstream
  *  subscribe (the worker tracks that side), but each consumer's
@@ -203,12 +218,17 @@ export class SharedWorkerBridge implements MessageBusClient {
 	 *  `provide-ticket`. On throw, signal the worker synchronously
 	 *  via `ticket-fetch-failed` so the circuit breaker counts the
 	 *  failure immediately instead of waiting the 5 s need-ticket
-	 *  budget. */
+	 *  budget.
+	 *
+	 *  Client-side AbortController deadline — see TICKET_FETCH_TIMEOUT_MS. */
 	async #fetchAndProvideTicket(nonce: number): Promise<void> {
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), TICKET_FETCH_TIMEOUT_MS);
 		try {
 			const res = await apiJson<RtTicketResponse>('/api/rt/ticket', {
 				method: 'POST',
-				headers: getCsrfHeaders()
+				headers: getCsrfHeaders(),
+				signal: controller.signal
 			});
 			this.#post({
 				kind: 'provide-ticket',
@@ -216,17 +236,31 @@ export class SharedWorkerBridge implements MessageBusClient {
 				nonce
 			});
 		} catch (err) {
-			// A 403 here (anonymous session, revoked, etc.) is terminal
-			// at the auth layer; the worker's circuit breaker trips on
-			// repeated failures. A 401 would have been retried-with-
-			// refresh by apiFetch already — if it got here, the refresh
-			// also failed. Either way, tell the worker RIGHT NOW so it
-			// doesn't sit on the 5 s need-ticket timeout.
+			// Three paths land here:
+			//   * Server actively refusing (`ERR_CONNECTION_REFUSED`) —
+			//     throws fast, `aborted` is false, next cycle schedules
+			//     immediately via `ticket-fetch-failed`.
+			//   * Server hanging on TCP SYN with no response — the
+			//     browser's native TCP-connect timeout is ~75 s, far
+			//     too long. The AbortController trips at
+			//     TICKET_FETCH_TIMEOUT_MS and the fetch rejects with
+			//     `AbortError`. `aborted` is true.
+			//   * A real auth failure (403 anonymous, 401 after
+			//     refresh failed) — throws with an HTTP status. The
+			//     worker's circuit breaker trips after
+			//     MAX_CONSECUTIVE_FAILURES. `aborted` is false.
+			//
+			// Either way, tell the worker RIGHT NOW so it doesn't sit
+			// on the 5 s need-ticket timeout.
+			const aborted = (err as { name?: string })?.name === 'AbortError';
 			busLog.warn('ticket fetch failed — signalling worker (fast path)', {
 				nonce,
-				err
+				err,
+				aborted
 			});
 			this.#post({ kind: 'ticket-fetch-failed', nonce });
+		} finally {
+			clearTimeout(timer);
 		}
 	}
 
@@ -309,6 +343,10 @@ export class SharedWorkerBridge implements MessageBusClient {
 					// `'reconnect'` and `'bridge_closed'` because the
 					// transport's aggressive reset throws those on
 					// pending topic waiters when manually re-armed.
+					//
+					// Plain Set — short-lived local lookup, not
+					// reactive state.
+					// eslint-disable-next-line svelte/prefer-svelte-reactivity
 					const transientMsgs = new Set([
 						'ws_closed',
 						'not_connected',

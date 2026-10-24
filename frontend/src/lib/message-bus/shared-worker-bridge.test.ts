@@ -17,9 +17,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { MessageChannel as NodeMessageChannel } from 'node:worker_threads';
 
 // Hoisted mocks — the bridge's module graph pulls in `apiJson` and
-// `getCsrfHeaders` via static import.
+// `getCsrfHeaders` via static import. apiJson's type is widened to
+// `(url, init) => Promise<unknown>` so tests can override with
+// a specific-shape implementation (e.g. the hanging-fetch stub in
+// the AbortController test) without TypeScript narrowing fighting
+// each `mockImplementationOnce`.
 const { apiJsonMock, csrfMock } = vi.hoisted(() => ({
-	apiJsonMock: vi.fn(async () => ({
+	apiJsonMock: vi.fn<(url: string, init?: RequestInit) => Promise<unknown>>(async () => ({
 		ticket: 'uuid-1',
 		expires_in_seconds: 30,
 		subprotocol: 'oxi.ticket.uuid-1'
@@ -115,5 +119,91 @@ describe('SharedWorkerBridge — on-demand ticket flow (post-regression wiring)'
 		expect(call[1].headers).toMatchObject({ 'X-CSRF-Token': 'test-csrf' });
 		bridge.close();
 		bridge2.close();
+	});
+
+	it('passes an AbortSignal to apiJson so the fetch is cancellable', async () => {
+		// Regression pin for the AbortController wiring. If a future
+		// edit drops the `signal` option, the bridge loses the
+		// client-side deadline and reverts to waiting for the
+		// browser's ~75 s TCP-connect timeout on a hanging server —
+		// each reconnect cycle costs 5 s instead of 2 s. The pin is
+		// that `signal` is PRESENT and is an `AbortSignal`; the
+		// deadline behaviour is covered by the follow-up test.
+		apiJsonMock.mockClear();
+		const { in: workerSide, out: tabSide } = newChannel();
+		const bridge = new SharedWorkerBridge(tabSide);
+		(workerSide as unknown as { postMessage: (m: unknown) => void }).postMessage({
+			kind: 'need-ticket',
+			nonce: 11
+		});
+		await new Promise((r) => setTimeout(r, 10));
+
+		expect(apiJsonMock).toHaveBeenCalled();
+		const call = apiJsonMock.mock.calls[0] as unknown as [string, RequestInit];
+		expect(call[1].signal).toBeInstanceOf(AbortSignal);
+		expect(call[1].signal?.aborted).toBe(false);
+		bridge.close();
+	});
+
+	it('posts ticket-fetch-failed when the fetch hangs past the deadline', async () => {
+		// Pin: on a dead-but-not-refusing server, apiJson hangs
+		// (no response). The AbortController fires at
+		// TICKET_FETCH_TIMEOUT_MS (2 s), fetch throws AbortError,
+		// bridge catches, posts `ticket-fetch-failed`. The worker's
+		// `transport.ticketFetchFailed(nonce)` then bumps the
+		// consecutiveFailures counter immediately — the 5 s
+		// need-ticket backstop never has to fire.
+		//
+		// Vitest's fake timers advance the clock without real-time
+		// delay, so the 2 s abort window completes near-instantly.
+		vi.useFakeTimers();
+		apiJsonMock.mockClear();
+
+		// Mock apiJson to NEVER resolve on its own — simulates the
+		// hung-server case. The AbortController should trip the
+		// signal from the caller side, which fetch would normally
+		// honour by rejecting with AbortError. Our mock has to do
+		// the rejection manually since it isn't the real fetch.
+		apiJsonMock.mockImplementationOnce(
+			(_url: string, init?: RequestInit) =>
+				new Promise((_resolve, reject) => {
+					init?.signal?.addEventListener('abort', () => {
+						const err = new Error('aborted');
+						(err as Error & { name: string }).name = 'AbortError';
+						reject(err);
+					});
+				})
+		);
+
+		const { in: workerSide, out: tabSide } = newChannel();
+		const received: Array<{ kind: string; [k: string]: unknown }> = [];
+		const nodeWorker = workerSide as unknown as {
+			on: (ev: 'message', cb: (msg: unknown) => void) => void;
+			start?: () => void;
+			postMessage: (m: unknown) => void;
+		};
+		nodeWorker.on('message', (m) => received.push(m as { kind: string }));
+		nodeWorker.start?.();
+
+		const bridge = new SharedWorkerBridge(tabSide);
+		nodeWorker.postMessage({ kind: 'need-ticket', nonce: 42 });
+		await vi.advanceTimersByTimeAsync(10);
+		expect(apiJsonMock).toHaveBeenCalled();
+
+		// Nothing fired yet — abort hasn't tripped.
+		expect(received.some((m) => m.kind === 'ticket-fetch-failed')).toBe(false);
+
+		// Jump to just after the 2 s deadline — abort trips, catch
+		// branch runs, ticket-fetch-failed posts.
+		await vi.advanceTimersByTimeAsync(2_100);
+
+		const failed = received.find((m) => m.kind === 'ticket-fetch-failed') as
+			| { kind: string; nonce: number }
+			| undefined;
+		expect(failed).toBeDefined();
+		expect(failed?.nonce).toBe(42);
+
+		bridge.close();
+		vi.useRealTimers();
 	});
 });
