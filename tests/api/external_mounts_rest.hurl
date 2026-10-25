@@ -27,6 +27,20 @@ HTTP 200
 token: jsonpath "$.access_token"
 
 
+# Capture admin's user id for the #837 effective_grants assertion
+# below — the filter needs to pin which SUBJECT holds the owner
+# grant, not just that *some* owner grant exists. `$.full.user.id`
+# (not `$.id`): `/api/auth/me` returns the Self view composed over
+# Full over Public (user_dto.rs), and the layers are NOT
+# serde-flattened — the nesting is on the wire.
+GET {{base_url}}/api/auth/me
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Captures]
+admin_user_id: jsonpath "$.full.user.id"
+
+
 GET {{base_url}}/api/drives
 Authorization: Bearer {{token}}
 
@@ -173,7 +187,14 @@ HTTP 200
 [Asserts]
 jsonpath "$.ancestors" count >= 2
 jsonpath "$.ancestors[-1].name" == "hurl-rest-sub"
-jsonpath "$.ancestors[?(@.name=='hurl-rest-mount')]" count == 1
+# Hurl collapses a single-element filter match to a scalar, so a
+# `count == 1` assertion fails with "invalid filter input type"
+# (the input is the matched object, not a list). Project onto
+# `.name` and compare the scalar instead; a zero-match would
+# fail parsing, a multi-match wouldn't collapse and would also
+# fail the `==` — covers "exists exactly once" without the
+# collection-count call.
+jsonpath "$.ancestors[?(@.name=='hurl-rest-mount')].name" == "hurl-rest-mount"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -213,8 +234,66 @@ HTTP 200
 [Asserts]
 jsonpath "$.ancestors" count >= 3
 jsonpath "$.ancestors[-1].name" == "nested-leaf"
-jsonpath "$.ancestors[?(@.name=='hurl-rest-sub')]" count == 1
-jsonpath "$.ancestors[?(@.name=='hurl-rest-mount')]" count == 1
+# Scalar-projection trick to avoid Hurl's collapse-on-single-match
+# (see earlier note on the one-segment case).
+jsonpath "$.ancestors[?(@.name=='hurl-rest-sub')].name" == "hurl-rest-sub"
+jsonpath "$.ancestors[?(@.name=='hurl-rest-mount')].name" == "hurl-rest-mount"
+
+
+# ─────────────────────────────────────────────────────────────
+# #837 — effective_grants on a mount-child leaf.
+#
+# `?include_grants=true` RAISES the required permission to Share
+# (the gate right below the Read one in `get_ancestors_with_perms`).
+# The grants collector runs over the NATIVE rows only (mount root
+# and its native ancestors) — synthetic mount-child entries have
+# no `role_grants` row of their own. The expected invariant:
+# `effective_grants` for a leaf INSIDE a mount is the same set
+# as `effective_grants` for the mount root itself.
+#
+# Three failure modes this pin catches:
+#   1. "Grants collection skipped on the mount-child path" →
+#      `effective_grants: []`. Caught by the `>= 1` assertion.
+#   2. "Grants duplicated per synthetic segment" (one copy per
+#      path depth) → the equivalence check with the mount root's
+#      count would see 2× or 3×. Caught by `count ==` on the
+#      second call.
+#   3. "Reading from the wrong drive scope" → subjects wouldn't
+#      include the admin. Caught by the subject-filter assertion.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/folders/{{nested_sub_id}}/ancestors?include_grants=true
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Captures]
+mount_child_grants_count: jsonpath "$.effective_grants" count
+[Asserts]
+jsonpath "$.effective_grants" exists
+jsonpath "$.effective_grants" count >= 1
+# Admin's drive-owner grant on their personal drive must be in
+# there — the mount lives in admin's personal drive and the
+# `role_grants` row seeded at user creation is `(admin, drive,
+# <personal-drive>, owner)`.
+#
+# Compound filter on `subject.id` AND `role` so a regression that
+# leaked a DIFFERENT user's owner grant (e.g. by reading from the
+# wrong drive scope) is caught. `SubjectDto` has no `name` field —
+# `{type, id}` only — so the admin match goes through the captured
+# `admin_user_id`. Scalar projection on `.role` to work around
+# Hurl's single-element collapse (the filter yields the matched
+# object, not a one-element list).
+jsonpath "$.effective_grants[?(@.subject.id=='{{admin_user_id}}' && @.role=='owner')].role" == "owner"
+
+
+# Equivalence check: querying the mount root with the same flag
+# must return the SAME set. If the fix duplicated grants per
+# synthetic segment, this count would mismatch.
+GET {{base_url}}/api/folders/{{mount_id}}/ancestors?include_grants=true
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.effective_grants" count == {{mount_child_grants_count}}
 
 
 # Download, preview, metadata of the `ext:` file.
