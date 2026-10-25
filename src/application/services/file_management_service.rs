@@ -464,10 +464,16 @@ impl FileManagementUseCase for FileManagementService {
         permission: Permission,
         file_id: &str,
     ) -> Result<Subject, DomainError> {
-        let uuid = Uuid::parse_str(file_id).map_err(|_| DomainError::not_found("File", file_id))?;
-        self.authz
-            .require_any(callers, permission, Resource::File(uuid))
-            .await
+        // `ext:` mount children authorise against the mount-root folder grant
+        // (#793): parsing them as UUIDs turned every REST precheck on a file
+        // inside a mount — download, thumbnail, metadata — into NotFound
+        // before the handler's mount branch could run.
+        let resource = match &self.mount_router {
+            Some(router) => router.file_authz_resource(file_id),
+            None => Uuid::parse_str(file_id).ok().map(Resource::File),
+        }
+        .ok_or_else(|| DomainError::not_found("File", file_id))?;
+        self.authz.require_any(callers, permission, resource).await
     }
 
     async fn move_file_with_perms(

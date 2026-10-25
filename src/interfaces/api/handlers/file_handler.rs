@@ -599,6 +599,17 @@ impl FileHandler {
             Err(err) => return AppError::from(err).into_response(),
         };
 
+        // External mount files have no blob and no thumbnail pipeline yet:
+        // answer the documented "no thumbnail for this file" 204 instead of
+        // letting the blob lookup below 404 (#793). The SPA shows the type
+        // icon for 204.
+        if matches!(
+            state.mount_router.classify(&id),
+            ResolvedId::MountChild { .. }
+        ) {
+            return StatusCode::NO_CONTENT.into_response();
+        }
+
         let thumbnail_service = &state.core.thumbnail_service;
 
         let thumb_size = match size.as_str() {
@@ -1441,6 +1452,23 @@ impl FileHandler {
             .await
         {
             return AppError::from(err).into_response();
+        }
+
+        // External mount files are not EXIF-indexed (no blob, no extractor
+        // run): same body as "indexed, nothing found" rather than a repo
+        // error on the `ext:` id (#793).
+        if matches!(
+            state.mount_router.classify(&file_id),
+            ResolvedId::MountChild { .. }
+        ) {
+            return (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "file_id": file_id,
+                    "message": "No EXIF metadata available"
+                })),
+            )
+                .into_response();
         }
 
         let metadata_repo = &state.repositories.file_metadata_repository;
