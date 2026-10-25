@@ -613,59 +613,84 @@ impl RecoverableJobHandler for ContentRescan {
                     .map(|(first, _)| first.as_str())
                     .unwrap_or(row.content_hash.as_str());
 
-                let head = match self
-                    .dedup
-                    .read_object_head_uncached(object_hash, HEAD_BYTES)
-                    .await
-                {
-                    Ok(h) => {
-                        head_reads += 1;
-                        h
-                    }
-                    // ⚠ A TRANSIENT failure stops the run; it must never
-                    // become a finding. If the backend is unreachable,
-                    // every content in the corpus fails identically — so
-                    // treating it per-row would emit thousands of
-                    // findings and then report Completed, i.e. a run that
-                    // re-sniffed nothing claiming success. Pause at the
-                    // last settled content instead, and let a human
-                    // decide when the backend is back.
-                    Err(e) if e.is_transient() => {
-                        return RunOutcome::from_domain_error(
-                            settled.as_ref().map(|c| c.as_bytes()),
-                            "content head read",
-                            &e,
-                        );
-                    }
-                    // A PERMANENT error is about this one object — the
-                    // bytes are gone or corrupt — so it is a finding and
-                    // the sweep carries on.
-                    Err(e) => {
-                        failures += 1;
-                        record_or_log(
-                            store,
-                            CONTENT_RESCAN_JOB_NAME,
-                            "blob_head_unreadable",
-                            // `anomaly`, not `data_loss`: files_consistency
-                            // owns `missing_blob` and is the authority for
-                            // that claim. Two jobs disagreeing about the
-                            // same condition is worse than one
-                            // under-claiming.
-                            "anomaly",
-                            None,
-                            serde_json::json!({
-                                "content_hash": row.content_hash,
-                                "object_hash":  object_hash,
-                                "file_count":   row.file_ids.len(),
-                                "error":        e.to_string(),
-                            }),
-                        )
-                        .await;
-                        // Concluded, unhappily: this content was examined
-                        // and found unreadable. A resumed run should not
-                        // retry it forever.
-                        settled = Some(row.content_hash.clone());
-                        continue;
+                // Zero-byte content: nothing to read, and nothing to sniff.
+                // `size` is `max(f.size)` over the group, and every file on
+                // one hash has the same content, so `== 0` is exact rather
+                // than a heuristic.
+                //
+                // ⚠ This has to come BEFORE the read, not as recovery after
+                // a failed one. A chunkless manifest has no first chunk, so
+                // the `unwrap_or` above falls back to the LEGACY whole-file
+                // path and asks the backend for an object named after the
+                // empty BLAKE3 hash (`af1349b9…`) — which was never stored,
+                // because storing zero bytes stores nothing. The backend
+                // answers `no such key`: a PERMANENT error, so the sweep
+                // recorded `blob_head_unreadable` against a file that is
+                // perfectly intact. That is the one finding an operator must
+                // never be trained to ignore, and the branch `continue`s, so
+                // the row silently lost its category backfill as well.
+                //
+                // Falling through with an empty head rather than skipping the
+                // row is deliberate: `infer` yields nothing, `decide` leaves
+                // the type alone, and the category backfill below still runs
+                // — which is the only work an empty file actually needs.
+                let head = if row.size == 0 {
+                    bytes::Bytes::new()
+                } else {
+                    match self
+                        .dedup
+                        .read_object_head_uncached(object_hash, HEAD_BYTES)
+                        .await
+                    {
+                        Ok(h) => {
+                            head_reads += 1;
+                            h
+                        }
+                        // ⚠ A TRANSIENT failure stops the run; it must never
+                        // become a finding. If the backend is unreachable,
+                        // every content in the corpus fails identically — so
+                        // treating it per-row would emit thousands of
+                        // findings and then report Completed, i.e. a run that
+                        // re-sniffed nothing claiming success. Pause at the
+                        // last settled content instead, and let a human
+                        // decide when the backend is back.
+                        Err(e) if e.is_transient() => {
+                            return RunOutcome::from_domain_error(
+                                settled.as_ref().map(|c| c.as_bytes()),
+                                "content head read",
+                                &e,
+                            );
+                        }
+                        // A PERMANENT error is about this one object — the
+                        // bytes are gone or corrupt — so it is a finding and
+                        // the sweep carries on.
+                        Err(e) => {
+                            failures += 1;
+                            record_or_log(
+                                store,
+                                CONTENT_RESCAN_JOB_NAME,
+                                "blob_head_unreadable",
+                                // `anomaly`, not `data_loss`: files_consistency
+                                // owns `missing_blob` and is the authority for
+                                // that claim. Two jobs disagreeing about the
+                                // same condition is worse than one
+                                // under-claiming.
+                                "anomaly",
+                                None,
+                                serde_json::json!({
+                                    "content_hash": row.content_hash,
+                                    "object_hash":  object_hash,
+                                    "file_count":   row.file_ids.len(),
+                                    "error":        e.to_string(),
+                                }),
+                            )
+                            .await;
+                            // Concluded, unhappily: this content was examined
+                            // and found unreadable. A resumed run should not
+                            // retry it forever.
+                            settled = Some(row.content_hash.clone());
+                            continue;
+                        }
                     }
                 };
 
@@ -1394,6 +1419,19 @@ mod integration_tests {
     /// empty file stopped the job for the entire corpus. Found on a real
     /// instance, not here: the seeded fixtures all had content.
     ///
+    /// The SECOND defect on the same fixture: once the chunkless manifest
+    /// was correctly dropped from the probe's map, the per-row `unwrap_or`
+    /// fell back to the legacy whole-file path and asked the backend for an
+    /// object named after the empty hash. Nothing was ever stored there —
+    /// storing zero bytes stores nothing — so the backend said `no such
+    /// key`, a PERMANENT error, and the sweep filed `blob_head_unreadable`
+    /// against an intact file. Also found on a real instance.
+    ///
+    /// The file is seeded `.ini` with a stale `category_order` of 9999 so
+    /// the backfill is observable: an empty `.ini` is `text/plain`/Config,
+    /// and Config is 950. A `.bin` would have classified as Unknown, which
+    /// IS 9999, and the assertion would have passed without the fix.
+    ///
     /// Returns a hash referenced by one file, so the walk actually visits
     /// it.
     async fn seed_chunkless(pool: &sqlx::PgPool, tag: &str, user: Uuid, drive: Uuid) -> String {
@@ -1413,10 +1451,10 @@ mod integration_tests {
             "INSERT INTO storage.files
                  (id, name, drive_id, blob_hash, mime_type, size,
                   category_order, created_by, updated_by)
-             VALUES (gen_random_uuid(), $1, $2, $3, 'application/octet-stream', 0,
+             VALUES (gen_random_uuid(), $1, $2, $3, 'text/plain', 0,
                      9999, $4, $4)",
         )
-        .bind(format!("empty-{tag}.bin"))
+        .bind(format!("empty-{tag}.ini"))
         .bind(drive)
         .bind(&hash)
         .bind(user)
@@ -1425,6 +1463,14 @@ mod integration_tests {
         .expect("seed chunkless file");
 
         hash
+    }
+
+    async fn category_of(pool: &sqlx::PgPool, hash: &str) -> i16 {
+        sqlx::query_scalar("SELECT category_order FROM storage.files WHERE blob_hash = $1")
+            .bind(hash)
+            .fetch_one(pool)
+            .await
+            .expect("read back category")
     }
 
     async fn types_and_categories(pool: &sqlx::PgPool, ids: &[Uuid]) -> Vec<(String, i16)> {
@@ -1545,8 +1591,10 @@ mod integration_tests {
         }
         assert_eq!(
             stat(&extra, "files_retyped"),
-            Some(3),
-            "all three copies must be retyped by the fan-out",
+            Some(4),
+            "expected 3 fanned-out retypes plus the empty file's category \
+             backfill — `files_retyped` counts ROWS UPDATED, and only \
+             `mime_changed` below is gated on the type actually moving",
         );
         // THE dedup guarantee, and the reason this job walks content
         // rather than files: three files, one read.
@@ -1556,6 +1604,23 @@ mod integration_tests {
             "three files on one content cost more than one backend read",
         );
         assert_eq!(stat(&extra, "mime_changed"), Some(1));
+
+        // ⚠ The zero-byte file is INTACT, so it must produce no finding at
+        // all — and its stale category must still be refreshed. Before the
+        // fix the backend was asked for an object that was never stored,
+        // which filed `blob_head_unreadable` against a healthy file and
+        // `continue`d past the backfill, so the row reappeared on every
+        // subsequent run.
+        assert_eq!(
+            stat(&extra, "failures"),
+            Some(0),
+            "a zero-byte file was reported as unreadable content",
+        );
+        assert_eq!(
+            category_of(&pool, &empty_hash).await,
+            950,
+            "the empty file's stale category was never refreshed (Config = 950)",
+        );
 
         // ── Phase 3: idempotent ──────────────────────────────────────
         let extra = run_job(&pool, &JobRunArgs::default()).await;
