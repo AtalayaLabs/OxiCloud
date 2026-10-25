@@ -642,11 +642,12 @@ telemetry nobody asked for.
 
 Findings via `record_or_log`, **one per content, not per file** — a song with
 400 copies must not produce 400 findings, so `detail` carries `file_count` and
-a capped sample. Four kinds:
+a capped sample. Five kinds:
 
 | kind | severity |
 |---|---|
 | `mime_type_mismatch` | **`anomaly`** — informational |
+| `stored_type_divergence` | `anomaly` — see below |
 | `category_order_refreshed` | `anomaly` — informational |
 | `blob_head_unreadable` | `anomaly` |
 | `rederive_failed` | `anomaly` |
@@ -671,11 +672,37 @@ treatment under `files`: it previously carried two hashes and a count, which
 cannot be acted on — and it is the kind that means bytes may be missing, so
 "which files" is the only question it raises.
 
-**Known gap, not addressed:** `decide` returns `Leave` on silence, so two
-files on identical bytes can record two different stored types indefinitely
-whenever the content has no magic signature (`.bin`, source files). Divergent
-`stored_types` within one hash is a genuine inconsistency the job sees and
-does not report.
+**`stored_type_divergence` is a fifth kind (2026-10-25).** `decide` returns
+`Leave` on silence, so two files on identical bytes could record two different
+stored types indefinitely whenever the content has no signature (`.bin`,
+source files) — an inconsistency the job walked straight past.
+
+The predicate is **not** `stored_types.len() > 1`. Copies of one content are
+*allowed* to disagree, and that is load-bearing: a zip shared by `report.docx`
+and `backup.zip` genuinely is both — the reason `RetypePerFile` exists — and
+`data.json` beside `data.txt` is two right answers from one byte string. The
+naive predicate would fire on the carve-out the job was built around.
+
+What is reported is divergence the **names** cannot explain: files whose
+`mime_detect::type_from_name` agrees holding different stored types. Gated on
+`Decision::Leave`, because the other decisions already resolve it — a real
+detection converges every copy (reported as `mime_type_mismatch`), and a
+generic envelope is *supposed* to diverge per name.
+
+`type_from_name` is step 3 of `refine_content_type`, hoisted to `pub` rather
+than reimplemented, so a caller with no bytes asks the same question and gets
+the same answer — including the `extension_override` corrections.
+
+**Report only, never repair**, and not because repair is unimplemented: the
+bytes said nothing, so there is no better answer to converge on and a fix
+could only pick a winner. Discovery-only unless repair is explicitly asked
+for is the house rule anyway.
+
+Severity `anomaly`, deliberately not `inconsistent`: claim-vs-extension
+ordering differs across upload paths, so first-run volume on a real corpus is
+unknown, and a kind that pages on sight would train operators to mute the
+channel before the number is known. Promote it once a real sweep shows the
+volume is small.
 
 ⚠ **A changed mime type is INFORMATIONAL, not an inconsistency.** All three
 kinds are `anomaly`, which is what "informational" means in this codebase —

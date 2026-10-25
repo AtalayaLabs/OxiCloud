@@ -185,6 +185,30 @@ fn extension_override(ext: &str) -> Option<&'static str> {
     }
 }
 
+/// The type a FILENAME alone implies — step 3 of `refine_content_type`,
+/// with the known-bad `mime_guess` mappings corrected first (see
+/// `extension_override`).
+///
+/// Factored out rather than inlined because a caller with no bytes to sniff
+/// has to be able to ask the same question and get the same answer.
+/// `content_rescan` asks it to decide whether copies of one content are
+/// allowed to disagree about their type: two names that imply the same type
+/// have no business holding different ones, while `report.docx` beside
+/// `backup.zip` is two right answers from one byte string.
+///
+/// `None` means the name carries no signal at all — no extension, or one
+/// `mime_guess` has never heard of.
+pub fn type_from_name(filename: &str) -> Option<String> {
+    if let Some(ext) = filename.rsplit_once('.').map(|(_, e)| e)
+        && let Some(fixed) = extension_override(&ext.to_ascii_lowercase())
+    {
+        return Some(fixed.to_string());
+    }
+    mime_guess::from_path(filename)
+        .first()
+        .map(|m| m.to_string())
+}
+
 /// Refine a claimed MIME type using magic bytes and filename extension.
 ///
 /// This is a synchronous function — the caller should already have the first
@@ -235,16 +259,9 @@ pub fn refine_content_type(buf: &[u8], filename: &str, claimed: &str) -> String 
         return claimed.to_string();
     }
 
-    // 3. Extension, when the client told us nothing usable — with the
-    //    known-bad mappings corrected first. See `extension_override`.
-    if let Some(ext) = filename.rsplit_once('.').map(|(_, e)| e)
-        && let Some(fixed) = extension_override(&ext.to_ascii_lowercase())
-    {
-        return fixed.to_string();
-    }
-    let guess = mime_guess::from_path(filename);
-    if let Some(mime) = guess.first() {
-        return mime.to_string();
+    // 3. Extension, when the client told us nothing usable.
+    if let Some(from_name) = type_from_name(filename) {
+        return from_name;
     }
 
     // 4. Give the claim back — but never an EMPTY string.

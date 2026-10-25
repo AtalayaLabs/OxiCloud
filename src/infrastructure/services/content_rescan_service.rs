@@ -557,6 +557,7 @@ impl RecoverableJobHandler for ContentRescan {
         let mut files_retyped = 0u64;
         let mut rederived = 0u64;
         let mut failures = 0u64;
+        let mut divergences = 0u64;
 
         loop {
             match store.status().await {
@@ -722,6 +723,85 @@ impl RecoverableJobHandler for ContentRescan {
 
                 let detected = infer::get(&head).map(|k| k.mime_type());
                 let decision = decide(detected, &row.stored_types);
+
+                // ⚠ Divergence the NAMES do not explain.
+                //
+                // Copies of one content are allowed to disagree. A zip
+                // shared by `report.docx` and `backup.zip` genuinely is
+                // both — that is what `RetypePerFile` exists for — and
+                // `data.json` beside `data.txt` is two right answers from
+                // one byte string. So `stored_types.len() > 1` is NOT the
+                // predicate; it would fire on the carve-out the job was
+                // built around.
+                //
+                // What should not happen is two files whose NAMES imply the
+                // same type holding different stored types. Gated on
+                // `Leave` because the other decisions resolve it: a real
+                // detection converges every copy (and reports that as
+                // `mime_type_mismatch`), while a generic envelope is
+                // SUPPOSED to diverge per name. Silence is the case where
+                // nothing will ever reconcile them.
+                //
+                // Report only, no repair: the bytes said nothing, so there
+                // is no better answer to converge on and a fix could only
+                // pick a winner. Discovery-only unless repair is asked for
+                // is the house rule.
+                if matches!(decision, Decision::Leave) && row.stored_types.len() > 1 {
+                    let mut by_name: HashMap<Option<String>, Vec<usize>> = HashMap::new();
+                    for (i, name) in row.file_names.iter().enumerate() {
+                        by_name
+                            .entry(crate::common::mime_detect::type_from_name(name))
+                            .or_default()
+                            .push(i);
+                    }
+
+                    let groups: Vec<serde_json::Value> = by_name
+                        .iter()
+                        .filter(|(_, at)| {
+                            at.iter()
+                                .filter_map(|i| row.file_mimes.get(*i))
+                                .collect::<std::collections::BTreeSet<_>>()
+                                .len()
+                                > 1
+                        })
+                        .map(|(implies, at)| {
+                            serde_json::json!({
+                                "name_implies": implies,
+                                "files": at.iter().take(SAMPLE).map(|i| serde_json::json!({
+                                    "file_id": row.file_ids.get(*i).map(|u| u.to_string()),
+                                    "name":    row.file_names.get(*i),
+                                    "stored":  row.file_mimes.get(*i),
+                                })).collect::<Vec<_>>(),
+                            })
+                        })
+                        .collect();
+
+                    if !groups.is_empty() {
+                        divergences += 1;
+                        record_or_log(
+                            store,
+                            CONTENT_RESCAN_JOB_NAME,
+                            "stored_type_divergence",
+                            // `anomaly`: surprising, no known impact, and
+                            // nothing is unreachable. Not `inconsistent`,
+                            // which alerts through `FindingNotifier` —
+                            // claim-vs-extension ordering differs across
+                            // upload paths, so first-run volume on a real
+                            // corpus is unknown and a kind that pages on
+                            // sight would train operators to mute the
+                            // channel. Promote it once the volume is known
+                            // to be small.
+                            "anomaly",
+                            None,
+                            serde_json::json!({
+                                "content_hash": row.content_hash,
+                                "file_count":   row.file_ids.len(),
+                                "groups":       groups,
+                            }),
+                        )
+                        .await;
+                    }
+                }
 
                 // Resolve to a concrete (file, mime) list. Non-container
                 // detections give every file the same answer; container
@@ -1110,6 +1190,7 @@ impl RecoverableJobHandler for ContentRescan {
                     ("files_retyped".to_string(), files_retyped.into()),
                     ("rederived".to_string(), rederived.into()),
                     ("failures".to_string(), failures.into()),
+                    ("divergences".to_string(), divergences.into()),
                 ]))
                 .await;
 
@@ -1133,6 +1214,7 @@ impl RecoverableJobHandler for ContentRescan {
             files_retyped = files_retyped,
             rederived = rederived,
             failures = failures,
+            divergences = divergences,
             "content_rescan completed: {} content re-identified, {} file(s) retyped",
             mime_changed,
             files_retyped,
@@ -1145,6 +1227,7 @@ impl RecoverableJobHandler for ContentRescan {
                 ("files_retyped".to_string(), files_retyped.into()),
                 ("rederived".to_string(), rederived.into()),
                 ("failures".to_string(), failures.into()),
+                ("divergences".to_string(), divergences.into()),
             ]),
         }
     }
@@ -1470,6 +1553,81 @@ mod integration_tests {
         (hash, ids, user, drive)
     }
 
+    /// Copies of one content that disagree about their type, in both the
+    /// legitimate and the illegitimate shape.
+    ///
+    /// The bytes are plain text, so `infer` is silent and `decide` returns
+    /// `Leave` — nothing will ever reconcile the copies. Three files:
+    ///
+    /// * `div-{tag}-a.ini` stored `text/plain`
+    /// * `div-{tag}-b.ini` stored `application/x-wine-extension-ini`
+    /// * `div-{tag}-c.json` stored `application/json`
+    ///
+    /// `a` and `b` are the defect: identical names-implied type, two stored
+    /// types, and no byte-level signal to settle it. `c` must NOT be
+    /// reported — a different extension on identical bytes is two correct
+    /// answers, the same reason `report.docx` may sit beside `backup.zip`.
+    ///
+    /// Returns the content hash.
+    async fn seed_divergent(
+        pool: &sqlx::PgPool,
+        dedup: &BlobHandler,
+        tag: &str,
+        user: Uuid,
+        drive: Uuid,
+    ) -> String {
+        let text: &[u8] = b"[section]\nkey = value\n";
+        let hash = format!("d1{tag}{}", "0".repeat(64 - 2 - tag.len()));
+
+        dedup
+            .backend()
+            .initialize()
+            .await
+            .expect("initialize the test backend");
+        dedup
+            .backend()
+            .put_blob_from_bytes(&hash, bytes::Bytes::from(text.to_vec()))
+            .await
+            .expect("seed blob bytes");
+
+        sqlx::query(
+            "INSERT INTO storage.blobs (hash, size, ref_count)
+             VALUES ($1, $2, 3) ON CONFLICT (hash) DO NOTHING",
+        )
+        .bind(&hash)
+        .bind(text.len() as i64)
+        .execute(pool)
+        .await
+        .expect("seed blobs row");
+
+        for (name, mime) in [
+            (format!("div-{tag}-a.ini"), "text/plain"),
+            (
+                format!("div-{tag}-b.ini"),
+                "application/x-wine-extension-ini",
+            ),
+            (format!("div-{tag}-c.json"), "application/json"),
+        ] {
+            sqlx::query(
+                "INSERT INTO storage.files
+                     (id, name, drive_id, blob_hash, mime_type, size,
+                      category_order, created_by, updated_by)
+                 VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, 950, $6, $6)",
+            )
+            .bind(name)
+            .bind(drive)
+            .bind(&hash)
+            .bind(mime)
+            .bind(text.len() as i64)
+            .bind(user)
+            .execute(pool)
+            .await
+            .expect("seed divergent file");
+        }
+
+        hash
+    }
+
     /// A manifest with NO chunks, which is what a zero-byte file has.
     ///
     /// `chunk_hashes[1]` on an empty array is NULL, and decoding that as a
@@ -1635,6 +1793,13 @@ mod integration_tests {
         // One zero-byte file in the same corpus. Its manifest has no
         // chunks, which used to abort the entire sweep.
         let empty_hash = seed_chunkless(&pool, "a1", user, drive).await;
+        // And one content whose copies disagree about their type — in both
+        // the legitimate and the illegitimate shape. Folded into THIS test
+        // rather than its own: the engine permits one non-terminal run per
+        // job, so a second test calling `run_job` concurrently gets an
+        // `already_running` envelope with no dispatch, and whichever run
+        // does dispatch sweeps the other's fixtures and miscounts.
+        let div_hash = seed_divergent(&pool, &dedup, "a1", user, drive).await;
 
         // ── Phase 1: dry_run reports and writes nothing ──────────────
         let args = JobRunArgs::new(
@@ -1678,8 +1843,9 @@ mod integration_tests {
         // rather than files: three files, one read.
         assert_eq!(
             stat(&extra, "head_reads"),
-            Some(1),
-            "three files on one content cost more than one backend read",
+            Some(2),
+            "SEVEN files, two contents with bytes, so two reads — plus the \
+             zero-byte content, which must cost none at all",
         );
         assert_eq!(stat(&extra, "mime_changed"), Some(1));
 
@@ -1734,6 +1900,61 @@ mod integration_tests {
             "the finding named no file: {change}",
         );
 
+        // ── Divergence the names cannot explain ──────────────────────
+        assert_eq!(
+            stat(&extra, "divergences"),
+            Some(1),
+            "the unexplained divergence was not reported",
+        );
+        let found = findings_for(&pool, &div_hash).await;
+        assert_eq!(
+            found.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+            vec!["stored_type_divergence"],
+        );
+
+        // ⚠ ONE group. The `.json` copy also disagrees with the other two,
+        // and reporting it would be the false positive the predicate exists
+        // to avoid: a different extension on identical bytes is two right
+        // answers, the same reason `report.docx` may sit beside
+        // `backup.zip`.
+        let groups = found[0].1["groups"].as_array().expect("groups array");
+        assert_eq!(
+            groups.len(),
+            1,
+            "a legitimately-divergent copy was reported: {groups:?}",
+        );
+        let stored: Vec<&str> = groups[0]["files"]
+            .as_array()
+            .expect("files array")
+            .iter()
+            .map(|f| f["stored"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(stored.len(), 2, "the reported group was not the .ini pair");
+        assert!(
+            stored.contains(&"text/plain") && stored.contains(&"application/x-wine-extension-ini"),
+            "the group named the wrong files: {stored:?}",
+        );
+
+        // Report only, never repair: the bytes said nothing, so there is no
+        // answer to converge on and a fix could only pick a winner.
+        let after: Vec<(String, i16)> = sqlx::query_as(
+            "SELECT mime_type, category_order FROM storage.files
+              WHERE blob_hash = $1 ORDER BY name",
+        )
+        .bind(&div_hash)
+        .fetch_all(pool.as_ref())
+        .await
+        .expect("read back the divergent copies");
+        assert_eq!(
+            after.iter().map(|(m, _)| m.as_str()).collect::<Vec<_>>(),
+            vec![
+                "text/plain",
+                "application/x-wine-extension-ini",
+                "application/json",
+            ],
+            "the job silently picked a winner instead of reporting",
+        );
+
         // ── Phase 3: idempotent ──────────────────────────────────────
         let extra = run_job(&pool, &JobRunArgs::default()).await;
         assert_eq!(
@@ -1750,6 +1971,7 @@ mod integration_tests {
 
         cleanup(&pool, &hash).await;
         cleanup(&pool, &empty_hash).await;
+        cleanup(&pool, &div_hash).await;
     }
 
     /// A typo must fail the run before any work, not silently select the
