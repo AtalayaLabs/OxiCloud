@@ -803,6 +803,45 @@ wanted, and `rederive=always` is the mode that applies a widened extractor: an
 extractor change does not move the sniffed type, so the default `changed` mode
 skips every affected row.
 
+### 5. Expose it on REST — yes, but on the DETAIL read and after §7
+
+Raised 2026-10-25. The gap is real and it is asymmetric: the server now
+extracts a claimed creation date for documents, and the only surface that
+shows it is `nc:creation_time`. A NextCloud desktop client can see a 2019
+`.docx`'s real date; our own SPA cannot. Meanwhile the same column IS on the
+wire for photos, as `PhotoResourceItemDto.captured_at` — so the data is
+exposed, just only for the one content type that is not a document.
+
+By this plan's own rule — *one column per meaning, one wire slot each* — that
+is an incomplete slot.
+
+**Not on `FileDto`, though.** The generic `/files` listing does **not** join
+`storage.content_metadata` today; only the two media queries do (the Photos
+timeline and the map viewport, `file_blob_read_repository.rs`). Adding the
+field to `FileDto` puts a `LEFT JOIN ... ON fm.source_hash = blob_hash` on the
+hottest path in the product, per row, for a value that is NULL for most rows
+and is **presentational** by this document's own taxonomy — ordering and
+display, nothing acts on it. That is the kind of per-row cost AGENTS.md names
+as a real regression at the 10k target.
+
+So the slot is the single-file read (`GET /api/files/{id}`), where the same
+join is one primary-key lookup rather than one per page row. A properties or
+details panel is also where a user actually asks "when was this made?", as
+opposed to scanning a list.
+
+⚠ **Sequencing: §7 first.** §7 renames `captured_at` on the wire, because the
+column it reflects stopped being photo-only. Adding a second REST surface
+*now* means naming it `captured_at` and then renaming two fields instead of
+one — or naming it something else and shipping two names for one column, which
+is worse. The field costs almost nothing once the vocabulary is settled, and
+guessing the name early is the only way to make it expensive.
+
+**Not a sort axis.** `storage.files.media_sort_date` is already denormalised
+and trigger-maintained, so ordering by the claimed date needs no join at all.
+But it is a `COALESCE`, so it cannot distinguish "claims 2019" from "claims
+nothing, and its mtime is 2019" — which is exactly the distinction a displayed
+*creation date* has to make. It serves sorting and cannot serve display.
+
 ### Original phase text
 
 ```sql
