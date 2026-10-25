@@ -7,9 +7,25 @@ import { loadEnv } from './load-env';
  * with Istanbul instrumentation via `COVERAGE=1`) and collects per-test
  * `window.__coverage__` into `.nyc_output/` for an nyc report.
  *
- * The server is a debug `cargo run` on port 8088 serving the instrumented
- * SPA build. Production-shape end-to-end: OPAQUE + DPoP `required` are
- * both inherited from `tests/common/server.env` — the previous legacy
+ * TWO backends are started side-by-side (ports 8088 and 8089) because the
+ * shared-worker-bus feature is opt-in: the default suite exercises the
+ * production shape (opt-in OFF → per-tab mode) against 8088, while the
+ * message-bus specs that assert `SharedWorkerBridge` is live run against
+ * 8089 with `OXICLOUD_ENABLE_SHARED_WORKER_BUS=true`. Running the
+ * opt-in flag suite-wide broke every spec that used
+ * `waitForLoadState('networkidle')` — the SharedWorker's eagerly-opened
+ * connection kept Playwright's "no network for 500 ms" counter from
+ * firing. Isolating the opt-in behaviour to its own project keeps the
+ * other 125 specs on a quiet backend.
+ *
+ * Both backends share one Postgres (sqlx migrations are idempotent + use
+ * an advisory lock to serialise concurrent startups) but have separate
+ * storage dirs — specs don't cross backends so filesystem isolation is
+ * clean. `globalSetup` seeds the admin against :8088 and the shared DB
+ * exposes it to :8089 too.
+ *
+ * Production-shape end-to-end: OPAQUE + DPoP `required` are both
+ * inherited from `tests/common/server.env` — the previous legacy
  * `./static` vanilla-frontend suite that overrode them off has been
  * retired.
  *
@@ -19,6 +35,30 @@ import { loadEnv } from './load-env';
 const startScript = path.join(__dirname, 'start-server-spa.sh');
 const commonEnv = loadEnv(path.join(__dirname, '../common/server.env'));
 const workspace = process.env.GITHUB_WORKSPACE ?? path.join(__dirname, '../..');
+
+/** Shared env for both backends — everything except port, storage path,
+ *  and the shared-worker-bus flag. Keeps the two webServer entries in
+ *  sync so a knob added here reaches both. */
+const sharedBackendEnv = {
+  ...commonEnv,
+  OXICLOUD_STATIC_PATH: './static-dist',
+  OXICLOUD_ENABLE_PLUGINS: 'true',
+  // Explicitly clear OXICLOUD_METRICS_LISTEN so a developer's `.env`
+  // value (typical: `127.0.0.1:9090`) doesn't leak in via the parent-
+  // process env Playwright merges here — the test server would collide
+  // with the developer's own running instance on that port and main.rs
+  // would hard-fail. Empty string is the config-parser's "disabled"
+  // sentinel.
+  OXICLOUD_METRICS_LISTEN: '',
+};
+
+/** Specs that MUST run against the shared-worker-bus-enabled backend
+ *  (port 8089). Includes the fallback spec: it deletes
+ *  `window.SharedWorker` via `addInitScript` and expects the FE to engage
+ *  the mandatory handshake-timeout fallback even though the SERVER flag
+ *  is on — i.e. the fallback test depends on the server flag being `true`
+ *  so the factory would actually try shared mode in the first place. */
+const SHARED_WORKER_SPECS = /message-bus-.*\.spec\.ts/;
 
 export default defineConfig({
   testDir: './spa',
@@ -32,6 +72,9 @@ export default defineConfig({
   globalTeardown: require.resolve('./global-teardown'),
 
   use: {
+    // Project-level `baseURL` overrides this per-project (per-tab 8088
+    // vs shared-worker 8089). Kept at the suite level as the sensible
+    // default for anything that forgets to set it.
     baseURL: 'http://127.0.0.1:8088',
     trace: 'on-first-retry',
     headless: true,
@@ -47,78 +90,77 @@ export default defineConfig({
 
   projects: [
     {
+      // Default project — opts the backend OUT of shared-worker-bus so
+      // the production-shape (opt-in default) is what every non-
+      // message-bus spec drives. Points at the per-tab backend on
+      // :8088; the project-level `baseURL` override wins over the top-
+      // level `use.baseURL`.
       name: 'chromium',
-      use: { ...devices['Desktop Chrome'] },
-      // The main suite runs on the SPA's happy path — SharedWorker
-      // enabled, bus takes the shared path. The fallback-mode spec
-      // runs under its own project with the Chromium flag that
-      // disables SharedWorker; keep it OUT of this project so a
-      // typeof-SharedWorker regression there doesn't poison the
-      // broader run.
-      testIgnore: /message-bus-fallback\.spec\.ts/
+      use: {
+        ...devices['Desktop Chrome'],
+        baseURL: 'http://127.0.0.1:8088',
+      },
+      testIgnore: SHARED_WORKER_SPECS,
     },
     {
-      // Runs the fallback spec. The force-fallback mechanism is
-      // `addInitScript({ delete window.SharedWorker })` INSIDE the
-      // spec, not a browser launch flag — the latter
-      // (`--disable-features=SharedWorkerAPI`) works on stable
-      // Google Chrome but not reliably on Playwright's bundled
-      // Chromium (observed 2026-10-24: `typeof SharedWorker`
-      // was still `'function'` under the flag). The spec can
-      // still coexist in its own project so the per-test shim
-      // doesn't leak into other specs that assume shared mode.
-      name: 'chromium-no-shared-worker',
-      use: { ...devices['Desktop Chrome'] },
-      testMatch: /message-bus-fallback\.spec\.ts/
-    }
+      // Shared-worker-bus project — the Gate-4/5 specs that assert
+      // `SharedWorkerBridge` is live and the fan-out/reconnect
+      // properties hold. Points at the opt-in-ON backend on :8089.
+      // Includes the fallback spec: it needs the server flag ON (so
+      // the factory tries shared mode) and simulates browser
+      // non-support via `addInitScript({ delete window.SharedWorker })`.
+      name: 'chromium-shared-worker',
+      use: {
+        ...devices['Desktop Chrome'],
+        baseURL: 'http://127.0.0.1:8089',
+      },
+      testMatch: SHARED_WORKER_SPECS,
+    },
   ],
 
-  webServer: {
-    command: process.env.BUILD_TARGET
-      ? `bash "${startScript}" "${workspace}/target/${process.env.BUILD_TARGET}/oxicloud"`
-      : `bash "${startScript}" cargo run --features plugins`,
-    url: 'http://127.0.0.1:8088/ready',
-    timeout: 600_000,
-    reuseExistingServer: false,
-    cwd: '../..',
-    stdout: 'pipe',
-    stderr: 'pipe',
-    env: {
-      ...commonEnv,
-      OXICLOUD_SERVER_PORT: '8088',
-      OXICLOUD_STORAGE_PATH: './tests/e2e/storage-spa',
-      // Serve the instrumented SvelteKit build (there is no legacy
-      // ./static frontend anymore — retired with the scenarios
-      // suite).
-      OXICLOUD_STATIC_PATH: './static-dist',
-      // Enable the WASM plugin runtime so the admin Plugins tab is exercisable
-      // (the suite installs the example hello plugin fixture).
-      OXICLOUD_ENABLE_PLUGINS: 'true',
-      // The shared-worker bus ships OFF by default (opt-in while
-      // production behaviour is being observed); the Gate-4
-      // Playwright specs assert `SharedWorkerBridge` is live, so
-      // explicitly opt the test backend in. The `no-shared-worker`
-      // project doesn't need the flag flipped: it deletes
-      // `window.SharedWorker` via `addInitScript` and asserts the
-      // mandatory fallback engages regardless of the server flag.
-      OXICLOUD_ENABLE_SHARED_WORKER_BUS: 'true',
-      // OPAQUE + DPoP both inherit `migrate` and `required`
-      // respectively from `tests/common/server.env` — production-
-      // shape end-to-end. All specs in `spa/` drive the SPA through
-      // UI interactions (page.click / page.fill / page.goto), so
-      // every request lands as either an `apiFetch` call (page-
-      // context, signed inline) or a browser-initiated subresource
-      // (SW-signed via `service-worker.ts`). No Node-side
-      // `page.request.*` in this suite — the scenarios suite that
-      // needed those helpers was retired with the legacy vanilla
-      // frontend.
-      // Explicitly clear OXICLOUD_METRICS_LISTEN so a developer's
-      // `.env` value (typical: `127.0.0.1:9090`) doesn't leak in via
-      // the parent-process env Playwright merges here — the test
-      // server would collide with the developer's own running
-      // instance on that port and main.rs would hard-fail. Empty
-      // string is the config-parser's "disabled" sentinel.
-      OXICLOUD_METRICS_LISTEN: '',
+  webServer: [
+    {
+      // Per-tab backend — the default (opt-in off). Serves the main
+      // :8088 suite.
+      command: process.env.BUILD_TARGET
+        ? `bash "${startScript}" "${workspace}/target/${process.env.BUILD_TARGET}/oxicloud"`
+        : `bash "${startScript}" cargo run --features plugins`,
+      url: 'http://127.0.0.1:8088/ready',
+      timeout: 600_000,
+      reuseExistingServer: false,
+      cwd: '../..',
+      stdout: 'pipe',
+      stderr: 'pipe',
+      env: {
+        ...sharedBackendEnv,
+        OXICLOUD_SERVER_PORT: '8088',
+        OXICLOUD_STORAGE_PATH: './tests/e2e/storage-spa',
+      },
     },
-  },
+    {
+      // Shared-worker-bus backend — opt-in flag ON. Serves the Gate-4/5
+      // message-bus specs on :8089.
+      //
+      // Isolated storage dir so blob files don't collide with :8088;
+      // DB is shared with :8088 (sqlx migrations are idempotent +
+      // advisory-locked, `globalSetup` seeds TEST_ADMIN against :8088
+      // and the shared DB exposes it to :8089 too).
+      command: process.env.BUILD_TARGET
+        ? `bash "${startScript}" "${workspace}/target/${process.env.BUILD_TARGET}/oxicloud"`
+        : `bash "${startScript}" cargo run --features plugins`,
+      url: 'http://127.0.0.1:8089/ready',
+      timeout: 600_000,
+      reuseExistingServer: false,
+      cwd: '../..',
+      stdout: 'pipe',
+      stderr: 'pipe',
+      env: {
+        ...sharedBackendEnv,
+        OXICLOUD_SERVER_PORT: '8089',
+        OXICLOUD_STORAGE_PATH: './tests/e2e/storage-spa-shared',
+        // The whole reason this second backend exists.
+        OXICLOUD_ENABLE_SHARED_WORKER_BUS: 'true',
+      },
+    },
+  ],
 });

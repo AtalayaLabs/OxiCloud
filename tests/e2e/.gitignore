@@ -8,8 +8,14 @@ playwright-report/
 test-results/
 
 # Server runtime data dir created by start-server-spa.sh (blob store + search index).
+# Two backends run in parallel: `storage-spa/` (per-tab, :8088) and
+# `storage-spa-shared/` (opt-in shared-worker-bus, :8089).
 storage-spa/
+storage-spa-shared/
 storage/
 
-# webServer startup log tee'd by start-server.sh (diagnostics).
+# webServer startup log tee'd by start-server.sh (diagnostics). Per-port
+# suffix when both coverage backends run (`-8088`, `-8089`); bare name
+# is the single-backend / legacy pattern.
 server-startup.log
+server-startup-*.log

@@ -9,14 +9,30 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-SPA_STORAGE_PATH="$REPO_ROOT/tests/e2e/storage-spa"
+# Honour the caller's OXICLOUD_STORAGE_PATH so a second webServer entry in
+# playwright.coverage.config.ts (shared-worker-bus-ON backend) can point at
+# its own directory without stomping on the per-tab backend's state. Relative
+# paths are resolved against the repo root to match the server's own `cwd`.
+if [[ -n "${OXICLOUD_STORAGE_PATH:-}" ]]; then
+  if [[ "$OXICLOUD_STORAGE_PATH" = /* ]]; then
+    SPA_STORAGE_PATH="$OXICLOUD_STORAGE_PATH"
+  else
+    SPA_STORAGE_PATH="$REPO_ROOT/$OXICLOUD_STORAGE_PATH"
+  fi
+else
+  SPA_STORAGE_PATH="$REPO_ROOT/tests/e2e/storage-spa"
+fi
 
 # Mirror markers + the server's stdout/stderr to a log file as well as the
 # console; CI surfaces it via the "Print server startup log" step (Playwright's
 # own webServer capture isn't always shown there). The final `exec "$@"`
 # inherits these fds, so the server's output is tee'd while it still replaces
 # this shell (Playwright tracks the PID for teardown).
-SERVER_LOG="$REPO_ROOT/tests/e2e/server-startup.log"
+# Each backend logs to its own file so two Playwright webServer entries
+# (per-tab backend on 8088, shared-worker backend on 8089) don't interleave.
+# Falls back to the historical un-suffixed path when no port is set.
+LOG_SUFFIX="${OXICLOUD_SERVER_PORT:+-${OXICLOUD_SERVER_PORT}}"
+SERVER_LOG="$REPO_ROOT/tests/e2e/server-startup${LOG_SUFFIX}.log"
 exec > >(tee "$SERVER_LOG") 2>&1
 
 mark() { echo "[start-server-spa $(date -u +%H:%M:%S)] $*"; }
