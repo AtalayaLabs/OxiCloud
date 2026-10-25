@@ -30,94 +30,23 @@ pub enum ExtractedText {
     Failed(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum Kind {
-    Plain,
-    Pdf,
-    Docx,
-    Xlsx,
-    Pptx,
-    Odf,
-}
-
-/// MIME types (beyond `text/*`) parsed as plain text.
-const TEXTUAL_MIMES: &[&str] = &[
-    "application/json",
-    "application/ld+json",
-    "application/xml",
-    "application/javascript",
-    "application/x-javascript",
-    "application/x-yaml",
-    "application/yaml",
-    "application/toml",
-    "application/x-sh",
-    "application/x-shellscript",
-    "application/sql",
-    "image/svg+xml",
-];
-
-/// Extensions parsed as plain text when the MIME type is generic
-/// (`application/octet-stream` uploads are common on WebDAV clients).
-const TEXTUAL_EXTENSIONS: &[&str] = &[
-    "txt", "md", "markdown", "csv", "tsv", "json", "xml", "yaml", "yml", "toml", "ini", "cfg",
-    "conf", "log", "rs", "js", "mjs", "ts", "jsx", "tsx", "css", "scss", "html", "htm", "py", "rb",
-    "go", "java", "c", "h", "cpp", "hpp", "cs", "php", "sh", "sql", "tex", "svg",
-];
-
-fn extension_of(name: &str) -> Option<String> {
-    name.rsplit_once('.').map(|(_, ext)| ext.to_lowercase())
-}
-
-fn classify(name: &str, mime: &str) -> Option<Kind> {
-    let mime = mime
-        .split(';')
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_lowercase();
-
-    if mime.starts_with("text/") || TEXTUAL_MIMES.contains(&mime.as_str()) {
-        return Some(Kind::Plain);
-    }
-    match mime.as_str() {
-        "application/pdf" => return Some(Kind::Pdf),
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => {
-            return Some(Kind::Docx);
-        }
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => {
-            return Some(Kind::Xlsx);
-        }
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation" => {
-            return Some(Kind::Pptx);
-        }
-        "application/vnd.oasis.opendocument.text"
-        | "application/vnd.oasis.opendocument.spreadsheet"
-        | "application/vnd.oasis.opendocument.presentation" => return Some(Kind::Odf),
-        _ => {}
-    }
-
-    // Generic MIME — fall back to the extension.
-    match extension_of(name)?.as_str() {
-        ext if TEXTUAL_EXTENSIONS.contains(&ext) => Some(Kind::Plain),
-        "pdf" => Some(Kind::Pdf),
-        "docx" => Some(Kind::Docx),
-        "xlsx" => Some(Kind::Xlsx),
-        "pptx" => Some(Kind::Pptx),
-        "odt" | "ods" | "odp" => Some(Kind::Odf),
-        _ => None,
-    }
-}
+/// The format registry lives in `document_format` — hoisted out of here so
+/// the creation-date extractor asks the same question and gets the same
+/// answer. A second copy of this table would be the duplication AGENTS.md
+/// forbids, and it would drift silently: a format added for text and missed
+/// for dates looks like "that document has no creation date".
+use crate::infrastructure::services::document_format::{self, DocumentFormat as Kind};
 
 /// Whether [`extract`] has an extractor for this file — the worker calls this
 /// BEFORE reading the blob, so unsupported content (photos, video, archives)
 /// costs zero I/O.
 pub fn supports(name: &str, mime: &str) -> bool {
-    classify(name, mime).is_some()
+    document_format::supports_text(name, mime)
 }
 
 /// Extract plain text from `bytes`, capped at `max_text_bytes` of UTF-8.
 pub fn extract(name: &str, mime: &str, bytes: &[u8], max_text_bytes: usize) -> ExtractedText {
-    let Some(kind) = classify(name, mime) else {
+    let Some(kind) = document_format::classify(name, mime) else {
         return ExtractedText::Unsupported;
     };
 
