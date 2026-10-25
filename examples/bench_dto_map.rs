@@ -76,6 +76,7 @@ static GLOBAL: CountingAlloc = CountingAlloc;
 /// paths change nothing observable.
 #[allow(clippy::all)]
 mod before {
+    use oxicloud::application::dtos::display_helpers::ResourceCategory;
     use std::sync::Arc;
 
     use oxicloud::application::dtos::display_helpers::category_for;
@@ -111,7 +112,7 @@ mod before {
 
         let parts = file.into_parts();
 
-        let category: Arc<str> = Arc::from(category_for(&parts.name, &parts.mime_type));
+        let category = category_for(&parts.name, &parts.mime_type);
         let mime_type: Arc<str> = Arc::from(parts.mime_type.as_str());
 
         FileDto {
@@ -158,7 +159,7 @@ mod before {
             tree_modified_at: oxicloud::application::dtos::timestamp_helpers::epoch_to_datetime(
                 folder.tree_modified_at(),
             ),
-            category: Arc::from("Folder"),
+            category: ResourceCategory::Folder,
             etag,
             created_by: folder.created_by(),
             updated_by: folder.updated_by(),

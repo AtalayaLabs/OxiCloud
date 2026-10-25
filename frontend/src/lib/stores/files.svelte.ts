@@ -51,7 +51,9 @@ export function dateBucket(value: number | string | null | undefined): string {
 
 /** Localise a file `category` (e.g. "Image") via files.file_types.* keys. */
 export function typeLabel(category: string | null | undefined): string {
-	if (!category) return t('files.file_types.document', 'Document');
+	// Unknown, not Document: the server stopped calling unidentifiable
+	// content a document, and this fallback must not reinstate the lie.
+	if (!category) return t('files.file_types.unknown', 'Unknown');
 	return t(`files.file_types.${category.toLowerCase()}`, category);
 }
 

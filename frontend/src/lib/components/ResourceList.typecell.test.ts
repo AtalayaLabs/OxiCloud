@@ -1,4 +1,5 @@
 import { it, expect, vi } from 'vitest';
+import type { ResourceCategory } from '$lib/api/types';
 import { render, screen } from '@testing-library/svelte';
 
 /**
@@ -34,7 +35,7 @@ vi.mock('$lib/utils/resourceBuckets', () => ({
 
 import ResourceList from './ResourceList.svelte';
 
-function fileItem(category: string) {
+function fileItem(category: ResourceCategory) {
 	return {
 		category,
 		created_at: '1970-01-01T00:00:00Z',
@@ -80,7 +81,7 @@ it('renders an empty Type cell rather than calling typeLabel on nothing', async 
 			// of `ResourceContentDto`, both reach the cell with `category`
 			// absent. `typeLabel('')` would return `''` anyway, but the guard
 			// keeps the call out of the hot render path for every such row.
-			items: [{ ...fileItem(''), category: undefined as unknown as string }],
+			items: [{ ...fileItem('Unknown'), category: undefined as unknown as ResourceCategory }],
 			showType: true
 		}
 	});

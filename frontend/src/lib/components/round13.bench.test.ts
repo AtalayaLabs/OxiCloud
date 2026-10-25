@@ -14,6 +14,7 @@
 // — the same lever the round-12 files page test documents.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { ResourceCategory } from '$lib/api/types';
 import { render } from '@testing-library/svelte';
 
 vi.mock('$lib/api/endpoints/files', () => ({
@@ -26,7 +27,7 @@ import type { GroupByDef } from './ResourceList.svelte';
 import { files as filesStore } from '$lib/stores/files.svelte';
 
 interface TestFile {
-	category: string;
+	category: ResourceCategory;
 	/** RFC 3339 UTC — matches the FileItem wire shape post-pivot. */
 	created_at: string;
 	id: string;
@@ -48,7 +49,7 @@ interface TestFile {
 
 function fileItem(i: number): TestFile {
 	return {
-		category: 'Document',
+		category: 'WordProcessor',
 		created_at: '1970-01-01T00:00:00Z',
 		id: `f${i}`,
 		mime_type: 'text/plain',

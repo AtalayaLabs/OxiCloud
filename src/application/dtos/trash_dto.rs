@@ -1,3 +1,4 @@
+use crate::application::dtos::display_helpers::ResourceCategory;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
@@ -19,7 +20,7 @@ pub struct TrashedItemDto {
     pub days_until_deletion: i64,
     /// Content category — a stable machine key, not display text (e.g.
     /// "Image", "Folder", "Document"). See `FileDto::category`.
-    pub category: String,
+    pub category: ResourceCategory,
 }
 
 /// Request to move an item to trash

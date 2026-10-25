@@ -1,3 +1,4 @@
+use crate::application::dtos::display_helpers::ResourceCategory;
 use sqlx::{PgPool, Row};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -101,7 +102,7 @@ impl FavoritesRepositoryPort for FavoritesPgRepository {
                     modified_at: row.try_get("content_modified_at").ok(),
                     item_path: row.try_get("item_path").ok(),
                     // Temporary defaults; with_display_fields() computes the real values
-                    category: String::new(),
+                    category: ResourceCategory::Unknown,
                 }
                 .with_display_fields())
             })

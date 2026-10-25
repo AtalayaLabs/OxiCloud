@@ -39,10 +39,10 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::env;
 use std::hint::black_box;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
+use oxicloud::application::dtos::display_helpers::ResourceCategory;
 use oxicloud::application::dtos::file_dto::FileDto;
 use oxicloud::application::dtos::folder_dto::FolderDto;
 use oxicloud::application::services::search_service::SearchService;
@@ -85,6 +85,7 @@ fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
 
 #[allow(clippy::all)]
 mod before {
+    use oxicloud::application::dtos::display_helpers::ResourceCategory;
     use oxicloud::application::dtos::display_helpers::category_for;
     use oxicloud::application::dtos::file_dto::FileDto;
     use oxicloud::application::dtos::folder_dto::FolderDto;
@@ -101,7 +102,7 @@ mod before {
         pub created_at: u64,
         pub modified_at: u64,
         pub relevance_score: u32,
-        pub category: String,
+        pub category: ResourceCategory,
         pub blob_hash: String,
         pub snippet: Option<String>,
         pub match_source: Option<String>,
@@ -119,8 +120,8 @@ mod before {
     }
 
     // Verbatim copies of the old private helpers.
-    fn get_category(name: &str, mime: &str) -> String {
-        category_for(name, mime).to_string()
+    fn get_category(name: &str, mime: &str) -> ResourceCategory {
+        category_for(name, mime)
     }
 
     /// Verbatim copy of the service's private `compute_relevance` (unchanged
@@ -215,7 +216,7 @@ mod before {
             modified_at: oxicloud::application::dtos::timestamp_helpers::epoch_to_datetime(
                 fr.modified_at,
             ),
-            category: category_for(&fr.name, &fr.mime_type).to_string().into(),
+            category: category_for(&fr.name, &fr.mime_type),
             content_hash: fr.blob_hash.clone(),
             etag,
             created_by: None,
@@ -280,7 +281,7 @@ fn folder_dtos(n: usize) -> Vec<FolderDto> {
                 1_700_000_200,
             ),
             etag: format!("{i:032x}"),
-            category: Arc::from("Folder"),
+            category: ResourceCategory::Folder,
             created_by: None,
             updated_by: None,
             is_favorite: false,
@@ -320,7 +321,7 @@ fn main() {
                         new.modified_at,
                     )
                 && old.relevance_score == new.relevance_score
-                && old.category == *new.category
+                && old.category == new.category
                 && old.blob_hash == new.blob_hash
                 && old.snippet == new.snippet
                 && old.match_source == new.match_source;

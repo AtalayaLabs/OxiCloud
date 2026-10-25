@@ -46,6 +46,24 @@ operator benefit.
 | `grant_cleanup`    | `OXICLOUD_GRANT_CLEANUP_INTERVAL_HOURS` (default 24h) — feature-gated by `OXICLOUD_GRANT_CLEANUP_ENABLED` | `force=true` → `purge(Some(0))` (grace_days=0) | [`grant_cleanup_service.rs`](../../src/infrastructure/services/grant_cleanup_service.rs) |
 | `collab_idle_gc`   | `OXICLOUD_COLLAB_IDLE_SCAN_INTERVAL_SECS` (default 300s = 5 min) — registered only when `OXICLOUD_ENABLE_MARKDOWN_COLLAB=true` | ignored — the sweep is unconditional; per-tick work is bounded by `batch_limit`, not by a force flag | [`collab_idle_gc_service.rs`](../../src/infrastructure/services/collab_idle_gc_service.rs) |
 
+> ⚠ **This table lists only the plain `JobHandler` tenants, and that is
+> now the minority.** Every long-running job — `backend_migration`,
+> `backend_rechunk`, `backend_reclaim`, the `*_consistency` family,
+> `content_rescan` — implements [`RecoverableJobHandler`] instead, which
+> is a different trait with cursors, checkpoints, cancel/resume, typed
+> [`JobParam`]s in place of a single `force` bool, and findings. None of
+> them appear above.
+>
+> The recipe below has the same gap: it documents the plain path only, so
+> following it for anything that walks a corpus produces a job that
+> cannot be cancelled or resumed. Start from
+> `infrastructure/scheduler/recoverable.rs` and a worked example —
+> `drive_policies_consistency_service.rs` is the complete small one,
+> `content_rescan_service.rs` the complete large one.
+>
+> [`RecoverableJobHandler`]: ../../src/infrastructure/scheduler/recoverable.rs
+> [`JobParam`]: ../../src/infrastructure/scheduler/types.rs
+
 ---
 
 ## Adding a new job — recipe

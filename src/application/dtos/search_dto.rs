@@ -1,3 +1,4 @@
+use crate::application::dtos::display_helpers::ResourceCategory;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -44,9 +45,16 @@ pub enum SearchTypeFilter {
     Document,
     Archive,
     Code,
-    /// Unknown or undetected mime. Useful to an operator chasing broken type
+    /// Fonts. Server-side only, like `Unknown` below — present so a font
+    /// library can be filtered, not offered in the SPA picker yet.
+    Font,
+    /// Unidentifiable content. Useful to an operator chasing broken type
     /// detection; the SPA does not offer it until someone asks.
-    Other,
+    ///
+    /// Named `Unknown` to match `ResourceCategory::Unknown` — one bucket,
+    /// one name. It was `Other`, which only ever existed on an unmerged
+    /// branch, so the rename costs no compatibility.
+    Unknown,
 }
 
 impl SearchTypeFilter {
@@ -260,8 +268,7 @@ pub struct SearchFileResultDto {
     /// contract. (This comment used to claim lowercase values — "document",
     /// "image", … — which it never carried: `enrich_file` copies the
     /// capitalised `category_for` output verbatim.)
-    #[schema(value_type = String)]
-    pub category: Arc<str>,
+    pub category: ResourceCategory,
     /// Raw BLAKE3 content hash. Feeds `FileDto::content_hash` and
     /// `File::compute_etag` when search results are converted to
     /// `FileDto` (NC REPORT/SEARCH response). Defaults to `String::new()`
@@ -766,7 +773,7 @@ fn append_folders(items: &mut Vec<SearchResourceItem>, folders: Vec<SearchFolder
             // Folders carry a closed-set display field — always the same
             // static string. Cheap to build via `Arc::from` (interning-worthy
             // but not on the search hot path).
-            category: Arc::from("Folder"),
+            category: ResourceCategory::Folder,
             etag: f.etag,
             created_by: f.created_by,
             updated_by: f.updated_by,

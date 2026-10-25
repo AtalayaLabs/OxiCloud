@@ -9,7 +9,7 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::application::dtos::display_helpers::{category_for, intern_display, intern_mime};
+use crate::application::dtos::display_helpers::{ResourceCategory, category_for, intern_mime};
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::FolderDto;
 use crate::application::dtos::timestamp_helpers::epoch_to_datetime;
@@ -179,7 +179,7 @@ impl PathResolverService {
                     created_at: epoch_to_datetime(created_at.max(0) as u64),
                     modified_at: epoch_to_datetime(modified_at.max(0) as u64),
                     tree_modified_at: epoch_to_datetime(tree_mod),
-                    category: intern_display("Folder"),
+                    category: ResourceCategory::Folder,
                     // §14 provenance not selected by this resolver path —
                     // it's used for existence/type discrimination, not
                     // detailed DTO emission. Callers that need provenance
@@ -211,7 +211,7 @@ impl PathResolverService {
                     folder_id,
                     created_at: epoch_to_datetime(created_at.max(0) as u64),
                     modified_at: epoch_to_datetime(modified_at_u),
-                    category: intern_display(category_for(&name, &mime)),
+                    category: category_for(&name, &mime),
                     content_hash: hash,
                     etag,
                     // §14 provenance not selected by this resolver path

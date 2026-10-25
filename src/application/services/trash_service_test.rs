@@ -62,7 +62,7 @@ where
     FoR: FolderRepository,
 {
     async fn get_trash_items(&self, user_id: Uuid) -> Result<Vec<TrashedItemDto>> {
-        use crate::application::dtos::display_helpers::category_for;
+        use crate::application::dtos::display_helpers::{ResourceCategory, category_for};
 
         let items = self.trash_repository.get_trash_items(&user_id).await?;
         Ok(items
@@ -72,8 +72,8 @@ where
 
                 // Determine display fields based on item type
                 let category = match item.item_type() {
-                    TrashedItemType::Folder => "Folder".to_string(),
-                    TrashedItemType::File => category_for(item.name(), "").to_string(),
+                    TrashedItemType::Folder => ResourceCategory::Folder,
+                    TrashedItemType::File => category_for(item.name(), ""),
                 };
 
                 TrashedItemDto {

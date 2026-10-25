@@ -31,7 +31,7 @@ use chrono::{TimeZone, Utc};
 use oxicloud::application::adapters::carddav_adapter::{CardDavAdapter, CardDavReportType};
 use oxicloud::application::adapters::webdav_adapter::QualifiedName;
 use oxicloud::application::dtos::contact_dto::ContactDto;
-use oxicloud::application::dtos::display_helpers::{category_for, intern_display, intern_mime};
+use oxicloud::application::dtos::display_helpers::{category_for, intern_mime};
 use oxicloud::application::dtos::file_dto::FileDto;
 use oxicloud::application::dtos::search_dto::SearchSuggestionItem;
 use oxicloud::domain::entities::drive::{Drive, DriveKind};
@@ -411,13 +411,12 @@ fn main() {
     {
         let names: Vec<String> = (0..rows).map(|i| format!("informe-{i}.pdf")).collect();
         let mime = "application/pdf";
-        let row_before = |name: &str| {
-            (
-                Arc::<str>::from(mime),
-                Arc::<str>::from(category_for(name, mime)),
-            )
-        };
-        let row_after = |name: &str| (intern_mime(mime), intern_display(category_for(name, mime)));
+        // Only the MIME half is still interned: `category` became the
+        // `Copy` one-byte `ResourceCategory` enum, so its allocation does
+        // not exist to measure any more. The pair is kept so the row shape
+        // still matches production.
+        let row_before = |name: &str| (Arc::<str>::from(mime), category_for(name, mime));
+        let row_after = |name: &str| (intern_mime(mime), category_for(name, mime));
         let t_b = time_passes(passes, || {
             for n in &names {
                 black_box(row_before(n));
@@ -434,12 +433,12 @@ fn main() {
         let a_a = allocs_of(|| row_after(&names[0]));
         let (bm, bc) = row_before(&names[0]);
         let (am, ac) = row_after(&names[0]);
-        if *bm != *am || *bc != *ac {
+        if *bm != *am || bc != ac {
             eprintln!("GATE FAIL interning content");
             ok = false;
         }
         println!("[3] listing closed-set fields             ns/row   allocs/row");
-        println!("    BEFORE (Arc::from ×2)                {t_b:8.1}   {a_b:7}");
+        println!("    BEFORE (Arc::from, mime only)         {t_b:8.1}   {a_b:7}");
         println!(
             "    AFTER  (intern lookups ×2)           {t_a:8.1}   {a_a:7}   {:.1}x",
             t_b / t_a

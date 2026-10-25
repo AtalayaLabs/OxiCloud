@@ -15,6 +15,7 @@ use utoipa::{Modify, OpenApi};
 use crate::application::dtos::contact_dto::{
     AddressDto, ContactDto, ContactGroupDto, EmailDto, PhoneDto,
 };
+use crate::application::dtos::display_helpers::ResourceCategory;
 use crate::application::dtos::drive_dto::{DriveDto, DriveKindDto};
 use crate::application::dtos::favorites_dto::{
     BatchFavoritesResult, BatchFavoritesStats, FavoriteItemDto, FavoritesOrderBy,
@@ -503,6 +504,7 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             SearchCriteriaDto,
             SearchOrderBy,
             SearchTypeFilter,
+            ResourceCategory,
             SearchResultsDto,
             SearchFileResultDto,
             SearchFolderResultDto,

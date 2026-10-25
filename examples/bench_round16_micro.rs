@@ -6,11 +6,8 @@
 //! a `GATE FAIL … rollback` check that exits non-zero if the AFTER arm fails to
 //! reduce allocations — the round's roll-back rule encoded into the benchmark.
 //!
-//!   [M1] Folder display constants — the trash-listing / NC-search-REPORT /
-//!        path-resolver folder branch built `Arc::<str>::from("fas fa-folder")`
-//!        (+ "folder-icon" + "Folder"): 3 heap allocs/row. All three are in the
-//!        `DISPLAY_INTERN` closed set, so `intern_display` returns an `Arc`
-//!        clone (refcount bump, 0 allocs) — the sibling file branch already did.
+//!   [M1] REMOVED — it measured `intern_display`, which no longer exists.
+//!        See the note where `section_intern` used to be.
 //!   [M2] `build_content_disposition` — every download and every Range seek
 //!        built an `encoded` String, an `ascii_safe` String, and the `format!`
 //!        result: 3 allocs. The shipped fast path (all-attr-char name) and the
@@ -30,11 +27,9 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::env;
 use std::hint::black_box;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
-use oxicloud::application::dtos::display_helpers::intern_display;
 use oxicloud::interfaces::nextcloud::webdav_handler::nc_href;
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 
@@ -118,36 +113,12 @@ fn gate_allocs(tag: &str, before: &Measured, after: &Measured) {
 // [M1] Folder display constants — 3 `Arc::from` allocs vs 0 (interned clone)
 // ────────────────────────────────────────────────────────────────────────────
 
-fn section_intern() {
-    let iters: usize = env_or("BENCH_ITERS", 200_000);
-    const CONSTS: [&str; 3] = ["fas fa-folder", "folder-icon", "Folder"];
-
-    // Gate: the interned Arc carries identical bytes to `Arc::from`.
-    for s in CONSTS {
-        assert_eq!(
-            &*intern_display(s),
-            &*Arc::<str>::from(s),
-            "intern differs for {s:?}"
-        );
-    }
-
-    // BEFORE: the folder branch's three `Arc::<str>::from(literal)` — 3 allocs.
-    let before = measure(iters, || {
-        for s in CONSTS {
-            black_box(Arc::<str>::from(black_box(s)));
-        }
-    });
-    // AFTER: the shipped `intern_display` — closed-set lookup + refcount bump.
-    let after = measure(iters, || {
-        for s in CONSTS {
-            black_box(intern_display(black_box(s)));
-        }
-    });
-
-    println!("\n## [M1] folder display constants (3 fields/row)");
-    header_footer("folder Arc::from → intern", &before, &after);
-    gate_allocs("M1", &before, &after);
-}
+// [M1] `section_intern` lived here. It measured `intern_display` against a
+// per-row `Arc::from`, and that function no longer exists: the `category`
+// field it interned is now the `Copy` one-byte `ResourceCategory` enum, so
+// there is no allocation left to remove and nothing to compare. Deleted
+// rather than left to rot against a function it cannot call — the same
+// treatment `bench_round11_micro`'s §21 got when `DisplayClass` went.
 
 // ────────────────────────────────────────────────────────────────────────────
 // [M2] build_content_disposition — 3 allocs vs 1
@@ -380,7 +351,6 @@ fn main() {
     println!("# Round-16 CPU/alloc micro-pack");
     println!("#################################################################");
 
-    section_intern();
     section_content_disposition();
     section_nc_href();
     section_preview_parse();

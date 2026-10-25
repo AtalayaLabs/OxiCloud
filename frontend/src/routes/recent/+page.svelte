@@ -33,7 +33,7 @@
 		resource: FileDto | FolderDto;
 	};
 	import { addFavorite, removeFavorite } from '$lib/api/endpoints/favorites';
-	import { dateBucket, sizeBucket, typeLabel } from '$lib/utils/resourceBuckets';
+	import { dateBucket, sizeBucket, typeLabelOf } from '$lib/utils/resourceBuckets';
 	import { resolveOwnerName } from '$lib/utils/ownerName';
 	import { fileDownloadUrl, renameFile, deleteFile } from '$lib/api/endpoints/files';
 	import { renameFolder, deleteFolder } from '$lib/api/endpoints/folders';
@@ -100,8 +100,8 @@
 			key: 'type',
 			label: t('groupby.type', 'Type'),
 			orderBy: 'type',
-			bucketOf: (item) => item.category ?? 'other',
-			labelOf: (k) => typeLabel(k)
+			bucketOf: (item) => item.category ?? 'Unknown',
+			labelOf: (k) => typeLabelOf(k)
 		},
 		{
 			key: 'size',

@@ -2205,7 +2205,7 @@ pub fn write_folder_response<W: std::io::Write>(
 /// seconds, from `super::nc_creation_time` — `None` when the content
 /// claims none, which emits `0`. It is deliberately a caller-supplied
 /// side channel rather than a `FileDto` field: it lives in
-/// `storage.file_metadata`, it is sparse (media only, until the extractor
+/// `storage.content_metadata`, it is sparse (media only, until the extractor
 /// widens), and the callers already batch three other per-row reads over
 /// the same id set.
 #[allow(
@@ -2463,6 +2463,7 @@ pub fn format_oc_id_into(out: &mut String, id: i64, svc: Option<&Arc<NextcloudFi
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::dtos::display_helpers::ResourceCategory;
 
     // ── nc_to_internal_path ──
     //
@@ -2486,7 +2487,7 @@ mod tests {
             created_at: crate::application::dtos::timestamp_helpers::epoch_zero(),
             modified_at: crate::application::dtos::timestamp_helpers::epoch_zero(),
             tree_modified_at: crate::application::dtos::timestamp_helpers::epoch_zero(),
-            category: std::sync::Arc::from("Folder"),
+            category: ResourceCategory::Folder,
             etag: String::new(),
             // §14 provenance not relevant to path-mapper tests.
             created_by: None,

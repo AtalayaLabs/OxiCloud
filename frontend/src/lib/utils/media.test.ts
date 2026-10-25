@@ -47,6 +47,10 @@ describe('media helpers', () => {
 	it('minimalPhotoItem stubs a FileItem from an id', () => {
 		const p = minimalPhotoItem('abc');
 		expect(p.id).toBe('abc');
-		expect(p.category).toBe('image');
+		// 'Image', not 'image'. The server's key is PascalCase, so the old
+		// lowercase value never matched typeLabel's map — the Type cell fell
+		// through to its raw-key passthrough and rendered "image". This test
+		// pinned the bug; the typed union is what exposed it.
+		expect(p.category).toBe('Image');
 	});
 });

@@ -41,7 +41,7 @@ migrations, and a **vanilla-JS / vanilla-CSS** frontend (design tokens from
 | 0.3 Justified layout | ✅ done | `75ee9b7` |
 | 0.4 Lightbox (zoom/pan, swipe, info panel, favorite fix) | 🟡 mostly | `ca1a8cb`, `e8520e4` — the map pin shows **coordinates as text**; the embedded mini-map / deep-link into Places is deferred until Places exists. |
 | 0.5 Shift-select, confirm→Modal, keyboard a11y | 🟡 mostly | `824df4d`, `e8520e4` — optional drag-marquee not done. |
-| 0.6 HEIC | ⬜ pending | open decision (native `libheif` dep). |
+| 0.6 HEIC | ⏸ **deferred, decided 2026-10-07** | Thumbnails wait for a **pure-Rust** HEIF decoder; `libheif-rs` declined (C toolchain + LGPL). Metadata already works. See §0.6. |
 | 0.7 Sub-nav tabs | ⬜ pending | deferred to Phase 1 (tabs need the Places/People views). |
 
 **Phase 1 — Places: complete (Approach A).**
@@ -182,11 +182,78 @@ materialized group**, so it composes with section materialize/dematerialize.
   (`static/js/components/modal.js`; add an async `Modal.confirm()` helper).
 - Tiles become focusable/role-correct; arrow-key navigation across the grid.
 
-#### 0.6 (Optional) HEIC support
-`image` crate ships only `jpeg/png/gif/webp` — iPhone HEIC photos currently get **no
-server thumbnail**. Either add `libheif-rs` decoding in `thumbnail_service.rs` /
-`media_metadata_service.rs`, or transcode HEIC→JPEG on upload. Flagged as its own task
-(native dep).
+#### 0.6 HEIC support — ⏸ **deferred pending a pure-Rust decoder (decided 2026-10-07)**
+
+Re-audited 2026-10-07 while verifying content-type sniffing. The gap is
+narrower than this section originally said: **metadata already works, only
+thumbnails are missing.**
+
+What happens to an iPhone photo today:
+
+| | |
+|---|---|
+| detected type | `image/heif` — from the ISO-BMFF `ftyp` brand. Note **not** `image/heic`: `infer` has no HEIC spelling, and `image/heif` is not a container envelope, so the `.heic` extension does not narrow it. Pinned by `phone_camera_formats_are_detected` in `common/mime_detect.rs` |
+| EXIF metadata | ✅ `MediaMetadataService::handles()` gates on the `image/` prefix, and **nom-exif 3.6 parses HEIF** — `captured_at`, GPS and camera make/model come through, so `media_sort_date` is populated and the photo sorts correctly in the timeline |
+| width / height | ❌ those come only from the kamadak-exif path, which is JPEG/TIFF-oriented |
+| thumbnail | ❌ none, so no tile in the Photos grid |
+
+The thumbnail gate is **honest, not buggy**:
+
+```rust
+// ThumbnailService::is_supported_image
+matches!(mime_type, "image/jpeg" | "image/jpg" | "image/png" | "image/gif" | "image/webp")
+```
+
+That list mirrors `Cargo.toml` exactly —
+`image = { features = ["jpeg", "png", "gif", "webp"] }`. The `image` crate
+has no HEIF decoder at all, so widening the gate would only move the failure
+from "skipped" to "decode error". `image/avif` is absent for the same reason.
+
+**Decision: wait for a pure-Rust HEIF decoder.** The three options and why:
+
+- **`libheif-rs`** — declined. Pulls a C toolchain into every build, and
+  libheif is LGPL, which needs care in an MIT project (see AGENTS.md on
+  licence compatibility). Too much permanent cost for one input format.
+- **Transcode HEIC→JPEG on upload** — declined for now. It mutates the
+  user's bytes on ingest, which this project does not do: content is
+  stored verbatim and content-addressed. A *derived* JPEG would be the
+  shape (`content_derived_blobs`, `kind = 'thumbnail'`), but that still
+  needs a decoder to produce it, so it does not avoid the problem.
+- **Pure-Rust decoder** — the one that costs nothing permanent. Revisit
+  when a maintained crate can decode HEIF/HEIC stills (the AVIF side is
+  closer than HEIC's HEVC-in-HEIF).
+
+##### Candidates evaluated
+
+**`heic` (imazen/heic) — rejected 2026-10-07 on licence.**
+`AGPL-3.0-only OR LicenseRef-Imazen-Commercial`. AGPL is disqualifying
+per AGENTS.md, and worse than GPL for this project specifically: §13
+triggers on *network interaction*, which is what a self-hosted server
+serving thumbnails over HTTP does. The commercial option (they advertise
+$1 startup licences) does not rescue it — OxiCloud is self-hosted, so
+**every operator** would need their own licence, which is exactly the
+"no feature gated behind a licence key" prohibition, pushed onto users.
+
+Worth knowing it is otherwise the strongest candidate seen, so nobody
+re-evaluates it hoping the terms changed without checking: pure Rust,
+`#![forbid(unsafe_code)]`, FFI isolated in optional subcrates, and it
+decodes **HEVC-in-HEIF natively** — the hard part that other pure-Rust
+efforts skip in favour of AVIF only. 49/49 conformance vectors.
+
+Even setting licence aside it would be early for us: 0.1.6, first
+released 2026-03-29, 0.2.0 yanked, 12 GitHub stars and a single vendor.
+118/162 HEIF corpus files decode (~27% fail), HEVC **I-frames only**,
+and no PQ/HLG EOTF — "callers handle tone-mapping", which modern iPhones
+need since they shoot HDR HEIC.
+
+Re-check criteria for any future candidate, in order: (1) licence
+MIT/Apache/BSD-compatible — not AGPL, not dual-commercial; (2) no C
+toolchain in the default build; (3) decodes HEVC-in-HEIF stills, not
+just AVIF; (4) handles HDR transfer functions or we accept writing
+tone-mapping.
+
+Until then: no code change, and `is_supported_image` carries a pointer
+here so the next reader finds the decision rather than re-deriving it.
 
 #### 0.7 Sub-navigation inside Photos
 **`static/index.html`** + **`static/js/app/navigation.js`** (`switchToPhotosSection`,

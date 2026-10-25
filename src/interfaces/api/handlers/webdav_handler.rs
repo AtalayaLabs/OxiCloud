@@ -22,7 +22,7 @@ use uuid::Uuid;
 use crate::application::adapters::webdav_adapter::{
     LockInfo, PropFindRequest, PropPatchOp, QualifiedName, WebDavAdapter, is_protected_property,
 };
-use crate::application::dtos::display_helpers::intern_display;
+use crate::application::dtos::display_helpers::ResourceCategory;
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::FolderDto;
 use crate::application::ports::authorization_ports::AuthorizationEngine;
@@ -573,7 +573,7 @@ async fn handle_propfind(
                 // the same "now" the other two clocks get. DAV reads this
                 // for the root collection's `getlastmodified`.
                 tree_modified_at: Utc::now(),
-                category: intern_display("Folder"),
+                category: ResourceCategory::Folder,
                 created_by: None,
                 updated_by: None,
                 // Synthetic root, not on the SPA path — safe default.

@@ -45,6 +45,17 @@
 //!   bytes are user-supplied — a client-generated PDF preview has no
 //!   server-side render path — so there is nothing to regenerate from. Same
 //!   finding shape as the derived case, materially higher stakes.
+//! * `content_facts_orphan` (`anomaly`) — a row in a content-keyed FACTS
+//!   table (`audio.content_metadata`, `storage.content_metadata`) whose
+//!   source Blob is gone. Those tables are the third satellite shape: keyed
+//!   by content like `content_derived_blobs`, but holding parsed COLUMNS
+//!   rather than an artifact, so no `blob_hash`, no `ref_count` and no FK
+//!   to cascade from. They are reaped only by
+//!   `BlobHandler::purge_content_facts`, and if a reap path misses, nothing
+//!   else ever notices — this check is that "nothing else". Lowest severity
+//!   of the three on purpose: the row pins no storage, and because the key
+//!   is a content hash it becomes correct again the moment those bytes are
+//!   re-uploaded.
 //!
 //! There is deliberately no orphan-mapping check for the attached table:
 //! `file_id` is `REFERENCES storage.files(id) ON DELETE CASCADE`, so a row
@@ -89,9 +100,11 @@ static PARAMETERS: [JobParam; 1] = [JobParam::boolean(
     "repair",
     false,
     "Delete orphaned derived mappings and release the blob references they \
-     pin. Default off — the run only reports. Never offered for \
-     file_attached_blobs: those bytes were uploaded by a user and are not \
-     recomputable, so the only safe action there is to tell someone.",
+     pin, and delete orphaned content-facts rows (which hold no reference, \
+     so there is nothing to release). Default off — the run only reports. \
+     Never offered for file_attached_blobs: those bytes were uploaded by a \
+     user and are not recomputable, so the only safe action there is to \
+     tell someone.",
 )];
 
 pub const SATELLITES_CONSISTENCY_JOB_NAME: &str = "satellites_consistency";
@@ -114,6 +127,70 @@ macro_rules! blob_exists {
         )
     };
 }
+
+/// One page of a content-facts table, keyed on its only column that
+/// matters here. Generated per table because a table name cannot be bound
+/// as a parameter.
+macro_rules! facts_page_sql {
+    ($table:literal) => {
+        concat!(
+            "SELECT f.source_hash, ",
+            blob_exists!("f.source_hash"),
+            " AS source_exists
+               FROM ",
+            $table,
+            " f
+              WHERE ($1::text IS NULL OR f.source_hash > $1)
+              ORDER BY f.source_hash
+              LIMIT $2"
+        )
+    };
+}
+
+macro_rules! facts_delete_sql {
+    ($table:literal) => {
+        concat!("DELETE FROM ", $table, " WHERE source_hash = $1")
+    };
+}
+
+/// A content-keyed FACTS table: parsed values stored against the hash of
+/// the bytes they came from, holding no `blob_hash`, no `ref_count` and no
+/// FK to `storage.files`.
+///
+/// They are the third satellite shape (see
+/// `docs/architecture/derived-and-attached-blobs.md`). Because they hold no
+/// reference, they are reaped only by `BlobHandler::purge_content_facts`
+/// when their source Blob goes — and if a reap path ever misses, nothing
+/// else notices. This phase is that "nothing else".
+///
+/// A plain table-driven list rather than a trait: the alternative is a
+/// satellite abstraction over two tables with different columns, which
+/// costs more than the duplication it removes. Adding a third table is
+/// one entry here.
+struct FactsTable {
+    /// Cursor tag. Stable — it is persisted in a resume cursor, so
+    /// renaming one strands in-flight runs. Entries are walked in the
+    /// order they appear here.
+    tag: &'static str,
+    table: &'static str,
+    page_sql: &'static str,
+    delete_sql: &'static str,
+}
+
+const FACTS_TABLES: &[FactsTable] = &[
+    FactsTable {
+        tag: "audio",
+        table: "audio.content_metadata",
+        page_sql: facts_page_sql!("audio.content_metadata"),
+        delete_sql: facts_delete_sql!("audio.content_metadata"),
+    },
+    FactsTable {
+        tag: "capture",
+        table: "storage.content_metadata",
+        page_sql: facts_page_sql!("storage.content_metadata"),
+        delete_sql: facts_delete_sql!("storage.content_metadata"),
+    },
+];
 
 pub struct SatellitesConsistencyCheck {
     pool: Arc<PgPool>,
@@ -141,6 +218,12 @@ struct DerivedRow {
     blob_hash: Option<String>,
     source_exists: bool,
     artifact_exists: bool,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct FactsRow {
+    source_hash: String,
+    source_exists: bool,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -259,6 +342,10 @@ impl SatellitesConsistencyCheck {
 enum Phase {
     Derived,
     Attached,
+    /// Content-keyed facts tables. Slot `a` carries the `FactsTable::tag`
+    /// and `b` the position within it, so one phase walks every table in
+    /// `FACTS_TABLES` and still resumes to the exact row.
+    Facts,
 }
 
 impl Phase {
@@ -266,6 +353,7 @@ impl Phase {
         match self {
             Phase::Derived => "derived",
             Phase::Attached => "attached",
+            Phase::Facts => "facts",
         }
     }
 }
@@ -288,6 +376,9 @@ fn decode_cursor(bytes: Vec<u8>) -> Result<Cursor, String> {
         }
         (Some("attached"), Some(a), Some(b), Some(c)) => {
             Ok(Some((Phase::Attached, a.into(), b.into(), c.into())))
+        }
+        (Some("facts"), Some(a), Some(b), Some(c)) => {
+            Ok(Some((Phase::Facts, a.into(), b.into(), c.into())))
         }
         _ => Err(format!("malformed cursor: {s:?}")),
     }
@@ -324,8 +415,11 @@ impl RecoverableJobHandler for SatellitesConsistencyCheck {
              that became referenced again is never deleted. Mappings whose \
              artifact is missing are deleted too, since derived content is \
              a pure function of its source and re-renders on the next \
-             request. file_attached_blobs is never touched: those bytes \
-             were uploaded by a user and nothing can recompute them.",
+             request. Orphaned content-facts rows (audio.content_metadata, \
+             storage.content_metadata) are deleted outright — they hold no \
+             reference, so there is nothing to release, and their source \
+             content is gone. file_attached_blobs is never touched: those \
+             bytes were uploaded by a user and nothing can recompute them.",
         )
     }
 
@@ -381,11 +475,13 @@ impl RecoverableJobHandler for SatellitesConsistencyCheck {
         // Skipped entirely when resuming mid-attached, since that phase runs
         // strictly after this one.
         let mut derived_cursor = match &start {
-            Some((Phase::Attached, ..)) => None,
             Some((Phase::Derived, a, b, c)) => Some((a.clone(), b.clone(), c.clone())),
-            None => None,
+            _ => None,
         };
-        let skip_derived = matches!(&start, Some((Phase::Attached, ..)));
+        let skip_derived = matches!(
+            &start,
+            Some((Phase::Attached, ..)) | Some((Phase::Facts, ..))
+        );
 
         if !skip_derived {
             loop {
@@ -607,28 +703,142 @@ impl RecoverableJobHandler for SatellitesConsistencyCheck {
             },
             _ => None,
         };
+        // Phase 3 runs strictly after this one, so a cursor from it means
+        // this table is already walked.
+        let skip_attached = matches!(&start, Some((Phase::Facts, ..)));
 
-        loop {
+        if !skip_attached {
+            loop {
+                if let Some(outcome) = poll_cancel(
+                    store,
+                    attached_cursor
+                        .as_ref()
+                        .map(|(a, b, c)| encode_cursor(Phase::Attached, &a.to_string(), b, c)),
+                )
+                .await
+                {
+                    return outcome;
+                }
+
+                let (ch, ck, cv) = match &attached_cursor {
+                    Some((a, b, c)) => (Some(*a), Some(b.as_str()), Some(c.as_str())),
+                    None => (None, None, None),
+                };
+
+                let rows: Vec<AttachedRow> = match sqlx::query_as(Self::ATTACHED_PAGE_SQL)
+                    .bind(ch)
+                    .bind(ck)
+                    .bind(cv)
+                    .bind(BATCH_SIZE)
+                    .fetch_all(self.pool.as_ref())
+                    .await
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return RunOutcome::Failed {
+                            message: format!("attached page: {e}"),
+                        };
+                    }
+                };
+                if rows.is_empty() {
+                    break;
+                }
+
+                for row in &rows {
+                    if !row.artifact_exists {
+                        finding_count += 1;
+                        record_or_log(
+                            store,
+                            SATELLITES_CONSISTENCY_JOB_NAME,
+                            "attached_dangling_blob",
+                            "data_loss",
+                            None,
+                            serde_json::json!({
+                                "file_id":     row.file_id,
+                                "kind":        row.kind,
+                                "variant":     row.variant,
+                                "blob_hash":   row.blob_hash,
+                                "uploaded_by": row.uploaded_by,
+                                "recoverable": false,
+                                "note": "UNRECOVERABLE: these bytes were user-supplied and have no \
+                                         server-side render path, so nothing can regenerate them",
+                            }),
+                        )
+                        .await;
+                    }
+                }
+
+                let scanned = rows.len() as u64;
+                let last = rows.last().unwrap();
+                attached_cursor = Some((last.file_id, last.kind.clone(), last.variant.clone()));
+                if let Err(e) = store
+                    .checkpoint(
+                        encode_cursor(
+                            Phase::Attached,
+                            &last.file_id.to_string(),
+                            &last.kind,
+                            &last.variant,
+                        ),
+                        scanned,
+                    )
+                    .await
+                {
+                    return RunOutcome::Failed {
+                        message: format!("checkpoint: {e}"),
+                    };
+                }
+                if scanned < BATCH_SIZE as u64 {
+                    break;
+                }
+            }
+        }
+
+        // ── Phase 3: content-keyed FACTS ─────────────────────────────────
+        // Only the source side can rot here. These tables hold no
+        // `blob_hash`, so there is no artifact to dangle — the single
+        // failure mode is a row whose source Blob was reaped by a path
+        // that did not call `purge_content_facts`.
+        //
+        // Resume: slot `a` is the table tag, slot `b` the position in it.
+        // An unknown tag is a hard failure rather than a restart from the
+        // beginning — silently rewalking is how a resumed run reports
+        // success over rows it never looked at.
+        let (mut table_idx, mut facts_cursor) = match &start {
+            Some((Phase::Facts, tag, pos, _)) => {
+                match FACTS_TABLES.iter().position(|t| t.tag == *tag) {
+                    Some(i) => (i, (!pos.is_empty()).then(|| pos.clone())),
+                    None => {
+                        return RunOutcome::Failed {
+                            message: format!(
+                                "resume cursor names an unknown facts table {tag:?} — it was \
+                                 renamed or removed; clear the cursor to rerun this phase"
+                            ),
+                        };
+                    }
+                }
+            }
+            _ => (0, None),
+        };
+
+        while table_idx < FACTS_TABLES.len() {
+            let t = &FACTS_TABLES[table_idx];
+
             if let Some(outcome) = poll_cancel(
                 store,
-                attached_cursor
-                    .as_ref()
-                    .map(|(a, b, c)| encode_cursor(Phase::Attached, &a.to_string(), b, c)),
+                Some(encode_cursor(
+                    Phase::Facts,
+                    t.tag,
+                    facts_cursor.as_deref().unwrap_or(""),
+                    "",
+                )),
             )
             .await
             {
                 return outcome;
             }
 
-            let (ch, ck, cv) = match &attached_cursor {
-                Some((a, b, c)) => (Some(*a), Some(b.as_str()), Some(c.as_str())),
-                None => (None, None, None),
-            };
-
-            let rows: Vec<AttachedRow> = match sqlx::query_as(Self::ATTACHED_PAGE_SQL)
-                .bind(ch)
-                .bind(ck)
-                .bind(cv)
+            let rows: Vec<FactsRow> = match sqlx::query_as(t.page_sql)
+                .bind(facts_cursor.as_deref())
                 .bind(BATCH_SIZE)
                 .fetch_all(self.pool.as_ref())
                 .await
@@ -636,59 +846,106 @@ impl RecoverableJobHandler for SatellitesConsistencyCheck {
                 Ok(r) => r,
                 Err(e) => {
                     return RunOutcome::Failed {
-                        message: format!("attached page: {e}"),
+                        message: format!("facts page ({}): {e}", t.table),
                     };
                 }
             };
-            if rows.is_empty() {
-                break;
-            }
 
             for row in &rows {
-                if !row.artifact_exists {
-                    finding_count += 1;
-                    record_or_log(
-                        store,
-                        SATELLITES_CONSISTENCY_JOB_NAME,
-                        "attached_dangling_blob",
-                        "data_loss",
-                        None,
-                        serde_json::json!({
-                            "file_id":     row.file_id,
-                            "kind":        row.kind,
-                            "variant":     row.variant,
-                            "blob_hash":   row.blob_hash,
-                            "uploaded_by": row.uploaded_by,
-                            "recoverable": false,
-                            "note": "UNRECOVERABLE: these bytes were user-supplied and have no \
-                                     server-side render path, so nothing can regenerate them",
-                        }),
-                    )
-                    .await;
+                if row.source_exists {
+                    continue;
                 }
+                finding_count += 1;
+
+                let repaired = if repair {
+                    match sqlx::query(t.delete_sql)
+                        .bind(&row.source_hash)
+                        .execute(self.pool.as_ref())
+                        .await
+                    {
+                        Ok(_) => {
+                            repaired_count += 1;
+                            true
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                target: "oxicloud::consistency",
+                                event = "satellites_consistency.repair_failed",
+                                source_hash = %row.source_hash,
+                                table = t.table,
+                                error = %e,
+                                "could not delete an orphaned content-facts row: {e}"
+                            );
+                            repair_failures += 1;
+                            false
+                        }
+                    }
+                } else {
+                    false
+                };
+
+                // `anomaly`, not `inconsistent`, and the distinction is
+                // real rather than modesty. The derived-mapping orphan
+                // above pins an artifact forever — a leak with teeth.
+                // This row holds no reference and pins nothing: it is
+                // dead weight, a few columns nobody can reach.
+                //
+                // It is also not even wrong. The key is the content hash,
+                // so if those exact bytes are ever uploaded again the row
+                // is immediately correct for them — EXIF and ID3 are
+                // functions of the bytes, and the bytes have not changed.
+                // Reaping it is housekeeping, which is why it is
+                // discovery-only and repair is opt-in.
+                record_or_log(
+                    store,
+                    SATELLITES_CONSISTENCY_JOB_NAME,
+                    "content_facts_orphan",
+                    "anomaly",
+                    None,
+                    serde_json::json!({
+                        "source_hash": row.source_hash,
+                        "table":       t.table,
+                        "repaired":    repaired,
+                        "note": "source Blob is gone, so purge_content_facts can never fire; \
+                                 the row holds no reference and pins nothing, but nothing \
+                                 will ever delete it either",
+                    }),
+                )
+                .await;
             }
 
             let scanned = rows.len() as u64;
-            let last = rows.last().unwrap();
-            attached_cursor = Some((last.file_id, last.kind.clone(), last.variant.clone()));
+            let page_was_short = scanned < BATCH_SIZE as u64;
+
+            // Advance WITHIN the table, or on to the next one. The
+            // checkpoint is written in both cases: moving to the next
+            // table is exactly the progress a resume must not lose.
+            if let Some(last) = rows.last() {
+                facts_cursor = Some(last.source_hash.clone());
+            }
+            if page_was_short {
+                table_idx += 1;
+                facts_cursor = None;
+            }
+
+            let (ck_tag, ck_pos) = match FACTS_TABLES.get(table_idx) {
+                Some(next) => (next.tag, facts_cursor.as_deref().unwrap_or("")),
+                // Past the end: park the cursor on the last table at its
+                // final position. Nothing resumes from here — the run is
+                // about to complete — but a cancel racing this instant
+                // must not decode as "start of table 0".
+                None => (
+                    FACTS_TABLES[FACTS_TABLES.len() - 1].tag,
+                    "\u{10FFFF}", // sorts after any hex hash
+                ),
+            };
             if let Err(e) = store
-                .checkpoint(
-                    encode_cursor(
-                        Phase::Attached,
-                        &last.file_id.to_string(),
-                        &last.kind,
-                        &last.variant,
-                    ),
-                    scanned,
-                )
+                .checkpoint(encode_cursor(Phase::Facts, ck_tag, ck_pos, ""), scanned)
                 .await
             {
                 return RunOutcome::Failed {
                     message: format!("checkpoint: {e}"),
                 };
-            }
-            if scanned < BATCH_SIZE as u64 {
-                break;
             }
         }
 
@@ -741,7 +998,7 @@ mod tests {
     /// is the worst failure available to it.
     #[test]
     fn cursor_round_trips_and_keeps_its_phase() {
-        for phase in [Phase::Derived, Phase::Attached] {
+        for phase in [Phase::Derived, Phase::Attached, Phase::Facts] {
             let encoded = encode_cursor(phase, "0a1b", "thumbnail", "preview.webp");
             assert_eq!(
                 decode_cursor(encoded).unwrap(),
@@ -751,6 +1008,61 @@ mod tests {
                     "thumbnail".to_string(),
                     "preview.webp".to_string()
                 ))
+            );
+        }
+    }
+
+    /// The facts cursor carries a TABLE TAG, not a hash, in slot `a`, and
+    /// the resume arm looks that tag up in `FACTS_TABLES` to decide where
+    /// to restart. Two things have to hold for that to be safe, and both
+    /// are easy to break by editing the table list alone:
+    ///
+    /// - every tag resolves, or a resumed run fails instead of silently
+    ///   rewalking from table 0 and reporting success over rows it never
+    ///   looked at;
+    /// - tags are unique, or `position()` picks the first match and the
+    ///   duplicate's progress is lost on every resume.
+    #[test]
+    fn every_facts_table_tag_resolves_and_is_unique() {
+        for t in FACTS_TABLES {
+            let found = FACTS_TABLES.iter().position(|x| x.tag == t.tag);
+            assert_eq!(
+                found.map(|i| FACTS_TABLES[i].table),
+                Some(t.table),
+                "tag {:?} does not resolve back to its own table — duplicate tag?",
+                t.tag,
+            );
+            assert!(!t.tag.is_empty(), "an empty tag collides with 'no cursor'");
+        }
+        assert!(
+            !FACTS_TABLES.is_empty(),
+            "phase 3 with no tables would checkpoint past the end of the list",
+        );
+    }
+
+    /// Both SQL strings must actually name the table they are filed under.
+    /// They are built by macro from a literal, so a copy-paste that left
+    /// the wrong table name would compile, run, and quietly sweep the
+    /// wrong table — deleting live rows under `?repair=true`.
+    #[test]
+    fn facts_sql_targets_its_own_table() {
+        for t in FACTS_TABLES {
+            assert!(
+                t.page_sql.contains(t.table),
+                "page_sql for {} does not mention it",
+                t.table,
+            );
+            assert!(
+                t.delete_sql.contains(t.table),
+                "delete_sql for {} does not mention it",
+                t.table,
+            );
+            // Keyed by content: a delete that forgot its WHERE clause
+            // would empty the table on the first repair run.
+            assert!(
+                t.delete_sql.contains("WHERE source_hash = $1"),
+                "delete_sql for {} is not row-scoped",
+                t.table,
             );
         }
     }
@@ -881,6 +1193,57 @@ mod integration_tests {
         (source, artifact)
     }
 
+    /// Two orphaned content-facts rows — one per table in `FACTS_TABLES` —
+    /// whose `source_hash` names content that exists nowhere.
+    ///
+    /// Unlike the derived orphan there is no artifact to seed: these rows
+    /// hold no `blob_hash`. That IS the shape under test, and it is why
+    /// the repair arm here is a plain delete with no reference to release.
+    ///
+    /// Both tables are seeded in one go so the test proves phase 3 walks
+    /// past the first table. A phase that stopped after `audio` would
+    /// otherwise pass every assertion written against it.
+    async fn seed_facts_orphans(pool: &sqlx::PgPool, tag: &str) -> String {
+        let source = format!("fact{tag}{}", "0".repeat(64 - 4 - tag.len()));
+
+        sqlx::query(
+            "INSERT INTO audio.content_metadata (source_hash, title, duration_secs)
+             VALUES ($1, 'orphan', 0)
+             ON CONFLICT (source_hash) DO NOTHING",
+        )
+        .bind(&source)
+        .execute(pool)
+        .await
+        .expect("seed audio facts orphan");
+
+        sqlx::query(
+            "INSERT INTO storage.content_metadata (source_hash, created_at)
+             VALUES ($1, TIMESTAMPTZ '2019-07-14 10:30:00+00')
+             ON CONFLICT (source_hash) DO NOTHING",
+        )
+        .bind(&source)
+        .execute(pool)
+        .await
+        .expect("seed capture facts orphan");
+
+        source
+    }
+
+    /// How many of the two facts tables still hold a row for this hash.
+    async fn facts_count(pool: &sqlx::PgPool, source: &str) -> i64 {
+        let mut total = 0i64;
+        for t in FACTS_TABLES {
+            let sql = format!("SELECT count(*) FROM {} WHERE source_hash = $1", t.table);
+            let n: i64 = sqlx::query_scalar(&sql)
+                .bind(source)
+                .fetch_one(pool)
+                .await
+                .expect("count facts rows");
+            total += n;
+        }
+        total
+    }
+
     async fn mapping_count(pool: &sqlx::PgPool, source: &str) -> i64 {
         sqlx::query_scalar(
             "SELECT COUNT(*) FROM storage.content_derived_blobs WHERE source_hash = $1",
@@ -923,6 +1286,17 @@ mod integration_tests {
             "DELETE FROM storage.blobs WHERE hash = $1",
         ] {
             let _ = sqlx::query(sql).bind(artifact).execute(pool).await;
+        }
+    }
+
+    /// Idempotent: a passing run already deleted these under repair, so
+    /// this only matters when the test failed partway and would otherwise
+    /// leave rows that make the next run's phase-1 assertion fail for the
+    /// wrong reason.
+    async fn cleanup_facts(pool: &sqlx::PgPool, source: &str) {
+        for t in FACTS_TABLES {
+            let sql = format!("DELETE FROM {} WHERE source_hash = $1", t.table);
+            let _ = sqlx::query(&sql).bind(source).execute(pool).await;
         }
     }
 
@@ -983,6 +1357,7 @@ mod integration_tests {
     async fn repair_is_opt_in_and_releases_the_reference() {
         let pool = test_pool().await;
         let (source, artifact) = seed_orphan(&pool, "rp").await;
+        let facts_source = seed_facts_orphans(&pool, "rp").await;
 
         // ── Phase 1: discovery only ──────────────────────────────────
         run_job(&pool, &JobRunArgs::default()).await;
@@ -991,6 +1366,11 @@ mod integration_tests {
             mapping_count(&pool, &source).await,
             1,
             "a read-only run deleted an orphan mapping"
+        );
+        assert_eq!(
+            facts_count(&pool, &facts_source).await,
+            2,
+            "a read-only run deleted content-facts rows"
         );
         assert_eq!(
             manifest_refcount(&pool, &artifact).await,
@@ -1047,7 +1427,18 @@ mod integration_tests {
             "the freed chunk must be dereferenced and orphaned, so the GC \
              can reclaim it — not unlinked from inside the scan"
         );
+        // BOTH tables, which is the assertion that proves phase 3 did not
+        // stop after the first entry in FACTS_TABLES. There is no
+        // reference to check afterwards — holding none is the defining
+        // property of this satellite shape.
+        assert_eq!(
+            facts_count(&pool, &facts_source).await,
+            0,
+            "repair left an orphaned content-facts row behind — if only one \
+             of the two survived, phase 3 stopped after its first table"
+        );
 
         cleanup(&pool, &source, &artifact).await;
+        cleanup_facts(&pool, &facts_source).await;
     }
 }

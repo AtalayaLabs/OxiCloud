@@ -7,7 +7,7 @@ use axum::{
 use std::sync::Arc;
 use tracing::info;
 
-use crate::application::dtos::display_helpers::{category_for, intern_display, intern_mime};
+use crate::application::dtos::display_helpers::{ResourceCategory, category_for, intern_mime};
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::FolderDto;
 use crate::application::dtos::grant_dto::{ResourceContentDto, ResourceTypeDto};
@@ -245,7 +245,7 @@ pub async fn list_recent_resources(
                             // `D:getlastmodified`, so the row's own mtime
                             // stands in rather than a claim about descendants.
                             tree_modified_at: row.modified_at,
-                            category: intern_display("Folder"),
+                            category: ResourceCategory::Folder,
                             created_by: row.created_by,
                             updated_by: row.updated_by,
                             is_favorite: row.is_favorite,
@@ -270,7 +270,7 @@ pub async fn list_recent_resources(
                         let content_hash = row.blob_hash.unwrap_or_default();
                         // The name-derived category borrows `row.name`;
                         // compute it before the name moves into the DTO.
-                        let category = intern_display(category_for(&row.name, mime));
+                        let category = category_for(&row.name, mime);
                         let dto = FileDto {
                             id: row.resource_id.to_string(),
                             name: row.name,

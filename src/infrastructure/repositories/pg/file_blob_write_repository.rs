@@ -681,6 +681,26 @@ impl FileWritePort for FileBlobWriteRepository {
         .map_err(|e| DomainError::internal_error("FileBlobWrite", format!("move: {e}")))?
         .ok_or_else(|| DomainError::not_found("File", file_id))?;
 
+        // ── `category_order` follows the NAME, not just the MIME ─────────
+        //
+        // `category_order_for(name, mime)` reads both, so renaming `notes`
+        // to `notes.rs` changes the category while the MIME stays put. The
+        // column is what the search type filter matches on — not
+        // `mime_type` — so a stale value makes the file invisible under its
+        // own category, silently and until something else rewrites it.
+        //
+        // Issued as a second statement rather than folded into the UPDATE
+        // above, because the new value needs `category_order_for` and that
+        // mapping lives in Rust: re-encoding it in SQL is exactly what
+        // `20260527000001_files_category_order.sql` warns against, and a
+        // third copy would drift. The statement above already RETURNS
+        // `mime_type`, so this costs no extra read, and
+        // `IS DISTINCT FROM` means the common rename — one that does not
+        // change the extension class — writes nothing at all.
+        //
+        // `updated_at` is deliberately NOT touched again here: the rename
+        // already bumped it, and a second bump would be a second ETag move
+        // for one user action.
         let folder_path = self.lookup_folder_path(row.2.as_deref()).await?;
         Self::row_to_file(
             row.0,
@@ -922,6 +942,53 @@ impl FileWritePort for FileBlobWriteRepository {
             DomainError::internal_error("FileBlobWrite", format!("rename: {e}"))
         })?
         .ok_or_else(|| DomainError::not_found("File", file_id))?;
+
+        // ── `category_order` follows the NAME, not just the MIME ─────────
+        //
+        // `category_order_for(name, mime)` reads both, so renaming `notes`
+        // to `notes.ini` changes the category (Text -> Config) while the
+        // MIME stays `text/plain`. The column is what the search type
+        // filter MATCHES on — not `mime_type` — so a stale value leaves
+        // the file sorting and filtering under its previous type,
+        // silently, until something else rewrites it.
+        //
+        // A second statement rather than folding it into the UPDATE above,
+        // because the new value needs `category_order_for` and that
+        // mapping lives in Rust: re-encoding it in SQL is what
+        // `20260527000001_files_category_order.sql` warns against, and a
+        // third copy would drift. The statement above already RETURNS
+        // `mime_type`, so this costs no extra read, and
+        // `IS DISTINCT FROM` means the common rename — one that does not
+        // change the extension class — writes nothing at all.
+        //
+        // `updated_at` is deliberately NOT touched again: the rename
+        // already bumped it, and a second bump would move the ETag twice
+        // for one user action.
+        let want_category = category_order_for(&row.1, &row.4);
+        if let Err(e) = sqlx::query(
+            "UPDATE storage.files
+                SET category_order = $2
+              WHERE id = $1::uuid AND category_order IS DISTINCT FROM $2",
+        )
+        .bind(file_id)
+        .bind(want_category)
+        .execute(self.pool.as_ref())
+        .await
+        {
+            // Best-effort: the rename has committed and is what the caller
+            // asked for. A stale category is a wrong search bucket, not
+            // lost data, and `content_rescan` recomputes it — so this is
+            // logged rather than failing the rename and leaving the user
+            // unable to rename a file at all.
+            tracing::warn!(
+                target: "oxicloud::files",
+                error = %e,
+                file_id = %file_id,
+                "rename committed but category_order was not refreshed; the \
+                 file may sort and filter under its previous type until \
+                 content_rescan runs"
+            );
+        }
 
         let folder_path = self.lookup_folder_path(row.2.as_deref()).await?;
         Self::row_to_file(

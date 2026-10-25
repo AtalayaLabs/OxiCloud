@@ -1550,7 +1550,7 @@ export type FavoriteItemDto = {
      * Content category — a stable machine key, not display text (e.g.
      * "Image", "Folder"). See `FileDto::category`.
      */
-    category: string;
+    category: ResourceCategory;
     /**
      * When the item was added to favorites
      */
@@ -1736,7 +1736,7 @@ export type FileDto = {
      * it client-side would let the FE's buckets disagree with the server's
      * `ORDER BY`. See `docs/architecture/resource-listing.md`.
      */
-    category: string;
+    category: ResourceCategory;
     /**
      * Raw BLAKE3 content hash. Populated from `File::content_hash()`.
      * Exposed in REST JSON so API consumers can use it for
@@ -1904,7 +1904,7 @@ export type FolderDto = {
      * Content category — a stable machine key, not display text; always
      * "Folder". See `FileDto::category` for the contract.
      */
-    category: string;
+    category: ResourceCategory;
     /**
      * Creation timestamp (RFC 3339 UTC).
      */
@@ -3157,7 +3157,7 @@ export type PhotoResourceItemDto = {
      */
     has_gps: boolean;
     /**
-     * Image/video height in pixels, from `storage.file_metadata`.
+     * Image/video height in pixels, from `storage.content_metadata`.
      */
     height?: number | null;
     /**
@@ -3196,7 +3196,7 @@ export type PhotoResourceItemDto = {
      */
     sort_date: string;
     /**
-     * Image/video width in pixels, from `storage.file_metadata`.
+     * Image/video width in pixels, from `storage.content_metadata`.
      * `None` when the row has no metadata (very old uploads, or a
      * format the metadata extractor doesn't understand).
      */
@@ -3365,7 +3365,7 @@ export type RecentItemDto = {
      * Content category — a stable machine key, not display text (e.g.
      * "Image", "Folder"). See `FileDto::category`.
      */
-    category: string;
+    category: ResourceCategory;
     /**
      * Unique identifier for the recent item
      */
@@ -3478,6 +3478,24 @@ export type RenamePersonRequest = {
 export type ReorderTracksDto = {
     item_ids: Array<string>;
 };
+
+/**
+ * The resource categories the server classifies into — the fine set.
+ *
+ * `SearchTypeFilter` is the COARSE view of this, and the two are
+ * deliberately separate: the filter's `Document` spans Pdf, Document,
+ * Spreadsheet, Presentation, Markdown and Text, so collapsing them would
+ * either coarsen the Type column (users lose "Spreadsheet" vs "PDF") or
+ * inflate the picker to fourteen options. What IS unified is the
+ * relationship — `category_orders_for_filter` maps coarse to fine
+ * *categories*, so the sort integers appear in exactly one place
+ * ([`category_order_for`]).
+ *
+ * On the wire this is a machine key, never display text: the SPA's
+ * `typeLabel` maps it to a localised string. Rendering it raw is the i18n
+ * bug that step 1 of `retire-precomputed-display-fields.md` fixed.
+ */
+export type ResourceCategory = 'Image' | 'Video' | 'Audio' | 'PDF' | 'WordProcessor' | 'Spreadsheet' | 'Presentation' | 'Archive' | 'Code' | 'Markdown' | 'Text' | 'Package' | 'Config' | 'DiskImage' | 'Font' | 'Ebook' | 'Executable' | 'Folder' | 'Unknown';
 
 /**
  * The resource payload for one item in the shared-with-me list.
@@ -3661,7 +3679,7 @@ export type SearchFileResultDto = {
      * "image", … — which it never carried: `enrich_file` copies the
      * capitalised `category_for` output verbatim.)
      */
-    category: string;
+    category: ResourceCategory;
     /**
      * Creation timestamp (RFC 3339 UTC).
      */
@@ -4010,7 +4028,7 @@ export type SearchSuggestionsDto = {
  * through [`category_orders_for_filter`], which is exhaustive over this enum
  * so a new variant is a compile error there.
  */
-export type SearchTypeFilter = 'all' | 'folder' | 'image' | 'video' | 'audio' | 'document' | 'archive' | 'code' | 'other';
+export type SearchTypeFilter = 'all' | 'folder' | 'image' | 'video' | 'audio' | 'document' | 'archive' | 'code' | 'font' | 'unknown';
 
 /**
  * Self view — everything the caller may see about themselves.
@@ -4769,7 +4787,7 @@ export type TrashedItemDto = {
      * Content category — a stable machine key, not display text (e.g.
      * "Image", "Folder", "Document"). See `FileDto::category`.
      */
-    category: string;
+    category: ResourceCategory;
     days_until_deletion: number;
     id: string;
     item_type: string;

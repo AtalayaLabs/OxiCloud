@@ -153,15 +153,26 @@ pub trait JobHandler: Send + Sync {
     /// recording and advances `next_run_at` by one interval, instead
     /// of running the handler.
     ///
+    /// Read the flag as **"must not run while the backend is under
+    /// exclusive maintenance"** rather than literally "performs writes".
+    /// Writing is the usual reason, not the only one: a job that reads
+    /// the whole corpus competes for the same bandwidth a migration is
+    /// saturating and may read across a cutover, which is just as good a
+    /// reason to defer. `content_rescan` sets it for exactly that
+    /// reason and writes nothing to the backend — do not "correct" it
+    /// to `false` on the strength of the first sentence.
+    ///
     /// Defaults to `false` — DB-only maintenance jobs (consistency,
-    /// cleanup, GC) are unaffected by the gate. Backend-writer jobs
-    /// override to `true`:
+    /// cleanup, GC) are unaffected by the gate. Jobs that override to
+    /// `true`:
     ///   - `backend_reclaim` (DELETE orphan objects)
     ///   - `backend_rechunk` (PUT new chunks + DELETE old)
     ///   - `backend_rotate` (PUT re-encrypted + DELETE old)
     ///   - `thumb_attached_import`, `thumb_derived_import` (PUT satellites)
     ///   - `transcode_import` (PUT transcoded derivatives)
     ///   - `satellites_consistency` (now a writer after pass 3)
+    ///   - `content_rescan` (no backend writes — see above: full-corpus
+    ///     reads plus a corpus-wide `mime_type` rewrite)
     ///
     /// `backend_migration` itself is deliberately NOT in this list —
     /// it is the one that TAKES the gate, so the dispatch prologue

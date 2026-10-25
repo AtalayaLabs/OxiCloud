@@ -164,7 +164,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 base64 = "0.22.1"
 fs2 = "0.4"
 rayon = "1.12.0"
-infer = "0.19"
+infer = "0.22"
 async-compression = { version = "0.4.42", features = ["tokio", "gzip"] }
 async_zip = { version = "0.0.18", features = ["tokio", "deflate"] }
 dashmap = "6.2.1"

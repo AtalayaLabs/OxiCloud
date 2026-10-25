@@ -258,11 +258,9 @@ impl FileUploadService {
         // The manifest knows the original content type; fall back to the
         // new name's extension when the stored one is generic.
         let claimed = metadata.content_type.as_deref().unwrap_or("");
-        let content_type =
-            match crate::common::mime_detect::refine_content_type(&[], &name, claimed) {
-                ct if ct.is_empty() => "application/octet-stream".to_string(),
-                ct => ct,
-            };
+        // The empty-string fallback lives in `refine_content_type` now —
+        // see its step 4 for why it belongs there and not here.
+        let content_type = crate::common::mime_detect::refine_content_type(&[], &name, claimed);
 
         // Take the reference the row registration will consume (it releases
         // it again on any failure). A concurrent GC between the ownership
