@@ -470,12 +470,21 @@ pub type FolderResourcesDto = CursorListResponse<FolderResourceItemDto>;
 /// walk stops at the first inaccessible parent.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct FolderAncestorDto {
-    pub id: Uuid,
+    /// Folder id. A native folder is a UUID string; a folder inside
+    /// an external mount is an `ext:<mount>:<token>` string (same
+    /// shape every other mount-aware DTO uses — [`FolderDto::id`],
+    /// [`crate::application::dtos::resource_dto::ResourceDto`]).
+    /// Typed as a string so the single DTO shape carries both — see
+    /// #837: the previous `Uuid`-only field type forced the ancestor
+    /// walk to UUID-parse `leaf_id` before classify, so every mount
+    /// subfolder answered 404.
+    pub id: String,
     pub name: String,
     /// `None` on the drive-root folder. On boundary crumbs it's the id
     /// of the (invisible-to-caller) parent — clients don't render it
-    /// but the field is preserved for debugging.
-    pub parent_id: Option<Uuid>,
+    /// but the field is preserved for debugging. Same string shape as
+    /// [`Self::id`] (UUID or `ext:…`).
+    pub parent_id: Option<String>,
     /// Drive the folder belongs to. Always populated (every folder has
     /// a drive_id in the D0+ schema). Lets clients derive the current
     /// drive from `ancestors.at(-1).drive_id` without a second
