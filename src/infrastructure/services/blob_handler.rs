@@ -6119,9 +6119,8 @@ mod delta_upload_integration_tests {
         );
 
         // The orphan's bytes are really there and addressable.
-        assert_eq!(
+        assert!(
             svc.backend().blob_exists(&fresh_hash).await.unwrap(),
-            true,
             "orphan chunk bytes must exist in the backend"
         );
 

@@ -1993,7 +1993,9 @@ mod integration_tests {
         }
 
         // ── Phase 2: the real run ────────────────────────────────────
-        let extra = run_job(&pool, &JobRunArgs::default()).await;
+        // No binding: phase 2 asserts entirely through findings scoped to
+        // its own content hashes, never the corpus-wide run counters.
+        run_job(&pool, &JobRunArgs::default()).await;
 
         for (mime, cat) in types_and_categories(&pool, &ids).await {
             assert_eq!(mime, "image/png", "the stored type was not corrected");
