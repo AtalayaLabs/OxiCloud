@@ -176,6 +176,47 @@ jsonpath "$.ancestors[-1].name" == "hurl-rest-sub"
 jsonpath "$.ancestors[?(@.name=='hurl-rest-mount')]" count == 1
 
 
+# ─────────────────────────────────────────────────────────────
+# #837 — nested subfolder (two segments deep).
+#
+# `node_id` for the provider is the POSIX path relative to the
+# mount root, so `hurl-rest-sub/nested-leaf` is split into TWO
+# segments by `get_ancestors_with_perms`'s synthetic-tail loop.
+# A regression that only walked the LAST segment (producing
+# `[mount, nested-leaf]` instead of `[mount, hurl-rest-sub,
+# nested-leaf]`) would still pass the single-level pin above —
+# this one catches it.
+#
+# Pins:
+#   * `hurl-rest-sub` AND `nested-leaf` BOTH appear in the chain.
+#   * `nested-leaf` sits strictly after `hurl-rest-sub` (chain is
+#     root-first, leaf-last). Asserted by checking the leaf is
+#     the last entry and the intermediate is anywhere in it.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/folders
+Authorization: Bearer {{token}}
+Content-Type: application/json
+{ "name": "nested-leaf", "parent_id": "{{sub_id}}" }
+
+HTTP 201
+[Captures]
+nested_sub_id: jsonpath "$.id"
+[Asserts]
+jsonpath "$.id" startsWith "ext:"
+jsonpath "$.parent_id" == "{{sub_id}}"
+
+
+GET {{base_url}}/api/folders/{{nested_sub_id}}/ancestors
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.ancestors" count >= 3
+jsonpath "$.ancestors[-1].name" == "nested-leaf"
+jsonpath "$.ancestors[?(@.name=='hurl-rest-sub')]" count == 1
+jsonpath "$.ancestors[?(@.name=='hurl-rest-mount')]" count == 1
+
+
 # Download, preview, metadata of the `ext:` file.
 GET {{base_url}}/api/files/{{file_id}}
 Authorization: Bearer {{token}}
@@ -242,7 +283,18 @@ HTTP 404
 # the ancestor method shares with /resources above, so a regression
 # that leaks "folder exists but you can't see its chain" via 403
 # shows up as a mismatch between these two calls.
+#
+# Covers BOTH depth levels (one-segment `sub_id`, two-segment
+# `nested_sub_id`) because the gate collapses every `ext:` id onto
+# `Resource::Folder(mount_id)` — if that collapse ever drifted and
+# one depth leaked while another denied, the asymmetry shows here.
 GET {{base_url}}/api/folders/{{sub_id}}/ancestors
+Authorization: Bearer {{eve_token}}
+
+HTTP 404
+
+
+GET {{base_url}}/api/folders/{{nested_sub_id}}/ancestors
 Authorization: Bearer {{eve_token}}
 
 HTTP 404
@@ -264,6 +316,15 @@ HTTP 404
 # Cleanup — permanent inside a mount.
 # ─────────────────────────────────────────────────────────────
 DELETE {{base_url}}/api/files/{{file_id}}
+Authorization: Bearer {{token}}
+
+HTTP *
+
+
+# Delete nested-leaf before its parent — mount deletes are
+# non-recursive at this layer (the provider's rmdir rejects
+# non-empty directories), so the leaf-first order matters.
+DELETE {{base_url}}/api/folders/{{nested_sub_id}}
 Authorization: Bearer {{token}}
 
 HTTP *
