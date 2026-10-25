@@ -255,7 +255,7 @@ guards live in `nc_webdav_patch.hurl` and `webdav_patch_consistency.hurl`.
 
 ---
 
-## §1 — Add `content_modified_at`, write it, read nothing **IN PROGRESS** (`625f089d`)
+## §1 — Add `content_modified_at`, write it, read nothing **DONE** (`625f089d`)
 
 ### Schema
 
@@ -773,7 +773,37 @@ and the timeline order stay the same expression at every phase. §4 adds the
 
 ---
 
-## §4 — Add `source_created_at` **BLOCKED**
+## §4 — Add `source_created_at` **UNBLOCKED, NOT STARTED** (2026-10-25)
+
+**The blocker shipped.** The reframing below made §4 depend on a content-keyed
+home for a byte-derived date, and said that home was "not this plan's work".
+It landed on `security/sniff-mime-type`: `storage.content_metadata` is keyed by
+`source_hash`, its `created_at` holds the date the bytes claim, and
+`extracted_at` holds the bookkeeping — exactly the shape specified under *The
+keying asymmetry*. `audio.content_metadata` matches. `source_created_at` was
+never created, and the sort chain is the final two-arm
+`COALESCE(created_at, content_modified_at)`.
+
+What remains of §4 is **only the extractor widening**, which this section
+already identified as the real cost:
+
+1. **Hoist the format classifier** out of `search_index::text_extractor` — its
+   `Kind` and `classify` are private, and a creation date is not a search
+   concern. `infrastructure/services/document_format.rs` does not exist yet.
+2. **Extract the date per format:** PDF `/CreationDate` from the trailer
+   dictionary, OOXML `docProps/core.xml` → `dcterms:created`, ODF `meta.xml`.
+3. **Widen the gate.** `MediaMetadataService::handles` is still
+   `is_image_file(mime) || is_video_file(mime)`.
+4. **`catch_unwind` plus size and time bounds** on every parser, per the
+   discipline recorded below — `extract_pdf` already needs it because a
+   malformed PDF *panics*.
+
+`content_rescan` (same branch) is the re-runnable extraction job this section
+wanted, and `rederive=always` is the mode that applies a widened extractor: an
+extractor change does not move the sniffed type, so the default `changed` mode
+skips every affected row.
+
+### Original phase text
 
 ```sql
 ALTER TABLE storage.files
@@ -1640,7 +1670,27 @@ Behaviour confirmed in that same rolled-back transaction:
 
 ---
 
-## §9 — Preserve the browser's mtime on upload **NOT STARTED**
+## §9 — Preserve the browser's mtime on upload **MOSTLY DONE** (2026-10-25)
+
+Both SPA paths carry it, so the size-dependent hazard this section warns about
+is closed:
+
+- multipart `POST /api/files/upload` parses, validates and threads
+  `source_modified_at` (`file_handler.rs`), refusing an implausible value with
+  a 400 and a `by_hash.source_mtime_rejected` audit line;
+- the by-hash create and the delta commit both have the slot
+  (`delta_upload_service`), and the SPA sends `file.lastModified` through
+  `createFileByHash` — pinned in `deltaUpload.test.ts`;
+- `upload_file_streaming` takes `source_modified_at: Option<i64>` instead of
+  hard-coding `None`.
+
+**What is left: the chunked path.** `/api/uploads/{id}` + `/complete` has no
+mtime slot — `source_modified_at` does not appear in
+`chunked_upload_handler.rs` at all. The SPA does not choose that path, so it
+costs non-SPA chunked clients only, but it is the same silent-drop shape as
+the original hazard.
+
+### Original phase text
 
 The plan already contains a Playwright spec asserting that a dragged file keeps
 its source mtime (§ E2E — drag-and-drop preserves the source mtime). That spec
