@@ -33,7 +33,8 @@ use crate::infrastructure::services::webdav_dead_property_store::ResourceRef;
 use crate::interfaces::api::handlers::webdav_handler::{
     PROPFIND_BATCH_SIZE, cas_write_patch, dead_props_for, enforce_native_lock, file_dead_props,
     files_dead_props_map, folder_dead_props, folders_dead_props_map, if_match_precondition_fails,
-    if_none_match_precondition_fails, parse_update_range, splice_patch_streams,
+    if_none_match_precondition_fails, mount_file_get_response, parse_update_range,
+    splice_patch_streams,
 };
 use crate::interfaces::errors::AppError;
 use crate::interfaces::range_requests::{not_modified_response, range_response};
@@ -366,15 +367,16 @@ async fn handle_propfind(
 
     match resolved {
         ResolvedResource::Folder(folder) => {
-            let folder_uuid = Uuid::parse_str(&folder.id)
-                .map_err(|_| AppError::not_found("Resource not found"))?;
+            // Mount ids (`ext:` children, mount-root UUID) authorise against
+            // the mount-root folder — parsing them as UUIDs 404'd every path
+            // below a mount root (#794).
+            let resource = state
+                .mount_router
+                .folder_authz_resource(&folder.id)
+                .ok_or_else(|| AppError::not_found("Resource not found"))?;
             state
                 .authorization
-                .require(
-                    Subject::User(user.id),
-                    Permission::Read,
-                    Resource::Folder(folder_uuid),
-                )
+                .require(Subject::User(user.id), Permission::Read, resource)
                 .await?;
 
             // It's a folder — stream the multistatus: children are fetched in
@@ -405,15 +407,13 @@ async fn handle_propfind(
             ))
         }
         ResolvedResource::File(file) => {
-            let file_uuid =
-                Uuid::parse_str(&file.id).map_err(|_| AppError::not_found("Resource not found"))?;
+            let resource = state
+                .mount_router
+                .file_authz_resource(&file.id)
+                .ok_or_else(|| AppError::not_found("Resource not found"))?;
             state
                 .authorization
-                .require(
-                    Subject::User(user.id),
-                    Permission::Read,
-                    Resource::File(file_uuid),
-                )
+                .require(Subject::User(user.id), Permission::Read, resource)
                 .await?;
 
             // Batch-check favorites for this single file.
@@ -529,15 +529,13 @@ async fn handle_get(
 
     let file = match resolved {
         ResolvedResource::Folder(folder) => {
-            let folder_uuid =
-                Uuid::parse_str(&folder.id).map_err(|_| AppError::not_found("File not found"))?;
+            let resource = state
+                .mount_router
+                .folder_authz_resource(&folder.id)
+                .ok_or_else(|| AppError::not_found("File not found"))?;
             state
                 .authorization
-                .require(
-                    Subject::User(user.id),
-                    Permission::Read,
-                    Resource::Folder(folder_uuid),
-                )
+                .require(Subject::User(user.id), Permission::Read, resource)
                 .await?;
             return Ok(Response::builder()
                 .status(StatusCode::OK)
@@ -546,15 +544,13 @@ async fn handle_get(
                 .unwrap());
         }
         ResolvedResource::File(f) => {
-            let file_uuid =
-                Uuid::parse_str(&f.id).map_err(|_| AppError::not_found("File not found"))?;
+            let resource = state
+                .mount_router
+                .file_authz_resource(&f.id)
+                .ok_or_else(|| AppError::not_found("File not found"))?;
             state
                 .authorization
-                .require(
-                    Subject::User(user.id),
-                    Permission::Read,
-                    Resource::File(file_uuid),
-                )
+                .require(Subject::User(user.id), Permission::Read, resource)
                 .await?;
             f
         }
@@ -582,6 +578,11 @@ async fn handle_get(
     // `project_recent_session_intent.md` — the planned session-intent
     // gate (interactive JWT vs app-password) will turn this back on
     // for human-driven NC web access in the same browser session.
+
+    // External mount: bytes come from the provider, not the blob store (#794).
+    if let Some(resp) = mount_file_get_response(&state, &file, user.id, headers, &etag).await? {
+        return Ok(resp);
+    }
 
     // Range Requests — serve 206/416 instead of the whole file on seeks.
     if let Some(resp) = range_response(headers, &file, &etag, file_service).await {
@@ -634,15 +635,13 @@ async fn handle_head(
 
     let file = match resolved {
         ResolvedResource::Folder(folder) => {
-            let folder_uuid =
-                Uuid::parse_str(&folder.id).map_err(|_| AppError::not_found("File not found"))?;
+            let resource = state
+                .mount_router
+                .folder_authz_resource(&folder.id)
+                .ok_or_else(|| AppError::not_found("File not found"))?;
             state
                 .authorization
-                .require(
-                    Subject::User(user.id),
-                    Permission::Read,
-                    Resource::Folder(folder_uuid),
-                )
+                .require(Subject::User(user.id), Permission::Read, resource)
                 .await?;
             return Ok(Response::builder()
                 .status(StatusCode::OK)
@@ -651,15 +650,13 @@ async fn handle_head(
                 .unwrap());
         }
         ResolvedResource::File(f) => {
-            let file_uuid =
-                Uuid::parse_str(&f.id).map_err(|_| AppError::not_found("File not found"))?;
+            let resource = state
+                .mount_router
+                .file_authz_resource(&f.id)
+                .ok_or_else(|| AppError::not_found("File not found"))?;
             state
                 .authorization
-                .require(
-                    Subject::User(user.id),
-                    Permission::Read,
-                    Resource::File(file_uuid),
-                )
+                .require(Subject::User(user.id), Permission::Read, resource)
                 .await?;
             f
         }
