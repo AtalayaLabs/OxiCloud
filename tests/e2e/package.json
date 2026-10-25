@@ -5,7 +5,9 @@
   "main": "index.js",
   "scripts": {
     "build:spa": "cd ../../frontend && COVERAGE=1 VITE_E2E=1 npm run build",
-    "test:coverage": "FORCE_COLOR=true npx playwright test -c playwright.coverage.config.ts",
+    "test:coverage": "FORCE_COLOR=true npx playwright test -c playwright.coverage.config.ts && OXICLOUD_SHARED_WORKER_MODE=1 FORCE_COLOR=true npx playwright test -c playwright.coverage.config.ts",
+    "test:coverage:per-tab": "FORCE_COLOR=true npx playwright test -c playwright.coverage.config.ts",
+    "test:coverage:shared": "OXICLOUD_SHARED_WORKER_MODE=1 FORCE_COLOR=true npx playwright test -c playwright.coverage.config.ts",
     "coverage:report": "node coverage-report.cjs e2e",
     "coverage:report:unit": "node coverage-report.cjs unit",
     "coverage:report:combined": "node coverage-report.cjs combined"

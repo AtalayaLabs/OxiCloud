@@ -68,6 +68,44 @@ declare global {
 			setLogLevel: (namespace: string, level: log.LogLevelDesc) => string;
 			listLogLevels: () => Record<string, string>;
 			UPLOAD_BATCH_BYTES: number;
+			/** End-to-end diagnostic for the message bus. Round-trips a
+			 *  `rt.ping` across the full chain (tab → worker in shared
+			 *  mode, OR tab-local in per-tab mode → server → back) and
+			 *  returns a structured snapshot:
+			 *
+			 *    await oxi.checkBusChain()
+			 *    // {
+			 *    //   ok: true,
+			 *    //   impl: 'SharedWorkerBridge',
+			 *    //   state: 'connected',
+			 *    //   workerVersion: 'dev-1792800537',
+			 *    //   latencyMs: 7
+			 *    // }
+			 *
+			 *  `ok: false` with `error: {code, message}` is returned
+			 *  instead of throwing — easier to read in DevTools when
+			 *  the WS is down. `message === 'not_connected'` is the
+			 *  common signal that the worker lost its WS. */
+			checkBusChain: () => Promise<{
+				ok: boolean;
+				impl: string;
+				state: string;
+				workerVersion: string | null;
+				latencyMs: number | null;
+				error?: { code: number; message: string };
+			}>;
+			/** Force the message bus to re-arm its circuit breaker and
+			 *  schedule an immediate reconnect. Works whether the state
+			 *  is `disconnected`, `unavailable`, or stuck in a
+			 *  `connecting` cycle. No-op when already `connected`.
+			 *  Routes through the `request-reconnect` port envelope in
+			 *  shared mode.
+			 *
+			 *  Returns a confirmation string naming the before/after
+			 *  state (sampled synchronously; use `checkBusChain()` to
+			 *  verify the eventual `connected` state after the WS
+			 *  re-opens). */
+			reconnectBus: () => Promise<string>;
 		};
 	}
 }
@@ -110,6 +148,82 @@ export async function init(): Promise<void> {
 					}
 				}
 				return out;
+			},
+			// End-to-end bus diagnostic — see the Window.oxi JSDoc above
+			// for the full return shape and failure modes. Dynamic
+			// import so the main `window.oxi` setup stays sync and the
+			// message-bus module graph isn't eagerly pulled in by
+			// hooks.client.ts (it's already loaded elsewhere; the
+			// dynamic import returns the cached singleton).
+			async checkBusChain() {
+				// Dynamic import awaits the module's top-level await
+				// (`messageBus = await makeMessageBus()`), guaranteeing
+				// the factory has run and `window.__oxi_bus_impl` is
+				// set by the time we read it below. Without this await
+				// ordering, a very early `checkBusChain()` call could
+				// read `undefined` and fall through to the mangled
+				// `constructor.name`.
+				const { messageBus } = await import('$lib/message-bus/client.svelte');
+
+				// `__oxi_bus_impl` is a stable string literal the factory
+				// stamps on `window` at construction time — survives
+				// minification (`messageBus.constructor.name` gets
+				// mangled to e.g. `"KA"` in production builds, which
+				// defeats introspection code AND Playwright specs).
+				//
+				// If the window field is unset at this point, EITHER
+				// (a) the bundle is pre-fix (needs rebuild), OR (b)
+				// the factory took the SSR branch (no window). In both
+				// cases falling back to the raw constructor name is the
+				// least bad option — it's at least non-null, callers
+				// can see "KA" and know to rebuild.
+				const impl: string = window.__oxi_bus_impl ?? messageBus.constructor.name;
+				// `workerVersion` only exists on the SharedWorker bridge;
+				// null in per-tab mode. The optional chain + the ?? null
+				// keep both impls' return shape identical.
+				const workerVersion =
+					(messageBus as unknown as { workerVersion?: string | null }).workerVersion ?? null;
+				try {
+					const latencyMs = await messageBus.ping();
+					return {
+						ok: true,
+						impl,
+						state: messageBus.state,
+						workerVersion,
+						latencyMs
+					};
+				} catch (err) {
+					const e = err as { code?: number; message?: string };
+					return {
+						ok: false,
+						impl,
+						state: messageBus.state,
+						workerVersion,
+						latencyMs: null,
+						error: {
+							code: typeof e.code === 'number' ? e.code : -1,
+							message: typeof e.message === 'string' ? e.message : String(err)
+						}
+					};
+				}
+			},
+			// Manual reconnect — forces the bus to re-arm its circuit
+			// breaker and schedule an immediate attempt. Easiest way
+			// out of a `state === 'unavailable'` without reloading the
+			// page, and shortens the long-backoff tail during
+			// `disconnected` cycles.
+			//
+			// Returns a confirmation string summarising the requested
+			// transition and the fresh state (sampled synchronously
+			// after reconnect() returns — before the WS actually
+			// re-opens, so expect `connecting` here even on a
+			// successful reconnect; follow up with checkBusChain() to
+			// confirm `connected`).
+			async reconnectBus() {
+				const { messageBus } = await import('$lib/message-bus/client.svelte');
+				const before = messageBus.state;
+				messageBus.reconnect();
+				return `reconnect requested — was ${before}, now ${messageBus.state}`;
 			}
 		};
 		// UPLOAD_BATCH_BYTES: getter reads live from localStorage so any
