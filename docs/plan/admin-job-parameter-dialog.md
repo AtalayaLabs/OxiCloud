@@ -81,10 +81,56 @@ no one will hover to find.
 
 ## Design
 
-A **"Run with parameters…"** entry in the existing run menu, opening a dialog
-built entirely from `JobSummary.parameters`.
+**Revised 2026-10-25 (Ed): the run menu items become presets that seed the
+dialog the launch already shows.** Not a new "Run with parameters…" entry
+beside them — the menu already reads `Run` / `Run dry run` / `Run with
+repair_divergence`, and each of those is a *named set of parameter values*.
+Clicking one opens the dialog with that set applied, and the operator adjusts
+before confirming.
+
+This is strictly better than a separate entry, for three reasons:
+
+1. **It closes gap 2 for free.** Click "Run with repair_divergence", and the
+   dialog opens with that box already ticked — then tick `dry_run` and set
+   `rederive` too. The combination that was inexpressible becomes the default
+   interaction, with no extra menu item to find.
+2. **One dialog, not two.** A mutating job already shows a confirm on launch
+   (`onTriggerGuarded`). Putting the parameters *in* that popup means the
+   operator reads the warning and sets the values in the same step, instead of
+   confirming and then being asked.
+3. **The menu stays the discovery surface.** A newly-declared boolean still
+   appears there on its own, which is what `extraBooleanParams` is for. It now
+   seeds the dialog rather than dispatching blind.
+
+### When the dialog does NOT open
+
+It has to earn the click. Skip it and trigger straight through when the job
+declares **no parameters** and `mutates === 'never'` — there is nothing to
+show and nothing to warn about, and read-only jobs triggering in one click is
+the point of that flag. Everything else opens it, including a `never` job that
+declares parameters (otherwise its non-booleans stay unreachable, which is
+gap 1).
+
+### Where it lives
+
+`dialogs.svelte.ts` cannot host this. It is a promise-based store with exactly
+two kinds — `confirm` → `boolean` and `prompt` → `string | null` — rendered by
+`<DialogHost>`, and both are app-wide primitives. A job parameter form is not
+one, so adding a third `params` kind would push admin-specific shape into a
+generic store.
+
+So the dialog is its own component on the existing `Modal`:
+`lib/components/admin/JobParamsDialog.svelte`, taking `JobSummary` plus the
+preset, resolving to `JobParamValues | null`. `AdminJobsPanel` keeps ownership
+of triggering; the dialog only collects values. That also makes it testable
+without the panel's menu and busy-key machinery.
+
+The form itself, built entirely from `JobSummary.parameters`:
 
 ```
+Shown here seeded by the "Run with repair_divergence" menu item — note that
+box is pre-ticked while everything else sits at its declared default:
+
 ┌─ Run content_rescan ─────────────────────────────────┐
 │ Re-sniff stored content and correct its MIME type.   │
 │                                                      │
@@ -97,7 +143,7 @@ built entirely from `JobSummary.parameters`.
 │   When to re-extract metadata after sniffing:        │
 │   'changed' (default) only for content whose type…   │
 │                                                      │
-│ ☐ repair_divergence                    default: off  │
+│ ☑ repair_divergence                    default: off  │
 │   Converge copies of one content whose names imply…  │
 │                                                      │
 │   mime_prefix  [                ]      default: —     │
@@ -116,19 +162,20 @@ Rules:
 - **Descriptions render as body text**, not tooltips. They are written as one
   line for exactly this (`JobParam::description`'s doc says so), and several
   are already multi-sentence because the decision needs explaining.
-- **Omitted means default.** Only parameters the operator actually touched go
-  into the query string, because the engine seeds every run's args from the
-  declarations before overlaying caller values — so `{}` is already correct and
-  the dialog must not send a full set of redundant values that would pin
-  today's defaults into run history.
-- **The mutation warning stays.** `mutates === 'always'` shows the same copy
-  `onTriggerGuarded` uses today, inline in the dialog rather than as a second
-  confirm — one dialog, not two. `repair` set inside the dialog must still
-  surface `repair_description`, which is the only destructive-click wording the
-  backend owns.
-- **Entry is conditional:** show "Run with parameters…" only when the job
-  declares more than one parameter, or any non-boolean one. A job with a lone
-  `repair` already has a better one-click path.
+- **Omitted means default — and a preset value is NOT "touched".** Only
+  parameters the operator actually changed, plus the preset's own values, go
+  into the query string. The engine seeds every run's args from the
+  declarations before overlaying caller values, so `{}` is already correct,
+  and sending a full set would pin today's defaults into run history as if
+  they had been chosen. A box the preset ticked is a choice; a box the preset
+  left alone is not, even though both were rendered.
+- **The mutation warning stays**, inline. `mutates === 'always'` shows the
+  copy `onTriggerGuarded` uses today, and `repair` ticked inside the dialog
+  must surface `repair_description` — the only destructive-click wording the
+  backend owns, and the reason the one-click repair entry exists at all. It
+  appears in the dialog rather than as a second confirm after it.
+- **The confirm button is the trigger.** No separate confirm step, because the
+  dialog *is* the confirm. Cancel must dispatch nothing.
 
 ### Where it lives
 
@@ -140,10 +187,14 @@ panel's menu/busy-key machinery.
 
 ### Tests
 
-- **Vitest** on the value-collection logic: untouched parameters must be
-  absent from the result (the "omitted means default" rule), a touched boolean
-  must appear even when set to its default value, and a cleared text input must
-  be absent rather than `""`.
+- **Vitest** on the value-collection logic, which is where the subtle rules
+  are: untouched parameters absent from the result; a parameter the *preset*
+  set present even when it equals its declared default; a box the preset left
+  alone still absent; a touched boolean present even when toggled back to its
+  default value; a cleared text input absent rather than `""`.
+- **Vitest** on the skip rule: a job with no parameters and `mutates: never`
+  must trigger without opening anything, and a `never` job that declares
+  parameters must still open.
 - **One Playwright case** — `rederive=always` reaching the wire — since the
   whole point is a parameter that no other path can express.
 - No Rust change, so no Hurl.
