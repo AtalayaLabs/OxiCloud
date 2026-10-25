@@ -1529,6 +1529,24 @@ mod integration_tests {
         dedup: &BlobHandler,
         tag: &str,
     ) -> (String, Vec<Uuid>, Uuid, Uuid) {
+        // ⚠ Clear this tag's rows FIRST. `cleanup` runs at the end of a
+        // test, so a failed assertion leaks its fixtures, and
+        // `init-test-schema.sh` only applies migrations — it never clears
+        // data. A leaked row then points at a backend object held in a
+        // previous process's temp dir, so the next sweep gets `no such key`
+        // and files `blob_head_unreadable` against it: one failure used to
+        // make every later run fail for an unrelated reason.
+        for tagged in [
+            format!("c7{tag}{}", "0".repeat(64 - 2 - tag.len())),
+            format!("e0{tag}{}", "0".repeat(64 - 2 - tag.len())),
+            format!("d1{tag}{}", "0".repeat(64 - 2 - tag.len())),
+        ] {
+            let _ = sqlx::query("DELETE FROM storage.files WHERE blob_hash = $1")
+                .bind(&tagged)
+                .execute(pool)
+                .await;
+        }
+
         // Smallest valid PNG: signature + IHDR. `infer` keys off the
         // 8-byte signature, so this is genuinely detected rather than
         // pattern-matched by length.
@@ -1568,28 +1586,54 @@ mod integration_tests {
         .await
         .expect("seed blobs row");
 
-        let user = Uuid::new_v4();
-        sqlx::query(
+        // Upsert, not insert. `cleanup` removes files, manifests and blobs
+        // — never the user or the drive — so a plain INSERT made this test
+        // pass exactly ONCE per database. It only looked reliable because
+        // `spawn-db.sh` does `down -v` before `up -d`, handing every
+        // `just test-integration` a fresh volume; run it twice against one
+        // database and the second fails on `users_username_key`, which is
+        // how a real diagnosis gets mistaken for leftover junk.
+        let user: Uuid = sqlx::query_scalar(
             "INSERT INTO auth.users (id, username, email, password_hash, role,
                                      storage_quota_bytes, storage_used_bytes)
-             VALUES ($1, $2, $3, 'x', 'user', 0, 0)",
+             VALUES ($1, $2, $3, 'x', 'user', 0, 0)
+             ON CONFLICT (username) DO UPDATE SET email = EXCLUDED.email
+             RETURNING id",
         )
-        .bind(user)
+        .bind(Uuid::new_v4())
         .bind(format!("cr-{tag}"))
         .bind(format!("cr-{tag}@test.local"))
-        .execute(pool)
+        .fetch_one(pool)
         .await
         .expect("seed user");
 
-        let drive = Uuid::new_v4();
-        sqlx::query(
-            "INSERT INTO storage.drives (id, kind, default_for_user) VALUES ($1, 'personal', $2)",
+        // Lookup-then-insert rather than `ON CONFLICT`: the drive is found
+        // by `default_for_user` (never by name — see the house rule), and
+        // `DO NOTHING` would leave `drive` holding a UUID that was never
+        // written, failing the files insert on its FK instead.
+        let drive: Uuid = match sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM storage.drives WHERE default_for_user = $1",
         )
-        .bind(drive)
         .bind(user)
-        .execute(pool)
+        .fetch_optional(pool)
         .await
-        .expect("seed drive");
+        .expect("look up the drive")
+        {
+            Some(existing) => existing,
+            None => {
+                let fresh = Uuid::new_v4();
+                sqlx::query(
+                    "INSERT INTO storage.drives (id, kind, default_for_user)
+                     VALUES ($1, 'personal', $2)",
+                )
+                .bind(fresh)
+                .bind(user)
+                .execute(pool)
+                .await
+                .expect("seed drive");
+                fresh
+            }
+        };
 
         let mut ids = Vec::new();
         for i in 0..3 {
@@ -1743,6 +1787,58 @@ mod integration_tests {
         hash
     }
 
+    /// The database's clock, for scoping finding queries to this test run.
+    ///
+    /// The DB clock, not the app's: the two are known to disagree on this
+    /// deployment (`bug_job_run_timestamps_two_clocks`), and
+    /// `run_findings.created_at` defaults to `NOW()`, so a cutoff taken from
+    /// the app could sit after rows the run is about to write.
+    async fn db_now(pool: &sqlx::PgPool) -> chrono::DateTime<chrono::Utc> {
+        sqlx::query_scalar("SELECT now()")
+            .fetch_one(pool)
+            .await
+            .expect("read the database clock")
+    }
+
+    /// How many findings of one kind this test run has filed against one
+    /// content.
+    ///
+    /// **Scoping to the run is the only honest way to assert "this run
+    /// reported X".** The job sweeps the WHOLE corpus, so its run counters
+    /// — `failures`, `mime_changed`, `head_reads`, `files_retyped`,
+    /// `divergences` — describe the entire test database, not this test's
+    /// fixtures. They inflate whenever another test leaves a row in
+    /// `storage.files`, and `tests/common/init-test-schema.sh` only applies
+    /// migrations: it never clears data, so a fixture leaked by an earlier
+    /// FAILED run (cleanup runs last, after the assertions) persists and
+    /// poisons every later run. Worse, such a row points at a backend object
+    /// from a different process's temp dir, so the sweep gets `no such key`
+    /// and files `blob_head_unreadable` — a corpus-wide `failures == 0` then
+    /// fails forever, for a reason unrelated to whatever broke first.
+    ///
+    /// Unscoped counts are no good either: `cleanup` removes files, not
+    /// findings, and `jobs.run_findings` rows outlive it via their run — so
+    /// a test run against a database that has seen an earlier one counts
+    /// that one's findings too. Hence `since`.
+    async fn finding_count(
+        pool: &sqlx::PgPool,
+        hash: &str,
+        kind: &str,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> i64 {
+        sqlx::query_scalar(
+            "SELECT count(*) FROM jobs.run_findings
+              WHERE kind = $1 AND detail->>'content_hash' = $2
+                AND created_at >= $3",
+        )
+        .bind(kind)
+        .bind(hash)
+        .bind(since)
+        .fetch_one(pool)
+        .await
+        .expect("count findings")
+    }
+
     /// The distinct finding KINDS filed against one content, each with its
     /// most recent detail.
     ///
@@ -1750,13 +1846,22 @@ mod integration_tests {
     /// files its own findings (with `corrected: false`), and `jobs.run_findings`
     /// outlives `cleanup`, which only removes the seeded files. Asserting on
     /// a row count would pass once and then drift.
-    async fn findings_for(pool: &sqlx::PgPool, hash: &str) -> Vec<(String, serde_json::Value)> {
+    ///
+    /// `since` is load-bearing for the same reason: without it an earlier
+    /// run's phase-4 repair finding shows up among phase 2's kinds, so the
+    /// test passes exactly once per database.
+    async fn findings_for(
+        pool: &sqlx::PgPool,
+        hash: &str,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> Vec<(String, serde_json::Value)> {
         sqlx::query_as(
             "SELECT DISTINCT ON (kind) kind, detail FROM jobs.run_findings
-              WHERE detail->>'content_hash' = $1
+              WHERE detail->>'content_hash' = $1 AND created_at >= $2
               ORDER BY kind, created_at DESC",
         )
         .bind(hash)
+        .bind(since)
         .fetch_all(pool)
         .await
         .expect("read findings")
@@ -1862,6 +1967,11 @@ mod integration_tests {
         // does dispatch sweeps the other's fixtures and miscounts.
         let div_hash = seed_divergent(&pool, &dedup, "a1", user, drive).await;
 
+        // Every assertion below counts findings filed SINCE here, because
+        // the run counters are corpus-wide and the findings table outlives
+        // `cleanup` — see `finding_count`.
+        let t0 = db_now(&pool).await;
+
         // ── Phase 1: dry_run reports and writes nothing ──────────────
         let args = JobRunArgs::new(
             [(
@@ -1893,37 +2003,39 @@ mod integration_tests {
             // own category.
             assert_eq!(cat, 100, "category_order did not follow the mime");
         }
+        // THE dedup guarantee, and the reason this job walks content rather
+        // than files: ONE conclusion covering three files.
+        //
+        // Asserted through the finding rather than `head_reads`, which is
+        // corpus-wide — see `finding_count`. `file_count: 3` with
+        // `files_updated: 3` on a single finding says the same thing and
+        // says it about OUR content: the job reached one verdict and fanned
+        // it out, instead of reading the bytes once per file.
+        // TWO, not one: the dry run in phase 1 reported it as well. That is
+        // the contract — `dry_run` suppresses the UPDATEs, not the findings,
+        // which is the whole reason a preview is useful.
         assert_eq!(
-            stat(&extra, "files_retyped"),
-            Some(4),
-            "expected 3 fanned-out retypes plus the empty file's category \
-             backfill — `files_retyped` counts ROWS UPDATED, and only \
-             `mime_changed` below is gated on the type actually moving",
+            finding_count(&pool, &hash, "mime_type_mismatch", t0).await,
+            2,
+            "the content was not re-identified once per run (dry + real)",
         );
-        // THE dedup guarantee, and the reason this job walks content
-        // rather than files: three files, one read.
-        assert_eq!(
-            stat(&extra, "head_reads"),
-            Some(2),
-            "SEVEN files, two contents with bytes, so two reads — plus the \
-             zero-byte content, which must cost none at all",
-        );
-        assert_eq!(stat(&extra, "mime_changed"), Some(1));
 
-        // ⚠ The zero-byte file is INTACT, so it must produce no finding at
-        // all — and its stale category must still be refreshed. Before the
-        // fix the backend was asked for an object that was never stored,
-        // which filed `blob_head_unreadable` against a healthy file and
-        // `continue`d past the backfill, so the row reappeared on every
-        // subsequent run.
+        // ⚠ The zero-byte file is INTACT, so it must produce no
+        // `blob_head_unreadable` at all — and its stale category must still
+        // be refreshed. Before the fix the backend was asked for an object
+        // that was never stored, which filed that finding against a healthy
+        // file and `continue`d past the backfill, so the row reappeared on
+        // every subsequent run.
+        //
+        // Scoped to the empty content's own hash. The run's `failures`
+        // counter is a catch-all over blob_head_unreadable /
+        // container_probe_failed / rederive_failed for the ENTIRE corpus, so
+        // asserting it is 0 made this test fail whenever any other row in
+        // the database was unreadable — which a leaked fixture guarantees.
         assert_eq!(
-            stat(&extra, "failures"),
-            Some(0),
-            "something in this corpus failed. `failures` is a catch-all \
-             across blob_head_unreadable / container_probe_failed / \
-             rederive_failed, so read the findings rather than guessing — \
-             the regression this guards is the zero-byte file, whose \
-             content has no stored object and was reported as unreadable.",
+            finding_count(&pool, &empty_hash, "blob_head_unreadable", t0).await,
+            0,
+            "the zero-byte content was reported as unreadable",
         );
         assert_eq!(
             category_of(&pool, &empty_hash).await,
@@ -1936,7 +2048,7 @@ mod integration_tests {
         // before and after were IDENTICAL — "something mismatched" with no
         // visible difference — and mixed a corpus-wide classifier change
         // into the kind an operator filters for real mis-detections.
-        let empty = findings_for(&pool, &empty_hash).await;
+        let empty = findings_for(&pool, &empty_hash, t0).await;
         assert_eq!(
             empty.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
             vec!["category_order_refreshed"],
@@ -1952,11 +2064,14 @@ mod integration_tests {
 
         // And a real mis-detection keeps the original kind, naming the file
         // and BOTH types. `file_count` alone cannot be acted on.
-        let retyped = findings_for(&pool, &hash).await;
+        let retyped = findings_for(&pool, &hash, t0).await;
         assert_eq!(
             retyped.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
             vec!["mime_type_mismatch"],
         );
+        // One finding, three files, three rows written — the fan-out.
+        assert_eq!(retyped[0].1["file_count"], 3);
+        assert_eq!(retyped[0].1["files_updated"], 3);
         let change = &retyped[0].1["changes"][0];
         assert_eq!(change["from_type"], "image/jpeg");
         assert_eq!(change["to_type"], "image/png");
@@ -1967,11 +2082,11 @@ mod integration_tests {
 
         // ── Divergence the names cannot explain ──────────────────────
         assert_eq!(
-            stat(&extra, "divergences"),
-            Some(1),
-            "the unexplained divergence was not reported",
+            finding_count(&pool, &div_hash, "stored_type_divergence", t0).await,
+            2,
+            "the unexplained divergence was not reported once per run (dry + real)",
         );
-        let found = findings_for(&pool, &div_hash).await;
+        let found = findings_for(&pool, &div_hash, t0).await;
         assert_eq!(
             found.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
             vec!["stored_type_divergence"],
@@ -2025,17 +2140,27 @@ mod integration_tests {
         );
 
         // ── Phase 3: idempotent ──────────────────────────────────────
-        let extra = run_job(&pool, &JobRunArgs::default()).await;
+        //
+        // Scoped to our own contents, not the run counters: a second run
+        // must report nothing NEW about them, and must not rewrite rows that
+        // already agree — `IS DISTINCT FROM` not holding would churn the
+        // tree ETag on every sweep.
+        let before = types_and_categories(&pool, &ids).await;
+        run_job(&pool, &JobRunArgs::default()).await;
         assert_eq!(
-            stat(&extra, "files_retyped"),
-            Some(0),
-            "a second run rewrote rows that already agreed — `IS DISTINCT \
-             FROM` is not holding, and every run would churn the tree ETag",
+            finding_count(&pool, &hash, "mime_type_mismatch", t0).await,
+            2,
+            "a second run reported the content as mismatched again",
         );
         assert_eq!(
-            stat(&extra, "mime_changed"),
-            Some(0),
-            "a second run still reported the content as mismatched",
+            finding_count(&pool, &empty_hash, "category_order_refreshed", t0).await,
+            2,
+            "a second run backfilled the category again",
+        );
+        assert_eq!(
+            types_and_categories(&pool, &ids).await,
+            before,
+            "a second run rewrote rows that already agreed",
         );
 
         // ── Phase 4: repair_divergence converges the group ───────────
@@ -2053,8 +2178,17 @@ mod integration_tests {
             .into_iter()
             .collect(),
         );
-        let extra = run_job(&pool, &args).await;
-        assert_eq!(stat(&extra, "divergences"), Some(1));
+        run_job(&pool, &args).await;
+        assert_eq!(
+            finding_count(&pool, &div_hash, "stored_type_divergence", t0).await,
+            4,
+            "the repairing run did not report the divergence it acted on",
+        );
+        assert_eq!(
+            finding_count(&pool, &div_hash, "mime_type_mismatch", t0).await,
+            1,
+            "the repair itself was not reported",
+        );
         assert_eq!(
             divergent_types(&pool).await,
             vec![
@@ -2074,7 +2208,7 @@ mod integration_tests {
 
         // The finding says so, and names the reason the types moved
         // without any signature being involved.
-        let repaired = findings_for(&pool, &div_hash).await;
+        let repaired = findings_for(&pool, &div_hash, t0).await;
         let by_kind = |k: &str| {
             repaired
                 .iter()
@@ -2085,11 +2219,13 @@ mod integration_tests {
         assert_eq!(by_kind("stored_type_divergence")["corrected"], true);
         assert_eq!(by_kind("mime_type_mismatch")["reason"], "divergence_repair");
 
-        // And it is now settled: a further run finds nothing to report.
-        let extra = run_job(&pool, &JobRunArgs::default()).await;
+        // And it is now settled: a further run reports nothing new about
+        // this content, which is the point of repairing rather than
+        // reporting forever.
+        run_job(&pool, &JobRunArgs::default()).await;
         assert_eq!(
-            stat(&extra, "divergences"),
-            Some(0),
+            finding_count(&pool, &div_hash, "stored_type_divergence", t0).await,
+            4,
             "the divergence was reported again after being repaired",
         );
 
