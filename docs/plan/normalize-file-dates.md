@@ -638,7 +638,7 @@ is wrong today and right afterwards).
 
 ---
 
-## §3 — Sort axes **DONE** (interim two-arm form)
+## §3 — Sort axes **DONE** (final two-arm form)
 
 Couples to §2 — the REST `modified_at` field moves in the same commit, so the
 UI's "Last modified" column repoints at the same moment.
@@ -773,7 +773,28 @@ and the timeline order stay the same expression at every phase. §4 adds the
 
 ---
 
-## §4 — Add `source_created_at` **UNBLOCKED, NOT STARTED** (2026-10-25)
+## §4 — The content's claimed creation date **MOSTLY DONE** (2026-10-25)
+
+Renamed from "Add `source_created_at`", which is the one thing this phase
+decided *not* to do.
+
+**Shipped:** `document_format` (the classifier, hoisted out of
+`search_index::text_extractor` so one registry serves both consumers),
+`document_date_extractor` (OOXML `docProps/core.xml` → `dcterms:created`, ODF
+`meta.xml`, PDF `/CreationDate`), the widened `MediaMetadataService::handles`
+— which the upload lifecycle hook already gated on, so documents are extracted
+on upload with no further plumbing — and the matching
+`FileMetadataRepository::applies_to`, extended in the same commit because
+`content_rescan::drop_stale_metadata` DELETES on a `false` and widening only
+the extractor would have erased every document's metadata corpus-wide on the
+next sweep. A test asserts `handles` implies `applies_to` so that fails loudly
+instead of silently.
+
+Coverage from both ends on five committed fixtures:
+`tests/api/document_date_extraction.hurl` (upload → `nc:creation_time`) and a
+unit test parsing the same files.
+
+**Remaining:** item 5 below — the REST slot, which waits on §7's naming.
 
 **The blocker shipped.** The reframing below made §4 depend on a content-keyed
 home for a byte-derived date, and said that home was "not this plan's work".
