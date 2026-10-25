@@ -11,9 +11,8 @@ This document defines which column means what, which wire slot each one feeds,
 which of them a client actually *acts* on, and how far a client-supplied value
 is trusted.
 
-> **Status.** Re-checked against the tree 2026-10-25. The columns are shipped,
-> including the ones still marked **new** below (`content_modified_at` on files
-> and folders). Two things changed shape since the 2026-10-11 design and are
+> **Status.** Re-checked against the tree 2026-10-25. Every column described
+> here is shipped. Two things changed shape since the 2026-10-11 design and are
 > corrected throughout:
 >
 > - **`source_created_at` was never created and will not be.** One
@@ -38,11 +37,11 @@ is trusted.
 | Meaning | Column | Trust | Written by |
 |---|---|---|---|
 | Server received it (`btime`-ish) | `storage.files.created_at` | server-stamped, immutable | row insert |
-| Bytes last changed (`mtime`) | `storage.files.content_modified_at` **new** | client-asserted, bounded | content-mutation paths only |
+| Bytes last changed (`mtime`) | `storage.files.content_modified_at` | client-asserted, bounded | content-mutation paths only |
 | The date the bytes claim | `storage.content_metadata.created_at` | server-extracted | EXIF `DateTimeOriginal` today; document creation dates once the extractor widens |
 | When extraction last ran | `storage.content_metadata.extracted_at` | server-stamped | every extraction — bookkeeping, not a file date |
 | Any row touch (`ctime`) | `storage.files.updated_at` | server-stamped, never client-assertable | every mutation through a repository write path: content **and** metadata |
-| Entry list last changed (directory `mtime`) | `storage.folders.content_modified_at` **new** | server-stamped | direct-child add/remove/rename triggers |
+| Entry list last changed (directory `mtime`) | `storage.folders.content_modified_at` | server-stamped | direct-child add/remove/rename triggers |
 | Subtree changed | `storage.folders.tree_modified_at` | server-stamped | `tree_etag_dirty` queue |
 
 `content_modified_at` is `NOT NULL` and read directly — no fallback expression
