@@ -1724,7 +1724,7 @@
       "title": "Filtrer par type",
       "files": "Fichiers",
       "folders": "Dossiers",
-      "drives": "Lecteurs",
+      "drives": "Disques",
       "emptyTitle": "Aucun partage ne correspond au filtre actuel",
       "emptyHint": "Ajustez le filtre de type ou réinitialisez-le à sa valeur par défaut (Fichiers + Dossiers).",
       "reset": "Réinitialiser le filtre"
