@@ -60,18 +60,28 @@ impl FileMetadataRepository {
     /// must be dropped — so a `false` here is a DELETE.
     ///
     /// ⚠ **Extend this the moment a new extractor writes this table.**
-    /// Document creation dates are the known next case: a `.docx` date is
-    /// the same fact as an EXIF capture date and lands in the same
-    /// `created_at` column — which is exactly why the table and column
-    /// are named for content rather than for photos. Add the predicate
-    /// here *in the same change* as the extractor, or `content_rescan`
-    /// will delete every document's metadata on its next sweep, silently
+    /// Documents were the known next case and landed in 2026-10 — a
+    /// `.docx` date is the same fact as an EXIF capture date and lands in
+    /// the same `created_at` column, which is exactly why the table and
+    /// column are named for content rather than for photos. The predicate
+    /// has to grow *in the same change* as the extractor, or
+    /// `content_rescan` deletes the new rows on its next sweep, silently
     /// and corpus-wide, because the type is not image/video.
     ///
     /// The failure mode is one-directional and quiet: nothing errors, the
     /// rows simply stop existing.
+    ///
+    /// Note this asks a BROADER question than the extractor: it says a row
+    /// is *legitimate*, not that today's parser can produce one. Those
+    /// differ for `text/plain`, which `document_format` classifies (it has
+    /// extractable text) while carrying no date — and the asymmetry is
+    /// safe in this direction. A `true` here with no extractor means a row
+    /// is merely never written; a `false` with an extractor means rows are
+    /// deleted.
     pub fn applies_to(mime: &str) -> bool {
-        mime.starts_with("image/") || mime.starts_with("video/")
+        mime.starts_with("image/")
+            || mime.starts_with("video/")
+            || crate::infrastructure::services::document_format::classify("", mime).is_some()
     }
 
     /// Insert or update the facts parsed from one blob's content.
@@ -238,5 +248,67 @@ impl FileMetadataRepository {
         }
 
         Ok(map)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FileMetadataRepository as Repo;
+    use crate::infrastructure::services::media_metadata_service::MediaMetadataService;
+
+    /// ⚠ The guard against a silent corpus-wide delete.
+    ///
+    /// `content_rescan::drop_stale_metadata` DELETES a content's row when
+    /// `applies_to` says false. `MediaMetadataService::handles` says whether
+    /// today's extractor writes one. If the extractor ever covers a type
+    /// this predicate rejects, every row of that type is removed on the next
+    /// sweep — silently, because nothing errors and the rows simply stop
+    /// existing.
+    ///
+    /// So **`handles` must imply `applies_to`**. The reverse is allowed and
+    /// deliberate (a `.txt` is a legitimate row we never write), because that
+    /// direction only means a row is never created.
+    #[test]
+    fn every_type_the_extractor_handles_may_legitimately_keep_its_row() {
+        for mime in [
+            "image/jpeg",
+            "image/heic",
+            "video/mp4",
+            "video/quicktime",
+            "application/pdf",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "application/vnd.oasis.opendocument.text",
+            "application/vnd.oasis.opendocument.spreadsheet",
+            "application/vnd.oasis.opendocument.presentation",
+        ] {
+            assert!(
+                MediaMetadataService::handles(mime),
+                "{mime} is no longer extracted — if that is intended, drop it \
+                 from this list; if not, the extractor gate regressed",
+            );
+            assert!(
+                Repo::applies_to(mime),
+                "⚠ {mime} IS extracted but `applies_to` rejects it, so \
+                 content_rescan will DELETE every row of that type on its \
+                 next sweep",
+            );
+        }
+    }
+
+    /// The asymmetry, stated explicitly so a future reader does not "tidy"
+    /// the two predicates into one.
+    #[test]
+    fn a_legitimate_row_we_never_write_is_fine_the_other_way_round_is_not() {
+        // Extractable text, no extractable date — so no row is ever written,
+        // but one would be legitimate and must not be deleted.
+        assert!(Repo::applies_to("text/plain"));
+        assert!(!MediaMetadataService::handles("text/plain"));
+
+        // Content with no document or media shape at all: neither.
+        assert!(!Repo::applies_to("application/zip"));
+        assert!(!MediaMetadataService::handles("application/zip"));
+        assert!(!Repo::applies_to("application/octet-stream"));
     }
 }
