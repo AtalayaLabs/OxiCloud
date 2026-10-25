@@ -693,10 +693,26 @@ generic envelope is *supposed* to diverge per name.
 than reimplemented, so a caller with no bytes asks the same question and gets
 the same answer — including the `extension_override` corrections.
 
-**Report only, never repair**, and not because repair is unimplemented: the
-bytes said nothing, so there is no better answer to converge on and a fix
-could only pick a winner. Discovery-only unless repair is explicitly asked
-for is the house rule anyway.
+**Repair is opt-in: `repair_divergence` (default off).** It converges an
+unexplained group on `type_from_name` — the only oracle left once the bytes
+are silent — and the default is off because that oracle is the *weaker* one.
+Step 2 of `refine_content_type` prefers a specific client claim precisely
+because an extension is wrong in the ambiguous cases, so converging can
+replace a right answer with a wrong one: two files named `notes.ts`, one
+stored `text/typescript` (a correct claim) and one `video/mp2t` (what
+`mime_guess` says), converge to `video/mp2t` — both wrong where one was
+right.
+
+So the trade is explicit. Reporting leaves "one right, one wrong, visible";
+repairing gives "both hold the name's answer, silent". That is an improvement
+only when the name beats both stored values, which the operator knows and the
+job does not. Discovery-only unless repair is asked for is the house rule
+anyway.
+
+Groups whose files have no extension are reported either way — there is
+nothing to converge *on*. A repaired row reports `reason:
+"divergence_repair"`, not `magic_bytes`: no signature was involved, the name
+broke a tie the bytes could not.
 
 Severity `anomaly`, deliberately not `inconsistent`: claim-vs-extension
 ordering differs across upload paths, so first-run volume on a real corpus is

@@ -97,7 +97,7 @@ const MAX_DERIVE_BYTES: i64 = 512 * 1024 * 1024;
 /// stays readable and the row stays a sane size in `job_findings`.
 const SAMPLE: usize = 10;
 
-static PARAMETERS: [JobParam; 3] = [
+static PARAMETERS: [JobParam; 4] = [
     JobParam::boolean(
         "dry_run",
         false,
@@ -113,6 +113,17 @@ static PARAMETERS: [JobParam; 3] = [
          endpoints — and the only mode that repairs a fixed EXTRACTOR, \
          since an extractor fix does not change the sniffed type), or \
          'never' to resniff only.",
+    ),
+    JobParam::boolean(
+        "repair_divergence",
+        false,
+        "Converge copies of one content whose names imply the same type but \
+         whose stored types differ. OFF by default: the only oracle left is \
+         the filename, which is the WEAKER one — a specific client claim \
+         beats an extension in exactly the ambiguous cases, so converging \
+         can replace a right answer with a wrong one. Turn it on when you \
+         know the corpus. Groups whose files have no extension are reported \
+         either way, there being nothing to converge on.",
     ),
     JobParam::string(
         "mime_prefix",
@@ -530,6 +541,7 @@ impl RecoverableJobHandler for ContentRescan {
         resume_cursor: Option<Vec<u8>>,
     ) -> RunOutcome {
         let dry_run = args.get_bool("dry_run");
+        let repair_divergence = args.get_bool("repair_divergence");
         let mime_prefix = args.get_str("mime_prefix").map(|s| s.to_string());
 
         // Parsed BEFORE any work: silently defaulting a typo'd `alwyas` to
@@ -742,10 +754,19 @@ impl RecoverableJobHandler for ContentRescan {
                 // SUPPOSED to diverge per name. Silence is the case where
                 // nothing will ever reconcile them.
                 //
-                // Report only, no repair: the bytes said nothing, so there
-                // is no better answer to converge on and a fix could only
-                // pick a winner. Discovery-only unless repair is asked for
-                // is the house rule.
+                // Repair is OPT-IN (`repair_divergence`), because picking a
+                // winner can make things worse. The only oracle left is the
+                // name, and the name is the WEAKER one: step 2 of
+                // `refine_content_type` prefers a specific client claim
+                // precisely because the extension is wrong in the ambiguous
+                // cases. Two files named `notes.ts`, one stored
+                // `text/typescript` (a correct claim) and one `video/mp2t`
+                // (what `mime_guess` says), converge to `video/mp2t` — both
+                // wrong where one was right. So the default reports, and
+                // repair is something an operator asks for knowing the
+                // corpus. Discovery-only unless repair is requested is the
+                // house rule.
+                let mut divergence_repairs: Vec<(Uuid, String)> = Vec::new();
                 if matches!(decision, Decision::Leave) && row.stored_types.len() > 1 {
                     let mut by_name: HashMap<Option<String>, Vec<usize>> = HashMap::new();
                     for (i, name) in row.file_names.iter().enumerate() {
@@ -755,26 +776,40 @@ impl RecoverableJobHandler for ContentRescan {
                             .push(i);
                     }
 
-                    let groups: Vec<serde_json::Value> = by_name
-                        .iter()
-                        .filter(|(_, at)| {
-                            at.iter()
-                                .filter_map(|i| row.file_mimes.get(*i))
-                                .collect::<std::collections::BTreeSet<_>>()
-                                .len()
-                                > 1
-                        })
-                        .map(|(implies, at)| {
-                            serde_json::json!({
-                                "name_implies": implies,
-                                "files": at.iter().take(SAMPLE).map(|i| serde_json::json!({
-                                    "file_id": row.file_ids.get(*i).map(|u| u.to_string()),
-                                    "name":    row.file_names.get(*i),
-                                    "stored":  row.file_mimes.get(*i),
-                                })).collect::<Vec<_>>(),
-                            })
-                        })
-                        .collect();
+                    let unexplained = by_name.iter().filter(|(_, at)| {
+                        at.iter()
+                            .filter_map(|i| row.file_mimes.get(*i))
+                            .collect::<std::collections::BTreeSet<_>>()
+                            .len()
+                            > 1
+                    });
+
+                    let mut groups: Vec<serde_json::Value> = Vec::new();
+                    for (implies, at) in unexplained {
+                        // Only a name that says something can settle the
+                        // group. With no extension there is nothing to
+                        // converge ON, so those stay reported-only even
+                        // under `repair_divergence`.
+                        if let Some(target) = implies.as_deref()
+                            && repair_divergence
+                        {
+                            for i in at {
+                                if row.file_mimes.get(*i).map(String::as_str) != Some(target)
+                                    && let Some(id) = row.file_ids.get(*i)
+                                {
+                                    divergence_repairs.push((*id, target.to_string()));
+                                }
+                            }
+                        }
+                        groups.push(serde_json::json!({
+                            "name_implies": implies,
+                            "files": at.iter().take(SAMPLE).map(|i| serde_json::json!({
+                                "file_id": row.file_ids.get(*i).map(|u| u.to_string()),
+                                "name":    row.file_names.get(*i),
+                                "stored":  row.file_mimes.get(*i),
+                            })).collect::<Vec<_>>(),
+                        }));
+                    }
 
                     if !groups.is_empty() {
                         divergences += 1;
@@ -797,6 +832,10 @@ impl RecoverableJobHandler for ContentRescan {
                                 "content_hash": row.content_hash,
                                 "file_count":   row.file_ids.len(),
                                 "groups":       groups,
+                                // False both when repair was not asked for
+                                // and when it was but no group had a name
+                                // to converge on.
+                                "corrected": !divergence_repairs.is_empty() && !dry_run,
                             }),
                         )
                         .await;
@@ -828,6 +867,24 @@ impl RecoverableJobHandler for ContentRescan {
                             targets.push((*id, mime, cat));
                         }
                     }
+                }
+
+                // Divergence repair rides the same statement as everything
+                // else. It has to be merged BEFORE the category-only
+                // backfill below, which rebuilds targets from
+                // `row.file_mimes` — the pre-repair values — and would
+                // otherwise put the diverged type straight back.
+                let divergence_repaired = !divergence_repairs.is_empty();
+                for (id, mime) in divergence_repairs {
+                    let name = row
+                        .file_ids
+                        .iter()
+                        .position(|f| *f == id)
+                        .and_then(|i| row.file_names.get(i))
+                        .map(String::as_str)
+                        .unwrap_or_default();
+                    let cat = category_order_for(name, &mime);
+                    targets.push((id, mime, cat));
                 }
 
                 // A container detection that resolves to exactly what is
@@ -1066,7 +1123,11 @@ impl RecoverableJobHandler for ContentRescan {
                             .collect::<Vec<_>>(),
                         "files_updated": affected,
                         "corrected":     !dry_run,
-                        "reason": if category_only {
+                        "reason": if divergence_repaired {
+                            // Not `magic_bytes`: no signature was involved.
+                            // The name broke a tie the bytes could not.
+                            "divergence_repair"
+                        } else if category_only {
                             // The mime was already right; only the
                             // denormalised category had drifted, which
                             // happens when the classifier changes.
@@ -1858,7 +1919,11 @@ mod integration_tests {
         assert_eq!(
             stat(&extra, "failures"),
             Some(0),
-            "a zero-byte file was reported as unreadable content",
+            "something in this corpus failed. `failures` is a catch-all \
+             across blob_head_unreadable / container_probe_failed / \
+             rederive_failed, so read the findings rather than guessing — \
+             the regression this guards is the zero-byte file, whose \
+             content has no stored object and was reported as unreadable.",
         );
         assert_eq!(
             category_of(&pool, &empty_hash).await,
@@ -1935,24 +2000,28 @@ mod integration_tests {
             "the group named the wrong files: {stored:?}",
         );
 
-        // Report only, never repair: the bytes said nothing, so there is no
-        // answer to converge on and a fix could only pick a winner.
-        let after: Vec<(String, i16)> = sqlx::query_as(
-            "SELECT mime_type, category_order FROM storage.files
-              WHERE blob_hash = $1 ORDER BY name",
-        )
-        .bind(&div_hash)
-        .fetch_all(pool.as_ref())
-        .await
-        .expect("read back the divergent copies");
+        // Report only BY DEFAULT: converging means picking a winner, and
+        // the name is the weaker oracle — a specific claim beats an
+        // extension in exactly the ambiguous cases, so a default repair
+        // could replace a right answer with a wrong one.
+        let divergent_types = async |pool: &Arc<sqlx::PgPool>| -> Vec<String> {
+            sqlx::query_scalar(
+                "SELECT mime_type FROM storage.files
+                  WHERE blob_hash = $1 ORDER BY name",
+            )
+            .bind(&div_hash)
+            .fetch_all(pool.as_ref())
+            .await
+            .expect("read back the divergent copies")
+        };
         assert_eq!(
-            after.iter().map(|(m, _)| m.as_str()).collect::<Vec<_>>(),
+            divergent_types(&pool).await,
             vec![
                 "text/plain",
                 "application/x-wine-extension-ini",
                 "application/json",
             ],
-            "the job silently picked a winner instead of reporting",
+            "the job picked a winner without being asked to",
         );
 
         // ── Phase 3: idempotent ──────────────────────────────────────
@@ -1967,6 +2036,61 @@ mod integration_tests {
             stat(&extra, "mime_changed"),
             Some(0),
             "a second run still reported the content as mismatched",
+        );
+
+        // ── Phase 4: repair_divergence converges the group ───────────
+        //
+        // Only the two `.ini` copies move, and they move to what their
+        // NAME implies — not to whichever stored value happened to look
+        // more specific. The `.json` copy is untouched: its divergence was
+        // explained by its own name, so it was never in a reported group
+        // and must not be dragged along by a repair of its neighbours.
+        let args = JobRunArgs::new(
+            [(
+                "repair_divergence".to_string(),
+                crate::infrastructure::scheduler::JobParamValue::Boolean(true),
+            )]
+            .into_iter()
+            .collect(),
+        );
+        let extra = run_job(&pool, &args).await;
+        assert_eq!(stat(&extra, "divergences"), Some(1));
+        assert_eq!(
+            divergent_types(&pool).await,
+            vec![
+                // `div-a.ini`, `div-b.ini` — both now the name's answer,
+                // which for `.ini` is `text/plain`. Note the winner is NOT
+                // the more specific-looking stored value: the group
+                // converges on what the NAME says, so
+                // `application/x-wine-extension-ini` loses to it.
+                "text/plain",
+                "text/plain",
+                // `div-c.json`, untouched — its divergence was explained by
+                // its own name, so it was never in a reported group.
+                "application/json",
+            ],
+            "repair_divergence did not converge the unexplained group",
+        );
+
+        // The finding says so, and names the reason the types moved
+        // without any signature being involved.
+        let repaired = findings_for(&pool, &div_hash).await;
+        let by_kind = |k: &str| {
+            repaired
+                .iter()
+                .find(|(kind, _)| kind == k)
+                .map(|(_, d)| d.clone())
+                .unwrap_or_default()
+        };
+        assert_eq!(by_kind("stored_type_divergence")["corrected"], true);
+        assert_eq!(by_kind("mime_type_mismatch")["reason"], "divergence_repair");
+
+        // And it is now settled: a further run finds nothing to report.
+        let extra = run_job(&pool, &JobRunArgs::default()).await;
+        assert_eq!(
+            stat(&extra, "divergences"),
+            Some(0),
+            "the divergence was reported again after being repaired",
         );
 
         cleanup(&pool, &hash).await;
