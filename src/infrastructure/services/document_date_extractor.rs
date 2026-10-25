@@ -555,6 +555,60 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// The committed fixtures, read by the real entry point.
+    ///
+    /// These are the same files `tests/api/document_date_extraction.hurl`
+    /// uploads, so this test and that one pin the same instants from the two
+    /// ends: here the parser in isolation, there the whole path out to
+    /// `nc:creation_time`. If the fixtures are ever regenerated with
+    /// different dates, this fails first and cheapest.
+    ///
+    /// Built by `scripts/helpers/make-document-date-fixtures.py`.
+    #[test]
+    fn the_committed_fixtures_claim_the_dates_the_hurl_scenario_expects() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let cases = [
+            (
+                "doc-date.docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                1_551_694_920_i64,
+            ),
+            (
+                "doc-date.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                1_592_209_800,
+            ),
+            (
+                "doc-date.pptx",
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                1_642_694_700,
+            ),
+            (
+                "doc-date.odt",
+                "application/vnd.oasis.opendocument.text",
+                1_631_198_700,
+            ),
+            // ⚠ The same instant as the docx, written `11:22+01'00'`. Get the
+            // offset sign backwards and this reads 12:22 — an hour late for
+            // every European document, and plausible enough to ship.
+            ("doc-date.pdf", "application/pdf", 1_551_694_920),
+        ];
+
+        for (name, mime, want) in cases {
+            let path = dir.join(name);
+            assert!(
+                path.exists(),
+                "missing fixture {name} — regenerate with \
+                 scripts/helpers/make-document-date-fixtures.py",
+            );
+            assert_eq!(
+                extract(&path, mime).map(|d| d.timestamp()),
+                Some(want),
+                "{name} did not yield its claimed creation date",
+            );
+        }
+    }
+
     /// Unsupported content must not even reach a parser — the gate is the
     /// format registry, and `text/plain` is the case that proves the two
     /// gates differ (extractable text, no extractable date).

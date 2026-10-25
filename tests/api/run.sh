@@ -642,6 +642,7 @@ HURL_FILES=( \
   # camera and GPS are asserted PRESENT. Read together they pin both
   # arms of the same COALESCE.
   "$API_DIR/photos_exif_extraction.hurl" \
+  "$API_DIR/document_date_extraction.hurl" \
   "$API_DIR/search_sort_content_clock.hurl" \
   "$API_DIR/content_clock_metadata_mutations.hurl" \
   "$API_DIR/rest_upload_source_mtime.hurl" \
