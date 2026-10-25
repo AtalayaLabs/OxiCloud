@@ -6,7 +6,7 @@
     "license": {
       "name": "MIT"
     },
-    "version": "0.9.3"
+    "version": "0.10.0"
   },
   "paths": {
     "/api/address-books": {
@@ -14052,7 +14052,7 @@
           },
           "id": {
             "type": "string",
-            "format": "uuid"
+            "description": "Folder id. A native folder is a UUID string; a folder inside\nan external mount is an `ext:<mount>:<token>` string (same\nshape every other mount-aware DTO uses — [`FolderDto::id`],\n[`crate::application::dtos::resource_dto::ResourceDto`]).\nTyped as a string so the single DTO shape carries both — see\n#837: the previous `Uuid`-only field type forced the ancestor\nwalk to UUID-parse `leaf_id` before classify, so every mount\nsubfolder answered 404."
           },
           "name": {
             "type": "string"
@@ -14062,8 +14062,7 @@
               "string",
               "null"
             ],
-            "format": "uuid",
-            "description": "`None` on the drive-root folder. On boundary crumbs it's the id\nof the (invisible-to-caller) parent — clients don't render it\nbut the field is preserved for debugging."
+            "description": "`None` on the drive-root folder. On boundary crumbs it's the id\nof the (invisible-to-caller) parent — clients don't render it\nbut the field is preserved for debugging. Same string shape as\n[`Self::id`] (UUID or `ext:…`)."
           }
         }
       },

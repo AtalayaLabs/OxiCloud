@@ -1514,10 +1514,7 @@ impl FolderService {
                 .last()
                 .map(|a| a.id.clone())
                 .unwrap_or_else(|| cfg.mount_id.to_string());
-            let synthetic_drive_id = ancestors
-                .last()
-                .map(|a| a.drive_id)
-                .unwrap_or(cfg.drive_id);
+            let synthetic_drive_id = ancestors.last().map(|a| a.drive_id).unwrap_or(cfg.drive_id);
             let mut acc = String::new();
             for segment in node_id.as_str().split('/').filter(|s| !s.is_empty()) {
                 if !acc.is_empty() {

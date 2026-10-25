@@ -1837,12 +1837,23 @@ export type FolderAncestorDto = {
      * header" call. See 2026-07-26 UX pass on /files load traffic.
      */
     drive_id: string;
+    /**
+     * Folder id. A native folder is a UUID string; a folder inside
+     * an external mount is an `ext:<mount>:<token>` string (same
+     * shape every other mount-aware DTO uses — [`FolderDto::id`],
+     * [`crate::application::dtos::resource_dto::ResourceDto`]).
+     * Typed as a string so the single DTO shape carries both — see
+     * #837: the previous `Uuid`-only field type forced the ancestor
+     * walk to UUID-parse `leaf_id` before classify, so every mount
+     * subfolder answered 404.
+     */
     id: string;
     name: string;
     /**
      * `None` on the drive-root folder. On boundary crumbs it's the id
      * of the (invisible-to-caller) parent — clients don't render it
-     * but the field is preserved for debugging.
+     * but the field is preserved for debugging. Same string shape as
+     * [`Self::id`] (UUID or `ext:…`).
      */
     parent_id?: string | null;
 };
