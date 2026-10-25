@@ -185,6 +185,37 @@ collaboration is this product's main axis.
 So the two coexist: `content_modified_at` is what a person reads,
 `tree_modified_at` is what a cache validates.
 
+## Vocabulary — "Added" vs "Created"
+
+Decided 2026-10-19 (shipped in `docs/plan/normalize-file-dates.md` §6) and
+reaffirmed 2026-10-25 when the content-keyed column landed. The two words are
+**not** interchangeable, and which one a surface uses is fixed:
+
+| Word | Column | Means |
+|---|---|---|
+| **Added** | `storage.files.created_at` | when this instance received the bytes |
+| **Created** | `storage.content_metadata.created_at` | when the bytes say they were made |
+
+So the UI's file list says **"Added date"**, never "Created date" — that label
+was changed in §6 precisely to free the word. `?order_by=created_at` sorts by
+arrival and is the admin-facing axis; it is *not* the content's claimed date.
+
+This matters more once document extraction lands (§4), not less. Today a
+`.docx` has no claimed date, so the distinction looks academic and "Created"
+would merely be imprecise. Once `dcterms:created` is read, a 2019 document
+uploaded last week genuinely has two different dates that users will compare —
+and a surface that labelled arrival "Created" would be flatly wrong rather than
+loose. The vocabulary was separated before the data existed so no surface has
+to be relabelled after it does.
+
+Other surfaces already label their own axis the same way, which is the
+precedent this follows: `/favorites` says "Added", `/recent` says "Opened",
+`/trash` says "Deleted".
+
+⚠ **Two columns are spelled `created_at`.** Qualify the table in any query or
+DTO mapping where both are in scope. The one on `storage.files` is arrival; the
+one on `storage.content_metadata` is the claim.
+
 ## Roles — who actually reads them
 
 Only two of the six are **behavioural**. Sorting the rest by who reads them is
