@@ -63,7 +63,7 @@ ap_pw: jsonpath "$.password"
 POST {{base_url}}/api/admin/external-mounts
 Authorization: Bearer {{token}}
 Content-Type: application/json
-{ "name": "hurl-dav-mount", "host_path": "/tmp", "read_only": false, "drive_id": "{{drive_id}}" }
+{ "name": "hurl-dav-mount", "host_path": "{{mount_webdav_root}}", "read_only": false, "drive_id": "{{drive_id}}" }
 
 HTTP 201
 [Captures]
@@ -125,6 +125,25 @@ HTTP 207
 body contains "hurl-dav-sub"
 body contains "hello.txt"
 body contains "<D:collection/>"
+# content_modified_at over an external mount — WebDAV half of the pair
+# whose REST half lives in `external_mounts_rest.hurl`.
+#
+# `hello-mtime.txt` is seeded by `run.sh::seed_mount_fixtures` with a
+# FIXED mtime of 2021-01-01T12:00:00Z (`TZ=UTC touch -t`), which no API
+# call could set: the local provider only READS `meta.modified()`
+# (`local_fs_mount_provider.rs:163,258`) and has no write path for file
+# times. So this pins that a mount file's `getlastmodified` is the FILE's
+# date off the host filesystem, not the date the server first saw it —
+# and that it matches the instant REST reports for the same bytes.
+#
+# The href predicate scopes to the one response among several in the
+# Depth:1 multistatus; same shape as the `displayname` predicate in
+# `caldav_shared_roles.hurl`, with `contains()` because the href is a
+# full path.
+#
+# The ` GMT` / ` +0000` alternation matches the other DAV date assertions
+# in this suite — both are valid RFC 1123 and the emitter has used each.
+xpath "string(//*[local-name()='response'][contains(*[local-name()='href'],'{{mount_mtime_file}}')]//*[local-name()='getlastmodified'])" matches "^Fri, 0?1 Jan 2021 12:00:00 (GMT|\\+0000)$"
 
 
 # ─────────────────────────────────────────────────────────────

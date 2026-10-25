@@ -38,11 +38,42 @@ drive_id: jsonpath "$[0].id"
 POST {{base_url}}/api/admin/external-mounts
 Authorization: Bearer {{token}}
 Content-Type: application/json
-{ "name": "hurl-rest-mount", "host_path": "/tmp", "read_only": false, "drive_id": "{{drive_id}}" }
+{ "name": "hurl-rest-mount", "host_path": "{{mount_rest_root}}", "read_only": false, "drive_id": "{{drive_id}}" }
 
 HTTP 201
 [Captures]
 mount_id: jsonpath "$.mount_folder_id"
+
+
+# ─────────────────────────────────────────────────────────────
+# content_modified_at over an external mount — REST surface.
+#
+# `hello-mtime.txt` is seeded by `run.sh::seed_mount_fixtures` with a
+# FIXED mtime of 2021-01-01T12:00:00Z (`TZ=UTC touch -t`). It cannot be
+# produced through the API: the local provider only READS
+# `meta.modified()` (`local_fs_mount_provider.rs:163,258`) and has no
+# write path for file times, so not even an upload carrying `X-OC-Mtime`
+# can set it.
+#
+# What this pins: the provider's `modified_at` (unix seconds from the
+# host filesystem) survives the trip through `mount_entry_file_dto` and
+# `epoch_to_datetime` to the wire as RFC 3339 UTC — so a mount file's
+# date is the FILE's date, not the date the server happened to see it.
+# The WebDAV half of the same fixture is in `external_mounts_webdav.hurl`,
+# and the two asserting the same instant on different surfaces is the
+# point: they must not drift.
+#
+# Filtered jsonpath + `==` rather than `[0]`: the mount root holds both
+# this fixture and the subfolder created below, so index order is not
+# guaranteed. Interpolating a variable inside the filter is the same
+# shape `grants.hurl` uses for `@.subject.id`.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/folders/{{mount_id}}/resources
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.items[?(@.resource.name=='{{mount_mtime_file}}')].resource.modified_at" == "2021-01-01T12:00:00Z"
 
 
 POST {{base_url}}/api/folders
@@ -90,7 +121,25 @@ Authorization: Bearer {{token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.items[*].resource.name" includes "hello.txt"
+# Why not `$.items[*].resource.name includes "hello.txt"` (the original):
+# Hurl collapses a single-element jsonpath result to a SCALAR, so with one
+# file in the subfolder that expression evaluates to the string
+# "hello.txt" and `includes` — a collection predicate — fails with "types
+# between actual and expected are not consistent". The server returned the
+# right thing; only the operator was wrong.
+#
+# Why not `$.items[?(@.resource.name=='hello.txt')] count == 1` either:
+# a filter yielding one match is just as collapse-prone, and nothing else
+# in this suite asserts `count` on a filtered expression, so its behaviour
+# here is unverified. The forms below use only primitives with heavy prior
+# art — `count` on a plain array field, and `==` on a single indexed
+# element (which collapses to a scalar, where `==` is exactly right).
+#
+# Deliberately asserts name and not mime_type: mime is the subject of the
+# content-sniffing work and would make this pin fail for an unrelated
+# reason.
+jsonpath "$.items" count == 1
+jsonpath "$.items[0].resource.name" == "hello.txt"
 
 
 # Download, preview, metadata of the `ext:` file.

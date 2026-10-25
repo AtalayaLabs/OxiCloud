@@ -166,7 +166,58 @@ SERVER_PID=""
 
 WOPI_MOCK_PID=""
 
+# Host directory the external-mount scenarios mount. Still under /tmp (a
+# per-user tmpfs on current systems, so writing there is fine) but a
+# DEDICATED tree, where `external_mounts_rest`/`_webdav` mounted `/tmp`
+# itself until 2026-10-25. Two concrete problems with mounting it directly,
+# neither about /tmp being shared:
+#
+#   1. Residue blocked reruns. A hurl file stops at its first failing
+#      assertion — before its own teardown — so a mid-file failure stranded
+#      `/tmp/hurl-rest-sub` on disk. The NEXT run then failed EARLIER, at the
+#      `POST /api/folders` that recreates it (409), which reads like a product
+#      bug rather than leftover state. That is exactly how this was found.
+#   2. Mount-root listings were non-deterministic: a Depth:1 PROPFIND or a
+#      `/resources` listing of the mount root enumerated whatever else
+#      happened to be in /tmp, so any count or ordering assertion there was
+#      luck. The seeded fixtures below depend on the root holding only what
+#      this script put there.
+#
+# Owned entirely by this script: wiped and recreated on every start, wiped
+# again on exit. That is what makes the mount scenarios idempotent — the
+# residue lives on the filesystem, so the reset has to happen here and not in
+# a hurl teardown that a fail-stop can skip.
+MOUNT_FIXTURE_ROOT="${TMPDIR:-/tmp}/oxicloud-hurl-mounts"
+
+# `hello-mtime.txt` carries a FIXED past mtime so the external-mount
+# scenarios can assert `content_modified_at` end-to-end on both surfaces.
+# It has to be stamped here rather than through the API: the local provider
+# only READS `meta.modified()` (`local_fs_mount_provider.rs:163,258`) and has
+# no `set_times`/`FileTimes` write path, so no upload — not even one carrying
+# `X-OC-Mtime` — can set a mount file's mtime.
+#
+# `TZ=UTC` is load-bearing. `touch -t` interprets its stamp in LOCAL time on
+# both GNU and BSD touch, so without it the asserted instant would shift with
+# the developer's timezone and the test would pass only in UTC. Pinning TZ
+# makes 202101011200.00 mean exactly 2021-01-01T12:00:00Z everywhere.
+MOUNT_FIXTURE_MTIME_FILE="hello-mtime.txt"
+MOUNT_FIXTURE_MTIME_TOUCH="202101011200.00"
+
+seed_mount_fixtures() {
+  rm -rf "$MOUNT_FIXTURE_ROOT"
+  mkdir -p "$MOUNT_FIXTURE_ROOT/rest" "$MOUNT_FIXTURE_ROOT/webdav"
+  for surface in rest webdav; do
+    printf 'fixed-mtime fixture\n' \
+      > "$MOUNT_FIXTURE_ROOT/$surface/$MOUNT_FIXTURE_MTIME_FILE"
+    TZ=UTC touch -t "$MOUNT_FIXTURE_MTIME_TOUCH" \
+      "$MOUNT_FIXTURE_ROOT/$surface/$MOUNT_FIXTURE_MTIME_FILE"
+  done
+}
+
 cleanup() {
+  # Before the server goes down, so a wedged provider handle can't keep the
+  # tree alive on platforms that refuse to unlink open files.
+  rm -rf "$MOUNT_FIXTURE_ROOT"
   if [[ -n "$SERVER_PID" ]]; then
     log "Stopping OxiCloud server (pid $SERVER_PID)..."
     kill "$SERVER_PID" 2>/dev/null || true
@@ -406,6 +457,12 @@ HURL_FILES=( \
   "$API_DIR/shared_worker_bus_discovery.hurl" \
   "$API_DIR/device_auth_flow.hurl" \
   "$API_DIR/external_mounts.hurl" \
+  # Same mount fixtures, one surface each: REST (#793) and both WebDAV
+  # surfaces (#792, #794). Kept adjacent to `external_mounts.hurl` so the
+  # three mount scenarios fail together when the provider config is wrong,
+  # rather than looking like three unrelated breakages.
+  "$API_DIR/external_mounts_rest.hurl" \
+  "$API_DIR/external_mounts_webdav.hurl" \
   "$API_DIR/chunked_upload_cap.hurl" \
   "$API_DIR/nc_auth_failures.hurl" \
   "$API_DIR/dedup_create.hurl" \
@@ -506,7 +563,12 @@ fi
 # checks — logs in with. Skipping it when only a shell check was selected made
 # `run.sh rechunk_legacy_check` fail with "no such user 'admin'" from the check's
 # own login, which looks like a broken check rather than a missing precondition.
+seed_mount_fixtures
+
 hurl --variables-file "$API_DIR/test.env" --file-root "$REPO_ROOT/tests" --test --jobs 1 \
+  --variable "mount_rest_root=$MOUNT_FIXTURE_ROOT/rest" \
+  --variable "mount_webdav_root=$MOUNT_FIXTURE_ROOT/webdav" \
+  --variable "mount_mtime_file=$MOUNT_FIXTURE_MTIME_FILE" \
   "${SELECTED_HURL[@]}"
 
 #bash "$API_DIR/dedup_bulk_upload.sh"
