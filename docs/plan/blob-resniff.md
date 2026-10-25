@@ -642,13 +642,40 @@ telemetry nobody asked for.
 
 Findings via `record_or_log`, **one per content, not per file** — a song with
 400 copies must not produce 400 findings, so `detail` carries `file_count` and
-a capped `file_ids`. Three kinds:
+a capped sample. Four kinds:
 
 | kind | severity |
 |---|---|
 | `mime_type_mismatch` | **`anomaly`** — informational |
+| `category_order_refreshed` | `anomaly` — informational |
 | `blob_head_unreadable` | `anomaly` |
 | `rederive_failed` | `anomaly` |
+
+**As implemented (2026-10-25) — `category_order_refreshed` is a fourth kind,
+and the sample names files.** Both came out of the first real-instance run.
+
+A category backfill was initially filed as `mime_type_mismatch` with
+`reason: "category_backfill"`, which read as "something mismatched" while
+showing `stored == applied` — no visible difference, because the mime was
+already right and only the denormalised rank had drifted. It also mixed a
+corpus-wide classifier change into the kind an operator filters for real
+mis-detections. Separate kinds, per the `run_findings.kind` convention: *new
+failure mode = new value, never repurpose an existing one*.
+
+The sample became `changes` — a capped per-file `{file_id, name, from_type,
+to_type, from_category, to_category}` — replacing a bare `file_ids` list.
+`detected` and `previous_types` (was `stored`) describe the CONTENT; `changes`
+is what names which file moved and from what, and it is the only place the
+CATEGORY's before/after appears at all. `blob_head_unreadable` grew the same
+treatment under `files`: it previously carried two hashes and a count, which
+cannot be acted on — and it is the kind that means bytes may be missing, so
+"which files" is the only question it raises.
+
+**Known gap, not addressed:** `decide` returns `Leave` on silence, so two
+files on identical bytes can record two different stored types indefinitely
+whenever the content has no magic signature (`.bin`, source files). Divergent
+`stored_types` within one hash is a genuine inconsistency the job sees and
+does not report.
 
 ⚠ **A changed mime type is INFORMATIONAL, not an inconsistency.** All three
 kinds are `anomaly`, which is what "informational" means in this codebase —

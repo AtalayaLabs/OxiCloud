@@ -89,6 +89,14 @@ const HEAD_BYTES: u64 = 8192;
 /// skipped, with a finding.
 const MAX_DERIVE_BYTES: i64 = 512 * 1024 * 1024;
 
+/// How many files a finding names before it stops listing them.
+///
+/// Findings are keyed by CONTENT, and dedup means one content can carry
+/// hundreds of files — a popular song, a shared PDF. `file_count` always
+/// reports the true total; this only bounds the named sample, so a finding
+/// stays readable and the row stays a sane size in `job_findings`.
+const SAMPLE: usize = 10;
+
 static PARAMETERS: [JobParam; 3] = [
     JobParam::boolean(
         "dry_run",
@@ -681,6 +689,24 @@ impl RecoverableJobHandler for ContentRescan {
                                     "content_hash": row.content_hash,
                                     "object_hash":  object_hash,
                                     "file_count":   row.file_ids.len(),
+                                    // ⚠ Named, not just counted. Two hashes
+                                    // and a count cannot be acted on, and
+                                    // this is the finding that says bytes may
+                                    // be MISSING — so the only question the
+                                    // operator has is WHICH files. Capped the
+                                    // same way as the sample below.
+                                    "files": row
+                                        .file_ids
+                                        .iter()
+                                        .zip(row.file_names.iter())
+                                        .take(SAMPLE)
+                                        .map(|(id, name)| {
+                                            serde_json::json!({
+                                                "file_id": id.to_string(),
+                                                "name":    name,
+                                            })
+                                        })
+                                        .collect::<Vec<_>>(),
                                     "error":        e.to_string(),
                                 }),
                             )
@@ -911,20 +937,53 @@ impl RecoverableJobHandler for ContentRescan {
                 record_or_log(
                     store,
                     CONTENT_RESCAN_JOB_NAME,
-                    "mime_type_mismatch",
+                    // Two different events, so two different kinds. A
+                    // category backfill is NOT a mime mismatch: the stored
+                    // type was right, and filing it as one produced findings
+                    // where `previous_types` and `applied` were identical —
+                    // "something mismatched" with no visible difference. An
+                    // operator filtering for real mis-detections got a
+                    // corpus-wide classifier change mixed in.
+                    if category_only {
+                        "category_order_refreshed"
+                    } else {
+                        "mime_type_mismatch"
+                    },
                     "anomaly",
                     None,
                     serde_json::json!({
                         "content_hash": row.content_hash,
                         "detected":     detected,
-                        "stored":       row.stored_types,
+                        // Was `stored`, which did not read as "the value
+                        // before this run".
+                        "previous_types": row.stored_types,
                         "applied":      new_mime,
                         "file_count":   row.file_ids.len(),
+                        // The per-file before→after. `detected` and
+                        // `previous_types` describe the CONTENT; this names
+                        // which file moved and from what — including the
+                        // CATEGORY, which is the only thing that moves on a
+                        // backfill and was previously absent from the payload
+                        // entirely.
+                        //
                         // Capped: a song with 400 copies must not produce a
                         // 400-entry finding, but naming a few makes it
-                        // actionable.
-                        "file_ids":     row.file_ids.iter().take(10).map(|u| u.to_string())
-                                            .collect::<Vec<_>>(),
+                        // actionable. Only files that actually changed appear.
+                        "changes": targets
+                            .iter()
+                            .take(SAMPLE)
+                            .map(|(id, mime, cat)| {
+                                let at = row.file_ids.iter().position(|f| f == id);
+                                serde_json::json!({
+                                    "file_id":       id.to_string(),
+                                    "name":          at.and_then(|i| row.file_names.get(i)),
+                                    "from_type":     at.and_then(|i| row.file_mimes.get(i)),
+                                    "to_type":       mime,
+                                    "from_category": at.and_then(|i| row.file_categories.get(i)),
+                                    "to_category":   cat,
+                                })
+                            })
+                            .collect::<Vec<_>>(),
                         "files_updated": affected,
                         "corrected":     !dry_run,
                         "reason": if category_only {
@@ -1465,6 +1524,25 @@ mod integration_tests {
         hash
     }
 
+    /// The distinct finding KINDS filed against one content, each with its
+    /// most recent detail.
+    ///
+    /// Distinct-on rather than every row, for two reasons: the dry-run phase
+    /// files its own findings (with `corrected: false`), and `jobs.run_findings`
+    /// outlives `cleanup`, which only removes the seeded files. Asserting on
+    /// a row count would pass once and then drift.
+    async fn findings_for(pool: &sqlx::PgPool, hash: &str) -> Vec<(String, serde_json::Value)> {
+        sqlx::query_as(
+            "SELECT DISTINCT ON (kind) kind, detail FROM jobs.run_findings
+              WHERE detail->>'content_hash' = $1
+              ORDER BY kind, created_at DESC",
+        )
+        .bind(hash)
+        .fetch_all(pool)
+        .await
+        .expect("read findings")
+    }
+
     async fn category_of(pool: &sqlx::PgPool, hash: &str) -> i16 {
         sqlx::query_scalar("SELECT category_order FROM storage.files WHERE blob_hash = $1")
             .bind(hash)
@@ -1620,6 +1698,40 @@ mod integration_tests {
             category_of(&pool, &empty_hash).await,
             950,
             "the empty file's stale category was never refreshed (Config = 950)",
+        );
+
+        // The two events must not share a kind. A category backfill was
+        // filed as `mime_type_mismatch`, which produced findings whose
+        // before and after were IDENTICAL — "something mismatched" with no
+        // visible difference — and mixed a corpus-wide classifier change
+        // into the kind an operator filters for real mis-detections.
+        let empty = findings_for(&pool, &empty_hash).await;
+        assert_eq!(
+            empty.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+            vec!["category_order_refreshed"],
+            "a category-only backfill was filed under the wrong kind",
+        );
+        let change = &empty[0].1["changes"][0];
+        assert_eq!(change["from_category"], 9999);
+        assert_eq!(change["to_category"], 950);
+        assert_eq!(
+            change["from_type"], change["to_type"],
+            "a category backfill must not claim the type moved",
+        );
+
+        // And a real mis-detection keeps the original kind, naming the file
+        // and BOTH types. `file_count` alone cannot be acted on.
+        let retyped = findings_for(&pool, &hash).await;
+        assert_eq!(
+            retyped.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+            vec!["mime_type_mismatch"],
+        );
+        let change = &retyped[0].1["changes"][0];
+        assert_eq!(change["from_type"], "image/jpeg");
+        assert_eq!(change["to_type"], "image/png");
+        assert!(
+            change["name"].is_string(),
+            "the finding named no file: {change}",
         );
 
         // ── Phase 3: idempotent ──────────────────────────────────────
