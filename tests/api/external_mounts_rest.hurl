@@ -142,6 +142,40 @@ jsonpath "$.items" count == 1
 jsonpath "$.items[0].resource.name" == "hello.txt"
 
 
+# ─────────────────────────────────────────────────────────────
+# #837 — breadcrumb for a mount subfolder.
+#
+# `FolderService::get_ancestors_with_perms` gated on
+# `folder_resource(leaf_id)` which `Uuid::parse_str`'d the id and
+# mapped failures to NotFound — so every `ext:` id (every subfolder
+# below a mount root) returned 404, breaking the web UI's "open
+# subfolder" path even though WebDAV and `/resources` worked.
+#
+# Pins (as the mount owner):
+#   * 200 (not 404).
+#   * The returned chain has at least two entries — the mount root
+#     and the leaf below it. The in-mount hierarchy may lift the
+#     chain into the mount's native ancestors (drive root, etc.);
+#     at minimum the two we created live in it.
+#   * The LAST entry (leaf) is the subfolder we created.
+#   * The mount root appears somewhere in the chain.
+#
+# The `.id` field type is NOT asserted here — the fix extends it
+# to accept both native UUIDs and `ext:` ids; a Hurl assertion on
+# the exact wire shape would couple this pin to the DTO rename
+# unnecessarily. The two name/length pins catch the regression
+# without that coupling.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/folders/{{sub_id}}/ancestors
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.ancestors" count >= 2
+jsonpath "$.ancestors[-1].name" == "hurl-rest-sub"
+jsonpath "$.ancestors[?(@.name=='hurl-rest-mount')]" count == 1
+
+
 # Download, preview, metadata of the `ext:` file.
 GET {{base_url}}/api/files/{{file_id}}
 Authorization: Bearer {{token}}
@@ -197,6 +231,18 @@ eve_token: jsonpath "$.access_token"
 
 
 GET {{base_url}}/api/folders/{{sub_id}}/resources
+Authorization: Bearer {{eve_token}}
+
+HTTP 404
+
+
+# #837 — ancestor walk denies as 404 for an outsider, matching the
+# anti-enumeration shape every other mount-subfolder call uses here.
+# The fix must keep this: Resource::Folder(mount_id) is the AuthZ gate
+# the ancestor method shares with /resources above, so a regression
+# that leaks "folder exists but you can't see its chain" via 403
+# shows up as a mismatch between these two calls.
+GET {{base_url}}/api/folders/{{sub_id}}/ancestors
 Authorization: Bearer {{eve_token}}
 
 HTTP 404
