@@ -315,6 +315,9 @@ HURL_FILES=( \
   "$API_DIR/app_passwords.hurl" \
   "$API_DIR/auth_profile_image.hurl" \
   "$API_DIR/registration.hurl" \
+  # Registers mixed-case usernames and asserts they land lowercased, so it
+  # sits with registration rather than with the admin user-ops block.
+  "$API_DIR/lowercase_usernames.hurl" \
   "$API_DIR/nc_status_capabilities.hurl" \
   "$API_DIR/nc_login_flow_v2.hurl" \
   "$API_DIR/nc_login_flow_v2_drive_picker.hurl" \
@@ -361,16 +364,25 @@ HURL_FILES=( \
   "$API_DIR/transcode_import.hurl" \
   "$API_DIR/dedup_admin_gate.hurl" \
   "$API_DIR/admin_jobs.hurl" \
+  # Both read/write admin-scoped global state and clean up after themselves
+  # (ops_banners asserts an empty list at the end). admin_advisories pins
+  # dashboard flags derived from the ACTIVE BACKEND, so it must stay above the
+  # backend_* group at the bottom of this array.
+  "$API_DIR/admin_advisories.hurl" \
+  "$API_DIR/ops_banners.hurl" \
   "$API_DIR/recoverable_jobs.hurl" \
   "$API_DIR/jobs_notify.hurl" \
   "$API_DIR/storage_multi_entry.hurl" \
   "$API_DIR/default_caldav_carddav.hurl" \
   "$API_DIR/dav_error_mapping.hurl" \
   "$API_DIR/carddav_vcard_properties.hurl" \
+  "$API_DIR/webdav_carddav_param_encoding.hurl" \
   "$API_DIR/contacts.hurl" \
   "$API_DIR/calendar.hurl" \
   "$API_DIR/caldav_shared_roles.hurl" \
   "$API_DIR/caldav_recurring.hurl" \
+  "$API_DIR/caldav_tzid.hurl" \
+  "$API_DIR/caldav_vtodo.hurl" \
   "$API_DIR/caldav_calendar_query.hurl" \
   "$API_DIR/playlists.hurl" \
   "$API_DIR/public_shares.hurl" \
@@ -422,6 +434,7 @@ HURL_FILES=( \
   "$API_DIR/folder_content_clock.hurl" \
   "$API_DIR/folder_listing_cursor_clocks.hurl" \
   "$API_DIR/webdav_etag_rename_stability.hurl" \
+  "$API_DIR/webdav_etag_cross_check.hurl" \
   "$API_DIR/copy_preserves_category_order.hurl" \
   "$API_DIR/photos_sort_date_content_clock.hurl" \
   "$API_DIR/search_sort_content_clock.hurl" \
@@ -433,6 +446,12 @@ HURL_FILES=( \
   "$API_DIR/nfc_normalization.hurl" \
   "$API_DIR/wopi_authz.hurl" \
   "$API_DIR/wopi_shared_drive.hurl" \
+  `# Engages the operator write-lock, which refuses user writes and makes` \
+  `# backend-writer jobs defer, so it runs near the end where the fewest` \
+  `# scenarios sit behind it. It releases the gate twice (step 9 is an` \
+  `# idempotent second DELETE), so a fail-stop mid-file still leaves the` \
+  `# gate free for whatever follows.` \
+  "$API_DIR/backend_write_lock.hurl" \
   `# Second-to-last. The slowest file in the suite BY DESIGN: it waits` \
   `# out an unreachable endpoint (~31s) to prove the wait is bounded, so` \
   `# that cost belongs at the end rather than in the middle. It leaves no` \

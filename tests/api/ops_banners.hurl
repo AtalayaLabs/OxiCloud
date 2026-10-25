@@ -117,17 +117,51 @@ HTTP 400
 
 # ─────────────────────────────────────────────────────────────
 # Step 7 — Public wire now carries the banner + banners_version.
+#
+# The header is NOT asserted here. `server_status_middleware` is
+# layered on the protected `/api` router only, and `/api/config` is
+# registered on the PUBLIC, unauthenticated router — which is why it
+# returns a server-status *snapshot in the body* instead ("one-shot
+# boot hydration by the SPA", see `config_handler.rs`). This step
+# asserted `header "x-server-status" contains "banners_version"` until
+# 2026-10-24 and got `actual: none`; the file was never wired into
+# run.sh, so it never surfaced. The header assertion moved to the
+# authenticated request below, which is the surface that carries it.
 # ─────────────────────────────────────────────────────────────
 GET {{base_url}}/api/config
 
 HTTP 200
 [Asserts]
-header "x-server-status" contains "banners_version"
 jsonpath "$.server_status.banners_version" exists
 jsonpath "$.server_status.banners" count == 1
 jsonpath "$.server_status.banners[0].id" == "{{banner_id}}"
 jsonpath "$.server_status.banners[0].severity" == "warning"
 jsonpath "$.server_status.banners[0].body.en" contains "Scheduled"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 7b — The same `banners_version` on the HEADER surface.
+#
+# The original step 7 asserted this on `GET /api/config` and got
+# `actual: none`: `server_status_middleware` is layered inside
+# `create_api_routes`, and `/api/config` sits on the PUBLIC router.
+# `GET /api/auth/me` fails the same way — `/api/auth/*` is its own
+# router (`auth_protected_routes()`, composed in `main.rs`), also
+# outside the layer, and the middleware explicitly relies on header
+# absence there meaning "outside the middleware stack".
+#
+# `/api/admin/*` IS nested inside `create_api_routes`, so it carries
+# the header. Asserting both surfaces keeps them from drifting: the
+# body snapshot serves the unauthenticated boot, the header serves the
+# per-response diff that the FE fetch wrapper watches.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/admin/banners
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+[Asserts]
+header "x-server-status" contains "banners_version"
+jsonpath "$" count == 1
 
 
 # ─────────────────────────────────────────────────────────────
