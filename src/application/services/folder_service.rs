@@ -22,7 +22,7 @@ use crate::domain::repositories::folder_repository::FolderRepository;
 use crate::domain::services::authorization::{
     Grant, Permission, Resource, ResourceKind, Role, Subject,
 };
-use crate::domain::services::external_mount_id::NodeId;
+use crate::domain::services::external_mount_id::{NodeId, encode_child_id};
 use crate::domain::services::path_service::{StoragePath, validate_storage_name};
 use crate::infrastructure::repositories::pg::folder_db_repository::FolderDbRepository;
 use crate::infrastructure::services::pg_acl_engine::PgAclEngine;
@@ -1220,8 +1220,23 @@ impl FolderService {
         include_grants: bool,
     ) -> Result<FolderAncestorsDto, DomainError> {
         // Gate: caller must have Read on the leaf. Denial → 404 (anti-enum).
+        //
+        // `folder_authz_resource` collapses all three id shapes onto one
+        // `Resource` (#831): a native UUID becomes `Resource::Folder(uuid)`;
+        // a mount root OR a mount child (`ext:…`) both become
+        // `Resource::Folder(cfg.mount_id)`. That makes the ancestor
+        // endpoint's gate the same one `/resources` and the WebDAV
+        // handlers use — a stranger denied there is denied here with
+        // the same 404 shape. Historical bug (#837): this method
+        // called `folder_resource(leaf_id)` which `Uuid::parse_str`'d
+        // the id and mapped non-UUIDs to NotFound, so every mount
+        // subfolder returned 404 even for the owner.
+        let resource = self
+            .mount_router
+            .folder_authz_resource(leaf_id)
+            .ok_or_else(|| DomainError::not_found("Folder", leaf_id))?;
         self.authz
-            .require(caller, Permission::Read, Self::folder_resource(leaf_id)?)
+            .require(caller, Permission::Read, resource)
             .await?;
 
         // `include_grants` RAISES the permission this endpoint needs.
@@ -1238,16 +1253,33 @@ impl FolderService {
         // instead of having to remember it.
         if include_grants {
             self.authz
-                .require(caller, Permission::Share, Self::folder_resource(leaf_id)?)
+                .require(caller, Permission::Share, resource)
                 .await?;
         }
 
-        let leaf_uuid =
-            Uuid::parse_str(leaf_id).map_err(|_| DomainError::not_found("Folder", leaf_id))?;
+        // Where the native walk starts, and whether we need to append
+        // synthetic mount-child entries after it.
+        //
+        //   * MountChild: walk the mount ROOT's native ancestors (so
+        //     the breadcrumb still carries the drive / share boundary
+        //     above the mount), then synthesise one entry per path
+        //     segment of the decoded `node_id`.
+        //   * MountRoot: walk the mount root's native row directly —
+        //     identical to Regular from this point on.
+        //   * Regular: walk the leaf's own UUID.
+        let (walk_root, mount_tail) = match self.mount_router.classify(leaf_id) {
+            ResolvedId::MountChild { cfg, node_id } => (cfg.mount_id, Some((cfg, node_id))),
+            ResolvedId::MountRoot { cfg } => (cfg.mount_id, None),
+            ResolvedId::Regular => {
+                let uuid = Uuid::parse_str(leaf_id)
+                    .map_err(|_| DomainError::not_found("Folder", leaf_id))?;
+                (uuid, None)
+            }
+        };
 
         let mut rows = self
             .folder_storage
-            .fetch_ancestor_walk(caller, leaf_uuid)
+            .fetch_ancestor_walk(caller, walk_root)
             .await?;
         if rows.is_empty() {
             return Err(DomainError::not_found("Folder", leaf_id));
@@ -1450,15 +1482,55 @@ impl FolderService {
             (None, None)
         };
 
-        let ancestors = rows
+        let mut ancestors: Vec<FolderAncestorDto> = rows
             .into_iter()
             .map(|r| FolderAncestorDto {
-                id: r.id,
+                id: r.id.to_string(),
                 name: r.name,
-                parent_id: r.parent_id,
+                parent_id: r.parent_id.map(|u| u.to_string()),
                 drive_id: r.drive_id,
             })
             .collect();
+
+        // Mount-child tail: append one synthetic entry per path segment
+        // of the decoded `node_id`. Each entry's parent is the previous
+        // one in the chain; the first segment's parent is the mount
+        // root (last native ancestor). `drive_id` is carried from the
+        // mount root — every entry below a mount lives in the same
+        // drive as its mount by definition.
+        //
+        // No AuthZ loop here: the top-of-method gate already proved
+        // `Permission::Read` on `Resource::Folder(cfg.mount_id)`, and
+        // that single grant covers every path below the mount root
+        // (mount provides the AuthZ scope; the provider owns the
+        // namespace underneath).
+        //
+        // No `effective_grants` entries are added below the mount root:
+        // grants live on the mount root and above, which the native
+        // walk already enumerated. A synthetic row holds no row of
+        // its own.
+        if let Some((cfg, node_id)) = mount_tail {
+            let mut prev_id = ancestors
+                .last()
+                .map(|a| a.id.clone())
+                .unwrap_or_else(|| cfg.mount_id.to_string());
+            let synthetic_drive_id = ancestors.last().map(|a| a.drive_id).unwrap_or(cfg.drive_id);
+            let mut acc = String::new();
+            for segment in node_id.as_str().split('/').filter(|s| !s.is_empty()) {
+                if !acc.is_empty() {
+                    acc.push('/');
+                }
+                acc.push_str(segment);
+                let child_id = encode_child_id(cfg.mount_id, acc.clone());
+                ancestors.push(FolderAncestorDto {
+                    id: child_id.clone(),
+                    name: segment.to_string(),
+                    parent_id: Some(prev_id),
+                    drive_id: synthetic_drive_id,
+                });
+                prev_id = child_id;
+            }
+        }
 
         Ok(FolderAncestorsDto {
             ancestors,

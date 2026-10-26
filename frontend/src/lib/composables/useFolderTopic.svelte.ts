@@ -60,14 +60,42 @@ export interface FolderTopicHandlers {
  * getter that reads from reactive state (route param) so the
  * subscription follows the current folder.
  */
+/**
+ * Pure helper that maps a folder id to its bus topic — or `null`
+ * when the folder has no publishers.
+ *
+ * External-mount folders (`ext:<mount>:<node>` ids) have no
+ * publisher server-side — nothing in the services ever calls
+ * `bus.publish(Topic::Folder(ext_id))` because `Topic::parse`
+ * (`application/ports/message_bus_ports.rs:143`) only accepts
+ * UUID-suffixed `folder:` topics and would `BadUuid` an `ext:`
+ * one before publish could reach it. Subscribing from the FE
+ * would hand the server an unparseable topic → the subscribe
+ * is rejected → `onRevoked` fires → the folder view toasts
+ * "access revoked" + navigates back to /files on every mount
+ * subfolder open (observed 2026-10-26, surfaced by #837 once
+ * the ancestors breadcrumb let users actually reach a mount
+ * subfolder in the first place).
+ *
+ * Return `null` for `ext:` ids so `useTopic` short-circuits
+ * (null = don't subscribe). Mount folders are naturally
+ * snapshot-reload-only — the host filesystem is the source of
+ * truth, so manual refresh is the right UX anyway.
+ *
+ * Exposed for unit tests; `useFolderTopic` is the reactive glue
+ * around it.
+ */
+export function folderTopicFor(id: string | null | undefined): string | null {
+	if (!id) return null;
+	if (id.startsWith('ext:')) return null;
+	return `folder:${id}`;
+}
+
 export function useFolderTopic(
 	folderId: string | null | (() => string | null),
 	handlers: FolderTopicHandlers
 ): void {
-	const topic = () => {
-		const id = typeof folderId === 'function' ? folderId() : folderId;
-		return id ? `folder:${id}` : null;
-	};
+	const topic = () => folderTopicFor(typeof folderId === 'function' ? folderId() : folderId);
 	useTopic(topic, (params) => dispatch(params, handlers), handlers.onRevoked);
 	useReconnect(handlers.onReconnect);
 }
