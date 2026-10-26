@@ -21,9 +21,11 @@
 #             strict-RFC-4918 412. If a later commit adds
 #             conditional support, the assertions here will
 #             trip and you can update them deliberately.
-#   F1     — NC PUT returns ETag + oc-etag headers but NO
-#             oc-fileid header (the file id is discoverable
-#             via PROPFIND or REST). Pinned as "absent".
+#   F1     — NC PUT returns ETag + oc-etag + oc-fileid headers.
+#             The NC desktop client needs OC-FileId on the write
+#             response (F2, docs/plan/nc-sync-client-findings.md);
+#             the exact value is pinned in
+#             tests/api/nc_write_response_headers.hurl.
 # =============================================================
 
 set -euo pipefail
@@ -96,10 +98,12 @@ F1_OC_ETAG=$(header_value "oc-etag" "$HEADERS")
 [[ -n "$F1_OC_ETAG" ]] || fail "F1: response missing oc-etag header"
 [[ "$F1_ETAG" == "$F1_OC_ETAG" ]] \
     || fail "F1: ETag ($F1_ETAG) and oc-etag ($F1_OC_ETAG) should match"
-# Pin "no oc-fileid header" current behaviour.
-grep -qi '^oc-fileid:' <<< "$HEADERS" \
-    && fail "F1: oc-fileid header is now present — pin needs updating"
-pass "F1: PUT new → 201 + matching ETag/oc-etag, no oc-fileid header"
+# The sync client reads OC-FileId off the PUT response; without it the
+# client reports "Missing File ID from server" (F2 in
+# docs/plan/nc-sync-client-findings.md).
+[[ -n "$(header_value "oc-fileid" "$HEADERS")" ]] \
+    || fail "F1: response missing oc-fileid header"
+pass "F1: PUT new → 201 + matching ETag/oc-etag + oc-fileid"
 
 # ─────────────────────────────────────────────────────────────
 # F2 — GET retrieves the bytes we just PUT

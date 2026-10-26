@@ -2090,7 +2090,7 @@ impl FolderDbRepository {
 // folder move, deleted and re-downloaded the folder. These pins run the
 // triggers against a real database with no flusher, so only the
 // immediate in-statement bump can move `tree_modified_at`.
-#[cfg(integration_tests)]
+#[cfg(all(test, integration_tests))]
 mod tree_etag_immediate_bump_tests {
     use crate::integration_test_support::{ensure_clean_test_db, test_db_url};
     use chrono::{DateTime, Utc};
