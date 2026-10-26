@@ -294,3 +294,22 @@ jobs:
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Transition the Release from draft (set by release.yml) to
+      # published, which is what fires GitHub's "new release" email
+      # to watchers. Running HERE — after `fail_on_unmatched_files`
+      # has confirmed every platform tarball + SHA256SUMS actually
+      # attached — guarantees subscribers never see an email for a
+      # release that's missing binaries.
+      #
+      # Idempotent: `--draft=false` on an already-published release
+      # is a no-op, so a workflow re-run doesn't send a second email.
+      # If `release.yml` never ran (e.g. only this workflow was
+      # workflow_dispatch'd against an existing tag), the release
+      # wasn't a draft to begin with — same no-op.
+      - name: Publish release (draft → public)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.event.inputs.version || github.ref_name }}"
+          gh release edit "$TAG" --draft=false --repo "${{ github.repository }}"

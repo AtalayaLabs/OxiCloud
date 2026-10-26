@@ -35,5 +35,31 @@ jobs:
         with:
           generate_release_notes: true
           make_latest: true
+          # Ship as DRAFT. GitHub only sends the "new release" email
+          # when a release transitions from draft to published, so
+          # subscribers get one email at the moment the Release is
+          # complete — not an email mentioning only `Source code
+          # (zip|tar.gz)` 15–25 min before the binary matrix in
+          # release-binaries.yml finishes attaching the tarballs
+          # (observed on v0.10.0, 2026-10-26).
+          #
+          # `release-binaries.yml`'s final `release` job calls
+          # `gh release edit --draft=false` after `fail_on_unmatched_files`
+          # has proved every platform tarball is attached. A matrix
+          # failure leaves the release stuck in draft — correct
+          # behaviour; a release missing a platform shouldn't be
+          # visible.
+          draft: true
+          # Force the body to be REPLACED on each run, not appended.
+          # Action-gh-release v2's default behaviour when
+          # `generate_release_notes: true` meets an existing release
+          # is to concatenate the newly-generated notes onto the
+          # existing body — a re-run (manual retrigger, or a race
+          # with the parallel `release-binaries.yml` creating the
+          # release first) therefore ends up with "What's Changed"
+          # printed twice back-to-back (observed on v0.10.0). The
+          # `append_body: false` flag disables the concat path so
+          # every run produces exactly one notes block.
+          append_body: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
