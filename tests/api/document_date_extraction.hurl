@@ -389,6 +389,48 @@ jsonpath "$.created_at" == "2019-03-04T10:22:00Z"
 
 
 # ─────────────────────────────────────────────────────────────
+# A PDF whose /Info is inside a COMPRESSED OBJECT STREAM.
+#
+# The window scan cannot see this one — `grep CreationDate` on the file
+# finds nothing, because the key is deflated inside an `/ObjStm`. It is
+# read by following the trailer's `/Info` reference through the xref
+# stream, which needs a real PDF object model.
+#
+# Reported `0` until 2026-10 and was documented as a blind spot on the
+# grounds that a parser would be a new dependency. It was not: lopdf was
+# already compiled in as `pdf-extract`'s own dependency, just not
+# importable.
+#
+# A distinct instant from the plain PDF above, so reading the wrong
+# fixture cannot satisfy this.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/files/upload
+Authorization: Bearer {{jwt}}
+[MultipartFormData]
+folder_id: {{folder_id}}
+file: file,fixtures/doc-date-objstm.pdf; application/pdf
+
+HTTP 201
+[Captures]
+objstm_id: jsonpath "$.id"
+
+
+GET {{base_url}}/api/files/{{objstm_id}}/metadata
+Authorization: Bearer {{jwt}}
+[Options]
+retry: 20
+retry-interval: 250ms
+
+HTTP 200
+[Asserts]
+# D:20231107084500Z
+jsonpath "$.created_at" == "2023-11-07T08:45:00Z"
+# ⚠ Not the plain PDF's instant — that would mean the wrong fixture was
+# read, and the compressed path proves nothing.
+jsonpath "$.created_at" != "2019-03-04T10:22:00Z"
+
+
+# ─────────────────────────────────────────────────────────────
 # Teardown – the suite shares one database; leave nothing behind.
 # ─────────────────────────────────────────────────────────────
 DELETE {{base_url}}/api/folders/{{folder_id}}

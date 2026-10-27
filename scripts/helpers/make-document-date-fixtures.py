@@ -36,6 +36,9 @@ PPTX_CREATED = "2022-01-20T16:05:00Z"
 ODT_CREATED = "2021-09-09T14:45:00"
 # Same instant as the docx, written with an offset.
 PDF_CREATED = "D:20190304112200+01'00'"
+# A DISTINCT instant for the compressed-objstm PDF, so a test that reaches
+# it cannot be satisfied by accidentally reading the plain one.
+OBJSTM_CREATED = "D:20231107084500Z"
 
 
 def core_props(created: str) -> str:
@@ -138,15 +141,93 @@ def write_pdf(path: Path, created: str) -> None:
     path.write_bytes(bytes(out))
 
 
+def write_pdf_objstm(path: Path, created: str) -> None:
+    """A PDF 1.5 whose /Info lives in a COMPRESSED OBJECT STREAM.
+
+    The blind spot of the byte scanner, made into a fixture. The
+    `/CreationDate` key is deflated inside an `/ObjStm`, so no amount of
+    window scanning can see it — only a real parse that walks the xref
+    stream, inflates the object stream and resolves the reference.
+
+    Hand-rolled rather than produced with Ghostscript or qpdf, because a
+    fixture generator must run on stdlib alone. That makes it easy to get
+    subtly wrong, so the unit test asserts the date IS found: a malformed
+    archive yields None and fails loudly instead of passing for the wrong
+    reason.
+
+    Layout — objects 1-3 are a minimal page tree written plainly, object 4
+    (the Info dict) lives inside object 5 (the ObjStm), and object 6 is the
+    xref stream that says so.
+    """
+    import zlib
+
+    out = bytearray(b"%PDF-1.5\n")
+    offsets: dict[int, int] = {}
+
+    def add(num: int, body: bytes) -> None:
+        offsets[num] = len(out)
+        out.extend(f"{num} 0 obj ".encode() + body + b" endobj\n")
+
+    add(1, b"<< /Type /Catalog /Pages 2 0 R >>")
+    add(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>")
+    add(3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 72 72] >>")
+
+    # Object 4 inside object 5. An ObjStm's payload is a pairs section
+    # ("objnum reloffset" …) followed by the objects themselves; /First is
+    # where the objects begin, and each offset is relative to it.
+    info = f"<< /Producer (OxiCloud fixture) /CreationDate ({created}) >>".encode()
+    pairs = b"4 0 "
+    payload = pairs + info
+    stream = zlib.compress(payload)
+    offsets[5] = len(out)
+    out.extend(
+        b"5 0 obj << /Type /ObjStm /N 1 /First "
+        + str(len(pairs)).encode()
+        + b" /Length "
+        + str(len(stream)).encode()
+        + b" /Filter /FlateDecode >>\nstream\n"
+    )
+    out.extend(stream)
+    out.extend(b"\nendstream endobj\n")
+
+    # The xref stream. /W [1 4 2] → one byte of type, four of field2, two of
+    # field3. Type 1 is "at this byte offset"; type 2 is "in that object
+    # stream, at that index", which is how object 4 is reachable at all.
+    xref_at = len(out)
+    rows = bytearray()
+    rows += bytes([0]) + (0).to_bytes(4, "big") + (65535).to_bytes(2, "big")
+    for num in (1, 2, 3):
+        rows += bytes([1]) + offsets[num].to_bytes(4, "big") + (0).to_bytes(2, "big")
+    rows += bytes([2]) + (5).to_bytes(4, "big") + (0).to_bytes(2, "big")
+    rows += bytes([1]) + offsets[5].to_bytes(4, "big") + (0).to_bytes(2, "big")
+    rows += bytes([1]) + xref_at.to_bytes(4, "big") + (0).to_bytes(2, "big")
+    xref_stream = zlib.compress(bytes(rows))
+    out.extend(
+        b"6 0 obj << /Type /XRef /Size 7 /W [1 4 2] /Root 1 0 R /Info 4 0 R"
+        + b" /Length "
+        + str(len(xref_stream)).encode()
+        + b" /Filter /FlateDecode >>\nstream\n"
+    )
+    out.extend(xref_stream)
+    out.extend(b"\nendstream endobj\n")
+    out.extend(f"startxref\n{xref_at}\n%%EOF\n".encode())
+
+    path.write_bytes(bytes(out))
+
+
 def epoch(iso: str) -> int:
     """Epoch seconds for the instant a document claims."""
     if iso.startswith("D:"):
         body = iso[2:]
         naive = datetime.strptime(body[:14], "%Y%m%d%H%M%S")
-        sign = 1 if body[14] == "+" else -1
-        hours = int(body[15:17])
-        minutes = int(body[18:20])
-        offset = sign * (hours * 3600 + minutes * 60)
+        rest = body[14:]
+        # `Z`, or absent entirely, means UTC — the offset form is only one of
+        # the three the spec allows.
+        if rest[:1] in ("+", "-"):
+            sign = 1 if rest[0] == "+" else -1
+            offset = sign * (int(rest[1:3]) * 3600 + int(rest[4:6]) * 60)
+        else:
+            offset = 0
         return int(naive.replace(tzinfo=timezone.utc).timestamp()) - offset
     if iso.endswith("Z"):
         return int(
@@ -189,6 +270,7 @@ def main() -> None:
         ODT_CREATED,
     )
     write_pdf(OUT / "doc-date.pdf", PDF_CREATED)
+    write_pdf_objstm(OUT / "doc-date-objstm.pdf", OBJSTM_CREATED)
 
     print("fixture                 claims                       nc:creation_time")
     for name, claimed in [
@@ -197,6 +279,7 @@ def main() -> None:
         ("doc-date.pptx", PPTX_CREATED),
         ("doc-date.odt", ODT_CREATED),
         ("doc-date.pdf", PDF_CREATED),
+        ("doc-date-objstm.pdf", OBJSTM_CREATED),
     ]:
         print(f"{name:<23} {claimed:<28} {epoch(claimed)}")
 

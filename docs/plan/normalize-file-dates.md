@@ -790,9 +790,30 @@ the extractor would have erased every document's metadata corpus-wide on the
 next sweep. A test asserts `handles` implies `applies_to` so that fails loudly
 instead of silently.
 
-Coverage from both ends on five committed fixtures:
-`tests/api/document_date_extraction.hurl` (upload → `nc:creation_time`) and a
-unit test parsing the same files.
+**PDF reads both shapes** (2026-10-27). Two passes, cheapest first: a fixed
+128 KiB window scan for `/CreationDate`, then — only when that finds nothing —
+`lopdf` resolving the trailer's `/Info` reference through the xref, which is
+what reaches a key sitting inside a *compressed object stream*. The second
+pass is size-gated at 64 MiB because it inflates the whole document, where the
+scan is flat; keeping the scan first is why a 500 MB PDF is not parsed to find
+twenty bytes.
+
+An earlier note here claimed `lopdf` was "not in the tree" and that a PDF
+object parser was "a dependency decision of its own". **Both wrong**, and the
+original phase text below was right: `pdf-extract` has always pulled lopdf
+0.42 (MIT), so it was already compiled into the binary — just not importable,
+a transitive dependency being out of scope. Declaring it directly cost one
+line in `Cargo.toml` and no build time, licence surface or audit surface. It
+does *not* remove the `catch_unwind`: `pdf_extract` panics on malformed input
+and lopdf is the parser underneath it.
+
+Coverage from both ends on six committed fixtures:
+`tests/api/document_date_extraction.hurl` (upload → `nc:creation_time`, and
+the REST `created_at`) plus unit tests parsing the same files. The two PDF
+passes are pinned against the file the other cannot read — the
+compressed-objstm fixture is invisible to the scan, which also proves the
+hand-rolled object stream is genuinely valid rather than passing for the wrong
+reason.
 
 **Remaining:** item 5 below — the REST slot, which waits on §7's naming.
 

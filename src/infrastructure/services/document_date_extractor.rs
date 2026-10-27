@@ -45,6 +45,15 @@ const MAX_METADATA_ENTRY_BYTES: u64 = 256 * 1024;
 /// to find twenty bytes.
 const PDF_SCAN_WINDOW: usize = 64 * 1024;
 
+/// Largest PDF the object-model pass will parse, when the window scan found
+/// nothing.
+///
+/// That pass reads and inflates the whole document, so it needs a ceiling
+/// the window scan does not. 64 MiB is far above any document whose `/Info`
+/// is worth chasing and well under `MAX_DERIVE_BYTES`; past it the file
+/// reports no claimed date, exactly as it did before the pass existed.
+const MAX_PDF_PARSE_BYTES: u64 = 64 * 1024 * 1024;
+
 /// The creation date this document claims, or `None`.
 ///
 /// `None` covers every failure — unsupported format, unreadable file, broken
@@ -132,26 +141,33 @@ fn local_suffix(name: &[u8]) -> &[u8] {
 
 /// Find `/CreationDate` in a PDF's `/Info` dictionary.
 ///
-/// ⚠ **A deliberate shortcut, with a known blind spot.** This scans for the
-/// key rather than resolving the trailer's `/Info` reference through the
-/// cross-reference table, because the proper parse needs a full PDF object
-/// model and `lopdf` is **not** in the tree — only `pdf-extract`, which does
-/// not expose metadata. (`docs/plan/normalize-file-dates.md` §4 claimed both
-/// were available; that was wrong.) Adding a PDF object parser to read one
-/// date is a dependency decision of its own, not something to slip into this
-/// phase.
+/// Two passes, cheapest first.
 ///
-/// What it misses: PDF 1.5+ may place `/Info` inside a *compressed object
-/// stream*, where the key is deflated and this scan cannot see it. Those
-/// documents report no claimed date — the honest answer, and the same one
-/// they got before this existed. What it gets right is the common case: every
-/// PDF with an uncompressed `/Info`, which is what Word, LibreOffice,
-/// Ghostscript and most scanners emit.
+/// 1. **Scan a fixed window** at each end for `/CreationDate`. The trailer
+///    lives at the tail and a linearized document repeats `/Info` near the
+///    head, so 128 KiB total covers the overwhelming majority at a flat cost
+///    — rather than pulling a 500 MB document into RAM to find twenty bytes.
+/// 2. **Resolve `/Info` through the object model** only when the scan finds
+///    nothing. PDF 1.5+ may place the `/Info` dictionary inside a
+///    *compressed object stream*, where the key is deflated and no byte scan
+///    can see it. That needs a real parse.
+///
+/// Keeping the scan rather than always parsing is the point: the second pass
+/// reads and inflates the whole file, so making it the only path would turn a
+/// bounded read at upload time into a whole-document parse for every PDF.
 ///
 /// If a revised document has several `/CreationDate` entries, the LAST one in
 /// the file wins: PDF appends revisions, so the latest trailer is the live
 /// one.
 fn pdf_creation_date(path: &Path) -> Option<DateTime<Utc>> {
+    if let Some(found) = pdf_creation_date_scanned(path) {
+        return Some(found);
+    }
+    pdf_creation_date_parsed(path)
+}
+
+/// Pass 1 — the fixed window scan.
+fn pdf_creation_date_scanned(path: &Path) -> Option<DateTime<Utc>> {
     let mut file = File::open(path).ok()?;
     let len = file.metadata().ok()?.len();
 
@@ -179,6 +195,39 @@ fn pdf_creation_date(path: &Path) -> Option<DateTime<Utc>> {
         return scan_pdf_creation_date(&bytes);
     }
     None
+}
+
+/// Pass 2 — follow the trailer's `/Info` reference properly.
+///
+/// This is what reaches a `/CreationDate` inside a compressed object stream:
+/// `lopdf` parses the cross-reference (including xref streams), inflates the
+/// object streams, and resolves the reference.
+///
+/// `lopdf` is not a new dependency — `pdf-extract` has always pulled it, so
+/// it was compiled in but not importable. Declaring it directly costs a line
+/// in `Cargo.toml` and no build time.
+///
+/// **Size-gated**, because this pass reads and inflates the whole document
+/// rather than a window. Above the cap a PDF simply reports no claimed date,
+/// which is the same answer it gave before this pass existed — the cheap
+/// scan already had its chance.
+///
+/// Still inside the caller's `catch_unwind`, and that is not belt-and-braces:
+/// `text_extractor::extract_pdf` needs its own guard because `pdf_extract`
+/// panics on malformed input, and `lopdf` is the parser underneath it.
+fn pdf_creation_date_parsed(path: &Path) -> Option<DateTime<Utc>> {
+    if std::fs::metadata(path).ok()?.len() > MAX_PDF_PARSE_BYTES {
+        return None;
+    }
+    let doc = lopdf::Document::load(path).ok()?;
+    // `/Info` is normally an indirect reference, but a direct dictionary is
+    // legal and some producers emit one.
+    let info = doc.trailer.get(b"Info").ok()?;
+    let dict = match info {
+        lopdf::Object::Reference(id) => doc.get_object(*id).ok()?.as_dict().ok()?,
+        direct => direct.as_dict().ok()?,
+    };
+    parse_pdf_date(dict.get(b"CreationDate").ok()?.as_str().ok()?)
 }
 
 /// The last `/CreationDate (...)` in a byte window.
@@ -409,8 +458,9 @@ mod tests {
         assert_eq!(scan_pdf_creation_date(b"/CreationDate (nonsense)"), None);
         // An unterminated string must not walk off the end.
         assert_eq!(scan_pdf_creation_date(b"/CreationDate (D:2019"), None);
-        // A reference instead of a literal — the blind spot, answered
-        // honestly rather than guessed.
+        // A reference instead of a literal. The SCAN cannot follow it, by
+        // design — that is what `pdf_creation_date_parsed` is for, and the
+        // two-pass test below pins the handover.
         assert_eq!(scan_pdf_creation_date(b"/CreationDate 12 0 R"), None);
     }
 
@@ -592,6 +642,11 @@ mod tests {
             // offset sign backwards and this reads 12:22 — an hour late for
             // every European document, and plausible enough to ship.
             ("doc-date.pdf", "application/pdf", 1_551_694_920),
+            // ⚠ `/Info` inside a COMPRESSED OBJECT STREAM, which the window
+            // scan cannot see — only the `lopdf` pass reaches it. A distinct
+            // instant from the plain PDF above, so passing by accidentally
+            // reading the other fixture is impossible.
+            ("doc-date-objstm.pdf", "application/pdf", 1_699_346_700),
         ];
 
         for (name, mime, want) in cases {
@@ -607,6 +662,49 @@ mod tests {
                 "{name} did not yield its claimed creation date",
             );
         }
+    }
+
+    /// ⚠ The two PDF passes must be the two they claim to be.
+    ///
+    /// Without this, a change that made the scan always fail — or the parse
+    /// always run — would still pass the fixture test above, because both
+    /// passes happen to answer for both files. So each is asserted against
+    /// the file the OTHER one cannot read:
+    ///
+    /// * the compressed-objstm PDF is invisible to the scan (its
+    ///   `/CreationDate` is deflated; `grep CreationDate` on the file finds
+    ///   nothing), so `scanned` must return None and only `parsed` answers;
+    /// * that also proves the fixture is genuinely what it claims. A
+    ///   malformed hand-rolled object stream would make `parsed` return None
+    ///   and fail here rather than passing for the wrong reason.
+    #[test]
+    fn the_scan_and_the_object_model_pass_cover_different_files() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let plain = dir.join("doc-date.pdf");
+        let objstm = dir.join("doc-date-objstm.pdf");
+
+        // The cheap pass answers for the plain one — which is why it stays
+        // first and the parse is only a fallback.
+        assert_eq!(
+            pdf_creation_date_scanned(&plain).map(|d| d.timestamp()),
+            Some(1_551_694_920),
+            "the window scan stopped finding an uncompressed /Info",
+        );
+
+        // And is blind to the compressed one.
+        assert_eq!(
+            pdf_creation_date_scanned(&objstm),
+            None,
+            "the scan found a deflated /CreationDate, so this fixture is not \
+             actually compressed and proves nothing",
+        );
+
+        // Which the object-model pass reads.
+        assert_eq!(
+            pdf_creation_date_parsed(&objstm).map(|d| d.timestamp()),
+            Some(1_699_346_700),
+            "lopdf did not resolve /Info out of the object stream",
+        );
     }
 
     /// Unsupported content must not even reach a parser — the gate is the
