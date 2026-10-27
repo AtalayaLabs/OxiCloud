@@ -625,6 +625,7 @@ HURL_FILES=( \
   "$API_DIR/nc_webdav_patch_consistency.hurl" \
   "$API_DIR/nc_webdav_put_gaps.hurl" \
   "$API_DIR/nc_webdav_client_mtime.hurl" \
+  "$API_DIR/nc_report_folder_tree_clock.hurl" \
   "$API_DIR/folder_content_clock.hurl" \
   "$API_DIR/folder_listing_cursor_clocks.hurl" \
   "$API_DIR/webdav_etag_rename_stability.hurl" \

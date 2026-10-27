@@ -4332,6 +4332,22 @@ export type SearchFolderResultDto = {
      */
     relevance_score: number;
     /**
+     * Subtree rollup clock — the newest content change anywhere beneath
+     * this folder.
+     *
+     * Carried because the NC search REPORT handler emits
+     * `D:getlastmodified` for folder hits, and for a collection that
+     * property means the SUBTREE, not the folder row (see
+     * `docs/architecture/dates.md` § Collections). Dropping it made one
+     * folder answer differently depending on whether the client asked by
+     * REPORT or by PROPFIND.
+     *
+     * Costs no extra query: `enrich_folder` already receives a whole
+     * `FolderDto`, which carries this and even derives its ETag from it.
+     * The value was being discarded one function short of its consumer.
+     */
+    tree_modified_at?: string;
+    /**
      * §14 provenance — last-mutator user id.
      */
     updated_by?: string | null;

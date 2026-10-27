@@ -17295,6 +17295,11 @@
             "description": "Relevance score (0-100) computed server-side",
             "minimum": 0
           },
+          "tree_modified_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Subtree rollup clock — the newest content change anywhere beneath\nthis folder.\n\nCarried because the NC search REPORT handler emits\n`D:getlastmodified` for folder hits, and for a collection that\nproperty means the SUBTREE, not the folder row (see\n`docs/architecture/dates.md` § Collections). Dropping it made one\nfolder answer differently depending on whether the client asked by\nREPORT or by PROPFIND.\n\nCosts no extra query: `enrich_folder` already receives a whole\n`FolderDto`, which carries this and even derives its ETag from it.\nThe value was being discarded one function short of its consumer."
+          },
           "updated_by": {
             "type": [
               "string",
