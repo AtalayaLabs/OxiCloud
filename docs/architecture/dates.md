@@ -31,8 +31,10 @@ is trusted.
 > `content_rescan` with `rederive=always` to pick them up, since extraction
 > fires on upload and an extractor change does not move the sniffed type.
 >
-> Still open: the chunked upload path drops client mtime (§9), and NC REPORT
-> renders a folder's `getlastmodified` from a projection with no subtree clock.
+> Still open: NC REPORT renders a folder's `getlastmodified` from a
+> projection with no subtree clock. Whether a client-asserted
+> `source_created_at` is ever needed depends on the `X-OC-CTime` question
+> above.
 > `PhotoResourceItemDto.captured_at` is **not** a gap — it differs from the
 > generic endpoint's `created_at` by decision, see
 > [§ And one column has two wire names](#and-one-column-has-two-wire-names-on-purpose).
@@ -531,9 +533,16 @@ wiring only one would have preserved mtime for small uploads and silently
 dropped it for large ones — a size-dependent capability no single-file test
 would catch.
 
-**Still missing: the chunked path.** `/api/uploads/{id}` + `/complete` has no
-mtime slot, so non-SPA chunked clients are stamped `NOW()`. See
-`docs/plan/normalize-file-dates.md` §9.
+**All four paths now carry it**, the chunked `/complete` included
+(2026-10-27). Its `source_modified_at` lives on `CompleteUploadRequest` rather
+than at session creation, because `/complete` is where the file row is made.
+
+Worth knowing how it was missing: the field, the validation and the repository
+write all existed, and `upload_file_streaming_with_perms` — the variant the
+chunked path finalises through — passed a hardcoded `None` when delegating. A
+capability can be complete end to end and still never arrive, because one
+caller passes a literal where its argument belongs. `grep` for the field name
+found it everywhere except the one line that mattered.
 
 **Round, don't truncate** on the way in: discarding up to 999 ms reports a file
 a second older than the client believes, which is enough to make the next mtime
@@ -733,6 +742,7 @@ and unaffected.
 | `X-OC-Mtime` parsed and validated but dropped on the CREATE path, so a client's mtime survived only when overwriting an existing file — and new-file upload is the common NextCloud-desktop case | plan §1 completion: `save_file_with_blob` now takes the asserted mtime and writes it in the INSERT. Covered by `nc_webdav_client_mtime.hurl`, which is what found it |
 | `nc:creation_time` read `files.created_at` — the upload moment, so every file claimed to have been created when it arrived | plan §0: reads `content_metadata.created_at` and emits `0` when the bytes claim nothing. Both file clocks were considered as fallbacks and **both rejected** — see [§ When creation date is unknown](#when-creation-date-is-unknown) |
 | `nc:upload_time` read `modified_at`, the content clock, so a file edited years after upload claimed to have been uploaded years after it was | plan §0: reads `files.created_at`, which is immutable and is exactly "when we received the bytes". The two `nc:` slots now answer different questions instead of duplicating one |
+| The chunked upload path accepted no client mtime, so non-SPA chunked clients were stamped `NOW()` while the other three preserved it | plan §9 (2026-10-27): `source_modified_at` on `CompleteUploadRequest`. The cause was `upload_file_streaming_with_perms` delegating with a hardcoded `None` — the capability was fully built below it and simply never arrived. Pinned by `chunked_upload_source_mtime.hurl` |
 
 ### Deliberate
 
@@ -747,7 +757,6 @@ and unaffected.
 |---|---|---|
 | NC REPORT (search) renders a folder's `getlastmodified` from a projection carrying no subtree clock, so a REPORT hit and a PROPFIND on the same folder disagree | `nextcloud/report_handler.rs` | widen the search projection |
 | A document's creation date is never extracted, so `content_metadata.created_at` is NULL for everything that is not an image or a video and `nc:creation_time` emits `0` | `MediaMetadataService::handles` gates on `image/*` \| `video/*` | read OOXML `docProps/core.xml`, PDF `/CreationDate`, ODF `meta.xml` — plan §4 |
-| The chunked upload path accepts no client mtime, so non-SPA chunked clients are stamped `NOW()` | `chunked_upload_handler.rs` — `source_modified_at` appears nowhere in it | a slot matching the multipart and delta paths — plan §9 |
 
 ## Rejected alternatives
 

@@ -20,7 +20,7 @@ heading:
 | §5 tighten to `NOT NULL` | **FOLDED INTO §1** 2026-10-17 — the migration lands it in-transaction |
 | §6 UI axes | **DONE** 2026-10-19 — `updated_at` retired from the wire outright (no deprecation window: API too recent, SPA is the only consumer), `Created date` → `Added date`, persisted Photos preference migrated on read |
 | §7 naming normalisation | **DONE** 2026-10-21 — part 1 (`13a24a20`) `order_by` everywhere + 3 OpenAPI param gaps; part 2 (`11246953`) `deletion_date` → `expires_at`; part 3 typed sort axes, one endpoint per commit: trash `084d3473`, favorites `ae137ca3`, recent `885c7c65`, folders `a678403f`, search `5249b87a` (**found and fixed a real bug** — folder sorting ignored `modified_at`/`created_at`/`size`/`reverse` on the default recursive path), grants `408712ac` (split `SharedWithMeQuery` in two — disjoint sets), frontend `1b3382d0`. Two decisions recorded below: `CursorQuery` stays out of OpenAPI, and the compile-time protection did NOT need the `types.ts` redirect as a precondition |
-| §9 preserve the browser's mtime on upload | **DONE** 2026-10-20 — `source_modified_at` (epoch ms) on ALL THREE upload paths: multipart `/api/files/upload`, `/api/files/by-hash` (the instant-upload short-circuit) and delta commit (both create and update modes). Both UI entry points — picker and drag, single and multi — send `File.lastModified`. Original: — repository layer and helpers are ready. THREE upload paths to cover (multipart, delta, chunked); the SPA picks by file size, so covering only `/api/files/upload` would drop mtime on every large upload |
+| §9 preserve the browser's mtime on upload | **DONE** 2026-10-27 — `source_modified_at` (epoch ms) on ALL FOUR upload paths: multipart `/api/files/upload`, `/api/files/by-hash` (the instant-upload short-circuit), delta commit (create and update), and chunked `/complete` (closed 2026-10-27 — `upload_file_streaming_with_perms` had been delegating with a hardcoded `None`). Both UI entry points — picker and drag, single and multi — send `File.lastModified`. Original: — repository layer and helpers are ready. THREE upload paths to cover (multipart, delta, chunked); the SPA picks by file size, so covering only `/api/files/upload` would drop mtime on every large upload |
 | §8 folders get a content clock | **DONE** 2026-10-18 — `storage.folders.content_modified_at` with POSIX entry-list semantics (migration `20261103000008`), 14 folder-side reads repointed, keyset predicate back to one column |
 
 > **Reassessed 2026-10-17** against the tree, after the `pivot/dto-timestamps-iso`
@@ -1816,7 +1816,7 @@ Behaviour confirmed in that same rolled-back transaction:
 
 ---
 
-## §9 — Preserve the browser's mtime on upload **MOSTLY DONE** (2026-10-25)
+## §9 — Preserve the browser's mtime on upload **DONE** (2026-10-27)
 
 Both SPA paths carry it, so the size-dependent hazard this section warns about
 is closed:
@@ -1830,11 +1830,28 @@ is closed:
 - `upload_file_streaming` takes `source_modified_at: Option<i64>` instead of
   hard-coding `None`.
 
-**What is left: the chunked path.** `/api/uploads/{id}` + `/complete` has no
-mtime slot — `source_modified_at` does not appear in
-`chunked_upload_handler.rs` at all. The SPA does not choose that path, so it
-costs non-SPA chunked clients only, but it is the same silent-drop shape as
-the original hazard.
+**The chunked path closed it (2026-10-27).** `source_modified_at` is now a
+field on `CompleteUploadRequest`, with the same half-up rounding and trust
+bounds as the other three and a `chunked_complete.source_mtime_rejected`
+audit line on refusal. Pinned by
+`tests/api/chunked_upload_source_mtime.hurl`.
+
+The cause was one literal, and worth recording because the shape recurs:
+`upload_file_streaming_with_perms` — the variant this path finalises through,
+for the AuthZ re-check added by audit #17 — delegated to
+`upload_file_streaming` with a hardcoded `None`. Everything below it already
+accepted the value. A capability can be fully built and still never arrive,
+because one caller passes a literal instead of its argument.
+
+The field is on `/complete`, not session creation: that is where the file row
+is created, so a value supplied at session open would have to ride the
+session for hours and gain nothing.
+
+⚠ Note these endpoints are `#[deprecated]`, marked so in OpenAPI to push
+callers to `/api/files/delta/*` — which already had the slot. Closing the gap
+anyway was a judgement call: deprecated is not removed, the path accepts
+uploads today, and a client silently losing mtime cannot detect it. Reversible
+if the path should simply retire instead.
 
 ### Original phase text
 
