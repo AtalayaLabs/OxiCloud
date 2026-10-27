@@ -1,6 +1,19 @@
 # Plan — Normalize file dates: one column per meaning, one wire slot each
 
-**Status:** design agreed 2026-10-11; §1–§3 landed 2026-10-17. The end state is specified
+**Status: COMPLETE** — design agreed 2026-10-11, §0–§9 all landed by
+2026-10-27. Two items were resolved by DECIDING NOT to do them rather than by
+building: `source_created_at` was never created (§4 — reserved for a
+client-asserted `X-OC-CTime` that no client is yet known to send), and the
+`captured_at` wire rename was dropped from §7 because the photos listing is
+media-only by construction, so "captured" is the precise word there.
+
+One open QUESTION remains, which is an observation to make rather than work to
+do: does any NextCloud client actually send `X-OC-CTime` on upload? That
+answers whether a second, client-asserted creation column is ever needed. §4
+specifies the test — one `tracing::debug!` on the NC upload path logging
+unhandled `X-OC-*` headers, left running for a week.
+
+The end state is specified
 in [`docs/architecture/dates.md`](../architecture/dates.md) — this plan is only
 how to get there. Triggered by a review of the four date surfaces (OxiCloud
 columns, the browser File API, NextCloud DAV, RFC 4918) which found that
@@ -2115,7 +2128,7 @@ proportional to table size.
 
 ## Open decisions
 
-### Open: NC REPORT search emits the wrong folder `getlastmodified`
+### DONE (2026-10-27): NC REPORT search emitted the wrong folder `getlastmodified`
 
 §2's folder side left one real gap. `nextcloud/report_handler.rs` renders DAV
 responses from search results, and the search projection doesn't select
@@ -2129,9 +2142,27 @@ means widening `SearchFolderResultDto` and the query behind it to carry the
 rollup, which touches the Tantivy-backed search path rather than the dates work
 proper. Deliberately not bundled into §2.
 
-Severity is low: NC desktop clients use REPORT for search results they display,
-not for sync decisions, and the ETag — which *is* load-bearing — is correct on
-both paths.
+**Closed, and the sizing above was wrong twice.**
+
+The query never needed widening: `enrich_folder` already receives a whole
+`FolderDto` carrying `tree_modified_at`, so the value was being discarded one
+function short of its consumer. Three lines — carry it on
+`SearchFolderResultDto`, stop dropping it in `enrich_folder`, use it in
+`folder_dto_from_search`. Nothing in the Tantivy path was touched.
+
+⚠ **And "the ETag is correct on both paths" was false** — that sentence is why
+this sat open as low-severity. `folder_dto_from_search` set
+`etag: sr.id.clone()`, so REPORT emitted the folder's raw UUID while PROPFIND
+emitted `Folder::compute_etag(id, tree_modified_at)`. A UUID never changes, so
+that token could not invalidate when the subtree did: not merely inconsistent
+but inert, and a client caching it from a search result would hold it forever.
+The ETag was the *worse* of the two defects, and the assumption that it was
+fine is what made the whole item look deferrable.
+
+Found by the regression pin asserting both properties equal across the two
+methods (`tests/api/nc_report_folder_tree_clock.hurl`) rather than by
+inspection — the mtime assertion passed on the first run and the ETag one did
+not.
 
 ### Decided 2026-10-11
 

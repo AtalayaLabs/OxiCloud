@@ -31,10 +31,9 @@ is trusted.
 > `content_rescan` with `rederive=always` to pick them up, since extraction
 > fires on upload and an extractor change does not move the sniffed type.
 >
-> Still open: NC REPORT renders a folder's `getlastmodified` from a
-> projection with no subtree clock. Whether a client-asserted
-> `source_created_at` is ever needed depends on the `X-OC-CTime` question
-> above.
+> Nothing from §0–§9 is open. The one remaining QUESTION is empirical, not
+> work: whether a client-asserted `source_created_at` is ever needed depends
+> on the `X-OC-CTime` observation described above.
 > `PhotoResourceItemDto.captured_at` is **not** a gap — it differs from the
 > generic endpoint's `created_at` by decision, see
 > [§ And one column has two wire names](#and-one-column-has-two-wire-names-on-purpose).
@@ -743,6 +742,7 @@ and unaffected.
 | `nc:creation_time` read `files.created_at` — the upload moment, so every file claimed to have been created when it arrived | plan §0: reads `content_metadata.created_at` and emits `0` when the bytes claim nothing. Both file clocks were considered as fallbacks and **both rejected** — see [§ When creation date is unknown](#when-creation-date-is-unknown) |
 | `nc:upload_time` read `modified_at`, the content clock, so a file edited years after upload claimed to have been uploaded years after it was | plan §0: reads `files.created_at`, which is immutable and is exactly "when we received the bytes". The two `nc:` slots now answer different questions instead of duplicating one |
 | The chunked upload path accepted no client mtime, so non-SPA chunked clients were stamped `NOW()` while the other three preserved it | plan §9 (2026-10-27): `source_modified_at` on `CompleteUploadRequest`. The cause was `upload_file_streaming_with_perms` delegating with a hardcoded `None` — the capability was fully built below it and simply never arrived. Pinned by `chunked_upload_source_mtime.hurl` |
+| NC REPORT rendered a folder's `getlastmodified` from the folder row rather than the subtree, so REPORT and PROPFIND disagreed on the same collection — and its `getetag` was the folder's raw UUID, a token that could never invalidate | §2 completion (2026-10-27): both now come from `tree_modified_at`, carried through `SearchFolderResultDto`. No wider query was needed — `enrich_folder` already held a whole `FolderDto`. Pinned by `nc_report_folder_tree_clock.hurl`, which asserts the two METHODS agree rather than asserting an instant |
 
 ### Deliberate
 
@@ -755,7 +755,6 @@ and unaffected.
 
 | What | Where | Should be |
 |---|---|---|
-| NC REPORT (search) renders a folder's `getlastmodified` from a projection carrying no subtree clock, so a REPORT hit and a PROPFIND on the same folder disagree | `nextcloud/report_handler.rs` | widen the search projection |
 | A document's creation date is never extracted, so `content_metadata.created_at` is NULL for everything that is not an image or a video and `nc:creation_time` emits `0` | `MediaMetadataService::handles` gates on `image/*` \| `video/*` | read OOXML `docProps/core.xml`, PDF `/CreationDate`, ODF `meta.xml` — plan §4 |
 
 ## Rejected alternatives
