@@ -7,11 +7,17 @@ client-asserted `X-OC-CTime` that no client is yet known to send), and the
 `captured_at` wire rename was dropped from §7 because the photos listing is
 media-only by construction, so "captured" is the precise word there.
 
-One open QUESTION remains, which is an observation to make rather than work to
-do: does any NextCloud client actually send `X-OC-CTime` on upload? That
-answers whether a second, client-asserted creation column is ever needed. §4
-specifies the test — one `tracing::debug!` on the NC upload path logging
-unhandled `X-OC-*` headers, left running for a week.
+One open QUESTION remains, and it is an observation rather than work: does any
+NextCloud client send `X-OC-CTime` on upload? That answers whether a second,
+client-asserted creation column is ever needed.
+
+The probe is in the tree (`log_unhandled_oc_headers`, behind
+`RUST_LOG=oxicloud::nc_headers=debug`). **First evidence 2026-10-27: the macOS
+desktop client does not send it** — a PUT carried `oc-total-length` and
+`oc-chunk-size` only. That is the informative case, because macOS exposes
+`st_birthtime` natively and Linux has no portable read for it, so the platform
+best placed to send the header does not. Windows, mobile and third-party
+clients remain unobserved.
 
 The end state is specified
 in [`docs/architecture/dates.md`](../architecture/dates.md) — this plan is only
