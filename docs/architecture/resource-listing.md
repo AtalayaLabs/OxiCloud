@@ -40,7 +40,8 @@ All listing endpoints return the same wrapper (defined in
 | `next_cursor` | `string` | **Omitted** (not `null`) when this is the last page. |
 
 **Never** include `total`, `page`, or `offset` — computing a total requires a `COUNT(*)` that
-does not scale.
+does not scale. One exception exists, for a count that is genuinely free: see
+[§ The one endpoint with its own envelope](#the-one-endpoint-with-its-own-envelope--apisearch).
 
 ---
 
@@ -50,8 +51,8 @@ The shape is a sandwich, and confusing the layers is the most common way to
 get a new listing endpoint wrong:
 
 ```
-CursorListResponse<T>          ← the ENVELOPE. Identical everywhere.
-  items: [
+CursorListResponse<T>          ← the ENVELOPE. Shared by seven endpoints;
+  items: [                       search declares its own (see below).
     T                          ← the CONTAINER. One type PER ENDPOINT.
       resource_type: "file"    ·   the discriminator
       resource: {…}            ·   ResourceContentDto — identical everywhere
@@ -73,6 +74,7 @@ container that carries the signals only that endpoint can answer for:
 | `/api/grants/incoming/resources` | `SharedWithMeItemDto` | — |
 | `/api/grants/outgoing/resources` | `OutgoingResourceItemDto` | `first_shared_at`, `grants` |
 | `/api/photos/resources` | `PhotoResourceItemDto` | `sort_date`, `captured_at`, `width`, `height`, `orientation`, `has_gps`, `has_blob_siblings` |
+| `GET /api/search` | `SearchResourceItem` | `meta` (a nested `SearchMeta`) |
 
 **Do not unify the containers.** A single item type covering all seven would
 carry `grants` that is null for photos and `captured_at` that is null for
@@ -87,6 +89,32 @@ file.
 
 So adding a listing endpoint means: reuse the envelope, reuse
 `ResourceContentDto`, and declare your own container.
+
+### The one endpoint with its own envelope — `/api/search`
+
+`GET /api/search` follows the container convention exactly
+(`SearchResourceItem` = `resource_type` + `resource` + `meta`) but declares
+its **own envelope**, `SearchResourcesDto`, rather than reusing
+`CursorListResponse`. It adds two fields:
+
+- `query_time_ms` — the UI shows "Found N in Xms" and admins read it as a
+  health signal. A property of the *query*, not of any row, so it belongs on
+  the envelope and nowhere else.
+- `total` — **the documented exception to the "never `total`" rule above.**
+  The rule exists because a count over a filtered table costs a `COUNT(*)`
+  that does not scale. A full-text index does not pay that: Tantivy yields
+  its hit count as a by-product of the search it already ran. So this one is
+  allowed *and* hedged — optional (omitted when the service cannot compute it
+  cheaply), approximate, and permission-filtered so it never leaks a count
+  for rows the caller cannot see.
+
+Do not read this as licence to add `total` elsewhere. The test is whether the
+count is free, not whether it would be convenient.
+
+**Incidentally, search is the proof the OpenAPI defect below is fixable.**
+Because its envelope is a concrete named struct rather than a generic
+instantiation, utoipa resolves it properly: `/api/search` is the one listing
+endpoint whose documented `items` type is actually its own.
 
 ### ⚠ Known defect: the envelope is mis-documented in OpenAPI
 
@@ -117,6 +145,10 @@ The fix is aliasing, not restructuring: `#[aliases(…)]` on
 `CursorListResponse` plus registering the seven aliases, so each path `$ref`s
 its own envelope. No DTO, handler or wire change. Verify by diffing
 `resources/gen/openapi.json` for seven distinct `items.$ref` values.
+
+`/api/search` is unaffected and shows the end state: a concrete envelope
+resolves correctly today, so if aliasing proves awkward, declaring seven
+concrete envelopes is a known-working fallback.
 
 ---
 
@@ -477,7 +509,7 @@ is not a breaking change.
 | `GET /api/trash/resources` | ✅ | ✅ | ✅ Compliant |
 | `GET /api/photos/resources` | ✅ | ✅ | ✅ Compliant |
 | `GET /api/photos` | — | — | ✅ **Removed** — use `/api/photos/resources` |
-| `GET /api/search` | ❌ offset | ✅ | Migrate cursor |
+| `GET /api/search` | ✅ | ✅ | ✅ Compliant — own envelope, see § The one endpoint with its own envelope |
 | `GET /api/folders/paginated` | ❌ page | ❌ | Migrate cursor |
 | `GET /api/folders/{id}/contents/paginated` | — | — | ✅ **Removed** — use `/api/folders/{id}/resources` |
 | `GET /api/admin/users` | ❌ offset | ❌ | Migrate cursor |
