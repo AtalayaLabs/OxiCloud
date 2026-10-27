@@ -2082,3 +2082,157 @@ impl FolderDbRepository {
             .collect()
     }
 }
+
+// F4 (docs/plan/nc-sync-client-findings.md): ancestor ETags of a
+// structural folder change were bumped only by the async flusher, up to
+// one flush interval after commit. A sync client polling inside that
+// window saw the new listing under the old collection ETag and, for a
+// folder move, deleted and re-downloaded the folder. These pins run the
+// triggers against a real database with no flusher, so only the
+// immediate in-statement bump can move `tree_modified_at`.
+#[cfg(all(test, integration_tests))]
+mod tree_etag_immediate_bump_tests {
+    use crate::integration_test_support::{ensure_clean_test_db, test_db_url};
+    use chrono::{DateTime, Utc};
+    use sqlx::PgPool;
+    use sqlx::postgres::PgPoolOptions;
+    use uuid::Uuid;
+
+    async fn test_pool() -> PgPool {
+        let pool = PgPoolOptions::new()
+            .max_connections(4)
+            .connect(&test_db_url())
+            .await
+            .expect("connect to test DB — run tests/common/spawn-db.sh first");
+        ensure_clean_test_db(&pool).await;
+        pool
+    }
+
+    /// `(user_id, drive_id, drive_root_folder_id)` of a seeded user.
+    async fn seed_user(pool: &PgPool) -> (Uuid, Uuid, Uuid) {
+        sqlx::query_as(
+            "SELECT u.id, d.id, d.root_folder_id
+               FROM auth.users u
+               JOIN storage.drives d ON d.default_for_user = u.id
+              LIMIT 1",
+        )
+        .fetch_one(pool)
+        .await
+        .expect("auth.users + storage.drives must be seeded (init-test-schema.sh)")
+    }
+
+    async fn create(pool: &PgPool, name: &str, parent: Uuid, drive: Uuid, user: Uuid) -> Uuid {
+        sqlx::query_scalar(
+            "INSERT INTO storage.folders (name, parent_id, drive_id, created_by, updated_by)
+             VALUES ($1, $2, $3, $4, $4) RETURNING id",
+        )
+        .bind(name)
+        .bind(parent)
+        .bind(drive)
+        .bind(user)
+        .fetch_one(pool)
+        .await
+        .expect("create folder")
+    }
+
+    async fn tree_mtime(pool: &PgPool, id: Uuid) -> DateTime<Utc> {
+        sqlx::query_scalar("SELECT tree_modified_at FROM storage.folders WHERE id = $1")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .expect("read tree_modified_at")
+    }
+
+    /// A folder move must bump the source chain and the destination chain
+    /// in the moving statement itself.
+    #[tokio::test]
+    async fn folder_move_bumps_both_ancestor_chains_immediately() {
+        let pool = test_pool().await;
+        let (user, drive, root) = seed_user(&pool).await;
+        let top_name = format!("rust-test-f4-move-{}", &Uuid::new_v4().to_string()[..8]);
+        let top = create(&pool, &top_name, root, drive, user).await;
+        let src = create(&pool, "src", top, drive, user).await;
+        let dst = create(&pool, "dst", top, drive, user).await;
+        let moved = create(&pool, "moved", src, drive, user).await;
+
+        let (top0, src0, dst0) = (
+            tree_mtime(&pool, top).await,
+            tree_mtime(&pool, src).await,
+            tree_mtime(&pool, dst).await,
+        );
+
+        sqlx::query("UPDATE storage.folders SET parent_id = $1, updated_at = NOW() WHERE id = $2")
+            .bind(dst)
+            .bind(moved)
+            .execute(&pool)
+            .await
+            .expect("move folder");
+
+        assert!(
+            tree_mtime(&pool, src).await > src0,
+            "source parent not bumped"
+        );
+        assert!(
+            tree_mtime(&pool, dst).await > dst0,
+            "destination parent not bumped"
+        );
+        assert!(
+            tree_mtime(&pool, top).await > top0,
+            "common ancestor not bumped"
+        );
+
+        sqlx::query("DELETE FROM storage.folders WHERE id = $1")
+            .bind(top)
+            .execute(&pool)
+            .await
+            .expect("cleanup");
+    }
+
+    /// The immediate bump must never wait: with an ancestor locked by
+    /// another transaction the rename still completes, and the target goes
+    /// to the queue so the flusher finishes the bump. A blocking bump here
+    /// would reintroduce the lock waits 20260627000000 removed.
+    #[tokio::test]
+    async fn locked_ancestor_falls_back_to_queue_without_blocking() {
+        let pool = test_pool().await;
+        let (user, drive, root) = seed_user(&pool).await;
+        let top_name = format!("rust-test-f4-lock-{}", &Uuid::new_v4().to_string()[..8]);
+        let top = create(&pool, &top_name, root, drive, user).await;
+        let parent = create(&pool, "parent", top, drive, user).await;
+        let child = create(&pool, "child", parent, drive, user).await;
+
+        let mut holder = pool.begin().await.expect("begin lock holder");
+        sqlx::query("SELECT 1 FROM storage.folders WHERE id = $1 FOR NO KEY UPDATE")
+            .bind(top)
+            .execute(&mut *holder)
+            .await
+            .expect("lock ancestor");
+
+        let rename = sqlx::query("UPDATE storage.folders SET name = 'renamed' WHERE id = $1")
+            .bind(child)
+            .execute(&pool);
+        tokio::time::timeout(std::time::Duration::from_secs(5), rename)
+            .await
+            .expect("rename blocked on a locked ancestor")
+            .expect("rename folder");
+
+        let queued: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM storage.tree_etag_dirty WHERE folder_id = $1)",
+        )
+        .bind(parent)
+        .fetch_one(&pool)
+        .await
+        .expect("read queue");
+        assert!(
+            queued,
+            "skipped ancestor bump was not enqueued for the flusher"
+        );
+
+        holder.rollback().await.expect("release lock");
+        sqlx::query("DELETE FROM storage.folders WHERE id = $1")
+            .bind(top)
+            .execute(&pool)
+            .await
+            .expect("cleanup");
+    }
+}

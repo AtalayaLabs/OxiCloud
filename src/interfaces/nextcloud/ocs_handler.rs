@@ -58,12 +58,14 @@ fn capabilities_response(state: &AppState, ocs_version: u8) -> Response {
         let base_url = state.core.config.base_url();
         let emulated = state.core.config.nextcloud.emulated_version;
         let version_string = state.core.config.nextcloud.version_string();
+        let max_chunk_size = advertised_max_chunk_size(&state.core.config.storage);
         [1u8, 2u8].map(|v| {
             bytes::Bytes::from(
                 serde_json::to_vec(&capabilities_payload(
                     &base_url,
                     emulated,
                     &version_string,
+                    max_chunk_size,
                     v,
                 ))
                 .expect("static capabilities JSON serializes"),
@@ -605,7 +607,17 @@ fn empty_search_response() -> Json<serde_json::Value> {
     }))
 }
 
-/// Build the capabilities JSON tree from its three config inputs. Public
+/// Largest chunk the NC client may send, advertised as
+/// `files.chunked_upload.max_size`. The client caps its chunk size at this
+/// value and PUTs a file whole when it fits in one chunk, so both request
+/// caps bound it: a chunk above `chunk_max_bytes` is a 413 on
+/// `/uploads/…`, and a small file above `direct_put_max_bytes` is a 413 on
+/// the direct PUT. Without it the client has no way to learn a lowered cap.
+fn advertised_max_chunk_size(storage: &crate::common::config::StorageConfig) -> u64 {
+    storage.chunk_max_bytes.min(storage.direct_put_max_bytes) as u64
+}
+
+/// Build the capabilities JSON tree from its config inputs. Public
 /// only under the `bench` feature caller path via
 /// [`capabilities_payload_for_bench`]; production reaches it once through
 /// the [`CAPABILITIES_BODIES`] init.
@@ -613,6 +625,7 @@ fn capabilities_payload(
     base_url: &str,
     emulated_version: (u32, u32, u32),
     version_string: &str,
+    max_chunk_size: u64,
     ocs_version: u8,
 ) -> serde_json::Value {
     let statuscode = if ocs_version == 1 { 100 } else { 200 };
@@ -644,6 +657,9 @@ fn capabilities_payload(
                     },
                     "files": {
                         "bigfilechunking": true,
+                        "chunked_upload": {
+                            "max_size": max_chunk_size
+                        },
                         "favorites": true,
                         "undelete": true,
                         "versioning": false
@@ -693,9 +709,16 @@ pub fn capabilities_payload_for_bench(
     base_url: &str,
     emulated_version: (u32, u32, u32),
     version_string: &str,
+    max_chunk_size: u64,
     ocs_version: u8,
 ) -> serde_json::Value {
-    capabilities_payload(base_url, emulated_version, version_string, ocs_version)
+    capabilities_payload(
+        base_url,
+        emulated_version,
+        version_string,
+        max_chunk_size,
+        ocs_version,
+    )
 }
 
 fn extract_basic_password(headers: &axum::http::HeaderMap) -> Option<String> {
@@ -704,4 +727,38 @@ fn extract_basic_password(headers: &axum::http::HeaderMap) -> Option<String> {
         .to_str()
         .ok()?;
     super::basic_auth_middleware::parse_basic_auth(value).map(|(_, pass)| pass)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::config::StorageConfig;
+
+    // F5 (docs/plan/nc-sync-client-findings.md): capabilities never
+    // advertised `files.chunked_upload.max_size`, so an operator who lowered
+    // either request cap below the client's default chunk size got 413s on
+    // every desktop upload. The advertised value must be the smaller cap.
+    #[test]
+    fn advertised_max_chunk_size_is_the_smaller_request_cap() {
+        let mut storage = StorageConfig {
+            chunk_max_bytes: 8 << 20,
+            direct_put_max_bytes: 1 << 30,
+            ..StorageConfig::default()
+        };
+        assert_eq!(advertised_max_chunk_size(&storage), 8 << 20);
+
+        storage.direct_put_max_bytes = 4 << 20;
+        assert_eq!(advertised_max_chunk_size(&storage), 4 << 20);
+    }
+
+    #[test]
+    fn capabilities_advertise_chunked_upload_max_size() {
+        for v in [1u8, 2u8] {
+            let payload = capabilities_payload("http://x", (28, 0, 4), "28.0.4", 4_194_304, v);
+            assert_eq!(
+                payload["ocs"]["data"]["capabilities"]["files"]["chunked_upload"]["max_size"],
+                4_194_304
+            );
+        }
+    }
 }

@@ -430,6 +430,15 @@ test-caldav:
     cargo build
     ./tests/caldav/run-pycaldav.sh
 
+# Sync-convergence suite: the real Nextcloud desktop sync engine
+# (`nextcloudcmd`, pinned Docker image built from tests/nextcloudcmd/
+# Dockerfile) syncs against OxiCloud while files change on both sides;
+# local and server trees must end byte-identical. Same fresh-binary rule
+# as test-caldav. Extra args go to pytest, e.g. `just test-nextcloudcmd -k churn`.
+test-nextcloudcmd *ARGS:
+    cargo build
+    ./tests/nextcloudcmd/run.sh {{ARGS}}
+
 # Manual, human-run: launches OxiCloud with OIDC as the ONLY login method
 # (fake IdP on :1081, server on :8090) and waits for you to eyeball the
 # /login auto-redirect in a real browser. Not part of `just test-api` —
