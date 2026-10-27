@@ -13,7 +13,7 @@ use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::geo_dto::GeoBounds;
 use crate::application::dtos::grant_dto::{ResourceContentDto, ResourceTypeDto};
 use crate::application::dtos::photos_dto::{
-    PhotoKind, PhotoOrderBy, PhotoResourceItemDto, PhotosCursor, PhotosFilter, PhotosResourcesDto,
+    PhotoKind, PhotoOrderBy, PhotoResourceItemDto, PhotosCursor, PhotosFilter,
 };
 use crate::common::di::AppState;
 use crate::interfaces::api::etag::{if_none_match_matches, not_modified, with_cache_headers};
@@ -90,7 +90,7 @@ fn default_limit() -> u32 {
     path = "/api/photos/resources",
     params(PhotosResourcesQueryParams),
     responses(
-        (status = 200, body = PhotosResourcesDto, description = "Page of media files with photo-level signals"),
+        (status = 200, body = crate::application::dtos::cursor::CursorListResponse<crate::application::dtos::photos_dto::PhotoResourceItemDto>, description = "Page of media files with photo-level signals"),
         (status = 400, description = "Invalid cursor or unsupported order_by"),
         (status = 401, description = "Unauthorized"),
         (status = 500, description = "Internal server error")

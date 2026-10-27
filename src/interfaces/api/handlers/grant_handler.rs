@@ -942,7 +942,7 @@ pub async fn list_incoming(
                         Each item carries the full file or folder details plus \
                         aggregated permissions. `next_cursor` is absent on the \
                         last page.",
-         body = SharedWithMeDto),
+         body = crate::application::dtos::cursor::CursorListResponse<crate::application::dtos::grant_dto::SharedWithMeItemDto>),
     ),
     security(("bearerAuth" = [])),
     tag = "grants"
@@ -1228,7 +1228,7 @@ pub async fn list_on_resource(
                         Each item carries the full resource details plus all subjects \
                         (users and tokens) the resource was shared with. \
                         `next_cursor` is absent on the last page.",
-         body = MySharesDto),
+         body = crate::application::dtos::cursor::CursorListResponse<crate::application::dtos::grant_dto::OutgoingResourceItemDto>),
     ),
     security(("bearerAuth" = [])),
     tag = "grants"

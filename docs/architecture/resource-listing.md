@@ -116,39 +116,60 @@ Because its envelope is a concrete named struct rather than a generic
 instantiation, utoipa resolves it properly: `/api/search` is the one listing
 endpoint whose documented `items` type is actually its own.
 
-### ⚠ Known defect: the envelope is mis-documented in OpenAPI
+### Registering the envelope — one schema per instantiation
 
-Found 2026-10-27. All seven endpoints above are *correct on the wire*, and the
-spec describes six of them wrongly.
+**Fixed 2026-10-27.** What follows is the trap and why it bites, because the
+registration is easy to omit and nothing fails loudly when you do.
 
-`utoipa` collapses the generic `CursorListResponse<T>` into a **single**
-schema, whose `items` ends up hard-wired to one arbitrary instantiation
-(currently `OutgoingResourceItemDto`). Every path then `$ref`s that one
-envelope, so six endpoints are documented as returning outgoing-share items,
-and none of the `…ResourcesDto` aliases (`PhotosResourcesDto`,
-`FolderResourcesDto`, …) appears in the document at all. The container types
-themselves *are* all registered — they are simply orphaned, referenced by
-nothing.
+OpenAPI has no generics, so utoipa emits one schema per concrete
+instantiation — and only for the ones **registered**. Two things are needed,
+and the first alone is not enough:
+
+1. `CursorListResponse<YourItemDto>` in `components(schemas(..))`
+   (`src/interfaces/api/mod.rs`), alongside `YourItemDto` itself;
+2. the path's own `body = …` spelling out the generic —
+   `body = crate::application::dtos::cursor::CursorListResponse<…::YourItemDto>`,
+   **not** the `pub type YourResourcesDto` alias. A plain Rust alias is
+   invisible to utoipa: it resolves to the bare generic and the path keeps
+   `$ref`-ing a parameterless `CursorListResponse`.
+
+The generated schema name is utoipa's own (`CursorListResponse_PhotoResourceItemDto`
+→ TS `CursorListResponsePhotoResourceItemDto`). `#[aliases(..)]` would let you
+choose it, but it was removed in utoipa 5.
+
+Verify after `just openapi`: every `/resources` path must `$ref` a *distinct*
+envelope, and the bare `CursorListResponse` must be referenced by no path at
+all.
+
+#### What it looked like before
+
+All seven endpoints were *correct on the wire*, and the spec described six of
+them wrongly.
+
+`utoipa` collapsed the generic `CursorListResponse<T>` into a **single**
+schema whose `items` was hard-wired to one arbitrary instantiation
+(`OutgoingResourceItemDto`). Every path `$ref`-ed that one envelope, so six
+endpoints were documented as returning outgoing-share items. The container
+types *were* all registered — they were simply orphaned, `PhotoResourceItemDto`
+reaching zero `$ref`s.
 
 Two consequences, both already observed:
 
-- **Generated clients get the wrong item type**, which is why
-  `frontend/src/lib/api/endpoints/photos.ts` maintains a hand-written
-  `PhotoItem` instead of importing one. A hand-written type has nothing
-  checking it against the server: that is exactly how `FileMetadata` went on
-  declaring `captured_at` after the column became `created_at`.
-- **Renames on these containers are unguarded.** `check-types-overlap.mjs`
-  can only catch a hand-written type colliding with a *generated* one, and
-  there is no generated item type to collide with.
+Two consequences, which is why it was worth fixing rather than noting:
 
-The fix is aliasing, not restructuring: `#[aliases(…)]` on
-`CursorListResponse` plus registering the seven aliases, so each path `$ref`s
-its own envelope. No DTO, handler or wire change. Verify by diffing
-`resources/gen/openapi.json` for seven distinct `items.$ref` values.
+- **Generated clients got the wrong item type.** That is why
+  `frontend/src/lib/api/endpoints/photos.ts` still maintains a hand-written
+  `PhotoItem` — there was no correct generated type to import. A hand-written
+  type has nothing checking it against the server, which is exactly how
+  `FileMetadata` went on declaring `captured_at` after the column became
+  `created_at`. **Follow-up:** `photos.ts` can now drop `PhotoItem` in favour
+  of the generated envelope's item type.
+- **Renames on these containers were unguarded.** `check-types-overlap.mjs`
+  catches a hand-written type colliding with a *generated* one, and there was
+  no generated item type to collide with.
 
-`/api/search` is unaffected and shows the end state: a concrete envelope
-resolves correctly today, so if aliasing proves awkward, declaring seven
-concrete envelopes is a known-working fallback.
+`/api/search` was unaffected throughout, and pointed at the answer: its
+envelope is a concrete named struct, so utoipa always resolved it properly.
 
 ---
 
