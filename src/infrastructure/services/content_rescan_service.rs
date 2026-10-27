@@ -1411,36 +1411,48 @@ mod tests {
         );
     }
 
-    /// TRIPWIRE for the document-metadata work.
+    /// Documents MAY hold content facts — the tripwire, flipped.
     ///
     /// `drop_stale_metadata` DELETES a content's `storage.content_metadata`
-    /// row when `applies_to` says that type cannot have one. Today
-    /// documents cannot, so a retype to `.docx` correctly clears a stale
-    /// EXIF row.
+    /// row when `applies_to` says that type cannot have one. This test used
+    /// to assert documents *could not*, as a reminder for whoever landed a
+    /// document extractor: get it wrong and the job silently deletes every
+    /// document's metadata, corpus-wide, on every sweep, with nothing
+    /// logged as an error.
     ///
-    /// The moment a document extractor writes a `.docx` creation date
-    /// into that table, this assertion becomes WRONG and the job starts
-    /// deleting every document's metadata on every sweep — silently,
-    /// corpus-wide, with nothing logged as an error. Whoever lands that
-    /// extractor must flip this test and the predicate together; the
-    /// failure here is the reminder.
+    /// It fired on exactly the change it was written for (2026-10, document
+    /// creation dates) and is now inverted to pin the other direction. The
+    /// stronger guard lives beside the predicate itself —
+    /// `file_metadata_repository::every_type_the_extractor_handles_may_legitimately_keep_its_row`
+    /// asserts `handles` implies `applies_to` for every type, so it cannot
+    /// go stale the way a hardcoded list does. This one stays because it
+    /// names the consequence from the deleting side.
     #[test]
-    fn documents_cannot_yet_hold_capture_facts() {
+    fn documents_may_hold_content_facts() {
         use crate::infrastructure::repositories::pg::file_metadata_repository::FileMetadataRepository as R;
 
         assert!(R::applies_to("image/jpeg"));
         assert!(R::applies_to("video/mp4"));
 
-        // Flip these — and `applies_to` — when document extraction lands.
-        assert!(
-            !R::applies_to(
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            ),
-            "documents now hold capture facts: extend \
-             FileMetadataRepository::applies_to in the SAME change, or \
-             content_rescan will delete every document's metadata",
-        );
-        assert!(!R::applies_to("application/pdf"));
+        for mime in [
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.oasis.opendocument.text",
+            "application/pdf",
+        ] {
+            assert!(
+                R::applies_to(mime),
+                "⚠ {mime} is extracted but `applies_to` rejects it, so \
+                 content_rescan will DELETE every row of that type on its \
+                 next sweep — silently, because nothing errors and the rows \
+                 simply stop existing",
+            );
+        }
+
+        // And content with no document or media shape still cannot, so the
+        // predicate did not simply become `true`.
+        assert!(!R::applies_to("application/zip"));
+        assert!(!R::applies_to("application/octet-stream"));
     }
 
     /// The job must defer while the backend write lock is held, even

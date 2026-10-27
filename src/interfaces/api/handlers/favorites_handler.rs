@@ -144,7 +144,7 @@ pub async fn remove_favorite(
     params(FavoritesResourcesQuery),
     responses(
         (status = 200, description = "Paginated list of favorited resources",
-         body = crate::application::dtos::favorites_dto::FavoritesResourcesDto),
+         body = crate::application::dtos::cursor::CursorListResponse<crate::application::dtos::favorites_dto::FavoritesResourceItemDto>),
         (status = 400, description = "Invalid cursor or query parameters", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
