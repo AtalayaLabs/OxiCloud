@@ -871,12 +871,20 @@ join is one primary-key lookup rather than one per page row. A properties or
 details panel is also where a user actually asks "when was this made?", as
 opposed to scanning a list.
 
-⚠ **Sequencing: §7 first.** §7 renames `captured_at` on the wire, because the
-column it reflects stopped being photo-only. Adding a second REST surface
-*now* means naming it `captured_at` and then renaming two fields instead of
-one — or naming it something else and shipping two names for one column, which
-is worse. The field costs almost nothing once the vocabulary is settled, and
-guessing the name early is the only way to make it expensive.
+**Resolved 2026-10-27 — and the sequencing concern dissolved.** This item
+originally said "§7 first", because §7 was going to rename `captured_at` and
+naming a second surface before that settled would mean renaming two fields
+instead of one.
+
+Both halves are moot. `GET /api/files/{id}/metadata` turned out to already
+serve this value — it returns the whole `content_metadata` row — so the slot
+needed typing, not creating: it is now `FileContentMetadataDto` with a
+`created_at` field, registered in the spec. And §7 no longer renames
+`captured_at` at all, the photos listing being media-only by construction
+(see §7's narrowed scope).
+
+So what remains of this item is **not an API change**: a UI surface that
+displays the claimed date. The endpoint answers today.
 
 **Not a sort axis.** `storage.files.media_sort_date` is already denormalised
 and trigger-maintained, so ordering by the claimed date needs no join at all.
@@ -1386,6 +1394,48 @@ handler accepts `"updated_at"`, and no wire DTO selects `storage.files.updated_a
 ---
 
 ## §7 — Naming normalisation **NOT STARTED**
+
+**Scope narrowed 2026-10-27 — the `captured_at` rename is OUT.** Three items
+remain, and they are the ones that matter:
+
+1. **`order_by`, not `sort_by`** — one token for one concept across every
+   listing endpoint.
+2. **Typed sort axes** — an enum per endpoint rather than a free string, so an
+   unknown axis is a 400 at the edge instead of a silent fallback.
+3. **`deletion_date` → `expires_at`** — it read as a past event while holding
+   a future instant.
+
+**Why `captured_at` was dropped from this phase.** The reasoning below treats
+it as a misnomer that "compounds", on the premise that the column stopped
+being photo-specific. The column did; **the endpoint did not.**
+`/api/photos/resources` is hard-filtered to `image/%` or `video/%` in SQL on
+every `PhotoKind` branch, backed by a partial covering index, so it cannot
+return a document. There, "captured" is the precise word — EXIF calls the
+value `DateTimeOriginal` — while `created_at` would be vaguer.
+
+The generic surface that *does* answer for documents already says
+`created_at` (`GET /api/files/{id}/metadata`, shipped). So the column has two
+wire names, each correct in its own context — the same resolution the two
+`created_at` columns got: write down which is which rather than force one
+spelling onto two meanings. Recorded in
+`docs/architecture/dates.md § And one column has two wire names`.
+
+The cost was the other half: a wire field, the `?order_by=captured_at` enum
+value, two i18n keys and a migrate-on-read for the persisted Photos sort
+preference — §6 paid that toll once already for a label change.
+
+Reopen it if the photos timeline ever lists non-media (a new `PhotoKind` plus
+a new index, so a deliberate act rather than drift), or if
+`order_by=captured_at` gains a sibling axis that makes the asymmetry
+confusing.
+
+⚠ **This also removes a prerequisite.** The OpenAPI envelope defect
+(`docs/architecture/resource-listing.md § Known defect`) was flagged as
+needing a fix *before* §7, because a rename on `PhotoResourceItemDto` would
+not reach the generated SDK and so would be unguarded. With no rename, that
+ordering constraint is gone. The aliasing fix is still worth doing on its own
+merits — six endpoints mis-documented, and the frontend can drop a
+hand-written `PhotoItem` — just no longer a blocker for this phase.
 
 Adjacent to the date work rather than part of it — ships independently, no
 column changes. Two conventions, applied everywhere.

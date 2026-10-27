@@ -23,12 +23,19 @@ is trusted.
 >   `storage.content_metadata`, `captured_at` became `created_at`, and the row's
 >   own bookkeeping is `extracted_at`.
 >
-> Still open: document creation dates are not extracted yet (so `created_at` is
-> NULL for anything that is not an image or a video), the chunked upload path
-> drops client mtime, and the `PhotoResourceItemDto.captured_at` wire name still
-> lags its column. The migration path is
-> [`docs/plan/normalize-file-dates.md`](/plan/normalize-file-dates) — §4, §7 and
-> §9 respectively.
+> Re-checked 2026-10-27: **document creation dates are now extracted** —
+> OOXML `docProps/core.xml`, ODF `meta.xml` and a PDF `/CreationDate`,
+> including one inside a compressed object stream. Existing files need a
+> `content_rescan` with `rederive=always` to pick them up, since extraction
+> fires on upload and an extractor change does not move the sniffed type.
+>
+> Still open: the chunked upload path drops client mtime (§9), and NC REPORT
+> renders a folder's `getlastmodified` from a projection with no subtree clock.
+> `PhotoResourceItemDto.captured_at` is **not** a gap — it differs from the
+> generic endpoint's `created_at` by decision, see
+> [§ And one column has two wire names](#and-one-column-has-two-wire-names-on-purpose).
+> The migration path is
+> [`docs/plan/normalize-file-dates.md`](/plan/normalize-file-dates).
 
 ---
 
@@ -85,11 +92,22 @@ date looked like it had nowhere to live. It becomes load-bearing with a
 re-runnable extractor: "when did we last extract this" is a question
 `content_rescan` has to answer.
 
-**Still NULL for most content.** The extractor handles images and video
-(`MediaMetadataService::handles` gates on `image/*` | `video/*`); documents —
-OOXML `docProps/core.xml` → `dcterms:created`, PDF `/CreationDate`, ODF
-`meta.xml` — are not read yet, so a `.docx` has no claimed date and the
-COALESCE chains below fall through to `content_modified_at`.
+**What fills it** (as of 2026-10-27): EXIF `DateTimeOriginal` for images, the
+container creation time for video, and documents — OOXML
+`docProps/core.xml` → `dcterms:created`, ODF `meta.xml` →
+`meta:creation-date`, and a PDF's `/Info` → `/CreationDate`, read from the
+trailer window or, when it sits inside a compressed object stream, through
+the object model.
+
+**Still NULL for everything else**, which is most content by count: an
+archive, a binary, a plain text file or a source file claims no creation date,
+so the COALESCE chains below fall through to `content_modified_at`. That is
+the designed answer, not a gap — see § When creation date is unknown.
+
+⚠ **Extraction runs on upload**, so the existing corpus does not have these
+dates until a sweep. That needs `content_rescan` with **`rederive=always`**:
+an extractor gaining a format does not change the sniffed type, so the
+default `changed` mode skips every row it would have fixed.
 
 ### What exactly bumps `updated_at`
 
@@ -216,6 +234,39 @@ precedent this follows: `/favorites` says "Added", `/recent` says "Opened",
 DTO mapping where both are in scope. The one on `storage.files` is arrival; the
 one on `storage.content_metadata` is the claim.
 
+### And one column has two wire names, on purpose
+
+`storage.content_metadata.created_at` is served under two different field
+names, and that is a decision rather than drift (taken 2026-10-27, after
+asking whether to unify them):
+
+| surface | what it may return | field |
+|---|---|---|
+| `GET /api/files/{id}/metadata` | any file — documents included | **`created_at`** |
+| `GET /api/photos/resources` | `image/*` or `video/*` only | **`captured_at`** |
+
+The photos listing is hard-filtered to media in SQL on every `PhotoKind`
+branch, backed by a partial covering index, so it **cannot** return a
+document. On that endpoint "captured" is not a misnomer but the precise
+domain word — EXIF calls the value `DateTimeOriginal`, and a photo *is*
+captured. The generic endpoint has to answer for `.docx` and PDF, where
+"captured" would be a lie, so it says `created_at`.
+
+So each name is correct where it appears, which is the same resolution the
+two `created_at` columns above got: write down which is which rather than
+force one spelling onto two meanings.
+
+**Renaming `captured_at` was considered and declined.** It would cost a wire
+field, the `?order_by=captured_at` enum value, two i18n keys and a migrate-on-
+read for the persisted Photos sort preference — §6 already paid that toll once
+for a label change — in exchange for replacing a precise word with a vaguer
+one on the only surface where the precise word fits.
+
+Two things would reopen it: the photos timeline listing non-media (which needs
+a new `PhotoKind` and a new index, so it is a deliberate act and not a drift
+risk), or `order_by=captured_at` gaining a sibling axis that makes the
+asymmetry confusing.
+
 ## Roles — who actually reads them
 
 Only two of the six are **behavioural**. Sorting the rest by who reads them is
@@ -328,7 +379,7 @@ point — but a listing that interleaves the two is interleaving two different
 | DTO | Field | Column |
 |---|---|---|
 | `PhotoResourceItemDto` | `sort_date` | `media_sort_date` (or `created_at` / `content_modified_at` when the caller picks another axis) |
-| `PhotoResourceItemDto` | `captured_at` | `content_metadata.created_at`, null when nothing was extracted. ⚠ The wire name still says *captured*; the column was renamed when it stopped being photo-only. Renaming the field is a wire change and belongs with `docs/plan/normalize-file-dates.md` §7. |
+| `PhotoResourceItemDto` | `captured_at` | `content_metadata.created_at`, null when nothing was extracted. The name differs from the generic endpoint's `created_at` **by decision** — this listing cannot return a document, so "captured" is the precise word here. See [§ And one column has two wire names](#and-one-column-has-two-wire-names-on-purpose). |
 | `TrashItemDto` | `trashed_at` | when it entered the trash |
 | `TrashItemDto` | `expires_at` | when it will be **purged** — a future instant, not a past one. Called `deletion_date` until §7, which renamed it for exactly that reason: it read as a past event while holding a future value. Pairs with `trashed_at` (past) |
 
@@ -614,7 +665,7 @@ scope — the table below does not, because each row names only one.
 
 | Query | Resolves to |
 |---|---|
-| `?order_by=captured_at` | `media_sort_date` (the wire name still says *captured* — §7) |
+| `?order_by=captured_at` | `media_sort_date` — the axis is "capture date, best effort", so the COALESCE is its implementation rather than a misnomer |
 | `?order_by=updated_at` | `files.content_modified_at` — the UI's "Last modified" axis means POSIX mtime, which is what users expect |
 | `?order_by=created_at` | `files.created_at` — server arrival, the admin-facing axis. **Not** the content's claimed date |
 
@@ -676,7 +727,6 @@ and unaffected.
 | NC REPORT (search) renders a folder's `getlastmodified` from a projection carrying no subtree clock, so a REPORT hit and a PROPFIND on the same folder disagree | `nextcloud/report_handler.rs` | widen the search projection |
 | A document's creation date is never extracted, so `content_metadata.created_at` is NULL for everything that is not an image or a video and `nc:creation_time` emits `0` | `MediaMetadataService::handles` gates on `image/*` \| `video/*` | read OOXML `docProps/core.xml`, PDF `/CreationDate`, ODF `meta.xml` — plan §4 |
 | The chunked upload path accepts no client mtime, so non-SPA chunked clients are stamped `NOW()` | `chunked_upload_handler.rs` — `source_modified_at` appears nowhere in it | a slot matching the multipart and delta paths — plan §9 |
-| `PhotoResourceItemDto.captured_at` keeps a photo-only name for a column that is no longer photo-only | `application/dtos/photos_dto.rs` | renamed with the rest of the wire vocabulary — plan §7 |
 
 ## Rejected alternatives
 
