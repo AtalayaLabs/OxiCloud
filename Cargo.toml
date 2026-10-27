@@ -205,6 +205,14 @@ askama = "0.16.0"
 tantivy = "0.27.0"
 zip = { version = "9", default-features = false, features = ["deflate"] }
 pdf-extract = "0.12.0"
+# NOT a new dependency: `pdf-extract` already pulls lopdf 0.42 (MIT), so it
+# is compiled into the binary either way — it was simply not importable,
+# because a transitive dep is not in scope. Declared directly so
+# `document_date_extractor` can resolve a PDF's `/Info` through the object
+# model when the key sits in a compressed object stream, where a byte scan
+# cannot see it. Keep the version matching what pdf-extract resolves, or
+# cargo builds two copies of it.
+lopdf = "0.42.0"
 nom-exif = "3.6.1"
 extism = { version = "1.41", optional = true }
 toml = "1.1.2"
