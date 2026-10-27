@@ -7,6 +7,9 @@ code easy to audit and extend.
 ## TL;DR checklist
 
 - [ ] Response is `CursorListResponse<T>` → `{ items: T[], next_cursor?: string }`
+- [ ] `T` is **this endpoint's own container**, wrapping the shared
+      `ResourceContentDto` under `resource` plus whatever only this endpoint
+      knows — never a reused or unified item type
 - [ ] Query embeds `CursorQuery` via `#[serde(flatten)]`
 - [ ] `limit` is clamped with `q.paging.limit_clamped()` — never trust the raw value
 - [ ] Cursor is decoded with `q.paging.decode_cursor::<MyCursor>()` — invalid cursor → first page
@@ -38,6 +41,82 @@ All listing endpoints return the same wrapper (defined in
 
 **Never** include `total`, `page`, or `offset` — computing a total requires a `COUNT(*)` that
 does not scale.
+
+---
+
+## Three layers, and which of them varies
+
+The shape is a sandwich, and confusing the layers is the most common way to
+get a new listing endpoint wrong:
+
+```
+CursorListResponse<T>          ← the ENVELOPE. Identical everywhere.
+  items: [
+    T                          ← the CONTAINER. One type PER ENDPOINT.
+      resource_type: "file"    ·   the discriminator
+      resource: {…}            ·   ResourceContentDto — identical everywhere
+      <enrichment>             ·   whatever THIS endpoint knows
+  ]
+  next_cursor?: "…"
+```
+
+**The contained resource is common; the container is not.** Every listing
+returns the same `ResourceContentDto` under `resource`, and wraps it in a
+container that carries the signals only that endpoint can answer for:
+
+| Endpoint | Container | Its own enrichment |
+|---|---|---|
+| `/api/folders/{id}/resources` | `FolderResourceItemDto` | — |
+| `/api/favorites/resources` | `FavoritesResourceItemDto` | — |
+| `/api/recent/resources` | `RecentResourceItemDto` | — |
+| `/api/trash/resources` | `TrashResourceItemDto` | — |
+| `/api/grants/incoming/resources` | `SharedWithMeItemDto` | — |
+| `/api/grants/outgoing/resources` | `OutgoingResourceItemDto` | `first_shared_at`, `grants` |
+| `/api/photos/resources` | `PhotoResourceItemDto` | `sort_date`, `captured_at`, `width`, `height`, `orientation`, `has_gps`, `has_blob_siblings` |
+
+**Do not unify the containers.** A single item type covering all seven would
+carry `grants` that is null for photos and `captured_at` that is null for
+shares — a union whose shape tells a client nothing about which fields it can
+actually expect. Seven small honest types beat one large vague one, and the
+part worth sharing is already shared: `resource`.
+
+**Do not push enrichment down into `ResourceContentDto` either.** It is the
+resource as the resource knows itself; `first_shared_at` is a fact about a
+grant and `has_gps` a fact about extracted metadata. Neither belongs on the
+file.
+
+So adding a listing endpoint means: reuse the envelope, reuse
+`ResourceContentDto`, and declare your own container.
+
+### ⚠ Known defect: the envelope is mis-documented in OpenAPI
+
+Found 2026-10-27. All seven endpoints above are *correct on the wire*, and the
+spec describes six of them wrongly.
+
+`utoipa` collapses the generic `CursorListResponse<T>` into a **single**
+schema, whose `items` ends up hard-wired to one arbitrary instantiation
+(currently `OutgoingResourceItemDto`). Every path then `$ref`s that one
+envelope, so six endpoints are documented as returning outgoing-share items,
+and none of the `…ResourcesDto` aliases (`PhotosResourcesDto`,
+`FolderResourcesDto`, …) appears in the document at all. The container types
+themselves *are* all registered — they are simply orphaned, referenced by
+nothing.
+
+Two consequences, both already observed:
+
+- **Generated clients get the wrong item type**, which is why
+  `frontend/src/lib/api/endpoints/photos.ts` maintains a hand-written
+  `PhotoItem` instead of importing one. A hand-written type has nothing
+  checking it against the server: that is exactly how `FileMetadata` went on
+  declaring `captured_at` after the column became `created_at`.
+- **Renames on these containers are unguarded.** `check-types-overlap.mjs`
+  can only catch a hand-written type colliding with a *generated* one, and
+  there is no generated item type to collide with.
+
+The fix is aliasing, not restructuring: `#[aliases(…)]` on
+`CursorListResponse` plus registering the seven aliases, so each path `$ref`s
+its own envelope. No DTO, handler or wire change. Verify by diffing
+`resources/gen/openapi.json` for seven distinct `items.$ref` values.
 
 ---
 
@@ -391,7 +470,13 @@ is not a breaking change.
 | Endpoint | Cursor | `order_by` | Status |
 |---|---|---|---|
 | `GET /api/grants/incoming/resources` | ✅ | 🔜 planned | **Reference implementation** |
-| `GET /api/photos` | ⚠️ `before` header | ❌ | Non-standard — migrate to body cursor |
+| `GET /api/grants/outgoing/resources` | ✅ | 🔜 planned | ✅ Compliant |
+| `GET /api/folders/{id}/resources` | ✅ | ✅ | ✅ Compliant |
+| `GET /api/favorites/resources` | ✅ | ✅ | ✅ Compliant |
+| `GET /api/recent/resources` | ✅ | ✅ | ✅ Compliant |
+| `GET /api/trash/resources` | ✅ | ✅ | ✅ Compliant |
+| `GET /api/photos/resources` | ✅ | ✅ | ✅ Compliant |
+| `GET /api/photos` | — | — | ✅ **Removed** — use `/api/photos/resources` |
 | `GET /api/search` | ❌ offset | ✅ | Migrate cursor |
 | `GET /api/folders/paginated` | ❌ page | ❌ | Migrate cursor |
 | `GET /api/folders/{id}/contents/paginated` | — | — | ✅ **Removed** — use `/api/folders/{id}/resources` |
