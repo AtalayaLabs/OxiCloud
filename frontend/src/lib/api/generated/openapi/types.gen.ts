@@ -586,6 +586,24 @@ export type CompleteUploadRequest = {
      * Unknown values return 400.
      */
     checksumalg?: string | null;
+    /**
+     * §9 — the source file's modification time, epoch **milliseconds**.
+     *
+     * Same unit and trust bounds as the multipart `source_modified_at`,
+     * the by-hash field and the delta commit: the server rounds half-up
+     * and refuses an implausible value with a 400.
+     *
+     * This path needed its own slot for the same reason delta did —
+     * a capability must not depend on which upload route the client
+     * chose. Without it, every chunked upload was stamped `NOW()`
+     * while the other three preserved the client's mtime, and the
+     * client had no way to tell.
+     *
+     * Supplied on `/complete` rather than at session creation because
+     * that is where the file row is created; a value given hours
+     * earlier would have to be carried through the session for no gain.
+     */
+    source_modified_at?: number | null;
 };
 
 /**
@@ -10505,7 +10523,7 @@ export type DownloadFileData = {
     };
     query?: {
         /**
-         * Return metadata JSON instead of file content
+         * `true`/`1` returns the file's own DTO as JSON instead of its bytes — the same `FileDto` a listing yields (name, size, mime_type, created_at, modified_at, is_favorite, is_shared). ⚠ NOT the same as the sibling route `GET /api/files/{id}/metadata`, which returns `FileContentMetadataDto` — facts extracted from the CONTENT (the creation date the bytes claim, camera, dimensions). This one describes the file row; that one describes the bytes.
          */
         metadata?: boolean;
         /**
@@ -10529,7 +10547,7 @@ export type DownloadFileErrors = {
 
 export type DownloadFileResponses = {
     /**
-     * File content (Content-Type on the actual response reflects the file's own mime type)
+     * File content (Content-Type on the actual response reflects the file's own mime type). ⚠ With `?metadata=true` this same 200 is instead `application/json` carrying a `FileDto` — one status, two shapes, selected by the query parameter. Declared as the byte stream because that is the default and the overwhelmingly common case; see the `metadata` parameter.
      */
     200: Blob | File;
     /**

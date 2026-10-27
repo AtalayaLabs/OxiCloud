@@ -6544,7 +6544,7 @@
           {
             "name": "metadata",
             "in": "query",
-            "description": "Return metadata JSON instead of file content",
+            "description": "`true`/`1` returns the file's own DTO as JSON instead of its bytes — the same `FileDto` a listing yields (name, size, mime_type, created_at, modified_at, is_favorite, is_shared). ⚠ NOT the same as the sibling route `GET /api/files/{id}/metadata`, which returns `FileContentMetadataDto` — facts extracted from the CONTENT (the creation date the bytes claim, camera, dimensions). This one describes the file row; that one describes the bytes.",
             "required": false,
             "schema": {
               "type": "boolean"
@@ -6571,7 +6571,7 @@
         ],
         "responses": {
           "200": {
-            "description": "File content (Content-Type on the actual response reflects the file's own mime type)",
+            "description": "File content (Content-Type on the actual response reflects the file's own mime type). ⚠ With `?metadata=true` this same 200 is instead `application/json` carrying a `FileDto` — one status, two shapes, selected by the query parameter. Declared as the byte stream because that is the default and the overwhelmingly common case; see the `metadata` parameter.",
             "content": {
               "application/octet-stream": {}
             }
@@ -12233,6 +12233,14 @@
               "null"
             ],
             "description": "Algorithm name. `blake3` is the recommended choice (default —\nmatches the blob store's content-addressing algorithm). `md5`,\n`sha256` / `sha-256` are accepted and computed in-flight.\nUnknown values return 400."
+          },
+          "source_modified_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "§9 — the source file's modification time, epoch **milliseconds**.\n\nSame unit and trust bounds as the multipart `source_modified_at`,\nthe by-hash field and the delta commit: the server rounds half-up\nand refuses an implausible value with a 400.\n\nThis path needed its own slot for the same reason delta did —\na capability must not depend on which upload route the client\nchose. Without it, every chunked upload was stamped `NOW()`\nwhile the other three preserved the client's mtime, and the\nclient had no way to tell.\n\nSupplied on `/complete` rather than at session creation because\nthat is where the file row is created; a value given hours\nearlier would have to be carried through the session for no gain."
           }
         }
       },

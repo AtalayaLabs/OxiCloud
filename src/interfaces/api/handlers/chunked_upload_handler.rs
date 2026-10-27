@@ -91,6 +91,23 @@ pub struct CompleteUploadRequest {
     /// `sha256` / `sha-256` are accepted and computed in-flight.
     /// Unknown values return 400.
     pub checksumalg: Option<String>,
+    /// §9 — the source file's modification time, epoch **milliseconds**.
+    ///
+    /// Same unit and trust bounds as the multipart `source_modified_at`,
+    /// the by-hash field and the delta commit: the server rounds half-up
+    /// and refuses an implausible value with a 400.
+    ///
+    /// This path needed its own slot for the same reason delta did —
+    /// a capability must not depend on which upload route the client
+    /// chose. Without it, every chunked upload was stamped `NOW()`
+    /// while the other three preserved the client's mtime, and the
+    /// client had no way to tell.
+    ///
+    /// Supplied on `/complete` rather than at session creation because
+    /// that is where the file row is created; a value given hours
+    /// earlier would have to be carried through the session for no gain.
+    #[serde(default)]
+    pub source_modified_at: Option<i64>,
 }
 
 /// Chunked Upload Handler
@@ -454,6 +471,38 @@ impl ChunkedUploadHandler {
         // days ago; app-passwords keep sessions valid indefinitely.
         // Without the finalize re-check, a grant revoked mid-session
         // stayed effective until the last chunk landed.
+        // §9 — the client's asserted source mtime, rounded half-up from
+        // milliseconds and bounds-checked, exactly as the multipart,
+        // by-hash and delta paths do. Rejected values are a 400 with an
+        // audit line rather than a silent clamp: a parseable-but-implausible
+        // value is the client asserting something specific and wrong, and
+        // storing it would bake a bad timestamp into the tree.
+        let source_modified_at = match body.source_modified_at {
+            None => None,
+            Some(millis) => {
+                let secs =
+                    crate::application::dtos::timestamp_helpers::millis_to_seconds_rounded(millis);
+                match crate::application::dtos::timestamp_helpers::validate_client_mtime(
+                    secs,
+                    chrono::Utc::now().timestamp(),
+                ) {
+                    Ok(valid) => Some(valid),
+                    Err(rejection) => {
+                        tracing::info!(
+                            target: "audit",
+                            event = "chunked_complete.source_mtime_rejected",
+                            reason = rejection.reason(),
+                            asserted_millis = millis,
+                            user_id = %auth_user.id,
+                            "👮🏻‍♂️ rejected client-asserted source_modified_at on chunked complete: {}",
+                            rejection.message(),
+                        );
+                        return AppError::bad_request(rejection.message()).into_response();
+                    }
+                }
+            }
+        };
+
         let size = ingested.size;
         match upload_service
             .upload_file_streaming_with_perms(
@@ -462,6 +511,7 @@ impl ChunkedUploadHandler {
                 ingested.content_type.clone(),
                 ingested.stored(),
                 auth_user.id,
+                source_modified_at,
             )
             .await
         {

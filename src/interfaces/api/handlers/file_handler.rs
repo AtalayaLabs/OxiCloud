@@ -1893,12 +1893,12 @@ pub async fn create_file_by_hash(
     path = "/api/files/{id}",
     params(
         ("id" = String, Path, description = "File ID"),
-        ("metadata" = Option<bool>, Query, description = "Return metadata JSON instead of file content"),
+        ("metadata" = Option<bool>, Query, description = "`true`/`1` returns the file's own DTO as JSON instead of its bytes — the same `FileDto` a listing yields (name, size, mime_type, created_at, modified_at, is_favorite, is_shared). ⚠ NOT the same as the sibling route `GET /api/files/{id}/metadata`, which returns `FileContentMetadataDto` — facts extracted from the CONTENT (the creation date the bytes claim, camera, dimensions). This one describes the file row; that one describes the bytes."),
         ("original" = Option<bool>, Query, description = "Skip WebP transcoding"),
         ("inline" = Option<bool>, Query, description = "Content-Disposition: inline"),
     ),
     responses(
-        (status = 200, content_type = "application/octet-stream", description = "File content (Content-Type on the actual response reflects the file's own mime type)"),
+        (status = 200, content_type = "application/octet-stream", description = "File content (Content-Type on the actual response reflects the file's own mime type). ⚠ With `?metadata=true` this same 200 is instead `application/json` carrying a `FileDto` — one status, two shapes, selected by the query parameter. Declared as the byte stream because that is the default and the overwhelmingly common case; see the `metadata` parameter."),
         (status = 206, content_type = "application/octet-stream", description = "Partial content (Range request) — same byte stream as the 200, scoped to the requested byte range. `Content-Type` on the actual response reflects the file's own mime type."),
         (status = 304, description = "Not modified"),
         (status = 404, description = "File not found"),

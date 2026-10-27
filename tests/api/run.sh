@@ -646,6 +646,7 @@ HURL_FILES=( \
   "$API_DIR/search_sort_content_clock.hurl" \
   "$API_DIR/content_clock_metadata_mutations.hurl" \
   "$API_DIR/rest_upload_source_mtime.hurl" \
+  "$API_DIR/chunked_upload_source_mtime.hurl" \
   "$API_DIR/webdav_drive_root.hurl" \
   "$API_DIR/webdav_permissions.hurl" \
   "$API_DIR/webdav_nested_move_cascade.hurl" \

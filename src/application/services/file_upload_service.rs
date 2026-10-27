@@ -541,6 +541,7 @@ impl FileUploadUseCase for FileUploadService {
         content_type: String,
         blob: StoredBlob,
         caller_id: Uuid,
+        source_modified_at: Option<i64>,
     ) -> Result<FileDto, DomainError> {
         if let Some(fid) = folder_id.as_deref() {
             let Some(authz) = &self.authorization else {
@@ -560,8 +561,19 @@ impl FileUploadUseCase for FileUploadService {
                 .await?;
         }
 
-        self.upload_file_streaming(name, folder_id, content_type, blob, caller_id, None)
-            .await
+        // §9 — forward the asserted mtime instead of the `None` that used
+        // to be hardcoded here. That literal was the whole chunked-path
+        // gap: every finalised chunked upload got `NOW()`, silently, and a
+        // client could not tell.
+        self.upload_file_streaming(
+            name,
+            folder_id,
+            content_type,
+            blob,
+            caller_id,
+            source_modified_at,
+        )
+        .await
     }
 
     /// Swap the content of the file at `path` to an already-ingested blob,
