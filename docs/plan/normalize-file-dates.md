@@ -822,12 +822,19 @@ home for a byte-derived date, and said that home was "not this plan's work".
 It landed on `security/sniff-mime-type`: `storage.content_metadata` is keyed by
 `source_hash`, its `created_at` holds the date the bytes claim, and
 `extracted_at` holds the bookkeeping — exactly the shape specified under *The
-keying asymmetry*. `audio.content_metadata` matches. `source_created_at` was
-never created, and the sort chain is the final two-arm
-`COALESCE(created_at, content_modified_at)`.
+keying asymmetry*. `audio.content_metadata` matches.
 
-What remains of §4 is **only the extractor widening**, which this section
-already identified as the real cost:
+`source_created_at` has still never been created, and the sort chain is
+two-arm `COALESCE(created_at, content_modified_at)` today. ⚠ It is **not**
+ruled out: the progress table's 2026-10-20 entry reserves it for the
+client-asserted `X-OC-CTime` case, which is a different value in a different
+trust class from what the bytes claim. That remains gated on the inbound
+test — does any NC client actually send the header? — and `grep X-OC-CTime
+src/` still finds nothing. Until it answers, the chain has one fewer arm and
+loses nothing.
+
+What remained of the EXTRACTION half of §4 is the extractor widening, which
+this section already identified as the real cost:
 
 1. **Hoist the format classifier** out of `search_index::text_extractor` — its
    `Kind` and `classify` are private, and a creation date is not a search
@@ -1393,17 +1400,25 @@ handler accepts `"updated_at"`, and no wire DTO selects `storage.files.updated_a
 
 ---
 
-## §7 — Naming normalisation **NOT STARTED**
+## §7 — Naming normalisation **DONE** (verified against the tree 2026-10-27)
 
-**Scope narrowed 2026-10-27 — the `captured_at` rename is OUT.** Three items
-remain, and they are the ones that matter:
+All three items are shipped; this heading said NOT STARTED because the
+section predates the work. Verified by inspection rather than by the parts
+notes below, which are the only record that it happened:
 
-1. **`order_by`, not `sort_by`** — one token for one concept across every
-   listing endpoint.
-2. **Typed sort axes** — an enum per endpoint rather than a free string, so an
-   unknown axis is a 400 at the edge instead of a silent fallback.
-3. **`deletion_date` → `expires_at`** — it read as a past event while holding
-   a future instant.
+| item | evidence |
+|---|---|
+| `order_by`, not `sort_by` | all 8 sorted endpoints expose `order_by`; **0** occurrences of `sort_by` in `resources/gen/openapi.json`, and none as a Rust field — `CursorQuery::order_by` carries the "the name is load-bearing" note that keeps the next endpoint from re-seeding it |
+| Typed sort axes | all 8 enums exist with `#[default]` — `FolderOrderBy`, `FavoritesOrderBy`, `RecentOrderBy`, `TrashOrderBy`, `IncomingGrantOrderBy`, `OutgoingGrantOrderBy`, `PhotoOrderBy`, `SearchOrderBy`. The grant pair is split in two precisely as parts 3f/3g specified: "granted to me" and "who did I grant to" are different questions |
+| `deletion_date` → `expires_at` | `TrashResourceItemDto.expires_at`; **0** occurrences of `deletion_date` in the spec |
+
+Every surviving mention of `sort_by` or `deletion_date` in the tree is a
+historical comment explaining the rename, which is the right place for it —
+a cursor minted before the change now fails closed rather than sorting by a
+column that no longer exists.
+
+**The `captured_at` rename was removed from this phase** (2026-10-27) rather
+than done — see below for why the photos surface keeps it.
 
 **Why `captured_at` was dropped from this phase.** The reasoning below treats
 it as a misnomer that "compounds", on the premise that the column stopped

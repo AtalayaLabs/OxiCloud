@@ -15,10 +15,12 @@ is trusted.
 > here is shipped. Two things changed shape since the 2026-10-11 design and are
 > corrected throughout:
 >
-> - **`source_created_at` was never created and will not be.** One
->   server-extracted creation column replaced the planned pair — see
->   [§ There is no `source_created_at`](#there-is-no-source_created_at-and-there-will-not-be).
->   Every COALESCE chain here is therefore two-arm.
+> - **`source_created_at` has never been created**, and a server-extracted
+>   column took the role it was meant to fill, so every COALESCE chain here is
+>   two-arm. It stays RESERVED for one case — a client that actually sends
+>   `X-OC-CTime`, which would be a client-asserted birthtime in its own trust
+>   class. See
+>   [§ There is no `source_created_at`](#there-is-no-source_created_at--and-whether-there-ever-is-depends-on-one-test).
 > - **The extraction table is content-keyed**: `storage.file_metadata` became
 >   `storage.content_metadata`, `captured_at` became `created_at`, and the row's
 >   own bookkeeping is `extracted_at`.
@@ -61,22 +63,37 @@ and that is accepted rather than fixable: the true value is unrecoverable, and
 wrong-and-disruptive. Correctness begins at the first content mutation after the
 column ships. See `docs/plan/normalize-file-dates.md` §1.
 
-### There is no `source_created_at`, and there will not be
+### There is no `source_created_at` — and whether there ever is depends on one test
 
 An earlier design had a second creation column — `storage.files.source_created_at`,
 the pre-upload `btime`, client-asserted — split from `captured_at` so the trust
-bounds applied to exactly one of them. **It was never built, and the decision
-is not to build it** (`docs/plan/normalize-file-dates.md` §4).
+bounds applied to exactly one of them. **It has never been built**, and the
+server-extracted date took the role it was meant to fill
+(`docs/plan/normalize-file-dates.md` §4).
 
-Two findings collapsed it into one column:
+Two findings moved the server-extracted half into one column:
 
-1. **No client-asserted writer exists, and no browser can ever be one.** The
-   File API exposes `lastModified` (an mtime) and no `btime` on any platform,
-   and `nc:creation_time` is only ever *emitted* — there is no inbound path.
-   A trust class with no members does not need its own column.
-2. **The remaining writer is server-side extraction**, which belongs in the
-   column that already holds server-extracted dates. So one column means one
-   thing: *the creation date the bytes themselves claim*, whatever the format.
+1. **No client-asserted writer exists today, and no browser can ever be one.**
+   The File API exposes `lastModified` (an mtime) and no `btime` on any
+   platform, and `nc:creation_time` is only ever *emitted* — `grep X-OC-CTime
+   src/` finds nothing inbound.
+2. **The writer that does exist is server-side extraction**, which belongs in
+   the column that already holds server-extracted dates. So that column means
+   one thing: *the creation date the bytes themselves claim*, whatever the
+   format.
+
+⚠ **It is not ruled out.** §4 keeps it reserved for exactly one case: if a
+NextCloud client turns out to send `X-OC-CTime` on upload, that is a
+**client-asserted filesystem birthtime** — a different value from what the
+bytes claim, in a different trust class, and the trust bounds would apply to
+it alone. Then a second column is right, and the emitted chain becomes
+`COALESCE(client ctime, content metadata date, 0)`.
+
+So the question is empirical and still open: *does any client actually send
+it?* The test §4 specifies is one `tracing::debug!` on the NC upload path
+logging unhandled `X-OC-*` headers, left running for a week. Until that
+answers, the column does not exist and nothing is lost by its absence — the
+chain simply has one fewer arm.
 
 That column is `storage.content_metadata.created_at`. It is keyed by content
 (`source_hash`), not by file, because the same bytes always claim the same
@@ -482,12 +499,16 @@ everything on the other side.
 | Browser has | Maps to | Notes |
 |---|---|---|
 | `File.lastModified` | `content_modified_at` | epoch **milliseconds** — the only timestamp the File API gives |
-| — | a creation date | no `btime` is exposed to web content on any platform. This is *why* there is no client-asserted creation column |
-| — | `content_metadata.created_at` | the bytes carry it; the server extracts it with `nom-exif` |
+| — | a creation date | no `btime` is exposed to web content on any platform — which is why **a browser** can never write a client-asserted creation column |
+| — | `content_metadata.created_at` | the bytes carry it; the server extracts it |
 
-So a drag-and-drop upload can preserve mtime and nothing else. A creation date
-can only ever come out of the bytes, which is the finding that collapsed the
-two creation columns into one — see [§ There is no `source_created_at`](#there-is-no-source_created_at-and-there-will-not-be).
+So a drag-and-drop upload can preserve mtime and nothing else. From a
+**browser**, a creation date can only come out of the bytes.
+
+That is a statement about browsers, not about every client: a native sync
+client has filesystem access and could supply a real birthtime, which is
+exactly the case `source_created_at` stays reserved for — see
+[§ There is no `source_created_at`](#there-is-no-source_created_at--and-whether-there-ever-is-depends-on-one-test).
 
 **This is wired** (re-checked 2026-10-25; it was not on 2026-10-18, and the
 paragraph that said so stood for a week after it shipped):
