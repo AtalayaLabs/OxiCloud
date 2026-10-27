@@ -6692,11 +6692,11 @@
         ],
         "responses": {
           "200": {
-            "description": "File metadata (EXIF, dimensions, duration, etc.)",
+            "description": "Metadata extracted from the file's CONTENT — the creation date it claims (`created_at`), plus camera, geo and dimensions where the format carries them. Every field is optional; a body whose fields are all null carries `message` instead. Keyed by content hash, so copies of one file share these values.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/FileContentMetadataDto"
                 }
               }
             }
@@ -13940,6 +13940,82 @@
           "ocm",
           "oidc"
         ]
+      },
+      "FileContentMetadataDto": {
+        "type": "object",
+        "description": "Content-derived metadata for one file.\n\nEvery field is optional because extraction is best-effort and\nformat-dependent: a photo fills the camera and geo columns, a `.docx`\nfills `created_at` alone, and content nothing can be read from fills\nnone of them.",
+        "required": [
+          "file_id"
+        ],
+        "properties": {
+          "camera_make": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "camera_model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "**The creation date the content claims about itself.**\n\nEXIF `DateTimeOriginal` for a photo, the container creation time for\na video, `dcterms:created` for OOXML, `meta:creation-date` for ODF,\n`/CreationDate` for a PDF.\n\nNamed `created_at` to match its column, and **not** `captured_at`,\nwhich is what this field was called while the only writer was EXIF.\nA `.docx` is not *captured*; the word was photo vocabulary for a\nvalue that now covers every format the extractor reads. Note this is\na different thing from `FileDto.created_at`, which is when this\ninstance received the bytes — the vocabulary is \"Added\" for arrival\nand \"Created\" for the claim, per `docs/architecture/dates.md`.\n\n`null` means the content claims nothing, which is a real answer and\nnever a guess: see\n`docs/architecture/dates.md § When creation date is unknown`."
+          },
+          "file_id": {
+            "type": "string",
+            "description": "The file the caller asked about. Echoed back because the row itself\nis keyed by CONTENT, so it carries no file identity of its own."
+          },
+          "height": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "latitude": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "longitude": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Present only when there is nothing to report, so a client can tell\n\"we looked and found none\" from a field it forgot to read.\n\nKept in the SAME shape as a populated response rather than returned\nas a different body: the endpoint answers 200 either way, and two\nshapes behind one status is what made `body = Object` the only\nhonest annotation before this type existed."
+          },
+          "orientation": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "EXIF orientation (1-8), for viewers that rotate on display."
+          },
+          "width": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          }
+        }
       },
       "FileDto": {
         "type": "object",

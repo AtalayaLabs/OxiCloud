@@ -15,6 +15,7 @@ use utoipa::{Modify, OpenApi};
 use crate::application::dtos::contact_dto::{
     AddressDto, ContactDto, ContactGroupDto, EmailDto, PhoneDto,
 };
+use crate::application::dtos::content_metadata_dto::FileContentMetadataDto;
 use crate::application::dtos::display_helpers::ResourceCategory;
 use crate::application::dtos::drive_dto::{DriveDto, DriveKindDto};
 use crate::application::dtos::favorites_dto::{
@@ -556,6 +557,11 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             // with no drift guard. That is how `captured_at` stayed typed
             // `number` long after the server began sending RFC 3339.
             PhotoResourceItemDto,
+            // `GET /api/files/{id}/metadata`, which was annotated
+            // `body = Object` — so the generated SDK carried no type for it
+            // and the SPA kept a hand-written `FileMetadata` with no drift
+            // guard, the same shape of hole the comment above describes.
+            FileContentMetadataDto,
             // Contacts / address-book schemas
             AddressBookResponse,
             CreateAddressBookRequest,

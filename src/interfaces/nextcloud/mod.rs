@@ -62,7 +62,7 @@ pub(crate) fn nc_creation_time(
     meta: &HashMap<String, StoredMetadata>,
     file_id: &str,
 ) -> Option<i64> {
-    meta.get(file_id)?.captured_at.map(|t| t.timestamp().max(0))
+    meta.get(file_id)?.created_at.map(|t| t.timestamp().max(0))
 }
 
 /// Batch-read the content metadata backing `nc:creation_time`, degrading

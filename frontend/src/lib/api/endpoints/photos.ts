@@ -2,7 +2,11 @@
 import { apiFetch } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import type { FileItem } from '$lib/api/types';
-import type { PhotoOrderBy, PhotoResourceItemDto } from '$lib/api/generated/openapi/types.gen';
+import type {
+	FileContentMetadataDto,
+	PhotoOrderBy,
+	PhotoResourceItemDto
+} from '$lib/api/generated/openapi/types.gen';
 
 /**
  * A timeline photo/video. The `/api/photos/resources` envelope carries file
@@ -79,18 +83,16 @@ interface PhotosEnvelope {
 	next_cursor?: string;
 }
 
-/** EXIF metadata returned by `/api/files/{id}/metadata` (subset used by the lightbox). */
-export interface FileMetadata {
-	file_id: string;
-	captured_at?: string;
-	latitude?: number | null;
-	longitude?: number | null;
-	camera_make?: string | null;
-	camera_model?: string | null;
-	orientation?: number | null;
-	width?: number | null;
-	height?: number | null;
-}
+/**
+ * Metadata extracted from a file's CONTENT, from `/api/files/{id}/metadata`.
+ *
+ * Re-exported from the generated SDK rather than hand-written. The endpoint
+ * was annotated `body = Object`, so there was no generated type and this
+ * interface was maintained by hand with nothing checking it against the
+ * server — which is how it carried `captured_at` after the column had been
+ * renamed `created_at`, and declared a field the lightbox never reads.
+ */
+export type FileMetadata = FileContentMetadataDto;
 
 /** Result of a batch trash request (200 = all, 206 = partial success). */
 export interface BatchTrashResult {
@@ -213,7 +215,7 @@ export async function fetchPhotos(limit = 60, opts: FetchPhotosOptions = {}): Pr
 	};
 }
 
-/** Fetch EXIF metadata for a file. Returns `null` on any error (non-critical). */
+/** Fetch content-extracted metadata for a file. Returns `null` on any error (non-critical). */
 export async function fetchFileMetadata(fileId: string): Promise<FileMetadata | null> {
 	try {
 		const res = await apiFetch(`/api/files/${fileId}/metadata`, { credentials: 'same-origin' });

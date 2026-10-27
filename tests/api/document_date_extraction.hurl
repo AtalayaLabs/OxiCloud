@@ -50,6 +50,35 @@
 
 
 # ─────────────────────────────────────────────────────────────
+# Setup — JWT login, then mint an NC app password.
+#
+# NC DAV authenticates with Basic Auth, not the JWT bearer token, and
+# `nc_username`/`nc_password` are CAPTURED here rather than configured:
+# they are not in `tests/api/test.env` and cannot be, being minted per
+# run. Same shape as `nc_webdav_client_mtime.hurl`.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/auth/login
+Content-Type: application/json
+{ "username": "{{username}}", "password": "{{password}}" }
+
+HTTP 200
+[Captures]
+jwt: jsonpath "$.access_token"
+
+
+POST {{base_url}}/api/auth/app-passwords
+Authorization: Bearer {{jwt}}
+Content-Type: application/json
+{ "label": "document_date_extraction" }
+
+HTTP 200
+[Captures]
+nc_username: jsonpath "$.username"
+nc_password: jsonpath "$.password"
+ap_id: jsonpath "$.id"
+
+
+# ─────────────────────────────────────────────────────────────
 # Step 1 – .docx → dcterms:created 2019-03-04T10:22:00Z
 # ─────────────────────────────────────────────────────────────
 PUT {{base_url}}/remote.php/dav/files/{{username}}/doc-date.docx
@@ -247,9 +276,126 @@ xpath "string(//*[local-name()='creation_time'])" == "1551694920"
 xpath "string(//*[local-name()='creation_time'])" != "1551702120"
 
 
+# ═════════════════════════════════════════════════════════════
+# Part B — the REST surface: /api/files/{id}/metadata
+# ═════════════════════════════════════════════════════════════
+# Part A read the date through `nc:creation_time`, which is a
+# NextCloud-compat integer. This part reads the SAME value through the
+# REST endpoint a browser client would use, where it is an RFC 3339
+# string on a typed response.
+#
+# Three things are pinned here that Part A cannot reach:
+#
+#  1. The field is `created_at`. It was `captured_at` while EXIF was the
+#     only writer — photo vocabulary for a value that now covers every
+#     format the extractor reads, and a `.docx` is not *captured*.
+#  2. It is NOT confused with `FileDto.created_at`, which is when this
+#     instance received the bytes. Same spelling, different meaning, two
+#     different responses: "Added" for arrival, "Created" for the claim
+#     (docs/architecture/dates.md § Vocabulary).
+#  3. The response is a declared schema. It used to be annotated
+#     `body = Object`, so the generated SDK carried no type and the SPA
+#     kept a hand-written interface with nothing checking it — which is
+#     how it went on declaring `captured_at` after the rename.
+#
+# A document fills `created_at` and nothing else, so the media-shaped
+# fields must come back null rather than absent or zero.
+#
+# Reuses the `jwt` captured in Setup — REST takes the bearer token,
+# where the DAV half above needs the Basic Auth app password.
+# ─────────────────────────────────────────────────────────────
+# Upload through REST rather than looking up the DAV copy by name.
+#
+# Two reasons: the multipart response hands back the id directly, so no
+# JSONPath filter over a listing (hurl's filter support is quirky enough
+# that a non-matching expression yields nothing rather than failing) —
+# and it exercises the OTHER upload path. Part A went through DAV, so
+# between them both ingest routes are shown to run the extractor.
+POST {{base_url}}/api/folders
+Authorization: Bearer {{jwt}}
+Content-Type: application/json
+{ "name": "hurl-doc-dates" }
+
+HTTP 201
+[Captures]
+folder_id: jsonpath "$.id"
+
+
+POST {{base_url}}/api/files/upload
+Authorization: Bearer {{jwt}}
+[MultipartFormData]
+folder_id: {{folder_id}}
+file: file,fixtures/doc-date.docx; application/vnd.openxmlformats-officedocument.wordprocessingml.document
+
+HTTP 201
+[Captures]
+docx_id: jsonpath "$.id"
+docx_added: jsonpath "$.created_at"
+
+
+GET {{base_url}}/api/files/{{docx_id}}/metadata
+Authorization: Bearer {{jwt}}
+[Options]
+retry: 20
+retry-interval: 250ms
+
+HTTP 200
+[Asserts]
+# The claimed creation date, as RFC 3339 — 2019-03-04T10:22:00Z, the same
+# instant Part A read as 1551694920.
+jsonpath "$.created_at" == "2019-03-04T10:22:00Z"
+# ⚠ The old name must be gone, not merely deprecated. Leaving both would
+# let the SPA keep reading the stale one indefinitely.
+jsonpath "$.captured_at" not exists
+# A document fills this field and no other: present-and-null, so a client
+# can tell "we looked" from "no such field".
+jsonpath "$.camera_make" == null
+jsonpath "$.width" == null
+jsonpath "$.height" == null
+# And `message` is absent when there IS something to report.
+jsonpath "$.message" not exists
+# ⚠ Not the file's own `created_at`, captured from the upload response
+# above. `FileDto.created_at` is when this instance received the bytes —
+# moments ago — while this one is 2019. Same spelling, different
+# question: "Added" for arrival, "Created" for the claim. Pinned as an
+# inequality as well as by value, so the two cannot quietly converge on
+# one column without a named failure.
+jsonpath "$.created_at" != "{{docx_added}}"
+
+
+# The PDF through the same surface, for the offset arithmetic.
+POST {{base_url}}/api/files/upload
+Authorization: Bearer {{jwt}}
+[MultipartFormData]
+folder_id: {{folder_id}}
+file: file,fixtures/doc-date.pdf; application/pdf
+
+HTTP 201
+[Captures]
+pdf_id: jsonpath "$.id"
+
+
+GET {{base_url}}/api/files/{{pdf_id}}/metadata
+Authorization: Bearer {{jwt}}
+[Options]
+retry: 20
+retry-interval: 250ms
+
+HTTP 200
+[Asserts]
+# `D:20190304112200+01'00'` is 10:22Z. Reported as 11:22 or 12:22 would
+# mean the offset was ignored or added instead of subtracted.
+jsonpath "$.created_at" == "2019-03-04T10:22:00Z"
+
+
 # ─────────────────────────────────────────────────────────────
 # Teardown – the suite shares one database; leave nothing behind.
 # ─────────────────────────────────────────────────────────────
+DELETE {{base_url}}/api/folders/{{folder_id}}
+Authorization: Bearer {{jwt}}
+
+HTTP *
+
 DELETE {{base_url}}/remote.php/dav/files/{{username}}/doc-date.docx
 [BasicAuth]
 {{nc_username}}: {{nc_password}}
@@ -279,3 +425,11 @@ DELETE {{base_url}}/remote.php/dav/files/{{username}}/doc-date.pdf
 {{nc_username}}: {{nc_password}}
 
 HTTP *
+
+
+# The app password minted in Setup. Revoked last, after every request
+# that authenticates with it.
+DELETE {{base_url}}/api/auth/app-passwords/{{ap_id}}
+Authorization: Bearer {{jwt}}
+
+HTTP 200

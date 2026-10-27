@@ -111,7 +111,7 @@ retry-interval: 250
 
 HTTP 200
 [Asserts]
-jsonpath "$.captured_at"   == "2019-07-14T10:30:00Z"
+jsonpath "$.created_at"    == "2019-07-14T10:30:00Z"
 jsonpath "$.camera_make"   == "OxiCloud"
 jsonpath "$.camera_model"  == "TestCam A1"
 # 6 = rotate 90° CW. Not 1, which is what "no orientation read" looks
@@ -154,7 +154,7 @@ Authorization: Bearer {{jwt}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.captured_at"  == "2019-07-14T10:30:00Z"
+jsonpath "$.created_at"   == "2019-07-14T10:30:00Z"
 jsonpath "$.camera_make"  == "OxiCloud"
 jsonpath "$.camera_model" == "TestCam A1"
 jsonpath "$.orientation"  == 6
@@ -181,7 +181,7 @@ Authorization: Bearer {{jwt}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.captured_at" == "2019-07-14T10:30:00Z"
+jsonpath "$.created_at" == "2019-07-14T10:30:00Z"
 jsonpath "$.longitude"   < -4.7
 
 
