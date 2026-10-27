@@ -326,7 +326,7 @@ Authorization: Bearer {{token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.message" == "No EXIF metadata available"
+jsonpath "$.message" == "No extracted metadata available"
 
 
 # ─────────────────────────────────────────────────────────────

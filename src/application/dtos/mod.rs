@@ -4,6 +4,7 @@ pub use cursor::{CursorListResponse, CursorQuery, PageCursor};
 pub mod app_password_dto;
 pub mod calendar_dto;
 pub mod contact_dto;
+pub mod content_metadata_dto;
 pub mod device_auth_dto;
 pub mod display_helpers;
 pub mod drive_dto;

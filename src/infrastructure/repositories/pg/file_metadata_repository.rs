@@ -27,7 +27,7 @@ type MetadataRow = (
 #[derive(Debug, Clone, Serialize)]
 pub struct StoredMetadata {
     pub file_id: String,
-    pub captured_at: Option<DateTime<Utc>>,
+    pub created_at: Option<DateTime<Utc>>,
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
     pub camera_make: Option<String>,
@@ -90,14 +90,12 @@ impl FileMetadataRepository {
     /// writes nothing. See
     /// `migrations/20261105000000_exif_metadata_content_keyed.sql`.
     ///
-    /// Note the column is `created_at` while the Rust field stays
-    /// `captured_at`, and the asymmetry is deliberate.
-    /// `docs/plan/normalize-file-dates.md` fixes the COLUMN name, because
-    /// it stops being photo-specific the moment the extractor learns to
-    /// read a document's creation date — at which point `captured_at`
-    /// would be a lie. The Rust side keeps EXIF vocabulary until that
-    /// widening actually happens, rather than renaming 56 call sites
-    /// inside a schema migration. Mapping the two is what this repository
+    /// The Rust field is `created_at`, matching the column. It was
+    /// `captured_at` for as long as EXIF was the only writer — kept
+    /// deliberately, so a schema migration did not also have to rename
+    /// call sites — and renamed the moment the extractor learned to read a
+    /// document's creation date, because a `.docx` is not *captured* and
+    /// the old name became a lie. Mapping the two is what this repository
     /// is for.
     pub async fn upsert(&self, source_hash: &str, meta: &ExifMetadata) -> Result<(), DomainError> {
         sqlx::query(
@@ -157,7 +155,7 @@ impl FileMetadataRepository {
         Ok(row.map(
             |(
                 file_id,
-                captured_at,
+                created_at,
                 latitude,
                 longitude,
                 camera_make,
@@ -168,7 +166,7 @@ impl FileMetadataRepository {
             )| {
                 StoredMetadata {
                     file_id,
-                    captured_at,
+                    created_at,
                     latitude,
                     longitude,
                     camera_make,
@@ -186,7 +184,7 @@ impl FileMetadataRepository {
     ///
     /// **Sparse by construction**: files whose content has no
     /// `storage.content_metadata` row are simply absent from the map, and a
-    /// present row may still carry `captured_at = NULL`. Callers must treat both as "the
+    /// present row may still carry `created_at = NULL`. Callers must treat both as "the
     /// content claims no date" rather than defaulting to a file clock —
     /// see `nc_creation_time` in `interfaces/nextcloud`.
     ///
@@ -221,7 +219,7 @@ impl FileMetadataRepository {
         let mut map = HashMap::with_capacity(rows.len());
         for (
             file_id,
-            captured_at,
+            created_at,
             latitude,
             longitude,
             camera_make,
@@ -235,7 +233,7 @@ impl FileMetadataRepository {
                 file_id.clone(),
                 StoredMetadata {
                     file_id,
-                    captured_at,
+                    created_at,
                     latitude,
                     longitude,
                     camera_make,
