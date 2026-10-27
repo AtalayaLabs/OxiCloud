@@ -44,7 +44,7 @@ intervals before every sync, so it tests convergence rather than the
 width of the window.
 
 **Fixed for structural folder changes** (migration
-`20261104000000_tree_etag_immediate_folder_bumps`): folder create, rename,
+`20261107000001_tree_etag_immediate_folder_bumps`): folder create, rename,
 move, trash, restore and delete now bump their ancestor chain inside the
 writing statement, so the listing and the collection ETags commit
 together. The state lives only in the database, so it holds with several

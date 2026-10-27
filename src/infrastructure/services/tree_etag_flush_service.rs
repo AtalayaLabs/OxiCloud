@@ -39,7 +39,7 @@ use crate::infrastructure::repositories::pg::transaction_utils::retry_on_deadloc
 ///   * The flusher is not the only writer of `tree_modified_at`: structural
 ///     folder changes bump their ancestor chain in the writing statement
 ///     (`storage.tree_etag_bump_or_enqueue`, migration
-///     `20261104000000_tree_etag_immediate_folder_bumps`). That bump uses
+///     `20261107000001_tree_etag_immediate_folder_bumps`). That bump uses
 ///     `SKIP LOCKED` and never waits, so the flusher may wait on it but
 ///     not the reverse; anything it skips is enqueued and lands here.
 pub struct TreeEtagFlushService {
