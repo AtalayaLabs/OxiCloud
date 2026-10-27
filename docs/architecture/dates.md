@@ -90,11 +90,30 @@ bytes claim, in a different trust class, and the trust bounds would apply to
 it alone. Then a second column is right, and the emitted chain becomes
 `COALESCE(client ctime, content metadata date, 0)`.
 
-So the question is empirical and still open: *does any client actually send
-it?* The test §4 specifies is one `tracing::debug!` on the NC upload path
-logging unhandled `X-OC-*` headers, left running for a week. Until that
-answers, the column does not exist and nothing is lost by its absence — the
-chain simply has one fewer arm.
+So the question is empirical: *does any client actually send it?* The probe
+is in the tree — `log_unhandled_oc_headers` in `interfaces/nextcloud/mod.rs`,
+behind `RUST_LOG=oxicloud::nc_headers=debug` — because the answer cannot be
+observed from behaviour. There is no read path for the header, so a client
+that sends it and a client that does not both produce
+`nc:creation_time = 0`; the value is invisible precisely because nothing
+consumes it.
+
+**First evidence, 2026-10-27: the macOS NextCloud desktop client does NOT
+send it.** A WebDAV PUT carried `oc-total-length` and `oc-chunk-size` and no
+`x-oc-ctime`.
+
+That is stronger than one data point sounds, because **macOS is the best case
+for a birthtime-sending client**: APFS exposes `st_birthtime` natively, so
+that client has the easiest possible access to the value. Linux has no
+portable read (`statx`/`STATX_BTIME` exists but little tooling uses it), so a
+Linux client is *less* likely to send it. If the platform where birthtime is
+free does not send it, the field is probably absent from the client's upload
+path entirely.
+
+Still open rather than closed: the Windows desktop client, mobile, and
+third-party clients (rclone, Cyberduck) are unobserved. Until one of them is
+seen sending it the column does not exist, and nothing is lost by its absence
+— the chain simply has one fewer arm.
 
 That column is `storage.content_metadata.created_at`. It is keyed by content
 (`source_hash`), not by file, because the same bytes always claim the same

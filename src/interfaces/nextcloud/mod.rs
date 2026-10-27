@@ -140,16 +140,34 @@ pub(crate) async fn nc_creation_times(
 /// uploads with no such line answers it "no". Both are useful — a `no` is
 /// what keeps the column from being built on spec-reading alone.
 ///
+/// **First run, 2026-10-27.** On a WebDAV PUT the NC desktop client sent
+/// `oc-total-length` (the logical upload size) and `oc-chunk-size` (its
+/// preferred 100 MiB chunking) — and **no `x-oc-ctime`**. One upload from
+/// one client is not the week's answer, but it is the first evidence, and
+/// it points at "no".
+///
+/// Those two are reported every time and that is fine: both are advisory
+/// on a whole-file PUT, where `Content-Length` already gives the size and
+/// our own chunked protocol carries its own `total_size`. Worth knowing if
+/// a quota pre-check or an early reject on oversized uploads is ever added
+/// — `oc-total-length` is the value it would want, and it arrives before
+/// the body.
+///
 /// Deliberately DEBUG rather than `info!(target: "audit")`: a client that
 /// sends some unhandled header on every PUT would otherwise flood the audit
 /// channel, and this is a question to answer once rather than an outcome to
 /// keep watching. Nothing branches on it, so leaving it compiled in costs a
 /// header-map walk on the two NC upload paths when the level is disabled.
 fn log_unhandled_oc_headers(headers: &HeaderMap, surface: &str) {
-    // `x-oc-mtime` is the only one this server reads today — verified by
-    // grep, not assumed. Extend this list when a header starts being
-    // handled, or the probe keeps reporting it as unknown forever.
+    // Headers this server ACTS ON. `x-oc-mtime` is the only one today —
+    // verified by grep, not assumed. Extend when a header starts being
+    // handled, or the probe reports it as unknown forever.
     const HANDLED: &[&str] = &["x-oc-mtime"];
+
+    // No "known but ignored" list on purpose. The probe is DEBUG-only and
+    // run deliberately, so reporting everything is cheaper than keeping a
+    // second list in step — and a header we chose to ignore is still worth
+    // seeing while reading these lines.
 
     for (name, value) in headers.iter() {
         let name = name.as_str();
