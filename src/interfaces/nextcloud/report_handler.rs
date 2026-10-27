@@ -497,7 +497,25 @@ fn folder_dto_from_search(
     sr: &crate::application::dtos::search_dto::SearchFolderResultDto,
 ) -> FolderDto {
     FolderDto {
-        etag: sr.id.clone(),
+        // ⚠ The carried ETag, NOT the folder id.
+        //
+        // This read `sr.id.clone()`, so a folder hit in REPORT/SEARCH
+        // emitted the folder's raw UUID as its `D:getetag` while PROPFIND
+        // emitted `Folder::compute_etag(id, tree_modified_at)`. Two
+        // different opaque tokens for the same collection, which is the
+        // same defect the sibling `file_dto_from_search` documents above
+        // and avoids: NC's conditional-request logic on search results
+        // disagrees with its own cached state and re-walks the subtree.
+        //
+        // Worse than the file case, because a UUID never changes: the
+        // REPORT token could not invalidate when the subtree did, so it
+        // was not merely inconsistent but inert.
+        //
+        // `SearchFolderResultDto::etag` exists for exactly this and is
+        // populated by `enrich_folder` from the `FolderDto` it already
+        // receives — whose own ETag is computed from `tree_modified_at`,
+        // so the two agree by construction.
+        etag: sr.etag.clone(),
         id: sr.id.clone(),
         name: sr.name.clone(),
         path: sr.path.clone(),
@@ -505,12 +523,17 @@ fn folder_dto_from_search(
         drive_id: sr.drive_id,
         created_at: sr.created_at,
         modified_at: sr.modified_at,
-        // Search results carry no subtree rollup. This path *does* emit
-        // `D:getlastmodified` (NC REPORT), so the fallback is load-bearing:
-        // a REPORT hit keeps reporting the folder's own mtime, as it did
-        // before `tree_modified_at` existed. Wiring the rollup here means
-        // widening the search projection — tracked in the dates plan.
-        tree_modified_at: sr.modified_at,
+        // The subtree rollup, carried through search since 2026-10-27.
+        //
+        // This path emits `D:getlastmodified`, which for a collection means
+        // the subtree rather than the folder row — so while this fell back
+        // to `sr.modified_at`, the same folder answered differently by
+        // REPORT than by PROPFIND, and a rename showed up as a content
+        // change to search clients only.
+        //
+        // Closing it needed no wider query: `enrich_folder` always received
+        // a whole `FolderDto` carrying this value and simply dropped it.
+        tree_modified_at: sr.tree_modified_at,
         category: ResourceCategory::Folder,
         // §14 provenance not selected by search results.
         created_by: None,
