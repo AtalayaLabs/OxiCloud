@@ -9,7 +9,19 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-SPA_STORAGE_PATH="$REPO_ROOT/tests/e2e/storage-spa"
+# Honour the caller's OXICLOUD_STORAGE_PATH when set — kept parameterizable
+# so an alternate webServer config can point at a different directory
+# without editing this script. Relative paths resolve against the repo
+# root to match the server's own `cwd`.
+if [[ -n "${OXICLOUD_STORAGE_PATH:-}" ]]; then
+  if [[ "$OXICLOUD_STORAGE_PATH" = /* ]]; then
+    SPA_STORAGE_PATH="$OXICLOUD_STORAGE_PATH"
+  else
+    SPA_STORAGE_PATH="$REPO_ROOT/$OXICLOUD_STORAGE_PATH"
+  fi
+else
+  SPA_STORAGE_PATH="$REPO_ROOT/tests/e2e/storage-spa"
+fi
 
 # Mirror markers + the server's stdout/stderr to a log file as well as the
 # console; CI surfaces it via the "Print server startup log" step (Playwright's

@@ -6,7 +6,7 @@
     "license": {
       "name": "MIT"
     },
-    "version": "0.9.3"
+    "version": "0.10.0"
   },
   "paths": {
     "/api/address-books": {
@@ -13764,7 +13764,7 @@
         ],
         "properties": {
           "category": {
-            "type": "string",
+            "$ref": "#/components/schemas/ResourceCategory",
             "description": "Content category — a stable machine key, not display text (e.g.\n\"Image\", \"Folder\"). See `FileDto::category`."
           },
           "created_at": {
@@ -13882,7 +13882,8 @@
           "faces",
           "video_thumbnails",
           "external_mounts",
-          "markdown_collab"
+          "markdown_collab",
+          "shared_worker_bus"
         ],
         "properties": {
           "external_mounts": {
@@ -13912,6 +13913,10 @@
           "search": {
             "type": "boolean",
             "description": "Full-text and metadata search (`/api/search/*`). See\n`FeaturesConfig::enable_search`."
+          },
+          "shared_worker_bus": {
+            "type": "boolean",
+            "description": "Shared-worker-backed message bus — one `/api/rt/ws`\nconnection per BROWSER rather than per tab. Server-side wire\nshape is identical; the flag gates FE behaviour only.\nDefault `true` (opt-out). See\n`FeaturesConfig::enable_shared_worker_bus` and\n`docs/plan/message-bus-via-shared-worker.md` for the rollout\nstory and fallback matrix."
           },
           "sharing": {
             "type": "boolean",
@@ -13955,7 +13960,7 @@
         ],
         "properties": {
           "category": {
-            "type": "string",
+            "$ref": "#/components/schemas/ResourceCategory",
             "description": "Coarse content category — a **stable machine key**, not display text.\n\nValues are the English identifiers `category_for` returns (\"Image\",\n\"Document\", \"Spreadsheet\", …). Clients must treat them as opaque keys:\nthe SPA's only legitimate consumer path is\n`utils/resourceBuckets.ts::typeLabel`, which maps them to localised\nlabels, plus the group-by buckets keyed off the same values. Rendering\nthis field directly is the i18n bug step 1 of\n`docs/plan/retire-precomputed-display-fields.md` fixed — it showed\nuntranslated English in the Type column for every non-English locale.\n\nThis is the one display field that stays server-side, and the reason is\nnot symmetry with the others: `category_order_for` turns it into\n`storage.files.category_order`, the indexed `type` sort key. Deriving\nit client-side would let the FE's buckets disagree with the server's\n`ORDER BY`. See `docs/architecture/resource-listing.md`."
           },
           "content_hash": {
@@ -14047,7 +14052,7 @@
           },
           "id": {
             "type": "string",
-            "format": "uuid"
+            "description": "Folder id. A native folder is a UUID string; a folder inside\nan external mount is an `ext:<mount>:<token>` string (same\nshape every other mount-aware DTO uses — [`FolderDto::id`],\n[`crate::application::dtos::resource_dto::ResourceDto`]).\nTyped as a string so the single DTO shape carries both — see\n#837: the previous `Uuid`-only field type forced the ancestor\nwalk to UUID-parse `leaf_id` before classify, so every mount\nsubfolder answered 404."
           },
           "name": {
             "type": "string"
@@ -14057,8 +14062,7 @@
               "string",
               "null"
             ],
-            "format": "uuid",
-            "description": "`None` on the drive-root folder. On boundary crumbs it's the id\nof the (invisible-to-caller) parent — clients don't render it\nbut the field is preserved for debugging."
+            "description": "`None` on the drive-root folder. On boundary crumbs it's the id\nof the (invisible-to-caller) parent — clients don't render it\nbut the field is preserved for debugging. Same string shape as\n[`Self::id`] (UUID or `ext:…`)."
           }
         }
       },
@@ -14119,7 +14123,7 @@
         ],
         "properties": {
           "category": {
-            "type": "string",
+            "$ref": "#/components/schemas/ResourceCategory",
             "description": "Content category — a stable machine key, not display text; always\n\"Folder\". See `FileDto::category` for the contract."
           },
           "created_at": {
@@ -15856,7 +15860,7 @@
               "null"
             ],
             "format": "int32",
-            "description": "Image/video height in pixels, from `storage.file_metadata`."
+            "description": "Image/video height in pixels, from `storage.content_metadata`."
           },
           "orientation": {
             "type": [
@@ -15884,7 +15888,7 @@
               "null"
             ],
             "format": "int32",
-            "description": "Image/video width in pixels, from `storage.file_metadata`.\n`None` when the row has no metadata (very old uploads, or a\nformat the metadata extractor doesn't understand)."
+            "description": "Image/video width in pixels, from `storage.content_metadata`.\n`None` when the row has no metadata (very old uploads, or a\nformat the metadata extractor doesn't understand)."
           }
         }
       },
@@ -16195,7 +16199,7 @@
             "description": "When the item was accessed"
           },
           "category": {
-            "type": "string",
+            "$ref": "#/components/schemas/ResourceCategory",
             "description": "Content category — a stable machine key, not display text (e.g.\n\"Image\", \"Folder\"). See `FileDto::category`."
           },
           "id": {
@@ -16361,6 +16365,31 @@
             }
           }
         }
+      },
+      "ResourceCategory": {
+        "type": "string",
+        "description": "The resource categories the server classifies into — the fine set.\n\n`SearchTypeFilter` is the COARSE view of this, and the two are\ndeliberately separate: the filter's `Document` spans Pdf, Document,\nSpreadsheet, Presentation, Markdown and Text, so collapsing them would\neither coarsen the Type column (users lose \"Spreadsheet\" vs \"PDF\") or\ninflate the picker to fourteen options. What IS unified is the\nrelationship — `category_orders_for_filter` maps coarse to fine\n*categories*, so the sort integers appear in exactly one place\n([`category_order_for`]).\n\nOn the wire this is a machine key, never display text: the SPA's\n`typeLabel` maps it to a localised string. Rendering it raw is the i18n\nbug that step 1 of `retire-precomputed-display-fields.md` fixed.",
+        "enum": [
+          "Image",
+          "Video",
+          "Audio",
+          "PDF",
+          "WordProcessor",
+          "Spreadsheet",
+          "Presentation",
+          "Archive",
+          "Code",
+          "Markdown",
+          "Text",
+          "Package",
+          "Config",
+          "DiskImage",
+          "Font",
+          "Ebook",
+          "Executable",
+          "Folder",
+          "Unknown"
+        ]
       },
       "ResourceContentDto": {
         "oneOf": [
@@ -16653,7 +16682,7 @@
             "description": "Raw BLAKE3 content hash. Feeds `FileDto::content_hash` and\n`File::compute_etag` when search results are converted to\n`FileDto` (NC REPORT/SEARCH response). Defaults to `String::new()`\nfor backward-compatible deserialisation of cached results\nthat pre-date the column."
           },
           "category": {
-            "type": "string",
+            "$ref": "#/components/schemas/ResourceCategory",
             "description": "Coarse content category — a stable machine key, not display text.\nCarried through from `FileDto::category`; see that field for the full\ncontract. (This comment used to claim lowercase values — \"document\",\n\"image\", … — which it never carried: `enrich_file` copies the\ncapitalised `category_for` output verbatim.)"
           },
           "created_at": {
@@ -17063,7 +17092,8 @@
           "document",
           "archive",
           "code",
-          "other"
+          "font",
+          "unknown"
         ]
       },
       "SelfUserDto": {
@@ -17985,7 +18015,7 @@
         ],
         "properties": {
           "category": {
-            "type": "string",
+            "$ref": "#/components/schemas/ResourceCategory",
             "description": "Content category — a stable machine key, not display text (e.g.\n\"Image\", \"Folder\", \"Document\"). See `FileDto::category`."
           },
           "days_until_deletion": {

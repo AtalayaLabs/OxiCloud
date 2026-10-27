@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use chrono::{DateTime, TimeZone, Utc};
-use oxicloud::application::dtos::display_helpers::{category_for, intern_display, intern_mime};
+use oxicloud::application::dtos::display_helpers::{ResourceCategory, category_for, intern_mime};
 use oxicloud::application::dtos::favorites_dto::FavoriteResourceRow;
 use oxicloud::application::dtos::file_dto::FileDto;
 use oxicloud::application::dtos::folder_dto::{FolderDto, FolderResourceRow};
@@ -106,7 +106,7 @@ fn rows(n: usize) -> Vec<FolderResourceRow> {
 
 /// (name, category) pair extracted from each produced DTO — the
 /// fields the move-vs-clone touches. Used for the equivalence gate.
-type Probe = (String, std::sync::Arc<str>);
+type Probe = (String, ResourceCategory);
 
 /// BEFORE — verbatim: `name: row.name.clone()` in both branches.
 fn map_before(rows: Vec<FolderResourceRow>) -> Vec<Probe> {
@@ -127,7 +127,7 @@ fn map_before(rows: Vec<FolderResourceRow>) -> Vec<Probe> {
                     // rollup, and the bench measures row→DTO mapping cost,
                     // not DAV emission.
                     tree_modified_at: row.modified_at,
-                    category: intern_display("Folder"),
+                    category: ResourceCategory::Folder,
                     created_by: None,
                     updated_by: None,
                     is_favorite: false,
@@ -156,7 +156,7 @@ fn map_before(rows: Vec<FolderResourceRow>) -> Vec<Probe> {
                     folder_id: row.parent_id.map(|u| u.to_string()),
                     created_at: row.created_at,
                     modified_at: row.modified_at,
-                    category: intern_display(category_for(&row.name, mime)),
+                    category: category_for(&row.name, mime),
                     content_hash,
                     etag,
                     created_by: None,
@@ -189,7 +189,7 @@ fn map_after(rows: Vec<FolderResourceRow>) -> Vec<Probe> {
                     // rollup, and the bench measures row→DTO mapping cost,
                     // not DAV emission.
                     tree_modified_at: row.modified_at,
-                    category: intern_display("Folder"),
+                    category: ResourceCategory::Folder,
                     created_by: None,
                     updated_by: None,
                     is_favorite: false,
@@ -209,7 +209,7 @@ fn map_after(rows: Vec<FolderResourceRow>) -> Vec<Probe> {
                 } else {
                     File::compute_etag(&content_hash, modified_at_u)
                 };
-                let category = intern_display(category_for(&row.name, mime));
+                let category = category_for(&row.name, mime);
                 let dto = FileDto {
                     id: row.id.to_string(),
                     name: row.name,
@@ -280,7 +280,7 @@ fn fav_rows(n: usize) -> Vec<FavoriteResourceRow> {
 
 /// (name, path, content_hash, category) — every field the
 /// clone→move rewrite touches on the favorites/recents mapping.
-type FavProbe = (String, String, String, std::sync::Arc<str>);
+type FavProbe = (String, String, String, ResourceCategory);
 
 /// BEFORE — verbatim favorites/recents mapping: `row.path.clone()`,
 /// `row.name.clone()` (both branches) and `row.blob_hash.clone()`.
@@ -307,7 +307,7 @@ fn fav_map_before(rows: Vec<FavoriteResourceRow>) -> Vec<FavProbe> {
                     // rollup, and the bench measures row→DTO mapping cost,
                     // not DAV emission.
                     tree_modified_at: row.modified_at,
-                    category: intern_display("Folder"),
+                    category: ResourceCategory::Folder,
                     created_by: None,
                     updated_by: None,
                     is_favorite: false,
@@ -336,7 +336,7 @@ fn fav_map_before(rows: Vec<FavoriteResourceRow>) -> Vec<FavProbe> {
                     folder_id: row.parent_id.map(|u| u.to_string()),
                     created_at: row.resource_created_at,
                     modified_at: row.modified_at,
-                    category: intern_display(category_for(&row.name, mime)),
+                    category: category_for(&row.name, mime),
                     content_hash,
                     etag,
                     created_by: None,
@@ -375,7 +375,7 @@ fn fav_map_after(rows: Vec<FavoriteResourceRow>) -> Vec<FavProbe> {
                     // rollup, and the bench measures row→DTO mapping cost,
                     // not DAV emission.
                     tree_modified_at: row.modified_at,
-                    category: intern_display("Folder"),
+                    category: ResourceCategory::Folder,
                     created_by: None,
                     updated_by: None,
                     is_favorite: false,
@@ -395,7 +395,7 @@ fn fav_map_after(rows: Vec<FavoriteResourceRow>) -> Vec<FavProbe> {
                 } else {
                     File::compute_etag(&content_hash, modified_at_u)
                 };
-                let category = intern_display(category_for(&row.name, mime));
+                let category = category_for(&row.name, mime);
                 let dto = FileDto {
                     id: row.resource_id.to_string(),
                     name: row.name,

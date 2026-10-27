@@ -137,6 +137,14 @@ pub struct FeaturesDto {
     /// menu entry and falls back to the plain `.md` viewer when
     /// opening one. See `FeaturesConfig::enable_markdown_collab`.
     pub markdown_collab: bool,
+    /// Shared-worker-backed message bus — one `/api/rt/ws`
+    /// connection per BROWSER rather than per tab. Server-side wire
+    /// shape is identical; the flag gates FE behaviour only.
+    /// Default `true` (opt-out). See
+    /// `FeaturesConfig::enable_shared_worker_bus` and
+    /// `docs/plan/message-bus-via-shared-worker.md` for the rollout
+    /// story and fallback matrix.
+    pub shared_worker_bus: bool,
 }
 
 /// `GET /api/config` — return the public server-configuration
@@ -167,6 +175,7 @@ pub async fn get_config(State(state): State<Arc<AppState>>) -> Json<ServerConfig
             video_thumbnails: f.enable_video_thumbnails,
             external_mounts: f.enable_external_mounts,
             markdown_collab: f.enable_markdown_collab,
+            shared_worker_bus: f.enable_shared_worker_bus,
         },
         auth: AuthDto {
             min_password_length: state.core.config.auth.min_password_length,

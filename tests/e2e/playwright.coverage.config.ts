@@ -7,9 +7,44 @@ import { loadEnv } from './load-env';
  * with Istanbul instrumentation via `COVERAGE=1`) and collects per-test
  * `window.__coverage__` into `.nyc_output/` for an nyc report.
  *
- * The server is a debug `cargo run` on port 8088 serving the instrumented
- * SPA build. Production-shape end-to-end: OPAQUE + DPoP `required` are
- * both inherited from `tests/common/server.env` — the previous legacy
+ * Two run modes, controlled by the `OXICLOUD_SHARED_WORKER_MODE` env var,
+ * executed SEQUENTIALLY (same port, same storage, one backend at a time):
+ *
+ *   * **default (`OXICLOUD_SHARED_WORKER_MODE` unset)** —
+ *     production-shape (opt-in OFF → per-tab mode). Backend boots with
+ *     `OXICLOUD_ENABLE_SHARED_WORKER_BUS` unset; the suite runs every
+ *     spec EXCEPT the `message-bus-*.spec.ts` ones. `networkidle`
+ *     works here because nothing opens a WS until a consumer
+ *     subscribes, and no subscribes fire on /login.
+ *
+ *   * **shared-worker (`OXICLOUD_SHARED_WORKER_MODE=1`)** — opt-in
+ *     flag ON. Backend boots with `OXICLOUD_ENABLE_SHARED_WORKER_BUS=true`;
+ *     the suite runs ONLY the `message-bus-*.spec.ts` specs (including
+ *     the fallback test, which needs the server flag on for the factory
+ *     to try shared mode in the first place before `addInitScript({
+ *     delete window.SharedWorker })` deflects it).
+ *
+ * Running the opt-in flag suite-wide broke every spec that used
+ * `waitForLoadState('networkidle')` (the SharedWorker's eagerly-opened
+ * connection kept Playwright's "no network for 500 ms" counter from
+ * firing). Running two backends in parallel on different ports caused
+ * boot-time contention on shared state we don't fully understand yet.
+ * Sequential same-port runs sidestep both: one backend at a time, each
+ * run picks its env.
+ *
+ * Invocation:
+ *   # per-tab suite:
+ *   npx playwright test -c playwright.coverage.config.ts
+ *
+ *   # shared-worker suite:
+ *   OXICLOUD_SHARED_WORKER_MODE=1 npx playwright test -c playwright.coverage.config.ts
+ *
+ * CI runs both back-to-back; the second run's `start-server-spa.sh`
+ * wipes storage, globalSetup re-seeds (and 409-handles the existing
+ * admin in the shared DB).
+ *
+ * Production-shape end-to-end: OPAQUE + DPoP `required` are both
+ * inherited from `tests/common/server.env` — the previous legacy
  * `./static` vanilla-frontend suite that overrode them off has been
  * retired.
  *
@@ -19,6 +54,16 @@ import { loadEnv } from './load-env';
 const startScript = path.join(__dirname, 'start-server-spa.sh');
 const commonEnv = loadEnv(path.join(__dirname, '../common/server.env'));
 const workspace = process.env.GITHUB_WORKSPACE ?? path.join(__dirname, '../..');
+
+/** Shared-worker-bus mode toggle. Set `OXICLOUD_SHARED_WORKER_MODE=1`
+ *  for the shared-worker run; anything else is per-tab mode. The
+ *  bool-ness is boot-time; the config isn't reactive after import. */
+const SHARED_WORKER_MODE = process.env.OXICLOUD_SHARED_WORKER_MODE === '1';
+
+/** Spec files that only make sense against an opt-in-ON backend —
+ *  they assert `SharedWorkerBridge` is live and exercise the shared-
+ *  worker fan-out / reconnect / fallback properties. */
+const SHARED_WORKER_SPECS = /message-bus-.*\.spec\.ts/;
 
 export default defineConfig({
   testDir: './spa',
@@ -45,7 +90,19 @@ export default defineConfig({
       : {},
   },
 
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  projects: [
+    {
+      // Single project. Name reflects the mode so Playwright's output
+      // (and HTML report) tells you which run you're looking at.
+      name: SHARED_WORKER_MODE ? 'chromium-shared-worker' : 'chromium',
+      use: { ...devices['Desktop Chrome'] },
+      // Scope: per-tab mode runs everything EXCEPT the message-bus
+      // specs; shared-worker mode runs ONLY those specs.
+      ...(SHARED_WORKER_MODE
+        ? { testMatch: SHARED_WORKER_SPECS }
+        : { testIgnore: SHARED_WORKER_SPECS }),
+    },
+  ],
 
   webServer: {
     command: process.env.BUILD_TARGET
@@ -85,6 +142,11 @@ export default defineConfig({
       // instance on that port and main.rs would hard-fail. Empty
       // string is the config-parser's "disabled" sentinel.
       OXICLOUD_METRICS_LISTEN: '',
+      // Shared-worker-bus toggle. Spread so the key is absent (not
+      // present-with-false) when disabled — the server's env parser
+      // treats absence as "use the default (opt-in off)", which is
+      // what we want for the per-tab run.
+      ...(SHARED_WORKER_MODE ? { OXICLOUD_ENABLE_SHARED_WORKER_BUS: 'true' } : {}),
     },
   },
 });

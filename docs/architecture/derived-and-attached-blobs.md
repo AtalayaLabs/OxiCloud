@@ -19,17 +19,25 @@ Both point into the same blob store underneath (see
 [Backend Storage](./backend-storage.md)). The keying is what separates
 them.
 
+A **third shape** shares the content keying but holds no artifact at
+all — see [Content facts](#content-facts-the-third-shape) below.
+
 ```mermaid
 erDiagram
     FILES  ||--o{ ATTACHED : "file_id — per FILE"
     FILES  }o--|| BLOBS    : "blob_hash (its content)"
     BLOBS  ||--o{ DERIVED  : "source_hash — per CONTENT"
+    BLOBS  ||--o{ CONTENT_FACTS : "source_hash — per CONTENT"
     DERIVED  }o--o| ARTIFACT : "blob_hash (NULL = negative)"
     ATTACHED }o--|| ARTIFACT : "blob_hash"
 
     FILES {
         uuid id PK
         text blob_hash
+    }
+    CONTENT_FACTS {
+        text source_hash PK
+        text columns "parsed values — NO blob_hash"
     }
     DERIVED {
         text source_hash  PK
@@ -52,7 +60,69 @@ erDiagram
 
 Read the two arrows into `ARTIFACT`: `DERIVED` reaches it from
 **content**, `ATTACHED` from a **file**. Everything below follows from
-that.
+that. `CONTENT_FACTS` has no such arrow, which is its defining
+property.
+
+## Content facts — the third shape
+
+Some things parsed out of content are **columns, not artifacts**: a
+photo's capture date and GPS, a song's ID3 tags, a document's extracted
+text, a face vector. They are keyed by content for the same reason
+`DERIVED` is — identical bytes yield identical values, so one parse
+serves every copy — but there is no second blob to point at, because
+the result fits in the row.
+
+| | holds a `blob_hash`? | holds a `ref_count`? | dies when |
+|---|---|---|---|
+| `DERIVED` | yes (or NULL = negative) | yes, via its artifact | its source blob is reaped |
+| `ATTACHED` | yes | yes, via its artifact | its file is deleted (FK cascade) |
+| `CONTENT_FACTS` | **no** | **no** | its source blob is reaped |
+
+Today: `storage.content_metadata` (capture date, GPS, camera,
+dimensions), `audio.content_metadata` (ID3 / Vorbis tags),
+`storage.blob_extracted_text`, `faces.faces`.
+
+Two consequences, both easy to get wrong:
+
+- **They keep nothing alive.** Holding a reference would be a bug, not
+  an omission: a blob pinned by its own metadata could never be reaped,
+  because deleting every file on it would leave the row behind holding
+  it open. They are *dependents* — the same role `DERIVED.source_hash`
+  plays, without the `blob_hash` half.
+- **They outlive the last file on their content, on purpose.** There is
+  no FK and no cascade, because the row belongs to the bytes. Deleting
+  one of N copies of a photo must not drop the EXIF the other N−1 still
+  need, and deleting the last one leaves the row until the blob itself
+  goes. That is not a leak and not a privacy regression: the row's
+  lifetime is the blob's lifetime, and the blob is the photo. The
+  invariant is enforced at reap time by
+  `BlobHandler::purge_content_facts`.
+
+  There is **no FK to cascade from**, and today none is possible: a Blob
+  is either a `chunk_manifests` row (CDC) or a bare `storage.blobs` row
+  (legacy whole-file), and a foreign key must name exactly one table —
+  either choice would reject half the corpus. So the lifetime is
+  enforced in code, and `satellites_consistency` sweeps for rows a
+  forgotten reap path left behind (`content_facts_orphan`, severity
+  `anomaly`; deletion only under `?repair=true`).
+
+  **This is temporary.** `backend_rechunk` converts legacy whole-file
+  blobs to manifests, and once it has converged — the same gate as the
+  already-decided NEXT-MAJOR removal of the legacy paths, see
+  `docs/plan/derived-blobs.md` — every Blob is a `chunk_manifests` row
+  and `source_hash REFERENCES storage.chunk_manifests(file_hash) ON
+  DELETE CASCADE` becomes expressible. It is also the better design: a
+  guarantee the database enforces beats one every future reap path has
+  to remember. At that point the sweep becomes belt-and-braces rather
+  than the enforcement.
+
+  **The cascade suits this shape and only this shape.** `DERIVED` must
+  not get it: deleting that row is only half of what its reap does — the
+  other half releases the artifact's `blob_hash` reference — so a
+  cascade would leave the artifact pinned with nothing pointing at it,
+  which is the exact leak that table was built to avoid. Holding no
+  reference is what makes the cascade safe here. Sequence and
+  preconditions: `docs/plan/storage-consistency.md`.
 
 ## Why two tables and not one with a `kind` column
 

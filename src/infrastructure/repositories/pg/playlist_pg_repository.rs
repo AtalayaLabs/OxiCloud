@@ -30,9 +30,11 @@ struct PlaylistItemRow {
     added_at: DateTime<Utc>,
 }
 
+/// A row of `audio.content_metadata`, which is keyed by CONTENT and so
+/// carries no file id — several files may share these tags. Callers
+/// re-attach whichever file id they were asked about.
 #[derive(FromRow)]
-struct AudioMetadataRow {
-    file_id: Uuid,
+struct AudioContentMetadataRow {
     title: Option<String>,
     artist: Option<String>,
     album: Option<String>,
@@ -46,7 +48,11 @@ struct AudioMetadataRow {
     sample_rate: Option<i32>,
     channels: Option<i16>,
     format: Option<String>,
-    created_at: DateTime<Utc>,
+    /// When we parsed these tags. Named for the row, not the content —
+    /// `created_at` is reserved on content-keyed metadata for the
+    /// content's own claimed creation date, per
+    /// `docs/plan/normalize-file-dates.md`.
+    extracted_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
 
@@ -224,7 +230,7 @@ impl PlaylistItemPgRepository {
                 m.title, m.artist, m.album, m.duration_secs
             FROM audio.playlist_items pi
             LEFT JOIN storage.files f ON pi.file_id = f.id
-            LEFT JOIN audio.file_metadata m ON pi.file_id = m.file_id
+            LEFT JOIN audio.content_metadata m ON m.source_hash = f.blob_hash
             WHERE pi.playlist_id = $1
             ORDER BY pi.position ASC
             "#,
@@ -422,87 +428,42 @@ impl AudioMetadataPgRepository {
 }
 
 impl AudioMetadataRepository for AudioMetadataPgRepository {
-    async fn create_or_update(
-        &self,
-        metadata: AudioFileMetadata,
-    ) -> AudioMetadataRepositoryResult<AudioFileMetadata> {
-        let row = sqlx::query_as::<_, AudioMetadataRow>(
-            r#"
-            INSERT INTO audio.file_metadata (file_id, title, artist, album, album_artist, genre, track_number, disc_number, year, duration_secs, bitrate, sample_rate, channels, format, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
-            ON CONFLICT (file_id) DO UPDATE SET
-                title = COALESCE($2, audio.file_metadata.title),
-                artist = COALESCE($3, audio.file_metadata.artist),
-                album = COALESCE($4, audio.file_metadata.album),
-                album_artist = COALESCE($5, audio.file_metadata.album_artist),
-                genre = COALESCE($6, audio.file_metadata.genre),
-                track_number = COALESCE($7, audio.file_metadata.track_number),
-                disc_number = COALESCE($8, audio.file_metadata.disc_number),
-                year = COALESCE($9, audio.file_metadata.year),
-                duration_secs = $10,
-                bitrate = COALESCE($11, audio.file_metadata.bitrate),
-                sample_rate = COALESCE($12, audio.file_metadata.sample_rate),
-                channels = COALESCE($13, audio.file_metadata.channels),
-                format = COALESCE($14, audio.file_metadata.format),
-                updated_at = NOW()
-            RETURNING file_id, title, artist, album, album_artist, genre, track_number, disc_number, year, duration_secs, bitrate, sample_rate, channels, format, created_at, updated_at
-            "#,
-        )
-        .bind(metadata.file_id())
-        .bind(metadata.title())
-        .bind(metadata.artist())
-        .bind(metadata.album())
-        .bind(metadata.album_artist())
-        .bind(metadata.genre())
-        .bind(metadata.track_number())
-        .bind(metadata.disc_number())
-        .bind(metadata.year())
-        .bind(metadata.duration_secs())
-        .bind(metadata.bitrate())
-        .bind(metadata.sample_rate())
-        .bind(metadata.channels())
-        .bind(metadata.format())
-        .bind(metadata.created_at())
-        .bind(metadata.updated_at())
-        .fetch_one(&*self.pool)
-        .await
-        .map_err(|e| DomainError::database_error(format!("Failed to create audio metadata: {}", e)))?;
-
-        Ok(AudioFileMetadata::with_all_fields(
-            row.file_id,
-            row.title,
-            row.artist,
-            row.album,
-            row.album_artist,
-            row.genre,
-            row.track_number,
-            row.disc_number,
-            row.year,
-            row.duration_secs,
-            row.bitrate,
-            row.sample_rate,
-            row.channels,
-            row.format,
-            row.created_at,
-            row.updated_at,
-        ))
-    }
-
     async fn find_by_file_id(
         &self,
         file_id: &Uuid,
     ) -> AudioMetadataRepositoryResult<Option<AudioFileMetadata>> {
-        let row = sqlx::query_as::<_, AudioMetadataRow>(
-            "SELECT file_id, title, artist, album, album_artist, genre, track_number, disc_number, year, duration_secs, bitrate, sample_rate, channels, format, created_at, updated_at FROM audio.file_metadata WHERE file_id = $1",
+        // Content-keyed now, so resolve the file to its content first. The
+        // subquery is a PK lookup on storage.files followed by a PK lookup
+        // on content_metadata — same two index hits as the old direct
+        // read, and it means N copies of a track share one row.
+        //
+        // The row carries NO file id: these columns describe content, which
+        // several files may share. `file_id` is re-attached below from the
+        // id the caller asked about, so the DTO still answers "metadata for
+        // THIS file" and the API shape is unchanged. Selecting
+        // `source_hash AS file_id` instead would compile and then fail at
+        // runtime, since a 64-char hex string does not decode as a UUID.
+        let row = sqlx::query_as::<_, AudioContentMetadataRow>(
+            r#"
+            SELECT title, artist, album, album_artist, genre,
+                   track_number, disc_number, year, duration_secs, bitrate,
+                   sample_rate, channels, format, extracted_at, updated_at
+              FROM audio.content_metadata
+             WHERE source_hash = (SELECT blob_hash FROM storage.files WHERE id = $1)
+            "#,
         )
         .bind(file_id)
         .fetch_optional(&*self.pool)
         .await
-        .map_err(|e| DomainError::database_error(format!("Failed to find audio metadata: {}", e)))?;
+        .map_err(|e| {
+            DomainError::database_error(format!("Failed to find audio metadata: {}", e))
+        })?;
 
         Ok(row.map(|r| {
             AudioFileMetadata::with_all_fields(
-                r.file_id,
+                // Re-attached from the request, not read from the row —
+                // the row describes content, which may back many files.
+                *file_id,
                 r.title,
                 r.artist,
                 r.album,
@@ -516,131 +477,13 @@ impl AudioMetadataRepository for AudioMetadataPgRepository {
                 r.sample_rate,
                 r.channels,
                 r.format,
-                r.created_at,
+                // The entity's `created_at` carries the extraction time —
+                // the same value the DTO has always exposed. Only the
+                // COLUMN was renamed, to free `created_at` for the
+                // content's own claimed date on the sibling table.
+                r.extracted_at,
                 r.updated_at,
             )
         }))
-    }
-
-    async fn delete(&self, file_id: &Uuid) -> AudioMetadataRepositoryResult<()> {
-        sqlx::query("DELETE FROM audio.file_metadata WHERE file_id = $1")
-            .bind(file_id)
-            .execute(&*self.pool)
-            .await
-            .map_err(|e| {
-                DomainError::database_error(format!("Failed to delete audio metadata: {}", e))
-            })?;
-        Ok(())
-    }
-
-    async fn list_by_artist(
-        &self,
-        artist: &str,
-    ) -> AudioMetadataRepositoryResult<Vec<AudioFileMetadata>> {
-        let rows = sqlx::query_as::<_, AudioMetadataRow>(
-            "SELECT file_id, title, artist, album, album_artist, genre, track_number, disc_number, year, duration_secs, bitrate, sample_rate, channels, format, created_at, updated_at FROM audio.file_metadata WHERE artist ILIKE $1 ORDER BY album, track_number",
-        )
-        .bind(format!("%{}%", artist))
-        .fetch_all(&*self.pool)
-        .await
-        .map_err(|e| DomainError::database_error(format!("Failed to list by artist: {}", e)))?;
-
-        Ok(rows
-            .into_iter()
-            .map(|r| {
-                AudioFileMetadata::with_all_fields(
-                    r.file_id,
-                    r.title,
-                    r.artist,
-                    r.album,
-                    r.album_artist,
-                    r.genre,
-                    r.track_number,
-                    r.disc_number,
-                    r.year,
-                    r.duration_secs,
-                    r.bitrate,
-                    r.sample_rate,
-                    r.channels,
-                    r.format,
-                    r.created_at,
-                    r.updated_at,
-                )
-            })
-            .collect())
-    }
-
-    async fn list_by_album(
-        &self,
-        album: &str,
-    ) -> AudioMetadataRepositoryResult<Vec<AudioFileMetadata>> {
-        let rows = sqlx::query_as::<_, AudioMetadataRow>(
-            "SELECT file_id, title, artist, album, album_artist, genre, track_number, disc_number, year, duration_secs, bitrate, sample_rate, channels, format, created_at, updated_at FROM audio.file_metadata WHERE album ILIKE $1 ORDER BY disc_number, track_number",
-        )
-        .bind(format!("%{}%", album))
-        .fetch_all(&*self.pool)
-        .await
-        .map_err(|e| DomainError::database_error(format!("Failed to list by album: {}", e)))?;
-
-        Ok(rows
-            .into_iter()
-            .map(|r| {
-                AudioFileMetadata::with_all_fields(
-                    r.file_id,
-                    r.title,
-                    r.artist,
-                    r.album,
-                    r.album_artist,
-                    r.genre,
-                    r.track_number,
-                    r.disc_number,
-                    r.year,
-                    r.duration_secs,
-                    r.bitrate,
-                    r.sample_rate,
-                    r.channels,
-                    r.format,
-                    r.created_at,
-                    r.updated_at,
-                )
-            })
-            .collect())
-    }
-
-    async fn list_by_genre(
-        &self,
-        genre: &str,
-    ) -> AudioMetadataRepositoryResult<Vec<AudioFileMetadata>> {
-        let rows = sqlx::query_as::<_, AudioMetadataRow>(
-            "SELECT file_id, title, artist, album, album_artist, genre, track_number, disc_number, year, duration_secs, bitrate, sample_rate, channels, format, created_at, updated_at FROM audio.file_metadata WHERE genre ILIKE $1 ORDER BY artist, album, track_number",
-        )
-        .bind(format!("%{}%", genre))
-        .fetch_all(&*self.pool)
-        .await
-        .map_err(|e| DomainError::database_error(format!("Failed to list by genre: {}", e)))?;
-
-        Ok(rows
-            .into_iter()
-            .map(|r| {
-                AudioFileMetadata::with_all_fields(
-                    r.file_id,
-                    r.title,
-                    r.artist,
-                    r.album,
-                    r.album_artist,
-                    r.genre,
-                    r.track_number,
-                    r.disc_number,
-                    r.year,
-                    r.duration_secs,
-                    r.bitrate,
-                    r.sample_rate,
-                    r.channels,
-                    r.format,
-                    r.created_at,
-                    r.updated_at,
-                )
-            })
-            .collect())
     }
 }

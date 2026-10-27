@@ -1264,8 +1264,6 @@
     "running": "En cours d'exécution…",
     "maintenance": "Entretien",
     "maintenance_hint": "Analysez à nouveau les fichiers existants pour remplir les métadonnées. Réexécution en toute sécurité ; traite toute la bibliothèque et peut prendre un certain temps.",
-    "reextract_audio": "Réextraire les métadonnées audio",
-    "reextract_photos": "Réextraire les dates de capture photo et vidéo",
     "encryption": "Cryptage",
     "encryption_hint": "Générez une clé AES-256 pour le chiffrement des objets blob au repos, puis définissez-la sur OXICLOUD_STORAGE_ENCRYPTION_KEY dans votre environnement de serveur.",
     "gen_key": "Générer une clé",
@@ -1370,7 +1368,6 @@
     },
     "oidc": "OIDC / SSO",
     "oidc_discover": "Tester / découvrir",
-    "reextract_done": "{{processed}}/{{total}} traités · {{failed}} échec(s)",
     "sessions": {
       "filter_user": "Utilisateur (UUID)",
       "include_revoked": "Inclure les révoquées / expirées",

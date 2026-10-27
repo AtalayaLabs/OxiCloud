@@ -37,7 +37,10 @@ pub struct StoredMetadata {
     pub height: Option<i32>,
 }
 
-/// Repository for `storage.file_metadata` table operations.
+/// Repository for `storage.content_metadata` table operations.
+///
+/// The table is keyed by content hash; this repository is the layer that
+/// maps it back to the file ids its callers hold.
 pub struct FileMetadataRepository {
     pool: Arc<PgPool>,
 }
@@ -47,25 +50,64 @@ impl FileMetadataRepository {
         Self { pool }
     }
 
-    /// Insert or update EXIF metadata for a file.
-    pub async fn upsert(&self, file_id: &str, meta: &ExifMetadata) -> Result<(), DomainError> {
+    /// Can content of this type legitimately HAVE a row in
+    /// `storage.content_metadata`?
+    ///
+    /// This is the table's own question, which is why it lives on the
+    /// repository that owns the table rather than on whichever service
+    /// happens to extract today. `content_rescan` consults it to decide
+    /// whether a retyped content's existing row has become a lie and
+    /// must be dropped — so a `false` here is a DELETE.
+    ///
+    /// ⚠ **Extend this the moment a new extractor writes this table.**
+    /// Document creation dates are the known next case: a `.docx` date is
+    /// the same fact as an EXIF capture date and lands in the same
+    /// `created_at` column — which is exactly why the table and column
+    /// are named for content rather than for photos. Add the predicate
+    /// here *in the same change* as the extractor, or `content_rescan`
+    /// will delete every document's metadata on its next sweep, silently
+    /// and corpus-wide, because the type is not image/video.
+    ///
+    /// The failure mode is one-directional and quiet: nothing errors, the
+    /// rows simply stop existing.
+    pub fn applies_to(mime: &str) -> bool {
+        mime.starts_with("image/") || mime.starts_with("video/")
+    }
+
+    /// Insert or update the facts parsed from one blob's content.
+    ///
+    /// Keyed by CONTENT: N copies of a photo share one row, and a copy
+    /// writes nothing. See
+    /// `migrations/20261105000000_exif_metadata_content_keyed.sql`.
+    ///
+    /// Note the column is `created_at` while the Rust field stays
+    /// `captured_at`, and the asymmetry is deliberate.
+    /// `docs/plan/normalize-file-dates.md` fixes the COLUMN name, because
+    /// it stops being photo-specific the moment the extractor learns to
+    /// read a document's creation date — at which point `captured_at`
+    /// would be a lie. The Rust side keeps EXIF vocabulary until that
+    /// widening actually happens, rather than renaming 56 call sites
+    /// inside a schema migration. Mapping the two is what this repository
+    /// is for.
+    pub async fn upsert(&self, source_hash: &str, meta: &ExifMetadata) -> Result<(), DomainError> {
         sqlx::query(
             r#"
-            INSERT INTO storage.file_metadata
-                (file_id, captured_at, latitude, longitude, camera_make, camera_model, orientation, width, height)
-            VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9)
-            ON CONFLICT (file_id) DO UPDATE SET
-                captured_at  = EXCLUDED.captured_at,
+            INSERT INTO storage.content_metadata
+                (source_hash, created_at, latitude, longitude, camera_make, camera_model, orientation, width, height)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            ON CONFLICT (source_hash) DO UPDATE SET
+                created_at   = EXCLUDED.created_at,
                 latitude     = EXCLUDED.latitude,
                 longitude    = EXCLUDED.longitude,
                 camera_make  = EXCLUDED.camera_make,
                 camera_model = EXCLUDED.camera_model,
                 orientation  = EXCLUDED.orientation,
                 width        = EXCLUDED.width,
-                height       = EXCLUDED.height
+                height       = EXCLUDED.height,
+                updated_at   = CURRENT_TIMESTAMP
             "#,
         )
-        .bind(file_id)
+        .bind(source_hash)
         .bind(meta.captured_at)
         .bind(meta.latitude)
         .bind(meta.longitude)
@@ -88,10 +130,10 @@ impl FileMetadataRepository {
     pub async fn get(&self, file_id: &str) -> Result<Option<StoredMetadata>, DomainError> {
         let row: Option<MetadataRow> = sqlx::query_as(
             r#"
-            SELECT file_id::text, captured_at, latitude, longitude,
-                   camera_make, camera_model, orientation, width, height
-              FROM storage.file_metadata
-             WHERE file_id = $1::uuid
+            SELECT $1::text, m.created_at, m.latitude, m.longitude,
+                   m.camera_make, m.camera_model, m.orientation, m.width, m.height
+              FROM storage.content_metadata m
+             WHERE m.source_hash = (SELECT blob_hash FROM storage.files WHERE id = $1::uuid)
             "#,
         )
         .bind(file_id)
@@ -132,9 +174,9 @@ impl FileMetadataRepository {
     /// Get metadata for multiple files in a single query.
     /// Batch-read metadata for a set of files, keyed by file id.
     ///
-    /// **Sparse by construction**: files with no `storage.file_metadata`
-    /// row are simply absent from the map, and a present row may still
-    /// carry `captured_at = NULL`. Callers must treat both as "the
+    /// **Sparse by construction**: files whose content has no
+    /// `storage.content_metadata` row are simply absent from the map, and a
+    /// present row may still carry `captured_at = NULL`. Callers must treat both as "the
     /// content claims no date" rather than defaulting to a file clock —
     /// see `nc_creation_time` in `interfaces/nextcloud`.
     ///
@@ -151,10 +193,11 @@ impl FileMetadataRepository {
 
         let rows: Vec<MetadataRow> = sqlx::query_as(
             r#"
-            SELECT file_id::text, captured_at, latitude, longitude,
-                   camera_make, camera_model, orientation, width, height
-              FROM storage.file_metadata
-             WHERE file_id = ANY($1::uuid[])
+            SELECT f.id::text, m.created_at, m.latitude, m.longitude,
+                   m.camera_make, m.camera_model, m.orientation, m.width, m.height
+              FROM storage.files f
+              JOIN storage.content_metadata m ON m.source_hash = f.blob_hash
+             WHERE f.id = ANY($1::uuid[])
             "#,
         )
         .bind(file_ids)

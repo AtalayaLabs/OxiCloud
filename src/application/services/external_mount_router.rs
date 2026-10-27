@@ -9,6 +9,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::application::services::mount_registry::{MountConfig, MountRegistry};
+use crate::domain::services::authorization::Resource;
 use crate::domain::services::external_mount_id::{NodeId, is_external_id, parse_child_id};
 
 /// The result of classifying an id.
@@ -69,6 +70,47 @@ impl MountRouter {
             return ResolvedId::MountRoot { cfg };
         }
         ResolvedId::Regular
+    }
+
+    /// The AuthZ resource guarding a *folder* id that may be native or
+    /// mount-addressed. Everything inside a mount is gated by the mount-root
+    /// folder grant, so both the root UUID and `ext:` children collapse onto
+    /// `Resource::Folder(cfg.mount_id)`; a native id parses to its own UUID.
+    /// `None` when the id is neither — callers answer NotFound (never 500),
+    /// which is also the anti-enumeration shape `FolderService::folder_resource`
+    /// uses.
+    ///
+    /// Added for #794: the DAV handlers ran `Uuid::parse_str(&dto.id)` on a
+    /// resolved DTO *before* the permission check, so every `ext:` id — i.e.
+    /// every path below a mount root — turned into a 404.
+    pub fn folder_authz_resource(&self, id: &str) -> Option<Resource> {
+        match self.classify(id) {
+            ResolvedId::MountRoot { cfg } | ResolvedId::MountChild { cfg, .. } => {
+                Some(Resource::Folder(cfg.mount_id))
+            }
+            ResolvedId::Regular => Uuid::parse_str(id).ok().map(Resource::Folder),
+        }
+    }
+
+    /// File counterpart of [`Self::folder_authz_resource`]: a native file id
+    /// becomes `Resource::File`, an `ext:` child collapses onto the mount-root
+    /// folder. A mount-root UUID is a directory and never a file → `None`.
+    pub fn file_authz_resource(&self, id: &str) -> Option<Resource> {
+        match self.classify(id) {
+            ResolvedId::MountChild { cfg, .. } => Some(Resource::Folder(cfg.mount_id)),
+            ResolvedId::MountRoot { .. } => None,
+            ResolvedId::Regular => Uuid::parse_str(id).ok().map(Resource::File),
+        }
+    }
+
+    /// `ext:` id → `(mount config, provider node)`; `None` for native ids and
+    /// mount roots. The DAV GET/HEAD paths use this to stream a mount file
+    /// through its provider instead of the blob store.
+    pub fn mount_child(&self, id: &str) -> Option<(Arc<MountConfig>, NodeId)> {
+        match self.classify(id) {
+            ResolvedId::MountChild { cfg, node_id } => Some((cfg, node_id)),
+            _ => None,
+        }
     }
 
     /// True when `id` addresses anything inside a mount (root or child).
@@ -170,6 +212,51 @@ mod tests {
             _ => panic!("expected MountChild"),
         }
         assert!(router.is_mount_id(&child));
+    }
+
+    /// #794 regression pin: an `ext:` child id must authorize against the
+    /// mount-root folder instead of failing a UUID parse (which the handlers
+    /// turned into a 404 for every path below a mount root). The root UUID
+    /// itself resolves to the same resource; a native UUID keeps its own.
+    #[tokio::test]
+    async fn authz_resources_collapse_mount_ids_onto_mount_root() {
+        let dir = TempDir::new().unwrap();
+        let mount_id = Uuid::new_v4();
+        let router = router_with_mount(mount_id, &dir).await;
+
+        let child = encode_child_id(mount_id, "docs/a.txt");
+        assert_eq!(
+            router.folder_authz_resource(&child),
+            Some(Resource::Folder(mount_id))
+        );
+        assert_eq!(
+            router.file_authz_resource(&child),
+            Some(Resource::Folder(mount_id))
+        );
+        assert_eq!(
+            router.folder_authz_resource(&mount_id.to_string()),
+            Some(Resource::Folder(mount_id))
+        );
+        // A mount root is a directory, never a file.
+        assert_eq!(router.file_authz_resource(&mount_id.to_string()), None);
+
+        let native = Uuid::new_v4();
+        assert_eq!(
+            router.folder_authz_resource(&native.to_string()),
+            Some(Resource::Folder(native))
+        );
+        assert_eq!(
+            router.file_authz_resource(&native.to_string()),
+            Some(Resource::File(native))
+        );
+        assert_eq!(router.folder_authz_resource("garbage"), None);
+        assert_eq!(router.file_authz_resource("garbage"), None);
+
+        let (cfg, node) = router.mount_child(&child).expect("mount child");
+        assert_eq!(cfg.mount_id, mount_id);
+        assert_eq!(node.as_str(), "docs/a.txt");
+        assert!(router.mount_child(&mount_id.to_string()).is_none());
+        assert!(router.mount_child(&native.to_string()).is_none());
     }
 
     #[tokio::test]

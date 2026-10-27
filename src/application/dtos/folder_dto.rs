@@ -1,7 +1,5 @@
-use std::sync::Arc;
-
 use crate::application::dtos::cursor::{CursorListResponse, CursorQuery, PageCursor};
-use crate::application::dtos::display_helpers::intern_display;
+use crate::application::dtos::display_helpers::ResourceCategory;
 use crate::application::dtos::grant_dto::{
     GrantDto, ResourceContentDto, ResourceDto, ResourceTypeDto, RoleDto,
 };
@@ -85,8 +83,7 @@ pub struct FolderDto {
     // ── Pre-computed display fields (Arc<str>: always identical values) ──
     /// Content category — a stable machine key, not display text; always
     /// "Folder". See `FileDto::category` for the contract.
-    #[schema(value_type = String)]
-    pub category: Arc<str>,
+    pub category: ResourceCategory,
 
     /// Opaque ETag for HTTP responses. Populated from `Folder::etag()`
     /// at conversion time so every WebDAV / NextCloud handler emits
@@ -145,7 +142,7 @@ impl From<Folder> for FolderDto {
             tree_modified_at: epoch_to_datetime(parts.tree_modified_at),
             // Constant display field: refcount bump on an interned static
             // instead of a fresh Arc allocation per row.
-            category: intern_display("Folder"),
+            category: ResourceCategory::Folder,
             etag,
             created_by: parts.created_by,
             updated_by: parts.updated_by,
@@ -226,7 +223,7 @@ impl FolderDto {
             created_at: epoch_zero(),
             modified_at: epoch_zero(),
             tree_modified_at: epoch_zero(),
-            category: intern_display("Folder"),
+            category: ResourceCategory::Folder,
             etag: String::new(),
             created_by: None,
             updated_by: None,
@@ -473,12 +470,21 @@ pub type FolderResourcesDto = CursorListResponse<FolderResourceItemDto>;
 /// walk stops at the first inaccessible parent.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct FolderAncestorDto {
-    pub id: Uuid,
+    /// Folder id. A native folder is a UUID string; a folder inside
+    /// an external mount is an `ext:<mount>:<token>` string (same
+    /// shape every other mount-aware DTO uses — [`FolderDto::id`],
+    /// [`crate::application::dtos::resource_dto::ResourceDto`]).
+    /// Typed as a string so the single DTO shape carries both — see
+    /// #837: the previous `Uuid`-only field type forced the ancestor
+    /// walk to UUID-parse `leaf_id` before classify, so every mount
+    /// subfolder answered 404.
+    pub id: String,
     pub name: String,
     /// `None` on the drive-root folder. On boundary crumbs it's the id
     /// of the (invisible-to-caller) parent — clients don't render it
-    /// but the field is preserved for debugging.
-    pub parent_id: Option<Uuid>,
+    /// but the field is preserved for debugging. Same string shape as
+    /// [`Self::id`] (UUID or `ext:…`).
+    pub parent_id: Option<String>,
     /// Drive the folder belongs to. Always populated (every folder has
     /// a drive_id in the D0+ schema). Lets clients derive the current
     /// drive from `ancestors.at(-1).drive_id` without a second

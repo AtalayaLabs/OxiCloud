@@ -167,10 +167,6 @@ pub fn admin_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/transfer-ownership", post(transfer_ownership))
         // Registration control
         .route("/settings/registration", put(set_registration_setting))
-        // Audio metadata
-        .route("/audio/metadata/reextract", post(reextract_audio_metadata))
-        // Image/video capture metadata (Photos timeline backfill)
-        .route("/photos/metadata/reextract", post(reextract_image_metadata))
         // Plugin management
         .route("/plugins", get(list_plugins))
         // Install caps the request body at 32 MiB (overriding the global
@@ -2343,53 +2339,6 @@ pub async fn set_registration_setting(
     ))
 }
 
-async fn reextract_audio_metadata(
-    State(state): State<Arc<AppState>>,
-) -> Result<impl IntoResponse, AppError> {
-    let audio_service = state
-        .applications
-        .audio_metadata_service
-        .as_ref()
-        .ok_or_else(|| AppError::internal_error("Audio metadata service not available"))?;
-
-    let result = audio_service
-        .reextract_all_audio_metadata()
-        .await
-        .map_err(|e| {
-            AppError::internal_error(format!("Failed to re-extract audio metadata: {}", e))
-        })?;
-
-    Ok(Json(serde_json::json!({
-        "message": "Audio metadata extraction complete",
-        "total": result.total,
-        "processed": result.processed,
-        "failed": result.failed,
-    })))
-}
-
-/// Backfill image/video capture dates (EXIF / container creation time) into
-/// `storage.file_metadata` for every existing media file, re-bucketing the
-/// Photos timeline by real capture date. Safe to re-run (idempotent upsert).
-async fn reextract_image_metadata(
-    State(state): State<Arc<AppState>>,
-) -> Result<impl IntoResponse, AppError> {
-    let result = state
-        .applications
-        .media_metadata_service
-        .reextract_all_image_metadata()
-        .await
-        .map_err(|e| {
-            AppError::internal_error(format!("Failed to re-extract capture metadata: {}", e))
-        })?;
-
-    Ok(Json(serde_json::json!({
-        "message": "Image/video capture-metadata extraction complete",
-        "total": result.total,
-        "processed": result.processed,
-        "failed": result.failed,
-    })))
-}
-
 // ─────────────────────────────────────────────────────
 // SMTP diagnostics
 // ─────────────────────────────────────────────────────
@@ -3765,8 +3714,8 @@ pub async fn trigger_job(
         "👮🏻‍♂️ Admin triggered job {name} ({params_desc})",
     );
 
-    // Jobs that can run for hours (backend_migration, future
-    // reextract_*) are detached: `tokio::spawn` the trigger so the
+    // Jobs that can run for hours (backend_migration, content_rescan)
+    // are detached: `tokio::spawn` the trigger so the
     // HTTP request returns immediately. Without this, browser HTTP
     // timeouts drop the request future mid-await → the SemaphorePermit
     // gets released while the spawned handler task keeps running →
@@ -3820,8 +3769,13 @@ pub async fn trigger_job(
 /// hardcoded allowlist (rather than a flag on `JobEntry`) until
 /// there's a second long-running tenant that justifies the plumbing.
 /// See the comment in `trigger_job` for why detach matters.
+///
+/// `content_rescan` is that second tenant: it reads the head of every
+/// distinct content in the corpus, so a synchronous trigger would block
+/// the request for the length of a full-corpus sweep — which is the bug
+/// it exists to fix in the two re-extract endpoints it replaces.
 fn is_detached_job(name: &str) -> bool {
-    matches!(name, "backend_migration")
+    matches!(name, "backend_migration" | "content_rescan")
 }
 
 /// `POST /api/admin/jobs/{name}/cancel` — cooperative cancel of the

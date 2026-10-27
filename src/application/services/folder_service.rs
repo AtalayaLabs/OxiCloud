@@ -22,7 +22,7 @@ use crate::domain::repositories::folder_repository::FolderRepository;
 use crate::domain::services::authorization::{
     Grant, Permission, Resource, ResourceKind, Role, Subject,
 };
-use crate::domain::services::external_mount_id::NodeId;
+use crate::domain::services::external_mount_id::{NodeId, encode_child_id};
 use crate::domain::services::path_service::{StoragePath, validate_storage_name};
 use crate::infrastructure::repositories::pg::folder_db_repository::FolderDbRepository;
 use crate::infrastructure::services::pg_acl_engine::PgAclEngine;
@@ -332,7 +332,14 @@ impl FolderUseCase for FolderService {
         permission: Permission,
         folder_id: &str,
     ) -> Result<Subject, DomainError> {
-        let resource = Self::folder_resource(folder_id)?;
+        // Mount ids (root UUID and `ext:` children) authorise against the
+        // mount-root folder grant (#793) — the REST prechecks on folder
+        // listing, folder metadata and uploads into a mount subfolder all
+        // pass through here.
+        let resource = self
+            .mount_router
+            .folder_authz_resource(folder_id)
+            .ok_or_else(|| DomainError::not_found("Folder", folder_id))?;
         self.authz.require_any(callers, permission, resource).await
     }
 
@@ -446,6 +453,20 @@ impl FolderUseCase for FolderService {
         id: &str,
         caller: Subject,
     ) -> Result<FolderDto, DomainError> {
+        // An `ext:` mount directory has no `storage.folders` row: authorise
+        // on the mount root and stat it on the provider (#793). The mount
+        // root itself is a real row and falls through.
+        if let ResolvedId::MountChild { cfg, node_id } = self.mount_router.classify(id) {
+            self.authz
+                .require(caller, Permission::Read, Resource::Folder(cfg.mount_id))
+                .await?;
+            let stat = cfg.provider.stat(&node_id).await?;
+            if !stat.is_dir {
+                return Err(DomainError::not_found("Folder", id));
+            }
+            let parent = mount_parent_id(&cfg, stat.node_id.as_str());
+            return Ok(mount_folder_dto(&cfg, &parent, &stat));
+        }
         self.authz
             .require(caller, Permission::Read, Self::folder_resource(id)?)
             .await?;
@@ -594,6 +615,42 @@ impl FolderUseCase for FolderService {
         after_name: Option<&str>,
         limit: usize,
     ) -> Result<Vec<FolderDto>, DomainError> {
+        // External mount: list subdirectories from the provider. This is the
+        // folder half of the WebDAV / NextCloud PROPFIND Depth:1 loop; the file
+        // half lives in `FileRetrievalService::list_files_batch_with_perms` and
+        // already branched here. The keyset refactor dropped this branch from
+        // the batch path (#792) — Depth:1 on a mount listed files but no
+        // directories. Authz collapses on the mount root; provider order is
+        // not guaranteed, so sort before slicing on `after_name`.
+        if let Some(pid) = parent_id
+            && let Some((cfg, node)) = self.mount_node_for(pid)
+        {
+            self.require_mount_perm(&cfg, Permission::Read, caller_id)
+                .await?;
+            let mut dirs: Vec<_> = cfg
+                .provider
+                .list_dir(&node)
+                .await?
+                .into_iter()
+                .filter(|e| e.is_dir)
+                .collect();
+            dirs.sort_by_key(|e| e.name.to_lowercase());
+            let start = match after_name {
+                Some(name) => dirs
+                    .iter()
+                    .position(|e| name.eq_ignore_ascii_case(&e.name))
+                    .map(|i| i + 1)
+                    .unwrap_or(0),
+                None => 0,
+            };
+            return Ok(dirs
+                .into_iter()
+                .skip(start)
+                .take(limit)
+                .map(|e| mount_entry_folder_dto(&cfg, pid, &e))
+                .collect());
+        }
+
         match parent_id {
             Some(pid) => {
                 self.authz
@@ -1163,8 +1220,23 @@ impl FolderService {
         include_grants: bool,
     ) -> Result<FolderAncestorsDto, DomainError> {
         // Gate: caller must have Read on the leaf. Denial → 404 (anti-enum).
+        //
+        // `folder_authz_resource` collapses all three id shapes onto one
+        // `Resource` (#831): a native UUID becomes `Resource::Folder(uuid)`;
+        // a mount root OR a mount child (`ext:…`) both become
+        // `Resource::Folder(cfg.mount_id)`. That makes the ancestor
+        // endpoint's gate the same one `/resources` and the WebDAV
+        // handlers use — a stranger denied there is denied here with
+        // the same 404 shape. Historical bug (#837): this method
+        // called `folder_resource(leaf_id)` which `Uuid::parse_str`'d
+        // the id and mapped non-UUIDs to NotFound, so every mount
+        // subfolder returned 404 even for the owner.
+        let resource = self
+            .mount_router
+            .folder_authz_resource(leaf_id)
+            .ok_or_else(|| DomainError::not_found("Folder", leaf_id))?;
         self.authz
-            .require(caller, Permission::Read, Self::folder_resource(leaf_id)?)
+            .require(caller, Permission::Read, resource)
             .await?;
 
         // `include_grants` RAISES the permission this endpoint needs.
@@ -1181,16 +1253,33 @@ impl FolderService {
         // instead of having to remember it.
         if include_grants {
             self.authz
-                .require(caller, Permission::Share, Self::folder_resource(leaf_id)?)
+                .require(caller, Permission::Share, resource)
                 .await?;
         }
 
-        let leaf_uuid =
-            Uuid::parse_str(leaf_id).map_err(|_| DomainError::not_found("Folder", leaf_id))?;
+        // Where the native walk starts, and whether we need to append
+        // synthetic mount-child entries after it.
+        //
+        //   * MountChild: walk the mount ROOT's native ancestors (so
+        //     the breadcrumb still carries the drive / share boundary
+        //     above the mount), then synthesise one entry per path
+        //     segment of the decoded `node_id`.
+        //   * MountRoot: walk the mount root's native row directly —
+        //     identical to Regular from this point on.
+        //   * Regular: walk the leaf's own UUID.
+        let (walk_root, mount_tail) = match self.mount_router.classify(leaf_id) {
+            ResolvedId::MountChild { cfg, node_id } => (cfg.mount_id, Some((cfg, node_id))),
+            ResolvedId::MountRoot { cfg } => (cfg.mount_id, None),
+            ResolvedId::Regular => {
+                let uuid = Uuid::parse_str(leaf_id)
+                    .map_err(|_| DomainError::not_found("Folder", leaf_id))?;
+                (uuid, None)
+            }
+        };
 
         let mut rows = self
             .folder_storage
-            .fetch_ancestor_walk(caller, leaf_uuid)
+            .fetch_ancestor_walk(caller, walk_root)
             .await?;
         if rows.is_empty() {
             return Err(DomainError::not_found("Folder", leaf_id));
@@ -1393,15 +1482,55 @@ impl FolderService {
             (None, None)
         };
 
-        let ancestors = rows
+        let mut ancestors: Vec<FolderAncestorDto> = rows
             .into_iter()
             .map(|r| FolderAncestorDto {
-                id: r.id,
+                id: r.id.to_string(),
                 name: r.name,
-                parent_id: r.parent_id,
+                parent_id: r.parent_id.map(|u| u.to_string()),
                 drive_id: r.drive_id,
             })
             .collect();
+
+        // Mount-child tail: append one synthetic entry per path segment
+        // of the decoded `node_id`. Each entry's parent is the previous
+        // one in the chain; the first segment's parent is the mount
+        // root (last native ancestor). `drive_id` is carried from the
+        // mount root — every entry below a mount lives in the same
+        // drive as its mount by definition.
+        //
+        // No AuthZ loop here: the top-of-method gate already proved
+        // `Permission::Read` on `Resource::Folder(cfg.mount_id)`, and
+        // that single grant covers every path below the mount root
+        // (mount provides the AuthZ scope; the provider owns the
+        // namespace underneath).
+        //
+        // No `effective_grants` entries are added below the mount root:
+        // grants live on the mount root and above, which the native
+        // walk already enumerated. A synthetic row holds no row of
+        // its own.
+        if let Some((cfg, node_id)) = mount_tail {
+            let mut prev_id = ancestors
+                .last()
+                .map(|a| a.id.clone())
+                .unwrap_or_else(|| cfg.mount_id.to_string());
+            let synthetic_drive_id = ancestors.last().map(|a| a.drive_id).unwrap_or(cfg.drive_id);
+            let mut acc = String::new();
+            for segment in node_id.as_str().split('/').filter(|s| !s.is_empty()) {
+                if !acc.is_empty() {
+                    acc.push('/');
+                }
+                acc.push_str(segment);
+                let child_id = encode_child_id(cfg.mount_id, acc.clone());
+                ancestors.push(FolderAncestorDto {
+                    id: child_id.clone(),
+                    name: segment.to_string(),
+                    parent_id: Some(prev_id),
+                    drive_id: synthetic_drive_id,
+                });
+                prev_id = child_id;
+            }
+        }
 
         Ok(FolderAncestorsDto {
             ancestors,
@@ -2458,6 +2587,124 @@ mod mount_authz_integration {
             .list_mount_dir_with_perms(&cfg, &NodeId::default(), stranger, opts())
             .await
             .expect_err("stranger must be denied");
+        assert_eq!(err.kind, crate::domain::errors::ErrorKind::NotFound);
+    }
+
+    /// #792 regression pin: the keyset (batch) folder listing — the folder
+    /// half of the WebDAV / NextCloud PROPFIND Depth:1 loop — must branch to
+    /// the provider for mount directories exactly like the file half does.
+    /// Before the fix it queried `storage.folders` for children of the mount
+    /// root, found none, and Depth:1 listed files but no subdirectories.
+    /// Covers the mount root, an `ext:` child, the `after_name` cursor and the
+    /// stranger-denied path (NotFound — anti-enumeration).
+    #[tokio::test]
+    async fn batch_folder_listing_descends_into_mount() {
+        let (_c, pool) = fresh_db().await;
+        let host = tempfile::tempdir().unwrap();
+        std::fs::create_dir(host.path().join("beta")).unwrap();
+        std::fs::create_dir(host.path().join("Alpha")).unwrap();
+        std::fs::create_dir(host.path().join("Alpha").join("nested")).unwrap();
+        std::fs::write(host.path().join("file.txt"), b"not a folder").unwrap();
+        let (fs, mount_id, owner) = wire_mount(&pool, host.path()).await;
+
+        // Mount root: directories only, case-insensitive name order.
+        let page = fs
+            .list_folders_batch_with_perms(Some(&mount_id), owner, None, 50)
+            .await
+            .expect("owner may list");
+        let names: Vec<_> = page.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["Alpha", "beta"]);
+        assert!(
+            page.iter()
+                .all(|f| f.parent_id.as_deref() == Some(mount_id.as_str())),
+            "children of the mount root point back at the root UUID"
+        );
+
+        // Keyset cursor resumes after the named entry.
+        let rest = fs
+            .list_folders_batch_with_perms(Some(&mount_id), owner, Some("Alpha"), 50)
+            .await
+            .expect("owner may page");
+        let names: Vec<_> = rest.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["beta"]);
+
+        // An `ext:` child directory lists ITS subdirectories (#794's PROPFIND
+        // on a path below the root relies on this once the handler resolves it).
+        let child_id = encode_child_id(Uuid::parse_str(&mount_id).unwrap(), "Alpha");
+        let nested = fs
+            .list_folders_batch_with_perms(Some(&child_id), owner, None, 50)
+            .await
+            .expect("owner may list child");
+        let names: Vec<_> = nested.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["nested"]);
+
+        // No grant on the mount root → denied, as NotFound.
+        let stranger = make_user(&pool, "stranger").await;
+        let err = fs
+            .list_folders_batch_with_perms(Some(&mount_id), stranger, None, 50)
+            .await
+            .expect_err("stranger must be denied");
+        assert_eq!(err.kind, crate::domain::errors::ErrorKind::NotFound);
+    }
+
+    /// #793 regression pin: the REST prechecks (`require_permission`) and
+    /// `get_folder_with_perms` must accept `ext:` mount ids. Before the fix
+    /// both parsed the id as a UUID and answered NotFound, so the SPA could
+    /// open a mount root but not a single subfolder (or upload into one).
+    #[tokio::test]
+    async fn rest_prechecks_accept_mount_child_ids() {
+        let (_c, pool) = fresh_db().await;
+        let host = tempfile::tempdir().unwrap();
+        std::fs::create_dir(host.path().join("sub")).unwrap();
+        std::fs::write(host.path().join("sub").join("f.txt"), b"x").unwrap();
+        let (fs, mount_id, owner) = wire_mount(&pool, host.path()).await;
+        let mount_uuid = Uuid::parse_str(&mount_id).unwrap();
+        let sub = encode_child_id(mount_uuid, "sub");
+
+        // Precheck passes for the owner, on the root UUID and on the child.
+        for id in [mount_id.as_str(), sub.as_str()] {
+            let granted = fs
+                .require_permission(&[Subject::User(owner)], Permission::Read, id)
+                .await
+                .expect("owner passes the precheck");
+            assert_eq!(granted, Subject::User(owner));
+        }
+
+        // Folder metadata of a mount subdirectory comes from the provider.
+        let dto = fs
+            .get_folder_with_perms(&sub, Subject::User(owner))
+            .await
+            .expect("owner reads mount subfolder");
+        assert_eq!(dto.name, "sub");
+        assert_eq!(dto.id, sub);
+        assert_eq!(dto.parent_id.as_deref(), Some(mount_id.as_str()));
+
+        // A file id is not a folder.
+        let file_as_folder = encode_child_id(mount_uuid, "sub/f.txt");
+        let err = fs
+            .get_folder_with_perms(&file_as_folder, Subject::User(owner))
+            .await
+            .expect_err("file is not a folder");
+        assert_eq!(err.kind, crate::domain::errors::ErrorKind::NotFound);
+
+        // Stranger: denied on both paths, as NotFound.
+        let stranger = make_user(&pool, "stranger").await;
+        let err = fs
+            .require_permission(&[Subject::User(stranger)], Permission::Read, &sub)
+            .await
+            .expect_err("stranger denied");
+        assert_eq!(err.kind, crate::domain::errors::ErrorKind::NotFound);
+        let err = fs
+            .get_folder_with_perms(&sub, Subject::User(stranger))
+            .await
+            .expect_err("stranger denied");
+        assert_eq!(err.kind, crate::domain::errors::ErrorKind::NotFound);
+
+        // Garbage ids still NotFound, never 500.
+        let err = fs
+            .require_permission(&[Subject::User(owner)], Permission::Read, "garbage")
+            .await
+            .expect_err("garbage id");
         assert_eq!(err.kind, crate::domain::errors::ErrorKind::NotFound);
     }
 

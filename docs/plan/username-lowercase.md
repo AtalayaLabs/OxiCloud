@@ -142,6 +142,14 @@ entity-write path automatically. Callers to touch:
 
 - User-driven rename (calls `User::set_username`):
   - `auth_application_service.rs:2756-2801` — `update_profile()`
+  - **Correction (2026-10-24): there is no user-driven rename.**
+    `update_profile` treats username as **claim-once** — passing one for a
+    user that already has it returns 409 with
+    `reason = "username_immutable"`. That is deliberate and should stay:
+    the DAV / NextCloud surfaces bake the username into path segments
+    (`/remote.php/dav/files/{user}/`), so a rename silently breaks every
+    cached client URL. Only the claim path (user without a username yet)
+    reaches `set_username`, and that still needs the lowercase guarantee.
 
 - Repository-write compile-error catches:
   - `src/infrastructure/repositories/pg/user_pg_repository.rs:281`
@@ -457,9 +465,46 @@ The two docs that DO ship with this PR:
   total-affected-count sums across groups.
 - **Hurl** (`tests/api/lowercase_usernames.hurl`, new): register a
   user with `MixedCase`, assert DB stores `mixedcase`; log in with
-  `MIXEDCASE` and `mixedcase` — both succeed; rename to `NewName`,
-  assert `newname` stored; NC Basic Auth accepts `MixedCase:pass`,
-  `MIXEDCASE:pass`, `mixedcase:pass`.
+  `MIXEDCASE` and `mixedcase` — both succeed; NC Basic Auth accepts
+  `MixedCase:pass`, `MIXEDCASE:pass`, `mixedcase:pass`.
+  (This originally said "rename to `NewName`, assert `newname`
+  stored". The test was written to that spec, PATCHed a `/api/auth/me`
+  route that does not exist, and was never wired into `run.sh` — so it
+  failed on both counts the first time it ran, 2026-10-24. It now pins
+  the 409 refusal instead; see the correction under "User-driven
+  rename" above.)
+
+### Gap found while fixing that test: the two 409s are not machine-distinguishable
+
+`update_profile` returns `ErrorKind::AlreadyExists` for **both**
+username-immutable and username-taken-by-another-user. On the wire that is
+`error_type: "Already Exists"` for both, and REST `AppError` has no
+`error_code` field — `{status, error, message, error_type}` is the whole
+shape. (The `error_code` constants in `message_bus_ports` are the RT/RPC
+surface, not REST.)
+
+So the only way to tell them apart is the English message, and
+`frontend/src/lib/api/endpoints/profile.ts:43` does exactly that:
+
+```js
+const key = msg.includes('already claimed') ? 'profile.username_immutable_error'
+                                            : 'profile.username_taken_error';
+```
+
+Two consequences worth fixing separately from this plan:
+
+1. **Rewording the server message silently mis-routes the SPA error.** The
+   Hurl pin added above is currently the only guard.
+2. **Server-side i18n breaks it outright.** Once that message is localised
+   (`project_server_i18n` work), `includes('already claimed')` stops matching
+   and every immutable-username rejection renders as "already taken".
+
+The fix is a fine-grained machine code on REST errors — `error_code:
+"username_immutable"` vs `"username_taken"` — asserted by the Hurl pin and
+switched on by the SPA. Note that `frontend/.../profile.test.ts` does NOT
+currently catch this: it mocks `{ message: 'username already claimed' }`, a
+string the server never sends, so the test passes regardless of the real
+wording.
 - **Manual** (against dev DB, not CI):
   - Auto-rename path: `UPDATE auth.users SET username='Alice' WHERE
     username='alice'` (no collision); boot server → verify audit log

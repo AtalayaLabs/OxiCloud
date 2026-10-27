@@ -44,7 +44,7 @@ function photo(i: number): PhotoItem {
 	const w = 200 + ((i * 37) % 400);
 	const h = 200 + ((i * 53) % 300);
 	return {
-		category: 'image',
+		category: 'Image',
 		created_at: sortDateIso,
 		id: `p-${i.toString().padStart(6, '0')}`,
 		mime_type: 'image/jpeg',

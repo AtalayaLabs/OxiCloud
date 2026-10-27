@@ -114,6 +114,15 @@ cargo clippy --all-features --all-targets -- -D warnings     # Lint (must pass w
 
 CI enforces both — commits that fail either check will not merge.
 
+**`--all-targets` does NOT cover the integration tests.** They live in
+`#[cfg(integration_tests)]` modules, which that command never compiles — so a
+warning in one passes clippy and shows up only when someone runs the suite.
+When the change touches such a module, lint it too:
+
+```bash
+RUSTFLAGS='--cfg integration_tests' cargo clippy --all-features --all-targets -- -D warnings
+```
+
 ## Backend Pre-push checks
 
 When the change touches server code (anything under `src/`, `migrations/`,
@@ -198,6 +207,28 @@ The server exposes multiple protocol interfaces simultaneously:
 ### Test organization
 
 Tests are primarily `#[cfg(test)]` modules within source files (~36 files have inline tests). Dedicated test files exist at `*_test.rs` alongside their source. The `test_utils` feature flag enables `mockall` mock generation for trait-heavy testing. No separate `tests/` directory.
+
+### DB integration tests share one database
+
+`#[cfg(integration_tests)]` modules all run against the single Postgres on
+5433, across several test binaries, concurrently. Three rules follow, and
+ignoring them produces failures that look like bugs in the code under test:
+
+- **Never assert on a value derived from the whole database.** A job that
+  sweeps every row reports counters for every row, so `failures == 0` or
+  `head_reads == 2` is a claim about every other test's fixtures too. Assert
+  on your own keys — findings filtered by your content hash, rows filtered by
+  your id.
+- **Scope history-bearing queries to the run.** `cleanup` removes fixtures,
+  not `jobs.run_findings`, and those rows outlive it. Take a cutoff from the
+  DB clock (`SELECT now()`, not the app's — see
+  `bug_job_run_timestamps_two_clocks`) and filter on it.
+- **Seed idempotently, and clear before seeding.** `tests/common/init-test-schema.sh`
+  only applies migrations; it never clears data. Cleanup at the end of a test
+  does not run when an assertion fails, so a leaked fixture persists — and one
+  pointing at a backend object from a dead process's temp dir makes every
+  later run fail for an unrelated reason. `spawn-db.sh` does `down -v` first,
+  which hides all of this until someone runs a test twice by hand.
 
 ### Every regression gets its own coverage
 
@@ -339,3 +370,4 @@ CI runs the same `npm run check` (plus Vitest) — commits that fail will not me
 - Leave debug `console.log` statements in code
 - Use raw color values in CSS — always use CSS custom properties
 - Commit without passing all linters (`npm run check` for the frontend; `cargo fmt` + `cargo clippy` for the backend)
+- **Commit server (`src/`, `migrations/`) or frontend (`frontend/src/`) changes before the relevant tests have been validated.** The pre-commit hook triggers a build; committing speculatively to "see what happens" forces that build each time and wastes wall-clock minutes per iteration. For a code change touching server logic, run the targeted unit or integration test first (`cargo test <name>`), or hand the Hurl invocation to the maintainer and wait for the result, before `git commit`. Same for frontend: `npm run test:unit` or the relevant Playwright spec first. **Test-doc edits are exempt** — a Hurl file or a `.spec.ts` on its own has no build cost worth deferring.

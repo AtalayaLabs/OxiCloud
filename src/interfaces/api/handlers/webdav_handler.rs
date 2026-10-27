@@ -22,7 +22,7 @@ use uuid::Uuid;
 use crate::application::adapters::webdav_adapter::{
     LockInfo, PropFindRequest, PropPatchOp, QualifiedName, WebDavAdapter, is_protected_property,
 };
-use crate::application::dtos::display_helpers::intern_display;
+use crate::application::dtos::display_helpers::ResourceCategory;
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::FolderDto;
 use crate::application::ports::authorization_ports::AuthorizationEngine;
@@ -573,7 +573,7 @@ async fn handle_propfind(
                 // the same "now" the other two clocks get. DAV reads this
                 // for the root collection's `getlastmodified`.
                 tree_modified_at: Utc::now(),
-                category: intern_display("Folder"),
+                category: ResourceCategory::Folder,
                 created_by: None,
                 updated_by: None,
                 // Synthetic root, not on the SPA path — safe default.
@@ -604,96 +604,30 @@ async fn handle_propfind(
         WebdavTarget::Scope(scope) => (scope.drive_id, scope.db_path),
     };
 
-    // Single-query path resolution: folder OR file in one DB round-trip.
+    // Path resolution: the single-query PathResolver first, then the
+    // mount-aware `get_*_by_path` pair (`resolve_or_legacy`). The resolver
+    // only knows DB rows, so a path below an external-mount root used to
+    // end here with a 404 (#794) even though the provider could serve it.
     //
     // Post-D7 the resolver is drive-scoped (not owner-scoped), so we
-    // explicitly `authz.require(Read, …)` on the returned resource
-    // before rendering the multistatus. The streaming children of a
-    // Folder branch are separately per-item authorised inside
-    // `build_streaming_propfind_response` via `_with_perms` service
-    // methods.
-    if let Some(resolver) = &state.path_resolver {
-        match resolver.resolve_path_in_drive(&path, drive_id).await {
-            Ok(ResolvedResource::Folder(folder)) => {
-                let folder_uuid = Uuid::parse_str(&folder.id)
-                    .map_err(|_| AppError::not_found(format!("Resource not found: {}", path)))?;
-                state
-                    .authorization
-                    .require(
-                        Subject::User(user.id),
-                        Permission::Read,
-                        Resource::Folder(folder_uuid),
-                    )
-                    .await?;
-                let folder_id = folder.id.clone();
-                let quota = if propfind_request.wants_quota() {
-                    state.resolve_webdav_quota(user.id, drive_id).await
-                } else {
-                    None
-                };
-                return build_streaming_propfind_response(
-                    folder,
-                    Some(folder_id),
-                    &depth_owned,
-                    &base_href,
-                    propfind_request,
-                    folder_service,
-                    file_retrieval_service,
-                    user.id,
-                    state.webdav_dead_props.clone(),
-                    quota,
-                )
-                .await;
-            }
-            Ok(ResolvedResource::File(file)) => {
-                let file_uuid = Uuid::parse_str(&file.id)
-                    .map_err(|_| AppError::not_found(format!("Resource not found: {}", path)))?;
-                state
-                    .authorization
-                    .require(
-                        Subject::User(user.id),
-                        Permission::Read,
-                        Resource::File(file_uuid),
-                    )
-                    .await?;
-                let dead_props = file_dead_props(&state, &file).await;
-                let file_href = webdav_href(&client_path);
-                let mut buf = Vec::with_capacity(1024);
-                {
-                    let mut xml_writer = Writer::new(&mut buf);
-                    WebDavAdapter::write_multistatus_start(&mut xml_writer)
-                        .map_err(|e| AppError::internal_error(format!("XML write error: {}", e)))?;
-                    WebDavAdapter::write_file_entry_with_dead_props(
-                        &mut xml_writer,
-                        &file,
-                        &propfind_request,
-                        &file_href,
-                        &dead_props,
-                    )
-                    .map_err(|e| AppError::internal_error(format!("XML write error: {}", e)))?;
-                    WebDavAdapter::write_multistatus_end(&mut xml_writer)
-                        .map_err(|e| AppError::internal_error(format!("XML write error: {}", e)))?;
-                }
-                return Ok(Response::builder()
-                    .status(StatusCode::MULTI_STATUS)
-                    .header(header::CONTENT_TYPE, "application/xml; charset=utf-8")
-                    .body(Body::from(buf))
-                    .unwrap());
-            }
-            Err(_) => {}
-        }
-    } else {
-        // Fallback: legacy double-query path when PathResolver is unavailable.
-        if let Ok(folder) = folder_service.get_folder_by_path(&path, drive_id).await {
-            let folder_uuid = Uuid::parse_str(&folder.id)
-                .map_err(|_| AppError::not_found(format!("Resource not found: {}", path)))?;
+    // explicitly `authz.require(Read, …)` on the returned resource before
+    // rendering the multistatus. Mount ids (`ext:` children and the root
+    // UUID) collapse onto the mount-root folder grant via
+    // `MountRouter::*_authz_resource`; the streaming children of a Folder
+    // branch are separately per-item authorised inside
+    // `build_streaming_propfind_response` via `_with_perms` service methods.
+    let Some(resolved) = resolve_or_legacy(&state, &path, drive_id).await else {
+        return Err(AppError::not_found(format!("Resource not found: {}", path)));
+    };
+    match resolved {
+        ResolvedResource::Folder(folder) => {
+            let resource = state
+                .mount_router
+                .folder_authz_resource(&folder.id)
+                .ok_or_else(|| AppError::not_found(format!("Resource not found: {}", path)))?;
             state
                 .authorization
-                .require(
-                    Subject::User(user.id),
-                    Permission::Read,
-                    Resource::Folder(folder_uuid),
-                )
+                .require(Subject::User(user.id), Permission::Read, resource)
                 .await?;
             let folder_id = folder.id.clone();
             let quota = if propfind_request.wants_quota() {
@@ -701,7 +635,7 @@ async fn handle_propfind(
             } else {
                 None
             };
-            return build_streaming_propfind_response(
+            build_streaming_propfind_response(
                 folder,
                 Some(folder_id),
                 &depth_owned,
@@ -713,21 +647,16 @@ async fn handle_propfind(
                 state.webdav_dead_props.clone(),
                 quota,
             )
-            .await;
-        }
-        if let Ok(file) = file_retrieval_service
-            .get_file_by_path(&path, drive_id)
             .await
-        {
-            let file_uuid = Uuid::parse_str(&file.id)
-                .map_err(|_| AppError::not_found(format!("Resource not found: {}", path)))?;
+        }
+        ResolvedResource::File(file) => {
+            let resource = state
+                .mount_router
+                .file_authz_resource(&file.id)
+                .ok_or_else(|| AppError::not_found(format!("Resource not found: {}", path)))?;
             state
                 .authorization
-                .require(
-                    Subject::User(user.id),
-                    Permission::Read,
-                    Resource::File(file_uuid),
-                )
+                .require(Subject::User(user.id), Permission::Read, resource)
                 .await?;
             let dead_props = file_dead_props(&state, &file).await;
             let file_href = webdav_href(&client_path);
@@ -747,15 +676,13 @@ async fn handle_propfind(
                 WebDavAdapter::write_multistatus_end(&mut xml_writer)
                     .map_err(|e| AppError::internal_error(format!("XML write error: {}", e)))?;
             }
-            return Ok(Response::builder()
+            Ok(Response::builder()
                 .status(StatusCode::MULTI_STATUS)
                 .header(header::CONTENT_TYPE, "application/xml; charset=utf-8")
                 .body(Body::from(buf))
-                .unwrap());
+                .unwrap())
         }
     }
-
-    Err(AppError::not_found(format!("Resource not found: {}", path)))
 }
 
 /// Builds a streaming 207 Multi-Status PROPFIND response.
@@ -1112,11 +1039,13 @@ async fn handle_get(
     let drive_id = scope.drive_id;
     let path = scope.db_path;
 
-    // Resolve file — drive-scoped when PathResolver is available.
-    // Post-D7 both branches enforce `Read` on the resolved file
-    // explicitly. The download stream call below also passes
-    // `caller_id`, so `get_file_stream_with_perms` re-verifies as
-    // defence-in-depth.
+    // Resolve the file — PathResolver first, then the mount-aware
+    // `get_file_by_path` fallback (#794: paths below an external-mount root
+    // are invisible to the DB-only resolver). Post-D7 we enforce `Read` on
+    // the resolved file explicitly; `ext:` ids collapse onto the mount-root
+    // folder grant. The download stream call below also passes `caller_id`
+    // (native) or re-authorises against the mount root (mount), so the
+    // service re-verifies as defence-in-depth.
     //
     // (Fix, 2026-07-02: the legacy fallback branch previously used
     // `Permission::Update`, a stale mapping from the retired
@@ -1124,45 +1053,24 @@ async fn handle_get(
     // downloads once shared drives were exposed via WebDAV. Both
     // branches now share the correct `Read` permission — see the
     // post-D7 second AuthZ audit memo.)
-    let file = if let Some(resolver) = &state.path_resolver {
-        match resolver.resolve_path_in_drive(&path, drive_id).await {
-            Ok(ResolvedResource::File(f)) => {
-                let file_uuid = Uuid::parse_str(&f.id)
-                    .map_err(|_| AppError::not_found(format!("File not found: {}", path)))?;
-                state
-                    .authorization
-                    .require(
-                        Subject::User(user.id),
-                        Permission::Read,
-                        Resource::File(file_uuid),
-                    )
-                    .await?;
-                f
-            }
-            Ok(ResolvedResource::Folder(_)) => {
-                return Err(AppError::bad_request("Cannot GET a directory"));
-            }
-            Err(_) => {
-                return Err(AppError::not_found(format!("File not found: {}", path)));
-            }
+    let file = match resolve_or_legacy(&state, &path, drive_id).await {
+        Some(ResolvedResource::File(f)) => {
+            let resource = state
+                .mount_router
+                .file_authz_resource(&f.id)
+                .ok_or_else(|| AppError::not_found(format!("File not found: {}", path)))?;
+            state
+                .authorization
+                .require(Subject::User(user.id), Permission::Read, resource)
+                .await?;
+            f
         }
-    } else {
-        // Legacy fallback — fetch + AuthZ check.
-        let f = file_retrieval_service
-            .get_file_by_path(&path, drive_id)
-            .await
-            .map_err(|_e| AppError::not_found(format!("File not found: {}", path)))?;
-        let file_uuid = Uuid::parse_str(&f.id)
-            .map_err(|_| AppError::not_found(format!("File not found: {}", path)))?;
-        state
-            .authorization
-            .require(
-                Subject::User(user.id),
-                Permission::Read,
-                Resource::File(file_uuid),
-            )
-            .await?;
-        f
+        Some(ResolvedResource::Folder(_)) => {
+            return Err(AppError::bad_request("Cannot GET a directory"));
+        }
+        None => {
+            return Err(AppError::not_found(format!("File not found: {}", path)));
+        }
     };
 
     let etag = format!("\"{}\"", file.etag);
@@ -1180,6 +1088,14 @@ async fn handle_get(
     // See memory note `project_recent_session_intent.md` — the planned
     // session-intent gate (interactive JWT vs app-password) will turn
     // this back on for the rare human-driven DAV access.
+
+    // External mount: the bytes live on the provider, not in the blob store
+    // — stream (optionally ranged) through it. Native files continue below.
+    if let Some(resp) =
+        mount_file_get_response(&state, &file, user.id, req.headers(), &etag).await?
+    {
+        return Ok(resp);
+    }
 
     // Range Requests — mount-style clients (rclone, davfs2, Finder) read
     // by ranges; serve 206/416 instead of re-sending the whole file on
@@ -1215,8 +1131,6 @@ async fn handle_head(
     path: String,
 ) -> Result<Response<Body>, AppError> {
     let user = extract_user(&req)?;
-    let file_retrieval_service = &state.applications.file_retrieval_service;
-    let folder_service = &state.applications.folder_service;
 
     if path.is_empty() || path == "/" {
         // Root folder — return collection headers
@@ -1234,90 +1148,42 @@ async fn handle_head(
     let drive_id = scope.drive_id;
     let path = scope.db_path;
 
-    // Single-query path resolution (drive-scoped). Both branches
-    // enforce `Read` on the resolved resource before emitting the
-    // metadata response — same permission as the legacy fallback below.
-    if let Some(resolver) = &state.path_resolver {
-        match resolver.resolve_path_in_drive(&path, drive_id).await {
-            Ok(ResolvedResource::Folder(folder)) => {
-                let folder_uuid = Uuid::parse_str(&folder.id)
-                    .map_err(|_| AppError::not_found(format!("Resource not found: {}", path)))?;
-                state
-                    .authorization
-                    .require(
-                        Subject::User(user.id),
-                        Permission::Read,
-                        Resource::Folder(folder_uuid),
-                    )
-                    .await?;
-                return Ok(Response::builder()
-                    .status(StatusCode::OK)
-                    .header(header::CONTENT_TYPE, "httpd/unix-directory")
-                    .header(header::CONTENT_LENGTH, 0)
-                    .header(header::ETAG, format!("\"{}\"", folder.etag))
-                    .body(Body::empty())
-                    .unwrap());
-            }
-            Ok(ResolvedResource::File(file)) => {
-                let file_uuid = Uuid::parse_str(&file.id)
-                    .map_err(|_| AppError::not_found(format!("Resource not found: {}", path)))?;
-                state
-                    .authorization
-                    .require(
-                        Subject::User(user.id),
-                        Permission::Read,
-                        Resource::File(file_uuid),
-                    )
-                    .await?;
-                return Ok(Response::builder()
-                    .status(StatusCode::OK)
-                    .header(header::CONTENT_TYPE, &*file.mime_type)
-                    .header(header::CONTENT_LENGTH, file.size)
-                    .header(header::ETAG, format!("\"{}\"", file.etag))
-                    .header(header::LAST_MODIFIED, file.created_at.to_rfc2822())
-                    .body(Body::empty())
-                    .unwrap());
-            }
-            Err(_) => return Err(AppError::not_found(format!("Resource not found: {}", path))),
+    // Path resolution + `Read` check, same shape as PROPFIND/GET: resolver
+    // first, mount-aware fallback second (#794), mount ids authorised
+    // against the mount root. Metadata only — never load content for HEAD.
+    let Some(resolved) = resolve_or_legacy(&state, &path, drive_id).await else {
+        return Err(AppError::not_found(format!("Resource not found: {}", path)));
+    };
+    let file = match resolved {
+        ResolvedResource::Folder(folder) => {
+            let resource = state
+                .mount_router
+                .folder_authz_resource(&folder.id)
+                .ok_or_else(|| AppError::not_found(format!("Resource not found: {}", path)))?;
+            state
+                .authorization
+                .require(Subject::User(user.id), Permission::Read, resource)
+                .await?;
+            return Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "httpd/unix-directory")
+                .header(header::CONTENT_LENGTH, 0)
+                .header(header::ETAG, format!("\"{}\"", folder.etag))
+                .body(Body::empty())
+                .unwrap());
         }
-    }
-
-    // Fallback: legacy double-query path (with ownership check).
-    if let Ok(folder) = folder_service.get_folder_by_path(&path, drive_id).await {
-        let folder_uuid = Uuid::parse_str(&folder.id)
-            .map_err(|_| AppError::not_found(format!("Resource not found: {}", path)))?;
-        state
-            .authorization
-            .require(
-                Subject::User(user.id),
-                Permission::Read,
-                Resource::Folder(folder_uuid),
-            )
-            .await?;
-        return Ok(Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, "httpd/unix-directory")
-            .header(header::CONTENT_LENGTH, 0)
-            .header(header::ETAG, format!("\"{}\"", folder.etag))
-            .body(Body::empty())
-            .unwrap());
-    }
-
-    // Try as file — use metadata only, never load content for HEAD
-    let file = file_retrieval_service
-        .get_file_by_path(&path, drive_id)
-        .await
-        .map_err(|_e| AppError::not_found(format!("Resource not found: {}", path)))?;
-    let file_uuid = Uuid::parse_str(&file.id)
-        .map_err(|_| AppError::not_found(format!("Resource not found: {}", path)))?;
-    state
-        .authorization
-        .require(
-            Subject::User(user.id),
-            Permission::Read,
-            Resource::File(file_uuid),
-        )
-        .await?;
+        ResolvedResource::File(file) => {
+            let resource = state
+                .mount_router
+                .file_authz_resource(&file.id)
+                .ok_or_else(|| AppError::not_found(format!("Resource not found: {}", path)))?;
+            state
+                .authorization
+                .require(Subject::User(user.id), Permission::Read, resource)
+                .await?;
+            file
+        }
+    };
 
     Ok(Response::builder()
         .status(StatusCode::OK)
@@ -1374,6 +1240,65 @@ async fn resolve_or_legacy(
         return Some(ResolvedResource::File(file));
     }
     None
+}
+
+/// Serve a GET for a file that lives inside an external mount: the bytes
+/// come from the provider (`open_mount_file_with_perms`, which re-authorises
+/// against the mount root), not from the blob store that `range_response` /
+/// `get_file_stream` read. Returns `Ok(None)` for native files so the caller
+/// continues down its normal path. Shared by the native and the
+/// NextCloud-compatible GET handlers (#794).
+///
+/// `etag` is the caller's already-formatted strong ETag — for mount files
+/// `FileDto::etag` is the size+mtime virtual etag, so GET, HEAD and PROPFIND
+/// stay byte-identical, which is what sync clients compare.
+pub(crate) async fn mount_file_get_response(
+    state: &Arc<AppState>,
+    file: &FileDto,
+    caller_id: Uuid,
+    headers: &axum::http::HeaderMap,
+    etag: &str,
+) -> Result<Option<Response<Body>>, AppError> {
+    use super::file_handler::{MountRangePlan, plan_mount_range};
+
+    let Some((cfg, node_id)) = state.mount_router.mount_child(&file.id) else {
+        return Ok(None);
+    };
+    let retrieval = &state.applications.file_retrieval_service;
+    let range_header = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
+    let plan = plan_mount_range(file.size, range_header);
+    let (status, range, content_length, content_range) = match plan {
+        MountRangePlan::NotSatisfiable => {
+            return Ok(Some(
+                Response::builder()
+                    .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                    .header(header::CONTENT_RANGE, format!("bytes */{}", file.size))
+                    .body(Body::empty())
+                    .unwrap(),
+            ));
+        }
+        MountRangePlan::Range { start, end } => (
+            StatusCode::PARTIAL_CONTENT,
+            Some((start, Some(end))),
+            end - start + 1,
+            Some(format!("bytes {}-{}/{}", start, end, file.size)),
+        ),
+        MountRangePlan::Full => (StatusCode::OK, None, file.size, None),
+    };
+    let stream = retrieval
+        .open_mount_file_with_perms(&cfg, &node_id, caller_id, range)
+        .await?;
+    let mut builder = Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, &*file.mime_type)
+        .header(header::CONTENT_LENGTH, content_length)
+        .header(header::ETAG, etag)
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::LAST_MODIFIED, file.modified_at.to_rfc2822());
+    if let Some(cr) = content_range {
+        builder = builder.header(header::CONTENT_RANGE, cr);
+    }
+    Ok(Some(builder.body(Body::from_stream(stream)).unwrap()))
 }
 
 /// Fetch a file's dead properties for a PROPFIND response.

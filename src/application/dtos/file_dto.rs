@@ -1,3 +1,4 @@
+use crate::application::dtos::display_helpers::ResourceCategory;
 use std::sync::Arc;
 
 use crate::domain::entities::file::File;
@@ -6,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use super::display_helpers::{category_for, intern_display, intern_mime};
+use super::display_helpers::{category_for, intern_mime};
 use super::timestamp_helpers::{datetime_to_epoch, epoch_to_datetime, epoch_zero};
 
 /// DTO for file responses
@@ -55,8 +56,7 @@ pub struct FileDto {
     /// `storage.files.category_order`, the indexed `type` sort key. Deriving
     /// it client-side would let the FE's buckets disagree with the server's
     /// `ORDER BY`. See `docs/architecture/resource-listing.md`.
-    #[schema(value_type = String)]
-    pub category: Arc<str>,
+    pub category: ResourceCategory,
 
     /// Raw BLAKE3 content hash. Populated from `File::content_hash()`.
     /// Exposed in REST JSON so API consumers can use it for
@@ -127,7 +127,7 @@ impl From<File> for FileDto {
         // `category` comes from a closed static table and MIME values repeat
         // massively across rows — intern instead of allocating a fresh
         // Arc<str> per row (`Arc::from(&str)` always allocs+copies).
-        let category = intern_display(category_for(&parts.name, &parts.mime_type));
+        let category = category_for(&parts.name, &parts.mime_type);
         let mime_type = intern_mime(&parts.mime_type);
 
         Self {
@@ -215,7 +215,7 @@ impl FileDto {
             folder_id: None,
             created_at: epoch_zero(),
             modified_at: epoch_zero(),
-            category: intern_display("Document"),
+            category: ResourceCategory::Unknown,
             content_hash: String::new(),
             etag: String::new(),
             created_by: None,

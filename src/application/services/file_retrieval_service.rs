@@ -568,6 +568,27 @@ impl FileRetrievalUseCase for FileRetrievalService {
     }
 
     async fn get_file_with_perms(&self, id: &str, caller: Subject) -> Result<FileDto, DomainError> {
+        // `ext:` mount file: no `storage.files` row — authorise on the mount
+        // root and stat on the provider (#793). Restricted to user callers,
+        // like every other mount read (a share token has no provider identity).
+        if let Some((cfg, node_id)) = self.mount_file_node(id) {
+            let Some(user_id) = caller.user_id() else {
+                return Err(DomainError::not_found("File", id));
+            };
+            let stat = self
+                .stat_mount_file_with_perms(&cfg, &node_id, user_id)
+                .await?;
+            if stat.is_dir {
+                return Err(DomainError::not_found("File", id));
+            }
+            let parent = crate::application::services::mount_dto::mount_parent_id(
+                &cfg,
+                stat.node_id.as_str(),
+            );
+            return Ok(crate::application::services::mount_dto::mount_file_dto(
+                &cfg, &parent, &stat,
+            ));
+        }
         self.require_file(id, Permission::Read, caller).await?;
         let file = self.file_read.get_file(id).await?;
         // After authZ + lookup succeed: this caller has just inspected the

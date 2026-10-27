@@ -105,11 +105,69 @@ scenario_names() {
   } | sort -u
 }
 
+# ── Drift guard: a .hurl on disk that nothing runs ────────────────────────────
+#
+# Writing the scenario and forgetting to wire it in costs nothing at the time
+# and everything later: the file sits in the tree looking like coverage, passes
+# review as coverage, and is never executed once. Eight files had accumulated
+# that way before this check existed — including ones a plan document lists as
+# shipped deliverables.
+#
+# This dies rather than warns, for the reason the rest of the codebase prefers
+# a loud failure to a silent skip: a warning in a few hundred lines of suite
+# output is a warning nobody reads.
+#
+# Entries below are the pre-existing backlog, grandfathered so the suite stays
+# green while they are triaged one at a time. Each needs a decision — wire it
+# in, or delete it — and the list should only ever shrink. Do NOT add to it to
+# silence a new file; wire the file in instead.
+#
+# This whole mechanism is a backstop for a hand-kept registry. The fix is
+# `docs/plan/api-test-phase-folders.md`: numbered phase folders the runner
+# globs, so a file cannot be forgotten by construction rather than being
+# caught afterwards. Triaging this list is the prerequisite for that move.
+UNWIRED_KNOWN=(
+  admin_advisories              # expects specific OXICLOUD_* vars in server.env
+  backend_write_lock
+  caldav_tzid
+  caldav_vtodo
+  lowercase_usernames           # docs/plan/username-lowercase.md lists it as shipped
+  ops_banners
+  webdav_carddav_param_encoding
+  webdav_etag_cross_check       # cited as authoritative by docs/architecture/dates.md
+)
+
+check_no_unwired_scenarios() {
+  local wired unwired=() base
+  wired="$(grep -oE '\$API_DIR/[a-z0-9_-]+\.hurl' "$0" | sed 's|.*/||; s|\.hurl$||' | sort -u)"
+  for f in "$API_DIR"/*.hurl; do
+    base="$(basename "$f" .hurl)"
+    [[ "$base" == *_diag ]] && continue
+    printf '%s\n' "$wired" | grep -qx "$base" && continue
+    # shellcheck disable=SC2076
+    [[ " ${UNWIRED_KNOWN[*]} " == *" $base "* ]] && continue
+    unwired+=("$base")
+  done
+  if (( ${#unwired[@]} > 0 )); then
+    echo "[api-test] ERROR: scenario file(s) present but not wired into run.sh:" >&2
+    printf '  %s\n' "${unwired[@]}" >&2
+    echo "Add each to the scenario list so it actually runs." >&2
+    exit 1
+  fi
+}
+
+check_no_unwired_scenarios
+
 # Answered before anything is started — a listing that needs docker, postgres
 # and a server build is not a listing.
 if (( LIST_ONLY )); then
   echo "Selectable scenarios (substring match):"
   scenario_names | sed 's/^/  /'
+  if (( ${#UNWIRED_KNOWN[@]} > 0 )); then
+    echo
+    echo "Present but NOT run (backlog — see UNWIRED_KNOWN in run.sh):"
+    printf '  %s\n' "${UNWIRED_KNOWN[@]}"
+  fi
   exit 0
 fi
 
@@ -166,7 +224,58 @@ SERVER_PID=""
 
 WOPI_MOCK_PID=""
 
+# Host directory the external-mount scenarios mount. Still under /tmp (a
+# per-user tmpfs on current systems, so writing there is fine) but a
+# DEDICATED tree, where `external_mounts_rest`/`_webdav` mounted `/tmp`
+# itself until 2026-10-25. Two concrete problems with mounting it directly,
+# neither about /tmp being shared:
+#
+#   1. Residue blocked reruns. A hurl file stops at its first failing
+#      assertion — before its own teardown — so a mid-file failure stranded
+#      `/tmp/hurl-rest-sub` on disk. The NEXT run then failed EARLIER, at the
+#      `POST /api/folders` that recreates it (409), which reads like a product
+#      bug rather than leftover state. That is exactly how this was found.
+#   2. Mount-root listings were non-deterministic: a Depth:1 PROPFIND or a
+#      `/resources` listing of the mount root enumerated whatever else
+#      happened to be in /tmp, so any count or ordering assertion there was
+#      luck. The seeded fixtures below depend on the root holding only what
+#      this script put there.
+#
+# Owned entirely by this script: wiped and recreated on every start, wiped
+# again on exit. That is what makes the mount scenarios idempotent — the
+# residue lives on the filesystem, so the reset has to happen here and not in
+# a hurl teardown that a fail-stop can skip.
+MOUNT_FIXTURE_ROOT="${TMPDIR:-/tmp}/oxicloud-hurl-mounts"
+
+# `hello-mtime.txt` carries a FIXED past mtime so the external-mount
+# scenarios can assert `content_modified_at` end-to-end on both surfaces.
+# It has to be stamped here rather than through the API: the local provider
+# only READS `meta.modified()` (`local_fs_mount_provider.rs:163,258`) and has
+# no `set_times`/`FileTimes` write path, so no upload — not even one carrying
+# `X-OC-Mtime` — can set a mount file's mtime.
+#
+# `TZ=UTC` is load-bearing. `touch -t` interprets its stamp in LOCAL time on
+# both GNU and BSD touch, so without it the asserted instant would shift with
+# the developer's timezone and the test would pass only in UTC. Pinning TZ
+# makes 202101011200.00 mean exactly 2021-01-01T12:00:00Z everywhere.
+MOUNT_FIXTURE_MTIME_FILE="hello-mtime.txt"
+MOUNT_FIXTURE_MTIME_TOUCH="202101011200.00"
+
+seed_mount_fixtures() {
+  rm -rf "$MOUNT_FIXTURE_ROOT"
+  mkdir -p "$MOUNT_FIXTURE_ROOT/rest" "$MOUNT_FIXTURE_ROOT/webdav"
+  for surface in rest webdav; do
+    printf 'fixed-mtime fixture\n' \
+      > "$MOUNT_FIXTURE_ROOT/$surface/$MOUNT_FIXTURE_MTIME_FILE"
+    TZ=UTC touch -t "$MOUNT_FIXTURE_MTIME_TOUCH" \
+      "$MOUNT_FIXTURE_ROOT/$surface/$MOUNT_FIXTURE_MTIME_FILE"
+  done
+}
+
 cleanup() {
+  # Before the server goes down, so a wedged provider handle can't keep the
+  # tree alive on platforms that refuse to unlink open files.
+  rm -rf "$MOUNT_FIXTURE_ROOT"
   if [[ -n "$SERVER_PID" ]]; then
     log "Stopping OxiCloud server (pid $SERVER_PID)..."
     kill "$SERVER_PID" 2>/dev/null || true
@@ -291,6 +400,73 @@ if [[ ! -s "$OVER_CAP_FIXTURE" ]]; then
   dd if=/dev/zero of="$OVER_CAP_FIXTURE" bs=1024 count=5120 status=none
 fi
 
+# upload_mime_sniffing.hurl needs real ZIP-family archives. Generated
+# rather than committed for the same reason as above, and because the
+# interesting one has to be built to a precise shape (see below).
+SNIFF_FIXTURE="$REPO_ROOT/tests/fixtures/sniff-padded.docx"
+if [[ ! -s "$SNIFF_FIXTURE" ]]; then
+  log "Generating MIME-sniffing archive fixtures → $REPO_ROOT/tests/fixtures/sniff-*"
+  python3 - "$REPO_ROOT/tests/fixtures" <<'PYEOF'
+import sys, zipfile
+from pathlib import Path
+
+out = Path(sys.argv[1])
+out.mkdir(parents=True, exist_ok=True)
+
+# ── sniff-padded.docx — the case the carve-out exists for ──────────────
+#
+# A .docx IS a zip. `infer` tries to look inside: check_msooml walks the
+# local file headers looking for a `word/` entry. That works only while
+# the entry falls inside the bytes we peeked (MAGIC_BYTES_LEN = 8 KiB).
+#
+# This archive is a VALID docx whose [Content_Types].xml is padded past
+# that window with ZIP_STORED (deflate would squash the padding back to
+# nothing and defeat the point), so `word/document.xml` lands beyond the
+# peek and detection degrades to application/zip. Without the
+# generic-envelope carve-out in common/mime_detect.rs the server stores
+# it as a bare archive.
+z = zipfile.ZipFile(out / "sniff-padded.docx", "w", zipfile.ZIP_DEFLATED)
+z.writestr(
+    zipfile.ZipInfo("[Content_Types].xml"),
+    '<?xml version="1.0"?><Types xmlns="x">' + " " * 20000 + "</Types>",
+    compress_type=zipfile.ZIP_STORED,
+)
+z.writestr("_rels/.rels", '<?xml version="1.0"?><Relationships/>')
+z.writestr("word/document.xml", '<?xml version="1.0"?><document/>')
+z.close()
+
+# ── sniff-plain.zip — the inverse. Must STAY application/zip ──────────
+z = zipfile.ZipFile(out / "sniff-plain.zip", "w", zipfile.ZIP_DEFLATED)
+z.writestr("readme.txt", "just an archive\n")
+z.close()
+
+# ── sniff-book.epub — mimetype first and STORED, per the EPUB spec,
+# which exists precisely so sniffers can read it. infer should get this
+# one unaided; the assertion guards the day it cannot.
+z = zipfile.ZipFile(out / "sniff-book.epub", "w", zipfile.ZIP_DEFLATED)
+z.writestr(
+    zipfile.ZipInfo("mimetype"), "application/epub+zip",
+    compress_type=zipfile.ZIP_STORED,
+)
+z.writestr("META-INF/container.xml", '<?xml version="1.0"?><container/>')
+z.close()
+
+# ── sniff-logo.svg — starts with <?xml, so infer answers text/xml.
+# There is no SVG matcher in infer at all.
+(out / "sniff-logo.svg").write_text(
+    '<?xml version="1.0" encoding="UTF-8"?>\n'
+    '<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4">'
+    '<rect width="4" height="4" fill="#0a0"/></svg>\n'
+)
+PYEOF
+fi
+
+# Zero-byte fixtures for upload_mime_sniffing.hurl step 9. Written every
+# run rather than guarded: the guard above is `-s` (size > 0), which an
+# empty file can never satisfy. `: >` is idempotent and costs nothing.
+: > "$REPO_ROOT/tests/fixtures/sniff-empty.txt"
+: > "$REPO_ROOT/tests/fixtures/sniff-empty-noext"
+
 # ── 4. Run Hurl tests ─────────────────────────────────────────────────────────
 
 log "Running Hurl tests..."
@@ -315,6 +491,9 @@ HURL_FILES=( \
   "$API_DIR/app_passwords.hurl" \
   "$API_DIR/auth_profile_image.hurl" \
   "$API_DIR/registration.hurl" \
+  # Registers mixed-case usernames and asserts they land lowercased, so it
+  # sits with registration rather than with the admin user-ops block.
+  "$API_DIR/lowercase_usernames.hurl" \
   "$API_DIR/nc_status_capabilities.hurl" \
   "$API_DIR/nc_login_flow_v2.hurl" \
   "$API_DIR/nc_login_flow_v2_drive_picker.hurl" \
@@ -358,21 +537,42 @@ HURL_FILES=( \
   "$API_DIR/transcode_cache.hurl" \
   "$API_DIR/cache_header.hurl" \
   "$API_DIR/broken_pdf_resilience.hurl" \
+  "$API_DIR/upload_mime_sniffing.hurl" \
   "$API_DIR/transcode_import.hurl" \
   "$API_DIR/dedup_admin_gate.hurl" \
   "$API_DIR/admin_jobs.hurl" \
+  # Both read/write admin-scoped global state and clean up after themselves
+  # (ops_banners asserts an empty list at the end). admin_advisories pins
+  # dashboard flags derived from the ACTIVE BACKEND, so it must stay above the
+  # backend_* group at the bottom of this array.
+  "$API_DIR/admin_advisories.hurl" \
+  "$API_DIR/ops_banners.hurl" \
   "$API_DIR/recoverable_jobs.hurl" \
+  # Adjacent to recoverable_jobs.hurl, which pins the INLINE trigger
+  # envelope. This one pins the DETACHED one (202 + dispatched) plus
+  # parameter rejection — and every run it makes is dry_run or scoped
+  # to a mime prefix nothing has, because content_rescan rewrites
+  # mime_type corpus-wide and the suite shares one database.
+  "$API_DIR/content_rescan_job.hurl" \
   "$API_DIR/jobs_notify.hurl" \
   "$API_DIR/storage_multi_entry.hurl" \
   "$API_DIR/default_caldav_carddav.hurl" \
   "$API_DIR/dav_error_mapping.hurl" \
   "$API_DIR/carddav_vcard_properties.hurl" \
+  "$API_DIR/webdav_carddav_param_encoding.hurl" \
   "$API_DIR/contacts.hurl" \
   "$API_DIR/calendar.hurl" \
   "$API_DIR/caldav_shared_roles.hurl" \
   "$API_DIR/caldav_recurring.hurl" \
+  "$API_DIR/caldav_tzid.hurl" \
+  "$API_DIR/caldav_vtodo.hurl" \
   "$API_DIR/caldav_calendar_query.hurl" \
   "$API_DIR/playlists.hurl" \
+  # Adjacent to playlists.hurl because it drives the same
+  # /api/playlists/audio-metadata endpoint — but it is about the
+  # EXTRACTION behind it: that ID3 tags reach the wire at all, and that
+  # one parse serves every copy of the content.
+  "$API_DIR/audio_id3_extraction.hurl" \
   "$API_DIR/public_shares.hurl" \
   "$API_DIR/anonymous_share_session.hurl" \
   "$API_DIR/permissions.hurl" \
@@ -391,8 +591,15 @@ HURL_FILES=( \
   "$API_DIR/admin_user_ops.hurl" \
   "$API_DIR/admin_role_hierarchy.hurl" \
   "$API_DIR/dto_shape_regression_guards.hurl" \
+  "$API_DIR/shared_worker_bus_discovery.hurl" \
   "$API_DIR/device_auth_flow.hurl" \
   "$API_DIR/external_mounts.hurl" \
+  # Same mount fixtures, one surface each: REST (#793) and both WebDAV
+  # surfaces (#792, #794). Kept adjacent to `external_mounts.hurl` so the
+  # three mount scenarios fail together when the provider config is wrong,
+  # rather than looking like three unrelated breakages.
+  "$API_DIR/external_mounts_rest.hurl" \
+  "$API_DIR/external_mounts_webdav.hurl" \
   "$API_DIR/chunked_upload_cap.hurl" \
   "$API_DIR/nc_auth_failures.hurl" \
   "$API_DIR/dedup_create.hurl" \
@@ -422,8 +629,20 @@ HURL_FILES=( \
   "$API_DIR/folder_content_clock.hurl" \
   "$API_DIR/folder_listing_cursor_clocks.hurl" \
   "$API_DIR/webdav_etag_rename_stability.hurl" \
+  "$API_DIR/webdav_etag_cross_check.hurl" \
   "$API_DIR/copy_preserves_category_order.hurl" \
+  # Beside the copy pin because both guard `category_order`, the
+  # denormalised rank the search type filter MATCHES on. Copy was
+  # dropping it; rename was not refreshing it when the extension
+  # changed the category while the MIME stayed put.
+  "$API_DIR/rename_refreshes_category_order.hurl" \
   "$API_DIR/photos_sort_date_content_clock.hurl" \
+  # Deliberately next to the file above, which asserts `captured_at`
+  # is ABSENT to prove its content-clock fallback arm. This one is the
+  # other half: a fixture that really does carry EXIF, so the date,
+  # camera and GPS are asserted PRESENT. Read together they pin both
+  # arms of the same COALESCE.
+  "$API_DIR/photos_exif_extraction.hurl" \
   "$API_DIR/search_sort_content_clock.hurl" \
   "$API_DIR/content_clock_metadata_mutations.hurl" \
   "$API_DIR/rest_upload_source_mtime.hurl" \
@@ -433,6 +652,12 @@ HURL_FILES=( \
   "$API_DIR/nfc_normalization.hurl" \
   "$API_DIR/wopi_authz.hurl" \
   "$API_DIR/wopi_shared_drive.hurl" \
+  `# Engages the operator write-lock, which refuses user writes and makes` \
+  `# backend-writer jobs defer, so it runs near the end where the fewest` \
+  `# scenarios sit behind it. It releases the gate twice (step 9 is an` \
+  `# idempotent second DELETE), so a fail-stop mid-file still leaves the` \
+  `# gate free for whatever follows.` \
+  "$API_DIR/backend_write_lock.hurl" \
   `# Second-to-last. The slowest file in the suite BY DESIGN: it waits` \
   `# out an unreachable endpoint (~31s) to prove the wait is bounded, so` \
   `# that cost belongs at the end rather than in the middle. It leaves no` \
@@ -487,7 +712,12 @@ fi
 # checks — logs in with. Skipping it when only a shell check was selected made
 # `run.sh rechunk_legacy_check` fail with "no such user 'admin'" from the check's
 # own login, which looks like a broken check rather than a missing precondition.
+seed_mount_fixtures
+
 hurl --variables-file "$API_DIR/test.env" --file-root "$REPO_ROOT/tests" --test --jobs 1 \
+  --variable "mount_rest_root=$MOUNT_FIXTURE_ROOT/rest" \
+  --variable "mount_webdav_root=$MOUNT_FIXTURE_ROOT/webdav" \
+  --variable "mount_mtime_file=$MOUNT_FIXTURE_MTIME_FILE" \
   "${SELECTED_HURL[@]}"
 
 #bash "$API_DIR/dedup_bulk_upload.sh"

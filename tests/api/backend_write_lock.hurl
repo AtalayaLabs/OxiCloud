@@ -81,11 +81,17 @@ jsonpath "$.outcome.extra.deferred_reason" not exists
 
 # ─────────────────────────────────────────────────────────────
 # Step 3b — Baseline for the wire exposure: with the gate free,
-# the X-Server-Status machinery is on the hot-path early-return
-# (readonly:false + no rotation → no header) and `/api/config`'s
-# body carries `server_status.readonly: false`. This is the
-# "before" bookend for Step 4b's "after" check — without it,
-# step 4b could pass trivially if the header were always set.
+# `/api/config`'s body carries `server_status.readonly: false` and no
+# holder. This is the "before" bookend for Step 4b's "after" check —
+# without it, step 4b could pass trivially.
+#
+# (This comment used to describe an "X-Server-Status hot-path
+# early-return (readonly:false + no rotation → no header)". That rule
+# was removed from `server_status_middleware`: it now stamps on every
+# response inside its layer, because the FE needs header absence to mean
+# "outside the middleware stack" rather than "nothing happening". A
+# stale `hot-path returns without a header` comment still sits at the
+# top of that middleware and is what this test was written against.)
 # ─────────────────────────────────────────────────────────────
 GET {{base_url}}/api/config
 
@@ -118,9 +124,12 @@ jsonpath "$.holder.label" == "hurl: backend_write_lock scenario"
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 4b — Public wire exposure: with the gate held, EVERY API
-# response carries the `X-Server-Status` header AND `/api/config`
-# surfaces the holder in its body. Both consumed by the FE's
+# Step 4b — Public wire exposure: with the gate held, `/api/config`
+# surfaces the holder in its body, and every response inside the
+# `create_api_routes` layer additionally carries the
+# `X-Server-Status` header (not "EVERY API response" as this comment
+# previously claimed — the public and `/api/auth/*` trees sit outside
+# that layer by design). Both consumed by the FE's
 # global server-status store to render the maintenance banner
 # across the whole app — not just the admin tab. Public-safe
 # projection: `kind` + `display` only (admin_id / expires_at /
@@ -137,11 +146,48 @@ GET {{base_url}}/api/config
 
 HTTP 200
 [Asserts]
-header "x-server-status" contains "\"readonly\":true"
-header "x-server-status" contains "\"kind\":\"external\""
+# No header assertion HERE: `/api/config` is on the PUBLIC router and
+# `server_status_middleware` is layered inside `create_api_routes`, so
+# this response never passes through it. That is deliberate — the
+# middleware relies on header ABSENCE meaning "response path outside the
+# middleware stack". The header is asserted in step 4c below, on an
+# in-layer endpoint.
 jsonpath "$.server_status.readonly" == true
 jsonpath "$.server_status.holder.kind" == "external"
-jsonpath "$.server_status.holder.display" contains "hurl: backend_write_lock scenario"
+# The PUBLIC projection strips the operator label: `build_header_payload`
+# calls `reason.public_display()`, which for External always returns the
+# generic string, while the header path calls `reason.display()` and
+# keeps "Maintenance: {label}". This assertion asked for the label here
+# and got "External maintenance in progress" the first time the file ran
+# (2026-10-24) — the privacy control working as designed. Pinning the
+# generic form is the useful assertion: it fails if the label ever starts
+# leaking to anonymous callers.
+jsonpath "$.server_status.holder.display" == "External maintenance in progress"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 4c — The `X-Server-Status` header surface, which carries what
+# the public body deliberately does not: the FULL `display()` including
+# the operator label.
+#
+# `/api/admin/*` is nested inside `create_api_routes`, so unlike
+# `/api/config` and `/api/auth/*` it DOES pass through the middleware.
+# This is the end-to-end proof the original step 4b was reaching for
+# when it asserted the label on `/api/config` — same intent, correct
+# surface. It is also the suite's only coverage of the header itself.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/admin/storage/write-lock
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+[Asserts]
+header "x-server-status" contains "\"readonly\":true"
+header "x-server-status" contains "\"kind\":\"external\""
+# The operator label reached the FE wire path — only observable here.
+header "x-server-status" contains "hurl: backend_write_lock scenario"
+# And the admin body still carries the raw typed holder.
+jsonpath "$.is_held" == true
+jsonpath "$.holder.label" == "hurl: backend_write_lock scenario"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -188,10 +234,13 @@ jsonpath "$.is_held" == false
 # ─────────────────────────────────────────────────────────────
 # Step 7b — Public wire exposure after release: the `/api/config`
 # body reports `server_status.readonly: false` + no holder, and
-# the global banner on every open client disappears. (The
-# `X-Server-Status` header is omitted on the hot-path early-return
-# when readonly is false AND rotation is inactive, so the next
-# response the FE receives naturally resets the store.)
+# the global banner on every open client disappears. (The parenthetical
+# here used to say the `X-Server-Status` header is "omitted on the
+# hot-path early-return when readonly is false AND rotation is
+# inactive". That early-return no longer exists — inside its layer the
+# middleware now stamps `{"readonly":false}` unconditionally, and it is
+# that explicit false, not the header's absence, that resets the FE
+# store.)
 # ─────────────────────────────────────────────────────────────
 GET {{base_url}}/api/config
 

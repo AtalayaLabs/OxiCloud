@@ -39,6 +39,7 @@ use std::hint::black_box;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use oxicloud::application::dtos::display_helpers::ResourceCategory;
 use oxicloud::application::dtos::search_dto::{
     SearchFileResultDto, SearchOrderBy, SearchResultsDto,
 };
@@ -144,7 +145,7 @@ fn synth_entry(idx: u64) -> Arc<SearchResultsDto> {
                 1_752_800_000,
             ),
             relevance_score: 50,
-            category: "document".into(),
+            category: ResourceCategory::WordProcessor,
             blob_hash: pseudo_hex(&mut rng, 64),
             snippet: content_hit.then(|| SNIPPET.to_string()),
             match_source: Some(match_source.to_string()),

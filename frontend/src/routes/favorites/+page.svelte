@@ -12,7 +12,7 @@
 		removeFavorite,
 		type FavoritesResourceItem
 	} from '$lib/api/endpoints/favorites';
-	import { dateBucket, sizeBucket, typeLabel } from '$lib/utils/resourceBuckets';
+	import { dateBucket, sizeBucket, typeLabelOf } from '$lib/utils/resourceBuckets';
 	import { resolveOwnerName } from '$lib/utils/ownerName';
 	import { fileDownloadUrl } from '$lib/api/endpoints/files';
 	import { renameFile, deleteFile } from '$lib/api/endpoints/files';
@@ -74,8 +74,8 @@
 			key: 'type',
 			label: t('groupby.type', 'Type'),
 			orderBy: 'type',
-			bucketOf: (item) => item.category ?? 'other',
-			labelOf: (k) => typeLabel(k)
+			bucketOf: (item) => item.category ?? 'Unknown',
+			labelOf: (k) => typeLabelOf(k)
 		},
 		{
 			key: 'size',

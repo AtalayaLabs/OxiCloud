@@ -6,7 +6,7 @@ use axum::{
 };
 use std::sync::Arc;
 
-use crate::application::dtos::display_helpers::{category_for, intern_display, intern_mime};
+use crate::application::dtos::display_helpers::{ResourceCategory, category_for, intern_mime};
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::{
     AncestorsQuery, CreateFolderDto, FolderAncestorsDto, FolderDto, FolderResourceItemDto,
@@ -678,7 +678,7 @@ pub async fn list_folder_resources(
                             // emits `D:getlastmodified`, so the row's own
                             // mtime stands in.
                             tree_modified_at: row.modified_at,
-                            category: intern_display("Folder"),
+                            category: ResourceCategory::Folder,
                             created_by: row.created_by,
                             updated_by: row.updated_by,
                             is_favorite: row.is_favorite,
@@ -712,7 +712,7 @@ pub async fn list_folder_resources(
                         // `&row.name`), so `name` can be moved into the DTO
                         // below instead of cloned — one fewer String alloc per
                         // file row (benches/ROUND7.md).
-                        let category = intern_display(category_for(&row.name, mime));
+                        let category = category_for(&row.name, mime);
                         let dto = FileDto {
                             id: row.id.to_string(),
                             name: row.name,
@@ -818,7 +818,7 @@ fn mount_entry_to_item(
             // External mount entry — no subtree rollup available. See
             // `mount_dto::mount_folder_dto`.
             tree_modified_at: epoch_to_datetime(entry.modified_at),
-            category: Arc::from("Folder"),
+            category: ResourceCategory::Folder,
             created_by: Some(cfg.owner_id),
             updated_by: Some(cfg.owner_id),
             // Mount entries use synthetic `ext:*` ids — no favorites /
@@ -843,7 +843,7 @@ fn mount_entry_to_item(
             folder_id: Some(parent_id.to_owned()),
             created_at: epoch_to_datetime(entry.created_at),
             modified_at: epoch_to_datetime(entry.modified_at),
-            category: Arc::from(category_for(&entry.name, &mime)),
+            category: category_for(&entry.name, &mime),
             content_hash: String::new(),
             etag: virtual_file_etag(entry.size, entry.modified_at),
             created_by: Some(cfg.owner_id),
