@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { busyKeySuffix, collectValues, initialFields, needsDialog } from './jobParams';
-import type { JobParam, JobSummary } from '$lib/api/types';
+import type { JobParam, JobSummary } from '$lib/api/generated/openapi/types.gen';
 
 /** `content_rescan`'s real declarations — the job the dialog exists for. */
 const RESCAN_PARAMS: JobParam[] = [

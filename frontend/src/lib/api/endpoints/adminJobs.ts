@@ -8,7 +8,8 @@
  */
 import { apiFetch, apiJson } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
-import type { Finding, JobOutcome, JobParamValues, JobSummary, RunSummary } from '$lib/api/types';
+import type { JobOutcome, JobSummary } from '$lib/api/generated/openapi/types.gen';
+import type { Finding, JobParamValues, RunSummary } from '$lib/api/types';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 

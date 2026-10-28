@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { JobSummary } from '$lib/api/types';
+import type { JobSummary } from '$lib/api/generated/openapi/types.gen';
 import { jobVerdict, stoppedReason, actionableFindingCount } from './jobVerdict';
 
 function job(over: Partial<JobSummary> = {}): JobSummary {

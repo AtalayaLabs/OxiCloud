@@ -43,14 +43,8 @@
 		triggerJob,
 		cancelJob
 	} from '$lib/api/endpoints/adminJobs';
-	import type {
-		Finding,
-		JobParam,
-		JobParamValues,
-		JobSummary,
-		RunSummary,
-		RunStatus
-	} from '$lib/api/types';
+	import type { JobParam, JobSummary, RunStatus } from '$lib/api/generated/openapi/types.gen';
+	import type { Finding, JobParamValues, RunSummary } from '$lib/api/types';
 	import JobParamsDialog from '$lib/components/admin/JobParamsDialog.svelte';
 	import { busyKeySuffix, needsDialog } from '$lib/utils/jobParams';
 	import { messageBus } from '$lib/message-bus/client.svelte';
@@ -551,7 +545,10 @@
 	}
 
 	function cadenceLabel(job: JobSummary): string {
-		if (job.interval_ms !== undefined) return intervalLabel(job.interval_ms);
+		// `!= null`, not `!== undefined`: the generated type is
+		// `number | null`, so the strict check let `null` through to
+		// `intervalLabel(null)`.
+		if (job.interval_ms != null) return intervalLabel(job.interval_ms);
 		// No cadence of its own, but something scheduled runs it. Saying
 		// "on-demand" here would be false in the configuration that ships
 		// by default: `consistency_batch` is scheduled weekly and sweeps
@@ -599,6 +596,12 @@
 	// refusing writes across the whole app; the row has to say so.
 	/// Lifecycle label for the State column. Lower-cased to match the
 	/// existing `running` pill rather than shouting the DB's PascalCase.
+	// `RunStatus`, and deliberately WITHOUT a default arm: the switch is
+	// exhaustive over the published six, so adding a seventh state on the
+	// backend fails this build rather than silently rendering nothing.
+	// That only holds because `JobSummary.last_run_status` is typed with
+	// the enum — while it was `Option<String>` this had to take `string`,
+	// and a new state would have slipped through.
 	function runStatusLabel(status: RunStatus): string {
 		switch (status) {
 			case 'Running':
@@ -1029,7 +1032,7 @@
 								</span>
 							{/if}
 						</td>
-						<td class="jobs-panel__muted">{timeAgo(job.last_run_at)}</td>
+						<td class="jobs-panel__muted">{timeAgo(job.last_run_at ?? undefined)}</td>
 						<td>
 							<div class="jobs-panel__outcome-cell">
 								<span class={outcomeClass(job)}>{outcomeLabel(job)}</span>

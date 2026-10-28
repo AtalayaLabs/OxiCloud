@@ -3347,11 +3347,22 @@ pub async fn get_transcode_stats(State(state): State<Arc<AppState>>) -> impl Int
         .into_response()
 }
 
+/// `body` is spelled out rather than left as `Object`: the admin panel
+/// switches on `mutates`, `parameters[].type` and `parameters[].allowed`,
+/// and an untyped body meant the generated SDK carried no TS type for any
+/// of them — so the panel's `JobSummary`/`JobParam` were hand-written and
+/// ungoverned, exactly the drift `PhotoResourceItemDto` was registered to
+/// stop.
 #[utoipa::path(
     get,
     path = "/api/admin/jobs",
     responses(
-        (status = 200, body = Object, description = "Jobs listed"),
+        (
+            status = 200,
+            body = Vec<crate::infrastructure::scheduler::JobSummary>,
+            description = "Jobs listed, registry order (the handler sorts; \
+                           the panel re-sorts for display)"
+        ),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Admin required"),
     ),
@@ -3491,7 +3502,24 @@ pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse 
             // Always reported, so the panel can prefer the row's truth
             // over the in-memory outcome rather than guessing which is
             // fresher.
-            job.last_run_status = Some(status.clone());
+            //
+            // Parsed into `RunStatus` rather than passed through as the
+            // raw TEXT, so the published schema carries the real
+            // vocabulary. A value that fails to parse means the column
+            // holds something no code path writes (`RunStatus::as_str`
+            // is the only writer), which is worth a line in the log
+            // rather than a silent pass-through to the UI.
+            job.last_run_status =
+                crate::infrastructure::scheduler::RunStatus::parse(status).or_else(|| {
+                    tracing::warn!(
+                        target: "oxicloud::scheduler",
+                        job = %job.name,
+                        raw_status = %status,
+                        "⚠️ jobs.recoverable_runs.status holds a value RunStatus does not know; \
+                         reporting no status for this row",
+                    );
+                    None
+                });
             // Always, including empty: `Some({})` says the run found
             // nothing, which the panel renders as a clean green "ok".
             // Omitting it there would be indistinguishable from "no run
