@@ -1,8 +1,19 @@
 default:
     @just --list
 
+# Dev build. Carries `--features plugins` so the binary it produces is the
+# one the e2e suite can reuse: `playwright.coverage.config.ts` boots
+# `target/debug/oxicloud` when it is fresh AND plugins-linked, and otherwise
+# falls back to `cargo run --features plugins` — a 5-minute rebuild on every
+# e2e run. One flag here spends ~0 extra seconds (you were going to pay the
+# wasmtime compile on the first e2e run anyway) and saves it every time after.
+#
+# Deliberately NOT `default = ["plugins"]` in Cargo.toml: that would link a
+# large WASM engine into every operator's `cargo build --release` for a
+# feature they must still switch on with OXICLOUD_ENABLE_PLUGINS=true. The
+# flag belongs on the dev entry point, not in the crate's default.
 build:
-    cargo build
+    cargo build --features plugins
 
 release:
     # Build the SvelteKit SPA into static-dist/ (build.rs no longer bundles),
