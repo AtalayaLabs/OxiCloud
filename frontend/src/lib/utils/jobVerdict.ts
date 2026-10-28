@@ -10,7 +10,7 @@
  * its own column. A job can be `Paused` and still have a meaningful
  * verdict about what the run managed to do before it stopped.
  */
-import type { JobSummary } from '$lib/api/types';
+import type { JobSummary } from '$lib/api/generated/openapi/types.gen';
 
 export type JobVerdict =
 	/** The run gave up: the backend was unreachable after its retries,

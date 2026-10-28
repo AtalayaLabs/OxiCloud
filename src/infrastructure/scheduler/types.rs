@@ -218,12 +218,18 @@ impl JobRunArgs {
 /// scalar (rows scanned, blobs migrated, thumbnails checked). `extra`
 /// is a free-form JSON blob for job-specific fields the caller wants
 /// surfaced to `oxicloud::scheduler` log lines.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum JobOutcome {
     Ok {
         count: u64,
+        /// Free-form per-job payload, so `Object` is the honest schema —
+        /// its keys are chosen by each handler (`purged`,
+        /// `repaired_count`, `per_check`, …) and the admin panel reads
+        /// the ones it knows. See `AdminJobsPanel`'s `extra` cast for
+        /// the set that is load-bearing today.
         #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+        #[schema(value_type = Object)]
         extra: serde_json::Value,
     },
     /// `Err` is a struct variant (not tuple-newtype) so it composes
@@ -320,7 +326,7 @@ impl fmt::Display for ErrCause {
 /// discovery-only by default, mutation behind an explicit opt-in — so a
 /// consistency tenant that later grows a repair arm changes this one value
 /// and nothing else.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Mutates {
     /// Read-only under every flag. All consistency tenants.
@@ -340,7 +346,7 @@ pub enum Mutates {
 /// panel can express between them: a checkbox, a text/select input, a
 /// number input. Anything richer belongs in the job's own config, not
 /// in a per-run parameter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum JobParamType {
     Boolean,
@@ -366,11 +372,17 @@ pub enum JobParamType {
 /// implemented by the job, so declaring `Absent` made the admin panel
 /// render "no default" directly above a description reading
 /// "'changed' (default)".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+/// On the wire, `untagged` makes this `boolean | number | string | null`
+/// — `Absent` is a unit variant, so it serialises as `null`. The schema
+/// says exactly that rather than naming the Rust variants, because a
+/// client sees values, never variant names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 #[serde(untagged)]
+#[schema(as = JobParamDefault)]
 pub enum JobParamDefault {
     Boolean(bool),
     Number(i64),
+    #[schema(value_type = String)]
     Str(&'static str),
     /// No default — the parameter is simply absent unless supplied.
     Absent,
@@ -393,7 +405,7 @@ impl JobParamDefault {
 /// `String` is `Option` because an absent string and an empty one are
 /// different for `storage` — absent means "use the active backend",
 /// empty would be a nameless entry.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, utoipa::ToSchema)]
 #[serde(untagged)]
 pub enum JobParamValue {
     Boolean(bool),
@@ -450,8 +462,9 @@ impl JobParamValue {
 /// switches on, so renaming one breaks existing run history the same
 /// way renaming a [`Mutates`] variant would. Add a new parameter
 /// rather than repurposing an old one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct JobParam {
+    #[schema(value_type = String)]
     pub name: &'static str,
     #[serde(rename = "type")]
     pub param_type: JobParamType,
@@ -461,6 +474,7 @@ pub struct JobParam {
     pub default: JobParamDefault,
     /// One line for the panel's input label. Empty renders bare.
     #[serde(skip_serializing_if = "str::is_empty")]
+    #[schema(value_type = Option<String>)]
     pub description: &'static str,
     /// The only values this parameter accepts, when it is an enum in all
     /// but type. Empty means "any string" — the common case.
@@ -475,7 +489,13 @@ pub struct JobParam {
     ///
     /// Still `JobParamType::String` on the wire — an enum value *is* a
     /// string, so nothing in type-checking or `JobParamValue` changes.
+    ///
+    /// `value_type = Option<Vec<String>>` because the serde attribute
+    /// above omits the field when empty: a generated client must read
+    /// "absent" as "any string", which is exactly the distinction the
+    /// panel's text-box-vs-`<select>` branch turns on.
     #[serde(skip_serializing_if = "<[&str]>::is_empty")]
+    #[schema(value_type = Option<Vec<String>>)]
     pub allowed: &'static [&'static str],
 }
 

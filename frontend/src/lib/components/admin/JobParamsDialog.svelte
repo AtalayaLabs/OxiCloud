@@ -17,7 +17,8 @@
 <script lang="ts">
 	import Modal from '$lib/components/Modal.svelte';
 	import { t } from '$lib/i18n/index.svelte';
-	import type { JobParamValues, JobSummary } from '$lib/api/types';
+	import type { JobSummary } from '$lib/api/generated/openapi/types.gen';
+	import type { JobParamValues } from '$lib/api/types';
 	import { collectValues, initialFields, type ParamField } from '$lib/utils/jobParams';
 
 	interface Props {

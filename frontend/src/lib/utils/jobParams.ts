@@ -9,7 +9,8 @@
  * See `docs/plan/admin-job-parameter-dialog.md`.
  */
 
-import type { JobParam, JobParamValues, JobSummary } from '$lib/api/types';
+import type { JobParam, JobSummary } from '$lib/api/generated/openapi/types.gen';
+import type { JobParamValues } from '$lib/api/types';
 
 /**
  * One row of the dialog: the declaration, the current value, and whether

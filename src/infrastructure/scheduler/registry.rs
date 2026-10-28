@@ -536,24 +536,39 @@ pub enum RegisterError {
 /// - `paused_run` — populated iff a `Paused` row exists in
 ///   `jobs.recoverable_runs` for this job. The UI uses it to render
 ///   "Resume (scanned/total)" instead of "Run".
-#[derive(Debug, Clone, Serialize)]
+/// # Published in the OpenAPI document
+///
+/// This is the response body of `GET /api/admin/jobs`, so it is a
+/// compatibility surface and carries `ToSchema`. The `&'static`
+/// fields need explicit `value_type` overrides — utoipa describes
+/// wire shapes, and a borrow is not one.
+///
+/// The fields with `skip_serializing_if` are declared
+/// `Option<…>`/absent in the schema even where the Rust type is not
+/// optional: a generated client must see that the key can be missing,
+/// which for `parameters` and `allowed` is load-bearing (absent means
+/// "none declared", not "empty list I should render").
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct JobSummary {
     pub name: String,
     /// One or two sentences on what the job does. Empty for jobs that
     /// haven't declared one yet — the UI omits the line rather than
     /// rendering a blank block.
     #[serde(skip_serializing_if = "str::is_empty")]
+    #[schema(value_type = Option<String>)]
     pub description: &'static str,
     pub mutates: Mutates,
     /// `Some` iff the job does something extra under `?repair=true`.
     /// Presence is what gates the repair toggle in the UI; the string
     /// is the confirmation text.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
     pub repair_description: Option<&'static str>,
     /// What this job accepts on a trigger. The panel renders exactly
     /// these — previously it showed the same fixed checkboxes on every
     /// job, most of which the job ignored with no way to tell.
     #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    #[schema(value_type = Option<Vec<JobParam>>)]
     pub parameters: &'static [JobParam],
     /// Status of this job's most recent run row, for recoverable jobs.
     ///
@@ -565,8 +580,16 @@ pub struct JobSummary {
     /// flip — and the panel went on showing the pause's outcome.
     ///
     /// Prefer this over `last_outcome` wherever the two could disagree.
+    ///
+    /// Typed [`RunStatus`], not `String`. It was a `String` because the
+    /// handler reads `status::TEXT`, and the cost landed on the client:
+    /// the generated TS said `string`, so the admin panel could not keep
+    /// its own six-value union and had to widen the two functions that
+    /// switch on it. The enum is the DB's real vocabulary — the column
+    /// is TEXT but only `RunStatus::as_str` ever writes it — so the
+    /// spec publishes the union and the switch stays exhaustive.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_run_status: Option<String>,
+    pub last_run_status: Option<crate::infrastructure::scheduler::RunStatus>,
     /// Findings of the most recent run, counted per severity, read from
     /// `jobs.run_findings` — the same numbers [`JobOutcome`] carries in
     /// `extra.severity_counts`, but sourced from the rows rather than
@@ -648,7 +671,7 @@ pub struct JobSummary {
 /// Still a distinct type rather than `JobRunArgs` itself — this is an
 /// API shape the admin panel switches on, and the dispatch type should
 /// stay free to change without a frontend release.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct StartupTrigger {
     pub params: std::collections::BTreeMap<String, JobParamValue>,
 }
@@ -665,7 +688,7 @@ pub struct StartupTrigger {
 /// "Resume" without progress.
 /// "This job has no cadence of its own, but `job` runs it every
 /// `interval_ms`." See [`JobSummary::scheduled_via`].
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct ScheduledVia {
     /// The scheduled job that dispatches this one.
     pub job: String,
@@ -673,8 +696,9 @@ pub struct ScheduledVia {
     pub interval_ms: u64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct PausedRunBrief {
+    #[schema(value_type = String, format = Uuid)]
     pub id: uuid::Uuid,
     pub scanned: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
