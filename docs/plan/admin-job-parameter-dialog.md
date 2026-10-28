@@ -1,6 +1,41 @@
 # Plan — A parameter dialog for job triggers
 
-**Status:** proposed 2026-10-25, not started. Awaiting review.
+**Status: FULLY IMPLEMENTED** — proposed 2026-10-25, implemented and verified
+2026-10-28 on `feat/jobs-parmeters`. Nothing in this plan is outstanding; the
+two items it had deferred (the `JobParam` enum and the `job_runs_cleanup`
+consolidation) were both pulled in and shipped on the same branch, and the
+"Not in scope" and "Open question" sections below record how each was closed.
+
+Shipped as designed: every run-menu item is a preset that seeds one dialog,
+the dialog replaces the confirm rather than adding to it, and the form is
+built entirely from `JobSummary.parameters` with no per-job knowledge.
+
+Verified green before commit: `cargo clippy --all-features --all-targets`
+(zero warnings), `cargo test --lib`, `npm run check`, `npm run test:unit`
+(669), `jobParams.test.ts` (14), `tests/api/admin_jobs.hurl`, and the two
+Playwright pins in `tests/e2e/spa/admin.spec.ts`.
+
+| piece | where |
+|---|---|
+| value rules (the subtle part) | `frontend/src/lib/utils/jobParams.ts` |
+| their pins | `jobParams.test.ts` — 13 cases |
+| the form | `frontend/src/lib/components/admin/JobParamsDialog.svelte` |
+| wiring | `AdminJobsPanel.svelte` — `openWithPreset` / `onParamsResolve` |
+| wire pin | `tests/e2e/spa/admin.spec.ts` — `rederive=always` reaches the query string |
+
+Three things worth knowing that the design did not anticipate:
+
+- **Resume is exempt.** A paused run already has args and the engine RESTORES
+  them (`persist_or_restore_args`), so offering the form there would invite
+  changing the parameters of a run already half-done. That button stays a
+  bare trigger, commented in place.
+- **Busy keys had to change shape.** They encoded `:deep` / `:repair`
+  literally; with arbitrary combinations they are now derived from the values
+  (sorted, so `{a,b}` and `{b,a}` are one key — two keys for one dispatch
+  would leave the panel believing something is still in flight).
+- **`confirmDialog` left the panel entirely.** Both confirms are gone, which
+  is the point: the dialog IS the confirm. The import's removal is the proof
+  there is no second ask.
 
 The admin jobs panel can trigger a job with **one boolean set to true**. Every
 other way a job can be parameterised is unreachable from the UI. The backend
@@ -177,14 +212,6 @@ Rules:
 - **The confirm button is the trigger.** No separate confirm step, because the
   dialog *is* the confirm. Cancel must dispatch nothing.
 
-### Where it lives
-
-`AdminJobsPanel.svelte` is already large. The dialog goes in its own component
-— `lib/components/admin/JobParamsDialog.svelte` — taking a `JobSummary` and
-resolving to `JobParamValues | null`. The panel keeps ownership of triggering;
-the dialog only collects values. That also makes it testable without the
-panel's menu/busy-key machinery.
-
 ### Tests
 
 - **Vitest** on the value-collection logic, which is where the subtle rules
@@ -201,20 +228,88 @@ panel's menu/busy-key machinery.
 
 ## Not in scope
 
-- **Changing `JobParam`.** It already carries name, type, default and
-  description. If a parameter needs an enum of allowed values (`rederive` is
-  `changed|always|never`, and a free-text box will let an operator type
-  `alwyas` — which the job correctly rejects, but only after they click Run),
-  that is a *backend* change adding `allowed: &'static [&'static str]` and
-  deserves its own decision. Worth noting the job already pins this:
-  `rederive_rejects_a_typo_by_name`.
+- ~~**Changing `JobParam`.**~~ **DONE 2026-10-28, same branch** — it was
+  listed here as out of scope, then pulled in because the dialog made two
+  defects visible that only a backend change could fix:
+
+  1. `rederive` rendered "**no default**" directly above a description
+     reading "'changed' (the default)". `JobParam::string` takes no default
+     and `JobParamDefault` had no string variant — justified when `storage`
+     was the only string parameter, where `Absent` genuinely means *use the
+     active backend*. `rederive` is the counter-example: `changed` is a real
+     per-run default the job implements.
+  2. A free-text box let an operator type `alwyas`, which the job rejected
+     only after dispatch — so the typo was learned from a failed run rather
+     than from the request, and run history gained a failure that was never
+     a real attempt.
+
+  Shipped: `JobParamDefault::Str(&'static str)` (`&'static str` is `Copy`, so
+  const-promotion still holds), `allowed: &'static [&'static str]` on
+  `JobParam`, and `JobParam::enumerated(name, allowed, default, description)`.
+  `parse_value` rejects an unlisted value, and `from_declared` already
+  propagated to the handler's 400 — so the **edge rejection needed no handler
+  change**.
+
+  Two jobs converted, after auditing all seven string parameters:
+  `content_rescan`'s `rederive` and `notify_selftest`'s `severity` (a closed
+  set the alert threshold keys off, with the same "no default" display bug).
+  The other five stay free-text correctly — `storage` ×3 names *configured
+  backends*, which a `&'static` slice cannot express; `kind` and `mime_prefix`
+  are genuinely open.
+
+  The default-in-allowed invariant is enforced at **registration**, not in a
+  test: `enumerated` is a `const fn` and cannot compare strings, so
+  `RegisterError::EnumDefaultNotAllowed` makes a bad declaration refuse to
+  boot rather than seeding every run with a value the parameter rejects.
 - **Scheduling.** This dialog triggers now; it does not set intervals.
 - **Removing the one-click `deep` / `repair` entries.** They stay.
 
-## Open question
+## Resolved: `job_runs_cleanup` (2026-10-28, same branch)
 
-Does the dialog replace `job_runs_cleanup`'s hardcoded `retention_days` path
-in `adminJobs.ts` immediately, or after it has shipped? Replacing it is the
-point — it is the duplication AGENTS.md forbids — but it is also the one
-parameterised trigger that works today, so it should be the last thing
-removed, not the first.
+The open question was whether the dialog replaces `job_runs_cleanup`'s
+hardcoded `retention_days` path immediately or after shipping. **Immediately**
+— it was the duplication AGENTS.md forbids, and keeping it one release longer
+would only have meant two modals in the same panel, each the place a reader
+might reasonably look.
+
+`job_runs_cleanup` got a parameter before any generic way to pass one existed,
+so it grew its own everything. All of it is gone:
+
+| Removed | Replaced by |
+| --- | --- |
+| `purgeModal` state + `openPurge`/`closePurge`/`confirmPurge` | `openWithPreset(cleanupJob)` — one `onclick` |
+| ~50 lines of bespoke `<Modal>` form, 3 CSS rules | `JobParamsDialog` |
+| `purgeJobRuns()` + `PurgeResponse` in `adminJobs.ts` | `triggerJob` |
+| `purge_title`, `purge_body`, `purge_days_label`, `purge_confirm` × 16 locales | the dialog's own copy |
+| the panel's last `Modal` import | — |
+
+The retention window now comes from the job's declared `retention_days`
+(number, default 30), so **changing the default is a backend change with no
+frontend release** — which is the property the hand-built form could not have.
+
+Three things the swap had to not lose:
+
+- **The purged count.** The bespoke toast read "{{n}} old run(s) purged
+  (retention {{days}} days)". `job_runs_cleanup` is a plain `JobHandler`, so
+  it has no run row to expand instead, and "purged 400" and "purged nothing"
+  would have read identically. Kept by branching on the **outcome shape**
+  (`extra.purged` present) rather than the job name, the same style as the
+  `repair_requested` rollup beside it — so no job name appears in the panel,
+  and `purge_done` keeps its 16 existing translations instead of a new
+  English-only key.
+- **The button.** `job_runs_cleanup` has a table row too, so the top-bar entry
+  is now a pure second route to the same dialog. Kept anyway: "purge old runs"
+  is what an operator reclaiming space searches for, and the job name is not.
+  It costs one `onclick` — the duplication that mattered was the second
+  hand-built form, not the second button. It is also now conditional on the
+  job being registered, which the hardcoded path was not.
+- **A pin, so this cannot quietly regress.** `tests/e2e/spa/admin.spec.ts`
+  asserts the button opens the dialog by **its own testid** and puts
+  `retention_days=7` on the wire — a revert to a hand-built form would still
+  open something with a number box and still send a request, so the testid is
+  the only thing that tells them apart.
+
+The same commit fixed a pin the enum work had silently broken: the
+string-parameter e2e case located its input as `input[type="text"]`, which
+after the `rederive` enum swap would have filled `mime_prefix` and asserted on
+a parameter nobody set.

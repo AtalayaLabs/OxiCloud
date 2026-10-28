@@ -212,25 +212,39 @@ jsonpath "$.captured_at" != "{{first_alert_at}}"
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 5 — A bad severity fails the run.
+# Step 5 — A bad severity is refused at the TRIGGER.
 #
 # Fail-fast rather than record-and-drop: a finding whose severity no
 # build recognises sits below every threshold, which is the silent
 # channel this file exists to rule out — arriving from the job that
 # is supposed to detect it.
 #
-# The envelope is still a 200, like every other trigger outcome; the
-# run is what failed. A failed run is also not a baseline — only
-# COMPLETED runs are diffed — so this leaves Step 4's empty state
-# standing for Step 6, which is itself worth pinning.
+# This asserted a 200 whose `outcome` was `err` ("not a severity")
+# until `severity` became `JobParam::enumerated` over
+# `data_loss|inconsistent|anomaly`. Now `from_declared` refuses
+# `critical` and the handler answers 400, so nothing is dispatched at
+# all.
+#
+# The job's own `Severity::parse` guard STAYS and is still reachable:
+# a resumed run restores the args it STARTED with, so a row persisted
+# before the enum landed can still carry `critical` into
+# `run_resumable`. The declaration guards new triggers; the in-job
+# check guards history.
+#
+# Step 6's precondition survives the change — and more cleanly. A
+# failed run was never a baseline (only COMPLETED runs are diffed),
+# and now there is no run row at all, so Step 4's empty state still
+# stands for Step 6 to be a lone appearance.
 # ─────────────────────────────────────────────────────────────
 POST {{base_url}}/api/admin/jobs/notify_selftest/trigger?severity=critical
 Authorization: Bearer {{admin_token}}
 
-HTTP 200
+HTTP 400
 [Asserts]
-jsonpath "$.outcome.outcome" == "err"
-jsonpath "$.outcome.message" contains "not a severity"
+# Names the rejected value and the accepted set — an operator who
+# mistyped a severity can fix it without reading the job's source.
+jsonpath "$.error" contains "critical"
+jsonpath "$.error" contains "data_loss, inconsistent, anomaly"
 
 
 # ─────────────────────────────────────────────────────────────

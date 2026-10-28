@@ -355,14 +355,23 @@ pub enum JobParamType {
 /// `parameters()` body needs const promotion, which a type with a
 /// destructor blocks.
 ///
-/// No string variant, deliberately — see [`JobParam::string`]: a string
-/// parameter that wants a default is usually config in disguise, and
-/// `Absent` is what "use the active backend" looks like for `storage`.
+/// `Str` holds a `&'static str`, which is `Copy` with no destructor, so
+/// the const-promotion argument above still holds.
+///
+/// It was omitted at first on the grounds that "a string parameter that
+/// wants a default is usually config in disguise" — true of `storage`,
+/// where `Absent` genuinely means *use the active backend*. `rederive` is
+/// the counter-example that earned this variant: `changed` is a real
+/// per-run default, named in the parameter's own description and
+/// implemented by the job, so declaring `Absent` made the admin panel
+/// render "no default" directly above a description reading
+/// "'changed' (default)".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub enum JobParamDefault {
     Boolean(bool),
     Number(i64),
+    Str(&'static str),
     /// No default — the parameter is simply absent unless supplied.
     Absent,
 }
@@ -373,6 +382,7 @@ impl JobParamDefault {
         match self {
             Self::Boolean(b) => JobParamValue::Boolean(b),
             Self::Number(n) => JobParamValue::Number(n),
+            Self::Str(s) => JobParamValue::String(Some(s.to_string())),
             Self::Absent => JobParamValue::String(None),
         }
     }
@@ -452,6 +462,21 @@ pub struct JobParam {
     /// One line for the panel's input label. Empty renders bare.
     #[serde(skip_serializing_if = "str::is_empty")]
     pub description: &'static str,
+    /// The only values this parameter accepts, when it is an enum in all
+    /// but type. Empty means "any string" — the common case.
+    ///
+    /// Two jobs at once:
+    ///
+    /// * the admin panel renders a `<select>` instead of a text box, so
+    ///   `alwyas` is not typeable;
+    /// * [`JobParam::parse_value`] rejects an unlisted value, which makes
+    ///   a typo a **400 at the trigger** rather than a dispatched run that
+    ///   fails on its first statement.
+    ///
+    /// Still `JobParamType::String` on the wire — an enum value *is* a
+    /// string, so nothing in type-checking or `JobParamValue` changes.
+    #[serde(skip_serializing_if = "<[&str]>::is_empty")]
+    pub allowed: &'static [&'static str],
 }
 
 impl JobParam {
@@ -462,6 +487,7 @@ impl JobParam {
             param_type: JobParamType::Boolean,
             default: JobParamDefault::Boolean(default),
             description,
+            allowed: &[],
         }
     }
 
@@ -477,6 +503,34 @@ impl JobParam {
             param_type: JobParamType::String,
             default: JobParamDefault::Absent,
             description,
+            allowed: &[],
+        }
+    }
+
+    /// A string parameter restricted to a fixed set, with a default that
+    /// must be one of them.
+    ///
+    /// Use this wherever a string is really an enum: the panel renders a
+    /// `<select>` and `parse_value` turns a typo into a 400 before the run
+    /// is dispatched. `rederive` on `content_rescan` is the case it was
+    /// added for — three modes, one of them (`always`) the only way to
+    /// apply a fixed extractor.
+    ///
+    /// ⚠ `default` is not checked against `allowed` here: `const fn`
+    /// cannot compare strings. The drift guard in this module's tests
+    /// does it instead, for every declared parameter.
+    pub const fn enumerated(
+        name: &'static str,
+        allowed: &'static [&'static str],
+        default: &'static str,
+        description: &'static str,
+    ) -> Self {
+        Self {
+            name,
+            param_type: JobParamType::String,
+            default: JobParamDefault::Str(default),
+            description,
+            allowed,
         }
     }
 
@@ -487,6 +541,7 @@ impl JobParam {
             param_type: JobParamType::Number,
             default: JobParamDefault::Number(default),
             description,
+            allowed: &[],
         }
     }
 
@@ -511,6 +566,21 @@ impl JobParam {
                     self.name
                 )),
             },
+            JobParamType::String if !self.allowed.is_empty() => {
+                // The 400 that makes a typo cheap. Without this the value
+                // reaches the job, which parses it there and fails the run
+                // — so the operator learns about `alwyas` from a failed
+                // run's error instead of from the request that made it.
+                if self.allowed.contains(&raw) {
+                    Ok(JobParamValue::String(Some(raw.to_string())))
+                } else {
+                    Err(format!(
+                        "'{raw}' is not a valid value for parameter '{}' (expected one of: {})",
+                        self.name,
+                        self.allowed.join(", ")
+                    ))
+                }
+            }
             JobParamType::String => Ok(JobParamValue::String(Some(raw.to_string()))),
             JobParamType::Number => raw
                 .parse::<i64>()
@@ -529,7 +599,39 @@ mod tests {
         JobParam::boolean("deep", true, "d"),
         JobParam::string("storage", "d"),
         JobParam::number("batch", 500, "d"),
+        JobParam::enumerated("mode", &["changed", "always", "never"], "changed", "d"),
     ];
+
+    #[test]
+    fn an_enum_rejects_an_unlisted_value_before_the_run_starts() {
+        let mode = DECLARED.iter().find(|p| p.name == "mode").unwrap();
+        assert_eq!(
+            mode.parse_value("always").unwrap(),
+            JobParamValue::String(Some("always".to_owned()))
+        );
+        // ⚠ The whole point: a typo is a parse failure the caller sees,
+        // not a dispatched run that dies on its first statement.
+        let err = mode.parse_value("alwyas").unwrap_err();
+        assert!(
+            err.contains("alwyas"),
+            "the error must quote the bad value: {err}"
+        );
+        assert!(
+            err.contains("changed, always, never"),
+            "the error must list the valid values: {err}"
+        );
+        // A free-form string parameter keeps taking anything.
+        let storage = DECLARED.iter().find(|p| p.name == "storage").unwrap();
+        assert!(storage.parse_value("whatever-entry").is_ok());
+    }
+
+    #[test]
+    fn a_string_default_seeds_the_run_like_any_other() {
+        let args = JobRunArgs::from_declared(DECLARED, []).unwrap();
+        // The bug this variant fixes: with `Absent` the panel rendered
+        // "no default" above a description naming one.
+        assert_eq!(args.get_str("mode"), Some("changed"));
+    }
 
     #[test]
     fn declared_defaults_seed_the_run() {

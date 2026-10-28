@@ -181,49 +181,26 @@ export function listRuns(name: string, limit = 20): Promise<RunSummary[]> {
 	});
 }
 
-/** Envelope from `POST /api/admin/jobs/runs/purge`. `purged` is
- *  the count of terminal-run rows deleted (findings cascade with
- *  their parent run via the FK, no separate counter). */
-export interface PurgeResponse {
-	purged: number;
-	retention_days: number;
-}
-
-/**
- * Retention cleanup of job-run history. Deletes terminal runs
- * (`Completed`, `Failed`, `Cancelled`) older than `days`; their
- * `jobs.run_findings` rows drop with them via CASCADE. Non-terminal
- * runs (`Running`, `Paused`, `CancelRequested`) are ALWAYS preserved
- * regardless of age. The backend clamps to a minimum of 1 day.
- *
- * Triggers the `job_runs_cleanup` job rather than a dedicated endpoint.
- * The bespoke `POST /api/admin/jobs/runs/purge` it used to call was
- * removed once the job existed: both ran the same purge, and the job
- * additionally gets run history, an audit line, and the mutating-job
- * confirmation every other destructive job goes through.
- *
- * The same job also runs nightly on its own schedule — this is the
- * "do it now, with this window" path.
- */
-export async function purgeJobRuns(days = 30): Promise<PurgeResponse> {
-	const res = await triggerJob('job_runs_cleanup', { retention_days: days });
-	// The trigger envelope wraps the job's own `extra`, and the outcome is
-	// a discriminated union — a failed purge carries a message and no
-	// counts. Both non-ok shapes throw rather than returning 0: "deleted
-	// nothing" and "did not run" look identical on the row otherwise, and
-	// the second is the one worth seeing.
-	if (!res.outcome) {
-		throw new Error('purge dispatched but reported no outcome');
-	}
-	if (res.outcome.outcome !== 'ok') {
-		throw new Error(res.outcome.message);
-	}
-	const extra = res.outcome.extra as { purged?: number; retention_days?: number } | undefined;
-	return {
-		purged: extra?.purged ?? 0,
-		retention_days: extra?.retention_days ?? days
-	};
-}
+// There is deliberately NO `purgeJobRuns` wrapper here any more.
+//
+// Retention cleanup of job-run history is the `job_runs_cleanup` job —
+// it deletes terminal runs (`Completed`, `Failed`, `Cancelled`) older
+// than its declared `retention_days` (number, default 30), their
+// `jobs.run_findings` rows going with them via CASCADE, while
+// non-terminal runs (`Running`, `Paused`, `CancelRequested`) are
+// preserved regardless of age.
+//
+// It lost its bespoke `POST /api/admin/jobs/runs/purge` endpoint once
+// the job existed, and then its bespoke wrapper + modal once the
+// parameter dialog existed: a wrapper that hardcodes one job's
+// parameter name and unwraps one job's `extra` is a second spelling of
+// `triggerJob`, and the second spelling is what drifts. The panel now
+// hands the `JobSummary` to the same dialog every other job uses, so
+// the retention window comes from the backend declaration — change the
+// default there and the UI follows with no frontend release.
+//
+// The job also runs nightly on its own schedule; the button is the
+// "do it now, with this window" path.
 
 /**
  * `GET /api/admin/jobs/{name}/runs/{id}/findings?limit=N&offset=M` —
