@@ -1,8 +1,35 @@
 default:
     @just --list
 
+# Dev build. Carries `--features plugins` so the binary it produces is the
+# one the e2e suite can reuse: `playwright.coverage.config.ts` boots
+# `target/debug/oxicloud` when it is fresh AND plugins-linked, and otherwise
+# falls back to `cargo run --features plugins` — a 5-minute rebuild on every
+# e2e run. One flag here spends ~0 extra seconds (you were going to pay the
+# wasmtime compile on the first e2e run anyway) and saves it every time after.
+#
+# Deliberately NOT `default = ["plugins"]` in Cargo.toml: that would link a
+# large WASM engine into every operator's `cargo build --release` for a
+# feature they must still switch on with OXICLOUD_ENABLE_PLUGINS=true. The
+# flag belongs on the dev entry point, not in the crate's default.
+#
+# ⚠ Every recipe that WRITES `target/debug/oxicloud` carries the same flag —
+# `run`, `run-debug`, `dev`, `test-caldav` — and that is the whole point.
+# Cargo caches dependency units per feature set, so both sets coexist and
+# switching is a one-time cost, not a rebuild each way. The binary PATH is
+# what is shared: a bare `cargo run` overwrites the plugins binary with a
+# non-plugins one, the e2e config's wasmtime probe then rejects it, and the
+# next `just front-test` falls back to a full `cargo run --features plugins`.
+# One `just dev` session would otherwise silently undo this optimisation.
+#
+# `dev` also wants the feature on its own merits: without it the admin
+# Plugins tab is dead in the local dev server, so it cannot be exercised.
+#
+# NOT aligned, on purpose: `test` / `test-mocks` build test harnesses rather
+# than this binary (and `test-plugins` covers the plugins path separately),
+# and the `dev_tools` generators build a different bin entirely.
 build:
-    cargo build
+    cargo build --features plugins
 
 release:
     # Build the SvelteKit SPA into static-dist/ (build.rs no longer bundles),
@@ -11,7 +38,7 @@ release:
     cargo build --release
 
 run:
-    cargo run
+    cargo run --features plugins
 
 # ── Docker image builds ──────────────────────────────────────────────────────
 # Build the runtime image locally with BuildKit cargo cache mounts so repeat
@@ -40,7 +67,7 @@ docker-build-e2e tag="oxicloud-e2e:latest":
         .
 
 run-debug:
-    RUST_LOG=debug cargo run
+    RUST_LOG=debug cargo run --features plugins
 
 test:
     cargo test --workspace
@@ -427,7 +454,7 @@ test-caldav:
         echo "XXX python3 not found — skipping CalDAV client-driven tests"
         exit 0
     fi
-    cargo build
+    cargo build --features plugins
     ./tests/caldav/run-pycaldav.sh
 
 # Manual, human-run: launches OxiCloud with OIDC as the ONLY login method
@@ -523,7 +550,7 @@ docs-specs: gen-openapi gen-asyncapi
 dev:
     #!/usr/bin/env bash
     set -euo pipefail
-    cargo run &
+    cargo run --features plugins &
     backend=$!
     trap 'kill $backend 2>/dev/null' EXIT INT TERM
     cd frontend && npm run dev
