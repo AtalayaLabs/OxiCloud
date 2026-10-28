@@ -586,6 +586,24 @@ export type CompleteUploadRequest = {
      * Unknown values return 400.
      */
     checksumalg?: string | null;
+    /**
+     * §9 — the source file's modification time, epoch **milliseconds**.
+     *
+     * Same unit and trust bounds as the multipart `source_modified_at`,
+     * the by-hash field and the delta commit: the server rounds half-up
+     * and refuses an implausible value with a 400.
+     *
+     * This path needed its own slot for the same reason delta did —
+     * a capability must not depend on which upload route the client
+     * chose. Without it, every chunked upload was stamped `NOW()`
+     * while the other three preserved the client's mtime, and the
+     * client had no way to tell.
+     *
+     * Supplied on `/complete` rather than at session creation because
+     * that is where the file row is created; a value given hours
+     * earlier would have to be carried through the session for no gain.
+     */
+    source_modified_at?: number | null;
 };
 
 /**
@@ -848,9 +866,436 @@ export type CreateUploadResponseDto = {
  * `next_cursor` is omitted from the JSON when `None` (i.e. last page).
  * Callers must treat a missing `next_cursor` as end-of-results — never
  * include a `total` count (that would require an expensive `COUNT(*)`).
+ * ⚠ **Every instantiation must be registered in `components(schemas(..))`,
+ * spelled out with its item type.** OpenAPI has no generics, so utoipa emits
+ * one schema per concrete instantiation — and if none is registered, the
+ * paths fall back to a single bare `CursorListResponse` whose `items` is
+ * hard-wired to whichever instantiation it resolved. Every endpoint then
+ * `$ref`s that one, so all but one is documented as returning the WRONG item
+ * type while its real container sits in `components.schemas` referenced by
+ * nothing.
+ *
+ * That is not cosmetic. A generated client gets the wrong item type, and a
+ * hand-written replacement has nothing checking it against the server —
+ * which is how `frontend/.../photos.ts` came to maintain `PhotoItem` by
+ * hand, and how `FileMetadata` went on declaring `captured_at` for weeks
+ * after the column became `created_at`.
+ *
+ * So adding a listing endpoint means registering
+ * `CursorListResponse<YourItemDto>` alongside `YourItemDto` itself.
+ * (`#[aliases(..)]` would be tidier, but it was removed in utoipa 5.)
+ *
+ * See `docs/architecture/resource-listing.md § Three layers`.
  */
 export type CursorListResponse = {
-    items: Array<OutgoingResourceItemDto>;
+    items: Array<SharedWithMeItemDto>;
+    /**
+     * Opaque cursor for the next page.  Absent when this is the last page.
+     */
+    next_cursor?: string | null;
+};
+
+/**
+ * Standard response envelope for cursor-paginated listing endpoints.
+ *
+ * `next_cursor` is omitted from the JSON when `None` (i.e. last page).
+ * Callers must treat a missing `next_cursor` as end-of-results — never
+ * include a `total` count (that would require an expensive `COUNT(*)`).
+ * ⚠ **Every instantiation must be registered in `components(schemas(..))`,
+ * spelled out with its item type.** OpenAPI has no generics, so utoipa emits
+ * one schema per concrete instantiation — and if none is registered, the
+ * paths fall back to a single bare `CursorListResponse` whose `items` is
+ * hard-wired to whichever instantiation it resolved. Every endpoint then
+ * `$ref`s that one, so all but one is documented as returning the WRONG item
+ * type while its real container sits in `components.schemas` referenced by
+ * nothing.
+ *
+ * That is not cosmetic. A generated client gets the wrong item type, and a
+ * hand-written replacement has nothing checking it against the server —
+ * which is how `frontend/.../photos.ts` came to maintain `PhotoItem` by
+ * hand, and how `FileMetadata` went on declaring `captured_at` for weeks
+ * after the column became `created_at`.
+ *
+ * So adding a listing endpoint means registering
+ * `CursorListResponse<YourItemDto>` alongside `YourItemDto` itself.
+ * (`#[aliases(..)]` would be tidier, but it was removed in utoipa 5.)
+ *
+ * See `docs/architecture/resource-listing.md § Three layers`.
+ */
+export type CursorListResponseFavoritesResourceItemDto = {
+    items: Array<{
+        /**
+         * When the resource was added to the user's favorites.
+         */
+        favorited_at: string;
+        /**
+         * Full resource details — shape determined by `resource_type`.
+         */
+        resource: ResourceContentDto;
+        resource_type: ResourceTypeDto;
+    }>;
+    /**
+     * Opaque cursor for the next page.  Absent when this is the last page.
+     */
+    next_cursor?: string | null;
+};
+
+/**
+ * Standard response envelope for cursor-paginated listing endpoints.
+ *
+ * `next_cursor` is omitted from the JSON when `None` (i.e. last page).
+ * Callers must treat a missing `next_cursor` as end-of-results — never
+ * include a `total` count (that would require an expensive `COUNT(*)`).
+ * ⚠ **Every instantiation must be registered in `components(schemas(..))`,
+ * spelled out with its item type.** OpenAPI has no generics, so utoipa emits
+ * one schema per concrete instantiation — and if none is registered, the
+ * paths fall back to a single bare `CursorListResponse` whose `items` is
+ * hard-wired to whichever instantiation it resolved. Every endpoint then
+ * `$ref`s that one, so all but one is documented as returning the WRONG item
+ * type while its real container sits in `components.schemas` referenced by
+ * nothing.
+ *
+ * That is not cosmetic. A generated client gets the wrong item type, and a
+ * hand-written replacement has nothing checking it against the server —
+ * which is how `frontend/.../photos.ts` came to maintain `PhotoItem` by
+ * hand, and how `FileMetadata` went on declaring `captured_at` for weeks
+ * after the column became `created_at`.
+ *
+ * So adding a listing endpoint means registering
+ * `CursorListResponse<YourItemDto>` alongside `YourItemDto` itself.
+ * (`#[aliases(..)]` would be tidier, but it was removed in utoipa 5.)
+ *
+ * See `docs/architecture/resource-listing.md § Three layers`.
+ */
+export type CursorListResponseFolderResourceItemDto = {
+    items: Array<{
+        /**
+         * Full resource details. Shape is determined by `resource_type`.
+         */
+        resource: ResourceContentDto;
+        resource_type: ResourceTypeDto;
+    }>;
+    /**
+     * Opaque cursor for the next page.  Absent when this is the last page.
+     */
+    next_cursor?: string | null;
+};
+
+/**
+ * Standard response envelope for cursor-paginated listing endpoints.
+ *
+ * `next_cursor` is omitted from the JSON when `None` (i.e. last page).
+ * Callers must treat a missing `next_cursor` as end-of-results — never
+ * include a `total` count (that would require an expensive `COUNT(*)`).
+ * ⚠ **Every instantiation must be registered in `components(schemas(..))`,
+ * spelled out with its item type.** OpenAPI has no generics, so utoipa emits
+ * one schema per concrete instantiation — and if none is registered, the
+ * paths fall back to a single bare `CursorListResponse` whose `items` is
+ * hard-wired to whichever instantiation it resolved. Every endpoint then
+ * `$ref`s that one, so all but one is documented as returning the WRONG item
+ * type while its real container sits in `components.schemas` referenced by
+ * nothing.
+ *
+ * That is not cosmetic. A generated client gets the wrong item type, and a
+ * hand-written replacement has nothing checking it against the server —
+ * which is how `frontend/.../photos.ts` came to maintain `PhotoItem` by
+ * hand, and how `FileMetadata` went on declaring `captured_at` for weeks
+ * after the column became `created_at`.
+ *
+ * So adding a listing endpoint means registering
+ * `CursorListResponse<YourItemDto>` alongside `YourItemDto` itself.
+ * (`#[aliases(..)]` would be tidier, but it was removed in utoipa 5.)
+ *
+ * See `docs/architecture/resource-listing.md § Three layers`.
+ */
+export type CursorListResponseOutgoingResourceItemDto = {
+    items: Array<{
+        /**
+         * Earliest grant date across all subjects on this resource.
+         */
+        first_shared_at: string;
+        /**
+         * One entry per (subject, permissions) pair.
+         */
+        grants: Array<OutgoingResourceGrantDto>;
+        /**
+         * Full resource details. Shape is determined by `resource_type`.
+         */
+        resource: ResourceContentDto;
+        resource_type: ResourceTypeDto;
+    }>;
+    /**
+     * Opaque cursor for the next page.  Absent when this is the last page.
+     */
+    next_cursor?: string | null;
+};
+
+/**
+ * Standard response envelope for cursor-paginated listing endpoints.
+ *
+ * `next_cursor` is omitted from the JSON when `None` (i.e. last page).
+ * Callers must treat a missing `next_cursor` as end-of-results — never
+ * include a `total` count (that would require an expensive `COUNT(*)`).
+ * ⚠ **Every instantiation must be registered in `components(schemas(..))`,
+ * spelled out with its item type.** OpenAPI has no generics, so utoipa emits
+ * one schema per concrete instantiation — and if none is registered, the
+ * paths fall back to a single bare `CursorListResponse` whose `items` is
+ * hard-wired to whichever instantiation it resolved. Every endpoint then
+ * `$ref`s that one, so all but one is documented as returning the WRONG item
+ * type while its real container sits in `components.schemas` referenced by
+ * nothing.
+ *
+ * That is not cosmetic. A generated client gets the wrong item type, and a
+ * hand-written replacement has nothing checking it against the server —
+ * which is how `frontend/.../photos.ts` came to maintain `PhotoItem` by
+ * hand, and how `FileMetadata` went on declaring `captured_at` for weeks
+ * after the column became `created_at`.
+ *
+ * So adding a listing endpoint means registering
+ * `CursorListResponse<YourItemDto>` alongside `YourItemDto` itself.
+ * (`#[aliases(..)]` would be tidier, but it was removed in utoipa 5.)
+ *
+ * See `docs/architecture/resource-listing.md § Three layers`.
+ */
+export type CursorListResponsePhotoResourceItemDto = {
+    items: Array<{
+        /**
+         * Raw EXIF `DateTimeOriginal` (RFC 3339 UTC). `None` when the
+         * file carries no EXIF date. Lets the client distinguish "taken
+         * on this date" from the fallback that `sort_date` collapses into
+         * one value — but it is NOT a sort axis, so do not group by it.
+         */
+        captured_at?: string | null;
+        /**
+         * `true` when at least one other non-trashed media row in the
+         * same drive references the same blob hash — i.e. the §9
+         * within-drive `DISTINCT ON (blob_hash)` hid one or more
+         * siblings behind this tile. §9b Layer 1 of
+         * `docs/plan/photos-resources-migration.md` surfaces this as the
+         * delete-UX hint: a `true` tile warns the user that "trashing
+         * this removes only one copy of the content — N other copies
+         * still live elsewhere in this drive", so the gallery can offer
+         * the siblings list from `GET /api/dedup/check/{hash}` (Layer 2)
+         * before committing. `false` is the common case and lets the FE
+         * skip the sibling fetch entirely — zero round trips when
+         * there's nothing to warn about.
+         */
+        has_blob_siblings: boolean;
+        /**
+         * `true` when the file has both GPS lat AND lng. Presence signal
+         * only — the raw coordinates stay off the main listing. Enables
+         * a "📍 has location" badge and a "photos with location"
+         * client-side filter without disclosing per-photo coordinates on
+         * every gallery tile. Important on public share links where a
+         * visitor seeing GPS for every photo would often be unintended
+         * by the sharer. For the Places map, continue to use
+         * `/api/photos/geo` which clusters coords server-side; for a
+         * specific photo's exact lat/lng, call `/api/files/{id}/metadata`
+         * — the explicit per-photo call is the right disclosure
+         * boundary.
+         */
+        has_gps: boolean;
+        /**
+         * Image/video height in pixels, from `storage.content_metadata`.
+         */
+        height?: number | null;
+        /**
+         * Raw EXIF orientation (TIFF 1–8 enum). `None` when absent. The
+         * client applies this to the full-resolution image tile BEFORE
+         * pixels arrive, so there is no "appears sideways, flips" flash
+         * on `<img>` load in browsers that don't auto-rotate. Note:
+         * thumbnails already arrive display-correct — the server-side
+         * thumbnail generator bakes rotation into the output pixels.
+         * This field is strictly for the full-res lightbox / download
+         * viewer.
+         */
+        orientation?: number | null;
+        /**
+         * Full file details — serialised as the inner object via
+         * `ResourceContentDto`'s `#[serde(untagged)]`, so consumers read
+         * `resource.id`, `resource.name`, … directly.
+         */
+        resource: ResourceContentDto;
+        resource_type: ResourceTypeDto;
+        /**
+         * Value of the **active sort axis** (RFC 3339 UTC) — whichever
+         * column the server actually ordered this page by, not one fixed
+         * column. `order_by=captured_at` (the default) yields
+         * `media_sort_date`, i.e. `COALESCE(captured_at,
+         * content_modified_at)`; `order_by=created_at` yields
+         * `created_at`; `order_by=modified_at` yields
+         * `content_modified_at`. The cursor keys off this value.
+         *
+         * **Clients must bucket and group on this field**, precisely
+         * because it tracks the ordering. The timeline arrives
+         * monotonically newest-first, and a UI that groups on any other
+         * date can see a month reopen after it closed. Doing exactly that
+         * — grouping on `created_at` — is what broke `/photos` with
+         * `each_key_duplicate` once §3 made the two axes diverge.
+         */
+        sort_date: string;
+        /**
+         * Image/video width in pixels, from `storage.content_metadata`.
+         * `None` when the row has no metadata (very old uploads, or a
+         * format the metadata extractor doesn't understand).
+         */
+        width?: number | null;
+    }>;
+    /**
+     * Opaque cursor for the next page.  Absent when this is the last page.
+     */
+    next_cursor?: string | null;
+};
+
+/**
+ * Standard response envelope for cursor-paginated listing endpoints.
+ *
+ * `next_cursor` is omitted from the JSON when `None` (i.e. last page).
+ * Callers must treat a missing `next_cursor` as end-of-results — never
+ * include a `total` count (that would require an expensive `COUNT(*)`).
+ * ⚠ **Every instantiation must be registered in `components(schemas(..))`,
+ * spelled out with its item type.** OpenAPI has no generics, so utoipa emits
+ * one schema per concrete instantiation — and if none is registered, the
+ * paths fall back to a single bare `CursorListResponse` whose `items` is
+ * hard-wired to whichever instantiation it resolved. Every endpoint then
+ * `$ref`s that one, so all but one is documented as returning the WRONG item
+ * type while its real container sits in `components.schemas` referenced by
+ * nothing.
+ *
+ * That is not cosmetic. A generated client gets the wrong item type, and a
+ * hand-written replacement has nothing checking it against the server —
+ * which is how `frontend/.../photos.ts` came to maintain `PhotoItem` by
+ * hand, and how `FileMetadata` went on declaring `captured_at` for weeks
+ * after the column became `created_at`.
+ *
+ * So adding a listing endpoint means registering
+ * `CursorListResponse<YourItemDto>` alongside `YourItemDto` itself.
+ * (`#[aliases(..)]` would be tidier, but it was removed in utoipa 5.)
+ *
+ * See `docs/architecture/resource-listing.md § Three layers`.
+ */
+export type CursorListResponseRecentResourceItemDto = {
+    items: Array<{
+        /**
+         * When the resource was last accessed.
+         */
+        accessed_at: string;
+        /**
+         * Full resource details — shape determined by `resource_type`.
+         */
+        resource: ResourceContentDto;
+        resource_type: ResourceTypeDto;
+    }>;
+    /**
+     * Opaque cursor for the next page.  Absent when this is the last page.
+     */
+    next_cursor?: string | null;
+};
+
+/**
+ * Standard response envelope for cursor-paginated listing endpoints.
+ *
+ * `next_cursor` is omitted from the JSON when `None` (i.e. last page).
+ * Callers must treat a missing `next_cursor` as end-of-results — never
+ * include a `total` count (that would require an expensive `COUNT(*)`).
+ * ⚠ **Every instantiation must be registered in `components(schemas(..))`,
+ * spelled out with its item type.** OpenAPI has no generics, so utoipa emits
+ * one schema per concrete instantiation — and if none is registered, the
+ * paths fall back to a single bare `CursorListResponse` whose `items` is
+ * hard-wired to whichever instantiation it resolved. Every endpoint then
+ * `$ref`s that one, so all but one is documented as returning the WRONG item
+ * type while its real container sits in `components.schemas` referenced by
+ * nothing.
+ *
+ * That is not cosmetic. A generated client gets the wrong item type, and a
+ * hand-written replacement has nothing checking it against the server —
+ * which is how `frontend/.../photos.ts` came to maintain `PhotoItem` by
+ * hand, and how `FileMetadata` went on declaring `captured_at` for weeks
+ * after the column became `created_at`.
+ *
+ * So adding a listing endpoint means registering
+ * `CursorListResponse<YourItemDto>` alongside `YourItemDto` itself.
+ * (`#[aliases(..)]` would be tidier, but it was removed in utoipa 5.)
+ *
+ * See `docs/architecture/resource-listing.md § Three layers`.
+ */
+export type CursorListResponseSharedWithMeItemDto = {
+    items: Array<{
+        /**
+         * Earliest grant date for this resource.
+         */
+        granted_at: string;
+        /**
+         * UUID of the user who created the (earliest) grant.
+         */
+        granted_by: string;
+        /**
+         * All permissions the caller holds on this resource (aggregated).
+         */
+        permissions: Array<PermissionDto>;
+        /**
+         * Full resource details. Shape is determined by `resource_type`.
+         */
+        resource: ResourceContentDto;
+        resource_type: ResourceTypeDto;
+    }>;
+    /**
+     * Opaque cursor for the next page.  Absent when this is the last page.
+     */
+    next_cursor?: string | null;
+};
+
+/**
+ * Standard response envelope for cursor-paginated listing endpoints.
+ *
+ * `next_cursor` is omitted from the JSON when `None` (i.e. last page).
+ * Callers must treat a missing `next_cursor` as end-of-results — never
+ * include a `total` count (that would require an expensive `COUNT(*)`).
+ * ⚠ **Every instantiation must be registered in `components(schemas(..))`,
+ * spelled out with its item type.** OpenAPI has no generics, so utoipa emits
+ * one schema per concrete instantiation — and if none is registered, the
+ * paths fall back to a single bare `CursorListResponse` whose `items` is
+ * hard-wired to whichever instantiation it resolved. Every endpoint then
+ * `$ref`s that one, so all but one is documented as returning the WRONG item
+ * type while its real container sits in `components.schemas` referenced by
+ * nothing.
+ *
+ * That is not cosmetic. A generated client gets the wrong item type, and a
+ * hand-written replacement has nothing checking it against the server —
+ * which is how `frontend/.../photos.ts` came to maintain `PhotoItem` by
+ * hand, and how `FileMetadata` went on declaring `captured_at` for weeks
+ * after the column became `created_at`.
+ *
+ * So adding a listing endpoint means registering
+ * `CursorListResponse<YourItemDto>` alongside `YourItemDto` itself.
+ * (`#[aliases(..)]` would be tidier, but it was removed in utoipa 5.)
+ *
+ * See `docs/architecture/resource-listing.md § Three layers`.
+ */
+export type CursorListResponseTrashResourceItemDto = {
+    items: Array<{
+        /**
+         * The drive the trashed item belongs to. Enables client-side
+         * group-by-drive in the `/trash` UI (D2b spec — see
+         * `project_trash_groupbys_d2b` memory). The drive's display name
+         * resolves through the `/api/drives` listing the client already
+         * holds in `drives.svelte` — no extra round-trip needed.
+         */
+        drive_id: string;
+        /**
+         * When the item will be permanently deleted by the retention sweeper.
+         */
+        expires_at: string;
+        /**
+         * Full resource details — shape determined by `resource_type`.
+         */
+        resource: ResourceContentDto;
+        resource_type: ResourceTypeDto;
+        /**
+         * When the user moved the item to trash.
+         */
+        trashed_at: string;
+    }>;
     /**
      * Opaque cursor for the next page.  Absent when this is the last page.
      */
@@ -1713,6 +2158,62 @@ export type FeaturesDto = {
  * source of truth for the three canonical values.
  */
 export type FederationKindDto = 'magic_link' | 'ocm' | 'oidc';
+
+/**
+ * Content-derived metadata for one file.
+ *
+ * Every field is optional because extraction is best-effort and
+ * format-dependent: a photo fills the camera and geo columns, a `.docx`
+ * fills `created_at` alone, and content nothing can be read from fills
+ * none of them.
+ */
+export type FileContentMetadataDto = {
+    camera_make?: string | null;
+    camera_model?: string | null;
+    /**
+     * **The creation date the content claims about itself.**
+     *
+     * EXIF `DateTimeOriginal` for a photo, the container creation time for
+     * a video, `dcterms:created` for OOXML, `meta:creation-date` for ODF,
+     * `/CreationDate` for a PDF.
+     *
+     * Named `created_at` to match its column, and **not** `captured_at`,
+     * which is what this field was called while the only writer was EXIF.
+     * A `.docx` is not *captured*; the word was photo vocabulary for a
+     * value that now covers every format the extractor reads. Note this is
+     * a different thing from `FileDto.created_at`, which is when this
+     * instance received the bytes — the vocabulary is "Added" for arrival
+     * and "Created" for the claim, per `docs/architecture/dates.md`.
+     *
+     * `null` means the content claims nothing, which is a real answer and
+     * never a guess: see
+     * `docs/architecture/dates.md § When creation date is unknown`.
+     */
+    created_at?: string | null;
+    /**
+     * The file the caller asked about. Echoed back because the row itself
+     * is keyed by CONTENT, so it carries no file identity of its own.
+     */
+    file_id: string;
+    height?: number | null;
+    latitude?: number | null;
+    longitude?: number | null;
+    /**
+     * Present only when there is nothing to report, so a client can tell
+     * "we looked and found none" from a field it forgot to read.
+     *
+     * Kept in the SAME shape as a populated response rather than returned
+     * as a different body: the endpoint answers 200 either way, and two
+     * shapes behind one status is what made `body = Object` the only
+     * honest annotation before this type existed.
+     */
+    message?: string | null;
+    /**
+     * EXIF orientation (1-8), for viewers that rotate on display.
+     */
+    orientation?: number | null;
+    width?: number | null;
+};
 
 /**
  * DTO for file responses
@@ -3830,6 +4331,22 @@ export type SearchFolderResultDto = {
      * Relevance score (0-100) computed server-side
      */
     relevance_score: number;
+    /**
+     * Subtree rollup clock — the newest content change anywhere beneath
+     * this folder.
+     *
+     * Carried because the NC search REPORT handler emits
+     * `D:getlastmodified` for folder hits, and for a collection that
+     * property means the SUBTREE, not the folder row (see
+     * `docs/architecture/dates.md` § Collections). Dropping it made one
+     * folder answer differently depending on whether the client asked by
+     * REPORT or by PROPFIND.
+     *
+     * Costs no extra query: `enrich_folder` already receives a whole
+     * `FolderDto`, which carries this and even derives its ETag from it.
+     * The value was being discarded one function short of its consumer.
+     */
+    tree_modified_at?: string;
     /**
      * §14 provenance — last-mutator user id.
      */
@@ -9690,7 +10207,7 @@ export type ListFavoritesResourcesResponses = {
     /**
      * Paginated list of favorited resources
      */
-    200: CursorListResponse;
+    200: CursorListResponseFavoritesResourceItemDto;
 };
 
 export type ListFavoritesResourcesResponse = ListFavoritesResourcesResponses[keyof ListFavoritesResourcesResponses];
@@ -10022,7 +10539,7 @@ export type DownloadFileData = {
     };
     query?: {
         /**
-         * Return metadata JSON instead of file content
+         * `true`/`1` returns the file's own DTO as JSON instead of its bytes — the same `FileDto` a listing yields (name, size, mime_type, created_at, modified_at, is_favorite, is_shared). ⚠ NOT the same as the sibling route `GET /api/files/{id}/metadata`, which returns `FileContentMetadataDto` — facts extracted from the CONTENT (the creation date the bytes claim, camera, dimensions). This one describes the file row; that one describes the bytes.
          */
         metadata?: boolean;
         /**
@@ -10046,7 +10563,7 @@ export type DownloadFileErrors = {
 
 export type DownloadFileResponses = {
     /**
-     * File content (Content-Type on the actual response reflects the file's own mime type)
+     * File content (Content-Type on the actual response reflects the file's own mime type). ⚠ With `?metadata=true` this same 200 is instead `application/json` carrying a `FileDto` — one status, two shapes, selected by the query parameter. Declared as the byte stream because that is the default and the overwhelmingly common case; see the `metadata` parameter.
      */
     200: Blob | File;
     /**
@@ -10110,11 +10627,9 @@ export type GetFileMetadataErrors = {
 
 export type GetFileMetadataResponses = {
     /**
-     * File metadata (EXIF, dimensions, duration, etc.)
+     * Metadata extracted from the file's CONTENT — the creation date it claims (`created_at`), plus camera, geo and dimensions where the format carries them. Every field is optional; a body whose fields are all null carries `message` instead. Keyed by content hash, so copies of one file share these values.
      */
-    200: {
-        [key: string]: unknown;
-    };
+    200: FileContentMetadataDto;
 };
 
 export type GetFileMetadataResponse = GetFileMetadataResponses[keyof GetFileMetadataResponses];
@@ -10548,7 +11063,7 @@ export type ListFolderResourcesResponses = {
     /**
      * Cursor-paginated files and folders inside the requested folder. Items arrive in `order_by` order (folders first when order_by=name). `next_cursor` is absent on the last page.
      */
-    200: CursorListResponse;
+    200: CursorListResponseFolderResourceItemDto;
 };
 
 export type ListFolderResourcesResponse = ListFolderResourcesResponses[keyof ListFolderResourcesResponses];
@@ -10663,7 +11178,7 @@ export type ListSharedWithMeResponses = {
     /**
      * Cursor-paginated resources shared with the caller. Each item carries the full file or folder details plus aggregated permissions. `next_cursor` is absent on the last page.
      */
-    200: CursorListResponse;
+    200: CursorListResponseSharedWithMeItemDto;
 };
 
 export type ListSharedWithMeResponse = ListSharedWithMeResponses[keyof ListSharedWithMeResponses];
@@ -10719,7 +11234,7 @@ export type ListMySharesResponses = {
     /**
      * Cursor-paginated resources the caller has shared with others. Each item carries the full resource details plus all subjects (users and tokens) the resource was shared with. `next_cursor` is absent on the last page.
      */
-    200: CursorListResponse;
+    200: CursorListResponseOutgoingResourceItemDto;
 };
 
 export type ListMySharesResponse = ListMySharesResponses[keyof ListMySharesResponses];
@@ -11719,7 +12234,7 @@ export type ListPhotosResourcesResponses = {
     /**
      * Page of media files with photo-level signals
      */
-    200: CursorListResponse;
+    200: CursorListResponsePhotoResourceItemDto;
 };
 
 export type ListPhotosResourcesResponse = ListPhotosResourcesResponses[keyof ListPhotosResourcesResponses];
@@ -12207,7 +12722,7 @@ export type ListRecentResourcesResponses = {
     /**
      * Paginated list of recently accessed resources
      */
-    200: CursorListResponse;
+    200: CursorListResponseRecentResourceItemDto;
 };
 
 export type ListRecentResourcesResponse = ListRecentResourcesResponses[keyof ListRecentResourcesResponses];
@@ -12796,7 +13311,7 @@ export type GetTrashResourcesResponses = {
     /**
      * Paginated list of trashed resources
      */
-    200: CursorListResponse;
+    200: CursorListResponseTrashResourceItemDto;
 };
 
 export type GetTrashResourcesResponse = GetTrashResourcesResponses[keyof GetTrashResourcesResponses];

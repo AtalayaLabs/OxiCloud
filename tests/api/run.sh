@@ -625,6 +625,7 @@ HURL_FILES=( \
   "$API_DIR/nc_webdav_patch_consistency.hurl" \
   "$API_DIR/nc_webdav_put_gaps.hurl" \
   "$API_DIR/nc_webdav_client_mtime.hurl" \
+  "$API_DIR/nc_report_folder_tree_clock.hurl" \
   "$API_DIR/folder_content_clock.hurl" \
   "$API_DIR/folder_listing_cursor_clocks.hurl" \
   "$API_DIR/webdav_etag_rename_stability.hurl" \
@@ -642,9 +643,11 @@ HURL_FILES=( \
   # camera and GPS are asserted PRESENT. Read together they pin both
   # arms of the same COALESCE.
   "$API_DIR/photos_exif_extraction.hurl" \
+  "$API_DIR/document_date_extraction.hurl" \
   "$API_DIR/search_sort_content_clock.hurl" \
   "$API_DIR/content_clock_metadata_mutations.hurl" \
   "$API_DIR/rest_upload_source_mtime.hurl" \
+  "$API_DIR/chunked_upload_source_mtime.hurl" \
   "$API_DIR/webdav_drive_root.hurl" \
   "$API_DIR/webdav_permissions.hurl" \
   "$API_DIR/webdav_nested_move_cascade.hurl" \

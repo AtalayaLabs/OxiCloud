@@ -26,7 +26,7 @@ use std::sync::Arc;
     params(TrashResourcesQuery),
     responses(
         (status = 200, description = "Paginated list of trashed resources",
-         body = crate::application::dtos::trash_dto::TrashResourcesDto),
+         body = crate::application::dtos::cursor::CursorListResponse<crate::application::dtos::trash_dto::TrashResourceItemDto>),
         (status = 400, description = "Invalid cursor or query parameters"),
         (status = 501, description = "Trash feature not enabled"),
     ),

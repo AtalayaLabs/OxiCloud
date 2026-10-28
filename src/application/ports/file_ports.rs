@@ -71,6 +71,14 @@ pub trait FileUploadUseCase: Send + Sync + 'static {
     /// forever with app-passwords). Handlers now call this variant
     /// so the engine re-checks at finalize regardless of how long
     /// the session was open.
+    ///
+    /// `source_modified_at` is epoch **seconds**, already rounded and
+    /// bounds-checked by the caller; `None` stamps `NOW()`. It exists on
+    /// this variant and not only on `upload_file_streaming` because the
+    /// chunked path finalises here — and §9's rule is that preserving the
+    /// client's mtime must not depend on which upload route it chose. The
+    /// impl used to pass a hardcoded `None` when delegating, which is
+    /// precisely how chunked uploads lost it silently.
     async fn upload_file_streaming_with_perms(
         &self,
         name: String,
@@ -78,6 +86,7 @@ pub trait FileUploadUseCase: Send + Sync + 'static {
         content_type: String,
         blob: StoredBlob,
         caller_id: Uuid,
+        source_modified_at: Option<i64>,
     ) -> Result<FileDto, DomainError>;
 
     /// Replace the content of the file at `path` with an already-ingested

@@ -62,7 +62,7 @@ pub(crate) fn nc_creation_time(
     meta: &HashMap<String, StoredMetadata>,
     file_id: &str,
 ) -> Option<i64> {
-    meta.get(file_id)?.captured_at.map(|t| t.timestamp().max(0))
+    meta.get(file_id)?.created_at.map(|t| t.timestamp().max(0))
 }
 
 /// Batch-read the content metadata backing `nc:creation_time`, degrading
@@ -120,10 +120,84 @@ pub(crate) async fn nc_creation_times(
 /// `event_prefix` namespaces the audit events per surface, e.g.
 /// `"webdav_put"` yields `webdav_put.mtime_rejected` /
 /// `webdav_put.mtime_ignored`.
+/// Report any `OC-*` / `X-OC-*` request header this server does not act on.
+///
+/// **A measurement, not a feature.** `docs/plan/normalize-file-dates.md` §4
+/// leaves one question open: does a real NextCloud client send
+/// `X-OC-CTime` — the source filesystem's *birthtime* — on upload? That
+/// answers whether a client-asserted creation column is ever needed, and it
+/// cannot be settled by reading ownCloud's source, because what matters is
+/// the clients this instance's users actually run. So: observe them.
+///
+/// Logs at DEBUG on its own target, off unless asked for:
+///
+/// ```text
+/// RUST_LOG=oxicloud::nc_headers=debug cargo run
+/// ```
+///
+/// Then upload from a NextCloud desktop/mobile client and grep the log for
+/// `nc_headers`. A line naming `x-oc-ctime` answers §4 "yes"; a week of
+/// uploads with no such line answers it "no". Both are useful — a `no` is
+/// what keeps the column from being built on spec-reading alone.
+///
+/// **First run, 2026-10-27.** On a WebDAV PUT the NC desktop client sent
+/// `oc-total-length` (the logical upload size) and `oc-chunk-size` (its
+/// preferred 100 MiB chunking) — and **no `x-oc-ctime`**. One upload from
+/// one client is not the week's answer, but it is the first evidence, and
+/// it points at "no".
+///
+/// Those two are reported every time and that is fine: both are advisory
+/// on a whole-file PUT, where `Content-Length` already gives the size and
+/// our own chunked protocol carries its own `total_size`. Worth knowing if
+/// a quota pre-check or an early reject on oversized uploads is ever added
+/// — `oc-total-length` is the value it would want, and it arrives before
+/// the body.
+///
+/// Deliberately DEBUG rather than `info!(target: "audit")`: a client that
+/// sends some unhandled header on every PUT would otherwise flood the audit
+/// channel, and this is a question to answer once rather than an outcome to
+/// keep watching. Nothing branches on it, so leaving it compiled in costs a
+/// header-map walk on the two NC upload paths when the level is disabled.
+fn log_unhandled_oc_headers(headers: &HeaderMap, surface: &str) {
+    // Headers this server ACTS ON. `x-oc-mtime` is the only one today —
+    // verified by grep, not assumed. Extend when a header starts being
+    // handled, or the probe reports it as unknown forever.
+    const HANDLED: &[&str] = &["x-oc-mtime"];
+
+    // No "known but ignored" list on purpose. The probe is DEBUG-only and
+    // run deliberately, so reporting everything is cheaper than keeping a
+    // second list in step — and a header we chose to ignore is still worth
+    // seeing while reading these lines.
+
+    for (name, value) in headers.iter() {
+        let name = name.as_str();
+        if !(name.starts_with("x-oc-") || name.starts_with("oc-")) {
+            continue;
+        }
+        if HANDLED.contains(&name) {
+            continue;
+        }
+        tracing::debug!(
+            target: "oxicloud::nc_headers",
+            surface,
+            header = name,
+            // Lossy on purpose: a header we do not understand may not be
+            // UTF-8, and the point is to see that it arrived at all.
+            value = %String::from_utf8_lossy(value.as_bytes()),
+            "🔎 unhandled OC header on an upload — see §4 of \
+             docs/plan/normalize-file-dates.md if this is x-oc-ctime",
+        );
+    }
+}
+
 pub(crate) fn parse_client_mtime(
     headers: &HeaderMap,
     event_prefix: &str,
 ) -> Result<Option<i64>, AppError> {
+    // ⚠ Before the early return below: a client may send `X-OC-CTime`
+    // without `X-OC-Mtime`, and that is exactly the case §4 is looking for.
+    log_unhandled_oc_headers(headers, event_prefix);
+
     let Some(raw) = headers.get("x-oc-mtime") else {
         return Ok(None);
     };

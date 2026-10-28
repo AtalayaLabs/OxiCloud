@@ -27,7 +27,7 @@ type MetadataRow = (
 #[derive(Debug, Clone, Serialize)]
 pub struct StoredMetadata {
     pub file_id: String,
-    pub captured_at: Option<DateTime<Utc>>,
+    pub created_at: Option<DateTime<Utc>>,
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
     pub camera_make: Option<String>,
@@ -60,18 +60,28 @@ impl FileMetadataRepository {
     /// must be dropped — so a `false` here is a DELETE.
     ///
     /// ⚠ **Extend this the moment a new extractor writes this table.**
-    /// Document creation dates are the known next case: a `.docx` date is
-    /// the same fact as an EXIF capture date and lands in the same
-    /// `created_at` column — which is exactly why the table and column
-    /// are named for content rather than for photos. Add the predicate
-    /// here *in the same change* as the extractor, or `content_rescan`
-    /// will delete every document's metadata on its next sweep, silently
+    /// Documents were the known next case and landed in 2026-10 — a
+    /// `.docx` date is the same fact as an EXIF capture date and lands in
+    /// the same `created_at` column, which is exactly why the table and
+    /// column are named for content rather than for photos. The predicate
+    /// has to grow *in the same change* as the extractor, or
+    /// `content_rescan` deletes the new rows on its next sweep, silently
     /// and corpus-wide, because the type is not image/video.
     ///
     /// The failure mode is one-directional and quiet: nothing errors, the
     /// rows simply stop existing.
+    ///
+    /// Note this asks a BROADER question than the extractor: it says a row
+    /// is *legitimate*, not that today's parser can produce one. Those
+    /// differ for `text/plain`, which `document_format` classifies (it has
+    /// extractable text) while carrying no date — and the asymmetry is
+    /// safe in this direction. A `true` here with no extractor means a row
+    /// is merely never written; a `false` with an extractor means rows are
+    /// deleted.
     pub fn applies_to(mime: &str) -> bool {
-        mime.starts_with("image/") || mime.starts_with("video/")
+        mime.starts_with("image/")
+            || mime.starts_with("video/")
+            || crate::infrastructure::services::document_format::classify("", mime).is_some()
     }
 
     /// Insert or update the facts parsed from one blob's content.
@@ -80,14 +90,12 @@ impl FileMetadataRepository {
     /// writes nothing. See
     /// `migrations/20261105000000_exif_metadata_content_keyed.sql`.
     ///
-    /// Note the column is `created_at` while the Rust field stays
-    /// `captured_at`, and the asymmetry is deliberate.
-    /// `docs/plan/normalize-file-dates.md` fixes the COLUMN name, because
-    /// it stops being photo-specific the moment the extractor learns to
-    /// read a document's creation date — at which point `captured_at`
-    /// would be a lie. The Rust side keeps EXIF vocabulary until that
-    /// widening actually happens, rather than renaming 56 call sites
-    /// inside a schema migration. Mapping the two is what this repository
+    /// The Rust field is `created_at`, matching the column. It was
+    /// `captured_at` for as long as EXIF was the only writer — kept
+    /// deliberately, so a schema migration did not also have to rename
+    /// call sites — and renamed the moment the extractor learned to read a
+    /// document's creation date, because a `.docx` is not *captured* and
+    /// the old name became a lie. Mapping the two is what this repository
     /// is for.
     pub async fn upsert(&self, source_hash: &str, meta: &ExifMetadata) -> Result<(), DomainError> {
         sqlx::query(
@@ -147,7 +155,7 @@ impl FileMetadataRepository {
         Ok(row.map(
             |(
                 file_id,
-                captured_at,
+                created_at,
                 latitude,
                 longitude,
                 camera_make,
@@ -158,7 +166,7 @@ impl FileMetadataRepository {
             )| {
                 StoredMetadata {
                     file_id,
-                    captured_at,
+                    created_at,
                     latitude,
                     longitude,
                     camera_make,
@@ -176,7 +184,7 @@ impl FileMetadataRepository {
     ///
     /// **Sparse by construction**: files whose content has no
     /// `storage.content_metadata` row are simply absent from the map, and a
-    /// present row may still carry `captured_at = NULL`. Callers must treat both as "the
+    /// present row may still carry `created_at = NULL`. Callers must treat both as "the
     /// content claims no date" rather than defaulting to a file clock —
     /// see `nc_creation_time` in `interfaces/nextcloud`.
     ///
@@ -211,7 +219,7 @@ impl FileMetadataRepository {
         let mut map = HashMap::with_capacity(rows.len());
         for (
             file_id,
-            captured_at,
+            created_at,
             latitude,
             longitude,
             camera_make,
@@ -225,7 +233,7 @@ impl FileMetadataRepository {
                 file_id.clone(),
                 StoredMetadata {
                     file_id,
-                    captured_at,
+                    created_at,
                     latitude,
                     longitude,
                     camera_make,
@@ -238,5 +246,67 @@ impl FileMetadataRepository {
         }
 
         Ok(map)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FileMetadataRepository as Repo;
+    use crate::infrastructure::services::media_metadata_service::MediaMetadataService;
+
+    /// ⚠ The guard against a silent corpus-wide delete.
+    ///
+    /// `content_rescan::drop_stale_metadata` DELETES a content's row when
+    /// `applies_to` says false. `MediaMetadataService::handles` says whether
+    /// today's extractor writes one. If the extractor ever covers a type
+    /// this predicate rejects, every row of that type is removed on the next
+    /// sweep — silently, because nothing errors and the rows simply stop
+    /// existing.
+    ///
+    /// So **`handles` must imply `applies_to`**. The reverse is allowed and
+    /// deliberate (a `.txt` is a legitimate row we never write), because that
+    /// direction only means a row is never created.
+    #[test]
+    fn every_type_the_extractor_handles_may_legitimately_keep_its_row() {
+        for mime in [
+            "image/jpeg",
+            "image/heic",
+            "video/mp4",
+            "video/quicktime",
+            "application/pdf",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "application/vnd.oasis.opendocument.text",
+            "application/vnd.oasis.opendocument.spreadsheet",
+            "application/vnd.oasis.opendocument.presentation",
+        ] {
+            assert!(
+                MediaMetadataService::handles(mime),
+                "{mime} is no longer extracted — if that is intended, drop it \
+                 from this list; if not, the extractor gate regressed",
+            );
+            assert!(
+                Repo::applies_to(mime),
+                "⚠ {mime} IS extracted but `applies_to` rejects it, so \
+                 content_rescan will DELETE every row of that type on its \
+                 next sweep",
+            );
+        }
+    }
+
+    /// The asymmetry, stated explicitly so a future reader does not "tidy"
+    /// the two predicates into one.
+    #[test]
+    fn a_legitimate_row_we_never_write_is_fine_the_other_way_round_is_not() {
+        // Extractable text, no extractable date — so no row is ever written,
+        // but one would be legitimate and must not be deleted.
+        assert!(Repo::applies_to("text/plain"));
+        assert!(!MediaMetadataService::handles("text/plain"));
+
+        // Content with no document or media shape at all: neither.
+        assert!(!Repo::applies_to("application/zip"));
+        assert!(!MediaMetadataService::handles("application/zip"));
+        assert!(!Repo::applies_to("application/octet-stream"));
     }
 }

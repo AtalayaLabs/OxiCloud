@@ -576,7 +576,7 @@ pub async fn download_folder_zip(
          description = "Cursor-paginated files and folders inside the requested folder. \
                         Items arrive in `order_by` order (folders first when order_by=name). \
                         `next_cursor` is absent on the last page.",
-         body = FolderResourcesDto),
+         body = crate::application::dtos::cursor::CursorListResponse<crate::application::dtos::folder_dto::FolderResourceItemDto>),
         (status = 404, description = "Folder not found or access denied"),
     ),
     security(("bearerAuth" = [])),

@@ -332,6 +332,21 @@ pub struct SearchFolderResultDto {
     pub created_at: DateTime<Utc>,
     /// Last modification timestamp (RFC 3339 UTC).
     pub modified_at: DateTime<Utc>,
+    /// Subtree rollup clock — the newest content change anywhere beneath
+    /// this folder.
+    ///
+    /// Carried because the NC search REPORT handler emits
+    /// `D:getlastmodified` for folder hits, and for a collection that
+    /// property means the SUBTREE, not the folder row (see
+    /// `docs/architecture/dates.md` § Collections). Dropping it made one
+    /// folder answer differently depending on whether the client asked by
+    /// REPORT or by PROPFIND.
+    ///
+    /// Costs no extra query: `enrich_folder` already receives a whole
+    /// `FolderDto`, which carries this and even derives its ETag from it.
+    /// The value was being discarded one function short of its consumer.
+    #[serde(default)]
+    pub tree_modified_at: DateTime<Utc>,
     /// Relevance score (0-100) computed server-side
     pub relevance_score: u32,
     /// HTTP ETag — folders derive theirs from the tree-etag propagator.

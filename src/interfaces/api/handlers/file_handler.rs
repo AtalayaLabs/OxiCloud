@@ -11,6 +11,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use utoipa::ToSchema;
 
+use crate::application::dtos::content_metadata_dto::{FileContentMetadataDto, NO_CONTENT_METADATA};
 use crate::application::ports::external_mount_ports::MountStat;
 use crate::application::ports::file_ports::{
     CacheOutcome, FileManagementUseCase, FileRetrievalUseCase, FileUploadUseCase,
@@ -1430,9 +1431,17 @@ impl FileHandler {
     //  METADATA
     // ═══════════════════════════════════════════════════════════════════════
 
-    /// Returns EXIF/media metadata for a file.
+    /// Returns metadata extracted from a file's CONTENT.
     ///
-    /// Used by the Photos lightbox and for testing EXIF extraction.
+    /// EXIF for an image, container metadata for a video, and the document's
+    /// own properties for a `.docx` / `.xlsx` / `.pptx` / ODF / PDF — where
+    /// the only field any of them fills is `created_at`, the creation date
+    /// the bytes claim. "EXIF" is therefore the wrong word for this endpoint
+    /// as a whole, and was the word it used while EXIF was the only writer.
+    ///
+    /// Read by the Photos lightbox (camera and dimensions) and by
+    /// `tests/api/document_date_extraction.hurl` (the claimed creation
+    /// date), which are the two halves of what it now serves.
     pub(super) async fn get_file_metadata_impl(
         State(state): State<GlobalState>,
         callers: CallerSubjects,
@@ -1441,10 +1450,19 @@ impl FileHandler {
         // Authorize against every credential the caller holds — the Photos
         // lightbox is one of the components a share visitor reuses.
         //
-        // No disclosure fix needed here, unlike the sibling routes: the rows
-        // this returns are EXIF (capture time, GPS, camera, dimensions), which
-        // are carried in the image bytes the visitor may already download.
-        // Nothing here names the owner or their tree.
+        // No disclosure fix needed here, unlike the sibling routes: every
+        // field this returns is extracted FROM the content, so a visitor
+        // holding Read could parse the same values out of the bytes they are
+        // entitled to download. Nothing here names the owner or their tree.
+        //
+        // That reasoning used to be written as "the rows are EXIF … carried
+        // in the image bytes", which stopped covering the data in 2026-10:
+        // the endpoint now also serves document creation dates
+        // (`dcterms:created`, a PDF `/CreationDate`). The conclusion is
+        // unchanged — those live in the downloadable bytes too — but the
+        // premise had to be generalised, or the next reader would re-derive
+        // an authz decision from a statement that no longer describes the
+        // response.
         if let Err(err) = state
             .applications
             .file_management_service
@@ -1463,23 +1481,32 @@ impl FileHandler {
         ) {
             return (
                 StatusCode::OK,
-                Json(serde_json::json!({
-                    "file_id": file_id,
-                    "message": "No EXIF metadata available"
-                })),
+                Json(FileContentMetadataDto::empty(&file_id, NO_CONTENT_METADATA)),
             )
                 .into_response();
         }
 
         let metadata_repo = &state.repositories.file_metadata_repository;
         match metadata_repo.get(&file_id).await {
-            Ok(Some(meta)) => (StatusCode::OK, Json(meta)).into_response(),
+            Ok(Some(meta)) => (
+                StatusCode::OK,
+                Json(FileContentMetadataDto {
+                    file_id: meta.file_id,
+                    created_at: meta.created_at,
+                    latitude: meta.latitude,
+                    longitude: meta.longitude,
+                    camera_make: meta.camera_make,
+                    camera_model: meta.camera_model,
+                    orientation: meta.orientation,
+                    width: meta.width,
+                    height: meta.height,
+                    message: None,
+                }),
+            )
+                .into_response(),
             Ok(None) => (
                 StatusCode::OK,
-                Json(serde_json::json!({
-                    "file_id": file_id,
-                    "message": "No EXIF metadata available"
-                })),
+                Json(FileContentMetadataDto::empty(&file_id, NO_CONTENT_METADATA)),
             )
                 .into_response(),
             Err(e) => (
@@ -1866,12 +1893,12 @@ pub async fn create_file_by_hash(
     path = "/api/files/{id}",
     params(
         ("id" = String, Path, description = "File ID"),
-        ("metadata" = Option<bool>, Query, description = "Return metadata JSON instead of file content"),
+        ("metadata" = Option<bool>, Query, description = "`true`/`1` returns the file's own DTO as JSON instead of its bytes — the same `FileDto` a listing yields (name, size, mime_type, created_at, modified_at, is_favorite, is_shared). ⚠ NOT the same as the sibling route `GET /api/files/{id}/metadata`, which returns `FileContentMetadataDto` — facts extracted from the CONTENT (the creation date the bytes claim, camera, dimensions). This one describes the file row; that one describes the bytes."),
         ("original" = Option<bool>, Query, description = "Skip WebP transcoding"),
         ("inline" = Option<bool>, Query, description = "Content-Disposition: inline"),
     ),
     responses(
-        (status = 200, content_type = "application/octet-stream", description = "File content (Content-Type on the actual response reflects the file's own mime type)"),
+        (status = 200, content_type = "application/octet-stream", description = "File content (Content-Type on the actual response reflects the file's own mime type). ⚠ With `?metadata=true` this same 200 is instead `application/json` carrying a `FileDto` — one status, two shapes, selected by the query parameter. Declared as the byte stream because that is the default and the overwhelmingly common case; see the `metadata` parameter."),
         (status = 206, content_type = "application/octet-stream", description = "Partial content (Range request) — same byte stream as the 200, scoped to the requested byte range. `Content-Type` on the actual response reflects the file's own mime type."),
         (status = 304, description = "Not modified"),
         (status = 404, description = "File not found"),
@@ -1975,7 +2002,7 @@ pub async fn upload_thumbnail(
     path = "/api/files/{id}/metadata",
     params(("id" = String, Path, description = "File ID")),
     responses(
-        (status = 200, body = Object, description = "File metadata (EXIF, dimensions, duration, etc.)"),
+        (status = 200, body = FileContentMetadataDto, description = "Metadata extracted from the file's CONTENT — the creation date it claims (`created_at`), plus camera, geo and dimensions where the format carries them. Every field is optional; a body whose fields are all null carries `message` instead. Keyed by content hash, so copies of one file share these values."),
         (status = 404, description = "File not found"),
     ),
     security(("bearerAuth" = [])),

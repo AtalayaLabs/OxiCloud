@@ -15,6 +15,8 @@ use utoipa::{Modify, OpenApi};
 use crate::application::dtos::contact_dto::{
     AddressDto, ContactDto, ContactGroupDto, EmailDto, PhoneDto,
 };
+use crate::application::dtos::content_metadata_dto::FileContentMetadataDto;
+use crate::application::dtos::cursor::CursorListResponse;
 use crate::application::dtos::display_helpers::ResourceCategory;
 use crate::application::dtos::drive_dto::{DriveDto, DriveKindDto};
 use crate::application::dtos::favorites_dto::{
@@ -544,18 +546,39 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             // missing their TS types.
             PhotoKind,
             PhotoOrderBy,
-            // The response item itself. `PhotosResourcesDto` is a generic
-            // alias (`CursorListResponse<PhotoResourceItemDto>`) and aliases
-            // are not registered here — the item type is, exactly as
-            // `FolderResourceItemDto` is for its own listing.
-            //
-            // Omitting it had a real cost: `/api/photos/resources` declares
-            // `body = PhotosResourcesDto`, so the path appeared in the spec
-            // while its item schema did not, the generated SDK carried no TS
-            // type for it, and the frontend kept a HAND-WRITTEN `PhotoItem`
-            // with no drift guard. That is how `captured_at` stayed typed
-            // `number` long after the server began sending RFC 3339.
+            // The response item itself. Registering it was necessary but not
+            // sufficient: the ENVELOPE also has to name which item it holds,
+            // or the path still documents the wrong one. See the seven
+            // envelope aliases registered below.
             PhotoResourceItemDto,
+            // ── The seven listing envelopes ──────────────────────────────
+            //
+            // ⚠ One schema per instantiation, or six of seven endpoints are
+            // documented as returning the WRONG item type.
+            //
+            // OpenAPI has no generics, so utoipa emits one schema per NAME.
+            // A bare `ToSchema` on `CursorListResponse<T>` therefore
+            // collapsed every instantiation into a single
+            // `CursorListResponse` whose `items` was hard-wired to whichever
+            // one it happened to resolve (`OutgoingResourceItemDto`) — and
+            // every path `$ref`d that one, while the real container types sat
+            // in `components.schemas` referenced by nothing.
+            //
+            // Spelled out with the item type, which is what makes utoipa emit
+            // a distinct schema per endpoint. `#[aliases(..)]` on the struct
+            // would be tidier but was removed in utoipa 5.
+            CursorListResponse<FolderResourceItemDto>,
+            CursorListResponse<FavoritesResourceItemDto>,
+            CursorListResponse<RecentResourceItemDto>,
+            CursorListResponse<TrashResourceItemDto>,
+            CursorListResponse<SharedWithMeItemDto>,
+            CursorListResponse<OutgoingResourceItemDto>,
+            CursorListResponse<PhotoResourceItemDto>,
+            // `GET /api/files/{id}/metadata`, which was annotated
+            // `body = Object` — so the generated SDK carried no type for it
+            // and the SPA kept a hand-written `FileMetadata` with no drift
+            // guard, the same shape of hole the comment above describes.
+            FileContentMetadataDto,
             // Contacts / address-book schemas
             AddressBookResponse,
             CreateAddressBookRequest,
