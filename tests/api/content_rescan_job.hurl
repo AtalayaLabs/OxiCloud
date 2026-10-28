@@ -102,36 +102,40 @@ jsonpath "$.error" exists
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 5 — A declared parameter with an unknown VALUE cannot be
-#          caught at the HTTP boundary — `rederive` is a string,
-#          so `alwyas` parses fine — and this job is detached, so
-#          the trigger still returns 202. The rejection has to
-#          land on the RUN.
+# Step 5 — A declared parameter with an unlisted VALUE is
+#          rejected at the TRIGGER, before any run starts.
 #
-#          This is the behaviour that matters most on this page.
-#          Asking for `always` and silently getting `changed`
-#          would make a requested full backfill do nothing and
-#          report success — and `always` is the only mode that
-#          repairs a fixed extractor, since an extractor fix does
-#          not change the sniffed type.
+#          The behaviour that matters most on this page is
+#          unchanged: asking for `always` and silently getting
+#          `changed` would make a requested full backfill do
+#          nothing and report success — and `always` is the only
+#          mode that repairs a fixed extractor, since an
+#          extractor fix does not move the sniffed type.
+#
+#          WHERE it is caught changed. This step asserted 202 +
+#          a `Failed` run until `rederive` became
+#          `JobParam::enumerated` with exactly
+#          `changed|always|never`: the value was accepted,
+#          dispatched, and refused by the job's first statement.
+#          `from_declared` now refuses it and the handler returns
+#          400, so the operator learns from the request that
+#          caused it rather than from a failed run — and run
+#          history no longer gains a failure that was never a
+#          real attempt.
+#
+#          Note this is a DIFFERENT typo from Step 4 above, which
+#          misspells the parameter NAME (`rederrive`) and has
+#          always been a 400. Both spellings now land the same
+#          way, from two different checks.
 # ─────────────────────────────────────────────────────────────
 POST {{base_url}}/api/admin/jobs/content_rescan/trigger?rederive=alwyas
 Authorization: Bearer {{admin_token}}
 
-HTTP 202
+HTTP 400
 [Asserts]
-jsonpath "$.dispatched" == true
-
-
-GET {{base_url}}/api/admin/jobs/content_rescan/runs
-Authorization: Bearer {{admin_token}}
-[Options]
-retry: 30
-retry-interval: 300
-
-HTTP 200
-[Asserts]
-jsonpath "$[0].status" == "Failed"
 # The error must NAME the typo, so an operator sees what they
 # actually sent rather than being told "invalid parameter".
-jsonpath "$[0].error_message" contains "alwyas"
+jsonpath "$.error" contains "alwyas"
+# …and the accepted set, so a mistyped run is fixable in one go
+# without going to read the job's source.
+jsonpath "$.error" contains "changed, always, never"

@@ -20,8 +20,12 @@
 <script lang="ts">
 	import { SvelteSet } from 'svelte/reactivity';
 	import Icon from '$lib/icons/Icon.svelte';
-	import Modal from '$lib/components/Modal.svelte';
-	import { confirmDialog } from '$lib/stores/dialogs.svelte';
+	// Neither `Modal` nor `confirmDialog` is imported any more. The
+	// parameter dialog IS the confirm (a mutating run no longer warns and
+	// then asks again), and it is also the only modal this panel opens —
+	// the bespoke purge modal that used to live here was one hand-built
+	// form for the one job that happened to get a parameter first.
+
 	import { t } from '$lib/i18n/index.svelte';
 	import { errorMessage } from '$lib/utils/errors';
 	import {
@@ -37,10 +41,18 @@
 		listFindings,
 		pauseJob,
 		triggerJob,
-		cancelJob,
-		purgeJobRuns
+		cancelJob
 	} from '$lib/api/endpoints/adminJobs';
-	import type { Finding, JobParam, JobSummary, RunSummary, RunStatus } from '$lib/api/types';
+	import type {
+		Finding,
+		JobParam,
+		JobParamValues,
+		JobSummary,
+		RunSummary,
+		RunStatus
+	} from '$lib/api/types';
+	import JobParamsDialog from '$lib/components/admin/JobParamsDialog.svelte';
+	import { busyKeySuffix, needsDialog } from '$lib/utils/jobParams';
 	import { messageBus } from '$lib/message-bus/client.svelte';
 	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 
@@ -54,6 +66,9 @@
 	// vertical space in the shared admin page and confuse the polling
 	// story (runs list stale-detection).
 	let expandedJob = $state<string | null>(null);
+	/** Open parameter dialog, or `null`. Holds the preset the chosen
+	 *  run-menu item implies. */
+	let paramsDialog = $state<{ job: JobSummary; preset: JobParamValues } | null>(null);
 	let runsByJob = $state<Record<string, RunSummary[]>>({});
 	let runsErrorByJob = $state<Record<string, string>>({});
 	let runsLoadingByJob = $state<Record<string, boolean>>({});
@@ -112,39 +127,17 @@
 		};
 	});
 
-	// Purge-modal state. Null = closed; otherwise carries the
-	// draft retention days the operator's picking. Kept separate
-	// from the top-bar action state so mouse-away doesn't lose
-	// the value.
-	let purgeModal = $state<{ days: number } | null>(null);
-	function openPurge() {
-		purgeModal = { days: 30 };
-	}
-	function closePurge() {
-		purgeModal = null;
-	}
-	async function confirmPurge() {
-		if (!purgeModal) return;
-		const days = Math.max(1, Math.floor(purgeModal.days));
-		markBusy('purge', true);
-		try {
-			const res = await purgeJobRuns(days);
-			ui.notify(
-				t(
-					'admin.jobs.purge_done',
-					{ n: res.purged, days: res.retention_days },
-					'{{n}} old run(s) purged (retention {{days}} days)'
-				),
-				'success'
-			);
-			purgeModal = null;
-			await loadJobs();
-		} catch (e) {
-			ui.notify(errorMessage(e), 'error');
-		} finally {
-			markBusy('purge', false);
-		}
-	}
+	// `job_runs_cleanup`, when registered. The top-bar "Purge old runs"
+	// button is a named shortcut to it, so the button only renders when
+	// the job is actually there — the bespoke path hardcoded the name and
+	// would have 404'd on an instance where the job is absent.
+	//
+	// It is a shortcut, not a second implementation: it hands the
+	// `JobSummary` to the same `openWithPreset` every row uses, so the
+	// retention window comes from the job's own declared
+	// `retention_days` parameter (number, default 30) and the
+	// mutating-job warning comes from its `mutates: always`.
+	const cleanupJob = $derived(jobs?.find((j) => j.name === 'job_runs_cleanup') ?? null);
 
 	// ─── Loading + polling ─────────────────────────────────────────────
 
@@ -344,10 +337,13 @@
 
 	// ─── Actions ───────────────────────────────────────────────────────
 
-	async function onTrigger(name: string, opts: { deep?: boolean; repair?: boolean } = {}) {
+	async function onTrigger(name: string, opts: JobParamValues = {}) {
 		// Key suffix has to keep every dispatched variant distinct so the
 		// button-disabled state of one doesn't lock out another mid-flight.
-		const key = `trigger:${name}${opts.deep ? ':deep' : ''}${opts.repair ? ':repair' : ''}`;
+		// Derived from the values themselves (sorted, so `{a,b}` and
+		// `{b,a}` yield one key) rather than a hardcoded deep/repair pair:
+		// the dialog can now send any combination the job declares.
+		const key = `trigger:${name}${busyKeySuffix(opts)}`;
 		markBusy(key, true);
 		try {
 			// Fire the trigger + a follow-up loadJobs after a short delay
@@ -388,6 +384,13 @@
 				const extra = (res.outcome.extra ?? {}) as {
 					repair_requested?: boolean;
 					repaired_count?: number;
+					// `job_runs_cleanup`'s rollup. Declared here with the
+					// others rather than cast at the callsite, so the set of
+					// `extra` fields this panel actually reads is in one
+					// place — the panel's whole contract with every job's
+					// free-form blob.
+					purged?: number;
+					retention_days?: number;
 					per_check?: Record<
 						string,
 						{ extra?: { repair_requested?: boolean; repaired_count?: number } }
@@ -411,6 +414,26 @@
 							'admin.jobs.triggered_ok_repair',
 							{ name, n: repairedTotal },
 							'{{name}}: {{n}} counter(s) repaired'
+						),
+						'success'
+					);
+				} else if (extra.purged !== undefined) {
+					// Keyed on the OUTCOME SHAPE, not on the job name —
+					// same style as the repair rollup above. A job that
+					// reports `purged` gets the purged rollup; nothing here
+					// says `job_runs_cleanup`.
+					//
+					// Worth keeping rather than falling through to the
+					// generic toast: `job_runs_cleanup` is a plain
+					// `JobHandler`, so it has no run row to expand, and
+					// "purged 400" and "purged nothing" would otherwise
+					// read identically. This is the wording the bespoke
+					// purge modal showed, reusing its 16 translations.
+					ui.notify(
+						t(
+							'admin.jobs.purge_done',
+							{ n: extra.purged, days: extra.retention_days ?? 0 },
+							'{{n}} old run(s) purged (retention {{days}} days)'
 						),
 						'success'
 					);
@@ -771,37 +794,32 @@
 	// this string precisely because the wording differs per job: correcting
 	// a counter and unlinking files off disk are not the same warning, and
 	// the frontend has no way to tell them apart.
-	async function onTriggerWithRepairConfirm(job: JobSummary) {
-		const ok = await confirmDialog({
-			title: t(
-				'admin.jobs.run_repair_confirm_title_scoped',
-				{ name: job.name },
-				'Run {{name}} in repair mode?'
-			),
-			message: job.repair_description ?? '',
-			confirmText: t('admin.jobs.run_repair_confirm', 'Repair'),
-			danger: true
-		});
-		if (ok) await onTrigger(job.name, { repair: true });
+	// Every run-menu item is a PRESET: a named set of parameter values that
+	// seeds the dialog, rather than a blind dispatch. "Run with
+	// repair_divergence" opens with that box ticked and `dry_run` /
+	// `rederive` right there — the combination the one-boolean-per-item
+	// shape could not express.
+	//
+	// The dialog replaces the confirm that used to follow, so the operator
+	// reads the warning and sets the values in one step. `repair`'s own
+	// wording (`repair_description`) surfaces inside it when the box is
+	// ticked.
+	async function openWithPreset(job: JobSummary, preset: JobParamValues = {}) {
+		// It has to earn the click: a read-only job with no knobs has
+		// nothing to show and nothing to warn about, and one-click
+		// triggering is the point of `mutates: never`.
+		if (!needsDialog(job)) {
+			await onTrigger(job.name, preset);
+			return;
+		}
+		paramsDialog = { job, preset };
 	}
 
-	// Confirmation before a plain run of a job that writes. `never` jobs
-	// trigger straight through — that is the point of the flag — and
-	// `on_repair_only` jobs are read-only until the repair variant is
-	// picked, which carries its own confirm.
-	async function onTriggerGuarded(job: JobSummary) {
-		if (job.mutates === 'always') {
-			const ok = await confirmDialog({
-				title: t('admin.jobs.run_mutating_confirm_title', { name: job.name }, 'Run {{name}}?'),
-				message:
-					job.description ||
-					t('admin.jobs.run_mutating_confirm_body', 'This job changes stored state when it runs.'),
-				confirmText: t('admin.jobs.run', 'Run'),
-				danger: true
-			});
-			if (!ok) return;
-		}
-		await onTrigger(job.name);
+	function onParamsResolve(values: JobParamValues | null) {
+		const pending = paramsDialog;
+		paramsDialog = null;
+		if (!pending || values === null) return;
+		void onTrigger(pending.job.name, values);
 	}
 
 	// Row badge. `never` is the one worth stating outright — it is the
@@ -889,9 +907,9 @@
 				{#if batch.repair_description}
 					<button
 						class="jobs-panel__btn jobs-panel__btn--warn"
-						disabled={busyKeys.has('trigger:consistency_batch:repair')}
+						disabled={busyKeys.has('trigger:consistency_batch:repair=true')}
 						title={batch.repair_description}
-						onclick={() => onTriggerWithRepairConfirm(batch)}
+						onclick={() => openWithPreset(batch, { repair: true })}
 					>
 						<Icon name="cog" />
 						{t('admin.jobs.run_repair', 'Repair ref_counts')}
@@ -900,21 +918,29 @@
 			{/if}
 			<!-- Purge is orthogonal to consistency — it works even
 			     when the batch coordinator isn't registered, so it
-			     lives outside the batch block. Opens a modal so
-			     the operator picks a retention window with intent
-			     (no accidental delete-all). -->
-			<button
-				class="jobs-panel__btn"
-				title={t(
-					'admin.jobs.purge_hint',
-					'Delete completed and failed run history older than the chosen retention window. Findings drop with their parent runs. Non-terminal runs are always preserved.'
-				)}
-				onclick={openPurge}
-				disabled={busyKeys.has('purge')}
-			>
-				<Icon name="trash-alt" />
-				{t('admin.jobs.purge', 'Purge old runs')}
-			</button>
+			     lives outside the batch block.
+
+			     Kept as a top-bar entry even though `job_runs_cleanup`
+			     also has a table row: "purge old runs" is the words an
+			     operator reclaiming space goes looking for, and the job
+			     name is not. It costs one `onclick` now that the dialog
+			     is shared — the duplication that mattered was the second
+			     hand-built form, not the second button. -->
+			{#if cleanupJob}
+				{@const cleanup = cleanupJob}
+				<button
+					class="jobs-panel__btn"
+					title={t(
+						'admin.jobs.purge_hint',
+						'Delete completed and failed run history older than the chosen retention window. Findings drop with their parent runs. Non-terminal runs are always preserved.'
+					)}
+					onclick={() => openWithPreset(cleanup)}
+					disabled={busyKeys.has('trigger:job_runs_cleanup')}
+				>
+					<Icon name="trash-alt" />
+					{t('admin.jobs.purge', 'Purge old runs')}
+				</button>
+			{/if}
 		</div>
 	</header>
 
@@ -1070,6 +1096,13 @@
 												'Resume ({{scanned}}/{{total}})'
 											)
 										: t('admin.jobs.resume', 'Resume')}
+								<!-- ⚠ Resume stays a bare trigger — no parameter dialog.
+								     A paused run already has args, and the engine
+								     RESTORES them on resume (`persist_or_restore_args`);
+								     offering the form here would invite changing the
+								     parameters of a run already half-done, and
+								     sending any value would override what it was
+								     started with. -->
 								<button
 									class="jobs-panel__btn jobs-panel__btn--small jobs-panel__btn--primary"
 									disabled={busyKeys.has(`trigger:${job.name}`)}
@@ -1110,7 +1143,7 @@
 										title={job.description || undefined}
 										onclick={() => {
 											closeAllRunMenus();
-											void onTriggerGuarded(job);
+											void openWithPreset(job);
 										}}
 									>
 										{t('admin.jobs.run', 'Run')}
@@ -1132,7 +1165,7 @@
 														type="button"
 														class="jobs-panel__run-menu-item"
 														role="menuitem"
-														disabled={busyKeys.has(`trigger:${job.name}:deep`)}
+														disabled={busyKeys.has(`trigger:${job.name}:deep=true`)}
 														title={paramOf(job, 'deep')?.description ||
 															t(
 																'admin.jobs.run_deep_hint',
@@ -1140,7 +1173,7 @@
 															)}
 														onclick={() => {
 															closeAllRunMenus();
-															void onTrigger(job.name, { deep: true });
+															void openWithPreset(job, { deep: true });
 														}}
 													>
 														<Icon name="search" />
@@ -1152,11 +1185,11 @@
 														type="button"
 														class="jobs-panel__run-menu-item jobs-panel__run-menu-item--warn"
 														role="menuitem"
-														disabled={busyKeys.has(`trigger:${job.name}:repair`)}
+														disabled={busyKeys.has(`trigger:${job.name}:repair=true`)}
 														title={job.repair_description}
 														onclick={() => {
 															closeAllRunMenus();
-															void onTriggerWithRepairConfirm(job);
+															void openWithPreset(job, { repair: true });
 														}}
 													>
 														<Icon name="cog" />
@@ -1176,11 +1209,11 @@
 														type="button"
 														class="jobs-panel__run-menu-item"
 														role="menuitem"
-														disabled={busyKeys.has(`trigger:${job.name}:${p.name}`)}
+														disabled={busyKeys.has(`trigger:${job.name}:${p.name}=true`)}
 														title={p.description}
 														onclick={() => {
 															closeAllRunMenus();
-															void onTrigger(job.name, { [p.name]: true });
+															void openWithPreset(job, { [p.name]: true });
 														}}
 													>
 														<Icon name="play" />
@@ -1558,57 +1591,17 @@
 	{/if}
 </section>
 
-<!-- Purge modal — pick a retention window, then confirm. -->
-<Modal
-	open={purgeModal !== null}
-	title={t('admin.jobs.purge_title', 'Purge old task history')}
-	onclose={closePurge}
->
-	{#if purgeModal}
-		<form
-			class="jobs-panel__purge-form"
-			onsubmit={(e) => {
-				e.preventDefault();
-				void confirmPurge();
-			}}
-		>
-			<p>
-				{t(
-					'admin.jobs.purge_body',
-					'Delete completed and failed run history older than the chosen number of days. Findings drop with their parent runs. Non-terminal runs (running, paused, cancel-requested) are always preserved.'
-				)}
-			</p>
-			<label>
-				<span>{t('admin.jobs.purge_days_label', 'Retention (days)')}</span>
-				<input
-					type="number"
-					min="1"
-					step="1"
-					bind:value={purgeModal.days}
-					disabled={busyKeys.has('purge')}
-				/>
-			</label>
-			<div class="jobs-panel__purge-actions">
-				<button
-					type="button"
-					class="jobs-panel__btn"
-					onclick={closePurge}
-					disabled={busyKeys.has('purge')}
-				>
-					{t('common.cancel', 'Cancel')}
-				</button>
-				<button
-					type="submit"
-					class="jobs-panel__btn jobs-panel__btn--danger"
-					disabled={busyKeys.has('purge')}
-				>
-					<Icon name="trash-alt" />
-					{t('admin.jobs.purge_confirm', 'Purge')}
-				</button>
-			</div>
-		</form>
-	{/if}
-</Modal>
+<!-- Keyed on the job name so switching jobs rebuilds the form rather than
+     carrying one job's edits into another's fields. -->
+{#if paramsDialog}
+	{#key paramsDialog.job.name}
+		<JobParamsDialog
+			job={paramsDialog.job}
+			preset={paramsDialog.preset}
+			onresolve={onParamsResolve}
+		/>
+	{/key}
+{/if}
 
 <style>
 	.jobs-panel {
@@ -2043,28 +2036,6 @@
 		gap: 0.4rem;
 		align-items: center;
 		flex-wrap: wrap;
-	}
-
-	.jobs-panel__purge-form {
-		display: flex;
-		flex-direction: column;
-		gap: 0.75rem;
-	}
-
-	.jobs-panel__purge-form label {
-		display: flex;
-		flex-direction: column;
-		gap: 0.25rem;
-	}
-
-	.jobs-panel__purge-form input {
-		max-width: 8rem;
-	}
-
-	.jobs-panel__purge-actions {
-		display: flex;
-		gap: 0.5rem;
-		justify-content: flex-end;
 	}
 
 	.jobs-panel__link {

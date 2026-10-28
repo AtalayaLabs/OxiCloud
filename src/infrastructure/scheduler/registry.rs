@@ -245,6 +245,27 @@ impl JobRegistry {
         if handler.mutates() == Mutates::OnRepairOnly && handler.repair_description().is_none() {
             return Err(RegisterError::RepairOnlyWithoutRepair(name));
         }
+        // An enum parameter whose default is not one of its own values
+        // would seed every run with a value the parameter itself rejects —
+        // and `JobParam::enumerated` is a `const fn`, so it cannot compare
+        // strings at the declaration. Caught at REGISTRATION, which is
+        // boot: a broken declaration refuses to start rather than failing
+        // the first trigger that omits the parameter.
+        for param in handler.parameters() {
+            if param.allowed.is_empty() {
+                continue;
+            }
+            if let crate::infrastructure::scheduler::types::JobParamDefault::Str(d) = param.default
+                && !param.allowed.contains(&d)
+            {
+                return Err(RegisterError::EnumDefaultNotAllowed {
+                    job: name,
+                    param: param.name,
+                    default: d,
+                    allowed: param.allowed,
+                });
+            }
+        }
         let mut guard = self.entries.write().await;
         if guard.contains_key(&name) {
             return Err(RegisterError::DuplicateName(name));
@@ -486,6 +507,17 @@ pub enum RegisterError {
          it claims to mutate only under a flag it does not support"
     )]
     RepairOnlyWithoutRepair(String),
+    #[error(
+        "job {job} parameter '{param}' defaults to '{default}', which is not one of \
+         its allowed values {allowed:?} — every run omitting it would be seeded with \
+         a value the parameter rejects"
+    )]
+    EnumDefaultNotAllowed {
+        job: String,
+        param: &'static str,
+        default: &'static str,
+        allowed: &'static [&'static str],
+    },
 }
 
 /// Per-job row in the `GET /api/admin/jobs` response.

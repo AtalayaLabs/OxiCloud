@@ -608,9 +608,21 @@ export interface JobParam {
 	name: string;
 	type: JobParamType;
 	default: boolean | number | string | null;
-	/** The job's own wording for THIS parameter, for the control's
-	 *  tooltip. Absent when the handler left it blank. */
+	/** The job's own wording for THIS parameter. Rendered as body text in
+	 *  the run dialog, not a tooltip — several are multi-sentence because
+	 *  the choice needs explaining, and a tooltip is invisible on touch. */
 	description?: string;
+	/**
+	 * The only values this parameter accepts, when it is an enum in all
+	 * but type (`JobParam::enumerated` on the backend). Absent — not
+	 * `[]` — for a free-form string, so "render a text box" stays the
+	 * natural default.
+	 *
+	 * Present means two things: the dialog renders a `<select>`, and the
+	 * server rejects anything unlisted with a 400 at the trigger rather
+	 * than dispatching a run that fails parsing it.
+	 */
+	allowed?: string[];
 }
 
 /** Values for one trigger, keyed by declared parameter name. */
