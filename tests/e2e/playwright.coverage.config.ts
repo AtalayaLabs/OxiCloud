@@ -125,6 +125,45 @@ function hasPluginsFeature(bin: string): boolean {
   }
 }
 
+/**
+ * Refuse to run against a `static-dist/` older than the frontend sources.
+ *
+ * The suite serves `static-dist/`, which Vite only writes on an explicit
+ * build — so editing a component and running Playwright tests the PREVIOUS
+ * bundle. The failure is silent and reads as a product bug: a new
+ * `data-testid` is simply absent, so the test either times out or, worse,
+ * hits a tolerant guard and SKIPS.
+ *
+ * This bit twice in one session. First a dialog that did not exist in the
+ * bundle, then a green run that never exercised the code it was meant to
+ * verify. Both times the output looked fine.
+ *
+ * Throwing here is the point: a false green is worse than a failed run, and
+ * the fix is one command. Not auto-built — a 40-second build triggered from
+ * a config file is a surprise, and the explicit step is also the record of
+ * WHICH bundle was tested.
+ */
+function assertFreshBundle(): void {
+  const dist = path.join(workspace, 'static-dist');
+  if (!fs.existsSync(path.join(dist, 'index.html'))) {
+    throw new Error(
+      '[e2e] static-dist/index.html is missing — build the instrumented SPA first:\n' +
+        '        just fe-build-e2e\n'
+    );
+  }
+  const distAge = newestMtime([dist]);
+  const srcAge = newestMtime([path.join(workspace, 'frontend', 'src')]);
+  if (srcAge > distAge) {
+    throw new Error(
+      `[e2e] static-dist/ is OLDER than frontend/src/ — the suite would test the previous bundle,\n` +
+        `      and a missing data-testid reads as a product bug rather than a stale build.\n` +
+        `        static-dist:  ${new Date(distAge).toISOString()}\n` +
+        `        frontend/src: ${new Date(srcAge).toISOString()}\n` +
+        `      Rebuild first:  just fe-build-e2e\n`
+    );
+  }
+}
+
 function serverCommand(): string {
   if (process.env.BUILD_TARGET) {
     return `bash "${startScript}" "${workspace}/target/${process.env.BUILD_TARGET}/oxicloud"`;
@@ -160,6 +199,8 @@ function serverCommand(): string {
   );
   return `bash "${startScript}" "${bin}"`;
 }
+
+assertFreshBundle();
 
 export default defineConfig({
   testDir: './spa',

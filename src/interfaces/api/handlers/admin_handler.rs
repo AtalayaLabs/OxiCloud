@@ -3509,8 +3509,8 @@ pub async fn list_jobs(State(state): State<Arc<AppState>>) -> impl IntoResponse 
             // holds something no code path writes (`RunStatus::as_str`
             // is the only writer), which is worth a line in the log
             // rather than a silent pass-through to the UI.
-            job.last_run_status =
-                crate::infrastructure::scheduler::RunStatus::parse(status).or_else(|| {
+            job.last_run_status = crate::infrastructure::scheduler::RunStatus::parse(status)
+                .or_else(|| {
                     tracing::warn!(
                         target: "oxicloud::scheduler",
                         job = %job.name,
