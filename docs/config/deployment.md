@@ -140,6 +140,26 @@ Two ways to fix:
 
 `PUID`/`PGID` is the more forgiving path and the one to use unless you have a specific reason to run the container unprivileged from PID 1. The two mechanisms are compatible: if both are set, the Docker `user:` directive wins (the entrypoint runs as that user, skips the UID rewrite).
 
+**Option 3 — Rootless Docker or userns-remap (host-side fix)**. The kernel's user namespaces can map UID 1001 inside the container to an arbitrary host UID without the container knowing. No `PUID`/`PGID` or `user:` directive needed; the baked-in `oxicloud` user at UID 1001 keeps running inside the container, but the host sees whatever UID the mapping decides. This is the "proper" solution when the deployment platform supports it:
+
+```sh
+# Rootless Docker — install per https://docs.docker.com/engine/security/rootless/
+# then every container's root maps to your user; UID 1001 inside maps to the
+# first entry of your /etc/subuid range.
+dockerd-rootless-setuptool.sh install
+
+# Or rootful Docker with userns-remap — add to /etc/docker/daemon.json:
+#   { "userns-remap": "default" }
+# Then restart dockerd. Container UID 1001 maps to a specific host UID
+# derived from /etc/subuid for the `dockremap` user.
+```
+
+Trade-offs vs. `PUID`/`PGID`:
+- Pros: no in-container privilege manipulation, no entrypoint UID rewrite, works with the stock image as-shipped. OS-level isolation is stronger.
+- Cons: not available on most NAS products (TrueNAS Scale, Synology, Unraid all ship rootful Docker without userns-remap and don't expose the config). Requires host-side setup. Rootless adds its own quirks (ports <1024, limited cgroups, etc.).
+
+If your platform supports it (standard Linux hosts, Kubernetes with user-namespace pods), use rootless/userns-remap and ignore `PUID`/`PGID`. If you're on a NAS, use `PUID`/`PGID`.
+
 ## Kubernetes (Helm)
 
 ### Prerequisites
