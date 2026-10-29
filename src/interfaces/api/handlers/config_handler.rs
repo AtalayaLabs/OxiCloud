@@ -66,7 +66,6 @@ pub struct ServerConfigDto {
     /// branch as this field (the other three fields it carried
     /// were already redundant with `/api/config` and `/api/admin/*`).
     pub initialized: bool,
-
     // `server_status` is deliberately NOT on `/api/config`. The
     // whole runtime-status surface — readonly, migration, rotation,
     // holder, banners — lives on authenticated `GET /api/status`
