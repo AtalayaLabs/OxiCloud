@@ -746,7 +746,7 @@
 						</a>
 					{/if}
 
-					{#if passwordLoginEnabled}
+					{#if passwordLoginEnabled && serverConfig.auth.registration.enabled}
 						<div class="auth-toggle">
 							{t('auth.no_account', 'No account?')}
 							<button

@@ -2641,6 +2641,12 @@ impl AppServiceFactory {
                 crate::infrastructure::services::webdav_dead_property_store::create_dead_property_store(pool.clone()),
             authorization: authorization.clone(),
             migration_readonly: migration_readonly.clone(),
+            // Default-on; the seed from AdminSettingsService happens
+            // further down once the service exists. Reading `true` in
+            // the pre-seed window keeps the register endpoint behaving
+            // the same as "no override set" — anything stricter would
+            // block registration during the ~ms before the seed runs.
+            registration_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             backend_write_gate: backend_write_gate.clone(),
             ops_banner_service: ops_banner_service.clone(),
             migration_progress: Arc::new(std::sync::RwLock::new(None)),
@@ -3103,6 +3109,17 @@ impl AppServiceFactory {
             }
 
             app_state.admin_settings_service = Some(admin_svc.clone());
+
+            // Seed the public-registration atomic from the service's
+            // effective value (env `OXICLOUD_DISABLE_REGISTRATION`
+            // > DB setting > default-true). Admin-UI toggles flip the
+            // atomic directly in `set_registration_setting`; this is
+            // the one-shot boot seed so `/api/config` reflects the
+            // right value from the first request.
+            app_state.registration_enabled.store(
+                admin_svc.get_registration_enabled().await,
+                std::sync::atomic::Ordering::Relaxed,
+            );
 
             // 9b-1b. Wire storage settings service (reuses same settings_repo).
             // Multi-entry view fields (entries + active_entry_name +
@@ -4068,6 +4085,18 @@ pub struct AppState {
     /// gate when you need the WHY. See
     /// `docs/plan/storage-multi-entry.md` §"Read-only mode".
     pub migration_readonly: Arc<std::sync::atomic::AtomicBool>,
+
+    /// Cached "public self-registration is enabled" flag, kept as an
+    /// atomic so `GET /api/config` can read it without a DB round-trip
+    /// on every request. Seeded at boot from
+    /// [`AdminSettingsService::get_registration_enabled`] (env
+    /// `OXICLOUD_DISABLE_REGISTRATION` > DB `registration_enabled` >
+    /// default `true`), flipped at admin-write time in
+    /// `admin_handler::set_registration_setting`. The handler folds
+    /// this into [`compute_server_status_version`]'s hash input so a
+    /// toggle fires a real version diff and every connected FE
+    /// refetches `/api/config` to pick it up.
+    pub registration_enabled: Arc<std::sync::atomic::AtomicBool>,
 
     /// Operator-driven banner messages. The admin UI CRUDs on this
     /// via `/api/admin/banners`; the `X-Server-Status` middleware

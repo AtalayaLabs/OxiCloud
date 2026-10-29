@@ -149,6 +149,37 @@ it('registers a new account', async () => {
 	await waitFor(() => expect(auth.register).toHaveBeenCalled());
 });
 
+// Register-link visibility gate. The login page must hide the
+// "Create one" button when the server advertises
+// `/api/config.auth.registration.enabled: false` — the same signal
+// `POST /api/auth/register` enforces on the wire. Pins both
+// directions so a future refactor that drops the gate silently
+// (every login page shows the link again) OR silently inverts the
+// condition (hidden when enabled) trips a failing assertion.
+//
+// The default state is set by `serverConfig.DEFAULT_AUTH.registration =
+// { enabled: true }`, so the "visible when enabled" case needs no
+// per-test setup. The "hidden when disabled" case flips the
+// singleton's `$state` and restores it in `afterEach`.
+import { serverConfig } from '$lib/stores/serverConfig.svelte';
+
+it('shows the register link when registration is enabled (default)', async () => {
+	render(LoginPage);
+	await screen.findByTestId('login-form');
+	expect(screen.queryByTestId('login-to-register-btn')).toBeTruthy();
+});
+
+it('hides the register link when registration.enabled is false', async () => {
+	serverConfig.auth = { ...serverConfig.auth, registration: { enabled: false } };
+	try {
+		render(LoginPage);
+		await screen.findByTestId('login-form');
+		expect(screen.queryByTestId('login-to-register-btn')).toBeNull();
+	} finally {
+		serverConfig.auth = { ...serverConfig.auth, registration: { enabled: true } };
+	}
+});
+
 it('shows an error message when login fails', async () => {
 	m(auth.login).mockRejectedValue(new Error('bad credentials'));
 	render(LoginPage);

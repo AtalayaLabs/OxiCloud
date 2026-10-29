@@ -11781,7 +11781,8 @@
         "description": "Auth block within [`ServerConfigDto`]. Non-privacy-implicating\ntunables the SPA needs at boot so form validation matches server\nenforcement.",
         "required": [
           "min_password_length",
-          "opaque_mode"
+          "opaque_mode",
+          "registration"
         ],
         "properties": {
           "min_password_length": {
@@ -11793,6 +11794,10 @@
           "opaque_mode": {
             "type": "string",
             "description": "OPAQUE deployment mode — one of `\"off\"`, `\"migrate\"`,\n`\"opaque_only\"`. Mirrors `AuthConfig::opaque.mode` (env\n`OXICLOUD_AUTH_OPAQUE_MODE`). Login already discovers this\nper-user via `POST /api/auth/opaque/login/lookup`; exposing\nthe server-wide mode here is for future consumers (admin\npanel status indicators, OPAQUE-native setup / register\nflows). Login callers should NOT branch on this value —\nkeep using the per-user lookup so mixed populations during\nmigration stay honest."
+          },
+          "registration": {
+            "$ref": "#/components/schemas/RegistrationDto",
+            "description": "Public self-registration flow. Grouped under a dedicated\n`registration` sub-object so future knobs (verified-email\nrequirement, domain allowlist mirror) land as sibling fields\nwithout widening `AuthDto` itself. See [`RegistrationDto`]."
           }
         }
       },
@@ -16324,6 +16329,19 @@
               "null"
             ],
             "description": "Optional handle (2-64 chars, no `@`). When omitted, the user can\nclaim one later via the profile-edit endpoint. Users without a\nusername cannot use NextCloud clients or create app passwords\n(Basic-Auth resolves users by username); web UI / native API\nworks fine without one."
+          }
+        }
+      },
+      "RegistrationDto": {
+        "type": "object",
+        "description": "Public-registration block within [`AuthDto`]. Reflects the\nprecedence rule of\n`AdminSettingsService::get_registration_enabled` (env\n`OXICLOUD_DISABLE_REGISTRATION` > DB\n`admin_settings.registration_enabled` > default-true), but through\nthe `AppState::registration_enabled` atomic — seeded at boot,\nflipped at admin-write time, so `/api/config` never disagrees with\nthe enforcement in `POST /api/auth/register`. The FE login page\ngates the \"Create one\" button on this; subsequent admin toggles\npropagate because `ServerStatusChanged`'s version hash covers this\nfield (see `compute_server_status_version`).",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "`true` when `POST /api/auth/register` is accepting requests.\n`false` when disabled by env var or admin UI."
           }
         }
       },

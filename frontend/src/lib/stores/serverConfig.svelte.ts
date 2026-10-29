@@ -64,7 +64,15 @@ const DEFAULT_STATUS: ServerStatus = {
  *  OPAQUE isn't configured. */
 const DEFAULT_AUTH: ServerAuth = {
 	min_password_length: 8,
-	opaque_mode: 'off'
+	opaque_mode: 'off',
+	// Default-on mirrors the server's `AdminSettingsService` fallback
+	// — a client that can't reach `/api/config` falls back to the same
+	// behaviour the deployment had before this field shipped (the
+	// login page shows the "Create one" button). Server-side
+	// enforcement still runs on `POST /api/auth/register`, so a
+	// stale-default client clicking through on a disabled instance
+	// sees a 403 toast, never a smuggled-in account.
+	registration: { enabled: true }
 };
 
 const cfgLog = log.getLogger('oxi:config');

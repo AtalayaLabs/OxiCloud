@@ -92,6 +92,30 @@ pub struct AuthDto {
     /// keep using the per-user lookup so mixed populations during
     /// migration stay honest.
     pub opaque_mode: &'static str,
+
+    /// Public self-registration flow. Grouped under a dedicated
+    /// `registration` sub-object so future knobs (verified-email
+    /// requirement, domain allowlist mirror) land as sibling fields
+    /// without widening `AuthDto` itself. See [`RegistrationDto`].
+    pub registration: RegistrationDto,
+}
+
+/// Public-registration block within [`AuthDto`]. Reflects the
+/// precedence rule of
+/// `AdminSettingsService::get_registration_enabled` (env
+/// `OXICLOUD_DISABLE_REGISTRATION` > DB
+/// `admin_settings.registration_enabled` > default-true), but through
+/// the `AppState::registration_enabled` atomic — seeded at boot,
+/// flipped at admin-write time, so `/api/config` never disagrees with
+/// the enforcement in `POST /api/auth/register`. The FE login page
+/// gates the "Create one" button on this; subsequent admin toggles
+/// propagate because `ServerStatusChanged`'s version hash covers this
+/// field (see `compute_server_status_version`).
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct RegistrationDto {
+    /// `true` when `POST /api/auth/register` is accepting requests.
+    /// `false` when disabled by env var or admin UI.
+    pub enabled: bool,
 }
 
 /// Feature-flag block within [`ServerConfigDto`]. One boolean per
@@ -184,6 +208,11 @@ pub async fn get_config(State(state): State<Arc<AppState>>) -> Json<ServerConfig
             // `auth` on the wire is a UX choice for FE consumers who
             // expect all identity-related tunables side-by-side.
             opaque_mode: state.core.config.opaque.mode.as_str(),
+            registration: RegistrationDto {
+                enabled: state
+                    .registration_enabled
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            },
         },
         server_status: build_header_payload(&state),
     })

@@ -319,6 +319,13 @@ export type AuthDto = {
      * migration stay honest.
      */
     opaque_mode: string;
+    /**
+     * Public self-registration flow. Grouped under a dedicated
+     * `registration` sub-object so future knobs (verified-email
+     * requirement, domain allowlist mirror) land as sibling fields
+     * without widening `AuthDto` itself. See [`RegistrationDto`].
+     */
+    registration: RegistrationDto;
 };
 
 export type AuthResponseDto = {
@@ -3466,6 +3473,27 @@ export type RegisterDto = {
      * works fine without one.
      */
     username?: string | null;
+};
+
+/**
+ * Public-registration block within [`AuthDto`]. Reflects the
+ * precedence rule of
+ * `AdminSettingsService::get_registration_enabled` (env
+ * `OXICLOUD_DISABLE_REGISTRATION` > DB
+ * `admin_settings.registration_enabled` > default-true), but through
+ * the `AppState::registration_enabled` atomic — seeded at boot,
+ * flipped at admin-write time, so `/api/config` never disagrees with
+ * the enforcement in `POST /api/auth/register`. The FE login page
+ * gates the "Create one" button on this; subsequent admin toggles
+ * propagate because `ServerStatusChanged`'s version hash covers this
+ * field (see `compute_server_status_version`).
+ */
+export type RegistrationDto = {
+    /**
+     * `true` when `POST /api/auth/register` is accepting requests.
+     * `false` when disabled by env var or admin UI.
+     */
+    enabled: boolean;
 };
 
 /**

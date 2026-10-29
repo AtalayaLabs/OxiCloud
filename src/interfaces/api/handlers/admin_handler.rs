@@ -2330,6 +2330,23 @@ pub async fn set_registration_setting(
         .await
         .map_err(|e| AppError::internal_error(format!("Failed to save setting: {}", e)))?;
 
+    // Mirror the DB write into the AppState atomic so `/api/config`,
+    // `POST /api/auth/register`'s gate, and the version hash all see
+    // the new value immediately — no next-boot wait, no DB round-trip
+    // in the hot path. Broadcast a `ServerStatusChanged` so every
+    // connected session refetches `/api/config` and sees the new
+    // `auth.registration.enabled`; `compute_server_status_version`
+    // folds this axis into the hash input, so the version string
+    // actually changes and FE clients don't skip the refetch as a
+    // no-op diff. Env-override case (`OXICLOUD_DISABLE_REGISTRATION`
+    // set) is unaffected — the service kept the DB value in sync
+    // either way, and the atomic is the single effective source of
+    // truth at read time.
+    state
+        .registration_enabled
+        .store(enabled, std::sync::atomic::Ordering::Relaxed);
+    broadcast_server_status_change(&state);
+
     Ok((
         StatusCode::OK,
         Json(serde_json::json!({
