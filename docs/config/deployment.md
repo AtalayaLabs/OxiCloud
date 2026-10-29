@@ -95,6 +95,12 @@ kubectl logs statefulset/oxicloud -n oxicloud | grep "WOPI discovery loaded"
 
 ## Reverse Proxy & Subpath Deployments
 
+**OxiCloud does not terminate TLS itself.** The server speaks plain HTTP on
+its listen port and expects a reverse proxy in front to handle HTTPS. For
+any internet-facing deployment, running one of the proxies below is the
+recommended shape — without it, cookies, DPoP, OIDC callbacks and share
+links all travel in clear text.
+
 OxiCloud runs happily behind any reverse proxy (nginx, Apache, Caddy, Traefik).
 Two rules apply to every proxy setup:
 
@@ -104,6 +110,148 @@ Two rules apply to every proxy setup:
 2. Forward `X-Forwarded-Proto` and `X-Forwarded-Host` — the DPoP middleware
    reconstructs the browser-visible URL from them; without them every bound
    request fails with `dpop.verify_failed reason=wrong_htu`.
+
+### Traefik (Docker Compose, same host)
+
+For a deployment where Traefik and OxiCloud run as containers on the same Docker host, the clean shape is a `docker-compose.override.yml` that attaches OxiCloud to Traefik's external network, drops the host port exposure, and adds the router labels. The base `docker-compose.yml` stays untouched.
+
+Prerequisites — created once on the host, outside the compose file:
+
+```sh
+# External network Traefik is attached to. Name must match the one
+# Traefik's own compose/config uses.
+docker network create traefik-net
+```
+
+Then alongside OxiCloud's `docker-compose.yml`:
+
+```yaml
+# docker-compose.override.yml — gitignored by Compose convention
+services:
+  oxicloud:
+    # The committed compose maps 8086 to the host; with Traefik in
+    # front, nothing outside the Docker network should reach OxiCloud
+    # directly. `!reset []` REPLACES the base ports list rather than
+    # appending (Compose default list behaviour is merge). Needs
+    # Compose v2.24+ — see "Postgres credentials and ports" above.
+    ports: !reset []
+
+    networks:
+      - oxicloud          # base — keep for postgres reachability
+      - traefik-net       # add — so Traefik can route to us
+
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik-net"
+      # Router — adjust the Host rule to your domain and `websecure`
+      # to whatever your Traefik calls its TLS entrypoint.
+      - "traefik.http.routers.oxicloud-secure.rule=Host(`cloud.example.com`)"
+      - "traefik.http.routers.oxicloud-secure.entrypoints=websecure"
+      - "traefik.http.routers.oxicloud-secure.tls=true"
+      - "traefik.http.routers.oxicloud-secure.tls.certresolver=letsencrypt"
+      # Service — the port OxiCloud actually listens on INSIDE the
+      # container (`OXICLOUD_SERVER_PORT`), not any host-side port.
+      - "traefik.http.services.oxicloud.loadbalancer.server.port=8086"
+
+networks:
+  traefik-net:
+    external: true
+```
+
+OxiCloud-side env (set in your `.env`):
+
+```sh
+OXICLOUD_BASE_URL=https://cloud.example.com
+# OXICLOUD_COOKIE_SECURE auto-detects from the https:// prefix above —
+# no explicit setting needed. See `example.env` for the full
+# auto-detect matrix.
+
+# REQUIRED when a reverse proxy sits in front. Without it, OxiCloud
+# refuses to honour X-Forwarded-For / X-Forwarded-Proto from Traefik,
+# every request looks like it came from the Docker bridge gateway,
+# and DPoP breaks with `dpop.verify_failed reason=wrong_htu` because
+# the server thinks the scheme is http.
+#
+# 172.16.0.0/12 is Docker's default bridge-network pool (user-defined
+# networks like traefik-net are carved from it). If you pinned a
+# narrower subnet with `--subnet=` on `docker network create`, use
+# that instead — tighter is better.
+OXICLOUD_TRUST_PROXY_CIDR=172.16.0.0/12
+```
+
+Traefik-side config needs the matching entrypoint + certresolver. Minimal `traefik.yml`:
+
+```yaml
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+          permanent: true
+  websecure:
+    address: ":443"
+
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: you@example.com
+      storage: /letsencrypt/acme.json
+      httpChallenge:
+        entryPoint: web
+
+providers:
+  docker:
+    exposedByDefault: false      # label-opt-in; `traefik.enable=true` above does it
+    network: traefik-net
+```
+
+Checks after `docker compose up -d`:
+
+```sh
+# Container attached to BOTH networks:
+docker inspect oxicloud --format '{{range $k,$_ := .NetworkSettings.Networks}}{{$k}} {{end}}'
+# Expected: oxicloud traefik-net
+
+# Traefik dashboard (if enabled) shows the router at Host(`cloud.example.com`)
+# with TLS resolved via letsencrypt. The service lists one healthy backend
+# on 8086.
+
+# End-to-end — a /ready probe over HTTPS:
+curl -fsSI https://cloud.example.com/ready
+```
+
+Not forwarding `X-Forwarded-Proto` is the usual DPoP footgun (`dpop.verify_failed reason=wrong_htu`). Traefik forwards it by default; verify by hitting `/api/debug/forwarded-headers` once if you suspect a header-stripping intermediate (another proxy in front of Traefik).
+
+WebSocket upgrade (message bus, WOPI, collab) works without any extra labels — Traefik passes `Upgrade: websocket` through natively on any router that matches. Unlike nginx, no `headers`-middleware or `Connection: Upgrade` setting is required.
+
+### Caddy
+
+Caddy is the shortest reverse-proxy config OxiCloud supports — automatic HTTPS via Let's Encrypt is built in, `reverse_proxy` passes `X-Forwarded-*` and handles the WebSocket upgrade without any extra directives. The example below assumes both Caddy and OxiCloud run on the same host (bare-metal binary or systemd service); for a containerized Caddy next to a containerized OxiCloud, the shape is identical to Traefik above — a shared external network, `ports: !reset []` on OxiCloud, and the trust CIDR set to the Docker bridge pool.
+
+`/etc/caddy/Caddyfile`:
+
+```caddy
+cloud.example.com {
+    reverse_proxy 127.0.0.1:8086
+}
+```
+
+That is the entire proxy config. The three things that matter — TLS cert, `X-Forwarded-Proto`, WebSocket upgrade — are all defaults, and Caddy renews certs on its own.
+
+OxiCloud-side env (set in your `.env` or systemd unit):
+
+```sh
+OXICLOUD_BASE_URL=https://cloud.example.com
+
+# Both services run on the host, so Caddy connects to OxiCloud via
+# loopback and the request's source address is 127.0.0.1.
+OXICLOUD_TRUST_PROXY_CIDR=127.0.0.0/8
+```
+
+Then `systemctl reload caddy` (or `caddy run --config /etc/caddy/Caddyfile` out of a shell). On the first request to `cloud.example.com` Caddy fetches a certificate via the HTTP-01 challenge, serves OxiCloud over HTTPS, and renews on its own — no cert-resolver block, no `certbot` cron, no manual `nginx -s reload` on renewal.
 
 ### Serving under a subpath
 
@@ -149,6 +297,8 @@ ProxyPassReverse /oxicloud http://127.0.0.1:8086/oxicloud
 ```
 
 :::
+
+The Caddy equivalent is `handle_path /oxicloud/* { reverse_proxy 127.0.0.1:8086 }` inside the site block; for Traefik, add a `PathPrefix(\`/oxicloud\`)` matcher to the router rule.
 
 Known limitation: RFC 6764 requires the CalDAV/CardDAV **autodiscovery**
 endpoints `/.well-known/caldav` and `/.well-known/carddav` at the domain

@@ -3719,9 +3719,58 @@ impl AppConfig {
             config.auth.authz_engine = Some(v);
         }
 
-        // Database configuration
-        if let Ok(connection_string) = env::var("OXICLOUD_DB_CONNECTION_STRING") {
-            config.database.connection_string = connection_string;
+        // Database configuration.
+        //
+        // The runtime config name is `OXICLOUD_DB_CONNECTION_STRING` —
+        // consistent with the rest of the config surface (every knob
+        // mirrors a TOML `[section] key = …` under the OXICLOUD_* prefix).
+        //
+        // `DATABASE_URL` is DEPRECATED at runtime but still accepted as a
+        // fallback for backwards compatibility. It remains required at
+        // BUILD time for sqlx's `query!` compile-time macros, so a source
+        // checkout still needs it set — that's a build-only usage, not a
+        // runtime config.
+        //
+        // Precedence:
+        //   1. `OXICLOUD_DB_CONNECTION_STRING` set → use it. If
+        //      `DATABASE_URL` is also set we emit a deprecation warning
+        //      regardless of whether the values match — the goal is to
+        //      retire the fallback entirely in a future major.
+        //   2. Only `DATABASE_URL` set → use it, emit a deprecation
+        //      warning naming the replacement.
+        //   3. Neither set → `config.database.connection_string` keeps
+        //      its Default; the pool connect error later is the cue.
+        match (
+            env::var("OXICLOUD_DB_CONNECTION_STRING"),
+            env::var("DATABASE_URL"),
+        ) {
+            (Ok(primary), Ok(_)) => {
+                tracing::warn!(
+                    target: "audit",
+                    event = "config.deprecated_env_var",
+                    reason = "database_url_deprecated",
+                    "👮🏻‍♂️ DATABASE_URL is deprecated at runtime and will be removed in a future major release — OXICLOUD_DB_CONNECTION_STRING is the replacement and takes precedence here. DATABASE_URL is still required for sqlx build-time macros when building from source.",
+                );
+                config.database.connection_string = primary;
+            }
+            (Ok(primary), Err(_)) => {
+                config.database.connection_string = primary;
+            }
+            (Err(_), Ok(fallback)) => {
+                tracing::warn!(
+                    target: "audit",
+                    event = "config.deprecated_env_var",
+                    reason = "database_url_deprecated",
+                    "👮🏻‍♂️ DATABASE_URL is deprecated at runtime and will be removed in a future major release — set OXICLOUD_DB_CONNECTION_STRING instead. Using DATABASE_URL as a fallback for this boot.",
+                );
+                config.database.connection_string = fallback;
+            }
+            (Err(_), Err(_)) => {
+                // Neither set — leave the default. If the deployment never
+                // reaches a real Postgres, the pool connect will fail with
+                // the default string in the error message, naming the
+                // misconfiguration clearly.
+            }
         }
 
         if let Ok(max_connections) =
@@ -6340,5 +6389,120 @@ mod should_warn_magic_link_muted_by_oidc_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[cfg(not(integration_tests))]
+mod db_connection_string_env_fallback_tests {
+    //! Precedence tests for the `OXICLOUD_DB_CONNECTION_STRING` /
+    //! deprecated `DATABASE_URL` pair.
+    //!
+    //! Behaviours pinned:
+    //!   * Primary wins when both are set (even when values differ).
+    //!   * Fallback is used when only `DATABASE_URL` is set
+    //!     (deprecated-but-honoured path).
+    //!   * Neither set → config keeps its default (loader is a no-op).
+    //!
+    //! Pins the deprecation path so a future refactor that silently
+    //! stops reading `DATABASE_URL` doesn't ship without a visible
+    //! test failure — and so a future refactor that promotes
+    //! `DATABASE_URL` back to primary trips the opposite assertion.
+    //!
+    //! Audit-warning emission is NOT asserted here (would need a
+    //! tracing capturer); the precedence of the resulting
+    //! `connection_string` is the user-visible behaviour.
+    //!
+    //! `#[cfg(not(integration_tests))]`: these tests mutate the
+    //! process-global `DATABASE_URL` env (set / unset) and the
+    //! module-local `ENV_GUARD` only serialises mutation within this
+    //! module — not against other readers. Under
+    //! `--cfg integration_tests` every integration test calls
+    //! `integration_test_support::test_db_url()` which reads
+    //! `DATABASE_URL` concurrently; a `wipe()` here races those
+    //! readers to the `DEFAULT_TEST_DB` fallback (port 5433) and on
+    //! CI, where nothing listens on 5433, every integration test's
+    //! `.connect()` times out with `PoolTimedOut`. Running these tests
+    //! only in the regular (non-integration) build removes the race
+    //! source — step 1 of CI (`cargo test --workspace`) still covers
+    //! them, and no other test in that build reads `DATABASE_URL`.
+    use super::AppConfig;
+    use std::env;
+    use std::sync::Mutex;
+
+    static ENV_GUARD: Mutex<()> = Mutex::new(());
+
+    const PRIMARY_KEY: &str = "OXICLOUD_DB_CONNECTION_STRING";
+    const FALLBACK_KEY: &str = "DATABASE_URL";
+
+    fn wipe() {
+        // SAFETY: ENV_GUARD serialises env mutation within this test
+        // module; the harness is single-threaded against these keys.
+        unsafe {
+            env::remove_var(PRIMARY_KEY);
+            env::remove_var(FALLBACK_KEY);
+        }
+    }
+
+    fn set(k: &str, v: &str) {
+        unsafe { env::set_var(k, v) };
+    }
+
+    #[test]
+    fn primary_only_wins() {
+        let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+        wipe();
+        set(PRIMARY_KEY, "postgres://primary/db");
+        let cfg = AppConfig::from_env();
+        assert_eq!(cfg.database.connection_string, "postgres://primary/db");
+        wipe();
+    }
+
+    #[test]
+    fn fallback_only_is_honoured() {
+        let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+        wipe();
+        set(FALLBACK_KEY, "postgres://fallback/db");
+        let cfg = AppConfig::from_env();
+        assert_eq!(cfg.database.connection_string, "postgres://fallback/db");
+        wipe();
+    }
+
+    #[test]
+    fn primary_wins_over_fallback_even_when_values_differ() {
+        let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+        wipe();
+        set(PRIMARY_KEY, "postgres://primary/db");
+        set(FALLBACK_KEY, "postgres://fallback/db");
+        let cfg = AppConfig::from_env();
+        assert_eq!(cfg.database.connection_string, "postgres://primary/db");
+        wipe();
+    }
+
+    #[test]
+    fn primary_wins_over_fallback_when_values_match() {
+        // Common mirror-for-sqlx-build case: operators set both to the
+        // same string. Primary still wins (deterministic branch).
+        let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+        wipe();
+        set(PRIMARY_KEY, "postgres://same/db");
+        set(FALLBACK_KEY, "postgres://same/db");
+        let cfg = AppConfig::from_env();
+        assert_eq!(cfg.database.connection_string, "postgres://same/db");
+        wipe();
+    }
+
+    #[test]
+    fn neither_set_keeps_default() {
+        let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+        wipe();
+        // AppConfig::default() seeds a localhost connection string; the
+        // loader must not clobber it when both envs are absent. The
+        // exact default is held by the test fixture to avoid pinning a
+        // specific host — just asserting the loader's no-op branch.
+        let default_cs = AppConfig::default().database.connection_string;
+        let cfg = AppConfig::from_env();
+        assert_eq!(cfg.database.connection_string, default_cs);
+        wipe();
     }
 }
