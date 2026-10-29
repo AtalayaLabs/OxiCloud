@@ -120,6 +120,14 @@ beforeEach(() => {
 	// module-level singleton. Reset it so each test's mock
 	// responses drive a fresh /params fetch.
 	__resetOpaqueParamsCache();
+	// getOidcProviders() caches its result in a module-level
+	// promise so the layout + login page share one wire fetch.
+	// Reset per test so one test's resolved-value mock doesn't
+	// leak into the next (otherwise the first case fetches,
+	// subsequent cases see a stale cached value and the SDK
+	// stub is never called again — breaking the smoke test's
+	// "every wrapper fired" count).
+	auth.invalidateOidcProvidersCache();
 	// Default: DPoP proof unavailable (matches jsdom's missing WebCrypto).
 	// DPoP-aware describe blocks below opt in by setting a proof value.
 	dpopState.proof = null;
@@ -160,6 +168,44 @@ it('exercises the auth endpoints (success paths)', async () => {
 	const sdkCount = sdkMocks.reduce((n, m) => n + m.mock.calls.length, 0);
 	expect(fc + f.mock.calls.length + sdkCount).toBeGreaterThan(5);
 });
+// Dedup pin for `getOidcProviders()`. The function caches its
+// in-flight promise at module scope so the layout + login page
+// (previously two independent fetches at boot) share one wire
+// call. Three callers → ONE SDK invocation. A regression that
+// drops the cache (back to the pre-fix shape) would double the
+// request count on every login visit — the trigger that put
+// this pin here in the first place. Also covers the concurrent
+// case: `Promise.all` fires two synchronous callers before the
+// first fetch's promise resolves; both must see the same
+// in-flight promise.
+it('getOidcProviders dedupes concurrent + repeat callers to one SDK fetch', async () => {
+	sdkOidcProviders.mockReset();
+	sdkOidcProviders.mockResolvedValue({ enabled: false });
+	const [a, b] = await Promise.all([auth.getOidcProviders(), auth.getOidcProviders()]);
+	const c = await auth.getOidcProviders();
+	expect(a).toEqual({ enabled: false });
+	expect(b).toEqual(a);
+	expect(c).toEqual(a);
+	expect(sdkOidcProviders).toHaveBeenCalledTimes(1);
+});
+
+// Invalidator correctness pin. After the cache is cleared the
+// next call MUST reach the SDK again — otherwise an admin OIDC
+// toggle that calls `invalidateOidcProvidersCache()` (future
+// wire-up on `ServerStatusChanged`) would silently keep the
+// old providers in place, defeating the whole invalidate.
+it('invalidateOidcProvidersCache forces the next call to refetch', async () => {
+	sdkOidcProviders.mockReset();
+	sdkOidcProviders.mockResolvedValueOnce({ enabled: false });
+	sdkOidcProviders.mockResolvedValueOnce({ enabled: true });
+	const first = await auth.getOidcProviders();
+	auth.invalidateOidcProvidersCache();
+	const second = await auth.getOidcProviders();
+	expect(first).toEqual({ enabled: false });
+	expect(second).toEqual({ enabled: true });
+	expect(sdkOidcProviders).toHaveBeenCalledTimes(2);
+});
+
 it('fetchMe returns null when the server responds 401', async () => {
 	// Phase 4 — SDK call with `responseStyle: 'fields'` + no throwOnError.
 	// On 401, Hey API resolves (not rejects) with `{response, error}` so
