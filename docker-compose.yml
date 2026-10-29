@@ -3,17 +3,40 @@ services:
     image: postgres:18.2-alpine3.23
     restart: always
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: oxicloud
-    ports:
-      - "5432:5432"
+      # Credentials parameterized via .env so operators can bake stronger
+      # ones in on FRESH installs without editing the compose file. The
+      # defaults match the historical hardcoded values — existing
+      # operators pulling this compose see zero behavioural change because
+      # the Postgres image honours POSTGRES_* only on initdb against an
+      # empty data dir, and their pg_data volume already has `postgres`
+      # role with `postgres` password baked in.
+      #
+      # Production hardening — set these in `.env` BEFORE the first
+      # `docker compose up`:
+      #     POSTGRES_PASSWORD=$(openssl rand -base64 24)
+      #
+      # Changing POSTGRES_USER / POSTGRES_DB on an existing volume won't
+      # take effect (Postgres image behaviour); it's a role rename
+      # requiring a dump → wipe → restore cycle. See
+      # `docs/config/deployment.md § Postgres credentials and ports`.
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-oxicloud}
+    # No `ports:` mapping. The `oxicloud` service reaches `postgres` over
+    # the internal `oxicloud` bridge network by hostname, which is enough
+    # for every production use case; mapping 5432 to the host binds on
+    # 0.0.0.0 and makes a weak default password externally reachable.
+    # Dev / debugging access (local `psql`, Prometheus postgres_exporter,
+    # etc.) belongs in a per-operator `docker-compose.override.yml`
+    # binding to 127.0.0.1 explicitly — override files are gitignored by
+    # Compose convention. See
+    # `docs/config/deployment.md § Postgres credentials and ports`.
     networks:
       - oxicloud
     volumes:
       - pg_data:/var/lib/postgresql/
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
       interval: 5s
       timeout: 5s
       retries: 5

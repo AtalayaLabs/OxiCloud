@@ -63,6 +63,50 @@ volumes:
 
 This example mirrors the repository's current `docker-compose.yml`. If you deploy from a registry-only setup, you can keep the `image:` line and remove the `build:` stanza.
 
+### Postgres credentials and ports
+
+**Credentials**. The compose file parameterizes the Postgres service's `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` via `.env` with fallback defaults (`postgres` / `postgres` / `oxicloud`) that match the historical hardcoded values — a `docker compose pull` + `up` on an existing deployment is a no-op.
+
+For **new** installs set a strong password BEFORE the first `docker compose up`:
+
+```sh
+# in your .env, before first boot
+POSTGRES_PASSWORD=$(openssl rand -base64 24)
+```
+
+Then update `OXICLOUD_DB_CONNECTION_STRING` and `DATABASE_URL` in the same file to match.
+
+Once the Postgres cluster has been initialized, **changing POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB in the env has no effect** — the Postgres image honors them only on `initdb` against an empty data dir. Changing them later is a role / password rename inside the running cluster:
+
+```sh
+# Rotate the password on an existing cluster:
+docker compose exec postgres \
+    psql -U postgres -d oxicloud -c "ALTER USER postgres WITH PASSWORD 'new-strong-password'"
+# Then update POSTGRES_PASSWORD + OXICLOUD_DB_CONNECTION_STRING + DATABASE_URL
+# in .env and `docker compose up -d` to reload the oxicloud service with the
+# new string. (POSTGRES_PASSWORD in the Postgres service env is used by
+# `pg_isready` for the healthcheck only; the role password lives in the
+# cluster.)
+```
+
+**Ports**. The committed compose file does NOT map Postgres's port 5432 to the host — the `oxicloud` service reaches `postgres` through Docker's internal bridge network by service name, which is enough for every production use case. Binding 5432 to the host (and especially to `0.0.0.0:5432`, which `ports: "5432:5432"` does by default) would make a weak default password externally reachable; the omission is deliberate.
+
+**For dev / ops that need local `psql`**, add a `docker-compose.override.yml` beside the main compose file. Compose auto-loads it on every `docker compose` command, and the file is gitignored by convention — your overrides never leak into commits:
+
+```yaml
+# docker-compose.override.yml — bind 5432 to 127.0.0.1 so only
+# host-local tools reach it. Never bind to 0.0.0.0 in a dev override
+# unless you intend to accept remote connections.
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:5432:5432"
+```
+
+Then `psql -h 127.0.0.1 -U ${POSTGRES_USER:-postgres} oxicloud` from the host.
+
+For a Prometheus `postgres_exporter` or similar on the same host, the same override shape applies — bind to `127.0.0.1` and point the exporter at it.
+
 ### Matching the storage volume's UID/GID
 
 By default the container runs the application as `oxicloud:oxicloud` (UID/GID **1001:1001**). The entrypoint runs as root on first boot, chowns `/app/storage` + `/app/static` to that user, then drops privileges via `su-exec`.
