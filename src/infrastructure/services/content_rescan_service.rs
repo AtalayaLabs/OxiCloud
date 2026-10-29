@@ -105,14 +105,21 @@ static PARAMETERS: [JobParam; 4] = [
          happen — the cost of the run is identical; only the UPDATEs and \
          re-derives are suppressed.",
     ),
-    JobParam::string(
+    // Enumerated rather than a bare string: the three modes are the whole
+    // set, so the panel renders a select and a typo is a 400 at the
+    // trigger instead of a dispatched run that dies parsing it. Declaring
+    // the default here also stops the panel rendering "no default" above a
+    // description that names one.
+    JobParam::enumerated(
         "rederive",
-        "When to re-extract metadata after sniffing: 'changed' (default) \
-         only for content whose type actually moved, 'always' for every \
-         content visited (the faithful replacement of the old reextract \
-         endpoints — and the only mode that repairs a fixed EXTRACTOR, \
-         since an extractor fix does not change the sniffed type), or \
-         'never' to resniff only.",
+        &["changed", "always", "never"],
+        "changed",
+        "When to re-extract metadata after sniffing: 'changed' (the \
+         default) only for content whose type actually moved, 'always' for \
+         every content visited (the faithful replacement of the old \
+         reextract endpoints — and the only mode that repairs a fixed \
+         EXTRACTOR, since an extractor fix does not change the sniffed \
+         type), or 'never' to resniff only.",
     ),
     JobParam::boolean(
         "repair_divergence",

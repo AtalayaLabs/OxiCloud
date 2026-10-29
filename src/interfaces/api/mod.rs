@@ -556,6 +556,31 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             // with no drift guard. That is how `captured_at` stayed typed
             // `number` long after the server began sending RFC 3339.
             PhotoResourceItemDto,
+            // Admin jobs registry — the response body of
+            // `GET /api/admin/jobs`, previously `body = Object`.
+            //
+            // Registering these closes the same hole
+            // `PhotoResourceItemDto` above closed: the path was in the
+            // spec with an untyped body, the generated SDK carried no TS
+            // type, and the frontend kept HAND-WRITTEN `JobSummary` /
+            // `JobParam` with no drift guard. `JobParam.allowed` — the
+            // field that decides whether the admin panel renders a
+            // `<select>` or a free-text box — was invisible to the spec
+            // on the day it shipped.
+            crate::infrastructure::scheduler::JobSummary,
+            crate::infrastructure::scheduler::JobParam,
+            crate::infrastructure::scheduler::JobParamType,
+            crate::infrastructure::scheduler::JobParamDefault,
+            crate::infrastructure::scheduler::JobParamValue,
+            crate::infrastructure::scheduler::JobOutcome,
+            crate::infrastructure::scheduler::Mutates,
+            crate::infrastructure::scheduler::ScheduledVia,
+            crate::infrastructure::scheduler::PausedRunBrief,
+            crate::infrastructure::scheduler::StartupTrigger,
+            // `JobSummary.last_run_status`. Published so the panel keeps
+            // an exhaustive switch over the six states instead of the
+            // `string` an `Option<String>` field generated.
+            crate::infrastructure::scheduler::RunStatus,
             // Contacts / address-book schemas
             AddressBookResponse,
             CreateAddressBookRequest,

@@ -2423,6 +2423,249 @@ export type IncomingGrantOrderBy = 'granted_at' | 'granted_by' | 'name' | 'type'
 export type ItemKind = 'file' | 'folder';
 
 /**
+ * Uniform outcome the supervisor logs and stores for every job dispatch.
+ *
+ * Two variants, deliberately. Distinguishing *why* a job failed
+ * (handler returned Err, `tokio::time::timeout` tripped,
+ * `catch_unwind` caught a panic) is a **diagnostic** concern — it
+ * belongs in a `cause` tracing field the supervisor sets, not in a
+ * control-flow branch every consumer of `match outcome` has to
+ * think about. See `docs/plan/job-registry.md` Part 1 §JobOutcome.
+ *
+ * `Ok::count` is the row/record count the job reports as its primary
+ * scalar (rows scanned, blobs migrated, thumbnails checked). `extra`
+ * is a free-form JSON blob for job-specific fields the caller wants
+ * surfaced to `oxicloud::scheduler` log lines.
+ */
+export type JobOutcome = {
+    count: number;
+    /**
+     * Free-form per-job payload, so `Object` is the honest schema —
+     * its keys are chosen by each handler (`purged`,
+     * `repaired_count`, `per_check`, …) and the admin panel reads
+     * the ones it knows. See `AdminJobsPanel`'s `extra` cast for
+     * the set that is load-bearing today.
+     */
+    extra?: {
+        [key: string]: unknown;
+    };
+    outcome: 'ok';
+} | {
+    message: string;
+    outcome: 'err';
+};
+
+/**
+ * One parameter a job accepts on a run.
+ *
+ * # Why jobs declare these
+ *
+ * The four parameters `force` / `deep` / `repair` / `storage` used to
+ * be a fixed struct, and six places hardcoded that same list: the
+ * engine's persist/restore, the trigger endpoint's query type, the
+ * `OXICLOUD_JOBS_STARTUP` parser, the frontend API wrapper, and the
+ * admin panel's checkboxes. Adding a parameter meant editing all of
+ * them, and forgetting one meant the parameter was silently dropped —
+ * most damagingly by the persist/restore path, where a resumed run
+ * would quietly lose it.
+ *
+ * Worse for operators: the panel showed the same knobs on every job.
+ * Only two jobs read `deep` and six read `repair`, so most of those
+ * checkboxes did nothing, with no way to tell which.
+ *
+ * Now each job declares what it accepts. The engine iterates the
+ * declaration, the trigger endpoint rejects anything undeclared, and
+ * the panel renders exactly the knobs that job reads.
+ *
+ * # Wire names are a compatibility surface
+ *
+ * `name` is what `params` rows are keyed by and what the panel
+ * switches on, so renaming one breaks existing run history the same
+ * way renaming a [`Mutates`] variant would. Add a new parameter
+ * rather than repurposing an old one.
+ */
+export type JobParam = {
+    /**
+     * The only values this parameter accepts, when it is an enum in all
+     * but type. Empty means "any string" — the common case.
+     *
+     * Two jobs at once:
+     *
+     * * the admin panel renders a `<select>` instead of a text box, so
+     * `alwyas` is not typeable;
+     * * [`JobParam::parse_value`] rejects an unlisted value, which makes
+     * a typo a **400 at the trigger** rather than a dispatched run that
+     * fails on its first statement.
+     *
+     * Still `JobParamType::String` on the wire — an enum value *is* a
+     * string, so nothing in type-checking or `JobParamValue` changes.
+     *
+     * `value_type = Option<Vec<String>>` because the serde attribute
+     * above omits the field when empty: a generated client must read
+     * "absent" as "any string", which is exactly the distinction the
+     * panel's text-box-vs-`<select>` branch turns on.
+     */
+    allowed?: Array<string> | null;
+    /**
+     * Applied when the caller omits the parameter. The engine seeds
+     * every run's args from these before overlaying caller values, so
+     * a handler reading a declared parameter always finds it.
+     */
+    default: JobParamDefault;
+    /**
+     * One line for the panel's input label. Empty renders bare.
+     */
+    description?: string | null;
+    name: string;
+    type: JobParamType;
+};
+
+/**
+ * A parameter's declared default.
+ *
+ * Separate from [`JobParamValue`] so [`JobParam`] contains no `String`
+ * and stays const-constructible: a `&'static [JobParam]` literal in a
+ * `parameters()` body needs const promotion, which a type with a
+ * destructor blocks.
+ *
+ * `Str` holds a `&'static str`, which is `Copy` with no destructor, so
+ * the const-promotion argument above still holds.
+ *
+ * It was omitted at first on the grounds that "a string parameter that
+ * wants a default is usually config in disguise" — true of `storage`,
+ * where `Absent` genuinely means *use the active backend*. `rederive` is
+ * the counter-example that earned this variant: `changed` is a real
+ * per-run default, named in the parameter's own description and
+ * implemented by the job, so declaring `Absent` made the admin panel
+ * render "no default" directly above a description reading
+ * "'changed' (default)".
+ * On the wire, `untagged` makes this `boolean | number | string | null`
+ * — `Absent` is a unit variant, so it serialises as `null`. The schema
+ * says exactly that rather than naming the Rust variants, because a
+ * client sees values, never variant names.
+ */
+export type JobParamDefault = boolean | number | string | null;
+
+/**
+ * The type of a declared job parameter, and the shape its value takes
+ * on the wire.
+ *
+ * Three types because that is what the query string and the admin
+ * panel can express between them: a checkbox, a text/select input, a
+ * number input. Anything richer belongs in the job's own config, not
+ * in a per-run parameter.
+ */
+export type JobParamType = 'boolean' | 'string' | 'number';
+
+/**
+ * A value for a declared parameter, as supplied for one run.
+ *
+ * `String` is `Option` because an absent string and an empty one are
+ * different for `storage` — absent means "use the active backend",
+ * empty would be a nameless entry.
+ */
+export type JobParamValue = boolean | string | null | number;
+
+/**
+ * Per-job row in the `GET /api/admin/jobs` response.
+ *
+ * - `interval_ms` — periodic cadence; `null` for on-demand jobs.
+ * - `next_run_at` — next scheduled dispatch; `null` for on-demand.
+ * - `last_run_at` / `last_outcome` — most recent completed run;
+ * `null` until the first run finishes.
+ * - `running` — true iff the in-flight permit is currently held
+ * (either the supervisor tick is in progress or an admin trigger
+ * raced in).
+ * - `recoverable` — true iff the job persists runs + findings to
+ * `jobs.recoverable_runs`. Consumed by the admin UI to decide
+ * whether the row is expandable (drawer with run history +
+ * findings) and to gate the retention/purge action.
+ * - `paused_run` — populated iff a `Paused` row exists in
+ * `jobs.recoverable_runs` for this job. The UI uses it to render
+ * "Resume (scanned/total)" instead of "Run".
+ * # Published in the OpenAPI document
+ *
+ * This is the response body of `GET /api/admin/jobs`, so it is a
+ * compatibility surface and carries `ToSchema`. The `&'static`
+ * fields need explicit `value_type` overrides — utoipa describes
+ * wire shapes, and a borrow is not one.
+ *
+ * The fields with `skip_serializing_if` are declared
+ * `Option<…>`/absent in the schema even where the Rust type is not
+ * optional: a generated client must see that the key can be missing,
+ * which for `parameters` and `allowed` is load-bearing (absent means
+ * "none declared", not "empty list I should render").
+ */
+export type JobSummary = {
+    /**
+     * One or two sentences on what the job does. Empty for jobs that
+     * haven't declared one yet — the UI omits the line rather than
+     * rendering a blank block.
+     */
+    description?: string | null;
+    interval_ms?: number | null;
+    last_outcome?: null | JobOutcome;
+    last_run_at?: string | null;
+    /**
+     * Why the most recent run stopped, read from the run row —
+     * `backend_unavailable`, `backend_timeout`, `job_failed`,
+     * `server_restart`.
+     *
+     * Same reasoning as `last_run_severity_counts`, and the same defect
+     * behind it: a retryable pause reports `ok` on the wire, so the
+     * panel showed a green "ok" for a job that gave up because its
+     * backend was unreachable. The row knows better and survives a
+     * restart.
+     *
+     * `None` is two good cases at once — a clean run, or a pause an
+     * operator asked for. Neither should render as a problem, which is
+     * why the alerting path keys off this field's presence too.
+     */
+    last_run_error_reason?: string | null;
+    /**
+     * Findings of the most recent run, counted per severity, read from
+     * `jobs.run_findings` — the same numbers [`JobOutcome`] carries in
+     * `extra.severity_counts`, but sourced from the rows rather than
+     * from memory.
+     *
+     * It exists because the panel turns its outcome pill amber on a
+     * non-empty count, and `last_outcome` is in-memory: a restart
+     * empties it, so a completed run that recorded data loss read as a
+     * neutral "—" with nothing to act on. Findings are durable, so the
+     * signal drawn from them must be too — and that matters most for a
+     * *scheduled* detector, which runs with nobody watching the
+     * dispatch.
+     *
+     * `None` — no run row for this job. `Some({})` — a run that found
+     * nothing, which is the good news and a different fact.
+     */
+    last_run_severity_counts?: {
+        [key: string]: number;
+    } | null;
+    last_run_status?: null | RunStatus;
+    mutates: Mutates;
+    name: string;
+    next_run_at?: string | null;
+    /**
+     * What this job accepts on a trigger. The panel renders exactly
+     * these — previously it showed the same fixed checkboxes on every
+     * job, most of which the job ignored with no way to tell.
+     */
+    parameters?: Array<JobParam> | null;
+    paused_run?: null | PausedRunBrief;
+    recoverable: boolean;
+    /**
+     * `Some` iff the job does something extra under `?repair=true`.
+     * Presence is what gates the repair toggle in the UI; the string
+     * is the confirmation text.
+     */
+    repair_description?: string | null;
+    running: boolean;
+    scheduled_via?: null | ScheduledVia;
+    startup?: null | StartupTrigger;
+};
+
+/**
  * DTO for locale information
  */
 export type LocaleDto = {
@@ -2532,6 +2775,24 @@ export type MoveToTrashRequest = {
     item_id: string;
     item_type: string;
 };
+
+/**
+ * When a job changes state.
+ *
+ * Drives how the admin UI presents a trigger: `Never` earns a read-only
+ * badge, `OnRepairOnly` is safe to run and warns only when the toggle is on,
+ * `Always` warns regardless.
+ *
+ * Three values rather than a boolean because there are three cases, and the
+ * interesting one is conditional. `false` on a job that can delete files
+ * under `?repair=true` is actively misleading; `true` on one that is
+ * read-only by default is equally wrong. `OnRepairOnly` names the case a
+ * boolean cannot, and it is where the recovery framework is heading —
+ * discovery-only by default, mutation behind an explicit opt-in — so a
+ * consistency tenant that later grows a repair arm changes this one value
+ * and nothing else.
+ */
+export type Mutates = 'never' | 'always' | 'on_repair_only';
 
 /**
  * Wire shape for one notification row. `payload` stays a raw JSON
@@ -3060,6 +3321,12 @@ export type PaginationRequestDto = {
     page_size?: number;
 };
 
+export type PausedRunBrief = {
+    id: string;
+    scanned: number;
+    total?: number | null;
+};
+
 export type PermissionDto = 'read' | 'create' | 'share' | 'comment' | 'delete' | 'update' | 'manage';
 
 /**
@@ -3544,6 +3811,27 @@ export type RestoreFromTrashRequest = {
 export type RoleDto = 'viewer' | 'commenter' | 'contributor' | 'editor' | 'owner';
 
 /**
+ * Mirror of the `TEXT` values allowed in `jobs.recoverable_runs.status`.
+ *
+ * Terminal set = `{Completed, Failed, Cancelled}`. Non-terminal set
+ * (the one the exclusivity partial unique index scopes) =
+ * `{Running, Paused, CancelRequested}`.
+ *
+ * `CancelRequested` IS non-terminal — the run is still shutting down.
+ * A second trigger arriving during cancel MUST NOT spawn a parallel
+ * run; the trigger endpoint returns the surviving row instead.
+ *
+ * `Cancelled` IS terminal — admin explicitly abandoned the run. Distinct
+ * from `Failed` because it's user-driven, not a handler error. Distinct
+ * from `Paused` because it's not resumable. Runs land in `Cancelled` via
+ * two paths: (1) admin cancel on a Running row (sets
+ * `params.cancel_intent = "terminate"` alongside the CancelRequested
+ * flip; engine post-processes handler's Paused return → Cancelled), or
+ * (2) admin cancel on an already-Paused row (direct DB flip).
+ */
+export type RunStatus = 'Running' | 'Paused' | 'CancelRequested' | 'Completed' | 'Failed' | 'Cancelled';
+
+/**
  * Request body for saving OIDC settings from the admin panel
  */
 export type SaveOidcSettingsDto = {
@@ -3578,6 +3866,31 @@ export type SaveStorageSettingsDto = {
      * Only update if provided and non-empty (None = keep existing)
      */
     s3_secret_key?: string | null;
+};
+
+/**
+ * Enough info about a paused recoverable run for the admin panel to
+ * render "Resume (scanned/total)" on the job row without opening the
+ * drawer. Populated by `list_jobs` in the admin handler from a
+ * single `SELECT job_name, id, stats->>'scanned_count',
+ * params->>'total_rows' FROM jobs.recoverable_runs WHERE status =
+ * 'Paused'` — indexed by the `one_active_run_per_job` partial UNIQUE.
+ *
+ * `total` is `None` when the tenant doesn't seed a countable subject
+ * (`RecoverableJobHandler::count_total`); the UI then shows just
+ * "Resume" without progress.
+ * "This job has no cadence of its own, but `job` runs it every
+ * `interval_ms`." See [`JobSummary::scheduled_via`].
+ */
+export type ScheduledVia = {
+    /**
+     * That job's cadence — what this one effectively runs at.
+     */
+    interval_ms: number;
+    /**
+     * The scheduled job that dispatches this one.
+     */
+    job: string;
 };
 
 /**
@@ -4464,6 +4777,23 @@ export type StartMigrationDto = {
      * the currently-active entry.
      */
     target_name: string;
+};
+
+/**
+ * The parameters a job configured in `OXICLOUD_JOBS_STARTUP` runs with.
+ *
+ * A map keyed by parameter name, for the same reason `JobRunArgs` is:
+ * the four named fields it used to carry meant a job growing a
+ * parameter silently dropped it from the panel's "at boot" pill.
+ *
+ * Still a distinct type rather than `JobRunArgs` itself — this is an
+ * API shape the admin panel switches on, and the dispatch type should
+ * stay free to change without a frontend release.
+ */
+export type StartupTrigger = {
+    params: {
+        [key: string]: JobParamValue;
+    };
 };
 
 /**
@@ -6432,11 +6762,9 @@ export type ListJobsErrors = {
 
 export type ListJobsResponses = {
     /**
-     * Jobs listed
+     * Jobs listed, registry order (the handler sorts; the panel re-sorts for display)
      */
-    200: {
-        [key: string]: unknown;
-    };
+    200: Array<JobSummary>;
 };
 
 export type ListJobsResponse = ListJobsResponses[keyof ListJobsResponses];

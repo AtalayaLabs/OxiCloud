@@ -371,3 +371,69 @@ POST {{base_url}}/api/admin/jobs/trash_cleanup/trigger
 Authorization: Bearer {{bob_token}}
 
 HTTP 403
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 7 — An enum parameter rejects an unlisted value at the
+#          TRIGGER, not inside the run.
+#
+# `rederive` is declared `JobParam::enumerated` with exactly three
+# modes, so `from_declared` refuses anything else and the handler
+# turns that into a 400 with an `job.trigger_rejected` audit line.
+#
+# Why it matters where the rejection happens: before this, a typo
+# was accepted here, dispatched, and failed on the job's first
+# statement — so the operator learned about `alwyas` from a failed
+# run's error rather than from the request that caused it, and the
+# run history gained a failure that was never a real attempt.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/admin/jobs/content_rescan/trigger?rederive=alwyas
+Authorization: Bearer {{admin_token}}
+
+HTTP 400
+[Asserts]
+# The error has to name the bad value AND the valid set — an
+# operator who mistyped needs both to fix it in one go.
+jsonpath "$.error" contains "alwyas"
+jsonpath "$.error" contains "changed, always, never"
+
+
+# The same parameter with a listed value is accepted. 202/200 both
+# mean dispatched — which it is depends on whether the job detaches,
+# and that is not what this pins.
+#
+# `mime_prefix` is a prefix nothing can match, the same bound
+# `content_rescan_job.hurl` uses: this asserts the value was ACCEPTED,
+# and a real walk over the shared test corpus would be pure cost.
+POST {{base_url}}/api/admin/jobs/content_rescan/trigger?rederive=never&dry_run=true&mime_prefix=application/x-oxicloud-nothing
+Authorization: Bearer {{admin_token}}
+
+HTTP *
+[Asserts]
+status >= 200
+status < 300
+
+
+# And the declaration advertises both the allowed set and the real
+# default, so the admin UI can render a select rather than a text
+# box. `rederive` read as "no default" until it became an enum,
+# directly above a description naming 'changed' as the default.
+GET {{base_url}}/api/admin/jobs
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+[Asserts]
+# ⚠ Hurl collapses a filter that matches exactly ONE node to that node's
+# own value, not to a one-element nodeset — so `.default` here IS the
+# string and wrapping it in `count` is a filter-type error, not a guard.
+# What makes these loud instead of vacuous is that a filter matching
+# NOTHING yields `none`, and `none` fails every predicate below: rename
+# the job or the parameter and this block goes red rather than quiet.
+jsonpath "$[?(@.name=='content_rescan')].parameters[?(@.name=='rederive')].default" == "changed"
+# The whole set, pinned by size AND by member, so neither dropping a mode
+# nor adding a fourth one can slip through: the panel renders exactly
+# these as its <select>, and the backend 400s on anything else.
+jsonpath "$[?(@.name=='content_rescan')].parameters[?(@.name=='rederive')].allowed" count == 3
+jsonpath "$[?(@.name=='content_rescan')].parameters[?(@.name=='rederive')].allowed" includes "changed"
+jsonpath "$[?(@.name=='content_rescan')].parameters[?(@.name=='rederive')].allowed" includes "always"
+jsonpath "$[?(@.name=='content_rescan')].parameters[?(@.name=='rederive')].allowed" includes "never"

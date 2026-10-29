@@ -320,3 +320,115 @@ test('plugins tab: install then save retention settings', async ({ page }) => {
   const ok = page.getByTestId('admin-confirm-ok-btn');
   if (await ok.isVisible().catch(() => false)) await ok.click();
 });
+
+/**
+ * Jobs tab — the job parameter dialog puts a NON-BOOLEAN parameter on the
+ * wire, which no other path in the UI could express.
+ *
+ * ⚠ `/admin/jobs`, NOT `/admin/maintenance`. They are two different tabs:
+ * maintenance owns operator-driven runtime state (the backend write-lock, the
+ * re-extract backfills) and jobs owns the registry table this dialog belongs
+ * to. Pointed at the wrong one, both these tests found no table, hit their
+ * "job not registered" guard and SKIPPED — green output for a test that never
+ * ran.
+ *
+ * Before this dialog the run menu offered one boolean per item and nothing
+ * else, so `content_rescan`'s `rederive` (the only mode that applies a FIXED
+ * EXTRACTOR — an extractor change does not move the sniffed type, so the
+ * default `changed` skips every row it should fix) was reachable only by
+ * calling the API by hand.
+ *
+ * The assertion is on the REQUEST, not on the run's outcome: the job sweeps
+ * the whole corpus and its result depends on the test database's contents,
+ * while `rederive=always` appearing on the query string is exactly the
+ * capability being added.
+ */
+test('jobs tab: the parameter dialog sends a string parameter', async ({ page }) => {
+  await page.goto('/admin/jobs');
+
+  // ⚠ An ASSERTION, not a `test.skip` guard. `content_rescan` registers
+  // unconditionally in `di.rs` (only its ffprobe container probe is optional),
+  // so "the row isn't there" is always a defect — a tolerant guard here just
+  // meant the pin reported green without running. Also note a bare
+  // `isVisible()` would be false on every run: the table renders only after
+  // `listJobs()` resolves, so the wait is what makes this meaningful.
+  const row = page.locator('.jobs-panel__row', { hasText: 'content_rescan' }).first();
+  await expect(row).toBeVisible({ timeout: 15_000 });
+
+  // Capture the trigger before it is sent — the dialog's Run button is the
+  // dispatch, so there is no second confirm to wait on.
+  const triggered = page.waitForRequest(
+    (r) => r.url().includes('/api/admin/jobs/content_rescan/trigger') && r.method() === 'POST'
+  );
+
+  await row.locator('.jobs-panel__btn--small').first().click();
+
+  const dialogRun = page.getByTestId('job-params-run');
+  await expect(dialogRun).toBeVisible();
+
+  // A SELECT, not a text box: `rederive` is declared `JobParam::enumerated`,
+  // so the dialog renders its three modes and `alwyas` is not typeable.
+  // Choosing marks the row touched, which is what puts it on the wire at all.
+  //
+  // ⚠ This locator is load-bearing. It read `input[type="text"]` while
+  // `rederive` was free text; the enum swap would have left it filling
+  // `mime_prefix` instead and asserting on a parameter nobody set.
+  await page.locator('select').first().selectOption('always');
+  await dialogRun.click();
+
+  const req = await triggered;
+  expect(req.url()).toContain('rederive=always');
+
+  // ⚠ And nothing the operator did not choose. `dry_run` was rendered and
+  // left alone, so it must be absent — sending it would pin today's default
+  // into the run's recorded args as if it had been picked.
+  expect(req.url()).not.toContain('dry_run');
+});
+
+/**
+ * Jobs tab — "Purge old runs" goes through the SHARED parameter dialog, not a
+ * form of its own.
+ *
+ * `job_runs_cleanup` got a parameter before the dialog existed, so it grew a
+ * bespoke modal, a bespoke `purgeJobRuns()` wrapper and four locale keys of
+ * its own. All three are gone; the button now hands the `JobSummary` to the
+ * same dialog every row uses, which is why the retention window can change on
+ * the backend with no frontend release.
+ *
+ * The pin is the dialog's own testid plus the trigger URL: a revert to a
+ * hand-built form would still open *something* with a number box in it, and
+ * would still send a request — only `job-params-run` tells the two apart.
+ */
+test('jobs tab: purging old runs reuses the shared parameter dialog', async ({ page }) => {
+  await page.goto('/admin/jobs');
+
+  // Asserted, not guarded, for the same reason as the case above:
+  // `job_runs_cleanup` registers unconditionally. The button is also the
+  // conditional-render pin — it now renders only when the job is in the
+  // fetched list, where the old bespoke path hardcoded the name.
+  const purge = page.getByRole('button', { name: /purge old runs/i });
+  await expect(purge).toBeVisible({ timeout: 15_000 });
+
+  const triggered = page.waitForRequest(
+    (r) => r.url().includes('/api/admin/jobs/job_runs_cleanup/trigger') && r.method() === 'POST'
+  );
+
+  await purge.click();
+
+  // The shared dialog, identified by ITS testid — the whole point of the
+  // change. It also carries the mutating-job warning, since the job declares
+  // `mutates: always`, so this is the confirm as well.
+  const dialogRun = page.getByTestId('job-params-run');
+  await expect(dialogRun).toBeVisible();
+
+  // Declared by the backend as a number with a default of 30, so the dialog
+  // seeds it without the frontend knowing the name.
+  const days = page.locator('input[type="number"]').first();
+  await expect(days).toHaveValue('30');
+  await days.fill('7');
+
+  await dialogRun.click();
+
+  const req = await triggered;
+  expect(req.url()).toContain('retention_days=7');
+});

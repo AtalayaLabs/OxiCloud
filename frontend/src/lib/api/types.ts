@@ -519,207 +519,38 @@ export type { EffectiveLink };
 
 // ─── Job registry (Part 1 + Part 2) ────────────────────────────────────────
 //
-// Maps `src/infrastructure/scheduler/*` DTOs 1:1. See
-// `docs/plan/job-registry.md` for the backend contract; the shapes below
-// are what the `/api/admin/jobs*` endpoints emit.
-
-/**
- * `JobOutcome` — the uniform outcome the scheduler logs and stores for
- * every job dispatch. Serialised with `#[serde(tag = "outcome")]` so the
- * discriminant is the `outcome` field, not the object key.
- */
-export type JobOutcome =
-	| { outcome: 'ok'; count: number; extra?: JobOutcomeExtra }
-	| { outcome: 'err'; message: string };
-
-/**
- * The parts of a job outcome's free-form `extra` the panel reads.
- *
- * Deliberately narrow — most keys are per-job counters nothing generic
- * should switch on. These three describe the RUN's shape rather than
- * its work, and the panel has to render them:
- *
- * A run that stopped because the backend was unreachable reports
- * `outcome: 'ok'` — it did not fail, it paused and can be resumed. Read
- * alone that renders as a green "ok" pill, which is exactly wrong: a
- * paused `backend_migration` still holds `migration_readonly` and is
- * refusing writes application-wide. `retryable` is what lets the row
- * say so.
- */
-export interface JobOutcomeExtra {
-	/** The run stopped at its cursor and can be resumed. */
-	paused?: boolean;
-	/** It stopped because the ENVIRONMENT failed, not because an
-	 *  operator asked — `reason` says what. */
-	retryable?: boolean;
-	reason?: string;
-	[key: string]: unknown;
-}
-
-/**
- * `JobSummary` — one row per registered job in `GET /api/admin/jobs`.
- * Cadence + last-run bookkeeping. `interval_ms` / `next_run_at` are
- * `undefined` on on-demand jobs (serde skips `Option::None`).
- */
-/**
- * Enough info about a paused recoverable run for the admin panel to
- * render "Resume (scanned/total)" on the job row without opening the
- * drawer. Absent when no `Paused` row exists for this job. `total`
- * is absent when the tenant didn't seed a countable subject —
- * fallback UI is just "Resume".
- */
-export interface PausedRunBrief {
-	id: string;
-	scanned: number;
-	total?: number;
-}
-
-/**
- * When a job changes state — `RecoverableJobHandler::mutates()` on the
- * backend. Three values rather than a boolean because the interesting
- * case is conditional: a job can be read-only by default and destructive
- * under `?repair=true`.
- *
- * - `never` — read-only under every flag. Render a read-only badge; no
- *   confirmation needed to trigger.
- * - `always` — changes state on a plain run. Confirm before triggering.
- * - `on_repair_only` — safe to trigger; confirm only when the repair
- *   toggle is on.
- */
-export type Mutates = 'never' | 'always' | 'on_repair_only';
-
-/** Wire type of a declared job parameter — `JobParamType` on the backend. */
-export type JobParamType = 'boolean' | 'string' | 'number';
-
-/**
- * One run parameter a job accepts, declared by the handler itself
- * (`JobHandler::parameters()`).
- *
- * This is how the panel knows which knobs a job actually reads. It used
- * to guess: `deep` came from a hardcoded name allowlist here, so a job
- * gaining a deep mode needed a frontend release, and a job losing one
- * left a button that silently did nothing. `force` was offered on every
- * job whether or not it was read.
- *
- * `default` is the value the run uses when the parameter is omitted —
- * `null` for a string with no default.
- */
-export interface JobParam {
-	name: string;
-	type: JobParamType;
-	default: boolean | number | string | null;
-	/** The job's own wording for THIS parameter, for the control's
-	 *  tooltip. Absent when the handler left it blank. */
-	description?: string;
-}
+// Maps `src/infrastructure/scheduler/*` DTOs. See
+// `docs/plan/job-registry.md` for the backend contract.
+//
+// `JobSummary`, `JobParam`, `JobParamType`, `JobParamDefault`,
+// `JobParamValue`, `JobOutcome`, `Mutates`, `PausedRunBrief`,
+// `StartupTrigger` and `ScheduledVia` are NO LONGER hand-written here.
+// `GET /api/admin/jobs` now declares `body = Vec<JobSummary>`, so the
+// generator publishes all ten and consumers import them from
+// `$lib/api/generated/openapi/types.gen` directly.
+//
+// They were hand-written for as long as the endpoint said `body =
+// Object`, and the cost was exactly what `check-types-overlap.mjs`
+// warns about: `JobParam.allowed` shipped with the panel's
+// text-box-vs-`<select>` branch depending on it, and the spec knew
+// nothing about it.
+//
+// `RunStatus` is published too — `JobSummary.last_run_status` is typed
+// with it rather than `String`, so the panel's switch over the six
+// states stays exhaustive instead of widening to `string`.
+//
+// What remains below is genuinely frontend-shaped or not yet published:
+// `JobParamValues` (a request-side map with no server type) and the
+// `/runs` + `/findings` shapes, whose endpoints still declare
+// `body = Object`.
 
 /** Values for one trigger, keyed by declared parameter name. */
 export type JobParamValues = Record<string, boolean | number | string>;
 
-export interface JobSummary {
-	name: string;
-	/** One or two sentences on what the job does, in English, authored
-	 *  next to the handler. Absent for jobs that haven't declared one —
-	 *  omit the line rather than rendering an empty block. */
-	description?: string;
-	mutates: Mutates;
-	/** Present iff `?repair=true` does something beyond a default run;
-	 *  describes what it ADDS. Presence is what gates the repair toggle;
-	 *  the text is the confirmation copy. Independent of `mutates` — the
-	 *  thumbnail import jobs are `always` AND repair-capable. */
-	repair_description?: string;
-	/** What this job accepts on a trigger. Absent — not `[]` — when the
-	 *  job takes none, so "render no controls" is the natural default. */
-	parameters?: JobParam[];
-	interval_ms?: number;
-	next_run_at?: string;
-	last_run_at?: string;
-	last_outcome?: JobOutcome;
-	running: boolean;
-	/**
-	 * `true` iff the job persists runs + findings to
-	 * `jobs.recoverable_runs`. Consumed by the admin panel to decide
-	 * whether the row is expandable (drawer with run history +
-	 * findings) and to gate the retention/purge action — replaces
-	 * the pre-K3 name-based allowlist that missed newly-added
-	 * recoverable tenants (`backend_rotate` shipped first without a
-	 * row-expand until this flag was added).
-	 */
-	recoverable: boolean;
-	/** Populated iff a `Paused` row exists in `jobs.recoverable_runs`
-	 *  for this job. Distinct from `running` — a paused run is
-	 *  resumable via the same trigger endpoint. */
-	paused_run?: PausedRunBrief;
-	/** Status of this job's most recent run row (recoverable jobs only).
-	 *
-	 *  **Prefer this over `last_outcome` wherever they could disagree.**
-	 *  `last_outcome` is the backend's in-memory record of the last
-	 *  dispatch, so anything that changes a run row without running the
-	 *  handler leaves it stale — cancelling a Paused run is a direct SQL
-	 *  flip, and the panel went on rendering the pause it replaced. */
-	last_run_status?: RunStatus;
-	/** Findings of the most recent run, counted per severity, read from
-	 *  `jobs.run_findings` (recoverable jobs only).
-	 *
-	 *  **Prefer this over `last_outcome.extra.severity_counts`**, for the
-	 *  same reason as `last_run_status`: the outcome is in-memory, so a
-	 *  restart erased the counts and a completed run that found data loss
-	 *  rendered as a neutral "—". Findings are rows, so this survives.
-	 *
-	 *  Absent = no run row. `{}` = a run that found nothing — the good
-	 *  news, and a different fact. Severity keys are open (the column is
-	 *  TEXT), so unknown keys must degrade rather than throw. */
-	last_run_severity_counts?: Record<string, number>;
-	/** Why the most recent run stopped, read from the run row —
-	 *  `backend_unavailable`, `backend_timeout`, `job_failed`,
-	 *  `server_restart`.
-	 *
-	 *  **The outcome pill must not read "ok" while this is set.** A
-	 *  retryable pause reports `outcome: "ok"` on the wire — correctly,
-	 *  since the run did not fail and a Resume continues it — so taking
-	 *  that at face value rendered a green "ok" for a job that gave up
-	 *  because its backend was unreachable.
-	 *
-	 *  Absent means a clean run *or* a pause an operator asked for;
-	 *  neither should look alarming, which is why presence is the
-	 *  signal rather than `status === "Paused"`. */
-	last_run_error_reason?: string;
-	/** Present when this job has no cadence of its own but a scheduled
-	 *  job runs it — a `*_consistency` detector swept by
-	 *  `consistency_batch`. Without it the row renders "on-demand",
-	 *  which is false in the default configuration. */
-	scheduled_via?: { job: string; interval_ms: number };
-	/** Present iff `OXICLOUD_STARTUP_JOBS` names this job — the flags it
-	 *  is dispatched with at every boot. Worth showing: a job configured
-	 *  with `repair: true` deletes on every restart, and the row would
-	 *  otherwise suggest that only happens when someone clicks Run. */
-	startup?: StartupTrigger;
-}
-
-/**
- * Parameters a job configured in `OXICLOUD_STARTUP_JOBS` runs with,
- * keyed by declared name.
- *
- * A map for the same reason `JobSummary.parameters` is one: the four
- * fixed fields it replaced meant a job growing a parameter silently
- * dropped it from the "at boot" pill.
- */
-export interface StartupTrigger {
-	params?: JobParamValues;
-}
-
-/**
- * `RunStatus` values allowed in `jobs.recoverable_runs.status`. The
- * non-terminal set (Running / Paused / CancelRequested) is what the
- * DB's `one_active_run_per_job` partial unique index scopes.
- */
-export type RunStatus =
-	| 'Running'
-	| 'Paused'
-	| 'CancelRequested'
-	| 'Completed'
-	| 'Failed'
-	| 'Cancelled';
+// `RunSummary` below still carries the run's status, and the status
+// vocabulary IS published now — so take it from the generator rather
+// than restating the six values here.
+import type { RunStatus } from './generated/openapi/types.gen';
 
 /**
  * `RunSummary` — one row per recoverable-job run from
