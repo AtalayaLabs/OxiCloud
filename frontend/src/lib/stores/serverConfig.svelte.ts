@@ -24,7 +24,7 @@
 import log from 'loglevel';
 
 import { getConfig } from '$lib/api/generated/openapi/sdk.gen';
-import type { ServerAuth, ServerConfig, ServerFeatures, ServerStatus } from '$lib/api/types';
+import type { ServerAuth, ServerConfig, ServerFeatures } from '$lib/api/types';
 
 /** Sensible defaults for every field. Used before `load()` resolves
  *  and as the fallback if the fetch fails — every feature enabled,
@@ -49,10 +49,6 @@ const DEFAULT_FEATURES: ServerFeatures = {
 	// per-tab via `trySharedWorker` detection — the flag never bypasses
 	// capability checks.
 	shared_worker_bus: true
-};
-
-const DEFAULT_STATUS: ServerStatus = {
-	readonly: false
 };
 
 /** Pre-load default for the auth tunables. `8` matches the server's
@@ -103,6 +99,14 @@ const cfgLog = log.getLogger('oxi:config');
 class ServerConfigStore {
 	/** Server version — populated after `load()`. `null` before. */
 	version = $state<string | null>(null);
+	/** `true` once first-run setup has completed (admin exists OR
+	 *  the admin-settings DB flag is set). The login page gates the
+	 *  admin-setup wizard on this — `false` → render setup, `true`
+	 *  → render login. Default `true` is the fail-safe: a
+	 *  misconfigured instance that can't reach `/api/config` shows
+	 *  the login form (not the setup wizard, which would mislead).
+	 *  Replaces the retired `GET /api/auth/status.initialized`. */
+	initialized = $state(true);
 	/** Feature flags. Defaults are all-enabled so pre-load code paths
 	 *  don't accidentally hide UI while the fetch is in flight. */
 	features = $state<ServerFeatures>({ ...DEFAULT_FEATURES });
@@ -111,13 +115,6 @@ class ServerConfigStore {
 	 *  historical floor (8) so pre-load form validation isn't accidentally
 	 *  more permissive than the server. */
 	auth = $state<ServerAuth>({ ...DEFAULT_AUTH });
-	/** Server-status snapshot. Live changes after `load()` propagate
-	 *  through the `X-Server-Status` header (see
-	 *  `stores/serverStatus.svelte.ts` — separate store, updated by
-	 *  `apiFetch`). This store's `server_status` reflects only the
-	 *  boot snapshot; consumers that need live status should read
-	 *  the other store. */
-	serverStatus = $state<ServerStatus>({ ...DEFAULT_STATUS });
 	/** `true` once `load()` has resolved (success OR failure). Guards
 	 *  callers that want to skip work until the boot snapshot is in. */
 	loaded = $state(false);
@@ -131,22 +128,16 @@ class ServerConfigStore {
 			// exactly. See `docs/plan/move-to-openapi.md` for the pattern.
 			const cfg: ServerConfig = await getConfig({ throwOnError: true });
 			this.version = cfg.version;
+			this.initialized = cfg.initialized;
 			this.features = cfg.features;
 			this.auth = cfg.auth ?? { ...DEFAULT_AUTH };
-			this.serverStatus = cfg.server_status;
-			// Mirror the banner slice into the live-status store so
-			// the AppShell's banner stack renders from day one of the
-			// SPA boot, without waiting for a header-driven
-			// version-diff refetch to happen. Also seeds
-			// `banners_version` so the first header carrying the same
-			// version doesn't trigger a redundant refetch.
-			const { hydrateBanners } = await import('$lib/stores/serverStatus.svelte');
-			// Null-coalesce at the SDK/store boundary — see the sibling
-			// `serverStatus.svelte.ts` note for the full rationale.
-			hydrateBanners(
-				cfg.server_status.banners ?? undefined,
-				cfg.server_status.banners_version ?? undefined
-			);
+			// No server_status on /api/config (feat/registration):
+			// the authenticated hydration path (`hydrateFromAuthenticatedBoot`
+			// in the root layout) + the per-response `X-Server-Status`
+			// header on authenticated routes handle every runtime axis
+			// (readonly, migration, rotation, holder, banners). Pre-auth
+			// visitors see only capability discovery (features/auth/
+			// version/initialized) here — no runtime state leaks.
 			cfgLog.debug('server config loaded', {
 				version: cfg.version,
 				message_bus: cfg.features.message_bus,

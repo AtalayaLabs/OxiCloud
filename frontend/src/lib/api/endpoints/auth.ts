@@ -8,7 +8,6 @@ import { ApiError, apiProbeTransport } from '$lib/api/client';
 import {
 	dpopBind,
 	getCurrentUser,
-	getSystemStatus,
 	login as sdkLogin,
 	logout as sdkLogout,
 	oidcExchange,
@@ -20,7 +19,6 @@ import {
 	setupAdmin as sdkSetupAdmin,
 	upgradeToInternal as sdkUpgradeToInternal
 } from '../generated/openapi/sdk.gen';
-import type { SystemInitStatusDto } from '../generated/openapi/types.gen';
 import type { AuthResponse, SelfUser } from '$lib/api/types';
 
 // Dedicated logger — silent by default; operators enable in devtools with
@@ -333,32 +331,6 @@ async function opaqueKsfForClient(): Promise<{
 	const { fetchOpaqueParams } = await import('$lib/api/endpoints/opaque');
 	const params = await fetchOpaqueParams();
 	return params.ksf;
-}
-
-export type AuthStatus = SystemInitStatusDto;
-
-/**
- * System bootstrap probe. When `initialized === false` no admin exists yet and
- * the login page must offer the first-run admin-setup flow. This auth primitive
- * bypasses unauthorized retry in the shared transport. Defaults to "initialized" on any failure so a transient
- * error never strands operators on the setup wizard.
- */
-export async function getAuthStatus(): Promise<AuthStatus> {
-	// Phase 4 — SDK call. The fallback object is NOT a plausible default;
-	// it is specifically the "already-initialized, nothing-to-set-up" state
-	// so a boot probe on a transiently-unreachable `/api/auth/status`
-	// doesn't push the user into the first-run setup wizard. Preserve it.
-	const fallback: AuthStatus = {
-		initialized: true,
-		admin_count: 1,
-		registration_allowed: true,
-		faces_enabled: false
-	};
-	try {
-		return await getSystemStatus({ throwOnError: true });
-	} catch {
-		return fallback;
-	}
 }
 
 /**

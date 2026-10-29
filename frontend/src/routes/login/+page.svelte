@@ -12,7 +12,6 @@
 		bindDpopIfPossible,
 		exchangeOidcCode,
 		fetchMe,
-		getAuthStatus,
 		login,
 		register,
 		sendMagicLink,
@@ -444,10 +443,11 @@
 		}
 
 		// 3) Bootstrap probe: a fresh install (no admin) must be set up first.
-		// `/api/auth/oidc/providers` is retired — OIDC + method matrix now
-		// live on `serverConfig.auth`, hydrated at SPA boot.
-		const status = await getAuthStatus();
-		setupAvailable = !status.initialized;
+		// `/api/auth/oidc/providers` + `/api/auth/status` are both retired
+		// — the auth-method matrix + initialized flag now live on
+		// `serverConfig.auth` and `serverConfig.initialized`, hydrated at
+		// SPA boot by `serverConfig.load()`.
+		setupAvailable = !serverConfig.initialized;
 		if (setupAvailable) mode = 'setup';
 
 		// Auto-redirect to the IdP in standalone-OIDC posture is enforced

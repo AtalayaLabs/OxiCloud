@@ -33,7 +33,6 @@ use axum::{Json, extract::State};
 use serde::Serialize;
 
 use crate::common::di::AppState;
-use crate::interfaces::middleware::server_status::{HeaderPayload, build_header_payload};
 
 /// Server-configuration DTO. Additive over time — clients ignore
 /// unknown fields, and no field is ever repurposed (same discipline
@@ -59,15 +58,23 @@ pub struct ServerConfigDto {
     /// before firing the request.
     pub auth: AuthDto,
 
-    /// Live server-status snapshot — exact same shape and field
-    /// names as the `X-Server-Status` response header. Clients use
-    /// this to hydrate their reactive store at boot; subsequent live
-    /// changes propagate through the header on every other request
-    /// (the middleware and this endpoint share `build_header_payload`
-    /// so drift is impossible). Non-optional so the client always
-    /// has a definite value; `readonly: false` with no `migration`
-    /// or `rotation` is the "everything nominal" case.
-    pub server_status: HeaderPayload,
+    /// `true` once the deployment has completed first-run setup
+    /// (admin exists OR the admin-settings DB flag is set). FE
+    /// login page gates: `false` → render the admin-setup wizard;
+    /// `true` → render the login form. Replaces the dedicated
+    /// `/api/auth/status` endpoint, which was retired on the same
+    /// branch as this field (the other three fields it carried
+    /// were already redundant with `/api/config` and `/api/admin/*`).
+    pub initialized: bool,
+
+    // `server_status` is deliberately NOT on `/api/config`. The
+    // whole runtime-status surface — readonly, migration, rotation,
+    // holder, banners — lives on authenticated `GET /api/status`
+    // + the `X-Server-Status` response header, so no runtime state
+    // (and no operator-authored banner text) leaks to anonymous
+    // callers. If the server is in maintenance mode, login
+    // attempts are rejected with a maintenance reason by the auth
+    // handler — that's the signal path, not a pre-auth banner.
 }
 
 /// Auth block within [`ServerConfigDto`]. Non-privacy-implicating
@@ -311,6 +318,26 @@ pub async fn get_config(State(state): State<Arc<AppState>>) -> Json<ServerConfig
         .auth_service
         .as_ref()
         .map(|s| s.auth_application_service.clone());
+
+    // First-run initialization probe — ported from the retired
+    // `/api/auth/status` handler. The DB flag is the authoritative
+    // source; the `admin_count > 0` fallback covers legacy
+    // deployments where the flag wasn't backfilled but at least
+    // one admin exists. The FE login page gates the setup wizard
+    // on this: `false` → render the setup form, `true` → render
+    // the login form. Defaults to `true` on service-missing so a
+    // misconfigured instance doesn't trap users in setup mode.
+    let initialized = {
+        let db_initialized = match state.admin_settings_service.as_ref() {
+            Some(admin_svc) => admin_svc.is_system_initialized().await,
+            None => false,
+        };
+        let admin_count = match auth_app.as_ref() {
+            Some(auth) => auth.count_admin_users().await.unwrap_or(0),
+            None => 0,
+        };
+        db_initialized || admin_count > 0
+    };
     let password_login_enabled = auth_app
         .as_ref()
         .map(|a| a.is_password_login_allowed())
@@ -362,6 +389,7 @@ pub async fn get_config(State(state): State<Arc<AppState>>) -> Json<ServerConfig
 
     Json(ServerConfigDto {
         version: env!("OXICLOUD_VERSION"),
+        initialized,
         features: FeaturesDto {
             message_bus: f.enable_message_bus,
             trash: f.enable_trash,
@@ -400,6 +428,5 @@ pub async fn get_config(State(state): State<Arc<AppState>>) -> Json<ServerConfig
                 providers: oidc_providers,
             },
         },
-        server_status: build_header_payload(&state),
     })
 }

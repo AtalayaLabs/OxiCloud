@@ -16,6 +16,7 @@
 	import { hashUrlToPath } from '$lib/utils/hashRedirect';
 	import { killLegacyServiceWorker } from '$lib/utils/killLegacyServiceWorker';
 	import { serverConfig } from '$lib/stores/serverConfig.svelte';
+	import { hydrateFromAuthenticatedBoot } from '$lib/stores/serverStatus.svelte';
 	import { readAndClearInterrupted } from '$lib/upload/interruption';
 	import { t } from '$lib/i18n/index.svelte';
 
@@ -199,6 +200,19 @@
 		// used to fire a second GET alongside session.load — now just
 		// loads the session.
 		await session.load();
+		// Authenticated boot hydration of the full server-status
+		// snapshot (readonly + migration + rotation + holder +
+		// banners). `/api/config.server_status` only carries the
+		// public-safe subset by design; without this call, a page
+		// that renders a maintenance banner on mount would wait
+		// for the first other API request's `X-Server-Status`
+		// header to arrive — a visible flash. Skip when
+		// unauthenticated: `/api/status` would 401, and the login
+		// page only needs the public subset `serverConfig.load()`
+		// already hydrated.
+		if (session.isAuthenticated) {
+			void hydrateFromAuthenticatedBoot();
+		}
 		ready = true;
 	});
 

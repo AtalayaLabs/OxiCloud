@@ -4241,16 +4241,15 @@ export type ServerConfigDto = {
      */
     features: FeaturesDto;
     /**
-     * Live server-status snapshot — exact same shape and field
-     * names as the `X-Server-Status` response header. Clients use
-     * this to hydrate their reactive store at boot; subsequent live
-     * changes propagate through the header on every other request
-     * (the middleware and this endpoint share `build_header_payload`
-     * so drift is impossible). Non-optional so the client always
-     * has a definite value; `readonly: false` with no `migration`
-     * or `rotation` is the "everything nominal" case.
+     * `true` once the deployment has completed first-run setup
+     * (admin exists OR the admin-settings DB flag is set). FE
+     * login page gates: `false` → render the admin-setup wizard;
+     * `true` → render the login form. Replaces the dedicated
+     * `/api/auth/status` endpoint, which was retired on the same
+     * branch as this field (the other three fields it carried
+     * were already redundant with `/api/config` and `/api/admin*`).
      */
-    server_status: HeaderPayload;
+    initialized: boolean;
     /**
      * Server version — `OXICLOUD_VERSION` derived by `build.rs` from
      * the git tag / `GITHUB_REF_NAME` / `git describe`. Matches what
@@ -4742,28 +4741,6 @@ export type SubjectInputDto = {
 };
 
 export type SubjectTypeDto = 'user' | 'group' | 'token';
-
-/**
- * System initialisation state, returned by `GET /api/auth/status`.
- */
-export type SystemInitStatusDto = {
-    /**
-     * Number of admin users in the system.
-     */
-    admin_count: number;
-    /**
-     * Whether the People routes are available in this running instance.
-     */
-    faces_enabled: boolean;
-    /**
-     * Whether the system has been set up with an admin.
-     */
-    initialized: boolean;
-    /**
-     * Whether self-registration is allowed.
-     */
-    registration_allowed: boolean;
-};
 
 /**
  * Thumbnail-moka occupancy snapshot. Separate struct from the
@@ -8712,29 +8689,6 @@ export type RegisterResponses = {
 };
 
 export type RegisterResponse = RegisterResponses[keyof RegisterResponses];
-
-export type GetSystemStatusData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/auth/status';
-};
-
-export type GetSystemStatusErrors = {
-    /**
-     * Auth service not configured
-     */
-    503: unknown;
-};
-
-export type GetSystemStatusResponses = {
-    /**
-     * System status
-     */
-    200: SystemInitStatusDto;
-};
-
-export type GetSystemStatusResponse = GetSystemStatusResponses[keyof GetSystemStatusResponses];
 
 export type UpgradeToInternalData = {
     body: UpgradeToInternalDto;
@@ -12715,6 +12669,29 @@ export type UpdateSharedLinkResponses = {
 };
 
 export type UpdateSharedLinkResponse = UpdateSharedLinkResponses[keyof UpdateSharedLinkResponses];
+
+export type GetServerStatusData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/status';
+};
+
+export type GetServerStatusErrors = {
+    /**
+     * Authentication required
+     */
+    401: unknown;
+};
+
+export type GetServerStatusResponses = {
+    /**
+     * Server runtime status
+     */
+    200: HeaderPayload;
+};
+
+export type GetServerStatusResponse = GetServerStatusResponses[keyof GetServerStatusResponses];
 
 export type EmptyTrashForDriveData = {
     body?: never;

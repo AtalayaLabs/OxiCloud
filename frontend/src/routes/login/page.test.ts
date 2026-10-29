@@ -24,7 +24,6 @@ vi.mock('$lib/api/endpoints/auth', () => ({
 	bindDpopIfPossible: vi.fn().mockResolvedValue(false),
 	exchangeOidcCode: vi.fn(),
 	fetchMe: vi.fn(),
-	getAuthStatus: vi.fn(),
 	login: vi.fn(),
 	register: vi.fn(),
 	sendMagicLink: vi.fn(),
@@ -83,7 +82,10 @@ beforeEach(() => {
 	// true — without this reset the "sends a magic link" test
 	// can't reach `sendMagicLink()`.
 	setAuthMatrix({});
-	m(auth.getAuthStatus).mockResolvedValue({ initialized: true });
+	// `/api/auth/status` is retired — `initialized` now lives on
+	// `serverConfig.initialized`. Reset to the "setup complete" default
+	// each test; the setup-wizard tests flip to `false` locally.
+	serverConfig.initialized = true;
 });
 
 // jsdom's `Location` can't be spied on in place (its setters trigger
@@ -138,7 +140,7 @@ it('skips the form when already authenticated', async () => {
 });
 
 it('enters setup mode on a fresh install', async () => {
-	m(auth.getAuthStatus).mockResolvedValue({ initialized: false });
+	serverConfig.initialized = false;
 	render(LoginPage);
 	await screen.findByTestId('login-setup-form');
 });
@@ -262,7 +264,7 @@ it('rejects a registration with a too-short password without calling the API', a
 });
 
 it('rejects an admin-setup submission with a too-short password without calling the API', async () => {
-	m(auth.getAuthStatus).mockResolvedValue({ initialized: false });
+	serverConfig.initialized = false;
 	m(auth.setupAdmin).mockResolvedValue(undefined);
 	render(LoginPage);
 	await screen.findByTestId('login-setup-form');
@@ -284,7 +286,7 @@ it('rejects an admin-setup submission with a too-short password without calling 
 });
 
 it('creates the first administrator in setup mode', async () => {
-	m(auth.getAuthStatus).mockResolvedValue({ initialized: false });
+	serverConfig.initialized = false;
 	m(auth.setupAdmin).mockResolvedValue(undefined);
 	render(LoginPage);
 	await screen.findByTestId('login-setup-form');
@@ -389,7 +391,7 @@ it('does not auto-redirect after the IdP already returned an error (loop guard)'
 });
 
 it('does not auto-redirect during first-run setup', async () => {
-	m(auth.getAuthStatus).mockResolvedValue({ initialized: false });
+	serverConfig.initialized = false;
 	setAuthMatrix({
 		password: { enabled: false },
 		oidc: {

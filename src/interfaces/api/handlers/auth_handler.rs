@@ -25,7 +25,10 @@ use serde::Deserialize;
 /// Public auth routes, no authentication required.
 pub fn auth_public_routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/status", get(get_system_status))
+        // /status endpoint retired. The one unique signal it carried
+        // (`initialized`) moved to `/api/config.initialized`; the
+        // other three fields (admin_count, registration_allowed,
+        // faces_enabled) were already duplicates or privacy leaks.
         // OIDC endpoints (all public). Provider-discovery used to live
         // at `/oidc/providers`; it was retired on feat/registration —
         // the same payload (plus `password`/`magic_link`/`registration`
@@ -1376,67 +1379,6 @@ pub async fn setup_admin(
     );
 
     Ok((StatusCode::CREATED, Json(user)))
-}
-
-/// System initialisation state, returned by `GET /api/auth/status`.
-#[derive(serde::Serialize, ToSchema)]
-pub struct SystemInitStatusDto {
-    /// Whether the system has been set up with an admin.
-    initialized: bool,
-    /// Number of admin users in the system.
-    admin_count: i64,
-    /// Whether self-registration is allowed.
-    registration_allowed: bool,
-    /// Whether the People routes are available in this running instance.
-    faces_enabled: bool,
-}
-
-/// Return the system initialisation state (used by the UI before setup).
-#[utoipa::path(
-    get,
-    path = "/api/auth/status",
-    responses(
-        (status = 200, description = "System status", body = SystemInitStatusDto),
-        (status = 503, description = "Auth service not configured"),
-    ),
-    tag = "auth"
-)]
-pub async fn get_system_status(
-    State(state): State<Arc<AppState>>,
-) -> Result<impl IntoResponse, AppError> {
-    let auth_service = state
-        .auth_service
-        .as_ref()
-        .ok_or_else(|| AppError::internal_error("Authentication service not configured"))?;
-
-    // Use the DB flag as the authoritative source for initialization status
-    let db_initialized = if let Some(admin_svc) = state.admin_settings_service.as_ref() {
-        admin_svc.is_system_initialized().await
-    } else {
-        false
-    };
-
-    // Count admin users for additional info
-    let admin_count = auth_service
-        .auth_application_service
-        .count_admin_users()
-        .await
-        .unwrap_or(0);
-
-    let status = SystemInitStatusDto {
-        initialized: db_initialized || admin_count > 0,
-        admin_count,
-        registration_allowed: db_initialized || admin_count > 0,
-        faces_enabled: state.people_service.is_some(),
-    };
-
-    tracing::info!(
-        "System status check: initialized={}, admin_count={}",
-        status.initialized,
-        status.admin_count
-    );
-
-    Ok((StatusCode::OK, Json(status)))
 }
 
 // ============================================================================

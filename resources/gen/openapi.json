@@ -4620,30 +4620,6 @@
         }
       }
     },
-    "/api/auth/status": {
-      "get": {
-        "tags": [
-          "auth"
-        ],
-        "summary": "Return the system initialisation state (used by the UI before setup).",
-        "operationId": "get_system_status",
-        "responses": {
-          "200": {
-            "description": "System status",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SystemInitStatusDto"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Auth service not configured"
-          }
-        }
-      }
-    },
     "/api/auth/upgrade-to-internal": {
       "post": {
         "tags": [
@@ -10423,6 +10399,35 @@
           },
           "404": {
             "description": "Share not found"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/status": {
+      "get": {
+        "tags": [
+          "status"
+        ],
+        "summary": "`GET /api/status` — return the full runtime server-status\npayload. Shape identical to the `X-Server-Status` response\nheader the middleware stamps on every authenticated response.",
+        "operationId": "get_server_status",
+        "responses": {
+          "200": {
+            "description": "Server runtime status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeaderPayload"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required"
           }
         },
         "security": [
@@ -17213,7 +17218,7 @@
           "version",
           "features",
           "auth",
-          "server_status"
+          "initialized"
         ],
         "properties": {
           "auth": {
@@ -17224,9 +17229,9 @@
             "$ref": "#/components/schemas/FeaturesDto",
             "description": "Feature flags — which subsystems the server has enabled.\nClients gate optional UI on these (e.g. hide the notification\nbell if `features.message_bus` is false, since the bell would\nhave no delivery channel)."
           },
-          "server_status": {
-            "$ref": "#/components/schemas/HeaderPayload",
-            "description": "Live server-status snapshot — exact same shape and field\nnames as the `X-Server-Status` response header. Clients use\nthis to hydrate their reactive store at boot; subsequent live\nchanges propagate through the header on every other request\n(the middleware and this endpoint share `build_header_payload`\nso drift is impossible). Non-optional so the client always\nhas a definite value; `readonly: false` with no `migration`\nor `rotation` is the \"everything nominal\" case."
+          "initialized": {
+            "type": "boolean",
+            "description": "`true` once the deployment has completed first-run setup\n(admin exists OR the admin-settings DB flag is set). FE\nlogin page gates: `false` → render the admin-setup wizard;\n`true` → render the login form. Replaces the dedicated\n`/api/auth/status` endpoint, which was retired on the same\nbranch as this field (the other three fields it carried\nwere already redundant with `/api/config` and `/api/admin/*`)."
           },
           "version": {
             "type": "string",
@@ -17866,35 +17871,6 @@
           "group",
           "token"
         ]
-      },
-      "SystemInitStatusDto": {
-        "type": "object",
-        "description": "System initialisation state, returned by `GET /api/auth/status`.",
-        "required": [
-          "initialized",
-          "admin_count",
-          "registration_allowed",
-          "faces_enabled"
-        ],
-        "properties": {
-          "admin_count": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Number of admin users in the system."
-          },
-          "faces_enabled": {
-            "type": "boolean",
-            "description": "Whether the People routes are available in this running instance."
-          },
-          "initialized": {
-            "type": "boolean",
-            "description": "Whether the system has been set up with an admin."
-          },
-          "registration_allowed": {
-            "type": "boolean",
-            "description": "Whether self-registration is allowed."
-          }
-        }
       },
       "ThumbnailCacheInfoDto": {
         "type": "object",

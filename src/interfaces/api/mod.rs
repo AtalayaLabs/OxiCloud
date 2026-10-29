@@ -56,7 +56,6 @@ use crate::application::dtos::user_dto::{
 use crate::application::ports::chunked_upload_ports::{
     ChunkUploadResponseDto, CreateUploadResponseDto, UploadStatusResponseDto,
 };
-use crate::interfaces::api::handlers::auth_handler::SystemInitStatusDto;
 use crate::interfaces::api::handlers::chunked_upload_handler::{
     CompleteUploadResponse, CreateUploadRequest,
 };
@@ -83,8 +82,8 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         handlers::auth_handler::change_password,
         handlers::auth_handler::logout,
         handlers::auth_handler::setup_admin,
-        handlers::auth_handler::get_system_status,
         handlers::auth_handler::oidc_authorize,
+        handlers::server_status_handler::get_server_status,
         handlers::auth_handler::oidc_callback,
         handlers::auth_handler::oidc_exchange,
         handlers::auth_handler::oidc_backchannel_logout,
@@ -416,7 +415,6 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             AuthResponseDto,
             ChangePasswordDto,
             RefreshTokenDto,
-            SystemInitStatusDto,
             // Device-authorization grant (RFC 8628).
             crate::application::dtos::device_auth_dto::DeviceAuthorizeRequestDto,
             crate::application::dtos::device_auth_dto::DeviceAuthorizeResponseDto,

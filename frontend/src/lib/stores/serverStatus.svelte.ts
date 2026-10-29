@@ -152,9 +152,24 @@ export function refetchServerStatusConfig(): Promise<void> {
 	return refetchBanners();
 }
 
-/** Refetch `/api/config` and update the ENTIRE server-status slice
- *  from the fresh body. Called from `updateFromHeader` on version-
- *  diff AND from the WS `server:status` push handler.
+/** Boot-time hydration of the authenticated server-status snapshot.
+ *  Called from the root layout right after `session.load()` resolves
+ *  to an authenticated session, so the store starts with the full
+ *  payload (readonly + migration + rotation + holder + banners)
+ *  instead of waiting for the first other request's `X-Server-Status`
+ *  header to arrive — critical for pages that render maintenance /
+ *  migration banners on mount without firing an API call of their own.
+ *
+ *  Same wire call as [`refetchBanners`], distinct name to make the
+ *  caller's intent legible ("I'm hydrating the store", not "banners
+ *  may have changed"). Idempotent — multiple calls just re-fetch. */
+export function hydrateFromAuthenticatedBoot(): Promise<void> {
+	return refetchBanners();
+}
+
+/** Refetch the full server-status payload and update the ENTIRE
+ *  slice from it. Called from `updateFromHeader` on version-diff
+ *  AND from the WS `server:status` push handler.
  *
  *  Why the full replacement (not just banners): the push fires on
  *  any server-status axis — ops banners, write-lock holder,
@@ -163,22 +178,27 @@ export function refetchServerStatusConfig(): Promise<void> {
  *  banner failed to appear on sibling tabs when an operator
  *  acquired the external write-lock.
  *
- *  The `fetchServerConfig()` call itself ALSO triggers
- *  `updateFromHeader` via `apiFetch` — but we overwrite with the
- *  body-side `server_status` after it resolves, so the two sources
- *  can't race to a stale value. The body is authoritative because
- *  it carries the full typed banner list (the header only has the
- *  version hash). */
+ *  Endpoint choice: `/api/status` (authenticated) carries the full
+ *  `HeaderPayload`; `/api/config.server_status` carries only the
+ *  public-safe subset (readonly + banners), by design — see
+ *  `middleware/server_status.rs::PublicHeaderPayload` for the
+ *  privacy rationale (migration.target, holder.display leak
+ *  infrastructure topology, hence auth-gated).
+ *
+ *  Try `/api/status` first; a 401 means we're pre-login (the WS
+ *  bus is session-gated too, so a ServerStatusChanged push without
+ *  a session shouldn't normally happen — but handles the paranoid
+ *  case). On 401, fall back to `/api/config` for a banner-only
+ *  refresh (readonly stays whatever the public config says). */
 async function refetchBanners(): Promise<void> {
-	ssLog.debug('refetching /api/config');
+	ssLog.debug('refetching /api/status');
 	try {
 		// Dynamic import defers the SDK operation until the first
 		// version-diff refetch; the boot path pulls the config via the
-		// static import on `serverConfig.svelte.ts`. See the comment on
-		// the enclosing function for why this file imports lazily.
-		const { getConfig } = await import('$lib/api/generated/openapi/sdk.gen');
-		const cfg = await getConfig({ throwOnError: true });
-		ssLog.debug('/api/config returned', cfg.server_status);
+		// static import on `serverConfig.svelte.ts`.
+		const { getServerStatus } = await import('$lib/api/generated/openapi/sdk.gen');
+		const payload = await getServerStatus({ throwOnError: true });
+		ssLog.debug('/api/status returned', payload);
 		// Replace from the fresh body — one atomic assignment so
 		// Svelte's reactivity notifies one time, not per-field.
 		// Coalesce `null → undefined` at the SDK/store boundary. The
@@ -188,15 +208,22 @@ async function refetchBanners(): Promise<void> {
 		// `undefined`-only — a single "absence" shape keeps conditional
 		// rendering (`{#if store.migration}`) idiomatic.
 		current = {
-			readonly: cfg.server_status.readonly,
-			migration: cfg.server_status.migration ?? undefined,
-			rotation: cfg.server_status.rotation ?? undefined,
-			holder: cfg.server_status.holder ?? undefined,
-			banners: cfg.server_status.banners ?? undefined,
-			banners_version: cfg.server_status.banners_version ?? undefined
+			readonly: payload.readonly,
+			migration: payload.migration ?? undefined,
+			rotation: payload.rotation ?? undefined,
+			holder: payload.holder ?? undefined,
+			banners: payload.banners ?? undefined,
+			banners_version: payload.banners_version ?? undefined
 		};
 	} catch (err) {
 		ssLog.warn('refetch failed', err);
-		// Transient — the next version-diff tick will try again.
+		// No fallback: `/api/config` no longer carries any runtime
+		// status, so there's nothing useful to probe here. A 401
+		// means we're pre-login — the login page doesn't render
+		// banners anyway, and the store will hydrate properly as
+		// soon as the user logs in via `hydrateFromAuthenticatedBoot`
+		// in the root layout. Any other failure is transient and
+		// the next header-diff or ServerStatusChanged push will
+		// try again.
 	}
 }

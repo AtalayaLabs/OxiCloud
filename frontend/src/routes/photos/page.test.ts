@@ -48,7 +48,10 @@ function photo(id: string) {
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	m(peopleEnabled).mockResolvedValue(false);
+	// `peopleEnabled` is now synchronous — it reads the hydrated
+	// `serverConfig.features.faces` directly (post-`/api/auth/status`
+	// retirement). `mockReturnValue`, not `mockResolvedValue`.
+	m(peopleEnabled).mockReturnValue(false);
 });
 
 it('loads the first page of photos on mount', async () => {
@@ -73,7 +76,7 @@ it('surfaces a load error', async () => {
 
 it('hides the People tab when face detection is disabled', async () => {
 	m(fetchPhotos).mockResolvedValue({ items: [], nextCursor: null });
-	m(peopleEnabled).mockResolvedValue(false);
+	m(peopleEnabled).mockReturnValue(false);
 	render(PhotosPage);
 	await waitFor(() => expect(peopleEnabled).toHaveBeenCalled());
 	expect(screen.queryByTestId('photos-tab-people')).toBeNull();
@@ -81,7 +84,7 @@ it('hides the People tab when face detection is disabled', async () => {
 
 it('shows the People tab when face detection is enabled', async () => {
 	m(fetchPhotos).mockResolvedValue({ items: [], nextCursor: null });
-	m(peopleEnabled).mockResolvedValue(true);
+	m(peopleEnabled).mockReturnValue(true);
 	render(PhotosPage);
 	await waitFor(() => expect(screen.getByTestId('photos-tab-people')).toBeTruthy());
 });

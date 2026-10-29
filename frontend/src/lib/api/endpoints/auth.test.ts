@@ -64,7 +64,6 @@ vi.mock('@serenity-kit/opaque', () => ({
 vi.mock('../generated/openapi/sdk.gen', () => ({
 	dpopBind: vi.fn(),
 	getCurrentUser: vi.fn(),
-	getSystemStatus: vi.fn(),
 	login: vi.fn(),
 	logout: vi.fn(),
 	oidcExchange: vi.fn(),
@@ -79,7 +78,6 @@ vi.mock('../generated/openapi/sdk.gen', () => ({
 import { apiFetch, apiJson, apiProbeTransport } from '$lib/api/client';
 import {
 	getCurrentUser as sdkGetCurrentUserMock,
-	getSystemStatus as sdkGetSystemStatusMock,
 	login as sdkLoginMock,
 	logout as sdkLogoutMock,
 	oidcExchange as sdkOidcExchangeMock,
@@ -99,7 +97,6 @@ const j = apiJson as unknown as ReturnType<typeof vi.fn>;
 const sdkGetCurrentUser = sdkGetCurrentUserMock as unknown as ReturnType<typeof vi.fn>;
 const sdkLogin = sdkLoginMock as unknown as ReturnType<typeof vi.fn>;
 const sdkLogout = sdkLogoutMock as unknown as ReturnType<typeof vi.fn>;
-const sdkGetSystemStatus = sdkGetSystemStatusMock as unknown as ReturnType<typeof vi.fn>;
 const sdkOidcExchange = sdkOidcExchangeMock as unknown as ReturnType<typeof vi.fn>;
 const sdkRefreshToken = sdkRefreshTokenMock as unknown as ReturnType<typeof vi.fn>;
 const sdkRegister = sdkRegisterMock as unknown as ReturnType<typeof vi.fn>;
@@ -129,7 +126,6 @@ it('exercises the auth endpoints (success paths)', async () => {
 	await auth.fetchMe().catch(() => {});
 	await auth.tryRefresh().catch(() => {});
 	await auth.login('u', 'p').catch(() => {});
-	await auth.getAuthStatus().catch(() => {});
 	await auth.setupAdmin('e@x.test', 'p').catch(() => {});
 	await auth.exchangeOidcCode('code').catch(() => {});
 	await auth.register('e@x.test', 'p', 'u').catch(() => {});
@@ -146,7 +142,6 @@ it('exercises the auth endpoints (success paths)', async () => {
 	const sdkMocks = [
 		sdkLogin,
 		sdkLogout,
-		sdkGetSystemStatus,
 		sdkSetupAdmin,
 		sdkOidcExchange,
 		sdkRegister,
