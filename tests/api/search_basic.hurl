@@ -267,7 +267,7 @@ Authorization: Bearer {{admin_token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.items[*].resource_type" not includes "file"
+jsonpath "$.items[*].resource_type" not contains "file"
 body not contains "{{canary_file_id}}"
 
 
@@ -429,12 +429,12 @@ HTTP 200
 # `contains` — Hurl collapses a single-element result to a scalar, where
 # `contains` silently becomes substring matching.
 jsonpath "$.items" count == 2
-jsonpath "$.items[*].resource.name" includes "searchcat-no-extension"
-jsonpath "$.items[*].resource.name" includes "searchcat-legacy.wma"
+jsonpath "$.items[*].resource.name" contains "searchcat-no-extension"
+jsonpath "$.items[*].resource.name" contains "searchcat-legacy.wma"
 # And the folder is excluded — the defect Ed reported. `search_folders`
 # cannot narrow by type, so the fix is to skip the folder query entirely
 # for any filter other than `all` / `folders`.
-jsonpath "$.items[*].resource_type" not includes "folder"
+jsonpath "$.items[*].resource_type" not contains "folder"
 
 
 # The same file must NOT come back under a different category. Proves the
