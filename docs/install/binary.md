@@ -124,12 +124,17 @@ Distro install commands for the optional prerequisite:
 
 ## First run
 
-The absolute minimum to boot the server is `DATABASE_URL`:
+The absolute minimum to boot the server is a PostgreSQL connection
+string in `OXICLOUD_DB_CONNECTION_STRING`:
 
 ```
-DATABASE_URL="postgres://oxicloud:secret@localhost:5432/oxicloud" \
+OXICLOUD_DB_CONNECTION_STRING="postgres://oxicloud:secret@localhost:5432/oxicloud" \
     ./oxicloud
 ```
+
+`DATABASE_URL` is also accepted as a deprecated fallback (boots with
+a `config.deprecated_env_var` audit warning) — new deployments
+should set `OXICLOUD_DB_CONNECTION_STRING` instead.
 
 The binary applies its embedded database migrations on startup, then
 listens on `127.0.0.1:8086` by default. Open your browser at
@@ -273,11 +278,11 @@ both exist as active accounts). The server **refuses to boot**
 
 ```
 # Preview the tiebreak — no writes.
-sudo -u oxicloud DATABASE_URL="postgres://..." \
+sudo -u oxicloud OXICLOUD_DB_CONNECTION_STRING="postgres://..." \
     /usr/local/bin/oxicloud migrate lowercase-usernames --dry-run
 
 # Apply. Renames run in a single transaction; safe to re-run if aborted.
-sudo -u oxicloud DATABASE_URL="postgres://..." \
+sudo -u oxicloud OXICLOUD_DB_CONNECTION_STRING="postgres://..." \
     /usr/local/bin/oxicloud migrate lowercase-usernames
 ```
 
