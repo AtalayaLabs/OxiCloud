@@ -92,7 +92,7 @@ lint:
     cargo clippy --all-features --all-targets -- -D warnings
 
 check:
-    cargo fmt --all
+    cargo fmt --all --check
     cargo clippy --all-features --all-targets -- -D warnings
 
 
