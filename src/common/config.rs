@@ -6393,6 +6393,7 @@ mod should_warn_magic_link_muted_by_oidc_tests {
 }
 
 #[cfg(test)]
+#[cfg(not(integration_tests))]
 mod db_connection_string_env_fallback_tests {
     //! Precedence tests for the `OXICLOUD_DB_CONNECTION_STRING` /
     //! deprecated `DATABASE_URL` pair.
@@ -6411,6 +6412,20 @@ mod db_connection_string_env_fallback_tests {
     //! Audit-warning emission is NOT asserted here (would need a
     //! tracing capturer); the precedence of the resulting
     //! `connection_string` is the user-visible behaviour.
+    //!
+    //! `#[cfg(not(integration_tests))]`: these tests mutate the
+    //! process-global `DATABASE_URL` env (set / unset) and the
+    //! module-local `ENV_GUARD` only serialises mutation within this
+    //! module — not against other readers. Under
+    //! `--cfg integration_tests` every integration test calls
+    //! `integration_test_support::test_db_url()` which reads
+    //! `DATABASE_URL` concurrently; a `wipe()` here races those
+    //! readers to the `DEFAULT_TEST_DB` fallback (port 5433) and on
+    //! CI, where nothing listens on 5433, every integration test's
+    //! `.connect()` times out with `PoolTimedOut`. Running these tests
+    //! only in the regular (non-integration) build removes the race
+    //! source — step 1 of CI (`cargo test --workspace`) still covers
+    //! them, and no other test in that build reads `DATABASE_URL`.
     use super::AppConfig;
     use std::env;
     use std::sync::Mutex;
