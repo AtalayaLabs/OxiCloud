@@ -19,17 +19,24 @@ services:
     image: postgres:18.2-alpine3.23
     restart: always
     environment:
-      POSTGRES_DB: oxicloud
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-    ports:
-      - "5432:5432"
+      # Overridable via .env; defaults match the historical hardcoded
+      # values so `docker compose pull` on an existing deployment is
+      # a no-op. See "Postgres credentials and ports" below.
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-oxicloud}
+    # Deliberately NO host port mapping. The oxicloud service reaches
+    # postgres over the internal bridge network by service name;
+    # exposing 5432 to the host binds on 0.0.0.0 and makes the default
+    # credentials externally reachable. Local psql / exporters belong
+    # in a `docker-compose.override.yml` (gitignored by Compose
+    # convention) binding to 127.0.0.1 — see the section below.
     networks:
       - oxicloud
     volumes:
       - pg_data:/var/lib/postgresql/
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
       interval: 5s
       timeout: 5s
       retries: 5
