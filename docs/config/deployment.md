@@ -9,7 +9,7 @@ OxiCloud uses a multi-stage Alpine build producing a **~40 MB** image:
 3. **Builder** — compiles OxiCloud (`rust:1.94.0-alpine3.23`)
 4. **Runtime** — minimal Alpine (`alpine:3.23.3`) with `libgcc`, `ca-certificates`, `libpq`, `tzdata`, `su-exec`
 
-The final image runs as non-root user `oxicloud` (UID/GID 1001). Exposed port: **8086**.
+The final image runs as non-root user `oxicloud` (UID/GID 1001 by default — overridable via `PUID`/`PGID`, see [Matching the storage volume's UID/GID](#matching-the-storage-volumes-uidgid) below). Exposed port: **8086**.
 
 ## Docker Compose
 
@@ -62,6 +62,39 @@ volumes:
 ```
 
 This example mirrors the repository's current `docker-compose.yml`. If you deploy from a registry-only setup, you can keep the `image:` line and remove the `build:` stanza.
+
+### Matching the storage volume's UID/GID
+
+By default the container runs the application as `oxicloud:oxicloud` (UID/GID **1001:1001**). The entrypoint runs as root on first boot, chowns `/app/storage` + `/app/static` to that user, then drops privileges via `su-exec`.
+
+On NAS deployments the host-side storage dataset is often already owned by a specific non-1001 UID that can't easily be changed (TrueNAS Scale apps run as `568:568`, Synology Container Manager assigns `1026:100`, Unraid uses whatever the share's `nobody:users` mapping says). Mounting such a dataset into `/app/storage` leaves the server unable to write to it — the application exits silently after service initialization and the container restarts in a loop.
+
+Two ways to fix:
+
+**Option 1 — Set `PUID` / `PGID` env vars (recommended)**. The entrypoint rewrites the oxicloud user's UID/GID to match before the chown. Idempotent across reboots.
+
+```yaml
+  oxicloud:
+    image: diocrafts/oxicloud:latest
+    environment:
+      PUID: 568          # TrueNAS Scale app UID
+      PGID: 568          # TrueNAS Scale app GID
+      # … your OXICLOUD_* vars
+    volumes:
+      - /mnt/pool/oxicloud-data:/app/storage
+```
+
+**Option 2 — Use the Docker `user:` directive**. The container starts as the specified UID (not root), the entrypoint sees that and skips both the UID rewrite and the chown — you take responsibility for ensuring the host-side volume is already correctly owned.
+
+```yaml
+  oxicloud:
+    image: diocrafts/oxicloud:latest
+    user: 568:568
+    volumes:
+      - /mnt/pool/oxicloud-data:/app/storage   # must be chowned 568:568 on the host first
+```
+
+`PUID`/`PGID` is the more forgiving path and the one to use unless you have a specific reason to run the container unprivileged from PID 1. The two mechanisms are compatible: if both are set, the Docker `user:` directive wins (the entrypoint runs as that user, skips the UID rewrite).
 
 ## Kubernetes (Helm)
 
