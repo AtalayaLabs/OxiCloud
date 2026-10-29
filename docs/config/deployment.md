@@ -95,6 +95,12 @@ kubectl logs statefulset/oxicloud -n oxicloud | grep "WOPI discovery loaded"
 
 ## Reverse Proxy & Subpath Deployments
 
+**OxiCloud does not terminate TLS itself.** The server speaks plain HTTP on
+its listen port and expects a reverse proxy in front to handle HTTPS. For
+any internet-facing deployment, running one of the proxies below is the
+recommended shape — without it, cookies, DPoP, OIDC callbacks and share
+links all travel in clear text.
+
 OxiCloud runs happily behind any reverse proxy (nginx, Apache, Caddy, Traefik).
 Two rules apply to every proxy setup:
 
@@ -221,6 +227,32 @@ Not forwarding `X-Forwarded-Proto` is the usual DPoP footgun (`dpop.verify_faile
 
 WebSocket upgrade (message bus, WOPI, collab) works without any extra labels — Traefik passes `Upgrade: websocket` through natively on any router that matches. Unlike nginx, no `headers`-middleware or `Connection: Upgrade` setting is required.
 
+### Caddy
+
+Caddy is the shortest reverse-proxy config OxiCloud supports — automatic HTTPS via Let's Encrypt is built in, `reverse_proxy` passes `X-Forwarded-*` and handles the WebSocket upgrade without any extra directives. The example below assumes both Caddy and OxiCloud run on the same host (bare-metal binary or systemd service); for a containerized Caddy next to a containerized OxiCloud, the shape is identical to Traefik above — a shared external network, `ports: !reset []` on OxiCloud, and the trust CIDR set to the Docker bridge pool.
+
+`/etc/caddy/Caddyfile`:
+
+```caddy
+cloud.example.com {
+    reverse_proxy 127.0.0.1:8086
+}
+```
+
+That is the entire proxy config. The three things that matter — TLS cert, `X-Forwarded-Proto`, WebSocket upgrade — are all defaults, and Caddy renews certs on its own.
+
+OxiCloud-side env (set in your `.env` or systemd unit):
+
+```sh
+OXICLOUD_BASE_URL=https://cloud.example.com
+
+# Both services run on the host, so Caddy connects to OxiCloud via
+# loopback and the request's source address is 127.0.0.1.
+OXICLOUD_TRUST_PROXY_CIDR=127.0.0.0/8
+```
+
+Then `systemctl reload caddy` (or `caddy run --config /etc/caddy/Caddyfile` out of a shell). On the first request to `cloud.example.com` Caddy fetches a certificate via the HTTP-01 challenge, serves OxiCloud over HTTPS, and renews on its own — no cert-resolver block, no `certbot` cron, no manual `nginx -s reload` on renewal.
+
 ### Serving under a subpath
 
 To serve OxiCloud under a URL prefix instead of a (sub)domain root — e.g.
@@ -265,6 +297,8 @@ ProxyPassReverse /oxicloud http://127.0.0.1:8086/oxicloud
 ```
 
 :::
+
+The Caddy equivalent is `handle_path /oxicloud/* { reverse_proxy 127.0.0.1:8086 }` inside the site block; for Traefik, add a `PathPrefix(\`/oxicloud\`)` matcher to the router rule.
 
 Known limitation: RFC 6764 requires the CalDAV/CardDAV **autodiscovery**
 endpoints `/.well-known/caldav` and `/.well-known/carddav` at the domain
