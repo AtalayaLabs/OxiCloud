@@ -189,8 +189,29 @@ export function hydrateFromAuthenticatedBoot(): Promise<void> {
  *  bus is session-gated too, so a ServerStatusChanged push without
  *  a session shouldn't normally happen — but handles the paranoid
  *  case). On 401, fall back to `/api/config` for a banner-only
- *  refresh (readonly stays whatever the public config says). */
+ *  refresh (readonly stays whatever the public config says).
+ *
+ *  In-flight dedup: concurrent callers reuse the same promise so
+ *  the "updateFromHeader triggers refetch while
+ *  hydrateFromAuthenticatedBoot ALSO triggers refetch" race (both
+ *  fire on login — one from the X-Server-Status header on
+ *  /api/auth/me, one from the layout's post-session hook) collapses
+ *  to a single wire call. */
+let inFlight: Promise<void> | null = null;
+
 async function refetchBanners(): Promise<void> {
+	if (inFlight) return inFlight;
+	inFlight = (async () => {
+		try {
+			await doRefetchBanners();
+		} finally {
+			inFlight = null;
+		}
+	})();
+	return inFlight;
+}
+
+async function doRefetchBanners(): Promise<void> {
 	ssLog.debug('refetching /api/status');
 	try {
 		// Dynamic import defers the SDK operation until the first
