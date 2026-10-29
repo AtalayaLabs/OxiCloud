@@ -13,12 +13,10 @@
 		exchangeOidcCode,
 		fetchMe,
 		getAuthStatus,
-		getOidcProviders,
 		login,
 		register,
 		sendMagicLink,
-		setupAdmin,
-		type OidcProviders
+		setupAdmin
 	} from '$lib/api/endpoints/auth';
 	import { i18n, SUPPORTED_LOCALES, setLocale, t, type Locale } from '$lib/i18n/index.svelte';
 	import { loginErrorMessage } from '$lib/auth/loginError';
@@ -73,14 +71,15 @@
 	// Magic-link submit status (rendered inline after a link is sent).
 	let magicStatus = $state<{ text: string; ok: boolean } | null>(null);
 
-	// OIDC + auth-method flags exposed by /api/auth/oidc/providers.
-	let oidc = $state<OidcProviders>({ enabled: false });
-	// Default `true` here: on older backends the field is absent, and the
-	// legacy behaviour was always-on password login.
-	const passwordLoginEnabled = $derived(oidc.password_login_enabled !== false);
-	// Default `false`: only render magic-link UI when the backend
-	// affirmatively enables it (SMTP wired + allowlist + non-OIDC deployment).
-	const magicLinkLoginEnabled = $derived(oidc.magic_link_login_enabled === true);
+	// OIDC + auth-method flags come from `/api/config.auth.*` (hydrated
+	// at SPA boot by `serverConfig.load()`). The pre-consolidation shape
+	// `/api/auth/oidc/providers` is retired; every field below used to
+	// live under flat names there (`password_login_enabled`,
+	// `magic_link_login_enabled`, …) and now lives under per-method
+	// sub-objects. $derived so a late `/api/config` arrival or a
+	// `ServerStatusChanged` refetch re-evaluates the form matrix.
+	const passwordLoginEnabled = $derived(serverConfig.auth.password.enabled);
+	const magicLinkLoginEnabled = $derived(serverConfig.auth.magic_link.enabled);
 	// Single-form UX: the identifier + password fields double as the
 	// magic-link path. When the password is empty (and the server offers
 	// magic-link), submit sends a link to the identifier instead of
@@ -445,8 +444,9 @@
 		}
 
 		// 3) Bootstrap probe: a fresh install (no admin) must be set up first.
-		const [providers, status] = await Promise.all([getOidcProviders(), getAuthStatus()]);
-		oidc = providers;
+		// `/api/auth/oidc/providers` is retired — OIDC + method matrix now
+		// live on `serverConfig.auth`, hydrated at SPA boot.
+		const status = await getAuthStatus();
 		setupAvailable = !status.initialized;
 		if (setupAvailable) mode = 'setup';
 
@@ -727,23 +727,34 @@
 						</form>
 					{/if}
 
-					{#if oidc.enabled}
+					{#if serverConfig.auth.oidc.enabled && serverConfig.auth.oidc.providers.length > 0}
 						{#if passwordLoginEnabled}
 							<div class="auth-divider"><span>{t('auth.or', 'or')}</span></div>
 						{/if}
-						<!-- Backend OIDC authorize endpoint (not a SvelteKit route). -->
-						<a
-							class="auth-button auth-button-oidc"
-							data-testid="login-oidc-btn"
-							href={oidc.authorize_endpoint}
-							rel="external"
-						>
-							{t(
-								'auth.sso_login_provider',
-								{ provider: oidc.provider_name ?? 'SSO' },
-								'Sign in with {{provider}}'
-							)}
-						</a>
+						<!--
+							One button per configured provider. Single-provider
+							deployments (today's reality) see one entry; a
+							future multi-provider deployment renders one button
+							per IdP without changing this template. `data-testid`
+							carries the issuer so Playwright can target a
+							specific provider without hard-coding the position.
+							The `login-oidc-btn` id (no suffix) is kept on the
+							first entry for pre-array test compatibility.
+						-->
+						{#each serverConfig.auth.oidc.providers as provider, i (provider.issuer)}
+							<a
+								class="auth-button auth-button-oidc"
+								data-testid={i === 0 ? 'login-oidc-btn' : `login-oidc-btn-${provider.issuer}`}
+								href={provider.authorize_endpoint}
+								rel="external"
+							>
+								{t(
+									'auth.sso_login_provider',
+									{ provider: provider.provider_name || 'SSO' },
+									'Sign in with {{provider}}'
+								)}
+							</a>
+						{/each}
 					{/if}
 
 					{#if passwordLoginEnabled && serverConfig.auth.registration.enabled}

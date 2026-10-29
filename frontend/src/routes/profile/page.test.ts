@@ -56,7 +56,16 @@ vi.mock('$lib/stores/session.svelte', () => ({ session }));
 vi.mock('$lib/stores/ui.svelte', () => ({ ui }));
 vi.mock('$lib/stores/dialogs.svelte', () => ({ confirmDialog: vi.fn() }));
 vi.mock('$lib/utils/errors', () => ({ errorToast: vi.fn() }));
-vi.mock('$lib/api/endpoints/auth', () => ({ getOidcProviders: vi.fn() }));
+// The profile page now reads OIDC + auth-method state from
+// `serverConfig.auth.*` (post-/api/auth/oidc/providers retirement),
+// so the test file no longer needs to mock any auth-endpoint
+// function — the default `serverConfig` singleton defaults match
+// what these tests expect (`password.enabled: true`, OIDC off).
+vi.mock('$lib/api/endpoints/auth', () => ({
+	fetchMe: vi.fn(),
+	startOidcLink: vi.fn(),
+	unlinkOidc: vi.fn()
+}));
 vi.mock('$lib/api/endpoints/profile', () => ({
 	changePassword: vi.fn(),
 	createAppPassword: vi.fn(),
@@ -68,7 +77,6 @@ vi.mock('$lib/api/endpoints/profile', () => ({
 }));
 
 import * as profile from '$lib/api/endpoints/profile';
-import { getOidcProviders } from '$lib/api/endpoints/auth';
 import { confirmDialog } from '$lib/stores/dialogs.svelte';
 import ProfilePage from './+page.svelte';
 
@@ -85,7 +93,6 @@ beforeEach(() => {
 	session.user = me.full.user;
 	m(profile.listAppPasswords).mockResolvedValue([]);
 	m(profile.updateProfile).mockResolvedValue(undefined);
-	m(getOidcProviders).mockResolvedValue({ password_login_enabled: true });
 });
 
 it('renders and saves the profile form', async () => {

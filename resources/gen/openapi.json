@@ -4267,31 +4267,6 @@
         ]
       }
     },
-    "/api/auth/oidc/providers": {
-      "get": {
-        "tags": [
-          "auth"
-        ],
-        "summary": "Return OIDC provider information for the login UI.",
-        "description": "Returns `enabled: false` when OIDC is not configured.",
-        "operationId": "oidc_providers",
-        "responses": {
-          "200": {
-            "description": "OIDC provider info (enabled=false when OIDC not configured)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/OidcProviderInfoDto"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Auth service not configured"
-          }
-        }
-      }
-    },
     "/api/auth/oidc/unlink": {
       "post": {
         "tags": [
@@ -11778,26 +11753,46 @@
       },
       "AuthDto": {
         "type": "object",
-        "description": "Auth block within [`ServerConfigDto`]. Non-privacy-implicating\ntunables the SPA needs at boot so form validation matches server\nenforcement.",
+        "description": "Auth block within [`ServerConfigDto`]. Non-privacy-implicating\ntunables the SPA needs at boot so form validation matches server\nenforcement, and the complete per-method enablement matrix the\nlogin page uses to pick which forms + buttons to render.\n\nSub-objects per auth concern (one of `registration` /\n`password` / `magic_link` / `oidc`) rather than flat booleans so\neach method's future knobs land as siblings inside its own\nsub-object without widening `AuthDto` itself. The ONLY flat\nfields at the top are cross-cutting policies (`require_verified_email`\ngates both registration AND login) and operator-tuned scalars\nthe SPA forms gate submit on (`min_password_length`, `opaque_mode`).\n\nReplaces the pre-consolidation surface where `/api/auth/oidc/providers`\nreturned the same four auth-method flags under flat names\n(`password_login_enabled`, `magic_link_login_enabled`,\n`require_verified_email`, `auto_redirect_to_oidc`). That endpoint\nwas retired in favour of this one.",
         "required": [
           "min_password_length",
           "opaque_mode",
-          "registration"
+          "require_verified_email",
+          "registration",
+          "password",
+          "magic_link",
+          "oidc"
         ],
         "properties": {
+          "magic_link": {
+            "$ref": "#/components/schemas/MagicLinkAuthDto",
+            "description": "Magic-link login + welcome flows. See [`MagicLinkAuthDto`]."
+          },
           "min_password_length": {
             "type": "integer",
             "format": "int32",
             "description": "Minimum password length (UTF-8 bytes). Mirrors\n`AuthConfig::min_password_length`, which every server-side\npassword-bearing endpoint uses. The SPA gates submit on the\nsame value so users see the failure instantly instead of\nafter a round-trip. See AtalayaLabs/OxiCloud#677.",
             "minimum": 0
           },
+          "oidc": {
+            "$ref": "#/components/schemas/OidcAuthDto",
+            "description": "OIDC / SSO federation. See [`OidcAuthDto`]."
+          },
           "opaque_mode": {
             "type": "string",
             "description": "OPAQUE deployment mode — one of `\"off\"`, `\"migrate\"`,\n`\"opaque_only\"`. Mirrors `AuthConfig::opaque.mode` (env\n`OXICLOUD_AUTH_OPAQUE_MODE`). Login already discovers this\nper-user via `POST /api/auth/opaque/login/lookup`; exposing\nthe server-wide mode here is for future consumers (admin\npanel status indicators, OPAQUE-native setup / register\nflows). Login callers should NOT branch on this value —\nkeep using the per-user lookup so mixed populations during\nmigration stay honest."
           },
+          "password": {
+            "$ref": "#/components/schemas/PasswordAuthDto",
+            "description": "Password-login method. See [`PasswordAuthDto`]."
+          },
           "registration": {
             "$ref": "#/components/schemas/RegistrationDto",
-            "description": "Public self-registration flow. Grouped under a dedicated\n`registration` sub-object so future knobs (verified-email\nrequirement, domain allowlist mirror) land as sibling fields\nwithout widening `AuthDto` itself. See [`RegistrationDto`]."
+            "description": "Public self-registration flow. See [`RegistrationDto`]."
+          },
+          "require_verified_email": {
+            "type": "boolean",
+            "description": "`true` iff `OXICLOUD_REQUIRE_VERIFIED_EMAIL` is set.\nCross-cutting policy — gates both registration (new users\nmust verify) and login (existing users without a verified\naddress are refused). Lives at top level because it isn't\nowned by any single sub-object. The FE uses this hint to\nexplain the `EmailNotVerified` login response and to nudge\nnew users toward the magic-link verification path straight\nafter signup."
           }
         }
       },
@@ -14836,6 +14831,19 @@
           }
         }
       },
+      "MagicLinkAuthDto": {
+        "type": "object",
+        "description": "Magic-link login block within [`AuthDto`]. Mirrors\n`AuthApplicationService::is_magic_link_login_allowed()`, which\ncomposes `OXICLOUD_AUTH_METHODS` membership + SMTP wiring + the\n\"OIDC-master → no magic-link login\" hard rule. FE login page\nshows the magic-link form iff this is true.",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "`true` when the server accepts magic-link login requests."
+          }
+        }
+      },
       "MarkAllReadResponseDto": {
         "type": "object",
         "required": [
@@ -15175,6 +15183,32 @@
           }
         }
       },
+      "OidcAuthDto": {
+        "type": "object",
+        "description": "OIDC / SSO block within [`AuthDto`]. Carries the enablement\nflag plus a list of configured providers. Today OxiCloud\nsupports one OIDC provider per deployment, so `providers` is\neither a one-element list or empty — but the array shape is\nfuture-proof for the planned multi-provider work (one deployment\nfederating multiple IdPs) and lets the FE loop over providers\nwithout an array-vs-scalar refactor later.\n\nDeployment-wide policies (`enabled`, `auto_redirect`) stay on\nthe sub-object top; per-provider identity (`issuer`,\n`provider_name`, `authorize_endpoint`) lives inside each\n[`OidcProviderDto`].",
+        "required": [
+          "enabled",
+          "auto_redirect",
+          "providers"
+        ],
+        "properties": {
+          "auto_redirect": {
+            "type": "boolean",
+            "description": "`true` iff the effective allowlist is `[Oidc]` AND the\n`auto_redirect_if_standalone_oidc` policy is set. FE uses\nthis to decide whether to auto-redirect to the authorize\nendpoint on login-page mount (true) or show a\nclick-to-continue button (false). Default `false` — the\nsafe posture that avoids redirect loops when the IdP is\ndegraded."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "`true` when OIDC federation is configured + enabled.\nWhen `false`, `providers` is empty and the FE hides every\nSSO affordance."
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OidcProviderDto"
+            },
+            "description": "Configured providers. Length is 0 (OIDC off) or 1 (single\nprovider, today's reality); FE treats >1 as a future\nmulti-provider deployment and renders one button per entry."
+          }
+        }
+      },
       "OidcExchangeDto": {
         "type": "object",
         "description": "Request body for the OIDC one-time code exchange endpoint",
@@ -15187,43 +15221,26 @@
           }
         }
       },
-      "OidcProviderInfoDto": {
+      "OidcProviderDto": {
         "type": "object",
-        "description": "Information about available OIDC providers + self-service auth\nmethods enabled on the deployment. Consumed by the login page to\ndecide which forms/buttons to render.",
+        "description": "A single OIDC provider inside [`OidcAuthDto::providers`]. All\nfields are per-provider; deployment-wide flags stay on the\nparent sub-object.",
         "required": [
-          "enabled",
+          "issuer",
           "provider_name",
-          "authorize_endpoint",
-          "password_login_enabled"
+          "authorize_endpoint"
         ],
         "properties": {
           "authorize_endpoint": {
-            "type": "string"
-          },
-          "auto_redirect_to_oidc": {
-            "type": "boolean",
-            "description": "True iff the effective allowlist is `[Oidc]` AND the\n`auto_redirect_if_standalone_oidc` policy is set. Frontend\nuses this to decide whether to auto-redirect to the authorize\nendpoint on login-page mount (true) or show a click-to-continue\nbutton (false). Default false — the safe posture that avoids\nredirect loops when the IdP is degraded."
-          },
-          "enabled": {
-            "type": "boolean"
+            "type": "string",
+            "description": "Browser-facing navigation target for the sign-in button —\nthe SPA sets `window.location` to this verbatim. Carries\nthe deployment base path (`OXICLOUD_BASE_PATH`-prefixed)."
           },
           "issuer": {
             "type": "string",
-            "description": "The authoritative issuer URL for THIS deployment's OIDC config —\nsame value that lands on `auth.users.federation_issuer` for\nusers JIT-provisioned via this IdP.\n\nPopulated so the frontend can resolve display: when\n`PublicUserDto.federation_issuer` equals this `issuer`, render\n`provider_name` as the human-friendly label (avoids showing raw\nissuer URLs like `https://sso.example.com/realms/main` in the\nadmin badge / profile view). Falls back to the raw issuer when\nthere's no match — happens for legacy rows not yet lazy-rebound,\nor (future) users linked to a different IdP than the currently\nconfigured one.\n\nEmpty string when OIDC is disabled on this deployment."
-          },
-          "magic_link_login_enabled": {
-            "type": "boolean",
-            "description": "True iff the server accepts magic-link login requests\n(`OXICLOUD_AUTH_METHODS` includes `magic_link` AND SMTP is\nconfigured). Frontend renders the magic-link form when true."
-          },
-          "password_login_enabled": {
-            "type": "boolean"
+            "description": "Authoritative issuer URL for this provider — same value\nthat lands on `auth.users.federation_issuer` for users\nJIT-provisioned via it. The FE compares a user's\n`federation_issuer` against this to decide whether to\nrender the human-friendly `provider_name` instead of the\nraw issuer URL. Doubles as the stable key when iterating\nproviders client-side (unique per deployment)."
           },
           "provider_name": {
-            "type": "string"
-          },
-          "require_verified_email": {
-            "type": "boolean",
-            "description": "True iff `OXICLOUD_REQUIRE_VERIFIED_EMAIL` is set. Frontend uses\nthis hint to explain the `EmailNotVerified` login response and\nto nudge new users toward the magic-link verification path\nstraight after signup."
+            "type": "string",
+            "description": "Human-readable name (e.g. \"Google\", \"Keycloak — Main Realm\")."
           }
         }
       },
@@ -15745,6 +15762,19 @@
             "type": "integer",
             "description": "Requested page size",
             "minimum": 0
+          }
+        }
+      },
+      "PasswordAuthDto": {
+        "type": "object",
+        "description": "Password-login block within [`AuthDto`]. Mirrors the policy\n`AuthApplicationService::is_password_login_allowed()` — composes\n`OXICLOUD_AUTH_METHODS` with the AuthZ cross-check (an OIDC-master\ndeployment turns password login off even when the env list carries\n`password`). FE login page uses this to decide whether to render\nthe password form at all.",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "`true` when the server accepts password-based login."
           }
         }
       },

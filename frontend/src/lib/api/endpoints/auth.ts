@@ -13,7 +13,6 @@ import {
 	logout as sdkLogout,
 	oidcExchange,
 	oidcLinkStart,
-	oidcProviders,
 	oidcUnlink,
 	refreshToken as sdkRefreshToken,
 	register as sdkRegister,
@@ -334,93 +333,6 @@ async function opaqueKsfForClient(): Promise<{
 	const { fetchOpaqueParams } = await import('$lib/api/endpoints/opaque');
 	const params = await fetchOpaqueParams();
 	return params.ksf;
-}
-
-export interface OidcProviders {
-	enabled: boolean;
-	provider_name?: string;
-	password_login_enabled?: boolean;
-	/**
-	 * True when the server accepts magic-link login requests. The backend
-	 * composes three factors: SMTP wired, `OXICLOUD_AUTH_METHODS` allowlist
-	 * includes `magic_link`, and OIDC is NOT enabled at the deployment
-	 * (OIDC-enabled deployments must not offer magic-link — it would bypass
-	 * any 2FA / step-up the IdP enforces).
-	 */
-	magic_link_login_enabled?: boolean;
-	/**
-	 * True when `OXICLOUD_REQUIRE_VERIFIED_EMAIL` is set. The login page
-	 * uses this to explain the `EmailNotVerified` login response and
-	 * surface a "resend verification link" affordance.
-	 */
-	require_verified_email?: boolean;
-	authorize_endpoint?: string;
-	/**
-	 * Server-computed: true when the `auto_redirect_if_standalone_oidc`
-	 * policy is on AND OIDC is the only working method (see
-	 * `AuthApplicationService::auto_redirect_to_oidc`). When true the root
-	 * layout guard `window.location.replace`s to `authorize_endpoint`
-	 * instead of routing through `/login` — the server-side `/login`
-	 * middleware only fires on full HTTP loads, so SPA client-side
-	 * navigation to `/login` (root guard, dev via Vite) would otherwise
-	 * stall on the login page. Because the flag is gated by the admin's
-	 * policy on the SERVER, using it on the client does NOT override the
-	 * policy toggle — we're just enacting the same decision on paths the
-	 * middleware can't reach.
-	 */
-	auto_redirect_to_oidc?: boolean;
-}
-
-/**
- * Shared in-flight / result cache for the OIDC-providers lookup. The
- * endpoint's content is operator-controlled (OIDC enabled / provider
- * list) and does NOT change at user-session granularity — only on a
- * server restart or an admin OIDC toggle. Caching the promise means
- * every caller that lands within the same SPA session gets the same
- * resolved result for free, including the layout + login page firing
- * at boot (previously two wire fetches racing).
- *
- * Promise caching, not value caching: the first fetch's promise is
- * reused as-is, so concurrent callers in the pre-resolve window see
- * the same in-flight promise instead of each starting their own.
- * Awaiting a resolved promise is immediate; no additional work.
- *
- * Invalidation: see [`invalidateOidcProvidersCache`]. Not wired into
- * `ServerStatusChanged` today — an admin OIDC flip propagates on
- * next page load. If a live refresh of this surface becomes needed,
- * the hook is to call the invalidator inside the server-status
- * subscriber in `stores/serverStatus.svelte.ts`.
- */
-let oidcProvidersPromise: Promise<OidcProviders> | null = null;
-
-/** Public OIDC provider info for the login page. */
-export async function getOidcProviders(): Promise<OidcProviders> {
-	// Phase 4 — SDK call via generated client. Target `/api/auth/oidc/providers`
-	// is in `transport.ts::AUTH_PRIMITIVES` so the refresh-dance isn't engaged
-	// here. The swallow-everything fallback is preserved: the login page polls
-	// this on first render and MUST NOT surface an error if the IdP config
-	// endpoint is unreachable — it just hides the OIDC-sign-in button.
-	if (!oidcProvidersPromise) {
-		oidcProvidersPromise = (async (): Promise<OidcProviders> => {
-			try {
-				const data = await oidcProviders({ throwOnError: true });
-				return data as OidcProviders;
-			} catch {
-				return { enabled: false };
-			}
-		})();
-	}
-	return oidcProvidersPromise;
-}
-
-/**
- * Clear the cached providers promise. Tests call this in `beforeEach`
- * so one test's SDK-mock output doesn't leak into the next; production
- * code only needs it if an admin OIDC flip must propagate without a
- * page reload (not wired today — see [`getOidcProviders`]).
- */
-export function invalidateOidcProvidersCache(): void {
-	oidcProvidersPromise = null;
 }
 
 export type AuthStatus = SystemInitStatusDto;

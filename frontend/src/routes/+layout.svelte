@@ -15,7 +15,7 @@
 	import { ui } from '$lib/stores/ui.svelte';
 	import { hashUrlToPath } from '$lib/utils/hashRedirect';
 	import { killLegacyServiceWorker } from '$lib/utils/killLegacyServiceWorker';
-	import { getOidcProviders, type OidcProviders } from '$lib/api/endpoints/auth';
+	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import { readAndClearInterrupted } from '$lib/upload/interruption';
 	import { t } from '$lib/i18n/index.svelte';
 
@@ -45,9 +45,10 @@
 	// SPA client-nav paths the middleware in interfaces/web/mod.rs can't
 	// see. The middleware only fires on full HTTP loads to /login; when
 	// the layout guard is about to `goto('/login')` we short-circuit to
-	// the IdP directly if the server tells us to. Null until fetched;
-	// the guard waits for it before deciding.
-	let providers = $state<OidcProviders | null>(null);
+	// the IdP directly if the server tells us to. The deployment-wide
+	// `auto_redirect` + the first provider's `authorize_endpoint` come
+	// from `/api/config.auth.oidc` (hydrated by `serverConfig.load()`
+	// in `hooks.client.ts` before the layout mounts).
 
 	// Wire the fetch-interceptor's mandatory-mode handler to a soft
 	// `goto()` so a stale-tab request that surfaces a 403
@@ -193,9 +194,11 @@
 			const mapped = hashUrlToPath(location.hash);
 			if (mapped) await goto(resolve(mapped as Pathname), { replaceState: true });
 		}
-		// Parallel — providers is a public endpoint independent of session state.
-		const [, prov] = await Promise.all([session.load(), getOidcProviders()]);
-		providers = prov;
+		// OIDC provider matrix now lives on `serverConfig.auth.oidc`
+		// (loaded by `hooks.client.ts` before layout mounts), so this
+		// used to fire a second GET alongside session.load — now just
+		// loads the session.
+		await session.load();
 		ready = true;
 	});
 
@@ -219,9 +222,13 @@
 		// middleware does for direct HTTP loads. Full-page navigation
 		// (`window.location`) so we hit the OxiCloud backend fresh — that
 		// endpoint 307s to the IdP with a fresh state + PKCE challenge.
-		// `goto()` would keep us in the SPA and never leave.
-		if (providers?.auto_redirect_to_oidc && providers.authorize_endpoint) {
-			window.location.replace(providers.authorize_endpoint);
+		// `goto()` would keep us in the SPA and never leave. Hits the
+		// FIRST configured provider; a multi-provider deployment with
+		// auto-redirect on would need an admin-chosen "default" field
+		// to pick between them (not shipped today).
+		const firstOidc = serverConfig.auth.oidc.providers[0];
+		if (serverConfig.auth.oidc.auto_redirect && firstOidc?.authorize_endpoint) {
+			window.location.replace(firstOidc.authorize_endpoint);
 			return;
 		}
 		void goto(resolve(`/login?redirect=${encodeURIComponent(path)}`), { replaceState: true });

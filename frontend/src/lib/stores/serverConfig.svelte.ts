@@ -65,14 +65,37 @@ const DEFAULT_STATUS: ServerStatus = {
 const DEFAULT_AUTH: ServerAuth = {
 	min_password_length: 8,
 	opaque_mode: 'off',
-	// Default-on mirrors the server's `AdminSettingsService` fallback
-	// — a client that can't reach `/api/config` falls back to the same
-	// behaviour the deployment had before this field shipped (the
-	// login page shows the "Create one" button). Server-side
-	// enforcement still runs on `POST /api/auth/register`, so a
-	// stale-default client clicking through on a disabled instance
-	// sees a 403 toast, never a smuggled-in account.
-	registration: { enabled: true }
+	// Cross-cutting policy — defaults to false (verification not
+	// required). Matches the server's `AuthApplicationService::require_verified_email()`
+	// fallback when `OXICLOUD_REQUIRE_VERIFIED_EMAIL` is unset. The
+	// login page uses this hint to render the EmailNotVerified
+	// branch guidance after a failed login.
+	require_verified_email: false,
+	// Registration default-on mirrors the server's `AdminSettingsService`
+	// fallback — a client that can't reach `/api/config` falls back
+	// to the same behaviour the deployment had before this field
+	// shipped (the login page shows the "Create one" button).
+	// Server-side enforcement still runs on `POST /api/auth/register`,
+	// so a stale-default client clicking through on a disabled
+	// instance sees a 403 toast, never a smuggled-in account.
+	registration: { enabled: true },
+	// Password + magic-link default-on, OIDC default-off. Matches
+	// the shape the login page needs for the pre-/api/config window
+	// (both self-service forms visible, SSO button hidden). Server
+	// enforcement composes `OXICLOUD_AUTH_METHODS` + SMTP wiring +
+	// the OIDC-master cross-rule; defaults here are the "no config
+	// loaded yet" fallback and should match the pre-consolidation
+	// fallback of `oidc.password_login_enabled` + friends.
+	password: { enabled: true },
+	magic_link: { enabled: true },
+	oidc: {
+		enabled: false,
+		auto_redirect: false,
+		// Empty list = no SSO providers configured. The login page
+		// renders one SSO button per entry — a future multi-provider
+		// deployment would ship >1 element here with no FE change.
+		providers: []
+	}
 };
 
 const cfgLog = log.getLogger('oxi:config');

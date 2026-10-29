@@ -24,7 +24,6 @@ vi.mock('$lib/api/endpoints/auth', () => ({
 	bindDpopIfPossible: vi.fn().mockResolvedValue(false),
 	exchangeOidcCode: vi.fn(),
 	fetchMe: vi.fn(),
-	getOidcProviders: vi.fn(),
 	getAuthStatus: vi.fn(),
 	login: vi.fn(),
 	register: vi.fn(),
@@ -33,24 +32,57 @@ vi.mock('$lib/api/endpoints/auth', () => ({
 }));
 
 import * as auth from '$lib/api/endpoints/auth';
+import { serverConfig } from '$lib/stores/serverConfig.svelte';
 import LoginPage from './+page.svelte';
 
 const m = (fn: unknown) => fn as ReturnType<typeof vi.fn>;
+
+// Default auth-method matrix the login page gates on. The real
+// values come from `/api/config.auth.*`; the login page reads them
+// reactively from the `serverConfig` singleton. Tests push values
+// into `serverConfig.auth` directly (same approach `page.test.ts`
+// uses for the registration-link gate) — one $state assignment
+// swaps the whole matrix, no module remocking needed.
+function setAuthMatrix(
+	patch: Partial<{
+		password: { enabled: boolean };
+		magic_link: { enabled: boolean };
+		registration: { enabled: boolean };
+		oidc: {
+			enabled: boolean;
+			auto_redirect: boolean;
+			providers: {
+				issuer: string;
+				provider_name: string;
+				authorize_endpoint: string;
+			}[];
+		};
+	}>
+): void {
+	serverConfig.auth = {
+		...serverConfig.auth,
+		password: patch.password ?? { enabled: true },
+		magic_link: patch.magic_link ?? { enabled: true },
+		registration: patch.registration ?? { enabled: true },
+		oidc: patch.oidc ?? {
+			enabled: false,
+			auto_redirect: false,
+			providers: []
+		}
+	};
+}
 
 beforeEach(() => {
 	vi.clearAllMocks();
 	pageState.url = new URL('http://localhost/login');
 	session.user = null;
 	m(auth.fetchMe).mockResolvedValue(null);
-	// Default provider info: both password + magic-link enabled, OIDC off.
-	// The unified login form's magic-link submit path is only reachable
-	// when `magic_link_login_enabled === true` — without this pin the
-	// "sends a magic link" test can't reach `sendMagicLink()`.
-	m(auth.getOidcProviders).mockResolvedValue({
-		enabled: false,
-		password_login_enabled: true,
-		magic_link_login_enabled: true
-	});
+	// Default matrix: password + magic-link enabled, OIDC off,
+	// registration enabled. The unified login form's magic-link
+	// submit path is only reachable when `magic_link.enabled` is
+	// true — without this reset the "sends a magic link" test
+	// can't reach `sendMagicLink()`.
+	setAuthMatrix({});
 	m(auth.getAuthStatus).mockResolvedValue({ initialized: true });
 });
 
@@ -157,12 +189,10 @@ it('registers a new account', async () => {
 // (every login page shows the link again) OR silently inverts the
 // condition (hidden when enabled) trips a failing assertion.
 //
-// The default state is set by `serverConfig.DEFAULT_AUTH.registration =
-// { enabled: true }`, so the "visible when enabled" case needs no
-// per-test setup. The "hidden when disabled" case flips the
-// singleton's `$state` and restores it in `afterEach`.
-import { serverConfig } from '$lib/stores/serverConfig.svelte';
-
+// The default matrix (set by `beforeEach` via `setAuthMatrix({})`)
+// has `registration.enabled: true`, so the "visible when enabled"
+// case needs no per-test setup. The "hidden when disabled" case
+// overrides via the same helper; `beforeEach` resets on the next test.
 it('shows the register link when registration is enabled (default)', async () => {
 	render(LoginPage);
 	await screen.findByTestId('login-form');
@@ -170,14 +200,10 @@ it('shows the register link when registration is enabled (default)', async () =>
 });
 
 it('hides the register link when registration.enabled is false', async () => {
-	serverConfig.auth = { ...serverConfig.auth, registration: { enabled: false } };
-	try {
-		render(LoginPage);
-		await screen.findByTestId('login-form');
-		expect(screen.queryByTestId('login-to-register-btn')).toBeNull();
-	} finally {
-		serverConfig.auth = { ...serverConfig.auth, registration: { enabled: true } };
-	}
+	setAuthMatrix({ registration: { enabled: false } });
+	render(LoginPage);
+	await screen.findByTestId('login-form');
+	expect(screen.queryByTestId('login-to-register-btn')).toBeNull();
 });
 
 it('shows an error message when login fails', async () => {
@@ -278,11 +304,18 @@ it('creates the first administrator in setup mode', async () => {
 });
 
 it('renders an SSO sign-in link when an OIDC provider is configured', async () => {
-	m(auth.getOidcProviders).mockResolvedValue({
-		enabled: true,
-		authorize_endpoint: 'https://idp.test/auth',
-		provider_name: 'Acme SSO',
-		password_login_enabled: true
+	setAuthMatrix({
+		oidc: {
+			enabled: true,
+			auto_redirect: false,
+			providers: [
+				{
+					issuer: 'https://idp.test/',
+					provider_name: 'Acme SSO',
+					authorize_endpoint: 'https://idp.test/auth'
+				}
+			]
+		}
 	});
 	render(LoginPage);
 	const sso = await screen.findByTestId('login-oidc-btn');
@@ -296,23 +329,38 @@ it('renders an SSO sign-in link when an OIDC provider is configured', async () =
 // policy choice. We keep this test asserting the *negative* to lock in
 // "SPA renders the click-to-continue button, no window.location.replace".
 it('does not client-side auto-redirect when OIDC is the only login method', async () => {
-	m(auth.getOidcProviders).mockResolvedValue({
-		enabled: true,
-		password_login_enabled: false,
-		authorize_endpoint: '/api/auth/oidc/authorize'
+	setAuthMatrix({
+		password: { enabled: false },
+		oidc: {
+			enabled: true,
+			auto_redirect: false,
+			providers: [
+				{
+					issuer: 'https://idp.test/',
+					provider_name: 'SSO',
+					authorize_endpoint: '/api/auth/oidc/authorize'
+				}
+			]
+		}
 	});
 	render(LoginPage);
-	// Give onMount time to finish its probes; the SSO button must appear
-	// and `window.location.replace` must NOT have been called.
 	await screen.findByTestId('login-oidc-btn');
 	expect(replaceSpy).not.toHaveBeenCalled();
 });
 
 it('does not auto-redirect when password login is also enabled', async () => {
-	m(auth.getOidcProviders).mockResolvedValue({
-		enabled: true,
-		password_login_enabled: true,
-		authorize_endpoint: '/api/auth/oidc/authorize'
+	setAuthMatrix({
+		oidc: {
+			enabled: true,
+			auto_redirect: false,
+			providers: [
+				{
+					issuer: 'https://idp.test/',
+					provider_name: 'SSO',
+					authorize_endpoint: '/api/auth/oidc/authorize'
+				}
+			]
+		}
 	});
 	render(LoginPage);
 	await screen.findByTestId('login-form');
@@ -321,10 +369,19 @@ it('does not auto-redirect when password login is also enabled', async () => {
 
 it('does not auto-redirect after the IdP already returned an error (loop guard)', async () => {
 	pageState.url = new URL('http://localhost/login?error=access_denied');
-	m(auth.getOidcProviders).mockResolvedValue({
-		enabled: true,
-		password_login_enabled: false,
-		authorize_endpoint: '/api/auth/oidc/authorize'
+	setAuthMatrix({
+		password: { enabled: false },
+		oidc: {
+			enabled: true,
+			auto_redirect: false,
+			providers: [
+				{
+					issuer: 'https://idp.test/',
+					provider_name: 'SSO',
+					authorize_endpoint: '/api/auth/oidc/authorize'
+				}
+			]
+		}
 	});
 	render(LoginPage);
 	await screen.findByTestId('login-form');
@@ -333,10 +390,19 @@ it('does not auto-redirect after the IdP already returned an error (loop guard)'
 
 it('does not auto-redirect during first-run setup', async () => {
 	m(auth.getAuthStatus).mockResolvedValue({ initialized: false });
-	m(auth.getOidcProviders).mockResolvedValue({
-		enabled: true,
-		password_login_enabled: false,
-		authorize_endpoint: '/api/auth/oidc/authorize'
+	setAuthMatrix({
+		password: { enabled: false },
+		oidc: {
+			enabled: true,
+			auto_redirect: false,
+			providers: [
+				{
+					issuer: 'https://idp.test/',
+					provider_name: 'SSO',
+					authorize_endpoint: '/api/auth/oidc/authorize'
+				}
+			]
+		}
 	});
 	render(LoginPage);
 	await screen.findByTestId('login-setup-form');
