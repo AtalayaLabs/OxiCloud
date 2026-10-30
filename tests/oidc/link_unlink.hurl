@@ -490,7 +490,7 @@ HTTP 200
 # does not satisfy that), so the refusal path fires and the
 # callback returns `DomainError::AlreadyExists`.
 #
-# Wire behavior: HTTP 409 with error_type "Already Exists"
+# Wire behavior: HTTP 409 with error_type "AlreadyExists"
 # (ErrorKind::AlreadyExists → CONFLICT). The message is the
 # "contact admin to link your OIDC identity" text that surfaces
 # in the SPA login form's error toast.

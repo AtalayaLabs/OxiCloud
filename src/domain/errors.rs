@@ -69,9 +69,48 @@ pub enum ErrorKind {
     /// HTTP 412. Distinct from `Conflict` (409): this is specifically
     /// "the state you thought you were writing against has moved."
     PreconditionFailed,
+    /// The caller's identity is authenticated (credentials matched)
+    /// but the account is deactivated. Only returned AFTER a
+    /// successful credential check, so a wrong-password attempt on a
+    /// deactivated account still collapses to the generic
+    /// `AccessDenied` + "Invalid credentials" shape — the deactivation
+    /// is only revealed to someone who already proved possession of
+    /// the credential. Maps to HTTP 403.
+    AccountDeactivated,
 }
 
 impl ErrorKind {
+    /// Stable **machine-readable** PascalCase identifier, used on the
+    /// wire as the `error_type` discriminator the SPA switches on.
+    /// Separate from [`as_str`](Self::as_str) — which is the
+    /// human-readable form used in logs and `Display` — because the two
+    /// have different stability contracts: `as_str` can be reworded in a
+    /// log review without breaking anything, while `wire_name` is an
+    /// API contract and must stay stable across releases.
+    ///
+    /// Handler-emitted `error_type` literals (e.g. `AccountDeactivated`,
+    /// `PasswordLoginDisabled`) follow the same PascalCase convention
+    /// so SPA branches can compare uniformly — never one with a space
+    /// and the next without.
+    pub fn wire_name(&self) -> &'static str {
+        match self {
+            ErrorKind::NotFound => "NotFound",
+            ErrorKind::AlreadyExists => "AlreadyExists",
+            ErrorKind::InvalidInput => "InvalidInput",
+            ErrorKind::AccessDenied => "AccessDenied",
+            ErrorKind::Timeout => "Timeout",
+            ErrorKind::TransientBackend => "TransientBackend",
+            ErrorKind::InternalError => "InternalError",
+            ErrorKind::NotImplemented => "NotImplemented",
+            ErrorKind::UnsupportedOperation => "UnsupportedOperation",
+            ErrorKind::DatabaseError => "DatabaseError",
+            ErrorKind::QuotaExceeded => "QuotaExceeded",
+            ErrorKind::Conflict => "Conflict",
+            ErrorKind::PreconditionFailed => "PreconditionFailed",
+            ErrorKind::AccountDeactivated => "AccountDeactivated",
+        }
+    }
+
     /// Stable human-readable name; `Display` delegates here so the two can
     /// never drift. Being `&'static` it lets the HTTP error path borrow the
     /// value instead of allocating per response (benches/ROUND11.md §9).
@@ -93,6 +132,9 @@ impl ErrorKind {
             ErrorKind::QuotaExceeded => "Quota Exceeded",
             ErrorKind::Conflict => "Conflict",
             ErrorKind::PreconditionFailed => "Precondition Failed",
+            // Wire value — SPA switches on `error_type`, so this string
+            // is the contract that `+page.svelte` branches against.
+            ErrorKind::AccountDeactivated => "Account Deactivated",
         }
     }
 }

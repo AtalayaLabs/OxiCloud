@@ -1372,6 +1372,44 @@ impl AuthApplicationService {
         Ok(PublicUserDto::new(created_user, false))
     }
 
+    /// Centralised deactivated-account gate — called by every path
+    /// that is about to mint a session on behalf of an authenticated
+    /// user (password login, magic-link redemption, OIDC callback).
+    ///
+    /// Fires AFTER the credential has been verified, never before: a
+    /// deactivated account hit with a wrong password still collapses
+    /// to the generic `AccessDenied` + "Invalid credentials" response,
+    /// so the deactivation state is only revealed to callers who have
+    /// already proved possession of the credential. The alternative —
+    /// gating pre-credential — leaks "this account exists AND is
+    /// deactivated" to anyone guessing passwords, which is a weaker
+    /// anti-enum posture.
+    ///
+    /// `origin` labels the login door for the audit record so
+    /// operators can tell which path the deactivated attempt came
+    /// through without having to join against the request-scope span.
+    fn ensure_user_is_active(&self, user: &User, origin: &'static str) -> Result<(), DomainError> {
+        if user.is_active() {
+            return Ok(());
+        }
+        tracing::info!(
+            target: "audit",
+            event = "auth.login_rejected",
+            reason = "account_deactivated",
+            origin = origin,
+            user_id = %user.id(),
+            username = %user.display_for_audit(),
+            "🔐 login rejected: account deactivated for '{}' (via {})",
+            user.display_for_audit(),
+            origin,
+        );
+        Err(DomainError::new(
+            ErrorKind::AccountDeactivated,
+            "Auth",
+            "Account deactivated",
+        ))
+    }
+
     pub async fn login(
         &self,
         dto: LoginDto,
@@ -1423,23 +1461,13 @@ impl AuthApplicationService {
             DomainError::new(ErrorKind::AccessDenied, "Auth", "Invalid credentials")
         })?;
 
-        // Check if user is active
-        if !user.is_active() {
-            tracing::info!(
-                target: "audit",
-                event = "auth.login_rejected",
-                reason = "account_deactivated",
-                user_id = %user.id(),
-                username = %user.display_for_audit(),
-                "🔐 login rejected: account deactivated for '{}'",
-                user.display_for_audit(),
-            );
-            return Err(DomainError::new(
-                ErrorKind::AccessDenied,
-                "Auth",
-                "Account deactivated",
-            ));
-        }
+        // NOTE: the deactivated-account check used to live here, BEFORE
+        // the password verify. That leaked "this account exists AND is
+        // deactivated" to any password-guesser. The check now fires
+        // AFTER a successful credential match via
+        // `ensure_user_is_active` — see below — so a wrong-password
+        // attempt on a deactivated account still collapses to the
+        // generic "Invalid credentials" response.
 
         // Verify password using the injected hasher. If the user has no
         // password configured (externals, OIDC-only), short-circuit to
@@ -1543,6 +1571,14 @@ impl AuthApplicationService {
                 "Invalid credentials",
             ));
         }
+
+        // Credentials matched — now the deactivated-account gate fires.
+        // Distinct error_type (`AccountDeactivated` → 403) so the SPA
+        // can show the real reason to a user who just proved possession
+        // of the right password; a wrong-password attempt above still
+        // collapses to the generic 401, keeping the deactivation
+        // invisible to guessers.
+        self.ensure_user_is_active(&user, "password")?;
 
         // Phase 4 gate: legacy password login is refused for users who
         // have completed at least one OPAQUE handshake
@@ -2081,6 +2117,13 @@ impl AuthApplicationService {
         // timestamp (benches/ROUND12.md §3, 8.9x).
         user.mark_email_verified();
         self.user_storage.mark_email_verified(user.id()).await?;
+
+        // Credentials matched (token redemption is the credential here)
+        // — gate the session mint on `is_active` so a magic link minted
+        // before deactivation can't be redeemed afterwards. See
+        // `ensure_user_is_active` for why the check lives after the
+        // credential path, not before.
+        self.ensure_user_is_active(&user, "magic_link")?;
 
         // Magic-link redemption is a GET redirect — no way to
         // thread `dpop_jkt` into a GET body. Session is minted
@@ -5686,6 +5729,12 @@ impl AuthApplicationService {
         if let Some(sid) = claims.sid.as_ref() {
             session = session.with_oidc_sid(sid.clone());
         }
+        // IdP-side credentials validated — gate session mint on local
+        // `is_active`. JIT provisioning above creates fresh users as
+        // active, so the check is only load-bearing for returning
+        // federated users whom an admin has since deactivated. Same
+        // enforcement point as the password + magic-link paths.
+        self.ensure_user_is_active(&user, "oidc")?;
         // Mint AFTER session is fully configured so `sid` claim
         // aligns with the row about to be inserted.
         let access_token =

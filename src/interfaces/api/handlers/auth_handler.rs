@@ -501,6 +501,23 @@ pub async fn login(
             // primarily serves legacy clients and downgrade-attack
             // detection. 403 keeps the shape consistent with the other
             // policy refusals (PasswordLoginDisabled, EmailNotVerified).
+            if err.kind == crate::domain::errors::ErrorKind::AccountDeactivated {
+                // Gap 3: credentials matched but the account is
+                // deactivated. Distinct error_type → SPA shows the real
+                // reason ("Account deactivated — contact your
+                // administrator") instead of the generic "Invalid
+                // credentials" we return for bad passwords. 403 matches
+                // the other post-credential-match policy refusals
+                // above. See `AuthApplicationService::ensure_user_is_active`
+                // for the ordering that keeps a wrong-password attempt
+                // on a deactivated account indistinguishable from a
+                // wrong-password attempt on an active one.
+                return Err(AppError::new(
+                    StatusCode::FORBIDDEN,
+                    "Your account has been deactivated. Contact your administrator.",
+                    "AccountDeactivated",
+                ));
+            }
             if err.message == "Password login refused: this account has migrated to OPAQUE" {
                 return Err(AppError::new(
                     StatusCode::FORBIDDEN,

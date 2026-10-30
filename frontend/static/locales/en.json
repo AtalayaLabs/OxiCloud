@@ -824,6 +824,7 @@
 		"register_domain_not_allowed": "This deployment doesn't accept sign-ups from that email domain. Try another address, or ask the administrator to add yours to the allow-list.",
 		"register_password_disabled": "Password sign-up is disabled on this deployment. Leave the password blank to receive a sign-in link by email, or sign in with your identity provider.",
 		"register_disabled": "Sign-up is closed on this deployment. Ask an administrator for an invitation.",
+		"account_deactivated": "Your account has been deactivated. Please contact your administrator.",
 		"session_expired": "Your session expired. Please sign in again.",
 		"logged_out": "Successfully signed out.",
 		"sign_in": "Sign in",

@@ -143,6 +143,11 @@ pub fn status_for_kind(kind: ErrorKind) -> StatusCode {
         // decide whether to retry, and it is what a reverse proxy
         // keys off to avoid caching the failure.
         ErrorKind::TransientBackend => StatusCode::SERVICE_UNAVAILABLE,
+        // 403, not 401: the credentials were correct — the account
+        // is just no longer permitted. See `login()` for the
+        // ordering that makes this distinguishable only AFTER a
+        // successful credential check.
+        ErrorKind::AccountDeactivated => StatusCode::FORBIDDEN,
     }
 }
 
@@ -153,7 +158,10 @@ impl From<DomainError> for AppError {
         Self {
             status_code,
             message: err.message,
-            error_type: Cow::Borrowed(err.kind.as_str()),
+            // Machine-readable PascalCase for the SPA's error_type
+            // switch — see `ErrorKind::wire_name` for the stability
+            // contract and why this is distinct from `as_str`.
+            error_type: Cow::Borrowed(err.kind.wire_name()),
         }
     }
 }

@@ -223,6 +223,16 @@
 					'auth.password_login_disabled',
 					'Password login is disabled on this server. Leave the password blank to receive a sign-in link, or use SSO.'
 				);
+			} else if (err instanceof ApiError && err.errorType === 'AccountDeactivated') {
+				// Reached ONLY after the server validated the credential
+				// — a wrong-password attempt on a deactivated account
+				// still collapses to the generic "Invalid credentials"
+				// branch above. See `ensure_user_is_active` in the Rust
+				// service for the ordering rationale.
+				error = t(
+					'auth.account_deactivated',
+					'Your account has been deactivated. Please contact your administrator.'
+				);
 			} else {
 				error = err instanceof Error ? err.message : t('auth.login_error', 'Error logging in');
 			}

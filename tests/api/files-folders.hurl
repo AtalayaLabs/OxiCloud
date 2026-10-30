@@ -83,7 +83,7 @@ Content-Type: application/json
 
 HTTP 400
 [Asserts]
-jsonpath "$.error_type" == "Invalid Input"
+jsonpath "$.error_type" == "InvalidInput"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -308,7 +308,7 @@ Content-Type: application/json
 
 HTTP 400
 [Asserts]
-jsonpath "$.error_type" == "Invalid Input"
+jsonpath "$.error_type" == "InvalidInput"
 
 
 # ─────────────────────────────────────────────────────────────

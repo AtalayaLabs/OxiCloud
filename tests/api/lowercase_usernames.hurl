@@ -115,7 +115,7 @@ HTTP 409
 # There is NO fine-grained machine flag to assert here, and that is the
 # finding rather than an oversight in this test.
 #
-# `error_type` is only `ErrorKind::as_str()` — "Already Exists" — which
+# `error_type` is only `ErrorKind::wire_name()` — "AlreadyExists" — which
 # `update_profile` returns for BOTH 409s: username-immutable AND
 # username-taken-by-another-user. Asserting it would pass whichever
 # rejection fired, so it pins nothing. REST `AppError` has no
@@ -136,7 +136,7 @@ HTTP 409
 # Replace both with `jsonpath "$.error_code" == "username_immutable"`
 # once REST errors carry a code — see the note in
 # `docs/plan/username-lowercase.md`.
-jsonpath "$.error_type" == "Already Exists"
+jsonpath "$.error_type" == "AlreadyExists"
 jsonpath "$.message" contains "already claimed"
 
 

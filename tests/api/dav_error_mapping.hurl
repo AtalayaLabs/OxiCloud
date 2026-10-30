@@ -127,7 +127,7 @@ HTTP 400
 # (`EmailNotVerified`, `PasswordLoginDisabled`, …), auto-mapped
 # codes use Space Case. Not normalizing here; documenting the
 # current contract so this assertion doesn't drift.
-jsonpath "$.error_type" == "Invalid Input"
+jsonpath "$.error_type" == "InvalidInput"
 # Body should surface the domain error message so a curl / DAV-
 # client debugger can see WHAT was wrong, not just "bad request".
 jsonpath "$.message" contains "DTSTART"
