@@ -11502,6 +11502,38 @@
           }
         }
       },
+      "ApiErrorBody": {
+        "type": "object",
+        "description": "OpenAPI-visible owned mirror of [`ErrorResponse`] — same wire shape,\nno borrowed lifetime (utoipa's `ToSchema` needs an owned type).\nPublished in `components.schemas` so the generated SDK and third-party\nclients have a typed body to deserialize 4xx/5xx responses against\ninstead of treating them as untyped `unknown`. The SPA's hand-written\n`apiErrorFromSdkError` helper can lean on this shape once individual\n`#[utoipa::path]` response blocks reference it (a follow-up sweep —\nintroducing the schema here is the enabling step, not the full\nmigration).\n\n`error_type` is a free-form `String` by design (not a closed enum):\nthe server emits both `ErrorKind::wire_name()` values (e.g.\n`AccessDenied`, `NotFound`) and handler-specific PascalCase literals\n(e.g. `AccountDeactivated`, `PasswordLoginDisabled`, `EmailNotVerified`,\n`RegistrationDomainNotAllowed`). Enumerating every value in the\nschema would force a schema bump + client regeneration on every new\nerror branch; keeping it string + documenting known values preserves\nthe stable wire contract without that tax. Known values below should\nbe updated when new branches land but aren't load-bearing on the\nschema's validity.\n\nExamples seen on the wire (not exhaustive):\n  * `ErrorKind::wire_name()` values: `AccessDenied`, `NotFound`,\n    `InvalidInput`, `AlreadyExists`, `Conflict`, `QuotaExceeded`,\n    `InternalError`, `TransientBackend`, `Timeout`,\n    `PreconditionFailed`, `AccountDeactivated`.\n  * Handler-emitted literals: `PasswordLoginDisabled`,\n    `EmailNotVerified`, `RegistrationDisabled`,\n    `RegistrationDomainNotAllowed`, `OpaqueLoginRequired`,\n    `PasswordChangeRequired`, `PasswordUnchanged`, `AccountLocked`.",
+        "required": [
+          "status",
+          "message",
+          "error",
+          "error_type"
+        ],
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "Same string as `message`; preserved for legacy clients that key\non `error` instead of `message`.",
+            "example": "Account deactivated"
+          },
+          "error_type": {
+            "type": "string",
+            "description": "Machine-readable PascalCase discriminator the SPA switches on.\nSee the struct doc for the current enumeration of known values.",
+            "example": "AccountDeactivated"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable message. Duplicates `error` for backwards compat\nwith pre-AppError handlers that returned `{\"error\": \"…\"}`.",
+            "example": "Account deactivated"
+          },
+          "status": {
+            "type": "string",
+            "description": "Numeric HTTP status rendered as a string (e.g. `\"403\"`, `\"404\"`).",
+            "example": "403"
+          }
+        }
+      },
       "AppPasswordCreatedResponseDto": {
         "type": "object",
         "description": "Response when an app password is created — includes the plain-text password\nthat is shown ONCE to the user.",

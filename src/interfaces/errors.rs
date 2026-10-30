@@ -8,7 +8,8 @@ use std::borrow::Cow;
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::domain::errors::{DomainError, ErrorKind};
 
@@ -37,6 +38,55 @@ pub struct ErrorResponse<'a> {
     pub error: &'a str,
     pub message: &'a str,
     pub error_type: &'a str,
+}
+
+/// OpenAPI-visible owned mirror of [`ErrorResponse`] — same wire shape,
+/// no borrowed lifetime (utoipa's `ToSchema` needs an owned type).
+/// Published in `components.schemas` so the generated SDK and third-party
+/// clients have a typed body to deserialize 4xx/5xx responses against
+/// instead of treating them as untyped `unknown`. The SPA's hand-written
+/// `apiErrorFromSdkError` helper can lean on this shape once individual
+/// `#[utoipa::path]` response blocks reference it (a follow-up sweep —
+/// introducing the schema here is the enabling step, not the full
+/// migration).
+///
+/// `error_type` is a free-form `String` by design (not a closed enum):
+/// the server emits both `ErrorKind::wire_name()` values (e.g.
+/// `AccessDenied`, `NotFound`) and handler-specific PascalCase literals
+/// (e.g. `AccountDeactivated`, `PasswordLoginDisabled`, `EmailNotVerified`,
+/// `RegistrationDomainNotAllowed`). Enumerating every value in the
+/// schema would force a schema bump + client regeneration on every new
+/// error branch; keeping it string + documenting known values preserves
+/// the stable wire contract without that tax. Known values below should
+/// be updated when new branches land but aren't load-bearing on the
+/// schema's validity.
+///
+/// Examples seen on the wire (not exhaustive):
+///   * `ErrorKind::wire_name()` values: `AccessDenied`, `NotFound`,
+///     `InvalidInput`, `AlreadyExists`, `Conflict`, `QuotaExceeded`,
+///     `InternalError`, `TransientBackend`, `Timeout`,
+///     `PreconditionFailed`, `AccountDeactivated`.
+///   * Handler-emitted literals: `PasswordLoginDisabled`,
+///     `EmailNotVerified`, `RegistrationDisabled`,
+///     `RegistrationDomainNotAllowed`, `OpaqueLoginRequired`,
+///     `PasswordChangeRequired`, `PasswordUnchanged`, `AccountLocked`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ApiErrorBody {
+    /// Numeric HTTP status rendered as a string (e.g. `"403"`, `"404"`).
+    #[schema(example = "403")]
+    pub status: String,
+    /// Human-readable message. Duplicates `error` for backwards compat
+    /// with pre-AppError handlers that returned `{"error": "…"}`.
+    #[schema(example = "Account deactivated")]
+    pub message: String,
+    /// Same string as `message`; preserved for legacy clients that key
+    /// on `error` instead of `message`.
+    #[schema(example = "Account deactivated")]
+    pub error: String,
+    /// Machine-readable PascalCase discriminator the SPA switches on.
+    /// See the struct doc for the current enumeration of known values.
+    #[schema(example = "AccountDeactivated")]
+    pub error_type: String,
 }
 
 impl AppError {

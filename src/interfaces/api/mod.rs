@@ -375,6 +375,12 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
     ),
     components(
         schemas(
+            // Shared error body — every 4xx / 5xx response conforms to
+            // this shape. Registered so the generated SDK and third-
+            // party clients have a typed body to deserialize against
+            // instead of `unknown`. See `interfaces::errors::ApiErrorBody`
+            // for the known `error_type` values.
+            crate::interfaces::errors::ApiErrorBody,
             // Folder schemas
             FolderDto,
             FolderOrderBy,
