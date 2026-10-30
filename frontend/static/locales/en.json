@@ -37,6 +37,12 @@
 					"subject": "Sign in to OxiCloud",
 					"body": "Hello,\n\nUse the link below to sign in to OxiCloud. The link works once and expires in {{ttl_minutes}} minutes. Open it on the same device where you requested it.\n\n{{link}}\n\nIf you didn't request this sign-in link, you can safely ignore this message — no further action is needed.\n\n— OxiCloud"
 				},
+				"login_coaching": {
+					"oidc": {
+						"subject": "Sign in to OxiCloud via SSO",
+						"body": "Hello {{username}},\n\nSomeone tried to sign in to your OxiCloud account with a password, but your account is linked to Single Sign-On (SSO) and must be signed in through your identity provider — not a password.\n\nOpen OxiCloud and click \"Sign in with SSO\":\n{{login_url}}\n\nIf you didn't try to sign in, you can safely ignore this message. No sign-in happened and nothing in your account has changed.\n\n— OxiCloud"
+					}
+				},
 				"coaching": {
 					"oidc": {
 						"subject": "Sign in to OxiCloud via SSO",

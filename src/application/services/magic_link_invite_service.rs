@@ -920,6 +920,146 @@ impl MagicLinkInviteService {
         }
     }
 
+    /// Dispatch an SSO-coaching email when a `POST /api/auth/login`
+    /// attempt lands on an OIDC-federated account. We can't mint a
+    /// session primitive for an IdP-owned identity (the IdP owns the
+    /// contract — MFA, step-up, revocation), so the only remedy is to
+    /// point the user at the SSO button. Separate from
+    /// [`send_coaching_email`] so the body copy can frame the attempted
+    /// method ("Someone tried to sign in with a password…") rather than
+    /// framing it as a magic-link request.
+    ///
+    /// Fail-open posture: SMTP failures are logged + swallowed. The
+    /// uniform `Invalid credentials` response the caller sees is
+    /// unaffected, so timing / error-shape leak nothing about whether
+    /// the user exists. Only the real mailbox owner reads the coaching
+    /// email, so the method-correctness disclosure stays side-channel.
+    pub(crate) async fn send_login_sso_coaching_email(&self, user: &User) {
+        let locale = self.locale_for(user);
+        let base_url = self.public_base_url.trim_end_matches('/').to_string();
+        let display = user.display_full(false);
+        let args: Vec<(&str, &str)> = vec![("login_url", &base_url), ("username", &display)];
+        let subject = self
+            .i18n_or(
+                "server.magic_link.email.login_coaching.oidc.subject",
+                &locale,
+                &args,
+            )
+            .await;
+        let text_body = self
+            .render_bilingual(
+                "server.magic_link.email.login_coaching.oidc.body",
+                &locale,
+                &args,
+            )
+            .await;
+        let message = EmailMessage {
+            to: user.email().to_string(),
+            subject,
+            text_body,
+            html_body: None,
+        };
+        if let Err(e) = self.email_sender.send(message).await {
+            tracing::warn!(
+                target: "audit",
+                event = "auth.login_coaching_failed",
+                reason = "oidc_user",
+                user_id = %user.id(),
+                error = %e.message,
+                "🔐 login SSO coaching email SMTP send failed for '{}'",
+                user.display_for_audit(),
+            );
+        }
+    }
+
+    /// Mint + email a one-click magic-link to a passwordless user who
+    /// tried to sign in with a password. We already have the user
+    /// (`AuthApplicationService::login` just looked them up), and the
+    /// caller has decided they're eligible for this path (no password
+    /// hash on file AND not OIDC-federated), so this method skips the
+    /// re-lookup + eligibility gate that `send_login_link` performs.
+    /// The token is minted WITHOUT a request-challenge binding —
+    /// symmetric to `issue_invitation`, since the login POST never set
+    /// the cross-browser cookie — so the user can click it from any
+    /// device. The copy is the standard login-link email, not a
+    /// coaching one: there's a clickable link in the body and the
+    /// uniform "Invalid credentials" response the attacker sees is
+    /// unchanged.
+    ///
+    /// Rate-limiting: the login endpoint already enforces per-IP and
+    /// per-identifier login rate limits, so an attacker spamming
+    /// passwords for a passwordless user is throttled upstream before
+    /// reaching this path.
+    ///
+    /// Fail-open on SMTP: the token row is already written by the time
+    /// delivery fails, so a transient SMTP blip doesn't block the real
+    /// owner from retrying — their next login attempt mints a fresh
+    /// token and tries again. Audit log carries the delivery outcome.
+    pub(crate) async fn send_unbound_login_link(&self, user: &User) -> Result<(), DomainError> {
+        let token = MagicLinkToken::new(
+            user.id(),
+            chrono::Duration::minutes(self.magic_link_cfg.login_ttl_minutes as i64),
+            None,
+            None,
+        );
+        self.magic_link_repo.create(&token).await?;
+
+        let link = format!(
+            "{}/magic/v1/{}",
+            self.public_base_url.trim_end_matches('/'),
+            token.token(),
+        );
+        let locale = self.locale_for(user);
+        let ttl_minutes = self.magic_link_cfg.login_ttl_minutes.to_string();
+        let login_args: Vec<(&str, &str)> = vec![("link", &link), ("ttl_minutes", &ttl_minutes)];
+
+        let subject = self
+            .i18n_or(
+                "server.magic_link.email.login.subject",
+                &locale,
+                &login_args,
+            )
+            .await;
+        let text_body = self
+            .render_bilingual("server.magic_link.email.login.body", &locale, &login_args)
+            .await;
+
+        let message = EmailMessage {
+            to: user.email().to_string(),
+            subject,
+            text_body,
+            html_body: None,
+        };
+
+        match self.email_sender.send(message).await {
+            Ok(outcome) => {
+                tracing::info!(
+                    target: "audit",
+                    event = "auth.login_magic_link_sent",
+                    reason = "no_password_recovery",
+                    user_id = %user.id(),
+                    username = %user.display_for_audit(),
+                    smtp_code = outcome.code,
+                    smtp_message = %outcome.message,
+                    "🔗 unbound login link sent after password attempt on passwordless account '{}'",
+                    user.display_for_audit(),
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "audit",
+                    event = "auth.login_magic_link_failed",
+                    user_id = %user.id(),
+                    error = %e.message,
+                    "🔗 unbound login link SMTP send failed for '{}'",
+                    user.display_for_audit(),
+                );
+            }
+        }
+
+        Ok(())
+    }
+
     /// Resolve a translation, falling back to the literal key on any
     /// lookup error. Identical to the handler-side helper — kept inline
     /// here because the service layer can't pull in a UI util module

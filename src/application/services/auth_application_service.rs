@@ -24,6 +24,7 @@ use crate::infrastructure::services::password_hasher::Argon2PasswordHasher;
 use moka::sync::Cache;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::RwLock;
 use std::time::Duration;
 use uuid::Uuid;
@@ -713,6 +714,37 @@ pub struct AuthApplicationService {
     /// NULL`), legacy `POST /api/auth/login` is refused for that
     /// account. `None` = substrate off, no gate applies.
     opaque_repo: Option<Arc<dyn crate::application::ports::opaque_ports::OpaqueRepositoryPort>>,
+    /// Coaching-email dispatcher used by `login()` when it refuses a
+    /// password attempt on an account that cannot accept one — OIDC-
+    /// federated accounts and passwordless externals. The uniform
+    /// `Invalid credentials` response is unchanged; the dispatcher
+    /// sends a side-channel email to the real mailbox owner naming the
+    /// correct method. `None` = SMTP not wired, no coaching dispatched
+    /// (login still returns the uniform rejection).
+    ///
+    /// Wired post-construction in `common/di.rs` once both
+    /// `AuthApplicationService` and `MagicLinkInviteService` exist —
+    /// the DI factory builds `MagicLinkInviteService` AFTER wrapping
+    /// `AuthApplicationService` in `Arc`, so a consuming builder won't
+    /// work; a one-shot `OnceLock` is the minimum machinery for the
+    /// "set-at-DI, read-forever" semantic.
+    login_coaching_dispatcher: OnceLock<
+        Arc<crate::application::services::magic_link_invite_service::MagicLinkInviteService>,
+    >,
+    /// Shared per-email + per-IP magic-link send limiters, consulted
+    /// before `send_unbound_login_link` mints on the login-recovery
+    /// path so an attacker can't use `POST /api/auth/login` as an
+    /// alternate mint channel to exceed the quotas enforced on
+    /// `POST /api/auth/magic-link/send`. These Arcs are the SAME
+    /// instances the magic-link-send handler consults — a hit on
+    /// either endpoint burns one unit of the other's budget. `None`
+    /// = test build or SMTP off, in which case the recovery path
+    /// mints without the limiter (test harnesses need to exercise
+    /// the mint path without configuring rate budgets).
+    login_recovery_per_email_rate_limiter:
+        OnceLock<Arc<crate::interfaces::middleware::rate_limit::RateLimiter>>,
+    login_recovery_per_ip_rate_limiter:
+        OnceLock<Arc<crate::interfaces::middleware::rate_limit::RateLimiter>>,
 }
 
 /// TTL for [`AuthApplicationService::user_flags_cache`]. Upper bound on how
@@ -770,7 +802,40 @@ impl AuthApplicationService {
             auth_policies: Vec::new(),
             require_verified_email: false,
             opaque_repo: None,
+            login_coaching_dispatcher: OnceLock::new(),
+            login_recovery_per_email_rate_limiter: OnceLock::new(),
+            login_recovery_per_ip_rate_limiter: OnceLock::new(),
         }
+    }
+
+    /// Attach the coaching-email dispatcher used by `login()` when it
+    /// refuses a password attempt on an OIDC-federated or passwordless
+    /// account. Wired post-construction from `common/di.rs` on an
+    /// `Arc<AuthApplicationService>` once `MagicLinkInviteService`
+    /// exists — hence `&self` + `OnceLock` rather than a consuming
+    /// builder. Idempotent: a second call is a no-op (the OnceLock has
+    /// already stored its value).
+    pub fn set_login_coaching_dispatcher(
+        &self,
+        dispatcher: Arc<
+            crate::application::services::magic_link_invite_service::MagicLinkInviteService,
+        >,
+    ) {
+        let _ = self.login_coaching_dispatcher.set(dispatcher);
+    }
+
+    /// Share the magic-link-send per-email + per-IP limiters so the
+    /// login-recovery path consults the SAME budgets the explicit
+    /// `/api/auth/magic-link/send` handler does — closing the alternate
+    /// mint channel. Wired from `common/di.rs` on `Arc<Self>`, same
+    /// pattern as `set_login_coaching_dispatcher`.
+    pub fn set_login_recovery_rate_limiters(
+        &self,
+        per_email: Arc<crate::interfaces::middleware::rate_limit::RateLimiter>,
+        per_ip: Arc<crate::interfaces::middleware::rate_limit::RateLimiter>,
+    ) {
+        let _ = self.login_recovery_per_email_rate_limiter.set(per_email);
+        let _ = self.login_recovery_per_ip_rate_limiter.set(per_ip);
     }
 
     /// Populates the auth-method allowlist + policy vector +
@@ -1379,17 +1444,78 @@ impl AuthApplicationService {
         // Verify password using the injected hasher. If the user has no
         // password configured (externals, OIDC-only), short-circuit to
         // "invalid credentials" — the password-login path never accepts
-        // a NULL hash.
+        // a NULL hash. Before returning, dispatch a side-channel email
+        // to the real mailbox owner that matches the account's actual
+        // method:
+        //   * OIDC-federated → SSO coaching email (we can't mint a
+        //     session primitive for an IdP-owned identity).
+        //   * No federation, no password → a REAL one-click magic-link
+        //     login email. The user attempted to sign in, we know
+        //     their account signs in via mailbox link, so give them
+        //     the link they'd otherwise have to type into the login
+        //     page a second time. Symmetric to the magic-link-send
+        //     path's coaching: the uniform response the submitter sees
+        //     still leaks nothing, but the legitimate owner stops
+        //     wondering why their password "stopped working" and goes
+        //     straight through.
         let Some(hash) = user.password_hash() else {
+            let is_oidc = user.is_oidc_user();
+            let coaching_reason: &'static str = if is_oidc { "oidc_user" } else { "no_password" };
             tracing::info!(
                 target: "audit",
                 event = "auth.login_rejected",
                 reason = "no_password",
+                coaching_reason = coaching_reason,
                 user_id = %user.id(),
                 username = %user.display_for_audit(),
-                "🔐 login rejected: user has no password configured for '{}'",
+                "🔐 login rejected: user has no password configured for '{}' (recovery: {})",
                 user.display_for_audit(),
+                coaching_reason,
             );
+            if let Some(dispatcher) = self.login_coaching_dispatcher.get() {
+                if is_oidc {
+                    dispatcher.send_login_sso_coaching_email(&user).await;
+                } else {
+                    // Share the magic-link-send budgets so this login-
+                    // recovery mint channel can't be used to exceed the
+                    // quotas the dedicated send endpoint enforces. Both
+                    // caps are keyed and spent identically to the
+                    // explicit send path (per-email on `user.email()`,
+                    // per-IP on the request's client address). A hit on
+                    // either bucket skips the mint silently — the
+                    // uniform 401 the attacker sees is unchanged, so
+                    // nothing is leaked about the rate state.
+                    let email_ok = self
+                        .login_recovery_per_email_rate_limiter
+                        .get()
+                        .is_none_or(|rl| rl.check_and_increment(user.email()).is_ok());
+                    let ip_ok = self
+                        .login_recovery_per_ip_rate_limiter
+                        .get()
+                        .zip(client_ip.as_deref())
+                        .is_none_or(|(rl, ip)| rl.check_and_increment(ip).is_ok());
+                    if !email_ok || !ip_ok {
+                        tracing::warn!(
+                            target: "audit",
+                            event = "auth.login_magic_link_rate_limited",
+                            reason = if !email_ok { "rate_limited_email" } else { "rate_limited_ip" },
+                            user_id = %user.id(),
+                            username = %user.display_for_audit(),
+                            "🔗 unbound login link suppressed for '{}' (shared magic-link quota exhausted)",
+                            user.display_for_audit(),
+                        );
+                    } else if let Err(e) = dispatcher.send_unbound_login_link(&user).await {
+                        tracing::warn!(
+                            target: "audit",
+                            event = "auth.login_magic_link_failed",
+                            user_id = %user.id(),
+                            error = %e.to_string(),
+                            "🔗 unbound login link dispatch failed for '{}'",
+                            user.display_for_audit(),
+                        );
+                    }
+                }
+            }
             return Err(DomainError::new(
                 ErrorKind::AccessDenied,
                 "Auth",

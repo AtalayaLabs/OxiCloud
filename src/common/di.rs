@@ -2833,6 +2833,36 @@ impl AppServiceFactory {
                 ),
             ));
 
+            // Login-side coaching: when `AuthApplicationService::login`
+            // refuses a password attempt on an OIDC-federated or
+            // passwordless account, dispatch a side-channel coaching
+            // email (OIDC) or a real one-click magic-link email
+            // (passwordless) naming the correct method. Wired here
+            // because the invite service was just constructed and
+            // auth_service was already built in the earlier
+            // auth-branch — the OnceLocks on
+            // `AuthApplicationService` are the one-shot setters.
+            //
+            // Also share the magic-link-send per-email + per-IP
+            // limiters so the login-recovery mint path cannot be used
+            // to exceed the quotas the explicit `/api/auth/magic-link/
+            // send` handler enforces — a hit on either endpoint burns
+            // one unit of the other's budget.
+            if let (Some(invite_svc), Some(auth_svc)) = (
+                app_state.magic_link_invite_service.clone(),
+                app_state.auth_service.as_ref(),
+            ) {
+                auth_svc
+                    .auth_application_service
+                    .set_login_coaching_dispatcher(invite_svc);
+                auth_svc
+                    .auth_application_service
+                    .set_login_recovery_rate_limiters(
+                        app_state.magic_link_send_per_email_rate_limiter.clone(),
+                        app_state.magic_link_send_per_ip_rate_limiter.clone(),
+                    );
+            }
+
             // PR N1: wire the unified RecipientNotificationService.
             // Only constructed when MagicLinkInviteService is also
             // available — the magic-link path delegates to it.
