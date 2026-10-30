@@ -165,7 +165,7 @@ where
             .map(|f| FailedOperation {
                 id: f.id,
                 error: f.message,
-                error_type: f.kind.as_str().to_string(),
+                error_type: f.kind.wire_name().to_string(),
             })
             .collect();
 
@@ -367,7 +367,7 @@ pub async fn delete_files_batch(
             .map(|f| FailedOperation {
                 id: f.id,
                 error: f.message,
-                error_type: f.kind.as_str().to_string(),
+                error_type: f.kind.wire_name().to_string(),
             })
             .collect(),
         stats: result.stats.into(),
@@ -442,7 +442,7 @@ pub async fn delete_folders_batch(
             .map(|f| FailedOperation {
                 id: f.id,
                 error: f.message,
-                error_type: f.kind.as_str().to_string(),
+                error_type: f.kind.wire_name().to_string(),
             })
             .collect(),
         stats: result.stats.into(),
@@ -752,7 +752,7 @@ pub async fn trash_batch(
                 all_failed.extend(result.failed.into_iter().map(|f| FailedOperation {
                     id: f.id,
                     error: f.message,
-                    error_type: f.kind.as_str().to_string(),
+                    error_type: f.kind.wire_name().to_string(),
                 }));
             }
             Err(e) => {
@@ -779,7 +779,7 @@ pub async fn trash_batch(
                 all_failed.extend(result.failed.into_iter().map(|f| FailedOperation {
                     id: f.id,
                     error: f.message,
-                    error_type: f.kind.as_str().to_string(),
+                    error_type: f.kind.wire_name().to_string(),
                 }));
             }
             Err(e) => {
