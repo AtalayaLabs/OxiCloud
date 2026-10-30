@@ -301,8 +301,33 @@
 			);
 			mode = 'login';
 		} catch (err) {
-			regError =
-				err instanceof Error ? err.message : t('auth.register_error', 'Registration failed');
+			// Branch on the server's `error_type` discriminator so each
+			// refusal gets its own user-readable string (translatable).
+			// Falls through to the server-provided message or the generic
+			// "Registration failed" when the reason is unknown — the
+			// anti-enumeration path (email/username collision) deliberately
+			// doesn't surface a distinguishable code, so there's nothing
+			// to branch on and the generic string is correct.
+			if (err instanceof ApiError && err.errorType === 'RegistrationDomainNotAllowed') {
+				regError = t(
+					'auth.register_domain_not_allowed',
+					"This deployment doesn't accept sign-ups from that email domain. Try another address, or ask the administrator to add yours to the allow-list."
+				);
+			} else if (err instanceof ApiError && err.errorType === 'PasswordRegistrationDisabled') {
+				regError = t(
+					'auth.register_password_disabled',
+					'Password sign-up is disabled on this deployment. Leave the password blank to receive a sign-in link by email, or sign in with your identity provider.'
+				);
+			} else if (err instanceof ApiError && err.errorType === 'RegistrationDisabled') {
+				regError = t(
+					'auth.register_disabled',
+					'Sign-up is closed on this deployment. Ask an administrator for an invitation.'
+				);
+			} else if (err instanceof Error && err.message) {
+				regError = err.message;
+			} else {
+				regError = t('auth.register_error', 'Registration failed');
+			}
 		} finally {
 			busy = false;
 		}

@@ -38,19 +38,50 @@ const authLog = log.getLogger('oxi:auth');
  * shape on non-2xx.
  */
 function apiErrorFromSdkError(e: unknown, path: string): ApiError {
-	const err = e as { response?: Response; data?: unknown };
-	const status = err.response?.status ?? 0;
-	const statusText = err.response?.statusText ?? '';
-	const body = (err.data ?? {}) as {
+	// Hey API throws two different shapes depending on the SDK call's
+	// `responseStyle`:
+	//   * `responseStyle: 'fields'` → throws a `{response, data}`
+	//     envelope: `data` is the parsed body, `response` is the raw
+	//     Response. `fetchMe` + `tryRefresh` opt into this because they
+	//     need the Response to read status without parsing the body.
+	//   * default (`responseStyle: 'data'`, every other call) → throws
+	//     the parsed body DIRECTLY. No wrapper, no Response object.
+	//     Register, login, upgrade, etc. all land here.
+	//
+	// This helper accepts BOTH shapes so every caller can use it
+	// without having to flip `responseStyle` just to get the error
+	// extraction right. A regression that only works for one shape
+	// (which is what shipped on 9ce1418b: register showed
+	// "API 0 for /api/auth/register" instead of the server message)
+	// is what the branch here guards against.
+	const envelope = e as { response?: Response; data?: unknown };
+	const bodyFromEnvelope = envelope.response !== undefined ? envelope.data : undefined;
+	// When the throw IS the body, read fields off `e` directly.
+	// When it's the envelope, `.data` is the body.
+	const body = (bodyFromEnvelope ?? e ?? {}) as {
 		error_type?: unknown;
 		message?: unknown;
 		error?: unknown;
+		status?: unknown;
 	};
+	const status = envelope.response?.status ?? parseStatusFromBody(body.status) ?? 0;
+	const statusText = envelope.response?.statusText ?? '';
 	const errorType = typeof body.error_type === 'string' ? body.error_type : undefined;
 	const message =
 		(typeof body.message === 'string' ? body.message : undefined) ??
 		(typeof body.error === 'string' ? body.error : undefined);
 	return new ApiError(status, statusText, path, errorType, message);
+}
+
+/** Extract the numeric prefix from the server's `status` string
+ *  ("403 Forbidden" → 403). Backend's ErrorResponse carries this
+ *  verbatim, so when the SDK throws the body alone (no Response
+ *  object), we still get an accurate HTTP status for the ApiError.
+ *  Returns `undefined` on anything unparseable. */
+function parseStatusFromBody(raw: unknown): number | undefined {
+	if (typeof raw !== 'string') return undefined;
+	const n = parseInt(raw, 10);
+	return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
 /** Probe the session without refreshing or redirecting on an ordinary 401. */
@@ -394,13 +425,14 @@ export async function register(email: string, password?: string, username?: stri
 	try {
 		await sdkRegister({ body: body as never, throwOnError: true });
 	} catch (e) {
-		const err = e as { response?: { status?: number }; data?: unknown };
-		const errBody = (err.data ?? {}) as { error?: unknown; message?: unknown };
-		const msg =
-			(typeof errBody.message === 'string' && errBody.message) ||
-			(typeof errBody.error === 'string' && errBody.error) ||
-			`register failed: ${err.response?.status ?? 'unknown'}`;
-		throw new Error(msg, { cause: e });
+		// Reshape to `ApiError` (status + errorType + server message) so
+		// the login page can branch on `error_type` for specific-UX
+		// rejections (e.g. `RegistrationDomainNotAllowed` → "that
+		// domain isn't open to sign-up here") instead of showing the
+		// bare server message or the fallback "unknown". Mirror of
+		// what the login + upgrade paths already do via
+		// `apiErrorFromSdkError`.
+		throw apiErrorFromSdkError(e, '/api/auth/register');
 	}
 }
 
