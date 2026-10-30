@@ -76,7 +76,7 @@ POST {{base_url}}/api/auth/login
 Content-Type: application/json
 { "username": "oidc@example.com", "password": "AnyWrongPassword1!" }
 
-HTTP 401
+HTTP 403
 
 
 GET {{base_url}}/api/admin/smtp/test/captured?to=oidc@example.com
@@ -135,7 +135,7 @@ POST {{base_url}}/api/auth/login
 Content-Type: application/json
 { "username": "pwless-login-recovery@oxicloud.local", "password": "AnyWrongPassword1!" }
 
-HTTP 401
+HTTP 403
 
 
 GET {{base_url}}/api/admin/smtp/test/captured?to=pwless-login-recovery@oxicloud.local
