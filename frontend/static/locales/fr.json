@@ -28,7 +28,27 @@
         },
         "kind_file": "fichier",
         "kind_folder": "dossier",
-        "english_fallback_divider": "--- Version anglaise ci-dessous ---"
+        "english_fallback_divider": "--- Version anglaise ci-dessous ---",
+        "login_coaching": {
+          "oidc": {
+            "subject": "Connexion à OxiCloud via SSO",
+            "body": "Bonjour {{username}},\n\nQuelqu'un a essayé de se connecter à votre compte OxiCloud avec un mot de passe, mais votre compte est lié à l'authentification unique (SSO) et doit être connecté via votre fournisseur d'identité — pas avec un mot de passe.\n\nOuvrez OxiCloud et cliquez sur « Se connecter avec SSO » :\n{{login_url}}\n\nSi vous n'avez pas essayé de vous connecter, vous pouvez ignorer ce message. Aucune connexion n'a eu lieu et rien n'a changé dans votre compte.\n\n— OxiCloud"
+          }
+        },
+        "coaching": {
+          "oidc": {
+            "subject": "Connexion à OxiCloud via SSO",
+            "body": "Bonjour {{username}},\n\nQuelqu'un a demandé un lien de connexion pour votre compte OxiCloud, mais votre compte est lié à l'authentification unique (SSO) et doit être connecté via votre fournisseur d'identité — pas par un lien envoyé par e-mail.\n\nOuvrez OxiCloud et cliquez sur « Se connecter avec SSO » :\n{{login_url}}\n\nSi vous n'avez pas fait cette demande, vous pouvez ignorer ce message. Aucune connexion n'a eu lieu et rien n'a changé dans votre compte.\n\n— OxiCloud"
+          },
+          "password": {
+            "subject": "Utilisez votre mot de passe pour vous connecter à OxiCloud",
+            "body": "Bonjour {{username}},\n\nQuelqu'un a demandé un lien de connexion pour votre compte OxiCloud, mais votre compte a un mot de passe défini et ce déploiement n'autorise pas la connexion par lien e-mail lorsqu'un mot de passe existe. Veuillez vous connecter avec votre mot de passe à la place.\n\nOuvrez OxiCloud :\n{{login_url}}\n\nSi vous ne vous souvenez pas de votre mot de passe, utilisez le lien « Mot de passe oublié ? » sur la page de connexion.\n\nSi vous n'avez pas fait cette demande, vous pouvez ignorer ce message. Aucune connexion n'a eu lieu et rien n'a changé dans votre compte.\n\n— OxiCloud"
+          },
+          "generic": {
+            "subject": "Lien de connexion OxiCloud non envoyé",
+            "body": "Bonjour {{username}},\n\nQuelqu'un a demandé un lien de connexion pour votre compte OxiCloud, mais il n'a pas pu être envoyé. Veuillez ouvrir OxiCloud et vous connecter avec la méthode configurée pour votre compte.\n\n{{login_url}}\n\nSi vous n'avez pas fait cette demande, vous pouvez ignorer ce message.\n\n— OxiCloud"
+          }
+        }
       }
     },
     "notification": {
@@ -739,7 +759,11 @@
     "signing_in": "Connexion…",
     "sending": "Envoi…",
     "toggle_password": "Afficher le mot de passe",
-    "logged_out": "Vous êtes déconnecté."
+    "logged_out": "Vous êtes déconnecté.",
+    "register_domain_not_allowed": "Ce déploiement n'accepte pas les inscriptions depuis ce domaine. Essayez une autre adresse ou demandez à l'administrateur d'ajouter le vôtre à la liste autorisée.",
+    "register_password_disabled": "L'inscription avec mot de passe est désactivée sur ce déploiement. Laissez le mot de passe vide pour recevoir un lien de connexion par e-mail, ou connectez-vous via votre fournisseur d'identité.",
+    "register_disabled": "Les inscriptions sont fermées sur ce déploiement. Demandez une invitation à un administrateur.",
+    "account_deactivated": "Votre compte a été désactivé. Veuillez contacter votre administrateur."
   },
   "storage": {
     "title": "Stockage",

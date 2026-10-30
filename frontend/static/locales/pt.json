@@ -28,7 +28,27 @@
         },
         "kind_file": "ficheiro",
         "kind_folder": "pasta",
-        "english_fallback_divider": "--- Versão em inglês abaixo ---"
+        "english_fallback_divider": "--- Versão em inglês abaixo ---",
+        "login_coaching": {
+          "oidc": {
+            "subject": "Entrar no OxiCloud via SSO",
+            "body": "Olá {{username}},\n\nAlguém tentou entrar na sua conta OxiCloud com uma senha, mas sua conta está vinculada ao login único (SSO) e deve ser autenticada através do seu provedor de identidade — não com uma senha.\n\nAbra o OxiCloud e clique em «Entrar com SSO»:\n{{login_url}}\n\nSe você não tentou entrar, pode ignorar esta mensagem. Nenhum login foi realizado e nada mudou em sua conta.\n\n— OxiCloud"
+          }
+        },
+        "coaching": {
+          "oidc": {
+            "subject": "Entrar no OxiCloud via SSO",
+            "body": "Olá {{username}},\n\nAlguém solicitou um link de login para sua conta OxiCloud, mas sua conta está vinculada ao login único (SSO) e deve ser autenticada através do seu provedor de identidade — não por um link por e-mail.\n\nAbra o OxiCloud e clique em «Entrar com SSO»:\n{{login_url}}\n\nSe você não solicitou isto, pode ignorar esta mensagem. Nenhum login foi realizado e nada mudou em sua conta.\n\n— OxiCloud"
+          },
+          "password": {
+            "subject": "Use sua senha para entrar no OxiCloud",
+            "body": "Olá {{username}},\n\nAlguém solicitou um link de login para sua conta OxiCloud, mas sua conta tem uma senha configurada e esta implantação não permite login por link de e-mail quando existe uma senha. Entre com sua senha.\n\nAbra o OxiCloud:\n{{login_url}}\n\nSe você não lembra sua senha, use o link «Esqueceu a senha?» na página de login.\n\nSe você não solicitou isto, pode ignorar esta mensagem. Nenhum login foi realizado e nada mudou em sua conta.\n\n— OxiCloud"
+          },
+          "generic": {
+            "subject": "Link de login OxiCloud não enviado",
+            "body": "Olá {{username}},\n\nAlguém solicitou um link de login para sua conta OxiCloud, mas ele não pôde ser entregue. Abra o OxiCloud e faça login com o método configurado para sua conta.\n\n{{login_url}}\n\nSe você não solicitou isto, pode ignorar esta mensagem.\n\n— OxiCloud"
+          }
+        }
       }
     },
     "notification": {
@@ -739,7 +759,11 @@
     "login_error_email_ambiguous": "Várias contas locais correspondem a este endereço de e-mail. Entre em contato com seu administrador para resolver.",
     "logged_out": "Sessão terminada com sucesso.",
     "login_error_email_not_verified_at_idp": "Seu provedor de identidade informa que seu endereço de e-mail não está verificado. Confirme seu e-mail em seu provedor de identidade e tente entrar novamente.",
-    "login_error_email_verification_required": "Este servidor requer um endereço de e-mail verificado. Seu provedor de identidade não incluiu uma declaração de verificação de e-mail. Contate seu administrador."
+    "login_error_email_verification_required": "Este servidor requer um endereço de e-mail verificado. Seu provedor de identidade não incluiu uma declaração de verificação de e-mail. Contate seu administrador.",
+    "register_domain_not_allowed": "Esta implantação não aceita inscrições desse domínio de e-mail. Tente outro endereço ou peça ao administrador para adicionar o seu à lista permitida.",
+    "register_password_disabled": "A inscrição com senha está desativada nesta implantação. Deixe a senha em branco para receber um link de login por e-mail, ou faça login com seu provedor de identidade.",
+    "register_disabled": "As inscrições estão fechadas nesta implantação. Peça um convite a um administrador.",
+    "account_deactivated": "Sua conta foi desativada. Por favor, entre em contato com seu administrador."
   },
   "storage": {
     "title": "Armazenamento",
