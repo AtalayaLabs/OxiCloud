@@ -14,11 +14,14 @@
 # — Step 3's SMTP capture would fail with an empty inbox.
 #
 # What is NOT exercised here:
-#   * OIDC-master rule: covered separately in tests/oidc/oidc.hurl
-#     step 2b (magic-link SEND refused when OIDC is enabled).
-#   * `has_password` rejection under the strict default: can't be
-#     exercised in the same run — the env is global. Rust unit test
-#     on `magic_link_eligibility()` covers it directly.
+#   * Strict `has_password` + strict `oidc_user` coaching paths:
+#     covered end-to-end on an OIDC-enabled deployment in
+#     `tests/oidc/magic_link_coaching.hurl` (same mock-SMTP
+#     capture pattern). The lenient-policy complement (both
+#     `permit_magic_link_for_{password,oidc}_users` set) is pinned
+#     by the Rust unit tests on `magic_link_eligibility()` — a
+#     dedicated Hurl env for the lenient permutation isn't
+#     shipped yet because the server config is static per run.
 # =============================================================
 
 

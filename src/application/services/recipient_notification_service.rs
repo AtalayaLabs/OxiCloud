@@ -334,42 +334,39 @@ impl RecipientNotificationService {
         }
 
         // 2. Choose the dispatch arm.
-        let kind =
-            match magic_link_eligibility(recipient, self.magic_link_cfg.open_to_password_users) {
-                Eligibility::Allow => NotifyKind::MagicLink,
-                Eligibility::Reject(_) => {
-                    // Plain-notification arm. Check the two gates.
-                    if !self.magic_link_cfg.notify_internal_users_on_share {
-                        self.audit_skipped(
-                            granter,
-                            recipient,
-                            resource,
-                            trigger,
-                            "operator_disabled",
-                        );
-                        return NotifyOutcome::NotApplicable {
-                            reason: "operator_disabled",
-                        };
-                    }
-                    if !recipient.notify_on_share() {
-                        self.audit_skipped(
-                            granter,
-                            recipient,
-                            resource,
-                            trigger,
-                            "recipient_opted_out",
-                        );
-                        return NotifyOutcome::NotApplicable {
-                            reason: "recipient_opted_out",
-                        };
-                    }
-                    if recipient.email().is_empty() {
-                        self.audit_skipped(granter, recipient, resource, trigger, "no_email");
-                        return NotifyOutcome::NotApplicable { reason: "no_email" };
-                    }
-                    NotifyKind::PlainNotification
+        let kind = match magic_link_eligibility(
+            recipient,
+            self.magic_link_cfg.open_to_password_users,
+            self.magic_link_cfg.open_to_oidc_users,
+        ) {
+            Eligibility::Allow => NotifyKind::MagicLink,
+            Eligibility::Reject(_) => {
+                // Plain-notification arm. Check the two gates.
+                if !self.magic_link_cfg.notify_internal_users_on_share {
+                    self.audit_skipped(granter, recipient, resource, trigger, "operator_disabled");
+                    return NotifyOutcome::NotApplicable {
+                        reason: "operator_disabled",
+                    };
                 }
-            };
+                if !recipient.notify_on_share() {
+                    self.audit_skipped(
+                        granter,
+                        recipient,
+                        resource,
+                        trigger,
+                        "recipient_opted_out",
+                    );
+                    return NotifyOutcome::NotApplicable {
+                        reason: "recipient_opted_out",
+                    };
+                }
+                if recipient.email().is_empty() {
+                    self.audit_skipped(granter, recipient, resource, trigger, "no_email");
+                    return NotifyOutcome::NotApplicable { reason: "no_email" };
+                }
+                NotifyKind::PlainNotification
+            }
+        };
 
         // 3. Coalesce check — only meaningful when we'd actually send.
         // Per-pair: `(granter_id, recipient_email)`.

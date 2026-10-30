@@ -1507,9 +1507,17 @@ pub struct AuthConfig {
     /// misconfiguration that silently locks users out.
     ///
     /// Env: `OXICLOUD_AUTH_METHODS` (comma-separated:
-    /// `password,magic_link`). Alias: the older
+    /// `password,magic_link,oidc`). Alias: the older
     /// `OXICLOUD_OIDC_DISABLE_PASSWORD_LOGIN=true` still removes
     /// Password from this list when set (backwards-compat).
+    ///
+    /// When the env var is unset entirely, `AppConfig::from_env`
+    /// auto-populates the list to reflect what the deployment can
+    /// actually serve (`password` always, plus `magic_link` iff SMTP
+    /// is wired, plus `oidc` iff `OXICLOUD_OIDC_ENABLED=true`). The
+    /// list is therefore NEVER empty at runtime — downstream code
+    /// treats pure `contains(…)` membership as authoritative, with
+    /// no `is_empty() → permissive` escape hatch anywhere.
     pub allowed_auth_methods: Vec<AuthMethod>,
     /// Minimum length (in UTF-8 bytes) enforced by every password-
     /// bearing endpoint: `POST /api/setup`, `POST /api/auth/register`,
@@ -1626,31 +1634,6 @@ impl AuthMethod {
     }
 }
 
-/// Pure boolean decision for the boot-time "magic-link login is
-/// muted by OIDC-master" warning. Extracted so the 2×2 truth table
-/// can be pinned with a trivial unit test — no env-var mocking.
-///
-/// Inputs:
-///   * `allowed_methods` — the FINAL resolved allowlist (post-env
-///     parsing). Catches both explicit `AUTH_METHODS=…,magic_link,…`
-///     and the implicit default `[Password, MagicLink]` deployed on
-///     top of OIDC.
-///   * `oidc_env_enabled` — the parsed `OXICLOUD_OIDC_ENABLED` env
-///     var. Does NOT cover admin-panel-only OIDC enablement — see
-///     the call site's doc for the known gap.
-///
-/// Returns `true` iff the operator has configured a deployment where
-/// `magic_link` is in the allowlist AND OIDC is on at the env level,
-/// meaning `is_magic_link_login_allowed()` will return `false` at
-/// runtime via the OIDC-master rule — a mute the operator deserves
-/// to see called out at boot.
-pub(crate) fn should_warn_magic_link_muted_by_oidc(
-    allowed_methods: &[AuthMethod],
-    oidc_env_enabled: bool,
-) -> bool {
-    oidc_env_enabled && allowed_methods.contains(&AuthMethod::MagicLink)
-}
-
 /// Additive auth-policy switches. Exposed as `AuthConfig::auth_policies`
 /// and parsed from `OXICLOUD_AUTH_POLICIES` (comma-separated). Each
 /// variant's name states its own polarity — `Permit...` grants an
@@ -1667,6 +1650,18 @@ pub enum AuthPolicy {
     /// Deprecated legacy alias: `OXICLOUD_MAGIC_LINK_OPEN_TO_PASSWORD_USERS=true`
     /// adds this variant to the vector with a startup warning.
     PermitMagicLinkForPasswordUsers,
+
+    /// Allow magic-link login for OIDC-federated accounts. Off by
+    /// default — the IdP is otherwise the sole security boundary for
+    /// those users, and mailbox possession would silently bypass any
+    /// MFA / step-up the IdP enforces. Operators enable this only
+    /// when they treat mailbox as trust-equivalent to the IdP (e.g.
+    /// the IdP also uses mailbox-only auth, so bypass is moot).
+    ///
+    /// Symmetric sibling of `PermitMagicLinkForPasswordUsers` —
+    /// deployments can set either, both, or neither. See
+    /// `magic_link_eligibility()` for the resulting matrix.
+    PermitMagicLinkForOidcUsers,
 
     /// When OIDC is the ONLY auth method available (standalone SSO
     /// posture — no password + no magic-link), instruct the login SPA
@@ -1695,6 +1690,9 @@ impl AuthPolicy {
         match s.trim().to_ascii_lowercase().as_str() {
             "permit_magic_link_for_password_users" | "permit-magic-link-for-password-users" => {
                 Some(Self::PermitMagicLinkForPasswordUsers)
+            }
+            "permit_magic_link_for_oidc_users" | "permit-magic-link-for-oidc-users" => {
+                Some(Self::PermitMagicLinkForOidcUsers)
             }
             "auto_redirect_if_standalone_oidc" | "auto-redirect-if-standalone-oidc" => {
                 Some(Self::AutoRedirectIfStandaloneOidc)
@@ -1793,7 +1791,14 @@ impl Default for AuthConfig {
             rate_limit: RateLimitConfig::default(),
             registration_allowed_email_domains: Vec::new(),
             auth_policies: Vec::new(),
-            allowed_auth_methods: vec![AuthMethod::Password, AuthMethod::MagicLink],
+            // Empty = sentinel for "operator didn't set AUTH_METHODS";
+            // `AppConfig::from_env` auto-populates this from the
+            // resolved wiring (always password, plus magic_link if SMTP
+            // is wired, plus oidc if OIDC is enabled) BEFORE returning
+            // the config, so `is_*_login_allowed()` + /api/config read a
+            // complete list without needing an "empty = permissive"
+            // escape hatch anywhere downstream.
+            allowed_auth_methods: vec![],
             require_verified_email: false,
             min_password_length: 8,
             dpop_mode: DpopMode::Off,
@@ -1806,7 +1811,12 @@ impl AuthConfig {
     /// "all methods allowed", matching pre-`OXICLOUD_AUTH_METHODS`
     /// behaviour when the operator hasn't opted in yet).
     pub fn is_method_allowed(&self, method: AuthMethod) -> bool {
-        self.allowed_auth_methods.is_empty() || self.allowed_auth_methods.contains(&method)
+        // No `is_empty()` escape hatch — `AppConfig::from_env`
+        // auto-populates the list when the operator didn't set
+        // AUTH_METHODS, so an empty vec here would indicate a
+        // programming bug rather than "all allowed". Pure membership
+        // keeps the policy auditable.
+        self.allowed_auth_methods.contains(&method)
     }
 
     /// True iff `policy` has been opted into via `OXICLOUD_AUTH_POLICIES`
@@ -2313,11 +2323,33 @@ pub struct MagicLinkConfig {
     ///   (Slack, Notion, etc.) — operators who treat email as the
     ///   canonical recovery channel anyway pick this.
     ///
-    /// OIDC-linked users are **always** rejected from magic-link
-    /// regardless of this flag — the IdP is the security boundary and
-    /// may enforce MFA we shouldn't bypass. See
-    /// `magic_link_eligibility()` for the precedence ladder.
+    /// OIDC-linked users are gated SEPARATELY by
+    /// `open_to_oidc_users` below — same operator-opt-in shape so the
+    /// matrix stays symmetric. See `magic_link_eligibility()` for the
+    /// precedence ladder.
     pub open_to_password_users: bool,
+
+    /// Operator-level permission for OIDC-federated users to also log
+    /// in via a magic link.
+    ///
+    /// Defaults to **false** (strict): a user whose account is linked
+    /// to an OIDC identity cannot receive a magic-link token — any
+    /// `POST /api/auth/magic-link/send` for that user is suppressed
+    /// and (feat/registration onwards) replaced with a coaching email
+    /// telling them to sign in via SSO. Rationale: the IdP may
+    /// enforce MFA / step-up policies that mailbox possession would
+    /// silently bypass.
+    ///
+    /// `true` (lenient): OIDC users can also request a magic link.
+    /// Operators pick this when they treat the mailbox as a
+    /// trust-equivalent factor to the IdP (e.g. the IdP ALSO uses
+    /// mailbox-only auth, so bypass is moot).
+    ///
+    /// Sourced from `OXICLOUD_AUTH_POLICIES=permit_magic_link_for_oidc_users`
+    /// — the symmetric sibling of `permit_magic_link_for_password_users`.
+    /// Both policies are independent: deployments can grant either,
+    /// both, or neither.
+    pub open_to_oidc_users: bool,
     /// Operator-level kill switch for plain-notification emails to
     /// internal users (PR N1). When `true` (default), users who can't
     /// receive a magic link (password users, OIDC users) get a "Hey,
@@ -2345,6 +2377,7 @@ impl Default for MagicLinkConfig {
             send_per_email_per_hour: 5,
             send_per_ip_per_hour: 200,
             open_to_password_users: false,
+            open_to_oidc_users: false,
             notify_internal_users_on_share: true,
         }
     }
@@ -4047,54 +4080,17 @@ impl AppConfig {
             config.auth.allowed_auth_methods = methods;
         }
 
-        // Cross-validation C: `magic_link` is in the effective allowlist
-        // AND `OXICLOUD_OIDC_ENABLED=true` → magic-link LOGIN is muted by
-        // the OIDC-master rule in `is_magic_link_login_allowed()` (the
-        // IdP is the security boundary; magic-link would sidestep any
-        // 2FA / step-up the IdP enforces). The operator either wrote
-        // `magic_link` into `AUTH_METHODS` and is unaware OIDC overrides
-        // them, or they left `AUTH_METHODS` unset and the default
-        // allowlist (`[Password, MagicLink]`) carries it in by implication.
-        // In either case the muted method is invisible to the operator
-        // until a user notices magic-link login doesn't work — surface
-        // it at boot instead.
-        //
-        // Scope: env var only. If OIDC is enabled later via admin panel
-        // (`state.config = Some(...)` after boot), this check doesn't
-        // observe it — a sibling runtime warning near the DI factory's
-        // `with_oidc(…)` call would be the right place to catch that
-        // case. Documented gap; worth a follow-up if operators configure
-        // OIDC exclusively via admin panel.
-        //
-        // The admin-mediated invite path (resource-scoped magic-link
-        // tokens, `resource_kind().is_some()` at redemption time) is
-        // intentionally NOT muted by this rule — see
-        // `auth_application_service.rs::redeem_magic_link` and
-        // `docs/config/authentication.md § 'OIDC master rule'`.
-        {
-            let oidc_env_enabled = env::var("OXICLOUD_OIDC_ENABLED")
-                .ok()
-                .and_then(|s| s.parse::<bool>().ok())
-                .unwrap_or(false);
-            if should_warn_magic_link_muted_by_oidc(
-                &config.auth.allowed_auth_methods,
-                oidc_env_enabled,
-            ) {
-                tracing::warn!(
-                    target: "oxicloud::config",
-                    reason = "oidc_master_mutes_magic_link",
-                    "OXICLOUD_AUTH_METHODS effective allowlist contains 'magic_link' \
-                     but OXICLOUD_OIDC_ENABLED=true — magic-link LOGIN is muted by \
-                     the OIDC-master rule (the IdP is the security boundary; \
-                     magic-link would bypass any 2FA / step-up it enforces). \
-                     The admin-mediated invite path still works. To resolve the \
-                     inconsistency: drop 'magic_link' from OXICLOUD_AUTH_METHODS \
-                     (e.g. set OXICLOUD_AUTH_METHODS=password,oidc), or set \
-                     OXICLOUD_OIDC_ENABLED=false if magic-link login was the \
-                     intent. See docs/config/authentication.md § 'OIDC master rule'."
-                );
-            }
-        }
+        // Cross-validation C (retired on feat/registration): the
+        // former OIDC-master-mutes-magic-link startup warning was
+        // dropped alongside the deployment-wide rule that produced
+        // it. OIDC + magic-link is now a first-class combination;
+        // the MFA-bypass concern it defended against is handled
+        // per-user by `magic_link_eligibility()` (OIDC-federated
+        // accounts refuse magic-link + receive a coaching email
+        // unless the operator opts in via
+        // `OXICLOUD_AUTH_POLICIES=permit_magic_link_for_oidc_users`).
+        // See docs/config/authentication.md § 'Per-user eligibility'
+        // for the full matrix.
 
         // Legacy alias: OXICLOUD_OIDC_DISABLE_PASSWORD_LOGIN=true still
         // removes Password from the allowlist. Its main handling in the
@@ -4192,22 +4188,31 @@ impl AppConfig {
                     None if !token.trim().is_empty() => {
                         eprintln!(
                             "⚠️  OXICLOUD_AUTH_POLICIES: ignoring unknown token '{}' \
-                             (known: permit_magic_link_for_password_users)",
+                             (known: permit_magic_link_for_password_users, \
+                             permit_magic_link_for_oidc_users, \
+                             auto_redirect_if_standalone_oidc)",
                             token.trim()
                         );
                     }
                     None => {}
                 }
             }
-            // Reflect the vector into the legacy magic_link config field
-            // so `magic_link_eligibility()` (the site that reads the
-            // boolean today) doesn't need to know about the new form.
+            // Reflect the vector into the magic_link config booleans
+            // so `magic_link_eligibility()` reads two scalars instead of
+            // consulting the vector.
             if config
                 .auth
                 .auth_policies
                 .contains(&AuthPolicy::PermitMagicLinkForPasswordUsers)
             {
                 config.magic_link.open_to_password_users = true;
+            }
+            if config
+                .auth
+                .auth_policies
+                .contains(&AuthPolicy::PermitMagicLinkForOidcUsers)
+            {
+                config.magic_link.open_to_oidc_users = true;
             }
         }
 
@@ -4939,6 +4944,36 @@ impl AppConfig {
         // AppConfig::from_env body doesn't have to know the internals of the
         // new mode enum / KSF param triple. See `OpaqueConfig::from_env`.
         config.opaque = OpaqueConfig::from_env();
+
+        // Auto-populate the auth-method allowlist when the operator
+        // didn't set `OXICLOUD_AUTH_METHODS` at all (the default
+        // state is `vec![]`; a user-set empty string is a boot
+        // panic above, so this branch only fires on "env unset").
+        // The inferred set reflects what the deployment can
+        // actually serve, so `is_*_login_allowed()` + the
+        // `/api/config.auth.*.enabled` surface agree with the
+        // real wiring without an "empty = permissive" escape
+        // hatch anywhere downstream.
+        //
+        //   * password      — always; the baseline self-service method.
+        //   * magic_link    — when SMTP is wired (same invariant the
+        //                     boot panic in main.rs enforces for the
+        //                     explicit case).
+        //   * oidc          — when `OXICLOUD_OIDC_ENABLED=true`
+        //                     (post-DI `oidc_enabled()` on the service
+        //                     may still disagree if admin-settings DB
+        //                     disables it; the main.rs post-DI panic
+        //                     catches `AUTH_METHODS=oidc` + no
+        //                     effective provider either way).
+        if config.auth.allowed_auth_methods.is_empty() {
+            config.auth.allowed_auth_methods.push(AuthMethod::Password);
+            if config.smtp.is_enabled() {
+                config.auth.allowed_auth_methods.push(AuthMethod::MagicLink);
+            }
+            if config.oidc.enabled {
+                config.auth.allowed_auth_methods.push(AuthMethod::Oidc);
+            }
+        }
 
         config
     }
@@ -6175,11 +6210,13 @@ mod tests {
                 mode,
                 ..OpaqueConfig::default()
             };
-            // Empty allowlist means "all methods allowed" per the existing
-            // convention, so password is implicitly in.
-            let empty_auth = auth_with_methods(vec![]);
-            assert_eq!(opaque.effective_mode(&empty_auth), mode);
-            // Explicit allowlist including Password.
+            // Explicit allowlist including Password — the only
+            // configuration under which OPAQUE passes through. The
+            // former "empty allowlist means all methods allowed"
+            // convention retired on feat/registration;
+            // `AuthConfig::from_env` auto-populates the list when the
+            // operator didn't set AUTH_METHODS, so no code path
+            // observes an empty vec at runtime.
             let with_password = auth_with_methods(vec![AuthMethod::Password]);
             assert_eq!(opaque.effective_mode(&with_password), mode);
             // Multi-method allowlist including Password.
@@ -6203,142 +6240,6 @@ mod tests {
             // for this straightforward truth table).
             let magic_only = auth_with_methods(vec![AuthMethod::MagicLink]);
             assert_eq!(opaque.effective_mode(&magic_only), OpaqueMode::Off);
-        }
-    }
-}
-
-/// Truth-table for the boot-time "magic-link login muted by OIDC"
-/// warning composed via the pure
-/// [`super::should_warn_magic_link_muted_by_oidc`] helper.
-///
-/// Pinned against the free function (not the warning emit site) so
-/// the matrix pins without env-var mocking or tracing capture. The
-/// warning emit site's only responsibility is to source the two
-/// inputs (`config.auth.allowed_auth_methods` + the parsed
-/// `OXICLOUD_OIDC_ENABLED`) correctly; the decision itself is a
-/// pure AND of membership and a boolean.
-///
-/// Regression this file pins (2026-10-16): operators running
-/// `AUTH_METHODS=password,magic_link,oidc` + `OIDC_ENABLED=true`,
-/// or the default allowlist + `OIDC_ENABLED=true`, were seeing
-/// `magic_link_login_enabled: false` on the wire with no boot
-/// signal explaining why. This helper + the companion warning emit
-/// at config.rs~3998 close that silent-mute gap.
-#[cfg(test)]
-mod should_warn_magic_link_muted_by_oidc_tests {
-    use super::{AuthMethod, should_warn_magic_link_muted_by_oidc};
-
-    #[test]
-    fn no_warning_when_oidc_disabled() {
-        // ① OIDC off — regardless of allowlist, nothing to warn
-        //    about (the OIDC-master rule never fires).
-        for methods in [
-            vec![],
-            vec![AuthMethod::MagicLink],
-            vec![AuthMethod::Password, AuthMethod::MagicLink],
-            vec![AuthMethod::Password],
-            vec![AuthMethod::MagicLink, AuthMethod::Oidc],
-        ] {
-            assert!(
-                !should_warn_magic_link_muted_by_oidc(&methods, false),
-                "expected NO warning for methods={methods:?}, oidc_env_enabled=false"
-            );
-        }
-    }
-
-    #[test]
-    fn no_warning_when_magic_link_not_in_allowlist() {
-        // ② OIDC on but operator explicitly dropped magic_link
-        //    (e.g. AUTH_METHODS=password,oidc or AUTH_METHODS=oidc).
-        //    The allowlist is already consistent with the OIDC-
-        //    master rule — nothing to warn about.
-        assert!(!should_warn_magic_link_muted_by_oidc(
-            &[AuthMethod::Password, AuthMethod::Oidc],
-            true
-        ));
-        assert!(!should_warn_magic_link_muted_by_oidc(
-            &[AuthMethod::Oidc],
-            true
-        ));
-        assert!(!should_warn_magic_link_muted_by_oidc(
-            &[AuthMethod::Password],
-            true
-        ));
-    }
-
-    #[test]
-    fn warns_on_explicit_magic_link_plus_oidc() {
-        // ③ The headline case: operator wrote `magic_link` into
-        //    `AUTH_METHODS` while OIDC is on, expecting both to
-        //    serve. OIDC-master mutes magic-link login silently —
-        //    warning MUST fire.
-        assert!(should_warn_magic_link_muted_by_oidc(
-            &[
-                AuthMethod::Password,
-                AuthMethod::MagicLink,
-                AuthMethod::Oidc
-            ],
-            true
-        ));
-        assert!(should_warn_magic_link_muted_by_oidc(
-            &[AuthMethod::MagicLink, AuthMethod::Oidc],
-            true
-        ));
-        assert!(should_warn_magic_link_muted_by_oidc(
-            &[AuthMethod::Password, AuthMethod::MagicLink],
-            true
-        ));
-        assert!(should_warn_magic_link_muted_by_oidc(
-            &[AuthMethod::MagicLink],
-            true
-        ));
-    }
-
-    #[test]
-    fn warns_on_default_allowlist_plus_oidc() {
-        // ④ Operator left `AUTH_METHODS` unset — the default
-        //    allowlist is `[Password, MagicLink]`. They turned OIDC
-        //    on without touching the auth-methods var. Magic-link
-        //    login is silently muted — operator deserves the same
-        //    boot signal as the explicit case ③. (The emit site
-        //    uses the FINAL `config.auth.allowed_auth_methods`
-        //    which carries the default when unset, so this path is
-        //    exercised the same way.)
-        let default_allowlist = vec![AuthMethod::Password, AuthMethod::MagicLink];
-        assert!(should_warn_magic_link_muted_by_oidc(
-            &default_allowlist,
-            true
-        ));
-    }
-
-    #[test]
-    fn full_truth_table() {
-        // Belt-and-braces: enumerate (oidc_enabled, magic_link_in_methods)
-        // combined with a representative set of methods vectors, and
-        // assert the decision equals the pure AND.
-        let allowlists: &[&[AuthMethod]] = &[
-            &[],
-            &[AuthMethod::Password],
-            &[AuthMethod::MagicLink],
-            &[AuthMethod::Oidc],
-            &[AuthMethod::Password, AuthMethod::MagicLink],
-            &[AuthMethod::Password, AuthMethod::Oidc],
-            &[AuthMethod::MagicLink, AuthMethod::Oidc],
-            &[
-                AuthMethod::Password,
-                AuthMethod::MagicLink,
-                AuthMethod::Oidc,
-            ],
-        ];
-        for &allowlist in allowlists {
-            for oidc in [false, true] {
-                let expected = oidc && allowlist.contains(&AuthMethod::MagicLink);
-                assert_eq!(
-                    should_warn_magic_link_muted_by_oidc(allowlist, oidc),
-                    expected,
-                    "mismatch at (allowlist={allowlist:?}, oidc_env_enabled={oidc})"
-                );
-            }
         }
     }
 }

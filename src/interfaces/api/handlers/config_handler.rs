@@ -304,19 +304,24 @@ pub struct FeaturesDto {
 pub async fn get_config(State(state): State<Arc<AppState>>) -> Json<ServerConfigDto> {
     let f = &state.core.config.features;
 
-    // Auth-method matrix lives on the AuthApplicationService — it
-    // composes `OXICLOUD_AUTH_METHODS` with cross-rules
-    // (OIDC-master-disables-magic-link, SMTP-missing-disables-magic-link,
-    // etc.) that a flat env read would miss. When no auth service is
-    // configured (`state.auth_service.is_none()`), fall back to a
-    // "everything off" matrix so `/api/config` stays reachable at
-    // boot even if a misconfiguration kept the auth service from
-    // being built — the FE will then hide every auth form, which is
-    // the correct degraded UX.
+    // `/api/config.auth.{password,magic_link,oidc}.enabled` mirrors
+    // `OXICLOUD_AUTH_METHODS` membership DIRECTLY — operators own the
+    // strategy end to end. Cross-rules that used to compose silently
+    // here (OIDC-master-disables-magic-link, SMTP-missing-disables-
+    // magic-link) moved to boot-time panics in `main.rs` for the
+    // deployment-wide invariants, and to per-user eligibility checks
+    // in `AuthApplicationService::user_eligible_for_method` for the
+    // runtime enforcement. See docs/architecture/auth.md for the full
+    // decision table. The upshot: what AUTH_METHODS says, /api/config
+    // says — no silent mutation.
     let auth_app = state
         .auth_service
         .as_ref()
         .map(|s| s.auth_application_service.clone());
+    let allowed = &state.core.config.auth.allowed_auth_methods;
+    let password_login_enabled = allowed.contains(&crate::common::config::AuthMethod::Password);
+    let magic_link_login_enabled = allowed.contains(&crate::common::config::AuthMethod::MagicLink);
+    let oidc_method_enabled = allowed.contains(&crate::common::config::AuthMethod::Oidc);
 
     // First-run initialization probe — ported from the retired
     // `/api/auth/status` handler. The DB flag is the authoritative
@@ -337,14 +342,6 @@ pub async fn get_config(State(state): State<Arc<AppState>>) -> Json<ServerConfig
         };
         db_initialized || admin_count > 0
     };
-    let password_login_enabled = auth_app
-        .as_ref()
-        .map(|a| a.is_password_login_allowed())
-        .unwrap_or(false);
-    let magic_link_login_enabled = auth_app
-        .as_ref()
-        .map(|a| a.is_magic_link_login_allowed())
-        .unwrap_or(false);
     let require_verified_email = auth_app
         .as_ref()
         .map(|a| a.require_verified_email())
@@ -353,19 +350,25 @@ pub async fn get_config(State(state): State<Arc<AppState>>) -> Json<ServerConfig
         .as_ref()
         .map(|a| a.auto_redirect_to_oidc())
         .unwrap_or(false);
-    let oidc_enabled = auth_app.as_ref().map(|a| a.oidc_enabled()).unwrap_or(false);
 
     // OIDC provider list — a one-element array today (single-provider
-    // reality), an empty one when OIDC is disabled, forward-compatible
-    // with the planned multi-provider work. Prefer the DISCOVERY
-    // document's cached issuer over the operator-typed `issuer_url`
-    // (same reasoning as the retired `/api/auth/oidc/providers`
-    // handler had: discovery publishes the canonical value, config
-    // only points at where discovery lives). Cache-only lookup to
-    // keep this unauthenticated endpoint from becoming a DoS
-    // amplifier against the IdP.
+    // reality), an empty one when OIDC isn't in AUTH_METHODS,
+    // forward-compatible with the planned multi-provider work. Prefer
+    // the DISCOVERY document's cached issuer over the operator-typed
+    // `issuer_url` (same reasoning as the retired
+    // `/api/auth/oidc/providers` handler had: discovery publishes the
+    // canonical value, config only points at where discovery lives).
+    // Cache-only lookup to keep this unauthenticated endpoint from
+    // becoming a DoS amplifier against the IdP.
+    //
+    // Gated on `oidc_method_enabled` (direct AUTH_METHODS check) — not
+    // on `auth_app.oidc_enabled()`. The boot panic in main.rs ensures
+    // both agree: if `oidc` is in AUTH_METHODS, an effective OIDC
+    // provider exists (env or admin-DB-reloaded). The gate here is
+    // the operator-visible intent; `auth_app.oidc_config()` is the
+    // runtime access to populate the fields.
     let oidc_providers: Vec<OidcProviderDto> =
-        if oidc_enabled && let Some(auth_app) = auth_app.as_ref() {
+        if oidc_method_enabled && let Some(auth_app) = auth_app.as_ref() {
             let config = auth_app.oidc_config();
             let provider_name = config
                 .as_ref()
@@ -422,7 +425,7 @@ pub async fn get_config(State(state): State<Arc<AppState>>) -> Json<ServerConfig
                 enabled: magic_link_login_enabled,
             },
             oidc: OidcAuthDto {
-                enabled: oidc_enabled,
+                enabled: oidc_method_enabled,
                 auto_redirect: auto_redirect_to_oidc,
                 providers: oidc_providers,
             },

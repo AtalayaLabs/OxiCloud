@@ -821,31 +821,36 @@ impl AuthApplicationService {
     /// deployment. Composes the OIDC `disable_password_login` legacy
     /// flag with the newer `OXICLOUD_AUTH_METHODS` allowlist.
     pub fn is_password_login_allowed(&self) -> bool {
-        !self.password_login_disabled()
-            && (self.allowed_auth_methods.is_empty()
-                || self.allowed_auth_methods.contains(&AuthMethod::Password))
+        // Pure membership — `AuthConfig::from_env` auto-populates the
+        // list when the operator didn't set AUTH_METHODS, so an empty
+        // vec here would be a programming bug rather than "all methods
+        // allowed".
+        !self.password_login_disabled() && self.allowed_auth_methods.contains(&AuthMethod::Password)
     }
 
-    /// True iff `POST /api/auth/magic-link/send` should mint tokens for
-    /// end-user login on this deployment.
+    /// True iff `POST /api/auth/magic-link/send` should accept
+    /// requests on this deployment.
     ///
-    /// Requires ALL of:
+    /// Requires BOTH of:
     ///   * repo wired (SMTP configured, tokens can actually be minted);
-    ///   * allowlist permits `MagicLink` (or is empty = permissive);
-    ///   * OIDC is NOT enabled at the deployment level.
+    ///   * `MagicLink` is in `OXICLOUD_AUTH_METHODS` (or the allowlist
+    ///     is empty = permissive default).
     ///
-    /// The OIDC guard is a hard rule: when OIDC is enabled it is the
-    /// master identity provider — magic-link would bypass any 2FA / step-up
-    /// policy that the IdP enforces. An operator running OIDC + local
-    /// accounts hybrid must NOT expose magic-link login for the local
-    /// accounts either, because a user provisioned via OIDC-JIT could
-    /// receive a magic-link on the same mailbox and sidestep MFA. Admin-
-    /// mediated invites use OIDC or password bootstrap instead.
+    /// The former OIDC-master guard (hard-disable magic-link whenever
+    /// OIDC was enabled, deployment-wide) was retired on
+    /// feat/registration — it blocked external users on OIDC
+    /// deployments as a side effect. The MFA-bypass concern that
+    /// motivated it is now enforced **per user** by
+    /// `magic_link_eligibility()`: an OIDC-federated account's
+    /// magic-link submit is refused with a coaching email ("sign in
+    /// via SSO") unless the operator opts in via
+    /// `OXICLOUD_AUTH_POLICIES=permit_magic_link_for_oidc_users`.
+    /// Deployment-level mix of OIDC + magic-link is now first-class.
     pub fn is_magic_link_login_allowed(&self) -> bool {
-        self.magic_link_enabled()
-            && !self.oidc_enabled()
-            && (self.allowed_auth_methods.is_empty()
-                || self.allowed_auth_methods.contains(&AuthMethod::MagicLink))
+        // Pure membership — see `is_password_login_allowed()` for the
+        // rationale (no `is_empty()` escape hatch; AuthConfig::from_env
+        // auto-populates when AUTH_METHODS is unset).
+        self.magic_link_enabled() && self.allowed_auth_methods.contains(&AuthMethod::MagicLink)
     }
 
     /// True iff login should reject accounts with `email_verified_at IS
