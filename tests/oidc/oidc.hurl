@@ -59,41 +59,57 @@ HTTP 201
 
 # ─────────────────────────────────────────────────────────────
 # Step 2 — Provider discovery for the SPA
+#
+# Was `GET /api/auth/oidc/providers` (retired on feat/registration);
+# OIDC enablement + provider list moved to `/api/config.auth.oidc`
+# as the `providers: [...]` array (forward-compatible with planned
+# multi-provider deployments). This test instance (`server-with-oidc.env`)
+# configures one provider, so `providers.length == 1`.
 # ─────────────────────────────────────────────────────────────
-GET {{base_url}}/api/auth/oidc/providers
+GET {{base_url}}/api/config
 
 HTTP 200
 [Asserts]
-jsonpath "$.enabled" == true
+jsonpath "$.auth.oidc.enabled" == true
+jsonpath "$.auth.oidc.providers" count == 1
 # tests/common/server-with-oidc.env sets OXICLOUD_OIDC_PROVIDER_NAME=MockSSO.
-jsonpath "$.provider_name" == "MockSSO"
-jsonpath "$.authorize_endpoint" == "/api/auth/oidc/authorize"
-jsonpath "$.password_login_enabled" == true
-# OIDC-master rule: magic-link login must be reported as OFF when OIDC
-# is enabled, regardless of `OXICLOUD_AUTH_METHODS` or SMTP wiring.
-# Magic-link would bypass any 2FA / step-up the IdP enforces; refusing
-# it at the deployment level is a hard invariant. The SPA reads this
-# to hide the "Send sign-in link" affordance.
-jsonpath "$.magic_link_login_enabled" == false
+jsonpath "$.auth.oidc.providers[0].provider_name" == "MockSSO"
+jsonpath "$.auth.oidc.providers[0].authorize_endpoint" == "/api/auth/oidc/authorize"
+jsonpath "$.auth.password.enabled" == true
+# Deployment-wide OIDC-master-mutes-magic-link rule retired on
+# feat/registration — `/api/config.auth.{method}.enabled` mirrors
+# `OXICLOUD_AUTH_METHODS` directly, so `magic_link` listed there is
+# `true` here. Per-user enforcement (OIDC-federated users refused +
+# coaching email) handles the MFA-bypass concern that the deployment
+# rule used to defend against; see `tests/oidc/magic_link_coaching.hurl`
+# for the matrix pin and `docs/config/authentication.md §
+# Magic-link eligibility` for the full table.
+jsonpath "$.auth.magic_link.enabled" == true
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 2b — OIDC-master rule regression at the endpoint layer.
-#           `POST /api/auth/magic-link/send` is refused with 403
-#           `MagicLinkLoginDisabled` when OIDC is enabled. The
-#           mock SMTP is configured (server-with-oidc.env has the
-#           full SMTP block) so this proves the policy gate fires
-#           BEFORE the "SMTP not wired" 503, which would otherwise
-#           mask the real reason. The 403 error_type is the machine-
-#           readable contract the SPA switches on.
+# Step 2b — Magic-link endpoint accepts requests on an OIDC-enabled
+#           deployment. The former OIDC-master-mutes-magic-link rule
+#           (deployment-wide 403 whenever OIDC was on) retired on
+#           feat/registration — a server with `magic_link` listed in
+#           `AUTH_METHODS` serves the endpoint regardless of OIDC,
+#           and the per-user eligibility matrix in
+#           `magic_link_eligibility()` decides what happens next:
+#           external users (no credential at all) get a login link;
+#           OIDC-federated users get a coaching email; password users
+#           get a coaching email unless the operator opted in via
+#           `permit_magic_link_for_password_users`.
+#
+#           The response here is uniform (200, "Check your inbox")
+#           for the anti-enumeration guarantee — the unknown-email
+#           case lands on the same shape as a real one. The matrix
+#           pin lives in `tests/oidc/magic_link_coaching.hurl`.
 # ─────────────────────────────────────────────────────────────
 POST {{base_url}}/api/auth/magic-link/send
 Content-Type: application/json
 { "email": "someone@example.com" }
 
-HTTP 403
-[Asserts]
-jsonpath "$.error_type" == "MagicLinkLoginDisabled"
+HTTP 200
 
 
 # ─────────────────────────────────────────────────────────────

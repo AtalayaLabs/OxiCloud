@@ -180,12 +180,15 @@ log "Server is ready."
 
 # ── 5. Run the OIDC Hurl suite ─────────────────────────────────────────────
 # Order matters: oidc.hurl bootstraps the admin and JIT-provisions the
-# `oidc_user` federated principal that link_unlink.hurl then reuses.
+# `oidc_user` federated principal that link_unlink.hurl + the coaching
+# matrix then reuse.
 log "Running OIDC Hurl tests..."
 hurl --variables-file "$OIDC_DIR/test.env" \
      --file-root "$REPO_ROOT/tests" \
      --test --jobs 1 \
      "$OIDC_DIR/oidc.hurl" \
+     "$OIDC_DIR/magic_link_coaching.hurl" \
+     "$OIDC_DIR/password_login_coaching.hurl" \
      "$OIDC_DIR/link_unlink.hurl"
 
 log "OIDC tests passed."

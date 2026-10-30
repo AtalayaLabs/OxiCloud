@@ -122,8 +122,10 @@ Content-Type: application/json
 HTTP 200
 
 # Old password no longer works. Login failures map to 403
-# (AccessDenied) in this codebase — both "invalid credentials"
-# and "account deactivated" go through the same error kind.
+# (AccessDenied) in this codebase for every "credentials refused"
+# arm — "invalid credentials" and "account deactivated" share the
+# status code but Gap 3 split them on `error_type` (see Row 6
+# below for the AccountDeactivated pin).
 POST {{base_url}}/api/auth/login
 Content-Type: application/json
 { "username": "charlie-ops", "password": "OriginalPassword1!" }
@@ -223,10 +225,26 @@ HTTP 200
 
 
 # ─────────────────────────────────────────────────────────────
-# 6 — Disable the account. The next login attempt must report
-#     403 (account disabled) — distinct from 401 (bad creds)
-#     so operators can tell "I locked you out" from "you typed
-#     the wrong password".
+# 6 — Disable the account.
+#
+# Gap 3 split the deactivated-account arm out from the generic
+# "Invalid credentials" response:
+#   * RIGHT password → 403 `error_type: AccountDeactivated` (the SPA
+#     branches on this to show "Your account has been deactivated —
+#     contact your administrator" instead of the generic error).
+#   * WRONG password → 403 `error_type: AccessDenied` + generic
+#     "Invalid credentials" (anti-enum pin — a password guesser on a
+#     deactivated account learns NOTHING beyond "that's not the
+#     password"; the deactivation is only revealed to callers who
+#     already proved possession of the credential).
+#
+# The two assertions below pin BOTH halves. Dropping either would
+# collapse Gap 3 silently: dropping the error_type assertion on the
+# right-password row would let the service drift back to generic
+# AccessDenied (SPA shows wrong copy); dropping the anti-enum pin
+# on the wrong-password row would let a future refactor leak
+# deactivation state to password-guessers (regression to the
+# pre-Gap-3 posture where `is_active` fired BEFORE password-verify).
 # ─────────────────────────────────────────────────────────────
 PUT {{base_url}}/api/admin/users/{{charlie_id}}/active
 Authorization: Bearer {{admin_token}}
@@ -235,11 +253,31 @@ Content-Type: application/json
 
 HTTP 200
 
+# RIGHT password on deactivated account — distinct AccountDeactivated
+# error_type.
 POST {{base_url}}/api/auth/login
 Content-Type: application/json
 { "username": "charlie-ops", "password": "CharliePicked3!" }
 
 HTTP 403
+[Asserts]
+jsonpath "$.error_type" == "AccountDeactivated"
+
+# WRONG password on deactivated account — must still collapse to the
+# generic 403 so an attacker cannot distinguish "wrong password on a
+# deactivated account" from "wrong password on an active one". This
+# is the anti-enum property Gap 3 preserves by firing `is_active`
+# AFTER password-verify, not before. Wire value is the machine-
+# readable `ErrorKind::wire_name()` ("AccessDenied") — same PascalCase
+# convention the handler-emitted error_types above use, so SPA
+# switches can compare uniformly without a space-stripping shim.
+POST {{base_url}}/api/auth/login
+Content-Type: application/json
+{ "username": "charlie-ops", "password": "DeliberatelyWrong9!" }
+
+HTTP 403
+[Asserts]
+jsonpath "$.error_type" == "AccessDenied"
 
 
 # ─────────────────────────────────────────────────────────────

@@ -26,7 +26,7 @@
 		AppPasswordSummaryDto,
 		UpdateProfileDto
 	} from '$lib/api/generated/openapi/types.gen';
-	import { fetchMe, getOidcProviders, startOidcLink, unlinkOidc } from '$lib/api/endpoints/auth';
+	import { fetchMe, startOidcLink, unlinkOidc } from '$lib/api/endpoints/auth';
 	import { SUPPORTED_LOCALES, setLocale, t, type Locale } from '$lib/i18n/index.svelte';
 	import Icon from '$lib/icons/Icon.svelte';
 	import { confirmDialog } from '$lib/stores/dialogs.svelte';
@@ -59,12 +59,15 @@
 	let savingPassword = $state(false);
 
 	let avatarBusy = $state(false);
-	let passwordLoginEnabled = $state(true);
-	// OIDC providers snapshot for the SSO link/unlink card. Populated
-	// on mount; determines whether we render the "Connect SSO" card
-	// (requires oidcEnabled) and what display label to show.
-	let oidcEnabled = $state(false);
-	let oidcProviderName = $state<string>('SSO');
+	// Auth-method state for the SSO link/unlink card + the
+	// change-password card gate. All three come from
+	// `/api/config.auth.*` (hydrated by `serverConfig.load()` at
+	// boot) — the pre-consolidation `getOidcProviders()` second
+	// fetch is retired. `$derived` so a late `/api/config` arrival
+	// or a `ServerStatusChanged` refetch re-evaluates the UI matrix.
+	const passwordLoginEnabled = $derived(serverConfig.auth.password.enabled);
+	const oidcEnabled = $derived(serverConfig.auth.oidc.enabled);
+	const oidcProviderName = $derived(serverConfig.auth.oidc.providers[0]?.provider_name || 'SSO');
 	let ssoBusy = $state(false);
 
 	// Avatar edit panel.
@@ -442,21 +445,8 @@
 		if (!session.loaded) await session.load();
 		hydrate();
 		void loadAppPasswords();
-		try {
-			const providers = await getOidcProviders();
-			// Only an explicit `false` hides the password card; an absent flag
-			// (no OIDC configured) leaves local password login available.
-			if (providers.password_login_enabled === false) passwordLoginEnabled = false;
-			// Capture OIDC state for the SSO link/unlink card. `provider_name`
-			// is the display label the FE renders in the "Connected to X"
-			// affordance.
-			oidcEnabled = providers.enabled === true;
-			if (typeof providers.provider_name === 'string' && providers.provider_name.length > 0) {
-				oidcProviderName = providers.provider_name;
-			}
-		} catch {
-			/* leave password login enabled */
-		}
+		// Auth-method state is read reactively from `serverConfig.auth.*`
+		// — no second fetch needed on this mount.
 
 		// Toast handling for the OIDC-link callback redirect. The
 		// backend redirects here with `?linked=1` on success or

@@ -59,7 +59,7 @@ hurl --variables-file tests/api/test.env --test --report-html /tmp/hurl-report t
 | 2 | List root folders – assert exactly 1 (home folder), capture `home_folder_id`, assert `parent_id` is null |
 | 3 | Browse home folder sub-folders – assert empty |
 | 4 | Browse home folder files – assert empty |
-| 5 | Create folder named `"/"` – assert HTTP 400, `error_type == "Invalid Input"` |
+| 5 | Create folder named `"/"` – assert HTTP 400, `error_type == "InvalidInput"` |
 | 6 | Create `test1` inside home folder – capture `test1_id`, assert `parent_id` == `home_folder_id` |
 | 7 | Create `test2` inside `test1` – capture `test2_id`, assert `parent_id` == `test1_id` |
 | 8 | Browse home folder – assert exactly 1 sub-folder (`test1`) |
@@ -71,7 +71,7 @@ hurl --variables-file tests/api/test.env --test --report-html /tmp/hurl-report t
 | 14 | Browse home folder – assert 2 sub-folders (`test1` and `test2`) |
 | 15 | Rename `test2` → `test2-renamed` – assert new name, `parent_id` unchanged |
 | 16 | Rename `hello.txt` → `hello-renamed.txt` – assert new name, `folder_id` unchanged |
-| 17 | Rename `hello-renamed.txt` to `"."` – assert HTTP 400, `error_type == "Invalid Input"` |
+| 17 | Rename `hello-renamed.txt` to `"."` – assert HTTP 400, `error_type == "InvalidInput"` |
 | 18 | Upload `fixtures/oxicloud-logo.jpg` into home folder – capture `logo_id`, assert `mime_type == image/jpeg` |
 | 19 | List files in home folder – assert count=1, `category == Image` |
 | 20 | `GET /api/files/{logo_id}/thumbnail/icon` → HTTP 200 |

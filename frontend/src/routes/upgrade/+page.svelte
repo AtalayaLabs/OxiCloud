@@ -6,7 +6,7 @@
 	import { resolve } from '$app/paths';
 	import { onMount } from 'svelte';
 	import { ApiError } from '$lib/api/client';
-	import { getOidcProviders, upgradeToInternal, type OidcProviders } from '$lib/api/endpoints/auth';
+	import { upgradeToInternal } from '$lib/api/endpoints/auth';
 	import { t } from '$lib/i18n/index.svelte';
 	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import { session } from '$lib/stores/session.svelte';
@@ -16,12 +16,13 @@
 	let busy = $state(false);
 	let error = $state('');
 	let successHint = $state('');
-	// Provider info tells us whether magic-link login is available.
 	// `passwordRequired = !magic_link_login_enabled` — if the deployment
 	// doesn't offer magic-link login, an upgraded user with no password
-	// would be stuck (no login path), so the form requires one.
-	let providers = $state<OidcProviders>({ enabled: false });
-	const passwordRequired = $derived(providers.magic_link_login_enabled !== true);
+	// would be stuck (no login path), so the form requires one. Reads
+	// from `/api/config.auth.magic_link.enabled` (hydrated by
+	// `serverConfig.load()` at boot), not from the retired
+	// `/api/auth/oidc/providers` endpoint.
+	const passwordRequired = $derived(!serverConfig.auth.magic_link.enabled);
 	const matchState = $derived(confirm.length === 0 ? '' : password === confirm ? 'ok' : 'bad');
 
 	onMount(async () => {
@@ -30,9 +31,7 @@
 		// this URL isn't a discoverable page for internal users.
 		if (session.user && session.user.is_external !== true) {
 			await goto(resolve('/files'), { replaceState: true });
-			return;
 		}
-		providers = await getOidcProviders();
 	});
 
 	async function onSubmit(e: SubmitEvent) {

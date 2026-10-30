@@ -100,7 +100,7 @@ file: file,fixtures/chunk-over-cap-5mb.bin; application/octet-stream
 # so the batch path (step 11) can be checked to agree with it.
 HTTP 507
 [Asserts]
-jsonpath "$.error_type" == "Quota Exceeded"
+jsonpath "$.error_type" == "QuotaExceeded"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -412,7 +412,7 @@ jsonpath "$.stats.failed"         == 1
 jsonpath "$.stats.successful"     == 0
 jsonpath "$.failed[0].id"         == "{{big_file_id}}"
 jsonpath "$.failed[0].error"      exists
-jsonpath "$.failed[0].error_type" == "Quota Exceeded"
+jsonpath "$.failed[0].error_type" == "QuotaExceeded"
 
 
 # 11c — Sanity: the file MOVE isn't universally broken. Targeting
@@ -476,7 +476,7 @@ HTTP 507
 jsonpath "$.stats.failed"         == 1
 jsonpath "$.stats.successful"     == 0
 jsonpath "$.failed[0].id"         == "{{quota_src_folder_id}}"
-jsonpath "$.failed[0].error_type" == "Quota Exceeded"
+jsonpath "$.failed[0].error_type" == "QuotaExceeded"
 
 
 # Put the file back at the unlimited root and drop the scratch

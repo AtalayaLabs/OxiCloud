@@ -42,28 +42,36 @@ Two environment variables control the auth surface. OIDC is a first-class allowl
 
 ### `OXICLOUD_AUTH_METHODS`
 
-Comma-separated allowlist of `password`, `magic_link`, and/or `oidc`. Default (when unset): `password,magic_link`.
+Comma-separated allowlist of `password`, `magic_link`, and/or `oidc`.
+
+`AUTH_METHODS` is the **single source of truth** for which methods the deployment offers. The three `.enabled` fields on `/api/config.auth.{password,magic_link,oidc}` mirror the allowlist **directly** — if you set `AUTH_METHODS=password,oidc`, `/api/config.auth.password.enabled=true` and `/api/config.auth.magic_link.enabled=false` on the wire, no silent composition. Operators own the strategy end to end; the enforcement of "can THIS user actually use method X" moves to the per-user eligibility matrix in `Magic-link eligibility` below.
+
+**Default when the env is unset — auto-populated from wiring.** The server reads what's actually configured and advertises only what it can serve:
+
+| Condition | Added to the inferred default |
+| --- | --- |
+| Always | `password` |
+| `OXICLOUD_SMTP_HOST` set | + `magic_link` |
+| `OXICLOUD_OIDC_ENABLED=true` | + `oidc` |
+
+So a fresh install with just a Postgres and no SMTP / OIDC advertises `password` only; add SMTP and `magic_link` appears on `/api/config` on next boot; add OIDC and `oidc` joins. No `is_empty() → permissive` escape hatch exists downstream — the list is always a complete snapshot of configured methods.
+
+**`OXICLOUD_AUTH_METHODS=` (empty string) is distinct from unset** and panics the boot — the server will not degrade "no methods" into "all methods".
 
 | Configuration | Effect |
 | --- | --- |
-| Unset | Password + magic-link (OIDC gated separately by `OXICLOUD_OIDC_ENABLED`) |
-| `password,magic_link` | Same as unset — both self-service methods |
+| Unset | Auto-populated from wiring (see table above) |
 | `password` | Password login OK. Magic-link send / redeem → 403 `MagicLinkLoginDisabled` |
 | `magic_link` | Password login → 403 `PasswordLoginDisabled`. Password-based `register` → 403 `PasswordRegistrationDisabled`. Email-only signup still works |
-| `oidc` | **SSO-only** posture. Requires `OXICLOUD_OIDC_ENABLED=true` + a full OIDC config bucket; local password + magic-link both disabled |
-| `password,oidc` | Hybrid: local password + SSO, no magic-link |
-| `password,magic_link,oidc` | Password + SSO advertised; magic-link login refused (**OIDC-master rule — see below**) despite being listed. The admin-mediated invite path still works. If you want three live login methods, OxiCloud cannot offer that: `magic_link` in this list is accepted but silently muted whenever OIDC is enabled |
+| `oidc` | **SSO-only** posture — requires an effective OIDC config (env or admin-settings DB) |
+| `password,oidc` | Hybrid: password + SSO; external users (no password, no federation) can't be invited since magic-link is off |
+| `password,magic_link,oidc` | All three advertised. Per-user eligibility decides which method a given account can actually use — see the matrix below |
 
-**Fail-fast.** Misconfiguration panics at boot instead of degrading silently:
-- Unknown token (e.g. `password,sso2`) → boot panic with `expected: password, magic_link, oidc`
-- Empty allowlist (e.g. `OXICLOUD_AUTH_METHODS=`) → boot panic (would lock everyone out otherwise)
-- `oidc` listed but `OXICLOUD_OIDC_ENABLED != true` → boot panic (advertising a method the server can't serve)
-
-**Loose semantic (documented).** The symmetric case is NOT fatal yet: when `OXICLOUD_AUTH_METHODS` is explicitly set WITHOUT `oidc` but `OXICLOUD_OIDC_ENABLED=true`, OIDC is served in addition to the listed methods — the enabled flag wins. A warning is logged at boot to make the mismatch visible. **Planned for the next major release**: this will escalate to a fail-fast panic so `AUTH_METHODS` becomes the authoritative allowlist for OIDC too. Align configs now (either add `oidc` to the list or set `OXICLOUD_OIDC_ENABLED=false`) to avoid the breaking change.
-
-**Startup gate.** If `magic_link` is the only working method (no `password`, no `oidc`) AND no SMTP transport is configured (`OXICLOUD_SMTP_HOST` empty), the server refuses to start with a fatal message. A magic-link-only policy without a working mailer silently locks every user out.
-
-**OIDC master rule.** When OIDC is enabled, magic-link login is **hard-disabled** regardless of this list. The IdP is the identity boundary; magic-link would bypass any 2FA / step-up policy the IdP enforces. The startup gate above does **not** trigger in this case — OIDC provides the login path.
+**Fail-fast boot panics.** Misconfiguration refuses to start instead of degrading silently:
+- Unknown token (e.g. `password,sso2`) → `expected: password, magic_link, oidc`.
+- Empty allowlist (`OXICLOUD_AUTH_METHODS=`) → would lock everyone out.
+- `oidc` in the list + no effective OIDC provider (empty issuer/client_id/client_secret via env AND no admin-settings override) → advertising a method the server can't serve.
+- `magic_link` in the list + no SMTP wired (`OXICLOUD_SMTP_HOST` empty) → ditto, mailbox transport is required to mint tokens.
 
 **DEPRECATED** alias: `OXICLOUD_OIDC_DISABLE_PASSWORD_LOGIN=true` still removes `password` from the effective allowlist. Setting it emits a boot warning; the flag will be removed in the next major release. Migrate to `OXICLOUD_AUTH_METHODS=oidc` (and add `OXICLOUD_AUTH_POLICIES=auto_redirect_if_standalone_oidc` if you want the server-side `/login` redirect too).
 
@@ -107,13 +115,25 @@ Comma-separated allowlist. Rejected registrations return 403 `RegistrationDomain
 
 ## Magic-link eligibility
 
-`POST /api/auth/magic-link/send` looks up the resolved email → user, then applies the eligibility ladder:
+`POST /api/auth/magic-link/send` looks up the resolved email → user, then checks the account against the deployment's auth policies. Two independent `OXICLOUD_AUTH_POLICIES` flags control who can use magic-link beyond the default "external users only" posture:
 
-1. **OIDC-linked user** → refused with `reason="oidc_user"`. Unconditional; the IdP is the security boundary and may enforce MFA that magic-link would sidestep.
-2. **Has a password configured** → refused with `reason="has_password"` (default). Set `OXICLOUD_AUTH_POLICIES=permit_magic_link_for_password_users` to allow — this weakens the password to mailbox-strength for affected accounts; opt-in only.
-3. **No credential** (typical external user or fresh email-only signup) → allow.
+| User state | `permit_magic_link_for_password_users` | `permit_magic_link_for_oidc_users` | Outcome |
+| --- | --- | --- | --- |
+| No credential (external user, email-only signup) | — | — | **Login link sent** |
+| Has a password, no federation | off (default) | — | **Coaching email: "sign in with your password"** |
+| Has a password, no federation | **on** | — | **Login link sent** |
+| OIDC-federated | — | off (default) | **Coaching email: "sign in via SSO"** |
+| OIDC-federated | — | **on** | **Login link sent** (operator accepts bypassing IdP MFA) |
+| Has password AND OIDC-federated | — | off | **Coaching email: "sign in via SSO"** (OIDC dominates) |
+| Has password AND OIDC-federated | — | **on** | **Login link sent** |
 
-The verification-piggyback flow above deliberately **bypasses the `has_password` gate** — that path is only reachable after the user has already proven identity via password on the same login request, so mailbox-only trust is not being extended beyond what the password already established.
+**Response to the submitter stays uniform** — "Check your inbox" — regardless of which row fires. The coaching email is the only side channel that reveals which method the account actually uses, and only the real mailbox owner can read it, preserving anti-enumeration.
+
+**The two policies are independent.** Set either, both, or neither via `OXICLOUD_AUTH_POLICIES` (comma-separated). Default (both off) is restrictive: magic-link exists primarily for passwordless flows + external-user invites.
+
+**External users on OIDC deployments** — the first row of the table matters: a user with no password and no federation (typical of folder-share invitations to outside addresses) always receives a magic link, regardless of whether `oidc` is in `AUTH_METHODS`. This unblocks external users on OIDC-enabled deployments, which was previously impossible under the deployment-wide "OIDC-master mutes magic-link" rule.
+
+**The verification-piggyback flow** (used by the login handler right after a successful password check to send an email-verification link) deliberately **bypasses this matrix** — that path is only reachable after the user has already proven identity, so mailbox-only trust is not being extended beyond what the password already established.
 
 ## OPAQUE aPAKE (zero-knowledge password login)
 

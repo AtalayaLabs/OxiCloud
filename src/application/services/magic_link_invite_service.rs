@@ -76,9 +76,17 @@ pub enum Eligibility {
 /// Account-deactivation is **not** checked here — `send_login_link` /
 /// `issue_invitation` handle it separately because the rejection reason
 /// (`"account_deactivated"`) is unrelated to credential state.
-pub fn magic_link_eligibility(user: &User, open_to_password_users: bool) -> Eligibility {
+pub fn magic_link_eligibility(
+    user: &User,
+    open_to_password_users: bool,
+    open_to_oidc_users: bool,
+) -> Eligibility {
     if user.is_oidc_user() {
-        return Eligibility::Reject("oidc_user");
+        return if open_to_oidc_users {
+            Eligibility::Allow
+        } else {
+            Eligibility::Reject("oidc_user")
+        };
     }
     if user.has_password() {
         return if open_to_password_users {
@@ -294,9 +302,11 @@ impl MagicLinkInviteService {
         // `OXICLOUD_MAGIC_LINK_OPEN_TO_PASSWORD_USERS=true`. Either way
         // they see the grant in their normal "Shared with me" view —
         // the mail is purely a notification convenience.
-        if let Eligibility::Reject(reason) =
-            magic_link_eligibility(recipient, self.magic_link_cfg.open_to_password_users)
-        {
+        if let Eligibility::Reject(reason) = magic_link_eligibility(
+            recipient,
+            self.magic_link_cfg.open_to_password_users,
+            self.magic_link_cfg.open_to_oidc_users,
+        ) {
             tracing::info!(
                 target: "audit",
                 event = "magic_link.invitation_suppressed",
@@ -513,26 +523,36 @@ impl MagicLinkInviteService {
             Err(e) => return Err(DomainError::from(e)),
         };
 
-        if let Eligibility::Reject(reason) =
-            magic_link_eligibility(&user, self.magic_link_cfg.open_to_password_users)
-        {
-            // Refuse the magic-link path for users who have a stronger
-            // credential configured. OIDC is unconditional — the IdP is
-            // the security boundary and we must not bypass any MFA it
-            // enforces. Password is gated by `open_to_password_users`:
-            // strict mode refuses (default — magic-link would weaken the
-            // password to mailbox-strength); lenient mode allows.
+        if let Eligibility::Reject(reason) = magic_link_eligibility(
+            &user,
+            self.magic_link_cfg.open_to_password_users,
+            self.magic_link_cfg.open_to_oidc_users,
+        ) {
+            // Refuse the magic-link path for users whose account state
+            // doesn't match the requested method. Instead of silently
+            // dropping (pre-feat/registration behaviour, which left
+            // users confused about why no email arrived), send a
+            // COACHING email telling them which method their account
+            // actually uses. The anti-enumeration response to the
+            // submitter stays uniform ("Check your inbox") — the
+            // coaching email is the only side channel, and only the
+            // real account owner can read it.
+            //
+            // Per-reason template keys:
+            //   * `oidc_user`    → "sign in via SSO"
+            //   * `has_password` → "sign in with your password"
             tracing::info!(
                 target: "audit",
-                event = "auth.magic_link_send",
+                event = "auth.magic_link_coaching",
                 reason = reason,
                 user_id = %user.id(),
                 username = %user.display_for_audit(),
                 email = %normalised,
-                "🔗 login-link suppressed: '{}' rejected ({})",
+                "🔗 login-link coaching email dispatched: '{}' ineligible ({})",
                 user.display_for_audit(),
                 reason,
             );
+            self.send_coaching_email(&user, reason).await;
             return Ok(());
         }
 
@@ -842,6 +862,204 @@ impl MagicLinkInviteService {
         Ok(())
     }
 
+    /// Dispatch a coaching email when a magic-link-send targets a user
+    /// whose account state (OIDC federation / password + strict policy)
+    /// disqualifies them. Instead of silently dropping the request —
+    /// which left users confused about why no email arrived — we tell
+    /// them which method their account actually uses. The anti-
+    /// enumeration response to the submitter stays uniform; the email
+    /// is the only channel that reveals which method is correct, and
+    /// only the real mailbox owner can read it.
+    ///
+    /// Not fail-fast: an SMTP failure here is logged + swallowed. The
+    /// alternative (bubbling the error to the handler) would turn an
+    /// anti-enumeration-protected path into one that leaks whether a
+    /// user exists via timing / error-shape.
+    ///
+    /// `reason` is the `Eligibility::Reject` key — `"oidc_user"` or
+    /// `"has_password"` — and selects the i18n template per-reason.
+    async fn send_coaching_email(&self, user: &User, reason: &'static str) {
+        let locale = self.locale_for(user);
+        let base_url = self.public_base_url.trim_end_matches('/').to_string();
+        // `display_full(false)` returns the best human-readable
+        // identifier available: given+family when the IdP supplied
+        // them, else username, else email, with a short UUID prefix
+        // as the pathological fallback. Never leaks the email in
+        // a greeting that already lands in that mailbox.
+        let display = user.display_full(false);
+        let args: Vec<(&str, &str)> = vec![("login_url", &base_url), ("username", &display)];
+        let subject_key = match reason {
+            "oidc_user" => "server.magic_link.email.coaching.oidc.subject",
+            "has_password" => "server.magic_link.email.coaching.password.subject",
+            _ => "server.magic_link.email.coaching.generic.subject",
+        };
+        let body_key = match reason {
+            "oidc_user" => "server.magic_link.email.coaching.oidc.body",
+            "has_password" => "server.magic_link.email.coaching.password.body",
+            _ => "server.magic_link.email.coaching.generic.body",
+        };
+        let subject = self.i18n_or(subject_key, &locale, &args).await;
+        let text_body = self.render_bilingual(body_key, &locale, &args).await;
+        let message = EmailMessage {
+            to: user.email().to_string(),
+            subject,
+            text_body,
+            html_body: None,
+        };
+        if let Err(e) = self.email_sender.send(message).await {
+            tracing::warn!(
+                target: "audit",
+                event = "auth.magic_link_coaching_failed",
+                reason = reason,
+                user_id = %user.id(),
+                error = %e.message,
+                "🔗 coaching email SMTP send failed for '{}' ({})",
+                user.display_for_audit(),
+                reason,
+            );
+        }
+    }
+
+    /// Dispatch an SSO-coaching email when a `POST /api/auth/login`
+    /// attempt lands on an OIDC-federated account. We can't mint a
+    /// session primitive for an IdP-owned identity (the IdP owns the
+    /// contract — MFA, step-up, revocation), so the only remedy is to
+    /// point the user at the SSO button. Separate from
+    /// [`send_coaching_email`] so the body copy can frame the attempted
+    /// method ("Someone tried to sign in with a password…") rather than
+    /// framing it as a magic-link request.
+    ///
+    /// Fail-open posture: SMTP failures are logged + swallowed. The
+    /// uniform `Invalid credentials` response the caller sees is
+    /// unaffected, so timing / error-shape leak nothing about whether
+    /// the user exists. Only the real mailbox owner reads the coaching
+    /// email, so the method-correctness disclosure stays side-channel.
+    pub(crate) async fn send_login_sso_coaching_email(&self, user: &User) {
+        let locale = self.locale_for(user);
+        let base_url = self.public_base_url.trim_end_matches('/').to_string();
+        let display = user.display_full(false);
+        let args: Vec<(&str, &str)> = vec![("login_url", &base_url), ("username", &display)];
+        let subject = self
+            .i18n_or(
+                "server.magic_link.email.login_coaching.oidc.subject",
+                &locale,
+                &args,
+            )
+            .await;
+        let text_body = self
+            .render_bilingual(
+                "server.magic_link.email.login_coaching.oidc.body",
+                &locale,
+                &args,
+            )
+            .await;
+        let message = EmailMessage {
+            to: user.email().to_string(),
+            subject,
+            text_body,
+            html_body: None,
+        };
+        if let Err(e) = self.email_sender.send(message).await {
+            tracing::warn!(
+                target: "audit",
+                event = "auth.login_coaching_failed",
+                reason = "oidc_user",
+                user_id = %user.id(),
+                error = %e.message,
+                "🔐 login SSO coaching email SMTP send failed for '{}'",
+                user.display_for_audit(),
+            );
+        }
+    }
+
+    /// Mint + email a one-click magic-link to a passwordless user who
+    /// tried to sign in with a password. We already have the user
+    /// (`AuthApplicationService::login` just looked them up), and the
+    /// caller has decided they're eligible for this path (no password
+    /// hash on file AND not OIDC-federated), so this method skips the
+    /// re-lookup + eligibility gate that `send_login_link` performs.
+    /// The token is minted WITHOUT a request-challenge binding —
+    /// symmetric to `issue_invitation`, since the login POST never set
+    /// the cross-browser cookie — so the user can click it from any
+    /// device. The copy is the standard login-link email, not a
+    /// coaching one: there's a clickable link in the body and the
+    /// uniform "Invalid credentials" response the attacker sees is
+    /// unchanged.
+    ///
+    /// Rate-limiting: the login endpoint already enforces per-IP and
+    /// per-identifier login rate limits, so an attacker spamming
+    /// passwords for a passwordless user is throttled upstream before
+    /// reaching this path.
+    ///
+    /// Fail-open on SMTP: the token row is already written by the time
+    /// delivery fails, so a transient SMTP blip doesn't block the real
+    /// owner from retrying — their next login attempt mints a fresh
+    /// token and tries again. Audit log carries the delivery outcome.
+    pub(crate) async fn send_unbound_login_link(&self, user: &User) -> Result<(), DomainError> {
+        let token = MagicLinkToken::new(
+            user.id(),
+            chrono::Duration::minutes(self.magic_link_cfg.login_ttl_minutes as i64),
+            None,
+            None,
+        );
+        self.magic_link_repo.create(&token).await?;
+
+        let link = format!(
+            "{}/magic/v1/{}",
+            self.public_base_url.trim_end_matches('/'),
+            token.token(),
+        );
+        let locale = self.locale_for(user);
+        let ttl_minutes = self.magic_link_cfg.login_ttl_minutes.to_string();
+        let login_args: Vec<(&str, &str)> = vec![("link", &link), ("ttl_minutes", &ttl_minutes)];
+
+        let subject = self
+            .i18n_or(
+                "server.magic_link.email.login.subject",
+                &locale,
+                &login_args,
+            )
+            .await;
+        let text_body = self
+            .render_bilingual("server.magic_link.email.login.body", &locale, &login_args)
+            .await;
+
+        let message = EmailMessage {
+            to: user.email().to_string(),
+            subject,
+            text_body,
+            html_body: None,
+        };
+
+        match self.email_sender.send(message).await {
+            Ok(outcome) => {
+                tracing::info!(
+                    target: "audit",
+                    event = "auth.login_magic_link_sent",
+                    reason = "no_password_recovery",
+                    user_id = %user.id(),
+                    username = %user.display_for_audit(),
+                    smtp_code = outcome.code,
+                    smtp_message = %outcome.message,
+                    "🔗 unbound login link sent after password attempt on passwordless account '{}'",
+                    user.display_for_audit(),
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "audit",
+                    event = "auth.login_magic_link_failed",
+                    user_id = %user.id(),
+                    error = %e.message,
+                    "🔗 unbound login link SMTP send failed for '{}'",
+                    user.display_for_audit(),
+                );
+            }
+        }
+
+        Ok(())
+    }
+
     /// Resolve a translation, falling back to the literal key on any
     /// lookup error. Identical to the handler-side helper — kept inline
     /// here because the service layer can't pull in a UI util module
@@ -876,7 +1094,15 @@ impl MagicLinkInviteService {
             // resolution is reliable even if a translator hasn't
             // populated the English copy yet — defensive default in
             // both layers.
-            Some(self.i18n_or(body_key, &Locale::english(), args).await)
+            let english = self.i18n_or(body_key, &Locale::english(), args).await;
+            // Suppress the English fallback when the native-locale
+            // resolution already rendered as English — happens when
+            // the key isn't translated for the user's locale yet
+            // (new email templates land in `en.json` first; the
+            // other locales catch up via a translation pass). Without
+            // this, the recipient sees the same English block twice
+            // with a divider in between.
+            if english == body { None } else { Some(english) }
         };
         let divider = self
             .i18n_or(
@@ -1036,16 +1262,23 @@ mod tests {
     }
 
     #[test]
-    fn oidc_always_rejected_regardless_of_flag() {
+    fn oidc_strict_then_lenient() {
         let u = user(None, Some(("google", "sub-123")));
+        // Strict (default): OIDC users are refused magic-link so the
+        // IdP's MFA / step-up stays authoritative.
         assert_eq!(
-            magic_link_eligibility(&u, false),
+            magic_link_eligibility(&u, false, false),
             Eligibility::Reject("oidc_user")
         );
+        // `permit_magic_link_for_oidc_users` doesn't move the needle
+        // on password-users; the two policies are independent.
         assert_eq!(
-            magic_link_eligibility(&u, true),
+            magic_link_eligibility(&u, true, false),
             Eligibility::Reject("oidc_user")
         );
+        // Lenient on OIDC: allow regardless of password-user policy.
+        assert_eq!(magic_link_eligibility(&u, false, true), Eligibility::Allow);
+        assert_eq!(magic_link_eligibility(&u, true, true), Eligibility::Allow);
     }
 
     #[test]
@@ -1069,33 +1302,56 @@ mod tests {
     #[test]
     fn password_user_strict_then_lenient() {
         let u = user(Some("$argon2id$..."), None);
+        // Strict: has_password rejection regardless of the OIDC flag.
         assert_eq!(
-            magic_link_eligibility(&u, false),
+            magic_link_eligibility(&u, false, false),
             Eligibility::Reject("has_password")
         );
-        assert_eq!(magic_link_eligibility(&u, true), Eligibility::Allow);
+        assert_eq!(
+            magic_link_eligibility(&u, false, true),
+            Eligibility::Reject("has_password")
+        );
+        // Lenient on password: allow regardless of OIDC flag.
+        assert_eq!(magic_link_eligibility(&u, true, false), Eligibility::Allow);
+        assert_eq!(magic_link_eligibility(&u, true, true), Eligibility::Allow);
     }
 
     #[test]
     fn no_credential_always_allowed() {
+        // External-user case: no password, no federation. Policy flags
+        // are irrelevant — magic-link is the only path for this user.
+        // This is the row that unblocks external users on OIDC-enabled
+        // deployments (previously stuck under the deployment-wide
+        // OIDC-master rule).
         let u = user(None, None);
-        assert_eq!(magic_link_eligibility(&u, false), Eligibility::Allow);
-        assert_eq!(magic_link_eligibility(&u, true), Eligibility::Allow);
+        for pw in [false, true] {
+            for oidc in [false, true] {
+                assert_eq!(
+                    magic_link_eligibility(&u, pw, oidc),
+                    Eligibility::Allow,
+                    "no-credential user must always be eligible (pw={pw}, oidc={oidc})"
+                );
+            }
+        }
     }
 
     #[test]
     fn oidc_dominates_password_when_both_set() {
         // Edge case: user has password AND OIDC linked. The ladder
         // checks OIDC first, so the rejection reason is "oidc_user"
-        // (not "has_password"). The flag doesn't matter here either.
+        // (not "has_password") — the OIDC policy flag alone decides.
         let u = user(Some("hash"), Some(("google", "sub-123")));
+        // OIDC flag off → reject as oidc_user regardless of password flag.
         assert_eq!(
-            magic_link_eligibility(&u, false),
+            magic_link_eligibility(&u, false, false),
             Eligibility::Reject("oidc_user")
         );
         assert_eq!(
-            magic_link_eligibility(&u, true),
+            magic_link_eligibility(&u, true, false),
             Eligibility::Reject("oidc_user")
         );
+        // OIDC flag on → allow regardless of password flag.
+        assert_eq!(magic_link_eligibility(&u, false, true), Eligibility::Allow);
+        assert_eq!(magic_link_eligibility(&u, true, true), Eligibility::Allow);
     }
 }

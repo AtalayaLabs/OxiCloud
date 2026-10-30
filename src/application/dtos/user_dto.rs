@@ -680,52 +680,6 @@ pub struct OidcExchangeDto {
     pub code: String,
 }
 
-/// Information about available OIDC providers + self-service auth
-/// methods enabled on the deployment. Consumed by the login page to
-/// decide which forms/buttons to render.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct OidcProviderInfoDto {
-    pub enabled: bool,
-    /// The authoritative issuer URL for THIS deployment's OIDC config —
-    /// same value that lands on `auth.users.federation_issuer` for
-    /// users JIT-provisioned via this IdP.
-    ///
-    /// Populated so the frontend can resolve display: when
-    /// `PublicUserDto.federation_issuer` equals this `issuer`, render
-    /// `provider_name` as the human-friendly label (avoids showing raw
-    /// issuer URLs like `https://sso.example.com/realms/main` in the
-    /// admin badge / profile view). Falls back to the raw issuer when
-    /// there's no match — happens for legacy rows not yet lazy-rebound,
-    /// or (future) users linked to a different IdP than the currently
-    /// configured one.
-    ///
-    /// Empty string when OIDC is disabled on this deployment.
-    #[serde(default)]
-    pub issuer: String,
-    pub provider_name: String,
-    pub authorize_endpoint: String,
-    pub password_login_enabled: bool,
-    /// True iff the server accepts magic-link login requests
-    /// (`OXICLOUD_AUTH_METHODS` includes `magic_link` AND SMTP is
-    /// configured). Frontend renders the magic-link form when true.
-    #[serde(default)]
-    pub magic_link_login_enabled: bool,
-    /// True iff `OXICLOUD_REQUIRE_VERIFIED_EMAIL` is set. Frontend uses
-    /// this hint to explain the `EmailNotVerified` login response and
-    /// to nudge new users toward the magic-link verification path
-    /// straight after signup.
-    #[serde(default)]
-    pub require_verified_email: bool,
-    /// True iff the effective allowlist is `[Oidc]` AND the
-    /// `auto_redirect_if_standalone_oidc` policy is set. Frontend
-    /// uses this to decide whether to auto-redirect to the authorize
-    /// endpoint on login-page mount (true) or show a click-to-continue
-    /// button (false). Default false — the safe posture that avoids
-    /// redirect loops when the IdP is degraded.
-    #[serde(default)]
-    pub auto_redirect_to_oidc: bool,
-}
-
 /// Claims extracted from the validated OIDC ID token
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct OidcUserInfoDto {

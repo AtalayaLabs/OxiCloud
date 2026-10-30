@@ -2641,6 +2641,12 @@ impl AppServiceFactory {
                 crate::infrastructure::services::webdav_dead_property_store::create_dead_property_store(pool.clone()),
             authorization: authorization.clone(),
             migration_readonly: migration_readonly.clone(),
+            // Default-on; the seed from AdminSettingsService happens
+            // further down once the service exists. Reading `true` in
+            // the pre-seed window keeps the register endpoint behaving
+            // the same as "no override set" — anything stricter would
+            // block registration during the ~ms before the seed runs.
+            registration_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             backend_write_gate: backend_write_gate.clone(),
             ops_banner_service: ops_banner_service.clone(),
             migration_progress: Arc::new(std::sync::RwLock::new(None)),
@@ -2826,6 +2832,36 @@ impl AppServiceFactory {
                     self.config.base_url(),
                 ),
             ));
+
+            // Login-side coaching: when `AuthApplicationService::login`
+            // refuses a password attempt on an OIDC-federated or
+            // passwordless account, dispatch a side-channel coaching
+            // email (OIDC) or a real one-click magic-link email
+            // (passwordless) naming the correct method. Wired here
+            // because the invite service was just constructed and
+            // auth_service was already built in the earlier
+            // auth-branch — the OnceLocks on
+            // `AuthApplicationService` are the one-shot setters.
+            //
+            // Also share the magic-link-send per-email + per-IP
+            // limiters so the login-recovery mint path cannot be used
+            // to exceed the quotas the explicit `/api/auth/magic-link/
+            // send` handler enforces — a hit on either endpoint burns
+            // one unit of the other's budget.
+            if let (Some(invite_svc), Some(auth_svc)) = (
+                app_state.magic_link_invite_service.clone(),
+                app_state.auth_service.as_ref(),
+            ) {
+                auth_svc
+                    .auth_application_service
+                    .set_login_coaching_dispatcher(invite_svc);
+                auth_svc
+                    .auth_application_service
+                    .set_login_recovery_rate_limiters(
+                        app_state.magic_link_send_per_email_rate_limiter.clone(),
+                        app_state.magic_link_send_per_ip_rate_limiter.clone(),
+                    );
+            }
 
             // PR N1: wire the unified RecipientNotificationService.
             // Only constructed when MagicLinkInviteService is also
@@ -3103,6 +3139,17 @@ impl AppServiceFactory {
             }
 
             app_state.admin_settings_service = Some(admin_svc.clone());
+
+            // Seed the public-registration atomic from the service's
+            // effective value (env `OXICLOUD_DISABLE_REGISTRATION`
+            // > DB setting > default-true). Admin-UI toggles flip the
+            // atomic directly in `set_registration_setting`; this is
+            // the one-shot boot seed so `/api/config` reflects the
+            // right value from the first request.
+            app_state.registration_enabled.store(
+                admin_svc.get_registration_enabled().await,
+                std::sync::atomic::Ordering::Relaxed,
+            );
 
             // 9b-1b. Wire storage settings service (reuses same settings_repo).
             // Multi-entry view fields (entries + active_entry_name +
@@ -4068,6 +4115,18 @@ pub struct AppState {
     /// gate when you need the WHY. See
     /// `docs/plan/storage-multi-entry.md` §"Read-only mode".
     pub migration_readonly: Arc<std::sync::atomic::AtomicBool>,
+
+    /// Cached "public self-registration is enabled" flag, kept as an
+    /// atomic so `GET /api/config` can read it without a DB round-trip
+    /// on every request. Seeded at boot from
+    /// [`AdminSettingsService::get_registration_enabled`] (env
+    /// `OXICLOUD_DISABLE_REGISTRATION` > DB `registration_enabled` >
+    /// default `true`), flipped at admin-write time in
+    /// `admin_handler::set_registration_setting`. The handler folds
+    /// this into [`compute_server_status_version`]'s hash input so a
+    /// toggle fires a real version diff and every connected FE
+    /// refetches `/api/config` to pick it up.
+    pub registration_enabled: Arc<std::sync::atomic::AtomicBool>,
 
     /// Operator-driven banner messages. The admin UI CRUDs on this
     /// via `/api/admin/banners`; the `X-Server-Status` middleware

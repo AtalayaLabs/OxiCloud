@@ -28,7 +28,27 @@
         },
         "kind_file": "archivo",
         "kind_folder": "carpeta",
-        "english_fallback_divider": "--- Versión en inglés a continuación ---"
+        "english_fallback_divider": "--- Versión en inglés a continuación ---",
+        "login_coaching": {
+          "oidc": {
+            "subject": "Iniciar sesión en OxiCloud mediante SSO",
+            "body": "Hola {{username}},\n\nAlguien intentó iniciar sesión en tu cuenta OxiCloud con una contraseña, pero tu cuenta está vinculada a inicio de sesión único (SSO) y debe autenticarse a través de tu proveedor de identidad — no con una contraseña.\n\nAbre OxiCloud y haz clic en «Iniciar sesión con SSO»:\n{{login_url}}\n\nSi no intentaste iniciar sesión, puedes ignorar este mensaje. No se ha iniciado ninguna sesión y nada ha cambiado en tu cuenta.\n\n— OxiCloud"
+          }
+        },
+        "coaching": {
+          "oidc": {
+            "subject": "Iniciar sesión en OxiCloud mediante SSO",
+            "body": "Hola {{username}},\n\nAlguien solicitó un enlace de inicio de sesión para tu cuenta OxiCloud, pero tu cuenta está vinculada a inicio de sesión único (SSO) y debe autenticarse a través de tu proveedor de identidad — no mediante un enlace por correo.\n\nAbre OxiCloud y haz clic en «Iniciar sesión con SSO»:\n{{login_url}}\n\nSi no solicitaste esto, puedes ignorar este mensaje. No se ha iniciado ninguna sesión y nada ha cambiado en tu cuenta.\n\n— OxiCloud"
+          },
+          "password": {
+            "subject": "Usa tu contraseña para iniciar sesión en OxiCloud",
+            "body": "Hola {{username}},\n\nAlguien solicitó un enlace de inicio de sesión para tu cuenta OxiCloud, pero tu cuenta tiene una contraseña configurada y esta instancia no permite iniciar sesión mediante enlace por correo cuando existe una contraseña. Por favor, inicia sesión con tu contraseña.\n\nAbre OxiCloud:\n{{login_url}}\n\nSi no recuerdas tu contraseña, usa el enlace «¿Olvidaste tu contraseña?» en la página de inicio de sesión.\n\nSi no solicitaste esto, puedes ignorar este mensaje. No se ha iniciado ninguna sesión y nada ha cambiado en tu cuenta.\n\n— OxiCloud"
+          },
+          "generic": {
+            "subject": "Enlace de inicio de sesión OxiCloud no enviado",
+            "body": "Hola {{username}},\n\nAlguien solicitó un enlace de inicio de sesión para tu cuenta OxiCloud, pero no se pudo entregar. Por favor, abre OxiCloud e inicia sesión con el método configurado para tu cuenta.\n\n{{login_url}}\n\nSi no solicitaste esto, puedes ignorar este mensaje.\n\n— OxiCloud"
+          }
+        }
       }
     },
     "notification": {
@@ -739,7 +759,11 @@
     "login_error_email_ambiguous": "Varias cuentas locales coinciden con esta dirección de correo electrónico. Póngase en contacto con su administrador para resolverlo.",
     "logged_out": "Sesión cerrada correctamente.",
     "login_error_email_not_verified_at_idp": "Su proveedor de identidad indica que su dirección de correo electrónico no está verificada. Confirme su correo electrónico en su proveedor de identidad y vuelva a iniciar sesión.",
-    "login_error_email_verification_required": "Este servidor requiere un correo electrónico verificado. Su proveedor de identidad no incluyó una declaración de verificación de correo electrónico. Contacte a su administrador."
+    "login_error_email_verification_required": "Este servidor requiere un correo electrónico verificado. Su proveedor de identidad no incluyó una declaración de verificación de correo electrónico. Contacte a su administrador.",
+    "register_domain_not_allowed": "Esta instancia no acepta registros desde ese dominio de correo. Prueba con otra dirección o pide al administrador que añada el tuyo a la lista permitida.",
+    "register_password_disabled": "El registro con contraseña está desactivado en esta instancia. Deja la contraseña en blanco para recibir un enlace de inicio de sesión por correo, o inicia sesión con tu proveedor de identidad.",
+    "register_disabled": "Los registros están cerrados en esta instancia. Pide una invitación a un administrador.",
+    "account_deactivated": "Tu cuenta ha sido desactivada. Por favor, contacta con tu administrador."
   },
   "storage": {
     "title": "Almacenamiento",

@@ -50,13 +50,12 @@ use crate::application::dtos::trash_dto::{
     TrashResourceItemDto, TrashResourcesDto, TrashedItemDto,
 };
 use crate::application::dtos::user_dto::{
-    AuthResponseDto, ChangePasswordDto, LoginDto, OidcExchangeDto, OidcProviderInfoDto,
-    PublicUserDto, RefreshTokenDto, RegisterDto, SetupAdminDto,
+    AuthResponseDto, ChangePasswordDto, LoginDto, OidcExchangeDto, PublicUserDto, RefreshTokenDto,
+    RegisterDto, SetupAdminDto,
 };
 use crate::application::ports::chunked_upload_ports::{
     ChunkUploadResponseDto, CreateUploadResponseDto, UploadStatusResponseDto,
 };
-use crate::interfaces::api::handlers::auth_handler::SystemInitStatusDto;
 use crate::interfaces::api::handlers::chunked_upload_handler::{
     CompleteUploadResponse, CreateUploadRequest,
 };
@@ -83,9 +82,8 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         handlers::auth_handler::change_password,
         handlers::auth_handler::logout,
         handlers::auth_handler::setup_admin,
-        handlers::auth_handler::get_system_status,
-        handlers::auth_handler::oidc_providers,
         handlers::auth_handler::oidc_authorize,
+        handlers::server_status_handler::get_server_status,
         handlers::auth_handler::oidc_callback,
         handlers::auth_handler::oidc_exchange,
         handlers::auth_handler::oidc_backchannel_logout,
@@ -377,6 +375,12 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
     ),
     components(
         schemas(
+            // Shared error body — every 4xx / 5xx response conforms to
+            // this shape. Registered so the generated SDK and third-
+            // party clients have a typed body to deserialize against
+            // instead of `unknown`. See `interfaces::errors::ApiErrorBody`
+            // for the known `error_type` values.
+            crate::interfaces::errors::ApiErrorBody,
             // Folder schemas
             FolderDto,
             FolderOrderBy,
@@ -417,7 +421,6 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             AuthResponseDto,
             ChangePasswordDto,
             RefreshTokenDto,
-            SystemInitStatusDto,
             // Device-authorization grant (RFC 8628).
             crate::application::dtos::device_auth_dto::DeviceAuthorizeRequestDto,
             crate::application::dtos::device_auth_dto::DeviceAuthorizeResponseDto,
@@ -451,7 +454,6 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             crate::domain::entities::notification::SharegrantedPayload,
             HeaderPayload,
             ProgressHeader,
-            OidcProviderInfoDto,
             OidcExchangeDto,
             // Admin sessions panel — wire shape for `/api/admin/sessions`.
             // `SessionOrigin` is the discriminated enum for the `origin`

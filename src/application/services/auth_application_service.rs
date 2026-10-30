@@ -24,6 +24,7 @@ use crate::infrastructure::services::password_hasher::Argon2PasswordHasher;
 use moka::sync::Cache;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::RwLock;
 use std::time::Duration;
 use uuid::Uuid;
@@ -713,6 +714,37 @@ pub struct AuthApplicationService {
     /// NULL`), legacy `POST /api/auth/login` is refused for that
     /// account. `None` = substrate off, no gate applies.
     opaque_repo: Option<Arc<dyn crate::application::ports::opaque_ports::OpaqueRepositoryPort>>,
+    /// Coaching-email dispatcher used by `login()` when it refuses a
+    /// password attempt on an account that cannot accept one — OIDC-
+    /// federated accounts and passwordless externals. The uniform
+    /// `Invalid credentials` response is unchanged; the dispatcher
+    /// sends a side-channel email to the real mailbox owner naming the
+    /// correct method. `None` = SMTP not wired, no coaching dispatched
+    /// (login still returns the uniform rejection).
+    ///
+    /// Wired post-construction in `common/di.rs` once both
+    /// `AuthApplicationService` and `MagicLinkInviteService` exist —
+    /// the DI factory builds `MagicLinkInviteService` AFTER wrapping
+    /// `AuthApplicationService` in `Arc`, so a consuming builder won't
+    /// work; a one-shot `OnceLock` is the minimum machinery for the
+    /// "set-at-DI, read-forever" semantic.
+    login_coaching_dispatcher: OnceLock<
+        Arc<crate::application::services::magic_link_invite_service::MagicLinkInviteService>,
+    >,
+    /// Shared per-email + per-IP magic-link send limiters, consulted
+    /// before `send_unbound_login_link` mints on the login-recovery
+    /// path so an attacker can't use `POST /api/auth/login` as an
+    /// alternate mint channel to exceed the quotas enforced on
+    /// `POST /api/auth/magic-link/send`. These Arcs are the SAME
+    /// instances the magic-link-send handler consults — a hit on
+    /// either endpoint burns one unit of the other's budget. `None`
+    /// = test build or SMTP off, in which case the recovery path
+    /// mints without the limiter (test harnesses need to exercise
+    /// the mint path without configuring rate budgets).
+    login_recovery_per_email_rate_limiter:
+        OnceLock<Arc<crate::interfaces::middleware::rate_limit::RateLimiter>>,
+    login_recovery_per_ip_rate_limiter:
+        OnceLock<Arc<crate::interfaces::middleware::rate_limit::RateLimiter>>,
 }
 
 /// TTL for [`AuthApplicationService::user_flags_cache`]. Upper bound on how
@@ -770,7 +802,40 @@ impl AuthApplicationService {
             auth_policies: Vec::new(),
             require_verified_email: false,
             opaque_repo: None,
+            login_coaching_dispatcher: OnceLock::new(),
+            login_recovery_per_email_rate_limiter: OnceLock::new(),
+            login_recovery_per_ip_rate_limiter: OnceLock::new(),
         }
+    }
+
+    /// Attach the coaching-email dispatcher used by `login()` when it
+    /// refuses a password attempt on an OIDC-federated or passwordless
+    /// account. Wired post-construction from `common/di.rs` on an
+    /// `Arc<AuthApplicationService>` once `MagicLinkInviteService`
+    /// exists — hence `&self` + `OnceLock` rather than a consuming
+    /// builder. Idempotent: a second call is a no-op (the OnceLock has
+    /// already stored its value).
+    pub fn set_login_coaching_dispatcher(
+        &self,
+        dispatcher: Arc<
+            crate::application::services::magic_link_invite_service::MagicLinkInviteService,
+        >,
+    ) {
+        let _ = self.login_coaching_dispatcher.set(dispatcher);
+    }
+
+    /// Share the magic-link-send per-email + per-IP limiters so the
+    /// login-recovery path consults the SAME budgets the explicit
+    /// `/api/auth/magic-link/send` handler does — closing the alternate
+    /// mint channel. Wired from `common/di.rs` on `Arc<Self>`, same
+    /// pattern as `set_login_coaching_dispatcher`.
+    pub fn set_login_recovery_rate_limiters(
+        &self,
+        per_email: Arc<crate::interfaces::middleware::rate_limit::RateLimiter>,
+        per_ip: Arc<crate::interfaces::middleware::rate_limit::RateLimiter>,
+    ) {
+        let _ = self.login_recovery_per_email_rate_limiter.set(per_email);
+        let _ = self.login_recovery_per_ip_rate_limiter.set(per_ip);
     }
 
     /// Populates the auth-method allowlist + policy vector +
@@ -821,31 +886,36 @@ impl AuthApplicationService {
     /// deployment. Composes the OIDC `disable_password_login` legacy
     /// flag with the newer `OXICLOUD_AUTH_METHODS` allowlist.
     pub fn is_password_login_allowed(&self) -> bool {
-        !self.password_login_disabled()
-            && (self.allowed_auth_methods.is_empty()
-                || self.allowed_auth_methods.contains(&AuthMethod::Password))
+        // Pure membership — `AuthConfig::from_env` auto-populates the
+        // list when the operator didn't set AUTH_METHODS, so an empty
+        // vec here would be a programming bug rather than "all methods
+        // allowed".
+        !self.password_login_disabled() && self.allowed_auth_methods.contains(&AuthMethod::Password)
     }
 
-    /// True iff `POST /api/auth/magic-link/send` should mint tokens for
-    /// end-user login on this deployment.
+    /// True iff `POST /api/auth/magic-link/send` should accept
+    /// requests on this deployment.
     ///
-    /// Requires ALL of:
+    /// Requires BOTH of:
     ///   * repo wired (SMTP configured, tokens can actually be minted);
-    ///   * allowlist permits `MagicLink` (or is empty = permissive);
-    ///   * OIDC is NOT enabled at the deployment level.
+    ///   * `MagicLink` is in `OXICLOUD_AUTH_METHODS` (or the allowlist
+    ///     is empty = permissive default).
     ///
-    /// The OIDC guard is a hard rule: when OIDC is enabled it is the
-    /// master identity provider — magic-link would bypass any 2FA / step-up
-    /// policy that the IdP enforces. An operator running OIDC + local
-    /// accounts hybrid must NOT expose magic-link login for the local
-    /// accounts either, because a user provisioned via OIDC-JIT could
-    /// receive a magic-link on the same mailbox and sidestep MFA. Admin-
-    /// mediated invites use OIDC or password bootstrap instead.
+    /// The former OIDC-master guard (hard-disable magic-link whenever
+    /// OIDC was enabled, deployment-wide) was retired on
+    /// feat/registration — it blocked external users on OIDC
+    /// deployments as a side effect. The MFA-bypass concern that
+    /// motivated it is now enforced **per user** by
+    /// `magic_link_eligibility()`: an OIDC-federated account's
+    /// magic-link submit is refused with a coaching email ("sign in
+    /// via SSO") unless the operator opts in via
+    /// `OXICLOUD_AUTH_POLICIES=permit_magic_link_for_oidc_users`.
+    /// Deployment-level mix of OIDC + magic-link is now first-class.
     pub fn is_magic_link_login_allowed(&self) -> bool {
-        self.magic_link_enabled()
-            && !self.oidc_enabled()
-            && (self.allowed_auth_methods.is_empty()
-                || self.allowed_auth_methods.contains(&AuthMethod::MagicLink))
+        // Pure membership — see `is_password_login_allowed()` for the
+        // rationale (no `is_empty()` escape hatch; AuthConfig::from_env
+        // auto-populates when AUTH_METHODS is unset).
+        self.magic_link_enabled() && self.allowed_auth_methods.contains(&AuthMethod::MagicLink)
     }
 
     /// True iff login should reject accounts with `email_verified_at IS
@@ -1302,6 +1372,44 @@ impl AuthApplicationService {
         Ok(PublicUserDto::new(created_user, false))
     }
 
+    /// Centralised deactivated-account gate — called by every path
+    /// that is about to mint a session on behalf of an authenticated
+    /// user (password login, magic-link redemption, OIDC callback).
+    ///
+    /// Fires AFTER the credential has been verified, never before: a
+    /// deactivated account hit with a wrong password still collapses
+    /// to the generic `AccessDenied` + "Invalid credentials" response,
+    /// so the deactivation state is only revealed to callers who have
+    /// already proved possession of the credential. The alternative —
+    /// gating pre-credential — leaks "this account exists AND is
+    /// deactivated" to anyone guessing passwords, which is a weaker
+    /// anti-enum posture.
+    ///
+    /// `origin` labels the login door for the audit record so
+    /// operators can tell which path the deactivated attempt came
+    /// through without having to join against the request-scope span.
+    fn ensure_user_is_active(&self, user: &User, origin: &'static str) -> Result<(), DomainError> {
+        if user.is_active() {
+            return Ok(());
+        }
+        tracing::info!(
+            target: "audit",
+            event = "auth.login_rejected",
+            reason = "account_deactivated",
+            origin = origin,
+            user_id = %user.id(),
+            username = %user.display_for_audit(),
+            "🔐 login rejected: account deactivated for '{}' (via {})",
+            user.display_for_audit(),
+            origin,
+        );
+        Err(DomainError::new(
+            ErrorKind::AccountDeactivated,
+            "Auth",
+            "Account deactivated",
+        ))
+    }
+
     pub async fn login(
         &self,
         dto: LoginDto,
@@ -1353,38 +1461,89 @@ impl AuthApplicationService {
             DomainError::new(ErrorKind::AccessDenied, "Auth", "Invalid credentials")
         })?;
 
-        // Check if user is active
-        if !user.is_active() {
-            tracing::info!(
-                target: "audit",
-                event = "auth.login_rejected",
-                reason = "account_deactivated",
-                user_id = %user.id(),
-                username = %user.display_for_audit(),
-                "🔐 login rejected: account deactivated for '{}'",
-                user.display_for_audit(),
-            );
-            return Err(DomainError::new(
-                ErrorKind::AccessDenied,
-                "Auth",
-                "Account deactivated",
-            ));
-        }
+        // NOTE: the deactivated-account check used to live here, BEFORE
+        // the password verify. That leaked "this account exists AND is
+        // deactivated" to any password-guesser. The check now fires
+        // AFTER a successful credential match via
+        // `ensure_user_is_active` — see below — so a wrong-password
+        // attempt on a deactivated account still collapses to the
+        // generic "Invalid credentials" response.
 
         // Verify password using the injected hasher. If the user has no
         // password configured (externals, OIDC-only), short-circuit to
         // "invalid credentials" — the password-login path never accepts
-        // a NULL hash.
+        // a NULL hash. Before returning, dispatch a side-channel email
+        // to the real mailbox owner that matches the account's actual
+        // method:
+        //   * OIDC-federated → SSO coaching email (we can't mint a
+        //     session primitive for an IdP-owned identity).
+        //   * No federation, no password → a REAL one-click magic-link
+        //     login email. The user attempted to sign in, we know
+        //     their account signs in via mailbox link, so give them
+        //     the link they'd otherwise have to type into the login
+        //     page a second time. Symmetric to the magic-link-send
+        //     path's coaching: the uniform response the submitter sees
+        //     still leaks nothing, but the legitimate owner stops
+        //     wondering why their password "stopped working" and goes
+        //     straight through.
         let Some(hash) = user.password_hash() else {
+            let is_oidc = user.is_oidc_user();
+            let coaching_reason: &'static str = if is_oidc { "oidc_user" } else { "no_password" };
             tracing::info!(
                 target: "audit",
                 event = "auth.login_rejected",
                 reason = "no_password",
+                coaching_reason = coaching_reason,
                 user_id = %user.id(),
                 username = %user.display_for_audit(),
-                "🔐 login rejected: user has no password configured for '{}'",
+                "🔐 login rejected: user has no password configured for '{}' (recovery: {})",
                 user.display_for_audit(),
+                coaching_reason,
             );
+            if let Some(dispatcher) = self.login_coaching_dispatcher.get() {
+                if is_oidc {
+                    dispatcher.send_login_sso_coaching_email(&user).await;
+                } else {
+                    // Share the magic-link-send budgets so this login-
+                    // recovery mint channel can't be used to exceed the
+                    // quotas the dedicated send endpoint enforces. Both
+                    // caps are keyed and spent identically to the
+                    // explicit send path (per-email on `user.email()`,
+                    // per-IP on the request's client address). A hit on
+                    // either bucket skips the mint silently — the
+                    // uniform 401 the attacker sees is unchanged, so
+                    // nothing is leaked about the rate state.
+                    let email_ok = self
+                        .login_recovery_per_email_rate_limiter
+                        .get()
+                        .is_none_or(|rl| rl.check_and_increment(user.email()).is_ok());
+                    let ip_ok = self
+                        .login_recovery_per_ip_rate_limiter
+                        .get()
+                        .zip(client_ip.as_deref())
+                        .is_none_or(|(rl, ip)| rl.check_and_increment(ip).is_ok());
+                    if !email_ok || !ip_ok {
+                        tracing::warn!(
+                            target: "audit",
+                            event = "auth.login_magic_link_rate_limited",
+                            reason = if !email_ok { "rate_limited_email" } else { "rate_limited_ip" },
+                            user_id = %user.id(),
+                            username = %user.display_for_audit(),
+                            "🔗 unbound login link suppressed for '{}' (shared magic-link quota exhausted)",
+                            user.display_for_audit(),
+                        );
+                    } else if let Err(e) = dispatcher.send_unbound_login_link(&user).await {
+                        tracing::warn!(
+                            target: "audit",
+                            event = "auth.login_magic_link_failed",
+                            user_id = %user.id(),
+                            error = %e.to_string(),
+                            "🔗 unbound login link dispatch failed for '{}'",
+                            user.display_for_audit(),
+                        );
+                    }
+                }
+            }
             return Err(DomainError::new(
                 ErrorKind::AccessDenied,
                 "Auth",
@@ -1412,6 +1571,14 @@ impl AuthApplicationService {
                 "Invalid credentials",
             ));
         }
+
+        // Credentials matched — now the deactivated-account gate fires.
+        // Distinct error_type (`AccountDeactivated` → 403) so the SPA
+        // can show the real reason to a user who just proved possession
+        // of the right password; a wrong-password attempt above still
+        // collapses to the generic 401, keeping the deactivation
+        // invisible to guessers.
+        self.ensure_user_is_active(&user, "password")?;
 
         // Phase 4 gate: legacy password login is refused for users who
         // have completed at least one OPAQUE handshake
@@ -1950,6 +2117,13 @@ impl AuthApplicationService {
         // timestamp (benches/ROUND12.md §3, 8.9x).
         user.mark_email_verified();
         self.user_storage.mark_email_verified(user.id()).await?;
+
+        // Credentials matched (token redemption is the credential here)
+        // — gate the session mint on `is_active` so a magic link minted
+        // before deactivation can't be redeemed afterwards. See
+        // `ensure_user_is_active` for why the check lives after the
+        // credential path, not before.
+        self.ensure_user_is_active(&user, "magic_link")?;
 
         // Magic-link redemption is a GET redirect — no way to
         // thread `dpop_jkt` into a GET body. Session is minted
@@ -5555,6 +5729,12 @@ impl AuthApplicationService {
         if let Some(sid) = claims.sid.as_ref() {
             session = session.with_oidc_sid(sid.clone());
         }
+        // IdP-side credentials validated — gate session mint on local
+        // `is_active`. JIT provisioning above creates fresh users as
+        // active, so the check is only load-bearing for returning
+        // federated users whom an admin has since deactivated. Same
+        // enforcement point as the password + magic-link paths.
+        self.ensure_user_is_active(&user, "oidc")?;
         // Mint AFTER session is fully configured so `sid` claim
         // aligns with the row about to be inserted.
         let access_token =

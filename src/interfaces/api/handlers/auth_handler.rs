@@ -12,8 +12,7 @@ use uuid::Uuid;
 
 use crate::application::dtos::user_dto::{
     AuthResponseDto, ChangePasswordDto, LoginDto, OidcCallbackQueryDto, OidcExchangeDto,
-    OidcProviderInfoDto, PublicUserDto, RefreshTokenDto, RegisterDto, SelfUserDto, SetupAdminDto,
-    UpgradeToInternalDto,
+    PublicUserDto, RefreshTokenDto, RegisterDto, SelfUserDto, SetupAdminDto, UpgradeToInternalDto,
 };
 use crate::application::services::auth_application_service::{OidcCallbackResult, RegisterResult};
 use crate::common::di::AppState;
@@ -26,9 +25,14 @@ use serde::Deserialize;
 /// Public auth routes, no authentication required.
 pub fn auth_public_routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/status", get(get_system_status))
-        // OIDC endpoints (all public)
-        .route("/oidc/providers", get(oidc_providers))
+        // /status endpoint retired. The one unique signal it carried
+        // (`initialized`) moved to `/api/config.initialized`; the
+        // other three fields (admin_count, registration_allowed,
+        // faces_enabled) were already duplicates or privacy leaks.
+        // OIDC endpoints (all public). Provider-discovery used to live
+        // at `/oidc/providers`; it was retired on feat/registration —
+        // the same payload (plus `password`/`magic_link`/`registration`
+        // sibling blocks) is now carried by `GET /api/config.auth.oidc`.
         .route("/oidc/authorize", get(oidc_authorize))
         .route("/oidc/callback", get(oidc_callback))
         .route("/oidc/exchange", post(oidc_exchange))
@@ -497,6 +501,23 @@ pub async fn login(
             // primarily serves legacy clients and downgrade-attack
             // detection. 403 keeps the shape consistent with the other
             // policy refusals (PasswordLoginDisabled, EmailNotVerified).
+            if err.kind == crate::domain::errors::ErrorKind::AccountDeactivated {
+                // Gap 3: credentials matched but the account is
+                // deactivated. Distinct error_type → SPA shows the real
+                // reason ("Account deactivated — contact your
+                // administrator") instead of the generic "Invalid
+                // credentials" we return for bad passwords. 403 matches
+                // the other post-credential-match policy refusals
+                // above. See `AuthApplicationService::ensure_user_is_active`
+                // for the ordering that keeps a wrong-password attempt
+                // on a deactivated account indistinguishable from a
+                // wrong-password attempt on an active one.
+                return Err(AppError::new(
+                    StatusCode::FORBIDDEN,
+                    "Your account has been deactivated. Contact your administrator.",
+                    "AccountDeactivated",
+                ));
+            }
             if err.message == "Password login refused: this account has migrated to OPAQUE" {
                 return Err(AppError::new(
                     StatusCode::FORBIDDEN,
@@ -1377,153 +1398,10 @@ pub async fn setup_admin(
     Ok((StatusCode::CREATED, Json(user)))
 }
 
-/// System initialisation state, returned by `GET /api/auth/status`.
-#[derive(serde::Serialize, ToSchema)]
-pub struct SystemInitStatusDto {
-    /// Whether the system has been set up with an admin.
-    initialized: bool,
-    /// Number of admin users in the system.
-    admin_count: i64,
-    /// Whether self-registration is allowed.
-    registration_allowed: bool,
-    /// Whether the People routes are available in this running instance.
-    faces_enabled: bool,
-}
-
-/// Return the system initialisation state (used by the UI before setup).
-#[utoipa::path(
-    get,
-    path = "/api/auth/status",
-    responses(
-        (status = 200, description = "System status", body = SystemInitStatusDto),
-        (status = 503, description = "Auth service not configured"),
-    ),
-    tag = "auth"
-)]
-pub async fn get_system_status(
-    State(state): State<Arc<AppState>>,
-) -> Result<impl IntoResponse, AppError> {
-    let auth_service = state
-        .auth_service
-        .as_ref()
-        .ok_or_else(|| AppError::internal_error("Authentication service not configured"))?;
-
-    // Use the DB flag as the authoritative source for initialization status
-    let db_initialized = if let Some(admin_svc) = state.admin_settings_service.as_ref() {
-        admin_svc.is_system_initialized().await
-    } else {
-        false
-    };
-
-    // Count admin users for additional info
-    let admin_count = auth_service
-        .auth_application_service
-        .count_admin_users()
-        .await
-        .unwrap_or(0);
-
-    let status = SystemInitStatusDto {
-        initialized: db_initialized || admin_count > 0,
-        admin_count,
-        registration_allowed: db_initialized || admin_count > 0,
-        faces_enabled: state.people_service.is_some(),
-    };
-
-    tracing::info!(
-        "System status check: initialized={}, admin_count={}",
-        status.initialized,
-        status.admin_count
-    );
-
-    Ok((StatusCode::OK, Json(status)))
-}
-
 // ============================================================================
 // ============================================================================
 // OIDC Handlers
 // ============================================================================
-
-/// Return OIDC provider information for the login UI.
-///
-/// Returns `enabled: false` when OIDC is not configured.
-#[utoipa::path(
-    get,
-    path = "/api/auth/oidc/providers",
-    responses(
-        (status = 200, description = "OIDC provider info (enabled=false when OIDC not configured)", body = OidcProviderInfoDto),
-        (status = 503, description = "Auth service not configured"),
-    ),
-    tag = "auth"
-)]
-pub async fn oidc_providers(
-    State(state): State<Arc<AppState>>,
-) -> Result<impl IntoResponse, AppError> {
-    let auth_service = state
-        .auth_service
-        .as_ref()
-        .ok_or_else(|| AppError::internal_error("Auth service not configured"))?;
-
-    let auth_app = &auth_service.auth_application_service;
-
-    // Policy questions the SPA needs to decide which forms to render.
-    // `is_magic_link_login_allowed()` composes SMTP wiring + allowlist +
-    // the "OIDC master → no magic-link login" hard rule; the login page
-    // shows the magic-link tab iff this is true.
-    let password_login_enabled = auth_app.is_password_login_allowed();
-    let magic_link_login_enabled = auth_app.is_magic_link_login_allowed();
-    let require_verified_email = auth_app.require_verified_email();
-    let auto_redirect_to_oidc = auth_app.auto_redirect_to_oidc();
-
-    if !auth_app.oidc_enabled() {
-        return Ok(Json(OidcProviderInfoDto {
-            enabled: false,
-            issuer: String::new(),
-            provider_name: String::new(),
-            authorize_endpoint: String::new(),
-            password_login_enabled,
-            magic_link_login_enabled,
-            require_verified_email,
-            auto_redirect_to_oidc: false,
-        }));
-    }
-
-    let config = auth_app.oidc_config().unwrap();
-
-    // Prefer the DISCOVERY document's issuer — that's what
-    // OidcService uses to validate id_tokens AND what lands on
-    // `auth.users.federation_issuer` at JIT provisioning / lazy
-    // rebind. The config's `issuer_url` is only what the operator
-    // typed to point at discovery; the discovery document publishes
-    // the authoritative value (may differ by trailing slash, host
-    // casing, etc). **Cache-only lookup on purpose** — this
-    // endpoint is PUBLIC + UNAUTHENTICATED, so triggering an IdP
-    // HTTP fetch per request is a DoS amplifier (attacker at N req/s
-    // → we hit the IdP at N req/s, and the cache only stores on
-    // success so a degraded IdP means every call retries). On cold
-    // cache (before the first real OIDC flow warms it), fall back to
-    // the operator-typed `config.issuer_url`. In practice the cache
-    // is warm within seconds of the first login; the fallback only
-    // shows during that window and is only wrong if the IdP
-    // publishes an issuer that differs from the URL used to fetch
-    // discovery (rare in normal deployments).
-    let issuer = auth_app
-        .oidc_service()
-        .and_then(|svc| svc.cached_issuer())
-        .unwrap_or_else(|| config.issuer_url.clone());
-
-    Ok(Json(OidcProviderInfoDto {
-        enabled: true,
-        issuer,
-        provider_name: config.provider_name.clone(),
-        // Browser-facing navigation target (the SPA window.location's to
-        // it verbatim) — must carry the deployment base path.
-        authorize_endpoint: state.core.config.prefixed_path("/api/auth/oidc/authorize"),
-        password_login_enabled,
-        magic_link_login_enabled,
-        require_verified_email,
-        auto_redirect_to_oidc,
-    }))
-}
 
 /// Initiate OIDC authorization — redirects to the configured identity provider.
 ///

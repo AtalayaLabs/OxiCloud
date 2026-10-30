@@ -1,7 +1,7 @@
 /** People (faces) endpoints — ported from features/library/people.js. */
 import { apiFetch } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
-import { getAuthStatus } from './auth';
+import { serverConfig } from '$lib/stores/serverConfig.svelte';
 
 export type { PersonDto as Person } from '../generated/openapi/types.gen';
 import type { PersonDto as Person } from '../generated/openapi/types.gen';
@@ -17,11 +17,14 @@ export async function fetchPeople(): Promise<Person[]> {
 }
 
 /**
- * Read the advertised People capability without probing a disabled route. Used to reveal
- * the People tab only when the backend can serve it.
+ * Read the advertised People capability without probing a disabled route.
+ * Used to reveal the People tab only when the backend can serve it. Reads
+ * from `/api/config.features.faces` (hydrated at SPA boot by
+ * `serverConfig.load()`), replacing the retired
+ * `/api/auth/status.faces_enabled` field.
  */
-export async function peopleEnabled(): Promise<boolean> {
-	return (await getAuthStatus()).faces_enabled === true;
+export function peopleEnabled(): boolean {
+	return serverConfig.features.faces === true;
 }
 
 /** File ids of the photos a person appears in. */

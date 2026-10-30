@@ -196,6 +196,60 @@ export type AdminUsersPageResponse = {
 };
 
 /**
+ * OpenAPI-visible owned mirror of [`ErrorResponse`] — same wire shape,
+ * no borrowed lifetime (utoipa's `ToSchema` needs an owned type).
+ * Published in `components.schemas` so the generated SDK and third-party
+ * clients have a typed body to deserialize 4xx/5xx responses against
+ * instead of treating them as untyped `unknown`. The SPA's hand-written
+ * `apiErrorFromSdkError` helper can lean on this shape once individual
+ * `#[utoipa::path]` response blocks reference it (a follow-up sweep —
+ * introducing the schema here is the enabling step, not the full
+ * migration).
+ *
+ * `error_type` is a free-form `String` by design (not a closed enum):
+ * the server emits both `ErrorKind::wire_name()` values (e.g.
+ * `AccessDenied`, `NotFound`) and handler-specific PascalCase literals
+ * (e.g. `AccountDeactivated`, `PasswordLoginDisabled`, `EmailNotVerified`,
+ * `RegistrationDomainNotAllowed`). Enumerating every value in the
+ * schema would force a schema bump + client regeneration on every new
+ * error branch; keeping it string + documenting known values preserves
+ * the stable wire contract without that tax. Known values below should
+ * be updated when new branches land but aren't load-bearing on the
+ * schema's validity.
+ *
+ * Examples seen on the wire (not exhaustive):
+ * * `ErrorKind::wire_name()` values: `AccessDenied`, `NotFound`,
+ * `InvalidInput`, `AlreadyExists`, `Conflict`, `QuotaExceeded`,
+ * `InternalError`, `TransientBackend`, `Timeout`,
+ * `PreconditionFailed`, `AccountDeactivated`.
+ * * Handler-emitted literals: `PasswordLoginDisabled`,
+ * `EmailNotVerified`, `RegistrationDisabled`,
+ * `RegistrationDomainNotAllowed`, `OpaqueLoginRequired`,
+ * `PasswordChangeRequired`, `PasswordUnchanged`, `AccountLocked`.
+ */
+export type ApiErrorBody = {
+    /**
+     * Same string as `message`; preserved for legacy clients that key
+     * on `error` instead of `message`.
+     */
+    error: string;
+    /**
+     * Machine-readable PascalCase discriminator the SPA switches on.
+     * See the struct doc for the current enumeration of known values.
+     */
+    error_type: string;
+    /**
+     * Human-readable message. Duplicates `error` for backwards compat
+     * with pre-AppError handlers that returned `{"error": "…"}`.
+     */
+    message: string;
+    /**
+     * Numeric HTTP status rendered as a string (e.g. `"403"`, `"404"`).
+     */
+    status: string;
+};
+
+/**
  * Response when an app password is created — includes the plain-text password
  * that is shown ONCE to the user.
  */
@@ -296,9 +350,28 @@ export type AudioMetadataDto = {
 /**
  * Auth block within [`ServerConfigDto`]. Non-privacy-implicating
  * tunables the SPA needs at boot so form validation matches server
- * enforcement.
+ * enforcement, and the complete per-method enablement matrix the
+ * login page uses to pick which forms + buttons to render.
+ *
+ * Sub-objects per auth concern (one of `registration` /
+ * `password` / `magic_link` / `oidc`) rather than flat booleans so
+ * each method's future knobs land as siblings inside its own
+ * sub-object without widening `AuthDto` itself. The ONLY flat
+ * fields at the top are cross-cutting policies (`require_verified_email`
+ * gates both registration AND login) and operator-tuned scalars
+ * the SPA forms gate submit on (`min_password_length`, `opaque_mode`).
+ *
+ * Replaces the pre-consolidation surface where `/api/auth/oidc/providers`
+ * returned the same four auth-method flags under flat names
+ * (`password_login_enabled`, `magic_link_login_enabled`,
+ * `require_verified_email`, `auto_redirect_to_oidc`). That endpoint
+ * was retired in favour of this one.
  */
 export type AuthDto = {
+    /**
+     * Magic-link login + welcome flows. See [`MagicLinkAuthDto`].
+     */
+    magic_link: MagicLinkAuthDto;
     /**
      * Minimum password length (UTF-8 bytes). Mirrors
      * `AuthConfig::min_password_length`, which every server-side
@@ -307,6 +380,10 @@ export type AuthDto = {
      * after a round-trip. See AtalayaLabs/OxiCloud#677.
      */
     min_password_length: number;
+    /**
+     * OIDC / SSO federation. See [`OidcAuthDto`].
+     */
+    oidc: OidcAuthDto;
     /**
      * OPAQUE deployment mode — one of `"off"`, `"migrate"`,
      * `"opaque_only"`. Mirrors `AuthConfig::opaque.mode` (env
@@ -319,6 +396,25 @@ export type AuthDto = {
      * migration stay honest.
      */
     opaque_mode: string;
+    /**
+     * Password-login method. See [`PasswordAuthDto`].
+     */
+    password: PasswordAuthDto;
+    /**
+     * Public self-registration flow. See [`RegistrationDto`].
+     */
+    registration: RegistrationDto;
+    /**
+     * `true` iff `OXICLOUD_REQUIRE_VERIFIED_EMAIL` is set.
+     * Cross-cutting policy — gates both registration (new users
+     * must verify) and login (existing users without a verified
+     * address are refused). Lives at top level because it isn't
+     * owned by any single sub-object. The FE uses this hint to
+     * explain the `EmailNotVerified` login response and to nudge
+     * new users toward the magic-link verification path straight
+     * after signup.
+     */
+    require_verified_email: boolean;
 };
 
 export type AuthResponseDto = {
@@ -2458,6 +2554,20 @@ export type LoginDto = {
     username: string;
 };
 
+/**
+ * Magic-link login block within [`AuthDto`]. Mirrors
+ * `AuthApplicationService::is_magic_link_login_allowed()`, which
+ * composes `OXICLOUD_AUTH_METHODS` membership + SMTP wiring + the
+ * "OIDC-master → no magic-link login" hard rule. FE login page
+ * shows the magic-link form iff this is true.
+ */
+export type MagicLinkAuthDto = {
+    /**
+     * `true` when the server accepts magic-link login requests.
+     */
+    enabled: boolean;
+};
+
 export type MarkAllReadResponseDto = {
     /**
      * Number of rows that transitioned unread → read.
@@ -2644,6 +2754,45 @@ export type NotifyOutcomeSetDto = {
 };
 
 /**
+ * OIDC / SSO block within [`AuthDto`]. Carries the enablement
+ * flag plus a list of configured providers. Today OxiCloud
+ * supports one OIDC provider per deployment, so `providers` is
+ * either a one-element list or empty — but the array shape is
+ * future-proof for the planned multi-provider work (one deployment
+ * federating multiple IdPs) and lets the FE loop over providers
+ * without an array-vs-scalar refactor later.
+ *
+ * Deployment-wide policies (`enabled`, `auto_redirect`) stay on
+ * the sub-object top; per-provider identity (`issuer`,
+ * `provider_name`, `authorize_endpoint`) lives inside each
+ * [`OidcProviderDto`].
+ */
+export type OidcAuthDto = {
+    /**
+     * `true` iff the effective allowlist is `[Oidc]` AND the
+     * `auto_redirect_if_standalone_oidc` policy is set. FE uses
+     * this to decide whether to auto-redirect to the authorize
+     * endpoint on login-page mount (true) or show a
+     * click-to-continue button (false). Default `false` — the
+     * safe posture that avoids redirect loops when the IdP is
+     * degraded.
+     */
+    auto_redirect: boolean;
+    /**
+     * `true` when OIDC federation is configured + enabled.
+     * When `false`, `providers` is empty and the FE hides every
+     * SSO affordance.
+     */
+    enabled: boolean;
+    /**
+     * Configured providers. Length is 0 (OIDC off) or 1 (single
+     * provider, today's reality); FE treats >1 as a future
+     * multi-provider deployment and renders one button per entry.
+     */
+    providers: Array<OidcProviderDto>;
+};
+
+/**
  * Request body for the OIDC one-time code exchange endpoint
  */
 export type OidcExchangeDto = {
@@ -2651,54 +2800,31 @@ export type OidcExchangeDto = {
 };
 
 /**
- * Information about available OIDC providers + self-service auth
- * methods enabled on the deployment. Consumed by the login page to
- * decide which forms/buttons to render.
+ * A single OIDC provider inside [`OidcAuthDto::providers`]. All
+ * fields are per-provider; deployment-wide flags stay on the
+ * parent sub-object.
  */
-export type OidcProviderInfoDto = {
+export type OidcProviderDto = {
+    /**
+     * Browser-facing navigation target for the sign-in button —
+     * the SPA sets `window.location` to this verbatim. Carries
+     * the deployment base path (`OXICLOUD_BASE_PATH`-prefixed).
+     */
     authorize_endpoint: string;
     /**
-     * True iff the effective allowlist is `[Oidc]` AND the
-     * `auto_redirect_if_standalone_oidc` policy is set. Frontend
-     * uses this to decide whether to auto-redirect to the authorize
-     * endpoint on login-page mount (true) or show a click-to-continue
-     * button (false). Default false — the safe posture that avoids
-     * redirect loops when the IdP is degraded.
+     * Authoritative issuer URL for this provider — same value
+     * that lands on `auth.users.federation_issuer` for users
+     * JIT-provisioned via it. The FE compares a user's
+     * `federation_issuer` against this to decide whether to
+     * render the human-friendly `provider_name` instead of the
+     * raw issuer URL. Doubles as the stable key when iterating
+     * providers client-side (unique per deployment).
      */
-    auto_redirect_to_oidc?: boolean;
-    enabled: boolean;
+    issuer: string;
     /**
-     * The authoritative issuer URL for THIS deployment's OIDC config —
-     * same value that lands on `auth.users.federation_issuer` for
-     * users JIT-provisioned via this IdP.
-     *
-     * Populated so the frontend can resolve display: when
-     * `PublicUserDto.federation_issuer` equals this `issuer`, render
-     * `provider_name` as the human-friendly label (avoids showing raw
-     * issuer URLs like `https://sso.example.com/realms/main` in the
-     * admin badge / profile view). Falls back to the raw issuer when
-     * there's no match — happens for legacy rows not yet lazy-rebound,
-     * or (future) users linked to a different IdP than the currently
-     * configured one.
-     *
-     * Empty string when OIDC is disabled on this deployment.
+     * Human-readable name (e.g. "Google", "Keycloak — Main Realm").
      */
-    issuer?: string;
-    /**
-     * True iff the server accepts magic-link login requests
-     * (`OXICLOUD_AUTH_METHODS` includes `magic_link` AND SMTP is
-     * configured). Frontend renders the magic-link form when true.
-     */
-    magic_link_login_enabled?: boolean;
-    password_login_enabled: boolean;
     provider_name: string;
-    /**
-     * True iff `OXICLOUD_REQUIRE_VERIFIED_EMAIL` is set. Frontend uses
-     * this hint to explain the `EmailNotVerified` login response and
-     * to nudge new users toward the magic-link verification path
-     * straight after signup.
-     */
-    require_verified_email?: boolean;
 };
 
 /**
@@ -3058,6 +3184,21 @@ export type PaginationRequestDto = {
      * Requested page size
      */
     page_size?: number;
+};
+
+/**
+ * Password-login block within [`AuthDto`]. Mirrors the policy
+ * `AuthApplicationService::is_password_login_allowed()` — composes
+ * `OXICLOUD_AUTH_METHODS` with the AuthZ cross-check (an OIDC-master
+ * deployment turns password login off even when the env list carries
+ * `password`). FE login page uses this to decide whether to render
+ * the password form at all.
+ */
+export type PasswordAuthDto = {
+    /**
+     * `true` when the server accepts password-based login.
+     */
+    enabled: boolean;
 };
 
 export type PermissionDto = 'read' | 'create' | 'share' | 'comment' | 'delete' | 'update' | 'manage';
@@ -3466,6 +3607,27 @@ export type RegisterDto = {
      * works fine without one.
      */
     username?: string | null;
+};
+
+/**
+ * Public-registration block within [`AuthDto`]. Reflects the
+ * precedence rule of
+ * `AdminSettingsService::get_registration_enabled` (env
+ * `OXICLOUD_DISABLE_REGISTRATION` > DB
+ * `admin_settings.registration_enabled` > default-true), but through
+ * the `AppState::registration_enabled` atomic — seeded at boot,
+ * flipped at admin-write time, so `/api/config` never disagrees with
+ * the enforcement in `POST /api/auth/register`. The FE login page
+ * gates the "Create one" button on this; subsequent admin toggles
+ * propagate because `ServerStatusChanged`'s version hash covers this
+ * field (see `compute_server_status_version`).
+ */
+export type RegistrationDto = {
+    /**
+     * `true` when `POST /api/auth/register` is accepting requests.
+     * `false` when disabled by env var or admin UI.
+     */
+    enabled: boolean;
 };
 
 /**
@@ -4133,16 +4295,15 @@ export type ServerConfigDto = {
      */
     features: FeaturesDto;
     /**
-     * Live server-status snapshot — exact same shape and field
-     * names as the `X-Server-Status` response header. Clients use
-     * this to hydrate their reactive store at boot; subsequent live
-     * changes propagate through the header on every other request
-     * (the middleware and this endpoint share `build_header_payload`
-     * so drift is impossible). Non-optional so the client always
-     * has a definite value; `readonly: false` with no `migration`
-     * or `rotation` is the "everything nominal" case.
+     * `true` once the deployment has completed first-run setup
+     * (admin exists OR the admin-settings DB flag is set). FE
+     * login page gates: `false` → render the admin-setup wizard;
+     * `true` → render the login form. Replaces the dedicated
+     * `/api/auth/status` endpoint, which was retired on the same
+     * branch as this field (the other three fields it carried
+     * were already redundant with `/api/config` and `/api/admin*`).
      */
-    server_status: HeaderPayload;
+    initialized: boolean;
     /**
      * Server version — `OXICLOUD_VERSION` derived by `build.rs` from
      * the git tag / `GITHUB_REF_NAME` / `git describe`. Matches what
@@ -4634,28 +4795,6 @@ export type SubjectInputDto = {
 };
 
 export type SubjectTypeDto = 'user' | 'group' | 'token';
-
-/**
- * System initialisation state, returned by `GET /api/auth/status`.
- */
-export type SystemInitStatusDto = {
-    /**
-     * Number of admin users in the system.
-     */
-    admin_count: number;
-    /**
-     * Whether the People routes are available in this running instance.
-     */
-    faces_enabled: boolean;
-    /**
-     * Whether the system has been set up with an admin.
-     */
-    initialized: boolean;
-    /**
-     * Whether self-registration is allowed.
-     */
-    registration_allowed: boolean;
-};
 
 /**
  * Thumbnail-moka occupancy snapshot. Separate struct from the
@@ -8344,29 +8483,6 @@ export type OidcLinkStartResponses = {
     200: unknown;
 };
 
-export type OidcProvidersData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/auth/oidc/providers';
-};
-
-export type OidcProvidersErrors = {
-    /**
-     * Auth service not configured
-     */
-    503: unknown;
-};
-
-export type OidcProvidersResponses = {
-    /**
-     * OIDC provider info (enabled=false when OIDC not configured)
-     */
-    200: OidcProviderInfoDto;
-};
-
-export type OidcProvidersResponse = OidcProvidersResponses[keyof OidcProvidersResponses];
-
 export type OidcUnlinkData = {
     body?: never;
     path?: never;
@@ -8627,29 +8743,6 @@ export type RegisterResponses = {
 };
 
 export type RegisterResponse = RegisterResponses[keyof RegisterResponses];
-
-export type GetSystemStatusData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/auth/status';
-};
-
-export type GetSystemStatusErrors = {
-    /**
-     * Auth service not configured
-     */
-    503: unknown;
-};
-
-export type GetSystemStatusResponses = {
-    /**
-     * System status
-     */
-    200: SystemInitStatusDto;
-};
-
-export type GetSystemStatusResponse = GetSystemStatusResponses[keyof GetSystemStatusResponses];
 
 export type UpgradeToInternalData = {
     body: UpgradeToInternalDto;
@@ -12630,6 +12723,29 @@ export type UpdateSharedLinkResponses = {
 };
 
 export type UpdateSharedLinkResponse = UpdateSharedLinkResponses[keyof UpdateSharedLinkResponses];
+
+export type GetServerStatusData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/status';
+};
+
+export type GetServerStatusErrors = {
+    /**
+     * Authentication required
+     */
+    401: unknown;
+};
+
+export type GetServerStatusResponses = {
+    /**
+     * Server runtime status
+     */
+    200: HeaderPayload;
+};
+
+export type GetServerStatusResponse = GetServerStatusResponses[keyof GetServerStatusResponses];
 
 export type EmptyTrashForDriveData = {
     body?: never;

@@ -24,7 +24,7 @@
 import log from 'loglevel';
 
 import { getConfig } from '$lib/api/generated/openapi/sdk.gen';
-import type { ServerAuth, ServerConfig, ServerFeatures, ServerStatus } from '$lib/api/types';
+import type { ServerAuth, ServerConfig, ServerFeatures } from '$lib/api/types';
 
 /** Sensible defaults for every field. Used before `load()` resolves
  *  and as the fallback if the fetch fails — every feature enabled,
@@ -51,10 +51,6 @@ const DEFAULT_FEATURES: ServerFeatures = {
 	shared_worker_bus: true
 };
 
-const DEFAULT_STATUS: ServerStatus = {
-	readonly: false
-};
-
 /** Pre-load default for the auth tunables. `8` matches the server's
  *  historical hardcoded floor and the current `AuthConfig` default —
  *  so a client that never loads the config still enforces the same
@@ -64,7 +60,38 @@ const DEFAULT_STATUS: ServerStatus = {
  *  OPAQUE isn't configured. */
 const DEFAULT_AUTH: ServerAuth = {
 	min_password_length: 8,
-	opaque_mode: 'off'
+	opaque_mode: 'off',
+	// Cross-cutting policy — defaults to false (verification not
+	// required). Matches the server's `AuthApplicationService::require_verified_email()`
+	// fallback when `OXICLOUD_REQUIRE_VERIFIED_EMAIL` is unset. The
+	// login page uses this hint to render the EmailNotVerified
+	// branch guidance after a failed login.
+	require_verified_email: false,
+	// Registration default-on mirrors the server's `AdminSettingsService`
+	// fallback — a client that can't reach `/api/config` falls back
+	// to the same behaviour the deployment had before this field
+	// shipped (the login page shows the "Create one" button).
+	// Server-side enforcement still runs on `POST /api/auth/register`,
+	// so a stale-default client clicking through on a disabled
+	// instance sees a 403 toast, never a smuggled-in account.
+	registration: { enabled: true },
+	// Password + magic-link default-on, OIDC default-off. Matches
+	// the shape the login page needs for the pre-/api/config window
+	// (both self-service forms visible, SSO button hidden). Server
+	// enforcement composes `OXICLOUD_AUTH_METHODS` + SMTP wiring +
+	// the OIDC-master cross-rule; defaults here are the "no config
+	// loaded yet" fallback and should match the pre-consolidation
+	// fallback of `oidc.password_login_enabled` + friends.
+	password: { enabled: true },
+	magic_link: { enabled: true },
+	oidc: {
+		enabled: false,
+		auto_redirect: false,
+		// Empty list = no SSO providers configured. The login page
+		// renders one SSO button per entry — a future multi-provider
+		// deployment would ship >1 element here with no FE change.
+		providers: []
+	}
 };
 
 const cfgLog = log.getLogger('oxi:config');
@@ -72,6 +99,14 @@ const cfgLog = log.getLogger('oxi:config');
 class ServerConfigStore {
 	/** Server version — populated after `load()`. `null` before. */
 	version = $state<string | null>(null);
+	/** `true` once first-run setup has completed (admin exists OR
+	 *  the admin-settings DB flag is set). The login page gates the
+	 *  admin-setup wizard on this — `false` → render setup, `true`
+	 *  → render login. Default `true` is the fail-safe: a
+	 *  misconfigured instance that can't reach `/api/config` shows
+	 *  the login form (not the setup wizard, which would mislead).
+	 *  Replaces the retired `GET /api/auth/status.initialized`. */
+	initialized = $state(true);
 	/** Feature flags. Defaults are all-enabled so pre-load code paths
 	 *  don't accidentally hide UI while the fetch is in flight. */
 	features = $state<ServerFeatures>({ ...DEFAULT_FEATURES });
@@ -80,13 +115,6 @@ class ServerConfigStore {
 	 *  historical floor (8) so pre-load form validation isn't accidentally
 	 *  more permissive than the server. */
 	auth = $state<ServerAuth>({ ...DEFAULT_AUTH });
-	/** Server-status snapshot. Live changes after `load()` propagate
-	 *  through the `X-Server-Status` header (see
-	 *  `stores/serverStatus.svelte.ts` — separate store, updated by
-	 *  `apiFetch`). This store's `server_status` reflects only the
-	 *  boot snapshot; consumers that need live status should read
-	 *  the other store. */
-	serverStatus = $state<ServerStatus>({ ...DEFAULT_STATUS });
 	/** `true` once `load()` has resolved (success OR failure). Guards
 	 *  callers that want to skip work until the boot snapshot is in. */
 	loaded = $state(false);
@@ -100,22 +128,16 @@ class ServerConfigStore {
 			// exactly. See `docs/plan/move-to-openapi.md` for the pattern.
 			const cfg: ServerConfig = await getConfig({ throwOnError: true });
 			this.version = cfg.version;
+			this.initialized = cfg.initialized;
 			this.features = cfg.features;
 			this.auth = cfg.auth ?? { ...DEFAULT_AUTH };
-			this.serverStatus = cfg.server_status;
-			// Mirror the banner slice into the live-status store so
-			// the AppShell's banner stack renders from day one of the
-			// SPA boot, without waiting for a header-driven
-			// version-diff refetch to happen. Also seeds
-			// `banners_version` so the first header carrying the same
-			// version doesn't trigger a redundant refetch.
-			const { hydrateBanners } = await import('$lib/stores/serverStatus.svelte');
-			// Null-coalesce at the SDK/store boundary — see the sibling
-			// `serverStatus.svelte.ts` note for the full rationale.
-			hydrateBanners(
-				cfg.server_status.banners ?? undefined,
-				cfg.server_status.banners_version ?? undefined
-			);
+			// No server_status on /api/config (feat/registration):
+			// the authenticated hydration path (`hydrateFromAuthenticatedBoot`
+			// in the root layout) + the per-response `X-Server-Status`
+			// header on authenticated routes handle every runtime axis
+			// (readonly, migration, rotation, holder, banners). Pre-auth
+			// visitors see only capability discovery (features/auth/
+			// version/initialized) here — no runtime state leaks.
 			cfgLog.debug('server config loaded', {
 				version: cfg.version,
 				message_bus: cfg.features.message_bus,
