@@ -1,5 +1,5 @@
 import { it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/svelte';
+import { render, screen, fireEvent, waitFor } from '@testing-library/svelte';
 vi.mock('$lib/api/endpoints/files', () => ({
 	deleteFile: vi.fn(),
 	fileDownloadUrl: () => '/d',
@@ -12,8 +12,11 @@ vi.mock('$lib/api/endpoints/photos', () => ({ fetchFileMetadata: vi.fn() }));
 vi.mock('$lib/stores/dialogs.svelte', () => ({ confirmDialog: vi.fn() }));
 vi.mock('$lib/utils/errors', () => ({ errorToast: vi.fn() }));
 import { fetchFileMetadata } from '$lib/api/endpoints/photos';
+import { confirmDialog } from '$lib/stores/dialogs.svelte';
+import { serverConfig } from '$lib/stores/serverConfig.svelte';
 import PhotoLightbox from './PhotoLightbox.svelte';
 const fm = fetchFileMetadata as unknown as ReturnType<typeof vi.fn>;
+const cd = confirmDialog as unknown as ReturnType<typeof vi.fn>;
 function item(id: string, size = 1) {
 	return {
 		id,
@@ -35,6 +38,9 @@ function item(id: string, size = 1) {
 beforeEach(() => {
 	vi.clearAllMocks();
 	fm.mockResolvedValue(null);
+	// Default trash on so pre-existing tests see the familiar "Move to
+	// trash" copy; the two new pins below flip it off per-test.
+	serverConfig.features = { ...serverConfig.features, trash: true };
 });
 it('opens at an index, navigates next/prev, and closes', async () => {
 	render(PhotoLightbox, { props: { items: [item('a'), item('b')], index: 0 } });
@@ -90,4 +96,33 @@ it('omits the caption size for a lazily-opened stub (size 0)', async () => {
 	// …and the date itself still renders — this is a suppressed size, not an
 	// empty caption.
 	expect(meta.textContent?.trim()).not.toBe('');
+});
+
+// ─── Delete-confirm copy ─ features.trash adapt ──────────────────────────
+// The dialog opens via the trash-icon toolbar button. The two pins below
+// cover both sides of `serverConfig.features.trash` to keep the i18n key
+// selection honest: a regression that hardcoded either variant would
+// mislead the user on the opposite deployment (trash-off hard-deletes;
+// trash-on reversible move).
+
+it('uses the "Move to trash?" copy when features.trash is true', async () => {
+	serverConfig.features = { ...serverConfig.features, trash: true };
+	cd.mockResolvedValue(false); // User cancels — we only pin the dialog contents.
+	render(PhotoLightbox, { props: { items: [item('a')], index: 0 } });
+	await fireEvent.click(screen.getByTitle('Delete'));
+	await waitFor(() => expect(cd).toHaveBeenCalled());
+	const arg = cd.mock.calls.at(-1)?.[0] as { message?: string } | undefined;
+	expect(arg?.message).toMatch(/^Delete /);
+	expect(arg?.message).not.toMatch(/Permanently/);
+});
+
+it('uses the "Permanently delete" copy when features.trash is false', async () => {
+	serverConfig.features = { ...serverConfig.features, trash: false };
+	cd.mockResolvedValue(false);
+	render(PhotoLightbox, { props: { items: [item('a')], index: 0 } });
+	await fireEvent.click(screen.getByTitle('Delete'));
+	await waitFor(() => expect(cd).toHaveBeenCalled());
+	const arg = cd.mock.calls.at(-1)?.[0] as { message?: string } | undefined;
+	expect(arg?.message).toMatch(/Permanently delete/);
+	expect(arg?.message).toMatch(/cannot be undone/);
 });
