@@ -121,6 +121,11 @@ pub struct FeaturesDto {
     // `StorageUsageService` unconditionally.
     /// Music player + playlists. See `FeaturesConfig::enable_music`.
     pub music: bool,
+    /// Photo library (`/api/photos`, `/photos` SPA route). The SPA hides
+    /// the top-nav "Photos" entry when this is false; sub-flags
+    /// `places` + `faces` are then moot. See
+    /// `FeaturesConfig::enable_photos`.
+    pub photos: bool,
     /// Photo-map ("Places") tab. See `FeaturesConfig::enable_places`.
     pub places: bool,
     /// Face detection + identity clustering ("People"). Biometric —
@@ -170,6 +175,7 @@ pub async fn get_config(State(state): State<Arc<AppState>>) -> Json<ServerConfig
             search: f.enable_search,
             sharing: f.enable_file_sharing,
             music: f.enable_music,
+            photos: f.enable_photos,
             places: f.enable_places,
             faces: f.enable_faces,
             video_thumbnails: f.enable_video_thumbnails,

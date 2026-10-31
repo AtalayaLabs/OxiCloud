@@ -2384,6 +2384,11 @@ pub struct FeaturesConfig {
     pub enable_trash: bool,
     pub enable_search: bool,
     pub enable_music: bool,
+    /// Photo library — gates `/api/photos` listing, the SPA's `/photos`
+    /// route and the top-nav "Photos" entry. When off, the sub-features
+    /// `enable_places` + `enable_faces` are moot even if left `true`.
+    /// Env: `OXICLOUD_ENABLE_PHOTOS`. Default: true.
+    pub enable_photos: bool,
     /// Lists the user's geotagged photos on a map (GET /api/photos/geo).
     pub enable_places: bool,
     /// Face detection + identity clustering for the photo library ("People").
@@ -3017,6 +3022,7 @@ impl Default for FeaturesConfig {
             enable_trash: true,            // Enable trash feature
             enable_search: true,           // Enable search feature
             enable_music: true,            // Enable music feature
+            enable_photos: true,           // Photo library (/api/photos, /photos SPA route)
             enable_places: true,           // Photo map (GET /api/photos/geo + Places tab)
             enable_faces: false,           // People/faces (biometric) — opt-in, off by default
             expose_system_users: true,     // Expose OxiCloud users as address book by default
@@ -4301,6 +4307,12 @@ impl AppConfig {
             && let Ok(val) = enable_music
         {
             config.features.enable_music = val;
+        }
+
+        if let Ok(enable_photos) = env::var("OXICLOUD_ENABLE_PHOTOS").map(|v| v.parse::<bool>())
+            && let Ok(val) = enable_photos
+        {
+            config.features.enable_photos = val;
         }
 
         if let Ok(enable_places) = env::var("OXICLOUD_ENABLE_PLACES").map(|v| v.parse::<bool>())
