@@ -37,6 +37,7 @@ const DEFAULT_FEATURES: ServerFeatures = {
 	search: true,
 	sharing: true,
 	music: true,
+	photos: true,
 	places: true,
 	faces: false,
 	video_thumbnails: true,

@@ -108,6 +108,7 @@
 	import ActionBar from '$lib/components/ActionBar.svelte';
 	import DisplayModeControls from '$lib/components/DisplayModeControls.svelte';
 	import UserVignette from '$lib/components/UserVignette.svelte';
+	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import VirtualList from '$lib/components/VirtualList.svelte';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
@@ -1293,7 +1294,19 @@
 		-->
 		{#if hasActionCell}
 			<div class="action-cell">
-				{#if onshared}
+				<!--
+					Share button is gated on `features.sharing` AND on the
+					caller supplying an `onshared` handler. One central
+					gate here covers every ResourceList caller
+					(files / favorites / search / shared-with-me / music …)
+					without changing each page: when the operator sets
+					`OXICLOUD_ENABLE_FILE_SHARING=false` the backend's
+					`/api/shares/*` routes aren't mounted (`routes.rs:114,
+					337` guard on `share_service.is_some()`), so a visible
+					button would 404 on click. See `common/di.rs::create
+					_share_service` for the server-side side.
+				-->
+				{#if onshared && serverConfig.features.sharing}
 					<button
 						class="shared-button"
 						class:active={item.is_shared}
