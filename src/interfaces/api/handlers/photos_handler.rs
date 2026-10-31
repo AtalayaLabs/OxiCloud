@@ -1,12 +1,14 @@
 use axum::{
     Json,
     extract::{Query, State},
-    http::{HeaderMap, StatusCode},
+    http::HeaderMap,
     response::IntoResponse,
 };
 use serde::Deserialize;
 use std::sync::Arc;
 use tracing::{error, info};
+
+use crate::interfaces::errors::AppError;
 
 use crate::application::dtos::cursor::{CursorListResponse, PageCursor};
 use crate::application::dtos::file_dto::FileDto;
@@ -91,9 +93,9 @@ fn default_limit() -> u32 {
     params(PhotosResourcesQueryParams),
     responses(
         (status = 200, body = PhotosResourcesDto, description = "Page of media files with photo-level signals"),
-        (status = 400, description = "Invalid cursor or unsupported order_by"),
-        (status = 401, description = "Unauthorized"),
-        (status = 500, description = "Internal server error")
+        (status = 400, description = "Invalid cursor or unsupported order_by", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 500, description = "Internal server error", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "photos"
@@ -152,23 +154,13 @@ pub async fn list_photos_resources(
                 } else {
                     "reverse"
                 };
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({
-                        "error_type": "bad_request",
-                        "message": format!("cursor was issued against a different {axis} axis"),
-                    })),
-                )
-                    .into_response();
+                return AppError::bad_request(format!(
+                    "cursor was issued against a different {axis} axis"
+                ))
+                .into_response();
             }
             None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({
-                        "error_type": "bad_request",
-                        "message": "cursor is not a valid photos cursor"
-                    })),
-                )
+                return AppError::bad_request("cursor is not a valid photos cursor")
                     .into_response();
             }
         },
@@ -187,13 +179,7 @@ pub async fn list_photos_resources(
         Ok(r) => r,
         Err(err) => {
             error!("list_photos_resources: {}", err);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error_type": "internal_error",
-                    "message": format!("Failed to list photos: {}", err)
-                })),
-            )
+            return AppError::internal_error(format!("Failed to list photos: {}", err))
                 .into_response();
         }
     };
@@ -305,8 +291,8 @@ pub struct GeoQueryParams {
                            number of photos in the cell, and one representative sample_file_id \
                            usable as the cluster thumbnail."
         ),
-        (status = 400, description = "Invalid bounding box"),
-        (status = 401, description = "Unauthorized")
+        (status = 400, description = "Invalid bounding box", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "photos"
@@ -317,11 +303,7 @@ pub async fn list_photos_geo(
     Query(params): Query<GeoQueryParams>,
 ) -> impl IntoResponse {
     let Some(places) = state.places_service.as_ref() else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "Places feature is disabled" })),
-        )
-            .into_response();
+        return AppError::not_found("Places feature is disabled").into_response();
     };
 
     let coords: Vec<f64> = params
@@ -330,11 +312,7 @@ pub async fn list_photos_geo(
         .filter_map(|s| s.trim().parse::<f64>().ok())
         .collect();
     if coords.len() != 4 {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "bbox must be 'west,south,east,north'" })),
-        )
-            .into_response();
+        return AppError::bad_request("bbox must be 'west,south,east,north'").into_response();
     }
     let bounds = GeoBounds {
         west: coords[0],
@@ -348,11 +326,7 @@ pub async fn list_photos_geo(
         Ok(clusters) => Json(clusters).into_response(),
         Err(err) => {
             error!("Error listing photo geo clusters: {}", err);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": format!("{}", err) })),
-            )
-                .into_response()
+            AppError::internal_error(format!("{}", err)).into_response()
         }
     }
 }

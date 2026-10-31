@@ -215,9 +215,9 @@ pub struct OpaqueRegisterFinishDto {
     request_body = OpaqueRegisterStartDto,
     responses(
         (status = 200, description = "Server registration response", body = OpaqueRegisterStartResponse),
-        (status = 400, description = "Malformed registration request"),
-        (status = 401, description = "Not authenticated"),
-        (status = 503, description = "OPAQUE service not configured"),
+        (status = 400, description = "Malformed registration request", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 503, description = "OPAQUE service not configured", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "auth"
@@ -289,9 +289,9 @@ pub async fn register_start(
     request_body = OpaqueRegisterFinishDto,
     responses(
         (status = 204, description = "Registration persisted"),
-        (status = 400, description = "Malformed record or ciphersuite mismatch"),
-        (status = 401, description = "Not authenticated"),
-        (status = 503, description = "OPAQUE service not configured"),
+        (status = 400, description = "Malformed record or ciphersuite mismatch", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 503, description = "OPAQUE service not configured", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "auth"
@@ -450,8 +450,8 @@ pub struct OpaqueLookupResponse {
     request_body = OpaqueLookupDto,
     responses(
         (status = 200, description = "Whether the identifier resolves to a user with an OPAQUE envelope", body = OpaqueLookupResponse),
-        (status = 400, description = "Malformed request body"),
-        (status = 503, description = "OPAQUE service not configured"),
+        (status = 400, description = "Malformed request body", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 503, description = "OPAQUE service not configured", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "auth"
 )]
@@ -568,8 +568,8 @@ pub struct OpaqueLoginKe3Dto {
     responses(
         (status = 200, description = "Login response + single-use exchange handle",
             body = OpaqueLoginKe1Response),
-        (status = 400, description = "Malformed request payload"),
-        (status = 503, description = "OPAQUE service not configured"),
+        (status = 400, description = "Malformed request payload", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 503, description = "OPAQUE service not configured", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "auth"
 )]
@@ -674,9 +674,9 @@ pub async fn login_ke1(
     request_body = OpaqueLoginKe3Dto,
     responses(
         (status = 200, description = "Session issued", body = AuthResponseDto),
-        (status = 400, description = "Malformed request payload"),
-        (status = 401, description = "Invalid credentials"),
-        (status = 503, description = "OPAQUE service not configured"),
+        (status = 400, description = "Malformed request payload", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 401, description = "Invalid credentials", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 503, description = "OPAQUE service not configured", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "auth"
 )]

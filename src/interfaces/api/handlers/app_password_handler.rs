@@ -40,9 +40,9 @@ pub fn app_password_routes() -> Router<Arc<AppState>> {
     request_body = CreateAppPasswordRequestDto,
     responses(
         (status = 200, description = "App password created — `password` is plain-text and shown exactly ONCE", body = crate::application::dtos::app_password_dto::AppPasswordCreatedResponseDto),
-        (status = 401, description = "Caller is not signed in"),
-        (status = 403, description = "External users cannot mint app passwords"),
-        (status = 409, description = "Caller has no claimed username — app password is unusable without one"),
+        (status = 401, description = "Caller is not signed in", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 403, description = "External users cannot mint app passwords", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 409, description = "Caller has no claimed username — app password is unusable without one", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "app-passwords"
 )]
@@ -120,7 +120,7 @@ pub async fn create_app_password(
     path = "/api/auth/app-passwords",
     responses(
         (status = 200, description = "The caller's app passwords (metadata only, no plain text)", body = crate::application::dtos::app_password_dto::AppPasswordListResponseDto),
-        (status = 401, description = "Caller is not signed in"),
+        (status = 401, description = "Caller is not signed in", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "app-passwords"
 )]
@@ -148,9 +148,9 @@ pub async fn list_app_passwords(
     ),
     responses(
         (status = 200, description = "App password revoked — subsequent Basic-Auth with it returns 401", body = crate::application::dtos::app_password_dto::AppPasswordRevokeResponseDto),
-        (status = 400, description = "`id` is not a valid UUID"),
-        (status = 401, description = "Caller is not signed in"),
-        (status = 404, description = "No app password with this id for the caller"),
+        (status = 400, description = "`id` is not a valid UUID", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 401, description = "Caller is not signed in", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "No app password with this id for the caller", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "app-passwords"
 )]

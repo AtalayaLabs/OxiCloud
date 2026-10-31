@@ -338,10 +338,7 @@ impl FolderHandler {
                     Some(svc) => svc,
                     None => {
                         tracing::error!("ZipService not initialized");
-                        return (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(serde_json::json!({ "error": "ZipService not initialized" })),
-                        )
+                        return AppError::internal_error("ZipService not initialized")
                             .into_response();
                     }
                 };
@@ -405,7 +402,7 @@ impl FolderHandler {
     request_body(content = CreateFolderDto, content_type = "application/json", description = "Folder creation payload"),
     responses(
         (status = 201, description = "Folder created", body = FolderDto),
-        (status = 400, description = "Invalid request"),
+        (status = 400, description = "Invalid request", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "folders"
@@ -424,7 +421,7 @@ pub async fn create_folder(
     params(("id" = String, Path, description = "Folder ID")),
     responses(
         (status = 200, description = "Folder", body = FolderDto),
-        (status = 404, description = "Folder not found"),
+        (status = 404, description = "Folder not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "folders"
@@ -446,8 +443,8 @@ pub async fn get_folder(
     ),
     responses(
         (status = 200, description = "Ancestor chain + access-source. `ancestors` is root-first, leaf-last (length ≥ 1). With `include_grants=true`, also every grant reaching the leaf in `effective_grants`. See `FolderAncestorsDto`.", body = FolderAncestorsDto),
-        (status = 403, description = "`include_grants=true` and the caller lacks Share on the leaf"),
-        (status = 404, description = "Folder not found or caller lacks Read (anti-enum)"),
+        (status = 403, description = "`include_grants=true` and the caller lacks Share on the leaf", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Folder not found or caller lacks Read (anti-enum)", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "folders"
@@ -484,7 +481,7 @@ pub async fn list_root_folders(
     request_body(content = RenameFolderDto, content_type = "application/json", description = "Rename payload"),
     responses(
         (status = 200, description = "Renamed folder", body = FolderDto),
-        (status = 404, description = "Folder not found"),
+        (status = 404, description = "Folder not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "folders"
@@ -505,7 +502,7 @@ pub async fn rename_folder(
     request_body(content = MoveFolderDto, content_type = "application/json", description = "Move payload"),
     responses(
         (status = 200, description = "Moved folder", body = FolderDto),
-        (status = 404, description = "Folder or destination not found"),
+        (status = 404, description = "Folder or destination not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "folders"
@@ -525,7 +522,7 @@ pub async fn move_folder(
     params(("id" = String, Path, description = "Folder ID")),
     responses(
         (status = 204, description = "Folder deleted"),
-        (status = 404, description = "Folder not found"),
+        (status = 404, description = "Folder not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "folders"
@@ -544,8 +541,8 @@ pub async fn delete_folder_with_trash(
     params(("id" = String, Path, description = "Folder ID")),
     responses(
         (status = 200, content_type = "application/zip", description = "ZIP archive stream (application/zip)"),
-        (status = 404, description = "Folder not found"),
-        (status = 501, description = "ZIP service not available"),
+        (status = 404, description = "Folder not found", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 501, description = "ZIP service not available", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "folders"
@@ -577,7 +574,7 @@ pub async fn download_folder_zip(
                         Items arrive in `order_by` order (folders first when order_by=name). \
                         `next_cursor` is absent on the last page.",
          body = FolderResourcesDto),
-        (status = 404, description = "Folder not found or access denied"),
+        (status = 404, description = "Folder not found or access denied", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "folders"

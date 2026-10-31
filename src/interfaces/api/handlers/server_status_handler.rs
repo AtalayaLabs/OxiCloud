@@ -43,7 +43,7 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, build_header_p
     tag = "status",
     responses(
         (status = 200, description = "Server runtime status", body = HeaderPayload),
-        (status = 401, description = "Authentication required"),
+        (status = 401, description = "Authentication required", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
 )]

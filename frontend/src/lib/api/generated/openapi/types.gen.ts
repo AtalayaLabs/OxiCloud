@@ -5359,8 +5359,10 @@ export type ListAddressBooksErrors = {
     /**
      * Internal server error
      */
-    500: unknown;
+    500: ApiErrorBody;
 };
+
+export type ListAddressBooksError = ListAddressBooksErrors[keyof ListAddressBooksErrors];
 
 export type ListAddressBooksResponses = {
     /**
@@ -5382,8 +5384,10 @@ export type CreateAddressBookErrors = {
     /**
      * Invalid input
      */
-    400: unknown;
+    400: ApiErrorBody;
 };
+
+export type CreateAddressBookError = CreateAddressBookErrors[keyof CreateAddressBookErrors];
 
 export type CreateAddressBookResponses = {
     /**
@@ -5410,12 +5414,14 @@ export type DeleteAddressBookErrors = {
     /**
      * Only the owner can delete
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Address book not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type DeleteAddressBookError = DeleteAddressBookErrors[keyof DeleteAddressBookErrors];
 
 export type DeleteAddressBookResponses = {
     /**
@@ -5442,12 +5448,14 @@ export type UpdateAddressBookErrors = {
     /**
      * Only the owner can update
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Address book not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type UpdateAddressBookError = UpdateAddressBookErrors[keyof UpdateAddressBookErrors];
 
 export type UpdateAddressBookResponses = {
     /**
@@ -5487,12 +5495,14 @@ export type ListContactsErrors = {
     /**
      * Access denied
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Address book not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type ListContactsError = ListContactsErrors[keyof ListContactsErrors];
 
 export type ListContactsResponses = {
     /**
@@ -5519,16 +5529,18 @@ export type CreateContactErrors = {
     /**
      * Invalid input
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Access denied or read-only book
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Address book not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type CreateContactError = CreateContactErrors[keyof CreateContactErrors];
 
 export type CreateContactResponses = {
     /**
@@ -5559,16 +5571,18 @@ export type DeleteContactErrors = {
     /**
      * Access denied or read-only book
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Contact not found
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * ETag mismatch
      */
-    412: unknown;
+    412: ApiErrorBody;
 };
+
+export type DeleteContactError = DeleteContactErrors[keyof DeleteContactErrors];
 
 export type DeleteContactResponses = {
     /**
@@ -5599,12 +5613,14 @@ export type GetContactErrors = {
     /**
      * Access denied
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Contact not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type GetContactError = GetContactErrors[keyof GetContactErrors];
 
 export type GetContactResponses = {
     /**
@@ -5635,20 +5651,22 @@ export type UpdateContactErrors = {
     /**
      * Invalid input
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Access denied or read-only book
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Contact not found
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * ETag mismatch — contact was modified
      */
-    412: unknown;
+    412: ApiErrorBody;
 };
+
+export type UpdateContactError = UpdateContactErrors[keyof UpdateContactErrors];
 
 export type UpdateContactResponses = {
     /**
@@ -5675,12 +5693,14 @@ export type ListGroupsErrors = {
     /**
      * Access denied
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Address book not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type ListGroupsError = ListGroupsErrors[keyof ListGroupsErrors];
 
 export type ListGroupsResponses = {
     /**
@@ -5707,12 +5727,14 @@ export type CreateGroupErrors = {
     /**
      * Access denied or read-only book
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Address book not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type CreateGroupError = CreateGroupErrors[keyof CreateGroupErrors];
 
 export type CreateGroupResponses = {
     /**
@@ -5743,12 +5765,14 @@ export type DeleteGroupErrors = {
     /**
      * Access denied or read-only book
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Group not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type DeleteGroupError = DeleteGroupErrors[keyof DeleteGroupErrors];
 
 export type DeleteGroupResponses = {
     /**
@@ -5779,12 +5803,14 @@ export type GetGroupErrors = {
     /**
      * Access denied
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Group not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type GetGroupError = GetGroupErrors[keyof GetGroupErrors];
 
 export type GetGroupResponses = {
     /**
@@ -5815,12 +5841,14 @@ export type UpdateGroupErrors = {
     /**
      * Access denied or read-only book
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Group not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type UpdateGroupError = UpdateGroupErrors[keyof UpdateGroupErrors];
 
 export type UpdateGroupResponses = {
     /**
@@ -5851,12 +5879,14 @@ export type ListContactsInGroupErrors = {
     /**
      * Access denied
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Group not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type ListContactsInGroupError = ListContactsInGroupErrors[keyof ListContactsInGroupErrors];
 
 export type ListContactsInGroupResponses = {
     /**
@@ -5887,16 +5917,18 @@ export type AddContactToGroupErrors = {
     /**
      * Invalid contact ID
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Access denied or read-only book
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Group or contact not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type AddContactToGroupError = AddContactToGroupErrors[keyof AddContactToGroupErrors];
 
 export type AddContactToGroupResponses = {
     /**
@@ -5931,12 +5963,14 @@ export type RemoveContactFromGroupErrors = {
     /**
      * Access denied or read-only book
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Group or contact not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type RemoveContactFromGroupError = RemoveContactFromGroupErrors[keyof RemoveContactFromGroupErrors];
 
 export type RemoveContactFromGroupResponses = {
     /**
@@ -5958,12 +5992,14 @@ export type ListOpsBannersErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type ListOpsBannersError = ListOpsBannersErrors[keyof ListOpsBannersErrors];
 
 export type ListOpsBannersResponses = {
     /**
@@ -5985,20 +6021,22 @@ export type CreateOpsBannerErrors = {
     /**
      * Validation error (empty body, oversized body, invalid locale, …)
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Banner cap reached — delete one before creating another
      */
-    409: unknown;
+    409: ApiErrorBody;
 };
+
+export type CreateOpsBannerError = CreateOpsBannerErrors[keyof CreateOpsBannerErrors];
 
 export type CreateOpsBannerResponses = {
     /**
@@ -6025,16 +6063,18 @@ export type DeleteOpsBannerErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Banner not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type DeleteOpsBannerError = DeleteOpsBannerErrors[keyof DeleteOpsBannerErrors];
 
 export type DeleteOpsBannerResponses = {
     /**
@@ -6061,20 +6101,22 @@ export type UpdateOpsBannerErrors = {
     /**
      * Validation error
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Banner not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type UpdateOpsBannerError = UpdateOpsBannerErrors[keyof UpdateOpsBannerErrors];
 
 export type UpdateOpsBannerResponses = {
     /**
@@ -6096,12 +6138,14 @@ export type GetDashboardStatsErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type GetDashboardStatsError = GetDashboardStatsErrors[keyof GetDashboardStatsErrors];
 
 export type GetDashboardStatsResponses = {
     /**
@@ -6128,16 +6172,18 @@ export type AdminCheckHashErrors = {
     /**
      * Missing or invalid token
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Caller is not an admin
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * No blob with this hash is stored (or malformed input)
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type AdminCheckHashError = AdminCheckHashErrors[keyof AdminCheckHashErrors];
 
 export type AdminCheckHashResponses = {
     /**
@@ -6159,16 +6205,18 @@ export type RecalculateStatsErrors = {
     /**
      * Missing or invalid token
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Caller is not an admin
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Integrity verification failed
      */
-    500: unknown;
+    500: ApiErrorBody;
 };
+
+export type RecalculateStatsError = RecalculateStatsErrors[keyof RecalculateStatsErrors];
 
 export type RecalculateStatsResponses = {
     /**
@@ -6190,12 +6238,14 @@ export type GetStatsErrors = {
     /**
      * Missing or invalid token
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Caller is not an admin
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type GetStatsError = GetStatsErrors[keyof GetStatsErrors];
 
 export type GetStatsResponses = {
     /**
@@ -6222,16 +6272,18 @@ export type GetDrivePolicyDefaultsErrors = {
     /**
      * Unknown drive kind
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type GetDrivePolicyDefaultsError = GetDrivePolicyDefaultsErrors[keyof GetDrivePolicyDefaultsErrors];
 
 export type GetDrivePolicyDefaultsResponses = {
     /**
@@ -6267,16 +6319,18 @@ export type SetDrivePolicyDefaultsErrors = {
     /**
      * Unknown kind, unknown knob, or a knob that cannot be defaulted
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type SetDrivePolicyDefaultsError = SetDrivePolicyDefaultsErrors[keyof SetDrivePolicyDefaultsErrors];
 
 export type SetDrivePolicyDefaultsResponses = {
     /**
@@ -6300,12 +6354,14 @@ export type GetDrivePolicyDriftErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type GetDrivePolicyDriftError = GetDrivePolicyDriftErrors[keyof GetDrivePolicyDriftErrors];
 
 export type GetDrivePolicyDriftResponses = {
     /**
@@ -6327,12 +6383,14 @@ export type ListAllDrivesErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type ListAllDrivesError = ListAllDrivesErrors[keyof ListAllDrivesErrors];
 
 export type ListAllDrivesResponses = {
     /**
@@ -6359,20 +6417,22 @@ export type DeleteDriveAdminErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Default Personal drive — undeletable
      */
-    405: unknown;
+    405: ApiErrorBody;
     /**
      * Drive is not empty
      */
-    409: unknown;
+    409: ApiErrorBody;
 };
+
+export type DeleteDriveAdminError = DeleteDriveAdminErrors[keyof DeleteDriveAdminErrors];
 
 export type DeleteDriveAdminResponses = {
     /**
@@ -6399,12 +6459,14 @@ export type ListDriveMembersAdminErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type ListDriveMembersAdminError = ListDriveMembersAdminErrors[keyof ListDriveMembersAdminErrors];
 
 export type ListDriveMembersAdminResponses = {
     /**
@@ -6431,20 +6493,22 @@ export type AddDriveMemberAdminErrors = {
     /**
      * Validation error (e.g. last-owner constraint)
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Personal drive — membership is immutable
      */
-    405: unknown;
+    405: ApiErrorBody;
 };
+
+export type AddDriveMemberAdminError = AddDriveMemberAdminErrors[keyof AddDriveMemberAdminErrors];
 
 export type AddDriveMemberAdminResponses = {
     /**
@@ -6479,20 +6543,22 @@ export type RemoveDriveMemberAdminErrors = {
     /**
      * Last-owner protection — promote another member first
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Personal drive — membership is immutable
      */
-    405: unknown;
+    405: ApiErrorBody;
 };
+
+export type RemoveDriveMemberAdminError = RemoveDriveMemberAdminErrors[keyof RemoveDriveMemberAdminErrors];
 
 export type RemoveDriveMemberAdminResponses = {
     /**
@@ -6527,20 +6593,22 @@ export type UpdateDriveMemberAdminErrors = {
     /**
      * Validation error (e.g. last-owner demotion)
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Personal drive — membership is immutable
      */
-    405: unknown;
+    405: ApiErrorBody;
 };
+
+export type UpdateDriveMemberAdminError = UpdateDriveMemberAdminErrors[keyof UpdateDriveMemberAdminErrors];
 
 export type UpdateDriveMemberAdminResponses = {
     /**
@@ -6562,12 +6630,14 @@ export type ListJobsErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type ListJobsError = ListJobsErrors[keyof ListJobsErrors];
 
 export type ListJobsResponses = {
     /**
@@ -6596,16 +6666,18 @@ export type CancelJobErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * DB error
      */
-    500: unknown;
+    500: ApiErrorBody;
 };
+
+export type CancelJobError = CancelJobErrors[keyof CancelJobErrors];
 
 export type CancelJobResponses = {
     /**
@@ -6634,16 +6706,18 @@ export type PauseJobErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * DB error
      */
-    500: unknown;
+    500: ApiErrorBody;
 };
+
+export type PauseJobError = PauseJobErrors[keyof PauseJobErrors];
 
 export type PauseJobResponses = {
     /**
@@ -6677,16 +6751,18 @@ export type ListJobRunsErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * DB error
      */
-    500: unknown;
+    500: ApiErrorBody;
 };
+
+export type ListJobRunsError = ListJobRunsErrors[keyof ListJobRunsErrors];
 
 export type ListJobRunsResponses = {
     /**
@@ -6719,20 +6795,22 @@ export type GetJobRunErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Run not found
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * DB error
      */
-    500: unknown;
+    500: ApiErrorBody;
 };
+
+export type GetJobRunError = GetJobRunErrors[keyof GetJobRunErrors];
 
 export type GetJobRunResponses = {
     /**
@@ -6774,20 +6852,22 @@ export type ListJobRunFindingsErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Run not found
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * DB error
      */
-    500: unknown;
+    500: ApiErrorBody;
 };
+
+export type ListJobRunFindingsError = ListJobRunFindingsErrors[keyof ListJobRunFindingsErrors];
 
 export type ListJobRunFindingsResponses = {
     /**
@@ -6816,16 +6896,18 @@ export type TriggerJobErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Job not registered
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type TriggerJobError = TriggerJobErrors[keyof TriggerJobErrors];
 
 export type TriggerJobResponses = {
     /**
@@ -6849,12 +6931,14 @@ export type GetNotifyInfoErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type GetNotifyInfoError = GetNotifyInfoErrors[keyof GetNotifyInfoErrors];
 
 export type GetNotifyInfoResponses = {
     /**
@@ -6876,16 +6960,18 @@ export type ClearSearchCacheErrors = {
     /**
      * Missing or invalid token
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Caller is not an admin
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Search service unavailable
      */
-    503: unknown;
+    503: ApiErrorBody;
 };
+
+export type ClearSearchCacheError = ClearSearchCacheErrors[keyof ClearSearchCacheErrors];
 
 export type ClearSearchCacheResponses = {
     /**
@@ -6926,12 +7012,14 @@ export type ListSessionsErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type ListSessionsError = ListSessionsErrors[keyof ListSessionsErrors];
 
 export type ListSessionsResponses = {
     /**
@@ -6960,20 +7048,22 @@ export type RevokeSessionErrors = {
     /**
      * Invalid UUID
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Session not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type RevokeSessionError = RevokeSessionErrors[keyof RevokeSessionErrors];
 
 export type RevokeSessionResponses = {
     /**
@@ -6997,12 +7087,14 @@ export type GetOidcSettingsErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type GetOidcSettingsError = GetOidcSettingsErrors[keyof GetOidcSettingsErrors];
 
 export type GetOidcSettingsResponses = {
     /**
@@ -7024,12 +7116,14 @@ export type SaveOidcSettingsErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type SaveOidcSettingsError = SaveOidcSettingsErrors[keyof SaveOidcSettingsErrors];
 
 export type SaveOidcSettingsResponses = {
     /**
@@ -7053,16 +7147,18 @@ export type SetRegistrationSettingErrors = {
     /**
      * Missing field
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type SetRegistrationSettingError = SetRegistrationSettingErrors[keyof SetRegistrationSettingErrors];
 
 export type SetRegistrationSettingResponses = {
     /**
@@ -7086,12 +7182,14 @@ export type GetStorageSettingsErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type GetStorageSettingsError = GetStorageSettingsErrors[keyof GetStorageSettingsErrors];
 
 export type GetStorageSettingsResponses = {
     /**
@@ -7113,12 +7211,14 @@ export type SaveStorageSettingsErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type SaveStorageSettingsError = SaveStorageSettingsErrors[keyof SaveStorageSettingsErrors];
 
 export type SaveStorageSettingsResponses = {
     /**
@@ -7142,12 +7242,14 @@ export type GenerateEncryptionKeyErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type GenerateEncryptionKeyError = GenerateEncryptionKeyErrors[keyof GenerateEncryptionKeyErrors];
 
 export type GenerateEncryptionKeyResponses = {
     /**
@@ -7171,12 +7273,14 @@ export type GetSmtpInfoErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type GetSmtpInfoError = GetSmtpInfoErrors[keyof GetSmtpInfoErrors];
 
 export type GetSmtpInfoResponses = {
     /**
@@ -7198,16 +7302,18 @@ export type SendSmtpTestErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * SMTP not configured
      */
-    503: unknown;
+    503: ApiErrorBody;
 };
+
+export type SendSmtpTestError = SendSmtpTestErrors[keyof SendSmtpTestErrors];
 
 export type SendSmtpTestResponses = {
     /**
@@ -7234,16 +7340,18 @@ export type TriggerBackendRotateErrors = {
     /**
      * Unknown entry
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type TriggerBackendRotateError = TriggerBackendRotateErrors[keyof TriggerBackendRotateErrors];
 
 export type TriggerBackendRotateResponses = {
     /**
@@ -7263,12 +7371,14 @@ export type GetMigrationStatusErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type GetMigrationStatusError = GetMigrationStatusErrors[keyof GetMigrationStatusErrors];
 
 export type GetMigrationStatusResponses = {
     /**
@@ -7290,12 +7400,14 @@ export type PauseMigrationErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type PauseMigrationError = PauseMigrationErrors[keyof PauseMigrationErrors];
 
 export type PauseMigrationResponses = {
     /**
@@ -7319,12 +7431,14 @@ export type ResumeMigrationErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type ResumeMigrationError = ResumeMigrationErrors[keyof ResumeMigrationErrors];
 
 export type ResumeMigrationResponses = {
     /**
@@ -7348,12 +7462,14 @@ export type StartMigrationErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type StartMigrationError = StartMigrationErrors[keyof StartMigrationErrors];
 
 export type StartMigrationResponses = {
     /**
@@ -7377,12 +7493,14 @@ export type ReleaseBackendWriteLockErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type ReleaseBackendWriteLockError = ReleaseBackendWriteLockErrors[keyof ReleaseBackendWriteLockErrors];
 
 export type ReleaseBackendWriteLockResponses = {
     /**
@@ -7404,12 +7522,14 @@ export type GetBackendWriteLockErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type GetBackendWriteLockError = GetBackendWriteLockErrors[keyof GetBackendWriteLockErrors];
 
 export type GetBackendWriteLockResponses = {
     /**
@@ -7434,16 +7554,18 @@ export type AcquireBackendWriteLockErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Backend write-lock already held by another operation (migration/backup/rotation/external)
      */
-    409: unknown;
+    409: ApiErrorBody;
 };
+
+export type AcquireBackendWriteLockError = AcquireBackendWriteLockErrors[keyof AcquireBackendWriteLockErrors];
 
 export type AcquireBackendWriteLockResponses = {
     /**
@@ -7465,20 +7587,22 @@ export type TransferOwnershipErrors = {
     /**
      * Target cannot hold ownership, or is already the owner
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Only the current owner may transfer ownership
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Target user not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type TransferOwnershipError = TransferOwnershipErrors[keyof TransferOwnershipErrors];
 
 export type TransferOwnershipResponses = {
     /**
@@ -7511,12 +7635,14 @@ export type ListUsersErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type ListUsersError = ListUsersErrors[keyof ListUsersErrors];
 
 export type ListUsersResponses = {
     /**
@@ -7538,16 +7664,18 @@ export type CreateUserErrors = {
     /**
      * Invalid user data
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required, and cannot create a role the caller does not outrank
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type CreateUserError = CreateUserErrors[keyof CreateUserErrors];
 
 export type CreateUserResponses = {
     /**
@@ -7574,16 +7702,18 @@ export type DeleteUserErrors = {
     /**
      * Cannot delete own account
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type DeleteUserError = DeleteUserErrors[keyof DeleteUserErrors];
 
 export type DeleteUserResponses = {
     /**
@@ -7612,16 +7742,18 @@ export type GetUserErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * User not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type GetUserError = GetUserErrors[keyof GetUserErrors];
 
 export type GetUserResponses = {
     /**
@@ -7648,16 +7780,18 @@ export type UpdateUserActiveErrors = {
     /**
      * Cannot deactivate own account
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type UpdateUserActiveError = UpdateUserActiveErrors[keyof UpdateUserActiveErrors];
 
 export type UpdateUserActiveResponses = {
     /**
@@ -7686,16 +7820,18 @@ export type ResetUserPasswordErrors = {
     /**
      * Invalid password
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required, and must outrank the target
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type ResetUserPasswordError = ResetUserPasswordErrors[keyof ResetUserPasswordErrors];
 
 export type ResetUserPasswordResponses = {
     /**
@@ -7724,24 +7860,26 @@ export type AdminPromoteExternalToInternalErrors = {
     /**
      * Magic-link login is disabled on this deployment
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required (or target is OIDC-linked)
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * User not found
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * User is already internal
      */
-    409: unknown;
+    409: ApiErrorBody;
 };
+
+export type AdminPromoteExternalToInternalError = AdminPromoteExternalToInternalErrors[keyof AdminPromoteExternalToInternalErrors];
 
 export type AdminPromoteExternalToInternalResponses = {
     /**
@@ -7768,12 +7906,14 @@ export type UpdateUserQuotaErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required, and must outrank the target
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type UpdateUserQuotaError = UpdateUserQuotaErrors[keyof UpdateUserQuotaErrors];
 
 export type UpdateUserQuotaResponses = {
     /**
@@ -7802,16 +7942,18 @@ export type UpdateUserRoleErrors = {
     /**
      * Cannot change own role, or the target is the server owner
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type UpdateUserRoleError = UpdateUserRoleErrors[keyof UpdateUserRoleErrors];
 
 export type UpdateUserRoleResponses = {
     /**
@@ -7835,12 +7977,14 @@ export type GetWebhookInfoErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type GetWebhookInfoError = GetWebhookInfoErrors[keyof GetWebhookInfoErrors];
 
 export type GetWebhookInfoResponses = {
     /**
@@ -7862,16 +8006,18 @@ export type SendWebhookTestErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * No webhook configured
      */
-    503: unknown;
+    503: ApiErrorBody;
 };
+
+export type SendWebhookTestError = SendWebhookTestErrors[keyof SendWebhookTestErrors];
 
 export type SendWebhookTestResponses = {
     /**
@@ -7893,8 +8039,10 @@ export type ListAppPasswordsErrors = {
     /**
      * Caller is not signed in
      */
-    401: unknown;
+    401: ApiErrorBody;
 };
+
+export type ListAppPasswordsError = ListAppPasswordsErrors[keyof ListAppPasswordsErrors];
 
 export type ListAppPasswordsResponses = {
     /**
@@ -7916,16 +8064,18 @@ export type CreateAppPasswordErrors = {
     /**
      * Caller is not signed in
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * External users cannot mint app passwords
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Caller has no claimed username — app password is unusable without one
      */
-    409: unknown;
+    409: ApiErrorBody;
 };
+
+export type CreateAppPasswordError = CreateAppPasswordErrors[keyof CreateAppPasswordErrors];
 
 export type CreateAppPasswordResponses = {
     /**
@@ -7952,16 +8102,18 @@ export type RevokeAppPasswordErrors = {
     /**
      * `id` is not a valid UUID
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Caller is not signed in
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * No app password with this id for the caller
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type RevokeAppPasswordError = RevokeAppPasswordErrors[keyof RevokeAppPasswordErrors];
 
 export type RevokeAppPasswordResponses = {
     /**
@@ -7983,12 +8135,14 @@ export type ChangePasswordErrors = {
     /**
      * New password does not meet requirements
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Not authenticated or current password incorrect
      */
-    401: unknown;
+    401: ApiErrorBody;
 };
+
+export type ChangePasswordError = ChangePasswordErrors[keyof ChangePasswordErrors];
 
 export type ChangePasswordResponses = {
     /**
@@ -8028,8 +8182,10 @@ export type ListDevicesErrors = {
     /**
      * Not authenticated
      */
-    401: unknown;
+    401: ApiErrorBody;
 };
+
+export type ListDevicesError = ListDevicesErrors[keyof ListDevicesErrors];
 
 export type ListDevicesResponses = {
     /**
@@ -8056,12 +8212,14 @@ export type RevokeDeviceErrors = {
     /**
      * Invalid device id
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Not authenticated
      */
-    401: unknown;
+    401: ApiErrorBody;
 };
+
+export type RevokeDeviceError = RevokeDeviceErrors[keyof RevokeDeviceErrors];
 
 export type RevokeDeviceResponses = {
     /**
@@ -8113,8 +8271,10 @@ export type DeviceVerifyInfoErrors = {
     /**
      * Caller is not signed in — the user must authenticate before approving a device
      */
-    401: unknown;
+    401: ApiErrorBody;
 };
+
+export type DeviceVerifyInfoError = DeviceVerifyInfoErrors[keyof DeviceVerifyInfoErrors];
 
 export type DeviceVerifyInfoResponses = {
     /**
@@ -8136,12 +8296,14 @@ export type DeviceVerifyActionErrors = {
     /**
      * `action` was not one of `approve`/`deny`
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Caller is not signed in
      */
-    401: unknown;
+    401: ApiErrorBody;
 };
+
+export type DeviceVerifyActionError = DeviceVerifyActionErrors[keyof DeviceVerifyActionErrors];
 
 export type DeviceVerifyActionResponses = {
     /**
@@ -8163,16 +8325,18 @@ export type DpopBindErrors = {
     /**
      * Malformed thumbprint
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Not authenticated
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Session already bound
      */
-    409: unknown;
+    409: ApiErrorBody;
 };
+
+export type DpopBindError = DpopBindErrors[keyof DpopBindErrors];
 
 export type DpopBindResponses = {
     /**
@@ -8196,16 +8360,18 @@ export type LoginErrors = {
     /**
      * Invalid credentials or password login disabled
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Account disabled
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Account temporarily locked (too many failed attempts)
      */
-    429: unknown;
+    429: ApiErrorBody;
 };
+
+export type LoginError = LoginErrors[keyof LoginErrors];
 
 export type LoginResponses = {
     /**
@@ -8232,8 +8398,10 @@ export type LogoutErrors = {
     /**
      * Not authenticated or refresh token missing
      */
-    401: unknown;
+    401: ApiErrorBody;
 };
+
+export type LogoutError = LogoutErrors[keyof LogoutErrors];
 
 export type LogoutResponses = {
     /**
@@ -8257,8 +8425,10 @@ export type SendMagicLinkErrors = {
     /**
      * Magic-link / SMTP is not configured on this server
      */
-    503: unknown;
+    503: ApiErrorBody;
 };
+
+export type SendMagicLinkError = SendMagicLinkErrors[keyof SendMagicLinkErrors];
 
 export type SendMagicLinkResponses = {
     /**
@@ -8282,8 +8452,10 @@ export type GetCurrentUserErrors = {
     /**
      * Not authenticated
      */
-    401: unknown;
+    401: ApiErrorBody;
 };
+
+export type GetCurrentUserError = GetCurrentUserErrors[keyof GetCurrentUserErrors];
 
 export type GetCurrentUserResponses = {
     /**
@@ -8305,12 +8477,14 @@ export type UpdateUserImageErrors = {
     /**
      * Validation error (invalid data URI / unsupported MIME / oversized / malformed URL)
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Not authenticated
      */
-    401: unknown;
+    401: ApiErrorBody;
 };
+
+export type UpdateUserImageError = UpdateUserImageErrors[keyof UpdateUserImageErrors];
 
 export type UpdateUserImageResponses = {
     /**
@@ -8330,20 +8504,22 @@ export type UpdateProfileErrors = {
     /**
      * Validation error (e.g. invalid handle format, empty given_name)
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Not authenticated
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * OIDC-managed profile — edit at the IdP
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Username already claimed (immutable) or taken by another user
      */
-    409: unknown;
+    409: ApiErrorBody;
 };
+
+export type UpdateProfileError = UpdateProfileErrors[keyof UpdateProfileErrors];
 
 export type UpdateProfileResponses = {
     /**
@@ -8365,12 +8541,14 @@ export type OidcAuthorizeErrors = {
     /**
      * OIDC not enabled
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * Auth service not configured
      */
-    503: unknown;
+    503: ApiErrorBody;
 };
+
+export type OidcAuthorizeError = OidcAuthorizeErrors[keyof OidcAuthorizeErrors];
 
 export type OidcBackchannelLogoutData = {
     /**
@@ -8386,12 +8564,14 @@ export type OidcBackchannelLogoutErrors = {
     /**
      * logout_token missing, malformed, or failed validation
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * OIDC not configured on this deployment
      */
-    503: unknown;
+    503: ApiErrorBody;
 };
+
+export type OidcBackchannelLogoutError = OidcBackchannelLogoutErrors[keyof OidcBackchannelLogoutErrors];
 
 export type OidcBackchannelLogoutResponses = {
     /**
@@ -8424,12 +8604,14 @@ export type OidcCallbackErrors = {
     /**
      * OIDC validation failed (bad state, nonce, or code)
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * OIDC not enabled
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type OidcCallbackError = OidcCallbackErrors[keyof OidcCallbackErrors];
 
 export type OidcExchangeData = {
     body: OidcExchangeDto;
@@ -8442,8 +8624,10 @@ export type OidcExchangeErrors = {
     /**
      * Exchange code invalid or expired
      */
-    401: unknown;
+    401: ApiErrorBody;
 };
+
+export type OidcExchangeError = OidcExchangeErrors[keyof OidcExchangeErrors];
 
 export type OidcExchangeResponses = {
     /**
@@ -8465,16 +8649,18 @@ export type OidcLinkStartErrors = {
     /**
      * Not authenticated
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * OIDC not enabled
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * User is already linked — unlink first
      */
-    409: unknown;
+    409: ApiErrorBody;
 };
+
+export type OidcLinkStartError = OidcLinkStartErrors[keyof OidcLinkStartErrors];
 
 export type OidcLinkStartResponses = {
     /**
@@ -8494,12 +8680,14 @@ export type OidcUnlinkErrors = {
     /**
      * Not authenticated
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Refused — user has no other credential and would be locked out
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type OidcUnlinkError = OidcUnlinkErrors[keyof OidcUnlinkErrors];
 
 export type OidcUnlinkResponses = {
     /**
@@ -8523,12 +8711,14 @@ export type LoginKe1Errors = {
     /**
      * Malformed request payload
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * OPAQUE service not configured
      */
-    503: unknown;
+    503: ApiErrorBody;
 };
+
+export type LoginKe1Error = LoginKe1Errors[keyof LoginKe1Errors];
 
 export type LoginKe1Responses = {
     /**
@@ -8550,16 +8740,18 @@ export type LoginKe3Errors = {
     /**
      * Malformed request payload
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Invalid credentials
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * OPAQUE service not configured
      */
-    503: unknown;
+    503: ApiErrorBody;
 };
+
+export type LoginKe3Error = LoginKe3Errors[keyof LoginKe3Errors];
 
 export type LoginKe3Responses = {
     /**
@@ -8581,12 +8773,14 @@ export type LoginLookupErrors = {
     /**
      * Malformed request body
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * OPAQUE service not configured
      */
-    503: unknown;
+    503: ApiErrorBody;
 };
+
+export type LoginLookupError = LoginLookupErrors[keyof LoginLookupErrors];
 
 export type LoginLookupResponses = {
     /**
@@ -8624,16 +8818,18 @@ export type RegisterFinishErrors = {
     /**
      * Malformed record or ciphersuite mismatch
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Not authenticated
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * OPAQUE service not configured
      */
-    503: unknown;
+    503: ApiErrorBody;
 };
+
+export type RegisterFinishError = RegisterFinishErrors[keyof RegisterFinishErrors];
 
 export type RegisterFinishResponses = {
     /**
@@ -8655,16 +8851,18 @@ export type RegisterStartErrors = {
     /**
      * Malformed registration request
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Not authenticated
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * OPAQUE service not configured
      */
-    503: unknown;
+    503: ApiErrorBody;
 };
+
+export type RegisterStartError = RegisterStartErrors[keyof RegisterStartErrors];
 
 export type RegisterStartResponses = {
     /**
@@ -8691,8 +8889,10 @@ export type RefreshTokenErrors = {
     /**
      * Refresh token missing, expired, or revoked
      */
-    401: unknown;
+    401: ApiErrorBody;
 };
+
+export type RefreshTokenError = RefreshTokenErrors[keyof RefreshTokenErrors];
 
 export type RefreshTokenResponses = {
     /**
@@ -8714,20 +8914,22 @@ export type RegisterErrors = {
     /**
      * Validation error (malformed request body)
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Registration disabled (admin setting or OIDC-only mode)
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Username or email already taken (SMTP not configured)
      */
-    409: unknown;
+    409: ApiErrorBody;
     /**
      * Email-only signup requires SMTP to be configured
      */
-    503: unknown;
+    503: ApiErrorBody;
 };
+
+export type RegisterError = RegisterErrors[keyof RegisterErrors];
 
 export type RegisterResponses = {
     /**
@@ -8755,20 +8957,22 @@ export type UpgradeToInternalErrors = {
     /**
      * Password missing / too short
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Not authenticated
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * OIDC user, or domain not in allowlist
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Already internal
      */
-    409: unknown;
+    409: ApiErrorBody;
 };
+
+export type UpgradeToInternalError = UpgradeToInternalErrors[keyof UpgradeToInternalErrors];
 
 export type UpgradeToInternalResponses = {
     /**
@@ -8799,28 +9003,30 @@ export type DownloadBatchQuerystringErrors = {
     /**
      * Malformed request, or every item failed for DIFFERENT reasons
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Every item was denied and the caller can see the resources
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Every item was denied and the caller cannot see the resources
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * ZIP creation failed
      */
-    500: unknown;
+    500: ApiErrorBody;
     /**
      * Every item exceeded the destination drive's quota
      */
-    507: unknown;
+    507: ApiErrorBody;
 };
+
+export type DownloadBatchQuerystringError = DownloadBatchQuerystringErrors[keyof DownloadBatchQuerystringErrors];
 
 export type DownloadBatchQuerystringResponses = {
     /**
@@ -8842,28 +9048,30 @@ export type DownloadBatchPostErrors = {
     /**
      * Malformed request, or every item failed for DIFFERENT reasons
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Every item was denied and the caller can see the resources
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Every item was denied and the caller cannot see the resources
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * ZIP creation failed
      */
-    500: unknown;
+    500: ApiErrorBody;
     /**
      * Every item exceeded the destination drive's quota
      */
-    507: unknown;
+    507: ApiErrorBody;
 };
+
+export type DownloadBatchPostError = DownloadBatchPostErrors[keyof DownloadBatchPostErrors];
 
 export type DownloadBatchPostResponses = {
     /**
@@ -8885,24 +9093,26 @@ export type CopyFilesBatchErrors = {
     /**
      * Malformed request, or every item failed for DIFFERENT reasons
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Every item was denied and the caller can see the resources
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Every item was denied and the caller cannot see the resources
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * Every item exceeded the destination drive's quota
      */
-    507: unknown;
+    507: ApiErrorBody;
 };
+
+export type CopyFilesBatchError = CopyFilesBatchErrors[keyof CopyFilesBatchErrors];
 
 export type CopyFilesBatchResponses = {
     /**
@@ -8932,24 +9142,26 @@ export type DeleteFilesBatchErrors = {
     /**
      * Malformed request, or every item failed for DIFFERENT reasons
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Every item was denied and the caller can see the resources
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Every item was denied and the caller cannot see the resources
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * Every item exceeded the destination drive's quota
      */
-    507: unknown;
+    507: ApiErrorBody;
 };
+
+export type DeleteFilesBatchError = DeleteFilesBatchErrors[keyof DeleteFilesBatchErrors];
 
 export type DeleteFilesBatchResponses = {
     /**
@@ -8979,24 +9191,26 @@ export type GetFilesBatchErrors = {
     /**
      * Malformed request, or every item failed for DIFFERENT reasons
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Every item was denied and the caller can see the resources
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Every item was denied and the caller cannot see the resources
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * Every item exceeded the destination drive's quota
      */
-    507: unknown;
+    507: ApiErrorBody;
 };
+
+export type GetFilesBatchError = GetFilesBatchErrors[keyof GetFilesBatchErrors];
 
 export type GetFilesBatchResponses = {
     /**
@@ -9026,24 +9240,26 @@ export type MoveFilesBatchErrors = {
     /**
      * Malformed request, or every item failed for DIFFERENT reasons
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Every item was denied and the caller can see the resources
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Every item was denied and the caller cannot see the resources
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * Every item exceeded the destination drive's quota
      */
-    507: unknown;
+    507: ApiErrorBody;
 };
+
+export type MoveFilesBatchError = MoveFilesBatchErrors[keyof MoveFilesBatchErrors];
 
 export type MoveFilesBatchResponses = {
     /**
@@ -9073,24 +9289,26 @@ export type CopyFoldersBatchErrors = {
     /**
      * Malformed request, or every item failed for DIFFERENT reasons
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Every item was denied and the caller can see the resources
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Every item was denied and the caller cannot see the resources
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * Every item exceeded the destination drive's quota
      */
-    507: unknown;
+    507: ApiErrorBody;
 };
+
+export type CopyFoldersBatchError = CopyFoldersBatchErrors[keyof CopyFoldersBatchErrors];
 
 export type CopyFoldersBatchResponses = {
     /**
@@ -9120,24 +9338,26 @@ export type CreateFoldersBatchErrors = {
     /**
      * Malformed request, or every item failed for DIFFERENT reasons
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Every item was denied and the caller can see the resources
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Every item was denied and the caller cannot see the resources
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * Every item exceeded the destination drive's quota
      */
-    507: unknown;
+    507: ApiErrorBody;
 };
+
+export type CreateFoldersBatchError = CreateFoldersBatchErrors[keyof CreateFoldersBatchErrors];
 
 export type CreateFoldersBatchResponses = {
     /**
@@ -9167,24 +9387,26 @@ export type DeleteFoldersBatchErrors = {
     /**
      * Malformed request, or every item failed for DIFFERENT reasons
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Every item was denied and the caller can see the resources
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Every item was denied and the caller cannot see the resources
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * Every item exceeded the destination drive's quota
      */
-    507: unknown;
+    507: ApiErrorBody;
 };
+
+export type DeleteFoldersBatchError = DeleteFoldersBatchErrors[keyof DeleteFoldersBatchErrors];
 
 export type DeleteFoldersBatchResponses = {
     /**
@@ -9214,24 +9436,26 @@ export type GetFoldersBatchErrors = {
     /**
      * Malformed request, or every item failed for DIFFERENT reasons
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Every item was denied and the caller can see the resources
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Every item was denied and the caller cannot see the resources
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * Every item exceeded the destination drive's quota
      */
-    507: unknown;
+    507: ApiErrorBody;
 };
+
+export type GetFoldersBatchError = GetFoldersBatchErrors[keyof GetFoldersBatchErrors];
 
 export type GetFoldersBatchResponses = {
     /**
@@ -9261,24 +9485,26 @@ export type MoveFoldersBatchErrors = {
     /**
      * Malformed request, or every item failed for DIFFERENT reasons
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Every item was denied and the caller can see the resources
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Every item was denied and the caller cannot see the resources
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * Every item exceeded the destination drive's quota
      */
-    507: unknown;
+    507: ApiErrorBody;
 };
+
+export type MoveFoldersBatchError = MoveFoldersBatchErrors[keyof MoveFoldersBatchErrors];
 
 export type MoveFoldersBatchResponses = {
     /**
@@ -9308,24 +9534,26 @@ export type TrashBatchErrors = {
     /**
      * Malformed request, or every item failed for DIFFERENT reasons
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Every item was denied and the caller can see the resources
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Every item was denied and the caller cannot see the resources
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * Every item exceeded the destination drive's quota
      */
-    507: unknown;
+    507: ApiErrorBody;
 };
+
+export type TrashBatchError = TrashBatchErrors[keyof TrashBatchErrors];
 
 export type TrashBatchResponses = {
     /**
@@ -9376,12 +9604,14 @@ export type GetBlobErrors = {
     /**
      * Invalid hash format
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Blob not found or not owned by this user
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type GetBlobError = GetBlobErrors[keyof GetBlobErrors];
 
 export type GetBlobResponses = {
     /**
@@ -9403,8 +9633,10 @@ export type CheckHashesBatchErrors = {
     /**
      * Too many hashes in one batch
      */
-    400: unknown;
+    400: ApiErrorBody;
 };
+
+export type CheckHashesBatchError = CheckHashesBatchErrors[keyof CheckHashesBatchErrors];
 
 export type CheckHashesBatchResponses = {
     /**
@@ -9431,8 +9663,10 @@ export type CheckHashErrors = {
     /**
      * No visible reference, unknown hash, or malformed input
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type CheckHashError = CheckHashErrors[keyof CheckHashErrors];
 
 export type CheckHashResponses = {
     /**
@@ -9454,8 +9688,10 @@ export type ListDrivesErrors = {
     /**
      * Internal server error
      */
-    500: unknown;
+    500: ApiErrorBody;
 };
+
+export type ListDrivesError = ListDrivesErrors[keyof ListDrivesErrors];
 
 export type ListDrivesResponses = {
     /**
@@ -9482,16 +9718,18 @@ export type DeleteDriveErrors = {
     /**
      * Drive not found or caller lacks Manage
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * Default Personal drive — undeletable
      */
-    405: unknown;
+    405: ApiErrorBody;
     /**
      * Drive is not empty — move/trash contents first
      */
-    409: unknown;
+    409: ApiErrorBody;
 };
+
+export type DeleteDriveError = DeleteDriveErrors[keyof DeleteDriveErrors];
 
 export type DeleteDriveResponses = {
     /**
@@ -9518,8 +9756,10 @@ export type ListDriveMembersErrors = {
     /**
      * Drive not found or caller lacks Read
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type ListDriveMembersError = ListDriveMembersErrors[keyof ListDriveMembersErrors];
 
 export type ListDriveMembersResponses = {
     /**
@@ -9546,16 +9786,18 @@ export type AddDriveMemberErrors = {
     /**
      * Validation error (e.g. last-owner constraint)
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Drive not found or caller lacks Manage
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * Personal drive — membership is immutable
      */
-    405: unknown;
+    405: ApiErrorBody;
 };
+
+export type AddDriveMemberError = AddDriveMemberErrors[keyof AddDriveMemberErrors];
 
 export type AddDriveMemberResponses = {
     /**
@@ -9590,16 +9832,18 @@ export type RemoveDriveMemberErrors = {
     /**
      * Last-owner protection — promote another member first
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Drive not found or caller lacks Manage
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * Personal drive — membership is immutable
      */
-    405: unknown;
+    405: ApiErrorBody;
 };
+
+export type RemoveDriveMemberError = RemoveDriveMemberErrors[keyof RemoveDriveMemberErrors];
 
 export type RemoveDriveMemberResponses = {
     /**
@@ -9634,16 +9878,18 @@ export type UpdateDriveMemberErrors = {
     /**
      * Validation error (e.g. last-owner demotion)
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Drive not found or caller lacks Manage
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * Personal drive — membership is immutable
      */
-    405: unknown;
+    405: ApiErrorBody;
 };
+
+export type UpdateDriveMemberError = UpdateDriveMemberErrors[keyof UpdateDriveMemberErrors];
 
 export type UpdateDriveMemberResponses = {
     /**
@@ -9670,8 +9916,10 @@ export type UpdateDrivePoliciesErrors = {
     /**
      * Drive not found OR caller is not OxiCloud admin
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type UpdateDrivePoliciesError = UpdateDrivePoliciesErrors[keyof UpdateDrivePoliciesErrors];
 
 export type UpdateDrivePoliciesResponses = {
     /**
@@ -9700,12 +9948,14 @@ export type UpdateDriveQuotaErrors = {
     /**
      * Personal drive — quota is envelope-managed via the owner user
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Drive not found OR caller is not OxiCloud admin
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type UpdateDriveQuotaError = UpdateDriveQuotaErrors[keyof UpdateDriveQuotaErrors];
 
 export type UpdateDriveQuotaResponses = {
     /**
@@ -9729,8 +9979,10 @@ export type BatchAddFavoritesErrors = {
     /**
      * Invalid request
      */
-    400: unknown;
+    400: ApiErrorBody;
 };
+
+export type BatchAddFavoritesError = BatchAddFavoritesErrors[keyof BatchAddFavoritesErrors];
 
 export type BatchAddFavoritesResponses = {
     /**
@@ -9776,8 +10028,10 @@ export type ListFavoritesResourcesErrors = {
     /**
      * Invalid cursor or query parameters
      */
-    400: unknown;
+    400: ApiErrorBody;
 };
+
+export type ListFavoritesResourcesError = ListFavoritesResourcesErrors[keyof ListFavoritesResourcesErrors];
 
 export type ListFavoritesResourcesResponses = {
     /**
@@ -9808,8 +10062,10 @@ export type RemoveFavoriteErrors = {
     /**
      * Item not in favorites
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type RemoveFavoriteError = RemoveFavoriteErrors[keyof RemoveFavoriteErrors];
 
 export type RemoveFavoriteResponses = {
     /**
@@ -9842,8 +10098,10 @@ export type AddFavoriteErrors = {
     /**
      * Invalid item type
      */
-    400: unknown;
+    400: ApiErrorBody;
 };
+
+export type AddFavoriteError = AddFavoriteErrors[keyof AddFavoriteErrors];
 
 export type AddFavoriteResponses = {
     /**
@@ -9888,20 +10146,22 @@ export type CreateFileByHashErrors = {
     /**
      * Invalid hash format or empty name
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * No owned blob with this hash (anti-enumeration: same shape as unknown hash)
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * A file with this name already exists in the folder
      */
-    409: unknown;
+    409: ApiErrorBody;
     /**
      * Storage quota exceeded
      */
-    507: unknown;
+    507: ApiErrorBody;
 };
+
+export type CreateFileByHashError = CreateFileByHashErrors[keyof CreateFileByHashErrors];
 
 export type CreateFileByHashResponses = {
     /**
@@ -9926,12 +10186,14 @@ export type DeltaUploadChunksErrors = {
     /**
      * Malformed framing, oversized frame, or oversized request
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Rate limited
      */
-    429: unknown;
+    429: ApiErrorBody;
 };
+
+export type DeltaUploadChunksError = DeltaUploadChunksErrors[keyof DeltaUploadChunksErrors];
 
 export type DeltaUploadChunksResponses = {
     /**
@@ -9953,11 +10215,11 @@ export type DeltaCommitErrors = {
     /**
      * Malformed request, or the declared file_hash does not match the chunk sequence
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Target folder/file not found or not accessible
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * Chunks not claimable — upload them and retry
      */
@@ -9965,11 +10227,11 @@ export type DeltaCommitErrors = {
     /**
      * Rate limited
      */
-    429: unknown;
+    429: ApiErrorBody;
     /**
      * Storage quota exceeded
      */
-    507: unknown;
+    507: ApiErrorBody;
 };
 
 export type DeltaCommitError = DeltaCommitErrors[keyof DeltaCommitErrors];
@@ -9998,7 +10260,7 @@ export type DeltaDownloadChunksErrors = {
     /**
      * Malformed hashes, duplicates, or batch above the per-request ceiling
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Some chunks are not available to this caller
      */
@@ -10006,7 +10268,7 @@ export type DeltaDownloadChunksErrors = {
     /**
      * Rate limited
      */
-    429: unknown;
+    429: ApiErrorBody;
 };
 
 export type DeltaDownloadChunksError = DeltaDownloadChunksErrors[keyof DeltaDownloadChunksErrors];
@@ -10031,12 +10293,14 @@ export type DeltaNegotiateErrors = {
     /**
      * Malformed chunk list (hash format, size bounds, count ceiling)
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Rate limited
      */
-    429: unknown;
+    429: ApiErrorBody;
 };
+
+export type DeltaNegotiateError = DeltaNegotiateErrors[keyof DeltaNegotiateErrors];
 
 export type DeltaNegotiateResponses = {
     /**
@@ -10061,12 +10325,14 @@ export type UploadFileWithThumbnailsErrors = {
     /**
      * Invalid request
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Storage quota exceeded
      */
-    507: unknown;
+    507: ApiErrorBody;
 };
+
+export type UploadFileWithThumbnailsError = UploadFileWithThumbnailsErrors[keyof UploadFileWithThumbnailsErrors];
 
 export type UploadFileWithThumbnailsResponses = {
     /**
@@ -10093,8 +10359,10 @@ export type DeleteFileErrors = {
     /**
      * File not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type DeleteFileError = DeleteFileErrors[keyof DeleteFileErrors];
 
 export type DeleteFileResponses = {
     /**
@@ -10134,8 +10402,10 @@ export type DownloadFileErrors = {
     /**
      * File not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type DownloadFileError = DownloadFileErrors[keyof DownloadFileErrors];
 
 export type DownloadFileResponses = {
     /**
@@ -10166,12 +10436,14 @@ export type DeltaFileManifestErrors = {
     /**
      * File not found, not accessible, or not owned by the caller
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * Rate limited
      */
-    429: unknown;
+    429: ApiErrorBody;
 };
+
+export type DeltaFileManifestError = DeltaFileManifestErrors[keyof DeltaFileManifestErrors];
 
 export type DeltaFileManifestResponses = {
     /**
@@ -10198,8 +10470,10 @@ export type GetFileMetadataErrors = {
     /**
      * File not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type GetFileMetadataError = GetFileMetadataErrors[keyof GetFileMetadataErrors];
 
 export type GetFileMetadataResponses = {
     /**
@@ -10231,8 +10505,10 @@ export type MoveFileSimpleErrors = {
     /**
      * File or destination not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type MoveFileSimpleError = MoveFileSimpleErrors[keyof MoveFileSimpleErrors];
 
 export type MoveFileSimpleResponses = {
     /**
@@ -10262,8 +10538,10 @@ export type RenameFileErrors = {
     /**
      * File not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type RenameFileError = RenameFileErrors[keyof RenameFileErrors];
 
 export type RenameFileResponses = {
     /**
@@ -10294,8 +10572,10 @@ export type GetThumbnailErrors = {
     /**
      * File not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type GetThumbnailError = GetThumbnailErrors[keyof GetThumbnailErrors];
 
 export type GetThumbnailResponses = {
     /**
@@ -10333,12 +10613,14 @@ export type UploadThumbnailErrors = {
     /**
      * Invalid image or size too large
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * File not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type UploadThumbnailError = UploadThumbnailErrors[keyof UploadThumbnailErrors];
 
 export type UploadThumbnailResponses = {
     /**
@@ -10381,8 +10663,10 @@ export type CreateFolderErrors = {
     /**
      * Invalid request
      */
-    400: unknown;
+    400: ApiErrorBody;
 };
+
+export type CreateFolderError = CreateFolderErrors[keyof CreateFolderErrors];
 
 export type CreateFolderResponses = {
     /**
@@ -10409,8 +10693,10 @@ export type DeleteFolderWithTrashErrors = {
     /**
      * Folder not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type DeleteFolderWithTrashError = DeleteFolderWithTrashErrors[keyof DeleteFolderWithTrashErrors];
 
 export type DeleteFolderWithTrashResponses = {
     /**
@@ -10437,8 +10723,10 @@ export type GetFolderErrors = {
     /**
      * Folder not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type GetFolderError = GetFolderErrors[keyof GetFolderErrors];
 
 export type GetFolderResponses = {
     /**
@@ -10482,12 +10770,14 @@ export type GetFolderAncestorsErrors = {
     /**
      * `include_grants=true` and the caller lacks Share on the leaf
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Folder not found or caller lacks Read (anti-enum)
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type GetFolderAncestorsError = GetFolderAncestorsErrors[keyof GetFolderAncestorsErrors];
 
 export type GetFolderAncestorsResponses = {
     /**
@@ -10514,12 +10804,14 @@ export type DownloadFolderZipErrors = {
     /**
      * Folder not found
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * ZIP service not available
      */
-    501: unknown;
+    501: ApiErrorBody;
 };
+
+export type DownloadFolderZipError = DownloadFolderZipErrors[keyof DownloadFolderZipErrors];
 
 export type DownloadFolderZipResponses = {
     /**
@@ -10549,8 +10841,10 @@ export type MoveFolderErrors = {
     /**
      * Folder or destination not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type MoveFolderError = MoveFolderErrors[keyof MoveFolderErrors];
 
 export type MoveFolderResponses = {
     /**
@@ -10580,8 +10874,10 @@ export type RenameFolderErrors = {
     /**
      * Folder not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type RenameFolderError = RenameFolderErrors[keyof RenameFolderErrors];
 
 export type RenameFolderResponses = {
     /**
@@ -10634,8 +10930,10 @@ export type ListFolderResourcesErrors = {
     /**
      * Folder not found or access denied
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type ListFolderResourcesError = ListFolderResourcesErrors[keyof ListFolderResourcesErrors];
 
 export type ListFolderResourcesResponses = {
     /**
@@ -10660,8 +10958,10 @@ export type ListOnResourceErrors = {
     /**
      * Resource not found or caller lacks Share
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type ListOnResourceError = ListOnResourceErrors[keyof ListOnResourceErrors];
 
 export type ListOnResourceResponses = {
     /**
@@ -10683,16 +10983,18 @@ export type CreateGrantErrors = {
     /**
      * Invalid input (both/neither of permissions+role provided)
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Resource not found OR caller lacks Share permission
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * Drive resource: personal drives have immutable membership
      */
-    405: unknown;
+    405: ApiErrorBody;
 };
+
+export type CreateGrantError = CreateGrantErrors[keyof CreateGrantErrors];
 
 export type CreateGrantResponses = {
     /**
@@ -10828,16 +11130,18 @@ export type SetRoleErrors = {
     /**
      * Drive resource: shared-drive last-owner demotion refused
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Resource not found or caller lacks Share
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * Drive resource: personal drives have immutable membership
      */
-    405: unknown;
+    405: ApiErrorBody;
 };
+
+export type SetRoleError = SetRoleErrors[keyof SetRoleErrors];
 
 export type SetRoleResponses = {
     /**
@@ -10864,8 +11168,10 @@ export type RevokeGrantErrors = {
     /**
      * Caller lacks Share permission on the underlying resource
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type RevokeGrantError = RevokeGrantErrors[keyof RevokeGrantErrors];
 
 export type RevokeGrantResponses = {
     /**
@@ -10892,16 +11198,18 @@ export type NotifyGrantRecipientErrors = {
     /**
      * Grant not found OR caller is not the granter
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * Token subject (use the existing /magic/v1/{token}/resend channel)
      */
-    409: unknown;
+    409: ApiErrorBody;
     /**
      * Per-recipient hard rate limit exceeded
      */
-    429: unknown;
+    429: ApiErrorBody;
 };
+
+export type NotifyGrantRecipientError = NotifyGrantRecipientErrors[keyof NotifyGrantRecipientErrors];
 
 export type NotifyGrantRecipientResponses = {
     /**
@@ -10934,12 +11242,14 @@ export type SubjectGroupListErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
 };
+
+export type SubjectGroupListError = SubjectGroupListErrors[keyof SubjectGroupListErrors];
 
 export type SubjectGroupListResponses = {
     /**
@@ -10961,20 +11271,22 @@ export type SubjectGroupCreateErrors = {
     /**
      * Invalid name (RFC 5321 violation)
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Group with this name already exists
      */
-    409: unknown;
+    409: ApiErrorBody;
 };
+
+export type SubjectGroupCreateError = SubjectGroupCreateErrors[keyof SubjectGroupCreateErrors];
 
 export type SubjectGroupCreateResponses = {
     /**
@@ -10999,8 +11311,10 @@ export type SubjectGroupSearchErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
 };
+
+export type SubjectGroupSearchError = SubjectGroupSearchErrors[keyof SubjectGroupSearchErrors];
 
 export type SubjectGroupSearchResponses = {
     /**
@@ -11027,16 +11341,18 @@ export type SubjectGroupDeleteErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required, or group is virtual
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Group not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type SubjectGroupDeleteError = SubjectGroupDeleteErrors[keyof SubjectGroupDeleteErrors];
 
 export type SubjectGroupDeleteResponses = {
     /**
@@ -11063,16 +11379,18 @@ export type SubjectGroupGetErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Group not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type SubjectGroupGetError = SubjectGroupGetErrors[keyof SubjectGroupGetErrors];
 
 export type SubjectGroupGetResponses = {
     /**
@@ -11099,24 +11417,26 @@ export type SubjectGroupUpdateErrors = {
     /**
      * Invalid name
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required, or group is virtual
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Group not found
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * Name already taken
      */
-    409: unknown;
+    409: ApiErrorBody;
 };
+
+export type SubjectGroupUpdateError = SubjectGroupUpdateErrors[keyof SubjectGroupUpdateErrors];
 
 export type SubjectGroupUpdateResponses = {
     /**
@@ -11143,16 +11463,18 @@ export type SubjectGroupEffectiveMembersErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Group not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type SubjectGroupEffectiveMembersError = SubjectGroupEffectiveMembersErrors[keyof SubjectGroupEffectiveMembersErrors];
 
 export type SubjectGroupEffectiveMembersResponses = {
     /**
@@ -11179,16 +11501,18 @@ export type SubjectGroupListMembersErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Group not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type SubjectGroupListMembersError = SubjectGroupListMembersErrors[keyof SubjectGroupListMembersErrors];
 
 export type SubjectGroupListMembersResponses = {
     /**
@@ -11215,24 +11539,26 @@ export type SubjectGroupAddMemberErrors = {
     /**
      * Invalid request, cycle would be created, or depth limit exceeded
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required, or virtual group
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Group not found
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * Member already in group
      */
-    409: unknown;
+    409: ApiErrorBody;
 };
+
+export type SubjectGroupAddMemberError = SubjectGroupAddMemberErrors[keyof SubjectGroupAddMemberErrors];
 
 export type SubjectGroupAddMemberResponses = {
     /**
@@ -11265,16 +11591,18 @@ export type SubjectGroupRemoveGroupMemberErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required, or virtual group
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Group or member not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type SubjectGroupRemoveGroupMemberError = SubjectGroupRemoveGroupMemberErrors[keyof SubjectGroupRemoveGroupMemberErrors];
 
 export type SubjectGroupRemoveGroupMemberResponses = {
     /**
@@ -11305,16 +11633,18 @@ export type SubjectGroupRemoveUserMemberErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Admin required, or virtual group
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Group or member not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type SubjectGroupRemoveUserMemberError = SubjectGroupRemoveUserMemberErrors[keyof SubjectGroupRemoveUserMemberErrors];
 
 export type SubjectGroupRemoveUserMemberResponses = {
     /**
@@ -11357,8 +11687,10 @@ export type GetTranslationsByLocaleErrors = {
     /**
      * Unsupported locale
      */
-    400: unknown;
+    400: ApiErrorBody;
 };
+
+export type GetTranslationsByLocaleError = GetTranslationsByLocaleErrors[keyof GetTranslationsByLocaleErrors];
 
 export type GetTranslationsByLocaleResponses = {
     /**
@@ -11395,7 +11727,7 @@ export type TranslateErrors = {
     /**
      * Key not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
 
 export type TranslateError = TranslateErrors[keyof TranslateErrors];
@@ -11527,8 +11859,10 @@ export type ListPeopleErrors = {
     /**
      * People feature disabled
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type ListPeopleError = ListPeopleErrors[keyof ListPeopleErrors];
 
 export type ListPeopleResponses = {
     /**
@@ -11550,8 +11884,10 @@ export type DeleteAllErrors = {
     /**
      * People feature disabled
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type DeleteAllError = DeleteAllErrors[keyof DeleteAllErrors];
 
 export type DeleteAllResponses = {
     /**
@@ -11578,12 +11914,14 @@ export type FacesForFileErrors = {
     /**
      * Malformed file id
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * People feature disabled
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type FacesForFileError = FacesForFileErrors[keyof FacesForFileErrors];
 
 export type FacesForFileResponses = {
     /**
@@ -11605,12 +11943,14 @@ export type MergePeopleErrors = {
     /**
      * Malformed cluster id(s)
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * People feature disabled
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type MergePeopleError = MergePeopleErrors[keyof MergePeopleErrors];
 
 export type MergePeopleResponses = {
     /**
@@ -11632,8 +11972,10 @@ export type ReclusterErrors = {
     /**
      * People feature disabled
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type ReclusterError = ReclusterErrors[keyof ReclusterErrors];
 
 export type ReclusterResponses = {
     /**
@@ -11658,12 +12000,14 @@ export type RenamePersonErrors = {
     /**
      * Malformed person id
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * People feature disabled
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type RenamePersonError = RenamePersonErrors[keyof RenamePersonErrors];
 
 export type RenamePersonResponses = {
     /**
@@ -11690,12 +12034,14 @@ export type PersonPhotosErrors = {
     /**
      * Malformed person id
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * People feature disabled
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type PersonPhotosError = PersonPhotosErrors[keyof PersonPhotosErrors];
 
 export type PersonPhotosResponses = {
     /**
@@ -11726,12 +12072,14 @@ export type ListPhotosGeoErrors = {
     /**
      * Invalid bounding box
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
 };
+
+export type ListPhotosGeoError = ListPhotosGeoErrors[keyof ListPhotosGeoErrors];
 
 export type ListPhotosGeoResponses = {
     /**
@@ -11797,16 +12145,18 @@ export type ListPhotosResourcesErrors = {
     /**
      * Invalid cursor or unsupported order_by
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Internal server error
      */
-    500: unknown;
+    500: ApiErrorBody;
 };
+
+export type ListPhotosResourcesError = ListPhotosResourcesErrors[keyof ListPhotosResourcesErrors];
 
 export type ListPhotosResourcesResponses = {
     /**
@@ -11841,8 +12191,10 @@ export type ListPlaylistsErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
 };
+
+export type ListPlaylistsError = ListPlaylistsErrors[keyof ListPlaylistsErrors];
 
 export type ListPlaylistsResponses = {
     /**
@@ -11864,12 +12216,14 @@ export type CreatePlaylistErrors = {
     /**
      * Bad request
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
 };
+
+export type CreatePlaylistError = CreatePlaylistErrors[keyof CreatePlaylistErrors];
 
 export type CreatePlaylistResponses = {
     /**
@@ -11896,12 +12250,14 @@ export type GetAudioMetadataErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * File not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type GetAudioMetadataError = GetAudioMetadataErrors[keyof GetAudioMetadataErrors];
 
 export type GetAudioMetadataResponses = {
     /**
@@ -11928,12 +12284,14 @@ export type DeletePlaylistErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Playlist not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type DeletePlaylistError = DeletePlaylistErrors[keyof DeletePlaylistErrors];
 
 export type DeletePlaylistResponses = {
     /**
@@ -11960,12 +12318,14 @@ export type GetPlaylistErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Playlist not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type GetPlaylistError = GetPlaylistErrors[keyof GetPlaylistErrors];
 
 export type GetPlaylistResponses = {
     /**
@@ -11992,12 +12352,14 @@ export type UpdatePlaylistErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Playlist not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type UpdatePlaylistError = UpdatePlaylistErrors[keyof UpdatePlaylistErrors];
 
 export type UpdatePlaylistResponses = {
     /**
@@ -12024,12 +12386,14 @@ export type ReorderTracksErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Playlist not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type ReorderTracksError = ReorderTracksErrors[keyof ReorderTracksErrors];
 
 export type ReorderTracksResponses = {
     /**
@@ -12056,12 +12420,14 @@ export type SharePlaylistErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Playlist not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type SharePlaylistError = SharePlaylistErrors[keyof SharePlaylistErrors];
 
 export type SharePlaylistResponses = {
     /**
@@ -12092,12 +12458,14 @@ export type RemoveShareErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Playlist or share not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type RemoveShareError = RemoveShareErrors[keyof RemoveShareErrors];
 
 export type RemoveShareResponses = {
     /**
@@ -12124,12 +12492,14 @@ export type GetPlaylistSharesErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Playlist not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type GetPlaylistSharesError = GetPlaylistSharesErrors[keyof GetPlaylistSharesErrors];
 
 export type GetPlaylistSharesResponses = {
     /**
@@ -12156,12 +12526,14 @@ export type ListPlaylistTracksErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Playlist not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type ListPlaylistTracksError = ListPlaylistTracksErrors[keyof ListPlaylistTracksErrors];
 
 export type ListPlaylistTracksResponses = {
     /**
@@ -12188,12 +12560,14 @@ export type AddTracksErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Playlist not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type AddTracksError = AddTracksErrors[keyof AddTracksErrors];
 
 export type AddTracksResponses = {
     /**
@@ -12224,12 +12598,14 @@ export type RemoveTrackErrors = {
     /**
      * Unauthorized
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Playlist or track not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type RemoveTrackError = RemoveTrackErrors[keyof RemoveTrackErrors];
 
 export type RemoveTrackResponses = {
     /**
@@ -12293,8 +12669,10 @@ export type ListRecentResourcesErrors = {
     /**
      * Invalid cursor or query parameters
      */
-    400: unknown;
+    400: ApiErrorBody;
 };
+
+export type ListRecentResourcesError = ListRecentResourcesErrors[keyof ListRecentResourcesErrors];
 
 export type ListRecentResourcesResponses = {
     /**
@@ -12325,8 +12703,10 @@ export type RemoveFromRecentErrors = {
     /**
      * Item not in recents
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type RemoveFromRecentError = RemoveFromRecentErrors[keyof RemoveFromRecentErrors];
 
 export type RemoveFromRecentResponses = {
     /**
@@ -12359,8 +12739,10 @@ export type RecordItemAccessErrors = {
     /**
      * Invalid item type
      */
-    400: unknown;
+    400: ApiErrorBody;
 };
+
+export type RecordItemAccessError = RecordItemAccessErrors[keyof RecordItemAccessErrors];
 
 export type RecordItemAccessResponses = {
     /**
@@ -12389,12 +12771,14 @@ export type AccessSharedItemErrors = {
     /**
      * Password required
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Share expired
      */
-    410: unknown;
+    410: ApiErrorBody;
 };
+
+export type AccessSharedItemError = AccessSharedItemErrors[keyof AccessSharedItemErrors];
 
 export type AccessSharedItemResponses = {
     /**
@@ -12421,12 +12805,14 @@ export type VerifySharedItemPasswordErrors = {
     /**
      * Invalid password
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Share expired
      */
-    410: unknown;
+    410: ApiErrorBody;
 };
+
+export type VerifySharedItemPasswordError = VerifySharedItemPasswordErrors[keyof VerifySharedItemPasswordErrors];
 
 export type VerifySharedItemPasswordResponses = {
     /**
@@ -12509,8 +12895,10 @@ export type SearchResourcesErrors = {
     /**
      * Search service unavailable
      */
-    503: unknown;
+    503: ApiErrorBody;
 };
+
+export type SearchResourcesError = SearchResourcesErrors[keyof SearchResourcesErrors];
 
 export type SearchResourcesResponses = {
     /**
@@ -12545,8 +12933,10 @@ export type SuggestFilesErrors = {
     /**
      * Search service unavailable
      */
-    503: unknown;
+    503: ApiErrorBody;
 };
+
+export type SuggestFilesError = SuggestFilesErrors[keyof SuggestFilesErrors];
 
 export type SuggestFilesResponses = {
     /**
@@ -12568,12 +12958,14 @@ export type SetupAdminErrors = {
     /**
      * System already initialized
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * Auth service not configured
      */
-    503: unknown;
+    503: ApiErrorBody;
 };
+
+export type SetupAdminError = SetupAdminErrors[keyof SetupAdminErrors];
 
 export type SetupAdminResponses = {
     /**
@@ -12628,8 +13020,10 @@ export type CreateSharedLinkErrors = {
     /**
      * Bad request
      */
-    400: unknown;
+    400: ApiErrorBody;
 };
+
+export type CreateSharedLinkError = CreateSharedLinkErrors[keyof CreateSharedLinkErrors];
 
 export type CreateSharedLinkResponses = {
     /**
@@ -12656,8 +13050,10 @@ export type DeleteSharedLinkErrors = {
     /**
      * Share not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type DeleteSharedLinkError = DeleteSharedLinkErrors[keyof DeleteSharedLinkErrors];
 
 export type DeleteSharedLinkResponses = {
     /**
@@ -12684,8 +13080,10 @@ export type GetSharedLinkErrors = {
     /**
      * Share not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type GetSharedLinkError = GetSharedLinkErrors[keyof GetSharedLinkErrors];
 
 export type GetSharedLinkResponses = {
     /**
@@ -12712,8 +13110,10 @@ export type UpdateSharedLinkErrors = {
     /**
      * Share not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type UpdateSharedLinkError = UpdateSharedLinkErrors[keyof UpdateSharedLinkErrors];
 
 export type UpdateSharedLinkResponses = {
     /**
@@ -12735,8 +13135,10 @@ export type GetServerStatusErrors = {
     /**
      * Authentication required
      */
-    401: unknown;
+    401: ApiErrorBody;
 };
+
+export type GetServerStatusError = GetServerStatusErrors[keyof GetServerStatusErrors];
 
 export type GetServerStatusResponses = {
     /**
@@ -12763,12 +13165,14 @@ export type EmptyTrashForDriveErrors = {
     /**
      * Caller lacks Delete on this drive
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * Trash feature not enabled
      */
-    501: unknown;
+    501: ApiErrorBody;
 };
+
+export type EmptyTrashForDriveError = EmptyTrashForDriveErrors[keyof EmptyTrashForDriveErrors];
 
 export type EmptyTrashForDriveResponses = {
     /**
@@ -12792,8 +13196,10 @@ export type EmptyTrashErrors = {
     /**
      * Trash feature not enabled
      */
-    501: unknown;
+    501: ApiErrorBody;
 };
+
+export type EmptyTrashError = EmptyTrashErrors[keyof EmptyTrashErrors];
 
 export type EmptyTrashResponses = {
     /**
@@ -12822,8 +13228,10 @@ export type MoveFileToTrashErrors = {
     /**
      * Trash feature not enabled
      */
-    501: unknown;
+    501: ApiErrorBody;
 };
+
+export type MoveFileToTrashError = MoveFileToTrashErrors[keyof MoveFileToTrashErrors];
 
 export type MoveFileToTrashResponses = {
     /**
@@ -12852,8 +13260,10 @@ export type MoveFolderToTrashErrors = {
     /**
      * Trash feature not enabled
      */
-    501: unknown;
+    501: ApiErrorBody;
 };
+
+export type MoveFolderToTrashError = MoveFolderToTrashErrors[keyof MoveFolderToTrashErrors];
 
 export type MoveFolderToTrashResponses = {
     /**
@@ -12901,12 +13311,14 @@ export type GetTrashResourcesErrors = {
     /**
      * Invalid cursor or query parameters
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Trash feature not enabled
      */
-    501: unknown;
+    501: ApiErrorBody;
 };
+
+export type GetTrashResourcesError = GetTrashResourcesErrors[keyof GetTrashResourcesErrors];
 
 export type GetTrashResourcesResponses = {
     /**
@@ -12933,8 +13345,10 @@ export type DeletePermanentlyErrors = {
     /**
      * Trash feature not enabled
      */
-    501: unknown;
+    501: ApiErrorBody;
 };
+
+export type DeletePermanentlyError = DeletePermanentlyErrors[keyof DeletePermanentlyErrors];
 
 export type DeletePermanentlyResponses = {
     /**
@@ -12963,8 +13377,10 @@ export type RestoreFromTrashErrors = {
     /**
      * Trash feature not enabled
      */
-    501: unknown;
+    501: ApiErrorBody;
 };
+
+export type RestoreFromTrashError = RestoreFromTrashErrors[keyof RestoreFromTrashErrors];
 
 export type RestoreFromTrashResponses = {
     /**
@@ -12991,12 +13407,14 @@ export type CreateUploadErrors = {
     /**
      * Invalid request (empty filename, zero size, chunk too small)
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Storage quota exceeded
      */
-    507: unknown;
+    507: ApiErrorBody;
 };
+
+export type CreateUploadError = CreateUploadErrors[keyof CreateUploadErrors];
 
 export type CreateUploadResponses = {
     /**
@@ -13023,8 +13441,10 @@ export type CancelUploadErrors = {
     /**
      * Cancel failed
      */
-    500: unknown;
+    500: ApiErrorBody;
 };
+
+export type CancelUploadError = CancelUploadErrors[keyof CancelUploadErrors];
 
 export type CancelUploadResponses = {
     /**
@@ -13051,8 +13471,10 @@ export type GetUploadStatusErrors = {
     /**
      * Upload session not found
      */
-    404: unknown;
+    404: ApiErrorBody;
 };
+
+export type GetUploadStatusError = GetUploadStatusErrors[keyof GetUploadStatusErrors];
 
 export type GetUploadStatusResponses = {
     /**
@@ -13095,16 +13517,18 @@ export type UploadChunkErrors = {
     /**
      * Invalid chunk, size mismatch, checksum mismatch, or unknown `checksumalg`
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Upload session not found
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * Chunk exceeds `storage.chunk_max_bytes` cap
      */
-    413: unknown;
+    413: ApiErrorBody;
 };
+
+export type UploadChunkError = UploadChunkErrors[keyof UploadChunkErrors];
 
 export type UploadChunkResponses = {
     /**
@@ -13134,16 +13558,18 @@ export type CompleteUploadErrors = {
     /**
      * Unknown `checksumalg` or final-checksum mismatch
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Upload session not found
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * Assembly, hashing, or file creation failed
      */
-    500: unknown;
+    500: ApiErrorBody;
 };
+
+export type CompleteUploadError = CompleteUploadErrors[keyof CompleteUploadErrors];
 
 export type CompleteUploadResponses = {
     /**
@@ -13170,12 +13596,14 @@ export type GetUserProfileErrors = {
     /**
      * User does not exist OR caller has no visibility (anti-enumeration: indistinguishable)
      */
-    404: unknown;
+    404: ApiErrorBody;
     /**
      * Per-caller rate limit exceeded
      */
-    429: unknown;
+    429: ApiErrorBody;
 };
+
+export type GetUserProfileError = GetUserProfileErrors[keyof GetUserProfileErrors];
 
 export type GetUserProfileResponses = {
     /**

@@ -97,7 +97,7 @@ pub struct VerifyPasswordRequest {
     request_body = CreateShareDto,
     responses(
         (status = 201, description = "Share created", body = crate::application::dtos::share_dto::ShareDto),
-        (status = 400, description = "Bad request")
+        (status = 400, description = "Bad request", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "shares"
@@ -120,7 +120,7 @@ pub async fn create_shared_link(
     params(("id" = String, Path, description = "Share ID")),
     responses(
         (status = 200, description = "Share details", body = crate::application::dtos::share_dto::ShareDto),
-        (status = 404, description = "Share not found")
+        (status = 404, description = "Share not found", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "shares"
@@ -169,10 +169,7 @@ pub async fn get_user_shares(
         let item_type = match ShareItemType::try_from(item_type_str.as_str()) {
             Ok(t) => t,
             Err(_) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": format!("Invalid item_type: {}", item_type_str) })),
-                )
+                return AppError::bad_request(format!("Invalid item_type: {}", item_type_str))
                     .into_response();
             }
         };
@@ -206,7 +203,7 @@ pub async fn get_user_shares(
     request_body = UpdateShareDto,
     responses(
         (status = 200, description = "Share updated", body = crate::application::dtos::share_dto::ShareDto),
-        (status = 404, description = "Share not found")
+        (status = 404, description = "Share not found", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "shares"
@@ -237,7 +234,7 @@ pub async fn update_shared_link(
     params(("id" = String, Path, description = "Share ID")),
     responses(
         (status = 204, description = "Share deleted"),
-        (status = 404, description = "Share not found")
+        (status = 404, description = "Share not found", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "shares"
@@ -264,8 +261,8 @@ pub async fn delete_shared_link(
     params(("token" = String, Path, description = "Share token")),
     responses(
         (status = 200, body = crate::application::dtos::share_dto::ShareDto, description = "Shared item details"),
-        (status = 401, description = "Password required"),
-        (status = 410, description = "Share expired")
+        (status = 401, description = "Password required", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 410, description = "Share expired", body = crate::interfaces::errors::ApiErrorBody)
     ),
     tag = "shares"
 )]
@@ -327,8 +324,8 @@ pub async fn access_shared_item(
     params(("token" = String, Path, description = "Share token")),
     responses(
         (status = 200, body = crate::application::dtos::share_dto::ShareDto, description = "Password verified, item details returned"),
-        (status = 401, description = "Invalid password"),
-        (status = 410, description = "Share expired")
+        (status = 401, description = "Invalid password", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 410, description = "Share expired", body = crate::interfaces::errors::ApiErrorBody)
     ),
     tag = "shares"
 )]

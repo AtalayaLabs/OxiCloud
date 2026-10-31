@@ -165,6 +165,20 @@ impl AppError {
     pub fn payload_too_large(message: impl Into<String>) -> Self {
         Self::new(StatusCode::PAYLOAD_TOO_LARGE, message, "PayloadTooLarge")
     }
+
+    /// Create a 501 Not Implemented error.
+    pub fn not_implemented(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::NOT_IMPLEMENTED, message, "NotImplemented")
+    }
+
+    /// Create a 503 Service Unavailable error.
+    pub fn service_unavailable(message: impl Into<String>) -> Self {
+        Self::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            message,
+            "ServiceUnavailable",
+        )
+    }
 }
 
 /// HTTP status for a domain error kind.

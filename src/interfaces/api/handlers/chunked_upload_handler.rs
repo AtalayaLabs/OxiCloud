@@ -140,23 +140,11 @@ impl ChunkedUploadHandler {
 
         // Validate request
         if request.filename.is_empty() {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "Filename is required"
-                })),
-            )
-                .into_response();
+            return AppError::bad_request("Filename is required").into_response();
         }
 
         if request.total_size == 0 {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "Total size must be greater than 0"
-                })),
-            )
-                .into_response();
+            return AppError::bad_request("Total size must be greater than 0").into_response();
         }
 
         // ── Whole-file cap ──────────────────────────────────────────
@@ -269,13 +257,7 @@ impl ChunkedUploadHandler {
         // Validate chunk size if provided
         let chunk_size = request.chunk_size.unwrap_or(DEFAULT_CHUNK_SIZE);
         if chunk_size < 1024 * 1024 {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "Chunk size must be at least 1MB"
-                })),
-            )
-                .into_response();
+            return AppError::bad_request("Chunk size must be at least 1MB").into_response();
         }
 
         let content_type = request
@@ -549,8 +531,8 @@ backward compatibility with existing clients but is no longer receiving new feat
     request_body(content = CreateUploadRequest, content_type = "application/json", description = "Upload session parameters"),
     responses(
         (status = 201, description = "Upload session created", body = crate::application::ports::chunked_upload_ports::CreateUploadResponseDto),
-        (status = 400, description = "Invalid request (empty filename, zero size, chunk too small)"),
-        (status = 507, description = "Storage quota exceeded"),
+        (status = 400, description = "Invalid request (empty filename, zero size, chunk too small)", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 507, description = "Storage quota exceeded", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "uploads",
     security(("bearerAuth" = []))
@@ -590,9 +572,9 @@ pub async fn create_upload(
     request_body(content_type = "application/octet-stream", description = "Raw chunk bytes"),
     responses(
         (status = 200, description = "Chunk received", body = crate::application::ports::chunked_upload_ports::ChunkUploadResponseDto),
-        (status = 400, description = "Invalid chunk, size mismatch, checksum mismatch, or unknown `checksumalg`"),
-        (status = 404, description = "Upload session not found"),
-        (status = 413, description = "Chunk exceeds `storage.chunk_max_bytes` cap"),
+        (status = 400, description = "Invalid chunk, size mismatch, checksum mismatch, or unknown `checksumalg`", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Upload session not found", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 413, description = "Chunk exceeds `storage.chunk_max_bytes` cap", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "uploads",
     security(("bearerAuth" = []))
@@ -721,7 +703,7 @@ pub async fn upload_chunk(
     ),
     responses(
         (status = 200, description = "Upload status in response headers and body", body = crate::application::ports::chunked_upload_ports::UploadStatusResponseDto),
-        (status = 404, description = "Upload session not found"),
+        (status = 404, description = "Upload session not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "uploads",
     security(("bearerAuth" = []))
@@ -757,9 +739,9 @@ pub async fn get_upload_status(
     ),
     responses(
         (status = 201, description = "File assembled and created", body = CompleteUploadResponse),
-        (status = 400, description = "Unknown `checksumalg` or final-checksum mismatch"),
-        (status = 404, description = "Upload session not found"),
-        (status = 500, description = "Assembly, hashing, or file creation failed"),
+        (status = 400, description = "Unknown `checksumalg` or final-checksum mismatch", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Upload session not found", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 500, description = "Assembly, hashing, or file creation failed", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "uploads",
     security(("bearerAuth" = []))
@@ -788,7 +770,7 @@ pub async fn complete_upload(
     ),
     responses(
         (status = 204, description = "Upload cancelled and temp files cleaned up"),
-        (status = 500, description = "Cancel failed"),
+        (status = 500, description = "Cancel failed", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "uploads",
     security(("bearerAuth" = []))

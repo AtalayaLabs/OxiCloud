@@ -111,10 +111,10 @@ pub fn setup_route() -> Router<Arc<AppState>> {
     responses(
         (status = 200, body = Object, description = "Uniform registration response (SMTP configured, anti-enumeration mode)"),
         (status = 201, description = "User registered successfully (SMTP not configured)", body = PublicUserDto),
-        (status = 400, description = "Validation error (malformed request body)"),
-        (status = 403, description = "Registration disabled (admin setting or OIDC-only mode)"),
-        (status = 409, description = "Username or email already taken (SMTP not configured)"),
-        (status = 503, description = "Email-only signup requires SMTP to be configured"),
+        (status = 400, description = "Validation error (malformed request body)", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 403, description = "Registration disabled (admin setting or OIDC-only mode)", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 409, description = "Username or email already taken (SMTP not configured)", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 503, description = "Email-only signup requires SMTP to be configured", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "auth"
 )]
@@ -325,9 +325,9 @@ pub async fn register(
     request_body = LoginDto,
     responses(
         (status = 200, description = "Login successful — tokens in body and cookies", body = AuthResponseDto),
-        (status = 401, description = "Invalid credentials or password login disabled"),
-        (status = 403, description = "Account disabled"),
-        (status = 429, description = "Account temporarily locked (too many failed attempts)"),
+        (status = 401, description = "Invalid credentials or password login disabled", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 403, description = "Account disabled", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 429, description = "Account temporarily locked (too many failed attempts)", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "auth"
 )]
@@ -579,7 +579,7 @@ pub async fn login(
         description = "Optional — omit when using the HttpOnly cookie"),
     responses(
         (status = 200, description = "New tokens issued", body = AuthResponseDto),
-        (status = 401, description = "Refresh token missing, expired, or revoked"),
+        (status = 401, description = "Refresh token missing, expired, or revoked", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "auth"
 )]
@@ -648,7 +648,7 @@ pub async fn refresh_token(
     path = "/api/auth/me",
     responses(
         (status = 200, description = "Current user profile", body = SelfUserDto),
-        (status = 401, description = "Not authenticated"),
+        (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "auth"
@@ -704,8 +704,8 @@ pub struct UpdateUserImageDto {
     request_body = ChangePasswordDto,
     responses(
         (status = 200, body = Object, description = "Password changed successfully"),
-        (status = 400, description = "New password does not meet requirements"),
-        (status = 401, description = "Not authenticated or current password incorrect"),
+        (status = 400, description = "New password does not meet requirements", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 401, description = "Not authenticated or current password incorrect", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "auth"
@@ -852,10 +852,10 @@ pub async fn change_password(
     request_body = UpgradeToInternalDto,
     responses(
         (status = 200, description = "Upgrade succeeded — returns SelfUserDto (same shape as GET /me)", body = SelfUserDto),
-        (status = 400, description = "Password missing / too short"),
-        (status = 401, description = "Not authenticated"),
-        (status = 403, description = "OIDC user, or domain not in allowlist"),
-        (status = 409, description = "Already internal"),
+        (status = 400, description = "Password missing / too short", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 403, description = "OIDC user, or domain not in allowlist", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 409, description = "Already internal", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "auth"
@@ -959,10 +959,10 @@ pub async fn upgrade_to_internal(
     request_body = crate::application::dtos::user_dto::UpdateProfileDto,
     responses(
         (status = 200, description = "Updated profile (SelfUserDto) — same shape as GET /me so the SPA sees the just-written state without a follow-up fetch", body = SelfUserDto),
-        (status = 400, description = "Validation error (e.g. invalid handle format, empty given_name)"),
-        (status = 401, description = "Not authenticated"),
-        (status = 403, description = "OIDC-managed profile — edit at the IdP"),
-        (status = 409, description = "Username already claimed (immutable) or taken by another user"),
+        (status = 400, description = "Validation error (e.g. invalid handle format, empty given_name)", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 403, description = "OIDC-managed profile — edit at the IdP", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 409, description = "Username already claimed (immutable) or taken by another user", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "auth"
@@ -1020,8 +1020,8 @@ pub async fn update_profile(
     request_body = UpdateUserImageDto,
     responses(
         (status = 200, description = "Image updated (or cleared when `image` was null)"),
-        (status = 400, description = "Validation error (invalid data URI / unsupported MIME / oversized / malformed URL)"),
-        (status = 401, description = "Not authenticated"),
+        (status = 400, description = "Validation error (invalid data URI / unsupported MIME / oversized / malformed URL)", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "auth"
@@ -1061,7 +1061,7 @@ pub async fn update_user_image(
         description = "Optional — omit when using the HttpOnly cookie"),
     responses(
         (status = 200, body = Object, description = "Logged out, auth cookies cleared"),
-        (status = 401, description = "Not authenticated or refresh token missing"),
+        (status = 401, description = "Not authenticated or refresh token missing", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "auth"
@@ -1139,9 +1139,9 @@ pub struct DpopBindDto {
     request_body = DpopBindDto,
     responses(
         (status = 200, body = Object, description = "Thumbprint bound"),
-        (status = 400, description = "Malformed thumbprint"),
-        (status = 401, description = "Not authenticated"),
-        (status = 409, description = "Session already bound"),
+        (status = 400, description = "Malformed thumbprint", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 409, description = "Session already bound", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "auth"
@@ -1203,8 +1203,8 @@ pub async fn dpop_bind(
     ),
     responses(
         (status = 200, body = Object, description = "Logout notification accepted (0 or more sessions revoked)"),
-        (status = 400, description = "logout_token missing, malformed, or failed validation"),
-        (status = 503, description = "OIDC not configured on this deployment"),
+        (status = 400, description = "logout_token missing, malformed, or failed validation", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 503, description = "OIDC not configured on this deployment", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "auth"
 )]
@@ -1283,8 +1283,8 @@ pub struct BackchannelLogoutForm {
     request_body = SetupAdminDto,
     responses(
         (status = 201, description = "First admin created and system initialized", body = PublicUserDto),
-        (status = 403, description = "System already initialized"),
-        (status = 503, description = "Auth service not configured"),
+        (status = 403, description = "System already initialized", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 503, description = "Auth service not configured", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "auth"
 )]
@@ -1412,8 +1412,8 @@ pub async fn setup_admin(
     path = "/api/auth/oidc/authorize",
     responses(
         (status = 302, description = "Redirect to OIDC provider authorization URL"),
-        (status = 404, description = "OIDC not enabled"),
-        (status = 503, description = "Auth service not configured"),
+        (status = 404, description = "OIDC not enabled", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 503, description = "Auth service not configured", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "auth"
 )]
@@ -1453,9 +1453,9 @@ pub async fn oidc_authorize(
     path = "/api/auth/oidc/link/start",
     responses(
         (status = 200, description = "Authorize URL to navigate the user to", body = serde_json::Value),
-        (status = 401, description = "Not authenticated"),
-        (status = 404, description = "OIDC not enabled"),
-        (status = 409, description = "User is already linked — unlink first"),
+        (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "OIDC not enabled", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 409, description = "User is already linked — unlink first", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "auth"
@@ -1493,8 +1493,8 @@ pub async fn oidc_link_start(
     path = "/api/auth/oidc/unlink",
     responses(
         (status = 200, body = Object, description = "OIDC identity unlinked (or was already unlinked)"),
-        (status = 401, description = "Not authenticated"),
-        (status = 403, description = "Refused — user has no other credential and would be locked out"),
+        (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 403, description = "Refused — user has no other credential and would be locked out", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "auth"
@@ -1542,8 +1542,8 @@ pub async fn oidc_unlink(
     ),
     responses(
         (status = 302, description = "Redirect to frontend with one-time exchange code"),
-        (status = 401, description = "OIDC validation failed (bad state, nonce, or code)"),
-        (status = 404, description = "OIDC not enabled"),
+        (status = 401, description = "OIDC validation failed (bad state, nonce, or code)", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "OIDC not enabled", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "auth"
 )]
@@ -1740,7 +1740,7 @@ pub async fn oidc_callback(
     request_body = OidcExchangeDto,
     responses(
         (status = 200, description = "Tokens issued, auth cookies set", body = AuthResponseDto),
-        (status = 401, description = "Exchange code invalid or expired"),
+        (status = 401, description = "Exchange code invalid or expired", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "auth"
 )]
@@ -1828,7 +1828,7 @@ pub struct SendMagicLinkDto {
     request_body = SendMagicLinkDto,
     responses(
         (status = 200, body = Object, description = "Uniform 'if an account exists, a link will be sent' response"),
-        (status = 503, description = "Magic-link / SMTP is not configured on this server"),
+        (status = 503, description = "Magic-link / SMTP is not configured on this server", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "auth",
 )]

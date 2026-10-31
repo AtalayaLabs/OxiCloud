@@ -32,7 +32,7 @@ use uuid::Uuid;
     ),
     responses(
         (status = 200, body = Object, description = "Access recorded"),
-        (status = 400, description = "Invalid item type")
+        (status = 400, description = "Invalid item type", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "recent"
@@ -46,13 +46,7 @@ pub async fn record_item_access(
 
     // Validate item type
     if item_type != "file" && item_type != "folder" {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "Item type must be 'file' or 'folder'"
-            })),
-        )
-            .into_response();
+        return AppError::bad_request("Item type must be 'file' or 'folder'").into_response();
     }
 
     let mut id_buf = [0u8; 36];
@@ -88,7 +82,7 @@ pub async fn record_item_access(
     ),
     responses(
         (status = 200, body = Object, description = "Item removed from recents"),
-        (status = 404, description = "Item not in recents")
+        (status = 404, description = "Item not in recents", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "recent"
@@ -118,13 +112,7 @@ pub async fn remove_from_recent(
                     .into_response()
             } else {
                 info!("Item {} '{}' was not in recents", item_type, item_id);
-                (
-                    StatusCode::NOT_FOUND,
-                    Json(serde_json::json!({
-                        "message": "Item was not in recents"
-                    })),
-                )
-                    .into_response()
+                AppError::not_found("Item was not in recents").into_response()
             }
         }
         // Same rationale as `record_item_access` — preserve the
@@ -177,7 +165,7 @@ pub async fn clear_recent_items(
     responses(
         (status = 200, description = "Paginated list of recently accessed resources",
          body = RecentResourcesDto),
-        (status = 400, description = "Invalid cursor or query parameters"),
+        (status = 400, description = "Invalid cursor or query parameters", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "recent"
