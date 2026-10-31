@@ -94,7 +94,8 @@
     "tab_places": "Miejsca",
     "tab_people": "Ludzie",
     "map_loading": "Ładowanie mapy…",
-    "map_error": "Nie udało się załadować mapy"
+    "map_error": "Nie udało się załadować mapy",
+    "confirm_delete_one_permanent": "Trwale usunąć „{{name}}\"? Tej operacji nie można cofnąć."
   },
   "music": {
     "create_playlist": "Utwórz playlistę",
@@ -543,7 +544,9 @@
     "new_text_file_prompt": "Nazwa pliku (np. notes.md)",
     "new_text_file_hint": "Podaj rozszerzenie w nazwie pliku (np. .md, .txt, .c, .py, .rs).",
     "new_text_file_binary_ext_title": "Rozszerzenie nietekstowe",
-    "new_text_file_binary_ext_message": "„{{name}}\" nie wygląda jak plik tekstowy. Edytor otworzy go jako tekst — zwykle psuje to formaty binarne. Mimo to kontynuować?"
+    "new_text_file_binary_ext_message": "„{{name}}\" nie wygląda jak plik tekstowy. Edytor otworzy go jako tekst — zwykle psuje to formaty binarne. Mimo to kontynuować?",
+    "confirm_delete_permanent": "Trwale usunąć „{{name}}\"? Tej operacji nie można cofnąć.",
+    "confirm_batch_delete_permanent": "Trwale usunąć {{n}} elementów? Tej operacji nie można cofnąć."
   },
   "dialogs": {
     "rename_folder": "Zmień nazwę folderu",

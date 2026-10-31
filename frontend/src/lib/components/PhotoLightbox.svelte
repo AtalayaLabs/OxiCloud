@@ -15,6 +15,7 @@
 	import { fetchFileMetadata, type FileMetadata } from '$lib/api/endpoints/photos';
 	import type { FileItem } from '$lib/api/types';
 	import { confirmDialog } from '$lib/stores/dialogs.svelte';
+	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import { t } from '$lib/i18n/index.svelte';
 	import { errorToast } from '$lib/utils/errors';
 	import { dateTimeFormatFor } from '$lib/utils/display';
@@ -226,9 +227,20 @@
 			}
 		}
 
+		// Same adaptive copy pattern as the files-page delete helper:
+		// when `features.trash=false`, the backend hard-deletes the
+		// item on `DELETE /api/files/{id}` so the dialog must warn the
+		// user instead of using the trash-flavoured wording.
+		const trashOn = serverConfig.features.trash;
 		const ok = await confirmDialog({
 			title: t('photos.delete', 'Delete photo'),
-			message: t('photos.confirm_delete_one', { name: target.name }, 'Delete {{name}}?'),
+			message: trashOn
+				? t('photos.confirm_delete_one', { name: target.name }, 'Delete {{name}}?')
+				: t(
+						'photos.confirm_delete_one_permanent',
+						{ name: target.name },
+						'Permanently delete "{{name}}"? This cannot be undone.'
+					),
 			confirmText: t('common.delete', 'Delete'),
 			danger: true
 		});

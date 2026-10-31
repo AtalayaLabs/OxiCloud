@@ -4,6 +4,7 @@
 	import { lazyComponent } from '$lib/composables/lazyComponent.svelte';
 	import { useSelection } from '$lib/composables/useSelection.svelte';
 	import { errorToast } from '$lib/utils/errors';
+	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import { onMount } from 'svelte';
 	import {
 		batchTrash,
@@ -632,17 +633,19 @@
 		>
 			{t('photos.tab_moments', 'Moments')}
 		</button>
-		<button
-			class="subnav__tab"
-			class:active={tab === 'places'}
-			role="tab"
-			aria-selected={tab === 'places'}
-			data-testid="photos-tab-places"
-			onclick={() => (tab = 'places')}
-		>
-			{t('photos.tab_places', 'Places')}
-		</button>
-		{#if peopleAvailable}
+		{#if serverConfig.features.places}
+			<button
+				class="subnav__tab"
+				class:active={tab === 'places'}
+				role="tab"
+				aria-selected={tab === 'places'}
+				data-testid="photos-tab-places"
+				onclick={() => (tab = 'places')}
+			>
+				{t('photos.tab_places', 'Places')}
+			</button>
+		{/if}
+		{#if peopleAvailable && serverConfig.features.faces}
 			<button
 				class="subnav__tab"
 				class:active={tab === 'people'}

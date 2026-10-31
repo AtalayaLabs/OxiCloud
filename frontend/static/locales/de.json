@@ -94,7 +94,8 @@
     "tab_places": "Orte",
     "tab_people": "Menschen",
     "map_loading": "Karte wird geladen…",
-    "map_error": "Die Karte konnte nicht geladen werden"
+    "map_error": "Die Karte konnte nicht geladen werden",
+    "confirm_delete_one_permanent": "„{{name}}\" dauerhaft löschen? Diese Aktion kann nicht rückgängig gemacht werden."
   },
   "music": {
     "create_playlist": "Playlist erstellen",
@@ -543,7 +544,9 @@
     "new_text_file_prompt": "Dateiname (z. B. notes.md)",
     "new_text_file_hint": "Erweiterung im Dateinamen angeben (z. B. .md, .txt, .c, .py, .rs).",
     "new_text_file_binary_ext_title": "Keine Text-Erweiterung",
-    "new_text_file_binary_ext_message": "„{{name}}\" sieht nicht wie eine Textdatei aus. Der Editor öffnet sie als Text — bei Binärformaten geht das meist schief. Trotzdem fortfahren?"
+    "new_text_file_binary_ext_message": "„{{name}}\" sieht nicht wie eine Textdatei aus. Der Editor öffnet sie als Text — bei Binärformaten geht das meist schief. Trotzdem fortfahren?",
+    "confirm_delete_permanent": "„{{name}}\" dauerhaft löschen? Diese Aktion kann nicht rückgängig gemacht werden.",
+    "confirm_batch_delete_permanent": "{{n}} Elemente dauerhaft löschen? Diese Aktion kann nicht rückgängig gemacht werden."
   },
   "dialogs": {
     "rename_folder": "Ordner umbenennen",

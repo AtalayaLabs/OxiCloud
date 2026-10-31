@@ -280,10 +280,17 @@
 		search: 'Search',
 		sharing: 'Sharing',
 		music: 'Music',
+		photos: 'Photos',
 		places: 'Places (photo map)',
 		faces: 'People (faces)',
 		video_thumbnails: 'Video thumbnails',
-		external_mounts: 'External mounts'
+		external_mounts: 'External mounts',
+		webdav: 'WebDAV',
+		caldav: 'CalDAV',
+		carddav: 'CardDAV',
+		nextcloud: 'NextCloud compatibility',
+		markdown_collab: 'Markdown collaborative editing',
+		shared_worker_bus: 'Shared-worker message bus'
 	};
 	const featureRows = $derived.by<FeatureRow[]>(() => {
 		const raw = serverConfig.features as unknown as Record<string, boolean>;

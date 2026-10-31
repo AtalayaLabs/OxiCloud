@@ -2384,6 +2384,11 @@ pub struct FeaturesConfig {
     pub enable_trash: bool,
     pub enable_search: bool,
     pub enable_music: bool,
+    /// Photo library — gates `/api/photos` listing, the SPA's `/photos`
+    /// route and the top-nav "Photos" entry. When off, the sub-features
+    /// `enable_places` + `enable_faces` are moot even if left `true`.
+    /// Env: `OXICLOUD_ENABLE_PHOTOS`. Default: true.
+    pub enable_photos: bool,
     /// Lists the user's geotagged photos on a map (GET /api/photos/geo).
     pub enable_places: bool,
     /// Face detection + identity clustering for the photo library ("People").
@@ -2403,6 +2408,27 @@ pub struct FeaturesConfig {
     /// trash/search). OFF by default — opt-in per deployment.
     /// Env: `OXICLOUD_ENABLE_EXTERNAL_MOUNTS`.
     pub enable_external_mounts: bool,
+    /// WebDAV protocol surface (`/webdav/*`). When off the router is not
+    /// mounted and non-SPA clients see 404. Default: true — operators
+    /// who want browser-only OxiCloud without exposing WebDAV flip this
+    /// off. Env: `OXICLOUD_ENABLE_WEBDAV`.
+    pub enable_webdav: bool,
+    /// CalDAV protocol surface (`/caldav/*` + `/.well-known/caldav`
+    /// discovery). Default: true. Env: `OXICLOUD_ENABLE_CALDAV`.
+    pub enable_caldav: bool,
+    /// CardDAV protocol surface (`/carddav/*` + `/.well-known/carddav`
+    /// discovery). Default: true. Env: `OXICLOUD_ENABLE_CARDDAV`.
+    pub enable_carddav: bool,
+    /// NextCloud compatibility surface (`/index.php`, `/remote.php`,
+    /// `/ocs/`, `/status.php`, NC login flow v2, NC trashbin). Default:
+    /// false — NC compat ships off because it changes the behaviour of
+    /// `/status.php` + widens the auth surface, so operators have to
+    /// opt in. Env: `OXICLOUD_ENABLE_NEXTCLOUD` (canonical name since
+    /// feat/feature-flags); the legacy `OXICLOUD_NEXTCLOUD_ENABLED` env
+    /// is still honoured as a deprecated alias with a WARN log at boot.
+    /// Mirrors `NextcloudConfig.enabled` for backward compat with
+    /// call-sites that still read the nextcloud config block directly.
+    pub enable_nextcloud: bool,
     /// Native WebDAV path segment that lists the caller's drives.
     ///
     /// * Default `"@drive"` — bare `/webdav/` addresses the caller's
@@ -3017,11 +3043,16 @@ impl Default for FeaturesConfig {
             enable_trash: true,            // Enable trash feature
             enable_search: true,           // Enable search feature
             enable_music: true,            // Enable music feature
+            enable_photos: true,           // Photo library (/api/photos, /photos SPA route)
             enable_places: true,           // Photo map (GET /api/photos/geo + Places tab)
             enable_faces: false,           // People/faces (biometric) — opt-in, off by default
             expose_system_users: true,     // Expose OxiCloud users as address book by default
             enable_video_thumbnails: true, // Video thumbs via ffmpeg (if detected)
             enable_external_mounts: false, // External mounts — opt-in, off by default
+            enable_webdav: true,           // WebDAV protocol surface
+            enable_caldav: true,           // CalDAV protocol surface
+            enable_carddav: true,          // CardDAV protocol surface
+            enable_nextcloud: false,       // NextCloud compat — opt-in, off by default
             // Back-compat with pre-multi-drive clients — bare `/webdav/`
             // maps to the caller's default drive; drive listing is
             // reachable at `/webdav/@drive/`.
@@ -4303,6 +4334,12 @@ impl AppConfig {
             config.features.enable_music = val;
         }
 
+        if let Ok(enable_photos) = env::var("OXICLOUD_ENABLE_PHOTOS").map(|v| v.parse::<bool>())
+            && let Ok(val) = enable_photos
+        {
+            config.features.enable_photos = val;
+        }
+
         if let Ok(enable_places) = env::var("OXICLOUD_ENABLE_PLACES").map(|v| v.parse::<bool>())
             && let Ok(val) = enable_places
         {
@@ -4785,9 +4822,47 @@ impl AppConfig {
             tracing::info!("WOPI secret not set, falling back to JWT secret");
         }
 
-        // Nextcloud compatibility configuration
-        if let Ok(v) = env::var("OXICLOUD_NEXTCLOUD_ENABLED") {
-            config.nextcloud.enabled = v.parse::<bool>().unwrap_or(false);
+        // Nextcloud compatibility — canonical name `OXICLOUD_ENABLE_NEXTCLOUD`
+        // (feat/feature-flags) mirrors the server-wide `OXICLOUD_ENABLE_*`
+        // convention. `OXICLOUD_NEXTCLOUD_ENABLED` is kept as a deprecated
+        // alias so pre-feat/feature-flags configs keep working; a boot WARN
+        // nudges operators to the new name. Canonical wins over alias when
+        // both are set.
+        let nc_enabled_legacy = env::var("OXICLOUD_NEXTCLOUD_ENABLED")
+            .ok()
+            .and_then(|v| v.parse::<bool>().ok());
+        let nc_enabled_canonical = env::var("OXICLOUD_ENABLE_NEXTCLOUD")
+            .ok()
+            .and_then(|v| v.parse::<bool>().ok());
+        if nc_enabled_legacy.is_some() && nc_enabled_canonical.is_none() {
+            tracing::warn!(
+                "OXICLOUD_NEXTCLOUD_ENABLED is deprecated — rename to OXICLOUD_ENABLE_NEXTCLOUD. \
+                 The legacy name is still honoured but will be removed in a future release."
+            );
+        }
+        if let Some(enabled) = nc_enabled_canonical.or(nc_enabled_legacy) {
+            config.features.enable_nextcloud = enabled;
+            // Keep NextcloudConfig.enabled mirrored so call-sites that still
+            // read the nextcloud config block (there are several) see the
+            // same value. Option (a) adapter — see FeaturesConfig doc.
+            config.nextcloud.enabled = enabled;
+        }
+
+        // DAV protocol flags — canonical shape, no legacy alias to carry.
+        if let Ok(v) = env::var("OXICLOUD_ENABLE_WEBDAV")
+            && let Ok(parsed) = v.parse::<bool>()
+        {
+            config.features.enable_webdav = parsed;
+        }
+        if let Ok(v) = env::var("OXICLOUD_ENABLE_CALDAV")
+            && let Ok(parsed) = v.parse::<bool>()
+        {
+            config.features.enable_caldav = parsed;
+        }
+        if let Ok(v) = env::var("OXICLOUD_ENABLE_CARDDAV")
+            && let Ok(parsed) = v.parse::<bool>()
+        {
+            config.features.enable_carddav = parsed;
         }
         if let Ok(v) = env::var("OXICLOUD_NEXTCLOUD_INSTANCE_ID") {
             let trimmed = v.trim();
@@ -4939,6 +5014,21 @@ impl AppConfig {
         // AppConfig::from_env body doesn't have to know the internals of the
         // new mode enum / KSF param triple. See `OpaqueConfig::from_env`.
         config.opaque = OpaqueConfig::from_env();
+
+        // NextCloud enable-flag adapter — keep the two sources of truth in
+        // sync. The flag now canonically lives on
+        // `features.enable_nextcloud` (feat/feature-flags, matching the
+        // other `OXICLOUD_ENABLE_*` env names), but several readers still
+        // consult `nextcloud.enabled`. Also, config files that set
+        // `[nextcloud] enabled = true` need to flip `features.enable_nextcloud`
+        // so `/api/config.features.nextcloud` reflects it. Logical OR of
+        // both sources is the safest join — any `true` wins — because the
+        // feature is opt-in: an operator who flipped it on somewhere means
+        // it on. Removed after the next-major cleanup when the adapter is
+        // dropped alongside the legacy env var.
+        let nc_on = config.features.enable_nextcloud || config.nextcloud.enabled;
+        config.features.enable_nextcloud = nc_on;
+        config.nextcloud.enabled = nc_on;
 
         config
     }

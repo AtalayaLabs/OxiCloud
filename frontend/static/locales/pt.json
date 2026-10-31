@@ -94,7 +94,8 @@
     "tab_places": "Lugares",
     "tab_people": "Pessoas",
     "map_loading": "Carregando mapa…",
-    "map_error": "Não foi possível carregar o mapa"
+    "map_error": "Não foi possível carregar o mapa",
+    "confirm_delete_one_permanent": "Excluir permanentemente «{{name}}»? Esta ação não pode ser desfeita."
   },
   "music": {
     "create_playlist": "Criar Playlist",
@@ -543,7 +544,9 @@
     "new_text_file_prompt": "Nome do ficheiro (ex. notes.md)",
     "new_text_file_hint": "Inclua a extensão no nome do ficheiro (ex. .md, .txt, .c, .py, .rs).",
     "new_text_file_binary_ext_title": "Extensão não textual",
-    "new_text_file_binary_ext_message": "«{{name}}» não parece ser um ficheiro de texto. O editor abri-lo-á como texto — isso costuma danificar formatos binários. Continuar mesmo assim?"
+    "new_text_file_binary_ext_message": "«{{name}}» não parece ser um ficheiro de texto. O editor abri-lo-á como texto — isso costuma danificar formatos binários. Continuar mesmo assim?",
+    "confirm_delete_permanent": "Excluir permanentemente «{{name}}»? Esta ação não pode ser desfeita.",
+    "confirm_batch_delete_permanent": "Excluir permanentemente {{n}} itens? Esta ação não pode ser desfeita."
   },
   "dialogs": {
     "rename_folder": "Renomear pasta",

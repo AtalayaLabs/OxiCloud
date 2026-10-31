@@ -37,10 +37,15 @@ const DEFAULT_FEATURES: ServerFeatures = {
 	search: true,
 	sharing: true,
 	music: true,
+	photos: true,
 	places: true,
 	faces: false,
 	video_thumbnails: true,
 	external_mounts: false,
+	webdav: true,
+	caldav: true,
+	carddav: true,
+	nextcloud: false,
 	markdown_collab: false,
 	// Shared-worker bus — on by default (opt-out). The flag gates FE
 	// behaviour only; a client that can't reach the server to read it

@@ -791,9 +791,12 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
     use oxicloud::interfaces::api::handlers::carddav_handler;
     use oxicloud::interfaces::api::handlers::webdav_handler;
     let caldav_router = caldav_handler::caldav_routes();
-    // RFC 6764 discovery for both CalDAV and CardDAV (public redirects).
-    let well_known_router =
-        caldav_handler::well_known_routes().merge(carddav_handler::well_known_routes());
+    // RFC 6764 discovery routers kept split per-protocol so an operator
+    // who disables CalDAV but keeps CardDAV (or vice versa) doesn't
+    // advertise discovery for a protocol that returns 404. See the
+    // feature-flag merges below.
+    let well_known_caldav = caldav_handler::well_known_routes();
+    let well_known_carddav = carddav_handler::well_known_routes();
     let carddav_router = carddav_handler::carddav_routes();
     let webdav_router = webdav_handler::webdav_routes();
 
@@ -1227,13 +1230,29 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
             // Public API routes (share access, i18n) — no auth required
             .nest("/api", public_api_routes.layer(access_log!("http::api")))
             // All other API routes are protected by auth middleware
-            .nest("/api", protected_api.layer(access_log!("http::api")))
-            // RFC 6764 well-known discovery (public, no auth — just redirects)
-            .merge(well_known_router.clone().layer(access_log!("http::dav")))
-            // CalDAV/CardDAV/WebDAV protocols merged at top-level for client compatibility
-            .merge(caldav_protected.layer(access_log!("http::dav")))
-            .merge(carddav_protected.layer(access_log!("http::dav")))
-            .merge(webdav_protected.layer(access_log!("http::dav")))
+            .nest("/api", protected_api.layer(access_log!("http::api")));
+
+        // CalDAV / CardDAV / WebDAV protocols — mounted at top-level for
+        // client compatibility, each gated on its feature flag. When off
+        // the router is not merged and non-SPA clients see 404. The
+        // RFC 6764 `.well-known/{caldav,carddav}` discovery routers are
+        // gated with their protocol — advertising discovery for a 404'd
+        // surface would be misleading.
+        if config.features.enable_caldav {
+            app = app
+                .merge(well_known_caldav.clone().layer(access_log!("http::dav")))
+                .merge(caldav_protected.layer(access_log!("http::dav")));
+        }
+        if config.features.enable_carddav {
+            app = app
+                .merge(well_known_carddav.clone().layer(access_log!("http::dav")))
+                .merge(carddav_protected.layer(access_log!("http::dav")));
+        }
+        if config.features.enable_webdav {
+            app = app.merge(webdav_protected.layer(access_log!("http::dav")));
+        }
+
+        app = app
             // Web (HTML pages) — also the ServeDir fallback root, so
             // static asset hits land here. We keep them on the `web`
             // target for simplicity; switch to `http::static` when
@@ -1336,14 +1355,26 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
             // Health / readiness probes — no auth, mounted at root
             .merge(health_routes.layer(access_log!("http::probe")))
             .nest("/api", public_api_routes.layer(access_log!("http::api")))
-            .nest("/api", api_routes.layer(access_log!("http::api")))
-            // RFC 6764 well-known discovery (just redirects)
-            .merge(well_known_router.layer(access_log!("http::dav")))
-            // CalDAV/CardDAV/WebDAV protocols merged at top-level
-            .merge(caldav_router.layer(access_log!("http::dav")))
-            .merge(carddav_router.layer(access_log!("http::dav")))
-            .merge(webdav_router.layer(access_log!("http::dav")))
-            .merge(web_routes.layer(access_log!("http::web")));
+            .nest("/api", api_routes.layer(access_log!("http::api")));
+
+        // Same per-protocol gating as the auth-enabled branch above —
+        // see the comment there for why the well-known discovery is
+        // paired with its protocol.
+        if config.features.enable_caldav {
+            app = app
+                .merge(well_known_caldav.layer(access_log!("http::dav")))
+                .merge(caldav_router.layer(access_log!("http::dav")));
+        }
+        if config.features.enable_carddav {
+            app = app
+                .merge(well_known_carddav.layer(access_log!("http::dav")))
+                .merge(carddav_router.layer(access_log!("http::dav")));
+        }
+        if config.features.enable_webdav {
+            app = app.merge(webdav_router.layer(access_log!("http::dav")));
+        }
+
+        app = app.merge(web_routes.layer(access_log!("http::web")));
 
         // Mount Nextcloud routes — merged BEFORE the trace + request-id
         // layers so NC requests get the same span fields as every

@@ -1086,9 +1086,22 @@
 	}
 
 	async function deleteItem(kind: 'file' | 'folder', id: string, name: string) {
+		// Adapt the confirm copy to the deployment's trash state. When
+		// trash is enabled, delete is reversible (`DELETE /api/folders/
+		// {id}` routes through `trash_service.move_to_trash` on the
+		// server). When trash is disabled, the same endpoint falls
+		// through to permanent delete — the user needs the stronger
+		// warning, not the misleading "Move to trash?" copy.
+		const trashOn = serverConfig.features.trash;
 		const ok = await confirmDialog({
 			title: t('common.delete', 'Delete'),
-			message: t('files.confirm_delete', { name }, 'Move "{{name}}" to trash?'),
+			message: trashOn
+				? t('files.confirm_delete', { name }, 'Move "{{name}}" to trash?')
+				: t(
+						'files.confirm_delete_permanent',
+						{ name },
+						'Permanently delete "{{name}}"? This cannot be undone.'
+					),
 			confirmText: t('common.delete', 'Delete'),
 			danger: true
 		});
@@ -1318,9 +1331,16 @@
 
 	async function batchDelete() {
 		const ids = [...selected];
+		const trashOn = serverConfig.features.trash;
 		const ok = await confirmDialog({
 			title: t('files.batch_delete', 'Delete selected'),
-			message: t('files.confirm_batch_delete', { n: ids.length }, 'Move {{n}} items to trash?'),
+			message: trashOn
+				? t('files.confirm_batch_delete', { n: ids.length }, 'Move {{n}} items to trash?')
+				: t(
+						'files.confirm_batch_delete_permanent',
+						{ n: ids.length },
+						'Permanently delete {{n}} items? This cannot be undone.'
+					),
 			confirmText: t('common.delete', 'Delete'),
 			danger: true
 		});
@@ -2604,16 +2624,18 @@
 				>
 			{/if}
 		{/if}
-		<button
-			class="ctx-item"
-			role="menuitem"
-			data-testid="files-ctx-share-item"
-			onclick={() => {
-				const tg = ctxTarget!;
-				closeContext();
-				openShare(tg.kind, tg.id, tg.name);
-			}}><Icon name="share-alt" /> {t('files.share', 'Share')}</button
-		>
+		{#if serverConfig.features.sharing}
+			<button
+				class="ctx-item"
+				role="menuitem"
+				data-testid="files-ctx-share-item"
+				onclick={() => {
+					const tg = ctxTarget!;
+					closeContext();
+					openShare(tg.kind, tg.id, tg.name);
+				}}><Icon name="share-alt" /> {t('files.share', 'Share')}</button
+			>
+		{/if}
 		<button
 			class="ctx-item"
 			role="menuitem"

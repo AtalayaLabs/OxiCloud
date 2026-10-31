@@ -13878,14 +13878,27 @@
           "search",
           "sharing",
           "music",
+          "photos",
           "places",
           "faces",
           "video_thumbnails",
           "external_mounts",
+          "webdav",
+          "caldav",
+          "carddav",
+          "nextcloud",
           "markdown_collab",
           "shared_worker_bus"
         ],
         "properties": {
+          "caldav": {
+            "type": "boolean",
+            "description": "CalDAV protocol surface (`/caldav/*` + well-known discovery).\nSee `FeaturesConfig::enable_caldav`."
+          },
+          "carddav": {
+            "type": "boolean",
+            "description": "CardDAV protocol surface (`/carddav/*` + well-known discovery).\nSee `FeaturesConfig::enable_carddav`."
+          },
           "external_mounts": {
             "type": "boolean",
             "description": "Admin-configured external filesystem mounts. See\n`FeaturesConfig::enable_external_mounts`."
@@ -13905,6 +13918,14 @@
           "music": {
             "type": "boolean",
             "description": "Music player + playlists. See `FeaturesConfig::enable_music`."
+          },
+          "nextcloud": {
+            "type": "boolean",
+            "description": "NextCloud compatibility surface (`/index.php`, `/remote.php`,\n`/ocs/`, `/status.php`, NC login flow v2, NC trashbin). OFF by\ndefault — opt-in per deployment. See\n`FeaturesConfig::enable_nextcloud`."
+          },
+          "photos": {
+            "type": "boolean",
+            "description": "Photo library (`/api/photos`, `/photos` SPA route). The SPA hides\nthe top-nav \"Photos\" entry when this is false; sub-flags\n`places` + `faces` are then moot. See\n`FeaturesConfig::enable_photos`."
           },
           "places": {
             "type": "boolean",
@@ -13929,6 +13950,10 @@
           "video_thumbnails": {
             "type": "boolean",
             "description": "Server-side video-thumbnail generation via ffmpeg. See\n`FeaturesConfig::enable_video_thumbnails`."
+          },
+          "webdav": {
+            "type": "boolean",
+            "description": "WebDAV protocol surface (`/webdav/*`). When off the router is\nnot mounted; the SPA admin dashboard reflects the state.\nSee `FeaturesConfig::enable_webdav`."
           }
         }
       },

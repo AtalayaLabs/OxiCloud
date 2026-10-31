@@ -892,22 +892,37 @@ impl AppServiceFactory {
 
         // Search service with cache. The optional content index widens the
         // same `/api/search` endpoint to full-text content matches.
+        // Gated at the composition root on `features.enable_search`:
+        // when the feature is off we return None, which cascades to the
+        // routes layer (`routes.rs::search_router` only mounts
+        // `/api/search/*` when `search_service.is_some()`) and to the
+        // NextCloud + WebDAV REPORT handlers (both degrade to empty
+        // results when the Arc is None). An operator setting
+        // `OXICLOUD_ENABLE_SEARCH=false` now gets a server with no
+        // reachable search endpoints — not just a hidden UI tab.
         let content_index_port: Option<
             Arc<dyn crate::application::ports::content_index_ports::ContentIndexPort>,
         > = content_index.map(|idx| idx as _);
-        let search_service: Option<Arc<SearchService>> = Some(Arc::new(SearchService::new(
-            repos.file_read_repository.clone(),
-            repos.folder_repository.clone(),
-            content_index_port,
-            Some(authz.clone()),
-            Some(drive_repo.clone()),
-            300, // Cache TTL in seconds (5 minutes)
-            // Byte budget for cached result pages (weigher-bounded, 32 MiB
-            // default; env OXICLOUD_SEARCH_CACHE_MAX_BYTES). Replaces the old
-            // entry-count capacity, which let 500-row pages keyed by
-            // user×query×offset×limit pin hundreds of MB for the TTL.
-            self.config.search_cache.max_bytes,
-        )));
+        let search_service: Option<Arc<SearchService>> = if self.config.features.enable_search {
+            Some(Arc::new(SearchService::new(
+                repos.file_read_repository.clone(),
+                repos.folder_repository.clone(),
+                content_index_port,
+                Some(authz.clone()),
+                Some(drive_repo.clone()),
+                300, // Cache TTL in seconds (5 minutes)
+                // Byte budget for cached result pages (weigher-bounded, 32 MiB
+                // default; env OXICLOUD_SEARCH_CACHE_MAX_BYTES). Replaces the old
+                // entry-count capacity, which let 500-row pages keyed by
+                // user×query×offset×limit pin hundreds of MB for the TTL.
+                self.config.search_cache.max_bytes,
+            )))
+        } else {
+            tracing::info!(
+                "Search service is disabled in configuration (OXICLOUD_ENABLE_SEARCH=false)"
+            );
+            None
+        };
 
         tracing::info!("Application services initialized");
 
@@ -1445,6 +1460,19 @@ impl AppServiceFactory {
     /// version-stale and must be repopulated from `storage.files`). Any
     /// failure degrades to name-only search instead of failing startup.
     fn create_content_index(&self) -> Option<(Arc<TantivyContentIndex>, bool)> {
+        // `features.enable_search = false` disables the search feature at
+        // its root — the content index is a sub-component (full-text), so
+        // when search is off the Tantivy writer, reseeder and background
+        // indexer must all stay dormant. Short-circuit here, BEFORE the
+        // narrower `content_search.enabled` sub-flag, so an operator who
+        // sets only `OXICLOUD_ENABLE_SEARCH=false` doesn't end up with a
+        // disabled public API but a still-populating index on disk.
+        if !self.config.features.enable_search {
+            tracing::info!(
+                "Content index skipped — search feature is disabled (OXICLOUD_ENABLE_SEARCH=false)"
+            );
+            return None;
+        }
         if !self.config.content_search.enabled {
             tracing::info!("Content search is disabled in configuration");
             return None;
@@ -2146,17 +2174,25 @@ impl AppServiceFactory {
             recent_service = Some(recent_service_eager.clone());
             apps.recent_service = Some(recent_service_eager.clone());
 
-            places_service = if core.config.features.enable_places {
-                Some(self.create_places_service(&repos.file_read_repository))
-            } else {
-                None
-            };
+            // `enable_photos` is the parent gate: Places and People are
+            // photo-library sub-features (map tab + People tab), so an
+            // operator who disables the photo library at the top level
+            // must not get a running sub-service even if the narrower
+            // sub-flag is still true. Same shape as the search / content
+            // index relationship.
+            places_service =
+                if core.config.features.enable_photos && core.config.features.enable_places {
+                    Some(self.create_places_service(&repos.file_read_repository))
+                } else {
+                    None
+                };
 
-            people_service = if core.config.features.enable_faces {
-                Some(self.create_people_service(&pool))
-            } else {
-                None
-            };
+            people_service =
+                if core.config.features.enable_photos && core.config.features.enable_faces {
+                    Some(self.create_people_service(&pool))
+                } else {
+                    None
+                };
 
             storage_usage_service = Some(storage_usage.clone());
 
