@@ -2162,6 +2162,11 @@ impl AppServiceFactory {
         let grant_cleanup_service: Option<
             Arc<crate::infrastructure::services::grant_cleanup_service::GrantCleanupService>,
         >;
+        // Auth services are now always constructed (feat/remove-useless-auth-flag).
+        // Kept as Option because downstream code still unwraps / matches,
+        // but the inner `None` initialiser is unreachable now that the
+        // auth-disabled branch is gone.
+        #[allow(unused_assignments)]
         let mut auth_services: Option<crate::common::di::AuthServices> = None;
         let mut nextcloud_services: Option<NextcloudServices> = None;
         // Lifted out of the database-services block so PR 9's invite
@@ -2389,60 +2394,57 @@ impl AppServiceFactory {
 
             let user_lifecycle = Arc::new(user_lifecycle_builder);
 
-            // Auth services. Folder service no longer threaded here —
-            // PR 3 moved home-folder provisioning into
-            // PersonalDriveLifecycleHook, which already holds an Arc to the
-            // folder service via the user_lifecycle dispatcher.
-            if self.config.features.enable_auth {
-                // OPAQUE repo built here (pre-`create_auth_services`) so
-                // the AuthApplicationService gets the Phase 4 gate wired
-                // at construction time — before Arc-wrapping locks the
-                // shape. Gate fires only when `effective_mode != Off`;
-                // an OPAQUE-off deployment gets `None` and legacy login
-                // stays open for every user (including anyone with a
-                // stale `opaque_migrated_at` from a previous rollout).
-                let opaque_repo_for_auth: Option<
-                    Arc<dyn crate::application::ports::opaque_ports::OpaqueRepositoryPort>,
-                > = {
-                    use crate::infrastructure::services::opaque_service::OpaqueMode;
-                    if self.config.opaque.effective_mode(&self.config.auth) != OpaqueMode::Off {
-                        Some(Arc::new(
-                            crate::infrastructure::repositories::pg::OpaquePgRepository::new(
-                                pool.clone(),
-                            ),
-                        ))
-                    } else {
-                        None
-                    }
-                };
-                let services = crate::infrastructure::auth_factory::create_auth_services(
-                    &self.config,
-                    pool.clone(),
-                    user_lifecycle.clone(),
-                    opaque_repo_for_auth,
-                )
-                .await
-                .map_err(|e| {
-                    // SECURITY: fail-closed. If auth is required but the auth
-                    // services cannot be created, propagate the error so the
-                    // server refuses to start — never degrade to public mode.
-                    tracing::error!(
-                        "FATAL: enable_auth=true but auth services failed to initialize: {}",
-                        e
-                    );
-                    DomainError::internal_error(
-                        "AuthInit",
-                        format!(
-                            "Authentication is enabled but auth services failed: {}. \
-                             Refusing to start without authentication.",
-                            e
+            // Auth services. Always constructed — authentication is
+            // unconditional since feat/remove-useless-auth-flag retired
+            // `OXICLOUD_ENABLE_AUTH`. Folder service no longer threaded
+            // here — PR 3 moved home-folder provisioning into
+            // PersonalDriveLifecycleHook, which already holds an Arc to
+            // the folder service via the user_lifecycle dispatcher.
+            //
+            // OPAQUE repo built here (pre-`create_auth_services`) so
+            // the AuthApplicationService gets the Phase 4 gate wired
+            // at construction time — before Arc-wrapping locks the
+            // shape. Gate fires only when `effective_mode != Off`;
+            // an OPAQUE-off deployment gets `None` and legacy login
+            // stays open for every user (including anyone with a
+            // stale `opaque_migrated_at` from a previous rollout).
+            let opaque_repo_for_auth: Option<
+                Arc<dyn crate::application::ports::opaque_ports::OpaqueRepositoryPort>,
+            > = {
+                use crate::infrastructure::services::opaque_service::OpaqueMode;
+                if self.config.opaque.effective_mode(&self.config.auth) != OpaqueMode::Off {
+                    Some(Arc::new(
+                        crate::infrastructure::repositories::pg::OpaquePgRepository::new(
+                            pool.clone(),
                         ),
-                    )
-                })?;
+                    ))
+                } else {
+                    None
+                }
+            };
+            let services = crate::infrastructure::auth_factory::create_auth_services(
+                &self.config,
+                pool.clone(),
+                user_lifecycle.clone(),
+                opaque_repo_for_auth,
+            )
+            .await
+            .map_err(|e| {
+                // SECURITY: fail-closed. If auth services cannot be
+                // created, propagate the error so the server refuses
+                // to start — never degrade to public mode.
+                tracing::error!("FATAL: auth services failed to initialize: {}", e);
+                DomainError::internal_error(
+                    "AuthInit",
+                    format!(
+                        "Auth services failed: {}. Refusing to start without authentication.",
+                        e
+                    ),
+                )
+            })?;
 
-                tracing::info!("Authentication services initialized successfully");
-                auth_services = Some(services);
-            }
+            tracing::info!("Authentication services initialized successfully");
+            auth_services = Some(services);
 
             user_lifecycle_handle = Some(user_lifecycle);
         }
@@ -2521,41 +2523,33 @@ impl AppServiceFactory {
             None
         };
 
-        // Shared App Password service — created once, used by both NC routes and native API
-        let shared_app_pw_svc: Option<Arc<AppPasswordService>> =
-            if self.config.nextcloud.enabled || self.config.features.enable_auth {
-                let app_pw_repo: Arc<AppPasswordPgRepository> =
-                    Arc::new(AppPasswordPgRepository::new(pool.clone()));
-                let hasher: Arc<Argon2PasswordHasher> = Arc::new(
-                    crate::infrastructure::services::password_hasher::Argon2PasswordHasher::new(
-                        self.config.auth.hash_memory_cost,
-                        self.config.auth.hash_time_cost,
-                        self.config.auth.hash_parallelism,
-                    ),
-                );
-                let user_repo: Arc<UserPgRepository> = Arc::new(
-                    crate::infrastructure::repositories::pg::UserPgRepository::new(pool.clone()),
-                );
-                let svc = Arc::new(AppPasswordService::new(
-                    app_pw_repo,
-                    hasher,
-                    user_repo,
-                    self.config.base_url(),
-                ));
-                tracing::info!("App Password service initialized (shared)");
-                Some(svc)
-            } else {
-                None
-            };
+        // Shared App Password service — always constructed since
+        // auth is unconditional (used by both NC routes and native API).
+        let shared_app_pw_svc: Option<Arc<AppPasswordService>> = {
+            let app_pw_repo: Arc<AppPasswordPgRepository> =
+                Arc::new(AppPasswordPgRepository::new(pool.clone()));
+            let hasher: Arc<Argon2PasswordHasher> = Arc::new(
+                crate::infrastructure::services::password_hasher::Argon2PasswordHasher::new(
+                    self.config.auth.hash_memory_cost,
+                    self.config.auth.hash_time_cost,
+                    self.config.auth.hash_parallelism,
+                ),
+            );
+            let user_repo: Arc<UserPgRepository> = Arc::new(
+                crate::infrastructure::repositories::pg::UserPgRepository::new(pool.clone()),
+            );
+            let svc = Arc::new(AppPasswordService::new(
+                app_pw_repo,
+                hasher,
+                user_repo,
+                self.config.base_url(),
+            ));
+            tracing::info!("App Password service initialized (shared)");
+            Some(svc)
+        };
 
         // Nextcloud compatibility services
         if self.config.nextcloud.enabled {
-            if !self.config.features.enable_auth {
-                tracing::warn!(
-                    "Nextcloud compatibility enabled but auth is disabled; Nextcloud routes will be unusable"
-                );
-            }
-
             // NC chunked-upload sessions root. Honour `OXICLOUD_CHUNK_DIR`
             // (same env var that the REST chunked service uses) so a single
             // value covers both surfaces and they stay co-located on one
