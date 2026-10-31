@@ -17851,6 +17851,7 @@
           "search",
           "sharing",
           "music",
+          "photos",
           "places",
           "faces",
           "video_thumbnails",
@@ -17878,6 +17879,10 @@
           "music": {
             "type": "boolean",
             "description": "Music player + playlists. See `FeaturesConfig::enable_music`."
+          },
+          "photos": {
+            "type": "boolean",
+            "description": "Photo library (`/api/photos`, `/photos` SPA route). The SPA hides\nthe top-nav \"Photos\" entry when this is false; sub-flags\n`places` + `faces` are then moot. See\n`FeaturesConfig::enable_photos`."
           },
           "places": {
             "type": "boolean",
