@@ -1462,7 +1462,7 @@ pub async fn get_dashboard_stats(
         SELECT
             COUNT(*)::INT8 as total_users,
             COUNT(*) FILTER (WHERE active = true)::INT8 as active_users,
-            COUNT(*) FILTER (WHERE role::text = 'admin')::INT8 as admin_users,
+            COUNT(*) FILTER (WHERE role::text IN ('owner', 'admin'))::INT8 as admin_users,
             COUNT(*) FILTER (WHERE storage_quota_bytes > 0 AND storage_used_bytes > storage_quota_bytes * 0.8)::INT8 as users_over_80,
             COUNT(*) FILTER (WHERE storage_quota_bytes > 0 AND storage_used_bytes > storage_quota_bytes)::INT8 as users_over_quota
         FROM auth.users
