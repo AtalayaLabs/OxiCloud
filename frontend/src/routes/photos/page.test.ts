@@ -21,9 +21,24 @@ vi.mock('$lib/api/endpoints/files', () => ({
 
 import { fetchPhotos } from '$lib/api/endpoints/photos';
 import { peopleEnabled } from '$lib/api/endpoints/people';
+import { serverConfig } from '$lib/stores/serverConfig.svelte';
 import PhotosPage from './+page.svelte';
 
 const m = (fn: unknown) => fn as ReturnType<typeof vi.fn>;
+
+// The photos page gates its Places / People tabs on
+// `serverConfig.features.{places,faces}` in addition to the pre-existing
+// runtime capability probe (`peopleEnabled()`). The store's default has
+// `places: true` + `faces: false`, so tests that exercise People tab
+// visibility have to flip `faces` explicitly — otherwise the AND-gate
+// hides the tab regardless of what the capability probe reports.
+function setFeatures(patch: Partial<{ places: boolean; faces: boolean }>) {
+	serverConfig.features = {
+		...serverConfig.features,
+		places: patch.places ?? true,
+		faces: patch.faces ?? false
+	};
+}
 
 function photo(id: string) {
 	return {
@@ -52,6 +67,7 @@ beforeEach(() => {
 	// `serverConfig.features.faces` directly (post-`/api/auth/status`
 	// retirement). `mockReturnValue`, not `mockResolvedValue`.
 	m(peopleEnabled).mockReturnValue(false);
+	setFeatures({});
 });
 
 it('loads the first page of photos on mount', async () => {
@@ -85,6 +101,7 @@ it('hides the People tab when face detection is disabled', async () => {
 it('shows the People tab when face detection is enabled', async () => {
 	m(fetchPhotos).mockResolvedValue({ items: [], nextCursor: null });
 	m(peopleEnabled).mockReturnValue(true);
+	setFeatures({ faces: true });
 	render(PhotosPage);
 	await waitFor(() => expect(screen.getByTestId('photos-tab-people')).toBeTruthy());
 });

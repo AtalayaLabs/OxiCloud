@@ -2209,6 +2209,13 @@ export type FeaturesDto = {
      */
     music: boolean;
     /**
+     * Photo library (`/api/photos`, `/photos` SPA route). The SPA hides
+     * the top-nav "Photos" entry when this is false; sub-flags
+     * `places` + `faces` are then moot. See
+     * `FeaturesConfig::enable_photos`.
+     */
+    photos: boolean;
+    /**
      * Photo-map ("Places") tab. See `FeaturesConfig::enable_places`.
      */
     places: boolean;

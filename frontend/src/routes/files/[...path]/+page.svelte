@@ -1335,9 +1335,20 @@
 	}
 
 	async function confirmAndBatchDelete() {
+		// Adapt the confirm copy to the deployment's trash state. When
+		// trash is enabled, `DELETE /api/files/{id}` is reversible via
+		// trash_service.move_to_trash; when trash is off, the same
+		// endpoint hard-deletes, so the user needs the stronger warning.
+		const trashOn = serverConfig.features.trash;
 		const ok = await confirmDialog({
 			title: t('files.batch_delete', 'Delete selected'),
-			message: t('files.confirm_batch_delete', { n: selected.size }, 'Move {{n}} items to trash?'),
+			message: trashOn
+				? t('files.confirm_batch_delete', { n: selected.size }, 'Move {{n}} items to trash?')
+				: t(
+						'files.confirm_batch_delete_permanent',
+						{ n: selected.size },
+						'Permanently delete {{n}} items? This cannot be undone.'
+					),
 			confirmText: t('common.delete', 'Delete'),
 			danger: true
 		});
@@ -2625,16 +2636,18 @@
 				>
 			{/if}
 		{/if}
-		<button
-			class="menu-item"
-			role="menuitem"
-			data-testid="files-ctx-share-item"
-			onclick={() => {
-				const tg = ctxTarget!;
-				closeContext();
-				openShare(tg.kind, tg.id, tg.name);
-			}}><Icon name="share-alt" /> {t('files.share', 'Share')}</button
-		>
+		{#if serverConfig.features.sharing}
+			<button
+				class="menu-item"
+				role="menuitem"
+				data-testid="files-ctx-share-item"
+				onclick={() => {
+					const tg = ctxTarget!;
+					closeContext();
+					openShare(tg.kind, tg.id, tg.name);
+				}}><Icon name="share-alt" /> {t('files.share', 'Share')}</button
+			>
+		{/if}
 		<button
 			class="menu-item"
 			role="menuitem"
