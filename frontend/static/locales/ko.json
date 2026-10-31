@@ -94,7 +94,8 @@
     "tab_places": "장소",
     "tab_people": "인물",
     "map_loading": "지도 로딩 중…",
-    "map_error": "지도를 불러올 수 없습니다"
+    "map_error": "지도를 불러올 수 없습니다",
+    "confirm_delete_one_permanent": "\"{{name}}\"을(를) 영구적으로 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다."
   },
   "music": {
     "create_playlist": "재생목록 만들기",
@@ -543,7 +544,9 @@
     "new_text_file_prompt": "파일 이름 (예: notes.md)",
     "new_text_file_hint": "파일 이름에 확장자를 포함하세요 (예: .md, .txt, .c, .py, .rs).",
     "new_text_file_binary_ext_title": "비텍스트 확장자",
-    "new_text_file_binary_ext_message": "\"{{name}}\"은(는) 텍스트 파일이 아닌 것 같습니다. 편집기가 텍스트로 열며 — 바이너리 형식은 보통 이렇게 하면 망가집니다. 계속하시겠습니까?"
+    "new_text_file_binary_ext_message": "\"{{name}}\"은(는) 텍스트 파일이 아닌 것 같습니다. 편집기가 텍스트로 열며 — 바이너리 형식은 보통 이렇게 하면 망가집니다. 계속하시겠습니까?",
+    "confirm_delete_permanent": "\"{{name}}\"을(를) 영구적으로 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.",
+    "confirm_batch_delete_permanent": "{{n}}개 항목을 영구적으로 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다."
   },
   "dialogs": {
     "rename_folder": "폴더 이름 변경",

@@ -94,7 +94,8 @@
     "tab_places": "地点",
     "tab_people": "人们",
     "map_loading": "正在加载地图...",
-    "map_error": "无法加载地图"
+    "map_error": "无法加载地图",
+    "confirm_delete_one_permanent": "永久删除「{{name}}」？此操作无法撤销。"
   },
   "music": {
     "create_playlist": "创建播放列表",
@@ -543,7 +544,9 @@
     "new_text_file_prompt": "文件名 (例如 notes.md)",
     "new_text_file_hint": "请在文件名中包含扩展名 (例如 .md、.txt、.c、.py、.rs)。",
     "new_text_file_binary_ext_title": "非文本扩展名",
-    "new_text_file_binary_ext_message": "\"{{name}}\" 看起来不像文本文件。编辑器会按文本方式打开 — 这通常会破坏二进制格式。仍要继续吗?"
+    "new_text_file_binary_ext_message": "\"{{name}}\" 看起来不像文本文件。编辑器会按文本方式打开 — 这通常会破坏二进制格式。仍要继续吗?",
+    "confirm_delete_permanent": "永久删除「{{name}}」？此操作无法撤销。",
+    "confirm_batch_delete_permanent": "永久删除 {{n}} 个项目？此操作无法撤销。"
   },
   "dialogs": {
     "rename_folder": "重命名文件夹",

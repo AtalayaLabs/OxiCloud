@@ -94,7 +94,8 @@
     "tab_places": "Plaatsen",
     "tab_people": "Mensen",
     "map_loading": "Kaart laden…",
-    "map_error": "Kan de kaart niet laden"
+    "map_error": "Kan de kaart niet laden",
+    "confirm_delete_one_permanent": "\"{{name}}\" definitief verwijderen? Deze actie kan niet ongedaan worden gemaakt."
   },
   "music": {
     "create_playlist": "Afspeellijst Maken",
@@ -543,7 +544,9 @@
     "new_text_file_prompt": "Bestandsnaam (bv. notes.md)",
     "new_text_file_hint": "Zet de extensie in de bestandsnaam (bv. .md, .txt, .c, .py, .rs).",
     "new_text_file_binary_ext_title": "Niet-tekst-extensie",
-    "new_text_file_binary_ext_message": "\"{{name}}\" lijkt geen tekstbestand. De editor opent het als tekst — dat beschadigt doorgaans binaire formaten. Toch doorgaan?"
+    "new_text_file_binary_ext_message": "\"{{name}}\" lijkt geen tekstbestand. De editor opent het als tekst — dat beschadigt doorgaans binaire formaten. Toch doorgaan?",
+    "confirm_delete_permanent": "\"{{name}}\" definitief verwijderen? Deze actie kan niet ongedaan worden gemaakt.",
+    "confirm_batch_delete_permanent": "{{n}} items definitief verwijderen? Deze actie kan niet ongedaan worden gemaakt."
   },
   "dialogs": {
     "rename_folder": "Map hernoemen",

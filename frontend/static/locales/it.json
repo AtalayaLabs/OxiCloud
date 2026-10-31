@@ -94,7 +94,8 @@
     "tab_places": "Luoghi",
     "tab_people": "Persone",
     "map_loading": "Caricamento mappa...",
-    "map_error": "Impossibile caricare la mappa"
+    "map_error": "Impossibile caricare la mappa",
+    "confirm_delete_one_permanent": "Eliminare definitivamente «{{name}}»? Questa azione non può essere annullata."
   },
   "music": {
     "create_playlist": "Crea Playlist",
@@ -543,7 +544,9 @@
     "new_text_file_prompt": "Nome del file (es. notes.md)",
     "new_text_file_hint": "Includi l'estensione nel nome del file (es. .md, .txt, .c, .py, .rs).",
     "new_text_file_binary_ext_title": "Estensione non testuale",
-    "new_text_file_binary_ext_message": "«{{name}}» non sembra un file di testo. L'editor lo aprirà come testo — di solito questo danneggia i formati binari. Continuare comunque?"
+    "new_text_file_binary_ext_message": "«{{name}}» non sembra un file di testo. L'editor lo aprirà come testo — di solito questo danneggia i formati binari. Continuare comunque?",
+    "confirm_delete_permanent": "Eliminare definitivamente «{{name}}»? Questa azione non può essere annullata.",
+    "confirm_batch_delete_permanent": "Eliminare definitivamente {{n}} elementi? Questa azione non può essere annullata."
   },
   "dialogs": {
     "rename_folder": "Rinomina cartella",

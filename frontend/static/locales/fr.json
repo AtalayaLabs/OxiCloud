@@ -94,7 +94,8 @@
     "tab_places": "Lieux",
     "tab_people": "Personnes",
     "map_loading": "Chargement de la carte…",
-    "map_error": "Impossible de charger la carte"
+    "map_error": "Impossible de charger la carte",
+    "confirm_delete_one_permanent": "Supprimer définitivement « {{name}} » ? Cette action est irréversible."
   },
   "music": {
     "create_playlist": "Créer une Playlist",
@@ -543,7 +544,9 @@
     "new_text_file_prompt": "Nom du fichier (ex. notes.md)",
     "new_text_file_hint": "Incluez l'extension dans le nom du fichier (ex. .md, .txt, .c, .py, .rs).",
     "new_text_file_binary_ext_title": "Extension non textuelle",
-    "new_text_file_binary_ext_message": "« {{name}} » ne ressemble pas à un fichier texte. L'éditeur l'ouvrira comme du texte — cela endommage généralement les formats binaires. Continuer quand même ?"
+    "new_text_file_binary_ext_message": "« {{name}} » ne ressemble pas à un fichier texte. L'éditeur l'ouvrira comme du texte — cela endommage généralement les formats binaires. Continuer quand même ?",
+    "confirm_delete_permanent": "Supprimer définitivement « {{name}} » ? Cette action est irréversible.",
+    "confirm_batch_delete_permanent": "Supprimer définitivement {{n}} éléments ? Cette action est irréversible."
   },
   "dialogs": {
     "rename_folder": "Renommer le dossier",

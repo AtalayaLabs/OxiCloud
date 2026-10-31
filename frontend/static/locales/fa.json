@@ -94,7 +94,8 @@
     "tab_places": "مکان ها",
     "tab_people": "مردم",
     "map_loading": "در حال بارگیری نقشه…",
-    "map_error": "نقشه بارگیری نشد"
+    "map_error": "نقشه بارگیری نشد",
+    "confirm_delete_one_permanent": "حذف «{{name}}» برای همیشه؟ این عمل قابل بازگشت نیست."
   },
   "music": {
     "create_playlist": "ایجاد فهرست پخش",
@@ -543,7 +544,9 @@
     "new_text_file_prompt": "نام فایل (مثلاً notes.md)",
     "new_text_file_hint": "پسوند را در نام فایل بگنجانید (مثلاً .md، .txt، .c، .py، .rs).",
     "new_text_file_binary_ext_title": "پسوند غیرمتنی",
-    "new_text_file_binary_ext_message": "«{{name}}» شبیه فایل متنی نیست. ویرایشگر آن را به صورت متن باز می‌کند — این معمولاً فرمت‌های دودویی را خراب می‌کند. با این حال ادامه می‌دهید؟"
+    "new_text_file_binary_ext_message": "«{{name}}» شبیه فایل متنی نیست. ویرایشگر آن را به صورت متن باز می‌کند — این معمولاً فرمت‌های دودویی را خراب می‌کند. با این حال ادامه می‌دهید؟",
+    "confirm_delete_permanent": "حذف «{{name}}» برای همیشه؟ این عمل قابل بازگشت نیست.",
+    "confirm_batch_delete_permanent": "حذف {{n}} مورد برای همیشه؟ این عمل قابل بازگشت نیست."
   },
   "dialogs": {
     "rename_folder": "تغییر نام پوشه",

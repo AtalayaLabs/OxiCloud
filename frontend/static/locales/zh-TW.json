@@ -94,7 +94,8 @@
     "tab_places": "地點",
     "tab_people": "人們",
     "map_loading": "正在加載地圖...",
-    "map_error": "無法載入地圖"
+    "map_error": "無法載入地圖",
+    "confirm_delete_one_permanent": "永久刪除「{{name}}」？此操作無法復原。"
   },
   "music": {
     "create_playlist": "建立播放列表",
@@ -543,7 +544,9 @@
     "new_text_file_prompt": "檔案名稱 (例如 notes.md)",
     "new_text_file_hint": "請在檔案名稱中包含副檔名 (例如 .md、.txt、.c、.py、.rs)。",
     "new_text_file_binary_ext_title": "非文字副檔名",
-    "new_text_file_binary_ext_message": "「{{name}}」看起來不像文字檔案。編輯器會以文字方式開啟 — 這通常會破壞二進位格式。仍要繼續嗎?"
+    "new_text_file_binary_ext_message": "「{{name}}」看起來不像文字檔案。編輯器會以文字方式開啟 — 這通常會破壞二進位格式。仍要繼續嗎?",
+    "confirm_delete_permanent": "永久刪除「{{name}}」？此操作無法復原。",
+    "confirm_batch_delete_permanent": "永久刪除 {{n}} 個項目？此操作無法復原。"
   },
   "dialogs": {
     "rename_folder": "重新命名資料夾",

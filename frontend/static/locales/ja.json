@@ -94,7 +94,8 @@
     "tab_places": "場所",
     "tab_people": "人々",
     "map_loading": "マップを読み込み中…",
-    "map_error": "マップを読み込めませんでした"
+    "map_error": "マップを読み込めませんでした",
+    "confirm_delete_one_permanent": "「{{name}}」を完全に削除しますか?この操作は取り消せません。"
   },
   "music": {
     "create_playlist": "プレイリストを作成",
@@ -543,7 +544,9 @@
     "new_text_file_prompt": "ファイル名 (例: notes.md)",
     "new_text_file_hint": "ファイル名に拡張子を含めてください (例: .md, .txt, .c, .py, .rs)。",
     "new_text_file_binary_ext_title": "非テキスト拡張子",
-    "new_text_file_binary_ext_message": "「{{name}}」はテキストファイルではないようです。エディターはテキストとして開きます — 通常、バイナリ形式はこれで壊れます。それでも続行しますか?"
+    "new_text_file_binary_ext_message": "「{{name}}」はテキストファイルではないようです。エディターはテキストとして開きます — 通常、バイナリ形式はこれで壊れます。それでも続行しますか?",
+    "confirm_delete_permanent": "「{{name}}」を完全に削除しますか?この操作は取り消せません。",
+    "confirm_batch_delete_permanent": "{{n}} 件のアイテムを完全に削除しますか?この操作は取り消せません。"
   },
   "dialogs": {
     "rename_folder": "フォルダ名を変更",

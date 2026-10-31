@@ -94,7 +94,8 @@
     "tab_places": "الأماكن",
     "tab_people": "الناس",
     "map_loading": "جارٍ تحميل الخريطة…",
-    "map_error": "تعذر تحميل الخريطة"
+    "map_error": "تعذر تحميل الخريطة",
+    "confirm_delete_one_permanent": "حذف «{{name}}» نهائيًا؟ لا يمكن التراجع عن هذا الإجراء."
   },
   "music": {
     "create_playlist": "إنشاء قائمة تشغيل",
@@ -543,7 +544,9 @@
     "new_text_file_prompt": "اسم الملف (مثل notes.md)",
     "new_text_file_hint": "ضمِّن الامتداد في اسم الملف (مثل .md، .txt، .c، .py، .rs).",
     "new_text_file_binary_ext_title": "امتداد غير نصي",
-    "new_text_file_binary_ext_message": "لا يبدو \"{{name}}\" ملفًا نصيًا. سيفتحه المحرّر كنص — وهذا عادةً ما يُفسد التنسيقات الثنائية. المتابعة على أي حال؟"
+    "new_text_file_binary_ext_message": "لا يبدو \"{{name}}\" ملفًا نصيًا. سيفتحه المحرّر كنص — وهذا عادةً ما يُفسد التنسيقات الثنائية. المتابعة على أي حال؟",
+    "confirm_delete_permanent": "حذف «{{name}}» نهائيًا؟ لا يمكن التراجع عن هذا الإجراء.",
+    "confirm_batch_delete_permanent": "حذف {{n}} عناصر نهائيًا؟ لا يمكن التراجع عن هذا الإجراء."
   },
   "dialogs": {
     "rename_folder": "إعادة تسمية المجلد",
