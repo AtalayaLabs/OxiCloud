@@ -137,6 +137,21 @@ pub struct FeaturesDto {
     /// Admin-configured external filesystem mounts. See
     /// `FeaturesConfig::enable_external_mounts`.
     pub external_mounts: bool,
+    /// WebDAV protocol surface (`/webdav/*`). When off the router is
+    /// not mounted; the SPA admin dashboard reflects the state.
+    /// See `FeaturesConfig::enable_webdav`.
+    pub webdav: bool,
+    /// CalDAV protocol surface (`/caldav/*` + well-known discovery).
+    /// See `FeaturesConfig::enable_caldav`.
+    pub caldav: bool,
+    /// CardDAV protocol surface (`/carddav/*` + well-known discovery).
+    /// See `FeaturesConfig::enable_carddav`.
+    pub carddav: bool,
+    /// NextCloud compatibility surface (`/index.php`, `/remote.php`,
+    /// `/ocs/`, `/status.php`, NC login flow v2, NC trashbin). OFF by
+    /// default — opt-in per deployment. See
+    /// `FeaturesConfig::enable_nextcloud`.
+    pub nextcloud: bool,
     /// Collaborative `.md` editing over the message-bus WebSocket
     /// (Yjs CRDT). When `false`, the FE hides the "New markdown"
     /// menu entry and falls back to the plain `.md` viewer when
@@ -180,6 +195,10 @@ pub async fn get_config(State(state): State<Arc<AppState>>) -> Json<ServerConfig
             faces: f.enable_faces,
             video_thumbnails: f.enable_video_thumbnails,
             external_mounts: f.enable_external_mounts,
+            webdav: f.enable_webdav,
+            caldav: f.enable_caldav,
+            carddav: f.enable_carddav,
+            nextcloud: f.enable_nextcloud,
             markdown_collab: f.enable_markdown_collab,
             shared_worker_bus: f.enable_shared_worker_bus,
         },

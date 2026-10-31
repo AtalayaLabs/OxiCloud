@@ -40,6 +40,10 @@ function resetFeatures() {
 		faces: false,
 		video_thumbnails: true,
 		external_mounts: false,
+		webdav: true,
+		caldav: true,
+		carddav: true,
+		nextcloud: false,
 		markdown_collab: false,
 		shared_worker_bus: true
 	};

@@ -1637,6 +1637,16 @@ export type FavoritesResourceItemDto = {
  */
 export type FeaturesDto = {
     /**
+     * CalDAV protocol surface (`/caldav*` + well-known discovery).
+     * See `FeaturesConfig::enable_caldav`.
+     */
+    caldav: boolean;
+    /**
+     * CardDAV protocol surface (`/carddav*` + well-known discovery).
+     * See `FeaturesConfig::enable_carddav`.
+     */
+    carddav: boolean;
+    /**
      * Admin-configured external filesystem mounts. See
      * `FeaturesConfig::enable_external_mounts`.
      */
@@ -1663,6 +1673,13 @@ export type FeaturesDto = {
      * Music player + playlists. See `FeaturesConfig::enable_music`.
      */
     music: boolean;
+    /**
+     * NextCloud compatibility surface (`/index.php`, `/remote.php`,
+     * `/ocs/`, `/status.php`, NC login flow v2, NC trashbin). OFF by
+     * default — opt-in per deployment. See
+     * `FeaturesConfig::enable_nextcloud`.
+     */
+    nextcloud: boolean;
     /**
      * Photo library (`/api/photos`, `/photos` SPA route). The SPA hides
      * the top-nav "Photos" entry when this is false; sub-flags
@@ -1705,6 +1722,12 @@ export type FeaturesDto = {
      * `FeaturesConfig::enable_video_thumbnails`.
      */
     video_thumbnails: boolean;
+    /**
+     * WebDAV protocol surface (`/webdav*`). When off the router is
+     * not mounted; the SPA admin dashboard reflects the state.
+     * See `FeaturesConfig::enable_webdav`.
+     */
+    webdav: boolean;
 };
 
 /**
