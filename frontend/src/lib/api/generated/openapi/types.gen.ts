@@ -5329,13 +5329,17 @@ export type ListContactsData = {
     };
     query?: {
         /**
-         * Max results (omit for the full book; system book defaults to 100)
+         * Max results (omit for the full book; system book defaults to 100; search defaults to 100, capped at 500)
          */
         limit?: number;
         /**
-         * Pagination offset (omit for none; system book defaults to 0)
+         * Pagination offset (omit for none; system book defaults to 0; ignored for system-book search)
          */
         offset?: number;
+        /**
+         * Case-insensitive substring search over name, nickname, organisation, e-mail and phone. Backed by the trigram indexes; empty/whitespace means no search
+         */
+        search?: string;
         /**
          * System address book only — include the calling user in the results. Default false (the share-modal "can't share with yourself" rule); the admin drive-owner surface sets it true. Ignored for non-system books
          */

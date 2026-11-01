@@ -115,15 +115,23 @@ pub struct AddContactToGroupRequest {
     pub contact_id: String,
 }
 
-/// Query parameters for paginated listing.
+/// Query parameters for paginated listing / search.
 ///
-/// Both fields are optional: when omitted, regular address books return
-/// the full contact list (the frontend relies on this), while the system
-/// book falls back to its own defaults (limit 100, offset 0).
+/// `limit` and `offset` are optional: when both are omitted, regular address
+/// books return the full contact list (the share-modal frontend relies on
+/// this), while the system book falls back to its own defaults (limit 100,
+/// offset 0). Supplying either field switches to the bounded path.
+///
+/// `search` runs a trigram-indexed substring match inside the selected book
+/// (or the system user directory). Search results are bounded even when
+/// `limit` is omitted, so a typo cannot scan a whole address book.
 #[derive(Deserialize)]
 pub struct ListQuery {
     limit: Option<i64>,
     offset: Option<i64>,
+    /// Case-insensitive substring search over name, nickname, organisation,
+    /// e-mail and phone. Empty/whitespace is treated as "no search".
+    search: Option<String>,
     /// System address book only — when `true`, includes the calling user
     /// in the returned contacts. Default `false` matches the share-modal
     /// "you can't share with yourself" semantics; the admin drive-owner
@@ -131,6 +139,18 @@ pub struct ListQuery {
     /// Ignored for non-system books.
     #[serde(default)]
     include_self: bool,
+}
+
+/// Default and maximum page size for search results. Search is bounded by
+/// construction: the trigram GIN indexes narrow the rows, and `LIMIT` stops a
+/// broad term from materialising every match in the book.
+const DEFAULT_SEARCH_LIMIT: i64 = 100;
+const MAX_SEARCH_LIMIT: i64 = 500;
+
+fn search_limit(requested: Option<i64>) -> i64 {
+    requested
+        .unwrap_or(DEFAULT_SEARCH_LIMIT)
+        .clamp(1, MAX_SEARCH_LIMIT)
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -278,6 +298,15 @@ pub async fn list_address_books(
                     }
                 })
                 .collect();
+            // The service returns books from a HashMap, so order is otherwise
+            // arbitrary. Stable alphabetical order keeps the picker from
+            // reshuffling between reloads; the system book is appended last.
+            response.sort_by(|a, b| {
+                a.name
+                    .to_lowercase()
+                    .cmp(&b.name.to_lowercase())
+                    .then_with(|| a.id.cmp(&b.id))
+            });
 
             // Skip the system address book for external callers so they
             // don't see an internal-user directory entry (let alone its
@@ -462,8 +491,9 @@ pub async fn delete_address_book(
     path = "/api/address-books/{book_id}/contacts",
     params(
         ("book_id" = String, Path, description = "Address book UUID or \"system\""),
-        ("limit"   = Option<i64>, Query, description = "Max results (omit for the full book; system book defaults to 100)"),
-        ("offset"  = Option<i64>, Query, description = "Pagination offset (omit for none; system book defaults to 0)"),
+        ("limit"   = Option<i64>, Query, description = "Max results (omit for the full book; system book defaults to 100; search defaults to 100, capped at 500)"),
+        ("offset"  = Option<i64>, Query, description = "Pagination offset (omit for none; system book defaults to 0; ignored for system-book search)"),
+        ("search"  = Option<String>, Query, description = "Case-insensitive substring search over name, nickname, organisation, e-mail and phone. Backed by the trigram indexes; empty/whitespace means no search"),
         ("include_self" = Option<bool>, Query, description = "System address book only — include the calling user in the results. Default false (the share-modal \"can't share with yourself\" rule); the admin drive-owner surface sets it true. Ignored for non-system books"),
     ),
     responses(
@@ -480,6 +510,12 @@ pub async fn list_contacts(
     Path(book_id): Path<String>,
     Query(params): Query<ListQuery>,
 ) -> impl IntoResponse {
+    let search = params
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|q| !q.is_empty());
+
     if book_id == SYSTEM_BOOK_ID {
         if !state.expose_system_users {
             return system_book_unavailable();
@@ -496,10 +532,22 @@ pub async fn list_contacts(
             return e.into_response();
         }
         let caller_id = auth_user.id.to_string();
-        match auth_service
-            .list_users(params.limit.unwrap_or(100), params.offset.unwrap_or(0))
-            .await
-        {
+        // `search_users` is the bounded, trigram-indexed query; `list_users`
+        // is the offset-paginated browse path. Offset has no meaning for the
+        // search variant, so it is ignored there.
+        let result = match search {
+            Some(query) => {
+                auth_service
+                    .search_users(query, search_limit(params.limit))
+                    .await
+            }
+            None => {
+                auth_service
+                    .list_users(params.limit.unwrap_or(100), params.offset.unwrap_or(0))
+                    .await
+            }
+        };
+        match result {
             Ok(users) => {
                 let include_self = params.include_self;
                 let contacts: Vec<ContactDto> = users
@@ -511,6 +559,24 @@ pub async fn list_contacts(
             }
             Err(err) => {
                 error!("Error listing OxiCloud users: {}", err);
+                domain_err_to_response(err)
+            }
+        }
+    } else if let Some(query) = search {
+        match state
+            .contact_service
+            .search_contacts(
+                &book_id,
+                query,
+                search_limit(params.limit),
+                params.offset.unwrap_or(0).max(0),
+                auth_user.id,
+            )
+            .await
+        {
+            Ok(contacts) => (StatusCode::OK, Json(contacts)).into_response(),
+            Err(err) => {
+                error!("Error searching contacts in book {}: {}", book_id, err);
                 domain_err_to_response(err)
             }
         }

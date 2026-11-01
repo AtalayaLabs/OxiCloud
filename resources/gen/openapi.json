@@ -185,7 +185,7 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Max results (omit for the full book; system book defaults to 100)",
+            "description": "Max results (omit for the full book; system book defaults to 100; search defaults to 100, capped at 500)",
             "required": false,
             "schema": {
               "type": "integer",
@@ -195,11 +195,20 @@
           {
             "name": "offset",
             "in": "query",
-            "description": "Pagination offset (omit for none; system book defaults to 0)",
+            "description": "Pagination offset (omit for none; system book defaults to 0; ignored for system-book search)",
             "required": false,
             "schema": {
               "type": "integer",
               "format": "int64"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "Case-insensitive substring search over name, nickname, organisation, e-mail and phone. Backed by the trigram indexes; empty/whitespace means no search",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           },
           {
