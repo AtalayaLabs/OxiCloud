@@ -56,6 +56,20 @@ impl CalendarAccess {
     pub fn from_role(role: Role) -> Self {
         Self::from_permissions(|p| role.expand().contains(&p))
     }
+
+    /// Stable wire discriminator for the REST calendar list.
+    ///
+    /// The values are load-bearing: the SPA gates its edit / delete
+    /// controls on them, so a rename would silently turn an ownable
+    /// calendar read-only in the UI.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Contribute => "contribute",
+            Self::Edit => "edit",
+            Self::Own => "own",
+        }
+    }
 }
 
 /// A calendar together with the caller's access level on it.
@@ -480,5 +494,20 @@ mod tests {
     fn strongest_grant_wins() {
         let levels = [Role::Viewer, Role::Editor, Role::Contributor].map(CalendarAccess::from_role);
         assert_eq!(levels.into_iter().max(), Some(CalendarAccess::Edit));
+    }
+
+    /// Wire values are gated on by the SPA (`access === 'own'` shows
+    /// rename/delete). Pinned so a rename cannot quietly turn every
+    /// calendar read-only client-side.
+    #[test]
+    fn access_wire_strings_are_stable() {
+        for (access, expected) in [
+            (CalendarAccess::Read, "read"),
+            (CalendarAccess::Contribute, "contribute"),
+            (CalendarAccess::Edit, "edit"),
+            (CalendarAccess::Own, "own"),
+        ] {
+            assert_eq!(access.as_str(), expected);
+        }
     }
 }

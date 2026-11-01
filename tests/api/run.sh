@@ -578,6 +578,7 @@ HURL_FILES=( \
   "$API_DIR/webdav_carddav_param_encoding.hurl" \
   "$API_DIR/contacts.hurl" \
   "$API_DIR/calendar.hurl" \
+  "$API_DIR/calendar_rest.hurl" \
   "$API_DIR/caldav_shared_roles.hurl" \
   "$API_DIR/caldav_recurring.hurl" \
   "$API_DIR/caldav_tzid.hurl" \

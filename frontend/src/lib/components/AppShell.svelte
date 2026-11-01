@@ -119,6 +119,17 @@
 				section: 'music'
 			});
 		}
+		// `features.calendars`, NOT `features.caldav`: that flag governs the
+		// CalDAV sync endpoint, this one governs `/api/calendars` + this
+		// page, and a deployment may want either without the other.
+		if (serverConfig.features.calendars) {
+			library.push({
+				href: '/calendars',
+				label: t('nav.calendars', 'Calendars'),
+				icon: 'calendar',
+				section: 'calendars'
+			});
+		}
 
 		const sharing: NavLink[] = [];
 		if (serverConfig.features.sharing) {

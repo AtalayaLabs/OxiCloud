@@ -58,6 +58,10 @@ use crate::application::dtos::user_dto::{
 use crate::application::ports::chunked_upload_ports::{
     ChunkUploadResponseDto, CreateUploadResponseDto, UploadStatusResponseDto,
 };
+use crate::interfaces::api::handlers::calendar_handler::{
+    CalendarEventResponse, CalendarResponse, CreateCalendarRequest, SaveEventRequest,
+    UpdateCalendarRequest,
+};
 use crate::interfaces::api::handlers::chunked_upload_handler::{
     CompleteUploadResponse, CreateUploadRequest,
 };
@@ -252,6 +256,15 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         handlers::contacts_handler::list_contacts_in_group,
         handlers::contacts_handler::add_contact_to_group,
         handlers::contacts_handler::remove_contact_from_group,
+        // Calendar handlers (REST surface for the SPA)
+        handlers::calendar_handler::list_calendars,
+        handlers::calendar_handler::create_calendar,
+        handlers::calendar_handler::update_calendar,
+        handlers::calendar_handler::delete_calendar,
+        handlers::calendar_handler::list_events,
+        handlers::calendar_handler::create_event,
+        handlers::calendar_handler::update_event,
+        handlers::calendar_handler::delete_event,
         // Admin handlers (pub free functions)
         handlers::admin_handler::get_dashboard_stats,
         handlers::admin_handler::list_users,
@@ -626,6 +639,12 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             UpdateContactRequest,
             ContactGroupNameRequest,
             AddContactToGroupRequest,
+            // Calendar schemas
+            CalendarResponse,
+            CreateCalendarRequest,
+            UpdateCalendarRequest,
+            CalendarEventResponse,
+            SaveEventRequest,
             // Grant / ReBAC schemas
             SubjectTypeDto,
             SubjectDto,
@@ -673,6 +692,7 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         (name = "batch", description = "Batch operation endpoints"),
         (name = "playlists", description = "Music playlist endpoints"),
         (name = "contacts", description = "Address books, contacts, and groups endpoints"),
+        (name = "calendars", description = "Calendars and events endpoints (SPA JSON surface)"),
         (name = "admin", description = "Admin management endpoints"),
         (name = "grants", description = "ReBAC grant management endpoints"),
         (name = "groups", description = "ReBAC subject-group management endpoints (named, nestable, root-owned)"),
