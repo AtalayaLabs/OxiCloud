@@ -50,7 +50,10 @@
 	}
 
 	let books = $state<AddressBook[]>([]);
+	let mode = $state<'contacts' | 'directory'>('contacts');
 	let bookId = $state('');
+	/** Last real address book the user viewed, restored when leaving the directory. */
+	let lastAddressBookId = $state('');
 	let contacts = $state<Contact[]>([]);
 	let selectedId = $state<string | null>(null);
 	let query = $state('');
@@ -65,9 +68,13 @@
 	let saveError = $state<string | null>(null);
 	let form = $state<ContactForm | null>(null);
 
+	const realBooks = $derived(books.filter((b) => !b.is_system));
+	const directoryBook = $derived(books.find((b) => b.is_system) ?? null);
 	const selectedBook = $derived(books.find((b) => b.id === bookId) ?? null);
 	const selected = $derived(contacts.find((c) => c.id === selectedId) ?? null);
-	const canEdit = $derived(!!selectedBook && !selectedBook.is_readonly && !selectedBook.is_system);
+	const canEdit = $derived(
+		mode === 'contacts' && !!selectedBook && !selectedBook.is_readonly && !selectedBook.is_system
+	);
 	const searching = $derived(query.trim().length > 0);
 
 	let searchTimer: ReturnType<typeof setTimeout> | undefined;
@@ -111,12 +118,12 @@
 		error = null;
 		try {
 			books = await listAddressBooks();
-			const first =
-				books.find((b) => !b.is_system && !b.is_readonly) ??
-				books.find((b) => !b.is_system) ??
-				books[0];
-			if (first) {
-				bookId = first.id;
+			const real = books.filter((b) => !b.is_system);
+			const target = real.find((b) => !b.is_readonly) ?? real[0] ?? books.find((b) => b.is_system);
+			if (target) {
+				mode = target.is_system ? 'directory' : 'contacts';
+				bookId = target.id;
+				if (!target.is_system) lastAddressBookId = target.id;
 				await loadContacts(true);
 			}
 		} catch (e) {
@@ -124,6 +131,25 @@
 		} finally {
 			loadingBooks = false;
 		}
+	}
+
+	function switchMode(next: 'contacts' | 'directory') {
+		if (next === mode) return;
+		const target =
+			next === 'directory'
+				? directoryBook
+				: (realBooks.find((b) => b.id === lastAddressBookId) ??
+					realBooks.find((b) => !b.is_readonly) ??
+					realBooks[0]);
+		if (!target) return;
+		mode = next;
+		bookId = target.id;
+		if (next === 'contacts') lastAddressBookId = target.id;
+		query = '';
+		contacts = [];
+		selectedId = null;
+		cancelForm();
+		void loadContacts(true);
 	}
 
 	async function loadContacts(reset: boolean) {
@@ -163,7 +189,9 @@
 	function onBookChange(event: Event) {
 		const value = (event.currentTarget as HTMLSelectElement).value;
 		if (value === bookId) return;
+		mode = 'contacts';
 		bookId = value;
+		lastAddressBookId = value;
 		query = '';
 		contacts = [];
 		selectedId = null;
@@ -370,15 +398,62 @@
 		</button>
 	</header>
 
+	{#if realBooks.length > 0 && directoryBook}
+		<div class="contacts__tabs" role="group" aria-label={t('contacts.sources', 'Contact sources')}>
+			<button
+				class="contacts__tab"
+				class:contacts__tab--active={mode === 'contacts'}
+				aria-pressed={mode === 'contacts'}
+				onclick={() => switchMode('contacts')}
+				data-testid="contacts-tab-address-books"
+			>
+				{t('contacts.address_books_tab', 'Address books')}
+			</button>
+			<button
+				class="contacts__tab"
+				class:contacts__tab--active={mode === 'directory'}
+				aria-pressed={mode === 'directory'}
+				onclick={() => switchMode('directory')}
+				data-testid="contacts-tab-directory"
+			>
+				{t('contacts.directory_tab', 'Directory')}
+			</button>
+		</div>
+	{/if}
+
 	<div class="contacts__toolbar">
-		<label class="contacts__book">
-			<span>{t('contacts.address_book', 'Address book')}</span>
-			<select value={bookId} onchange={onBookChange} data-testid="contacts-book-select">
-				{#each books as book (book.id)}
-					<option value={book.id}>{book.name}</option>
-				{/each}
-			</select>
-		</label>
+		{#if mode === 'contacts'}
+			{#if realBooks.length > 1}
+				<label class="contacts__book">
+					<span>{t('contacts.address_book', 'Address book')}</span>
+					<select value={bookId} onchange={onBookChange} data-testid="contacts-book-select">
+						{#each realBooks as book (book.id)}
+							<option value={book.id}>
+								{book.name}
+								{book.is_readonly ? ` · ${t('contacts.shared_book', 'shared')}` : ''}
+							</option>
+						{/each}
+					</select>
+				</label>
+			{:else if selectedBook}
+				<div class="contacts__book">
+					<span>{t('contacts.address_book', 'Address book')}</span>
+					<span class="contacts__book-name">
+						{selectedBook.name}
+						{#if selectedBook.is_readonly}
+							<span class="badge">{t('contacts.readonly_badge', 'Read only')}</span>
+						{/if}
+					</span>
+				</div>
+			{/if}
+		{:else}
+			<div class="contacts__book">
+				<span>{t('contacts.source', 'Source')}</span>
+				<span class="contacts__book-name">
+					{t('contacts.directory_tab', 'Directory')}
+				</span>
+			</div>
+		{/if}
 
 		<label class="contacts__search">
 			<span class="sr-only">{t('common.search', 'Search')}</span>
@@ -417,10 +492,17 @@
 						icon="id-card"
 						title={searching
 							? t('contacts.no_matches', 'No contacts match your search')
-							: t('contacts.no_contacts', 'No contacts yet')}
+							: mode === 'directory'
+								? t('contacts.no_directory_users', 'No other users')
+								: t('contacts.no_contacts', 'No contacts yet')}
 						hint={searching
 							? t('contacts.no_matches_hint', 'Try a different name, e-mail or organisation.')
-							: t('contacts.no_contacts_hint', 'Contacts synced through CardDAV appear here.')}
+							: mode === 'directory'
+								? t(
+										'contacts.no_directory_hint',
+										'Internal users of this OxiCloud instance appear here.'
+									)
+								: t('contacts.no_contacts_hint', 'Contacts synced through CardDAV appear here.')}
 					/>
 				{:else}
 					<ul class="contact-list" data-testid="contacts-list">
@@ -821,6 +903,36 @@
 		font-size: var(--text-sm);
 	}
 
+	.contacts__tabs {
+		display: flex;
+		align-self: flex-start;
+		gap: var(--space-1);
+		padding: 3px;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-xl);
+		background: var(--color-bg-muted);
+	}
+
+	.contacts__tab {
+		padding: var(--space-2) var(--space-3);
+		border: none;
+		border-radius: var(--radius-lg);
+		background: transparent;
+		color: var(--color-text-muted);
+		cursor: pointer;
+		font-size: var(--text-sm);
+	}
+
+	.contacts__tab:hover {
+		color: var(--color-text);
+	}
+
+	.contacts__tab--active {
+		background: var(--color-bg-surface);
+		color: var(--color-text);
+		box-shadow: var(--shadow-xs);
+	}
+
 	.contacts__toolbar {
 		display: flex;
 		flex-direction: column;
@@ -842,6 +954,15 @@
 		border: 1px solid var(--color-border);
 		border-radius: var(--radius-md);
 		background: var(--color-bg-input);
+		color: var(--color-text);
+		font-size: var(--text-base);
+	}
+
+	.contacts__book-name {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		padding: var(--space-2) 0;
 		color: var(--color-text);
 		font-size: var(--text-base);
 	}

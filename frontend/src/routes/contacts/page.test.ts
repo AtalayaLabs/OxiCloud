@@ -33,6 +33,15 @@ const book: AddressBook = {
 	updated_at: '2026-01-01T00:00:00Z'
 };
 
+const systemBook: AddressBook = {
+	...book,
+	id: 'system',
+	name: 'OxiCloud Users',
+	owner_id: 'system',
+	is_readonly: true,
+	is_system: true
+};
+
 function contact(overrides: Partial<Contact> = {}): Contact {
 	return {
 		id: 'c1',
@@ -76,6 +85,42 @@ it('loads the first address book and selects its first contact', async () => {
 	expect(detail.getByText('Ada')).toBeTruthy();
 	expect(detail.getByText('Last name')).toBeTruthy();
 	expect(detail.getByText('Lovelace')).toBeTruthy();
+});
+
+it('separates the system directory from the real address books', async () => {
+	const teamBook: AddressBook = { ...book, id: 'book-2', name: 'Team', is_readonly: true };
+	m(listAddressBooks).mockResolvedValue([book, teamBook, systemBook]);
+	m(listContacts).mockImplementation((id: string) =>
+		Promise.resolve(
+			id === 'system'
+				? [
+						contact({
+							id: 'u1',
+							address_book_id: 'system',
+							full_name: 'Other User',
+							first_name: 'Other',
+							last_name: 'User',
+							email: []
+						})
+					]
+				: [contact()]
+		)
+	);
+
+	render(ContactsPage);
+	await waitFor(() => expect(listContacts).toHaveBeenCalled());
+
+	const select = screen.getByTestId('contacts-book-select');
+	expect(within(select).queryByText('OxiCloud Users')).toBeNull();
+	expect(within(select).getByRole('option', { name: /Team/ })).toBeTruthy();
+	expect((screen.getByTestId('contacts-new') as HTMLButtonElement).disabled).toBe(false);
+
+	await fireEvent.click(screen.getByTestId('contacts-tab-directory'));
+	await waitFor(() => expect(m(listContacts).mock.calls.at(-1)?.[0]).toBe('system'));
+	expect((screen.getByTestId('contacts-new') as HTMLButtonElement).disabled).toBe(true);
+	await waitFor(() =>
+		expect(within(screen.getByTestId('contacts-detail')).getByText('Other User')).toBeTruthy()
+	);
 });
 
 it('shows the first and last name in the list when they differ from the display name', async () => {
