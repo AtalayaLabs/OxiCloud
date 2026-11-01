@@ -14,8 +14,14 @@
 # iCalendar component, so RRULE and DESCRIPTION round-trip even though
 # the REST response omits the raw `ical_data` blob.
 #
+# Step 8b is the cross-user denial block: a user with no grant must
+# neither see the calendar in the list nor read/create/update/delete
+# through any endpoint here, with the exact 404 anti-enum shape. This
+# surface has its own handlers, so the DAV denials in
+# dav_error_mapping.hurl do not cover it.
+#
 # Run:
-#   hurl --variables-file tests/api/hurl.vars --test tests/api/calendar_rest.hurl
+#   hurl --variables-file tests/api/test.env --test tests/api/calendar_rest.hurl
 # =============================================================
 
 
@@ -66,8 +72,13 @@ Authorization: Bearer {{token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$[?(@.id == '{{calendar_id}}')]" count == 1
-jsonpath "$[?(@.id == '{{calendar_id}}')].access" == "own"
+# Body containment, not `jsonpath ... count`: Hurl >= 8.1 coerces a
+# one-element filter result to a scalar, and `count` then fails with
+# "invalid filter input type". The id appears at most once in the
+# array, so containment is the same claim the count made. The regex
+# stops at `}` so it cannot match across into a later calendar.
+body contains "{{calendar_id}}"
+body matches "\"id\":\"{{calendar_id}}\",[^}]*\"access\":\"own\""
 
 
 # ─────────────────────────────────────────────────────────────
@@ -124,7 +135,7 @@ Authorization: Bearer {{token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$[?(@.id == '{{event_id}}')]" count == 1
+body contains "\"id\":\"{{event_id}}\""
 
 
 # ─────────────────────────────────────────────────────────────
@@ -160,8 +171,8 @@ Authorization: Bearer {{token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$[?(@.recurrence_id == '2026-12-22T09:00:00Z')]" count == 1
-jsonpath "$[?(@.recurrence_id == '2026-12-22T09:00:00Z')].summary" == "Weekly sync (moved)"
+body contains "\"recurrence_id\":\"2026-12-22T09:00:00Z\""
+body contains "\"summary\":\"Weekly sync (moved)\""
 
 
 # ─────────────────────────────────────────────────────────────
@@ -212,6 +223,136 @@ DELETE {{base_url}}/api/calendars/{{other_calendar_id}}/events/{{updated_event_i
 Authorization: Bearer {{token}}
 
 HTTP 404
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 8b – A user with NO grant on the calendar cannot see or
+# edit it through the SPA JSON surface.
+#
+# The CalDAV denials are pinned in dav_error_mapping.hurl and
+# calendar.hurl; these endpoints are a SEPARATE handler stack
+# (calendar_handler.rs), and every one of them must reach the
+# same CalendarService gate. A gate that lives only in the DAV
+# path would leave the SPA API as an unguarded second door.
+#
+# Refusals must be the exact 404 anti-enum shape, never 403:
+# Eve holds no Read, so confirming that the calendar exists
+# would defeat the policy. `error_type` is the Display form of
+# `ErrorKind::NotFound` ("Not Found", with a space) because the
+# REST handlers map domain errors through `AppError::from`.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/admin/users
+Authorization: Bearer {{token}}
+Content-Type: application/json
+{
+  "username": "rest_eve",
+  "password": "RestEvePassword1!",
+  "email":    "rest_eve@example.com",
+  "role":     "user"
+}
+
+HTTP *
+
+
+POST {{base_url}}/api/auth/login
+Content-Type: application/json
+{
+  "username": "rest_eve",
+  "password": "RestEvePassword1!"
+}
+
+HTTP 200
+[Captures]
+eve_token: jsonpath "$.access_token"
+eve_id: jsonpath "$.user.full.user.id"
+
+
+# Visibility: Eve's calendar list contains her own defaults only.
+GET {{base_url}}/api/calendars
+Authorization: Bearer {{eve_token}}
+
+HTTP 200
+[Asserts]
+body not contains "{{calendar_id}}"
+
+
+GET {{base_url}}/api/calendars/{{calendar_id}}/events?start=2026-12-01T00:00:00Z&end=2027-01-01T00:00:00Z
+Authorization: Bearer {{eve_token}}
+
+HTTP 404
+[Asserts]
+jsonpath "$.error_type" == "Not Found"
+
+
+POST {{base_url}}/api/calendars/{{calendar_id}}/events
+Authorization: Bearer {{eve_token}}
+Content-Type: application/json
+{
+  "summary": "Eve intruder",
+  "start_time": "2026-12-03T09:00:00Z",
+  "end_time": "2026-12-03T10:00:00Z"
+}
+
+HTTP 404
+[Asserts]
+jsonpath "$.error_type" == "Not Found"
+
+
+PUT {{base_url}}/api/calendars/{{calendar_id}}
+Authorization: Bearer {{eve_token}}
+Content-Type: application/json
+{
+  "name": "eve-hijacked"
+}
+
+HTTP 404
+[Asserts]
+jsonpath "$.error_type" == "Not Found"
+
+
+DELETE {{base_url}}/api/calendars/{{calendar_id}}
+Authorization: Bearer {{eve_token}}
+
+HTTP 404
+[Asserts]
+jsonpath "$.error_type" == "Not Found"
+
+
+PUT {{base_url}}/api/calendars/{{calendar_id}}/events/{{updated_event_id}}
+Authorization: Bearer {{eve_token}}
+Content-Type: application/json
+{
+  "summary": "Eve overwrote this",
+  "start_time": "2026-12-03T09:00:00Z",
+  "end_time": "2026-12-03T10:00:00Z"
+}
+
+HTTP 404
+[Asserts]
+jsonpath "$.error_type" == "Not Found"
+
+
+DELETE {{base_url}}/api/calendars/{{calendar_id}}/events/{{updated_event_id}}
+Authorization: Bearer {{eve_token}}
+
+HTTP 404
+[Asserts]
+jsonpath "$.error_type" == "Not Found"
+
+
+# The load-bearing check: every refusal above must have happened
+# BEFORE any write. Re-reading as the owner proves the event
+# survived with its summary intact and that Eve's attempt never
+# produced an "Eve intruder" row.
+GET {{base_url}}/api/calendars/{{calendar_id}}/events?start=2026-12-01T00:00:00Z&end=2027-01-01T00:00:00Z
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+body contains "\"id\":\"{{updated_event_id}}\""
+body contains "\"summary\":\"Weekly sync (renamed)\""
+body not contains "Eve intruder"
+body not contains "Eve overwrote this"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -271,5 +412,15 @@ Authorization: Bearer {{token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$[?(@.id == '{{calendar_id}}')]" count == 0
-jsonpath "$[?(@.id == '{{other_calendar_id}}')]" count == 0
+body not contains "{{calendar_id}}"
+body not contains "{{other_calendar_id}}"
+
+
+# Drop the throwaway user so downstream scenarios don't inherit it
+# (the suite shares one database for the whole run).
+DELETE {{base_url}}/api/admin/users/{{eve_id}}
+Authorization: Bearer {{token}}
+
+HTTP *
+[Asserts]
+status < 500
