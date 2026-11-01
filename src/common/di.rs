@@ -1080,6 +1080,7 @@ impl AppServiceFactory {
         authz: &Arc<PgAclEngine>,
         drive_repo: &Arc<crate::infrastructure::repositories::pg::DrivePgRepository>,
         bus: &Arc<crate::infrastructure::services::in_process_message_bus::InProcessMessageBus>,
+        storage_usage: &Arc<StorageUsageService>,
     ) -> Option<Arc<TrashService>> {
         if !self.config.features.enable_trash {
             tracing::info!("Trash service is disabled in configuration");
@@ -1105,7 +1106,8 @@ impl AppServiceFactory {
                 drive_repo.clone(),
             )
             .with_file_deleted_hook(core.file_lifecycle.clone())
-            .with_message_bus(bus_trait),
+            .with_message_bus(bus_trait)
+            .with_storage_usage_service(storage_usage.clone()),
         );
 
         // Initialize cleanup service (bulk-deletes expired items in 2 SQL
@@ -2037,14 +2039,11 @@ impl AppServiceFactory {
             crate::infrastructure::services::rt_ticket_store::RtTicketStore::new();
         let _reaper = Arc::clone(&rt_ticket_store).spawn_reaper();
 
-        // 3b. Trash service (needed before application services)
-        let trash_service = self
-            .create_trash_service(&repos, &core, &authorization, &drive_repo, &bus)
-            .await;
-
-        // 3c. Storage usage / quota service (needed by the instant-upload
-        // path inside the application services, and re-exposed on AppState
-        // for the handler-side quota checks of the byte-upload paths).
+        // 3b. Storage usage / quota service (needed by the instant-upload
+        // path inside the application services, re-exposed on AppState for
+        // the handler-side quota checks of the byte-upload paths, AND
+        // injected into TrashService below so `restore_item` can run the
+        // same envelope + per-drive quota precheck every write path uses).
         let storage_usage = self
             .create_storage_usage_service(
                 &repos,
@@ -2052,6 +2051,19 @@ impl AppServiceFactory {
                 &maintenance_pool,
                 drive_repo.clone(),
                 &core,
+            )
+            .await;
+
+        // 3c. Trash service (needed before application services). Takes
+        // `storage_usage` so restore honours quota.
+        let trash_service = self
+            .create_trash_service(
+                &repos,
+                &core,
+                &authorization,
+                &drive_repo,
+                &bus,
+                &storage_usage,
             )
             .await;
 
