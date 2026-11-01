@@ -21,7 +21,6 @@ use crate::application::dtos::user_dto::PublicUserDto;
 use crate::application::ports::carddav_ports::{AddressBookUseCase, ContactUseCase};
 use crate::application::services::auth_application_service::AuthApplicationService;
 use crate::application::services::contact_service::ContactService;
-use crate::domain::errors::ErrorKind;
 use crate::interfaces::middleware::auth::AuthUser;
 
 const SYSTEM_BOOK_ID: &str = "system";
@@ -137,17 +136,7 @@ pub struct ListQuery {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 fn domain_err_to_response(err: crate::domain::errors::DomainError) -> Response {
-    let status = match err.kind {
-        ErrorKind::NotFound => StatusCode::NOT_FOUND,
-        ErrorKind::AccessDenied => StatusCode::FORBIDDEN,
-        ErrorKind::InvalidInput => StatusCode::BAD_REQUEST,
-        _ => StatusCode::INTERNAL_SERVER_ERROR,
-    };
-    (
-        status,
-        Json(serde_json::json!({ "error": err.to_string() })),
-    )
-        .into_response()
+    AppError::from(err).into_response()
 }
 
 fn system_book_unavailable() -> Response {
