@@ -850,7 +850,7 @@
 		border: 1px solid var(--color-border);
 		border-radius: var(--radius-lg);
 		background: var(--color-bg-surface);
-		min-height: 18rem;
+		min-height: 24rem;
 	}
 
 	.contacts__list-pane {
@@ -1129,7 +1129,18 @@
 
 		.contacts__panes {
 			grid-template-columns: minmax(16rem, 22rem) 1fr;
-			align-items: start;
+			align-items: stretch;
+		}
+
+		/* Both tiles share one height in every state (empty, results,
+		   selected, editing). Without this the grid sized each pane to its
+		   own content and the page jumped whenever the right-hand pane
+		   switched between the empty state, a contact and the form. The
+		   panes scroll internally instead of stretching each other. */
+		.contacts__list-pane,
+		.contacts__detail-pane {
+			height: min(70vh, 46rem);
+			overflow-y: auto;
 		}
 
 		.contact-form__grid {
