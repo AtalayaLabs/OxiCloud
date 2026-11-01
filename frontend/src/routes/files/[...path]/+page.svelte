@@ -718,13 +718,14 @@
 		items: { file: File; folderId: string | null }[],
 		nid: number,
 		label: (done: number) => string
-	): Promise<{ savedBytes: number; failures: number }> {
+	): Promise<{ savedBytes: number; failures: number; firstError: unknown }> {
 		const total = items.length;
 		const owned = await resolveOwnedHashes(items.map((it) => it.file));
 		const frac = new Array<number>(total).fill(0);
 		let progressSum = 0;
 		let savedBytes = 0;
 		let failures = 0;
+		let firstError: unknown = undefined;
 		let next = 0;
 
 		const refresh = () => {
@@ -751,6 +752,12 @@
 					savedBytes += await uploadWithRetry(folderId, file, report, owned.get(file) ?? null);
 				} catch (e) {
 					failures++;
+					// Hold on to the first error so `finishUpload` can surface its
+					// specific reason (e.g. "Not enough space.") on the bell
+					// instead of a generic "Upload failed". Pre-fix the error_type
+					// the server shipped was dropped at `uploadFileWithProgress`,
+					// collapsing every reason into the same opaque toast.
+					if (firstError === undefined) firstError = e;
 					// A full disk won't recover within this batch — stop pulling new
 					// work so we don't fire hundreds of doomed uploads.
 					if ((e as { isQuota?: boolean } | null)?.isQuota) next = total;
@@ -763,18 +770,22 @@
 		};
 
 		await Promise.all(Array.from({ length: Math.min(UPLOAD_CONCURRENCY, total) }, worker));
-		return { savedBytes, failures };
+		return { savedBytes, failures, firstError };
 	}
 
 	/** Resolve the upload's bell notification: success, partial, skipped, or failure.
 	 *  `total` is the count of *readable* files actually attempted; `skipped` is the
-	 *  non-regular files (FIFOs/sockets/…) that were filtered out before uploading. */
+	 *  non-regular files (FIFOs/sockets/…) that were filtered out before uploading.
+	 *  `firstError`, when set, carries the error from the FIRST failing upload so
+	 *  the bell can surface the specific reason (e.g. "Not enough space.") instead
+	 *  of a generic "Upload failed". */
 	function finishUpload(
 		nid: number,
 		savedBytes: number,
 		failures: number,
 		total: number,
-		skipped = 0
+		skipped = 0,
+		firstError: unknown = undefined
 	) {
 		const ok = total - failures;
 		if (failures === 0 && skipped === 0) {
@@ -792,13 +803,26 @@
 				ok > 0 ? 'success' : 'warning'
 			);
 		} else if (ok > 0) {
-			ui.finishProgress(
-				nid,
-				t('files.uploaded_partial', { ok, failed: failures }, `${ok} uploaded, ${failures} failed`),
-				'warning'
+			// Partial failure — show counts + the first failure's reason so a
+			// user with "3 uploaded, 2 failed" sees whether it was quota, perms,
+			// or something else, without having to open DevTools.
+			const partialBase = t(
+				'files.uploaded_partial',
+				{ ok, failed: failures },
+				`${ok} uploaded, ${failures} failed`
 			);
+			const reason = firstError === undefined ? '' : ` — ${errorMessage(firstError)}`;
+			ui.finishProgress(nid, `${partialBase}${reason}`, 'warning');
 		} else {
-			ui.finishProgress(nid, t('files.upload_failed', 'Upload failed'), 'error');
+			// Full failure — surface the specific reason the server shipped
+			// (`errorMessage` returns the friendly i18n copy for
+			// `error_type: "QuotaExceeded"` et al, or the server's own
+			// `message` for unmapped error_types). Falls back to the generic
+			// "Upload failed" when no error was captured (shouldn't happen on
+			// this code path, but defensive).
+			const msg =
+				firstError === undefined ? t('files.upload_failed', 'Upload failed') : errorMessage(firstError);
+			ui.finishProgress(nid, msg, 'error');
 		}
 	}
 
@@ -875,12 +899,12 @@
 					? t('files.uploading_file', { name: readable[0].name }, `Uploading ${readable[0].name}…`)
 					: t('files.uploading_n', { done, total }, `Uploading ${done}/${total} files…`);
 			if (total > 0) {
-				const { savedBytes, failures } = await uploadAll(
+				const { savedBytes, failures, firstError } = await uploadAll(
 					readable.map((file) => ({ file, folderId: currentId })),
 					nid,
 					label
 				);
-				finishUpload(nid, savedBytes, failures, total, skipped.length);
+				finishUpload(nid, savedBytes, failures, total, skipped.length, firstError);
 			} else {
 				finishUpload(nid, 0, 0, 0, skipped.length);
 			}
@@ -1763,8 +1787,8 @@
 				items.push({ file, folderId: await ensureDir(segs.join('/')) });
 			}
 
-			const { savedBytes, failures } = await uploadAll(items, nid, label);
-			finishUpload(nid, savedBytes, failures, total, skipped.length);
+			const { savedBytes, failures, firstError } = await uploadAll(items, nid, label);
+			finishUpload(nid, savedBytes, failures, total, skipped.length, firstError);
 			await reloadAndTrackNew();
 			void session.refresh();
 		} catch (err) {

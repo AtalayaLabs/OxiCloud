@@ -1,8 +1,54 @@
 import { uploadTransport } from '../upload-transport';
 /** File endpoints — ported from fileOperations.js. */
-import { apiFetch, withBase } from '$lib/api/client';
+import { ApiError, apiFetch, withBase } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import type { FileItem } from '$lib/api/types';
+
+/**
+ * Parse a normalized `ApiErrorBody` from a non-2xx Response and construct
+ * an `ApiError` carrying `errorType` + the server's own message, so
+ * downstream `errorMessage()` can swap the server's operator-flavoured
+ * message for the friendly i18n copy keyed on PascalCase `error_type`
+ * (see `lib/utils/errors.ts`). The upload path used to throw a plain
+ * `Error("upload failed: 507")` which collapsed every error_type into
+ * the same opaque toast — the server shipped
+ * `{status, error, message, error_type: "QuotaExceeded"}` and the SPA
+ * threw it away on arrival.
+ *
+ * Shape-tolerant: a response that isn't JSON, or lacks the ApiErrorBody
+ * fields, yields an ApiError whose `errorType` is undefined and whose
+ * message is the status-text fallback. `isQuota` is attached when
+ * `response.status === 507` so the batch logic's "stop pulling new work
+ * on a full disk" short-circuit keeps working.
+ */
+async function uploadErrorFromResponse(
+	response: Response,
+	resource: string
+): Promise<ApiError & { isQuota: boolean }> {
+	let errorType: string | undefined;
+	let serverMessage: string | undefined;
+	try {
+		const body = (await response.clone().json()) as {
+			error_type?: unknown;
+			message?: unknown;
+			error?: unknown;
+		};
+		if (typeof body.error_type === 'string') errorType = body.error_type;
+		if (typeof body.message === 'string') serverMessage = body.message;
+		else if (typeof body.error === 'string') serverMessage = body.error;
+	} catch {
+		// Non-JSON body or empty body — fall through to the status-text message.
+	}
+	const err = new ApiError(
+		response.status,
+		response.statusText,
+		resource,
+		errorType,
+		serverMessage
+	) as ApiError & { isQuota: boolean };
+	err.isQuota = response.status === 507;
+	return err;
+}
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
@@ -102,7 +148,7 @@ export async function uploadFile(folderId: string | null, file: File): Promise<F
 		headers: getCsrfHeaders(), // multipart boundary set automatically; do not set Content-Type
 		body: form
 	});
-	if (!res.ok) throw new Error(`upload failed: ${res.status}`);
+	if (!res.ok) throw await uploadErrorFromResponse(res, '/api/files/upload');
 	// Tolerate a body-less success: the upload itself is what matters,
 	// and an older/proxied response shape must not turn a completed
 	// upload into a thrown error.
@@ -129,9 +175,7 @@ export async function uploadFileWithProgress(
 		fetch: uploadTransport(form, onProgress)
 	});
 	if (!response.ok) {
-		const error = new Error(`upload failed: ${response.status}`) as Error & { isQuota?: boolean };
-		error.isQuota = response.status === 507;
-		throw error;
+		throw await uploadErrorFromResponse(response, '/api/files/upload');
 	}
 }
 
