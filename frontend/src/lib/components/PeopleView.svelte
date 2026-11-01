@@ -78,7 +78,12 @@
 		const next = await promptDialog({
 			title: t('people.rename_title', 'Name this person'),
 			message: t('people.name_label', 'Name'),
-			defaultValue: value
+			defaultValue: value,
+			// Select all — a person's name is treated as one unit (no
+			// extension semantic). `selectOnOpen: 'name'` would misfire
+			// on names containing dots like "Dr. Smith" (would pre-
+			// select only "Dr"); plain `true` selects the full string.
+			selectOnOpen: true
 		});
 		if (next === null) return;
 		const trimmed = next.trim();

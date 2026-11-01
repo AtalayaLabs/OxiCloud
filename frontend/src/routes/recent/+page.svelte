@@ -242,6 +242,9 @@
 		const name = await promptDialog({
 			title: t('common.rename', 'Rename'),
 			defaultValue: item.name,
+			// Pre-select the filename stem — see favorites/+page.svelte
+			// for the same decision on the identical rename flow.
+			selectOnOpen: 'name',
 			confirmText: t('common.rename', 'Rename')
 		});
 		if (!name || name === item.name) return;

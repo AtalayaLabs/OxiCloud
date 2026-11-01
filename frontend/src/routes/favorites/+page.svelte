@@ -174,6 +174,10 @@
 		const name = await promptDialog({
 			title: t('common.rename', 'Rename'),
 			defaultValue: item.name,
+			// Pre-select the filename stem so typing immediately replaces
+			// just the name — the `.pdf` / `.jpg` extension survives even
+			// if the user starts typing without a manual select-all.
+			selectOnOpen: 'name',
 			confirmText: t('common.rename', 'Rename')
 		});
 		if (!name || name === item.name) return;

@@ -110,6 +110,10 @@
 		const name = await promptDialog({
 			title: t('music.rename_playlist', 'Rename playlist'),
 			defaultValue: current.name,
+			// Select all — playlist names have no extension semantic.
+			// `'name'` mode would misfire on titles containing dots
+			// (e.g. "Favs v2.0" → only "Favs v2" would be selected).
+			selectOnOpen: true,
 			confirmText: t('common.save', 'Save')
 		});
 		if (!name || name === current.name) return;

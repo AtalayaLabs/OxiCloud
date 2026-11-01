@@ -1078,6 +1078,11 @@
 		const name = await promptDialog({
 			title: t('common.rename', 'Rename'),
 			defaultValue: current,
+			// Pre-select the filename stem — the extension survives
+			// typing. Same decision as favorites/search/recent renames;
+			// `'name'` mode selects everything before the last dot
+			// (`report.pdf` → `report` selected, `.pdf` preserved).
+			selectOnOpen: 'name',
 			confirmText: t('common.save', 'Save')
 		});
 		if (!name || name === current) return;

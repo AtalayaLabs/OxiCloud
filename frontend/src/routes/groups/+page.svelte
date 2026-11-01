@@ -129,6 +129,9 @@
 			title: t('groups.edit_dialog_title', 'Rename group'),
 			defaultValue: g.name,
 			placeholder: t('groups.name_placeholder', 'engineering'),
+			// Select all — group names have no extension semantic.
+			// Same decision as playlist / person rename.
+			selectOnOpen: true,
 			confirmText: t('actions.rename', 'Rename')
 		});
 		if (!name || !name.trim() || name.trim() === g.name) return;
