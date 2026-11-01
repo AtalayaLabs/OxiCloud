@@ -149,6 +149,11 @@ body not contains "{{calendar_id}}"
 # Step 6 – Cross-user direct PROPFIND on Alice's calendar
 # → 404. `authz.require(Read)` denies with `NotFound` for
 # anti-enumeration parity with files/folders/drives.
+#
+# Exact 404, not a 4xx range: a 403 here would confirm the
+# calendar exists, and the JSON denial must not echo the id or
+# display name either (a "not found" body that names what it
+# could not find is the same leak in a different shape).
 # ─────────────────────────────────────────────────────────────
 PROPFIND {{base_url}}/caldav/{{calendar_id}}/
 Authorization: Bearer {{bob_token}}
@@ -161,10 +166,10 @@ Content-Type: application/xml
 </D:propfind>
 ```
 
-HTTP *
+HTTP 404
 [Asserts]
-status >= 400
-status < 500
+body not contains "{{calendar_id}}"
+body not contains "round3-cal"
 
 
 # ─────────────────────────────────────────────────────────────
