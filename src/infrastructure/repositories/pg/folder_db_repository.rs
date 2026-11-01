@@ -834,7 +834,28 @@ impl FolderRepository for FolderDbRepository {
             .fetch_optional(self.pool())
         })
         .await
-        .map_err(|e| DomainError::internal_error("FolderDb", format!("move: {e}")))?
+        .map_err(|e| {
+            // Translate the PG unique-violation (23505 on
+            // `idx_folders_unique_name`) to the semantic
+            // `AlreadyExists` DomainError so the handler layer
+            // surfaces 409 + `error_type: AlreadyExists` instead of a
+            // 500 InternalError. Mirrors the mapping `rename_folder`
+            // already does — moving a folder INTO a parent that already
+            // holds a sibling with the same name is semantically the
+            // same failure as renaming to that sibling's name, and
+            // must surface the same way so the SPA's `errors.ts`
+            // switch lands the friendly "An item with that name is
+            // already there" copy. Reported by Ed on 2026-11-01.
+            if let sqlx::Error::Database(ref db_err) = e
+                && db_err.code().as_deref() == Some("23505")
+            {
+                return DomainError::already_exists(
+                    "Folder",
+                    format!("destination already contains a folder with the same name"),
+                );
+            }
+            DomainError::internal_error("FolderDb", format!("move: {e}"))
+        })?
         .ok_or_else(|| DomainError::not_found("Folder", id))?;
 
         Self::row_to_folder(
