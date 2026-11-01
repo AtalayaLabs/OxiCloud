@@ -274,6 +274,12 @@ impl CalendarTodoRepository for CalendarTodoPgRepository {
                       expanded client-side. */ \
                    OR (rrule IS NOT NULL \
                        AND COALESCE(due_time, start_time, created_at) < $3) \
+                   /* (6) Exception whose original slot is in the \
+                      window but was moved out: return it so the \
+                      client can suppress the original occurrence. \
+                      Same rule as events. */ \
+                   OR (recurrence_id IS NOT NULL \
+                       AND recurrence_id >= $2 AND recurrence_id < $3) \
                ) \
              ORDER BY COALESCE(start_time, due_time, created_at)"
         ))

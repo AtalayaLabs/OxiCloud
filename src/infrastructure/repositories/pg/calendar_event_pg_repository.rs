@@ -175,7 +175,14 @@ impl CalendarEventRepository for CalendarEventPgRepository {
                   -- user navigated forward). `start_time < $3` is the
                   -- only bound that is safe: UNTIL/COUNT are expanded
                   -- client-side and cannot be evaluated in SQL.
-                  (rrule IS NOT NULL AND start_time < $3)
+                  (rrule IS NOT NULL AND start_time < $3) OR
+                  -- An exception whose original slot is in the window
+                  -- must be returned even when the user moved it OUT of
+                  -- the window. Otherwise the client sees no override
+                  -- and still renders the original occurrence the
+                  -- exception was meant to replace.
+                  (recurrence_id IS NOT NULL
+                      AND recurrence_id >= $2 AND recurrence_id < $3)
               )
             ORDER BY start_time
             "#,

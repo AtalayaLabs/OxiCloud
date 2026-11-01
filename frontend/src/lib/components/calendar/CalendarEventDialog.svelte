@@ -221,7 +221,14 @@
 				<Icon name="calendar" />
 				<span>{calendarName}</span>
 			</p>
-			{#if event.rrule}
+			{#if event.recurrence_id}
+				<p class="event-form__hint">
+					{t(
+						'calendar.override_hint',
+						'This occurrence was changed separately from the rest of the series.'
+					)}
+				</p>
+			{:else if event.rrule}
 				<p class="event-form__hint">
 					{t('calendar.series_hint', 'This event repeats. Changes apply to the whole series.')}
 				</p>

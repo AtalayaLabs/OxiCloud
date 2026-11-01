@@ -128,6 +128,43 @@ jsonpath "$[?(@.id == '{{event_id}}')]" count == 1
 
 
 # ─────────────────────────────────────────────────────────────
+# Step 6b – A CalDAV exception moves the Dec 22 occurrence out of
+# the window. The row's own start is in February, but its
+# RECURRENCE-ID slot (Dec 22) is inside the query window. It must
+# still be returned, or the client cannot suppress the original
+# occurrence and renders a phantom Dec 22 event.
+# ─────────────────────────────────────────────────────────────
+PUT {{base_url}}/caldav/{{calendar_id}}/{{event_uid}}.ics
+Authorization: Bearer {{token}}
+Content-Type: text/calendar; charset=utf-8
+```
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//OxiCloud calendar-rest test//EN
+BEGIN:VEVENT
+UID:{{event_uid}}
+DTSTAMP:20261201T120000Z
+DTSTART:20270202T090000Z
+DTEND:20270202T100000Z
+SUMMARY:Weekly sync (moved)
+RECURRENCE-ID:20261222T090000Z
+END:VEVENT
+END:VCALENDAR
+```
+
+HTTP 201
+
+
+GET {{base_url}}/api/calendars/{{calendar_id}}/events?start=2026-12-15T00:00:00Z&end=2026-12-31T00:00:00Z
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$[?(@.recurrence_id == '2026-12-22T09:00:00Z')]" count == 1
+jsonpath "$[?(@.recurrence_id == '2026-12-22T09:00:00Z')].summary" == "Weekly sync (moved)"
+
+
+# ─────────────────────────────────────────────────────────────
 # Step 7 – Update: full replacement, clearing the RRULE.
 # ─────────────────────────────────────────────────────────────
 PUT {{base_url}}/api/calendars/{{calendar_id}}/events/{{event_id}}
@@ -182,6 +219,26 @@ HTTP 404
 # ─────────────────────────────────────────────────────────────
 GET {{base_url}}/api/calendars/{{calendar_id}}/events?start=2027-01-01T00:00:00Z&end=2026-12-01T00:00:00Z
 Authorization: Bearer {{token}}
+
+HTTP 400
+[Asserts]
+jsonpath "$.error_type" == "BadRequest"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 9b – RRULE is written into the stored VEVENT without TEXT
+# escaping. A CRLF would let a caller inject arbitrary calendar
+# properties, so it must be rejected at the edge.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/calendars/{{calendar_id}}/events
+Authorization: Bearer {{token}}
+Content-Type: application/json
+{
+  "summary": "Injection attempt",
+  "start_time": "2026-12-02T09:00:00Z",
+  "end_time": "2026-12-02T10:00:00Z",
+  "rrule": "FREQ=DAILY\r\nDESCRIPTION:pwned"
+}
 
 HTTP 400
 [Asserts]
