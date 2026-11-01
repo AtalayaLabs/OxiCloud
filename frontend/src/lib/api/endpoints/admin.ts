@@ -956,10 +956,7 @@ export async function createOpsBanner(input: OpsBannerInput): Promise<OpsBanner>
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 		body: JSON.stringify(input)
 	});
-	if (!res.ok) {
-		const e = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
-		throw await apiErrorFromResponse(res);
-	}
+	if (!res.ok) throw await apiErrorFromResponse(res);
 	return (await res.json()) as OpsBanner;
 }
 
@@ -977,10 +974,7 @@ export async function updateOpsBanner(id: string, input: OpsBannerInput): Promis
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 		body: JSON.stringify(input)
 	});
-	if (!res.ok) {
-		const e = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
-		throw await apiErrorFromResponse(res);
-	}
+	if (!res.ok) throw await apiErrorFromResponse(res);
 	return (await res.json()) as OpsBanner;
 }
 
@@ -1028,10 +1022,7 @@ export async function installPlugin(bundle: File): Promise<PluginInfo> {
 		headers: { ...getCsrfHeaders() },
 		body: form
 	});
-	if (!res.ok) {
-		const e = (await res.json().catch(() => ({}))) as { message?: string };
-		throw await apiErrorFromResponse(res);
-	}
+	if (!res.ok) throw await apiErrorFromResponse(res);
 	return (await res.json()) as PluginInfo;
 }
 
@@ -1145,10 +1136,7 @@ export async function createExternalMount(input: CreateExternalMountInput): Prom
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 		body: JSON.stringify(input)
 	});
-	if (!res.ok) {
-		const e = (await res.json().catch(() => ({}))) as { message?: string };
-		throw await apiErrorFromResponse(res);
-	}
+	if (!res.ok) throw await apiErrorFromResponse(res);
 	return (await res.json()) as ExternalMount;
 }
 

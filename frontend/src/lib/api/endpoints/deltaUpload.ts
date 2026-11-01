@@ -394,7 +394,9 @@ export async function instantUploadOwned(
 		// orchestrator surfaced verbatim — the toast on 2026-11-01
 		// post-sandbox-test showed exactly that English string even though
 		// the server shipped the full normalized body.
-		const body = res.errorBody as { message?: unknown; error?: unknown; error_type?: unknown } | undefined;
+		const body = res.errorBody as
+			| { message?: unknown; error?: unknown; error_type?: unknown }
+			| undefined;
 		const serverMessage =
 			typeof body?.message === 'string'
 				? body.message

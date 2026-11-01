@@ -818,7 +818,9 @@
 			// "Upload failed" when no error was captured (shouldn't happen on
 			// this code path, but defensive).
 			const msg =
-				firstError === undefined ? t('files.upload_failed', 'Upload failed') : errorMessage(firstError);
+				firstError === undefined
+					? t('files.upload_failed', 'Upload failed')
+					: errorMessage(firstError);
 			ui.finishProgress(nid, msg, 'error');
 		}
 	}
