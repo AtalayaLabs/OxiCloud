@@ -82,6 +82,14 @@
 		return parts.join(' ') || contact.nickname?.trim() || primaryEmail(contact) || contact.uid;
 	}
 
+	/** Explicit "First Last" from the structured name fields. */
+	function nameParts(contact: Contact): string {
+		return [contact.first_name, contact.last_name]
+			.map((p) => p?.trim())
+			.filter((p): p is string => !!p)
+			.join(' ');
+	}
+
 	function primaryEmail(contact: Contact): string {
 		return contact.email.find((e) => e.is_primary)?.email ?? contact.email[0]?.email ?? '';
 	}
@@ -352,11 +360,12 @@
 			{/if}
 		</div>
 		<button
-			class="btn btn--primary"
+			class="btn btn-primary"
 			onclick={startCreate}
 			disabled={!canEdit}
 			data-testid="contacts-new"
 		>
+			<Icon name="plus" />
 			{t('contacts.new', 'New contact')}
 		</button>
 	</header>
@@ -416,6 +425,7 @@
 				{:else}
 					<ul class="contact-list" data-testid="contacts-list">
 						{#each contacts as contact (contact.id)}
+							{@const parts = nameParts(contact)}
 							<li>
 								<button
 									class="contact-row"
@@ -427,6 +437,9 @@
 									<span class="avatar" aria-hidden="true">{initials(contact)}</span>
 									<span class="contact-row__text">
 										<span class="contact-row__name">{displayName(contact)}</span>
+										{#if parts && parts !== displayName(contact)}
+											<span class="contact-row__meta">{parts}</span>
+										{/if}
 										{#if primaryEmail(contact)}
 											<span class="contact-row__meta">{primaryEmail(contact)}</span>
 										{:else if primaryPhone(contact)}
@@ -439,7 +452,7 @@
 					</ul>
 					{#if hasMore}
 						<button
-							class="btn contacts__more"
+							class="btn btn-secondary contacts__more"
 							onclick={() => void loadContacts(false)}
 							disabled={loadingMore}
 							data-testid="contacts-load-more"
@@ -462,19 +475,21 @@
 							<div class="contact-form__actions">
 								<button
 									type="button"
-									class="btn"
+									class="btn btn-secondary"
 									onclick={cancelForm}
 									disabled={saving}
 									data-testid="contacts-cancel"
 								>
+									<Icon name="times" />
 									{t('common.cancel', 'Cancel')}
 								</button>
 								<button
 									type="submit"
-									class="btn btn--primary"
+									class="btn btn-primary"
 									disabled={saving}
 									data-testid="contacts-save"
 								>
+									<Icon name="save" />
 									{saving ? t('common.saving', 'Saving…') : t('common.save', 'Save')}
 								</button>
 							</div>
@@ -672,7 +687,8 @@
 								{/if}
 							</div>
 							{#if canEdit}
-								<button class="btn" onclick={startEdit} data-testid="contacts-edit">
+								<button class="btn btn-secondary" onclick={startEdit} data-testid="contacts-edit">
+									<Icon name="pencil-alt" />
 									{t('contacts.edit', 'Edit')}
 								</button>
 							{/if}
@@ -728,10 +744,18 @@
 							</section>
 						{/if}
 
-						{#if selected.nickname || selected.notes || selected.birthday || selected.anniversary}
+						{#if selected.first_name || selected.last_name || selected.nickname || selected.notes || selected.birthday || selected.anniversary}
 							<section class="contact-detail__section">
 								<h3>{t('contacts.details', 'Details')}</h3>
 								<dl>
+									{#if selected.first_name}
+										<dt>{t('contacts.first_name', 'First name')}</dt>
+										<dd>{selected.first_name}</dd>
+									{/if}
+									{#if selected.last_name}
+										<dt>{t('contacts.last_name', 'Last name')}</dt>
+										<dd>{selected.last_name}</dd>
+									{/if}
 									{#if selected.nickname}
 										<dt>{t('contacts.nickname', 'Nickname')}</dt>
 										<dd>{selected.nickname}</dd>
@@ -1093,6 +1117,23 @@
 
 	.contact-form__notes textarea {
 		resize: vertical;
+	}
+
+	.link-btn {
+		background: none;
+		border: none;
+		padding: 0;
+		color: var(--color-accent-text);
+		cursor: pointer;
+		font-size: var(--text-sm);
+	}
+
+	.link-btn:hover {
+		text-decoration: underline;
+	}
+
+	.link-btn--danger {
+		color: var(--color-danger-text);
 	}
 
 	.badge {

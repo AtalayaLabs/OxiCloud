@@ -72,6 +72,19 @@ it('loads the first address book and selects its first contact', async () => {
 	const detail = within(screen.getByTestId('contacts-detail'));
 	expect(detail.getByText('Ada Lovelace')).toBeTruthy();
 	expect(detail.getByText('ada@example.com')).toBeTruthy();
+	expect(detail.getByText('First name')).toBeTruthy();
+	expect(detail.getByText('Ada')).toBeTruthy();
+	expect(detail.getByText('Last name')).toBeTruthy();
+	expect(detail.getByText('Lovelace')).toBeTruthy();
+});
+
+it('shows the first and last name in the list when they differ from the display name', async () => {
+	m(listContacts).mockResolvedValue([
+		contact({ full_name: 'Ada', first_name: 'Ada', last_name: 'Lovelace' })
+	]);
+	render(ContactsPage);
+	await waitFor(() => expect(screen.getByTestId('contacts-list')).toBeTruthy());
+	expect(within(screen.getByTestId('contacts-list')).getByText('Ada Lovelace')).toBeTruthy();
 });
 
 it('searches server-side after the debounce', async () => {
