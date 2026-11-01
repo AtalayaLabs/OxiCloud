@@ -55,21 +55,43 @@ pub async fn create_app_password(
     // Gate externals BEFORE we touch the app_password_service. The
     // service treats every authenticated caller equally; the policy
     // that externals can't hold persistent credentials lives here.
-    if let Some(auth_svc) = state.auth_service.as_ref()
-        && let Err(err) = crate::interfaces::middleware::user::require_internal_user(
-            &auth_svc.auth_application_service,
-            user.id,
-        )
-        .await
-    {
-        tracing::info!(
-            target: "audit",
-            event = "auth.app_password_create_rejected",
-            reason = "external_user",
-            caller_id = %user.id,
-            "👮🏻‍♂️ External user blocked from creating an app password"
-        );
-        return Err(err);
+    //
+    // The error_type `ExternalUserAppPassword` is more specific than the
+    // generic `Forbidden` that `require_internal_user` emits — the SPA's
+    // profile card branches on it to render the right CTA ("you're a
+    // magic-link user, there's nothing to show here") rather than a
+    // generic "no permission" toast. See `profile.test.ts` Pin 3.
+    //
+    // The `no user row` arm of `require_internal_user` still returns the
+    // generic `Forbidden` — that path is reachable only via session
+    // tokens whose user vanished (admin deleted the account mid-session)
+    // and the specific-copy branch wouldn't apply.
+    if let Some(auth_svc) = state.auth_service.as_ref() {
+        match auth_svc
+            .auth_application_service
+            .get_user_flags(user.id)
+            .await
+        {
+            Ok(flags) if flags.is_external => {
+                tracing::info!(
+                    target: "audit",
+                    event = "auth.app_password_create_rejected",
+                    reason = "external_user",
+                    caller_id = %user.id,
+                    "👮🏻‍♂️ External user blocked from creating an app password"
+                );
+                return Err(AppError::new(
+                    axum::http::StatusCode::FORBIDDEN,
+                    "External users cannot mint app passwords.",
+                    "ExternalUserAppPassword",
+                ));
+            }
+            // Fall through for internals and for transient flag-fetch
+            // failures — the behaviour matches `require_internal_user`
+            // (restriction gate, not auth), so a DB blip must not lock
+            // every internal user out of app-password creation.
+            _ => {}
+        }
     }
 
     // Require a claimed username. NextCloud Basic Auth resolves users by
