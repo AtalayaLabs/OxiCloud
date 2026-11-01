@@ -5725,21 +5725,21 @@
             }
           },
           "400": {
-            "description": "logout_token missing, malformed, or failed validation",
+            "description": "logout_token missing, malformed, or failed validation — RFC 6749 §5.2 OAuth error body",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiErrorBody"
+                  "$ref": "#/components/schemas/OAuthErrorResponse"
                 }
               }
             }
           },
           "503": {
-            "description": "OIDC not configured on this deployment",
+            "description": "OIDC not configured on this deployment — RFC 6749 §5.2 OAuth error body",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiErrorBody"
+                  "$ref": "#/components/schemas/OAuthErrorResponse"
                 }
               }
             }
@@ -18759,6 +18759,26 @@
           "total_recipients": {
             "type": "integer",
             "minimum": 0
+          }
+        }
+      },
+      "OAuthErrorResponse": {
+        "type": "object",
+        "description": "RFC 6749 § 5.2 / RFC 7009 § 2.2.1 OAuth 2.0 error response body.\n\nThis is the SPEC-REQUIRED shape for OAuth-flavoured endpoints that\nfederated identity providers call directly — our OIDC Back-Channel\nLogout receiver at `/api/auth/oidc/backchannel-logout`, and any\nfuture endpoint we expose for a federated IdP to probe. Its shape\nis NOT ours to redesign: compliant IdPs parse exactly these two\nfields, and some reject responses that carry sibling fields they\ndon't recognise.\n\n`error` here is a **lowercase_snake OAuth error code** (e.g.\n`invalid_request`, `invalid_token`, `unsupported_token_type`), NOT\nthe OxiCloud machine `error_type` discriminator used elsewhere.\nSpecifically distinct from `ApiErrorBody.error_type`: an IdP sees\n`invalid_request` and knows it must retry/resign; our SPA sees\n`error_type: InvalidInput` and shows a localised message. Different\naudiences, different vocabularies — keeping two shapes keeps either\none honest.\n\nUsed by:\n  * `oidc_backchannel_logout` — 400 on validation failure,\n    503 when OIDC isn't configured.",
+        "required": [
+          "error",
+          "error_description"
+        ],
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "Lowercase_snake OAuth 2.0 / OIDC error code. RFC 6749 § 5.2 lists\nthe common vocabulary (`invalid_request`, `invalid_client`,\n`invalid_grant`, `unauthorized_client`, `unsupported_grant_type`,\n`invalid_scope`); extensions add more (`invalid_token` from RFC\n7009, `authentication_not_configured` is our own).",
+            "example": "invalid_request"
+          },
+          "error_description": {
+            "type": "string",
+            "description": "Human-readable context — optional on the wire per the specs, but\nwe always send one because operators tailing the IdP's logs\nbenefit from the extra breadcrumb when the signed token itself\nis opaque to them.",
+            "example": "logout_token validation failed"
           }
         }
       },

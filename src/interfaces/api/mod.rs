@@ -381,6 +381,13 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             // instead of `unknown`. See `interfaces::errors::ApiErrorBody`
             // for the known `error_type` values.
             crate::interfaces::errors::ApiErrorBody,
+            // RFC 6749 § 5.2 / RFC 7009 OAuth error response — used by
+            // endpoints federated IdPs call directly (OIDC Back-Channel
+            // Logout today; future federated endpoints too). Keeps the
+            // spec-required `{error, error_description}` shape separate
+            // from the OxiCloud-flavoured `ApiErrorBody` — different
+            // audience, different vocabulary.
+            crate::interfaces::errors::OAuthErrorResponse,
             // Folder schemas
             FolderDto,
             FolderOrderBy,

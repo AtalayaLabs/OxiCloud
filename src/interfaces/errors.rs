@@ -89,6 +89,45 @@ pub struct ApiErrorBody {
     pub error_type: String,
 }
 
+/// RFC 6749 § 5.2 / RFC 7009 § 2.2.1 OAuth 2.0 error response body.
+///
+/// This is the SPEC-REQUIRED shape for OAuth-flavoured endpoints that
+/// federated identity providers call directly — our OIDC Back-Channel
+/// Logout receiver at `/api/auth/oidc/backchannel-logout`, and any
+/// future endpoint we expose for a federated IdP to probe. Its shape
+/// is NOT ours to redesign: compliant IdPs parse exactly these two
+/// fields, and some reject responses that carry sibling fields they
+/// don't recognise.
+///
+/// `error` here is a **lowercase_snake OAuth error code** (e.g.
+/// `invalid_request`, `invalid_token`, `unsupported_token_type`), NOT
+/// the OxiCloud machine `error_type` discriminator used elsewhere.
+/// Specifically distinct from `ApiErrorBody.error_type`: an IdP sees
+/// `invalid_request` and knows it must retry/resign; our SPA sees
+/// `error_type: InvalidInput` and shows a localised message. Different
+/// audiences, different vocabularies — keeping two shapes keeps either
+/// one honest.
+///
+/// Used by:
+///   * `oidc_backchannel_logout` — 400 on validation failure,
+///     503 when OIDC isn't configured.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct OAuthErrorResponse {
+    /// Lowercase_snake OAuth 2.0 / OIDC error code. RFC 6749 § 5.2 lists
+    /// the common vocabulary (`invalid_request`, `invalid_client`,
+    /// `invalid_grant`, `unauthorized_client`, `unsupported_grant_type`,
+    /// `invalid_scope`); extensions add more (`invalid_token` from RFC
+    /// 7009, `authentication_not_configured` is our own).
+    #[schema(example = "invalid_request")]
+    pub error: String,
+    /// Human-readable context — optional on the wire per the specs, but
+    /// we always send one because operators tailing the IdP's logs
+    /// benefit from the extra breadcrumb when the signed token itself
+    /// is opaque to them.
+    #[schema(example = "logout_token validation failed")]
+    pub error_description: String,
+}
+
 impl AppError {
     /// Create a new AppError with custom status code, message and error type.
     pub fn new(

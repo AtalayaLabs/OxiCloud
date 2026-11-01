@@ -1203,8 +1203,8 @@ pub async fn dpop_bind(
     ),
     responses(
         (status = 200, body = Object, description = "Logout notification accepted (0 or more sessions revoked)"),
-        (status = 400, description = "logout_token missing, malformed, or failed validation", body = crate::interfaces::errors::ApiErrorBody),
-        (status = 503, description = "OIDC not configured on this deployment", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 400, description = "logout_token missing, malformed, or failed validation — RFC 6749 §5.2 OAuth error body", body = crate::interfaces::errors::OAuthErrorResponse),
+        (status = 503, description = "OIDC not configured on this deployment — RFC 6749 §5.2 OAuth error body", body = crate::interfaces::errors::OAuthErrorResponse),
     ),
     tag = "auth"
 )]
