@@ -4,6 +4,7 @@
 	import '$lib/styles/ported/auth.css';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
+	import { resolvePath } from '$lib/utils/navigation';
 	import { page } from '$app/state';
 	import type { Pathname } from '$app/types';
 	import { onMount } from 'svelte';
@@ -220,7 +221,8 @@
 					replaceState: true
 				});
 			} else {
-				await goto(resolve(redirectTarget), { replaceState: true });
+				// eslint-disable-next-line svelte/no-navigation-without-resolve
+				await goto(resolvePath(redirectTarget), { replaceState: true });
 			}
 		} catch (err) {
 			if (err instanceof ApiError && err.errorType === 'EmailNotVerified') {
@@ -515,7 +517,8 @@
 				// unbound one that would 401 on the very next thumbnail. See
 				// `docs/plan/dpop.md` Gate 3.
 				await bindDpopIfPossible();
-				await goto(resolve(redirectTarget), { replaceState: true });
+				// eslint-disable-next-line svelte/no-navigation-without-resolve
+				await goto(resolvePath(redirectTarget), { replaceState: true });
 				return;
 			}
 			// Exchange failed — fall through to the normal login UI. Drop
@@ -536,7 +539,8 @@
 				const me = await fetchMe();
 				if (me) {
 					session.setUser(me);
-					await goto(resolve(redirectTarget), { replaceState: true });
+					// eslint-disable-next-line svelte/no-navigation-without-resolve
+					await goto(resolvePath(redirectTarget), { replaceState: true });
 					return;
 				}
 			} catch {

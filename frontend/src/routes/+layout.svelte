@@ -2,6 +2,7 @@
 	import { appPath } from '$lib/utils/appPath';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
+	import { resolvePath } from '$lib/utils/navigation';
 	import type { Pathname } from '$app/types';
 	import { page, updated } from '$app/state';
 	import { onMount } from 'svelte';
@@ -193,7 +194,8 @@
 			// for known route ids, so assert it as a Pathname (same precedent as the
 			// post-login redirect target).
 			const mapped = hashUrlToPath(location.hash);
-			if (mapped) await goto(resolve(mapped as Pathname), { replaceState: true });
+			// eslint-disable-next-line svelte/no-navigation-without-resolve
+			if (mapped) await goto(resolvePath(mapped as Pathname), { replaceState: true });
 		}
 		// OIDC provider matrix now lives on `serverConfig.auth.oidc`
 		// (loaded by `hooks.client.ts` before layout mounts), so this
