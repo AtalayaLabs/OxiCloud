@@ -6,11 +6,13 @@
 	import { t } from '$lib/i18n/index.svelte';
 	import { formatDate } from '$lib/utils/display';
 	import {
+		createContact,
 		listAddressBooks,
 		listContacts,
 		updateContact,
 		type AddressBook,
 		type Contact,
+		type ContactCreate,
 		type ContactUpdate
 	} from '$lib/api/endpoints/contacts';
 	import type { AddressDto, EmailDto, PhoneDto } from '$lib/api/generated/openapi/types.gen';
@@ -58,6 +60,7 @@
 	let hasMore = $state(false);
 	let error = $state<string | null>(null);
 	let editing = $state(false);
+	let creating = $state(false);
 	let saving = $state(false);
 	let saveError = $state<string | null>(null);
 	let form = $state<ContactForm | null>(null);
@@ -156,62 +159,86 @@
 		query = '';
 		contacts = [];
 		selectedId = null;
-		cancelEdit();
+		cancelForm();
 		void loadContacts(true);
 	}
 
 	function onSearchInput() {
 		clearTimeout(searchTimer);
 		searchTimer = setTimeout(() => {
-			editing = false;
-			form = null;
+			cancelForm();
 			void loadContacts(true);
 		}, SEARCH_DEBOUNCE_MS);
 	}
 
 	function selectContact(id: string) {
-		if (editing) cancelEdit();
+		if (editing || creating) cancelForm();
 		selectedId = id;
 		saveError = null;
 	}
 
-	function toForm(contact: Contact): ContactForm {
+	function emptyForm(): ContactForm {
 		return {
-			full_name: contact.full_name ?? '',
-			first_name: contact.first_name ?? '',
-			last_name: contact.last_name ?? '',
-			nickname: contact.nickname ?? '',
-			organization: contact.organization ?? '',
-			title: contact.title ?? '',
-			notes: contact.notes ?? '',
-			email: contact.email.length
-				? contact.email.map((e) => ({ email: e.email, type: e.type }))
-				: [{ email: '', type: 'work' }],
-			phone: contact.phone.length
-				? contact.phone.map((p) => ({ number: p.number, type: p.type }))
-				: [{ number: '', type: 'mobile' }],
-			address: contact.address.length
-				? contact.address.map((a) => ({
-						street: a.street ?? '',
-						city: a.city ?? '',
-						state: a.state ?? '',
-						postal_code: a.postal_code ?? '',
-						country: a.country ?? '',
-						type: a.type
-					}))
-				: [{ street: '', city: '', state: '', postal_code: '', country: '', type: 'home' }]
+			full_name: '',
+			first_name: '',
+			last_name: '',
+			nickname: '',
+			organization: '',
+			title: '',
+			notes: '',
+			email: [{ email: '', type: 'work' }],
+			phone: [{ number: '', type: 'mobile' }],
+			address: [{ street: '', city: '', state: '', postal_code: '', country: '', type: 'home' }]
 		};
+	}
+
+	function toForm(contact: Contact): ContactForm {
+		const f = emptyForm();
+		f.full_name = contact.full_name ?? '';
+		f.first_name = contact.first_name ?? '';
+		f.last_name = contact.last_name ?? '';
+		f.nickname = contact.nickname ?? '';
+		f.organization = contact.organization ?? '';
+		f.title = contact.title ?? '';
+		f.notes = contact.notes ?? '';
+		if (contact.email.length) {
+			f.email = contact.email.map((e) => ({ email: e.email, type: e.type }));
+		}
+		if (contact.phone.length) {
+			f.phone = contact.phone.map((p) => ({ number: p.number, type: p.type }));
+		}
+		if (contact.address.length) {
+			f.address = contact.address.map((a) => ({
+				street: a.street ?? '',
+				city: a.city ?? '',
+				state: a.state ?? '',
+				postal_code: a.postal_code ?? '',
+				country: a.country ?? '',
+				type: a.type
+			}));
+		}
+		return f;
+	}
+
+	function startCreate() {
+		if (!canEdit) return;
+		form = emptyForm();
+		saveError = null;
+		editing = false;
+		creating = true;
 	}
 
 	function startEdit() {
 		if (!selected || !canEdit) return;
 		form = toForm(selected);
 		saveError = null;
+		creating = false;
 		editing = true;
 	}
 
-	function cancelEdit() {
+	function cancelForm() {
 		editing = false;
+		creating = false;
 		form = null;
 		saveError = null;
 	}
@@ -251,16 +278,46 @@
 		};
 	}
 
+	function buildCreate(f: ContactForm): ContactCreate {
+		const update = buildUpdate(f);
+		return {
+			full_name: update.full_name || undefined,
+			first_name: update.first_name || undefined,
+			last_name: update.last_name || undefined,
+			nickname: update.nickname || undefined,
+			organization: update.organization || undefined,
+			title: update.title || undefined,
+			notes: update.notes || undefined,
+			email: update.email ?? [],
+			phone: update.phone ?? [],
+			address: update.address ?? []
+		};
+	}
+
 	async function save(event: SubmitEvent) {
 		event.preventDefault();
-		if (!form || !selectedId || !bookId) return;
+		if (!form || !bookId) return;
+		if (!creating && !selectedId) return;
 		saving = true;
 		saveError = null;
 		try {
-			const updated = await updateContact(bookId, selectedId, buildUpdate(form));
-			contacts = contacts.map((c) => (c.id === updated.id ? updated : c));
-			editing = false;
-			form = null;
+			if (creating) {
+				const created = await createContact(bookId, buildCreate(form));
+				query = '';
+				editing = false;
+				creating = false;
+				form = null;
+				await loadContacts(true);
+				if (!contacts.some((c) => c.id === created.id)) {
+					contacts = [created, ...contacts];
+				}
+				selectedId = created.id;
+			} else if (selectedId) {
+				const updated = await updateContact(bookId, selectedId, buildUpdate(form));
+				contacts = contacts.map((c) => (c.id === updated.id ? updated : c));
+				editing = false;
+				form = null;
+			}
 		} catch (e) {
 			saveError = errorMessage(e);
 		} finally {
@@ -294,6 +351,14 @@
 				</p>
 			{/if}
 		</div>
+		<button
+			class="btn btn--primary"
+			onclick={startCreate}
+			disabled={!canEdit}
+			data-testid="contacts-new"
+		>
+			{t('contacts.new', 'New contact')}
+		</button>
 	</header>
 
 	<div class="contacts__toolbar">
@@ -386,24 +451,19 @@
 			</section>
 
 			<section class="contacts__detail-pane" aria-live="polite">
-				{#if !selected}
-					<EmptyState
-						icon="id-card"
-						title={t('contacts.select_contact', 'Select a contact')}
-						hint={t(
-							'contacts.select_contact_hint',
-							'Choose someone from the list to see their details.'
-						)}
-					/>
-				{:else if editing && form}
+				{#if form && (creating || editing)}
 					<form class="contact-form" onsubmit={save} data-testid="contacts-form">
 						<div class="contact-form__head">
-							<h2>{t('contacts.edit_title', 'Edit contact')}</h2>
+							<h2>
+								{creating
+									? t('contacts.new_title', 'New contact')
+									: t('contacts.edit_title', 'Edit contact')}
+							</h2>
 							<div class="contact-form__actions">
 								<button
 									type="button"
 									class="btn"
-									onclick={cancelEdit}
+									onclick={cancelForm}
 									disabled={saving}
 									data-testid="contacts-cancel"
 								>
@@ -590,6 +650,15 @@
 							></textarea>
 						</label>
 					</form>
+				{:else if !selected}
+					<EmptyState
+						icon="id-card"
+						title={t('contacts.select_contact', 'Select a contact')}
+						hint={t(
+							'contacts.select_contact_hint',
+							'Choose someone from the list to see their details.'
+						)}
+					/>
 				{:else}
 					<article class="contact-detail" data-testid="contacts-detail">
 						<div class="contact-detail__head">

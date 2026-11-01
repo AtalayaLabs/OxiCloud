@@ -2,6 +2,7 @@ import { it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/svelte';
 
 vi.mock('$lib/api/endpoints/contacts', () => ({
+	createContact: vi.fn(),
 	getContact: vi.fn(),
 	listAddressBooks: vi.fn(),
 	listContacts: vi.fn(),
@@ -9,6 +10,7 @@ vi.mock('$lib/api/endpoints/contacts', () => ({
 }));
 
 import {
+	createContact,
 	listAddressBooks,
 	listContacts,
 	updateContact,
@@ -86,6 +88,42 @@ it('searches server-side after the debounce', async () => {
 				expect.objectContaining({ search: 'ada' })
 			),
 		{ timeout: 2000 }
+	);
+});
+
+it('creates a new contact and selects it', async () => {
+	const created = contact({
+		id: 'c2',
+		uid: 'c2@oxicloud',
+		full_name: 'Grace Hopper',
+		first_name: 'Grace',
+		last_name: 'Hopper',
+		email: [{ email: 'grace@example.com', type: 'work', is_primary: true }]
+	});
+	m(createContact).mockResolvedValue(created);
+	render(ContactsPage);
+	await waitFor(() => expect(screen.getByTestId('contacts-detail')).toBeTruthy());
+
+	await fireEvent.click(screen.getByTestId('contacts-new'));
+	expect(screen.queryByTestId('contacts-detail')).toBeNull();
+	await fireEvent.input(screen.getByTestId('contacts-field-full-name'), {
+		target: { value: 'Grace Hopper' }
+	});
+	await fireEvent.input(screen.getByTestId('contacts-email-0'), {
+		target: { value: 'grace@example.com' }
+	});
+	await fireEvent.submit(screen.getByTestId('contacts-form'));
+
+	await waitFor(() => expect(createContact).toHaveBeenCalled());
+	expect(m(createContact).mock.calls[0][0]).toBe(book.id);
+	expect(m(createContact).mock.calls[0][1]).toEqual(
+		expect.objectContaining({
+			full_name: 'Grace Hopper',
+			email: [expect.objectContaining({ email: 'grace@example.com' })]
+		})
+	);
+	await waitFor(() =>
+		expect(within(screen.getByTestId('contacts-detail')).getByText('Grace Hopper')).toBeTruthy()
 	);
 });
 

@@ -4,11 +4,13 @@ import { getCsrfHeaders } from '$lib/api/csrf';
 import type {
 	AddressBookResponse,
 	ContactDto,
+	CreateContactRequest,
 	UpdateContactRequest
 } from '$lib/api/generated/openapi/types.gen';
 
 export type AddressBook = AddressBookResponse;
 export type Contact = ContactDto;
+export type ContactCreate = CreateContactRequest;
 export type ContactUpdate = UpdateContactRequest;
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
@@ -52,6 +54,19 @@ export function listContacts(
 	return apiJson<Contact[]>(`${contactsUrl(bookId)}${qs ? `?${qs}` : ''}`, {
 		credentials: 'same-origin',
 		signal
+	});
+}
+
+/**
+ * Create a contact in an address book. The system book is read-only and
+ * rejects this server-side; callers should hide the action there.
+ */
+export function createContact(bookId: string, contact: ContactCreate): Promise<Contact> {
+	return apiJson<Contact>(contactsUrl(bookId), {
+		method: 'POST',
+		credentials: 'same-origin',
+		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
+		body: JSON.stringify(contact)
 	});
 }
 

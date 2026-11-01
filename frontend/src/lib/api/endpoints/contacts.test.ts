@@ -4,7 +4,13 @@ vi.mock('$lib/api/client', () => ({ apiJson: vi.fn() }));
 vi.mock('$lib/api/csrf', () => ({ getCsrfHeaders: () => ({ 'X-CSRF-Token': 'csrf' }) }));
 
 import { apiJson } from '$lib/api/client';
-import { getContact, listAddressBooks, listContacts, updateContact } from './contacts';
+import {
+	createContact,
+	getContact,
+	listAddressBooks,
+	listContacts,
+	updateContact
+} from './contacts';
 
 const json = vi.mocked(apiJson);
 
@@ -50,6 +56,16 @@ it('fetches one contact by id', async () => {
 	expect(json).toHaveBeenCalledWith('/api/address-books/book/contacts/c%201', {
 		credentials: 'same-origin',
 		signal: undefined
+	});
+});
+
+it('serializes creates to POST with CSRF headers', async () => {
+	await createContact('book', { full_name: 'Ada Lovelace', email: [] });
+	expect(json).toHaveBeenCalledWith('/api/address-books/book/contacts', {
+		method: 'POST',
+		credentials: 'same-origin',
+		headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': 'csrf' },
+		body: '{"full_name":"Ada Lovelace","email":[]}'
 	});
 });
 
