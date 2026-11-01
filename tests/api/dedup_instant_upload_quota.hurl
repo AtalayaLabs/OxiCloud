@@ -123,13 +123,23 @@ first_file_hash: jsonpath "$.content_hash"
 #          real caller sequence — a regression that silently
 #          changed `/by-hash`'s ownership probe would surface
 #          here, not just at the quota step.
+#
+# The response shape (`HashCheckResponse` in dedup_handler.rs:52)
+# is `{hash, existing_size, count, truncated, siblings}` — a 200
+# is itself the "owned" signal (404 is the explicit "not
+# visible" answer, see the doc comment on the type). Asserting
+# `existing_size == 32` is both the ownership signal and a size
+# pin against the fixture; a drift between the stored blob size
+# and `hello.txt`'s on-disk bytes would surface here instead of
+# being discovered through an opaque 507 in step 6.
 # ─────────────────────────────────────────────────────────────
 GET {{base_url}}/api/dedup/check/{{first_file_hash}}
 Authorization: Bearer {{owner_token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.owned" == true
+jsonpath "$.existing_size" == 32
+jsonpath "$.hash"          == "{{first_file_hash}}"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -196,7 +206,16 @@ Authorization: Bearer {{owner_token}}
 HTTP 200
 
 
+# `DELETE /api/drives/{id}` hardcodes `caller_is_admin = false` in
+# the handler (`drive_handler.rs::delete_drive`) and always goes
+# through `authz.require(Manage, Drive)` — admin bypass is NOT
+# wired here (deliberate, per the drive-management plan: admin
+# intervenes via `/api/admin/drives/*` surfaces, not the user API).
+# The drive owner is `iuq_owner` from step 3, so the delete runs
+# as them. Anti-enum graduated denial maps missing Manage to
+# `NotFound` ⇒ 404, which is what Ed's first run surfaced before
+# this comment landed.
 DELETE {{base_url}}/api/drives/{{drive_id}}
-Authorization: Bearer {{admin_token}}
+Authorization: Bearer {{owner_token}}
 
 HTTP 204
