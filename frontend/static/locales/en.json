@@ -143,6 +143,7 @@
     "repeat_yearly": "Yearly",
     "repeat_custom": "Custom ({{rule}})",
     "series_hint": "This event repeats. Changes apply to the whole series.",
+    "override_hint": "This occurrence was changed separately from the rest of the series.",
     "location": "Location",
     "description": "Description",
     "calendar": "Calendar",

@@ -250,7 +250,64 @@ fn build_event_ical(
     lines.push("END:VEVENT".to_string());
     lines.push("END:VCALENDAR".to_string());
     lines.push(String::new());
-    lines.join("\r\n")
+    lines
+        .iter()
+        .map(|line| fold_ical_line(line))
+        .collect::<Vec<_>>()
+        .join("\r\n")
+}
+
+/// Fold a content line at 75 octets (RFC 5545 §3.1). Continuation
+/// lines begin with a space, which counts toward their limit.
+///
+/// Without this a long DESCRIPTION reaches CalDAV clients as an
+/// unfolded line. Most parsers tolerate it, but the spec does not,
+/// and the byte limit is cheap to honour here.
+fn fold_ical_line(line: &str) -> String {
+    const LIMIT: usize = 75;
+    if line.len() <= LIMIT {
+        return line.to_string();
+    }
+    let mut out = String::with_capacity(line.len() + line.len() / LIMIT * 3);
+    let mut used = 0;
+    for ch in line.chars() {
+        if used + ch.len_utf8() > LIMIT {
+            out.push_str("\r\n ");
+            used = 1;
+        }
+        out.push(ch);
+        used += ch.len_utf8();
+    }
+    out
+}
+
+/// Validate an RRULE before it is written verbatim into the VEVENT.
+///
+/// The rule is structured (RECUR), not TEXT, so it is not escaped:
+/// a newline or a stray `:` would inject arbitrary calendar
+/// properties. Restrict it to the characters the grammar uses.
+fn validate_rrule(rrule: &str) -> Result<(), AppError> {
+    // RRULE token names are case-insensitive (RFC 5545 §3.3.10); the
+    // CalDAV write path stores what the client sent, so accept either
+    // case here rather than forcing a rewrite of a custom rule.
+    if !rrule
+        .as_bytes()
+        .get(..5)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"FREQ="))
+    {
+        return Err(AppError::bad_request(
+            "Recurrence rule must start with FREQ=",
+        ));
+    }
+    if !rrule
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'=' | b';' | b',' | b'+' | b'-'))
+    {
+        return Err(AppError::bad_request(
+            "Recurrence rule contains invalid characters",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_event(body: &SaveEventRequest) -> Result<(), AppError> {
@@ -261,6 +318,9 @@ fn validate_event(body: &SaveEventRequest) -> Result<(), AppError> {
         return Err(AppError::bad_request(
             "Event end time cannot be before its start time",
         ));
+    }
+    if let Some(rrule) = &body.rrule {
+        validate_rrule(rrule)?;
     }
     Ok(())
 }
@@ -687,6 +747,43 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    /// RRULE is inserted into the stored VEVENT without TEXT escaping.
+    /// A CRLF would end the property and let the client inject arbitrary
+    /// calendar lines, so the validator must reject it before the write.
+    #[test]
+    fn rrule_rejects_crlf_and_non_freq_shapes() {
+        let mut injected = body();
+        injected.rrule = Some("FREQ=DAILY\r\nDESCRIPTION:pwned".to_string());
+        assert!(validate_event(&injected).is_err());
+
+        let mut malformed = body();
+        malformed.rrule = Some("DAILY".to_string());
+        assert!(validate_event(&malformed).is_err());
+
+        let mut valid = body();
+        valid.rrule = Some("FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,TU".to_string());
+        assert!(validate_event(&valid).is_ok());
+
+        let mut lowercase = body();
+        lowercase.rrule = Some("freq=daily".to_string());
+        assert!(validate_event(&lowercase).is_ok());
+    }
+
+    /// RFC 5545 §3.1: physical lines cap at 75 octets. Unfolding the
+    /// generated body must reproduce the logical line.
+    #[test]
+    fn long_content_lines_are_folded() {
+        let mut long = body();
+        long.summary = "x".repeat(200);
+        let ics = build_event_ical("abc@oxicloud", None, &long);
+        assert!(ics.contains("\r\n "), "expected a folded continuation");
+        for physical in ics.split("\r\n") {
+            assert!(physical.len() <= 75, "line too long: {physical:?}");
+        }
+        let unfolded = ics.replace("\r\n ", "");
+        assert!(unfolded.contains(&format!("SUMMARY:{}\r\n", "x".repeat(200))));
     }
 
     #[test]
