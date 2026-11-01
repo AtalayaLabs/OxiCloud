@@ -407,10 +407,17 @@ impl TrashUseCase for TrashService {
                                     );
                                     // We continue so we can clean up the trash entry
                                 } else {
-                                    // Return error for other kinds of errors
+                                    // Preserve the inner `kind` so semantic errors
+                                    // (notably `AlreadyExists` from the repo's 23505
+                                    // translation — the restore-into-live-collision
+                                    // case) surface as the right wire shape rather
+                                    // than collapsing to 500 InternalError. Same
+                                    // bug class as the pre-fix
+                                    // `folder_service::rename_folder_with_perms`
+                                    // (commit 9043d1a9).
                                     error!("Error restoring file from trash: {} - {}", file_id, e);
                                     return Err(DomainError::new(
-                                        ErrorKind::InternalError,
+                                        e.kind,
                                         "File",
                                         format!(
                                             "Error restoring file {} from trash: {}",
@@ -447,13 +454,14 @@ impl TrashUseCase for TrashService {
                                     );
                                     // We continue so we can clean up the trash entry
                                 } else {
-                                    // Return error for other kinds of errors
+                                    // Preserve the inner `kind` — see the file
+                                    // branch above for the full rationale.
                                     error!(
                                         "Error restoring folder from trash: {} - {}",
                                         folder_id, e
                                     );
                                     return Err(DomainError::new(
-                                        ErrorKind::InternalError,
+                                        e.kind,
                                         "Folder",
                                         format!(
                                             "Error restoring folder {} from trash: {}",

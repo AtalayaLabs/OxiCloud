@@ -1241,7 +1241,24 @@ impl FileWritePort for FileBlobWriteRepository {
         .bind(caller_id)
         .execute(self.pool.as_ref())
         .await
-        .map_err(|e| DomainError::internal_error("FileBlobWrite", format!("restore: {e}")))?;
+        .map_err(|e| {
+            // 23505 → AlreadyExists. Restore sets `is_trashed = FALSE`
+            // and `folder_id = COALESCE(original_folder_id, folder_id)`;
+            // if the user created a new file with the same name at the
+            // original location while this one was in trash, the
+            // UPDATE collides on the files (folder_id, name) unique
+            // constraint. Mirrors `rename_file`'s and `move_file`'s
+            // 23505 translation.
+            if let sqlx::Error::Database(ref db_err) = e
+                && db_err.code().as_deref() == Some("23505")
+            {
+                return DomainError::already_exists(
+                    "File",
+                    "the original location already contains a file with the same name".to_string(),
+                );
+            }
+            DomainError::internal_error("FileBlobWrite", format!("restore: {e}"))
+        })?;
 
         if result.rows_affected() == 0 {
             return Err(DomainError::not_found("File", file_id));
