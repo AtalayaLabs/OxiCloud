@@ -6,8 +6,7 @@
  * cache-invalidation hint that triggers a refetch, not a data path.
  * See `docs/architecture/message-bus-and-notifications.md § Slice E` for the pattern.
  */
-import { apiJson } from '$lib/api/client';
-import { apiFetch } from '$lib/api/client';
+import { apiErrorFromResponse, apiFetch, apiJson } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import type {
 	MarkAllReadResponse,
@@ -58,7 +57,7 @@ export async function markNotificationRead(id: string): Promise<void> {
 		headers: getCsrfHeaders()
 	});
 	if (!res.ok && res.status !== 204) {
-		throw new Error(`markNotificationRead failed: HTTP ${res.status}`);
+		throw await apiErrorFromResponse(res);
 	}
 }
 
@@ -78,7 +77,7 @@ export async function deleteNotification(id: string): Promise<void> {
 		headers: getCsrfHeaders()
 	});
 	if (!res.ok && res.status !== 204) {
-		throw new Error(`deleteNotification failed: HTTP ${res.status}`);
+		throw await apiErrorFromResponse(res);
 	}
 }
 

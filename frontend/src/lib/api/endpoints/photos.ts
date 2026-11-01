@@ -1,5 +1,5 @@
 /** Photos timeline endpoint — ported from features/library/photos.js. */
-import { apiFetch } from '$lib/api/client';
+import { apiErrorFromResponse, apiFetch } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import type { FileItem } from '$lib/api/types';
 import type { PhotoOrderBy, PhotoResourceItemDto } from '$lib/api/generated/openapi/types.gen';
@@ -117,7 +117,7 @@ export async function fetchPhotosGeo(bbox: string, zoom: number): Promise<GeoClu
 	const res = await apiFetch(`/api/photos/geo?bbox=${encodeURIComponent(bbox)}&zoom=${zoom}`, {
 		credentials: 'same-origin'
 	});
-	if (!res.ok) throw new Error(`photos geo failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 	return (await res.json()) as GeoCluster[];
 }
 
@@ -188,7 +188,7 @@ export async function fetchPhotos(limit = 60, opts: FetchPhotosOptions = {}): Pr
 	// was dropped in favour of that native path (see
 	// docs/plan/photos-resources-migration.md §2b for the rationale).
 	const res = await apiFetch(`/api/photos/resources?${q}`, { credentials: 'same-origin' });
-	if (!res.ok) throw new Error(`photos failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 	const envelope = (await res.json()) as PhotosEnvelope;
 	// `?? undefined` on the optionals is a null→absent normalisation, not
 	// defensive noise. The server marks these `skip_serializing_if =

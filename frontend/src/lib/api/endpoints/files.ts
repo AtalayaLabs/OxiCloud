@@ -1,51 +1,22 @@
 import { uploadTransport } from '../upload-transport';
 /** File endpoints — ported from fileOperations.js. */
-import { ApiError, apiFetch, withBase } from '$lib/api/client';
+import { ApiError, apiErrorFromResponse, apiFetch, withBase } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import type { FileItem } from '$lib/api/types';
 
 /**
- * Parse a normalized `ApiErrorBody` from a non-2xx Response and construct
- * an `ApiError` carrying `errorType` + the server's own message, so
- * downstream `errorMessage()` can swap the server's operator-flavoured
- * message for the friendly i18n copy keyed on PascalCase `error_type`
- * (see `lib/utils/errors.ts`). The upload path used to throw a plain
- * `Error("upload failed: 507")` which collapsed every error_type into
- * the same opaque toast — the server shipped
- * `{status, error, message, error_type: "QuotaExceeded"}` and the SPA
- * threw it away on arrival.
- *
- * Shape-tolerant: a response that isn't JSON, or lacks the ApiErrorBody
- * fields, yields an ApiError whose `errorType` is undefined and whose
- * message is the status-text fallback. `isQuota` is attached when
- * `response.status === 507` so the batch logic's "stop pulling new work
- * on a full disk" short-circuit keeps working.
+ * Thin upload-specific wrapper around `apiErrorFromResponse` — the shared
+ * helper parses the normalized `ApiErrorBody` into an `ApiError`; this
+ * one adds the upload-specific `.isQuota` tag so the batch orchestrator's
+ * "stop pulling new work on a full disk" short-circuit (`uploadAll` at
+ * `+page.svelte:756`) keeps working. Non-upload endpoints call
+ * `apiErrorFromResponse` directly.
  */
 async function uploadErrorFromResponse(
 	response: Response,
 	resource: string
 ): Promise<ApiError & { isQuota: boolean }> {
-	let errorType: string | undefined;
-	let serverMessage: string | undefined;
-	try {
-		const body = (await response.clone().json()) as {
-			error_type?: unknown;
-			message?: unknown;
-			error?: unknown;
-		};
-		if (typeof body.error_type === 'string') errorType = body.error_type;
-		if (typeof body.message === 'string') serverMessage = body.message;
-		else if (typeof body.error === 'string') serverMessage = body.error;
-	} catch {
-		// Non-JSON body or empty body — fall through to the status-text message.
-	}
-	const err = new ApiError(
-		response.status,
-		response.statusText,
-		resource,
-		errorType,
-		serverMessage
-	) as ApiError & { isQuota: boolean };
+	const err = (await apiErrorFromResponse(response, resource)) as ApiError & { isQuota: boolean };
 	err.isQuota = response.status === 507;
 	return err;
 }
@@ -193,7 +164,7 @@ export async function renameFile(fileId: string, name: string): Promise<void> {
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 		body: JSON.stringify({ name })
 	});
-	if (!res.ok) throw new Error(`rename file failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 }
 
 export async function moveFile(fileId: string, targetFolderId: string | null): Promise<void> {
@@ -203,7 +174,7 @@ export async function moveFile(fileId: string, targetFolderId: string | null): P
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 		body: JSON.stringify({ folder_id: targetFolderId || null })
 	});
-	if (!res.ok) throw new Error(`move file failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 }
 
 export async function deleteFile(fileId: string): Promise<void> {
@@ -212,7 +183,7 @@ export async function deleteFile(fileId: string): Promise<void> {
 		credentials: 'same-origin',
 		headers: getCsrfHeaders()
 	});
-	if (!res.ok) throw new Error(`delete file failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 }
 
 /**
@@ -230,7 +201,7 @@ export async function getFile(fileId: string): Promise<FileItem> {
 	const res = await apiFetch(`/api/files/${fileId}?metadata=true`, {
 		credentials: 'same-origin'
 	});
-	if (!res.ok) throw new Error(`file metadata failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 	return (await res.json()) as FileItem;
 }
 

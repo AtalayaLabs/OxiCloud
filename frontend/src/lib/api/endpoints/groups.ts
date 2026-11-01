@@ -1,5 +1,5 @@
 /** Group (ReBAC) endpoints — ported from model/groups.js. */
-import { apiFetch, apiJson } from '$lib/api/client';
+import { apiErrorFromResponse, apiFetch, apiJson } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
@@ -39,7 +39,7 @@ async function mutate(url: string, method: string, body?: unknown): Promise<void
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 		body: body === undefined ? undefined : JSON.stringify(body)
 	});
-	if (!res.ok) throw new Error(`${method} ${url} failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 }
 
 /** A single page of groups plus the server-reported total (for "Load more"). */

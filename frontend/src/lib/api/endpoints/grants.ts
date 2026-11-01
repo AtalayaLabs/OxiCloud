@@ -1,5 +1,5 @@
 /** Sharing (ReBAC grants) endpoints — ported from model/grants.js. */
-import { apiFetch, apiJson } from '$lib/api/client';
+import { apiErrorFromResponse, apiFetch, apiJson } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import type { ItemType } from '$lib/api/types';
 import type {
@@ -96,10 +96,7 @@ export async function createGrant(
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 		body: JSON.stringify({ subject, resource, role, expires_at: expiresAt ?? null })
 	});
-	if (!res.ok) {
-		const e = (await res.json().catch(() => ({}))) as { error?: string };
-		throw new Error(e.error || `create grant failed: ${res.status}`);
-	}
+	if (!res.ok) throw await apiErrorFromResponse(res);
 	return (await res.json()) as CreateGrantResponse;
 }
 
@@ -115,7 +112,7 @@ export async function updateGrantRole(
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 		body: JSON.stringify({ subject, resource, role, expires_at: expiresAt ?? null })
 	});
-	if (!res.ok) throw new Error(`update role failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 }
 
 export async function revokeGrant(grantId: string): Promise<void> {
@@ -124,7 +121,7 @@ export async function revokeGrant(grantId: string): Promise<void> {
 		credentials: 'same-origin',
 		headers: getCsrfHeaders()
 	});
-	if (!res.ok) throw new Error(`revoke grant failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 }
 
 /**
@@ -143,7 +140,7 @@ export async function notifyGrantRecipient(grantId: string): Promise<NotifyOutco
 		return { total_recipients: 1, outcomes: [{ kind: 'rate_limited' }] };
 	}
 	if (res.ok) return (await res.json()) as NotifyOutcomeSet;
-	throw new Error(`notify failed: ${res.status}`);
+	throw await apiErrorFromResponse(res);
 }
 
 export interface IncomingGrantItem {
@@ -214,7 +211,7 @@ export async function fetchSharedWithMe(
 		`/api/grants/incoming/resources?${params({ resourceTypes: ['file', 'folder'], ...opts })}`,
 		{ credentials: 'same-origin' }
 	);
-	if (!res.ok) throw new Error(`shared-with-me failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 	return (await res.json()) as ResourcePage<IncomingGrantItem>;
 }
 
@@ -224,6 +221,6 @@ export async function fetchMyShares(
 	const res = await apiFetch(`/api/grants/outgoing/resources?${params(opts)}`, {
 		credentials: 'same-origin'
 	});
-	if (!res.ok) throw new Error(`my-shares failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 	return (await res.json()) as ResourcePage<OutgoingGrantItem>;
 }

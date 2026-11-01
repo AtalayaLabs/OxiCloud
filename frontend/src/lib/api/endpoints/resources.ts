@@ -3,7 +3,7 @@
  * endpoints, which all take the same query params. Ported from the original
  * favoritesModel/recentModel/trashModel.
  */
-import { apiFetch } from '$lib/api/client';
+import { apiErrorFromResponse, apiFetch } from '$lib/api/client';
 import type { FileItem, FolderItem, ItemType } from '$lib/api/types';
 
 /**
@@ -51,6 +51,6 @@ export async function fetchResourcePage<TItem, Axis extends string = string>(
 ): Promise<ResourcePage<TItem>> {
 	const qs = buildResourceParams(opts, defaultOrderBy);
 	const res = await apiFetch(`${base}?${qs}`, { credentials: 'same-origin', cache: 'no-store' });
-	if (!res.ok) throw new Error(`GET ${base} failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 	return (await res.json()) as ResourcePage<TItem>;
 }

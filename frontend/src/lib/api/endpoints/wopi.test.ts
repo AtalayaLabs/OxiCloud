@@ -1,9 +1,16 @@
 import { it, expect, vi, beforeEach } from 'vitest';
-vi.mock('$lib/api/client', () => ({
-	apiFetch: vi.fn(),
-	apiJson: vi.fn(),
-	withBase: (p: string) => p
-}));
+// Keep the real `ApiError` + `apiErrorFromResponse` so wopi's
+// post-sweep `throw await apiErrorFromResponse(res)` wires correctly;
+// the test's error-mock fakes the Response surface the helper reads.
+vi.mock('$lib/api/client', async () => {
+	const actual = await vi.importActual<typeof import('$lib/api/client')>('$lib/api/client');
+	return {
+		...actual,
+		apiFetch: vi.fn(),
+		apiJson: vi.fn(),
+		withBase: (p: string) => p
+	};
+});
 import { apiFetch, apiJson } from '$lib/api/client';
 import {
 	getSupportedExtensions,
@@ -42,17 +49,22 @@ it('fetches an editor URL for a file', async () => {
 	);
 });
 
+// Mock a non-ok Response in the shape `apiErrorFromResponse` reads:
+// needs `clone()` returning something with the same `json()`. Post-sweep
+// wopi throws `ApiError` via the shared helper, so pure `{ok, status,
+// text}` mocks no longer suffice.
+const errRes = (status: number, body: unknown = {}) => {
+	const base = { ok: false, status, statusText: '', url: '/mock', json: async () => body };
+	return { ...base, clone: () => base } as unknown as Response;
+};
+
 it('throws when the editor URL request fails', async () => {
-	af.mockResolvedValue({ ok: false, status: 500, text: async () => 'boom' });
-	await expect(getEditorUrl('f1')).rejects.toThrow('500');
+	af.mockResolvedValue(errRes(500, { message: 'boom' }));
+	await expect(getEditorUrl('f1')).rejects.toMatchObject({ name: 'ApiError', status: 500 });
 });
 
 it('falls back to view mode when an edit request 422s on a PDF', async () => {
-	af.mockResolvedValueOnce({
-		ok: false,
-		status: 422,
-		text: async () => 'not editable'
-	}).mockResolvedValueOnce({
+	af.mockResolvedValueOnce(errRes(422, { message: 'not editable' })).mockResolvedValueOnce({
 		ok: true,
 		json: async () => ({ editor_url: 'https://wopi/view', access_token: 't', access_token_ttl: 1 })
 	});
@@ -62,7 +74,10 @@ it('falls back to view mode when an edit request 422s on a PDF', async () => {
 });
 
 it('does not fall back for non-PDF edit failures', async () => {
-	af.mockResolvedValue({ ok: false, status: 500, text: async () => 'server error' });
-	await expect(getEditorUrlWithFallback('f1', 'sheet.xlsx', 'edit')).rejects.toThrow('500');
+	af.mockResolvedValue(errRes(500, { message: 'server error' }));
+	await expect(getEditorUrlWithFallback('f1', 'sheet.xlsx', 'edit')).rejects.toMatchObject({
+		name: 'ApiError',
+		status: 500
+	});
 	expect(af).toHaveBeenCalledTimes(1);
 });
