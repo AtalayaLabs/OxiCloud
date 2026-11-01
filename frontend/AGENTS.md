@@ -143,6 +143,20 @@ The DialogHost renders inline errors with `role="alert"` and an
 error on `oninput`, and refocuses the input after a failed submit so
 the keyboard flow stays continuous.
 
+**Shared error-state classes** live in `lib/styles/base/forms.css`:
+
+- `.form-error` — the inline message paragraph (red via
+  `--color-error-text`, dark-mode aware).
+- `.form-input--invalid` — the matching red border on the input
+  while the error is set.
+
+Use these in any new modal rather than coining a per-component
+error class — one place to tune contrast, dark-mode, and spacing.
+Note `--color-danger-text` (one letter apart) is `#ffffff` white —
+meant for text ON a red button background; using it on a dialog
+surface renders invisible text. The right token is
+`--color-error-text`.
+
 **Custom-content modals (not using `promptDialog`)** — e.g.
 `ShareDialog`, `MoveDialog`, `DrivePoliciesModal`, `QuotaEditor` —
 should follow the same shape: local `error`/`busy` state, clear on

@@ -82,7 +82,7 @@
 				{#if c.opts.message}<p class="dlg-msg">{c.opts.message}</p>{/if}
 				<input
 					class="dlg-input"
-					class:dlg-input--invalid={!!dialogs.error}
+					class:form-input--invalid={!!dialogs.error}
 					data-testid="dialog-host-prompt-input"
 					type="text"
 					bind:this={inputEl}
@@ -100,7 +100,7 @@
 		{/if}
 
 		{#if dialogs.error}
-			<p class="dlg-error" id="dialog-host-error" role="alert">{dialogs.error}</p>
+			<p class="form-error" id="dialog-host-error" role="alert">{dialogs.error}</p>
 		{/if}
 
 		{#snippet footer()}
@@ -156,18 +156,7 @@
 		font-size: var(--text-base);
 	}
 
-	/* Nice-to-have 3: visual feedback when an action failed. Paired with
-	   `aria-invalid="true"` + `aria-describedby` pointing at the error
-	   message, so screen readers announce the invalid state the moment
-	   the error renders. The red border keeps the user's eye on the
-	   field they need to edit instead of jumping to the error line. */
-	.dlg-input--invalid {
-		border-color: var(--color-danger-text);
-	}
-
-	.dlg-error {
-		margin: var(--space-3) 0 0;
-		color: var(--color-danger-text);
-		font-size: var(--text-sm);
-	}
+	/* `.form-error` and `.form-input--invalid` live in
+	   `lib/styles/base/forms.css` — one place for every dialog's
+	   error state. See `frontend/AGENTS.md § Dialog error UX`. */
 </style>

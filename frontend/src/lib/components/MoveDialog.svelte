@@ -262,7 +262,7 @@
 		{/if}
 
 		{#if action.error}
-			<p class="mv-error" id="move-dialog-error" role="alert">{action.error}</p>
+			<p class="form-error" id="move-dialog-error" role="alert">{action.error}</p>
 		{/if}
 	</div>
 
@@ -432,11 +432,7 @@
 		text-align: center;
 	}
 
-	/* Inline failure message — same style as `.dlg-error` in
-	   DialogHost.svelte so prompt + custom modals read uniformly. */
-	.mv-error {
-		margin: var(--space-3) 0 0;
-		color: var(--color-danger-text);
-		font-size: var(--text-sm);
-	}
+	/* `.form-error` lives in `lib/styles/base/forms.css` — one
+	   place for every dialog's error state. See
+	   `frontend/AGENTS.md § Dialog error UX`. */
 </style>
