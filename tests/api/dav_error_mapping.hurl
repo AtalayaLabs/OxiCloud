@@ -119,14 +119,13 @@ END:VCALENDAR
 
 HTTP 400
 [Asserts]
-# `error_type` is the `Display` form of `ErrorKind::InvalidInput`
-# ("Invalid Input", with a space) — that's what `From<DomainError>
-# for AppError` emits (see interfaces/errors.rs:134 →
-# `err.kind.to_string()`). Note the ecosystem inconsistency: hand-
-# crafted codes on `AppError::new(..., "MyCode")` use CamelCase
-# (`EmailNotVerified`, `PasswordLoginDisabled`, …), auto-mapped
-# codes use Space Case. Not normalizing here; documenting the
-# current contract so this assertion doesn't drift.
+# `error_type` is `ErrorKind::wire_name()` — PascalCase, no spaces.
+# Both auto-mapped codes (`From<DomainError> for AppError` →
+# `kind.wire_name()`) and hand-crafted literals on
+# `AppError::new(..., "MyCode")` share the same PascalCase shape
+# (`EmailNotVerified`, `PasswordLoginDisabled`, …) so the SPA can
+# switch on `error_type` uniformly without caring which path produced
+# the error.
 jsonpath "$.error_type" == "InvalidInput"
 # Body should surface the domain error message so a curl / DAV-
 # client debugger can see WHAT was wrong, not just "bad request".

@@ -161,7 +161,13 @@ Authorization: Bearer {{admin_token}}
 
 HTTP 404
 [Asserts]
-jsonpath "$.error" == "run not found"
+# Normalized ApiErrorBody shape — pre-normalization this endpoint
+# emitted a bare `{"error": "run not found"}`. After the sweep the
+# message carries the run-id (folded context, pending Phase 2's
+# `params` carrier) and the body carries the full ApiErrorBody.
+jsonpath "$.error_type" == "NotFound"
+jsonpath "$.message"    contains "run not found"
+jsonpath "$.message"    contains "00000000-0000-0000-0000-000000000000"
 
 
 # ─────────────────────────────────────────────────────────────

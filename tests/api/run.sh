@@ -494,6 +494,14 @@ HURL_FILES=( \
   # Registers mixed-case usernames and asserts they land lowercased, so it
   # sits with registration rather than with the admin user-ops block.
   "$API_DIR/lowercase_usernames.hurl" \
+  # Error-response envelope — pins the uniform ApiErrorBody shape
+  # emitted by every REST handler after chore/wire-apierrorbody-responses
+  # + the OAuthErrorResponse body on the OIDC Back-Channel Logout
+  # endpoint. Sits here (post-registration) so there's an admin + a
+  # plain user already in the DB — the pin exercises both the RBAC
+  # path (plain user hits admin surface → 403) and the admin BAD_REQUEST
+  # / NOT_FOUND paths.
+  "$API_DIR/error_shape_normalized.hurl" \
   "$API_DIR/nc_status_capabilities.hurl" \
   "$API_DIR/nc_login_flow_v2.hurl" \
   "$API_DIR/nc_login_flow_v2_drive_picker.hurl" \

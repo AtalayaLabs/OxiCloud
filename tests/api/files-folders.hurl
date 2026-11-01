@@ -397,4 +397,4 @@ file: file,fixtures/hello.txt; text/plain
 
 HTTP 400
 [Asserts]
-jsonpath "$.error_type" != "Internal Error"
+jsonpath "$.error_type" != "InternalError"

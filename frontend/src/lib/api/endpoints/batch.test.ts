@@ -60,7 +60,7 @@ describe('batch copy', () => {
 					{
 						id: 'a91ac3a7',
 						error: 'Quota Exceeded: Drive quota exceeded: 419764746 + 207929028 > 536870912 bytes',
-						error_type: 'Quota Exceeded'
+						error_type: 'QuotaExceeded'
 					}
 				]
 			})
@@ -68,7 +68,7 @@ describe('batch copy', () => {
 		await expect(copyFiles(['a91ac3a7'], 't')).rejects.toMatchObject({
 			name: 'ApiError',
 			status: 507,
-			errorType: 'Quota Exceeded'
+			errorType: 'QuotaExceeded'
 		});
 	});
 });
