@@ -613,6 +613,7 @@ HURL_FILES=( \
   "$API_DIR/nc_auth_failures.hurl" \
   "$API_DIR/dedup_create.hurl" \
   "$API_DIR/dedup_instant_upload_quota.hurl" \
+  "$API_DIR/rename_duplicate_name.hurl" \
   "$API_DIR/trash_per_drive.hurl" \
   "$API_DIR/drive_quota.hurl" \
   "$API_DIR/user_envelope_quota.hurl" \
