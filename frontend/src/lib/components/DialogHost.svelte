@@ -7,12 +7,16 @@
 	let value = $state('');
 	let lastId: object | null = null;
 	let inputEl = $state<HTMLInputElement | null>(null);
+	// Track the last error message so we only re-focus the input on a
+	// NEW error (not on every re-render while the error stays set).
+	let lastErrorSeen: string | null = null;
 
 	$effect(() => {
 		const c = dialogs.current;
 		if (c && c !== lastId) {
 			lastId = c;
 			value = c.kind === 'prompt' ? (c.opts.defaultValue ?? '') : '';
+			lastErrorSeen = null;
 			if (c.kind === 'prompt' && c.opts.selectOnOpen) {
 				const select = c.opts.selectOnOpen;
 				requestAnimationFrame(() => {
@@ -33,6 +37,22 @@
 		}
 	});
 
+	// Nice-to-have 2: on a FRESH error (dialog kept open after a failed
+	// action), re-focus the input so the user can retype immediately
+	// without reaching for the mouse. `busy = false` is set BEFORE
+	// `error` on the store, so by the time this effect runs the input
+	// is re-enabled and focusable. Guarded by `lastErrorSeen` so a
+	// stable error doesn't steal focus on every re-render.
+	$effect(() => {
+		const err = dialogs.error;
+		if (err && err !== lastErrorSeen && dialogs.current?.kind === 'prompt') {
+			lastErrorSeen = err;
+			requestAnimationFrame(() => inputEl?.focus());
+		} else if (!err) {
+			lastErrorSeen = null;
+		}
+	});
+
 	const open = $derived(dialogs.current !== null);
 
 	function submit(e?: SubmitEvent) {
@@ -42,6 +62,15 @@
 		// `resolve` runs any async action and keeps the dialog open on failure.
 		if (c.kind === 'prompt') void dialogs.resolve(value);
 		else void dialogs.resolve(true);
+	}
+
+	// Nice-to-have 1: clear the inline error as soon as the user starts
+	// editing. A stale "already exists" message hanging over the input
+	// while the user types a fix is visual noise — the submit will
+	// re-run the action anyway, so the error either returns (new value
+	// still bad) or disappears (good value). Keeps the dialog quieter.
+	function oninputChange() {
+		if (dialogs.error) dialogs.error = null;
 	}
 </script>
 
@@ -53,12 +82,16 @@
 				{#if c.opts.message}<p class="dlg-msg">{c.opts.message}</p>{/if}
 				<input
 					class="dlg-input"
+					class:dlg-input--invalid={!!dialogs.error}
 					data-testid="dialog-host-prompt-input"
 					type="text"
 					bind:this={inputEl}
 					bind:value
+					oninput={oninputChange}
 					placeholder={c.opts.placeholder ?? ''}
 					autocomplete="off"
+					aria-invalid={dialogs.error ? 'true' : undefined}
+					aria-describedby={dialogs.error ? 'dialog-host-error' : undefined}
 					disabled={dialogs.busy}
 				/>
 			</form>
@@ -67,7 +100,7 @@
 		{/if}
 
 		{#if dialogs.error}
-			<p class="dlg-error" role="alert">{dialogs.error}</p>
+			<p class="dlg-error" id="dialog-host-error" role="alert">{dialogs.error}</p>
 		{/if}
 
 		{#snippet footer()}
@@ -121,6 +154,15 @@
 		background: var(--color-bg-input);
 		color: var(--color-text);
 		font-size: var(--text-base);
+	}
+
+	/* Nice-to-have 3: visual feedback when an action failed. Paired with
+	   `aria-invalid="true"` + `aria-describedby` pointing at the error
+	   message, so screen readers announce the invalid state the moment
+	   the error renders. The red border keeps the user's eye on the
+	   field they need to edit instead of jumping to the error line. */
+	.dlg-input--invalid {
+		border-color: var(--color-danger-text);
 	}
 
 	.dlg-error {

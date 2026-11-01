@@ -475,27 +475,27 @@
 	}
 
 	async function rename(item: FileItem | FolderItem) {
-		const name = await promptDialog({
+		await promptDialog({
 			title: t('common.rename', 'Rename'),
 			defaultValue: item.name,
 			// Pre-select the filename stem — see favorites/+page.svelte
 			// for the same decision on the identical rename flow.
 			selectOnOpen: 'name',
-			confirmText: t('common.rename', 'Rename')
-		});
-		if (!name || name === item.name) return;
-		try {
-			if (isFile(item)) await renameFile(item.id, name);
-			else await renameFolder(item.id, name);
-			// Update the row in place so the user keeps their scroll
-			// position instead of jumping back to page 1.
-			const idx = raw.findIndex((it) => it.resource.id === item.id);
-			if (idx !== -1) {
-				raw[idx] = { ...raw[idx], resource: { ...raw[idx].resource, name } };
+			confirmText: t('common.rename', 'Rename'),
+			// Inline-error UX via `action` — see favorites/+page.svelte
+			// and `frontend/AGENTS.md § Dialog error UX`.
+			action: async (name) => {
+				if (!name || name === item.name) return;
+				if (isFile(item)) await renameFile(item.id, name);
+				else await renameFolder(item.id, name);
+				// Update the row in place so the user keeps their scroll
+				// position instead of jumping back to page 1.
+				const idx = raw.findIndex((it) => it.resource.id === item.id);
+				if (idx !== -1) {
+					raw[idx] = { ...raw[idx], resource: { ...raw[idx].resource, name } };
+				}
 			}
-		} catch (e) {
-			errorToast(e);
-		}
+		});
 	}
 
 	async function remove(item: FileItem | FolderItem) {

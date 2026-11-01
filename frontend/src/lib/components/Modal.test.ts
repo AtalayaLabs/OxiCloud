@@ -12,8 +12,7 @@ const children = createRawSnippet(() => ({
  * uses to defer focus (so the dialog is in the DOM before the focus call
  * fires). Works in jsdom, which runs rAF via a setTimeout fallback.
  */
-const nextRaf = () =>
-	new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+const nextRaf = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
 /**
  * jsdom has no layout engine, so `offsetParent` is null for every
@@ -85,8 +84,7 @@ it('closes on Escape', async () => {
 
 it('prefers a text input over the close button on open', async () => {
 	const withInput = createRawSnippet(() => ({
-		render: () =>
-			'<div><input data-testid="rename-input" type="text" value="report.pdf" /></div>'
+		render: () => '<div><input data-testid="rename-input" type="text" value="report.pdf" /></div>'
 	}));
 	render(Modal, { props: { open: true, title: 'Rename', children: withInput } });
 	await nextRaf();

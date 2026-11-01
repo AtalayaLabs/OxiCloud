@@ -25,7 +25,6 @@
 	import Icon from '$lib/icons/Icon.svelte';
 	import { t } from '$lib/i18n/index.svelte';
 	import { promptDialog } from '$lib/stores/dialogs.svelte';
-	import { ui } from '$lib/stores/ui.svelte';
 
 	const PAGE_SIZE = 50;
 
@@ -110,42 +109,44 @@
 	}
 
 	async function onCreate() {
-		const name = await promptDialog({
+		await promptDialog({
 			title: t('groups.create_dialog_title', 'New group'),
 			placeholder: t('groups.name_placeholder', 'engineering'),
-			confirmText: t('actions.create', 'Create')
+			confirmText: t('actions.create', 'Create'),
+			// Inline-error UX — see `frontend/AGENTS.md § Dialog error UX`.
+			action: async (name) => {
+				if (!name || !name.trim()) return;
+				await createGroup(name.trim());
+				await load();
+			}
 		});
-		if (!name || !name.trim()) return;
-		try {
-			await createGroup(name.trim());
-			await load();
-		} catch (e) {
-			report(e);
-		}
 	}
 
 	async function onRename(g: GroupItem) {
-		const name = await promptDialog({
+		await promptDialog({
 			title: t('groups.edit_dialog_title', 'Rename group'),
 			defaultValue: g.name,
 			placeholder: t('groups.name_placeholder', 'engineering'),
 			// Select all — group names have no extension semantic.
 			// Same decision as playlist / person rename.
 			selectOnOpen: true,
-			confirmText: t('actions.rename', 'Rename')
+			confirmText: t('actions.rename', 'Rename'),
+			// Inline-error UX — see `frontend/AGENTS.md § Dialog error UX`.
+			action: async (name) => {
+				if (!name || !name.trim() || name.trim() === g.name) return;
+				await renameGroup(g.id, name.trim());
+				await load();
+			}
 		});
-		if (!name || !name.trim() || name.trim() === g.name) return;
-		try {
-			await renameGroup(g.id, name.trim());
-			await load();
-		} catch (e) {
-			report(e);
-		}
 	}
 
 	async function onDelete(g: GroupItem) {
 		// Typed-name confirmation: the user must type the exact group name.
-		const typed = await promptDialog({
+		// Both the typed-mismatch guard AND the delete failure surface
+		// inline via `action` — the mismatch toast that lived in the
+		// corner on 2026-11-01 moves next to the input the user is
+		// editing. See `frontend/AGENTS.md § Dialog error UX`.
+		await promptDialog({
 			title: t('groups.delete_group', 'Delete group'),
 			message: t(
 				'groups.delete_confirm',
@@ -153,23 +154,19 @@
 				'Delete the group "{{name}}"? Type the group name to confirm.'
 			),
 			placeholder: g.name,
-			confirmText: t('actions.delete', 'Delete')
+			confirmText: t('actions.delete', 'Delete'),
+			action: async (typed) => {
+				if (typed === null) return;
+				if (typed !== g.name) {
+					throw new Error(
+						t('groups.delete_confirm_mismatch', 'Type the group name exactly to confirm.')
+					);
+				}
+				await deleteGroup(g.id);
+				if (expandedId === g.id) expandedId = null;
+				await load();
+			}
 		});
-		if (typed === null) return;
-		if (typed !== g.name) {
-			ui.notify(
-				t('groups.delete_confirm_mismatch', 'Type the group name exactly to confirm.'),
-				'error'
-			);
-			return;
-		}
-		try {
-			await deleteGroup(g.id);
-			if (expandedId === g.id) expandedId = null;
-			await load();
-		} catch (e) {
-			report(e);
-		}
 	}
 
 	function onAddQuery() {
