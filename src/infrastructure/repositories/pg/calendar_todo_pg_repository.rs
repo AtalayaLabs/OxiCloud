@@ -267,11 +267,13 @@ impl CalendarTodoRepository for CalendarTodoPgRepository {
                             OR (completed_at IS NULL \
                                 AND created_at >= $2 AND created_at < $3))) \
                    /* (5) Recurring master passthrough — same policy as \
-                      events: the master row rides along when its own \
-                      marker reaches into the window; expansion stays \
-                      client-side. */ \
+                      events: the master is returned whenever it starts \
+                      before the window ends. Bounding on its own due/ \
+                      start marker (>= $2) dropped a series from every \
+                      window past its first instance; UNTIL/COUNT are \
+                      expanded client-side. */ \
                    OR (rrule IS NOT NULL \
-                       AND COALESCE(due_time, start_time, created_at) >= $2) \
+                       AND COALESCE(due_time, start_time, created_at) < $3) \
                ) \
              ORDER BY COALESCE(start_time, due_time, created_at)"
         ))

@@ -228,6 +228,7 @@ it('shows all gated nav links when every feature flag is on (baseline)', () => {
 	expect(screen.queryByTestId('appshell-nav-shared-with-me-link')).toBeTruthy();
 	expect(screen.queryByTestId('appshell-nav-photos-link')).toBeTruthy();
 	expect(screen.queryByTestId('appshell-nav-music-link')).toBeTruthy();
+	expect(screen.queryByTestId('appshell-nav-calendars-link')).toBeTruthy();
 	expect(screen.queryByTestId('appshell-nav-trash-link')).toBeTruthy();
 });
 
@@ -304,6 +305,23 @@ it('hides /contacts when features.contacts is false', () => {
 	serverConfig.features = { ...serverConfig.features, contacts: false };
 	render(AppShell, { props: { children } });
 	expect(screen.queryByTestId('appshell-nav-contacts-link')).toBeNull();
+});
+
+it('hides /calendars when features.calendars is false', () => {
+	serverConfig.features = { ...serverConfig.features, calendars: false };
+	render(AppShell, { props: { children } });
+	expect(screen.queryByTestId('appshell-nav-calendars-link')).toBeNull();
+});
+
+it('keeps /calendars gated on features.calendars, NOT features.caldav', () => {
+	// The two are deliberately separate: `caldav` is the DAV sync
+	// endpoint a desktop client talks to, `calendars` is
+	// `/api/calendars` plus this page. A deployment can serve calendars
+	// only over DAV, or only in the SPA. Collapsing them onto one flag
+	// would silently remove one of those choices, so pin both directions.
+	serverConfig.features = { ...serverConfig.features, caldav: false, calendars: true };
+	render(AppShell, { props: { children } });
+	expect(screen.queryByTestId('appshell-nav-calendars-link')).toBeTruthy();
 });
 
 it('keeps /contacts gated on features.contacts, NOT features.carddav', () => {

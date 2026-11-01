@@ -168,7 +168,14 @@ impl CalendarEventRepository for CalendarEventPgRepository {
                   (start_time >= $2 AND start_time < $3) OR
                   (end_time > $2 AND end_time <= $3) OR
                   (start_time <= $2 AND end_time >= $3) OR
-                  (rrule IS NOT NULL AND end_time >= $2)
+                  -- A recurring master hosts occurrences long after its
+                  -- own DTEND. Filtering it on `end_time >= $2` dropped
+                  -- a series from every window past its first instance
+                  -- (the SPA's month view then showed nothing when the
+                  -- user navigated forward). `start_time < $3` is the
+                  -- only bound that is safe: UNTIL/COUNT are expanded
+                  -- client-side and cannot be evaluated in SQL.
+                  (rrule IS NOT NULL AND start_time < $3)
               )
             ORDER BY start_time
             "#,
