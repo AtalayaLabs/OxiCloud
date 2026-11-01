@@ -9,6 +9,7 @@
  */
 import { base } from '$app/paths';
 import log from 'loglevel';
+import { ApiError } from '$lib/api/client';
 import { getCsrfToken } from '$lib/api/csrf';
 import { createFileByHash, dedupCheckBatch } from '$lib/api/endpoints/files';
 import { blake3HexOfFile } from '$lib/vendor/hashWasm';
@@ -46,6 +47,18 @@ export interface DeltaUploadAnswer {
 	data?: unknown;
 	errorMsg?: string;
 	isQuotaError?: boolean;
+	/** HTTP status code of the failing response — surfaced on `ok: false` so
+	 *  callers can construct an `ApiError` with the same `status` the SPA's
+	 *  fetch stack would carry on a normal upload. */
+	status?: number;
+	/** PascalCase `error_type` discriminator from the server's normalized
+	 *  `ApiErrorBody` body. Surfaced on `ok: false` so the upload orchestrator
+	 *  can throw an `ApiError` whose `errorMessage()` lookup lands the right
+	 *  friendly i18n copy — not the generic server message. Without this the
+	 *  SPA toast reads "Storage quota exceeded" (either hardcoded here or
+	 *  the server's operator-flavoured string) instead of the user-facing
+	 *  "Espace insuffisant…" copy keyed on `QuotaExceeded`. */
+	errorType?: string;
 	/** Bytes NOT transferred thanks to dedup. */
 	savedBytes?: number;
 }
@@ -262,14 +275,23 @@ export function tryDeltaUpload(
 				}
 				const errorMsg =
 					msg.body?.message || msg.body?.error || `Delta upload failed (HTTP ${msg.status})`;
+				// The server's normalized `ApiErrorBody` carries a PascalCase
+				// `error_type` (`QuotaExceeded`, `Conflict`, …). Thread it
+				// through the DeltaUploadAnswer so the orchestrator in
+				// `+page.svelte` can construct an `ApiError` whose
+				// `errorMessage()` lookup lands the friendly i18n copy
+				// instead of the server's operator-flavoured message.
+				const bodyWithType = msg.body as { error_type?: unknown } | undefined;
+				const errorType =
+					typeof bodyWithType?.error_type === 'string' ? bodyWithType.error_type : undefined;
 				if (msg.status === 507) {
 					uploadLog.warn(`[${id}] delta hit quota (HTTP 507)`, { file: file.name, errorMsg });
-					settle({ ok: false, isQuotaError: true, errorMsg });
+					settle({ ok: false, isQuotaError: true, errorMsg, errorType, status: msg.status });
 					return;
 				}
 				if (msg.status === 409 && !msg.body?.still_missing) {
 					uploadLog.warn(`[${id}] delta conflict (HTTP 409)`, { file: file.name, errorMsg });
-					settle({ ok: false, errorMsg });
+					settle({ ok: false, errorMsg, errorType, status: msg.status });
 					return;
 				}
 				uploadLog.warn(
@@ -318,6 +340,44 @@ export function tryDeltaUpload(
  * `null` to fall back to a normal upload (e.g. the blob was GC'd between the
  * check and this create — rare).
  */
+/**
+ * Convert a failing `DeltaUploadAnswer` into a throwable `ApiError`.
+ *
+ * The dedup / delta fast-paths resolve a `{ok: false, …}` answer rather
+ * than throwing — the orchestrator in `+page.svelte::uploadOneFile`
+ * decides whether a `null` means "fall back to multipart" or a `{ok:
+ * false}` means "stop, surface this failure". When it's the latter, we
+ * need the thrown error to match the shape the FE toast layer expects:
+ * an `ApiError` carrying `errorType` so `errorMessage()` can land the
+ * friendly i18n copy (via the PascalCase switch in `lib/utils/errors.ts`),
+ * NOT a plain `Error` whose `.message` is the server's operator-flavoured
+ * byte arithmetic.
+ *
+ * Pre-extraction this logic lived inline in `+page.svelte` as a plain
+ * `new Error(dedup.errorMsg)` wrap, which collapsed every reason into
+ * the same opaque toast — the regression Ed hit on 2026-11-01 ("Storage
+ * Quota exceeded" English string on the by-hash path even though the
+ * server shipped `error_type: QuotaExceeded`). Extracted so it can be
+ * unit-tested without mounting the Svelte component.
+ *
+ * `.isQuota` is attached as a dynamic property because the batch
+ * orchestrator reads it to short-circuit further uploads in the same
+ * batch (`uploadAll` at `+page.svelte:756`). `status ?? 507` because an
+ * ok-false answer from a dedup path WITHOUT a status was pre-fix always
+ * a 507 (the only non-fallback failure the fast-path emits).
+ */
+export function throwFromDedupAnswer(answer: DeltaUploadAnswer, resource: string): never {
+	const err = new ApiError(
+		answer.status ?? 507,
+		'',
+		resource,
+		answer.errorType,
+		answer.errorMsg
+	) as ApiError & { isQuota: boolean };
+	err.isQuota = answer.isQuotaError ?? false;
+	throw err;
+}
+
 export async function instantUploadOwned(
 	folderId: string,
 	file: File,
@@ -326,7 +386,29 @@ export async function instantUploadOwned(
 	const res = await createFileByHash(folderId, file.name, hash, file.lastModified);
 	if (res.ok) return { ok: true, data: res.data, savedBytes: file.size };
 	if (res.status === 507) {
-		return { ok: false, isQuotaError: true, errorMsg: 'Storage quota exceeded' };
+		// Parse the server's normalized `ApiErrorBody` so the thrown error
+		// carries `error_type: "QuotaExceeded"` and the orchestrator's
+		// `errorMessage()` lands the friendly i18n copy ("Espace
+		// insuffisant…") instead of a hardcoded string. Pre-fix this
+		// branch returned `errorMsg: 'Storage quota exceeded'` which the
+		// orchestrator surfaced verbatim — the toast on 2026-11-01
+		// post-sandbox-test showed exactly that English string even though
+		// the server shipped the full normalized body.
+		const body = res.errorBody as { message?: unknown; error?: unknown; error_type?: unknown } | undefined;
+		const serverMessage =
+			typeof body?.message === 'string'
+				? body.message
+				: typeof body?.error === 'string'
+					? body.error
+					: 'Storage quota exceeded';
+		const errorType = typeof body?.error_type === 'string' ? body.error_type : undefined;
+		return {
+			ok: false,
+			isQuotaError: true,
+			errorMsg: serverMessage,
+			errorType,
+			status: res.status
+		};
 	}
 	return null;
 }

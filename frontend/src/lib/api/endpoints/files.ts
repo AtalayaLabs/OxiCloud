@@ -73,7 +73,7 @@ export async function createFileByHash(
 	 * refused by the server's pre-2000 floor.
 	 */
 	sourceModifiedAt?: number
-): Promise<{ ok: boolean; status: number; data?: unknown }> {
+): Promise<{ ok: boolean; status: number; data?: unknown; errorBody?: unknown }> {
 	const res = await apiFetch('/api/files/by-hash', {
 		method: 'POST',
 		credentials: 'same-origin',
@@ -85,8 +85,15 @@ export async function createFileByHash(
 			...(sourceModifiedAt ? { source_modified_at: sourceModifiedAt } : {})
 		})
 	});
-	const data = res.ok ? await res.json().catch(() => undefined) : undefined;
-	return { ok: res.ok, status: res.status, data };
+	if (res.ok) {
+		const data = await res.json().catch(() => undefined);
+		return { ok: true, status: res.status, data };
+	}
+	// Preserve the error body so callers like `instantUploadOwned` can thread
+	// the server's `error_type` + `message` into the thrown `ApiError`,
+	// instead of swallowing it into a hardcoded "Storage quota exceeded".
+	const errorBody = await res.json().catch(() => undefined);
+	return { ok: false, status: res.status, errorBody };
 }
 
 /**

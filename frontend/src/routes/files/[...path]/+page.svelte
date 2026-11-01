@@ -28,6 +28,7 @@
 	import {
 		instantUploadOwned,
 		resolveOwnedHashes,
+		throwFromDedupAnswer,
 		tryDeltaUpload
 	} from '$lib/api/endpoints/deltaUpload';
 	import {
@@ -616,11 +617,7 @@
 			(ownedHash && folderId ? await instantUploadOwned(folderId, file, ownedHash) : null) ??
 			(await tryDeltaUpload(file, folderId, (pct) => report(pct / 100)));
 		if (dedup) {
-			if (!dedup.ok) {
-				const err = new Error(dedup.errorMsg ?? 'upload failed') as Error & { isQuota?: boolean };
-				err.isQuota = dedup.isQuotaError ?? false;
-				throw err;
-			}
+			if (!dedup.ok) throwFromDedupAnswer(dedup, '/api/files/by-hash');
 			return dedup.savedBytes ?? 0;
 		}
 		await uploadFileWithProgress(folderId, file, report);
