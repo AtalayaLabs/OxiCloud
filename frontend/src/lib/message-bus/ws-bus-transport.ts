@@ -344,6 +344,63 @@ export class WsBusTransport implements BusTransport {
 		if (this.#activeTopics.size > 0) this.#scheduleReconnect();
 	}
 
+	/** A tab's `apiFetch` recovered from a 401 via refresh. The breaker
+	 *  may have been counting failures caused by a now-fixed stale
+	 *  session; reset the counter so the next cycle starts clean, and
+	 *  if we had already tripped to `unavailable`, come back online.
+	 *
+	 *  Fixes the "bus stays dead until the user reloads" symptom
+	 *  Ed hit on prod 2026-11-02 (see
+	 *  `project_message_bus_breaker_trip_silent` memory). Idempotent
+	 *  on a healthy breaker — a reset-to-zero on already-zero is a
+	 *  no-op; a reconnect schedule when we're already connecting is
+	 *  guarded upstream by `#state` checks.
+	 *
+	 *  The signal arrives via a `session-refreshed` port envelope
+	 *  dispatched by `shared-worker-bridge.svelte.ts` whenever
+	 *  `apiFetch`'s 401→refresh→retry dance succeeds. Any tab's
+	 *  recovery is enough — all tabs are talking to the same shared
+	 *  worker, and a successful refresh in one tab means the cookie
+	 *  jar is now fresh for all. */
+	sessionRefreshed(): void {
+		const hadFailures = this.#consecutiveFailures > 0;
+		const wasUnavailable = this.#state === 'unavailable';
+		const backoffWas = this.#backoffMs;
+		this.#consecutiveFailures = 0;
+		// Reset the exponential backoff too. The failure counter and
+		// the backoff timer track the same outage; after a confirmed
+		// session recovery (tab-visible or 401→refresh), the next
+		// reconnect should go out at the minimum delay, not after
+		// whatever the backoff doubled to during the outage (capped at
+		// 30 s). Without this, the UI stays "disconnected" long after
+		// the breaker is reset.
+		this.#backoffMs = RECONNECT_MIN_MS;
+		if (!hadFailures && !wasUnavailable && backoffWas === RECONNECT_MIN_MS) {
+			// No work to do; the breaker was healthy AND the backoff
+			// was already at the minimum. Avoids churn when every
+			// refresh in a healthy session fires this signal.
+			return;
+		}
+		// Elevated to `warn` so the paired trip (`ticket fetch failed
+		// (fast-path)`, also warn) and the recovery line both show up
+		// in a stock browser console. The default `loglevel` threshold
+		// is `warn`; a recovery is low-volume and ops-worthy.
+		busLog.warn('session refreshed — resetting ticket breaker', {
+			hadFailures,
+			wasUnavailable,
+			backoffWasMs: backoffWas
+		});
+		if (wasUnavailable) {
+			this.#setState('disconnected');
+			if (this.#activeTopics.size > 0) this.#scheduleReconnect(0);
+		} else if (this.#state === 'disconnected' && this.#activeTopics.size > 0) {
+			// If a reconnect is already scheduled with a stale (large)
+			// backoff, re-schedule at 0 so the fresh backoff takes
+			// effect right now instead of waiting out the old timer.
+			this.#scheduleReconnect(0);
+		}
+	}
+
 	provideTicket(subprotocol: string, nonce: number): void {
 		if (nonce !== 0 && nonce !== this.#ticketNonce) {
 			busLog.debug('provideTicket ignored — superseded nonce', {

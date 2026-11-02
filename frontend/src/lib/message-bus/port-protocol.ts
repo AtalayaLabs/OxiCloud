@@ -167,6 +167,23 @@ export interface PortPongMessage {
 	nonce: number;
 }
 
+/** Tab announces that its `apiFetch` just completed a 401→refresh→retry
+ *  dance successfully — the session is fresh, cookies + DPoP are
+ *  current. The worker resets its ticket-fetch circuit breaker
+ *  (`#consecutiveFailures = 0`) and, if it had tripped to the
+ *  `unavailable` state, schedules a reconnect right away. Without this
+ *  signal the worker's breaker stays open until the user reloads the
+ *  page, because the worker is isolated from the main tab's session
+ *  recovery and keeps hitting its own stale state. See
+ *  `project_message_bus_breaker_trip_silent` memory and
+ *  `shared-worker-bridge.svelte.ts::startSessionRefreshListener`.
+ *
+ *  Idempotent: a tab that broadcasts this with no prior failures just
+ *  no-ops the reset. */
+export interface SessionRefreshedMessage {
+	kind: 'session-refreshed';
+}
+
 export type PortTabToWorkerMessage =
 	| HelloMessage
 	| SubscribeMessage
@@ -182,7 +199,8 @@ export type PortTabToWorkerMessage =
 	| ProvideTicketMessage
 	| RequestReconnectMessage
 	| TicketFetchFailedMessage
-	| PortPongMessage;
+	| PortPongMessage
+	| SessionRefreshedMessage;
 
 // ============================================================
 // Worker → Tab envelopes
@@ -360,7 +378,8 @@ const TAB_TO_WORKER_KINDS = new Set<string>([
 	'provide-ticket',
 	'request-reconnect',
 	'ticket-fetch-failed',
-	'port-pong'
+	'port-pong',
+	'session-refreshed'
 ]);
 
 const WORKER_TO_TAB_KINDS = new Set<string>([
@@ -471,6 +490,10 @@ export function parsePortMessage(raw: unknown): PortMessage | null {
 		case 'port-pong': {
 			if (typeof obj.nonce !== 'number') return null;
 			return raw as PortPongMessage;
+		}
+		case 'session-refreshed': {
+			// Body-less envelope; the kind IS the signal.
+			return raw as SessionRefreshedMessage;
 		}
 		case 'hello-ack': {
 			if (typeof obj.reqId !== 'number') return null;

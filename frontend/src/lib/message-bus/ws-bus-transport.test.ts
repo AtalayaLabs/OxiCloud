@@ -346,3 +346,131 @@ describe('WsBusTransport — sendBinary gating', () => {
 		expect(t.sendBinary(new ArrayBuffer(4))).toBe(true);
 	});
 });
+
+describe('WsBusTransport — sessionRefreshed recovery', () => {
+	// Regression pin for the "ticket fetch failed (fast-path)" scenario
+	// Ed hit in production: once the breaker trips, the worker stops
+	// asking for tickets, so the bus stays `unavailable` until a page
+	// reload reinits the worker. A successful 401→refresh→retry in any
+	// tab fires `onSessionRefreshed`, which the bridge forwards here as
+	// `sessionRefreshed()` — the breaker must drop to zero and, if it
+	// had tripped, the transport must try to reconnect immediately so
+	// topics come back without a reload. The matching layer tests live
+	// at `transport.test.ts` (fires on 401 recovery) and
+	// `port-protocol.test.ts` (envelope roundtrips).
+
+	it('no-op when the breaker is healthy', async () => {
+		// Healthy sessions fire `onSessionRefreshed` on every proactive
+		// refresh too; we must not churn state or schedule a connect.
+		const { t, states } = makeTransport();
+		const stateCountBefore = states.length;
+		t.sessionRefreshed();
+		await flushN();
+		expect(t.state).toBe('idle');
+		expect(states.length).toBe(stateCountBefore);
+		expect(FakeSocket.instances).toHaveLength(0);
+	});
+
+	it('reconnects from `unavailable` when there are active topics', async () => {
+		const { t, needs, states } = makeTransport();
+		void t.subscribe('folder:X').catch(() => {});
+		await flushN();
+
+		// Trip the breaker — 11 cycles of nobody answering need-ticket.
+		for (let i = 0; i < 11; i++) {
+			vi.advanceTimersByTime(60_000);
+			await flushN();
+		}
+		expect(t.state).toBe('unavailable');
+		expect(FakeSocket.instances).toHaveLength(0);
+		const needCountBeforeRefresh = needs.length;
+
+		t.sessionRefreshed();
+		await flushN();
+
+		// Immediate transition out of `unavailable`, then a connect
+		// attempt fires because `activeTopics` still holds `folder:X`.
+		expect(states).toContain('disconnected');
+		expect(t.state).not.toBe('unavailable');
+		// The reconnect schedule asks for a fresh ticket immediately
+		// (delay 0), so needs grows without having to wait on timers.
+		await flushN();
+		expect(needs.length).toBeGreaterThan(needCountBeforeRefresh);
+	});
+
+	it('short-circuits a stale backoff so the next reconnect fires immediately', async () => {
+		// Regression pin for Ed's observation on 2026-11-02: resetting
+		// `#consecutiveFailures` alone was not enough — the exponential
+		// `#backoffMs` had already doubled toward the 30 s cap during
+		// the outage, so after sessionRefreshed() the UI stayed on
+		// "disconnected" for up to 30 s waiting out the stale timer.
+		// The fix resets backoff to RECONNECT_MIN_MS AND reschedules an
+		// in-flight reconnect at delay 0. Pin: after a dropped WS +
+		// scheduled reconnect with a grown backoff, sessionRefreshed()
+		// must issue a fresh need-ticket within the test's microtask
+		// window — not after advanceTimersByTime of hundreds of ms.
+		const { t, needs } = makeTransport();
+		void t.subscribe('folder:X').catch(() => {});
+		await flushN();
+		t.provideTicket('sp-1', needs[0]!);
+		await flushN();
+		const ws1 = FakeSocket.instances[0]!;
+		ws1.fireOpen();
+		await flushN();
+
+		// Drop + let backoff grow across a few cycles.
+		for (let i = 0; i < 4; i++) {
+			FakeSocket.instances.at(-1)!.fireClose(1006, 'abnormal');
+			// Enough to pass one jittered backoff tick without opening.
+			vi.advanceTimersByTime(60_000);
+			await flushN();
+			const n = needs.at(-1)!;
+			t.provideTicket(`sp-cycle-${i}`, n);
+			await flushN();
+		}
+		// Now in a connecting/connected cycle but with a large #backoffMs.
+		// Drop once more so a reconnect is SCHEDULED (not yet fired).
+		FakeSocket.instances.at(-1)!.fireClose(1006, 'abnormal');
+		await flushN();
+		const needCountBeforeRefresh = needs.length;
+
+		t.sessionRefreshed();
+		await flushN();
+
+		// The in-flight schedule should have been collapsed to 0 —
+		// a need-ticket fires on the next microtask, not after the
+		// stale (seconds-long) backoff.
+		expect(needs.length).toBeGreaterThan(needCountBeforeRefresh);
+	});
+
+	it('does NOT reconnect from `unavailable` when no topics are active', async () => {
+		// If every tab has unsubscribed, there's nothing to replay —
+		// the breaker reset is still correct, but opening a WS would
+		// be pointless churn.
+		const { t, needs } = makeTransport();
+		const sub = t.subscribe('folder:X');
+		await flushN();
+		// Discard the pending subscribe so unsubscribe can run without
+		// a dangling promise warning.
+		sub.catch(() => {});
+
+		for (let i = 0; i < 11; i++) {
+			vi.advanceTimersByTime(60_000);
+			await flushN();
+		}
+		expect(t.state).toBe('unavailable');
+
+		t.unsubscribe('folder:X');
+		await flushN();
+		const needCountBeforeRefresh = needs.length;
+
+		t.sessionRefreshed();
+		await flushN();
+
+		// Breaker is reset and state leaves `unavailable`, but no new
+		// ticket request is issued — there's nothing to connect for.
+		expect(t.state).not.toBe('unavailable');
+		expect(needs.length).toBe(needCountBeforeRefresh);
+		expect(FakeSocket.instances).toHaveLength(0);
+	});
+});

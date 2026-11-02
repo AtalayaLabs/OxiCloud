@@ -71,6 +71,20 @@ export interface ApiClientDeps {
 	 * is a no-op; the app wires the real handler at startup.
 	 */
 	onPasswordChangeRequired?: () => void;
+	/**
+	 * Invoked each time the 401→refresh→retry dance completes successfully
+	 * (the refresh call returned 2xx and the original request will be
+	 * replayed). The shared-worker message-bus bridge subscribes so it
+	 * can reset its ticket-fetch circuit breaker if that had tripped
+	 * silently — see `project_message_bus_breaker_trip_silent` memory
+	 * and `ws-bus-transport.ts::sessionRefreshed`.
+	 *
+	 * Fires on EVERY successful refresh (idempotent downstream — the
+	 * transport only re-connects if its breaker was actually tripped).
+	 * Default is a no-op so tests that don't wire the bridge don't
+	 * crash.
+	 */
+	onSessionRefreshed?: () => void;
 	/** Test seam for `window.location.origin`. */
 	origin?: string;
 	/** Bootstrap probes must not refresh or redirect on an ordinary 401. */
@@ -102,6 +116,7 @@ function bypassesRetry(urlStr: string): boolean {
  */
 export function createApiFetch(deps: ApiClientDeps): FetchFn {
 	const { rawFetch, onSessionExpired } = deps;
+	const onSessionRefreshed = deps.onSessionRefreshed ?? (() => {});
 	// Default no-op keeps existing test callers that don't wire this
 	// dep from crashing on a 403 PasswordChangeRequired — they'd just
 	// see the raw 403 flow through, which is what they already assert.
@@ -118,6 +133,20 @@ export function createApiFetch(deps: ApiClientDeps): FetchFn {
 					headers: { 'Content-Type': 'application/json', ...getCsrfHeaders() },
 					body: '{}'
 				});
+				if (r.ok) {
+					// Fire the recovery hook so downstream listeners
+					// (shared-worker message-bus bridge) can reset their
+					// own stale state. Guarded by try/catch so a buggy
+					// listener can't fail the refresh dance itself.
+					try {
+						onSessionRefreshed();
+					} catch (err) {
+						// No logger imported in this module — swallow
+						// quietly; the refresh succeeded and the retry
+						// upstream still fires.
+						void err;
+					}
+				}
 				return r.ok;
 			} catch {
 				return false;
@@ -345,6 +374,34 @@ export function setPasswordChangeRequiredHandler(fn: () => void): void {
 	passwordChangeRequiredHandler = fn;
 }
 
+// Session-refreshed observers — the shared-worker message-bus bridge
+// subscribes here so it can reset its ticket-fetch circuit breaker on
+// an apiFetch recovery (see `project_message_bus_breaker_trip_silent`
+// memory). Multiple subscribers are allowed; a listener that throws
+// is swallowed quietly rather than failing the refresh.
+let sessionRefreshedHandlers: Array<() => void> = [];
+
+/** Register a callback that fires each time `apiFetch`'s 401→refresh→retry
+ *  dance succeeds. Returns an unsubscribe function. The message-bus
+ *  bridge is the primary caller today; other recovery-sensitive
+ *  subsystems can hook here without re-plumbing the deps object. */
+export function onSessionRefreshed(fn: () => void): () => void {
+	sessionRefreshedHandlers = [...sessionRefreshedHandlers, fn];
+	return () => {
+		sessionRefreshedHandlers = sessionRefreshedHandlers.filter((h) => h !== fn);
+	};
+}
+
+function fireSessionRefreshed(): void {
+	for (const fn of sessionRefreshedHandlers) {
+		try {
+			fn();
+		} catch {
+			// Buggy listener must not fail the refresh dance.
+		}
+	}
+}
+
 const rawFetch: FetchFn =
 	typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : (undefined as never);
 
@@ -353,7 +410,8 @@ export function createApiTransport(wireFetch: FetchFn): FetchFn {
 	return createApiFetch({
 		rawFetch: wireFetch,
 		onSessionExpired: () => sessionExpiredHandler(),
-		onPasswordChangeRequired: () => passwordChangeRequiredHandler()
+		onPasswordChangeRequired: () => passwordChangeRequiredHandler(),
+		onSessionRefreshed: () => fireSessionRefreshed()
 	});
 }
 export const apiTransport: FetchFn = createApiTransport(rawFetch);

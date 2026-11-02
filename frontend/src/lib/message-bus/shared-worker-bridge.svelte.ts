@@ -15,7 +15,7 @@
 
 import log from 'loglevel';
 
-import { apiJson } from '$lib/api/client';
+import { apiJson, onSessionRefreshed } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import type {
 	ConnectionState,
@@ -153,6 +153,29 @@ export class SharedWorkerBridge implements MessageBusClient {
 	 *  dead at that point too). */
 	#handshakeComplete = false;
 	#handshakeWaiters: Array<() => void> = [];
+	// Unsubscribe handle for the `onSessionRefreshed` subscription set
+	// up in the constructor — cleared on `close()` so a disposed bridge
+	// doesn't keep posting to a closed port.
+	#unsubscribeSessionRefreshed: () => void = () => {};
+
+	// Bound `visibilitychange` listener kept so `close()` can remove it.
+	// Fires `session-refreshed` to the worker on every hidden→visible
+	// transition — the most reliable signal that the user has come back
+	// and wants the bus working again. If the worker's circuit breaker
+	// had tripped silently while the tab was backgrounded, this is the
+	// one chance to reset it without a page reload. The worker-side
+	// handler no-ops if the breaker is healthy, so repeated firings
+	// cost nothing.
+	readonly #onVisibilityChange = (): void => {
+		if (typeof document === 'undefined') return;
+		if (document.visibilityState !== 'visible') return;
+		// `warn` so the trigger shows in a default-threshold console
+		// side-by-side with the worker's matching `session refreshed —
+		// resetting ticket breaker` line. Firings are tab-reactivation
+		// events only, so volume is naturally low.
+		busLog.warn('tab visible — posting session-refreshed');
+		this.#post({ kind: 'session-refreshed' });
+	};
 
 	constructor(port: MessagePort, opts?: { wantedLogLevel?: LogLevel }) {
 		this.#port = port;
@@ -182,6 +205,32 @@ export class SharedWorkerBridge implements MessageBusClient {
 			reqId,
 			wantedLogLevel: opts?.wantedLogLevel ?? 'trace'
 		});
+
+		// Subscribe to the global session-refreshed hook. Every time
+		// `apiFetch`'s 401→refresh→retry dance succeeds (in this tab or
+		// an API call we fired directly), tell the worker so it can
+		// reset its ticket-fetch circuit breaker if that had tripped
+		// silently. See `project_message_bus_breaker_trip_silent`
+		// memory and `ws-bus-transport.ts::sessionRefreshed`.
+		//
+		// Idempotent on the worker side — a reset-to-zero on an already-
+		// healthy breaker is a no-op, so firing on every successful
+		// refresh (not just the recovery-from-failure case) is cheap.
+		this.#unsubscribeSessionRefreshed = onSessionRefreshed(() => {
+			this.#post({ kind: 'session-refreshed' });
+		});
+
+		// Also reset-on-visible: when the tab comes back to the
+		// foreground, send the same `session-refreshed` envelope. This
+		// is the signal Ed cares about most — a user who returns to a
+		// tab after a long idle finds the breaker already reset by the
+		// time their first action lands, so the bus reconnects without
+		// a page reload. The 401-refresh hook above still covers the
+		// case where the session was expired and the first action's
+		// refresh is what proves the session is live.
+		if (typeof document !== 'undefined') {
+			document.addEventListener('visibilitychange', this.#onVisibilityChange);
+		}
 
 		// NO eager ticket primer. The bridge is constructed on every
 		// page load, including unauthenticated routes (/login,
@@ -417,6 +466,10 @@ export class SharedWorkerBridge implements MessageBusClient {
 	}
 
 	close(): void {
+		this.#unsubscribeSessionRefreshed();
+		if (typeof document !== 'undefined') {
+			document.removeEventListener('visibilitychange', this.#onVisibilityChange);
+		}
 		this.#port.close();
 		this.#subs.clear();
 		this.#binaryHandlers.clear();

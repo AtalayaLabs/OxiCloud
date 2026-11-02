@@ -18,7 +18,8 @@ export {
 	setSessionExpiredHandler,
 	setPasswordChangeRequiredHandler,
 	setLogoutInProgress,
-	isLogoutInProgress
+	isLogoutInProgress,
+	onSessionRefreshed
 } from './transport';
 export type { FetchFn, ApiClientDeps } from './transport';
 
