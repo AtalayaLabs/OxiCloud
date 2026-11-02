@@ -237,9 +237,10 @@ HTTP 404
 #
 # Refusals must be the exact 404 anti-enum shape, never 403:
 # Eve holds no Read, so confirming that the calendar exists
-# would defeat the policy. `error_type` is the Display form of
-# `ErrorKind::NotFound` ("Not Found", with a space) because the
-# REST handlers map domain errors through `AppError::from`.
+# would defeat the policy. `error_type` is the PascalCase wire
+# discriminator (`ErrorKind::NotFound` → `wire_name()` = "NotFound")
+# because the REST handlers map domain errors through `AppError::from`
+# and `ApiErrorBody` serializes `wire_name()`, not the Display form.
 # ─────────────────────────────────────────────────────────────
 POST {{base_url}}/api/admin/users
 Authorization: Bearer {{token}}
@@ -281,7 +282,7 @@ Authorization: Bearer {{eve_token}}
 
 HTTP 404
 [Asserts]
-jsonpath "$.error_type" == "Not Found"
+jsonpath "$.error_type" == "NotFound"
 
 
 POST {{base_url}}/api/calendars/{{calendar_id}}/events
@@ -295,7 +296,7 @@ Content-Type: application/json
 
 HTTP 404
 [Asserts]
-jsonpath "$.error_type" == "Not Found"
+jsonpath "$.error_type" == "NotFound"
 
 
 PUT {{base_url}}/api/calendars/{{calendar_id}}
@@ -307,7 +308,7 @@ Content-Type: application/json
 
 HTTP 404
 [Asserts]
-jsonpath "$.error_type" == "Not Found"
+jsonpath "$.error_type" == "NotFound"
 
 
 DELETE {{base_url}}/api/calendars/{{calendar_id}}
@@ -315,7 +316,7 @@ Authorization: Bearer {{eve_token}}
 
 HTTP 404
 [Asserts]
-jsonpath "$.error_type" == "Not Found"
+jsonpath "$.error_type" == "NotFound"
 
 
 PUT {{base_url}}/api/calendars/{{calendar_id}}/events/{{updated_event_id}}
@@ -329,7 +330,7 @@ Content-Type: application/json
 
 HTTP 404
 [Asserts]
-jsonpath "$.error_type" == "Not Found"
+jsonpath "$.error_type" == "NotFound"
 
 
 DELETE {{base_url}}/api/calendars/{{calendar_id}}/events/{{updated_event_id}}
@@ -337,7 +338,7 @@ Authorization: Bearer {{eve_token}}
 
 HTTP 404
 [Asserts]
-jsonpath "$.error_type" == "Not Found"
+jsonpath "$.error_type" == "NotFound"
 
 
 # The load-bearing check: every refusal above must have happened
