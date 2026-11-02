@@ -270,7 +270,7 @@ This document contains the task list for the development of OxiCloud, a minimali
 - [x] Improve public links
   - [x] Add configurable expiration date
   - [x] Implement password protection
-  - [ ] Develop download limits
+  - [x] Develop download limits
 - [x] Implement granular permissions
   - [x] Add per-folder/file permissions
   - [x] Develop customizable roles

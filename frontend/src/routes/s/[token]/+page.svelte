@@ -70,6 +70,11 @@
 	const files = $derived(items.filter((i): i is FileItem => 'mime_type' in i));
 	const mediaFiles = $derived(files.filter(isMedia));
 
+	/** A capped link that has spent its allowance still opens for browsing. */
+	const downloadsExhausted = $derived(
+		meta?.max_downloads != null && meta.download_count >= meta.max_downloads
+	);
+
 	/** `#folder=<id>` deep link, so a sub-folder stays bookmarkable. */
 	function hashFolderId(): string | undefined {
 		if (typeof location === 'undefined') return undefined;
@@ -167,6 +172,27 @@
 		}
 	}
 
+	/**
+	 * Pre-flight a capped download so an exhausted link shows the page's own
+	 * notice instead of the browser's error page for a 403 navigation.
+	 */
+	async function guardDownload(event: MouseEvent, url: string) {
+		if (meta?.max_downloads == null) return;
+		event.preventDefault();
+		try {
+			const r = await getShareMeta(token);
+			if (r.status === 'ok') {
+				meta = r.data;
+				if (r.data.max_downloads != null && r.data.download_count >= r.data.max_downloads) {
+					return;
+				}
+			}
+		} catch {
+			/* pre-flight failed — fall through and let the browser try */
+		}
+		location.assign(url);
+	}
+
 	async function loadMeta() {
 		view = 'loading';
 		if (!token) {
@@ -194,7 +220,11 @@
 				// Open straight into the preview — a one-file link is a
 				// request to see that file, not a landing page. The card
 				// behind is what a close returns to.
-				viewerOpen = true;
+				//
+				// Skip the auto-open once the allowance is spent: the viewer
+				// would fetch content, get 403, and replace the useful
+				// "limit reached" notice with a generic preview error.
+				viewerOpen = r.data.max_downloads == null || r.data.download_count < r.data.max_downloads;
 			}
 		} catch {
 			view = 'expired';
@@ -349,20 +379,28 @@
 			<Icon name="file" class="share__big-icon" />
 			<h1>{viewerFile.name}</h1>
 			<div class="share__file-actions">
-				<button type="button" class="share__btn" onclick={() => (viewerOpen = true)}>
-					<Icon name="expand" />
-					{t('share.preview', 'Preview')}
-				</button>
-				<a
-					class="share__btn"
-					data-testid="public-share-download-btn"
-					href={fileDownloadUrl(viewerFile.id)}
-					download
-					rel="external"
-				>
-					<Icon name="download" />
-					{t('share.download', 'Download')}
-				</a>
+				{#if downloadsExhausted}
+					<p class="share__limit" role="status">
+						{t('share.download_limit_reached', 'This link has reached its download limit.')}
+					</p>
+				{:else}
+					{@const downloadUrl = fileDownloadUrl(viewerFile.id, meta?.id)}
+					<button type="button" class="share__btn" onclick={() => (viewerOpen = true)}>
+						<Icon name="expand" />
+						{t('share.preview', 'Preview')}
+					</button>
+					<a
+						class="share__btn"
+						data-testid="public-share-download-btn"
+						href={downloadUrl}
+						download
+						rel="external"
+						onclick={(e) => void guardDownload(e, downloadUrl)}
+					>
+						<Icon name="download" />
+						{t('share.download', 'Download')}
+					</a>
+				{/if}
 			</div>
 		</div>
 	{:else if view === 'folder' && folderId}
@@ -425,16 +463,24 @@
 				-->
 					{#snippet actions()}
 						{#if folderId}
-							<a
-								class="share__btn"
-								data-testid="public-share-download-zip-btn"
-								href={folderZipUrl(folderId)}
-								download
-								rel="external"
-							>
-								<Icon name="download" />
-								{t('share.download_zip', 'Download all')}
-							</a>
+							{@const zipFolderId = folderId}
+							{#if downloadsExhausted}
+								<span class="share__limit" role="status">
+									{t('share.download_limit_reached', 'This link has reached its download limit.')}
+								</span>
+							{:else}
+								<a
+									class="share__btn"
+									data-testid="public-share-download-zip-btn"
+									href={folderZipUrl(zipFolderId, meta?.id)}
+									download
+									rel="external"
+									onclick={(e) => void guardDownload(e, folderZipUrl(zipFolderId, meta?.id))}
+								>
+									<Icon name="download" />
+									{t('share.download_zip', 'Download all')}
+								</a>
+							{/if}
 						{/if}
 					{/snippet}
 				</ResourceList>
@@ -443,14 +489,14 @@
 	{/if}
 </main>
 
-<PhotoLightbox items={mediaFiles} bind:index={lightboxIndex} readOnly />
+<PhotoLightbox items={mediaFiles} bind:index={lightboxIndex} readOnly shareId={meta?.id} />
 
 <!--
 	One viewer for both shapes of share. Bound, so its own close button drives
 	`viewerOpen` back to false and the page beneath reappears — the folder grid
 	or the single-file card.
 -->
-<FileViewer bind:open={viewerOpen} file={viewerFile} readOnly />
+<FileViewer bind:open={viewerOpen} file={viewerFile} readOnly shareId={meta?.id} />
 
 <style>
 	/*
@@ -608,6 +654,12 @@
 	.share__error {
 		color: var(--color-danger-bg);
 		margin: 0;
+	}
+
+	.share__limit {
+		color: var(--color-text-muted);
+		margin: 0;
+		align-self: center;
 	}
 
 	.share__file-actions {

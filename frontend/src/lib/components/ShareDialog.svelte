@@ -507,6 +507,7 @@
 	let newLinkName = $state('');
 	let password = $state('');
 	let expiresAt = $state<string | null>(null);
+	let maxDownloads = $state<number | null>(null);
 
 	// ── Drive policy, applied to the link form ───────────────────────────────
 	//
@@ -651,11 +652,13 @@
 				itemName: newLinkName.trim() || item.name,
 				itemType: item.kind,
 				password: password || null,
-				expiresAt: expiresAt || null
+				expiresAt: expiresAt || null,
+				maxDownloads
 			});
 			newLinkName = '';
 			password = '';
 			expiresAt = null;
+			maxDownloads = null;
 			onshared?.(item.id);
 			onchange?.(item.id);
 			await loadShares();
@@ -1118,6 +1121,24 @@
 							}}
 						/>
 					</label>
+					<label>
+						<span>{t('share.download_limit', 'Download limit (optional)')}</span>
+						<input
+							type="number"
+							min="1"
+							step="1"
+							inputmode="numeric"
+							placeholder={t('share.download_limit_placeholder', 'Unlimited')}
+							data-testid="share-dialog-link-downloads-input"
+							value={maxDownloads ?? ''}
+							oninput={(e) => {
+								const raw = e.currentTarget.value.trim();
+								const n = Number(raw);
+								maxDownloads =
+									raw === '' || !Number.isFinite(n) ? null : Math.max(1, Math.trunc(n));
+							}}
+						/>
+					</label>
 				</div>
 				<!--
 					One slot, two modes. While the form is submittable this states
@@ -1183,6 +1204,18 @@
 									>{s.item_name || t('share.sharedLink', 'Shared link')}</span
 								>
 							</span>
+							{#if s.max_downloads !== null}
+								<span
+									class="link-row__expiry"
+									title={t('share.download_limit', 'Download limit (optional)')}
+								>
+									{t(
+										'share.downloads_used',
+										{ used: s.download_count, max: s.max_downloads },
+										'{{used}} / {{max}} downloads'
+									)}
+								</span>
+							{/if}
 							{@render expiryChip(shareExpiryIso(s), (v) => editLinkExpiry(s, v))}
 							<button
 								class="btn-action"

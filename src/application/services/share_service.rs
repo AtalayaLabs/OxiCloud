@@ -272,6 +272,56 @@ impl ShareService {
         };
         self.fetch_share_resolved(token, unlocked).await
     }
+
+    /// Enforce and consume one download for a token-authorized content fetch.
+    ///
+    /// `explicit_share` is the link whose page asked for the bytes
+    /// (`?share=<id>`) and is authoritative when the caller actually holds it
+    /// and it grants `Read` on the resource. Without that, the request has no
+    /// way to say which of several links it belongs to, and a browser holding
+    /// two links to the same file charged the wrong counter.
+    pub async fn register_download(
+        &self,
+        resource: Resource,
+        callers: &[Subject],
+        authorized_as: Subject,
+        explicit_share: Option<Uuid>,
+    ) -> Result<(), DomainError> {
+        if let Some(share_id) = explicit_share
+            && callers.iter().any(|s| s.token_id() == Some(share_id))
+            && self
+                .authorization
+                .check(Subject::Token(share_id), Permission::Read, resource)
+                .await?
+        {
+            return self.charge_download(share_id, resource).await;
+        }
+
+        match authorized_as.token_id() {
+            Some(share_id) => self.charge_download(share_id, resource).await,
+            None => Ok(()),
+        }
+    }
+
+    async fn charge_download(&self, share_id: Uuid, resource: Resource) -> Result<(), DomainError> {
+        if self.share_repository.consume_download(share_id).await? {
+            return Ok(());
+        }
+        tracing::info!(
+            target: "audit",
+            event = "share.download_rejected",
+            reason = "download_limit_reached",
+            share_id = %share_id,
+            resource_type = resource.type_str(),
+            resource_id = %resource.id(),
+            "👮🏻‍♂️ public link download refused: allowance exhausted",
+        );
+        Err(DomainError::new(
+            ErrorKind::AccessDenied,
+            "Share",
+            "Download limit reached",
+        ))
+    }
 }
 
 impl ShareUseCase for ShareService {
@@ -280,6 +330,13 @@ impl ShareUseCase for ShareService {
         user_id: Uuid,
         dto: CreateShareDto,
     ) -> Result<ShareDto, DomainError> {
+        if dto.max_downloads == Some(0) {
+            return Err(ShareServiceError::Validation(
+                "max_downloads must be at least 1".to_string(),
+            )
+            .into());
+        }
+
         let item_type = ShareItemType::try_from(dto.item_type.as_str())
             .map_err(|e| ShareServiceError::InvalidItemType(e.to_string()))?;
 
@@ -407,7 +464,8 @@ impl ShareUseCase for ShareService {
             user_id,
             password_hash,
         )
-        .map_err(|e| ShareServiceError::Validation(e.to_string()))?;
+        .map_err(|e| ShareServiceError::Validation(e.to_string()))?
+        .with_max_downloads(dto.max_downloads);
 
         let saved_share = self
             .share_repository
@@ -511,6 +569,16 @@ impl ShareUseCase for ShareService {
                 Some(self.hash_password_async(&password).await?)
             };
             share = share.with_password(password_hash);
+        }
+
+        if let Some(limit) = dto.max_downloads {
+            if limit == Some(0) {
+                return Err(ShareServiceError::Validation(
+                    "max_downloads must be at least 1".to_string(),
+                )
+                .into());
+            }
+            share = share.with_max_downloads(limit);
         }
 
         // Expiry is managed at the grant level; update all grants for this token.
@@ -1296,6 +1364,20 @@ mod tests {
             Ok(result)
         }
 
+        async fn consume_download(&self, share_id: Uuid) -> Result<bool, DomainError> {
+            let mut shares = self.shares.lock().unwrap();
+            let Some(share) = shares.get_mut(&share_id.to_string()) else {
+                return Ok(false);
+            };
+            let used = share.download_count();
+            let max = share.max_downloads();
+            if max.is_some_and(|limit| used >= u64::from(limit)) {
+                return Ok(false);
+            }
+            *share = share.clone().with_download_count(used + 1);
+            Ok(true)
+        }
+
         async fn update_share(&self, share: &Share) -> Result<Share, DomainError> {
             let mut shares = self.shares.lock().unwrap();
 
@@ -1351,6 +1433,7 @@ mod tests {
             item_type: "file".to_string(),
             password: Some("secret".to_string()),
             expires_at: None,
+            max_downloads: None,
         };
 
         let result = service.create_shared_link(Uuid::new_v4(), dto).await;

@@ -29,9 +29,18 @@
 		 * Viewing, zooming and download stay: those are what the link grants.
 		 */
 		readOnly?: boolean;
+		/** Share row id, when opened from a public link — attaches `?share=` to
+		 *  every content request so the cap charges that link. */
+		shareId?: string | null;
 	}
 
-	let { open = $bindable(false), file, onrefresh, readOnly = false }: Props = $props();
+	let {
+		open = $bindable(false),
+		file,
+		onrefresh,
+		readOnly = false,
+		shareId = null
+	}: Props = $props();
 
 	type Kind = 'image' | 'video' | 'audio' | 'pdf' | 'text' | 'other';
 
@@ -214,7 +223,7 @@
 			// waste a request.
 			textLoading = true;
 			textContent = '';
-			apiFetch(fileInlineUrl(f.id), { credentials: 'same-origin' })
+			apiFetch(fileInlineUrl(f.id, shareId), { credentials: 'same-origin' })
 				.then((r) => (r.ok ? r.text() : Promise.reject(new Error(`HTTP ${r.status}`))))
 				.then((txt) => (textContent = txt.slice(0, 500_000)))
 				.catch(() => (textContent = t('files.preview_failed', 'Could not load preview.')))
@@ -228,7 +237,7 @@
 			pdfError = false;
 			pdfUrl = null;
 			let objectUrl: string | null = null;
-			apiFetch(fileInlineUrl(f.id), { credentials: 'same-origin' })
+			apiFetch(fileInlineUrl(f.id, shareId), { credentials: 'same-origin' })
 				.then((r) => (r.ok ? r.blob() : Promise.reject(new Error(`HTTP ${r.status}`))))
 				.then((blob) => {
 					if (file !== f || !open) return;
@@ -310,7 +319,7 @@
 						<a
 							class="btn btn-secondary btn-sm"
 							data-testid="file-viewer-download-link"
-							href={fileDownloadUrl(file.id)}
+							href={fileDownloadUrl(file.id, shareId)}
 							download
 							rel="external"
 						>
@@ -320,7 +329,7 @@
 						<a
 							class="btn btn-secondary btn-sm"
 							data-testid="file-viewer-open-new-tab-link"
-							href={fileInlineUrl(file.id)}
+							href={fileInlineUrl(file.id, shareId)}
 							target="_blank"
 							rel="external noreferrer"
 						>
@@ -379,7 +388,7 @@
 								<a
 									class="fv__tool"
 									data-testid="file-viewer-collab-download-link"
-									href={fileDownloadUrl(file.id)}
+									href={fileDownloadUrl(file.id, shareId)}
 									download
 									rel="external"
 									title={t('common.download', 'Download')}
@@ -404,15 +413,16 @@
 				{:else if kind === 'image'}
 					<img
 						class="fv__media fv__image"
-						src={fileInlineUrl(file.id)}
+						src={fileInlineUrl(file.id, shareId)}
 						alt={file.name}
 						style:transform="scale({zoom})"
 					/>
 				{:else if kind === 'video'}
 					<!-- svelte-ignore a11y_media_has_caption -->
-					<video class="fv__media" src={fileInlineUrl(file.id)} controls preload="metadata"></video>
+					<video class="fv__media" src={fileInlineUrl(file.id, shareId)} controls preload="metadata"
+					></video>
 				{:else if kind === 'audio'}
-					<audio class="fv__audio" src={fileInlineUrl(file.id)} controls></audio>
+					<audio class="fv__audio" src={fileInlineUrl(file.id, shareId)} controls></audio>
 				{:else if kind === 'pdf'}
 					{#if pdfError}
 						<div class="fv__status fv__status--center">

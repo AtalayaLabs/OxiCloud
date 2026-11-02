@@ -22,3 +22,17 @@ it('exercises the shares endpoints', async () => {
 	await shares.deleteShare('s').catch(() => {});
 	expect(f.mock.calls.length + j.mock.calls.length).toBeGreaterThan(0);
 });
+
+it('maps maxDownloads onto the wire as max_downloads', async () => {
+	await shares.createShare({ itemId: 'i', itemType: 'folder', maxDownloads: 2 });
+	const created = JSON.parse((f.mock.calls[0][1] as { body: string }).body);
+	expect(created.max_downloads).toBe(2);
+
+	await shares.updateShare('s', { maxDownloads: null });
+	const cleared = JSON.parse((f.mock.calls[1][1] as { body: string }).body);
+	expect(cleared.max_downloads).toBeNull();
+
+	await shares.updateShare('s', { password: 'pw' });
+	const untouched = JSON.parse((f.mock.calls[2][1] as { body: string }).body);
+	expect('max_downloads' in untouched).toBe(false);
+});

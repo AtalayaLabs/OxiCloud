@@ -13,6 +13,8 @@ export interface CreateShareInput {
 	password?: string | null;
 	/** ISO date string or null; converted to epoch seconds for the wire. */
 	expiresAt?: string | null;
+	/** Optional cap on content downloads. Omit or null for unlimited. */
+	maxDownloads?: number | null;
 }
 
 export async function createShare(input: CreateShareInput): Promise<ShareItem> {
@@ -24,7 +26,8 @@ export async function createShare(input: CreateShareInput): Promise<ShareItem> {
 		// Server accepts RFC 3339 UTC (`DateTime<Utc>` on the wire).
 		// Normalise via `Date.toISOString()` so the server always sees the
 		// same canonical form regardless of what the caller passed in.
-		expires_at: input.expiresAt ? new Date(input.expiresAt).toISOString() : null
+		expires_at: input.expiresAt ? new Date(input.expiresAt).toISOString() : null,
+		max_downloads: input.maxDownloads ?? null
 	};
 	const res = await apiFetch('/api/shares', {
 		method: 'POST',
@@ -61,6 +64,8 @@ export interface UpdateShareInput {
 	password?: string | null;
 	/** ISO date string clears/sets; converted to epoch seconds. `null` clears. */
 	expiresAt?: string | null;
+	/** Number sets the cap, `null` removes it; omit to leave it unchanged. */
+	maxDownloads?: number | null;
 }
 
 /**
@@ -68,12 +73,17 @@ export interface UpdateShareInput {
  * `PUT /api/shares/{id}` with `{ password, expires_at }`.
  */
 export async function updateShare(shareId: string, input: UpdateShareInput): Promise<ShareItem> {
-	const body: { password?: string | null; expires_at?: string | null } = {};
+	const body: {
+		password?: string | null;
+		expires_at?: string | null;
+		max_downloads?: number | null;
+	} = {};
 	if (input.password !== undefined) body.password = input.password;
 	if (input.expiresAt !== undefined) {
 		// Server now accepts RFC 3339 UTC strings.
 		body.expires_at = input.expiresAt ? new Date(input.expiresAt).toISOString() : null;
 	}
+	if (input.maxDownloads !== undefined) body.max_downloads = input.maxDownloads;
 	const res = await apiFetch(`/api/shares/${encodeURIComponent(shareId)}`, {
 		method: 'PUT',
 		credentials: 'same-origin',

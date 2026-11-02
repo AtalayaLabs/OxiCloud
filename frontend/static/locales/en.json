@@ -37,6 +37,26 @@
           "subject": "Sign in to OxiCloud",
           "body": "Hello,\n\nUse the link below to sign in to OxiCloud. The link works once and expires in {{ttl_minutes}} minutes. Open it on the same device where you requested it.\n\n{{link}}\n\nIf you didn't request this sign-in link, you can safely ignore this message — no further action is needed.\n\n— OxiCloud"
         },
+        "login_coaching": {
+          "oidc": {
+            "subject": "Sign in to OxiCloud via SSO",
+            "body": "Hello {{username}},\n\nSomeone tried to sign in to your OxiCloud account with a password, but your account is linked to Single Sign-On (SSO) and must be signed in through your identity provider — not a password.\n\nOpen OxiCloud and click \"Sign in with SSO\":\n{{login_url}}\n\nIf you didn't try to sign in, you can safely ignore this message. No sign-in happened and nothing in your account has changed.\n\n— OxiCloud"
+          }
+        },
+        "coaching": {
+          "oidc": {
+            "subject": "Sign in to OxiCloud via SSO",
+            "body": "Hello {{username}},\n\nSomeone requested a sign-in link for your OxiCloud account, but your account is linked to Single Sign-On (SSO) and must be signed in through your identity provider — not a mailbox link.\n\nOpen OxiCloud and click \"Sign in with SSO\":\n{{login_url}}\n\nIf you didn't request this, you can safely ignore this message. No sign-in happened and nothing in your account has changed.\n\n— OxiCloud"
+          },
+          "password": {
+            "subject": "Use your password to sign in to OxiCloud",
+            "body": "Hello {{username}},\n\nSomeone requested a sign-in link for your OxiCloud account, but your account has a password set and this deployment doesn't allow signing in via mailbox link when a password exists. Please sign in with your password instead.\n\nOpen OxiCloud:\n{{login_url}}\n\nIf you don't remember your password, use the \"Forgot password?\" link on the sign-in page.\n\nIf you didn't request this, you can safely ignore this message. No sign-in happened and nothing in your account has changed.\n\n— OxiCloud"
+          },
+          "generic": {
+            "subject": "OxiCloud sign-in link not sent",
+            "body": "Hello {{username}},\n\nSomeone requested a sign-in link for your OxiCloud account, but it couldn't be delivered. Please open OxiCloud and sign in using the method your account is configured for.\n\n{{login_url}}\n\nIf you didn't request this, you can safely ignore this message.\n\n— OxiCloud"
+          }
+        },
         "kind_file": "file",
         "kind_folder": "folder",
         "english_fallback_divider": "--- English version below ---"
@@ -369,6 +389,10 @@
     "dialog_title": "Share “{{name}}”",
     "download": "Download",
     "download_zip": "Download ZIP",
+    "download_limit": "Download limit (optional)",
+    "download_limit_placeholder": "Unlimited",
+    "download_limit_reached": "This link has reached its download limit.",
+    "downloads_used": "{{used}} / {{max}} downloads",
     "empty_folder": "This folder is empty.",
     "preview": "Preview",
     "error": "Something went wrong. Please try again.",
@@ -801,6 +825,10 @@
     "magic_unavailable": "Sign-in by email is not available on this server.",
     "passwords_match": "Passwords match",
     "register_error": "Registration failed",
+    "register_domain_not_allowed": "This deployment doesn't accept sign-ups from that email domain. Try another address, or ask the administrator to add yours to the allow-list.",
+    "register_password_disabled": "Password sign-up is disabled on this deployment. Leave the password blank to receive a sign-in link by email, or sign in with your identity provider.",
+    "register_disabled": "Sign-up is closed on this deployment. Ask an administrator for an invitation.",
+    "account_deactivated": "Your account has been deactivated. Please contact your administrator.",
     "session_expired": "Your session expired. Please sign in again.",
     "logged_out": "Successfully signed out.",
     "sign_in": "Sign in",
