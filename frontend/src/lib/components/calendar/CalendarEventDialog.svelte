@@ -79,6 +79,16 @@
 		return String(value).padStart(width, '0');
 	}
 
+	/** IANA zone the wall-clock inputs are in, so the server can store
+	 * a TZID-qualified DTSTART and keep the local time across DST. */
+	function browserTimeZone(): string | null {
+		try {
+			return Intl.DateTimeFormat().resolvedOptions().timeZone || null;
+		} catch {
+			return null;
+		}
+	}
+
 	function localTimeInput(value: Date): string {
 		return `${pad(value.getFullYear(), 4)}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}T${pad(value.getHours())}:${pad(value.getMinutes())}`;
 	}
@@ -166,7 +176,8 @@
 			start_time: start.toISOString(),
 			end_time: end.toISOString(),
 			all_day: allDay,
-			rrule: repeat || null
+			rrule: repeat || null,
+			timezone: allDay ? null : browserTimeZone()
 		};
 	}
 

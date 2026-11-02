@@ -27,7 +27,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use utoipa::ToSchema;
@@ -105,6 +105,10 @@ pub struct CalendarEventResponse {
     pub end_time: DateTime<Utc>,
     pub all_day: bool,
     pub rrule: Option<String>,
+    /// IANA zone from the stored DTSTART, when the event carries one.
+    /// The SPA expands recurrence in this zone so wall-clock times do
+    /// not drift across DST; absent means the series is UTC.
+    pub timezone: Option<String>,
     pub ical_uid: String,
     pub recurrence_id: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
@@ -113,6 +117,7 @@ pub struct CalendarEventResponse {
 
 impl From<CalendarEventDto> for CalendarEventResponse {
     fn from(event: CalendarEventDto) -> Self {
+        let timezone = ical_dtstart_timezone(&event.ical_data);
         Self {
             id: event.id,
             calendar_id: event.calendar_id,
@@ -123,6 +128,7 @@ impl From<CalendarEventDto> for CalendarEventResponse {
             end_time: event.end_time,
             all_day: event.all_day,
             rrule: event.rrule,
+            timezone,
             ical_uid: event.ical_uid,
             recurrence_id: event.recurrence_id,
             created_at: event.created_at,
@@ -148,6 +154,12 @@ pub struct SaveEventRequest {
     pub all_day: bool,
     #[serde(default)]
     pub rrule: Option<String>,
+    /// IANA zone the caller entered the wall-clock time in (for example
+    /// `Europe/Paris`). Timed events are stored with a matching
+    /// `DTSTART;TZID=…`, so their recurrence keeps the same local time
+    /// across DST changes. Absent/`null` keeps the legacy UTC storage.
+    #[serde(default)]
+    pub timezone: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -180,6 +192,10 @@ fn normalized_request(mut body: SaveEventRequest) -> SaveEventRequest {
         .rrule
         .map(|r| r.trim().to_string())
         .filter(|r| !r.is_empty());
+    body.timezone = body
+        .timezone
+        .map(|tz| tz.trim().trim_matches('"').to_string())
+        .filter(|tz| !tz.is_empty());
     body
 }
 
@@ -207,6 +223,36 @@ fn ical_date(value: DateTime<Utc>) -> String {
     value.format("%Y%m%d").to_string()
 }
 
+/// DTSTART/DTEND lines for the payload. A timed event with a valid
+/// IANA timezone is written in that zone (`TZID`), which is what keeps
+/// its weekly wall-clock time stable across DST; an absent or unknown
+/// zone falls back to the legacy UTC form.
+fn timed_event_lines(body: &SaveEventRequest, timezone: Option<&str>) -> Vec<String> {
+    if body.all_day {
+        return vec![
+            format!("DTSTART;VALUE=DATE:{}", ical_date(body.start_time)),
+            format!("DTEND;VALUE=DATE:{}", ical_date(body.end_time)),
+        ];
+    }
+
+    if let Some(tzid) = timezone
+        && let Ok(tz) = tzid.parse::<chrono_tz::Tz>()
+    {
+        let name = tz.name();
+        let start = tz.from_utc_datetime(&body.start_time.naive_utc());
+        let end = tz.from_utc_datetime(&body.end_time.naive_utc());
+        return vec![
+            format!("DTSTART;TZID={}:{}", name, start.format("%Y%m%dT%H%M%S")),
+            format!("DTEND;TZID={}:{}", name, end.format("%Y%m%dT%H%M%S")),
+        ];
+    }
+
+    vec![
+        format!("DTSTART:{}", ical_datetime(body.start_time)),
+        format!("DTEND:{}", ical_datetime(body.end_time)),
+    ]
+}
+
 /// The properties the JSON payload owns. Every other property in a
 /// stored VEVENT (ATTENDEE, VALARM, CATEGORIES, EXDATE/RDATE, X-*, …)
 /// is preserved verbatim by [`merge_event_ical`].
@@ -215,6 +261,7 @@ fn event_property_lines(
     recurrence_id: Option<DateTime<Utc>>,
     body: &SaveEventRequest,
     include_times: bool,
+    timezone: Option<&str>,
 ) -> Vec<String> {
     let mut lines = vec![
         // Raw: the UID is the object's identity and came from the
@@ -225,13 +272,7 @@ fn event_property_lines(
     ];
 
     if include_times {
-        if body.all_day {
-            lines.push(format!("DTSTART;VALUE=DATE:{}", ical_date(body.start_time)));
-            lines.push(format!("DTEND;VALUE=DATE:{}", ical_date(body.end_time)));
-        } else {
-            lines.push(format!("DTSTART:{}", ical_datetime(body.start_time)));
-            lines.push(format!("DTEND:{}", ical_datetime(body.end_time)));
-        }
+        lines.extend(timed_event_lines(body, timezone));
     }
 
     lines.push(format!("SUMMARY:{}", escape_ical_text(&body.summary)));
@@ -270,6 +311,7 @@ fn build_event_ical(
     uid: &str,
     recurrence_id: Option<DateTime<Utc>>,
     body: &SaveEventRequest,
+    timezone: Option<&str>,
 ) -> String {
     let mut lines = vec![
         "BEGIN:VCALENDAR".to_string(),
@@ -278,7 +320,13 @@ fn build_event_ical(
         "CALSCALE:GREGORIAN".to_string(),
         "BEGIN:VEVENT".to_string(),
     ];
-    lines.extend(event_property_lines(uid, recurrence_id, body, true));
+    lines.extend(event_property_lines(
+        uid,
+        recurrence_id,
+        body,
+        true,
+        timezone,
+    ));
     lines.push("END:VEVENT".to_string());
     lines.push("END:VCALENDAR".to_string());
     lines.push(String::new());
@@ -314,6 +362,53 @@ fn unfold_ical_lines(block: &str) -> Vec<String> {
     lines
 }
 
+/// IANA zone carried by DTSTART's `TZID` parameter, if any. The SPA
+/// uses it to expand recurrence in wall-clock time; DATE values and
+/// UTC DTSTARTs have no zone.
+fn ical_dtstart_timezone(ical_data: &str) -> Option<String> {
+    // Read only the VEVENT block: a VTIMEZONE's STANDARD/DAYLIGHT
+    // sub-components also carry DTSTART properties.
+    let components = CalendarEvent::split_components(ical_data);
+    let block = components.vevents.first()?;
+
+    for line in unfold_ical_lines(block) {
+        let line = line.trim_start();
+        let Some((head, value)) = line.split_once(':') else {
+            continue;
+        };
+        let Some((name, params)) = head.split_once(';') else {
+            continue;
+        };
+        if !name.eq_ignore_ascii_case("DTSTART") {
+            continue;
+        }
+        // A `Z` suffix means the value is already UTC and the domain
+        // parser ignores TZID; DATE values are zone-free. Neither
+        // should make the SPA expand in wall-clock time.
+        let value = value.trim();
+        if value.ends_with('Z') {
+            continue;
+        }
+        let mut timezone = None;
+        let mut date_value = false;
+        for param in params.split(';') {
+            let Some((key, param_value)) = param.split_once('=') else {
+                continue;
+            };
+            if key.eq_ignore_ascii_case("TZID") {
+                timezone = Some(param_value.trim().trim_matches('"').to_string());
+            } else if key.eq_ignore_ascii_case("VALUE") && param_value.eq_ignore_ascii_case("DATE")
+            {
+                date_value = true;
+            }
+        }
+        if !date_value && let Some(timezone) = timezone.filter(|zone| !zone.is_empty()) {
+            return Some(timezone);
+        }
+    }
+    None
+}
+
 /// Property names at VEVENT depth that the JSON payload replaces.
 /// Nested components such as VALARM are never reached by the caller's
 /// depth check, so their DESCRIPTION/SUMMARY survive an edit.
@@ -337,6 +432,7 @@ fn rewrite_vevent_block(
     uid: &str,
     body: &SaveEventRequest,
     keep_existing_times: bool,
+    timezone: Option<&str>,
 ) -> Option<String> {
     let lines = unfold_ical_lines(block);
     if !lines
@@ -356,7 +452,13 @@ fn rewrite_vevent_block(
             depth += 1;
             if depth == 1 {
                 out.push("BEGIN:VEVENT".to_string());
-                out.extend(event_property_lines(uid, None, body, !keep_existing_times));
+                out.extend(event_property_lines(
+                    uid,
+                    None,
+                    body,
+                    !keep_existing_times,
+                    timezone,
+                ));
             } else {
                 out.push(line);
             }
@@ -407,10 +509,11 @@ fn merge_event_ical(
     uid: &str,
     body: &SaveEventRequest,
     keep_existing_times: bool,
+    timezone: Option<&str>,
 ) -> Option<String> {
     let components = CalendarEvent::split_components(existing);
     let block = components.vevents.first()?;
-    let merged = rewrite_vevent_block(block, uid, body, keep_existing_times)?;
+    let merged = rewrite_vevent_block(block, uid, body, keep_existing_times, timezone)?;
 
     let mut out = String::from(
         "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//OxiCloud//NONSGML Calendar//EN\r\n",
@@ -487,6 +590,12 @@ fn validate_event(body: &SaveEventRequest) -> Result<(), AppError> {
     }
     if let Some(rrule) = &body.rrule {
         validate_rrule(rrule)?;
+    }
+    if !body.all_day
+        && let Some(timezone) = &body.timezone
+        && timezone.parse::<chrono_tz::Tz>().is_err()
+    {
+        return Err(AppError::bad_request("Unknown timezone"));
     }
     Ok(())
 }
@@ -706,7 +815,7 @@ pub async fn create_event(
     let uid = format!("{}@oxicloud", Uuid::new_v4());
     let dto = CreateEventICalDto {
         calendar_id,
-        ical_data: build_event_ical(&uid, None, &body),
+        ical_data: build_event_ical(&uid, None, &body, body.timezone.as_deref()),
     };
     let created = state
         .calendar_service
@@ -762,18 +871,39 @@ pub async fn update_event(
         return Err(AppError::not_found("Event not found in this calendar"));
     }
 
+    // Prefer the series' stored zone: a shared Europe/Paris series must
+    // not be redefined in the editor's browser zone.
+    let existing_timezone = ical_dtstart_timezone(&existing.ical_data);
+    let effective_timezone = existing_timezone.as_deref().or(body.timezone.as_deref());
+    // Rows created by this SPA before TZIDs were stored are UTC with an
+    // `@oxicloud` UID. Their first edit rewrites the same instant in the
+    // browser zone, so they stop drifting without a data migration;
+    // CalDAV-created UTC rows keep their UTC semantics.
+    let add_timezone = existing_timezone.is_none()
+        && !existing.all_day
+        && body.timezone.is_some()
+        && existing.ical_uid.ends_with("@oxicloud");
     // Keep the stored value form when the timing did not change: a
     // TZID-based CalDAV event must not be flattened to UTC by a rename.
     let keep_existing_times = existing.start_time == body.start_time
         && existing.end_time == body.end_time
-        && existing.all_day == body.all_day;
+        && existing.all_day == body.all_day
+        && !add_timezone;
     let ical_data = merge_event_ical(
         &existing.ical_data,
         &existing.ical_uid,
         &body,
         keep_existing_times,
+        effective_timezone,
     )
-    .unwrap_or_else(|| build_event_ical(&existing.ical_uid, existing.recurrence_id, &body));
+    .unwrap_or_else(|| {
+        build_event_ical(
+            &existing.ical_uid,
+            existing.recurrence_id,
+            &body,
+            effective_timezone,
+        )
+    });
 
     let dto = CreateEventICalDto {
         calendar_id,
@@ -852,6 +982,7 @@ mod tests {
                 .with_timezone(&Utc),
             all_day: false,
             rrule: Some("FREQ=WEEKLY;BYDAY=TH".to_string()),
+            timezone: None,
         }
     }
 
@@ -860,7 +991,7 @@ mod tests {
     /// CalDAV clients see a summary-only event.
     #[test]
     fn generated_ical_carries_every_field() {
-        let ics = build_event_ical("abc@oxicloud", None, &body());
+        let ics = build_event_ical("abc@oxicloud", None, &body(), None);
         assert!(ics.contains("UID:abc@oxicloud\r\n"));
         assert!(ics.contains("SUMMARY:Team sync\r\n"));
         assert!(ics.contains("DESCRIPTION:Weekly\r\n"));
@@ -886,9 +1017,85 @@ mod tests {
     fn all_day_uses_date_values() {
         let mut event = body();
         event.all_day = true;
-        let ics = build_event_ical("abc@oxicloud", None, &event);
+        let ics = build_event_ical("abc@oxicloud", None, &event, None);
         assert!(ics.contains("DTSTART;VALUE=DATE:20261105\r\n"));
         assert!(ics.contains("DTEND;VALUE=DATE:20261105\r\n"));
+    }
+
+    #[test]
+    fn timed_event_uses_tzid_when_timezone_present() {
+        let mut event = body();
+        event.timezone = Some("Europe/Paris".to_string());
+        let ics = build_event_ical("abc@oxicloud", None, &event, event.timezone.as_deref());
+        // 2026-11-05 09:00Z is 10:00 CET.
+        assert!(ics.contains("DTSTART;TZID=Europe/Paris:20261105T100000\r\n"));
+        assert!(ics.contains("DTEND;TZID=Europe/Paris:20261105T110000\r\n"));
+        assert!(!ics.contains("DTSTART:20261105T090000Z"));
+    }
+
+    /// A wall-class event in the same zone uses the DST offset.
+    #[test]
+    fn tzid_uses_the_instant_dst_offset() {
+        let mut event = body();
+        event.timezone = Some("Europe/Paris".to_string());
+        event.start_time = DateTime::parse_from_rfc3339("2026-07-05T09:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        event.end_time = DateTime::parse_from_rfc3339("2026-07-05T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let ics = build_event_ical("abc@oxicloud", None, &event, event.timezone.as_deref());
+        // July is CEST (UTC+2), unlike the November case above.
+        assert!(ics.contains("DTSTART;TZID=Europe/Paris:20260705T110000\r\n"));
+        assert!(ics.contains("DTEND;TZID=Europe/Paris:20260705T120000\r\n"));
+    }
+
+    #[test]
+    fn unknown_timezone_is_rejected() {
+        let mut event = body();
+        event.timezone = Some("Not/ARealZone".to_string());
+        assert!(validate_event(&event).is_err());
+    }
+
+    #[test]
+    fn tzid_is_extracted_from_stored_dtstart() {
+        assert_eq!(
+            ical_dtstart_timezone(stored_rich_event()).as_deref(),
+            Some("Europe/Paris")
+        );
+        assert_eq!(
+            ical_dtstart_timezone(
+                "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nDTSTART:20261105T090000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+            ),
+            None
+        );
+        // A `Z` suffix wins over TZID in the parser, and DATE values
+        // have no zone; neither should trigger wall-clock expansion.
+        assert_eq!(
+            ical_dtstart_timezone(
+                "BEGIN:VEVENT\r\nDTSTART;TZID=Europe/Paris:20261105T090000Z\r\nEND:VEVENT\r\n"
+            ),
+            None
+        );
+        assert_eq!(
+            ical_dtstart_timezone("BEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20261105\r\nEND:VEVENT\r\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn changed_times_keep_the_series_timezone() {
+        let merged = merge_event_ical(
+            stored_rich_event(),
+            "abc@oxicloud",
+            &body(),
+            false,
+            Some("Europe/Paris"),
+        )
+        .unwrap();
+        assert!(merged.contains("DTSTART;TZID=Europe/Paris:20261105T100000\r\n"));
+        assert!(merged.contains("DTEND;TZID=Europe/Paris:20261105T110000\r\n"));
+        assert!(!merged.contains("DTSTART:20261105T090000Z"));
     }
 
     /// An exception override must keep its RECURRENCE-ID or the upsert
@@ -898,7 +1105,7 @@ mod tests {
         let rid = DateTime::parse_from_rfc3339("2026-11-12T09:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
-        let ics = build_event_ical("abc@oxicloud", Some(rid), &body());
+        let ics = build_event_ical("abc@oxicloud", Some(rid), &body(), None);
         assert!(ics.contains("RECURRENCE-ID:20261112T090000Z\r\n"));
     }
 
@@ -911,7 +1118,7 @@ mod tests {
             .with_timezone(&Utc);
         let mut event = body();
         event.all_day = true;
-        let ics = build_event_ical("abc@oxicloud", Some(rid), &event);
+        let ics = build_event_ical("abc@oxicloud", Some(rid), &event, None);
         assert!(ics.contains("RECURRENCE-ID;VALUE=DATE:20261112\r\n"));
         assert!(!ics.contains("RECURRENCE-ID:20261112T000000Z"));
     }
@@ -947,7 +1154,8 @@ mod tests {
     /// EXDATE and X-* the moment a user renamed the event.
     #[test]
     fn update_keeps_unmanaged_properties_and_value_form() {
-        let merged = merge_event_ical(stored_rich_event(), "abc@oxicloud", &body(), true).unwrap();
+        let merged =
+            merge_event_ical(stored_rich_event(), "abc@oxicloud", &body(), true, None).unwrap();
 
         assert!(merged.contains("DTSTART;TZID=Europe/Paris:20261105T100000\r\n"));
         assert!(merged.contains("DTEND;TZID=Europe/Paris:20261105T110000\r\n"));
@@ -967,7 +1175,8 @@ mod tests {
     /// unmanaged properties still survive the rewrite.
     #[test]
     fn update_with_new_times_replaces_tzid_value() {
-        let merged = merge_event_ical(stored_rich_event(), "abc@oxicloud", &body(), false).unwrap();
+        let merged =
+            merge_event_ical(stored_rich_event(), "abc@oxicloud", &body(), false, None).unwrap();
 
         assert!(merged.contains("DTSTART:20261105T090000Z\r\n"));
         assert!(merged.contains("DTEND:20261105T100000Z\r\n"));
@@ -982,7 +1191,8 @@ mod tests {
     fn clearing_recurrence_drops_exdate_but_keeps_alarms() {
         let mut changed = body();
         changed.rrule = None;
-        let merged = merge_event_ical(stored_rich_event(), "abc@oxicloud", &changed, true).unwrap();
+        let merged =
+            merge_event_ical(stored_rich_event(), "abc@oxicloud", &changed, true, None).unwrap();
 
         assert!(!merged.contains("RRULE:"));
         assert!(!merged.contains("EXDATE"));
@@ -1047,7 +1257,7 @@ mod tests {
     fn long_content_lines_are_folded() {
         let mut long = body();
         long.summary = "x".repeat(200);
-        let ics = build_event_ical("abc@oxicloud", None, &long);
+        let ics = build_event_ical("abc@oxicloud", None, &long, None);
         assert!(ics.contains("\r\n "), "expected a folded continuation");
         for physical in ics.split("\r\n") {
             assert!(physical.len() <= 75, "line too long: {physical:?}");
