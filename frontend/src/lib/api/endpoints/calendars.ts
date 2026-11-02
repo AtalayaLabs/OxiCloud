@@ -33,10 +33,12 @@ export type CalendarEvent = CalendarEventResponse & {
 	location: string | null;
 	rrule: string | null;
 	recurrence_id: string | null;
+	timezone: string | null;
 };
 
-/** Full replacement payload. The update path rewrites the whole VEVENT,
- * so an omitted optional field is cleared, not left untouched. */
+/** Full replacement payload. The update path replaces the VEVENT
+ * properties this DTO models, so an omitted optional field is cleared;
+ * properties outside the DTO (ATTENDEE, VALARM, X-*, …) are preserved. */
 export type SaveEventBody = Required<
 	Pick<SaveEventRequest, 'summary' | 'start_time' | 'end_time'>
 > & {
@@ -44,6 +46,7 @@ export type SaveEventBody = Required<
 	location: string | null;
 	all_day: boolean;
 	rrule: string | null;
+	timezone: string | null;
 };
 
 export function listCalendars(): Promise<CalendarInfo[]> {

@@ -23,6 +23,7 @@ function event(partial: Partial<CalendarEvent>): CalendarEvent {
 		rrule: null,
 		ical_uid: `uid-${seq}`,
 		recurrence_id: null,
+		timezone: null,
 		created_at: '2026-11-01T00:00:00Z',
 		updated_at: '2026-11-01T00:00:00Z',
 		...partial
@@ -54,6 +55,50 @@ describe('expandEvents', () => {
 			'2026-11-12T09:00:00.000Z',
 			'2026-11-19T09:00:00.000Z',
 			'2026-11-26T09:00:00.000Z'
+		]);
+	});
+
+	// A TZID series is anchored to local wall time: 09:00 New York
+	// stays 09:00 after the March DST switch, so the UTC instant moves
+	// from 14:00Z to 13:00Z. Expanding in UTC would keep 14:00Z and
+	// render the meeting an hour late for the rest of the year.
+	it('expands a TZID weekly series in wall-clock time across DST', () => {
+		const master = event({
+			start_time: '2026-03-02T14:00:00Z',
+			end_time: '2026-03-02T15:00:00Z',
+			rrule: 'FREQ=WEEKLY;COUNT=3',
+			timezone: 'America/New_York',
+			ical_uid: 'dst-weekly'
+		});
+		const expanded = expandEvents(
+			[master],
+			new Date('2026-03-01T00:00:00Z'),
+			new Date('2026-03-20T00:00:00Z')
+		);
+		expect(expanded.map((o) => o.start.toISOString())).toEqual([
+			'2026-03-02T14:00:00.000Z',
+			'2026-03-09T13:00:00.000Z',
+			'2026-03-16T13:00:00.000Z'
+		]);
+	});
+
+	it('applies UNTIL in UTC to a TZID series', () => {
+		const master = event({
+			start_time: '2026-03-02T14:00:00Z',
+			end_time: '2026-03-02T15:00:00Z',
+			rrule: 'FREQ=WEEKLY;UNTIL=20260316T130000Z',
+			timezone: 'America/New_York',
+			ical_uid: 'dst-until'
+		});
+		const expanded = expandEvents(
+			[master],
+			new Date('2026-03-01T00:00:00Z'),
+			new Date('2026-04-01T00:00:00Z')
+		);
+		expect(expanded.map((o) => o.start.toISOString())).toEqual([
+			'2026-03-02T14:00:00.000Z',
+			'2026-03-09T13:00:00.000Z',
+			'2026-03-16T13:00:00.000Z'
 		]);
 	});
 
