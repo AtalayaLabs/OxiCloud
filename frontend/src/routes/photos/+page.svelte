@@ -598,7 +598,7 @@
 				/* intentional: dropdown stays empty, cross-drive feed still works */
 			});
 		void loadMore();
-		void peopleEnabled().then((ok) => (peopleAvailable = ok));
+		peopleAvailable = peopleEnabled();
 		if (!sentinel) return;
 		const obs = new IntersectionObserver(
 			(entries) => {

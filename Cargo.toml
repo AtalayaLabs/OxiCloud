@@ -202,7 +202,7 @@ idna = "1.1"
 smol_str = { version = "0.3.6", features = ["serde"] }
 accept-language = "3.1.0"
 askama = "0.16.0"
-tantivy = "0.26.1"
+tantivy = "0.27.0"
 zip = { version = "9", default-features = false, features = ["deflate"] }
 pdf-extract = "0.12.0"
 nom-exif = "3.6.1"

@@ -28,7 +28,27 @@
         },
         "kind_file": "檔案",
         "kind_folder": "資料夾",
-        "english_fallback_divider": "--- 以下為英文版本 ---"
+        "english_fallback_divider": "--- 以下為英文版本 ---",
+        "login_coaching": {
+          "oidc": {
+            "subject": "透過 SSO 登入 OxiCloud",
+            "body": "您好 {{username}}，\n\n有人嘗試使用密碼登入您的 OxiCloud 帳戶，但您的帳戶已連結至單一登入 (SSO)，必須透過您的身分提供者進行驗證——而不是密碼。\n\n請開啟 OxiCloud 並點選「使用 SSO 登入」：\n{{login_url}}\n\n如果不是您本人嘗試登入，可以放心忽略此郵件。未發生任何登入，您的帳戶也沒有任何變更。\n\n— OxiCloud"
+          }
+        },
+        "coaching": {
+          "oidc": {
+            "subject": "透過 SSO 登入 OxiCloud",
+            "body": "您好 {{username}}，\n\n有人為您的 OxiCloud 帳戶要求了登入連結，但您的帳戶已連結至單一登入 (SSO)，必須透過您的身分提供者進行驗證——而不是郵件連結。\n\n請開啟 OxiCloud 並點選「使用 SSO 登入」：\n{{login_url}}\n\n如果不是您本人要求，可以放心忽略此郵件。未發生任何登入，您的帳戶也沒有任何變更。\n\n— OxiCloud"
+          },
+          "password": {
+            "subject": "使用您的密碼登入 OxiCloud",
+            "body": "您好 {{username}}，\n\n有人為您的 OxiCloud 帳戶要求了登入連結，但您的帳戶已設定密碼，且本部署在存在密碼時不允許透過郵件連結登入。請改用密碼登入。\n\n請開啟 OxiCloud：\n{{login_url}}\n\n如果您忘記密碼，請使用登入頁面上的「忘記密碼？」連結。\n\n如果不是您本人要求,可以放心忽略此郵件。未發生任何登入，您的帳戶也沒有任何變更。\n\n— OxiCloud"
+          },
+          "generic": {
+            "subject": "OxiCloud 登入連結未發送",
+            "body": "您好 {{username}}，\n\n有人為您的 OxiCloud 帳戶要求了登入連結，但無法送達。請開啟 OxiCloud 並使用為您帳戶設定的方式登入。\n\n{{login_url}}\n\n如果不是您本人要求，可以放心忽略此郵件。\n\n— OxiCloud"
+          }
+        }
       }
     },
     "notification": {
@@ -739,7 +759,11 @@
     "login_error_email_ambiguous": "多個本機帳戶與此電子郵件地址相符。請聯絡您的管理員來解決。",
     "logged_out": "已成功登出。",
     "login_error_email_not_verified_at_idp": "您的身份提供者回報您的電子郵件地址未經驗證。請在您的身份提供者處確認電子郵件,然後重新登入。",
-    "login_error_email_verification_required": "此伺服器要求提供已驗證的電子郵件。您的身份提供者未包含電子郵件驗證聲明。請聯絡您的管理員。"
+    "login_error_email_verification_required": "此伺服器要求提供已驗證的電子郵件。您的身份提供者未包含電子郵件驗證聲明。請聯絡您的管理員。",
+    "register_domain_not_allowed": "本部署不接受來自該電子郵件網域的註冊。請嘗試其他地址，或請管理員將您的網域加入允許清單。",
+    "register_password_disabled": "本部署已停用密碼註冊。請將密碼留空以透過電子郵件接收登入連結，或使用您的身分提供者登入。",
+    "register_disabled": "本部署已關閉註冊。請向管理員索取邀請。",
+    "account_deactivated": "您的帳戶已被停用。請聯絡您的管理員。"
   },
   "storage": {
     "title": "儲存空間",

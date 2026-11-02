@@ -286,13 +286,10 @@ impl FileHandler {
                         // compatibility surface to protect, and only our own
                         // frontend sends it — so garbage means a bug worth
                         // surfacing, not an old client worth tolerating.
-                        return Err((
-                            StatusCode::BAD_REQUEST,
-                            Json(serde_json::json!({
-                                "error": "source_modified_at must be an integer (epoch milliseconds)"
-                            })),
+                        return Err(AppError::bad_request(
+                            "source_modified_at must be an integer (epoch milliseconds)",
                         )
-                            .into_response());
+                        .into_response());
                     };
                     let secs =
                         crate::application::dtos::timestamp_helpers::millis_to_seconds_rounded(
@@ -313,10 +310,7 @@ impl FileHandler {
                                 "👮🏻‍♂️ rejected client-asserted source_modified_at on REST upload: {}",
                                 rejection.message(),
                             );
-                            return Err((
-                                StatusCode::BAD_REQUEST,
-                                Json(serde_json::json!({ "error": rejection.message() })),
-                            )
+                            return Err(AppError::bad_request(rejection.message().to_string())
                                 .into_response());
                         }
                     }
@@ -510,13 +504,7 @@ impl FileHandler {
             }
         }
 
-        Err((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "No file provided"
-            })),
-        )
-            .into_response())
+        Err(AppError::bad_request("No file provided").into_response())
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -617,13 +605,10 @@ impl FileHandler {
             "preview" => ThumbnailSize::Preview,
             "large" => ThumbnailSize::Large,
             _ => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({
-                        "error": "Invalid thumbnail size. Use: icon, preview, or large"
-                    })),
+                return AppError::bad_request(
+                    "Invalid thumbnail size. Use: icon, preview, or large",
                 )
-                    .into_response();
+                .into_response();
             }
         };
 
@@ -881,23 +866,16 @@ impl FileHandler {
             "preview" => ThumbnailSize::Preview,
             "large" => ThumbnailSize::Large,
             _ => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({
-                        "error": "Invalid thumbnail size. Use: icon, preview, or large"
-                    })),
+                return AppError::bad_request(
+                    "Invalid thumbnail size. Use: icon, preview, or large",
                 )
-                    .into_response();
+                .into_response();
             }
         };
 
         // Reject oversized payloads (512 KB)
         if body.len() > 512 * 1024 {
-            return (
-                StatusCode::PAYLOAD_TOO_LARGE,
-                Json(serde_json::json!({ "error": "Thumbnail exceeds 512 KB limit" })),
-            )
-                .into_response();
+            return AppError::payload_too_large("Thumbnail exceeds 512 KB limit").into_response();
         }
 
         // Validate file ownership
@@ -1482,11 +1460,7 @@ impl FileHandler {
                 })),
             )
                 .into_response(),
-            Err(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": e.to_string() })),
-            )
-                .into_response(),
+            Err(e) => AppError::internal_error(e.to_string()).into_response(),
         }
     }
 
@@ -1540,13 +1514,7 @@ impl FileHandler {
         let new_name = match payload.get("name").and_then(|v| v.as_str()) {
             Some(name) if !name.trim().is_empty() => name.trim().to_string(),
             _ => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({
-                        "error": "Missing or empty 'name' field"
-                    })),
-                )
-                    .into_response();
+                return AppError::bad_request("Missing or empty 'name' field").into_response();
             }
         };
 
@@ -1801,8 +1769,8 @@ pub async fn list_files_query(
     request_body(content_type = "multipart/form-data", description = "File data + folder_id (required: it determines the file's owner and drive)"),
     responses(
         (status = 201, description = "File uploaded", body = FileDto),
-        (status = 400, description = "Invalid request"),
-        (status = 507, description = "Storage quota exceeded"),
+        (status = 400, description = "Invalid request", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 507, description = "Storage quota exceeded", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "files"
@@ -1845,10 +1813,10 @@ pub struct CreateFileByHashRequest {
     request_body = CreateFileByHashRequest,
     responses(
         (status = 201, description = "File created from an already-owned blob — zero bytes transferred", body = FileDto),
-        (status = 400, description = "Invalid hash format or empty name"),
-        (status = 404, description = "No owned blob with this hash (anti-enumeration: same shape as unknown hash)"),
-        (status = 409, description = "A file with this name already exists in the folder"),
-        (status = 507, description = "Storage quota exceeded"),
+        (status = 400, description = "Invalid hash format or empty name", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "No owned blob with this hash (anti-enumeration: same shape as unknown hash)", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 409, description = "A file with this name already exists in the folder", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 507, description = "Storage quota exceeded", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "files"
@@ -1874,7 +1842,7 @@ pub async fn create_file_by_hash(
         (status = 200, content_type = "application/octet-stream", description = "File content (Content-Type on the actual response reflects the file's own mime type)"),
         (status = 206, content_type = "application/octet-stream", description = "Partial content (Range request) — same byte stream as the 200, scoped to the requested byte range. `Content-Type` on the actual response reflects the file's own mime type."),
         (status = 304, description = "Not modified"),
-        (status = 404, description = "File not found"),
+        (status = 404, description = "File not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "files"
@@ -1903,7 +1871,7 @@ pub async fn download_file(
         (status = 200, content_type = "image/webp", description = "Thumbnail image (image/jpeg or image/webp)"),
         (status = 204, description = "No thumbnail available for this file type"),
         (status = 304, description = "Not modified"),
-        (status = 404, description = "File not found"),
+        (status = 404, description = "File not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "files"
@@ -1955,8 +1923,8 @@ pub async fn get_thumbnail(
     request_body(content_type = "application/octet-stream", description = "Raw image bytes (max 512 KB)"),
     responses(
         (status = 201, body = Object, description = "Thumbnail stored"),
-        (status = 400, description = "Invalid image or size too large"),
-        (status = 404, description = "File not found"),
+        (status = 400, description = "Invalid image or size too large", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "File not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "files"
@@ -1976,7 +1944,7 @@ pub async fn upload_thumbnail(
     params(("id" = String, Path, description = "File ID")),
     responses(
         (status = 200, body = Object, description = "File metadata (EXIF, dimensions, duration, etc.)"),
-        (status = 404, description = "File not found"),
+        (status = 404, description = "File not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "files"
@@ -1995,7 +1963,7 @@ pub async fn get_file_metadata(
     params(("id" = String, Path, description = "File ID")),
     responses(
         (status = 204, description = "File deleted (moved to trash if enabled)"),
-        (status = 404, description = "File not found"),
+        (status = 404, description = "File not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "files"
@@ -2015,7 +1983,7 @@ pub async fn delete_file(
     request_body(content_type = "application/json", description = r#"{"name": "new-name.txt"}"#),
     responses(
         (status = 200, description = "Renamed file", body = FileDto),
-        (status = 404, description = "File not found"),
+        (status = 404, description = "File not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "files"
@@ -2036,7 +2004,7 @@ pub async fn rename_file(
     request_body(content = MoveFilePayload, content_type = "application/json", description = "MoveFilePayload"),
     responses(
         (status = 200, description = "Moved file", body = FileDto),
-        (status = 404, description = "File or destination not found"),
+        (status = 404, description = "File or destination not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "files"

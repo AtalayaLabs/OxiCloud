@@ -12,7 +12,7 @@
  * These run through apiFetch, which bypasses the refresh-and-retry path for
  * /api/s/ — a 401 here means "password required", not "session expired".
  */
-import { apiFetch } from '$lib/api/client';
+import { apiErrorFromResponse, apiFetch } from '$lib/api/client';
 import type { ItemType } from '$lib/api/types';
 
 export interface ShareMeta {
@@ -42,12 +42,12 @@ export async function getShareMeta(token: string): Promise<ShareMetaResult> {
 	if (res.status === 401) {
 		const body = (await res.json().catch(() => null)) as { requiresPassword?: boolean } | null;
 		if (body?.requiresPassword) return { status: 'password' };
-		throw new Error('Unauthorized');
+		throw await apiErrorFromResponse(res);
 	}
 	if (res.status === 410) return { status: 'expired' };
 	// 404 means the token doesn't resolve to any share — a bad/typo'd link.
 	if (res.status === 404) return { status: 'invalid' };
-	throw new Error(`HTTP ${res.status}`);
+	throw await apiErrorFromResponse(res);
 }
 
 /** Returns true on success, false on incorrect password. */
@@ -59,5 +59,5 @@ export async function verifySharePassword(token: string, password: string): Prom
 	});
 	if (res.ok) return true;
 	if (res.status === 401) return false;
-	throw new Error(`HTTP ${res.status}`);
+	throw await apiErrorFromResponse(res);
 }

@@ -86,9 +86,13 @@ const config = {
 		},
 		// Poll `_app/version.json` so an open tab notices a fresh deploy; the root
 		// layout reloads itself when it does, instead of silently running stale
-		// code after a rebuild (the classic "my fix isn't applied" trap).
+		// code after a rebuild (the classic "my fix isn't applied" trap). Five
+		// minutes — the SvelteKit default is 60 s, which is noisy on access logs
+		// for the "99% of tabs will never see a deploy during their lifetime"
+		// case; a 5-minute lag before an open tab notices a rebuild is fine
+		// for an operator-owned self-hosted deployment.
 		version: {
-			pollInterval: 60000
+			pollInterval: 300000
 		},
 		// Content-Security-Policy for the SPA document.
 		//

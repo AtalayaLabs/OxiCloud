@@ -28,7 +28,27 @@
         },
         "kind_file": "plik",
         "kind_folder": "folder",
-        "english_fallback_divider": "--- Wersja angielska poniżej ---"
+        "english_fallback_divider": "--- Wersja angielska poniżej ---",
+        "login_coaching": {
+          "oidc": {
+            "subject": "Zaloguj się do OxiCloud przez SSO",
+            "body": "Cześć {{username}},\n\nKtoś próbował zalogować się do Twojego konta OxiCloud za pomocą hasła, ale Twoje konto jest połączone z pojedynczym logowaniem (SSO) i musi być uwierzytelniane przez Twojego dostawcę tożsamości — nie hasłem.\n\nOtwórz OxiCloud i kliknij „Zaloguj się przez SSO\":\n{{login_url}}\n\nJeśli to nie Ty próbowałeś się zalogować, możesz zignorować tę wiadomość. Żadne logowanie nie miało miejsca i nic nie zmieniło się na Twoim koncie.\n\n— OxiCloud"
+          }
+        },
+        "coaching": {
+          "oidc": {
+            "subject": "Zaloguj się do OxiCloud przez SSO",
+            "body": "Cześć {{username}},\n\nKtoś poprosił o link logowania dla Twojego konta OxiCloud, ale Twoje konto jest połączone z pojedynczym logowaniem (SSO) i musi być uwierzytelniane przez Twojego dostawcę tożsamości — nie linkiem z e-maila.\n\nOtwórz OxiCloud i kliknij „Zaloguj się przez SSO\":\n{{login_url}}\n\nJeśli to nie Ty tego żądałeś, możesz zignorować tę wiadomość. Żadne logowanie nie miało miejsca i nic nie zmieniło się na Twoim koncie.\n\n— OxiCloud"
+          },
+          "password": {
+            "subject": "Użyj hasła, aby zalogować się do OxiCloud",
+            "body": "Cześć {{username}},\n\nKtoś poprosił o link logowania dla Twojego konta OxiCloud, ale Twoje konto ma ustawione hasło, a ta instancja nie zezwala na logowanie przez link e-mail, gdy istnieje hasło. Zaloguj się za pomocą swojego hasła.\n\nOtwórz OxiCloud:\n{{login_url}}\n\nJeśli nie pamiętasz hasła, użyj linku „Nie pamiętam hasła?\" na stronie logowania.\n\nJeśli to nie Ty tego żądałeś, możesz zignorować tę wiadomość. Żadne logowanie nie miało miejsca i nic nie zmieniło się na Twoim koncie.\n\n— OxiCloud"
+          },
+          "generic": {
+            "subject": "Link logowania OxiCloud nie został wysłany",
+            "body": "Cześć {{username}},\n\nKtoś poprosił o link logowania dla Twojego konta OxiCloud, ale nie udało się go dostarczyć. Otwórz OxiCloud i zaloguj się metodą skonfigurowaną dla Twojego konta.\n\n{{login_url}}\n\nJeśli to nie Ty tego żądałeś, możesz zignorować tę wiadomość.\n\n— OxiCloud"
+          }
+        }
       }
     },
     "notification": {
@@ -739,7 +759,11 @@
     "login_error_email_ambiguous": "Do tego adresu e-mail pasuje wiele kont lokalnych. Skontaktuj się z administratorem, aby rozwiązać problem.",
     "logged_out": "Wylogowano pomyślnie.",
     "login_error_email_not_verified_at_idp": "Twój dostawca tożsamości zgłasza, że Twój adres e-mail nie jest zweryfikowany. Potwierdź swój adres e-mail u dostawcy tożsamości i spróbuj zalogować się ponownie.",
-    "login_error_email_verification_required": "Ten serwer wymaga zweryfikowanego adresu e-mail. Twój dostawca tożsamości nie dołączył oświadczenia o weryfikacji e-maila. Skontaktuj się z administratorem."
+    "login_error_email_verification_required": "Ten serwer wymaga zweryfikowanego adresu e-mail. Twój dostawca tożsamości nie dołączył oświadczenia o weryfikacji e-maila. Skontaktuj się z administratorem.",
+    "register_domain_not_allowed": "Ta instancja nie akceptuje rejestracji z tej domeny e-mail. Spróbuj innego adresu lub poproś administratora o dodanie Twojej domeny do listy dozwolonych.",
+    "register_password_disabled": "Rejestracja z hasłem jest wyłączona na tej instancji. Pozostaw hasło puste, aby otrzymać link logowania e-mailem, lub zaloguj się za pomocą swojego dostawcy tożsamości.",
+    "register_disabled": "Rejestracja jest zamknięta na tej instancji. Poproś administratora o zaproszenie.",
+    "account_deactivated": "Twoje konto zostało dezaktywowane. Skontaktuj się z administratorem."
   },
   "storage": {
     "title": "Pamięć masowa",

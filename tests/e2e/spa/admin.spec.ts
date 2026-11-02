@@ -1,5 +1,5 @@
 import * as path from 'path';
-import { test, expect } from './coverage-helpers';
+import { test, expect, uiLogin } from './coverage-helpers';
 import { apiLogin, apiAdminCreateUser } from './helpers';
 
 const PLUGIN_ZIP = path.join(__dirname, '..', 'fixtures', 'plugin-hello.zip');
@@ -262,6 +262,45 @@ test('plugins tab: save retention settings', async ({ page }) => {
 });
 
 test('toggle the dashboard registration setting', async ({ page }) => {
+  await page.goto('/admin');
+  await expect(page.getByTestId('admin-dashboard-registration-checkbox')).toBeVisible({
+    timeout: 15_000,
+  });
+
+  // Step 1 — flip registration OFF via the admin checkbox.
+  await page.getByTestId('admin-dashboard-registration-checkbox').click();
+
+  // Step 2 — verify the gate: on an unauthenticated visit to /login,
+  // the register-flow path must be unreachable. The register form is
+  // gated behind `login-to-register-btn`, which is itself gated on
+  // `/api/config.auth.registration.enabled` (shipped in 9ce1418b); if
+  // registration is OFF, neither element must appear. Logout first so
+  // the layout guard doesn't bounce us off /login to /files.
+  //
+  // A hard reload is REQUIRED after logout — SvelteKit is a SPA, so
+  // the client-side navigation `/admin → /login` keeps the SPA module
+  // state (including the `serverConfig` store) alive. Without the
+  // reload, `serverConfig.auth.registration.enabled` is still the
+  // cached boot value (true), and the register button stays visible
+  // even though the server state just flipped to false. `page.reload`
+  // forces `hooks.client.ts` to re-run, which refetches `/api/config`
+  // and makes the gate reflect the current server state.
+  await page.getByTestId('appshell-user-menu-btn').click();
+  await page.getByTestId('appshell-user-menu-logout-btn').click();
+  await page.waitForURL('**/login**', { timeout: 15_000 });
+  await page.reload();
+  await expect(page.getByTestId('login-form')).toBeVisible();
+  await expect(page.getByTestId('login-to-register-btn')).toHaveCount(0);
+  await expect(page.getByTestId('login-register-form')).toHaveCount(0);
+
+  // Step 3 — sign back in as admin and flip registration ON so the
+  // DB state the rest of the Playwright suite inherits matches the
+  // default. The DB is shared across specs in a run — a single flip
+  // leaked state and broke the three register-flow specs that assume
+  // the register button is reachable (auth.spec.ts "register and
+  // setup panels…" + login.spec.ts "register a new account…" /
+  // "mismatched passwords…").
+  await uiLogin(page);
   await page.goto('/admin');
   await expect(page.getByTestId('admin-dashboard-registration-checkbox')).toBeVisible({
     timeout: 15_000,

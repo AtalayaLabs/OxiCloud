@@ -28,7 +28,27 @@
         },
         "kind_file": "Datei",
         "kind_folder": "Ordner",
-        "english_fallback_divider": "--- Englische Version unten ---"
+        "english_fallback_divider": "--- Englische Version unten ---",
+        "login_coaching": {
+          "oidc": {
+            "subject": "Bei OxiCloud über SSO anmelden",
+            "body": "Hallo {{username}},\n\nJemand hat versucht, sich mit einem Passwort bei Ihrem OxiCloud-Konto anzumelden, aber Ihr Konto ist mit Single Sign-On (SSO) verknüpft und muss über Ihren Identitätsanbieter angemeldet werden — nicht mit einem Passwort.\n\nÖffnen Sie OxiCloud und klicken Sie auf „Mit SSO anmelden\":\n{{login_url}}\n\nWenn Sie keine Anmeldung versucht haben, können Sie diese Nachricht ignorieren. Es wurde keine Anmeldung durchgeführt und an Ihrem Konto hat sich nichts geändert.\n\n— OxiCloud"
+          }
+        },
+        "coaching": {
+          "oidc": {
+            "subject": "Bei OxiCloud über SSO anmelden",
+            "body": "Hallo {{username}},\n\nJemand hat einen Anmeldelink für Ihr OxiCloud-Konto angefordert, aber Ihr Konto ist mit Single Sign-On (SSO) verknüpft und muss über Ihren Identitätsanbieter angemeldet werden — nicht per E-Mail-Link.\n\nÖffnen Sie OxiCloud und klicken Sie auf „Mit SSO anmelden\":\n{{login_url}}\n\nWenn Sie dies nicht angefordert haben, können Sie diese Nachricht ignorieren. Es wurde keine Anmeldung durchgeführt und an Ihrem Konto hat sich nichts geändert.\n\n— OxiCloud"
+          },
+          "password": {
+            "subject": "Verwenden Sie Ihr Passwort, um sich bei OxiCloud anzumelden",
+            "body": "Hallo {{username}},\n\nJemand hat einen Anmeldelink für Ihr OxiCloud-Konto angefordert, aber für Ihr Konto ist ein Passwort gesetzt und diese Instanz erlaubt keine Anmeldung per E-Mail-Link, wenn ein Passwort existiert. Bitte melden Sie sich stattdessen mit Ihrem Passwort an.\n\nÖffnen Sie OxiCloud:\n{{login_url}}\n\nWenn Sie Ihr Passwort nicht mehr kennen, verwenden Sie den Link „Passwort vergessen?\" auf der Anmeldeseite.\n\nWenn Sie dies nicht angefordert haben, können Sie diese Nachricht ignorieren. Es wurde keine Anmeldung durchgeführt und an Ihrem Konto hat sich nichts geändert.\n\n— OxiCloud"
+          },
+          "generic": {
+            "subject": "OxiCloud-Anmeldelink nicht gesendet",
+            "body": "Hallo {{username}},\n\nJemand hat einen Anmeldelink für Ihr OxiCloud-Konto angefordert, aber er konnte nicht zugestellt werden. Bitte öffnen Sie OxiCloud und melden Sie sich mit der für Ihr Konto konfigurierten Methode an.\n\n{{login_url}}\n\nWenn Sie dies nicht angefordert haben, können Sie diese Nachricht ignorieren.\n\n— OxiCloud"
+          }
+        }
       }
     },
     "notification": {
@@ -739,7 +759,11 @@
     "login_error_email_ambiguous": "Mehrere lokale Konten stimmen mit dieser E-Mail-Adresse überein. Wenden Sie sich zur Lösung an Ihren Administrator.",
     "logged_out": "Erfolgreich abgemeldet.",
     "login_error_email_not_verified_at_idp": "Ihr Identitätsanbieter meldet, dass Ihre E-Mail-Adresse nicht bestätigt ist. Bestätigen Sie Ihre E-Mail bei Ihrem Identitätsanbieter und versuchen Sie es erneut.",
-    "login_error_email_verification_required": "Dieser Server erfordert eine bestätigte E-Mail-Adresse. Ihr Identitätsanbieter hat keinen E-Mail-Bestätigungsanspruch übermittelt. Wenden Sie sich an Ihren Administrator."
+    "login_error_email_verification_required": "Dieser Server erfordert eine bestätigte E-Mail-Adresse. Ihr Identitätsanbieter hat keinen E-Mail-Bestätigungsanspruch übermittelt. Wenden Sie sich an Ihren Administrator.",
+    "register_domain_not_allowed": "Diese Instanz akzeptiert keine Registrierungen von dieser E-Mail-Domain. Versuchen Sie eine andere Adresse oder bitten Sie den Administrator, Ihre zur Zulassungsliste hinzuzufügen.",
+    "register_password_disabled": "Die Registrierung mit Passwort ist auf dieser Instanz deaktiviert. Lassen Sie das Passwort leer, um einen Anmeldelink per E-Mail zu erhalten, oder melden Sie sich über Ihren Identitätsanbieter an.",
+    "register_disabled": "Registrierungen sind auf dieser Instanz geschlossen. Bitten Sie einen Administrator um eine Einladung.",
+    "account_deactivated": "Ihr Konto wurde deaktiviert. Bitte kontaktieren Sie Ihren Administrator."
   },
   "storage": {
     "title": "Speicher",

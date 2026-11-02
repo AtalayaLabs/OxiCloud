@@ -268,29 +268,35 @@ pub enum AuthError {
 
 impl IntoResponse for AuthError {
     fn into_response(self) -> Response {
-        let (status, error_message) = match self {
+        // Route through AppError so every rejection out of the auth
+        // middleware emits the uniform ApiErrorBody wire shape
+        // (`{status, error, message, error_type}`). Pre-normalization
+        // this path emitted a bare `{"error": "..."}` body, drifting
+        // from every handler-emitted error and leaving the SPA's
+        // `body.error ?? body.message` fallback with a non-populated
+        // `.message` field. See docs/plan/normalize-errors.md.
+        let app = match self {
             AuthError::TokenNotProvided => {
-                (StatusCode::UNAUTHORIZED, "Token not provided".to_string())
+                crate::interfaces::errors::AppError::unauthorized("Token not provided")
             }
-            AuthError::InvalidToken(msg) => (StatusCode::UNAUTHORIZED, msg),
-            AuthError::TokenExpired => (StatusCode::UNAUTHORIZED, "Token expired".to_string()),
-            AuthError::UserNotFound => (StatusCode::UNAUTHORIZED, "User not found".to_string()),
-            AuthError::AccountInactive => (
-                StatusCode::UNAUTHORIZED,
-                "Account is no longer active".to_string(),
-            ),
-            AuthError::AccessDenied(msg) => (StatusCode::FORBIDDEN, msg),
-            AuthError::AuthServiceUnavailable => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Authentication service unavailable".to_string(),
-            ),
+            AuthError::InvalidToken(msg) => crate::interfaces::errors::AppError::unauthorized(msg),
+            AuthError::TokenExpired => {
+                crate::interfaces::errors::AppError::unauthorized("Token expired")
+            }
+            AuthError::UserNotFound => {
+                crate::interfaces::errors::AppError::unauthorized("User not found")
+            }
+            AuthError::AccountInactive => {
+                crate::interfaces::errors::AppError::unauthorized("Account is no longer active")
+            }
+            AuthError::AccessDenied(msg) => crate::interfaces::errors::AppError::forbidden(msg),
+            AuthError::AuthServiceUnavailable => {
+                crate::interfaces::errors::AppError::internal_error(
+                    "Authentication service unavailable",
+                )
+            }
         };
-
-        let body = axum::Json(serde_json::json!({
-            "error": error_message
-        }));
-
-        (status, body).into_response()
+        app.into_response()
     }
 }
 

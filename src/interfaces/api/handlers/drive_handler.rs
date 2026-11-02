@@ -38,7 +38,7 @@ use crate::interfaces::middleware::auth::AuthUser;
     path = "/api/drives",
     responses(
         (status = 200, description = "Drives the caller can read", body = Vec<DriveDto>),
-        (status = 500, description = "Internal server error"),
+        (status = 500, description = "Internal server error", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "drives"
@@ -157,9 +157,9 @@ fn parse_subject(kind: SubjectTypeDto, id: Uuid) -> Subject {
     request_body = CreateDriveDto,
     responses(
         (status = 201, description = "Drive created", body = DriveDto),
-        (status = 400, description = "Empty name, empty owner group, or invalid input"),
-        (status = 403, description = "Caller is not an OxiCloud admin"),
-        (status = 501, description = "kind=personal not yet implemented"),
+        (status = 400, description = "Empty name, empty owner group, or invalid input", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 403, description = "Caller is not an OxiCloud admin", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 501, description = "kind=personal not yet implemented", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "drives"
@@ -173,15 +173,12 @@ pub async fn create_drive(
 
     // Personal kind is a wire-shape placeholder — see DTO doc.
     if dto.kind == DriveKindDto::Personal {
-        return (
-            StatusCode::NOT_IMPLEMENTED,
-            Json(serde_json::json!({
-                "error": "Creating secondary personal drives is not yet implemented. \
+        return AppError::not_implemented(
+            "Creating secondary personal drives is not yet implemented. \
                           The authz model and quota source are still open product \
-                          questions — this body shape is reserved for the future PR."
-            })),
+                          questions — this body shape is reserved for the future PR.",
         )
-            .into_response();
+        .into_response();
     }
 
     let owner = parse_subject(dto.owner.kind, dto.owner.id);
@@ -207,7 +204,7 @@ pub async fn create_drive(
     params(("id" = Uuid, Path, description = "Drive UUID")),
     responses(
         (status = 200, description = "Role grants on this drive", body = Vec<GrantDto>),
-        (status = 404, description = "Drive not found or caller lacks Read"),
+        (status = 404, description = "Drive not found or caller lacks Read", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "drives"
@@ -237,9 +234,9 @@ pub async fn list_drive_members(
     request_body = AddDriveMemberDto,
     responses(
         (status = 201, description = "Member added", body = GrantDto),
-        (status = 400, description = "Validation error (e.g. last-owner constraint)"),
-        (status = 404, description = "Drive not found or caller lacks Manage"),
-        (status = 405, description = "Personal drive — membership is immutable"),
+        (status = 400, description = "Validation error (e.g. last-owner constraint)", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Drive not found or caller lacks Manage", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 405, description = "Personal drive — membership is immutable", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "drives"
@@ -279,9 +276,9 @@ pub async fn add_drive_member(
     request_body = UpdateDriveMemberDto,
     responses(
         (status = 200, description = "Member role updated", body = GrantDto),
-        (status = 400, description = "Validation error (e.g. last-owner demotion)"),
-        (status = 404, description = "Drive not found or caller lacks Manage"),
-        (status = 405, description = "Personal drive — membership is immutable"),
+        (status = 400, description = "Validation error (e.g. last-owner demotion)", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Drive not found or caller lacks Manage", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 405, description = "Personal drive — membership is immutable", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "drives"
@@ -320,9 +317,9 @@ pub async fn update_drive_member(
     ),
     responses(
         (status = 204, description = "Member removed (or was never a member — idempotent)"),
-        (status = 400, description = "Last-owner protection — promote another member first"),
-        (status = 404, description = "Drive not found or caller lacks Manage"),
-        (status = 405, description = "Personal drive — membership is immutable"),
+        (status = 400, description = "Last-owner protection — promote another member first", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Drive not found or caller lacks Manage", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 405, description = "Personal drive — membership is immutable", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "drives"
@@ -360,9 +357,9 @@ pub async fn remove_drive_member(
     params(("id" = Uuid, Path, description = "Drive UUID")),
     responses(
         (status = 204, description = "Drive deleted"),
-        (status = 404, description = "Drive not found or caller lacks Manage"),
-        (status = 405, description = "Default Personal drive — undeletable"),
-        (status = 409, description = "Drive is not empty — move/trash contents first"),
+        (status = 404, description = "Drive not found or caller lacks Manage", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 405, description = "Default Personal drive — undeletable", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 409, description = "Drive is not empty — move/trash contents first", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "drives"
@@ -471,7 +468,7 @@ where
     request_body = UpdateDrivePoliciesDto,
     responses(
         (status = 200, body = Object, description = "Policies merged"),
-        (status = 404, description = "Drive not found OR caller is not OxiCloud admin"),
+        (status = 404, description = "Drive not found OR caller is not OxiCloud admin", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "drives"
@@ -622,8 +619,8 @@ pub struct UpdateDriveQuotaDto {
     request_body = UpdateDriveQuotaDto,
     responses(
         (status = 200, body = Object, description = "Quota updated"),
-        (status = 400, description = "Personal drive — quota is envelope-managed via the owner user"),
-        (status = 404, description = "Drive not found OR caller is not OxiCloud admin"),
+        (status = 400, description = "Personal drive — quota is envelope-managed via the owner user", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Drive not found OR caller is not OxiCloud admin", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "drives"

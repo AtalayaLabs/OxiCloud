@@ -70,10 +70,7 @@ impl SearchHandler {
             Some(service) => service,
             None => {
                 error!("Search service not available");
-                return (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    Json(json!({ "error": "Search service is not available" })),
-                )
+                return AppError::service_unavailable("Search service is not available")
                     .into_response();
             }
         };
@@ -107,11 +104,7 @@ impl SearchHandler {
             }
             Err(err) => {
                 error!("Search error: {}", err);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({ "error": "Search error" })),
-                )
-                    .into_response()
+                AppError::internal_error("Search error").into_response()
             }
         }
     }
@@ -128,10 +121,7 @@ impl SearchHandler {
             Some(service) => service,
             None => {
                 error!("Search service not available");
-                return (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    Json(json!({ "error": "Search service is not available" })),
-                )
+                return AppError::service_unavailable("Search service is not available")
                     .into_response();
             }
         };
@@ -157,11 +147,7 @@ impl SearchHandler {
             }
             Err(err) => {
                 error!("Suggestions error: {}", err);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({ "error": "Suggestions error" })),
-                )
-                    .into_response()
+                AppError::internal_error("Suggestions error").into_response()
             }
         }
     }
@@ -189,11 +175,9 @@ impl SearchHandler {
 
         let Some(search_service) = &state.applications.search_service else {
             error!("Search service not available");
-            return Ok((
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({ "error": "Search service is not available" })),
-            )
-                .into_response());
+            return Ok(
+                AppError::service_unavailable("Search service is not available").into_response(),
+            );
         };
 
         match search_service.clear_search_cache().await {
@@ -212,11 +196,7 @@ impl SearchHandler {
             }
             Err(err) => {
                 error!("Error clearing search cache: {}", err);
-                Ok((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({ "error": "Error clearing search cache" })),
-                )
-                    .into_response())
+                Ok(AppError::internal_error("Error clearing search cache").into_response())
             }
         }
     }
@@ -277,7 +257,7 @@ pub struct SuggestParams {
     ),
     responses(
         (status = 200, description = "Search results (cursor-paginated envelope shared with /*/resources)", body = SearchResourcesDto),
-        (status = 503, description = "Search service unavailable"),
+        (status = 503, description = "Search service unavailable", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "search"
@@ -300,7 +280,7 @@ pub async fn search_resources(
     ),
     responses(
         (status = 200, description = "Suggestions", body = SearchSuggestionsDto),
-        (status = 503, description = "Search service unavailable"),
+        (status = 503, description = "Search service unavailable", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "search"
@@ -318,9 +298,9 @@ pub async fn suggest_files(
     path = "/api/admin/search/cache",
     responses(
         (status = 200, body = Object, description = "Cache cleared"),
-        (status = 401, description = "Missing or invalid token"),
-        (status = 403, description = "Caller is not an admin"),
-        (status = 503, description = "Search service unavailable"),
+        (status = 401, description = "Missing or invalid token", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 403, description = "Caller is not an admin", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 503, description = "Search service unavailable", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "admin"

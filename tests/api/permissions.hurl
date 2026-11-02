@@ -135,7 +135,7 @@ Content-Type: application/json
 
 HTTP 404
 [Asserts]
-jsonpath "$.error_type" == "Not Found"
+jsonpath "$.error_type" == "NotFound"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -152,7 +152,7 @@ Content-Type: application/json
 
 HTTP 404
 [Asserts]
-jsonpath "$.error_type" == "Not Found"
+jsonpath "$.error_type" == "NotFound"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -228,7 +228,7 @@ Content-Type: application/json
 
 HTTP 404
 [Asserts]
-jsonpath "$.error_type" == "Not Found"
+jsonpath "$.error_type" == "NotFound"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -260,7 +260,7 @@ Authorization: Bearer {{bob_token}}
 
 HTTP 404
 [Asserts]
-jsonpath "$.error_type" == "Not Found"
+jsonpath "$.error_type" == "NotFound"
 
 
 # ─────────────────────────────────────────────────────────────

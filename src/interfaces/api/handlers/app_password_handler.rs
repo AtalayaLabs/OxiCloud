@@ -40,9 +40,9 @@ pub fn app_password_routes() -> Router<Arc<AppState>> {
     request_body = CreateAppPasswordRequestDto,
     responses(
         (status = 200, description = "App password created — `password` is plain-text and shown exactly ONCE", body = crate::application::dtos::app_password_dto::AppPasswordCreatedResponseDto),
-        (status = 401, description = "Caller is not signed in"),
-        (status = 403, description = "External users cannot mint app passwords"),
-        (status = 409, description = "Caller has no claimed username — app password is unusable without one"),
+        (status = 401, description = "Caller is not signed in", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 403, description = "External users cannot mint app passwords", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 409, description = "Caller has no claimed username — app password is unusable without one", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "app-passwords"
 )]
@@ -55,21 +55,43 @@ pub async fn create_app_password(
     // Gate externals BEFORE we touch the app_password_service. The
     // service treats every authenticated caller equally; the policy
     // that externals can't hold persistent credentials lives here.
-    if let Some(auth_svc) = state.auth_service.as_ref()
-        && let Err(err) = crate::interfaces::middleware::user::require_internal_user(
-            &auth_svc.auth_application_service,
-            user.id,
-        )
-        .await
-    {
-        tracing::info!(
-            target: "audit",
-            event = "auth.app_password_create_rejected",
-            reason = "external_user",
-            caller_id = %user.id,
-            "👮🏻‍♂️ External user blocked from creating an app password"
-        );
-        return Err(err);
+    //
+    // The error_type `ExternalUserAppPassword` is more specific than the
+    // generic `Forbidden` that `require_internal_user` emits — the SPA's
+    // profile card branches on it to render the right CTA ("you're a
+    // magic-link user, there's nothing to show here") rather than a
+    // generic "no permission" toast. See `profile.test.ts` Pin 3.
+    //
+    // The `no user row` arm of `require_internal_user` still returns the
+    // generic `Forbidden` — that path is reachable only via session
+    // tokens whose user vanished (admin deleted the account mid-session)
+    // and the specific-copy branch wouldn't apply.
+    if let Some(auth_svc) = state.auth_service.as_ref() {
+        match auth_svc
+            .auth_application_service
+            .get_user_flags(user.id)
+            .await
+        {
+            Ok(flags) if flags.is_external => {
+                tracing::info!(
+                    target: "audit",
+                    event = "auth.app_password_create_rejected",
+                    reason = "external_user",
+                    caller_id = %user.id,
+                    "👮🏻‍♂️ External user blocked from creating an app password"
+                );
+                return Err(AppError::new(
+                    axum::http::StatusCode::FORBIDDEN,
+                    "External users cannot mint app passwords.",
+                    "ExternalUserAppPassword",
+                ));
+            }
+            // Fall through for internals and for transient flag-fetch
+            // failures — the behaviour matches `require_internal_user`
+            // (restriction gate, not auth), so a DB blip must not lock
+            // every internal user out of app-password creation.
+            _ => {}
+        }
     }
 
     // Require a claimed username. NextCloud Basic Auth resolves users by
@@ -120,7 +142,7 @@ pub async fn create_app_password(
     path = "/api/auth/app-passwords",
     responses(
         (status = 200, description = "The caller's app passwords (metadata only, no plain text)", body = crate::application::dtos::app_password_dto::AppPasswordListResponseDto),
-        (status = 401, description = "Caller is not signed in"),
+        (status = 401, description = "Caller is not signed in", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "app-passwords"
 )]
@@ -148,9 +170,9 @@ pub async fn list_app_passwords(
     ),
     responses(
         (status = 200, description = "App password revoked — subsequent Basic-Auth with it returns 401", body = crate::application::dtos::app_password_dto::AppPasswordRevokeResponseDto),
-        (status = 400, description = "`id` is not a valid UUID"),
-        (status = 401, description = "Caller is not signed in"),
-        (status = 404, description = "No app password with this id for the caller"),
+        (status = 400, description = "`id` is not a valid UUID", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 401, description = "Caller is not signed in", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "No app password with this id for the caller", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "app-passwords"
 )]

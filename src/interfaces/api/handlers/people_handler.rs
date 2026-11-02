@@ -22,19 +22,11 @@ use crate::interfaces::middleware::auth::AuthUser;
 use utoipa::ToSchema;
 
 fn disabled() -> Response {
-    (
-        StatusCode::NOT_FOUND,
-        Json(serde_json::json!({ "error": "People feature is disabled" })),
-    )
-        .into_response()
+    AppError::not_found("People feature is disabled").into_response()
 }
 
 fn bad_id() -> Response {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(serde_json::json!({ "error": "invalid id" })),
-    )
-        .into_response()
+    AppError::bad_request("invalid id").into_response()
 }
 
 /// GET /api/people — identity clusters for the caller.
@@ -43,7 +35,7 @@ fn bad_id() -> Response {
     path = "/api/people",
     responses(
         (status = 200, description = "Identity clusters", body = [PersonDto]),
-        (status = 404, description = "People feature disabled"),
+        (status = 404, description = "People feature disabled", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "people"
 )]
@@ -64,8 +56,8 @@ pub async fn list_people(State(state): State<Arc<AppState>>, auth_user: AuthUser
     params(("id" = String, Path, description = "Person cluster id")),
     responses(
         (status = 200, description = "File ids where this person appears", body = [String]),
-        (status = 400, description = "Malformed person id"),
-        (status = 404, description = "People feature disabled"),
+        (status = 400, description = "Malformed person id", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "People feature disabled", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "people"
 )]
@@ -101,8 +93,8 @@ pub struct RenamePersonRequest {
     request_body = RenamePersonRequest,
     responses(
         (status = 204, description = "Renamed"),
-        (status = 400, description = "Malformed person id"),
-        (status = 404, description = "People feature disabled"),
+        (status = 400, description = "Malformed person id", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "People feature disabled", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "people"
 )]
@@ -141,8 +133,8 @@ pub struct MergePeopleRequest {
     request_body = MergePeopleRequest,
     responses(
         (status = 204, description = "Merged"),
-        (status = 400, description = "Malformed cluster id(s)"),
-        (status = 404, description = "People feature disabled"),
+        (status = 400, description = "Malformed cluster id(s)", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "People feature disabled", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "people"
 )]
@@ -169,7 +161,7 @@ pub async fn merge_people(
     path = "/api/people/recluster",
     responses(
         (status = 200, description = "Recluster complete", body = serde_json::Value),
-        (status = 404, description = "People feature disabled"),
+        (status = 404, description = "People feature disabled", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "people"
 )]
@@ -189,7 +181,7 @@ pub async fn recluster(State(state): State<Arc<AppState>>, auth_user: AuthUser) 
     path = "/api/people/data",
     responses(
         (status = 204, description = "All face data erased"),
-        (status = 404, description = "People feature disabled"),
+        (status = 404, description = "People feature disabled", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "people"
 )]
@@ -210,8 +202,8 @@ pub async fn delete_all(State(state): State<Arc<AppState>>, auth_user: AuthUser)
     params(("file_id" = String, Path, description = "Photo file id")),
     responses(
         (status = 200, description = "Face bounding boxes in the photo", body = [FaceBoxDto]),
-        (status = 400, description = "Malformed file id"),
-        (status = 404, description = "People feature disabled"),
+        (status = 400, description = "Malformed file id", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "People feature disabled", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "people"
 )]

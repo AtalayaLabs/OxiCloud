@@ -632,7 +632,7 @@ impl DedupHandler {
     ),
     responses(
         (status = 200, description = "Caller holds a visible reference", body = HashCheckResponse),
-        (status = 404, description = "No visible reference, unknown hash, or malformed input"),
+        (status = 404, description = "No visible reference, unknown hash, or malformed input", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "dedup",
     security(("bearerAuth" = []))
@@ -653,9 +653,9 @@ pub async fn check_hash(
     ),
     responses(
         (status = 200, description = "Admin blob accounting: size + global ref_count", body = HashCheckAdminResponse),
-        (status = 401, description = "Missing or invalid token"),
-        (status = 403, description = "Caller is not an admin"),
-        (status = 404, description = "No blob with this hash is stored (or malformed input)"),
+        (status = 401, description = "Missing or invalid token", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 403, description = "Caller is not an admin", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "No blob with this hash is stored (or malformed input)", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "admin",
     security(("bearerAuth" = []))
@@ -674,7 +674,7 @@ pub async fn admin_check_hash(
     request_body = HashBatchRequest,
     responses(
         (status = 200, description = "The subset of the submitted hashes the caller already owns", body = HashBatchResponse),
-        (status = 400, description = "Too many hashes in one batch"),
+        (status = 400, description = "Too many hashes in one batch", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "dedup",
     security(("bearerAuth" = []))
@@ -692,8 +692,8 @@ pub async fn check_hashes_batch(
     path = "/api/admin/dedup/stats",
     responses(
         (status = 200, description = "Deduplication statistics", body = DedupStatsResponse),
-        (status = 401, description = "Missing or invalid token"),
-        (status = 403, description = "Caller is not an admin"),
+        (status = 401, description = "Missing or invalid token", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 403, description = "Caller is not an admin", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "admin",
     security(("bearerAuth" = []))
@@ -710,8 +710,8 @@ pub async fn get_stats(state: State<GlobalState>, auth_user: AuthUser) -> impl I
     ),
     responses(
         (status = 200, content_type = "application/octet-stream", description = "Raw blob content (user-scoped)"),
-        (status = 400, description = "Invalid hash format"),
-        (status = 404, description = "Blob not found or not owned by this user"),
+        (status = 400, description = "Invalid hash format", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Blob not found or not owned by this user", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "dedup",
     security(("bearerAuth" = []))
@@ -729,9 +729,9 @@ pub async fn get_blob(
     path = "/api/admin/dedup/recalculate",
     responses(
         (status = 200, description = "Statistics after integrity verification", body = DedupStatsResponse),
-        (status = 401, description = "Missing or invalid token"),
-        (status = 403, description = "Caller is not an admin"),
-        (status = 500, description = "Integrity verification failed"),
+        (status = 401, description = "Missing or invalid token", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 403, description = "Caller is not an admin", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 500, description = "Integrity verification failed", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "admin",
     security(("bearerAuth" = []))

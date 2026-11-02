@@ -310,6 +310,77 @@ impl StorageUsageService {
         Ok(bytes.unwrap_or(0))
     }
 
+    /// Size + folder_id of a TRASHED file. `None` when the file does
+    /// not exist OR is currently live (not trashed).
+    ///
+    /// Used by `trash_service::restore_item` to run the quota precheck
+    /// on the restore path: we need the file's `size` (the amount
+    /// about to re-count against the drive / envelope) AND its
+    /// `folder_id` (the folder the restored file will land under, so
+    /// the shared `check_drive_quota_by_folder` resolves the right
+    /// drive). Trash doesn't move the row; `folder_id` is the
+    /// pre-trash location that `restore_from_trash` reinstates
+    /// (`folder_id = COALESCE(original_folder_id, folder_id)` —
+    /// cascade-trashed files have `original_folder_id` NULL, so the
+    /// COALESCE picks up the unchanged `folder_id`).
+    pub async fn trashed_file_destination(
+        &self,
+        file_id: Uuid,
+    ) -> Result<Option<(i64, Uuid)>, DomainError> {
+        let row: Option<(i64, Uuid)> = sqlx::query_as(
+            "SELECT size, folder_id FROM storage.files WHERE id = $1 AND is_trashed",
+        )
+        .bind(file_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| {
+            DomainError::internal_error("StorageUsage", format!("trashed_file_destination: {e}"))
+        })?;
+        Ok(row)
+    }
+
+    /// Sum of file sizes that `restore_from_trash(folder_id)` would
+    /// un-trash. Mirrors the WHERE clause of
+    /// `folder_db_repository.rs::restore_from_trash`:
+    ///
+    ///   * The caller's folder, and every descendant via `lpath <@`.
+    ///   * Files currently trashed (`is_trashed = TRUE`).
+    ///   * Files that were cascade-trashed with the subtree
+    ///     (`original_folder_id IS NULL`) — i.e. went to trash as a
+    ///     side effect of their ancestor being trashed, not
+    ///     independently. Independently-trashed descendants
+    ///     (`original_folder_id IS NOT NULL`) stay in trash on
+    ///     restore and must be excluded from the quota math so we
+    ///     don't over-charge.
+    ///
+    /// Returns 0 for an empty subtree AND for a non-existent
+    /// `folder_id` (same silent-drop semantic as
+    /// [`Self::folder_subtree_bytes`]). The caller is expected to
+    /// probe the folder's existence separately.
+    pub async fn pending_restore_folder_subtree_bytes(
+        &self,
+        folder_id: Uuid,
+    ) -> Result<i64, DomainError> {
+        let (bytes,): (Option<i64>,) = sqlx::query_as(
+            "SELECT COALESCE(SUM(f.size), 0)::bigint
+               FROM storage.files f
+               JOIN storage.folders fo ON fo.id = f.folder_id
+              WHERE fo.lpath <@ (SELECT lpath FROM storage.folders WHERE id = $1)
+                AND f.is_trashed
+                AND f.original_folder_id IS NULL",
+        )
+        .bind(folder_id)
+        .fetch_one(self.pool.as_ref())
+        .await
+        .map_err(|e| {
+            DomainError::internal_error(
+                "StorageUsage",
+                format!("pending_restore_folder_subtree_bytes: {e}"),
+            )
+        })?;
+        Ok(bytes.unwrap_or(0))
+    }
+
     /// Same as [`Self::add_drive_storage_usage_delta`] but resolves
     /// the drive id from a parent folder id in a single statement.
     /// Avoids a separate `SELECT drive_id FROM storage.folders` round

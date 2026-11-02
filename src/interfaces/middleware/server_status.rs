@@ -209,15 +209,20 @@ pub fn build_header_payload(state: &AppState) -> HeaderPayload {
 /// clients can compare against their last-seen value and refetch
 /// `/api/config` only on a real diff.
 ///
-/// Hashes the entire [`HeaderPayload`] by serializing it to JSON and
-/// taking the first 16 hex chars of its BLAKE3. The payload shape is
-/// stable JSON (BTreeMap-serialized banners, deterministic field
-/// order), so the same observable state always hashes the same.
+/// Hash input is the pair of (`HeaderPayload`, `registration_enabled`).
+/// `HeaderPayload` is serialized as stable JSON (BTreeMap banners,
+/// deterministic field order); `registration_enabled` is appended as a
+/// single byte. Any new `/api/config` field whose admin-driven changes
+/// must trigger a FE refetch extends this tuple the same way — the
+/// hash's contract is "any axis that could flip at runtime and is
+/// reflected on `/api/config` is covered". BLAKE3, first 16 hex chars.
 /// Collision risk at 2^-64 — comfortably below "false negative on a
 /// genuine change" being noticeable.
 pub fn compute_server_status_version(state: &AppState) -> String {
     let payload = build_header_payload(state);
-    let bytes = serde_json::to_vec(&payload).unwrap_or_default();
+    let registration_enabled = state.registration_enabled.load(Ordering::Relaxed);
+    let mut bytes = serde_json::to_vec(&payload).unwrap_or_default();
+    bytes.push(u8::from(registration_enabled));
     let full = blake3::hash(&bytes).to_hex().to_string();
     full[..16].to_string()
 }

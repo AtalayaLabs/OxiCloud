@@ -12,13 +12,10 @@
 		bindDpopIfPossible,
 		exchangeOidcCode,
 		fetchMe,
-		getAuthStatus,
-		getOidcProviders,
 		login,
 		register,
 		sendMagicLink,
-		setupAdmin,
-		type OidcProviders
+		setupAdmin
 	} from '$lib/api/endpoints/auth';
 	import { i18n, SUPPORTED_LOCALES, setLocale, t, type Locale } from '$lib/i18n/index.svelte';
 	import { loginErrorMessage } from '$lib/auth/loginError';
@@ -73,14 +70,15 @@
 	// Magic-link submit status (rendered inline after a link is sent).
 	let magicStatus = $state<{ text: string; ok: boolean } | null>(null);
 
-	// OIDC + auth-method flags exposed by /api/auth/oidc/providers.
-	let oidc = $state<OidcProviders>({ enabled: false });
-	// Default `true` here: on older backends the field is absent, and the
-	// legacy behaviour was always-on password login.
-	const passwordLoginEnabled = $derived(oidc.password_login_enabled !== false);
-	// Default `false`: only render magic-link UI when the backend
-	// affirmatively enables it (SMTP wired + allowlist + non-OIDC deployment).
-	const magicLinkLoginEnabled = $derived(oidc.magic_link_login_enabled === true);
+	// OIDC + auth-method flags come from `/api/config.auth.*` (hydrated
+	// at SPA boot by `serverConfig.load()`). The pre-consolidation shape
+	// `/api/auth/oidc/providers` is retired; every field below used to
+	// live under flat names there (`password_login_enabled`,
+	// `magic_link_login_enabled`, …) and now lives under per-method
+	// sub-objects. $derived so a late `/api/config` arrival or a
+	// `ServerStatusChanged` refetch re-evaluates the form matrix.
+	const passwordLoginEnabled = $derived(serverConfig.auth.password.enabled);
+	const magicLinkLoginEnabled = $derived(serverConfig.auth.magic_link.enabled);
 	// Single-form UX: the identifier + password fields double as the
 	// magic-link path. When the password is empty (and the server offers
 	// magic-link), submit sends a link to the identifier instead of
@@ -225,6 +223,16 @@
 					'auth.password_login_disabled',
 					'Password login is disabled on this server. Leave the password blank to receive a sign-in link, or use SSO.'
 				);
+			} else if (err instanceof ApiError && err.errorType === 'AccountDeactivated') {
+				// Reached ONLY after the server validated the credential
+				// — a wrong-password attempt on a deactivated account
+				// still collapses to the generic "Invalid credentials"
+				// branch above. See `ensure_user_is_active` in the Rust
+				// service for the ordering rationale.
+				error = t(
+					'auth.account_deactivated',
+					'Your account has been deactivated. Please contact your administrator.'
+				);
 			} else {
 				error = err instanceof Error ? err.message : t('auth.login_error', 'Error logging in');
 			}
@@ -303,8 +311,33 @@
 			);
 			mode = 'login';
 		} catch (err) {
-			regError =
-				err instanceof Error ? err.message : t('auth.register_error', 'Registration failed');
+			// Branch on the server's `error_type` discriminator so each
+			// refusal gets its own user-readable string (translatable).
+			// Falls through to the server-provided message or the generic
+			// "Registration failed" when the reason is unknown — the
+			// anti-enumeration path (email/username collision) deliberately
+			// doesn't surface a distinguishable code, so there's nothing
+			// to branch on and the generic string is correct.
+			if (err instanceof ApiError && err.errorType === 'RegistrationDomainNotAllowed') {
+				regError = t(
+					'auth.register_domain_not_allowed',
+					"This deployment doesn't accept sign-ups from that email domain. Try another address, or ask the administrator to add yours to the allow-list."
+				);
+			} else if (err instanceof ApiError && err.errorType === 'PasswordRegistrationDisabled') {
+				regError = t(
+					'auth.register_password_disabled',
+					'Password sign-up is disabled on this deployment. Leave the password blank to receive a sign-in link by email, or sign in with your identity provider.'
+				);
+			} else if (err instanceof ApiError && err.errorType === 'RegistrationDisabled') {
+				regError = t(
+					'auth.register_disabled',
+					'Sign-up is closed on this deployment. Ask an administrator for an invitation.'
+				);
+			} else if (err instanceof Error && err.message) {
+				regError = err.message;
+			} else {
+				regError = t('auth.register_error', 'Registration failed');
+			}
 		} finally {
 			busy = false;
 		}
@@ -445,9 +478,11 @@
 		}
 
 		// 3) Bootstrap probe: a fresh install (no admin) must be set up first.
-		const [providers, status] = await Promise.all([getOidcProviders(), getAuthStatus()]);
-		oidc = providers;
-		setupAvailable = !status.initialized;
+		// `/api/auth/oidc/providers` + `/api/auth/status` are both retired
+		// — the auth-method matrix + initialized flag now live on
+		// `serverConfig.auth` and `serverConfig.initialized`, hydrated at
+		// SPA boot by `serverConfig.load()`.
+		setupAvailable = !serverConfig.initialized;
 		if (setupAvailable) mode = 'setup';
 
 		// Auto-redirect to the IdP in standalone-OIDC posture is enforced
@@ -727,26 +762,37 @@
 						</form>
 					{/if}
 
-					{#if oidc.enabled}
+					{#if serverConfig.auth.oidc.enabled && serverConfig.auth.oidc.providers.length > 0}
 						{#if passwordLoginEnabled}
 							<div class="auth-divider"><span>{t('auth.or', 'or')}</span></div>
 						{/if}
-						<!-- Backend OIDC authorize endpoint (not a SvelteKit route). -->
-						<a
-							class="auth-button auth-button-oidc"
-							data-testid="login-oidc-btn"
-							href={oidc.authorize_endpoint}
-							rel="external"
-						>
-							{t(
-								'auth.sso_login_provider',
-								{ provider: oidc.provider_name ?? 'SSO' },
-								'Sign in with {{provider}}'
-							)}
-						</a>
+						<!--
+							One button per configured provider. Single-provider
+							deployments (today's reality) see one entry; a
+							future multi-provider deployment renders one button
+							per IdP without changing this template. `data-testid`
+							carries the issuer so Playwright can target a
+							specific provider without hard-coding the position.
+							The `login-oidc-btn` id (no suffix) is kept on the
+							first entry for pre-array test compatibility.
+						-->
+						{#each serverConfig.auth.oidc.providers as provider, i (provider.issuer)}
+							<a
+								class="auth-button auth-button-oidc"
+								data-testid={i === 0 ? 'login-oidc-btn' : `login-oidc-btn-${provider.issuer}`}
+								href={provider.authorize_endpoint}
+								rel="external"
+							>
+								{t(
+									'auth.sso_login_provider',
+									{ provider: provider.provider_name || 'SSO' },
+									'Sign in with {{provider}}'
+								)}
+							</a>
+						{/each}
 					{/if}
 
-					{#if passwordLoginEnabled}
+					{#if passwordLoginEnabled && serverConfig.auth.registration.enabled}
 						<div class="auth-toggle">
 							{t('auth.no_account', 'No account?')}
 							<button

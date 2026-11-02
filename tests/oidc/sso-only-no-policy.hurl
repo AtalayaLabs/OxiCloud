@@ -18,20 +18,22 @@
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 1 — Providers reports SSO-only but WITHOUT auto-redirect.
-#          The `auto_redirect_to_oidc` field on the DTO comes from
+# Step 1 — Config discovery reports SSO-only but WITHOUT auto-redirect.
+#          The `auth.oidc.auto_redirect` field comes from
 #          AuthApplicationService::auto_redirect_to_oidc(), which
 #          requires the policy in the vector. Without it → false.
+#          Was `/api/auth/oidc/providers` (retired on feat/registration);
+#          fields moved under `/api/config.auth.*` sub-objects.
 # ─────────────────────────────────────────────────────────────
-GET {{base_url}}/api/auth/oidc/providers
+GET {{base_url}}/api/config
 
 HTTP 200
 [Asserts]
-jsonpath "$.enabled" == true
-jsonpath "$.password_login_enabled" == false
-jsonpath "$.magic_link_login_enabled" == false
+jsonpath "$.auth.oidc.enabled" == true
+jsonpath "$.auth.password.enabled" == false
+jsonpath "$.auth.magic_link.enabled" == false
 # The load-bearing difference from sso-only.hurl:
-jsonpath "$.auto_redirect_to_oidc" == false
+jsonpath "$.auth.oidc.auto_redirect" == false
 
 
 # ─────────────────────────────────────────────────────────────

@@ -678,7 +678,28 @@ impl FileWritePort for FileBlobWriteRepository {
         .bind(caller_id)
         .fetch_optional(self.pool.as_ref())
         .await
-        .map_err(|e| DomainError::internal_error("FileBlobWrite", format!("move: {e}")))?
+        .map_err(|e| {
+            // Translate the PG unique-violation (23505 on the
+            // `storage.files (folder_id, name)` constraint) to the
+            // semantic `AlreadyExists` DomainError. Mirrors the
+            // mapping `rename_file` already does — moving a file INTO
+            // a folder that already holds a file with the same name
+            // is semantically the same failure as renaming to that
+            // file's name, and must surface the same way so the SPA
+            // renders the friendly "An item with that name is already
+            // there" copy. Companion fix to `folder_db_repository.rs
+            // ::move_folder`; both were missing the 23505 translation
+            // while their rename siblings had it.
+            if let sqlx::Error::Database(ref db_err) = e
+                && db_err.code().as_deref() == Some("23505")
+            {
+                return DomainError::already_exists(
+                    "File",
+                    "destination already contains a file with the same name".to_string(),
+                );
+            }
+            DomainError::internal_error("FileBlobWrite", format!("move: {e}"))
+        })?
         .ok_or_else(|| DomainError::not_found("File", file_id))?;
 
         // ── `category_order` follows the NAME, not just the MIME ─────────
@@ -1220,7 +1241,24 @@ impl FileWritePort for FileBlobWriteRepository {
         .bind(caller_id)
         .execute(self.pool.as_ref())
         .await
-        .map_err(|e| DomainError::internal_error("FileBlobWrite", format!("restore: {e}")))?;
+        .map_err(|e| {
+            // 23505 → AlreadyExists. Restore sets `is_trashed = FALSE`
+            // and `folder_id = COALESCE(original_folder_id, folder_id)`;
+            // if the user created a new file with the same name at the
+            // original location while this one was in trash, the
+            // UPDATE collides on the files (folder_id, name) unique
+            // constraint. Mirrors `rename_file`'s and `move_file`'s
+            // 23505 translation.
+            if let sqlx::Error::Database(ref db_err) = e
+                && db_err.code().as_deref() == Some("23505")
+            {
+                return DomainError::already_exists(
+                    "File",
+                    "the original location already contains a file with the same name".to_string(),
+                );
+            }
+            DomainError::internal_error("FileBlobWrite", format!("restore: {e}"))
+        })?;
 
         if result.rows_affected() == 0 {
             return Err(DomainError::not_found("File", file_id));

@@ -260,7 +260,7 @@ Authorization: Bearer {{alice_token}}
 
 HTTP 400
 [Asserts]
-jsonpath "$.error_type" == "bad_request"
+jsonpath "$.error_type" == "BadRequest"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -496,7 +496,7 @@ Authorization: Bearer {{alice_token_again}}
 
 HTTP 400
 [Asserts]
-jsonpath "$.error_type" == "bad_request"
+jsonpath "$.error_type" == "BadRequest"
 jsonpath "$.message"    contains "kind"
 
 
@@ -551,7 +551,7 @@ Authorization: Bearer {{alice_token_again}}
 
 HTTP 400
 [Asserts]
-jsonpath "$.error_type" == "bad_request"
+jsonpath "$.error_type" == "BadRequest"
 jsonpath "$.message"    contains "favorite_only"
 
 

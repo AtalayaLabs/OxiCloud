@@ -11,7 +11,7 @@
  * `GET /api/admin/dedup/check/{hash}` and is not consumed here — the SPA has
  * no view that needs it.
  */
-import { apiFetch } from '$lib/api/client';
+import { apiErrorFromResponse, apiFetch } from '$lib/api/client';
 
 /**
  * One file visible to the caller that references the probed blob hash.
@@ -60,6 +60,6 @@ export async function fetchHashSiblings(hash: string): Promise<HashCheckResponse
 		credentials: 'same-origin'
 	});
 	if (res.status === 404) return null;
-	if (!res.ok) throw new Error(`dedup/check failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 	return (await res.json()) as HashCheckResponse;
 }

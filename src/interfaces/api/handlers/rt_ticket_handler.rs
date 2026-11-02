@@ -56,7 +56,7 @@ pub struct RtTicketResponse {
     tag = "message-bus",
     responses(
         (status = 200, description = "Ticket issued", body = RtTicketResponse),
-        (status = 401, description = "Unauthenticated"),
+        (status = 401, description = "Unauthenticated", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = []))
 )]

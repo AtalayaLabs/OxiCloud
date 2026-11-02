@@ -28,7 +28,27 @@
         },
         "kind_file": "파일",
         "kind_folder": "폴더",
-        "english_fallback_divider": "--- 영어 버전은 아래 ---"
+        "english_fallback_divider": "--- 영어 버전은 아래 ---",
+        "login_coaching": {
+          "oidc": {
+            "subject": "SSO로 OxiCloud에 로그인",
+            "body": "{{username}}님께,\n\n누군가 비밀번호로 귀하의 OxiCloud 계정에 로그인을 시도했지만, 귀하의 계정은 통합 로그인(SSO)에 연결되어 있어 비밀번호가 아닌 ID 공급자를 통해 인증해야 합니다.\n\nOxiCloud를 열고 \"SSO로 로그인\"을 클릭하세요:\n{{login_url}}\n\n로그인을 시도하지 않으셨다면 이 메시지를 무시하셔도 됩니다. 로그인이 이루어지지 않았으며 계정에는 아무 변화가 없습니다.\n\n— OxiCloud"
+          }
+        },
+        "coaching": {
+          "oidc": {
+            "subject": "SSO로 OxiCloud에 로그인",
+            "body": "{{username}}님께,\n\n누군가 귀하의 OxiCloud 계정으로 로그인 링크를 요청했지만, 귀하의 계정은 통합 로그인(SSO)에 연결되어 있어 이메일 링크가 아닌 ID 공급자를 통해 인증해야 합니다.\n\nOxiCloud를 열고 \"SSO로 로그인\"을 클릭하세요:\n{{login_url}}\n\n요청하지 않으셨다면 이 메시지를 무시하셔도 됩니다. 로그인이 이루어지지 않았으며 계정에는 아무 변화가 없습니다.\n\n— OxiCloud"
+          },
+          "password": {
+            "subject": "비밀번호를 사용하여 OxiCloud에 로그인하세요",
+            "body": "{{username}}님께,\n\n누군가 귀하의 OxiCloud 계정으로 로그인 링크를 요청했지만, 귀하의 계정에는 비밀번호가 설정되어 있으며 이 배포는 비밀번호가 있는 경우 이메일 링크 로그인을 허용하지 않습니다. 비밀번호로 로그인해 주세요.\n\nOxiCloud 열기:\n{{login_url}}\n\n비밀번호가 기억나지 않으시면 로그인 페이지의 \"비밀번호를 잊으셨나요?\" 링크를 사용하세요.\n\n요청하지 않으셨다면 이 메시지를 무시하셔도 됩니다. 로그인이 이루어지지 않았으며 계정에는 아무 변화가 없습니다.\n\n— OxiCloud"
+          },
+          "generic": {
+            "subject": "OxiCloud 로그인 링크가 전송되지 않았습니다",
+            "body": "{{username}}님께,\n\n누군가 귀하의 OxiCloud 계정으로 로그인 링크를 요청했지만 전송할 수 없었습니다. OxiCloud를 열고 계정에 설정된 방식으로 로그인하세요.\n\n{{login_url}}\n\n요청하지 않으셨다면 이 메시지를 무시하셔도 됩니다.\n\n— OxiCloud"
+          }
+        }
       }
     },
     "notification": {
@@ -739,7 +759,11 @@
     "login_error_generic": "SSO 로그인이 거부되었습니다. 다시 시도해 주세요.",
     "login_error_email_ambiguous": "여러 로컬 계정이 이 이메일 주소와 일치합니다. 해결하려면 관리자에게 문의하세요.",
     "login_error_email_not_verified_at_idp": "ID 공급자가 이메일 주소가 확인되지 않았다고 보고했습니다. ID 공급자에서 이메일을 확인한 후 다시 로그인하세요.",
-    "login_error_email_verification_required": "이 서버는 인증된 이메일이 필요합니다. ID 공급자가 이메일 인증 클레임을 포함하지 않았습니다. 관리자에게 문의하세요."
+    "login_error_email_verification_required": "이 서버는 인증된 이메일이 필요합니다. ID 공급자가 이메일 인증 클레임을 포함하지 않았습니다. 관리자에게 문의하세요.",
+    "register_domain_not_allowed": "이 배포는 해당 이메일 도메인의 가입을 허용하지 않습니다. 다른 주소를 시도하거나 관리자에게 허용 목록에 추가하도록 요청하세요.",
+    "register_password_disabled": "이 배포에서는 비밀번호를 통한 가입이 비활성화되어 있습니다. 비밀번호 필드를 비워 두어 이메일로 로그인 링크를 받거나, ID 공급자로 로그인하세요.",
+    "register_disabled": "이 배포에서는 가입이 마감되었습니다. 관리자에게 초대를 요청하세요.",
+    "account_deactivated": "귀하의 계정이 비활성화되었습니다. 관리자에게 문의하세요."
   },
   "storage": {
     "title": "저장소",

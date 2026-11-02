@@ -1,10 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('$lib/api/client', () => ({
-	apiFetch: vi.fn(),
-	apiJson: vi.fn(),
-	withBase: (p: string) => p
-}));
+// Keep the real `ApiError` + `apiErrorFromResponse` — admin wrappers now
+// throw `ApiError` via `apiErrorFromResponse`, and the assertions below
+// pin the server-message surfacing (via `ApiError.message = body.message`)
+// which only works when the real helper is wired in.
+vi.mock('$lib/api/client', async () => {
+	const actual = await vi.importActual<typeof import('$lib/api/client')>('$lib/api/client');
+	return {
+		...actual,
+		apiFetch: vi.fn(),
+		apiJson: vi.fn(),
+		withBase: (p: string) => p
+	};
+});
 vi.mock('$lib/api/csrf', () => ({ getCsrfHeaders: () => ({ 'x-csrf-token': 't' }) }));
 
 import { apiFetch, apiJson } from '$lib/api/client';
@@ -12,8 +20,13 @@ import * as admin from './admin';
 
 const okRes = (body: unknown = {}) =>
 	({ ok: true, status: 200, json: async () => body }) as unknown as Response;
-const errRes = (status = 400, body: unknown = { message: 'nope' }) =>
-	({ ok: false, status, json: async () => body }) as unknown as Response;
+// `apiErrorFromResponse` reads the body via `res.clone().json()`, so the
+// error mock must offer a `clone()` returning something with the same
+// `json()`. Minimum fidelity to make the real helper work.
+const errRes = (status = 400, body: unknown = { message: 'nope' }) => {
+	const base = { ok: false, status, statusText: '', url: '/mock', json: async () => body };
+	return { ...base, clone: () => base } as unknown as Response;
+};
 
 const fetchMock = apiFetch as unknown as ReturnType<typeof vi.fn>;
 const jsonMock = apiJson as unknown as ReturnType<typeof vi.fn>;
@@ -55,13 +68,33 @@ describe('admin mutate-based endpoints', () => {
 	});
 
 	it('throw the server message on failure', async () => {
-		fetchMock.mockResolvedValue(errRes(409, { message: 'conflict' }));
-		await expect(admin.deleteUser('1')).rejects.toThrow('conflict');
+		// Post-sweep the wrappers throw `ApiError` via `apiErrorFromResponse`,
+		// which pulls `message` (or `error`) out of the normalized
+		// `ApiErrorBody` and uses it as the thrown `.message`. So the
+		// `rejects.toThrow('conflict')` assertion still holds — just that
+		// the thrown value is now an `ApiError` carrying `errorType`,
+		// `status`, and `resource` fields the toast layer can use.
+		fetchMock.mockResolvedValue(errRes(409, { message: 'conflict', error_type: 'Conflict' }));
+		await expect(admin.deleteUser('1')).rejects.toMatchObject({
+			name: 'ApiError',
+			status: 409,
+			errorType: 'Conflict',
+			message: 'conflict'
+		});
 	});
 
-	it('throw a generic message when the error body has none', async () => {
+	it('throw a generic ApiError when the error body has none', async () => {
+		// Shape-tolerance guard: an empty JSON body (`{}`) still throws
+		// an `ApiError` whose `.message` falls through to the constructor's
+		// default `API ${status} ${statusText} for ${resource}` format.
+		// Pre-sweep the thrown Error read `${method} ${url} failed: ${status}`;
+		// post-sweep the ApiError default follows the shared format.
 		fetchMock.mockResolvedValue(errRes(500, {}));
-		await expect(admin.setUserActive('1', true)).rejects.toThrow(/failed: 500/);
+		await expect(admin.setUserActive('1', true)).rejects.toMatchObject({
+			name: 'ApiError',
+			status: 500,
+			errorType: undefined
+		});
 	});
 });
 

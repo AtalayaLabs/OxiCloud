@@ -2,17 +2,22 @@
 # OxiCloud — Operator-authored banner messages
 # =============================================================
 # Pins the admin CRUD surface on `/api/admin/banners` plus the
-# public wire exposure through `/api/config.server_status.banners`
-# and the `X-Server-Status` header's `banners_version` field.
+# authenticated wire exposure through `/api/status.banners` and
+# the `X-Server-Status` header's `banners_version` field.
+#
+# Banner bodies carry operator-authored text (DB maintenance
+# notes, internal ticket refs); they are NOT on `/api/config` by
+# design (feat/registration privacy split).
 #
 # Covered properties:
 #   - Create / list / delete round-trip
 #   - 400 on empty body / unknown locale key
 #   - Scheduled banner (starts_at in the future) is hidden from
-#     the public endpoint while admin still sees it
+#     `/api/status.banners` (`list_public()` filters future
+#     starts_at) while admin still sees it on /api/admin/banners
 #   - banners_version on the X-Server-Status header appears when
 #     at least one banner is live, absent when the list is empty
-#   - DELETE clears the public exposure
+#   - DELETE clears the authenticated exposure
 #
 # Prerequisites: setup.hurl must have run (admin user exists).
 #
@@ -38,15 +43,22 @@ admin_token: jsonpath "$.access_token"
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 2 — Baseline: public endpoint has no banners field (or an
-# empty list) and the X-Server-Status header carries no
-# banners_version.
+# Step 2 — Baseline: `/api/status` carries no banners field (or
+# an empty list), proving the admin posted none and the state
+# matches what later steps acquire.
+#
+# Pre-split this hit `/api/config.server_status.banners`; that
+# field is gone (feat/registration privacy split — banner bodies
+# carry operator-authored text that can leak). The whole
+# server-status surface including banners now lives only on the
+# authenticated `/api/status` + `X-Server-Status` header.
 # ─────────────────────────────────────────────────────────────
-GET {{base_url}}/api/config
+GET {{base_url}}/api/status
+Authorization: Bearer {{admin_token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.server_status.banners" not exists
+jsonpath "$.banners" not exists
 
 
 # ─────────────────────────────────────────────────────────────
@@ -116,27 +128,27 @@ HTTP 400
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 7 — Public wire now carries the banner + banners_version.
+# Step 7 — Authenticated wire now carries the banner + banners_version.
 #
-# The header is NOT asserted here. `server_status_middleware` is
-# layered on the protected `/api` router only, and `/api/config` is
-# registered on the PUBLIC, unauthenticated router — which is why it
-# returns a server-status *snapshot in the body* instead ("one-shot
-# boot hydration by the SPA", see `config_handler.rs`). This step
-# asserted `header "x-server-status" contains "banners_version"` until
-# 2026-10-24 and got `actual: none`; the file was never wired into
-# run.sh, so it never surfaced. The header assertion moved to the
-# authenticated request below, which is the surface that carries it.
+# Pre-split this hit `/api/config.server_status.banners` on the
+# PUBLIC endpoint; banner bodies carry operator-authored text
+# (DB maintenance notes, internal ticket refs) and shouldn't be
+# visible to anonymous callers. The whole runtime-status surface
+# including banners moved to the authenticated `/api/status` +
+# the `X-Server-Status` response header stamped on every
+# response that goes through `server_status_middleware` (see
+# the dedicated header assertion on `/api/auth/me` below).
 # ─────────────────────────────────────────────────────────────
-GET {{base_url}}/api/config
+GET {{base_url}}/api/status
+Authorization: Bearer {{admin_token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.server_status.banners_version" exists
-jsonpath "$.server_status.banners" count == 1
-jsonpath "$.server_status.banners[0].id" == "{{banner_id}}"
-jsonpath "$.server_status.banners[0].severity" == "warning"
-jsonpath "$.server_status.banners[0].body.en" contains "Scheduled"
+jsonpath "$.banners_version" exists
+jsonpath "$.banners" count == 1
+jsonpath "$.banners[0].id" == "{{banner_id}}"
+jsonpath "$.banners[0].severity" == "warning"
+jsonpath "$.banners[0].body.en" contains "Scheduled"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -167,11 +179,12 @@ jsonpath "$" count == 1
 # ─────────────────────────────────────────────────────────────
 # Step 8 — Capture the current version hash for diff checks.
 # ─────────────────────────────────────────────────────────────
-GET {{base_url}}/api/config
+GET {{base_url}}/api/status
+Authorization: Bearer {{admin_token}}
 
 HTTP 200
 [Captures]
-version_before_schedule: jsonpath "$.server_status.banners_version"
+version_before_schedule: jsonpath "$.banners_version"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -204,17 +217,20 @@ jsonpath "$" count == 2
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 11 — Public list still has only the first banner;
-# version hash has changed (any-live-banner → recompute).
+# Step 11 — Authenticated list still has only the first banner;
+# version hash has changed (any-live-banner → recompute). The
+# scheduled banner stays off the "live" list — `list_public()`
+# filters `starts_at > now`, which `/api/status` consults.
 # ─────────────────────────────────────────────────────────────
-GET {{base_url}}/api/config
+GET {{base_url}}/api/status
+Authorization: Bearer {{admin_token}}
 
 HTTP 200
 [Captures]
-version_after_schedule: jsonpath "$.server_status.banners_version"
+version_after_schedule: jsonpath "$.banners_version"
 [Asserts]
-jsonpath "$.server_status.banners" count == 1
-jsonpath "$.server_status.banners[0].id" == "{{banner_id}}"
+jsonpath "$.banners" count == 1
+jsonpath "$.banners[0].id" == "{{banner_id}}"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -223,11 +239,12 @@ jsonpath "$.server_status.banners[0].id" == "{{banner_id}}"
 # hash so clients know to refetch. If both are equal, the FE's
 # version-diff pattern would silently skip the update.
 # ─────────────────────────────────────────────────────────────
-GET {{base_url}}/api/config
+GET {{base_url}}/api/status
+Authorization: Bearer {{admin_token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.server_status.banners_version" != "{{version_before_schedule}}"
+jsonpath "$.banners_version" != "{{version_before_schedule}}"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -240,14 +257,15 @@ HTTP 204
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 13 — Public list is empty again (scheduled still hidden,
-# first one gone).
+# Step 13 — Authenticated list is empty again (scheduled still
+# hidden, first one gone).
 # ─────────────────────────────────────────────────────────────
-GET {{base_url}}/api/config
+GET {{base_url}}/api/status
+Authorization: Bearer {{admin_token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.server_status.banners" not exists
+jsonpath "$.banners" not exists
 
 
 # ─────────────────────────────────────────────────────────────

@@ -1,5 +1,5 @@
 /** Music / playlist endpoints — ported from features/library/music.js. */
-import { apiFetch, apiJson } from '$lib/api/client';
+import { apiErrorFromResponse, apiFetch, apiJson } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
@@ -61,7 +61,7 @@ export async function createPlaylist(name: string): Promise<Playlist> {
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 		body: JSON.stringify({ name, description: null })
 	});
-	if (!res.ok) throw new Error(`create playlist failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 	return (await res.json()) as Playlist;
 }
 
@@ -73,7 +73,7 @@ export async function updatePlaylist(playlistId: string, patch: PlaylistUpdate):
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 		body: JSON.stringify(patch)
 	});
-	if (!res.ok) throw new Error(`update playlist failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 }
 
 export function renamePlaylist(playlistId: string, name: string): Promise<void> {
@@ -86,7 +86,7 @@ export async function deletePlaylist(playlistId: string): Promise<void> {
 		credentials: 'same-origin',
 		headers: getCsrfHeaders()
 	});
-	if (!res.ok) throw new Error(`delete playlist failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 }
 
 export async function addTracks(playlistId: string, fileIds: string[]): Promise<void> {
@@ -96,7 +96,7 @@ export async function addTracks(playlistId: string, fileIds: string[]): Promise<
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 		body: JSON.stringify({ file_ids: fileIds })
 	});
-	if (!res.ok) throw new Error(`add tracks failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 }
 
 export async function removeTrack(playlistId: string, fileId: string): Promise<void> {
@@ -105,7 +105,7 @@ export async function removeTrack(playlistId: string, fileId: string): Promise<v
 		credentials: 'same-origin',
 		headers: getCsrfHeaders()
 	});
-	if (!res.ok) throw new Error(`remove track failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 }
 
 /** Persist a new track order. `itemIds` are PlaylistItem ids in the desired order. */
@@ -116,7 +116,7 @@ export async function reorderTracks(playlistId: string, itemIds: string[]): Prom
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 		body: JSON.stringify({ item_ids: itemIds })
 	});
-	if (!res.ok) throw new Error(`reorder failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 }
 
 export function listShares(playlistId: string): Promise<MusicShare[]> {
@@ -136,7 +136,7 @@ export async function sharePlaylist(
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 		body: JSON.stringify({ user_id: userId, can_write: canWrite })
 	});
-	if (!res.ok) throw new Error(`share playlist failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 }
 
 export async function removeShare(playlistId: string, userId: string): Promise<void> {
@@ -145,7 +145,7 @@ export async function removeShare(playlistId: string, userId: string): Promise<v
 		credentials: 'same-origin',
 		headers: getCsrfHeaders()
 	});
-	if (!res.ok) throw new Error(`remove share failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 }
 
 /** Upload an image and return its new file id (used to set a playlist cover). */
@@ -159,7 +159,7 @@ export async function uploadCoverImage(file: File, folderId = ''): Promise<strin
 		headers: getCsrfHeaders(),
 		body: form
 	});
-	if (!res.ok) throw new Error(`cover upload failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 	const uploaded = (await res.json()) as { id?: string };
 	if (!uploaded.id) throw new Error('cover upload returned no file id');
 	return uploaded.id;

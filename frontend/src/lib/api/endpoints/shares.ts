@@ -1,5 +1,5 @@
 /** Public share-link endpoints (/api/shares) — ported from features/sharing. */
-import { apiFetch } from '$lib/api/client';
+import { apiErrorFromResponse, apiFetch } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import type { ItemType, ShareItem } from '$lib/api/types';
 
@@ -32,10 +32,7 @@ export async function createShare(input: CreateShareInput): Promise<ShareItem> {
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 		body: JSON.stringify(body)
 	});
-	if (!res.ok) {
-		const e = (await res.json().catch(() => ({}))) as { error?: string };
-		throw new Error(e.error || `create share failed: ${res.status}`);
-	}
+	if (!res.ok) throw await apiErrorFromResponse(res);
 	return (await res.json()) as ShareItem;
 }
 
@@ -52,7 +49,7 @@ export async function getShareById(shareId: string): Promise<ShareItem> {
 	const res = await apiFetch(`/api/shares/${encodeURIComponent(shareId)}`, {
 		credentials: 'same-origin'
 	});
-	if (!res.ok) throw new Error(`get share failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 	return (await res.json()) as ShareItem;
 }
 
@@ -80,10 +77,7 @@ export async function updateShare(shareId: string, input: UpdateShareInput): Pro
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 		body: JSON.stringify(body)
 	});
-	if (!res.ok) {
-		const e = (await res.json().catch(() => ({}))) as { error?: string };
-		throw new Error(e.error || `update share failed: ${res.status}`);
-	}
+	if (!res.ok) throw await apiErrorFromResponse(res);
 	return (await res.json()) as ShareItem;
 }
 
@@ -93,7 +87,7 @@ export async function deleteShare(shareId: string): Promise<void> {
 		credentials: 'same-origin',
 		headers: getCsrfHeaders()
 	});
-	if (!res.ok && res.status !== 204) throw new Error(`delete share failed: ${res.status}`);
+	if (!res.ok && res.status !== 204) throw await apiErrorFromResponse(res);
 }
 
 /**

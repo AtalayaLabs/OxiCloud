@@ -28,7 +28,27 @@
         },
         "kind_file": "bestand",
         "kind_folder": "map",
-        "english_fallback_divider": "--- Engelse versie hieronder ---"
+        "english_fallback_divider": "--- Engelse versie hieronder ---",
+        "login_coaching": {
+          "oidc": {
+            "subject": "Inloggen bij OxiCloud via SSO",
+            "body": "Hallo {{username}},\n\nIemand heeft geprobeerd met een wachtwoord in te loggen op je OxiCloud-account, maar je account is gekoppeld aan Single Sign-On (SSO) en moet worden geauthenticeerd via je identiteitsprovider — niet met een wachtwoord.\n\nOpen OxiCloud en klik op \"Inloggen met SSO\":\n{{login_url}}\n\nAls je niet hebt geprobeerd in te loggen, kun je dit bericht negeren. Er is geen inlog gebeurd en er is niets veranderd aan je account.\n\n— OxiCloud"
+          }
+        },
+        "coaching": {
+          "oidc": {
+            "subject": "Inloggen bij OxiCloud via SSO",
+            "body": "Hallo {{username}},\n\nIemand heeft een inloglink aangevraagd voor je OxiCloud-account, maar je account is gekoppeld aan Single Sign-On (SSO) en moet worden geauthenticeerd via je identiteitsprovider — niet via een e-maillink.\n\nOpen OxiCloud en klik op \"Inloggen met SSO\":\n{{login_url}}\n\nAls je dit niet hebt aangevraagd, kun je dit bericht negeren. Er is geen inlog gebeurd en er is niets veranderd aan je account.\n\n— OxiCloud"
+          },
+          "password": {
+            "subject": "Gebruik je wachtwoord om in te loggen bij OxiCloud",
+            "body": "Hallo {{username}},\n\nIemand heeft een inloglink aangevraagd voor je OxiCloud-account, maar er is een wachtwoord ingesteld voor je account en deze omgeving staat inloggen via e-maillink niet toe wanneer er een wachtwoord bestaat. Log in met je wachtwoord.\n\nOpen OxiCloud:\n{{login_url}}\n\nAls je je wachtwoord niet meer weet, gebruik dan de link \"Wachtwoord vergeten?\" op de inlogpagina.\n\nAls je dit niet hebt aangevraagd, kun je dit bericht negeren. Er is geen inlog gebeurd en er is niets veranderd aan je account.\n\n— OxiCloud"
+          },
+          "generic": {
+            "subject": "OxiCloud-inloglink niet verzonden",
+            "body": "Hallo {{username}},\n\nIemand heeft een inloglink aangevraagd voor je OxiCloud-account, maar deze kon niet worden bezorgd. Open OxiCloud en log in met de methode die voor je account is ingesteld.\n\n{{login_url}}\n\nAls je dit niet hebt aangevraagd, kun je dit bericht negeren.\n\n— OxiCloud"
+          }
+        }
       }
     },
     "notification": {
@@ -739,7 +759,11 @@
     "login_error_email_ambiguous": "Meerdere lokale accounts komen overeen met dit e-mailadres. Neem contact op met uw beheerder om dit op te lossen.",
     "logged_out": "Succesvol afgemeld.",
     "login_error_email_not_verified_at_idp": "Uw identiteitsprovider meldt dat uw e-mailadres niet is geverifieerd. Bevestig uw e-mail bij uw identiteitsprovider en probeer opnieuw in te loggen.",
-    "login_error_email_verification_required": "Deze server vereist een geverifieerd e-mailadres. Uw identiteitsprovider heeft geen e-mailverificatie-claim opgenomen. Neem contact op met uw beheerder."
+    "login_error_email_verification_required": "Deze server vereist een geverifieerd e-mailadres. Uw identiteitsprovider heeft geen e-mailverificatie-claim opgenomen. Neem contact op met uw beheerder.",
+    "register_domain_not_allowed": "Deze omgeving accepteert geen aanmeldingen vanaf dat e-maildomein. Probeer een ander adres, of vraag de beheerder om jouwe aan de toegestane lijst toe te voegen.",
+    "register_password_disabled": "Aanmelden met een wachtwoord is uitgeschakeld op deze omgeving. Laat het wachtwoord leeg om een inloglink per e-mail te ontvangen, of log in met je identiteitsprovider.",
+    "register_disabled": "Aanmelden is gesloten op deze omgeving. Vraag een uitnodiging aan een beheerder.",
+    "account_deactivated": "Je account is gedeactiveerd. Neem contact op met je beheerder."
   },
   "storage": {
     "title": "Opslag",

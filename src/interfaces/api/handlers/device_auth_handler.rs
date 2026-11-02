@@ -143,7 +143,7 @@ pub struct VerifyQuery {
     ),
     responses(
         (status = 200, description = "Info about the pending authorization — `valid: false` means the code is unknown or expired", body = DeviceVerifyInfoDto),
-        (status = 401, description = "Caller is not signed in — the user must authenticate before approving a device"),
+        (status = 401, description = "Caller is not signed in — the user must authenticate before approving a device", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "device-auth"
 )]
@@ -175,8 +175,8 @@ pub async fn device_verify_info(
     request_body = DeviceVerifyRequestDto,
     responses(
         (status = 200, description = "Decision recorded — `status` echoes `approved` or `denied`", body = DeviceVerifyActionResponseDto),
-        (status = 400, description = "`action` was not one of `approve`/`deny`"),
-        (status = 401, description = "Caller is not signed in"),
+        (status = 400, description = "`action` was not one of `approve`/`deny`", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 401, description = "Caller is not signed in", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "device-auth"
 )]
@@ -236,7 +236,7 @@ pub async fn device_verify_action(
     path = "/api/auth/device/devices",
     responses(
         (status = 200, description = "The caller's authorized devices", body = Vec<DeviceInfoDto>),
-        (status = 401, description = "Not authenticated"),
+        (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "device-auth"
 )]
@@ -269,8 +269,8 @@ pub async fn list_devices(
     ),
     responses(
         (status = 204, description = "Revoked"),
-        (status = 400, description = "Invalid device id"),
-        (status = 401, description = "Not authenticated"),
+        (status = 400, description = "Invalid device id", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "device-auth"
 )]

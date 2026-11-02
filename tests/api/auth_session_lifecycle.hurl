@@ -8,7 +8,7 @@
 # pins them as a single end-to-end flow.
 #
 # Coverage:
-#   1. GET  /api/auth/status     (no auth required, used by login page)
+#   1. GET  /api/config          (no auth required, carries `initialized`)
 #   2. POST /api/auth/login      (capture initial access + refresh)
 #   3. POST /api/auth/refresh    (rotate; capture new tokens)
 #   4. New access token works on /api/auth/me
@@ -25,17 +25,22 @@
 
 
 # ─────────────────────────────────────────────────────────────
-# 1 — Unauthenticated /api/auth/status probe.
-#     The login page hits this on every load; the response
-#     determines whether the "Create first admin" flow shows.
+# 1 — Unauthenticated /api/config probe.
+#     The login page hits this on every load; the response's
+#     `initialized` field determines whether the "Create first
+#     admin" flow shows. Was `/api/auth/status` (retired on
+#     feat/registration); `initialized` moved to `/api/config`
+#     top-level, `registration_allowed` consolidated into
+#     `/api/config.auth.registration.enabled`, and `admin_count`
+#     was dropped (the admin section surfaces it on its own
+#     page — it was gratuitous leak to anonymous callers here).
 # ─────────────────────────────────────────────────────────────
-GET {{base_url}}/api/auth/status
+GET {{base_url}}/api/config
 
 HTTP 200
 [Asserts]
-jsonpath "$.initialized"          == true
-jsonpath "$.admin_count"          >= 1
-jsonpath "$.registration_allowed" == true
+jsonpath "$.initialized"                 == true
+jsonpath "$.auth.registration.enabled"   == true
 
 
 # ─────────────────────────────────────────────────────────────
@@ -134,10 +139,12 @@ HTTP 403
 
 
 # ─────────────────────────────────────────────────────────────
-# 8 — Sanity re-check: status still reports the system as
-#     initialized after logout (no state regression).
+# 8 — Sanity re-check: `/api/config.initialized` still reports
+#     the system as initialized after logout (no state
+#     regression). Was `/api/auth/status` — see step 1 for the
+#     retirement rationale.
 # ─────────────────────────────────────────────────────────────
-GET {{base_url}}/api/auth/status
+GET {{base_url}}/api/config
 
 HTTP 200
 [Asserts]

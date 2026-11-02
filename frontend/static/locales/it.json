@@ -28,7 +28,27 @@
         },
         "kind_file": "file",
         "kind_folder": "cartella",
-        "english_fallback_divider": "--- Versione inglese qui sotto ---"
+        "english_fallback_divider": "--- Versione inglese qui sotto ---",
+        "login_coaching": {
+          "oidc": {
+            "subject": "Accedi a OxiCloud tramite SSO",
+            "body": "Ciao {{username}},\n\nQualcuno ha provato ad accedere al tuo account OxiCloud con una password, ma il tuo account è collegato all'autenticazione unica (SSO) e deve essere autenticato tramite il tuo provider di identità — non con una password.\n\nApri OxiCloud e fai clic su «Accedi con SSO»:\n{{login_url}}\n\nSe non hai provato ad accedere, puoi ignorare questo messaggio. Non è stato effettuato alcun accesso e nulla è cambiato nel tuo account.\n\n— OxiCloud"
+          }
+        },
+        "coaching": {
+          "oidc": {
+            "subject": "Accedi a OxiCloud tramite SSO",
+            "body": "Ciao {{username}},\n\nQualcuno ha richiesto un link di accesso per il tuo account OxiCloud, ma il tuo account è collegato all'autenticazione unica (SSO) e deve essere autenticato tramite il tuo provider di identità — non con un link via e-mail.\n\nApri OxiCloud e fai clic su «Accedi con SSO»:\n{{login_url}}\n\nSe non l'hai richiesto, puoi ignorare questo messaggio. Non è stato effettuato alcun accesso e nulla è cambiato nel tuo account.\n\n— OxiCloud"
+          },
+          "password": {
+            "subject": "Usa la tua password per accedere a OxiCloud",
+            "body": "Ciao {{username}},\n\nQualcuno ha richiesto un link di accesso per il tuo account OxiCloud, ma per il tuo account è impostata una password e questa istanza non consente l'accesso via link e-mail quando esiste una password. Accedi invece con la tua password.\n\nApri OxiCloud:\n{{login_url}}\n\nSe non ricordi la tua password, usa il link «Password dimenticata?» nella pagina di accesso.\n\nSe non l'hai richiesto, puoi ignorare questo messaggio. Non è stato effettuato alcun accesso e nulla è cambiato nel tuo account.\n\n— OxiCloud"
+          },
+          "generic": {
+            "subject": "Link di accesso OxiCloud non inviato",
+            "body": "Ciao {{username}},\n\nQualcuno ha richiesto un link di accesso per il tuo account OxiCloud, ma non è stato possibile consegnarlo. Apri OxiCloud e accedi con il metodo configurato per il tuo account.\n\n{{login_url}}\n\nSe non l'hai richiesto, puoi ignorare questo messaggio.\n\n— OxiCloud"
+          }
+        }
       }
     },
     "notification": {
@@ -739,7 +759,11 @@
     "login_error_email_ambiguous": "Più account locali corrispondono a questo indirizzo email. Contatta l'amministratore per risolvere.",
     "logged_out": "Disconnessione effettuata.",
     "login_error_email_not_verified_at_idp": "Il tuo provider di identità segnala che il tuo indirizzo e-mail non è verificato. Conferma la tua e-mail presso il tuo provider di identità e riprova ad accedere.",
-    "login_error_email_verification_required": "Questo server richiede un indirizzo e-mail verificato. Il tuo provider di identità non ha incluso una dichiarazione di verifica e-mail. Contatta il tuo amministratore."
+    "login_error_email_verification_required": "Questo server richiede un indirizzo e-mail verificato. Il tuo provider di identità non ha incluso una dichiarazione di verifica e-mail. Contatta il tuo amministratore.",
+    "register_domain_not_allowed": "Questa istanza non accetta registrazioni da quel dominio e-mail. Prova con un altro indirizzo o chiedi all'amministratore di aggiungere il tuo alla lista consentita.",
+    "register_password_disabled": "La registrazione con password è disattivata su questa istanza. Lascia la password vuota per ricevere un link di accesso via e-mail, o accedi con il tuo provider di identità.",
+    "register_disabled": "Le registrazioni sono chiuse su questa istanza. Chiedi un invito a un amministratore.",
+    "account_deactivated": "Il tuo account è stato disattivato. Contatta il tuo amministratore."
   },
   "storage": {
     "title": "Archiviazione",

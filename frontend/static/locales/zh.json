@@ -28,7 +28,27 @@
         },
         "kind_file": "文件",
         "kind_folder": "文件夹",
-        "english_fallback_divider": "--- 以下为英文版本 ---"
+        "english_fallback_divider": "--- 以下为英文版本 ---",
+        "login_coaching": {
+          "oidc": {
+            "subject": "通过 SSO 登录 OxiCloud",
+            "body": "您好 {{username}}，\n\n有人尝试使用密码登录您的 OxiCloud 账户，但您的账户已链接到单点登录 (SSO)，必须通过您的身份提供商进行身份验证——而不是密码。\n\n请打开 OxiCloud 并点击「使用 SSO 登录」：\n{{login_url}}\n\n如果不是您本人尝试登录，可以放心忽略此邮件。未发生任何登录，您的账户也没有任何变化。\n\n— OxiCloud"
+          }
+        },
+        "coaching": {
+          "oidc": {
+            "subject": "通过 SSO 登录 OxiCloud",
+            "body": "您好 {{username}}，\n\n有人为您的 OxiCloud 账户请求了登录链接，但您的账户已链接到单点登录 (SSO)，必须通过您的身份提供商进行身份验证——而不是邮件链接。\n\n请打开 OxiCloud 并点击「使用 SSO 登录」：\n{{login_url}}\n\n如果不是您本人请求，可以放心忽略此邮件。未发生任何登录，您的账户也没有任何变化。\n\n— OxiCloud"
+          },
+          "password": {
+            "subject": "使用您的密码登录 OxiCloud",
+            "body": "您好 {{username}}，\n\n有人为您的 OxiCloud 账户请求了登录链接，但您的账户已设置密码，且本部署在存在密码时不允许通过邮件链接登录。请改用密码登录。\n\n请打开 OxiCloud：\n{{login_url}}\n\n如果您忘记了密码，请使用登录页面上的「忘记密码？」链接。\n\n如果不是您本人请求，可以放心忽略此邮件。未发生任何登录，您的账户也没有任何变化。\n\n— OxiCloud"
+          },
+          "generic": {
+            "subject": "OxiCloud 登录链接未发送",
+            "body": "您好 {{username}}，\n\n有人为您的 OxiCloud 账户请求了登录链接，但无法送达。请打开 OxiCloud 并使用为您的账户配置的方式登录。\n\n{{login_url}}\n\n如果不是您本人请求，可以放心忽略此邮件。\n\n— OxiCloud"
+          }
+        }
       }
     },
     "notification": {
@@ -739,7 +759,11 @@
     "login_error_email_ambiguous": "多个本地帐户与此电子邮件地址匹配。请联系您的管理员来解决。",
     "logged_out": "已成功退出。",
     "login_error_email_not_verified_at_idp": "您的身份提供商报告您的电子邮件地址未经验证。请在您的身份提供商处确认电子邮件,然后重新登录。",
-    "login_error_email_verification_required": "此服务器要求提供已验证的电子邮件。您的身份提供商未包含电子邮件验证声明。请联系您的管理员。"
+    "login_error_email_verification_required": "此服务器要求提供已验证的电子邮件。您的身份提供商未包含电子邮件验证声明。请联系您的管理员。",
+    "register_domain_not_allowed": "本部署不接受来自该邮箱域名的注册。请尝试其他地址，或请管理员将您的域名加入允许列表。",
+    "register_password_disabled": "本部署已禁用密码注册。请将密码留空以通过邮件接收登录链接，或使用您的身份提供商登录。",
+    "register_disabled": "本部署已关闭注册。请向管理员索取邀请。",
+    "account_deactivated": "您的账户已被停用。请联系您的管理员。"
   },
   "storage": {
     "title": "存储空间",
