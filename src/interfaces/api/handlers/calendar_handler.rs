@@ -16,6 +16,10 @@
 //! keeps DESCRIPTION / LOCATION / RRULE visible to CalDAV clients and
 //! lets an update clear a field or drop a recurrence rule, neither of
 //! which the `Option`-means-"no change" update DTO can express.
+//!
+//! Updates merge into the stored VEVENT instead of regenerating it, so
+//! properties the JSON surface does not model (ATTENDEE, VALARM,
+//! CATEGORIES, EXDATE/RDATE, X-*) survive an edit made in the SPA.
 
 use axum::{
     Json,
@@ -34,6 +38,7 @@ use crate::application::dtos::calendar_dto::{
 };
 use crate::application::ports::calendar_ports::{AccessibleCalendar, CalendarUseCase};
 use crate::application::services::calendar_service::CalendarService;
+use crate::domain::entities::calendar_event::CalendarEvent;
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::AuthUser;
 
@@ -127,8 +132,9 @@ impl From<CalendarEventDto> for CalendarEventResponse {
 }
 
 /// Full replacement payload shared by create and update. The update
-/// path re-writes the whole VEVENT, so "absent" means "cleared", not
-/// "unchanged".
+/// path replaces only the VEVENT properties this DTO models, so
+/// "absent" means "cleared" for those; unmodelled properties in the
+/// stored component are preserved.
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct SaveEventRequest {
     pub summary: String,
@@ -201,21 +207,16 @@ fn ical_date(value: DateTime<Utc>) -> String {
     value.format("%Y%m%d").to_string()
 }
 
-/// Render one VEVENT as a standalone VCALENDAR body.
-///
-/// `recurrence_id` is set only when rewriting an exception override; it
-/// preserves the master/exception split the storage layer routes on.
-fn build_event_ical(
+/// The properties the JSON payload owns. Every other property in a
+/// stored VEVENT (ATTENDEE, VALARM, CATEGORIES, EXDATE/RDATE, X-*, …)
+/// is preserved verbatim by [`merge_event_ical`].
+fn event_property_lines(
     uid: &str,
     recurrence_id: Option<DateTime<Utc>>,
     body: &SaveEventRequest,
-) -> String {
+    include_times: bool,
+) -> Vec<String> {
     let mut lines = vec![
-        "BEGIN:VCALENDAR".to_string(),
-        "VERSION:2.0".to_string(),
-        "PRODID:-//OxiCloud//NONSGML Calendar//EN".to_string(),
-        "CALSCALE:GREGORIAN".to_string(),
-        "BEGIN:VEVENT".to_string(),
         // Raw: the UID is the object's identity and came from the
         // server's own parser. Escaping it here would change the key
         // the upsert routes on if the UID ever contained `,` or `;`.
@@ -223,12 +224,14 @@ fn build_event_ical(
         format!("DTSTAMP:{}", ical_datetime(Utc::now())),
     ];
 
-    if body.all_day {
-        lines.push(format!("DTSTART;VALUE=DATE:{}", ical_date(body.start_time)));
-        lines.push(format!("DTEND;VALUE=DATE:{}", ical_date(body.end_time)));
-    } else {
-        lines.push(format!("DTSTART:{}", ical_datetime(body.start_time)));
-        lines.push(format!("DTEND:{}", ical_datetime(body.end_time)));
+    if include_times {
+        if body.all_day {
+            lines.push(format!("DTSTART;VALUE=DATE:{}", ical_date(body.start_time)));
+            lines.push(format!("DTEND;VALUE=DATE:{}", ical_date(body.end_time)));
+        } else {
+            lines.push(format!("DTSTART:{}", ical_datetime(body.start_time)));
+            lines.push(format!("DTEND:{}", ical_datetime(body.end_time)));
+        }
     }
 
     lines.push(format!("SUMMARY:{}", escape_ical_text(&body.summary)));
@@ -244,9 +247,38 @@ fn build_event_ical(
         lines.push(format!("RRULE:{}", rrule));
     }
     if let Some(recurrence_id) = recurrence_id {
-        lines.push(format!("RECURRENCE-ID:{}", ical_datetime(recurrence_id)));
+        // RFC 5545 §3.8.4.4: the value type must match the recurring
+        // event's DTSTART, so an all-day series uses DATE here too.
+        if body.all_day {
+            lines.push(format!(
+                "RECURRENCE-ID;VALUE=DATE:{}",
+                ical_date(recurrence_id)
+            ));
+        } else {
+            lines.push(format!("RECURRENCE-ID:{}", ical_datetime(recurrence_id)));
+        }
     }
 
+    lines
+}
+
+/// Render one VEVENT as a standalone VCALENDAR body.
+///
+/// `recurrence_id` is set only when rewriting an exception override; it
+/// preserves the master/exception split the storage layer routes on.
+fn build_event_ical(
+    uid: &str,
+    recurrence_id: Option<DateTime<Utc>>,
+    body: &SaveEventRequest,
+) -> String {
+    let mut lines = vec![
+        "BEGIN:VCALENDAR".to_string(),
+        "VERSION:2.0".to_string(),
+        "PRODID:-//OxiCloud//NONSGML Calendar//EN".to_string(),
+        "CALSCALE:GREGORIAN".to_string(),
+        "BEGIN:VEVENT".to_string(),
+    ];
+    lines.extend(event_property_lines(uid, recurrence_id, body, true));
     lines.push("END:VEVENT".to_string());
     lines.push("END:VCALENDAR".to_string());
     lines.push(String::new());
@@ -255,6 +287,140 @@ fn build_event_ical(
         .map(|line| fold_ical_line(line))
         .collect::<Vec<_>>()
         .join("\r\n")
+}
+
+fn starts_with_ci(value: &str, prefix: &str) -> bool {
+    value
+        .get(..prefix.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+}
+
+/// Undo RFC 5545 §3.1 line folding inside one component block.
+fn unfold_ical_lines(block: &str) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for raw in block.split('\n') {
+        let line = raw.trim_end_matches('\r');
+        if line.is_empty() {
+            continue;
+        }
+        if (line.starts_with(' ') || line.starts_with('\t')) && !lines.is_empty() {
+            if let Some(last) = lines.last_mut() {
+                last.push_str(&line[1..]);
+            }
+            continue;
+        }
+        lines.push(line.to_string());
+    }
+    lines
+}
+
+/// Property names at VEVENT depth that the JSON payload replaces.
+/// Nested components such as VALARM are never reached by the caller's
+/// depth check, so their DESCRIPTION/SUMMARY survive an edit.
+fn is_replaced_property(line: &str, body: &SaveEventRequest, keep_existing_times: bool) -> bool {
+    let name_end = line.find([':', ';']).unwrap_or(line.len());
+    let name = &line[..name_end];
+    let is = |property: &str| name.eq_ignore_ascii_case(property);
+
+    is("UID")
+        || is("DTSTAMP")
+        || is("SUMMARY")
+        || is("DESCRIPTION")
+        || is("LOCATION")
+        || is("RRULE")
+        || (!keep_existing_times && (is("DTSTART") || is("DTEND")))
+        || (body.rrule.is_none() && (is("EXDATE") || is("RDATE")))
+}
+
+fn rewrite_vevent_block(
+    block: &str,
+    uid: &str,
+    body: &SaveEventRequest,
+    keep_existing_times: bool,
+) -> Option<String> {
+    let lines = unfold_ical_lines(block);
+    if !lines
+        .first()
+        .is_some_and(|line| starts_with_ci(line.trim_start(), "BEGIN:VEVENT"))
+    {
+        return None;
+    }
+
+    let mut out: Vec<String> = Vec::new();
+    let mut depth = 0usize;
+    let mut closed = false;
+
+    for line in lines {
+        let trimmed = line.trim_start();
+        if starts_with_ci(trimmed, "BEGIN:") {
+            depth += 1;
+            if depth == 1 {
+                out.push("BEGIN:VEVENT".to_string());
+                out.extend(event_property_lines(uid, None, body, !keep_existing_times));
+            } else {
+                out.push(line);
+            }
+            continue;
+        }
+        if starts_with_ci(trimmed, "END:") {
+            if depth == 1 {
+                out.push("END:VEVENT".to_string());
+                depth = 0;
+                closed = true;
+                continue;
+            }
+            depth = depth.saturating_sub(1);
+            out.push(line);
+            continue;
+        }
+        if depth == 1 && is_replaced_property(trimmed, body, keep_existing_times) {
+            continue;
+        }
+        out.push(line);
+    }
+
+    if !closed {
+        return None;
+    }
+
+    let mut folded = out
+        .iter()
+        .map(|line| fold_ical_line(line))
+        .collect::<Vec<_>>()
+        .join("\r\n");
+    folded.push_str("\r\n");
+    Some(folded)
+}
+
+/// Rewrite the JSON-owned properties of an existing VEVENT while
+/// keeping every property the SPA does not model. Rebuilding the event
+/// from `SaveEventRequest` alone would strip ATTENDEE, VALARM,
+/// CATEGORIES, EXDATE/RDATE and X-* on the first edit of an event
+/// created by a CalDAV client.
+///
+/// `keep_existing_times` is set when the payload's start/end/all-day
+/// values are unchanged. In that case the original DTSTART/DTEND lines
+/// are kept, including their `TZID`/`VALUE=DATE` parameters, so merely
+/// renaming a Europe/Paris event does not flatten it to UTC.
+fn merge_event_ical(
+    existing: &str,
+    uid: &str,
+    body: &SaveEventRequest,
+    keep_existing_times: bool,
+) -> Option<String> {
+    let components = CalendarEvent::split_components(existing);
+    let block = components.vevents.first()?;
+    let merged = rewrite_vevent_block(block, uid, body, keep_existing_times)?;
+
+    let mut out = String::from(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//OxiCloud//NONSGML Calendar//EN\r\n",
+    );
+    for timezone in &components.vtimezones {
+        out.push_str(timezone);
+    }
+    out.push_str(&merged);
+    out.push_str("END:VCALENDAR\r\n");
+    Some(out)
 }
 
 /// Fold a content line at 75 octets (RFC 5545 §3.1). Continuation
@@ -555,7 +721,10 @@ pub async fn create_event(
 
 /// Replace an event. The service re-checks that the caller may modify
 /// the owning calendar; an Editor-or-above is required even though the
-/// underlying write is a `Create`-gated upsert.
+/// underlying write is a `Create`-gated upsert. Properties outside the
+/// JSON DTO are preserved from the stored component (see
+/// [`merge_event_ical`]); unchanged timing keeps its original
+/// `TZID`/`VALUE=DATE` value form.
 #[utoipa::path(
     put,
     path = "/api/calendars/{calendar_id}/events/{event_id}",
@@ -593,9 +762,22 @@ pub async fn update_event(
         return Err(AppError::not_found("Event not found in this calendar"));
     }
 
+    // Keep the stored value form when the timing did not change: a
+    // TZID-based CalDAV event must not be flattened to UTC by a rename.
+    let keep_existing_times = existing.start_time == body.start_time
+        && existing.end_time == body.end_time
+        && existing.all_day == body.all_day;
+    let ical_data = merge_event_ical(
+        &existing.ical_data,
+        &existing.ical_uid,
+        &body,
+        keep_existing_times,
+    )
+    .unwrap_or_else(|| build_event_ical(&existing.ical_uid, existing.recurrence_id, &body));
+
     let dto = CreateEventICalDto {
         calendar_id,
-        ical_data: build_event_ical(&existing.ical_uid, existing.recurrence_id, &body),
+        ical_data,
     };
     let result = state
         .calendar_service
@@ -718,6 +900,94 @@ mod tests {
             .with_timezone(&Utc);
         let ics = build_event_ical("abc@oxicloud", Some(rid), &body());
         assert!(ics.contains("RECURRENCE-ID:20261112T090000Z\r\n"));
+    }
+
+    /// RFC 5545 §3.8.4.4: RECURRENCE-ID's value type matches the
+    /// master DTSTART, so an all-day exception must use VALUE=DATE.
+    #[test]
+    fn all_day_recurrence_id_uses_date_value() {
+        let rid = DateTime::parse_from_rfc3339("2026-11-12T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let mut event = body();
+        event.all_day = true;
+        let ics = build_event_ical("abc@oxicloud", Some(rid), &event);
+        assert!(ics.contains("RECURRENCE-ID;VALUE=DATE:20261112\r\n"));
+        assert!(!ics.contains("RECURRENCE-ID:20261112T000000Z"));
+    }
+
+    fn stored_rich_event() -> &'static str {
+        "BEGIN:VCALENDAR\r\n\
+         VERSION:2.0\r\n\
+         PRODID:-//OxiCloud//NONSGML Calendar//EN\r\n\
+         BEGIN:VEVENT\r\n\
+         UID:abc@oxicloud\r\n\
+         DTSTAMP:20261101T120000Z\r\n\
+         DTSTART;TZID=Europe/Paris:20261105T100000\r\n\
+         DTEND;TZID=Europe/Paris:20261105T110000\r\n\
+         SUMMARY:Old title\r\n\
+         DESCRIPTION:Old description\r\n\
+         RRULE:FREQ=WEEKLY;BYDAY=TH\r\n\
+         EXDATE;TZID=Europe/Paris:20261112T100000\r\n\
+         CATEGORIES:Work,Important\r\n\
+         ATTENDEE;CN=Alice;ROLE=REQ-PARTICIPANT:mailto:alice@example.com\r\n\
+         X-OXICLOUD-TEST:keep-me\r\n\
+         BEGIN:VALARM\r\n\
+         ACTION:DISPLAY\r\n\
+         DESCRIPTION:Alarm text must survive\r\n\
+         TRIGGER:-PT15M\r\n\
+         END:VALARM\r\n\
+         END:VEVENT\r\n\
+         END:VCALENDAR\r\n"
+    }
+
+    /// The SPA's edit path must not reduce a CalDAV-created event to the
+    /// fields the JSON DTO models. Regression pin: update used to call
+    /// `build_event_ical`, which dropped ATTENDEE, VALARM, CATEGORIES,
+    /// EXDATE and X-* the moment a user renamed the event.
+    #[test]
+    fn update_keeps_unmanaged_properties_and_value_form() {
+        let merged = merge_event_ical(stored_rich_event(), "abc@oxicloud", &body(), true).unwrap();
+
+        assert!(merged.contains("DTSTART;TZID=Europe/Paris:20261105T100000\r\n"));
+        assert!(merged.contains("DTEND;TZID=Europe/Paris:20261105T110000\r\n"));
+        assert!(merged.contains("SUMMARY:Team sync\r\n"));
+        assert!(!merged.contains("SUMMARY:Old title"));
+        assert!(
+            merged.contains("ATTENDEE;CN=Alice;ROLE=REQ-PARTICIPANT:mailto:alice@example.com\r\n")
+        );
+        assert!(merged.contains("CATEGORIES:Work,Important\r\n"));
+        assert!(merged.contains("EXDATE;TZID=Europe/Paris:20261112T100000\r\n"));
+        assert!(merged.contains("X-OXICLOUD-TEST:keep-me\r\n"));
+        assert!(merged.contains("BEGIN:VALARM\r\n"));
+        assert!(merged.contains("DESCRIPTION:Alarm text must survive\r\n"));
+    }
+
+    /// A changed time cannot keep the old TZID-qualified value, but the
+    /// unmanaged properties still survive the rewrite.
+    #[test]
+    fn update_with_new_times_replaces_tzid_value() {
+        let merged = merge_event_ical(stored_rich_event(), "abc@oxicloud", &body(), false).unwrap();
+
+        assert!(merged.contains("DTSTART:20261105T090000Z\r\n"));
+        assert!(merged.contains("DTEND:20261105T100000Z\r\n"));
+        assert!(!merged.contains("DTSTART;TZID=Europe/Paris"));
+        assert!(merged.contains("ATTENDEE;CN=Alice"));
+        assert!(merged.contains("BEGIN:VALARM"));
+    }
+
+    /// Clearing the RRULE removes EXDATE/RDATE (they no longer describe
+    /// an existing series) while leaving unrelated properties intact.
+    #[test]
+    fn clearing_recurrence_drops_exdate_but_keeps_alarms() {
+        let mut changed = body();
+        changed.rrule = None;
+        let merged = merge_event_ical(stored_rich_event(), "abc@oxicloud", &changed, true).unwrap();
+
+        assert!(!merged.contains("RRULE:"));
+        assert!(!merged.contains("EXDATE"));
+        assert!(merged.contains("ATTENDEE;CN=Alice"));
+        assert!(merged.contains("BEGIN:VALARM"));
     }
 
     #[test]
