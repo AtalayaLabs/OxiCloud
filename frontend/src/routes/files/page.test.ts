@@ -215,7 +215,15 @@ it('redirects external users away from the home folder', async () => {
 
 it('creates a new folder in the current directory', async () => {
 	withListing();
-	promptDialog.mockResolvedValue('Reports');
+	// `promptDialog` callers migrated to the inline-error UX pattern pass
+	// `action: async (name) => createFolder(name, …)` instead of running
+	// the mutation outside the await. Simulate the real `dialogs.resolve`
+	// flow by invoking `opts.action` with the submitted value before
+	// resolving. See `frontend/AGENTS.md § Dialog error UX`.
+	promptDialog.mockImplementation(async (opts) => {
+		if (opts.action) await opts.action('Reports');
+		return 'Reports';
+	});
 	m(createFolder).mockResolvedValue({ id: 'new', name: 'Reports' });
 	render(FilesPage);
 	// New folder lives in the Add split-button menu.
@@ -248,7 +256,13 @@ it('hides the document kinds when no editor is configured', async () => {
 
 it('creates a new text document from the bundled blank template', async () => {
 	withListing();
-	promptDialog.mockResolvedValue('Memo');
+	// Same reasoning as `creates a new folder` above — the `onNewDocument`
+	// handler runs the upload inside `action` on the common (non-text-
+	// ext) path. Simulate the real flow by invoking `opts.action`.
+	promptDialog.mockImplementation(async (opts) => {
+		if (opts.action) await opts.action('Memo');
+		return 'Memo';
+	});
 	m(uploadFileWithProgress).mockResolvedValue(undefined);
 	vi.stubGlobal(
 		'fetch',

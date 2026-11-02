@@ -59,7 +59,15 @@ it('drills into a person and back to the list', async () => {
 it('renames the current person', async () => {
 	fp.mockResolvedValue([{ id: 'p1', name: 'Alice', face_count: 1, cover_file_id: null }]);
 	fpp.mockResolvedValue([]);
-	pd.mockResolvedValue('Bob');
+	// `promptDialog` callers migrated to the inline-error UX pattern pass
+	// `action: async (next) => renamePerson(…)` instead of running the
+	// mutation outside the await. Simulate the real `dialogs.resolve`
+	// flow by invoking `opts.action` with the submitted value. See
+	// `frontend/AGENTS.md § Dialog error UX`.
+	pd.mockImplementation(async (opts) => {
+		if (opts.action) await opts.action('Bob');
+		return 'Bob';
+	});
 	rn.mockResolvedValue(undefined);
 	render(PeopleView);
 	await fireEvent.click((await screen.findByText('Alice')).closest('button')!);

@@ -48,7 +48,15 @@ it('renders groups returned by the API', async () => {
 it('creates a new group', async () => {
 	m(listGroupsPage).mockResolvedValue({ items: [], total: 0 });
 	m(createGroup).mockResolvedValue(undefined);
-	promptDialog.mockResolvedValue('New Team');
+	// `promptDialog` callers migrated to the inline-error UX pattern pass
+	// `action: async (name) => createGroup(name.trim())` instead of
+	// running the mutation outside the await. Simulate the real
+	// `dialogs.resolve` flow by invoking `opts.action` with the
+	// submitted value. See `frontend/AGENTS.md § Dialog error UX`.
+	promptDialog.mockImplementation(async (opts) => {
+		if (opts.action) await opts.action('New Team');
+		return 'New Team';
+	});
 	render(GroupsPage);
 	await waitFor(() => expect(listGroupsPage).toHaveBeenCalled());
 	await fireEvent.click(screen.getByTestId('groups-create-btn'));
