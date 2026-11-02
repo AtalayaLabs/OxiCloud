@@ -12,9 +12,10 @@
  * not disappear from the grid. A rule we cannot parse falls back to a
  * single occurrence at the master's own start.
  *
- * Iteration runs in UTC. DTSTART arrives as a UTC instant, so stepping
- * in UTC keeps a 09:00Z weekly event at 09:00Z forever instead of
- * drifting an hour when the viewer's DST changes.
+ * Iteration runs in the event's IANA zone when DTSTART carries a
+ * `TZID` (the server exposes it as `timezone`), so a 09:00 Paris
+ * weekly meeting stays 09:00 across DST. A UTC event keeps the old
+ * behaviour: 09:00Z stays 09:00Z forever.
  */
 import type { CalendarEvent } from '$lib/api/endpoints/calendars';
 import { DAY_MS, dateKey, utcDateKey } from '$lib/utils/calendarDate';
@@ -114,6 +115,120 @@ function parseByDay(value: string | undefined): number[] {
 		if (dow !== undefined && !days.includes(dow)) days.push(dow);
 	}
 	return days;
+}
+
+/** Formatter cache: constructing `Intl.DateTimeFormat` per occurrence
+ * would dominate expansion time. `null` marks an unusable zone. */
+const zoneFormatters = new Map<string, Intl.DateTimeFormat | null>();
+
+function zoneFormatter(timeZone: string): Intl.DateTimeFormat | null {
+	if (zoneFormatters.has(timeZone)) return zoneFormatters.get(timeZone) ?? null;
+	let formatter: Intl.DateTimeFormat | null;
+	try {
+		formatter = new Intl.DateTimeFormat('en-US', {
+			timeZone,
+			hourCycle: 'h23',
+			year: 'numeric',
+			month: '2-digit',
+			day: '2-digit',
+			hour: '2-digit',
+			minute: '2-digit',
+			second: '2-digit'
+		});
+	} catch {
+		formatter = null;
+	}
+	zoneFormatters.set(timeZone, formatter);
+	return formatter;
+}
+
+function resolveTimeZone(timeZone: string | null | undefined): string | null {
+	if (!timeZone) return null;
+	return zoneFormatter(timeZone) ? timeZone : null;
+}
+
+/** Wall-clock components of `instant` in `timeZone`, encoded as a Date
+ * whose UTC fields hold those components (a "wall date"). */
+function wallDateInZone(instant: Date, timeZone: string): Date | null {
+	const formatter = zoneFormatter(timeZone);
+	if (!formatter) return null;
+	const parts = new Map<string, number>();
+	for (const part of formatter.formatToParts(instant)) {
+		if (part.type !== 'literal') parts.set(part.type, Number(part.value));
+	}
+	const year = parts.get('year');
+	const month = parts.get('month');
+	const day = parts.get('day');
+	const hour = parts.get('hour');
+	const minute = parts.get('minute');
+	const second = parts.get('second');
+	if (
+		year === undefined ||
+		month === undefined ||
+		day === undefined ||
+		hour === undefined ||
+		minute === undefined ||
+		second === undefined
+	) {
+		return null;
+	}
+	return new Date(
+		Date.UTC(year, month - 1, day, hour % 24, minute, second, instant.getUTCMilliseconds())
+	);
+}
+
+function zoneOffsetMs(instant: Date, timeZone: string): number | null {
+	const wall = wallDateInZone(instant, timeZone);
+	return wall ? wall.getTime() - instant.getTime() : null;
+}
+
+/** Convert a wall date to its instant in the zone. A second offset
+ * lookup settles the DST boundary where the first guess changes side. */
+function wallDateToInstant(wall: Date, timeZone: string): Date | null {
+	const firstOffset = zoneOffsetMs(wall, timeZone);
+	if (firstOffset === null) return null;
+	let instant = new Date(wall.getTime() - firstOffset);
+	const secondOffset = zoneOffsetMs(instant, timeZone);
+	if (secondOffset !== null && secondOffset !== firstOffset) {
+		instant = new Date(wall.getTime() - secondOffset);
+	}
+	return instant;
+}
+
+/** Collect occurrence starts in the series' zone, then convert each
+ * wall start to a real instant. Returns `null` when the zone cannot be
+ * formatted, so the caller can fall back to the UTC path. */
+function collectStartsInZone(
+	masterStart: Date,
+	masterEnd: Date,
+	rule: RecurrenceRule,
+	rangeStartMs: number,
+	rangeEndMs: number,
+	timeZone: string
+): Date[] | null {
+	const duration = Math.max(0, masterEnd.getTime() - masterStart.getTime());
+	const wallStart = wallDateInZone(masterStart, timeZone);
+	const rangeStartWall = wallDateInZone(new Date(rangeStartMs - duration), timeZone);
+	const rangeEndWall = wallDateInZone(new Date(rangeEndMs), timeZone);
+	if (!wallStart || !rangeStartWall || !rangeEndWall) return null;
+
+	// Two days of margin covers any zone offset on either side of the
+	// window; the overlap check after conversion trims the excess.
+	const wallFrom = rangeStartWall.getTime() - 2 * DAY_MS;
+	let wallTo = rangeEndWall.getTime() + 2 * DAY_MS;
+	if (rule.until !== undefined) {
+		wallTo = Math.min(wallTo, rule.until + 2 * DAY_MS);
+	}
+	const wallRule: RecurrenceRule = rule.until === undefined ? rule : { ...rule, until: undefined };
+
+	const starts: Date[] = [];
+	for (const wall of collectStarts(wallStart, wallRule, wallFrom, wallTo)) {
+		const start = wallDateToInstant(wall, timeZone);
+		if (!start) continue;
+		if (rule.until !== undefined && start.getTime() > rule.until) continue;
+		starts.push(start);
+	}
+	return starts;
 }
 
 /** Add whole months while keeping the day-of-month. `null` when the
@@ -333,10 +448,19 @@ export function expandEvents(
 			pushIfOverlaps(out, master, masterStart, masterEnd, rangeStartMs, rangeEndMs);
 		} else {
 			const duration = Math.max(0, masterEnd.getTime() - masterStart.getTime());
-			const starts = collectStarts(masterStart, rule, rangeStartMs - duration, rangeEndMs);
+			// A TZID-qualified series steps in wall-clock time, not
+			// UTC: a 09:00 Paris weekly meeting stays 09:00 after the
+			// DST switch even though its UTC instant moves.
+			const timeZone = master.all_day ? null : resolveTimeZone(master.timezone);
+			const zonedStarts = timeZone
+				? collectStartsInZone(masterStart, masterEnd, rule, rangeStartMs, rangeEndMs, timeZone)
+				: null;
+			const starts =
+				zonedStarts ?? collectStarts(masterStart, rule, rangeStartMs - duration, rangeEndMs);
 			for (const start of starts) {
-				if (overrides.has(start.getTime())) continue;
 				const end = new Date(start.getTime() + duration);
+				if (!overlaps(start, end, rangeStartMs, rangeEndMs)) continue;
+				if (overrides.has(start.getTime())) continue;
 				out.push(occurrence(master, start, end));
 			}
 		}

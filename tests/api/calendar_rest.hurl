@@ -107,7 +107,8 @@ Content-Type: application/json
   "start_time": "2026-12-01T09:00:00Z",
   "end_time": "2026-12-01T10:00:00Z",
   "all_day": false,
-  "rrule": "FREQ=WEEKLY"
+  "rrule": "FREQ=WEEKLY",
+  "timezone": "Europe/Paris"
 }
 
 HTTP 201
@@ -121,9 +122,24 @@ jsonpath "$.description" == "Standing meeting"
 jsonpath "$.location" == "Room 1"
 jsonpath "$.all_day" == false
 jsonpath "$.rrule" == "FREQ=WEEKLY"
+jsonpath "$.timezone" == "Europe/Paris"
 jsonpath "$.recurrence_id" == null
 jsonpath "$.ical_data" not exists
 jsonpath "$.ical_uid" isString
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 5b – The SPA's browser zone is stored as a TZID-qualified
+# DTSTART. 09:00Z on 1 December is 10:00 CET; without the TZID a
+# weekly series drifts an hour when the viewer's DST changes.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/caldav/{{calendar_id}}/{{event_uid}}.ics
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+body contains "DTSTART;TZID=Europe/Paris:20261201T100000"
+body contains "DTEND;TZID=Europe/Paris:20261201T110000"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -201,6 +217,17 @@ jsonpath "$.location" == null
 jsonpath "$.rrule" == null
 jsonpath "$.start_time" == "2026-12-01T09:30:00Z"
 jsonpath "$.ical_uid" == "{{event_uid}}"
+
+
+# The update body omitted `timezone`, so the series' stored zone is
+# reused when the new instants are written: 09:30Z is 10:30 CET.
+GET {{base_url}}/caldav/{{calendar_id}}/{{event_uid}}.ics
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+body contains "DTSTART;TZID=Europe/Paris:20261201T103000"
+body contains "DTEND;TZID=Europe/Paris:20261201T113000"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -403,6 +430,25 @@ jsonpath "$.error_type" == "BadRequest"
 
 
 # ─────────────────────────────────────────────────────────────
+# Step 9b2 – An unknown IANA zone would produce a TZID no client can
+# resolve, so it is rejected instead of stored verbatim.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/calendars/{{calendar_id}}/events
+Authorization: Bearer {{token}}
+Content-Type: application/json
+{
+  "summary": "Bad zone",
+  "start_time": "2026-12-02T09:00:00Z",
+  "end_time": "2026-12-02T10:00:00Z",
+  "timezone": "Not/ARealZone"
+}
+
+HTTP 400
+[Asserts]
+jsonpath "$.error_type" == "BadRequest"
+
+
+# ─────────────────────────────────────────────────────────────
 # Step 9c – The SPA edit path must preserve CalDAV-only properties.
 # A sync client's event carries ATTENDEE, VALARM, CATEGORIES, EXDATE
 # and X-* that the JSON DTO does not model. Renaming it through the
@@ -451,6 +497,7 @@ rich_event_id: jsonpath "$[0].id"
 [Asserts]
 jsonpath "$" count == 1
 jsonpath "$[0].ical_uid" == "rich-update-guard"
+jsonpath "$[0].timezone" == "Europe/Paris"
 
 
 PUT {{base_url}}/api/calendars/{{calendar_id}}/events/{{rich_event_id}}
@@ -528,6 +575,73 @@ body not contains "EXDATE"
 
 
 DELETE {{base_url}}/api/calendars/{{calendar_id}}/events/{{rich_single_id}}
+Authorization: Bearer {{token}}
+
+HTTP 204
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 9c2 – SPA events created before TZID storage are UTC with an
+# `@oxicloud` UID. The first edit rewrites the same instant in the
+# browser zone, so they stop drifting across DST without a migration.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/calendars/{{calendar_id}}/events
+Authorization: Bearer {{token}}
+Content-Type: application/json
+{
+  "summary": "Legacy UTC series",
+  "start_time": "2033-06-06T09:00:00Z",
+  "end_time": "2033-06-06T10:00:00Z",
+  "rrule": "FREQ=WEEKLY;COUNT=3"
+}
+
+HTTP 201
+[Captures]
+legacy_event_id: jsonpath "$.id"
+legacy_event_uid: jsonpath "$.ical_uid"
+[Asserts]
+jsonpath "$.timezone" == null
+
+
+GET {{base_url}}/caldav/{{calendar_id}}/{{legacy_event_uid}}.ics
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+body contains "DTSTART:20330606T090000Z"
+body not contains "TZID"
+
+
+PUT {{base_url}}/api/calendars/{{calendar_id}}/events/{{legacy_event_id}}
+Authorization: Bearer {{token}}
+Content-Type: application/json
+{
+  "summary": "Legacy UTC series",
+  "start_time": "2033-06-06T09:00:00Z",
+  "end_time": "2033-06-06T10:00:00Z",
+  "rrule": "FREQ=WEEKLY;COUNT=3",
+  "timezone": "Europe/Paris"
+}
+
+HTTP 200
+[Captures]
+legacy_updated_id: jsonpath "$.id"
+[Asserts]
+jsonpath "$.timezone" == "Europe/Paris"
+
+
+GET {{base_url}}/caldav/{{calendar_id}}/{{legacy_event_uid}}.ics
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+# 2033-06-06 09:00Z is 11:00 CEST; the instant is unchanged, the
+# value form now carries the zone.
+body contains "DTSTART;TZID=Europe/Paris:20330606T110000"
+body contains "DTEND;TZID=Europe/Paris:20330606T120000"
+
+
+DELETE {{base_url}}/api/calendars/{{calendar_id}}/events/{{legacy_updated_id}}
 Authorization: Bearer {{token}}
 
 HTTP 204
