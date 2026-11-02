@@ -220,6 +220,10 @@
 .nav-item[data-section="music"] .oxi-icon {
     color: var(--color-cal-9);
 } /* Music - purple */
+.nav-item[data-section="contacts"] i,
+.nav-item[data-section="contacts"] .oxi-icon {
+    color: var(--color-cal-5);
+} /* Contacts - green */
 .nav-item[data-section="trash"] i,
 .nav-item[data-section="trash"] .oxi-icon {
     color: var(--color-cal-1);

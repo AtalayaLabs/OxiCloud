@@ -77,10 +77,14 @@ pub trait ContactStoragePort: Send + Sync + 'static {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<Contact>, DomainError>;
+    /// Trigram-indexed substring search within one book, bounded by
+    /// `LIMIT`/`OFFSET`.
     async fn search_contacts(
         &self,
         address_book_id: &Uuid,
         query: &str,
+        limit: i64,
+        offset: i64,
     ) -> Result<Vec<Contact>, DomainError>;
 
     // ── Contact groups ───────────────────────────────────────────
@@ -197,10 +201,15 @@ pub trait ContactUseCase: Send + Sync + 'static {
         offset: Option<i64>,
         user_id: Uuid,
     ) -> Result<Vec<ContactDto>, DomainError>;
+    /// Trigram-indexed substring search within one address book. `limit` and
+    /// `offset` bound the result (REST search); the read gate runs before the
+    /// query, exactly like [`Self::list_contacts`].
     async fn search_contacts(
         &self,
         address_book_id: &str,
         query: &str,
+        limit: i64,
+        offset: i64,
         user_id: Uuid,
     ) -> Result<Vec<ContactDto>, DomainError>;
 

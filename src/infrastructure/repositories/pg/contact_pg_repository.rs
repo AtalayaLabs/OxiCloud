@@ -465,19 +465,21 @@ impl ContactRepository for ContactPgRepository {
         &self,
         address_book_id: &Uuid,
         query: &str,
+        limit: i64,
+        offset: i64,
     ) -> ContactRepositoryResult<Vec<Contact>> {
         let search_pattern = super::like_escape(query);
 
         let rows = sqlx::query(
             r#"
-            SELECT 
+            SELECT
                 id, address_book_id, uid, full_name, first_name, last_name, nickname,
                 email, phone, address, organization, title, notes, photo_url,
                 birthday, anniversary, etag, created_at, updated_at
             FROM carddav.contacts
             WHERE address_book_id = $1
               AND (
-                  full_name ILIKE $2 
+                  full_name ILIKE $2
                   OR first_name ILIKE $2
                   OR last_name ILIKE $2
                   OR nickname ILIKE $2
@@ -486,10 +488,13 @@ impl ContactRepository for ContactPgRepository {
                   OR organization ILIKE $2
               )
             ORDER BY full_name, first_name, last_name
+            LIMIT $3 OFFSET $4
             "#,
         )
         .bind(address_book_id)
         .bind(&search_pattern)
+        .bind(limit)
+        .bind(offset)
         .fetch_all(&*self.pool)
         .await
         .map_err(|e| DomainError::database_error(format!("Failed to search contacts: {}", e)))?;

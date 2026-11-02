@@ -140,6 +140,29 @@ jsonpath "$[0].full_name" == "John Doe"
 
 
 # ─────────────────────────────────────────────────────────────
+# Step 6b – Server-side search (trigram-indexed ILIKE)
+#           `search` must filter inside the book, not fetch
+#           everything and let the browser sift it.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/address-books/{{book_id}}/contacts?search=doe
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$" count == 1
+jsonpath "$[0].id" == {{contact_id}}
+jsonpath "$[0].full_name" == "John Doe"
+
+
+GET {{base_url}}/api/address-books/{{book_id}}/contacts?search=nobody-matches-this
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$" count == 0
+
+
+# ─────────────────────────────────────────────────────────────
 # Step 7 – Get John Doe by id and verify all fields
 # ─────────────────────────────────────────────────────────────
 GET {{base_url}}/api/address-books/{{book_id}}/contacts/{{contact_id}}
