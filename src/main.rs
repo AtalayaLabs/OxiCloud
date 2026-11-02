@@ -664,35 +664,40 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
         "Tokio runtime pools sized"
     );
 
-    // SECURITY: fail-closed on incoherent auth-method configuration. A
-    // magic-link-only policy without a working SMTP sender locks every
-    // user out — nothing can mint tokens, so nobody can log in. Refuse
-    // to start rather than boot into a bricked auth surface.
+    // SECURITY: fail-closed on incoherent auth-method configuration.
     //
-    // The SMTP-mock (`OXICLOUD_SMTP_MOCK=true` in `tests/common/server.env`)
-    // sets `OXICLOUD_SMTP_HOST=localhost`, so `is_enabled()` returns
-    // true and the Hurl test harness satisfies this gate without a real
-    // mail server.
+    // `/api/config.auth.{password,magic_link,oidc}.enabled` now mirrors
+    // `OXICLOUD_AUTH_METHODS` directly (feat/registration: operators
+    // own the strategy end to end — no silent cross-rules). The two
+    // panics here are the invariants that must hold for the resulting
+    // deployment to actually serve the methods it advertises:
+    //
+    //   1. `magic_link` in AUTH_METHODS requires SMTP wired. Without
+    //      it, every magic-link submit would 503 — a deployment that
+    //      advertises a method but can't service it is strictly worse
+    //      than one that doesn't advertise it at all. The SMTP-mock
+    //      (`OXICLOUD_SMTP_MOCK=true` in `tests/common/server.env`)
+    //      sets `OXICLOUD_SMTP_HOST=localhost`, so `is_enabled()`
+    //      returns true and the Hurl harness satisfies this gate
+    //      without a real mail server.
+    //
+    //   2. `oidc` in AUTH_METHODS requires an effective OIDC config
+    //      (issuer + client id + client secret, from env OR hot-
+    //      reloaded from admin-settings DB). Checked POST-DI below
+    //      because the DB-side reload happens inside `AppServiceFactory::build`.
     if config
         .auth
         .allowed_auth_methods
         .contains(&common::config::AuthMethod::MagicLink)
-        && !config
-            .auth
-            .allowed_auth_methods
-            .contains(&common::config::AuthMethod::Password)
-        && !config
-            .auth
-            .allowed_auth_methods
-            .contains(&common::config::AuthMethod::Oidc)
         && !config.smtp.is_enabled()
     {
         panic!(
-            "FATAL: OXICLOUD_AUTH_METHODS enables `magic_link` as the ONLY \
-             self-service auth method, but no SMTP transport is configured. \
-             Set OXICLOUD_SMTP_HOST (and matching OXICLOUD_SMTP_* settings), \
-             add `password` or `oidc` to OXICLOUD_AUTH_METHODS, or drop \
-             `magic_link` from the list. Refusing to start."
+            "FATAL: OXICLOUD_AUTH_METHODS includes `magic_link` but no SMTP \
+             transport is configured. Magic-link login cannot mint tokens \
+             without SMTP, so advertising the method on `/api/config` while \
+             submits would 503 is incoherent. Set OXICLOUD_SMTP_HOST (and \
+             matching OXICLOUD_SMTP_* settings), or drop `magic_link` from \
+             OXICLOUD_AUTH_METHODS. Refusing to start."
         );
     }
 
@@ -894,6 +899,37 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
             "FATAL: enable_auth=true but auth_service is None. \
              This should have been caught during initialization."
         );
+
+        // SECURITY: fail-closed on `AUTH_METHODS=oidc` + no effective OIDC
+        // provider. Checked POST-DI so hot-reload-from-DB
+        // (`AdminSettingsService::load_effective_oidc_config`) has had a
+        // chance to supply the config; the predicate is the service's
+        // own `oidc_enabled()`, which composes env + DB.
+        //
+        // Companion of the SMTP + magic_link check above — same shape,
+        // same rationale: `/api/config.auth.oidc.enabled` mirrors
+        // AUTH_METHODS directly now, so a deployment that advertises OIDC
+        // on `/api/config` without a serving IdP is incoherent.
+        if config
+            .auth
+            .allowed_auth_methods
+            .contains(&common::config::AuthMethod::Oidc)
+        {
+            let oidc_live = app_state
+                .auth_service
+                .as_ref()
+                .map(|s| s.auth_application_service.oidc_enabled())
+                .unwrap_or(false);
+            if !oidc_live {
+                panic!(
+                    "FATAL: OXICLOUD_AUTH_METHODS includes `oidc` but no \
+                     OIDC provider is configured. Set OXICLOUD_OIDC_ENABLED=true \
+                     plus OXICLOUD_OIDC_ISSUER_URL / _CLIENT_ID / _CLIENT_SECRET \
+                     (or configure them in the admin-settings DB), or drop \
+                     `oidc` from OXICLOUD_AUTH_METHODS. Refusing to start."
+                );
+            }
+        }
     }
     if config.features.enable_auth {
         use interfaces::api::handlers::auth_handler::{

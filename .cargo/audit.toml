@@ -250,6 +250,115 @@ ignore = [
     "RUSTSEC-2026-0363",
     "RUSTSEC-2026-0359",
 
+    # wasmtime 49.0.4 / wasmtime-wasi 49.0.4 — four advisories published
+    # 2026-10-29, same crate, same `extism 1.41.0` chain, same absent
+    # upgrade path: extism 1.41's internal subcrates pin
+    # `wasmtime-* = "=49.0.4"` exactly, and the fixed releases are
+    # >=49.0.5 <50 or >=50.0.1 — a point bump that extism has not
+    # released yet (`cargo update wasmtime` is a no-op; `cargo search
+    # extism` still shows 1.41.0 as the latest). We cannot force the
+    # bump via [patch.crates-io] without also patching every exact-
+    # version internal pin extism threads through `wasmtime-environ`,
+    # `wasmtime-internal-core`, `wasmtime-internal-cache`, …
+    #
+    # Standard build-feature gating applies: `plugins` is OPT-IN and
+    # absent from `default`, so the CI release binary does not link
+    # wasmtime at all; runtime activation needs
+    # OXICLOUD_ENABLE_PLUGINS=true; plugin binaries are admin-supplied,
+    # not attacker input. Per-advisory exposure on top:
+    #
+    #   RUSTSEC-2026-0420 (6.4 medium) — wasip3 UDP `send` can deliver
+    #     a datagram to an address only allowed for receiving. Not
+    #     reachable: `plugins/runtime.rs::compile` builds every plugin
+    #     with `.with_wasi(false)` and `.disallow_all_hosts()`, so no
+    #     wasip3 UDP sockets exist in the plugin sandbox.
+    #
+    #   RUSTSEC-2026-0422 (1.8 low) — typed functions with `i31` /
+    #     `nullref` arguments may panic due to insufficient type-check.
+    #     DoS only, bounded by `catch_unwind` at the plugin invocation
+    #     boundary; no RCE, no sandbox escape.
+    #
+    #   RUSTSEC-2026-0423 — cross-engine type confusion with host-
+    #     created struct-types-with-supertypes. Attack pattern requires
+    #     multi-Engine Store sharing, which `plugins/runtime.rs` does
+    #     not do (fresh Plugin + Store per invocation).
+    #
+    #   RUSTSEC-2026-0424 — unchecked memory usage in transferring
+    #     borrowed resources between components. Component Model only,
+    #     same unreachability as RUSTSEC-2026-0327 / -0362 / -0363 /
+    #     -0359 above: extism uses core WebAssembly, no
+    #     `wasmtime::component::*` API usage in our plugin runtime.
+    #
+    # Un-ignore trigger: extism releases a version on wasmtime
+    # >=49.0.5 / >=50.0.1 (check with `cargo tree -i wasmtime
+    # --features plugins`). Longer-term: the plugin system itself may
+    # be retired — nobody runs it in production — at which point
+    # extism + wasmtime + a dozen allow-list entries become
+    # removable in one sweep.
+    "RUSTSEC-2026-0420",
+    "RUSTSEC-2026-0422",
+    "RUSTSEC-2026-0423",
+    "RUSTSEC-2026-0424",
+
+    # zstd 0.13.3 / zstd-safe 7.3.0 — three advisories on the same
+    # wasmtime chain. Same gating story as the five wasmtime entries
+    # above: `plugins` is an opt-in build feature + runtime gate
+    # (`OXICLOUD_ENABLE_PLUGINS=true`) + plugin binaries are admin-
+    # supplied, not attacker input. The tantivy copy of zstd — the
+    # one that touches user-controlled search index data — is on
+    # zstd 0.14.3 + zstd-safe 8.2.0 + zstd-sys 2.1.2, fully fixed.
+    # These three entries cover the wasmtime-only remainder.
+    #
+    # Chain:
+    #   extism 1.41.0 (latest) → wasmtime 49.0.4
+    #     → wasmtime-internal-cache 49.0.4 → zstd 0.13.3
+    #     → zstd-safe 7.3.0
+    # Extism pins `wasmtime ^49`; wasmtime 50 bumps the API; no
+    # upgrade path without a wasmtime major bump upstream.
+    #
+    #   RUSTSEC-2026-0391 — "Data from an abandoned stream leaks into
+    #     the next stream on a reused context" (zstd 0.13.3, fixed in
+    #     >=0.14.3). NOT REACHABLE in this build: wasmtime uses zstd
+    #     only for its MODULE CACHE, which (de)compresses the engine's
+    #     own serialised module artifacts, not attacker input. The
+    #     "reused context" leak requires attacker-controlled sequential
+    #     compressions through the same context — admin-supplied
+    #     plugins are compiled by wasmtime once per `Engine::new` and
+    #     cached independently; no shared-context attack surface.
+    #
+    #   RUSTSEC-2026-0403 — "Uninitialized memory exposed when streaming
+    #     decompression of a legacy frame fails" (zstd-safe 7.3.0, fixed
+    #     in >=8.2.0). NOT REACHABLE: wasmtime writes modern zstd frames
+    #     into its cache and reads back the same shape it wrote. The
+    #     legacy-frame decompression path has no caller in a wasmtime
+    #     cache lifecycle; the vulnerability needs an attacker-crafted
+    #     legacy-framed input through the Seekable/streaming API, which
+    #     wasmtime cache does not accept.
+    #
+    #   RUSTSEC-2026-0398 — "`Seekable::decompress` sets a Vec length
+    #     beyond its capacity for offsets past the end" (zstd-safe
+    #     7.3.0, fixed in >=8.2.0). NOT REACHABLE: `Seekable` is the
+    #     zstd Rust binding's seekable-archive API, used neither by
+    #     wasmtime (which (de)serialises whole module blobs) nor by
+    #     any direct OxiCloud code. `cargo tree -i zstd-safe@7.3.0`
+    #     confirms the single reachable path is wasmtime-internal-cache.
+    #
+    # The build-level gating from the entries above still applies on
+    # top: `plugins` is opt-in and absent from `default`, so the CI
+    # release binary does not link wasmtime; runtime activation
+    # additionally needs OXICLOUD_ENABLE_PLUGINS=true; and plugin
+    # binaries are admin-supplied, not attacker input.
+    #
+    # Un-ignore trigger: EITHER extism releases a version on wasmtime
+    # >=50 (which pulls zstd 0.14.3 + zstd-safe 8.2.0 natively; check
+    # with `cargo tree -i zstd@0.13`), OR OxiCloud starts using the
+    # vulnerable zstd APIs (`Seekable`, legacy-frame streaming,
+    # reused-context compression) directly — at which point the
+    # unreachability argument no longer holds.
+    "RUSTSEC-2026-0391",
+    "RUSTSEC-2026-0398",
+    "RUSTSEC-2026-0403",
+
     # rustls-pemfile 2.2.0 — "rustls-pemfile is unmaintained"
     # (RUSTSEC-2025-0134). Transitive via
     # `testcontainers 0.25.2 → bollard 0.19.4 → rustls-pemfile 2.2.0`

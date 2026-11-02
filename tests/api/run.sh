@@ -494,6 +494,14 @@ HURL_FILES=( \
   # Registers mixed-case usernames and asserts they land lowercased, so it
   # sits with registration rather than with the admin user-ops block.
   "$API_DIR/lowercase_usernames.hurl" \
+  # Error-response envelope — pins the uniform ApiErrorBody shape
+  # emitted by every REST handler after chore/wire-apierrorbody-responses
+  # + the OAuthErrorResponse body on the OIDC Back-Channel Logout
+  # endpoint. Sits here (post-registration) so there's an admin + a
+  # plain user already in the DB — the pin exercises both the RBAC
+  # path (plain user hits admin surface → 403) and the admin BAD_REQUEST
+  # / NOT_FOUND paths.
+  "$API_DIR/error_shape_normalized.hurl" \
   "$API_DIR/nc_status_capabilities.hurl" \
   "$API_DIR/nc_login_flow_v2.hurl" \
   "$API_DIR/nc_login_flow_v2_drive_picker.hurl" \
@@ -592,6 +600,7 @@ HURL_FILES=( \
   "$API_DIR/admin_role_hierarchy.hurl" \
   "$API_DIR/dto_shape_regression_guards.hurl" \
   "$API_DIR/shared_worker_bus_discovery.hurl" \
+  "$API_DIR/auth_config_discovery.hurl" \
   "$API_DIR/device_auth_flow.hurl" \
   "$API_DIR/external_mounts.hurl" \
   # Same mount fixtures, one surface each: REST (#793) and both WebDAV
@@ -603,6 +612,10 @@ HURL_FILES=( \
   "$API_DIR/chunked_upload_cap.hurl" \
   "$API_DIR/nc_auth_failures.hurl" \
   "$API_DIR/dedup_create.hurl" \
+  "$API_DIR/dedup_instant_upload_quota.hurl" \
+  "$API_DIR/duplicate_name_conflict.hurl" \
+  "$API_DIR/trash_restore_duplicate.hurl" \
+  "$API_DIR/trash_restore_quota.hurl" \
   "$API_DIR/trash_per_drive.hurl" \
   "$API_DIR/drive_quota.hurl" \
   "$API_DIR/user_envelope_quota.hurl" \

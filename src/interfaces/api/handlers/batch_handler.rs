@@ -165,7 +165,7 @@ where
             .map(|f| FailedOperation {
                 id: f.id,
                 error: f.message,
-                error_type: f.kind.as_str().to_string(),
+                error_type: f.kind.wire_name().to_string(),
             })
             .collect();
 
@@ -184,11 +184,11 @@ where
     responses(
         (status = 200, body = Object, description = "All files moved"),
         (status = 206, body = Object, description = "Partial success — same `BatchOperationResponse` shape as the 200 (successful[], failed[], stats). Caller still inspects `failed[]` for the per-item cause."),
-        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons"),
-        (status = 403, description = "Every item was denied and the caller can see the resources"),
-        (status = 404, description = "Every item was denied and the caller cannot see the resources"),
-        (status = 507, description = "Every item exceeded the destination drive's quota"),
-        (status = 401, description = "Unauthorized")
+        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 403, description = "Every item was denied and the caller can see the resources", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Every item was denied and the caller cannot see the resources", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 507, description = "Every item exceeded the destination drive's quota", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "batch"
@@ -200,22 +200,15 @@ pub async fn move_files_batch(
 ) -> ApiResult<impl IntoResponse> {
     // Verify there are files to process
     if request.file_ids.is_empty() {
-        return Ok((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "No file IDs provided"
-            })),
-        )
-            .into_response());
+        return Ok(AppError::bad_request("No file IDs provided").into_response());
     }
     if request.file_ids.len() > MAX_BATCH_SIZE {
-        return Ok((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": format!("Batch size {} exceeds maximum of {}", request.file_ids.len(), MAX_BATCH_SIZE)
-            })),
-        )
-            .into_response());
+        return Ok(AppError::bad_request(format!(
+            "Batch size {} exceeds maximum of {}",
+            request.file_ids.len(),
+            MAX_BATCH_SIZE
+        ))
+        .into_response());
     }
 
     // Execute batch operation
@@ -247,11 +240,11 @@ pub async fn move_files_batch(
     responses(
         (status = 200, body = Object, description = "All files copied"),
         (status = 206, body = Object, description = "Partial success — same `BatchOperationResponse` shape as the 200 (successful[], failed[], stats). Caller still inspects `failed[]` for the per-item cause."),
-        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons"),
-        (status = 403, description = "Every item was denied and the caller can see the resources"),
-        (status = 404, description = "Every item was denied and the caller cannot see the resources"),
-        (status = 507, description = "Every item exceeded the destination drive's quota"),
-        (status = 401, description = "Unauthorized")
+        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 403, description = "Every item was denied and the caller can see the resources", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Every item was denied and the caller cannot see the resources", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 507, description = "Every item exceeded the destination drive's quota", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "batch"
@@ -263,22 +256,15 @@ pub async fn copy_files_batch(
 ) -> ApiResult<impl IntoResponse> {
     // Verify there are files to process
     if request.file_ids.is_empty() {
-        return Ok((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "No file IDs provided"
-            })),
-        )
-            .into_response());
+        return Ok(AppError::bad_request("No file IDs provided").into_response());
     }
     if request.file_ids.len() > MAX_BATCH_SIZE {
-        return Ok((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": format!("Batch size {} exceeds maximum of {}", request.file_ids.len(), MAX_BATCH_SIZE)
-            })),
-        )
-            .into_response());
+        return Ok(AppError::bad_request(format!(
+            "Batch size {} exceeds maximum of {}",
+            request.file_ids.len(),
+            MAX_BATCH_SIZE
+        ))
+        .into_response());
     }
 
     // Execute batch operation
@@ -310,11 +296,11 @@ pub async fn copy_files_batch(
     responses(
         (status = 200, body = Object, description = "All files deleted"),
         (status = 206, body = Object, description = "Partial success — same `BatchOperationResponse` shape as the 200 (successful[], failed[], stats). Caller still inspects `failed[]` for the per-item cause."),
-        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons"),
-        (status = 403, description = "Every item was denied and the caller can see the resources"),
-        (status = 404, description = "Every item was denied and the caller cannot see the resources"),
-        (status = 507, description = "Every item exceeded the destination drive's quota"),
-        (status = 401, description = "Unauthorized")
+        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 403, description = "Every item was denied and the caller can see the resources", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Every item was denied and the caller cannot see the resources", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 507, description = "Every item exceeded the destination drive's quota", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "batch"
@@ -326,22 +312,15 @@ pub async fn delete_files_batch(
 ) -> ApiResult<impl IntoResponse> {
     // Verify there are files to process
     if request.file_ids.is_empty() {
-        return Ok((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "No file IDs provided"
-            })),
-        )
-            .into_response());
+        return Ok(AppError::bad_request("No file IDs provided").into_response());
     }
     if request.file_ids.len() > MAX_BATCH_SIZE {
-        return Ok((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": format!("Batch size {} exceeds maximum of {}", request.file_ids.len(), MAX_BATCH_SIZE)
-            })),
-        )
-            .into_response());
+        return Ok(AppError::bad_request(format!(
+            "Batch size {} exceeds maximum of {}",
+            request.file_ids.len(),
+            MAX_BATCH_SIZE
+        ))
+        .into_response());
     }
 
     // Execute batch operation
@@ -367,7 +346,7 @@ pub async fn delete_files_batch(
             .map(|f| FailedOperation {
                 id: f.id,
                 error: f.message,
-                error_type: f.kind.as_str().to_string(),
+                error_type: f.kind.wire_name().to_string(),
             })
             .collect(),
         stats: result.stats.into(),
@@ -385,11 +364,11 @@ pub async fn delete_files_batch(
     responses(
         (status = 200, body = Object, description = "All folders deleted"),
         (status = 206, body = Object, description = "Partial success — same `BatchOperationResponse` shape as the 200 (successful[], failed[], stats). Caller still inspects `failed[]` for the per-item cause."),
-        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons"),
-        (status = 403, description = "Every item was denied and the caller can see the resources"),
-        (status = 404, description = "Every item was denied and the caller cannot see the resources"),
-        (status = 507, description = "Every item exceeded the destination drive's quota"),
-        (status = 401, description = "Unauthorized")
+        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 403, description = "Every item was denied and the caller can see the resources", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Every item was denied and the caller cannot see the resources", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 507, description = "Every item exceeded the destination drive's quota", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "batch"
@@ -401,22 +380,15 @@ pub async fn delete_folders_batch(
 ) -> ApiResult<impl IntoResponse> {
     // Verify there are folders to process
     if request.folder_ids.is_empty() {
-        return Ok((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "No folder IDs provided"
-            })),
-        )
-            .into_response());
+        return Ok(AppError::bad_request("No folder IDs provided").into_response());
     }
     if request.folder_ids.len() > MAX_BATCH_SIZE {
-        return Ok((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": format!("Batch size {} exceeds maximum of {}", request.folder_ids.len(), MAX_BATCH_SIZE)
-            })),
-        )
-            .into_response());
+        return Ok(AppError::bad_request(format!(
+            "Batch size {} exceeds maximum of {}",
+            request.folder_ids.len(),
+            MAX_BATCH_SIZE
+        ))
+        .into_response());
     }
 
     // Execute batch operation
@@ -442,7 +414,7 @@ pub async fn delete_folders_batch(
             .map(|f| FailedOperation {
                 id: f.id,
                 error: f.message,
-                error_type: f.kind.as_str().to_string(),
+                error_type: f.kind.wire_name().to_string(),
             })
             .collect(),
         stats: result.stats.into(),
@@ -460,11 +432,11 @@ pub async fn delete_folders_batch(
     responses(
         (status = 201, body = Object, description = "All folders created"),
         (status = 206, body = Object, description = "Partial success — same `BatchOperationResponse` shape as the 200 (successful[], failed[], stats). Caller still inspects `failed[]` for the per-item cause."),
-        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons"),
-        (status = 403, description = "Every item was denied and the caller can see the resources"),
-        (status = 404, description = "Every item was denied and the caller cannot see the resources"),
-        (status = 507, description = "Every item exceeded the destination drive's quota"),
-        (status = 401, description = "Unauthorized")
+        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 403, description = "Every item was denied and the caller can see the resources", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Every item was denied and the caller cannot see the resources", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 507, description = "Every item exceeded the destination drive's quota", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "batch"
@@ -476,22 +448,15 @@ pub async fn create_folders_batch(
 ) -> ApiResult<impl IntoResponse> {
     // Verify there are folders to process
     if request.folders.is_empty() {
-        return Ok((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "No folders provided"
-            })),
-        )
-            .into_response());
+        return Ok(AppError::bad_request("No folders provided").into_response());
     }
     if request.folders.len() > MAX_BATCH_SIZE {
-        return Ok((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": format!("Batch size {} exceeds maximum of {}", request.folders.len(), MAX_BATCH_SIZE)
-            })),
-        )
-            .into_response());
+        return Ok(AppError::bad_request(format!(
+            "Batch size {} exceeds maximum of {}",
+            request.folders.len(),
+            MAX_BATCH_SIZE
+        ))
+        .into_response());
     }
 
     // Transform the format for the service
@@ -530,11 +495,11 @@ pub async fn create_folders_batch(
     responses(
         (status = 200, body = Object, description = "Batch file details"),
         (status = 206, body = Object, description = "Partial success — same `BatchOperationResponse` shape as the 200 (successful[], failed[], stats). Caller still inspects `failed[]` for the per-item cause."),
-        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons"),
-        (status = 403, description = "Every item was denied and the caller can see the resources"),
-        (status = 404, description = "Every item was denied and the caller cannot see the resources"),
-        (status = 507, description = "Every item exceeded the destination drive's quota"),
-        (status = 401, description = "Unauthorized")
+        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 403, description = "Every item was denied and the caller can see the resources", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Every item was denied and the caller cannot see the resources", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 507, description = "Every item exceeded the destination drive's quota", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "batch"
@@ -546,22 +511,15 @@ pub async fn get_files_batch(
 ) -> ApiResult<impl IntoResponse> {
     // Verify there are files to process
     if request.file_ids.is_empty() {
-        return Ok((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "No file IDs provided"
-            })),
-        )
-            .into_response());
+        return Ok(AppError::bad_request("No file IDs provided").into_response());
     }
     if request.file_ids.len() > MAX_BATCH_SIZE {
-        return Ok((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": format!("Batch size {} exceeds maximum of {}", request.file_ids.len(), MAX_BATCH_SIZE)
-            })),
-        )
-            .into_response());
+        return Ok(AppError::bad_request(format!(
+            "Batch size {} exceeds maximum of {}",
+            request.file_ids.len(),
+            MAX_BATCH_SIZE
+        ))
+        .into_response());
     }
 
     // Execute batch operation
@@ -593,11 +551,11 @@ pub async fn get_files_batch(
     responses(
         (status = 200, body = Object, description = "Batch folder details"),
         (status = 206, body = Object, description = "Partial success — same `BatchOperationResponse` shape as the 200 (successful[], failed[], stats). Caller still inspects `failed[]` for the per-item cause."),
-        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons"),
-        (status = 403, description = "Every item was denied and the caller can see the resources"),
-        (status = 404, description = "Every item was denied and the caller cannot see the resources"),
-        (status = 507, description = "Every item exceeded the destination drive's quota"),
-        (status = 401, description = "Unauthorized")
+        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 403, description = "Every item was denied and the caller can see the resources", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Every item was denied and the caller cannot see the resources", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 507, description = "Every item exceeded the destination drive's quota", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "batch"
@@ -609,22 +567,15 @@ pub async fn get_folders_batch(
 ) -> ApiResult<impl IntoResponse> {
     // Verify there are folders to process
     if request.folder_ids.is_empty() {
-        return Ok((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "No folder IDs provided"
-            })),
-        )
-            .into_response());
+        return Ok(AppError::bad_request("No folder IDs provided").into_response());
     }
     if request.folder_ids.len() > MAX_BATCH_SIZE {
-        return Ok((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": format!("Batch size {} exceeds maximum of {}", request.folder_ids.len(), MAX_BATCH_SIZE)
-            })),
-        )
-            .into_response());
+        return Ok(AppError::bad_request(format!(
+            "Batch size {} exceeds maximum of {}",
+            request.folder_ids.len(),
+            MAX_BATCH_SIZE
+        ))
+        .into_response());
     }
 
     // Execute batch operation
@@ -696,11 +647,11 @@ impl From<BatchDownloadQuery> for BatchDownloadRequest {
     responses(
         (status = 200, body = Object, description = "All items trashed"),
         (status = 206, body = Object, description = "Partial success — same `BatchOperationResponse` shape as the 200 (successful[], failed[], stats). Caller still inspects `failed[]` for the per-item cause."),
-        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons"),
-        (status = 403, description = "Every item was denied and the caller can see the resources"),
-        (status = 404, description = "Every item was denied and the caller cannot see the resources"),
-        (status = 507, description = "Every item exceeded the destination drive's quota"),
-        (status = 401, description = "Unauthorized")
+        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 403, description = "Every item was denied and the caller can see the resources", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Every item was denied and the caller cannot see the resources", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 507, description = "Every item exceeded the destination drive's quota", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "batch"
@@ -711,23 +662,15 @@ pub async fn trash_batch(
     Json(request): Json<BatchTrashRequest>,
 ) -> ApiResult<impl IntoResponse> {
     if request.file_ids.is_empty() && request.folder_ids.is_empty() {
-        return Ok((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "No file or folder IDs provided"
-            })),
-        )
-            .into_response());
+        return Ok(AppError::bad_request("No file or folder IDs provided").into_response());
     }
     let combined_size = request.file_ids.len() + request.folder_ids.len();
     if combined_size > MAX_BATCH_SIZE {
-        return Ok((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": format!("Batch size {} exceeds maximum of {}", combined_size, MAX_BATCH_SIZE)
-            })),
-        )
-            .into_response());
+        return Ok(AppError::bad_request(format!(
+            "Batch size {} exceeds maximum of {}",
+            combined_size, MAX_BATCH_SIZE
+        ))
+        .into_response());
     }
 
     let mut all_successful: Vec<String> = Vec::new();
@@ -752,16 +695,12 @@ pub async fn trash_batch(
                 all_failed.extend(result.failed.into_iter().map(|f| FailedOperation {
                     id: f.id,
                     error: f.message,
-                    error_type: f.kind.as_str().to_string(),
+                    error_type: f.kind.wire_name().to_string(),
                 }));
             }
             Err(e) => {
                 tracing::error!("Batch trash_files failed: {}", e);
-                return Ok((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({ "error": "Batch trash operation failed" })),
-                )
-                    .into_response());
+                return Ok(AppError::internal_error("Batch trash operation failed").into_response());
             }
         }
     }
@@ -779,16 +718,12 @@ pub async fn trash_batch(
                 all_failed.extend(result.failed.into_iter().map(|f| FailedOperation {
                     id: f.id,
                     error: f.message,
-                    error_type: f.kind.as_str().to_string(),
+                    error_type: f.kind.wire_name().to_string(),
                 }));
             }
             Err(e) => {
                 tracing::error!("Batch trash_folders failed: {}", e);
-                return Ok((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({ "error": "Batch trash operation failed" })),
-                )
-                    .into_response());
+                return Ok(AppError::internal_error("Batch trash operation failed").into_response());
             }
         }
     }
@@ -819,11 +754,11 @@ pub async fn trash_batch(
     responses(
         (status = 200, body = Object, description = "All folders moved"),
         (status = 206, body = Object, description = "Partial success — same `BatchOperationResponse` shape as the 200 (successful[], failed[], stats). Caller still inspects `failed[]` for the per-item cause."),
-        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons"),
-        (status = 403, description = "Every item was denied and the caller can see the resources"),
-        (status = 404, description = "Every item was denied and the caller cannot see the resources"),
-        (status = 507, description = "Every item exceeded the destination drive's quota"),
-        (status = 401, description = "Unauthorized")
+        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 403, description = "Every item was denied and the caller can see the resources", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Every item was denied and the caller cannot see the resources", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 507, description = "Every item exceeded the destination drive's quota", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "batch"
@@ -834,22 +769,15 @@ pub async fn move_folders_batch(
     Json(request): Json<BatchFolderOperationRequest>,
 ) -> ApiResult<impl IntoResponse> {
     if request.folder_ids.is_empty() {
-        return Ok((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "No folder IDs provided"
-            })),
-        )
-            .into_response());
+        return Ok(AppError::bad_request("No folder IDs provided").into_response());
     }
     if request.folder_ids.len() > MAX_BATCH_SIZE {
-        return Ok((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": format!("Batch size {} exceeds maximum of {}", request.folder_ids.len(), MAX_BATCH_SIZE)
-            })),
-        )
-            .into_response());
+        return Ok(AppError::bad_request(format!(
+            "Batch size {} exceeds maximum of {}",
+            request.folder_ids.len(),
+            MAX_BATCH_SIZE
+        ))
+        .into_response());
     }
 
     let result = state
@@ -900,11 +828,11 @@ impl From<CopyFolderTreeResult> for CopiedFolderDto {
     responses(
         (status = 200, body = Object, description = "All folders copied"),
         (status = 206, body = Object, description = "Partial success — same `BatchOperationResponse` shape as the 200 (successful[], failed[], stats). Caller still inspects `failed[]` for the per-item cause."),
-        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons"),
-        (status = 403, description = "Every item was denied and the caller can see the resources"),
-        (status = 404, description = "Every item was denied and the caller cannot see the resources"),
-        (status = 507, description = "Every item exceeded the destination drive's quota"),
-        (status = 401, description = "Unauthorized")
+        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 403, description = "Every item was denied and the caller can see the resources", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Every item was denied and the caller cannot see the resources", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 507, description = "Every item exceeded the destination drive's quota", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "batch"
@@ -915,22 +843,15 @@ pub async fn copy_folders_batch(
     Json(request): Json<BatchFolderOperationRequest>,
 ) -> ApiResult<impl IntoResponse> {
     if request.folder_ids.is_empty() {
-        return Ok((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "No folder IDs provided"
-            })),
-        )
-            .into_response());
+        return Ok(AppError::bad_request("No folder IDs provided").into_response());
     }
     if request.folder_ids.len() > MAX_BATCH_SIZE {
-        return Ok((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": format!("Batch size {} exceeds maximum of {}", request.folder_ids.len(), MAX_BATCH_SIZE)
-            })),
-        )
-            .into_response());
+        return Ok(AppError::bad_request(format!(
+            "Batch size {} exceeds maximum of {}",
+            request.folder_ids.len(),
+            MAX_BATCH_SIZE
+        ))
+        .into_response());
     }
 
     let result = state
@@ -963,12 +884,12 @@ pub async fn copy_folders_batch(
     ),
     responses(
         (status = 200, content_type = "application/zip", description = "ZIP archive stream"),
-        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons"),
-        (status = 403, description = "Every item was denied and the caller can see the resources"),
-        (status = 404, description = "Every item was denied and the caller cannot see the resources"),
-        (status = 507, description = "Every item exceeded the destination drive's quota"),
-        (status = 401, description = "Unauthorized"),
-        (status = 500, description = "ZIP creation failed")
+        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 403, description = "Every item was denied and the caller can see the resources", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Every item was denied and the caller cannot see the resources", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 507, description = "Every item exceeded the destination drive's quota", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 500, description = "ZIP creation failed", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "batch"
@@ -989,12 +910,12 @@ pub async fn download_batch_querystring(
     path = "/api/batch/download",
     responses(
         (status = 200, content_type = "application/zip", description = "ZIP archive stream"),
-        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons"),
-        (status = 403, description = "Every item was denied and the caller can see the resources"),
-        (status = 404, description = "Every item was denied and the caller cannot see the resources"),
-        (status = 507, description = "Every item exceeded the destination drive's quota"),
-        (status = 401, description = "Unauthorized"),
-        (status = 500, description = "ZIP creation failed")
+        (status = 400, description = "Malformed request, or every item failed for DIFFERENT reasons", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 403, description = "Every item was denied and the caller can see the resources", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Every item was denied and the caller cannot see the resources", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 507, description = "Every item exceeded the destination drive's quota", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 500, description = "ZIP creation failed", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "batch"

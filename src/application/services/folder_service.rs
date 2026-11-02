@@ -842,7 +842,18 @@ impl FolderUseCase for FolderService {
             .rename_folder(id, dto.name, caller_id)
             .await
             .map_err(|e| {
-                DomainError::internal_error(
+                // Preserve the inner `kind` — `AlreadyExists` from a
+                // duplicate-name rename is a legitimate client-side
+                // failure that must surface as 409 + `error_type:
+                // AlreadyExists` (which the SPA keys the friendly "An
+                // item with that name is already there" copy off), NOT
+                // 500 `InternalError`. Pre-fix every repo error was
+                // coerced to `InternalError`, hiding `AlreadyExists`,
+                // `NotFound`, and `AccessDenied` cases from clients.
+                // Only the message is enriched with operator context;
+                // the kind flows through unchanged.
+                DomainError::new(
+                    e.kind,
                     "FolderStorage",
                     format!("Failed to rename folder with ID: {}: {}", id, e),
                 )
@@ -1032,7 +1043,13 @@ impl FolderUseCase for FolderService {
             .move_folder(id, parent_ref, caller_id)
             .await
             .map_err(|e| {
-                DomainError::internal_error(
+                // Same preservation as `rename_folder` above — a
+                // same-name move into a destination that already holds
+                // a sibling with that name is `AlreadyExists`, not an
+                // internal server error. See the comment at the rename
+                // site for the full rationale.
+                DomainError::new(
+                    e.kind,
                     "FolderStorage",
                     format!("Failed to move folder with ID: {}: {}", id, e),
                 )

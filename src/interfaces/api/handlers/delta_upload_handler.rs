@@ -156,8 +156,8 @@ fn parse_chunk_frames(
     request_body = DeltaNegotiateRequest,
     responses(
         (status = 200, description = "Chunks the caller must upload (the rest are claimable without bytes)", body = DeltaNegotiateResponse),
-        (status = 400, description = "Malformed chunk list (hash format, size bounds, count ceiling)"),
-        (status = 429, description = "Rate limited"),
+        (status = 400, description = "Malformed chunk list (hash format, size bounds, count ceiling)", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 429, description = "Rate limited", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "delta-upload"
@@ -184,8 +184,8 @@ pub async fn delta_negotiate(
         description = "Sequence of [u32 BE length][bytes] frames, one per chunk (each ≤ 1 MiB)"),
     responses(
         (status = 200, description = "Server-computed identity of every received frame, in order", body = DeltaChunksResponse),
-        (status = 400, description = "Malformed framing, oversized frame, or oversized request"),
-        (status = 429, description = "Rate limited"),
+        (status = 400, description = "Malformed framing, oversized frame, or oversized request", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 429, description = "Rate limited", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "delta-upload"
@@ -213,11 +213,11 @@ pub async fn delta_upload_chunks(
     responses(
         (status = 201, description = "File created from the committed chunk sequence", body = crate::application::dtos::file_dto::FileDto),
         (status = 200, description = "Existing file's content replaced", body = crate::application::dtos::file_dto::FileDto),
-        (status = 400, description = "Malformed request, or the declared file_hash does not match the chunk sequence"),
-        (status = 404, description = "Target folder/file not found or not accessible"),
+        (status = 400, description = "Malformed request, or the declared file_hash does not match the chunk sequence", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Target folder/file not found or not accessible", body = crate::interfaces::errors::ApiErrorBody),
         (status = 409, description = "Chunks not claimable — upload them and retry", body = DeltaStillMissingResponse),
-        (status = 429, description = "Rate limited"),
-        (status = 507, description = "Storage quota exceeded"),
+        (status = 429, description = "Rate limited", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 507, description = "Storage quota exceeded", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "delta-upload"
@@ -264,8 +264,8 @@ pub async fn delta_commit(
     responses(
         (status = 200, description = "Chunk recipe of the file (immutable per file_hash; served with ETag = file_hash)", body = DeltaManifestResponse),
         (status = 304, description = "Not modified (If-None-Match matched the current file_hash)"),
-        (status = 404, description = "File not found, not accessible, or not owned by the caller"),
-        (status = 429, description = "Rate limited"),
+        (status = 404, description = "File not found, not accessible, or not owned by the caller", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 429, description = "Rate limited", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "delta-upload"
@@ -316,9 +316,9 @@ pub async fn delta_file_manifest(
     responses(
         (status = 200, description = "Requested chunks as [u32 BE length][bytes] frames, in request order",
             content_type = "application/octet-stream"),
-        (status = 400, description = "Malformed hashes, duplicates, or batch above the per-request ceiling"),
+        (status = 400, description = "Malformed hashes, duplicates, or batch above the per-request ceiling", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "Some chunks are not available to this caller", body = DeltaNotAvailableResponse),
-        (status = 429, description = "Rate limited"),
+        (status = 429, description = "Rate limited", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "delta-upload"

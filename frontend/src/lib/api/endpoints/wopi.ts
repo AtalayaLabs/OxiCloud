@@ -3,7 +3,7 @@
  * `getEditorUrl` returns the iframe action URL + access token; the office editor
  * is launched by POST-ing the token to that URL (see WopiEditor.svelte).
  */
-import { apiFetch } from '$lib/api/client';
+import { ApiError, apiErrorFromResponse, apiFetch } from '$lib/api/client';
 
 export interface WopiEditorData {
 	editor_url: string;
@@ -86,10 +86,7 @@ export async function getEditorUrl(
 		`/api/wopi/editor-url?file_id=${encodeURIComponent(fileId)}&action=${encodeURIComponent(action)}`,
 		{ credentials: 'same-origin' }
 	);
-	if (!res.ok) {
-		const text = await res.text().catch(() => '');
-		throw new Error(`Editor URL request failed: ${res.status} ${text}`);
-	}
+	if (!res.ok) throw await apiErrorFromResponse(res);
 	return (await res.json()) as WopiEditorData;
 }
 
@@ -102,9 +99,16 @@ export async function getEditorUrlWithFallback(
 	try {
 		return await getEditorUrl(fileId, action);
 	} catch (e) {
+		// Branch on the ApiError's structural `status`, not a substring of
+		// `.message`. Pre-sweep the thrown Error's message was
+		// "Editor URL request failed: 422 not editable" (status in the
+		// string), so `msg.includes('422')` sufficed; post-sweep
+		// `apiErrorFromResponse` surfaces the server's own `message`
+		// (just "not editable") which no longer carries the status. See
+		// `project_error_type_contract` — the FE must switch on
+		// structured fields, not message text.
 		const ext = filename.split('.').pop()?.toLowerCase() ?? '';
-		const msg = e instanceof Error ? e.message : '';
-		if (action === 'edit' && ext === 'pdf' && msg.includes('422')) {
+		if (action === 'edit' && ext === 'pdf' && e instanceof ApiError && e.status === 422) {
 			return getEditorUrl(fileId, 'view');
 		}
 		throw e;

@@ -252,35 +252,6 @@ async fn create_pool_with_retries(
 /// in a `_sqlx_migrations` table. Each migration runs in its own transaction.
 /// Migration files are embedded at compile time via `sqlx::migrate!()`.
 async fn run_migrations(pool: &PgPool) -> Result<()> {
-    // ── One-time pre-flight cleanup for the 20260625000000 collision ──
-    //
-    // Two migrations landed on the same day from parallel branches with
-    // the same version prefix:
-    //   - 20260625000000_files_user_size_index.sql    (Dio)
-    //   - 20260625000000_folder_tree_modified_at.sql  (Ed)
-    // They were renamed to ...0001 and ...0002 (disjoint versions), and
-    // both bodies were made idempotent so they re-run safely against
-    // databases that already applied either original under the shared
-    // version. However sqlx 0.8's default strict mode errors on boot
-    // when `_sqlx_migrations` contains a row whose version no longer
-    // maps to a source file ("previously applied but is missing in the
-    // resolved migrations") — which is exactly the state of every
-    // contributor DB that booted before the rename.
-    //
-    // This DELETE silently clears that stale bookkeeping row. The
-    // schema effects of whichever original ran are preserved
-    // (idempotent re-application via ...0001 / ...0002 is a no-op on
-    // already-modified schemas). On fresh databases the table doesn't
-    // exist yet, the query errors, and the `let _` swallows it —
-    // sqlx::migrate!() then creates the table cleanly on its first
-    // pass.
-    //
-    // Sunset: drop this block once the contributor base has rolled
-    // past the affected commit window. Suggested review date 2026-12.
-    let _ = sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 20260625000000")
-        .execute(pool)
-        .await;
-
     match sqlx::migrate!().run(pool).await {
         Ok(()) => Ok(()),
         Err(e) => Err(DbError(format_error_chain("Migration error", &e))),

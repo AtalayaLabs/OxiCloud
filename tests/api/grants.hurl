@@ -1132,7 +1132,7 @@ HTTP 404
 [Asserts]
 jsonpath "$.stats.successful" == 0
 jsonpath "$.stats.failed" == 2
-jsonpath "$.failed[0].error_type" == "Not Found"
+jsonpath "$.failed[0].error_type" == "NotFound"
 
 # Files — move
 POST {{base_url}}/api/batch/files/move
@@ -1298,7 +1298,7 @@ Content-Type: application/json
 
 HTTP 403
 [Asserts]
-jsonpath "$.failed[0].error_type" == "Access Denied"
+jsonpath "$.failed[0].error_type" == "AccessDenied"
 
 POST {{base_url}}/api/batch/files/delete
 Authorization: Bearer {{frank_token}}

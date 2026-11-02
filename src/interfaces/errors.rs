@@ -8,7 +8,8 @@ use std::borrow::Cow;
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::domain::errors::{DomainError, ErrorKind};
 
@@ -37,6 +38,94 @@ pub struct ErrorResponse<'a> {
     pub error: &'a str,
     pub message: &'a str,
     pub error_type: &'a str,
+}
+
+/// OpenAPI-visible owned mirror of [`ErrorResponse`] — same wire shape,
+/// no borrowed lifetime (utoipa's `ToSchema` needs an owned type).
+/// Published in `components.schemas` so the generated SDK and third-party
+/// clients have a typed body to deserialize 4xx/5xx responses against
+/// instead of treating them as untyped `unknown`. The SPA's hand-written
+/// `apiErrorFromSdkError` helper can lean on this shape once individual
+/// `#[utoipa::path]` response blocks reference it (a follow-up sweep —
+/// introducing the schema here is the enabling step, not the full
+/// migration).
+///
+/// `error_type` is a free-form `String` by design (not a closed enum):
+/// the server emits both `ErrorKind::wire_name()` values (e.g.
+/// `AccessDenied`, `NotFound`) and handler-specific PascalCase literals
+/// (e.g. `AccountDeactivated`, `PasswordLoginDisabled`, `EmailNotVerified`,
+/// `RegistrationDomainNotAllowed`). Enumerating every value in the
+/// schema would force a schema bump + client regeneration on every new
+/// error branch; keeping it string + documenting known values preserves
+/// the stable wire contract without that tax. Known values below should
+/// be updated when new branches land but aren't load-bearing on the
+/// schema's validity.
+///
+/// Examples seen on the wire (not exhaustive):
+///   * `ErrorKind::wire_name()` values: `AccessDenied`, `NotFound`,
+///     `InvalidInput`, `AlreadyExists`, `Conflict`, `QuotaExceeded`,
+///     `InternalError`, `TransientBackend`, `Timeout`,
+///     `PreconditionFailed`, `AccountDeactivated`.
+///   * Handler-emitted literals: `PasswordLoginDisabled`,
+///     `EmailNotVerified`, `RegistrationDisabled`,
+///     `RegistrationDomainNotAllowed`, `OpaqueLoginRequired`,
+///     `PasswordChangeRequired`, `PasswordUnchanged`, `AccountLocked`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ApiErrorBody {
+    /// Numeric HTTP status rendered as a string (e.g. `"403"`, `"404"`).
+    #[schema(example = "403")]
+    pub status: String,
+    /// Human-readable message. Duplicates `error` for backwards compat
+    /// with pre-AppError handlers that returned `{"error": "…"}`.
+    #[schema(example = "Account deactivated")]
+    pub message: String,
+    /// Same string as `message`; preserved for legacy clients that key
+    /// on `error` instead of `message`.
+    #[schema(example = "Account deactivated")]
+    pub error: String,
+    /// Machine-readable PascalCase discriminator the SPA switches on.
+    /// See the struct doc for the current enumeration of known values.
+    #[schema(example = "AccountDeactivated")]
+    pub error_type: String,
+}
+
+/// RFC 6749 § 5.2 / RFC 7009 § 2.2.1 OAuth 2.0 error response body.
+///
+/// This is the SPEC-REQUIRED shape for OAuth-flavoured endpoints that
+/// federated identity providers call directly — our OIDC Back-Channel
+/// Logout receiver at `/api/auth/oidc/backchannel-logout`, and any
+/// future endpoint we expose for a federated IdP to probe. Its shape
+/// is NOT ours to redesign: compliant IdPs parse exactly these two
+/// fields, and some reject responses that carry sibling fields they
+/// don't recognise.
+///
+/// `error` here is a **lowercase_snake OAuth error code** (e.g.
+/// `invalid_request`, `invalid_token`, `unsupported_token_type`), NOT
+/// the OxiCloud machine `error_type` discriminator used elsewhere.
+/// Specifically distinct from `ApiErrorBody.error_type`: an IdP sees
+/// `invalid_request` and knows it must retry/resign; our SPA sees
+/// `error_type: InvalidInput` and shows a localised message. Different
+/// audiences, different vocabularies — keeping two shapes keeps either
+/// one honest.
+///
+/// Used by:
+///   * `oidc_backchannel_logout` — 400 on validation failure,
+///     503 when OIDC isn't configured.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct OAuthErrorResponse {
+    /// Lowercase_snake OAuth 2.0 / OIDC error code. RFC 6749 § 5.2 lists
+    /// the common vocabulary (`invalid_request`, `invalid_client`,
+    /// `invalid_grant`, `unauthorized_client`, `unsupported_grant_type`,
+    /// `invalid_scope`); extensions add more (`invalid_token` from RFC
+    /// 7009, `authentication_not_configured` is our own).
+    #[schema(example = "invalid_request")]
+    pub error: String,
+    /// Human-readable context — optional on the wire per the specs, but
+    /// we always send one because operators tailing the IdP's logs
+    /// benefit from the extra breadcrumb when the signed token itself
+    /// is opaque to them.
+    #[schema(example = "logout_token validation failed")]
+    pub error_description: String,
 }
 
 impl AppError {
@@ -115,6 +204,20 @@ impl AppError {
     pub fn payload_too_large(message: impl Into<String>) -> Self {
         Self::new(StatusCode::PAYLOAD_TOO_LARGE, message, "PayloadTooLarge")
     }
+
+    /// Create a 501 Not Implemented error.
+    pub fn not_implemented(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::NOT_IMPLEMENTED, message, "NotImplemented")
+    }
+
+    /// Create a 503 Service Unavailable error.
+    pub fn service_unavailable(message: impl Into<String>) -> Self {
+        Self::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            message,
+            "ServiceUnavailable",
+        )
+    }
 }
 
 /// HTTP status for a domain error kind.
@@ -143,6 +246,11 @@ pub fn status_for_kind(kind: ErrorKind) -> StatusCode {
         // decide whether to retry, and it is what a reverse proxy
         // keys off to avoid caching the failure.
         ErrorKind::TransientBackend => StatusCode::SERVICE_UNAVAILABLE,
+        // 403, not 401: the credentials were correct — the account
+        // is just no longer permitted. See `login()` for the
+        // ordering that makes this distinguishable only AFTER a
+        // successful credential check.
+        ErrorKind::AccountDeactivated => StatusCode::FORBIDDEN,
     }
 }
 
@@ -153,7 +261,10 @@ impl From<DomainError> for AppError {
         Self {
             status_code,
             message: err.message,
-            error_type: Cow::Borrowed(err.kind.as_str()),
+            // Machine-readable PascalCase for the SPA's error_type
+            // switch — see `ErrorKind::wire_name` for the stability
+            // contract and why this is distinct from `as_str`.
+            error_type: Cow::Borrowed(err.kind.wire_name()),
         }
     }
 }

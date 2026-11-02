@@ -81,24 +81,23 @@ jsonpath "$.outcome.extra.deferred_reason" not exists
 
 # ─────────────────────────────────────────────────────────────
 # Step 3b — Baseline for the wire exposure: with the gate free,
-# `/api/config`'s body carries `server_status.readonly: false` and no
-# holder. This is the "before" bookend for Step 4b's "after" check —
-# without it, step 4b could pass trivially.
+# `/api/status` reports `readonly: false` and no holder. This is
+# the "before" bookend for Step 4b-auth's "after" check — without
+# it, step 4b-auth could pass trivially (holder present because
+# the state has been held since boot by some leftover).
 #
-# (This comment used to describe an "X-Server-Status hot-path
-# early-return (readonly:false + no rotation → no header)". That rule
-# was removed from `server_status_middleware`: it now stamps on every
-# response inside its layer, because the FE needs header absence to mean
-# "outside the middleware stack" rather than "nothing happening". A
-# stale `hot-path returns without a header` comment still sits at the
-# top of that middleware and is what this test was written against.)
+# Public `/api/config` carries NO `server_status` field at all,
+# gate held or free — the privacy pin for that shape lives in
+# `auth_config_discovery.hurl` (step 3) and isn't re-asserted on
+# every state change here.
 # ─────────────────────────────────────────────────────────────
-GET {{base_url}}/api/config
+GET {{base_url}}/api/status
+Authorization: Bearer {{admin_token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.server_status.readonly" == false
-jsonpath "$.server_status.holder" not exists
+jsonpath "$.readonly" == false
+jsonpath "$.holder" not exists
 
 
 # ─────────────────────────────────────────────────────────────
@@ -124,45 +123,49 @@ jsonpath "$.holder.label" == "hurl: backend_write_lock scenario"
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 4b — Public wire exposure: with the gate held, `/api/config`
-# surfaces the holder in its body, and every response inside the
-# `create_api_routes` layer additionally carries the
-# `X-Server-Status` header (not "EVERY API response" as this comment
-# previously claimed — the public and `/api/auth/*` trees sit outside
-# that layer by design). Both consumed by the FE's
-# global server-status store to render the maintenance banner
-# across the whole app — not just the admin tab. Public-safe
-# projection: `kind` + `display` only (admin_id / expires_at /
-# raw label text / source-target names stay on the admin-only
-# `/api/admin/storage/write-lock` surface).
-#
-# The `display` field is server-formatted by
-# `BackendWriteLockReason::display()` and includes the operator
-# label on External holds, so `contains "hurl: backend_write_lock"`
-# proves end-to-end that this scenario's acquire reached the FE
-# wire path.
+# Step 4b-public — Public wire exposure after the gate acquire:
+# `/api/config` STILL carries no `server_status` field. The
+# gate-held / gate-free distinction is invisible on this
+# unauthenticated surface by design — the signal path for a
+# visitor who tries to use a maintenance-mode server is the auth
+# endpoint rejecting their login with a reason, not any
+# information on `/api/config`.
 # ─────────────────────────────────────────────────────────────
 GET {{base_url}}/api/config
 
 HTTP 200
 [Asserts]
-# No header assertion HERE: `/api/config` is on the PUBLIC router and
-# `server_status_middleware` is layered inside `create_api_routes`, so
-# this response never passes through it. That is deliberate — the
-# middleware relies on header ABSENCE meaning "response path outside the
-# middleware stack". The header is asserted in step 4c below, on an
-# in-layer endpoint.
-jsonpath "$.server_status.readonly" == true
-jsonpath "$.server_status.holder.kind" == "external"
-# The PUBLIC projection strips the operator label: `build_header_payload`
-# calls `reason.public_display()`, which for External always returns the
-# generic string, while the header path calls `reason.display()` and
-# keeps "Maintenance: {label}". This assertion asked for the label here
-# and got "External maintenance in progress" the first time the file ran
-# (2026-10-24) — the privacy control working as designed. Pinning the
-# generic form is the useful assertion: it fails if the label ever starts
-# leaking to anonymous callers.
-jsonpath "$.server_status.holder.display" == "External maintenance in progress"
+jsonpath "$.server_status" not exists
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 4b-auth — The authenticated `/api/status` body carries the
+# full holder details that step 4b-public deliberately strips.
+# This is the "logged-in caller actually sees the maintenance
+# banner" half of the invariant — without this pin, step 4b-public
+# alone would silently pass on a future refactor that stripped
+# holder from EVERY endpoint (not just the public one).
+#
+# `/api/status` is the authenticated runtime snapshot added in
+# the feat/registration privacy split; shape = full HeaderPayload
+# including `holder.kind` + `holder.display`. The `display`
+# string is server-formatted by `BackendWriteLockReason::display()`
+# and INCLUDES the operator-authored label on External holds, so
+# the exact "External maintenance in progress" value here proves
+# end-to-end that this scenario's acquire with
+# `label: "hurl: backend_write_lock scenario"` reached the FE wire
+# path. (The admin-only `/api/admin/storage/write-lock` surface in
+# step 4c carries the raw label too; this one carries the
+# server-formatted display.)
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/status
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.readonly" == true
+jsonpath "$.holder.kind" == "external"
+jsonpath "$.holder.display" == "External maintenance in progress"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -232,22 +235,22 @@ jsonpath "$.is_held" == false
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 7b — Public wire exposure after release: the `/api/config`
-# body reports `server_status.readonly: false` + no holder, and
-# the global banner on every open client disappears. (The parenthetical
-# here used to say the `X-Server-Status` header is "omitted on the
-# hot-path early-return when readonly is false AND rotation is
-# inactive". That early-return no longer exists — inside its layer the
-# middleware now stamps `{"readonly":false}` unconditionally, and it is
-# that explicit false, not the header's absence, that resets the FE
-# store.)
+# Step 7b — Wire exposure after release: `/api/status` reports
+# `readonly: false` and no holder again — the matched "after"
+# bookend for step 4b-auth's "held" assertion. Without this pin
+# a regression that forgot to clear the holder on release would
+# leave step 4b-auth's assertion passing on a stuck-high state.
+#
+# Public `/api/config` carries no `server_status` field in any
+# state; the privacy pin lives in `auth_config_discovery.hurl`.
 # ─────────────────────────────────────────────────────────────
-GET {{base_url}}/api/config
+GET {{base_url}}/api/status
+Authorization: Bearer {{admin_token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.server_status.readonly" == false
-jsonpath "$.server_status.holder" not exists
+jsonpath "$.readonly" == false
+jsonpath "$.holder" not exists
 
 
 # ─────────────────────────────────────────────────────────────

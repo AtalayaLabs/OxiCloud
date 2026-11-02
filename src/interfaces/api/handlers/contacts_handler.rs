@@ -1,3 +1,4 @@
+use crate::interfaces::errors::AppError;
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -20,7 +21,6 @@ use crate::application::dtos::user_dto::PublicUserDto;
 use crate::application::ports::carddav_ports::{AddressBookUseCase, ContactUseCase};
 use crate::application::services::auth_application_service::AuthApplicationService;
 use crate::application::services::contact_service::ContactService;
-use crate::domain::errors::ErrorKind;
 use crate::interfaces::middleware::auth::AuthUser;
 
 const SYSTEM_BOOK_ID: &str = "system";
@@ -115,15 +115,23 @@ pub struct AddContactToGroupRequest {
     pub contact_id: String,
 }
 
-/// Query parameters for paginated listing.
+/// Query parameters for paginated listing / search.
 ///
-/// Both fields are optional: when omitted, regular address books return
-/// the full contact list (the frontend relies on this), while the system
-/// book falls back to its own defaults (limit 100, offset 0).
+/// `limit` and `offset` are optional: when both are omitted, regular address
+/// books return the full contact list (the share-modal frontend relies on
+/// this), while the system book falls back to its own defaults (limit 100,
+/// offset 0). Supplying either field switches to the bounded path.
+///
+/// `search` runs a trigram-indexed substring match inside the selected book
+/// (or the system user directory). Search results are bounded even when
+/// `limit` is omitted, so a typo cannot scan a whole address book.
 #[derive(Deserialize)]
 pub struct ListQuery {
     limit: Option<i64>,
     offset: Option<i64>,
+    /// Case-insensitive substring search over name, nickname, organisation,
+    /// e-mail and phone. Empty/whitespace is treated as "no search".
+    search: Option<String>,
     /// System address book only — when `true`, includes the calling user
     /// in the returned contacts. Default `false` matches the share-modal
     /// "you can't share with yourself" semantics; the admin drive-owner
@@ -133,36 +141,30 @@ pub struct ListQuery {
     include_self: bool,
 }
 
+/// Default and maximum page size for search results. Search is bounded by
+/// construction: the trigram GIN indexes narrow the rows, and `LIMIT` stops a
+/// broad term from materialising every match in the book.
+const DEFAULT_SEARCH_LIMIT: i64 = 100;
+const MAX_SEARCH_LIMIT: i64 = 500;
+
+fn search_limit(requested: Option<i64>) -> i64 {
+    requested
+        .unwrap_or(DEFAULT_SEARCH_LIMIT)
+        .clamp(1, MAX_SEARCH_LIMIT)
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 fn domain_err_to_response(err: crate::domain::errors::DomainError) -> Response {
-    let status = match err.kind {
-        ErrorKind::NotFound => StatusCode::NOT_FOUND,
-        ErrorKind::AccessDenied => StatusCode::FORBIDDEN,
-        ErrorKind::InvalidInput => StatusCode::BAD_REQUEST,
-        _ => StatusCode::INTERNAL_SERVER_ERROR,
-    };
-    (
-        status,
-        Json(serde_json::json!({ "error": err.to_string() })),
-    )
-        .into_response()
+    AppError::from(err).into_response()
 }
 
 fn system_book_unavailable() -> Response {
-    (
-        StatusCode::NOT_FOUND,
-        Json(serde_json::json!({ "error": "System address book not available" })),
-    )
-        .into_response()
+    AppError::not_found("System address book not available").into_response()
 }
 
 fn system_book_readonly() -> Response {
-    (
-        StatusCode::METHOD_NOT_ALLOWED,
-        Json(serde_json::json!({ "error": "System address book is read-only" })),
-    )
-        .into_response()
+    AppError::method_not_allowed("System address book is read-only").into_response()
 }
 
 /// Attach a quoted `ETag` header to an existing response.
@@ -245,7 +247,7 @@ fn user_to_contact(user: PublicUserDto) -> ContactDto {
     path = "/api/address-books",
     responses(
         (status = 200, body = Vec<AddressBookResponse>, description = "List of address books"),
-        (status = 500, description = "Internal server error"),
+        (status = 500, description = "Internal server error", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "contacts"
@@ -278,6 +280,15 @@ pub async fn list_address_books(
                     }
                 })
                 .collect();
+            // The service returns books from a HashMap, so order is otherwise
+            // arbitrary. Stable alphabetical order keeps the picker from
+            // reshuffling between reloads; the system book is appended last.
+            response.sort_by(|a, b| {
+                a.name
+                    .to_lowercase()
+                    .cmp(&b.name.to_lowercase())
+                    .then_with(|| a.id.cmp(&b.id))
+            });
 
             // Skip the system address book for external callers so they
             // don't see an internal-user directory entry (let alone its
@@ -327,7 +338,7 @@ pub async fn list_address_books(
     path = "/api/address-books",
     responses(
         (status = 201, description = "Address book created", body = AddressBookResponse),
-        (status = 400, description = "Invalid input"),
+        (status = 400, description = "Invalid input", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "contacts"
@@ -372,8 +383,8 @@ pub async fn create_address_book(
     params(("book_id" = String, Path, description = "Address book UUID")),
     responses(
         (status = 200, description = "Address book updated", body = AddressBookResponse),
-        (status = 403, description = "Only the owner can update"),
-        (status = 404, description = "Address book not found"),
+        (status = 403, description = "Only the owner can update", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Address book not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "contacts"
@@ -426,8 +437,8 @@ pub async fn update_address_book(
     params(("book_id" = String, Path, description = "Address book UUID")),
     responses(
         (status = 204, description = "Address book deleted"),
-        (status = 403, description = "Only the owner can delete"),
-        (status = 404, description = "Address book not found"),
+        (status = 403, description = "Only the owner can delete", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Address book not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "contacts"
@@ -462,14 +473,15 @@ pub async fn delete_address_book(
     path = "/api/address-books/{book_id}/contacts",
     params(
         ("book_id" = String, Path, description = "Address book UUID or \"system\""),
-        ("limit"   = Option<i64>, Query, description = "Max results (omit for the full book; system book defaults to 100)"),
-        ("offset"  = Option<i64>, Query, description = "Pagination offset (omit for none; system book defaults to 0)"),
+        ("limit"   = Option<i64>, Query, description = "Max results (omit for the full book; system book defaults to 100; search defaults to 100, capped at 500)"),
+        ("offset"  = Option<i64>, Query, description = "Pagination offset (omit for none; system book defaults to 0; ignored for system-book search)"),
+        ("search"  = Option<String>, Query, description = "Case-insensitive substring search over name, nickname, organisation, e-mail and phone. Backed by the trigram indexes; empty/whitespace means no search"),
         ("include_self" = Option<bool>, Query, description = "System address book only — include the calling user in the results. Default false (the share-modal \"can't share with yourself\" rule); the admin drive-owner surface sets it true. Ignored for non-system books"),
     ),
     responses(
         (status = 200, body = Vec<ContactDto>, description = "List of contacts"),
-        (status = 403, description = "Access denied"),
-        (status = 404, description = "Address book not found"),
+        (status = 403, description = "Access denied", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Address book not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "contacts"
@@ -480,6 +492,12 @@ pub async fn list_contacts(
     Path(book_id): Path<String>,
     Query(params): Query<ListQuery>,
 ) -> impl IntoResponse {
+    let search = params
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|q| !q.is_empty());
+
     if book_id == SYSTEM_BOOK_ID {
         if !state.expose_system_users {
             return system_book_unavailable();
@@ -496,10 +514,22 @@ pub async fn list_contacts(
             return e.into_response();
         }
         let caller_id = auth_user.id.to_string();
-        match auth_service
-            .list_users(params.limit.unwrap_or(100), params.offset.unwrap_or(0))
-            .await
-        {
+        // `search_users` is the bounded, trigram-indexed query; `list_users`
+        // is the offset-paginated browse path. Offset has no meaning for the
+        // search variant, so it is ignored there.
+        let result = match search {
+            Some(query) => {
+                auth_service
+                    .search_users(query, search_limit(params.limit))
+                    .await
+            }
+            None => {
+                auth_service
+                    .list_users(params.limit.unwrap_or(100), params.offset.unwrap_or(0))
+                    .await
+            }
+        };
+        match result {
             Ok(users) => {
                 let include_self = params.include_self;
                 let contacts: Vec<ContactDto> = users
@@ -511,6 +541,24 @@ pub async fn list_contacts(
             }
             Err(err) => {
                 error!("Error listing OxiCloud users: {}", err);
+                domain_err_to_response(err)
+            }
+        }
+    } else if let Some(query) = search {
+        match state
+            .contact_service
+            .search_contacts(
+                &book_id,
+                query,
+                search_limit(params.limit),
+                params.offset.unwrap_or(0).max(0),
+                auth_user.id,
+            )
+            .await
+        {
+            Ok(contacts) => (StatusCode::OK, Json(contacts)).into_response(),
+            Err(err) => {
+                error!("Error searching contacts in book {}: {}", book_id, err);
                 domain_err_to_response(err)
             }
         }
@@ -536,9 +584,9 @@ pub async fn list_contacts(
     params(("book_id" = String, Path, description = "Address book UUID")),
     responses(
         (status = 201, body = ContactDto, description = "Contact created"),
-        (status = 400, description = "Invalid input"),
-        (status = 403, description = "Access denied or read-only book"),
-        (status = 404, description = "Address book not found"),
+        (status = 400, description = "Invalid input", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 403, description = "Access denied or read-only book", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Address book not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "contacts"
@@ -592,8 +640,8 @@ pub async fn create_contact(
     ),
     responses(
         (status = 200, body = ContactDto, description = "Contact details"),
-        (status = 403, description = "Access denied"),
-        (status = 404, description = "Contact not found"),
+        (status = 403, description = "Access denied", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Contact not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "contacts"
@@ -617,11 +665,7 @@ pub async fn get_contact(
             return e.into_response();
         }
         let Ok(uuid) = Uuid::parse_str(&contact_id) else {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "Invalid user ID format" })),
-            )
-                .into_response();
+            return AppError::bad_request("Invalid user ID format").into_response();
         };
         match auth_service.get_user_by_id(uuid).await {
             Ok(user) => {
@@ -663,10 +707,10 @@ pub async fn get_contact(
     ),
     responses(
         (status = 200, body = ContactDto, description = "Contact updated"),
-        (status = 400, description = "Invalid input"),
-        (status = 403, description = "Access denied or read-only book"),
-        (status = 404, description = "Contact not found"),
-        (status = 412, description = "ETag mismatch — contact was modified"),
+        (status = 400, description = "Invalid input", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 403, description = "Access denied or read-only book", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Contact not found", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 412, description = "ETag mismatch — contact was modified", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "contacts"
@@ -693,13 +737,10 @@ pub async fn update_contact(
         {
             Ok(current) => {
                 if !if_match_passes(if_match, &current.etag) {
-                    return (
-                        StatusCode::PRECONDITION_FAILED,
-                        Json(serde_json::json!({
-                            "error": "Contact was modified — fetch the latest version and retry"
-                        })),
+                    return AppError::precondition_failed(
+                        "Contact was modified — fetch the latest version and retry",
                     )
-                        .into_response();
+                    .into_response();
                 }
             }
             Err(err) => return domain_err_to_response(err),
@@ -745,9 +786,9 @@ pub async fn update_contact(
     ),
     responses(
         (status = 204, description = "Contact deleted"),
-        (status = 403, description = "Access denied or read-only book"),
-        (status = 404, description = "Contact not found"),
-        (status = 412, description = "ETag mismatch"),
+        (status = 403, description = "Access denied or read-only book", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Contact not found", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 412, description = "ETag mismatch", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "contacts"
@@ -772,13 +813,10 @@ pub async fn delete_contact(
         {
             Ok(current) => {
                 if !if_match_passes(if_match, &current.etag) {
-                    return (
-                        StatusCode::PRECONDITION_FAILED,
-                        Json(serde_json::json!({
-                            "error": "Contact was modified — fetch the latest version and retry"
-                        })),
+                    return AppError::precondition_failed(
+                        "Contact was modified — fetch the latest version and retry",
                     )
-                        .into_response();
+                    .into_response();
                 }
             }
             Err(err) => return domain_err_to_response(err),
@@ -807,8 +845,8 @@ pub async fn delete_contact(
     params(("book_id" = String, Path, description = "Address book UUID or \"system\"")),
     responses(
         (status = 200, body = Vec<ContactGroupDto>, description = "List of contact groups"),
-        (status = 403, description = "Access denied"),
-        (status = 404, description = "Address book not found"),
+        (status = 403, description = "Access denied", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Address book not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "contacts"
@@ -841,8 +879,8 @@ pub async fn list_groups(
     params(("book_id" = String, Path, description = "Address book UUID")),
     responses(
         (status = 201, body = ContactGroupDto, description = "Group created"),
-        (status = 403, description = "Access denied or read-only book"),
-        (status = 404, description = "Address book not found"),
+        (status = 403, description = "Access denied or read-only book", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Address book not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "contacts"
@@ -880,8 +918,8 @@ pub async fn create_group(
     ),
     responses(
         (status = 200, body = ContactGroupDto, description = "Group details"),
-        (status = 403, description = "Access denied"),
-        (status = 404, description = "Group not found"),
+        (status = 403, description = "Access denied", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Group not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "contacts"
@@ -892,11 +930,7 @@ pub async fn get_group(
     Path((book_id, group_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
     if book_id == SYSTEM_BOOK_ID {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "System address book has no groups" })),
-        )
-            .into_response();
+        return AppError::not_found("System address book has no groups").into_response();
     }
     match state
         .contact_service
@@ -921,8 +955,8 @@ pub async fn get_group(
     ),
     responses(
         (status = 200, body = ContactGroupDto, description = "Group updated"),
-        (status = 403, description = "Access denied or read-only book"),
-        (status = 404, description = "Group not found"),
+        (status = 403, description = "Access denied or read-only book", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Group not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "contacts"
@@ -959,8 +993,8 @@ pub async fn update_group(
     ),
     responses(
         (status = 204, description = "Group deleted"),
-        (status = 403, description = "Access denied or read-only book"),
-        (status = 404, description = "Group not found"),
+        (status = 403, description = "Access denied or read-only book", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Group not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "contacts"
@@ -998,8 +1032,8 @@ pub async fn delete_group(
     ),
     responses(
         (status = 200, body = Vec<ContactDto>, description = "Contacts in the group"),
-        (status = 403, description = "Access denied"),
-        (status = 404, description = "Group not found"),
+        (status = 403, description = "Access denied", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Group not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "contacts"
@@ -1010,11 +1044,7 @@ pub async fn list_contacts_in_group(
     Path((book_id, group_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
     if book_id == SYSTEM_BOOK_ID {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "System address book has no groups" })),
-        )
-            .into_response();
+        return AppError::not_found("System address book has no groups").into_response();
     }
     match state
         .contact_service
@@ -1039,9 +1069,9 @@ pub async fn list_contacts_in_group(
     ),
     responses(
         (status = 204, description = "Contact added to group"),
-        (status = 400, description = "Invalid contact ID"),
-        (status = 403, description = "Access denied or read-only book"),
-        (status = 404, description = "Group or contact not found"),
+        (status = 400, description = "Invalid contact ID", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 403, description = "Access denied or read-only book", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Group or contact not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "contacts"
@@ -1083,8 +1113,8 @@ pub async fn add_contact_to_group(
     ),
     responses(
         (status = 204, description = "Contact removed from group"),
-        (status = 403, description = "Access denied or read-only book"),
-        (status = 404, description = "Group or contact not found"),
+        (status = 403, description = "Access denied or read-only book", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Group or contact not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "contacts"

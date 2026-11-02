@@ -134,12 +134,26 @@ describe('opaqueRegister', () => {
 	});
 
 	it('throws ApiError with parsed error_type on start failure', async () => {
+		// Uses `OpaqueCiphersuiteMismatch` — a REAL server-side literal
+		// emitted at `opaque_auth_handler.rs::register_finish` when the
+		// client's declared ciphersuite_version doesn't match the server's.
+		// Earlier revisions of this pin used a hypothetical
+		// `OpaqueAlreadyRegistered`, but opaque register IS idempotent by
+		// design (`register_finish` overwrites — see line 285 of the
+		// handler), so no such code path exists server-side; the pin
+		// pretended to encode a contract it didn't. 400 is what the
+		// server emits for this cause; this test cares about parsing
+		// shape, not the specific status code, so it's a valid real
+		// pairing.
 		f.mockResolvedValueOnce(
-			errJson(409, { error_type: 'OpaqueAlreadyRegistered', message: 'already have envelope' })
+			errJson(400, {
+				error_type: 'OpaqueCiphersuiteMismatch',
+				message: 'ciphersuiteVersion mismatch: client=1, server=2'
+			})
 		);
 		await expect(opaqueRegister('pw', KSF, 1)).rejects.toMatchObject({
-			status: 409,
-			errorType: 'OpaqueAlreadyRegistered'
+			status: 400,
+			errorType: 'OpaqueCiphersuiteMismatch'
 		});
 	});
 

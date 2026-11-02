@@ -8,12 +8,10 @@ import { ApiError, apiProbeTransport } from '$lib/api/client';
 import {
 	dpopBind,
 	getCurrentUser,
-	getSystemStatus,
 	login as sdkLogin,
 	logout as sdkLogout,
 	oidcExchange,
 	oidcLinkStart,
-	oidcProviders,
 	oidcUnlink,
 	refreshToken as sdkRefreshToken,
 	register as sdkRegister,
@@ -21,7 +19,6 @@ import {
 	setupAdmin as sdkSetupAdmin,
 	upgradeToInternal as sdkUpgradeToInternal
 } from '../generated/openapi/sdk.gen';
-import type { SystemInitStatusDto } from '../generated/openapi/types.gen';
 import type { AuthResponse, SelfUser } from '$lib/api/types';
 
 // Dedicated logger — silent by default; operators enable in devtools with
@@ -41,19 +38,50 @@ const authLog = log.getLogger('oxi:auth');
  * shape on non-2xx.
  */
 function apiErrorFromSdkError(e: unknown, path: string): ApiError {
-	const err = e as { response?: Response; data?: unknown };
-	const status = err.response?.status ?? 0;
-	const statusText = err.response?.statusText ?? '';
-	const body = (err.data ?? {}) as {
+	// Hey API throws two different shapes depending on the SDK call's
+	// `responseStyle`:
+	//   * `responseStyle: 'fields'` → throws a `{response, data}`
+	//     envelope: `data` is the parsed body, `response` is the raw
+	//     Response. `fetchMe` + `tryRefresh` opt into this because they
+	//     need the Response to read status without parsing the body.
+	//   * default (`responseStyle: 'data'`, every other call) → throws
+	//     the parsed body DIRECTLY. No wrapper, no Response object.
+	//     Register, login, upgrade, etc. all land here.
+	//
+	// This helper accepts BOTH shapes so every caller can use it
+	// without having to flip `responseStyle` just to get the error
+	// extraction right. A regression that only works for one shape
+	// (which is what shipped on 9ce1418b: register showed
+	// "API 0 for /api/auth/register" instead of the server message)
+	// is what the branch here guards against.
+	const envelope = e as { response?: Response; data?: unknown };
+	const bodyFromEnvelope = envelope.response !== undefined ? envelope.data : undefined;
+	// When the throw IS the body, read fields off `e` directly.
+	// When it's the envelope, `.data` is the body.
+	const body = (bodyFromEnvelope ?? e ?? {}) as {
 		error_type?: unknown;
 		message?: unknown;
 		error?: unknown;
+		status?: unknown;
 	};
+	const status = envelope.response?.status ?? parseStatusFromBody(body.status) ?? 0;
+	const statusText = envelope.response?.statusText ?? '';
 	const errorType = typeof body.error_type === 'string' ? body.error_type : undefined;
 	const message =
 		(typeof body.message === 'string' ? body.message : undefined) ??
 		(typeof body.error === 'string' ? body.error : undefined);
 	return new ApiError(status, statusText, path, errorType, message);
+}
+
+/** Extract the numeric prefix from the server's `status` string
+ *  ("403 Forbidden" → 403). Backend's ErrorResponse carries this
+ *  verbatim, so when the SDK throws the body alone (no Response
+ *  object), we still get an accurate HTTP status for the ApiError.
+ *  Returns `undefined` on anything unparseable. */
+function parseStatusFromBody(raw: unknown): number | undefined {
+	if (typeof raw !== 'string') return undefined;
+	const n = parseInt(raw, 10);
+	return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
 /** Probe the session without refreshing or redirecting on an ordinary 401. */
@@ -336,82 +364,6 @@ async function opaqueKsfForClient(): Promise<{
 	return params.ksf;
 }
 
-export interface OidcProviders {
-	enabled: boolean;
-	provider_name?: string;
-	password_login_enabled?: boolean;
-	/**
-	 * True when the server accepts magic-link login requests. The backend
-	 * composes three factors: SMTP wired, `OXICLOUD_AUTH_METHODS` allowlist
-	 * includes `magic_link`, and OIDC is NOT enabled at the deployment
-	 * (OIDC-enabled deployments must not offer magic-link — it would bypass
-	 * any 2FA / step-up the IdP enforces).
-	 */
-	magic_link_login_enabled?: boolean;
-	/**
-	 * True when `OXICLOUD_REQUIRE_VERIFIED_EMAIL` is set. The login page
-	 * uses this to explain the `EmailNotVerified` login response and
-	 * surface a "resend verification link" affordance.
-	 */
-	require_verified_email?: boolean;
-	authorize_endpoint?: string;
-	/**
-	 * Server-computed: true when the `auto_redirect_if_standalone_oidc`
-	 * policy is on AND OIDC is the only working method (see
-	 * `AuthApplicationService::auto_redirect_to_oidc`). When true the root
-	 * layout guard `window.location.replace`s to `authorize_endpoint`
-	 * instead of routing through `/login` — the server-side `/login`
-	 * middleware only fires on full HTTP loads, so SPA client-side
-	 * navigation to `/login` (root guard, dev via Vite) would otherwise
-	 * stall on the login page. Because the flag is gated by the admin's
-	 * policy on the SERVER, using it on the client does NOT override the
-	 * policy toggle — we're just enacting the same decision on paths the
-	 * middleware can't reach.
-	 */
-	auto_redirect_to_oidc?: boolean;
-}
-
-/** Public OIDC provider info for the login page. */
-export async function getOidcProviders(): Promise<OidcProviders> {
-	// Phase 4 — SDK call via generated client. Target `/api/auth/oidc/providers`
-	// is in `transport.ts::AUTH_PRIMITIVES` so the refresh-dance isn't engaged
-	// here. The swallow-everything fallback is preserved: the login page polls
-	// this on first render and MUST NOT surface an error if the IdP config
-	// endpoint is unreachable — it just hides the OIDC-sign-in button.
-	try {
-		const data = await oidcProviders({ throwOnError: true });
-		return data as OidcProviders;
-	} catch {
-		return { enabled: false };
-	}
-}
-
-export type AuthStatus = SystemInitStatusDto;
-
-/**
- * System bootstrap probe. When `initialized === false` no admin exists yet and
- * the login page must offer the first-run admin-setup flow. This auth primitive
- * bypasses unauthorized retry in the shared transport. Defaults to "initialized" on any failure so a transient
- * error never strands operators on the setup wizard.
- */
-export async function getAuthStatus(): Promise<AuthStatus> {
-	// Phase 4 — SDK call. The fallback object is NOT a plausible default;
-	// it is specifically the "already-initialized, nothing-to-set-up" state
-	// so a boot probe on a transiently-unreachable `/api/auth/status`
-	// doesn't push the user into the first-run setup wizard. Preserve it.
-	const fallback: AuthStatus = {
-		initialized: true,
-		admin_count: 1,
-		registration_allowed: true,
-		faces_enabled: false
-	};
-	try {
-		return await getSystemStatus({ throwOnError: true });
-	} catch {
-		return fallback;
-	}
-}
-
 /**
  * First-run admin bootstrap. POSTs to `/api/setup`, which creates the admin
  * user and marks the system initialized. An ordinary 401 surfaces to the caller.
@@ -473,13 +425,14 @@ export async function register(email: string, password?: string, username?: stri
 	try {
 		await sdkRegister({ body: body as never, throwOnError: true });
 	} catch (e) {
-		const err = e as { response?: { status?: number }; data?: unknown };
-		const errBody = (err.data ?? {}) as { error?: unknown; message?: unknown };
-		const msg =
-			(typeof errBody.message === 'string' && errBody.message) ||
-			(typeof errBody.error === 'string' && errBody.error) ||
-			`register failed: ${err.response?.status ?? 'unknown'}`;
-		throw new Error(msg, { cause: e });
+		// Reshape to `ApiError` (status + errorType + server message) so
+		// the login page can branch on `error_type` for specific-UX
+		// rejections (e.g. `RegistrationDomainNotAllowed` → "that
+		// domain isn't open to sign-up here") instead of showing the
+		// bare server message or the fallback "unknown". Mirror of
+		// what the login + upgrade paths already do via
+		// `apiErrorFromSdkError`.
+		throw apiErrorFromSdkError(e, '/api/auth/register');
 	}
 }
 

@@ -92,6 +92,12 @@
 		},
 		{ href: '/photos', label: t('nav.photos', 'Photos'), icon: 'images', section: 'photos' },
 		{ href: '/music', label: t('nav.music', 'Music'), icon: 'music', section: 'music' },
+		{
+			href: '/contacts',
+			label: t('nav.contacts', 'Contacts'),
+			icon: 'id-card',
+			section: 'contacts'
+		},
 		{ href: '/trash', label: t('nav.trash', 'Trash'), icon: 'trash', section: 'trash' }
 	];
 

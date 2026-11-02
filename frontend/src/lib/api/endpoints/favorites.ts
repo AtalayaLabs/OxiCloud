@@ -8,7 +8,7 @@
  * What remains here are the three favorites-specific HTTP calls,
  * which will migrate to the generated SDK with the rest of Phase 4.
  */
-import { apiFetch } from '$lib/api/client';
+import { apiErrorFromResponse, apiFetch } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import {
 	fetchResourcePage,
@@ -47,7 +47,7 @@ export async function addFavorite(type: ItemType, id: string): Promise<void> {
 		headers: { 'Content-Type': 'application/json', ...getCsrfHeaders() },
 		body: '{}'
 	});
-	if (!res.ok) throw new Error(`add favorite failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 }
 
 export async function removeFavorite(type: ItemType, id: string): Promise<void> {
@@ -56,5 +56,5 @@ export async function removeFavorite(type: ItemType, id: string): Promise<void> 
 		credentials: 'same-origin',
 		headers: getCsrfHeaders()
 	});
-	if (!res.ok) throw new Error(`remove favorite failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 }

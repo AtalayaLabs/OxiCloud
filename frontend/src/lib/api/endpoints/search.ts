@@ -1,5 +1,5 @@
 // Search endpoint — hits the normalized `/*/resources` envelope shape.
-import { apiFetch, apiJson } from '$lib/api/client';
+import { apiErrorFromResponse, apiFetch, apiJson } from '$lib/api/client';
 import type { ItemType, SearchResourcesResponse } from '$lib/api/types';
 import type { SearchOrderBy, SearchTypeFilter } from '$lib/api/generated/openapi/types.gen';
 
@@ -119,5 +119,5 @@ export async function clearSearchCache(): Promise<void> {
 		method: 'DELETE',
 		credentials: 'same-origin'
 	});
-	if (!res.ok) throw new Error(`Failed to clear search cache: ${res.status} ${res.statusText}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 }

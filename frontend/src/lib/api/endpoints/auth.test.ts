@@ -64,12 +64,10 @@ vi.mock('@serenity-kit/opaque', () => ({
 vi.mock('../generated/openapi/sdk.gen', () => ({
 	dpopBind: vi.fn(),
 	getCurrentUser: vi.fn(),
-	getSystemStatus: vi.fn(),
 	login: vi.fn(),
 	logout: vi.fn(),
 	oidcExchange: vi.fn(),
 	oidcLinkStart: vi.fn(),
-	oidcProviders: vi.fn(),
 	oidcUnlink: vi.fn(),
 	refreshToken: vi.fn(),
 	register: vi.fn(),
@@ -80,11 +78,9 @@ vi.mock('../generated/openapi/sdk.gen', () => ({
 import { apiFetch, apiJson, apiProbeTransport } from '$lib/api/client';
 import {
 	getCurrentUser as sdkGetCurrentUserMock,
-	getSystemStatus as sdkGetSystemStatusMock,
 	login as sdkLoginMock,
 	logout as sdkLogoutMock,
 	oidcExchange as sdkOidcExchangeMock,
-	oidcProviders as sdkOidcProvidersMock,
 	refreshToken as sdkRefreshTokenMock,
 	register as sdkRegisterMock,
 	sendMagicLink as sdkSendMagicLinkMock,
@@ -101,8 +97,6 @@ const j = apiJson as unknown as ReturnType<typeof vi.fn>;
 const sdkGetCurrentUser = sdkGetCurrentUserMock as unknown as ReturnType<typeof vi.fn>;
 const sdkLogin = sdkLoginMock as unknown as ReturnType<typeof vi.fn>;
 const sdkLogout = sdkLogoutMock as unknown as ReturnType<typeof vi.fn>;
-const sdkOidcProviders = sdkOidcProvidersMock as unknown as ReturnType<typeof vi.fn>;
-const sdkGetSystemStatus = sdkGetSystemStatusMock as unknown as ReturnType<typeof vi.fn>;
 const sdkOidcExchange = sdkOidcExchangeMock as unknown as ReturnType<typeof vi.fn>;
 const sdkRefreshToken = sdkRefreshTokenMock as unknown as ReturnType<typeof vi.fn>;
 const sdkRegister = sdkRegisterMock as unknown as ReturnType<typeof vi.fn>;
@@ -132,8 +126,6 @@ it('exercises the auth endpoints (success paths)', async () => {
 	await auth.fetchMe().catch(() => {});
 	await auth.tryRefresh().catch(() => {});
 	await auth.login('u', 'p').catch(() => {});
-	await auth.getOidcProviders().catch(() => {});
-	await auth.getAuthStatus().catch(() => {});
 	await auth.setupAdmin('e@x.test', 'p').catch(() => {});
 	await auth.exchangeOidcCode('code').catch(() => {});
 	await auth.register('e@x.test', 'p', 'u').catch(() => {});
@@ -150,8 +142,6 @@ it('exercises the auth endpoints (success paths)', async () => {
 	const sdkMocks = [
 		sdkLogin,
 		sdkLogout,
-		sdkOidcProviders,
-		sdkGetSystemStatus,
 		sdkSetupAdmin,
 		sdkOidcExchange,
 		sdkRegister,
@@ -677,24 +667,88 @@ describe('tryRefresh — DPoP wiring', () => {
 // the wrapper reads from `err.data`. A regression on either half can
 // collapse the || chain to `undefined`, which only shows up visually
 // in the SPA.
-describe('plain-Error wrappers never surface "undefined" to the UI', () => {
-	it('register extracts the server error message, not undefined', async () => {
+describe('register surfaces the server error shape, never "undefined"', () => {
+	it('register wraps the SDK throw in ApiError with the server message', async () => {
 		sdkRegister.mockRejectedValueOnce({
-			response: { status: 409 },
+			response: { status: 409, statusText: 'Conflict' },
 			data: { message: 'email already registered' }
 		});
 		await expect(auth.register('x@y.z', 'p')).rejects.toThrow('email already registered');
 	});
 
-	it('register falls back to a status-formatted message when the body is empty', async () => {
-		sdkRegister.mockRejectedValueOnce({ response: { status: 500 }, data: {} });
-		await expect(auth.register('x@y.z', 'p')).rejects.toThrow(/^register failed: 500$/);
-		// The whole point: NEVER the string "undefined".
+	it('register carries error_type on the ApiError for FE branching', async () => {
+		// Pin the discriminator path the login page branches on
+		// (RegistrationDomainNotAllowed → "that domain isn't open to
+		// sign-up" vs the generic "Registration failed"). Register
+		// pre-feat/registration threw a plain `new Error(msg)` that
+		// dropped error_type; the login page could only match on the
+		// raw message string, which breaks across translations.
+		sdkRegister.mockRejectedValueOnce({
+			response: { status: 403, statusText: 'Forbidden' },
+			data: {
+				error_type: 'RegistrationDomainNotAllowed',
+				message: 'Registration is not open to this email domain.'
+			}
+		});
+		try {
+			await auth.register('x@blocked.test', 'p');
+			throw new Error('expected register to throw');
+		} catch (e) {
+			const err = e as { name?: string; errorType?: string; message?: string };
+			expect(err.name).toBe('ApiError');
+			expect(err.errorType).toBe('RegistrationDomainNotAllowed');
+			expect(err.message).toBe('Registration is not open to this email domain.');
+		}
+	});
+
+	it('register handles the body-only throw shape (Hey API default responseStyle)', async () => {
+		// Regression: `sdkRegister` runs with `throwOnError: true` and
+		// the default `responseStyle: 'data'`, so Hey API throws the
+		// parsed body DIRECTLY — no `{response, data}` wrapper. The
+		// previous shape of `apiErrorFromSdkError` only handled the
+		// `{response, data}` envelope and silently fell back to
+		// `status: 0` + no error_type on this shape, which showed up
+		// as "API 0  for /api/auth/register" in the SPA for every
+		// register rejection. The dedicated regression here mocks the
+		// shape the production SDK actually throws (body as the
+		// exception), not the envelope the previous test case used.
+		sdkRegister.mockRejectedValueOnce({
+			status: '403 Forbidden',
+			error: 'Registration is not open to this email domain.',
+			message: 'Registration is not open to this email domain.',
+			error_type: 'RegistrationDomainNotAllowed'
+		});
+		try {
+			await auth.register('x@blocked.test', 'p');
+			throw new Error('expected register to throw');
+		} catch (e) {
+			const err = e as {
+				name?: string;
+				status?: number;
+				errorType?: string;
+				message?: string;
+			};
+			expect(err.name).toBe('ApiError');
+			expect(err.status).toBe(403);
+			expect(err.errorType).toBe('RegistrationDomainNotAllowed');
+			expect(err.message).toBe('Registration is not open to this email domain.');
+		}
+	});
+
+	it('register falls back to an ApiError with a status-formatted message when the body is empty', async () => {
+		sdkRegister.mockRejectedValueOnce({
+			response: { status: 500, statusText: 'Internal Server Error' },
+			data: {}
+		});
+		// Load-bearing invariant: NEVER the string "undefined".
 		try {
 			await auth.register('x@y.z', 'p');
-			sdkRegister.mockRejectedValueOnce({ response: { status: 500 }, data: {} });
+			throw new Error('expected register to throw');
 		} catch (e) {
-			expect((e as Error).message).not.toContain('undefined');
+			const msg = (e as Error).message;
+			expect(msg).not.toContain('undefined');
+			// ApiError's auto-constructed message contains the status.
+			expect(msg).toContain('500');
 		}
 	});
 

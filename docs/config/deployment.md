@@ -9,7 +9,7 @@ OxiCloud uses a multi-stage Alpine build producing a **~40 MB** image:
 3. **Builder** — compiles OxiCloud (`rust:1.94.0-alpine3.23`)
 4. **Runtime** — minimal Alpine (`alpine:3.23.3`) with `libgcc`, `ca-certificates`, `libpq`, `tzdata`, `su-exec`
 
-The final image runs as non-root user `oxicloud` (UID/GID 1001). Exposed port: **8086**.
+The final image runs as non-root user `oxicloud` (UID/GID 1001 by default — overridable via `PUID`/`PGID`, see [Matching the storage volume's UID/GID](#matching-the-storage-volumes-uidgid) below). Exposed port: **8086**.
 
 ## Docker Compose
 
@@ -19,17 +19,24 @@ services:
     image: postgres:18.2-alpine3.23
     restart: always
     environment:
-      POSTGRES_DB: oxicloud
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-    ports:
-      - "5432:5432"
+      # Overridable via .env; defaults match the historical hardcoded
+      # values so `docker compose pull` on an existing deployment is
+      # a no-op. See "Postgres credentials and ports" below.
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-oxicloud}
+    # Deliberately NO host port mapping. The oxicloud service reaches
+    # postgres over the internal bridge network by service name;
+    # exposing 5432 to the host binds on 0.0.0.0 and makes the default
+    # credentials externally reachable. Local psql / exporters belong
+    # in a `docker-compose.override.yml` (gitignored by Compose
+    # convention) binding to 127.0.0.1 — see the section below.
     networks:
       - oxicloud
     volumes:
       - pg_data:/var/lib/postgresql/
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -62,6 +69,103 @@ volumes:
 ```
 
 This example mirrors the repository's current `docker-compose.yml`. If you deploy from a registry-only setup, you can keep the `image:` line and remove the `build:` stanza.
+
+### Postgres credentials and ports
+
+**Credentials**. The compose file parameterizes the Postgres service's `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` via `.env` with fallback defaults (`postgres` / `postgres` / `oxicloud`) that match the historical hardcoded values — a `docker compose pull` + `up` on an existing deployment is a no-op.
+
+For **new** installs set a strong password BEFORE the first `docker compose up`:
+
+```sh
+# in your .env, before first boot
+POSTGRES_PASSWORD=$(openssl rand -base64 24)
+```
+
+Then update `OXICLOUD_DB_CONNECTION_STRING` and `DATABASE_URL` in the same file to match.
+
+Once the Postgres cluster has been initialized, **changing POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB in the env has no effect** — the Postgres image honors them only on `initdb` against an empty data dir. Changing them later is a role / password rename inside the running cluster:
+
+```sh
+# Rotate the password on an existing cluster:
+docker compose exec postgres \
+    psql -U postgres -d oxicloud -c "ALTER USER postgres WITH PASSWORD 'new-strong-password'"
+# Then update POSTGRES_PASSWORD + OXICLOUD_DB_CONNECTION_STRING + DATABASE_URL
+# in .env and `docker compose up -d` to reload the oxicloud service with the
+# new string. (POSTGRES_PASSWORD in the Postgres service env is used by
+# `pg_isready` for the healthcheck only; the role password lives in the
+# cluster.)
+```
+
+**Ports**. The committed compose file does NOT map Postgres's port 5432 to the host — the `oxicloud` service reaches `postgres` through Docker's internal bridge network by service name, which is enough for every production use case. Binding 5432 to the host (and especially to `0.0.0.0:5432`, which `ports: "5432:5432"` does by default) would make a weak default password externally reachable; the omission is deliberate.
+
+**For dev / ops that need local `psql`**, add a `docker-compose.override.yml` beside the main compose file. Compose auto-loads it on every `docker compose` command, and the file is gitignored by convention — your overrides never leak into commits:
+
+```yaml
+# docker-compose.override.yml — bind 5432 to 127.0.0.1 so only
+# host-local tools reach it. Never bind to 0.0.0.0 in a dev override
+# unless you intend to accept remote connections.
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:5432:5432"
+```
+
+Then `psql -h 127.0.0.1 -U ${POSTGRES_USER:-postgres} oxicloud` from the host.
+
+For a Prometheus `postgres_exporter` or similar on the same host, the same override shape applies — bind to `127.0.0.1` and point the exporter at it.
+
+### Matching the storage volume's UID/GID
+
+By default the container runs the application as `oxicloud:oxicloud` (UID/GID **1001:1001**). The entrypoint runs as root on first boot, chowns `/app/storage` + `/app/static` to that user, then drops privileges via `su-exec`.
+
+On NAS deployments the host-side storage dataset is often already owned by a specific non-1001 UID that can't easily be changed (TrueNAS Scale apps run as `568:568`, Synology Container Manager assigns `1026:100`, Unraid uses whatever the share's `nobody:users` mapping says). Mounting such a dataset into `/app/storage` leaves the server unable to write to it — the application exits silently after service initialization and the container restarts in a loop.
+
+Two ways to fix:
+
+**Option 1 — Set `PUID` / `PGID` env vars (recommended)**. The entrypoint rewrites the oxicloud user's UID/GID to match before the chown. Idempotent across reboots.
+
+```yaml
+  oxicloud:
+    image: diocrafts/oxicloud:latest
+    environment:
+      PUID: 568          # TrueNAS Scale app UID
+      PGID: 568          # TrueNAS Scale app GID
+      # … your OXICLOUD_* vars
+    volumes:
+      - /mnt/pool/oxicloud-data:/app/storage
+```
+
+**Option 2 — Use the Docker `user:` directive**. The container starts as the specified UID (not root), the entrypoint sees that and skips both the UID rewrite and the chown — you take responsibility for ensuring the host-side volume is already correctly owned.
+
+```yaml
+  oxicloud:
+    image: diocrafts/oxicloud:latest
+    user: 568:568
+    volumes:
+      - /mnt/pool/oxicloud-data:/app/storage   # must be chowned 568:568 on the host first
+```
+
+`PUID`/`PGID` is the more forgiving path and the one to use unless you have a specific reason to run the container unprivileged from PID 1. The two mechanisms are compatible: if both are set, the Docker `user:` directive wins (the entrypoint runs as that user, skips the UID rewrite).
+
+**Option 3 — Rootless Docker or userns-remap (host-side fix)**. The kernel's user namespaces can map UID 1001 inside the container to an arbitrary host UID without the container knowing. No `PUID`/`PGID` or `user:` directive needed; the baked-in `oxicloud` user at UID 1001 keeps running inside the container, but the host sees whatever UID the mapping decides. This is the "proper" solution when the deployment platform supports it:
+
+```sh
+# Rootless Docker — install per https://docs.docker.com/engine/security/rootless/
+# then every container's root maps to your user; UID 1001 inside maps to the
+# first entry of your /etc/subuid range.
+dockerd-rootless-setuptool.sh install
+
+# Or rootful Docker with userns-remap — add to /etc/docker/daemon.json:
+#   { "userns-remap": "default" }
+# Then restart dockerd. Container UID 1001 maps to a specific host UID
+# derived from /etc/subuid for the `dockremap` user.
+```
+
+Trade-offs vs. `PUID`/`PGID`:
+- Pros: no in-container privilege manipulation, no entrypoint UID rewrite, works with the stock image as-shipped. OS-level isolation is stronger.
+- Cons: not available on most NAS products (TrueNAS Scale, Synology, Unraid all ship rootful Docker without userns-remap and don't expose the config). Requires host-side setup. Rootless adds its own quirks (ports <1024, limited cgroups, etc.).
+
+If your platform supports it (standard Linux hosts, Kubernetes with user-namespace pods), use rootless/userns-remap and ignore `PUID`/`PGID`. If you're on a NAS, use `PUID`/`PGID`.
 
 ## Kubernetes (Helm)
 
