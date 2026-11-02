@@ -2187,10 +2187,30 @@ export type FeaturesDto = {
      */
     caldav: boolean;
     /**
+     * Calendars browse surface — `/api/calendars` plus the SPA's
+     * `/calendars` page.
+     *
+     * **PLACEHOLDER**: advertised before anything consumes it, so the
+     * wire field and SDK type exist when
+     * <https://github.com/AtalayaLabs/OxiCloud/pull/853> lands. Reads
+     * `true` by default; a client gating on it today simply always
+     * shows the feature. Separate from `caldav` for the same reason
+     * `contacts` is separate from `carddav`.
+     */
+    calendars: boolean;
+    /**
      * CardDAV protocol surface (`/carddav*` + well-known discovery).
      * See `FeaturesConfig::enable_carddav`.
      */
     carddav: boolean;
+    /**
+     * Contacts browse surface — `/api/contacts` plus the SPA's
+     * `/contacts` page, whose nav entry is hidden when this is false.
+     * Deliberately separate from `carddav`: that is the sync protocol,
+     * this is the browse UI, and a deployment may want either without
+     * the other. See `FeaturesConfig::enable_contacts`.
+     */
+    contacts: boolean;
     /**
      * Admin-configured external filesystem mounts. See
      * `FeaturesConfig::enable_external_mounts`.

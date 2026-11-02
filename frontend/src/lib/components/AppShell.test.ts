@@ -43,6 +43,8 @@ function resetFeatures() {
 		webdav: true,
 		caldav: true,
 		carddav: true,
+		contacts: true,
+		calendars: true,
 		nextcloud: false,
 		markdown_collab: false,
 		shared_worker_bus: true
@@ -168,6 +170,24 @@ it('hides /music when features.music is false', () => {
 	serverConfig.features = { ...serverConfig.features, music: false };
 	render(AppShell, { props: { children } });
 	expect(screen.queryByTestId('appshell-nav-music-link')).toBeNull();
+});
+
+it('hides /contacts when features.contacts is false', () => {
+	serverConfig.features = { ...serverConfig.features, contacts: false };
+	render(AppShell, { props: { children } });
+	expect(screen.queryByTestId('appshell-nav-contacts-link')).toBeNull();
+});
+
+it('keeps /contacts gated on features.contacts, NOT features.carddav', () => {
+	// The two are deliberately separate: `carddav` is the DAV sync
+	// endpoint a desktop client talks to, `contacts` is `/api/contacts`
+	// plus this page. A deployment can serve contacts only over DAV, or
+	// only in the SPA. Collapsing them onto one flag — the obvious
+	// simplification — would silently remove one of those choices, so
+	// pin both directions.
+	serverConfig.features = { ...serverConfig.features, carddav: false, contacts: true };
+	render(AppShell, { props: { children } });
+	expect(screen.queryByTestId('appshell-nav-contacts-link')).toBeTruthy();
 });
 
 it('hides the search bar when features.search is false but keeps the slot', () => {

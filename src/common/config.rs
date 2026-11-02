@@ -2452,6 +2452,35 @@ pub struct FeaturesConfig {
     /// CardDAV protocol surface (`/carddav/*` + `/.well-known/carddav`
     /// discovery). Default: true. Env: `OXICLOUD_ENABLE_CARDDAV`.
     pub enable_carddav: bool,
+    /// Calendars browse surface — the `/api/calendars` REST API and the
+    /// SPA's `/calendars` page. Default: true.
+    /// Env: `OXICLOUD_ENABLE_CALENDARS`.
+    ///
+    /// **PLACEHOLDER.** Nothing reads this yet: the REST surface and the
+    /// SPA page arrive with
+    /// <https://github.com/AtalayaLabs/OxiCloud/pull/853>. It ships ahead
+    /// of them so the flag, its `/api/config.features.calendars` wire
+    /// field and the generated SDK type are already in place when that
+    /// PR lands — the implementer adds the route gate in `routes.rs` and
+    /// the nav gate in `AppShell.svelte` and nothing else moves.
+    ///
+    /// Same split as [`Self::enable_contacts`] vs
+    /// [`Self::enable_carddav`]: this is the browse UI, `enable_caldav`
+    /// is the sync protocol.
+    pub enable_calendars: bool,
+    /// Contacts browse surface — the `/api/contacts` REST API and the
+    /// SPA's `/contacts` page. Default: true.
+    /// Env: `OXICLOUD_ENABLE_CONTACTS`.
+    ///
+    /// Distinct from [`Self::enable_carddav`] on purpose: that one
+    /// governs the *protocol* endpoint a desktop client syncs against,
+    /// this one governs the *browse UI* and its REST backing. An
+    /// operator who serves contacts only to CardDAV clients turns this
+    /// off and keeps `enable_carddav` on; the reverse also makes sense
+    /// for a deployment that wants the SPA page without exposing a DAV
+    /// surface. Gating both on one flag would make either choice
+    /// impossible.
+    pub enable_contacts: bool,
     /// NextCloud compatibility surface (`/index.php`, `/remote.php`,
     /// `/ocs/`, `/status.php`, NC login flow v2, NC trashbin). Default:
     /// false — NC compat ships off because it changes the behaviour of
@@ -3085,6 +3114,8 @@ impl Default for FeaturesConfig {
             enable_webdav: true,           // WebDAV protocol surface
             enable_caldav: true,           // CalDAV protocol surface
             enable_carddav: true,          // CardDAV protocol surface
+            enable_calendars: true,        // Calendars browse UI (placeholder, see PR #853)
+            enable_contacts: true,         // Contacts browse UI + /api/contacts
             enable_nextcloud: false,       // NextCloud compat — opt-in, off by default
             // Back-compat with pre-multi-drive clients — bare `/webdav/`
             // maps to the caller's default drive; drive listing is
@@ -4917,6 +4948,16 @@ impl AppConfig {
             && let Ok(parsed) = v.parse::<bool>()
         {
             config.features.enable_carddav = parsed;
+        }
+        if let Ok(v) = env::var("OXICLOUD_ENABLE_CONTACTS")
+            && let Ok(parsed) = v.parse::<bool>()
+        {
+            config.features.enable_contacts = parsed;
+        }
+        if let Ok(v) = env::var("OXICLOUD_ENABLE_CALENDARS")
+            && let Ok(parsed) = v.parse::<bool>()
+        {
+            config.features.enable_calendars = parsed;
         }
         if let Ok(v) = env::var("OXICLOUD_NEXTCLOUD_INSTANCE_ID") {
             let trimmed = v.trim();

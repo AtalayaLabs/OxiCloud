@@ -126,15 +126,50 @@
 				section: 'music'
 			});
 		}
-		// Ungated: Contacts arrived on main after this builder was written,
-		// and nothing gates it — the CardDAV flag added later in this branch
-		// controls the DAV endpoint, not the SPA's contacts page.
-		links.push({
-			href: '/contacts',
-			label: t('nav.contacts', 'Contacts'),
-			icon: 'id-card',
-			section: 'contacts'
-		});
+		// `features.contacts`, NOT `features.carddav`: that flag governs the
+		// DAV sync endpoint, this one governs `/api/contacts` + this page,
+		// and a deployment may want either without the other.
+		if (serverConfig.features.contacts) {
+			links.push({
+				href: '/contacts',
+				label: t('nav.contacts', 'Contacts'),
+				icon: 'id-card',
+				section: 'contacts'
+			});
+		}
+		// ── TO THE /calendar IMPLEMENTER (PR #853) ───────────────────────
+		// `serverConfig.features.calendars` already exists end to end —
+		// `OXICLOUD_ENABLE_CALENDARS` → `FeaturesConfig::enable_calendars`
+		// → `/api/config.features.calendars` → the generated SDK type.
+		// It was added ahead of the feature so nothing about the flag has
+		// to be invented while landing the page. Add the nav entry here,
+		// gated the same way its neighbours are:
+		//
+		//   if (serverConfig.features.calendars) {
+		//     links.push({
+		//       href: '/calendars',
+		//       label: t('nav.calendars', 'Calendars'),
+		//       icon: 'calendar',
+		//       section: 'calendars'
+		//     });
+		//   }
+		//
+		// ⚠ PLURAL route, to match `/contacts` and `/photos` above, the
+		// `features.calendars` flag and the `/api/calendars` REST surface.
+		// PR #853 as currently written is split on this — its API is
+		// `/api/calendars` but its page is `/calendar`. Settle it one way
+		// when landing; this file's convention is that `section` equals
+		// the last path segment, which the `appshell-nav-${section}-link`
+		// test id depends on.
+		//
+		// Two things to do with it beyond this block: gate the
+		// `/api/calendars` router in `routes.rs` on
+		// `features.enable_calendars` (mirror the `/api/contacts` gate
+		// above it) so non-SPA clients get a 404 rather than a surface
+		// the SPA merely hides, and add the hide/show pins to
+		// `AppShell.test.ts` next to the contacts ones. Gate on
+		// `calendars`, NOT `caldav` — that is the sync protocol.
+		// https://github.com/AtalayaLabs/OxiCloud/pull/853
 		if (serverConfig.features.trash) {
 			links.push({
 				href: '/trash',

@@ -620,7 +620,16 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
 
     // REST browse API for CardDAV contacts, groups, and OxiCloud users.
     // Write operations and protocol sync remain on the /carddav endpoint.
-    if let Some(contact_service) = app_state.contact_use_case.clone() {
+    //
+    // Gated on `features.enable_contacts` the same way `/api/photos` is
+    // gated on `enable_photos`: with the flag off the whole `/api/contacts`
+    // prefix stays unmounted, so a non-SPA client gets a 404 rather than a
+    // surface the SPA merely hides. The flag is NOT `enable_carddav` —
+    // that governs the sync protocol, this governs the browse UI, and
+    // either can be wanted without the other.
+    if app_state.core.config.features.enable_contacts
+        && let Some(contact_service) = app_state.contact_use_case.clone()
+    {
         use crate::interfaces::api::handlers::contacts_handler::{self, ContactsApiState};
 
         let auth_svc = app_state

@@ -190,6 +190,8 @@ pub const KNOWN: &[(&str, &str)] = &[
     ("features", "OXICLOUD_ENABLE_AUTH"),
     ("features", "OXICLOUD_ENABLE_CALDAV"),
     ("features", "OXICLOUD_ENABLE_CARDDAV"),
+    ("features", "OXICLOUD_ENABLE_CONTACTS"),
+    ("features", "OXICLOUD_ENABLE_CALENDARS"),
     ("features", "OXICLOUD_ENABLE_CONTENT_SEARCH"),
     ("features", "OXICLOUD_ENABLE_EXTERNAL_MOUNTS"),
     ("features", "OXICLOUD_ENABLE_FACES"),

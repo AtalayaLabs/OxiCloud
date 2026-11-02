@@ -45,6 +45,11 @@ const DEFAULT_FEATURES: ServerFeatures = {
 	webdav: true,
 	caldav: true,
 	carddav: true,
+	contacts: true,
+	// Placeholder — nothing gates on it yet; the `/calendar` page and
+	// `/api/calendars` arrive with PR #853. Defaults true so the feature
+	// shows the moment it exists.
+	calendars: true,
 	nextcloud: false,
 	markdown_collab: false,
 	// Shared-worker bus — on by default (opt-out). The flag gates FE

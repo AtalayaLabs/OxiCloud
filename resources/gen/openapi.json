@@ -17859,6 +17859,8 @@
           "webdav",
           "caldav",
           "carddav",
+          "calendars",
+          "contacts",
           "nextcloud",
           "markdown_collab",
           "shared_worker_bus"
@@ -17868,9 +17870,17 @@
             "type": "boolean",
             "description": "CalDAV protocol surface (`/caldav/*` + well-known discovery).\nSee `FeaturesConfig::enable_caldav`."
           },
+          "calendars": {
+            "type": "boolean",
+            "description": "Calendars browse surface — `/api/calendars` plus the SPA's\n`/calendars` page.\n\n**PLACEHOLDER**: advertised before anything consumes it, so the\nwire field and SDK type exist when\n<https://github.com/AtalayaLabs/OxiCloud/pull/853> lands. Reads\n`true` by default; a client gating on it today simply always\nshows the feature. Separate from `caldav` for the same reason\n`contacts` is separate from `carddav`."
+          },
           "carddav": {
             "type": "boolean",
             "description": "CardDAV protocol surface (`/carddav/*` + well-known discovery).\nSee `FeaturesConfig::enable_carddav`."
+          },
+          "contacts": {
+            "type": "boolean",
+            "description": "Contacts browse surface — `/api/contacts` plus the SPA's\n`/contacts` page, whose nav entry is hidden when this is false.\nDeliberately separate from `carddav`: that is the sync protocol,\nthis is the browse UI, and a deployment may want either without\nthe other. See `FeaturesConfig::enable_contacts`."
           },
           "external_mounts": {
             "type": "boolean",
