@@ -204,6 +204,21 @@ jsonpath "$.ical_uid" == "{{event_uid}}"
 
 
 # ─────────────────────────────────────────────────────────────
+# Step 7b – Clearing the RRULE means the series is gone. The override
+# created in Step 6b (RECURRENCE-ID Dec 22, moved to February) must not
+# survive as a standalone event: the SPA renders a masterless override
+# as its own calendar entry. The Dec window is empty once the rule is
+# cleared.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/calendars/{{calendar_id}}/events?start=2026-12-15T00:00:00Z&end=2026-12-31T00:00:00Z
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$" count == 0
+
+
+# ─────────────────────────────────────────────────────────────
 # Step 8 – A second calendar must not be able to address the first
 # calendar's event id (cross-calendar id smuggling → 404, not 204).
 # ─────────────────────────────────────────────────────────────
@@ -385,6 +400,204 @@ Content-Type: application/json
 HTTP 400
 [Asserts]
 jsonpath "$.error_type" == "BadRequest"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 9c – The SPA edit path must preserve CalDAV-only properties.
+# A sync client's event carries ATTENDEE, VALARM, CATEGORIES, EXDATE
+# and X-* that the JSON DTO does not model. Renaming it through the
+# REST API used to rebuild a minimal VEVENT and drop all of them.
+# Create a rich event, edit it via REST, then read it back through
+# CalDAV (which serves the stored blob verbatim).
+# ─────────────────────────────────────────────────────────────
+PUT {{base_url}}/caldav/{{calendar_id}}/rich-update-guard.ics
+Authorization: Bearer {{token}}
+Content-Type: text/calendar; charset=utf-8
+```
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//OxiCloud rich update test//EN
+BEGIN:VEVENT
+UID:rich-update-guard
+DTSTAMP:20320501T120000Z
+DTSTART;TZID=Europe/Paris:20320504T110000
+DTEND;TZID=Europe/Paris:20320504T120000
+SUMMARY:Rich original
+DESCRIPTION:Original description
+LOCATION:Room 9
+RRULE:FREQ=WEEKLY;COUNT=5
+EXDATE:20320511T090000Z
+CATEGORIES:Work,Important
+ATTENDEE;CN=Alice;ROLE=REQ-PARTICIPANT:mailto:alice@example.com
+X-OXICLOUD-TEST:keep-me
+BEGIN:VALARM
+ACTION:DISPLAY
+DESCRIPTION:Alarm text must survive
+TRIGGER:-PT15M
+END:VALARM
+END:VEVENT
+END:VCALENDAR
+```
+
+HTTP 201
+
+
+GET {{base_url}}/api/calendars/{{calendar_id}}/events?start=2032-05-01T00:00:00Z&end=2032-06-01T00:00:00Z
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Captures]
+rich_event_id: jsonpath "$[0].id"
+[Asserts]
+jsonpath "$" count == 1
+jsonpath "$[0].ical_uid" == "rich-update-guard"
+
+
+PUT {{base_url}}/api/calendars/{{calendar_id}}/events/{{rich_event_id}}
+Authorization: Bearer {{token}}
+Content-Type: application/json
+{
+  "summary": "Rich updated",
+  "description": "Updated description",
+  "location": null,
+  "start_time": "2032-05-04T09:00:00Z",
+  "end_time": "2032-05-04T10:00:00Z",
+  "all_day": false,
+  "rrule": "FREQ=WEEKLY;COUNT=5"
+}
+
+HTTP 200
+[Captures]
+rich_updated_id: jsonpath "$.id"
+[Asserts]
+jsonpath "$.summary" == "Rich updated"
+jsonpath "$.ical_uid" == "rich-update-guard"
+
+
+GET {{base_url}}/caldav/{{calendar_id}}/rich-update-guard.ics
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+body contains "SUMMARY:Rich updated"
+body contains "ATTENDEE;CN=Alice"
+body contains "mailto:alice@example.com"
+body contains "CATEGORIES:Work,Important"
+body contains "EXDATE:20320511T090000Z"
+body contains "X-OXICLOUD-TEST:keep-me"
+body contains "BEGIN:VALARM"
+body contains "DESCRIPTION:Alarm text must survive"
+# The REST payload repeats the same instants (09:00Z/10:00Z), so the
+# stored TZID-qualified value form must survive instead of being
+# flattened to UTC by the rename.
+body contains "DTSTART;TZID=Europe/Paris:20320504T110000"
+body contains "DTEND;TZID=Europe/Paris:20320504T120000"
+body not contains "SUMMARY:Rich original"
+
+
+# Clearing the recurrence must drop the now-meaningless EXDATE while
+# keeping the properties the JSON surface does not own.
+PUT {{base_url}}/api/calendars/{{calendar_id}}/events/{{rich_updated_id}}
+Authorization: Bearer {{token}}
+Content-Type: application/json
+{
+  "summary": "Rich updated",
+  "description": "Updated description",
+  "location": null,
+  "start_time": "2032-05-04T09:00:00Z",
+  "end_time": "2032-05-04T10:00:00Z",
+  "all_day": false,
+  "rrule": null
+}
+
+HTTP 200
+[Captures]
+rich_single_id: jsonpath "$.id"
+
+
+GET {{base_url}}/caldav/{{calendar_id}}/rich-update-guard.ics
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+body contains "SUMMARY:Rich updated"
+body contains "ATTENDEE;CN=Alice"
+body contains "BEGIN:VALARM"
+body not contains "RRULE"
+body not contains "EXDATE"
+
+
+DELETE {{base_url}}/api/calendars/{{calendar_id}}/events/{{rich_single_id}}
+Authorization: Bearer {{token}}
+
+HTTP 204
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 9d – Deleting a recurring master deletes its overrides too.
+# An override with a RECURRENCE-ID is not an addressable CalDAV
+# resource, so a leftover row after deleting the master becomes a
+# phantom standalone event in the SPA.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/calendars/{{calendar_id}}/events
+Authorization: Bearer {{token}}
+Content-Type: application/json
+{
+  "summary": "Series to delete",
+  "start_time": "2031-01-06T09:00:00Z",
+  "end_time": "2031-01-06T10:00:00Z",
+  "rrule": "FREQ=WEEKLY;COUNT=4"
+}
+
+HTTP 201
+[Captures]
+series_id: jsonpath "$.id"
+series_uid: jsonpath "$.ical_uid"
+
+
+# Add one override via CalDAV. The master row id (`series_id`) is
+# unchanged because this PUT body contains only the exception.
+PUT {{base_url}}/caldav/{{calendar_id}}/{{series_uid}}.ics
+Authorization: Bearer {{token}}
+Content-Type: text/calendar; charset=utf-8
+```
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//OxiCloud series delete test//EN
+BEGIN:VEVENT
+UID:{{series_uid}}
+DTSTAMP:20310106T120000Z
+DTSTART:20310114T090000Z
+DTEND:20310114T100000Z
+SUMMARY:Series moved
+RECURRENCE-ID:20310113T090000Z
+END:VEVENT
+END:VCALENDAR
+```
+
+HTTP 201
+
+
+GET {{base_url}}/api/calendars/{{calendar_id}}/events?start=2031-01-01T00:00:00Z&end=2031-02-01T00:00:00Z
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$" count == 2
+
+
+DELETE {{base_url}}/api/calendars/{{calendar_id}}/events/{{series_id}}
+Authorization: Bearer {{token}}
+
+HTTP 204
+
+
+GET {{base_url}}/api/calendars/{{calendar_id}}/events?start=2031-01-01T00:00:00Z&end=2031-02-01T00:00:00Z
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$" count == 0
 
 
 # ─────────────────────────────────────────────────────────────
