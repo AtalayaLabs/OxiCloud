@@ -121,6 +121,12 @@ pub trait ShareStoragePort: Send + Sync + 'static {
         Ok(1)
     }
 
+    /// Consume one download from this link's allowance.
+    ///
+    /// `false` means the allowance is exhausted, or no such share exists.
+    /// The check and the increment must be one atomic step.
+    async fn consume_download(&self, share_id: Uuid) -> Result<bool, DomainError>;
+
     async fn find_shares_by_user(
         &self,
         user_id: Uuid,

@@ -97,6 +97,9 @@ export interface ShareItem {
 	created_by: string;
 	/** RFC 3339 UTC timestamp; `null` → never expires. */
 	expires_at: string | null;
+	/** `null` → unlimited. */
+	max_downloads: number | null;
+	download_count: number;
 	has_password: boolean;
 	id: string;
 	item_id: string;

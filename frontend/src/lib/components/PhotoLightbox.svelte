@@ -58,6 +58,9 @@
 		 * and `expandFullRes` is exactly what issue #721 is about.
 		 */
 		readOnly?: boolean;
+		/** Share row id, when opened from a public link — content requests
+		 *  carry `?share=` so the cap charges that link. */
+		shareId?: string | null;
 	}
 
 	let {
@@ -65,7 +68,8 @@
 		index = $bindable(),
 		onDelete,
 		onDeleteRequested,
-		readOnly = false
+		readOnly = false,
+		shareId = null
 	}: Props = $props();
 
 	let showingOriginal = $state(false);
@@ -151,7 +155,11 @@
 
 	/** The image src to display: large thumbnail first, original on expand/GIF. */
 	const imgSrc = $derived(
-		item ? (showingOriginal ? fileInlineUrl(item.id) : fileThumbnailUrl(item.id, 'large')) : ''
+		item
+			? showingOriginal
+				? fileInlineUrl(item.id, shareId)
+				: fileThumbnailUrl(item.id, 'large')
+			: ''
 	);
 
 	function onImgError() {
@@ -173,7 +181,7 @@
 	function download() {
 		if (!item) return;
 		const a = document.createElement('a');
-		a.href = fileDownloadUrl(item.id);
+		a.href = fileDownloadUrl(item.id, shareId);
 		a.download = item.name;
 		document.body.appendChild(a);
 		a.click();
@@ -298,7 +306,7 @@
 			{#if isVideo(item)}
 				{#key item.id}
 					<video class="lb__media" controls autoplay poster={fileThumbnailUrl(item.id, 'large')}>
-						<source src={fileInlineUrl(item.id)} type={item.mime_type} />
+						<source src={fileInlineUrl(item.id, shareId)} type={item.mime_type} />
 					</video>
 				{/key}
 			{:else}

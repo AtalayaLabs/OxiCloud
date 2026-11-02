@@ -1161,6 +1161,29 @@ impl FileHandler {
         }
 
         // ── Normal download (delegated to service) ───────────────────
+        // A share-token caller spends one download here, after metadata,
+        // 304 and Range requests have returned: those are browsing
+        // operations, and charging media scrubbing per seek would exhaust
+        // a small allowance before the visitor saved anything.
+        // shortcut: ranged GETs are free, so a client can bypass the cap by demanding ranges; upgrade if caps become a billing boundary.
+        if let Ok(file_id) = uuid::Uuid::parse_str(&id) {
+            let Some(share_service) = state.applications.share_service.as_ref() else {
+                tracing::error!("share token download but share service is not configured");
+                return AppError::internal_error("Share service unavailable".to_string())
+                    .into_response();
+            };
+            let resource = crate::domain::services::authorization::Resource::File(file_id);
+            let explicit = params
+                .get("share")
+                .and_then(|v| uuid::Uuid::parse_str(v).ok());
+            if let Err(err) = share_service
+                .register_download(resource, &callers.0, authorized_as, explicit)
+                .await
+            {
+                return AppError::from(err).into_response();
+            }
+        }
+
         let disposition = Self::content_disposition(&file_dto.name, &file_dto.mime_type, &params);
 
         let accept_webp = headers

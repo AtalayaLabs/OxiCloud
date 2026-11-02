@@ -17,6 +17,12 @@ import type { ItemType } from '$lib/api/types';
 
 export interface ShareMeta {
 	/**
+	 * The share row's own id. Sent back as `?share=` on content requests so a
+	 * download is charged to the link the visitor is actually using, not to
+	 * whichever link happens to sit first in the browser's share ring.
+	 */
+	id: string;
+	/**
 	 * The shared resource's own id — a folder id or a file id per
 	 * `item_type`. This is the handoff point between the share surface and
 	 * the ordinary one: `GET /api/s/{token}` is what issues the `oxi_shares`
@@ -26,6 +32,9 @@ export interface ShareMeta {
 	item_id: string;
 	item_type: ItemType;
 	item_name: string;
+	/** `null` → unlimited. */
+	max_downloads: number | null;
+	download_count: number;
 }
 
 export type ShareMetaResult =

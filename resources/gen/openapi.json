@@ -12769,6 +12769,15 @@
           "item_type": {
             "type": "string"
           },
+          "max_downloads": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Optional cap on content downloads. Omit or `null` for unlimited.",
+            "minimum": 0
+          },
           "password": {
             "type": [
               "string",
@@ -17312,7 +17321,8 @@
           "has_password",
           "created_at",
           "created_by",
-          "access_count"
+          "access_count",
+          "download_count"
         ],
         "properties": {
           "access_count": {
@@ -17327,6 +17337,11 @@
           },
           "created_by": {
             "type": "string"
+          },
+          "download_count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           },
           "expires_at": {
             "type": [
@@ -17352,6 +17367,15 @@
           },
           "item_type": {
             "type": "string"
+          },
+          "max_downloads": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "`None` = unlimited.",
+            "minimum": 0
           },
           "token": {
             "type": "string"
@@ -18404,6 +18428,15 @@
             ],
             "format": "date-time",
             "description": "See [`CreateShareDto::expires_at`] for the lenient wire contract."
+          },
+          "max_downloads": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Absent leaves the cap alone; `null` removes it; a number sets it.",
+            "minimum": 0
           },
           "password": {
             "type": [

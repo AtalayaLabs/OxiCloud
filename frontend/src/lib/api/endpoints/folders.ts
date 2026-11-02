@@ -265,6 +265,7 @@ export async function deleteFolder(folderId: string): Promise<void> {
 	if (!res.ok) throw new Error(`delete folder failed: ${res.status}`);
 }
 
-export function folderZipUrl(folderId: string): string {
-	return `/api/folders/${folderId}/download?format=zip`;
+export function folderZipUrl(folderId: string, shareId?: string | null): string {
+	const base = `/api/folders/${folderId}/download?format=zip`;
+	return shareId ? `${base}&share=${encodeURIComponent(shareId)}` : base;
 }
