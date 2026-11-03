@@ -132,7 +132,7 @@
 				langOpen = !langOpen;
 			}}
 		>
-			<span class="lang-selector__code">{(currentLang.code as string).toUpperCase()}</span>
+			<span class="lang-selector__label">{currentLang.flag} {currentLang.name}</span>
 			<Icon name="chevron-down" class="lang-selector__arrow" />
 		</button>
 		{#if langOpen}
@@ -263,8 +263,9 @@
 		background: var(--color-bg-hover);
 	}
 
-	.lang-selector__code {
+	.lang-selector__label {
 		font-weight: var(--weight-semibold);
+		white-space: nowrap;
 	}
 
 	:global(.lang-selector__arrow) {

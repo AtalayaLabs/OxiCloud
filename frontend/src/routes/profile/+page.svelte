@@ -27,8 +27,9 @@
 		UpdateProfileDto
 	} from '$lib/api/generated/openapi/types.gen';
 	import { fetchMe, getOidcProviders, startOidcLink, unlinkOidc } from '$lib/api/endpoints/auth';
-	import { SUPPORTED_LOCALES, setLocale, t, type Locale } from '$lib/i18n/index.svelte';
+	import { setLocale, t, type Locale } from '$lib/i18n/index.svelte';
 	import Icon from '$lib/icons/Icon.svelte';
+	import LanguageSelect from '$lib/components/LanguageSelect.svelte';
 	import { confirmDialog } from '$lib/stores/dialogs.svelte';
 	import ConfirmButton from '$lib/components/ConfirmButton.svelte';
 	import { preferences } from '$lib/stores/preferences.svelte';
@@ -851,14 +852,12 @@
 					</label>
 					<label>
 						<span>{t('profile.language', 'Language')}</span>
-						<select data-testid="profile-language-select" bind:value={preferredLocale}>
-							<option value="" data-testid="profile-language-auto-option"
-								>{t('profile.language_auto', 'Automatic')}</option
-							>
-							{#each SUPPORTED_LOCALES as loc (loc)}
-								<option value={loc} data-testid={`profile-language-option-${loc}`}>{loc}</option>
-							{/each}
-						</select>
+						<LanguageSelect
+							value={preferredLocale}
+							onchange={(loc) => (preferredLocale = loc)}
+							automaticLabel={t('profile.language_auto', 'Automatic')}
+							testid="profile-language-select"
+						/>
 					</label>
 					<label class="checkbox">
 						<input
@@ -1504,8 +1503,7 @@
 		gap: 0.5rem;
 	}
 
-	input,
-	select {
+	input {
 		padding: 0.5rem 0.625rem;
 		border: 1px solid var(--color-border);
 		border-radius: var(--radius-md);

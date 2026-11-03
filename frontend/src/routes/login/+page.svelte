@@ -20,8 +20,9 @@
 		setupAdmin,
 		type OidcProviders
 	} from '$lib/api/endpoints/auth';
-	import { i18n, SUPPORTED_LOCALES, setLocale, t, type Locale } from '$lib/i18n/index.svelte';
+	import { i18n, setLocale, t, type Locale } from '$lib/i18n/index.svelte';
 	import { loginErrorMessage } from '$lib/auth/loginError';
+	import LanguageSelect from '$lib/components/LanguageSelect.svelte';
 	import { session } from '$lib/stores/session.svelte';
 	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import { hasSessionHint } from '$lib/api/csrf';
@@ -1146,16 +1147,12 @@
 			{/if}
 
 			<div class="auth-lang">
-				<select
-					aria-label={t('settings.language', 'Language')}
-					data-testid="login-language-select"
+				<LanguageSelect
+					label={t('settings.language', 'Language')}
+					testid="login-language-select"
 					value={i18n.locale}
-					onchange={(e) => setLocale(e.currentTarget.value as Locale)}
-				>
-					{#each SUPPORTED_LOCALES as loc (loc)}
-						<option value={loc}>{loc.toUpperCase()}</option>
-					{/each}
-				</select>
+					onchange={(loc) => void setLocale(loc as Locale)}
+				/>
 			</div>
 		</div>
 	</div>
@@ -1165,14 +1162,6 @@
 	.auth-lang {
 		margin-top: var(--space-5);
 		text-align: center;
-	}
-
-	.auth-lang select {
-		padding: var(--space-1) var(--space-3);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
-		background: var(--color-bg-input);
-		color: var(--color-text-muted);
 	}
 
 	.auth-error--dismissible {
