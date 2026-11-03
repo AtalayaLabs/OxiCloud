@@ -48,7 +48,7 @@ Defaults for things created from now on. Existing accounts and drives keep their
 
 | Variable | Default | Description |
 |---|---|---|
-| `OXICLOUD_DB_CONNECTION_STRING` | `postgres://postgres:postgres@localhost:5432/oxicloud` | PostgreSQL connection string |
+| `OXICLOUD_DB_CONNECTION_STRING` | `postgres://postgres:postgres@localhost:5432/oxicloud` | PostgreSQL connection string. The runtime config name. If unset, `DATABASE_URL` is read as a deprecated fallback. |
 | `OXICLOUD_DB_MAX_CONNECTIONS` | `20` | Max pool connections |
 | `OXICLOUD_DB_MIN_CONNECTIONS` | `5` | Min pool connections |
 | `OXICLOUD_DB_MAINTENANCE_MAX_CONNECTIONS` | `5` | Max connections in the isolated maintenance pool |
@@ -58,7 +58,7 @@ Defaults for things created from now on. Existing accounts and drives keep their
 
 | Variable | Default | Description |
 |---|---|---|
-| `DATABASE_URL` | — | Build-time database URL for SQLx compile-time checks |
+| `DATABASE_URL` | — | Build-time database URL for SQLx compile-time checks. **DEPRECATED at runtime** — still accepted as a fallback when `OXICLOUD_DB_CONNECTION_STRING` is unset (boots with a `config.deprecated_env_var` audit warning), will be removed in a future major. New runtime deployments should set `OXICLOUD_DB_CONNECTION_STRING` instead. |
 
 ## Authentication
 
