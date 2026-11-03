@@ -219,10 +219,18 @@ test('install, toggle, and delete a plugin', async ({ page }) => {
   await toggle.click(); // re-enable
   await page.waitForTimeout(400);
 
-  // Delete it (admin confirm modal).
-  await page.locator('[data-testid^="admin-plugin-delete-"]').first().click();
-  const ok = page.getByTestId('admin-confirm-ok-btn');
-  if (await ok.isVisible().catch(() => false)) await ok.click();
+  // Delete it. This is an inline ConfirmButton, not a modal: the first
+  // click ARMS the button ("Really?") and the second performs the delete.
+  //
+  // It read `click once, then if (ok.isVisible()) ok.click()` against the
+  // old `admin-confirm-ok-btn` modal until 8c2cf868 replaced that modal
+  // app-wide. The conditional is what hid the breakage — with no modal to
+  // find, the confirm step was silently skipped, so the plugin was never
+  // deleted and only the final count assertion noticed. Both clicks are
+  // unconditional now; a confirm that stops happening must fail, not pass.
+  const del = page.locator('[data-testid^="admin-plugin-delete-"]').first();
+  await del.click();
+  await del.click();
   await expect(page.locator('[data-testid^="admin-plugin-toggle-"]')).toHaveCount(0, {
     timeout: 15_000,
   });
@@ -244,10 +252,16 @@ test('view plugin logs and details', async ({ page }) => {
   // settling, so it's left untested here.
   await page.getByTestId('admin-plugin-logs-close-btn').click({ timeout: 3_000 }).catch(() => {});
 
-  // Clean up: delete the plugin.
-  await page.locator('[data-testid^="admin-plugin-delete-"]').first().click();
-  const ok = page.getByTestId('admin-confirm-ok-btn');
-  if (await ok.isVisible().catch(() => false)) await ok.click();
+  // Clean up: delete the plugin. Inline ConfirmButton — arm, then confirm.
+  // The old conditional-modal form left the plugin INSTALLED (the modal it
+  // waited for no longer exists), which leaks into every later test in this
+  // file: they share one server and the suite runs serially.
+  const cleanup = page.locator('[data-testid^="admin-plugin-delete-"]').first();
+  await cleanup.click();
+  await cleanup.click();
+  await expect(page.locator('[data-testid^="admin-plugin-toggle-"]')).toHaveCount(0, {
+    timeout: 15_000,
+  });
 });
 
 test('plugins tab: save retention settings', async ({ page }) => {
@@ -354,10 +368,14 @@ test('plugins tab: install then save retention settings', async ({ page }) => {
     await page.getByTestId('admin-plugin-retention-save-btn').click().catch(() => {});
   }
 
-  // Clean up.
-  await page.locator('[data-testid^="admin-plugin-delete-"]').first().click();
-  const ok = page.getByTestId('admin-confirm-ok-btn');
-  if (await ok.isVisible().catch(() => false)) await ok.click();
+  // Clean up — same inline arm-then-confirm as above, and the same reason
+  // it is unconditional: a skipped confirm leaves the plugin installed.
+  const cleanup2 = page.locator('[data-testid^="admin-plugin-delete-"]').first();
+  await cleanup2.click();
+  await cleanup2.click();
+  await expect(page.locator('[data-testid^="admin-plugin-toggle-"]')).toHaveCount(0, {
+    timeout: 15_000,
+  });
 });
 
 /**
