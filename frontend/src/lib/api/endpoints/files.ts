@@ -205,12 +205,14 @@ export async function getFile(fileId: string): Promise<FileItem> {
 	return (await res.json()) as FileItem;
 }
 
-export function fileDownloadUrl(fileId: string): string {
-	return withBase(`/api/files/${fileId}`);
+export function fileDownloadUrl(fileId: string, shareId?: string | null): string {
+	const base = withBase(`/api/files/${fileId}`);
+	return shareId ? `${base}?share=${encodeURIComponent(shareId)}` : base;
 }
 
-export function fileInlineUrl(fileId: string): string {
-	return withBase(`/api/files/${fileId}?inline=true`);
+export function fileInlineUrl(fileId: string, shareId?: string | null): string {
+	const base = withBase(`/api/files/${fileId}?inline=true`);
+	return shareId ? `${base}&share=${encodeURIComponent(shareId)}` : base;
 }
 
 /** Thumbnail URL for a file at the given size (server-rendered, content-typed). */

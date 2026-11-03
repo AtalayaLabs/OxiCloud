@@ -17,6 +17,10 @@ pub struct Share {
     created_at: u64,
     created_by: Uuid,
     access_count: u64,
+    /// `None` = unlimited. Enforced when a visitor downloads content
+    /// through the link, not when the link is opened.
+    max_downloads: Option<u32>,
+    download_count: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -55,6 +59,8 @@ impl Share {
             created_at: now,
             created_by,
             access_count: 0,
+            max_downloads: None,
+            download_count: 0,
         })
     }
 
@@ -70,6 +76,8 @@ impl Share {
         created_at: u64,
         created_by: Uuid,
         access_count: u64,
+        max_downloads: Option<u32>,
+        download_count: u64,
     ) -> Self {
         Self {
             id,
@@ -82,6 +90,8 @@ impl Share {
             created_at,
             created_by,
             access_count,
+            max_downloads,
+            download_count,
         }
     }
 
@@ -123,7 +133,25 @@ impl Share {
         self.access_count
     }
 
+    pub fn max_downloads(&self) -> Option<u32> {
+        self.max_downloads
+    }
+
+    pub fn download_count(&self) -> u64 {
+        self.download_count
+    }
+
     // ── Builder-style modifiers (immutable) ──
+
+    pub fn with_max_downloads(mut self, max_downloads: Option<u32>) -> Self {
+        self.max_downloads = max_downloads;
+        self
+    }
+
+    pub fn with_download_count(mut self, download_count: u64) -> Self {
+        self.download_count = download_count;
+        self
+    }
 
     pub fn with_password(mut self, password_hash: Option<String>) -> Self {
         self.password_hash = password_hash;

@@ -914,6 +914,10 @@ export type CreateShareDto = {
     item_id: string;
     item_name?: string | null;
     item_type: string;
+    /**
+     * Optional cap on content downloads. Omit or `null` for unlimited.
+     */
+    max_downloads?: number | null;
     password?: string | null;
 };
 
@@ -4469,12 +4473,17 @@ export type ShareDto = {
      */
     created_at: string;
     created_by: string;
+    download_count: number;
     expires_at?: string | null;
     has_password: boolean;
     id: string;
     item_id: string;
     item_name?: string | null;
     item_type: string;
+    /**
+     * `None` = unlimited.
+     */
+    max_downloads?: number | null;
     token: string;
     url: string;
 };
@@ -5213,6 +5222,10 @@ export type UpdateShareDto = {
      * See [`CreateShareDto::expires_at`] for the lenient wire contract.
      */
     expires_at?: string | null;
+    /**
+     * Absent leaves the cap alone; `null` removes it; a number sets it.
+     */
+    max_downloads?: number | null;
     password?: string | null;
 };
 

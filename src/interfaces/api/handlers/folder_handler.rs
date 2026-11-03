@@ -22,7 +22,7 @@ use crate::application::services::folder_service::FolderService;
 use crate::application::services::mount_registry::MountConfig;
 use crate::common::di::AppState as GlobalAppState;
 use crate::domain::entities::file::File;
-use crate::domain::services::authorization::{Permission, Subject};
+use crate::domain::services::authorization::{Permission, Resource, Subject};
 use crate::domain::services::external_mount_id::{
     NodeId, encode_child_id, virtual_file_etag, virtual_folder_etag,
 };
@@ -36,6 +36,16 @@ use crate::interfaces::api::handlers::caller_flags::enrich_folder_flags;
 
 /// Handler for folder-related API endpoints
 pub struct FolderHandler;
+
+/// Query string of `GET /api/folders/{id}/download`.
+///
+/// `share` names the public link whose page asked for the archive, so the
+/// download is charged to that link instead of whichever credential happens
+/// to authorize the request.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct FolderDownloadQuery {
+    pub share: Option<String>,
+}
 
 impl FolderHandler {
     // ── Why no #[utoipa::path] here? ─────────────────────────────────────────────
@@ -307,6 +317,7 @@ impl FolderHandler {
         State(state): State<Arc<GlobalAppState>>,
         callers: CallerSubjects,
         Path(id): Path<String>,
+        query: FolderDownloadQuery,
     ) -> impl IntoResponse {
         tracing::info!("Downloading folder as ZIP: {}", id);
 
@@ -325,6 +336,25 @@ impl FolderHandler {
             Ok(subject) => subject,
             Err(err) => return AppError::from(err).into_response(),
         };
+
+        if let Ok(folder_id) = uuid::Uuid::parse_str(&id) {
+            let Some(share_service) = state.applications.share_service.as_ref() else {
+                tracing::error!("share token download but share service is not configured");
+                return AppError::internal_error("Share service unavailable".to_string())
+                    .into_response();
+            };
+            let resource = Resource::Folder(folder_id);
+            let explicit = query
+                .share
+                .as_deref()
+                .and_then(|v| uuid::Uuid::parse_str(v).ok());
+            if let Err(err) = share_service
+                .register_download(resource, &callers.0, authorized_as, explicit)
+                .await
+            {
+                return AppError::from(err).into_response();
+            }
+        }
 
         match folder_service
             .get_folder_with_perms(&id, authorized_as)
@@ -551,12 +581,9 @@ pub async fn download_folder_zip(
     state: State<Arc<GlobalAppState>>,
     callers: CallerSubjects,
     path: Path<String>,
+    query: Query<FolderDownloadQuery>,
 ) -> impl IntoResponse {
-    // No `Query` extractor: the handler reads only the path `id`. axum ignores
-    // any query string when no extractor is present, so the response is
-    // byte-identical while a per-request HashMap + owned key/value Strings are
-    // no longer parsed and dropped (benches/ROUND25.md §M3).
-    FolderHandler::download_folder_zip_impl(state, callers, path).await
+    FolderHandler::download_folder_zip_impl(state, callers, path, query.0).await
 }
 
 // ── GET /api/folders/{id}/resources ─────────────────────────────────────────

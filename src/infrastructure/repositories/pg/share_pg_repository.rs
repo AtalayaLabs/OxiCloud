@@ -63,6 +63,8 @@ impl SharePgRepository {
             DomainError::internal_error("Share", format!("Failed to read created_by: {e}"))
         })?;
         let access_count: i64 = row.try_get("access_count").unwrap_or(0);
+        let max_downloads: Option<i64> = row.try_get("max_downloads").unwrap_or(None);
+        let download_count: i64 = row.try_get("download_count").unwrap_or(0);
 
         let item_type =
             ShareItemType::try_from(item_type_str.as_str()).unwrap_or(ShareItemType::File);
@@ -78,6 +80,8 @@ impl SharePgRepository {
             created_at as u64,
             created_by,
             access_count as u64,
+            max_downloads.map(|v| v as u32),
+            download_count as u64,
         ))
     }
 }
@@ -88,19 +92,20 @@ impl ShareStoragePort for SharePgRepository {
             r#"
             INSERT INTO storage.shares
                 (id, item_id, item_name, item_type, token, password_hash,
-                 created_at, created_by, access_count)
+                 created_at, created_by, access_count, max_downloads, download_count)
             VALUES
-                ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             ON CONFLICT (id) DO UPDATE SET
                 item_name     = EXCLUDED.item_name,
                 password_hash = EXCLUDED.password_hash,
-                access_count  = EXCLUDED.access_count
+                access_count  = EXCLUDED.access_count,
+                max_downloads = EXCLUDED.max_downloads
             RETURNING
                 id, item_id, item_name, item_type, token, password_hash,
                 (SELECT MIN(EXTRACT(EPOCH FROM ag.expires_at)::BIGINT)
                  FROM storage.role_grants ag
                  WHERE ag.subject_type = 'token' AND ag.subject_id = id) AS expires_at,
-                created_at, created_by, access_count
+                created_at, created_by, access_count, max_downloads, download_count
             "#,
         )
         .bind(share.id())
@@ -112,6 +117,8 @@ impl ShareStoragePort for SharePgRepository {
         .bind(share.created_at() as i64)
         .bind(share.created_by())
         .bind(share.access_count() as i64)
+        .bind(share.max_downloads().map(i64::from))
+        .bind(share.download_count() as i64)
         .fetch_one(&*self.db_pool)
         .await
         .map_err(|e| {
@@ -151,6 +158,27 @@ impl ShareStoragePort for SharePgRepository {
         Ok(result.rows_affected())
     }
 
+    async fn consume_download(&self, share_id: Uuid) -> Result<bool, DomainError> {
+        // Check and increment in one statement: two round-trips would let
+        // concurrent visitors both read count = max - 1 and both proceed.
+        let result = sqlx::query(
+            r#"
+            UPDATE storage.shares
+               SET download_count = download_count + 1
+             WHERE id = $1
+               AND (max_downloads IS NULL OR download_count < max_downloads)
+            "#,
+        )
+        .bind(share_id)
+        .execute(&*self.db_pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("Database error consuming share download: {}", e);
+            DomainError::internal_error("Share", format!("Failed to register download: {e}"))
+        })?;
+        Ok(result.rows_affected() > 0)
+    }
+
     async fn find_share_by_token(&self, token: &str) -> Result<Share, DomainError> {
         let row = sqlx::query(
             r#"
@@ -158,7 +186,7 @@ impl ShareStoragePort for SharePgRepository {
                 (SELECT MIN(EXTRACT(EPOCH FROM ag.expires_at)::BIGINT)
                  FROM storage.role_grants ag
                  WHERE ag.subject_type = 'token' AND ag.subject_id = s.id) AS expires_at,
-                s.created_at, s.created_by, s.access_count
+                s.created_at, s.created_by, s.access_count, s.max_downloads, s.download_count
             FROM storage.shares s
             WHERE s.token = $1
             "#,
@@ -191,7 +219,7 @@ impl ShareStoragePort for SharePgRepository {
                 (SELECT MIN(EXTRACT(EPOCH FROM ag.expires_at)::BIGINT)
                  FROM storage.role_grants ag
                  WHERE ag.subject_type = 'token' AND ag.subject_id = s.id) AS expires_at,
-                s.created_at, s.created_by, s.access_count
+                s.created_at, s.created_by, s.access_count, s.max_downloads, s.download_count
             FROM storage.shares s
             WHERE s.id = $1 AND s.created_by = $2
             "#,
@@ -249,7 +277,7 @@ impl ShareStoragePort for SharePgRepository {
                 (SELECT MIN(EXTRACT(EPOCH FROM ag.expires_at)::BIGINT)
                  FROM storage.role_grants ag
                  WHERE ag.subject_type = 'token' AND ag.subject_id = s.id) AS expires_at,
-                s.created_at, s.created_by, s.access_count
+                s.created_at, s.created_by, s.access_count, s.max_downloads, s.download_count
             FROM storage.shares s
             WHERE s.item_id = $1 AND s.item_type = $2 AND s.created_by = $3
             ORDER BY s.created_at DESC
@@ -274,20 +302,22 @@ impl ShareStoragePort for SharePgRepository {
             UPDATE storage.shares SET
                 item_name     = $2,
                 password_hash = $3,
-                access_count  = $4
+                access_count  = $4,
+                max_downloads = $5
             WHERE id = $1
             RETURNING
                 id, item_id, item_name, item_type, token, password_hash,
                 (SELECT MIN(EXTRACT(EPOCH FROM ag.expires_at)::BIGINT)
                  FROM storage.role_grants ag
                  WHERE ag.subject_type = 'token' AND ag.subject_id = storage.shares.id) AS expires_at,
-                created_at, created_by, access_count
+                created_at, created_by, access_count, max_downloads, download_count
             "#,
         )
         .bind(share.id())
         .bind(share.item_name())
         .bind(share.password_hash())
         .bind(share.access_count() as i64)
+        .bind(share.max_downloads().map(i64::from))
         .fetch_optional(&*self.db_pool)
         .await
         .map_err(|e| {
@@ -317,7 +347,7 @@ impl ShareStoragePort for SharePgRepository {
                 (SELECT MIN(EXTRACT(EPOCH FROM ag.expires_at)::BIGINT)
                  FROM storage.role_grants ag
                  WHERE ag.subject_type = 'token' AND ag.subject_id = s.id) AS expires_at,
-                s.created_at, s.created_by, s.access_count,
+                s.created_at, s.created_by, s.access_count, s.max_downloads, s.download_count,
                 COUNT(*) OVER() AS total_count
             FROM storage.shares s
             WHERE s.created_by = $1
