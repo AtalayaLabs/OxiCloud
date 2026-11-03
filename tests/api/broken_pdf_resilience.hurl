@@ -165,14 +165,20 @@ header "Content-Length" == "{{file_size}}"
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 7 – (dropped) — `/api/files/{id}/metadata` returns EXIF
-# image metadata, not the file DTO, so a PDF response there is
-# just `{file_id, message: "No EXIF metadata available"}`. The
-# row-survives-async-hooks property we wanted to pin is already
-# covered by step 6: the second inline fetch returns the bytes
-# with `Content-Type: application/pdf` after any lifecycle
-# hooks have run. Nothing more to assert here without listing
-# the folder.
+# Step 7 – (dropped) — the row-survives-async-hooks property we
+# wanted to pin is already covered by step 6: the second inline
+# fetch returns the bytes with `Content-Type: application/pdf`
+# after any lifecycle hooks have run. Nothing more to assert
+# here without listing the folder.
+#
+# ⚠ The original reason given for dropping it has EXPIRED. It read:
+# "`/api/files/{id}/metadata` returns EXIF image metadata, so a PDF
+# response there is just `{message}`". Since 2026-10 that endpoint
+# also serves document creation dates, so a VALID pdf does return a
+# row. This fixture is malformed on purpose, so it still reports
+# nothing — but the premise no longer generalises, and anyone
+# reinstating this step should assert the absence of a claimed date
+# rather than assume the endpoint cannot produce one.
 #
 # ─────────────────────────────────────────────────────────────
 # Step 8 – Name-based search. The real resilience assertion:

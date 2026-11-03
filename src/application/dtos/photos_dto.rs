@@ -274,4 +274,13 @@ pub struct PhotoResourceItemDto {
 }
 
 /// Response envelope for `GET /api/photos/resources`.
+///
+/// ⚠ **Usable in code, NOT in `#[utoipa::path(body = …)]`.** A Rust type
+/// alias is invisible to utoipa: it resolves to the bare generic, and the
+/// path ends up `$ref`-ing a parameterless `CursorListResponse` whose items
+/// are whichever instantiation happened to register first. That is how six
+/// of seven listing endpoints came to be documented as returning
+/// outgoing-share items. The annotation must spell out
+/// `CursorListResponse<PhotoResourceItemDto>`; see
+/// `docs/architecture/resource-listing.md § Registering the envelope`.
 pub type PhotosResourcesDto = CursorListResponse<PhotoResourceItemDto>;

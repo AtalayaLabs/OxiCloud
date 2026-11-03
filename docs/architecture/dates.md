@@ -11,10 +11,33 @@ This document defines which column means what, which wire slot each one feeds,
 which of them a client actually *acts* on, and how far a client-supplied value
 is trusted.
 
-> **Status.** Columns marked **new** are agreed (2026-10-11) but not yet
-> implemented; everything else is shipped. The current tree also has four
-> mis-wirings that predate this model — see
-> [§ Known divergences](#known-divergences). The migration path is
+> **Status.** Re-checked against the tree 2026-10-25. Every column described
+> here is shipped. Two things changed shape since the 2026-10-11 design and are
+> corrected throughout:
+>
+> - **`source_created_at` has never been created**, and a server-extracted
+>   column took the role it was meant to fill, so every COALESCE chain here is
+>   two-arm. It stays RESERVED for one case — a client that actually sends
+>   `X-OC-CTime`, which would be a client-asserted birthtime in its own trust
+>   class. See
+>   [§ There is no `source_created_at`](#there-is-no-source_created_at--and-whether-there-ever-is-depends-on-one-test).
+> - **The extraction table is content-keyed**: `storage.file_metadata` became
+>   `storage.content_metadata`, `captured_at` became `created_at`, and the row's
+>   own bookkeeping is `extracted_at`.
+>
+> Re-checked 2026-10-27: **document creation dates are now extracted** —
+> OOXML `docProps/core.xml`, ODF `meta.xml` and a PDF `/CreationDate`,
+> including one inside a compressed object stream. Existing files need a
+> `content_rescan` with `rederive=always` to pick them up, since extraction
+> fires on upload and an extractor change does not move the sniffed type.
+>
+> Nothing from §0–§9 is open. The one remaining QUESTION is empirical, not
+> work: whether a client-asserted `source_created_at` is ever needed depends
+> on the `X-OC-CTime` observation described above.
+> `PhotoResourceItemDto.captured_at` is **not** a gap — it differs from the
+> generic endpoint's `created_at` by decision, see
+> [§ And one column has two wire names](#and-one-column-has-two-wire-names-on-purpose).
+> The migration path is
 > [`docs/plan/normalize-file-dates.md`](/plan/normalize-file-dates).
 
 ---
@@ -24,11 +47,11 @@ is trusted.
 | Meaning | Column | Trust | Written by |
 |---|---|---|---|
 | Server received it (`btime`-ish) | `storage.files.created_at` | server-stamped, immutable | row insert |
-| Bytes last changed (`mtime`) | `storage.files.content_modified_at` **new** | client-asserted, bounded | content-mutation paths only |
-| Captured on the device | `storage.file_metadata.captured_at` | server-extracted | EXIF `DateTimeOriginal` |
-| Created at the source (pre-upload `btime`) | `storage.files.source_created_at` **planned** | client-asserted, bounded | nothing yet — see below |
+| Bytes last changed (`mtime`) | `storage.files.content_modified_at` | client-asserted, bounded | content-mutation paths only |
+| The date the bytes claim | `storage.content_metadata.created_at` | server-extracted | EXIF `DateTimeOriginal` today; document creation dates once the extractor widens |
+| When extraction last ran | `storage.content_metadata.extracted_at` | server-stamped | every extraction — bookkeeping, not a file date |
 | Any row touch (`ctime`) | `storage.files.updated_at` | server-stamped, never client-assertable | every mutation through a repository write path: content **and** metadata |
-| Entry list last changed (directory `mtime`) | `storage.folders.content_modified_at` **new** | server-stamped | direct-child add/remove/rename triggers |
+| Entry list last changed (directory `mtime`) | `storage.folders.content_modified_at` | server-stamped | direct-child add/remove/rename triggers |
 | Subtree changed | `storage.folders.tree_modified_at` | server-stamped | `tree_etag_dirty` queue |
 
 `content_modified_at` is `NOT NULL` and read directly — no fallback expression
@@ -41,23 +64,87 @@ and that is accepted rather than fixable: the true value is unrecoverable, and
 wrong-and-disruptive. Correctness begins at the first content mutation after the
 column ships. See `docs/plan/normalize-file-dates.md` §1.
 
-The split between the two client-asserted columns is deliberate: `captured_at`
-comes out of the bytes and is therefore trustworthy, while `source_created_at`
-is whatever the client says. Keeping them apart means the trust bounds apply to
-exactly one of them, and re-running EXIF extraction can never clobber a
-client-supplied value or vice versa.
+### There is no `source_created_at` — and whether there ever is depends on one test
 
-**`source_created_at` has no writer and does not exist yet.** The column is
-unbuilt and the blocker is choosing who writes it, not a NextCloud answer:
-`nc:creation_time` is only ever *emitted* today, there is no inbound path, and
-**no browser can supply one** — the File API exposes `lastModified` (an mtime)
-and no `btime` on any platform. The two candidates are a NextCloud client that
-sends a creation time on upload, or server-side extraction from the bytes
-(OOXML `docProps/core.xml` → `dcterms:created`, PDF `/CreationDate`). The
-second is the stronger option: it makes the value server-extracted and so
-removes it from the client-asserted class entirely. Until one lands, the column
-is NULL and the COALESCE chains below simply fall through it. See
-`docs/plan/normalize-file-dates.md` §4.
+An earlier design had a second creation column — `storage.files.source_created_at`,
+the pre-upload `btime`, client-asserted — split from `captured_at` so the trust
+bounds applied to exactly one of them. **It has never been built**, and the
+server-extracted date took the role it was meant to fill
+(`docs/plan/normalize-file-dates.md` §4).
+
+Two findings moved the server-extracted half into one column:
+
+1. **No client-asserted writer exists today, and no browser can ever be one.**
+   The File API exposes `lastModified` (an mtime) and no `btime` on any
+   platform, and `nc:creation_time` is only ever *emitted* — `grep X-OC-CTime
+   src/` finds nothing inbound.
+2. **The writer that does exist is server-side extraction**, which belongs in
+   the column that already holds server-extracted dates. So that column means
+   one thing: *the creation date the bytes themselves claim*, whatever the
+   format.
+
+⚠ **It is not ruled out.** §4 keeps it reserved for exactly one case: if a
+NextCloud client turns out to send `X-OC-CTime` on upload, that is a
+**client-asserted filesystem birthtime** — a different value from what the
+bytes claim, in a different trust class, and the trust bounds would apply to
+it alone. Then a second column is right, and the emitted chain becomes
+`COALESCE(client ctime, content metadata date, 0)`.
+
+So the question is empirical: *does any client actually send it?* The probe
+is in the tree — `log_unhandled_oc_headers` in `interfaces/nextcloud/mod.rs`,
+behind `RUST_LOG=oxicloud::nc_headers=debug` — because the answer cannot be
+observed from behaviour. There is no read path for the header, so a client
+that sends it and a client that does not both produce
+`nc:creation_time = 0`; the value is invisible precisely because nothing
+consumes it.
+
+**First evidence, 2026-10-27: the macOS NextCloud desktop client does NOT
+send it.** A WebDAV PUT carried `oc-total-length` and `oc-chunk-size` and no
+`x-oc-ctime`.
+
+That is stronger than one data point sounds, because **macOS is the best case
+for a birthtime-sending client**: APFS exposes `st_birthtime` natively, so
+that client has the easiest possible access to the value. Linux has no
+portable read (`statx`/`STATX_BTIME` exists but little tooling uses it), so a
+Linux client is *less* likely to send it. If the platform where birthtime is
+free does not send it, the field is probably absent from the client's upload
+path entirely.
+
+Still open rather than closed: the Windows desktop client, mobile, and
+third-party clients (rclone, Cyberduck) are unobserved. Until one of them is
+seen sending it the column does not exist, and nothing is lost by its absence
+— the chain simply has one fewer arm.
+
+That column is `storage.content_metadata.created_at`. It is keyed by content
+(`source_hash`), not by file, because the same bytes always claim the same
+creation date whoever copied them — unlike `files.content_modified_at`, which
+is per-row because a copy legitimately gets `NOW()`. The two are therefore not
+the symmetric pair a `content_created_at` / `content_modified_at` naming would
+advertise.
+
+`extracted_at` on the same table is the row's own bookkeeping — when extraction
+last ran. It is deliberately not called `created_at`, which is what the old
+`file_metadata` table called it, and that misnomer is why the real creation
+date looked like it had nowhere to live. It becomes load-bearing with a
+re-runnable extractor: "when did we last extract this" is a question
+`content_rescan` has to answer.
+
+**What fills it** (as of 2026-10-27): EXIF `DateTimeOriginal` for images, the
+container creation time for video, and documents — OOXML
+`docProps/core.xml` → `dcterms:created`, ODF `meta.xml` →
+`meta:creation-date`, and a PDF's `/Info` → `/CreationDate`, read from the
+trailer window or, when it sits inside a compressed object stream, through
+the object model.
+
+**Still NULL for everything else**, which is most content by count: an
+archive, a binary, a plain text file or a source file claims no creation date,
+so the COALESCE chains below fall through to `content_modified_at`. That is
+the designed answer, not a gap — see § When creation date is unknown.
+
+⚠ **Extraction runs on upload**, so the existing corpus does not have these
+dates until a sweep. That needs `content_rescan` with **`rederive=always`**:
+an extractor gaining a format does not change the sniffed type, so the
+default `changed` mode skips every row it would have fixed.
 
 ### What exactly bumps `updated_at`
 
@@ -153,6 +240,70 @@ collaboration is this product's main axis.
 So the two coexist: `content_modified_at` is what a person reads,
 `tree_modified_at` is what a cache validates.
 
+## Vocabulary — "Added" vs "Created"
+
+Decided 2026-10-19 (shipped in `docs/plan/normalize-file-dates.md` §6) and
+reaffirmed 2026-10-25 when the content-keyed column landed. The two words are
+**not** interchangeable, and which one a surface uses is fixed:
+
+| Word | Column | Means |
+|---|---|---|
+| **Added** | `storage.files.created_at` | when this instance received the bytes |
+| **Created** | `storage.content_metadata.created_at` | when the bytes say they were made |
+
+So the UI's file list says **"Added date"**, never "Created date" — that label
+was changed in §6 precisely to free the word. `?order_by=created_at` sorts by
+arrival and is the admin-facing axis; it is *not* the content's claimed date.
+
+This matters more once document extraction lands (§4), not less. Today a
+`.docx` has no claimed date, so the distinction looks academic and "Created"
+would merely be imprecise. Once `dcterms:created` is read, a 2019 document
+uploaded last week genuinely has two different dates that users will compare —
+and a surface that labelled arrival "Created" would be flatly wrong rather than
+loose. The vocabulary was separated before the data existed so no surface has
+to be relabelled after it does.
+
+Other surfaces already label their own axis the same way, which is the
+precedent this follows: `/favorites` says "Added", `/recent` says "Opened",
+`/trash` says "Deleted".
+
+⚠ **Two columns are spelled `created_at`.** Qualify the table in any query or
+DTO mapping where both are in scope. The one on `storage.files` is arrival; the
+one on `storage.content_metadata` is the claim.
+
+### And one column has two wire names, on purpose
+
+`storage.content_metadata.created_at` is served under two different field
+names, and that is a decision rather than drift (taken 2026-10-27, after
+asking whether to unify them):
+
+| surface | what it may return | field |
+|---|---|---|
+| `GET /api/files/{id}/metadata` | any file — documents included | **`created_at`** |
+| `GET /api/photos/resources` | `image/*` or `video/*` only | **`captured_at`** |
+
+The photos listing is hard-filtered to media in SQL on every `PhotoKind`
+branch, backed by a partial covering index, so it **cannot** return a
+document. On that endpoint "captured" is not a misnomer but the precise
+domain word — EXIF calls the value `DateTimeOriginal`, and a photo *is*
+captured. The generic endpoint has to answer for `.docx` and PDF, where
+"captured" would be a lie, so it says `created_at`.
+
+So each name is correct where it appears, which is the same resolution the
+two `created_at` columns above got: write down which is which rather than
+force one spelling onto two meanings.
+
+**Renaming `captured_at` was considered and declined.** It would cost a wire
+field, the `?order_by=captured_at` enum value, two i18n keys and a migrate-on-
+read for the persisted Photos sort preference — §6 already paid that toll once
+for a label change — in exchange for replacing a precise word with a vaguer
+one on the only surface where the precise word fits.
+
+Two things would reopen it: the photos timeline listing non-media (which needs
+a new `PhotoKind` and a new index, so it is a deliberate act and not a drift
+risk), or `order_by=captured_at` gaining a sibling axis that makes the
+asymmetry confusing.
+
 ## Roles — who actually reads them
 
 Only two of the six are **behavioural**. Sorting the rest by who reads them is
@@ -162,7 +313,7 @@ what pushes both server-stamped columns almost entirely out of the protocol.
 |---|---|---|
 | **Behavioural** | `files.content_modified_at`, `folders.tree_modified_at` | Sync clients. Decides whether a file re-downloads and whether a folder is descended into — the only timestamps where being wrong changes what transfers. |
 | **Presentational** | `folders.content_modified_at` | The "Modified" column for a folder, and its `order_by=modified_at` sort. Deliberately *not* behavioural: no sync client reads it, because a collection's cache validity rides on `tree_modified_at` instead. |
-| **Presentational** | `captured_at`, `source_created_at` | Ordering and display: the Photos timeline, `nc:creation_time`. Wrong values look wrong and cost no bandwidth. |
+| **Presentational** | `content_metadata.created_at` | Ordering and display: the Photos timeline, `nc:creation_time`. Wrong values look wrong and cost no bandwidth. |
 | **Informational** | `created_at` | Emitted as `nc:upload_time` and `D:creationdate`; nothing acts on it. Immutable, so it stays trustworthy for audit. **`created_at` later than `modified_at` is normal, not a bug** — see below. |
 | **Internal** | `updated_at` (with `updated_by`) | Audit queries, consistency sweeps, retention. No surface asks for `ctime` — WebDAV excludes property changes, NextCloud has no equivalent — so it is emitted nowhere. |
 
@@ -225,8 +376,8 @@ an explicitly-named field — never one called `updated_at`.
 | `D:getetag` (folder) | out | `tree_modified_at` | `{id[..16]}-{tree_modified_at}` |
 | `D:getetag` (file) | out | `blob_hash` + `content_modified_at` | see [§ ETag coupling](#etag-coupling) |
 | `X-OC-Mtime` | in | `content_modified_at` | epoch seconds, on `PUT` |
-| `nc:creation_time` | out | `COALESCE(captured_at, source_created_at, content_modified_at)` | see [§ When creation date is unknown](#when-creation-date-is-unknown) |
-| `nc:creation_time` | in | `source_created_at` | see [§ Open questions](#open-questions) |
+| `nc:creation_time` | out | `content_metadata.created_at`, **or `0`** — no fallback to any file clock | see [§ When creation date is unknown](#when-creation-date-is-unknown) |
+| `nc:creation_time` | in | *nothing — no inbound path* | see [§ Open questions](#open-questions) |
 | `nc:upload_time` | out | `created_at` | server receipt |
 
 ### REST DTO fields and where they come from
@@ -265,7 +416,7 @@ point — but a listing that interleaves the two is interleaving two different
 | DTO | Field | Column |
 |---|---|---|
 | `PhotoResourceItemDto` | `sort_date` | `media_sort_date` (or `created_at` / `content_modified_at` when the caller picks another axis) |
-| `PhotoResourceItemDto` | `captured_at` | `file_metadata.captured_at`, null when no EXIF |
+| `PhotoResourceItemDto` | `captured_at` | `content_metadata.created_at`, null when nothing was extracted. The name differs from the generic endpoint's `created_at` **by decision** — this listing cannot return a document, so "captured" is the precise word here. See [§ And one column has two wire names](#and-one-column-has-two-wire-names-on-purpose). |
 | `TrashItemDto` | `trashed_at` | when it entered the trash |
 | `TrashItemDto` | `expires_at` | when it will be **purged** — a future instant, not a past one. Called `deletion_date` until §7, which renamed it for exactly that reason: it read as a past event while holding a future value. Pairs with `trashed_at` (past) |
 
@@ -322,25 +473,43 @@ resource).
 Most files have neither EXIF nor a client-supplied creation claim. The rule
 there is that **storage and presentation differ**:
 
-- **The column stays NULL.** Never write a fallback into `source_created_at`.
-  The trust bounds would then be applied to a value the server invented; the
-  distinction between "the client told us" and "we guessed" is lost permanently,
-  so a future backfill has nothing to target; and a stored fallback *freezes* at
-  upload time, so if the file is later overwritten and mtime legitimately moves,
-  the stored "creation" date silently drifts behind with nothing to correct it.
+- **The column stays NULL.** Never write a fallback into
+  `content_metadata.created_at`. The distinction between "the bytes claimed
+  this" and "we guessed" would be lost permanently, so a future extractor
+  widening has nothing to target; and a stored fallback *freezes* at extraction
+  time, so if the file is later overwritten and mtime legitimately moves, the
+  stored "creation" date silently drifts behind with nothing to correct it.
+  Being keyed by content makes this stricter, not looser: a guessed value would
+  be shared by every file with those bytes.
 
-- **The emitted property falls back**, using the same chain as the sort axis:
-  `COALESCE(captured_at, source_created_at, content_modified_at)`.
-  If the Photos timeline ordered by one date and displayed another, the grid
-  would look wrong in a way nobody could diagnose — so the displayed creation
-  date and `media_sort_date` are the same expression.
+- **The sort axis falls back**, because `media_sort_date` is `NOT NULL` and a
+  timeline has to put the file somewhere: `COALESCE(content_metadata.created_at,
+  files.content_modified_at)`.
 
-The chain always terminates on `content_modified_at`, which is `NOT NULL` — so
-there is no empty-property case and no `404` propstat block to emit.
+- **`nc:creation_time` does NOT fall back.** It emits `0`. This differs from
+  the sort axis deliberately, and an earlier draft of this document had them
+  matching — which was rejected during implementation
+  (`docs/plan/normalize-file-dates.md` §0).
 
-For the common file this means `nc:creation_time` and `D:getlastmodified` carry
-the same instant. That is honest rather than a defect: creation and modification
-genuinely coincide for a file nobody edited after making it.
+  The reason is drift. `media_sort_date`'s triggers recompute it on every
+  content mutation, so for a file with no claimed date it tracks
+  `content_modified_at` permanently — a *creation* date that advances every time
+  the file is saved, which is the exact lie §0 removed from `nc:upload_time`.
+  Both file clocks fail, in opposite directions: `content_modified_at` gets a
+  2019 document right on upload and wrong after any later edit, while
+  `created_at` is wrong on upload *and* identical to `nc:upload_time`, the bug
+  §0 exists to fix.
+
+  `0` is not a placeholder for a missing feature. In NextCloud this property is
+  the client's local filesystem birthtime, sent on upload via `X-OC-CTime`, and
+  it stays at its `0` default whenever the client's OS or filesystem cannot
+  supply one — so `0` is NextCloud's own "unknown", and every NC client already
+  handles it. Reporting `0` for a `.txt` is well-formed; guessing a file clock
+  would turn "unknown" into a confident wrong answer.
+
+So `nc:creation_time` and `D:getlastmodified` do **not** carry the same instant
+for a file with no claimed date: the first says `0`, the second says when the
+bytes last changed.
 
 ## The browser edge
 
@@ -350,29 +519,48 @@ everything on the other side.
 | Browser has | Maps to | Notes |
 |---|---|---|
 | `File.lastModified` | `content_modified_at` | epoch **milliseconds** — the only timestamp the File API gives |
-| — | `source_created_at` | no `btime` is exposed to web content on any platform |
-| — | `captured_at` | the bytes carry EXIF; the server extracts it with `nom-exif` |
+| — | a creation date | no `btime` is exposed to web content on any platform — which is why **a browser** can never write a client-asserted creation column |
+| — | `content_metadata.created_at` | the bytes carry it; the server extracts it |
 
-So a drag-and-drop upload can preserve mtime and nothing else, while a native
-sync client has filesystem access and could supply both. `source_created_at`
-will therefore be NULL for most SPA uploads — correct, not a gap, provided NULL
-keeps meaning "unknown".
+So a drag-and-drop upload can preserve mtime and nothing else. From a
+**browser**, a creation date can only come out of the bytes.
 
-**None of this is wired yet** (checked 2026-10-18), and the gap is easy to
-miss because the two ends exist separately:
+That is a statement about browsers, not about every client: a native sync
+client has filesystem access and could supply a real birthtime, which is
+exactly the case `source_created_at` stays reserved for — see
+[§ There is no `source_created_at`](#there-is-no-source_created_at--and-whether-there-ever-is-depends-on-one-test).
 
-- `X-OC-Mtime` is accepted, validated and stored — but **only** on the two
-  NextCloud surfaces (`nextcloud/webdav_handler::handle_put` and
-  `uploads_handler::handle_assemble`, both via `parse_client_mtime`).
-- The REST upload endpoints accept no mtime in any form. The multipart field
-  `source_modified_at` named below is a **planned** name, not an implemented
-  one — it appears nowhere in the tree.
-- The SPA never reads `File.lastModified` at all, so a drag-and-drop upload
-  currently discards the source mtime and the file is stamped `NOW()`.
+**This is wired** (re-checked 2026-10-25; it was not on 2026-10-18, and the
+paragraph that said so stood for a week after it shipped):
 
-So today a NextCloud desktop client preserves mtime and a browser does not.
-Closing that needs a mtime slot on the REST upload path plus a frontend that
-fills it — at which point the rule below applies.
+- `X-OC-Mtime` on the two NextCloud surfaces
+  (`nextcloud/webdav_handler::handle_put` and `uploads_handler::handle_assemble`,
+  both via `parse_client_mtime`).
+- `source_modified_at` on the REST paths — epoch **milliseconds**, validated by
+  `validate_client_mtime` and rounded by `millis_to_seconds_rounded`, as a
+  multipart field on `POST /api/files/upload` and as a body field on the
+  by-hash create and the delta commit. An implausible value is a 400 with a
+  `by_hash.source_mtime_rejected` audit line.
+- The SPA sends `File.lastModified` on **both** of its paths — small files via
+  `files.ts`, large ones via `createFileByHash` in `deltaUpload.ts` (pinned in
+  `deltaUpload.test.ts`). Both UI entry points, the file input and drag-and-drop,
+  yield real `File` objects, so neither loses it.
+
+Sending it on both paths is the point: the SPA picks its path by size, so
+wiring only one would have preserved mtime for small uploads and silently
+dropped it for large ones — a size-dependent capability no single-file test
+would catch.
+
+**All four paths now carry it**, the chunked `/complete` included
+(2026-10-27). Its `source_modified_at` lives on `CompleteUploadRequest` rather
+than at session creation, because `/complete` is where the file row is made.
+
+Worth knowing how it was missing: the field, the validation and the repository
+write all existed, and `upload_file_streaming_with_perms` — the variant the
+chunked path finalises through — passed a hardcoded `None` when delegating. A
+capability can be complete end to end and still never arrive, because one
+caller passes a literal where its argument belongs. `grep` for the field name
+found it everywhere except the one line that mattered.
 
 **Round, don't truncate** on the way in: discarding up to 999 ms reports a file
 a second older than the client believes, which is enough to make the next mtime
@@ -511,18 +699,23 @@ is deliberate and recorded under § Known divergences.
 
 `storage.files.media_sort_date` is `NOT NULL`
 (`migrations/20260307000000_initial_schema.sql:561`), so the chain must end on a
-column that always has one. `content_modified_at` is that terminator — EXIF
-beats a client's creation claim beats content mtime:
+column that always has one. `content_modified_at` is that terminator — the date
+the bytes claim beats content mtime, and there is no third arm:
 
 ```sql
-media_sort_date = COALESCE(captured_at, source_created_at, content_modified_at)
+media_sort_date = COALESCE(content_metadata.created_at, files.content_modified_at)
 ```
+
+⚠ **Two different columns are spelled `created_at`.** On `storage.files` it is
+server arrival; on `storage.content_metadata` it is the date the bytes claim.
+The chain's first arm is the latter. Qualify the table whenever both are in
+scope — the table below does not, because each row names only one.
 
 | Query | Resolves to |
 |---|---|
-| `?order_by=captured_at` | `media_sort_date` |
-| `?order_by=updated_at` | `content_modified_at` — the UI's "Last modified" axis means POSIX mtime, which is what users expect |
-| `?order_by=created_at` | `created_at` — server arrival, the admin-facing axis |
+| `?order_by=captured_at` | `media_sort_date` — the axis is "capture date, best effort", so the COALESCE is its implementation rather than a misnomer |
+| `?order_by=updated_at` | `files.content_modified_at` — the UI's "Last modified" axis means POSIX mtime, which is what users expect |
+| `?order_by=created_at` | `files.created_at` — server arrival, the admin-facing axis. **Not** the content's claimed date |
 
 ## ETag coupling
 
@@ -565,6 +758,10 @@ and unaffected.
 |---|---|
 | `D:getlastmodified` fed from `updated_at`, so it bumped on rename, move, trash, grant and favourite — non-conformant with RFC 4918 §15.7, and clients re-downloaded files whose bytes never moved | plan §2: all file-side reads now resolve `modified_at` from `content_modified_at` |
 | `X-OC-Mtime` parsed and validated but dropped on the CREATE path, so a client's mtime survived only when overwriting an existing file — and new-file upload is the common NextCloud-desktop case | plan §1 completion: `save_file_with_blob` now takes the asserted mtime and writes it in the INSERT. Covered by `nc_webdav_client_mtime.hurl`, which is what found it |
+| `nc:creation_time` read `files.created_at` — the upload moment, so every file claimed to have been created when it arrived | plan §0: reads `content_metadata.created_at` and emits `0` when the bytes claim nothing. Both file clocks were considered as fallbacks and **both rejected** — see [§ When creation date is unknown](#when-creation-date-is-unknown) |
+| `nc:upload_time` read `modified_at`, the content clock, so a file edited years after upload claimed to have been uploaded years after it was | plan §0: reads `files.created_at`, which is immutable and is exactly "when we received the bytes". The two `nc:` slots now answer different questions instead of duplicating one |
+| The chunked upload path accepted no client mtime, so non-SPA chunked clients were stamped `NOW()` while the other three preserved it | plan §9 (2026-10-27): `source_modified_at` on `CompleteUploadRequest`. The cause was `upload_file_streaming_with_perms` delegating with a hardcoded `None` — the capability was fully built below it and simply never arrived. Pinned by `chunked_upload_source_mtime.hurl` |
+| NC REPORT rendered a folder's `getlastmodified` from the folder row rather than the subtree, so REPORT and PROPFIND disagreed on the same collection — and its `getetag` was the folder's raw UUID, a token that could never invalidate | §2 completion (2026-10-27): both now come from `tree_modified_at`, carried through `SearchFolderResultDto`. No wider query was needed — `enrich_folder` already held a whole `FolderDto`. Pinned by `nc_report_folder_tree_clock.hurl`, which asserts the two METHODS agree rather than asserting an instant |
 
 ### Deliberate
 
@@ -577,9 +774,7 @@ and unaffected.
 
 | What | Where | Should be |
 |---|---|---|
-| `nc:creation_time` reads `created_at` | `nextcloud/webdav_handler.rs:2268` | `COALESCE(captured_at, source_created_at, content_modified_at)` |
-| `nc:upload_time` reads `modified_at` | `nextcloud/webdav_handler.rs:2273` | `created_at` |
-| NC REPORT (search) renders a folder's `getlastmodified` from a projection carrying no subtree clock, so a REPORT hit and a PROPFIND on the same folder disagree | `nextcloud/report_handler.rs` | widen the search projection |
+| A document's creation date is never extracted, so `content_metadata.created_at` is NULL for everything that is not an image or a video and `nc:creation_time` emits `0` | `MediaMetadataService::handles` gates on `image/*` \| `video/*` | read OOXML `docProps/core.xml`, PDF `/CreationDate`, ODF `meta.xml` — plan §4 |
 
 ## Rejected alternatives
 
@@ -592,17 +787,19 @@ and unaffected.
   covers both the initial upload and later overwrites: a re-upload with a newer
   local mtime updates `content_modified_at` from the new `X-OC-Mtime`, which is
   the correct answer.
-- **`source_created_at` into `D:creationdate`** so generic DAV clients (Finder,
-  a mapped drive, Cyberduck) show the real date. It makes a standard live
-  property client-asserted and therefore forgeable, goes non-monotonic against
-  the server's own history, and contradicts `nc:upload_time`. Nothing
+- **A claimed creation date into `D:creationdate`** so generic DAV clients
+  (Finder, a mapped drive, Cyberduck) show the real date. It goes non-monotonic
+  against the server's own history and contradicts `nc:upload_time`. Nothing
   behaviourally depends on `creationdate`, so the upside is cosmetic while the
   downside is a lost guarantee. Revisitable as an explicit opt-in if the
-  generic-client case ever becomes a real complaint.
-- **Naming the column `origin_at`.** `origin` already denotes provenance in this
-  codebase (sessions carry `"origin":"opaque"`) and reads as *backend/upstream*
-  in a storage product. `source_created_at` also advertises that the value is
-  client-asserted, which is where the trust bounds apply.
+  generic-client case ever becomes a real complaint. (The original objection
+  also said it would make a standard live property *client-asserted and
+  therefore forgeable*. That half no longer holds — the value is extracted from
+  the bytes — but the monotonicity argument stands on its own.)
+- **A second column named `origin_at` or `source_created_at`.** Moot: there is
+  one creation column and it lives on the content-keyed table. `origin` was
+  additionally a bad name — it already denotes provenance here (sessions carry
+  `"origin":"opaque"`) and reads as *backend/upstream* in a storage product.
 
 ## Scope — files only
 
@@ -622,11 +819,14 @@ semantics:
 
 ## Open questions
 
-**Does any client send creation time?** `nc:creation_time` is only ever emitted
-today — no read path exists anywhere in the tree. If no NextCloud client
-supplies it on upload, `source_created_at` has no writer except EXIF extraction
-and the SPA uploader, and the column should wait for a confirmed writer rather
-than ship empty.
+**Does any client send creation time? — ANSWERED (no), and it settled the
+design.** `nc:creation_time` is only ever emitted; no read path exists anywhere
+in the tree. Since no browser can supply a `btime` either, the client-asserted
+creation column had no possible writer, so it was never built and the single
+server-extracted column took its place. The test this question asked for — one
+`tracing::debug!` on the NC upload path logging unrecognised PROPPATCH
+properties and unhandled `X-OC-*` headers, left running for a week — would now
+only tell us whether to *reopen* the question, not whether to proceed.
 
 This does not block `content_modified_at`, which has both a confirmed writer
 (`X-OC-Mtime`, already parsed) and a confirmed reader (`D:getlastmodified`,

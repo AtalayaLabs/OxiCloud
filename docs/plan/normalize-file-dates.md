@@ -1,6 +1,25 @@
 # Plan — Normalize file dates: one column per meaning, one wire slot each
 
-**Status:** design agreed 2026-10-11; §1–§3 landed 2026-10-17. The end state is specified
+**Status: COMPLETE** — design agreed 2026-10-11, §0–§9 all landed by
+2026-10-27. Two items were resolved by DECIDING NOT to do them rather than by
+building: `source_created_at` was never created (§4 — reserved for a
+client-asserted `X-OC-CTime` that no client is yet known to send), and the
+`captured_at` wire rename was dropped from §7 because the photos listing is
+media-only by construction, so "captured" is the precise word there.
+
+One open QUESTION remains, and it is an observation rather than work: does any
+NextCloud client send `X-OC-CTime` on upload? That answers whether a second,
+client-asserted creation column is ever needed.
+
+The probe is in the tree (`log_unhandled_oc_headers`, behind
+`RUST_LOG=oxicloud::nc_headers=debug`). **First evidence 2026-10-27: the macOS
+desktop client does not send it** — a PUT carried `oc-total-length` and
+`oc-chunk-size` only. That is the informative case, because macOS exposes
+`st_birthtime` natively and Linux has no portable read for it, so the platform
+best placed to send the header does not. Windows, mobile and third-party
+clients remain unobserved.
+
+The end state is specified
 in [`docs/architecture/dates.md`](../architecture/dates.md) — this plan is only
 how to get there. Triggered by a review of the four date surfaces (OxiCloud
 columns, the browser File API, NextCloud DAV, RFC 4918) which found that
@@ -15,12 +34,12 @@ heading:
 | §0 fix the two `nc:` slots | **DONE** 2026-10-20 — both slots repointed. `nc:upload_time` → `created_at`; `nc:creation_time` → the content's own claimed date (`captured_at` today, `content_metadata.created_at` once the extractor widens) with **`0` for "unknown"**, which is NC's own value for this property. The planned `COALESCE(captured_at, content_modified_at)` form was REJECTED mid-implementation — see the correction below |
 | §1 add `content_modified_at`, write it, read nothing | **DONE** 2026-10-20 — migration, writers and trust bounds (`625f089d`), CREATE-path gap closed, and the tests landed green. Two documented non-gaps: delta commit is not coverable in Hurl (CDC hashes — `rt_bus_check.sh` S21 covers it), and `/api/files/upload` **overwrite** was misdescribed — that endpoint only creates. See § Coverage as landed |
 | §2 repoint the `modified_at` alias + ETag | **DONE** — file-side (27 sites + cursor predicate, `8d0631be`) and folder-side DAV-only (`2def1acb`). One gap left open: NC REPORT search, see Open decisions |
-| §3 sort axes | **DONE (interim two-arm form)** — `media_sort_date` on the content clock + both search axes repointed. §4 inserts the `source_created_at` arm |
+| §3 sort axes | **DONE (final form)** — `media_sort_date` on the content clock + both search axes repointed. The two-arm chain is final: §4 declined to create `source_created_at`, so there is no middle arm to insert |
 | §4 add `source_created_at` | **UNBLOCKED, and now clearly necessary** — repurposed 2026-10-20: it is the store for the client-asserted creation time, NextCloud's `X-OC-CTime` (the sibling of §9's `X-OC-Mtime`/`source_modified_at`). That is a DIFFERENT value from the metadata date §0 now emits — client filesystem birthtime vs. what the bytes claim — so the two coexist rather than one replacing the other. Final chain: `COALESCE(client ctime, content metadata date, 0)`. Still gated on the inbound test, which now answers one concrete question: does the NC client actually send `X-OC-CTime`? |
 | §5 tighten to `NOT NULL` | **FOLDED INTO §1** 2026-10-17 — the migration lands it in-transaction |
 | §6 UI axes | **DONE** 2026-10-19 — `updated_at` retired from the wire outright (no deprecation window: API too recent, SPA is the only consumer), `Created date` → `Added date`, persisted Photos preference migrated on read |
 | §7 naming normalisation | **DONE** 2026-10-21 — part 1 (`13a24a20`) `order_by` everywhere + 3 OpenAPI param gaps; part 2 (`11246953`) `deletion_date` → `expires_at`; part 3 typed sort axes, one endpoint per commit: trash `084d3473`, favorites `ae137ca3`, recent `885c7c65`, folders `a678403f`, search `5249b87a` (**found and fixed a real bug** — folder sorting ignored `modified_at`/`created_at`/`size`/`reverse` on the default recursive path), grants `408712ac` (split `SharedWithMeQuery` in two — disjoint sets), frontend `1b3382d0`. Two decisions recorded below: `CursorQuery` stays out of OpenAPI, and the compile-time protection did NOT need the `types.ts` redirect as a precondition |
-| §9 preserve the browser's mtime on upload | **DONE** 2026-10-20 — `source_modified_at` (epoch ms) on ALL THREE upload paths: multipart `/api/files/upload`, `/api/files/by-hash` (the instant-upload short-circuit) and delta commit (both create and update modes). Both UI entry points — picker and drag, single and multi — send `File.lastModified`. Original: — repository layer and helpers are ready. THREE upload paths to cover (multipart, delta, chunked); the SPA picks by file size, so covering only `/api/files/upload` would drop mtime on every large upload |
+| §9 preserve the browser's mtime on upload | **DONE** 2026-10-27 — `source_modified_at` (epoch ms) on ALL FOUR upload paths: multipart `/api/files/upload`, `/api/files/by-hash` (the instant-upload short-circuit), delta commit (create and update), and chunked `/complete` (closed 2026-10-27 — `upload_file_streaming_with_perms` had been delegating with a hardcoded `None`). Both UI entry points — picker and drag, single and multi — send `File.lastModified`. Original: — repository layer and helpers are ready. THREE upload paths to cover (multipart, delta, chunked); the SPA picks by file size, so covering only `/api/files/upload` would drop mtime on every large upload |
 | §8 folders get a content clock | **DONE** 2026-10-18 — `storage.folders.content_modified_at` with POSIX entry-list semantics (migration `20261103000008`), 14 folder-side reads repointed, keyset predicate back to one column |
 
 > **Reassessed 2026-10-17** against the tree, after the `pivot/dto-timestamps-iso`
@@ -255,7 +274,7 @@ guards live in `nc_webdav_patch.hurl` and `webdav_patch_consistency.hurl`.
 
 ---
 
-## §1 — Add `content_modified_at`, write it, read nothing **IN PROGRESS** (`625f089d`)
+## §1 — Add `content_modified_at`, write it, read nothing **DONE** (`625f089d`)
 
 ### Schema
 
@@ -638,7 +657,7 @@ is wrong today and right afterwards).
 
 ---
 
-## §3 — Sort axes **DONE** (interim two-arm form)
+## §3 — Sort axes **DONE** (final two-arm form)
 
 Couples to §2 — the REST `modified_at` field moves in the same commit, so the
 UI's "Last modified" column repoints at the same moment.
@@ -773,7 +792,133 @@ and the timeline order stay the same expression at every phase. §4 adds the
 
 ---
 
-## §4 — Add `source_created_at` **BLOCKED**
+## §4 — The content's claimed creation date **MOSTLY DONE** (2026-10-25)
+
+Renamed from "Add `source_created_at`", which is the one thing this phase
+decided *not* to do.
+
+**Shipped:** `document_format` (the classifier, hoisted out of
+`search_index::text_extractor` so one registry serves both consumers),
+`document_date_extractor` (OOXML `docProps/core.xml` → `dcterms:created`, ODF
+`meta.xml`, PDF `/CreationDate`), the widened `MediaMetadataService::handles`
+— which the upload lifecycle hook already gated on, so documents are extracted
+on upload with no further plumbing — and the matching
+`FileMetadataRepository::applies_to`, extended in the same commit because
+`content_rescan::drop_stale_metadata` DELETES on a `false` and widening only
+the extractor would have erased every document's metadata corpus-wide on the
+next sweep. A test asserts `handles` implies `applies_to` so that fails loudly
+instead of silently.
+
+**PDF reads both shapes** (2026-10-27). Two passes, cheapest first: a fixed
+128 KiB window scan for `/CreationDate`, then — only when that finds nothing —
+`lopdf` resolving the trailer's `/Info` reference through the xref, which is
+what reaches a key sitting inside a *compressed object stream*. The second
+pass is size-gated at 64 MiB because it inflates the whole document, where the
+scan is flat; keeping the scan first is why a 500 MB PDF is not parsed to find
+twenty bytes.
+
+An earlier note here claimed `lopdf` was "not in the tree" and that a PDF
+object parser was "a dependency decision of its own". **Both wrong**, and the
+original phase text below was right: `pdf-extract` has always pulled lopdf
+0.42 (MIT), so it was already compiled into the binary — just not importable,
+a transitive dependency being out of scope. Declaring it directly cost one
+line in `Cargo.toml` and no build time, licence surface or audit surface. It
+does *not* remove the `catch_unwind`: `pdf_extract` panics on malformed input
+and lopdf is the parser underneath it.
+
+Coverage from both ends on six committed fixtures:
+`tests/api/document_date_extraction.hurl` (upload → `nc:creation_time`, and
+the REST `created_at`) plus unit tests parsing the same files. The two PDF
+passes are pinned against the file the other cannot read — the
+compressed-objstm fixture is invisible to the scan, which also proves the
+hand-rolled object stream is genuinely valid rather than passing for the wrong
+reason.
+
+**Remaining:** item 5 below — the REST slot, which waits on §7's naming.
+
+**The blocker shipped.** The reframing below made §4 depend on a content-keyed
+home for a byte-derived date, and said that home was "not this plan's work".
+It landed on `security/sniff-mime-type`: `storage.content_metadata` is keyed by
+`source_hash`, its `created_at` holds the date the bytes claim, and
+`extracted_at` holds the bookkeeping — exactly the shape specified under *The
+keying asymmetry*. `audio.content_metadata` matches.
+
+`source_created_at` has still never been created, and the sort chain is
+two-arm `COALESCE(created_at, content_modified_at)` today. ⚠ It is **not**
+ruled out: the progress table's 2026-10-20 entry reserves it for the
+client-asserted `X-OC-CTime` case, which is a different value in a different
+trust class from what the bytes claim. That remains gated on the inbound
+test — does any NC client actually send the header? — and `grep X-OC-CTime
+src/` still finds nothing. Until it answers, the chain has one fewer arm and
+loses nothing.
+
+What remained of the EXTRACTION half of §4 is the extractor widening, which
+this section already identified as the real cost:
+
+1. **Hoist the format classifier** out of `search_index::text_extractor` — its
+   `Kind` and `classify` are private, and a creation date is not a search
+   concern. `infrastructure/services/document_format.rs` does not exist yet.
+2. **Extract the date per format:** PDF `/CreationDate` from the trailer
+   dictionary, OOXML `docProps/core.xml` → `dcterms:created`, ODF `meta.xml`.
+3. **Widen the gate.** `MediaMetadataService::handles` is still
+   `is_image_file(mime) || is_video_file(mime)`.
+4. **`catch_unwind` plus size and time bounds** on every parser, per the
+   discipline recorded below — `extract_pdf` already needs it because a
+   malformed PDF *panics*.
+
+`content_rescan` (same branch) is the re-runnable extraction job this section
+wanted, and `rederive=always` is the mode that applies a widened extractor: an
+extractor change does not move the sniffed type, so the default `changed` mode
+skips every affected row.
+
+### 5. Expose it on REST — yes, but on the DETAIL read and after §7
+
+Raised 2026-10-25. The gap is real and it is asymmetric: the server now
+extracts a claimed creation date for documents, and the only surface that
+shows it is `nc:creation_time`. A NextCloud desktop client can see a 2019
+`.docx`'s real date; our own SPA cannot. Meanwhile the same column IS on the
+wire for photos, as `PhotoResourceItemDto.captured_at` — so the data is
+exposed, just only for the one content type that is not a document.
+
+By this plan's own rule — *one column per meaning, one wire slot each* — that
+is an incomplete slot.
+
+**Not on `FileDto`, though.** The generic `/files` listing does **not** join
+`storage.content_metadata` today; only the two media queries do (the Photos
+timeline and the map viewport, `file_blob_read_repository.rs`). Adding the
+field to `FileDto` puts a `LEFT JOIN ... ON fm.source_hash = blob_hash` on the
+hottest path in the product, per row, for a value that is NULL for most rows
+and is **presentational** by this document's own taxonomy — ordering and
+display, nothing acts on it. That is the kind of per-row cost AGENTS.md names
+as a real regression at the 10k target.
+
+So the slot is the single-file read (`GET /api/files/{id}`), where the same
+join is one primary-key lookup rather than one per page row. A properties or
+details panel is also where a user actually asks "when was this made?", as
+opposed to scanning a list.
+
+**Resolved 2026-10-27 — and the sequencing concern dissolved.** This item
+originally said "§7 first", because §7 was going to rename `captured_at` and
+naming a second surface before that settled would mean renaming two fields
+instead of one.
+
+Both halves are moot. `GET /api/files/{id}/metadata` turned out to already
+serve this value — it returns the whole `content_metadata` row — so the slot
+needed typing, not creating: it is now `FileContentMetadataDto` with a
+`created_at` field, registered in the spec. And §7 no longer renames
+`captured_at` at all, the photos listing being media-only by construction
+(see §7's narrowed scope).
+
+So what remains of this item is **not an API change**: a UI surface that
+displays the claimed date. The endpoint answers today.
+
+**Not a sort axis.** `storage.files.media_sort_date` is already denormalised
+and trigger-maintained, so ordering by the claimed date needs no join at all.
+But it is a `COALESCE`, so it cannot distinguish "claims 2019" from "claims
+nothing, and its mtime is 2019" — which is exactly the distinction a displayed
+*creation date* has to make. It serves sorting and cannot serve display.
+
+### Original phase text
 
 ```sql
 ALTER TABLE storage.files
@@ -1274,7 +1419,57 @@ handler accepts `"updated_at"`, and no wire DTO selects `storage.files.updated_a
 
 ---
 
-## §7 — Naming normalisation **NOT STARTED**
+## §7 — Naming normalisation **DONE** (verified against the tree 2026-10-27)
+
+All three items are shipped; this heading said NOT STARTED because the
+section predates the work. Verified by inspection rather than by the parts
+notes below, which are the only record that it happened:
+
+| item | evidence |
+|---|---|
+| `order_by`, not `sort_by` | all 8 sorted endpoints expose `order_by`; **0** occurrences of `sort_by` in `resources/gen/openapi.json`, and none as a Rust field — `CursorQuery::order_by` carries the "the name is load-bearing" note that keeps the next endpoint from re-seeding it |
+| Typed sort axes | all 8 enums exist with `#[default]` — `FolderOrderBy`, `FavoritesOrderBy`, `RecentOrderBy`, `TrashOrderBy`, `IncomingGrantOrderBy`, `OutgoingGrantOrderBy`, `PhotoOrderBy`, `SearchOrderBy`. The grant pair is split in two precisely as parts 3f/3g specified: "granted to me" and "who did I grant to" are different questions |
+| `deletion_date` → `expires_at` | `TrashResourceItemDto.expires_at`; **0** occurrences of `deletion_date` in the spec |
+
+Every surviving mention of `sort_by` or `deletion_date` in the tree is a
+historical comment explaining the rename, which is the right place for it —
+a cursor minted before the change now fails closed rather than sorting by a
+column that no longer exists.
+
+**The `captured_at` rename was removed from this phase** (2026-10-27) rather
+than done — see below for why the photos surface keeps it.
+
+**Why `captured_at` was dropped from this phase.** The reasoning below treats
+it as a misnomer that "compounds", on the premise that the column stopped
+being photo-specific. The column did; **the endpoint did not.**
+`/api/photos/resources` is hard-filtered to `image/%` or `video/%` in SQL on
+every `PhotoKind` branch, backed by a partial covering index, so it cannot
+return a document. There, "captured" is the precise word — EXIF calls the
+value `DateTimeOriginal` — while `created_at` would be vaguer.
+
+The generic surface that *does* answer for documents already says
+`created_at` (`GET /api/files/{id}/metadata`, shipped). So the column has two
+wire names, each correct in its own context — the same resolution the two
+`created_at` columns got: write down which is which rather than force one
+spelling onto two meanings. Recorded in
+`docs/architecture/dates.md § And one column has two wire names`.
+
+The cost was the other half: a wire field, the `?order_by=captured_at` enum
+value, two i18n keys and a migrate-on-read for the persisted Photos sort
+preference — §6 paid that toll once already for a label change.
+
+Reopen it if the photos timeline ever lists non-media (a new `PhotoKind` plus
+a new index, so a deliberate act rather than drift), or if
+`order_by=captured_at` gains a sibling axis that makes the asymmetry
+confusing.
+
+⚠ **This also removes a prerequisite.** The OpenAPI envelope defect
+(`docs/architecture/resource-listing.md § Known defect`) was flagged as
+needing a fix *before* §7, because a rename on `PhotoResourceItemDto` would
+not reach the generated SDK and so would be unguarded. With no rename, that
+ordering constraint is gone. The aliasing fix is still worth doing on its own
+merits — six endpoints mis-documented, and the frontend can drop a
+hand-written `PhotoItem` — just no longer a blocker for this phase.
 
 Adjacent to the date work rather than part of it — ships independently, no
 column changes. Two conventions, applied everywhere.
@@ -1640,7 +1835,44 @@ Behaviour confirmed in that same rolled-back transaction:
 
 ---
 
-## §9 — Preserve the browser's mtime on upload **NOT STARTED**
+## §9 — Preserve the browser's mtime on upload **DONE** (2026-10-27)
+
+Both SPA paths carry it, so the size-dependent hazard this section warns about
+is closed:
+
+- multipart `POST /api/files/upload` parses, validates and threads
+  `source_modified_at` (`file_handler.rs`), refusing an implausible value with
+  a 400 and a `by_hash.source_mtime_rejected` audit line;
+- the by-hash create and the delta commit both have the slot
+  (`delta_upload_service`), and the SPA sends `file.lastModified` through
+  `createFileByHash` — pinned in `deltaUpload.test.ts`;
+- `upload_file_streaming` takes `source_modified_at: Option<i64>` instead of
+  hard-coding `None`.
+
+**The chunked path closed it (2026-10-27).** `source_modified_at` is now a
+field on `CompleteUploadRequest`, with the same half-up rounding and trust
+bounds as the other three and a `chunked_complete.source_mtime_rejected`
+audit line on refusal. Pinned by
+`tests/api/chunked_upload_source_mtime.hurl`.
+
+The cause was one literal, and worth recording because the shape recurs:
+`upload_file_streaming_with_perms` — the variant this path finalises through,
+for the AuthZ re-check added by audit #17 — delegated to
+`upload_file_streaming` with a hardcoded `None`. Everything below it already
+accepted the value. A capability can be fully built and still never arrive,
+because one caller passes a literal instead of its argument.
+
+The field is on `/complete`, not session creation: that is where the file row
+is created, so a value supplied at session open would have to ride the
+session for hours and gain nothing.
+
+⚠ Note these endpoints are `#[deprecated]`, marked so in OpenAPI to push
+callers to `/api/files/delta/*` — which already had the slot. Closing the gap
+anyway was a judgement call: deprecated is not removed, the path accepts
+uploads today, and a client silently losing mtime cannot detect it. Reversible
+if the path should simply retire instead.
+
+### Original phase text
 
 The plan already contains a Playwright spec asserting that a dragged file keeps
 its source mtime (§ E2E — drag-and-drop preserves the source mtime). That spec
@@ -1902,7 +2134,7 @@ proportional to table size.
 
 ## Open decisions
 
-### Open: NC REPORT search emits the wrong folder `getlastmodified`
+### DONE (2026-10-27): NC REPORT search emitted the wrong folder `getlastmodified`
 
 §2's folder side left one real gap. `nextcloud/report_handler.rs` renders DAV
 responses from search results, and the search projection doesn't select
@@ -1916,9 +2148,27 @@ means widening `SearchFolderResultDto` and the query behind it to carry the
 rollup, which touches the Tantivy-backed search path rather than the dates work
 proper. Deliberately not bundled into §2.
 
-Severity is low: NC desktop clients use REPORT for search results they display,
-not for sync decisions, and the ETag — which *is* load-bearing — is correct on
-both paths.
+**Closed, and the sizing above was wrong twice.**
+
+The query never needed widening: `enrich_folder` already receives a whole
+`FolderDto` carrying `tree_modified_at`, so the value was being discarded one
+function short of its consumer. Three lines — carry it on
+`SearchFolderResultDto`, stop dropping it in `enrich_folder`, use it in
+`folder_dto_from_search`. Nothing in the Tantivy path was touched.
+
+⚠ **And "the ETag is correct on both paths" was false** — that sentence is why
+this sat open as low-severity. `folder_dto_from_search` set
+`etag: sr.id.clone()`, so REPORT emitted the folder's raw UUID while PROPFIND
+emitted `Folder::compute_etag(id, tree_modified_at)`. A UUID never changes, so
+that token could not invalidate when the subtree did: not merely inconsistent
+but inert, and a client caching it from a search result would hold it forever.
+The ETag was the *worse* of the two defects, and the assumption that it was
+fine is what made the whole item look deferrable.
+
+Found by the regression pin asserting both properties equal across the two
+methods (`tests/api/nc_report_folder_tree_clock.hurl`) rather than by
+inspection — the mtime assertion passed on the first run and the ETag one did
+not.
 
 ### Decided 2026-10-11
 

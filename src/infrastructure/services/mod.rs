@@ -18,6 +18,8 @@ pub mod container_probe_service;
 pub mod content_rescan_service;
 pub mod db_pool_monitor;
 pub mod device_codes_cleanup_service;
+pub mod document_date_extractor;
+pub mod document_format;
 pub mod dpop_nonce_service;
 pub mod dpop_replay_cache;
 pub mod dpop_verifier;

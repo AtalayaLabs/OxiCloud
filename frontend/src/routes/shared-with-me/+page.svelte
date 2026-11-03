@@ -59,8 +59,9 @@
 	// row UI), so the map covers exactly the displayed `fileFolderGrants`.
 	const contextMap = new SvelteMap<string, ItemContext>();
 
-	// Server-supported sort_by values (see grant_handler.rs:615):
-	//   granted_at, granted_by, name, type
+	// Server-supported `order_by` values — the typed `IncomingGrantOrderBy`
+	// in `grant_dto.rs` is the source of truth, not this list:
+	//   granted_at (default), granted_by, name, type
 	// The first entry (no `bucketOf`) renders a flat list sorted by name —
 	// the A-Z icon flags it as "sort, not group" so users don't read it as
 	// a real bucket dimension. The remaining three are honest groupings and

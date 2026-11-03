@@ -384,6 +384,12 @@ impl SearchService {
             drive_id: folder.drive_id,
             created_at: folder.created_at,
             modified_at: folder.modified_at,
+            // The subtree rollup, which the NC REPORT handler emits as a
+            // folder's `D:getlastmodified`. Dropping it here was the whole
+            // of the REPORT-vs-PROPFIND divergence: the handler had to fall
+            // back to `modified_at`, so a renamed folder reported a content
+            // change to search while PROPFIND correctly did not.
+            tree_modified_at: folder.tree_modified_at,
             relevance_score: relevance,
             // Phase 1-plus (see sibling `enrich_file`): carry the
             // FolderDto fields the old enrich shape dropped.
@@ -1209,6 +1215,7 @@ mod tests {
                 drive_id: Uuid::nil(),
                 created_at: crate::application::dtos::timestamp_helpers::epoch_zero(),
                 modified_at: crate::application::dtos::timestamp_helpers::epoch_zero(),
+                tree_modified_at: crate::application::dtos::timestamp_helpers::epoch_zero(),
                 relevance_score: 50,
                 etag: String::new(),
                 created_by: None,
@@ -1296,6 +1303,11 @@ mod tests {
             drive_id: Uuid::nil(),
             created_at: epoch_zero(),
             modified_at: epoch_to_datetime(modified_at),
+            // Deliberately the same instant as `modified_at`: these fixtures
+            // exercise ordering and payload weight, not the collection-clock
+            // distinction. What pins the two APART is the wire guard in
+            // `tests/api/`.
+            tree_modified_at: epoch_to_datetime(modified_at),
             relevance_score: relevance,
             etag: String::new(),
             created_by: None,

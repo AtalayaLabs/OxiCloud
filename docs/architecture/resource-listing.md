@@ -7,6 +7,9 @@ code easy to audit and extend.
 ## TL;DR checklist
 
 - [ ] Response is `CursorListResponse<T>` → `{ items: T[], next_cursor?: string }`
+- [ ] `T` is **this endpoint's own container**, wrapping the shared
+      `ResourceContentDto` under `resource` plus whatever only this endpoint
+      knows — never a reused or unified item type
 - [ ] Query embeds `CursorQuery` via `#[serde(flatten)]`
 - [ ] `limit` is clamped with `q.paging.limit_clamped()` — never trust the raw value
 - [ ] Cursor is decoded with `q.paging.decode_cursor::<MyCursor>()` — invalid cursor → first page
@@ -37,7 +40,136 @@ All listing endpoints return the same wrapper (defined in
 | `next_cursor` | `string` | **Omitted** (not `null`) when this is the last page. |
 
 **Never** include `total`, `page`, or `offset` — computing a total requires a `COUNT(*)` that
-does not scale.
+does not scale. One exception exists, for a count that is genuinely free: see
+[§ The one endpoint with its own envelope](#the-one-endpoint-with-its-own-envelope--apisearch).
+
+---
+
+## Three layers, and which of them varies
+
+The shape is a sandwich, and confusing the layers is the most common way to
+get a new listing endpoint wrong:
+
+```
+CursorListResponse<T>          ← the ENVELOPE. Shared by seven endpoints;
+  items: [                       search declares its own (see below).
+    T                          ← the CONTAINER. One type PER ENDPOINT.
+      resource_type: "file"    ·   the discriminator
+      resource: {…}            ·   ResourceContentDto — identical everywhere
+      <enrichment>             ·   whatever THIS endpoint knows
+  ]
+  next_cursor?: "…"
+```
+
+**The contained resource is common; the container is not.** Every listing
+returns the same `ResourceContentDto` under `resource`, and wraps it in a
+container that carries the signals only that endpoint can answer for:
+
+| Endpoint | Container | Its own enrichment |
+|---|---|---|
+| `/api/folders/{id}/resources` | `FolderResourceItemDto` | — |
+| `/api/favorites/resources` | `FavoritesResourceItemDto` | — |
+| `/api/recent/resources` | `RecentResourceItemDto` | — |
+| `/api/trash/resources` | `TrashResourceItemDto` | — |
+| `/api/grants/incoming/resources` | `SharedWithMeItemDto` | — |
+| `/api/grants/outgoing/resources` | `OutgoingResourceItemDto` | `first_shared_at`, `grants` |
+| `/api/photos/resources` | `PhotoResourceItemDto` | `sort_date`, `captured_at`, `width`, `height`, `orientation`, `has_gps`, `has_blob_siblings` |
+| `GET /api/search` | `SearchResourceItem` | `meta` (a nested `SearchMeta`) |
+
+**Do not unify the containers.** A single item type covering all seven would
+carry `grants` that is null for photos and `captured_at` that is null for
+shares — a union whose shape tells a client nothing about which fields it can
+actually expect. Seven small honest types beat one large vague one, and the
+part worth sharing is already shared: `resource`.
+
+**Do not push enrichment down into `ResourceContentDto` either.** It is the
+resource as the resource knows itself; `first_shared_at` is a fact about a
+grant and `has_gps` a fact about extracted metadata. Neither belongs on the
+file.
+
+So adding a listing endpoint means: reuse the envelope, reuse
+`ResourceContentDto`, and declare your own container.
+
+### The one endpoint with its own envelope — `/api/search`
+
+`GET /api/search` follows the container convention exactly
+(`SearchResourceItem` = `resource_type` + `resource` + `meta`) but declares
+its **own envelope**, `SearchResourcesDto`, rather than reusing
+`CursorListResponse`. It adds two fields:
+
+- `query_time_ms` — the UI shows "Found N in Xms" and admins read it as a
+  health signal. A property of the *query*, not of any row, so it belongs on
+  the envelope and nowhere else.
+- `total` — **the documented exception to the "never `total`" rule above.**
+  The rule exists because a count over a filtered table costs a `COUNT(*)`
+  that does not scale. A full-text index does not pay that: Tantivy yields
+  its hit count as a by-product of the search it already ran. So this one is
+  allowed *and* hedged — optional (omitted when the service cannot compute it
+  cheaply), approximate, and permission-filtered so it never leaks a count
+  for rows the caller cannot see.
+
+Do not read this as licence to add `total` elsewhere. The test is whether the
+count is free, not whether it would be convenient.
+
+**Incidentally, search is the proof the OpenAPI defect below is fixable.**
+Because its envelope is a concrete named struct rather than a generic
+instantiation, utoipa resolves it properly: `/api/search` is the one listing
+endpoint whose documented `items` type is actually its own.
+
+### Registering the envelope — one schema per instantiation
+
+**Fixed 2026-10-27.** What follows is the trap and why it bites, because the
+registration is easy to omit and nothing fails loudly when you do.
+
+OpenAPI has no generics, so utoipa emits one schema per concrete
+instantiation — and only for the ones **registered**. Two things are needed,
+and the first alone is not enough:
+
+1. `CursorListResponse<YourItemDto>` in `components(schemas(..))`
+   (`src/interfaces/api/mod.rs`), alongside `YourItemDto` itself;
+2. the path's own `body = …` spelling out the generic —
+   `body = crate::application::dtos::cursor::CursorListResponse<…::YourItemDto>`,
+   **not** the `pub type YourResourcesDto` alias. A plain Rust alias is
+   invisible to utoipa: it resolves to the bare generic and the path keeps
+   `$ref`-ing a parameterless `CursorListResponse`.
+
+The generated schema name is utoipa's own (`CursorListResponse_PhotoResourceItemDto`
+→ TS `CursorListResponsePhotoResourceItemDto`). `#[aliases(..)]` would let you
+choose it, but it was removed in utoipa 5.
+
+Verify after `just openapi`: every `/resources` path must `$ref` a *distinct*
+envelope, and the bare `CursorListResponse` must be referenced by no path at
+all.
+
+#### What it looked like before
+
+All seven endpoints were *correct on the wire*, and the spec described six of
+them wrongly.
+
+`utoipa` collapsed the generic `CursorListResponse<T>` into a **single**
+schema whose `items` was hard-wired to one arbitrary instantiation
+(`OutgoingResourceItemDto`). Every path `$ref`-ed that one envelope, so six
+endpoints were documented as returning outgoing-share items. The container
+types *were* all registered — they were simply orphaned, `PhotoResourceItemDto`
+reaching zero `$ref`s.
+
+Two consequences, both already observed:
+
+Two consequences, which is why it was worth fixing rather than noting:
+
+- **Generated clients got the wrong item type.** That is why
+  `frontend/src/lib/api/endpoints/photos.ts` still maintains a hand-written
+  `PhotoItem` — there was no correct generated type to import. A hand-written
+  type has nothing checking it against the server, which is exactly how
+  `FileMetadata` went on declaring `captured_at` after the column became
+  `created_at`. **Follow-up:** `photos.ts` can now drop `PhotoItem` in favour
+  of the generated envelope's item type.
+- **Renames on these containers were unguarded.** `check-types-overlap.mjs`
+  catches a hand-written type colliding with a *generated* one, and there was
+  no generated item type to collide with.
+
+`/api/search` was unaffected throughout, and pointed at the answer: its
+envelope is a concrete named struct, so utoipa always resolved it properly.
 
 ---
 
@@ -391,8 +523,14 @@ is not a breaking change.
 | Endpoint | Cursor | `order_by` | Status |
 |---|---|---|---|
 | `GET /api/grants/incoming/resources` | ✅ | 🔜 planned | **Reference implementation** |
-| `GET /api/photos` | ⚠️ `before` header | ❌ | Non-standard — migrate to body cursor |
-| `GET /api/search` | ❌ offset | ✅ | Migrate cursor |
+| `GET /api/grants/outgoing/resources` | ✅ | 🔜 planned | ✅ Compliant |
+| `GET /api/folders/{id}/resources` | ✅ | ✅ | ✅ Compliant |
+| `GET /api/favorites/resources` | ✅ | ✅ | ✅ Compliant |
+| `GET /api/recent/resources` | ✅ | ✅ | ✅ Compliant |
+| `GET /api/trash/resources` | ✅ | ✅ | ✅ Compliant |
+| `GET /api/photos/resources` | ✅ | ✅ | ✅ Compliant |
+| `GET /api/photos` | — | — | ✅ **Removed** — use `/api/photos/resources` |
+| `GET /api/search` | ✅ | ✅ | ✅ Compliant — own envelope, see § The one endpoint with its own envelope |
 | `GET /api/folders/paginated` | ❌ page | ❌ | Migrate cursor |
 | `GET /api/folders/{id}/contents/paginated` | — | — | ✅ **Removed** — use `/api/folders/{id}/resources` |
 | `GET /api/admin/users` | ❌ offset | ❌ | Migrate cursor |

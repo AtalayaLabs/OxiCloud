@@ -164,7 +164,7 @@ pub async fn clear_recent_items(
     params(RecentResourcesQuery),
     responses(
         (status = 200, description = "Paginated list of recently accessed resources",
-         body = RecentResourcesDto),
+         body = crate::application::dtos::cursor::CursorListResponse<crate::application::dtos::recent_dto::RecentResourceItemDto>),
         (status = 400, description = "Invalid cursor or query parameters", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),

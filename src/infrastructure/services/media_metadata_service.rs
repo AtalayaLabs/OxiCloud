@@ -38,6 +38,8 @@ use crate::application::ports::file_lifecycle::FileLifecycleHook;
 use crate::common::errors::DomainError;
 use crate::infrastructure::repositories::pg::file_metadata_repository::FileMetadataRepository;
 use crate::infrastructure::services::blob_handler::BlobHandler;
+use crate::infrastructure::services::document_date_extractor;
+use crate::infrastructure::services::document_format;
 use crate::infrastructure::services::exif_service::{ExifMetadata, ExifService};
 
 pub struct MediaMetadataService {
@@ -68,9 +70,23 @@ impl MediaMetadataService {
         mime_type.starts_with("video/")
     }
 
-    /// Whether this service extracts capture metadata for the given MIME type.
+    /// Whether this service extracts a claimed creation date for this MIME
+    /// type.
+    ///
+    /// Images and video give a capture date plus the media-shaped columns;
+    /// documents give the creation date alone, from their own metadata
+    /// (`docProps/core.xml`, ODF `meta.xml`, a PDF `/CreationDate`) — see
+    /// `document_date_extractor`.
+    ///
+    /// A document row therefore populates `created_at` and leaves
+    /// `camera_make`, `orientation`, `latitude`, `width` and `height` NULL.
+    /// Mechanically fine (all nullable), and the reason the table is named
+    /// `content_metadata` rather than anything media-flavoured: it holds
+    /// facts about content, and only some content is a photograph.
     pub fn handles(mime_type: &str) -> bool {
-        Self::is_image_file(mime_type) || Self::is_video_file(mime_type)
+        Self::is_image_file(mime_type)
+            || Self::is_video_file(mime_type)
+            || document_format::supports_creation_date("", mime_type)
     }
 
     fn arc(&self) -> Arc<Self> {
@@ -122,7 +138,18 @@ impl MediaMetadataService {
                     ..Default::default()
                 })
         } else {
-            None
+            // A document: the creation date it claims about itself, and
+            // nothing else. Same shape as the video branch — one date, every
+            // media-shaped column left NULL.
+            //
+            // Reads a bounded window rather than the file: one zip entry, or
+            // the PDF trailer. The `size <= MAX_DERIVE_BYTES` guard that
+            // `content_rescan` applies before re-deriving is about the EXIF
+            // path's whole-file read, and does not have to hold here.
+            document_date_extractor::extract(path, mime_type).map(|dt| ExifMetadata {
+                captured_at: Some(dt),
+                ..Default::default()
+            })
         }
     }
 

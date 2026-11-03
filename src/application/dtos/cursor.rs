@@ -131,6 +131,26 @@ impl CursorQuery {
 /// `next_cursor` is omitted from the JSON when `None` (i.e. last page).
 /// Callers must treat a missing `next_cursor` as end-of-results — never
 /// include a `total` count (that would require an expensive `COUNT(*)`).
+/// ⚠ **Every instantiation must be registered in `components(schemas(..))`,
+/// spelled out with its item type.** OpenAPI has no generics, so utoipa emits
+/// one schema per concrete instantiation — and if none is registered, the
+/// paths fall back to a single bare `CursorListResponse` whose `items` is
+/// hard-wired to whichever instantiation it resolved. Every endpoint then
+/// `$ref`s that one, so all but one is documented as returning the WRONG item
+/// type while its real container sits in `components.schemas` referenced by
+/// nothing.
+///
+/// That is not cosmetic. A generated client gets the wrong item type, and a
+/// hand-written replacement has nothing checking it against the server —
+/// which is how `frontend/.../photos.ts` came to maintain `PhotoItem` by
+/// hand, and how `FileMetadata` went on declaring `captured_at` for weeks
+/// after the column became `created_at`.
+///
+/// So adding a listing endpoint means registering
+/// `CursorListResponse<YourItemDto>` alongside `YourItemDto` itself.
+/// (`#[aliases(..)]` would be tidier, but it was removed in utoipa 5.)
+///
+/// See `docs/architecture/resource-listing.md § Three layers`.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct CursorListResponse<T: Serialize> {
     pub items: Vec<T>,
