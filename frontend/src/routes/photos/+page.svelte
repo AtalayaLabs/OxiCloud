@@ -27,6 +27,7 @@
 	import { preferences } from '$lib/stores/preferences.svelte';
 	import { t } from '$lib/i18n/index.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
+	import { deleteConfirmLabel } from '$lib/utils/deleteConfirm';
 	import { filterDotfiles } from '$lib/utils/dotfileFilter';
 	import { dateTimeFormatFor } from '$lib/utils/display';
 	import { isVideo, photoTimestamp } from '$lib/utils/media';
@@ -702,6 +703,7 @@
 						<ConfirmButton
 							class="batch-btn batch-btn-danger"
 							title={t('common.delete', 'Delete')}
+							confirmLabel={deleteConfirmLabel()}
 							data-testid="photos-batch-delete-btn"
 							onconfirm={trashSelected}
 							icon="trash"

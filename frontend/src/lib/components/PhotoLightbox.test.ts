@@ -9,14 +9,16 @@ vi.mock('$lib/api/endpoints/files', () => ({
 }));
 vi.mock('$lib/api/endpoints/favorites', () => ({ addFavorite: vi.fn() }));
 vi.mock('$lib/api/endpoints/photos', () => ({ fetchFileMetadata: vi.fn() }));
-vi.mock('$lib/stores/dialogs.svelte', () => ({ confirmDialog: vi.fn() }));
+// No `dialogs.svelte` mock: the lightbox's delete is an inline
+// ConfirmButton (arm, then confirm), not a modal — nothing in the render
+// tree imports `confirmDialog` any more.
 vi.mock('$lib/utils/errors', () => ({ errorToast: vi.fn() }));
+import { deleteFile } from '$lib/api/endpoints/files';
 import { fetchFileMetadata } from '$lib/api/endpoints/photos';
-import { confirmDialog } from '$lib/stores/dialogs.svelte';
 import { serverConfig } from '$lib/stores/serverConfig.svelte';
 import PhotoLightbox from './PhotoLightbox.svelte';
 const fm = fetchFileMetadata as unknown as ReturnType<typeof vi.fn>;
-const cd = confirmDialog as unknown as ReturnType<typeof vi.fn>;
+const df = deleteFile as unknown as ReturnType<typeof vi.fn>;
 function item(id: string, size = 1) {
 	return {
 		id,
@@ -105,24 +107,34 @@ it('omits the caption size for a lazily-opened stub (size 0)', async () => {
 // mislead the user on the opposite deployment (trash-off hard-deletes;
 // trash-on reversible move).
 
-it('uses the "Move to trash?" copy when features.trash is true', async () => {
+it('arms with "Really?" when features.trash is true', async () => {
 	serverConfig.features = { ...serverConfig.features, trash: true };
-	cd.mockResolvedValue(false); // User cancels — we only pin the dialog contents.
 	render(PhotoLightbox, { props: { items: [item('a')], index: 0 } });
-	await fireEvent.click(screen.getByTitle('Delete'));
-	await waitFor(() => expect(cd).toHaveBeenCalled());
-	const arg = cd.mock.calls.at(-1)?.[0] as { message?: string } | undefined;
-	expect(arg?.message).toMatch(/^Delete /);
-	expect(arg?.message).not.toMatch(/Permanently/);
+	// First click only ARMS — it must not delete anything yet.
+	await fireEvent.click(screen.getByTestId('photo-lightbox-delete-btn'));
+	await waitFor(() => expect(screen.getByText('Really?')).toBeTruthy());
+	expect(screen.queryByText('Permanently?')).toBeNull();
+	expect(df).not.toHaveBeenCalled();
 });
 
-it('uses the "Permanently delete" copy when features.trash is false', async () => {
+it('arms with "Permanently?" when features.trash is false', async () => {
 	serverConfig.features = { ...serverConfig.features, trash: false };
-	cd.mockResolvedValue(false);
 	render(PhotoLightbox, { props: { items: [item('a')], index: 0 } });
-	await fireEvent.click(screen.getByTitle('Delete'));
-	await waitFor(() => expect(cd).toHaveBeenCalled());
-	const arg = cd.mock.calls.at(-1)?.[0] as { message?: string } | undefined;
-	expect(arg?.message).toMatch(/Permanently delete/);
-	expect(arg?.message).toMatch(/cannot be undone/);
+	await fireEvent.click(screen.getByTestId('photo-lightbox-delete-btn'));
+	await waitFor(() => expect(screen.getByText('Permanently?')).toBeTruthy());
+	expect(screen.queryByText('Really?')).toBeNull();
+	expect(df).not.toHaveBeenCalled();
+});
+
+it('deletes only on the second click, once armed', async () => {
+	// The arm-then-confirm contract itself. Pinned because the wording
+	// pins above would still pass if the FIRST click deleted — they only
+	// read the label.
+	serverConfig.features = { ...serverConfig.features, trash: true };
+	render(PhotoLightbox, { props: { items: [item('a')], index: 0 } });
+	const btn = screen.getByTestId('photo-lightbox-delete-btn');
+	await fireEvent.click(btn);
+	await waitFor(() => expect(screen.getByText('Really?')).toBeTruthy());
+	await fireEvent.click(btn);
+	await waitFor(() => expect(df).toHaveBeenCalledWith('a'));
 });

@@ -1938,6 +1938,7 @@
     "close": "Close",
     "confirm": "Confirm",
     "really": "Really?",
+    "permanently": "Permanently?",
     "copied": "Copied to clipboard",
     "copy": "Copy",
     "copy_failed": "Copy failed",

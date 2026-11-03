@@ -15,6 +15,7 @@
 	import { fetchFileMetadata, type FileMetadata } from '$lib/api/endpoints/photos';
 	import type { FileItem } from '$lib/api/types';
 	import ConfirmButton from '$lib/components/ConfirmButton.svelte';
+	import { deleteConfirmLabel } from '$lib/utils/deleteConfirm';
 	import { t } from '$lib/i18n/index.svelte';
 	import { errorToast } from '$lib/utils/errors';
 	import { dateTimeFormatFor } from '$lib/utils/display';
@@ -214,6 +215,10 @@
 		}
 	}
 
+	/** Armed-state wording — see `deleteConfirmLabel`. `$derived` so it
+	 *  tracks `features.trash`, which hydrates after first paint. */
+	const confirmLabel = $derived(deleteConfirmLabel());
+
 	async function remove() {
 		if (!item) return;
 		const target = item;
@@ -346,6 +351,7 @@
 				<ConfirmButton
 					variant="icon"
 					title={t('common.delete', 'Delete')}
+					{confirmLabel}
 					onconfirm={remove}
 					data-testid="photo-lightbox-delete-btn"
 					icon="trash"

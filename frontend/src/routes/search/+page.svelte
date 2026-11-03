@@ -556,6 +556,7 @@
 			label: t('common.delete', 'Delete'),
 			icon: 'trash',
 			danger: true,
+			permanentWhenNoTrash: true,
 			run: remove
 		}
 	];

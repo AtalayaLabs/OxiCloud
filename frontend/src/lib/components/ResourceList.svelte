@@ -62,6 +62,17 @@
 		icon: string;
 		danger?: boolean;
 		/**
+		 * This action deletes a FILE, so its armed confirm should say
+		 * "Permanently?" instead of "Really?" when `features.trash` is
+		 * off — with no trash there is nothing to undo from.
+		 *
+		 * Opt-in per action rather than inferred from `danger`, because
+		 * this one menu serves file lists AND the admin user list: a
+		 * user delete is irreversible whatever the trash flag says, so
+		 * keying its wording off that flag would be misleading.
+		 */
+		permanentWhenNoTrash?: boolean;
+		/**
 		 * Optional per-item visibility gate. Called at menu-open time
 		 * with the target item + context; return `false` to hide the
 		 * entry entirely for that row (e.g. `open_parent` on a drive-
@@ -117,6 +128,7 @@
 	import { ui } from '$lib/stores/ui.svelte';
 	import { files as filesStore } from '$lib/stores/files.svelte';
 	import { preferences } from '$lib/stores/preferences.svelte';
+	import { deleteConfirmLabel } from '$lib/utils/deleteConfirm';
 	import { formatBytes } from '$lib/utils/format';
 	import { formatDate, iconNameFor, fileIconKindClass } from '$lib/utils/display';
 	import { gridColumns } from '$lib/utils/grid';
@@ -1675,6 +1687,7 @@
 					class="menu-item menu-item--danger"
 					role="menuitem"
 					disabled={dis}
+					confirmLabel={action.permanentWhenNoTrash ? deleteConfirmLabel() : undefined}
 					data-testid={`resource-list-context-${action.key}-item`}
 					onconfirm={() => {
 						const target = ctxItem!;

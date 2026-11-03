@@ -47,6 +47,7 @@
 	import { copyFiles, copyFolders } from '$lib/api/endpoints/batch';
 	import { apiFetch, withBase } from '$lib/api/client';
 	import { getCsrfHeaders } from '$lib/api/csrf';
+	import { deleteConfirmLabel } from '$lib/utils/deleteConfirm';
 	import { countHidden, filterDotfiles } from '$lib/utils/dotfileFilter';
 	import { TEXTY_EXT_RE } from '$lib/utils/textyExt';
 	import { preferences } from '$lib/stores/preferences.svelte';
@@ -2462,6 +2463,7 @@
 			<ConfirmButton
 				class="batch-btn batch-btn-danger"
 				title={t('common.delete', 'Delete')}
+				confirmLabel={deleteConfirmLabel()}
 				data-testid="files-batch-delete-btn"
 				onconfirm={batchDelete}
 				icon="trash"
@@ -2699,6 +2701,7 @@
 			role="menuitem"
 			data-testid="files-ctx-delete-item"
 			title={t('common.delete', 'Delete')}
+			confirmLabel={deleteConfirmLabel()}
 			onconfirm={() => {
 				const tg = ctxTarget!;
 				closeContext();
