@@ -9,23 +9,15 @@
     border-radius: 50%;
     padding: 0;
     cursor: pointer;
-    transition: transform var(--motion-base) var(--ease-standard);
     display: flex;
     align-items: center;
     justify-content: center;
 }
 
-/* Premium hover: ONE soft accent ring hugging the avatar + a gentle warm glow
-   + a subtle pop — replaces the old heavy double halo (button border ring with
-   a gap + a second avatar ring). */
-.user-avatar-btn:hover {
-    transform: scale(1.05);
-}
-
+/* Hover keeps the single accent ring, without the pop or the blur that used
+   to sit under it. */
 .user-avatar-btn:hover .user-vignette__avatar {
-    box-shadow:
-        0 0 0 3px var(--color-accent-ring),
-        0 3px 12px -2px var(--color-accent-shadow);
+    box-shadow: 0 0 0 3px var(--color-accent-ring);
 }
 
 /* Menu open: a slightly firmer ring (same clean single-ring language). */
@@ -58,14 +50,19 @@
     top: calc(100% + 10px);
     right: 0;
     left: auto;
-    width: 300px;
+    width: min(300px, calc(100vw - 2 * var(--space-4)));
+    max-height: calc(100vh - 90px);
+    max-height: calc(100dvh - 90px);
     background: var(--color-bg-surface);
     border-radius: var(--radius-3xl);
     box-shadow:
         0 12px 40px var(--color-shadow-md),
         0 0 0 1px var(--color-shadow-xs);
     z-index: 2000;
-    overflow: hidden;
+    /* Scroll instead of clipping: on a landscape phone the menu is taller
+       than the viewport and the logout row used to be unreachable. */
+    overflow-x: hidden;
+    overflow-y: auto;
     animation: userMenuIn 0.2s ease-out;
 }
 

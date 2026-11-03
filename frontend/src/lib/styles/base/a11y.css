@@ -20,6 +20,40 @@
     outline-offset: 2px;
 }
 
+/* Text-entry controls keep the focus ring on the border instead of a
+   3–4px glow around the field. The `:focus` rule drops the legacy
+   component shadows and mirrors the search field's border/background
+   transition; the `:focus-visible` rule draws the ring inside the
+   border so it follows the radius instead of floating outside. */
+input:not([type="checkbox"]):not([type="radio"]),
+textarea,
+select {
+    transition:
+        border-color 0.2s ease,
+        background-color 0.2s ease,
+        box-shadow 0.2s ease;
+}
+
+input:not([type="checkbox"]):not([type="radio"]):focus,
+textarea:focus,
+select:focus {
+    border-color: var(--color-accent);
+    background-color: var(--color-bg-surface);
+    box-shadow: none;
+}
+
+input:not([type="checkbox"]):not([type="radio"]):focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+    outline: 2px solid var(--color-focus-ring);
+    outline-offset: -2px;
+}
+
+input[type="checkbox"]:focus-visible,
+input[type="radio"]:focus-visible {
+    outline-offset: 0;
+}
+
 /* Skip link — visually hidden until focused, then slides in at top-left.
    Lets keyboard users jump straight to <main id="main">. */
 .skip-link {
@@ -131,8 +165,13 @@
     .search-toggle-btn,
     .search-back-btn,
     .notif-bell-btn,
-    .user-avatar-btn {
+    .user-avatar-btn,
+    .toggle-btn {
         min-width: 44px;
+        min-height: 44px;
+    }
+
+    .batch-btn {
         min-height: 44px;
     }
 

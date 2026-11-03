@@ -173,6 +173,20 @@
 	//     accepts either a username or an email as identifier)
 	// The `submitAsMagicLink` derived tracks which mode is active;
 	// button label + hint text render off it.
+	/**
+	 * Wrong password / unknown user. The auth service reports both as a
+	 * DomainError `AccessDenied` (403, error_type "Access Denied"); a few
+	 * legacy paths use 401. Either way the copy must be "check what you
+	 * typed", never "you lack permission".
+	 */
+	function isBadCredentials(err: ApiError): boolean {
+		return (
+			err.status === 401 ||
+			(err.status === 403 &&
+				(err.errorType === 'Access Denied' || err.errorType === 'AccessDenied'))
+		);
+	}
+
 	async function onLogin(e: SubmitEvent) {
 		e.preventDefault();
 		error = '';
@@ -225,6 +239,16 @@
 					'auth.password_login_disabled',
 					'Password login is disabled on this server. Leave the password blank to receive a sign-in link, or use SSO.'
 				);
+			} else if (err instanceof ApiError && err.status === 0) {
+				error = t(
+					'auth.server_unreachable',
+					"Couldn't reach the server. Check your connection and try again."
+				);
+			} else if (err instanceof ApiError && isBadCredentials(err)) {
+				error = t(
+					'auth.invalid_credentials',
+					'Incorrect username or password. Check them and try again.'
+				);
 			} else {
 				error = err instanceof Error ? err.message : t('auth.login_error', 'Error logging in');
 			}
@@ -253,12 +277,38 @@
 					: {
 							text: t(
 								'auth.magic_unavailable',
-								'Sign-in by email is not available on this server.'
+								"This server doesn't send sign-in emails. Sign in with your password."
 							),
 							ok: false
 						};
-		} catch {
-			magicStatus = { text: t('auth.magic_error', 'Something went wrong. Try again.'), ok: false };
+		} catch (err) {
+			// Server messages beat a generic line: the magic-link endpoint
+			// has real refusals (policy off, email send failed) and the user
+			// needs to know which one they hit.
+			if (err instanceof ApiError && err.status === 0) {
+				magicStatus = {
+					text: t(
+						'auth.server_unreachable',
+						"Couldn't reach the server. Check your connection and try again."
+					),
+					ok: false
+				};
+			} else if (err instanceof ApiError && err.errorType === 'MagicLinkLoginDisabled') {
+				magicStatus = {
+					text: t(
+						'auth.magic_unavailable',
+						"This server doesn't send sign-in emails. Sign in with your password."
+					),
+					ok: false
+				};
+			} else if (err instanceof ApiError && err.message) {
+				magicStatus = { text: err.message, ok: false };
+			} else {
+				magicStatus = {
+					text: t('auth.magic_error', 'Something went wrong. Try again.'),
+					ok: false
+				};
+			}
 		} finally {
 			busy = false;
 		}
@@ -303,8 +353,38 @@
 			);
 			mode = 'login';
 		} catch (err) {
-			regError =
-				err instanceof Error ? err.message : t('auth.register_error', 'Registration failed');
+			if (err instanceof ApiError && err.status === 0) {
+				regError = t(
+					'auth.server_unreachable',
+					"Couldn't reach the server. Check your connection and try again."
+				);
+			} else if (err instanceof ApiError && err.errorType === 'EmailTaken') {
+				regError = t(
+					'auth.email_taken',
+					'An account with this email already exists. Sign in instead.'
+				);
+			} else if (err instanceof ApiError && err.errorType === 'UsernameTaken') {
+				regError = t('auth.username_taken', 'That username is already taken. Pick another one.');
+			} else if (err instanceof ApiError && err.errorType === 'RegistrationDisabled') {
+				regError = t(
+					'auth.registration_disabled',
+					'Sign-ups are disabled on this server. Ask an administrator to create your account.'
+				);
+			} else if (
+				err instanceof ApiError &&
+				(err.errorType === 'SmtpRequired' || err.errorType === 'MagicLinkLoginDisabled')
+			) {
+				// The account was submitted with no password, so the server
+				// would have to email a sign-in link it cannot send. Point at
+				// the password route instead of quoting the SMTP config.
+				regError = t(
+					'auth.registration_password_required',
+					"This server doesn't send sign-in emails. Enter a password to create your account."
+				);
+			} else {
+				regError =
+					err instanceof Error ? err.message : t('auth.register_error', 'Registration failed');
+			}
 		} finally {
 			busy = false;
 		}
@@ -637,10 +717,11 @@
 							</div>
 						{/if}
 						{#if magicStatus}
+							<!-- Same box as the sign-up errors: one error style on
+							     this page, not a second grey bar. -->
 							<div
-								class={magicStatus.ok
-									? 'auth-status auth-status-success'
-									: 'auth-status auth-status-error'}
+								class={magicStatus.ok ? 'auth-success' : 'auth-error'}
+								style="display: block"
 								role={magicStatus.ok ? 'status' : 'alert'}
 							>
 								{magicStatus.text}
@@ -1072,7 +1153,7 @@
 					onchange={(e) => setLocale(e.currentTarget.value as Locale)}
 				>
 					{#each SUPPORTED_LOCALES as loc (loc)}
-						<option value={loc}>{loc}</option>
+						<option value={loc}>{loc.toUpperCase()}</option>
 					{/each}
 				</select>
 			</div>

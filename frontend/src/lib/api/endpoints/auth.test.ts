@@ -518,6 +518,37 @@ it('login skips the OPAQUE branch entirely when the substrate is disabled', asyn
 	expect(sdkLogin).toHaveBeenCalledOnce();
 });
 
+// 2026-11-02: the generated client throws the parsed error body itself
+// (`client.gen.ts`: `throw jsonError`), not `{ response, data }`. Reading
+// only `response.status` made every real 403 look like status 0, so the
+// login page told the user the server was unreachable while the server
+// log showed "Access Denied: Invalid credentials".
+it('maps the SDK-thrown bare error body to an ApiError with its status', async () => {
+	f.mockResolvedValueOnce({
+		ok: true,
+		status: 200,
+		statusText: 'OK',
+		json: async () => ({
+			enabled: false,
+			ciphersuiteVersion: 0,
+			ksf: { memoryKib: 0, iterations: 0, parallelism: 0 }
+		})
+	});
+	sdkLogin.mockRejectedValueOnce({
+		status: '403 Forbidden',
+		error: 'Invalid credentials',
+		message: 'Invalid credentials',
+		error_type: 'Access Denied'
+	});
+
+	await expect(auth.login('alice@example.com', 'wrong')).rejects.toMatchObject({
+		name: 'ApiError',
+		status: 403,
+		errorType: 'Access Denied',
+		message: 'Invalid credentials'
+	});
+});
+
 it('login returns AuthResponse even when silent-migration fails (non-fatal)', async () => {
 	// Wire order: /params (enabled=true) → lookup (false) → legacy
 	// login (200) → /params is cached, skip → register/start fails
@@ -686,9 +717,12 @@ describe('plain-Error wrappers never surface "undefined" to the UI', () => {
 		await expect(auth.register('x@y.z', 'p')).rejects.toThrow('email already registered');
 	});
 
-	it('register falls back to a status-formatted message when the body is empty', async () => {
+	it('register surfaces the HTTP status and empty body as an ApiError', async () => {
 		sdkRegister.mockRejectedValueOnce({ response: { status: 500 }, data: {} });
-		await expect(auth.register('x@y.z', 'p')).rejects.toThrow(/^register failed: 500$/);
+		await expect(auth.register('x@y.z', 'p')).rejects.toMatchObject({
+			name: 'ApiError',
+			status: 500
+		});
 		// The whole point: NEVER the string "undefined".
 		try {
 			await auth.register('x@y.z', 'p');
@@ -696,6 +730,19 @@ describe('plain-Error wrappers never surface "undefined" to the UI', () => {
 		} catch (e) {
 			expect((e as Error).message).not.toContain('undefined');
 		}
+	});
+
+	// The 2026-11-02 report: a backend that is not running made the signup
+	// form print "register failed: unknown", and login print "API 0 for
+	// /api/auth/login". Both came from this lost-response path, so pin the
+	// stable type the forms branch on.
+	it('maps a failed fetch (no response) to a NetworkError ApiError', async () => {
+		sdkRegister.mockRejectedValueOnce({});
+		await expect(auth.register('x@y.z', 'p')).rejects.toMatchObject({
+			name: 'ApiError',
+			status: 0,
+			errorType: 'NetworkError'
+		});
 	});
 
 	it('setupAdmin extracts the server error message, not undefined', async () => {
@@ -711,20 +758,29 @@ describe('plain-Error wrappers never surface "undefined" to the UI', () => {
 		await expect(auth.setupAdmin('e@x.test', 'p')).rejects.toThrow(/^setup failed: 500$/);
 	});
 
-	it('sendMagicLink preserves the caught error as `cause` on throw', async () => {
-		// 503 branches to 'unavailable' (soft). Other failures throw an
-		// Error — must carry `cause` so the UI can surface the real
-		// transport failure in dev consoles. The ESLint rule
-		// preserve-caught-error enforces this at the source side; this
-		// test pins it at the behavioural side.
-		const underlying = { response: { status: 500 }, data: {} };
-		sdkSendMagicLink.mockRejectedValueOnce(underlying);
-		try {
-			await auth.sendMagicLink('x@y.z');
-			throw new Error('expected magic-link to throw');
-		} catch (e) {
-			expect((e as Error).message).not.toContain('undefined');
-			expect((e as Error).cause).toBe(underlying);
-		}
+	// The generated client throws the parsed body (no `response`), which is
+	// why the old `e.response.status === 503` check never matched: a server
+	// without SMTP turned into "Something went wrong. Try again." instead of
+	// telling the user to sign in with a password.
+	it('sendMagicLink maps the bare 503 body to unavailable', async () => {
+		sdkSendMagicLink.mockRejectedValueOnce({
+			status: '503 Service Unavailable',
+			error: 'This server cannot send sign-in emails. Submit a password to create the account.',
+			error_type: 'SmtpRequired'
+		});
+		await expect(auth.sendMagicLink('x@y.z')).resolves.toBe('unavailable');
+	});
+
+	it('sendMagicLink throws an ApiError with the real status', async () => {
+		sdkSendMagicLink.mockRejectedValueOnce({
+			status: '500 Internal Server Error',
+			message: 'mailer exploded',
+			error_type: 'Internal Server Error'
+		});
+		await expect(auth.sendMagicLink('x@y.z')).rejects.toMatchObject({
+			name: 'ApiError',
+			status: 500,
+			message: 'mailer exploded'
+		});
 	});
 });

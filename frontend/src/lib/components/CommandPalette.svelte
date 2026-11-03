@@ -385,7 +385,6 @@
 		background: none;
 		color: var(--color-text);
 		font-size: 1rem;
-		outline: none;
 	}
 
 	.cmdk__list {

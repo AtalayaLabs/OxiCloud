@@ -1181,6 +1181,28 @@
 		gap: var(--space-3);
 	}
 
+	/* Phones: the trailing cluster drops below the page actions and wraps
+	   left-aligned, so each filter keeps its own breathing room instead of
+	   being squeezed into a narrow column beside the display controls. */
+	@media (width <= 768px) {
+		.actions-bar__end {
+			justify-content: flex-start;
+			gap: var(--space-2);
+		}
+	}
+
+	@media (width <= 640px) {
+		.photos-head,
+		.photos-area {
+			padding: 0;
+		}
+
+		.actions-bar {
+			margin-left: 0;
+			margin-right: 0;
+		}
+	}
+
 	/* The shared `.batch-selection-bar` rule in
 	   `styles/ported/batchToolbar.css` carries
 	   `transform: translateY(-8px)` — a layout-specific hack for the

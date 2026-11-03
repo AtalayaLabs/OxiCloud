@@ -13,8 +13,6 @@
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
-	import { logout } from '$lib/api/endpoints/auth';
-	import { setLogoutInProgress } from '$lib/api/client';
 	import { searchResources } from '$lib/api/endpoints/search';
 	import { fileInlineUrl, deleteFile } from '$lib/api/endpoints/files';
 	import { deleteFolder } from '$lib/api/endpoints/folders';
@@ -25,6 +23,11 @@
 	import DrivePicker from '$lib/components/DrivePicker.svelte';
 	import BrandMark from '$lib/components/BrandMark.svelte';
 	import Banner from '$lib/components/Banner.svelte';
+	import AboutDialog from '$lib/components/AboutDialog.svelte';
+	import MobileNav from '$lib/components/MobileNav.svelte';
+	import SelfAvatar from '$lib/components/SelfAvatar.svelte';
+	import TransientNotificationRow from '$lib/components/TransientNotificationRow.svelte';
+	import UserMenuContent from '$lib/components/UserMenuContent.svelte';
 	import { renderOpsBannerMarkdown } from '$lib/utils/opsBannerMarkdown';
 	import { adminAdvisories } from '$lib/stores/adminAdvisories.svelte';
 	// Deliberate: no `onMount` import for a localStorage-backed
@@ -34,17 +37,14 @@
 	// to every open tab via the message-bus push + version-diff
 	// refetch. No client-side per-user state → no stale-id leak.
 	import Icon from '$lib/icons/Icon.svelte';
-	import { dateTimeFormatFor, iconNameFor } from '$lib/utils/display';
-	import { userInitials, avatarColorIndex } from '$lib/utils/avatar';
-	import { i18n, LANGUAGES, setLocale, t, type Locale } from '$lib/i18n/index.svelte';
+	import { iconNameFor } from '$lib/utils/display';
+	import { t } from '$lib/i18n/index.svelte';
 	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import { serverStatus } from '$lib/stores/serverStatus.svelte';
-	import { apiFetch } from '$lib/api/client';
 	import { dialogs } from '$lib/stores/dialogs.svelte';
 	import { files as filesStore } from '$lib/stores/files.svelte';
 	import { preferences } from '$lib/stores/preferences.svelte';
 	import { session } from '$lib/stores/session.svelte';
-	import { theme, type Theme } from '$lib/stores/theme.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 	import {
 		notifications as persistentNotifications,
@@ -52,7 +52,7 @@
 	} from '$lib/composables/useNotifications.svelte';
 	import NotificationRow from '$lib/components/NotificationRow.svelte';
 	import { errorToast } from '$lib/utils/errors';
-	import { formatBytes } from '$lib/utils/format';
+	import { formatBytes, storagePercent } from '$lib/utils/format';
 
 	let { children }: { children: Snippet } = $props();
 
@@ -400,9 +400,7 @@
 	let searchQuery = $state('');
 	/** Mobile collapsible-search overlay state (toggles .top-bar--search-active). */
 	let searchActive = $state(false);
-	let langOpen = $state(false);
 	let aboutOpen = $state(false);
-	let appVersion = $state('');
 	let searchInputEl = $state<HTMLInputElement | null>(null);
 
 	// Bell ring/auto-open: react to the store's bellPing token (bumped on upload
@@ -445,22 +443,6 @@
 	function closeMobileSearch() {
 		searchActive = false;
 		clearSearch();
-	}
-
-	async function openAbout() {
-		menuOpen = false;
-		aboutOpen = true;
-		if (!appVersion) {
-			try {
-				const r = await apiFetch('/api/version', { credentials: 'same-origin' });
-				if (r.ok) {
-					const data = (await r.json()) as { version?: string };
-					if (data.version) appVersion = `v${data.version}`;
-				}
-			} catch {
-				/* version stays blank — non-critical */
-			}
-		}
 	}
 
 	// Top-bar autocomplete
@@ -555,30 +537,16 @@
 		else window.open(fileInlineUrl(s.item.id), '_blank', 'noopener');
 	}
 
-	const THEMES: { mode: Theme; icon: string; label: string }[] = [
-		{ mode: 'light', icon: 'sun', label: t('user_menu.theme.light', 'Light') },
-		{ mode: 'auto', icon: 'desktop', label: t('user_menu.theme.auto', 'Like OS') },
-		{ mode: 'dark', icon: 'moon', label: t('user_menu.theme.dark', 'Dark') }
-	];
-
-	const storagePct = $derived.by(() => {
-		const full = session.me?.full;
-		if (!full || full.storage_quota_bytes <= 0) return 0;
-		return Math.min(100, (full.storage_used_bytes / full.storage_quota_bytes) * 100);
-	});
-
-	const initials = $derived(userInitials(session.user?.username || session.user?.email));
-
-	/** Uploaded avatar photo URL, if any. */
-	const avatarPhoto = $derived(session.user?.image ?? null);
-
-	/** Deterministic colour bucket 0–4 from the user id (shared with UserVignette). */
-	const avatarColor = $derived(avatarColorIndex(session.user?.id));
+	const storagePct = $derived(
+		storagePercent(
+			session.me?.full.storage_used_bytes ?? 0,
+			session.me?.full.storage_quota_bytes ?? 0
+		)
+	);
 
 	function closeMenus() {
 		notifOpen = false;
 		menuOpen = false;
-		langOpen = false;
 	}
 
 	/**
@@ -592,63 +560,6 @@
 		if (!(target instanceof HTMLElement)) return false;
 		const tag = target.tagName;
 		return tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable;
-	}
-
-	async function chooseLocale(loc: Locale) {
-		langOpen = false;
-		await setLocale(loc);
-	}
-
-	const currentLang = $derived(LANGUAGES.find((l) => l.code === i18n.locale) ?? LANGUAGES[0]);
-
-	function formatTime(ms: number): string {
-		return dateTimeFormatFor(undefined, { hour: '2-digit', minute: '2-digit' }).format(ms);
-	}
-
-	function notifIcon(kind: string): string {
-		switch (kind) {
-			case 'success':
-				return 'check';
-			case 'error':
-				return 'exclamation-circle';
-			case 'warning':
-				return 'exclamation-triangle';
-			default:
-				return 'info-circle';
-		}
-	}
-
-	async function onLogout() {
-		// Flip the session-teardown gate BEFORE the logout POST so every
-		// ambient/subscriber-fired fetch that fires between here and the
-		// /login mount short-circuits with AbortError instead of hitting
-		// the server (see `client.ts::logoutInProgress`). Left ON across
-		// the goto — module state persists over soft nav, so a stale
-		// reactive re-fetch during the transition still no-ops. A hard
-		// reload later (or the IdP round-trip below) wipes it naturally.
-		setLogoutInProgress(true);
-		let postLogoutUrl: string | undefined;
-		try {
-			({ postLogoutUrl } = await logout());
-		} catch {
-			/* clear locally regardless */
-		}
-		if (postLogoutUrl) {
-			// Full-page navigation to the IdP end-session endpoint. Do NOT
-			// touch local session state first: `session.reset()` fires the
-			// layout $effect guard which races us with a competing
-			// `goto('/login?redirect=...')`. The IdP round-trip lands us
-			// back on `/login` where the SPA reboots fresh from scratch —
-			// no local cleanup needed here.
-			window.location.replace(postLogoutUrl);
-			return;
-		}
-		session.reset();
-		// `?source=logged_out` distinguishes the friendly explicit-logout
-		// landing from `?source=session_expired` (auto-divert on 401 →
-		// refresh 401). The login page reads the flag, shows the success
-		// notice, and skips its existing-session probe.
-		await goto(resolve('/login?source=logged_out'));
 	}
 </script>
 
@@ -686,8 +597,7 @@
 			return;
 		}
 		if (e.key !== 'Escape') return;
-		if (aboutOpen) aboutOpen = false;
-		else if (searchActive) closeMobileSearch();
+		if (searchActive) closeMobileSearch();
 		else closeMenus();
 	}}
 />
@@ -830,7 +740,6 @@
 
 		<div class="search-slot">
 			<form class="search-container" onsubmit={onSearch}>
-				<Icon name="search" class="search-icon" />
 				<input
 					type="text"
 					bind:this={searchInputEl}
@@ -956,40 +865,7 @@
 							</div>
 						{:else}
 							{#each ui.notifications as n (n.id)}
-								<div class="notif-item notif-item--{n.kind}">
-									<span class="notif-item-icon"><Icon name={n.icon ?? notifIcon(n.kind)} /></span>
-									<div class="notif-item-body">
-										<div class="notif-item-text">{n.message}</div>
-										{#if n.currentFile}
-											<div class="notif-item-current" title={n.currentFile}>{n.currentFile}</div>
-										{/if}
-										{#if n.progress !== undefined}
-											<div
-												class="notif-progress"
-												role="progressbar"
-												aria-valuenow={n.progress}
-												aria-valuemin="0"
-												aria-valuemax="100"
-											>
-												<div class="notif-progress__fill" style:width="{n.progress}%"></div>
-											</div>
-											<div class="notif-progress-detail">
-												<span>{n.progress}%</span>
-												{#if n.total !== undefined}
-													<span>
-														{t(
-															'upload.files_counter',
-															{ done: n.completed ?? 0, total: n.total },
-															`${n.completed ?? 0} / ${n.total} files`
-														)}
-													</span>
-												{/if}
-											</div>
-										{:else}
-											<div class="notif-item-time">{formatTime(n.at)}</div>
-										{/if}
-									</div>
-								</div>
+								<TransientNotificationRow {n} />
 							{/each}
 							{#if persistentNotifications.items.length > 0}
 								{#if ui.notifications.length > 0}
@@ -1021,184 +897,17 @@
 						notifOpen = false;
 					}}
 				>
-					{@render avatar(false)}
+					<SelfAvatar />
 				</button>
 
 				<div class="user-menu">
-					{#if session.user}
-						<div class="user-menu-header">
-							{@render avatar(true)}
-							<div class="user-menu-id">
-								<div class="user-menu-name">{session.user.username || session.user.email}</div>
-								<div class="user-menu-email">{session.user.email}</div>
-							</div>
-						</div>
-
-						{#if isAdmin}
-							<div class="user-menu-role-badge">
-								<span class="role-badge role-badge-admin">
-									<Icon name="shield-alt" />
-									{t('user_menu.admin', 'Admin')}
-								</span>
-							</div>
-						{/if}
-
-						<div class="user-menu-storage">
-							<div class="user-menu-storage-label">
-								<Icon name="database" /> <span>{t('storage.title', 'Storage')}</span>
-							</div>
-							<div class="user-menu-storage-bar">
-								<div class="user-menu-storage-fill" style:width="{storagePct}%"></div>
-							</div>
-							<div class="user-menu-storage-text">
-								{#if (session.me?.full.storage_quota_bytes ?? 0) > 0}
-									{t(
-										'storage.used',
-										{
-											percentage: Math.round(storagePct),
-											used: formatBytes(session.me?.full.storage_used_bytes ?? 0),
-											total: formatBytes(session.me?.full.storage_quota_bytes ?? 0)
-										},
-										'{{percentage}}% used ({{used}} / {{total}})'
-									)}
-								{:else}
-									{formatBytes(session.me?.full.storage_used_bytes ?? 0)}
-								{/if}
-							</div>
-						</div>
-					{/if}
-
-					<div class="user-menu-divider"></div>
-
-					{#if isAdmin}
-						<a
-							class="user-menu-item"
-							href={resolve('/admin')}
-							data-testid="appshell-user-menu-admin-item"
-							onclick={() => (menuOpen = false)}
-						>
-							<Icon name="cogs" /> <span>{t('user_menu.admin_panel', 'Admin panel')}</span>
-						</a>
-						<a
-							class="user-menu-item"
-							href={resolve('/groups')}
-							data-testid="appshell-user-menu-groups-item"
-							onclick={() => (menuOpen = false)}
-						>
-							<Icon name="user-group" />
-							<span>{t('user_menu.manage_groups', 'Manage groups')}</span>
-						</a>
-					{/if}
-					<a
-						class="user-menu-item"
-						href={resolve('/profile')}
-						data-testid="appshell-user-menu-profile-item"
-						onclick={() => (menuOpen = false)}
-					>
-						<Icon name="user-circle" /> <span>{t('user_menu.profile', 'My profile')}</span>
-					</a>
-
-					<div class="user-menu-divider"></div>
-
-					<div class="user-menu-item user-menu-item--lang">
-						<Icon name="globe" />
-						<span>{t('settings.language', 'Language')}</span>
-						<div
-							class="lang-selector"
-							class:lang-selector--open={langOpen}
-							data-testid="appshell-lang-menu"
-						>
-							<button
-								type="button"
-								class="lang-selector__toggle"
-								aria-haspopup="listbox"
-								aria-expanded={langOpen}
-								data-testid="appshell-lang-toggle-btn"
-								onclick={(e) => {
-									e.stopPropagation();
-									langOpen = !langOpen;
-								}}
-							>
-								<span class="lang-selector__code">{(currentLang.code as string).toUpperCase()}</span
-								>
-								<Icon name="chevron-down" class="lang-selector__arrow" />
-							</button>
-							{#if langOpen}
-								<ul class="lang-selector__dropdown" role="listbox">
-									{#each LANGUAGES as lang (lang.code)}
-										<li>
-											<button
-												type="button"
-												class="lang-option"
-												class:lang-option--active={lang.code === i18n.locale}
-												role="option"
-												aria-selected={lang.code === i18n.locale}
-												data-testid={`appshell-lang-${lang.code}-option`}
-												onclick={(e) => {
-													e.stopPropagation();
-													chooseLocale(lang.code);
-												}}
-											>
-												<span class="lang-option__flag">{lang.flag}</span>
-												<span class="lang-option__name">{lang.name}</span>
-												{#if lang.code === i18n.locale}
-													<Icon name="check" class="lang-option__check" />
-												{/if}
-											</button>
-										</li>
-									{/each}
-								</ul>
-							{/if}
-						</div>
-					</div>
-
-					<div class="user-menu-item user-menu-item--theme">
-						<Icon name="adjust" />
-						<span>{t('user_menu.appearance', 'Appearance')}</span>
-						<div
-							class="theme-segmented"
-							role="radiogroup"
-							aria-label={t('user_menu.appearance', 'Appearance')}
-							data-testid="appshell-theme-toggle"
-						>
-							{#each THEMES as th (th.mode)}
-								<button
-									type="button"
-									class="theme-segmented__opt"
-									class:theme-segmented__opt--active={theme.current === th.mode}
-									role="radio"
-									aria-checked={theme.current === th.mode}
-									title={th.label}
-									aria-label={th.label}
-									data-testid={`appshell-theme-${th.mode}-option`}
-									onclick={(e) => {
-										e.stopPropagation();
-										theme.set(th.mode);
-									}}
-								>
-									<Icon name={th.icon} />
-								</button>
-							{/each}
-						</div>
-					</div>
-
-					<button
-						class="user-menu-item"
-						data-testid="appshell-user-menu-about-item"
-						onclick={openAbout}
-					>
-						<Icon name="info-circle" /> <span>{t('user_menu.about', 'About OxiCloud')}</span>
-					</button>
-
-					<div class="user-menu-divider"></div>
-
-					<button
-						class="user-menu-item user-menu-logout"
-						data-testid="appshell-user-menu-logout-btn"
-						onclick={onLogout}
-					>
-						<Icon name="sign-out-alt" /> <span>{t('actions.logout', 'Log out')}</span>
-					</button>
+					<UserMenuContent
+						onNavigate={() => (menuOpen = false)}
+						onabout={() => {
+							menuOpen = false;
+							aboutOpen = true;
+						}}
+					/>
 				</div>
 			</div>
 		</div>
@@ -1322,76 +1031,13 @@
 	</div>
 </div>
 
-{#snippet avatar(large: boolean)}
-	{#if avatarPhoto}
-		<img
-			class="avatar avatar--photo"
-			class:avatar--lg={large}
-			src={avatarPhoto}
-			alt={t('user_menu.title', 'User menu')}
-		/>
-	{:else}
-		<span class="avatar avatar--c{avatarColor}" class:avatar--lg={large}>{initials}</span>
-	{/if}
-{/snippet}
+<MobileNav />
 
-{#if aboutOpen}
-	<!-- About OxiCloud modal -->
-	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="about-overlay" onclick={(e) => e.target === e.currentTarget && (aboutOpen = false)}>
-		<div class="about-modal" role="dialog" aria-modal="true" aria-labelledby="about-modal-title">
-			<div class="about-modal__logo">
-				<svg viewBox="95 67 320 320" aria-hidden="true">
-					<path
-						d="M345 310c32 0 58-26 58-58s-26-58-58-58c-6.2 0-12 0.9-17.5 2.7C318 166 289 143 255 143c-34.3 0-63.1 22.6-73 53.7C176.9 195.7 171 195 165 195c-32 0-58 26-58 58s26 58 58 58h180z"
-					/>
-				</svg>
-			</div>
-			<h2 id="about-modal-title" class="about-modal__title">OxiCloud</h2>
-			<div class="about-modal__version">{appVersion || 'v…'}</div>
-			<p class="about-modal__desc">
-				{t(
-					'user_menu.about_description',
-					'Cloud storage platform built with Rust & Clean Architecture. Fast, secure, and private.'
-				)}
-			</p>
-			<div class="about-modal__tech">
-				<span class="about-modal__badge">Rust</span>
-				<span class="about-modal__badge">Axum</span>
-				<span class="about-modal__badge">PostgreSQL</span>
-				<span class="about-modal__badge">Clean Architecture</span>
-			</div>
-			<div class="about-modal__links">
-				<a
-					class="about-modal__link"
-					href="https://github.com/AtalayaLabs/OxiCloud/"
-					target="_blank"
-					rel="noopener"
-					data-testid="appshell-about-github-link"
-				>
-					<Icon name="github" /> GitHub
-				</a>
-				<a
-					class="about-modal__link"
-					href="https://github.com/AtalayaLabs/OxiCloud/blob/main/LICENSE"
-					target="_blank"
-					rel="noopener"
-					data-testid="appshell-about-license-link"
-				>
-					<Icon name="file-alt" />
-					{t('user_menu.mit_license', 'MIT License')}
-				</a>
-			</div>
-			<button
-				class="about-modal__close"
-				data-testid="appshell-about-close-btn"
-				onclick={() => (aboutOpen = false)}
-			>
-				{t('actions.close', 'Close')}
-			</button>
-		</div>
-	</div>
+<AboutDialog bind:open={aboutOpen} />
+
+{#if palette.component}
+	{@const CommandPalette = palette.component}
+	<CommandPalette autoOpen />
 {/if}
 
 {#if palette.component}
@@ -1488,38 +1134,6 @@
 		text-align: center;
 	}
 
-	.notif-progress {
-		height: 6px;
-		margin-top: 0.35rem;
-		border-radius: var(--radius-pill, 999px);
-		background: var(--color-bg-muted);
-		overflow: hidden;
-	}
-
-	.notif-progress__fill {
-		height: 100%;
-		background: var(--color-accent);
-		transition: width 0.2s ease;
-	}
-
-	.notif-progress-detail {
-		display: flex;
-		justify-content: space-between;
-		gap: 0.5rem;
-		margin-top: 0.25rem;
-		font-size: var(--text-xs, 0.75rem);
-		color: var(--color-text-muted);
-	}
-
-	.notif-item-current {
-		margin-top: 0.15rem;
-		font-size: var(--text-xs, 0.75rem);
-		color: var(--color-text-muted);
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
 	/* Divider between transient toasts and persistent (server-backed)
 	   rows. Slice E adds a section under the toast list; the divider
 	   is only rendered when both sections have content. */
@@ -1562,312 +1176,11 @@
 		}
 	}
 
-	/* Avatar: deterministic coloured-initials vignette, or the uploaded photo. */
-	.avatar {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		width: 36px;
-		height: 36px;
-		border-radius: 50%;
-		background: var(--color-accent-gradient, var(--color-accent));
-		color: var(--color-on-accent);
-		font-size: var(--text-sm);
-		font-weight: var(--weight-bold);
-		flex-shrink: 0;
-		overflow: hidden;
-	}
-
-	.avatar--photo {
-		object-fit: cover;
-	}
-
-	/* Colour buckets mirror userVignette's .uv-color-0..4 shared palette. */
-	.avatar--c0 {
-		background: var(--color-badge-indigo-bg);
-		color: var(--color-badge-indigo-text);
-	}
-
-	.avatar--c1 {
-		background: var(--color-badge-green-bg);
-		color: var(--color-badge-green-text);
-	}
-
-	.avatar--c2 {
-		background: var(--color-badge-orange-bg);
-		color: var(--color-badge-orange-text);
-	}
-
-	.avatar--c3 {
-		background: var(--color-badge-blue-bg);
-		color: var(--color-badge-blue-text);
-	}
-
-	.avatar--c4 {
-		background: var(--color-badge-amber-bg);
-		color: var(--color-badge-amber-text);
-	}
-
-	.avatar--lg {
-		width: 44px;
-		height: 44px;
-		font-size: var(--text-base);
-	}
-
-	.user-menu-header {
-		display: flex;
-		align-items: center;
-		gap: var(--space-3);
-		padding: var(--space-4);
-	}
-
-	.user-menu-id {
-		min-width: 0;
-	}
-
-	.user-menu-name {
-		font-weight: var(--weight-semibold);
-		color: var(--color-text-heading);
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.user-menu-email {
-		font-size: var(--text-sm);
-		color: var(--color-text-muted);
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.user-menu-item--lang,
-	.user-menu-item--theme {
-		cursor: default;
-	}
-
-	/* Custom language selector — flag + native name + active checkmark. */
-	.lang-selector {
-		position: relative;
-		margin-left: auto;
-	}
-
-	.lang-selector__toggle {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--space-1);
-		padding: var(--space-1) var(--space-2);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
-		background: var(--color-bg-input);
-		color: var(--color-text);
-		cursor: pointer;
-		font-size: var(--text-sm);
-	}
-
-	.lang-selector__toggle:hover {
-		background: var(--color-bg-hover);
-	}
-
-	.lang-selector__code {
-		font-weight: var(--weight-semibold);
-	}
-
-	:global(.lang-selector__arrow) {
-		font-size: var(--text-xs, 0.7rem);
-		transition: transform 0.15s ease;
-	}
-
-	.lang-selector--open :global(.lang-selector__arrow) {
-		transform: rotate(180deg);
-	}
-
-	.lang-selector__dropdown {
-		position: absolute;
-		bottom: calc(100% + 4px);
-		right: 0;
-		/* Sits above `--z-sticky` for the same reason as `.suggest` above. */
-		z-index: var(--z-dropdown);
-		min-width: 12rem;
-		max-height: 18rem;
-		overflow: auto;
-		list-style: none;
-		margin: 0;
-		padding: 0.25rem;
-		background: var(--color-bg-surface);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-lg, var(--radius-md));
-		box-shadow: var(--shadow-lg, 0 10px 30px var(--color-overlay-shadow));
-	}
-
-	:global([dir='rtl']) .lang-selector__dropdown {
-		right: auto;
-		left: 0;
-	}
-
-	.lang-option {
-		display: flex;
-		align-items: center;
-		gap: 0.6rem;
-		width: 100%;
-		padding: 0.45rem 0.55rem;
-		border: none;
-		background: none;
-		color: var(--color-text);
-		cursor: pointer;
-		text-align: left;
-		border-radius: var(--radius-sm);
-		font-size: var(--text-sm);
-	}
-
-	.lang-option:hover {
-		background: var(--color-bg-hover);
-	}
-
-	.lang-option--active {
-		color: var(--color-primary);
-		font-weight: var(--weight-semibold);
-	}
-
-	.lang-option__name {
-		flex: 1;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	:global(.lang-option__check) {
-		color: var(--color-primary);
-		flex-shrink: 0;
-	}
-
-	/* About OxiCloud modal. */
-	.about-overlay {
-		position: fixed;
-		inset: 0;
-		z-index: var(--z-modal);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		padding: 1rem;
-		background: var(--color-overlay);
-		animation: about-fade 0.18s ease;
-	}
-
-	.about-modal {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		gap: var(--space-3);
-		width: min(92vw, 26rem);
-		padding: var(--space-6) var(--space-5);
-		background: var(--color-bg-surface);
-		color: var(--color-text);
-		border-radius: var(--radius-lg);
-		box-shadow: var(--shadow-xl);
-		text-align: center;
-		animation: about-pop 0.2s ease;
-	}
-
-	.about-modal__logo {
-		/* 73px (not 64) so the cloud keeps its rendered scale after the viewBox
-		   grew 280→320 to stop clipping its left bulge: 73/320 ≈ 64/280. */
-		width: 73px;
-		height: 73px;
-		color: var(--color-accent);
-	}
-
-	.about-modal__logo svg {
-		width: 100%;
-		height: 100%;
-		fill: currentColor;
-	}
-
-	.about-modal__title {
-		margin: 0;
-		font-size: var(--text-xl, 1.5rem);
-		color: var(--color-text-heading);
-	}
-
-	.about-modal__version {
-		font-size: var(--text-sm);
-		color: var(--color-text-muted);
-	}
-
-	.about-modal__desc {
-		margin: 0;
-		font-size: var(--text-sm);
-		color: var(--color-text-muted);
-		line-height: 1.5;
-	}
-
-	.about-modal__tech {
-		display: flex;
-		flex-wrap: wrap;
-		justify-content: center;
-		gap: var(--space-2);
-	}
-
-	.about-modal__badge {
-		padding: var(--space-1) var(--space-2);
-		border-radius: var(--radius-pill, 999px);
-		background: var(--color-bg-muted);
-		color: var(--color-text-secondary, var(--color-text-muted));
-		font-size: var(--text-xs, 0.75rem);
-	}
-
-	.about-modal__links {
-		display: flex;
-		gap: var(--space-4);
-	}
-
-	.about-modal__link {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--space-1);
-		color: var(--color-primary);
-		text-decoration: none;
-		font-size: var(--text-sm);
-	}
-
-	.about-modal__link:hover {
-		text-decoration: underline;
-	}
-
-	.about-modal__close {
-		margin-top: var(--space-2);
-		padding: var(--space-2) var(--space-5);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
-		background: var(--color-bg-input);
-		color: var(--color-text);
-		cursor: pointer;
-		font-size: var(--text-sm);
-	}
-
-	.about-modal__close:hover {
-		background: var(--color-bg-hover);
-	}
-
-	@keyframes about-fade {
-		from {
-			opacity: 0;
-		}
-
-		to {
-			opacity: 1;
-		}
-	}
-
-	@keyframes about-pop {
-		from {
-			opacity: 0;
-			transform: scale(0.96);
-		}
-
-		to {
-			opacity: 1;
-			transform: scale(1);
+	@media (width <= 768px) {
+		/* The bottom bar owns both destinations on phones. */
+		.notif-wrapper,
+		.user-menu-wrapper {
+			display: none;
 		}
 	}
 </style>

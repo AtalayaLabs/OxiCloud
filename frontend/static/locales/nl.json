@@ -69,7 +69,8 @@
     "primary": "Primair",
     "admin_sections": "Beheerderssecties",
     "back_to_app": "Terug naar OxiCloud",
-    "toggle": "Schakel navigatiemenu in"
+    "toggle": "Schakel navigatiemenu in",
+    "account": "Account"
   },
   "photos": {
     "empty_state": "Nog geen foto's",
@@ -619,7 +620,8 @@
     "access_denied": "Je hebt geen toestemming om dat te doen.",
     "not_found": "Dit item bestaat niet meer.",
     "conflict": "Er bestaat al een item met die naam.",
-    "transient_backend": "Opslag is tijdelijk niet beschikbaar. Probeer het opnieuw."
+    "transient_backend": "Opslag is tijdelijk niet beschikbaar. Probeer het opnieuw.",
+    "network": "Kan geen verbinding maken met de server. Controleer je verbinding en probeer het opnieuw."
   },
   "breadcrumb": {
     "home": "Start",
@@ -717,7 +719,7 @@
     "caps_lock": "Caps Lock staat aan",
     "magic_email_label": "E-mailadres",
     "magic_hint": "Geen wachtwoord? Voer uw e-mailadres in en we sturen u een eenmalige aanmeldlink.",
-    "magic_unavailable": "Aanmelden per e-mail is niet beschikbaar op deze server.",
+    "magic_unavailable": "Deze server verstuurt geen inlog-e-mails. Log in met je wachtwoord.",
     "passwords_match": "Wachtwoorden komen overeen",
     "sign_in": "Inloggen",
     "password_or_link_hint": "Wachtwoord (leeg laten voor een inloglink)",
@@ -728,6 +730,12 @@
     "magic_send": "Stuur link",
     "magic_sent": "Als er een account bestaat, is er een inloglink verzonden. Controleer je inbox.",
     "register_error": "Registratie mislukt",
+    "server_unreachable": "Kan geen verbinding maken met de server. Controleer je verbinding en probeer het opnieuw.",
+    "invalid_credentials": "Gebruikersnaam of wachtwoord is onjuist. Controleer ze en probeer het opnieuw.",
+    "email_taken": "Er bestaat al een account met dit e-mailadres. Log in in plaats daarvan.",
+    "username_taken": "Die gebruikersnaam is al in gebruik. Kies een andere.",
+    "registration_disabled": "Registratie is uitgeschakeld op deze server. Vraag een beheerder om je account aan te maken.",
+    "registration_password_required": "Deze server verstuurt geen inlog-e-mails. Voer een wachtwoord in om je account aan te maken.",
     "session_expired": "Uw sessie is verlopen. Meld u opnieuw aan.",
     "signing_in": "Inloggen…",
     "sending": "Verzenden…",
@@ -817,7 +825,8 @@
     "share_success": "Deellink succesvol aangemaakt",
     "upload_files_section_title": "Uploaden hier niet beschikbaar",
     "upload_files_section_body": "Ga naar de sectie Bestanden om bestanden te uploaden",
-    "clear": "Alles wissen"
+    "clear": "Alles wissen",
+    "mark_all_read": "Alles als gelezen markeren"
   },
   "batch": {
     "one_selected": "1 item geselecteerd",

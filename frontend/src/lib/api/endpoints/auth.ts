@@ -42,14 +42,31 @@ const authLog = log.getLogger('oxi:auth');
  */
 function apiErrorFromSdkError(e: unknown, path: string): ApiError {
 	const err = e as { response?: Response; data?: unknown };
-	const status = err.response?.status ?? 0;
-	const statusText = err.response?.statusText ?? '';
-	const body = (err.data ?? {}) as {
+	// The generated client throws the PARSED error body itself
+	// (`client.gen.ts`: `throw jsonError ?? textError`), so on a real
+	// failure `response` is absent and the fields sit at the top level.
+	// Tests and older hey-api versions wrap it as `{ response, data }`;
+	// read whichever shape arrived.
+	const body = (err.data ?? err) as {
+		status?: unknown;
 		error_type?: unknown;
 		message?: unknown;
 		error?: unknown;
 	};
-	const errorType = typeof body.error_type === 'string' ? body.error_type : undefined;
+	// The wire `status` is "403 Forbidden" (`ErrorResponse.status`), not a
+	// number — parse the code back out of it.
+	const bodyStatus =
+		typeof body.status === 'string' ? Number.parseInt(body.status, 10) : Number.NaN;
+	const status = err.response?.status ?? (Number.isFinite(bodyStatus) ? bodyStatus : 0);
+	const statusText = err.response?.statusText ?? '';
+	// Only a throw with no HTTP body is a transport failure (server down,
+	// DNS, reset). A body carrying `error_type` always came from the server.
+	const errorType =
+		typeof body.error_type === 'string'
+			? body.error_type
+			: status === 0
+				? 'NetworkError'
+				: undefined;
 	const message =
 		(typeof body.message === 'string' ? body.message : undefined) ??
 		(typeof body.error === 'string' ? body.error : undefined);
@@ -473,13 +490,10 @@ export async function register(email: string, password?: string, username?: stri
 	try {
 		await sdkRegister({ body: body as never, throwOnError: true });
 	} catch (e) {
-		const err = e as { response?: { status?: number }; data?: unknown };
-		const errBody = (err.data ?? {}) as { error?: unknown; message?: unknown };
-		const msg =
-			(typeof errBody.message === 'string' && errBody.message) ||
-			(typeof errBody.error === 'string' && errBody.error) ||
-			`register failed: ${err.response?.status ?? 'unknown'}`;
-		throw new Error(msg, { cause: e });
+		// Same shape as `login` so the signup form can branch on `status`
+		// and `errorType` (EmailTaken, RegistrationDisabled, NetworkError)
+		// instead of rendering a bare "register failed: unknown".
+		throw apiErrorFromSdkError(e, '/api/auth/register');
 	}
 }
 
@@ -530,14 +544,17 @@ export async function sendMagicLink(email: string): Promise<MagicLinkResult> {
 	// Phase 4 — SDK call. The 503 → 'unavailable' branch stays: a server
 	// without SMTP configured returns 503 by design, and the login page
 	// treats that as a soft signal ("magic-link is off, use password").
-	// All other non-2xx errors throw so the caller surfaces a toast.
+	// All other non-2xx errors throw so the caller surfaces the server text.
 	try {
 		await sdkSendMagicLink({ body: { email }, throwOnError: true });
 		return 'sent';
 	} catch (e) {
-		const status = (e as { response?: { status?: number } })?.response?.status;
-		if (status === 503) return 'unavailable';
-		throw new Error(`magic-link failed: ${status ?? 'unknown'}`, { cause: e });
+		// Same bare-body throw shape as the other SDK calls — reading
+		// `e.response.status` here missed every real 503 and turned the
+		// SMTP refusal into a generic "something went wrong".
+		const err = apiErrorFromSdkError(e, '/api/auth/magic-link/send');
+		if (err.status === 503 || err.errorType === 'SmtpRequired') return 'unavailable';
+		throw err;
 	}
 }
 

@@ -107,6 +107,7 @@
 		setNotificationSinkMissing
 	} from '$lib/stores/adminAdvisories.svelte';
 	import ActionMenu, { type ActionMenuItem } from '$lib/components/ActionMenu.svelte';
+	import Banner from '$lib/components/Banner.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import OwnerAvatarStack from '$lib/components/OwnerAvatarStack.svelte';
 	import DrivePoliciesModal from '$lib/components/DrivePoliciesModal.svelte';
@@ -1164,7 +1165,7 @@
 					'admin.sessions.revoke_confirm',
 					'Revoke this session? The next request from that browser will 401.'
 				);
-		if (!confirm(message)) return;
+		if (!(await showConfirm(message))) return;
 		sessionRevokingId = id;
 		try {
 			await revokeAdminSession(id);
@@ -2630,7 +2631,7 @@
 					data-testid="admin-oidc-form"
 					onsubmit={(e) => (e.preventDefault(), doSaveOidc())}
 				>
-					<label class="checkbox">
+					<label class="checkbox checkbox--center">
 						<input
 							type="checkbox"
 							data-testid="admin-oidc-enabled-checkbox"
@@ -2769,15 +2770,17 @@
 					</label>
 					{#if oidc.callback_url}
 						<p class="muted callback-row">
-							{t('admin.oidc_callback', 'Callback URL')}: <code>{oidc.callback_url}</code>
+							<span>{t('admin.oidc_callback', 'Callback URL')}:</span>
+							<code title={oidc.callback_url}>{oidc.callback_url}</code>
 							<button
 								type="button"
-								class="btn btn-sm btn-secondary"
+								class="icon-btn"
 								data-testid="admin-oidc-callback-copy-btn"
+								title={t('common.copy', 'Copy')}
+								aria-label={t('common.copy', 'Copy')}
 								onclick={() => copyText(oidc?.callback_url ?? '')}
 							>
 								<Icon name="copy" />
-								{t('common.copy', 'Copy')}
 							</button>
 						</p>
 					{/if}
@@ -3052,14 +3055,18 @@
 				     single `default` entry from flat vars and emits a
 				     deprecation warning. Show the same warning here so
 				     admins with old .env files see it in the UI too. -->
-				<p class="alert alert--warn">
-					<Icon name="exclamation-triangle" />
-					{t(
-						'admin.storage_no_entries',
-						{ backend: storage.current_backend ?? '?' },
-						'No OXICLOUD_STORAGE_ENTRIES declared. Running on the legacy single-backend fallback ({{backend}}). Migrate to the multi-entry model — see docs/config/env.md.'
-					)}
-				</p>
+				<div class="storage-legacy-warning">
+					<Banner
+						severity="warning"
+						body={t(
+							'admin.storage_no_entries',
+							{ backend: storage.current_backend ?? '?' },
+							'No OXICLOUD_STORAGE_ENTRIES declared. Running on the legacy single-backend fallback ({{backend}}). Migrate to the multi-entry model — see docs/config/env.md.'
+						)}
+						role="status"
+						testid="admin-storage-legacy-warning"
+					/>
+				</div>
 				<dl class="kv">
 					<dt>{t('admin.storage_current', 'Current backend')}</dt>
 					<dd>{storage.current_backend ?? '—'}</dd>
@@ -3399,22 +3406,23 @@
 					'Generate an AES-256 key for at-rest blob encryption. Set it as OXICLOUD_STORAGE_<name>_ENCRYPTION_KEY under an entry declared in OXICLOUD_STORAGE_ENTRIES — presence of the key implies encryption is enabled on that entry (no separate flag).'
 				)}
 			</p>
-			<button class="btn btn-secondary" disabled={keyBusy} onclick={runGenerateKey}>
+			<button class="btn btn-secondary gen-key-btn" disabled={keyBusy} onclick={runGenerateKey}>
 				<Icon name="key" />
 				{keyBusy ? t('admin.running', 'Running…') : t('admin.gen_key', 'Generate key')}
 			</button>
 			{#if generatedKey}
-				<p class="callback-row">
-					<code>{generatedKey.key}</code>
+				<div class="gen-key-row">
+					<code title={generatedKey.key}>{generatedKey.key}</code>
 					<button
 						type="button"
-						class="btn btn-sm btn-secondary"
+						class="icon-btn"
+						title={t('common.copy', 'Copy')}
+						aria-label={t('common.copy', 'Copy')}
 						onclick={() => copyText(generatedKey?.key ?? '')}
 					>
 						<Icon name="copy" />
-						{t('common.copy', 'Copy')}
 					</button>
-				</p>
+				</div>
 				<p class="muted gen-key-fp">
 					{t('admin.gen_key_fingerprint', 'Fingerprint')}:
 					<code>{generatedKey.fingerprint}</code>
@@ -3426,13 +3434,17 @@
 						)}
 					</span>
 				</p>
-				<p class="alert alert--warn">
-					<Icon name="exclamation-triangle" />
-					{t(
-						'admin.gen_key_warning',
-						'Store this key securely. If it is lost, the encrypted data is irrecoverably lost.'
-					)}
-				</p>
+				<div class="gen-key-warning">
+					<Banner
+						severity="warning"
+						body={t(
+							'admin.gen_key_warning',
+							'Store this key securely. If it is lost, the encrypted data is irrecoverably lost.'
+						)}
+						role="status"
+						testid="admin-gen-key-warning"
+					/>
+				</div>
 			{/if}
 		</div>
 	{:else if tab === 'maintenance'}
@@ -3512,7 +3524,7 @@
 					<div class="storage-write-lock__actions">
 						<button
 							type="button"
-							class="button button--secondary"
+							class="btn btn-secondary"
 							disabled={writeLockBusy}
 							onclick={doLockRelease}
 							data-testid="admin-storage-write-lock-release"
@@ -3557,7 +3569,7 @@
 						</label>
 						<button
 							type="submit"
-							class="button button--primary"
+							class="btn btn-primary"
 							disabled={writeLockBusy || !writeLockLabel.trim()}
 							data-testid="admin-storage-write-lock-acquire"
 						>
@@ -3714,7 +3726,7 @@
 							{#if idx > 0}
 								<button
 									type="button"
-									class="btn btn-link ops-banner-editor__remove-locale"
+									class="btn btn-secondary btn-sm ops-banner-editor__remove-locale"
 									onclick={() => removeLanguageAt(idx)}
 									aria-label={t('admin.ops_banner_remove_locale', 'Remove this language')}
 								>
@@ -3761,26 +3773,31 @@
 						<div class="ops-banner-editor__add-language-actions">
 							<button
 								type="button"
-								class="btn btn-secondary"
+								class="btn btn-primary btn-sm"
 								onclick={confirmAddLanguage}
 								disabled={availableLocalesToAdd.length === 0}
 								data-testid="admin-ops-banner-add-locale-confirm"
 							>
 								{t('admin.ops_banner_add_locale_confirm', 'Add')}
 							</button>
-							<button type="button" class="btn btn-link" onclick={() => (addingLocale = null)}>
+							<button
+								type="button"
+								class="btn btn-secondary btn-sm"
+								onclick={() => (addingLocale = null)}
+							>
 								{t('admin.cancel', 'Cancel')}
 							</button>
 						</div>
 					{:else}
 						<button
 							type="button"
-							class="btn btn-link"
+							class="btn btn-secondary btn-sm"
 							onclick={openAddLanguage}
 							disabled={availableLocalesToAdd.length === 0}
 							data-testid="admin-ops-banner-add-locale"
 						>
-							+ {t('admin.ops_banner_add_locale', 'Add another language')}
+							<Icon name="plus" />
+							{t('admin.ops_banner_add_locale', 'Add another language')}
 						</button>
 					{/if}
 				</div>
@@ -4012,7 +4029,7 @@
 	{:else if tab === 'users'}
 		<div class="bar">
 			<button
-				class="btn btn--primary"
+				class="btn btn-primary"
 				data-testid="admin-users-create-btn"
 				onclick={() => (createOpen = true)}
 			>
@@ -4023,7 +4040,7 @@
 		{#if usersError}
 			<p class="status status--error">{usersError}</p>
 		{:else}
-			<table class="table">
+			<table class="table table--cards table--users">
 				<thead>
 					<tr>
 						<th>{t('admin.user', 'User')}</th>
@@ -4221,7 +4238,9 @@
 									</div>
 								{/if}
 							</td>
-							<td class="muted">{timeAgo(u.last_login_at)}</td>
+							<td class="muted" data-label={t('admin.last_login', 'Last login')}
+								>{timeAgo(u.last_login_at)}</td
+							>
 							<td>
 								<!-- One menu, not six icon buttons.
 								     The column had grown to six glyphs per row,
@@ -4249,14 +4268,14 @@
 			</table>
 			<div class="pager">
 				<button
-					class="btn"
+					class="btn btn-secondary"
 					data-testid="admin-users-pager-prev-btn"
 					disabled={pageIndex === 0}
 					onclick={() => changePage(-1)}>‹</button
 				>
 				<span>{pageIndex + 1} / {Math.max(1, Math.ceil(total / PAGE_SIZE))}</span>
 				<button
-					class="btn"
+					class="btn btn-secondary"
 					data-testid="admin-users-pager-next-btn"
 					disabled={(pageIndex + 1) * PAGE_SIZE >= total}
 					onclick={() => changePage(1)}>›</button
@@ -4283,7 +4302,7 @@
 				{t('admin.sessions.include_revoked', 'Include revoked / expired')}
 			</label>
 			<button
-				class="btn"
+				class="btn btn-secondary"
 				data-testid="admin-sessions-refresh-btn"
 				onclick={() => void loadSessions()}
 				disabled={sessionsLoading}
@@ -4310,7 +4329,7 @@
 					)}
 				</p>
 			{/if}
-			<table class="table" data-testid="admin-sessions-table">
+			<table class="table table--cards table--sessions" data-testid="admin-sessions-table">
 				<thead>
 					<tr>
 						<th>{t('admin.sessions.col_user', 'User')}</th>
@@ -4341,13 +4360,23 @@
 									{t(`admin.sessions.origin.${s.origin}`, s.origin)}
 								</span>
 							</td>
-							<td>{new Date(s.created_at).toLocaleString()}</td>
-							<td>{new Date(s.expires_at).toLocaleString()}</td>
-							<td class="mono">{s.ip_address ?? '—'}</td>
-							<td class="truncate" title={s.user_agent ?? ''}>
+							<td data-label={t('admin.sessions.col_created', 'Created')}
+								>{new Date(s.created_at).toLocaleString()}</td
+							>
+							<td data-label={t('admin.sessions.col_expires', 'Expires')}
+								>{new Date(s.expires_at).toLocaleString()}</td
+							>
+							<td class="mono" data-label={t('admin.sessions.col_ip', 'IP')}
+								>{s.ip_address ?? '—'}</td
+							>
+							<td
+								class="truncate"
+								data-label={t('admin.sessions.col_user_agent', 'User agent')}
+								title={s.user_agent ?? ''}
+							>
 								{shortUserAgent(s.user_agent)}
 							</td>
-							<td>
+							<td data-label={t('admin.sessions.col_bound', 'Bound')}>
 								{#if s.is_bound}
 									<span
 										class="bound-cell"
@@ -4486,7 +4515,7 @@
 				{t('admin.mounts.readonly', 'Read-only')}
 			</label>
 			<button
-				class="btn btn--primary"
+				class="btn btn-primary"
 				type="submit"
 				disabled={mountCreating || !newMount.drive_id}
 				data-testid="mount-create"
@@ -4548,7 +4577,7 @@
 	{:else if tab === 'drives'}
 		<div class="bar">
 			<button
-				class="btn btn--primary"
+				class="btn btn-primary"
 				data-testid="admin-drives-create-btn"
 				onclick={openDriveCreate}
 			>
@@ -4578,7 +4607,7 @@
 		{:else if drivesList.length === 0}
 			<p class="status">{t('admin.no_drives', 'No drives yet.')}</p>
 		{:else}
-			<table class="table">
+			<table class="table table--cards table--drives">
 				<thead>
 					<tr>
 						<th>{t('admin.drive_name', 'Name')}</th>
@@ -4671,7 +4700,9 @@
 									</span>
 								</div>
 							</td>
-							<td class="muted">{timeAgo(d.created_at)}</td>
+							<td class="muted" data-label={t('admin.drive_created_at', 'Created')}
+								>{timeAgo(d.created_at)}</td
+							>
 							<td>
 								<!-- Wrapper div carries the `actions` flex layout; the
 								     <td> stays a plain table cell so its baseline +
@@ -4697,20 +4728,6 @@
 									{:else}
 										<span class="icon-btn icon-btn--placeholder" aria-hidden="true"></span>
 									{/if}
-									<!-- D5 policy editor — admin-only mutation (the
-									     owner UI no longer surfaces policies at all).
-									     Available on every drive kind including personal,
-									     so the operator can lock a personal drive's
-									     external-sharing surface from outside. -->
-									<button
-										class="icon-btn"
-										data-testid={`admin-drive-manage-policies-${d.id}`}
-										title={t('admin.drive_manage_policies', 'Manage policies')}
-										aria-label={t('admin.drive_manage_policies', 'Manage policies')}
-										onclick={() => openManagePolicies(d)}
-									>
-										<Icon name="shield-alt" />
-									</button>
 									<!-- Shared-drive quota edit. Personal drives use the
 									     owner user's `storage_quota_bytes` envelope; the
 									     backend refuses PATCH /api/drives/{id}/quota on a
@@ -4748,6 +4765,20 @@
 									{:else}
 										<span class="icon-btn icon-btn--placeholder" aria-hidden="true"></span>
 									{/if}
+									<!-- D5 policy editor — admin-only mutation (the
+									     owner UI no longer surfaces policies at all).
+									     Available on every drive kind including personal,
+									     so the operator can lock a personal drive's
+									     external-sharing surface from outside. -->
+									<button
+										class="icon-btn"
+										data-testid={`admin-drive-manage-policies-${d.id}`}
+										title={t('admin.drive_manage_policies', 'Manage policies')}
+										aria-label={t('admin.drive_manage_policies', 'Manage policies')}
+										onclick={() => openManagePolicies(d)}
+									>
+										<Icon name="shield-alt" />
+									</button>
 								</div>
 							</td>
 						</tr>
@@ -4933,12 +4964,12 @@
 	</form>
 	{#snippet footer()}
 		<button
-			class="btn"
+			class="btn btn-secondary"
 			data-testid="admin-create-user-cancel-btn"
 			onclick={() => (createOpen = false)}>{t('common.cancel', 'Cancel')}</button
 		>
 		<button
-			class="btn btn--primary"
+			class="btn btn-primary"
 			type="submit"
 			form="create-user-form"
 			data-testid="admin-create-user-submit-btn"
@@ -5040,14 +5071,14 @@
 	</form>
 	{#snippet footer()}
 		<button
-			class="btn"
+			class="btn btn-secondary"
 			data-testid="admin-create-drive-cancel-btn"
 			onclick={() => (driveCreateOpen = false)}
 		>
 			{t('common.cancel', 'Cancel')}
 		</button>
 		<button
-			class="btn btn--primary"
+			class="btn btn-primary"
 			type="submit"
 			form="create-drive-form"
 			data-testid="admin-create-drive-submit-btn"
@@ -5158,7 +5189,11 @@
 		</div>
 	{/if}
 	{#snippet footer()}
-		<button class="btn" data-testid="admin-manage-owners-close-btn" onclick={closeManageOwners}>
+		<button
+			class="btn btn-secondary"
+			data-testid="admin-manage-owners-close-btn"
+			onclick={closeManageOwners}
+		>
 			{t('common.close', 'Close')}
 		</button>
 	{/snippet}
@@ -5236,12 +5271,12 @@
 	{/if}
 	{#snippet footer()}
 		<button
-			class="btn"
+			class="btn btn-secondary"
 			data-testid="admin-reset-password-cancel-btn"
 			onclick={() => (resetModal = null)}>{t('common.cancel', 'Cancel')}</button
 		>
 		<button
-			class="btn btn--primary"
+			class="btn btn-primary"
 			type="submit"
 			form="reset-pw-form"
 			data-testid="admin-reset-password-submit-btn"
@@ -5300,7 +5335,7 @@
 	{/if}
 	{#snippet footer()}
 		<button
-			class="btn"
+			class="btn btn-secondary"
 			data-testid="admin-delete-user-cancel-btn"
 			onclick={() => (deleteUserModal = null)}
 			disabled={deleteUserBusy}
@@ -5308,7 +5343,7 @@
 			{t('common.cancel', 'Cancel')}
 		</button>
 		<button
-			class="btn btn--danger"
+			class="btn btn-danger"
 			type="submit"
 			form="delete-user-form"
 			data-testid="admin-delete-user-confirm-btn"
@@ -5327,11 +5362,13 @@
 >
 	<p>{confirmState?.message}</p>
 	{#snippet footer()}
-		<button class="btn" data-testid="admin-confirm-cancel-btn" onclick={() => resolveConfirm(false)}
-			>{t('common.cancel', 'Cancel')}</button
+		<button
+			class="btn btn-secondary"
+			data-testid="admin-confirm-cancel-btn"
+			onclick={() => resolveConfirm(false)}>{t('common.cancel', 'Cancel')}</button
 		>
 		<button
-			class="btn btn--primary"
+			class="btn btn-primary"
 			data-testid="admin-confirm-ok-btn"
 			onclick={() => resolveConfirm(true)}
 		>
@@ -5399,7 +5436,7 @@
 				/></label
 			>
 			{#if retentionMsg}<p class="muted">{retentionMsg}</p>{/if}
-			<button class="btn btn-secondary" type="submit" data-testid="admin-plugin-retention-save-btn"
+			<button class="btn btn-primary" type="submit" data-testid="admin-plugin-retention-save-btn"
 				>{t('admin.plugins_retention_save', 'Save retention')}</button
 			>
 		</form>
@@ -5473,7 +5510,7 @@
 	{/if}
 	<div class="pager logs-pager">
 		<button
-			class="btn"
+			class="btn btn-secondary"
 			data-testid="admin-plugin-logs-pager-prev-btn"
 			disabled={logsPage === 0}
 			onclick={logsPrev}>‹</button
@@ -5494,7 +5531,7 @@
 			{/if}
 		</span>
 		<button
-			class="btn"
+			class="btn btn-secondary"
 			data-testid="admin-plugin-logs-pager-next-btn"
 			disabled={(logsPage + 1) * LOGS_PAGE_SIZE >= logsTotal}
 			onclick={logsNext}>›</button
@@ -5712,7 +5749,14 @@
 		margin-bottom: var(--space-4);
 	}
 
-	@media (width <= 40rem) {
+	/* The quota table's min-content width otherwise sets the grid
+	   column width, so the card refuses to shrink and the page scrolls
+	   sideways on a phone. */
+	.storage-cards > .card {
+		min-width: 0;
+	}
+
+	@media (width <= 48rem) {
 		.storage-cards {
 			grid-template-columns: 1fr;
 		}
@@ -6131,6 +6175,9 @@
 		justify-content: center;
 		width: 2rem;
 		height: 2rem;
+		/* Flex rows (key / callback URL) shrink children to fit; without
+		   this the icon button collapses into a tall rectangle. */
+		flex-shrink: 0;
 		border: 1px solid var(--color-border);
 		border-radius: var(--radius-md);
 		background: var(--color-bg-surface);
@@ -6174,6 +6221,10 @@
 		color: var(--color-warning-text);
 	}
 
+	.storage-legacy-warning {
+		margin-top: var(--space-3);
+	}
+
 	/* Discovery / verify result panels. */
 	.discovery-result {
 		margin-top: var(--space-2);
@@ -6207,7 +6258,39 @@
 		display: flex;
 		align-items: center;
 		gap: var(--space-2);
-		flex-wrap: wrap;
+		flex-wrap: nowrap;
+	}
+
+	.callback-row span {
+		flex-shrink: 0;
+	}
+
+	.callback-row code {
+		flex: 1 1 auto;
+		min-width: 0;
+		overflow: hidden;
+		white-space: nowrap;
+		text-overflow: ellipsis;
+	}
+
+	/* Generated key: one line, ellipsised, with the copy control beside it.
+	   The full value stays in the title attribute. */
+	.gen-key-row {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		margin-top: var(--space-3);
+	}
+
+	.gen-key-row code {
+		min-width: 0;
+		overflow: hidden;
+		white-space: nowrap;
+		text-overflow: ellipsis;
+	}
+
+	.gen-key-warning {
+		margin-top: var(--space-3);
 	}
 
 	.gen-key-fp {
@@ -6218,6 +6301,13 @@
 	.gen-key-fp code {
 		font-family: var(--font-mono);
 		color: var(--color-text-heading);
+	}
+
+	@media (width <= 48rem) {
+		.gen-key-btn {
+			width: 100%;
+			margin-top: var(--space-3);
+		}
 	}
 
 	.maint-row {
@@ -6483,14 +6573,14 @@
 		font-size: var(--text-sm);
 	}
 
-	.ops-banner-editor__remove-locale {
-		font-size: var(--text-xs);
-	}
-
 	.ops-banner-editor__add-language {
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-2);
+	}
+
+	.ops-banner-editor__add-language > .btn {
+		align-self: flex-start;
 	}
 
 	.ops-banner-editor__add-language-actions {
@@ -6545,6 +6635,46 @@
 
 	.storage-write-lock__actions {
 		margin-top: var(--space-2);
+	}
+
+	/* Phones: the write-lock and banner forms stack, with every control
+	   filling the card. The per-language "Remove" button is deliberately
+	   untouched — it belongs inline in the language header row. */
+	@media (width <= 48rem) {
+		.storage-write-lock__form,
+		.ops-banner-editor__row-controls {
+			flex-direction: column;
+			align-items: stretch;
+		}
+
+		.storage-write-lock__label,
+		.ops-banner-editor__field {
+			flex: 1 1 auto;
+			min-width: 0;
+			width: 100%;
+		}
+
+		.storage-write-lock__label input,
+		.ops-banner-editor__field select,
+		.ops-banner-editor__field input,
+		.ops-banner-editor__field textarea {
+			width: 100%;
+			box-sizing: border-box;
+		}
+
+		.storage-write-lock__form .btn,
+		.storage-write-lock__actions .btn,
+		.ops-banner-editor__actions .btn,
+		.maint-row .btn {
+			width: 100%;
+		}
+
+		/* Add + Cancel stay on one row, splitting the available width. */
+		.ops-banner-editor__add-language-actions .btn {
+			flex: 1 1 0;
+			width: auto;
+			min-width: 0;
+		}
 	}
 
 	.storage-content-stats {
@@ -7065,6 +7195,189 @@
 		border-collapse: collapse;
 	}
 
+	/* Phones: every admin table is 5–9 columns of prose and metadata, so it
+	   cannot reflow below ~700px. Scroll the table inside its own box rather
+	   than widening the page (which would also drag the fixed header along). */
+	@media (width <= 48rem) {
+		.table,
+		.quota-table {
+			display: block;
+			overflow-x: auto;
+			white-space: nowrap;
+		}
+	}
+
+	/* Users / Sessions / Drives opt out of that sideways scroll: their row
+	   actions sit in the last column, i.e. two to three screen widths away
+	   from the name the admin is looking at. Below the same breakpoint the
+	   header disappears and each `<tr>` becomes a bordered card laid out on
+	   a fixed grid — identity top-left, actions top-right, the rest on their
+	   own row in reading order. Cells whose value is ambiguous without its
+	   column header carry `data-label` and print it inline. */
+	@media (width <= 48rem) {
+		.table--cards {
+			display: block;
+			overflow: visible;
+			white-space: normal;
+		}
+
+		.table--cards thead {
+			display: none;
+		}
+
+		.table--cards tbody {
+			display: block;
+		}
+
+		.table--cards tbody tr {
+			display: grid;
+			align-items: center;
+			gap: var(--space-2) var(--space-3);
+			margin-bottom: var(--space-2);
+			padding: var(--space-3);
+			border: 1px solid var(--color-border);
+			border-radius: var(--radius-md);
+			background: var(--color-bg-surface);
+		}
+
+		.table--cards tbody td {
+			padding: 0;
+			border: 0;
+			text-align: left;
+		}
+
+		.table--cards tbody td[data-label]::before {
+			content: attr(data-label) ' ';
+			color: var(--color-text-muted);
+			font-size: 0.75rem;
+		}
+
+		/* 32px is a mouse target; a thumb needs more, and the card has room. */
+		.table--cards .icon-btn {
+			width: 2.5rem;
+			height: 2.5rem;
+		}
+
+		.table--cards .auth-cell {
+			max-width: none;
+		}
+
+		/* Keep the "you" badge beside the name instead of letting the
+		   vignette's `flex: 1` fling it to the card's right edge. */
+		.table--cards .user-vignette-cell {
+			width: fit-content;
+			max-width: 100%;
+		}
+
+		.table--cards tbody td:first-child {
+			grid-area: who;
+			min-width: 0;
+		}
+
+		.table--cards tbody td:last-child {
+			grid-area: actions;
+			place-self: start end;
+		}
+
+		.table--users tbody tr {
+			grid-template-columns: minmax(0, 1fr) auto;
+			grid-template-areas:
+				'who actions'
+				'role status'
+				'auth auth'
+				'quota last';
+		}
+
+		.table--users tbody td:nth-child(2) {
+			grid-area: role;
+		}
+
+		.table--users tbody td:nth-child(3) {
+			grid-area: auth;
+		}
+
+		.table--users tbody td:nth-child(4) {
+			grid-area: status;
+			justify-self: end;
+		}
+
+		.table--users tbody td:nth-child(5) {
+			grid-area: quota;
+		}
+
+		.table--users tbody td:nth-child(6) {
+			grid-area: last;
+			justify-self: end;
+		}
+
+		.table--sessions tbody tr {
+			grid-template-columns: minmax(0, 1fr) auto;
+			grid-template-areas:
+				'who actions'
+				'origin status'
+				'created created'
+				'expires expires'
+				'ip ip'
+				'bound bound'
+				'agent agent';
+		}
+
+		.table--sessions tbody td:nth-child(2) {
+			grid-area: origin;
+		}
+
+		.table--sessions tbody td:nth-child(3) {
+			grid-area: created;
+		}
+
+		.table--sessions tbody td:nth-child(4) {
+			grid-area: expires;
+		}
+
+		.table--sessions tbody td:nth-child(5) {
+			grid-area: ip;
+		}
+
+		.table--sessions tbody td:nth-child(6) {
+			grid-area: agent;
+		}
+
+		.table--sessions tbody td:nth-child(7) {
+			grid-area: bound;
+		}
+
+		.table--sessions tbody td:nth-child(8) {
+			grid-area: status;
+			justify-self: end;
+		}
+
+		.table--drives tbody tr {
+			grid-template-columns: minmax(0, 1fr) auto;
+			grid-template-areas:
+				'who actions'
+				'kind owners'
+				'usage created';
+		}
+
+		.table--drives tbody td:nth-child(2) {
+			grid-area: kind;
+		}
+
+		.table--drives tbody td:nth-child(3) {
+			grid-area: owners;
+			justify-self: end;
+		}
+
+		.table--drives tbody td:nth-child(4) {
+			grid-area: usage;
+		}
+
+		.table--drives tbody td:nth-child(5) {
+			grid-area: created;
+			justify-self: end;
+		}
+	}
+
 	.table th,
 	.table td {
 		text-align: left;
@@ -7132,6 +7445,16 @@
 		font-size: 0.875rem;
 	}
 
+	.form label.checkbox {
+		flex-direction: row;
+		align-items: center;
+		gap: var(--space-2);
+	}
+
+	.checkbox--center {
+		justify-content: center;
+	}
+
 	.form input,
 	.form select {
 		padding: 0.5rem;
@@ -7141,39 +7464,23 @@
 		color: var(--color-text);
 	}
 
-	.btn {
-		padding: 0.5rem 0.875rem;
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
-		background: var(--color-bg-surface);
-		color: var(--color-text);
-		cursor: pointer;
+	.btn-sm {
+		padding: var(--space-2) var(--space-4);
+		font-size: var(--text-sm);
 	}
 
-	.btn--primary {
-		background: var(--color-primary);
-		color: var(--color-text-light);
-		border-color: transparent;
+	.btn-link {
+		display: inline-flex;
+		padding: 0;
+		border: none;
+		background: none;
+		color: var(--color-accent-text);
+		font-size: var(--text-sm);
 	}
 
-	/* Destructive-action button. Kept red once enabled so the visual
-	   weight of the action doesn't dilute when the typed-email gate
-	   unlocks it — dimming to opacity only when disabled, not
-	   swapping the palette. Used by the delete-user modal's Delete
-	   button. */
-	.btn--danger {
-		background: var(--color-error-text);
-		color: var(--color-text-light);
-		border-color: transparent;
-	}
-
-	.btn--danger:hover:not(:disabled) {
-		filter: brightness(0.92);
-	}
-
-	.btn--danger:disabled {
-		opacity: 0.55;
-		cursor: not-allowed;
+	.btn-link:hover:not(:disabled) {
+		color: var(--color-accent);
+		text-decoration: underline;
 	}
 
 	.status {
@@ -7331,11 +7638,13 @@
 
 	.actions--drive {
 		display: grid;
-		/* Four action slots per row: manage-owners, policies, edit-
-		   quota, delete. Fixed columns keep icons aligned across
+		/* Four action slots per row: manage-owners, edit-quota, delete,
+		   policies. Fixed columns keep icons aligned across
 		   rows even when a row renders placeholders for
 		   inapplicable actions (e.g. personal drives have no
-		   owners roster). */
+		   owners roster). Policies sits last so the card's
+		   top-right corner is a harmless control, not the
+		   delete button. */
 		grid-template-columns: repeat(4, auto);
 		justify-content: end;
 		align-items: center;

@@ -624,6 +624,33 @@
 		background: var(--color-bg-surface);
 	}
 
+	/* Phones: a 2rem backdrop inset plus a 90vh card wastes the screen the
+	   preview exists to use. Go edge-to-edge and give the toolbar thumb-sized
+	   controls. */
+	@media (width <= 768px) {
+		.fv {
+			padding: 0;
+		}
+
+		.fv__panel {
+			width: 100%;
+			height: 100%;
+			border-radius: 0;
+		}
+
+		.fv__bar {
+			padding: 0.5rem 0.75rem;
+			gap: 0.5rem;
+		}
+
+		.fv__zoom-btn,
+		.fv__tool,
+		.fv__close {
+			min-width: 44px;
+			min-height: 44px;
+		}
+	}
+
 	.fv__status {
 		color: var(--color-text-muted);
 	}

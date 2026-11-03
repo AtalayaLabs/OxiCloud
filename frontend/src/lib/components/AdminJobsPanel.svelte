@@ -601,6 +601,10 @@
 	/// tested; each one is there because of a specific wrong answer this
 	/// panel once gave. Here we only map the verdict to words and
 	/// colour.
+	function capitalizeLabel(label: string): string {
+		return label.charAt(0).toUpperCase() + label.slice(1);
+	}
+
 	function outcomeLabel(job: JobSummary): string {
 		switch (jobVerdict(job)) {
 			case 'stopped':
@@ -979,7 +983,7 @@
 						     no interval that fires at boot is not on-demand, and
 						     the row said "on-demand" next to a badge saying
 						     otherwise. -->
-						<td class="jobs-panel__muted">
+						<td class="jobs-panel__muted" data-label={t('admin.jobs.col_cadence', 'Cadence')}>
 							{cadenceLabel(job)}
 							{#if job.startup}
 								{@const bootRepair = job.startup.params?.repair === true}
@@ -1003,10 +1007,12 @@
 								</span>
 							{/if}
 						</td>
-						<td class="jobs-panel__muted">{timeAgo(job.last_run_at)}</td>
+						<td class="jobs-panel__muted" data-label={t('admin.jobs.col_last_run', 'Last run')}>
+							{timeAgo(job.last_run_at)}
+						</td>
 						<td>
 							<div class="jobs-panel__outcome-cell">
-								<span class={outcomeClass(job)}>{outcomeLabel(job)}</span>
+								<span class={outcomeClass(job)}>{capitalizeLabel(outcomeLabel(job))}</span>
 								{#if actionableFindingCount(job) > 0}
 									{@const findings = actionableFindingCount(job)}
 									<span
@@ -1051,7 +1057,7 @@
 								     gets right. Reason on hover when the run
 								     stopped on a backend failure. -->
 								<span class={statusClass(job.last_run_status)} title={stoppedReason(job)}>
-									{runStatusLabel(job.last_run_status)}
+									{capitalizeLabel(runStatusLabel(job.last_run_status))}
 								</span>
 							{:else}
 								<span class="jobs-panel__muted">—</span>
@@ -1312,7 +1318,10 @@
 																<Icon name={isRunExpanded ? 'chevron-down' : 'chevron-right'} />
 															</button>
 														</td>
-														<td class="jobs-panel__muted">
+														<td
+															class="jobs-panel__muted"
+															data-label={t('admin.jobs.col_started_at', 'Started')}
+														>
 															{timeAgo(run.started_at)}
 														</td>
 														<td>
@@ -1320,10 +1329,13 @@
 																{statusLabel(run.status)}
 															</span>
 														</td>
-														<td class="jobs-panel__muted">
+														<td
+															class="jobs-panel__muted"
+															data-label={t('admin.jobs.col_duration', 'Duration')}
+														>
 															{runDurationLabel(run)}
 														</td>
-														<td>
+														<td data-label={t('admin.jobs.col_progress', 'Progress')}>
 															{#if run.progress}
 																{@const barPct = Math.min(
 																	100,
@@ -1384,7 +1396,10 @@
 																<span class="jobs-panel__muted">—</span>
 															{/if}
 														</td>
-														<td class="jobs-panel__num">
+														<td
+															class="jobs-panel__num"
+															data-label={t('admin.jobs.col_findings', 'Findings')}
+														>
 															{#if findingCount && findingCount > 0}
 																<span
 																	class="jobs-panel__pill jobs-panel__pill--err"
@@ -1399,7 +1414,10 @@
 																<span class="jobs-panel__muted">0</span>
 															{/if}
 														</td>
-														<td class="jobs-panel__err-cell">
+														<td
+															class="jobs-panel__err-cell"
+															data-label={t('admin.jobs.col_error', 'Error')}
+														>
 															{#if run.error_message || run.error_reason}
 																<!-- Reason first: it is the short stable key, so the
 																     cause is legible before the error chain, which can
@@ -1511,7 +1529,12 @@
 																									{f.severity}
 																								</span>
 																							</td>
-																							<td>
+																							<td
+																								data-label={t(
+																									'admin.jobs.col_resource',
+																									'Resource'
+																								)}
+																							>
 																								{#if label}
 																									<div class="jobs-panel__resource">
 																										<code class="jobs-panel__resource-name"
@@ -1529,7 +1552,7 @@
 																									>
 																								{/if}
 																							</td>
-																							<td>
+																							<td data-label={t('admin.jobs.col_detail', 'Detail')}>
 																								<code class="jobs-panel__detail"
 																									>{JSON.stringify(f.detail)}</code
 																								>
@@ -1644,8 +1667,8 @@
 	}
 
 	.jobs-panel__status--error {
-		background: var(--color-danger-bg);
-		color: var(--color-danger-text);
+		background: color-mix(in srgb, var(--color-error-text) 12%, var(--color-bg-surface));
+		color: var(--color-error-text);
 	}
 
 	.jobs-panel__table {
@@ -1729,11 +1752,11 @@
 		gap: 0.4rem;
 		padding: 0.4rem 0.8rem;
 		border: 1px solid var(--color-border);
-		background: var(--color-bg-surface);
-		border-radius: 4px;
+		background: var(--color-bg-hover);
+		border-radius: var(--radius-xl);
 		cursor: pointer;
 		font: inherit;
-		color: var(--color-text);
+		color: var(--color-text-secondary);
 	}
 
 	.jobs-panel__btn:disabled {
@@ -1742,9 +1765,9 @@
 	}
 
 	.jobs-panel__btn--primary {
-		background: var(--color-primary);
-		color: var(--color-on-accent);
-		border-color: var(--color-primary);
+		background: color-mix(in srgb, var(--color-accent) 14%, var(--color-bg-surface));
+		color: var(--color-accent-text);
+		border-color: color-mix(in srgb, var(--color-accent) 40%, var(--color-border));
 	}
 
 	.jobs-panel__btn--small {
@@ -1753,8 +1776,9 @@
 	}
 
 	.jobs-panel__btn--danger {
-		border-color: var(--color-danger-bg);
-		color: var(--color-danger-text-alt);
+		background: color-mix(in srgb, var(--color-error-text) 8%, var(--color-bg-surface));
+		border-color: color-mix(in srgb, var(--color-error-text) 35%, var(--color-border));
+		color: var(--color-error-text);
 	}
 
 	/* Warn variant — used for actions that mutate data but are content-
@@ -1762,7 +1786,8 @@
 	   "read the tooltip and the confirm before clicking" without the
 	   danger red reserved for destructive delete-style buttons. */
 	.jobs-panel__btn--warn {
-		border-color: var(--color-warning-border);
+		background: color-mix(in srgb, var(--color-warning-text) 10%, var(--color-bg-surface));
+		border-color: color-mix(in srgb, var(--color-warning-text) 35%, var(--color-border));
 		color: var(--color-warning-text);
 	}
 
@@ -1843,39 +1868,41 @@
 
 	.jobs-panel__pill {
 		display: inline-block;
-		padding: 0.1rem 0.5rem;
-		border-radius: 999px;
-		font-size: 0.8rem;
-		font-weight: 500;
+		padding: 0.05rem 0.4rem;
+		border-radius: var(--radius-sm);
+		font-size: var(--text-xs, 0.7rem);
+		font-weight: var(--weight-semibold, 600);
+		line-height: 1.4;
+		vertical-align: middle;
 	}
 
 	.jobs-panel__pill--ok {
-		background: var(--color-success-bg);
+		background: color-mix(in srgb, var(--color-success-text) 12%, var(--color-bg-surface));
 		color: var(--color-success-text);
 	}
 
 	.jobs-panel__pill--err {
-		background: var(--color-danger-lighter);
-		color: var(--color-danger-text-alt);
+		background: color-mix(in srgb, var(--color-error-text) 12%, var(--color-bg-surface));
+		color: var(--color-error-text);
 	}
 
 	.jobs-panel__pill--running {
-		background: var(--color-info-bg);
+		background: color-mix(in srgb, var(--color-info-text) 12%, var(--color-bg-surface));
 		color: var(--color-info-text);
 	}
 
 	.jobs-panel__pill--paused {
-		background: var(--color-warning-bg);
+		background: color-mix(in srgb, var(--color-warning-text) 14%, var(--color-bg-surface));
 		color: var(--color-warning-text);
 	}
 
 	.jobs-panel__pill--notice {
-		background: var(--color-info-bg);
+		background: color-mix(in srgb, var(--color-info-text) 12%, var(--color-bg-surface));
 		color: var(--color-info-text);
 	}
 
 	.jobs-panel__pill--neutral {
-		background: var(--color-bg-subtle);
+		background: var(--color-bg-muted);
 		color: var(--color-text-muted);
 	}
 
@@ -2124,5 +2151,191 @@
 		font-size: 0.8rem;
 		color: var(--color-text-muted);
 		white-space: nowrap;
+	}
+
+	@media (width <= 48rem) {
+		.jobs-panel__header {
+			flex-direction: column;
+			gap: 0.75rem;
+		}
+
+		.jobs-panel__header-actions {
+			display: grid;
+			grid-template-columns: 1fr 1fr;
+			gap: 0.5rem;
+			width: 100%;
+		}
+
+		.jobs-panel__header-actions .jobs-panel__btn {
+			justify-content: center;
+			width: 100%;
+			min-height: 2.5rem;
+		}
+
+		.jobs-panel__table,
+		.jobs-panel__table tbody,
+		.jobs-panel__table tr,
+		.jobs-panel__table td {
+			display: block;
+		}
+
+		.jobs-panel__table thead {
+			display: none;
+		}
+
+		.jobs-panel__table tr.jobs-panel__row {
+			display: grid;
+			grid-template-columns: minmax(0, 1fr) auto;
+			grid-template-areas:
+				'name name'
+				'outcome state'
+				'cadence last'
+				'actions actions';
+			gap: 0.5rem 0.75rem;
+			padding: 0.75rem;
+			margin-bottom: 0.5rem;
+			border: 1px solid var(--color-border);
+			border-radius: var(--radius-md, 6px);
+			background: var(--color-bg-surface);
+		}
+
+		.jobs-panel__row td {
+			padding: 0;
+			border: 0;
+			min-width: 0;
+		}
+
+		.jobs-panel__row td:nth-child(1) {
+			grid-area: name;
+			display: flex;
+			flex-wrap: wrap;
+			align-items: center;
+			gap: 0.4rem;
+		}
+
+		.jobs-panel__row td:nth-child(2) {
+			grid-area: cadence;
+		}
+
+		.jobs-panel__row td:nth-child(3) {
+			grid-area: last;
+			justify-self: end;
+			text-align: right;
+		}
+
+		.jobs-panel__row td:nth-child(4) {
+			grid-area: outcome;
+		}
+
+		.jobs-panel__row td:nth-child(5) {
+			grid-area: state;
+			justify-self: end;
+			text-align: right;
+		}
+
+		.jobs-panel__row td:nth-child(6) {
+			grid-area: actions;
+			display: flex;
+			flex-wrap: wrap;
+			align-items: center;
+			gap: 0.5rem;
+		}
+
+		.jobs-panel__row td:nth-child(6) .jobs-panel__btn {
+			min-height: 2.5rem;
+			padding: 0.4rem 0.8rem;
+		}
+
+		.jobs-panel__name {
+			overflow-wrap: anywhere;
+		}
+
+		.jobs-panel__desc-row,
+		.jobs-panel__runs {
+			display: block;
+			margin-bottom: 0.5rem;
+		}
+
+		.jobs-panel__desc-row td,
+		.jobs-panel__runs td {
+			display: block;
+			padding: 0;
+			border: 0;
+		}
+
+		.jobs-panel__desc-row td {
+			padding: 0.75rem;
+			border-radius: var(--radius-md, 6px);
+			background: var(--color-bg-subtle);
+		}
+
+		.jobs-panel__runs-inner {
+			padding: 0.75rem;
+			border-radius: var(--radius-md, 6px);
+			background: var(--color-bg-subtle);
+		}
+
+		.jobs-panel__inner-table,
+		.jobs-panel__inner-table tbody,
+		.jobs-panel__inner-table td {
+			display: block;
+		}
+
+		.jobs-panel__inner-table thead {
+			display: none;
+		}
+
+		.jobs-panel__inner-table td {
+			padding: 0;
+			border: 0;
+			min-width: 0;
+		}
+
+		.jobs-panel__runs-inner > .jobs-panel__inner-table > tbody > tr {
+			display: flex;
+			flex-wrap: wrap;
+			align-items: center;
+			gap: 0.4rem 0.6rem;
+			padding: 0.6rem 0;
+		}
+
+		.jobs-panel__runs-inner > .jobs-panel__inner-table > tbody > tr > td:nth-child(5),
+		.jobs-panel__runs-inner > .jobs-panel__inner-table > tbody > tr > td:nth-child(7) {
+			flex: 1 1 100%;
+		}
+
+		.jobs-panel__run-detail {
+			display: block;
+		}
+
+		.jobs-panel__findings-table > tbody > tr {
+			display: grid;
+			grid-template-columns: minmax(0, 1fr) auto;
+			gap: 0.4rem 0.6rem;
+			padding: 0.5rem 0;
+		}
+
+		.jobs-panel__findings-table td:nth-child(1) {
+			grid-column: 1;
+		}
+
+		.jobs-panel__findings-table td:nth-child(2) {
+			grid-column: 2;
+			justify-self: end;
+		}
+
+		.jobs-panel__findings-table td:nth-child(3),
+		.jobs-panel__findings-table td:nth-child(4) {
+			grid-column: 1 / -1;
+		}
+
+		.jobs-panel td[data-label]::before {
+			content: attr(data-label);
+			display: block;
+			margin-bottom: 0.1rem;
+			font-size: 0.7rem;
+			font-weight: 500;
+			color: var(--color-text-muted);
+		}
 	}
 </style>

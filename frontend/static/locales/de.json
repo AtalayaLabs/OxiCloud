@@ -69,7 +69,8 @@
     "primary": "Primär",
     "admin_sections": "Admin-Bereiche",
     "back_to_app": "Zurück zu OxiCloud",
-    "toggle": "Navigationsmenü umschalten"
+    "toggle": "Navigationsmenü umschalten",
+    "account": "Konto"
   },
   "photos": {
     "empty_state": "Noch keine Fotos",
@@ -619,7 +620,8 @@
     "access_denied": "Sie haben keine Berechtigung dafür.",
     "not_found": "Dieses Element existiert nicht mehr.",
     "conflict": "Ein Element mit diesem Namen existiert bereits.",
-    "transient_backend": "Speicher ist vorübergehend nicht verfügbar. Erneut versuchen."
+    "transient_backend": "Speicher ist vorübergehend nicht verfügbar. Erneut versuchen.",
+    "network": "Der Server ist nicht erreichbar. Prüfen Sie Ihre Verbindung und versuchen Sie es erneut."
   },
   "breadcrumb": {
     "home": "Startseite",
@@ -717,7 +719,7 @@
     "caps_lock": "Feststelltaste aktiv",
     "magic_email_label": "E-Mail-Adresse",
     "magic_hint": "Kein Passwort? Geben Sie Ihre E-Mail-Adresse ein und wir senden Ihnen einen einmaligen Anmeldelink.",
-    "magic_unavailable": "Die Anmeldung per E-Mail ist auf diesem Server nicht verfügbar.",
+    "magic_unavailable": "Dieser Server versendet keine Anmelde-E-Mails. Melden Sie sich mit Ihrem Passwort an.",
     "passwords_match": "Passwörter stimmen überein",
     "sign_in": "Anmelden",
     "password_or_link_hint": "Passwort (für einen Anmeldelink leer lassen)",
@@ -728,6 +730,12 @@
     "magic_send": "Link senden",
     "magic_sent": "Wenn ein Konto vorhanden ist, wurde ein Anmeldelink gesendet. Überprüfen Sie Ihren Posteingang.",
     "register_error": "Die Registrierung ist fehlgeschlagen",
+    "server_unreachable": "Der Server ist nicht erreichbar. Prüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
+    "invalid_credentials": "Benutzername oder Passwort ist falsch. Prüfen Sie Ihre Eingaben und versuchen Sie es erneut.",
+    "email_taken": "Für diese E-Mail-Adresse existiert bereits ein Konto. Melden Sie sich stattdessen an.",
+    "username_taken": "Dieser Benutzername ist bereits vergeben. Wählen Sie einen anderen.",
+    "registration_disabled": "Registrierungen sind auf diesem Server deaktiviert. Bitten Sie einen Administrator, Ihr Konto zu erstellen.",
+    "registration_password_required": "Dieser Server versendet keine Anmelde-E-Mails. Geben Sie ein Passwort ein, um Ihr Konto zu erstellen.",
     "session_expired": "Ihre Sitzung ist abgelaufen. Bitte melden Sie sich erneut an.",
     "signing_in": "Anmelden…",
     "sending": "Senden…",
@@ -817,7 +825,8 @@
     "share_success": "Freigabelink erfolgreich erstellt",
     "upload_files_section_title": "Upload hier nicht verfügbar",
     "upload_files_section_body": "Wechseln Sie zum Abschnitt Dateien, um Dateien hochzuladen",
-    "clear": "Alles löschen"
+    "clear": "Alles löschen",
+    "mark_all_read": "Alle als gelesen markieren"
   },
   "batch": {
     "one_selected": "1 Element ausgewählt",

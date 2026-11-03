@@ -887,6 +887,27 @@
 		border-top: 1px solid var(--color-border-faint, var(--color-border));
 	}
 
+	/* Phones: identity + role pill + expiry chip + kebab in one line leaves
+	   the name with ~130px and wraps the chips off the row entirely on
+	   narrower screens. Give the identity the full first line. */
+	@media (width <= 640px) {
+		.ms-row {
+			flex-wrap: wrap;
+		}
+
+		.ms-row__identity {
+			flex: 1 1 100%;
+		}
+
+		.ms-kebab {
+			margin-left: auto;
+		}
+
+		.ms-lane__header {
+			flex-wrap: wrap;
+		}
+	}
+
 	.ms-row:first-child {
 		border-top: none;
 	}

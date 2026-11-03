@@ -11,3 +11,9 @@ export function formatBytes(bytes: number, decimals = 1): string {
 	const value = bytes / Math.pow(1024, i);
 	return `${value.toFixed(i === 0 ? 0 : decimals)} ${units[i]}`;
 }
+
+/** Storage bar fill, clamped to 0–100. Unlimited quotas render as 0. */
+export function storagePercent(used: number, quota: number): number {
+	if (quota <= 0) return 0;
+	return Math.min(100, (used / quota) * 100);
+}

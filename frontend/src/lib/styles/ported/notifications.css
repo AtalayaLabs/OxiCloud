@@ -369,3 +369,23 @@
     font-size: var(--text-2xs);
     color: var(--color-text-faint);
 }
+
+/* Phones: the panel hangs off the bell with a -40px right offset, which puts
+   both edges outside a 390px viewport. Pin it to the viewport instead. */
+@media (max-width: 768px) {
+    .notif-panel {
+        position: fixed;
+        top: 70px;
+        left: var(--space-4);
+        right: var(--space-4);
+        width: auto;
+        max-height: calc(100vh - 70px - var(--space-4));
+        max-height: calc(100dvh - 70px - var(--space-4));
+    }
+
+    /* The flex panel is already viewport-bounded; a second 400px cap would
+       leave dead space under short lists. */
+    .notif-panel-body {
+        max-height: none;
+    }
+}

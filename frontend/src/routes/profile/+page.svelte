@@ -1591,4 +1591,11 @@
 			grid-template-columns: 1fr;
 		}
 	}
+
+	@media (width <= 48rem) {
+		.card button:not(.avatar-edit-btn, .avatar-tab, .btn-action, .app-pw-auto__toggle),
+		.card .avatar-file-label {
+			width: 100%;
+		}
+	}
 </style>

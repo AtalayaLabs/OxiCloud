@@ -69,7 +69,8 @@
     "primary": "Primario",
     "admin_sections": "Sezioni di amministrazione",
     "back_to_app": "Torniamo a OxiCloud",
-    "toggle": "Attiva/disattiva il menu di navigazione"
+    "toggle": "Attiva/disattiva il menu di navigazione",
+    "account": "Account"
   },
   "photos": {
     "empty_state": "Nessuna foto ancora",
@@ -619,7 +620,8 @@
     "access_denied": "Non hai l'autorizzazione per farlo.",
     "not_found": "Questo elemento non esiste più.",
     "conflict": "Esiste già un elemento con quel nome.",
-    "transient_backend": "Lo storage è temporaneamente non disponibile. Riprova."
+    "transient_backend": "Lo storage è temporaneamente non disponibile. Riprova.",
+    "network": "Impossibile raggiungere il server. Controlla la connessione e riprova."
   },
   "breadcrumb": {
     "home": "Home",
@@ -717,7 +719,7 @@
     "caps_lock": "Bloc Maiusc attivo",
     "magic_email_label": "Indirizzo email",
     "magic_hint": "Niente password? Inserisci la tua email e ti invieremo un link di accesso monouso.",
-    "magic_unavailable": "L'accesso tramite email non è disponibile su questo server.",
+    "magic_unavailable": "Questo server non invia email di accesso. Accedi con la tua password.",
     "passwords_match": "Le password corrispondono",
     "sign_in": "Accedi",
     "password_or_link_hint": "Password (lascia vuoto per un collegamento di accesso)",
@@ -728,6 +730,12 @@
     "magic_send": "Invia collegamento",
     "magic_sent": "Se esiste un account, è stato inviato un collegamento di accesso. Controlla la tua casella di posta.",
     "register_error": "La registrazione non è riuscita",
+    "server_unreachable": "Impossibile raggiungere il server. Controlla la connessione e riprova.",
+    "invalid_credentials": "Nome utente o password non corretti. Controllali e riprova.",
+    "email_taken": "Esiste già un account con questa email. Accedi invece.",
+    "username_taken": "Questo nome utente è già in uso. Scegline un altro.",
+    "registration_disabled": "Le registrazioni sono disattivate su questo server. Chiedi a un amministratore di creare il tuo account.",
+    "registration_password_required": "Questo server non invia email di accesso. Inserisci una password per creare il tuo account.",
     "session_expired": "La tua sessione è scaduta. Per favore accedi di nuovo.",
     "signing_in": "Accesso…",
     "sending": "Invio…",
@@ -817,7 +825,8 @@
     "share_success": "Link di condivisione creato con successo",
     "upload_files_section_title": "Caricamento non disponibile qui",
     "upload_files_section_body": "Vai alla sezione File per caricare i file",
-    "clear": "Cancella tutto"
+    "clear": "Cancella tutto",
+    "mark_all_read": "Segna tutto come letto"
   },
   "batch": {
     "one_selected": "1 elemento selezionato",

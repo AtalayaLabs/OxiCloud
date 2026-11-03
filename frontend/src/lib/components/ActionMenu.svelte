@@ -54,6 +54,7 @@
 
 	let open = $state(false);
 	let trigger = $state<HTMLButtonElement | null>(null);
+	let menu = $state<HTMLDivElement | null>(null);
 	let x = $state(0);
 	let y = $state(0);
 
@@ -72,13 +73,26 @@
 		}
 		const rect = trigger?.getBoundingClientRect();
 		if (rect) {
-			// Right-aligned under the trigger, clamped so a row near the
-			// viewport edge does not open the menu off-screen.
+			// Provisional placement for the first paint; the effect below
+			// re-pins against the menu's measured size.
 			x = Math.max(8, Math.min(rect.right - MENU_WIDTH, window.innerWidth - MENU_WIDTH - 8));
 			y = Math.min(rect.bottom + 4, window.innerHeight - (ordered.length * 44 + 24));
 		}
 		open = true;
 	}
+
+	// The menu is `min-width: 240px` and grows with its longest label or
+	// hint, so anchoring its right edge from the constant leaves it
+	// overhanging the trigger by the difference. Measure what was actually
+	// rendered and put the right edge exactly on the trigger's.
+	$effect(() => {
+		if (!open || !menu) return;
+		const rect = trigger?.getBoundingClientRect();
+		if (!rect) return;
+		const { width, height } = menu.getBoundingClientRect();
+		x = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
+		y = Math.min(rect.bottom + 4, window.innerHeight - height - 8);
+	});
 
 	function close() {
 		open = false;
@@ -114,6 +128,7 @@
 	<div class="am-scrim" role="presentation" onclick={close}></div>
 	<div
 		class="am-menu"
+		bind:this={menu}
 		style:left="{x}px"
 		style:top="{y}px"
 		role="menu"
@@ -161,6 +176,7 @@
 		position: fixed;
 		z-index: 901;
 		min-width: 240px;
+		max-width: calc(100vw - 16px);
 		padding: var(--space-1) 0;
 		background: var(--color-bg-surface);
 		border: 1px solid var(--color-border);
@@ -170,7 +186,7 @@
 
 	.am-item {
 		display: flex;
-		align-items: flex-start;
+		align-items: center;
 		gap: var(--space-2);
 		width: 100%;
 		padding: var(--space-2) var(--space-3);
@@ -202,6 +218,9 @@
 	.am-item__text {
 		display: flex;
 		flex-direction: column;
+		/* Without this the column refuses to shrink below its longest
+		   hint and overflows the capped menu instead of wrapping. */
+		min-width: 0;
 	}
 
 	/* The reason an action is unavailable. Smaller and muted so it reads

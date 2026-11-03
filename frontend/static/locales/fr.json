@@ -69,7 +69,8 @@
     "primary": "Primaire",
     "admin_sections": "Sections d'administration",
     "back_to_app": "Retour à OxiCloud",
-    "toggle": "Basculer le menu de navigation"
+    "toggle": "Basculer le menu de navigation",
+    "account": "Compte"
   },
   "photos": {
     "empty_state": "Pas encore de photos",
@@ -619,7 +620,8 @@
     "access_denied": "Vous n'avez pas la permission de faire cela.",
     "not_found": "Cet élément n'existe plus.",
     "conflict": "Un élément portant ce nom existe déjà.",
-    "transient_backend": "Le stockage est momentanément indisponible. Réessayez."
+    "transient_backend": "Le stockage est momentanément indisponible. Réessayez.",
+    "network": "Impossible de joindre le serveur. Vérifiez votre connexion et réessayez."
   },
   "breadcrumb": {
     "home": "Accueil",
@@ -717,7 +719,7 @@
     "caps_lock": "Verr. Maj activé",
     "magic_email_label": "Adresse e-mail",
     "magic_hint": "Pas de mot de passe ? Saisissez votre adresse e-mail et nous vous enverrons un lien de connexion à usage unique.",
-    "magic_unavailable": "La connexion par e-mail n'est pas disponible sur ce serveur.",
+    "magic_unavailable": "Ce serveur n'envoie pas d'e-mails de connexion. Connectez-vous avec votre mot de passe.",
     "passwords_match": "Les mots de passe correspondent",
     "sign_in": "Se connecter",
     "login_error_title": "Échec de la connexion",
@@ -739,6 +741,12 @@
     "magic_send": "Envoyer le lien",
     "magic_sent": "Si un compte existe, un lien de connexion a été envoyé. Vérifiez votre boîte de réception.",
     "register_error": "L'inscription a échoué",
+    "server_unreachable": "Impossible de joindre le serveur. Vérifiez votre connexion et réessayez.",
+    "invalid_credentials": "Nom d'utilisateur ou mot de passe incorrect. Vérifiez-les et réessayez.",
+    "email_taken": "Un compte existe déjà avec cette adresse e-mail. Connectez-vous plutôt.",
+    "username_taken": "Ce nom d'utilisateur est déjà pris. Choisissez-en un autre.",
+    "registration_disabled": "Les inscriptions sont désactivées sur ce serveur. Demandez à un administrateur de créer votre compte.",
+    "registration_password_required": "Ce serveur n'envoie pas d'e-mails de connexion. Saisissez un mot de passe pour créer votre compte.",
     "session_expired": "Votre session a expiré. Veuillez vous reconnecter.",
     "signing_in": "Connexion…",
     "sending": "Envoi…",
@@ -817,7 +825,8 @@
     "share_success": "Lien de partage créé avec succès",
     "upload_files_section_title": "Dépôt non disponible ici",
     "upload_files_section_body": "Accédez à la section Fichiers pour déposer des fichiers",
-    "clear": "Tout effacer"
+    "clear": "Tout effacer",
+    "mark_all_read": "Tout marquer comme lu"
   },
   "batch": {
     "one_selected": "1 élément sélectionné",

@@ -32,6 +32,16 @@
     scrollbar-gutter: stable;
 }
 
+/* Phones: keep the fixed bottom bar from covering the last row, and give
+   filter clusters their own full-width row. Squeezed beside the view
+   controls they wrap into a narrow column and the controls read as
+   overlapping. */
+@media (max-width: 768px) {
+    .content-area {
+        padding-bottom: calc(var(--mobile-nav-height) + var(--space-4));
+    }
+}
+
 /* Phones: tighten the shared gutter and let the actions bar wrap. */
 @media (max-width: 640px) {
     :root {
@@ -41,12 +51,6 @@
     /* Mobile uses overlay scrollbars — don't reserve a phantom gutter. */
     .content-area {
         scrollbar-gutter: auto;
-    }
-
-    .actions-bar {
-        flex-wrap: wrap;
-        height: auto;
-        gap: var(--space-2);
     }
 }
 
@@ -80,6 +84,44 @@
     display: flex;
     flex: auto;
     gap: var(--space-3);
+}
+
+/* Phones: the toolbar must grow when its controls wrap. These rules live
+   after the base `.actions-bar` / `.action-buttons` declarations on
+   purpose — earlier in the file the 60px height and `flex: auto` would
+   override them, and the wrapped controls would spill over the
+   breadcrumb and the file rows. */
+@media (max-width: 768px) {
+    .actions-bar {
+        flex-wrap: wrap;
+        height: auto;
+        gap: var(--space-2);
+    }
+
+    .actions-bar > .action-buttons,
+    .actions-bar > .actions-bar__end {
+        flex-wrap: wrap;
+        row-gap: var(--space-2);
+    }
+
+    /* Filter-heavy start clusters (search scope + selects) get their own
+       row; a lone action button keeps sharing the row with the display
+       controls when both fit. */
+    .actions-bar > .action-buttons:has(select, .seg),
+    .actions-bar > .actions-bar__end {
+        flex: 1 1 100%;
+    }
+
+    /* No page actions and no batch selection — don't reserve a dead row. */
+    .actions-bar > .action-buttons:empty {
+        display: none;
+    }
+
+    .actions-bar > .view-toggle {
+        flex: 0 0 auto;
+        flex-wrap: wrap;
+        max-width: 100%;
+    }
 }
 
 .empty-state {

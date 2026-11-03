@@ -69,7 +69,8 @@
     "primary": "기본",
     "toggle": "탐색 메뉴 전환",
     "admin_sections": "관리 섹션",
-    "back_to_app": "OxiCloud로 돌아가기"
+    "back_to_app": "OxiCloud로 돌아가기",
+    "account": "계정"
   },
   "photos": {
     "empty_state": "아직 사진이 없습니다",
@@ -619,7 +620,8 @@
     "access_denied": "해당 작업을 수행할 권한이 없습니다.",
     "not_found": "해당 항목이 더 이상 존재하지 않습니다.",
     "conflict": "같은 이름의 항목이 이미 있습니다.",
-    "transient_backend": "스토리지를 일시적으로 사용할 수 없습니다. 다시 시도하세요."
+    "transient_backend": "스토리지를 일시적으로 사용할 수 없습니다. 다시 시도하세요.",
+    "network": "서버에 연결할 수 없습니다. 연결을 확인한 후 다시 시도하세요."
   },
   "breadcrumb": {
     "home": "홈",
@@ -717,7 +719,7 @@
     "caps_lock": "Caps Lock이 켜져 있습니다.",
     "magic_email_label": "이메일 주소",
     "magic_hint": "비밀번호가 없으신가요? 이메일을 입력하시면 일회용 로그인 링크를 보내드립니다.",
-    "magic_unavailable": "이 서버에서는 이메일 로그인을 사용할 수 없습니다.",
+    "magic_unavailable": "이 서버는 로그인 이메일을 보내지 않습니다. 비밀번호로 로그인하세요.",
     "passwords_match": "비밀번호가 일치합니다.",
     "sign_in": "로그인",
     "cookie_rejected": "로그인은 성공했지만 브라우저가 세션 쿠키를 거부했습니다. HTTP를 사용 중이라면 OXICLOUD_COOKIE_SECURE=false로 설정하거나 HTTPS를 사용하세요.",
@@ -727,6 +729,12 @@
     "magic_send": "링크 보내기",
     "magic_sent": "해당 계정이 존재하면 로그인 링크가 전송되었습니다. 받은편지함을 확인하세요.",
     "register_error": "가입 실패",
+    "server_unreachable": "서버에 연결할 수 없습니다. 연결을 확인한 후 다시 시도하세요.",
+    "invalid_credentials": "사용자 이름 또는 비밀번호가 올바르지 않습니다. 확인한 후 다시 시도하세요.",
+    "email_taken": "이 이메일로 등록된 계정이 이미 있습니다. 대신 로그인하세요.",
+    "username_taken": "이 사용자 이름은 이미 사용 중입니다. 다른 이름을 선택하세요.",
+    "registration_disabled": "이 서버에서는 회원가입이 비활성화되어 있습니다. 관리자에게 계정 생성을 요청하세요.",
+    "registration_password_required": "이 서버는 로그인 이메일을 보내지 않습니다. 계정을 만들려면 비밀번호를 입력하세요.",
     "session_expired": "세션이 만료되었습니다. 다시 로그인해 주세요.",
     "logged_out": "로그아웃되었습니다.",
     "signing_in": "로그인 중…",
@@ -817,7 +825,8 @@
     "share_success": "공유 링크가 성공적으로 생성되었습니다",
     "upload_files_section_title": "여기서는 업로드할 수 없습니다",
     "upload_files_section_body": "파일을 업로드하려면 파일 섹션으로 이동하세요",
-    "clear": "모두 지우기"
+    "clear": "모두 지우기",
+    "mark_all_read": "모두 읽음으로 표시"
   },
   "batch": {
     "one_selected": "1개 선택됨",
