@@ -63,8 +63,9 @@ test('delete a folder via the context menu', async ({ page }) => {
   await expect(page.getByTestId(name)).toBeVisible({ timeout: 15_000 });
 
   await page.getByTestId(name).click({ button: 'right' });
+  // Two clicks: the first arms the entry, the second confirms it.
   await page.getByTestId('files-ctx-delete-item').click();
-  await page.getByTestId('dialog-host-confirm-btn').click();
+  await page.getByTestId('files-ctx-delete-item').click();
 
   await expect(page.getByTestId(name)).toHaveCount(0, { timeout: 15_000 });
 });

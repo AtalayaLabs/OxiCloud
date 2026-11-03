@@ -27,9 +27,11 @@
 		UpdateProfileDto
 	} from '$lib/api/generated/openapi/types.gen';
 	import { fetchMe, startOidcLink, unlinkOidc } from '$lib/api/endpoints/auth';
-	import { SUPPORTED_LOCALES, setLocale, t, type Locale } from '$lib/i18n/index.svelte';
+	import { setLocale, t, type Locale } from '$lib/i18n/index.svelte';
 	import Icon from '$lib/icons/Icon.svelte';
+	import LanguageSelect from '$lib/components/LanguageSelect.svelte';
 	import { confirmDialog } from '$lib/stores/dialogs.svelte';
+	import ConfirmButton from '$lib/components/ConfirmButton.svelte';
 	import { preferences } from '$lib/stores/preferences.svelte';
 	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import { session } from '$lib/stores/session.svelte';
@@ -415,13 +417,6 @@
 	}
 
 	async function revokePw(p: AppPasswordSummaryDto) {
-		const ok = await confirmDialog({
-			title: t('profile.app_pw_revoke', 'Revoke app password'),
-			message: t('profile.confirm_revoke', { label: p.label }, 'Revoke "{{label}}"?'),
-			confirmText: t('profile.app_pw_revoke', 'Revoke'),
-			danger: true
-		});
-		if (!ok) return;
 		try {
 			await revokeAppPassword(p.id);
 			generated = null;
@@ -847,14 +842,12 @@
 					</label>
 					<label>
 						<span>{t('profile.language', 'Language')}</span>
-						<select data-testid="profile-language-select" bind:value={preferredLocale}>
-							<option value="" data-testid="profile-language-auto-option"
-								>{t('profile.language_auto', 'Automatic')}</option
-							>
-							{#each SUPPORTED_LOCALES as loc (loc)}
-								<option value={loc} data-testid={`profile-language-option-${loc}`}>{loc}</option>
-							{/each}
-						</select>
+						<LanguageSelect
+							value={preferredLocale}
+							onchange={(loc) => (preferredLocale = loc)}
+							automaticLabel={t('profile.language_auto', 'Automatic')}
+							testid="profile-language-select"
+						/>
 					</label>
 					<label class="checkbox">
 						<input
@@ -967,14 +960,13 @@
 									</td>
 									<td>
 										{#if p.active !== false}
-											<button
-												class="btn-action btn-action--danger"
+											<ConfirmButton
+												icon="trash-alt"
+												variant="icon"
 												data-testid={`profile-app-pw-revoke-${p.id}`}
 												title={t('profile.revoke_title', 'Revoke')}
-												onclick={() => revokePw(p)}
-											>
-												<Icon name="trash-alt" />
-											</button>
+												onconfirm={() => revokePw(p)}
+											/>
 										{/if}
 									</td>
 								</tr>
@@ -1022,14 +1014,13 @@
 											>
 											<td>
 												{#if p.active !== false}
-													<button
-														class="btn-action btn-action--danger"
+													<ConfirmButton
+														icon="trash-alt"
+														variant="icon"
 														data-testid={`profile-app-pw-auto-revoke-${p.id}`}
 														title={t('profile.revoke_title', 'Revoke')}
-														onclick={() => revokePw(p)}
-													>
-														<Icon name="trash-alt" />
-													</button>
+														onconfirm={() => revokePw(p)}
+													/>
 												{/if}
 											</td>
 										</tr>
@@ -1502,8 +1493,7 @@
 		gap: 0.5rem;
 	}
 
-	input,
-	select {
+	input {
 		padding: 0.5rem 0.625rem;
 		border: 1px solid var(--color-border);
 		border-radius: var(--radius-md);
@@ -1573,12 +1563,19 @@
 	}
 
 	.link-btn--danger {
-		color: var(--color-danger-text);
+		color: var(--color-danger-alt);
 	}
 
 	@media (width <= 32rem) {
 		.info-grid {
 			grid-template-columns: 1fr;
+		}
+	}
+
+	@media (width <= 48rem) {
+		.card button:not(.avatar-edit-btn, .avatar-tab, .btn-action, .app-pw-auto__toggle),
+		.card .avatar-file-label {
+			width: 100%;
 		}
 	}
 </style>

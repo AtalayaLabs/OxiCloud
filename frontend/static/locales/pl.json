@@ -89,7 +89,8 @@
     "primary": "Podstawowy",
     "admin_sections": "Sekcje administracyjne",
     "back_to_app": "Powrót do OxiCloud",
-    "toggle": "Przełącz menu nawigacji"
+    "toggle": "Przełącz menu nawigacji",
+    "account": "Konto"
   },
   "photos": {
     "empty_state": "Brak zdjęć",
@@ -639,7 +640,8 @@
     "access_denied": "Nie masz uprawnień, aby to zrobić.",
     "not_found": "Ten element już nie istnieje.",
     "conflict": "Element o tej nazwie już istnieje.",
-    "transient_backend": "Pamięć masowa jest chwilowo niedostępna. Spróbuj ponownie."
+    "transient_backend": "Pamięć masowa jest chwilowo niedostępna. Spróbuj ponownie.",
+    "network": "Nie można połączyć się z serwerem. Sprawdź połączenie i spróbuj ponownie."
   },
   "breadcrumb": {
     "home": "Strona główna",
@@ -737,7 +739,7 @@
     "caps_lock": "Caps Lock jest włączony",
     "magic_email_label": "Adres e-mail",
     "magic_hint": "Brak hasła? Wpisz swój adres e-mail, a wyślemy Ci jednorazowy link do logowania.",
-    "magic_unavailable": "Logowanie e-mailem nie jest dostępne na tym serwerze.",
+    "magic_unavailable": "Ten serwer nie wysyła e-maili logowania. Zaloguj się hasłem.",
     "passwords_match": "Hasła się zgadzają",
     "sign_in": "Zaloguj się",
     "password_or_link_hint": "Hasło (pozostaw puste w przypadku linku do logowania)",
@@ -748,6 +750,12 @@
     "magic_send": "Wyślij link",
     "magic_sent": "Jeśli konto istnieje, został wysłany link do logowania. Sprawdź swoją skrzynkę odbiorczą.",
     "register_error": "Rejestracja nie powiodła się",
+    "server_unreachable": "Nie można połączyć się z serwerem. Sprawdź połączenie i spróbuj ponownie.",
+    "invalid_credentials": "Nieprawidłowa nazwa użytkownika lub hasło. Sprawdź je i spróbuj ponownie.",
+    "email_taken": "Konto z tym adresem e-mail już istnieje. Zamiast tego zaloguj się.",
+    "username_taken": "Ta nazwa użytkownika jest już zajęta. Wybierz inną.",
+    "registration_disabled": "Rejestracja jest wyłączona na tym serwerze. Poproś administratora o utworzenie konta.",
+    "registration_password_required": "Ten serwer nie wysyła e-maili logowania. Wprowadź hasło, aby utworzyć konto.",
     "session_expired": "Twoja sesja wygasła. Zaloguj się ponownie.",
     "signing_in": "Logowanie…",
     "sending": "Przesyłka…",
@@ -841,7 +849,8 @@
     "share_success": "Link udostępniania utworzony pomyślnie",
     "upload_files_section_title": "Przesyłanie niedostępne tutaj",
     "upload_files_section_body": "Przejdź do sekcji Pliki, aby przesłać pliki",
-    "clear": "Wyczyść wszystko"
+    "clear": "Wyczyść wszystko",
+    "mark_all_read": "Oznacz wszystko jako przeczytane"
   },
   "batch": {
     "one_selected": "Wybrano 1 element",
@@ -1857,6 +1866,7 @@
     "clear": "Wyczyść",
     "close": "Zamknij",
     "confirm": "Potwierdź",
+    "really": "Na pewno?",
     "copy": "Kopiuj",
     "create": "Utwórz",
     "delete": "Usuń",

@@ -34,12 +34,11 @@ test('recent shows accessed items, batch selection, and clear', async ({ page })
     await page.getByTestId('recent-batch-remove-btn').click({ timeout: 3_000 }).catch(() => {});
   }
 
-  // Clear the history if the control is present.
+  // Clear the history if the control is present (armed: click twice).
   const clearBtn = page.getByTestId('recent-clear-btn');
   if (await clearBtn.isVisible().catch(() => false)) {
     await clearBtn.click();
-    const confirm = page.getByTestId('dialog-host-confirm-btn');
-    if (await confirm.isVisible().catch(() => false)) await confirm.click();
+    await clearBtn.click();
   }
 });
 

@@ -16,24 +16,20 @@
     font-size: 15px;
 }
 
-/* Filled buttons rest on a soft, neutral elevation; their warm brand glow
-   blooms in on hover (rather than glowing at rest), and a gentle scale-down
-   gives a tactile press. The old "translateY lift on every button" is gone —
-   vertical lift is reserved for cards now, so buttons feel calm, not jittery. */
+/* Filled buttons are flat: no resting elevation, no hover glow. Hover is a
+   brightness nudge and a press is a gentle scale-down — the old warm blur
+   under every filled button read as a smudge against the new palette. */
 .btn-primary {
     background: var(--color-accent-gradient);
     color: var(--color-on-accent);
-    box-shadow: var(--shadow-sm);
 }
 
 .btn-primary:hover {
-    box-shadow: 0 4px 14px var(--color-accent-shadow);
     filter: brightness(1.05);
 }
 
 .btn-primary:active {
     transform: scale(0.98);
-    box-shadow: var(--shadow-xs);
     filter: brightness(0.97);
 }
 
@@ -56,17 +52,14 @@
 .btn-danger {
     background: var(--color-danger-gradient);
     color: var(--color-danger-text);
-    box-shadow: var(--shadow-sm);
 }
 
 .btn-danger:hover {
-    box-shadow: 0 4px 14px var(--color-danger-ring);
     filter: brightness(1.05);
 }
 
 .btn-danger:active {
     transform: scale(0.98);
-    box-shadow: var(--shadow-xs);
     filter: brightness(0.97);
 }
 
@@ -155,7 +148,6 @@
 .toggle-btn.active {
     background-color: var(--color-border);
     color: var(--color-accent);
-    box-shadow: 0 1px 3px var(--color-shadow);
 }
 
 .toggle-btn i {
@@ -188,6 +180,15 @@
 
 .group-by-btn.active {
     color: var(--color-accent);
+}
+
+/* Phones: the inline group-by label is what pushes the view toggles onto a
+   second action-bar row. The icon still names the active dimension, and the
+   button keeps its title/aria label. */
+@media (max-width: 640px) {
+    .group-by-btn:has(.group-by-label:not(:empty)) .group-by-label {
+        display: none;
+    }
 }
 
 /* Sort direction button — rotate the SVG icon when order is reversed */

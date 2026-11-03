@@ -709,7 +709,7 @@
 
 		<div class="dp__actions">
 			<button
-				class="btn"
+				class="btn btn-secondary"
 				type="button"
 				disabled={scanning}
 				data-testid="admin-policy-rescan"
@@ -719,7 +719,7 @@
 					? t('admin.drive_policies.scanning', 'Scanning…')
 					: t('admin.drive_policies.rescan', 'Run the scan')}
 			</button>
-			<button class="btn" type="button" onclick={loadFindings}>
+			<button class="btn btn-secondary" type="button" onclick={loadFindings}>
 				{t('admin.jobs.refresh', 'Refresh')}
 			</button>
 		</div>
@@ -874,7 +874,7 @@
 					'{{n}} drive(s) less restrictive than their default'
 				)}
 			</span>
-			<button class="btn" type="button" onclick={showDrift}>
+			<button class="btn btn-secondary" type="button" onclick={showDrift}>
 				{t('admin.drive_policies.drift_review', 'Review')}
 			</button>
 		</div>

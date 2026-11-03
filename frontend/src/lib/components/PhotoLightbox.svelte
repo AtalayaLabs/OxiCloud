@@ -14,7 +14,7 @@
 	} from '$lib/api/endpoints/files';
 	import { fetchFileMetadata, type FileMetadata } from '$lib/api/endpoints/photos';
 	import type { FileItem } from '$lib/api/types';
-	import { confirmDialog } from '$lib/stores/dialogs.svelte';
+	import ConfirmButton from '$lib/components/ConfirmButton.svelte';
 	import { t } from '$lib/i18n/index.svelte';
 	import { errorToast } from '$lib/utils/errors';
 	import { dateTimeFormatFor } from '$lib/utils/display';
@@ -234,13 +234,6 @@
 			}
 		}
 
-		const ok = await confirmDialog({
-			title: t('photos.delete', 'Delete photo'),
-			message: t('photos.confirm_delete_one', { name: target.name }, 'Delete {{name}}?'),
-			confirmText: t('common.delete', 'Delete'),
-			danger: true
-		});
-		if (!ok) return;
 		try {
 			await deleteFile(target.id);
 			onDelete?.(target.id);
@@ -350,9 +343,13 @@
 					title={t('common.favorite', 'Favorite')}
 					onclick={toggleFavorite}><Icon name={favorited ? 'star' : 'star-outline'} /></button
 				>
-				<button class="lb__tool" title={t('common.delete', 'Delete')} onclick={remove}>
-					<Icon name="trash" />
-				</button>
+				<ConfirmButton
+					variant="icon"
+					title={t('common.delete', 'Delete')}
+					onconfirm={remove}
+					data-testid="photo-lightbox-delete-btn"
+					icon="trash"
+				/>
 			{/if}
 		</div>
 

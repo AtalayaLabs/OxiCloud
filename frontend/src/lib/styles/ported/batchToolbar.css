@@ -79,13 +79,13 @@
 }
 
 .batch-btn-danger {
-    background: var(--color-multiselect-danger-bg);
-    color: var(--color-multiselect-danger-text);
+    background: var(--color-danger-bg);
+    color: var(--color-bg-surface);
 }
 
 .batch-btn-danger:hover {
-    background: var(--color-multiselect-danger-active);
-    color: var(--color-multiselect-danger-text-active);
+    background: var(--color-danger-bg-hover);
+    color: var(--color-bg-surface);
 }
 
 @media (max-width: 640px) {

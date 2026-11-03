@@ -65,6 +65,15 @@ it('opens the user menu, exposing profile and admin links', async () => {
 	expect(screen.getByTestId('appshell-user-menu-admin-item')).toBeTruthy();
 });
 
+it('labels the language toggle with the flag and native name, not the bare code', async () => {
+	// The dropdown already listed `🇬🇧 English`, so a toggle showing `EN`
+	// read as a different value from the option it selects.
+	render(AppShell, { props: { children } });
+	await fireEvent.click(screen.getByTestId('appshell-user-menu-btn'));
+	const toggle = await screen.findByTestId('appshell-lang-toggle-btn');
+	expect(toggle.textContent).toContain('🇬🇧 English');
+});
+
 it('logs out: clears the session and redirects to /login?source=logged_out', async () => {
 	// The `?source=logged_out` query param is consumed by the login page
 	// onMount branch to (a) show the "Successfully signed out" banner and

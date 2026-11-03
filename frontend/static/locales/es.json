@@ -89,7 +89,8 @@
     "primary": "Primario",
     "admin_sections": "Secciones de administración",
     "back_to_app": "Volver a OxiCloud",
-    "toggle": "Alternar menú de navegación"
+    "toggle": "Alternar menú de navegación",
+    "account": "Cuenta"
   },
   "photos": {
     "empty_state": "Aún no hay fotos",
@@ -639,7 +640,8 @@
     "access_denied": "No tienes permiso para hacer eso.",
     "not_found": "Ese elemento ya no existe.",
     "conflict": "Ya hay un elemento con ese nombre.",
-    "transient_backend": "El almacenamiento no está disponible temporalmente. Inténtalo de nuevo."
+    "transient_backend": "El almacenamiento no está disponible temporalmente. Inténtalo de nuevo.",
+    "network": "No se pudo conectar con el servidor. Comprueba tu conexión e inténtalo de nuevo."
   },
   "breadcrumb": {
     "home": "Inicio",
@@ -737,7 +739,7 @@
     "caps_lock": "Bloq Mayús activado",
     "magic_email_label": "Correo electrónico",
     "magic_hint": "¿Sin contraseña? Introduce tu correo electrónico y te enviaremos un enlace de inicio de sesión único.",
-    "magic_unavailable": "El inicio de sesión por correo electrónico no está disponible en este servidor.",
+    "magic_unavailable": "Este servidor no envía correos de inicio de sesión. Inicia sesión con tu contraseña.",
     "passwords_match": "Las contraseñas coinciden",
     "sign_in": "Iniciar sesión",
     "password_or_link_hint": "Contraseña (déjela en blanco para obtener un enlace de inicio de sesión)",
@@ -748,6 +750,12 @@
     "magic_send": "Enviar enlace",
     "magic_sent": "Si existe una cuenta, se ha enviado un enlace de inicio de sesión. Revisa tu bandeja de entrada.",
     "register_error": "Registro fallido",
+    "server_unreachable": "No se pudo conectar con el servidor. Comprueba tu conexión e inténtalo de nuevo.",
+    "invalid_credentials": "El nombre de usuario o la contraseña no son correctos. Compruébalos e inténtalo de nuevo.",
+    "email_taken": "Ya existe una cuenta con este correo electrónico. Inicia sesión en su lugar.",
+    "username_taken": "Ese nombre de usuario ya está en uso. Elige otro.",
+    "registration_disabled": "El registro está desactivado en este servidor. Pide a un administrador que cree tu cuenta.",
+    "registration_password_required": "Este servidor no envía correos de inicio de sesión. Introduce una contraseña para crear tu cuenta.",
     "session_expired": "Tu sesión expiró. Por favor inicia sesión nuevamente.",
     "signing_in": "Iniciando sesión…",
     "sending": "Envío…",
@@ -841,7 +849,8 @@
     "share_success": "Enlace compartido creado correctamente",
     "upload_files_section_title": "Subida no disponible aquí",
     "upload_files_section_body": "Ve a la sección Archivos para subir archivos",
-    "clear": "Borrar todo"
+    "clear": "Borrar todo",
+    "mark_all_read": "Marcar todo como leído"
   },
   "batch": {
     "one_selected": "1 elemento seleccionado",
@@ -1857,6 +1866,7 @@
     "clear": "Limpiar",
     "close": "Cerrar",
     "confirm": "Confirmar",
+    "really": "¿Seguro?",
     "copy": "Copiar",
     "create": "Crear",
     "delete": "Eliminar",

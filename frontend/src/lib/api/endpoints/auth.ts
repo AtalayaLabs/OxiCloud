@@ -66,7 +66,14 @@ function apiErrorFromSdkError(e: unknown, path: string): ApiError {
 	};
 	const status = envelope.response?.status ?? parseStatusFromBody(body.status) ?? 0;
 	const statusText = envelope.response?.statusText ?? '';
-	const errorType = typeof body.error_type === 'string' ? body.error_type : undefined;
+	// Only a throw with no HTTP body is a transport failure (server down,
+	// DNS, reset). A body carrying `error_type` always came from the server.
+	const errorType =
+		typeof body.error_type === 'string'
+			? body.error_type
+			: status === 0
+				? 'NetworkError'
+				: undefined;
 	const message =
 		(typeof body.message === 'string' ? body.message : undefined) ??
 		(typeof body.error === 'string' ? body.error : undefined);
@@ -483,14 +490,17 @@ export async function sendMagicLink(email: string): Promise<MagicLinkResult> {
 	// Phase 4 — SDK call. The 503 → 'unavailable' branch stays: a server
 	// without SMTP configured returns 503 by design, and the login page
 	// treats that as a soft signal ("magic-link is off, use password").
-	// All other non-2xx errors throw so the caller surfaces a toast.
+	// All other non-2xx errors throw so the caller surfaces the server text.
 	try {
 		await sdkSendMagicLink({ body: { email }, throwOnError: true });
 		return 'sent';
 	} catch (e) {
-		const status = (e as { response?: { status?: number } })?.response?.status;
-		if (status === 503) return 'unavailable';
-		throw new Error(`magic-link failed: ${status ?? 'unknown'}`, { cause: e });
+		// Same bare-body throw shape as the other SDK calls — reading
+		// `e.response.status` here missed every real 503 and turned the
+		// SMTP refusal into a generic "something went wrong".
+		const err = apiErrorFromSdkError(e, '/api/auth/magic-link/send');
+		if (err.status === 503 || err.errorType === 'SmtpRequired') return 'unavailable';
+		throw err;
 	}
 }
 

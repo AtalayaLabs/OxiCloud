@@ -17,12 +17,12 @@
 	import type { Drive, FileItem, FolderItem, TrashResourceItem } from '$lib/api/types';
 	import Icon from '$lib/icons/Icon.svelte';
 	import Button from '$lib/components/Button.svelte';
+	import ConfirmButton from '$lib/components/ConfirmButton.svelte';
 	import ResourceList, {
 		isFile,
 		type GroupByDef,
 		type ItemContext
 	} from '$lib/components/ResourceList.svelte';
-	import { confirmDialog } from '$lib/stores/dialogs.svelte';
 	import type { TrashOrderBy } from '$lib/api/generated/openapi/types.gen';
 	import { t } from '$lib/i18n/index.svelte';
 	import { drives as drivesStore } from '$lib/stores/drives.svelte';
@@ -168,13 +168,6 @@
 	}
 
 	async function purge(item: FileItem | FolderItem) {
-		const ok = await confirmDialog({
-			title: t('trash.delete', 'Delete permanently'),
-			message: t('trash.confirm_delete', 'Permanently delete this item? This cannot be undone.'),
-			confirmText: t('trash.delete', 'Delete'),
-			danger: true
-		});
-		if (!ok) return;
 		try {
 			await deleteTrashItem(item.id);
 			await reloadFromTop();
@@ -184,13 +177,6 @@
 	}
 
 	async function purgeAll() {
-		const ok = await confirmDialog({
-			title: t('trash.empty_action', 'Empty trash'),
-			message: t('trash.confirm_empty', 'Empty the trash? This cannot be undone.'),
-			confirmText: t('trash.empty_action', 'Empty trash'),
-			danger: true
-		});
-		if (!ok) return;
 		try {
 			await emptyTrash();
 			raw = [];
@@ -213,23 +199,6 @@
 
 	async function purgeDrive(bucketKey: string) {
 		const driveId = driveIdFromBucketKey(bucketKey);
-		const drive = drivesStore.findById(driveId);
-		// Owner-only check mirrors the backend gate so the UI doesn't
-		// surface the action for non-Owners — keeps the affordance
-		// honest. The bucket only appears on the page if the trash list
-		// already contained items the caller could see, but caller_role
-		// distinguishes Owner from Viewer/Editor on shared drives.
-		const ok = await confirmDialog({
-			title: t('trash.empty_drive_title', 'Empty drive trash'),
-			message: t(
-				'trash.confirm_empty_drive',
-				{ name: drive?.name ?? driveId },
-				'Empty the trash on drive "{{name}}"? This cannot be undone.'
-			),
-			confirmText: t('trash.empty_action', 'Empty trash'),
-			danger: true
-		});
-		if (!ok) return;
 		try {
 			await emptyTrashForDrive(driveId);
 			// Drop every entry that belonged to this drive; cheaper than a
@@ -288,10 +257,14 @@
 >
 	{#snippet actions()}
 		{#if items.length > 0}
-			<button class="btn btn-danger" data-testid="trash-empty-btn" onclick={purgeAll}>
-				<Icon name="trash" />
+			<ConfirmButton
+				class="btn btn-danger"
+				data-testid="trash-empty-btn"
+				onconfirm={purgeAll}
+				icon="trash"
+			>
 				{t('trash.empty_action', 'Empty trash')}
-			</button>
+			</ConfirmButton>
 		{/if}
 	{/snippet}
 	{#snippet batchActions(sel)}
@@ -307,12 +280,14 @@
 		<Button icon="undo" data-testid="trash-batch-restore-btn" onclick={() => sel.forEach(restore)}
 			>{t('trash.restore', 'Restore')}</Button
 		>
-		<Button
-			variant="danger"
+		<ConfirmButton
 			icon="trash"
+			class="btn btn-danger"
 			data-testid="trash-batch-delete-btn"
-			onclick={() => sel.forEach(purge)}>{t('trash.delete', 'Delete permanently')}</Button
+			onconfirm={() => sel.forEach(purge)}
 		>
+			{t('trash.delete', 'Delete permanently')}
+		</ConfirmButton>
 	{/snippet}
 	{#snippet rowBadge(_item, ctx)}
 		{@const chip = expiryChip(ctx?.date)}
@@ -328,16 +303,13 @@
 		{#if showPerDriveEmpty}
 			{@const driveId = driveIdFromBucketKey(bucketKey)}
 			{#if driveCanPurge(driveId)}
-				<button
-					type="button"
+				<ConfirmButton
+					icon="trash"
 					class="btn-action btn-action--delete"
 					data-testid={`trash-empty-drive-btn-${driveId}`}
 					title={t('trash.empty_drive_title', 'Empty drive trash')}
-					aria-label={t('trash.empty_drive_title', 'Empty drive trash')}
-					onclick={() => purgeDrive(bucketKey)}
-				>
-					<Icon name="trash" />
-				</button>
+					onconfirm={() => purgeDrive(bucketKey)}
+				/>
 			{/if}
 		{/if}
 	{/snippet}
@@ -350,14 +322,13 @@
 		>
 			<Icon name="undo" />
 		</button>
-		<button
+		<ConfirmButton
+			icon="trash"
 			class="btn-action btn-action--delete"
 			data-testid={`trash-delete-btn-${item.id}`}
 			title={t('trash.delete', 'Delete permanently')}
-			onclick={() => purge(item)}
-		>
-			<Icon name="trash" />
-		</button>
+			onconfirm={() => purge(item)}
+		/>
 	{/snippet}
 </ResourceList>
 
@@ -406,14 +377,16 @@
 		font-weight: var(--weight-semibold);
 	}
 
-	/* Grid-corner action-cell layout + chip visuals now live in the
-	   shared `ported/resourceList.css`; every section using ResourceList
-	   picks them up. What stays here is only the trash-specific danger
-	   red on the "Delete permanently" button — `--color-error-text` is
-	   the right red-text token (the shared `.file-actions:hover` accent
-	   colour still lands on the plain `.btn-action` restore button). */
-	:global(.files-grid-view .file-item .action-cell .btn-action--delete:hover) {
-		color: var(--color-error-text);
+	/* One red for every delete affordance: the `/files` context menu's
+	   `--color-danger-alt`. The shared `.btn-action:hover` accent rule in the
+	   ported sheet is three classes deep, so this override has to be too. */
+	:global(.file-item .action-cell) .btn-action--delete,
+	:global(.file-item .action-cell) .btn-action--delete:hover {
+		color: var(--color-danger-alt);
+	}
+
+	:global(.file-item .action-cell) .btn-action--delete:hover {
+		background: var(--color-danger-light-bg);
 	}
 
 	/* List view: hide the expiry chip that ResourceList paints inside

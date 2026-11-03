@@ -82,12 +82,14 @@ it('renders recent items returned by the API', async () => {
 	await waitFor(() => expect(screen.getByText('notes.txt')).toBeTruthy());
 });
 
-it('clears recent activity after confirmation', async () => {
+it('clears recent activity on the second click', async () => {
 	withOneFile();
-	confirmDialog.mockResolvedValue(true);
 	m(clearRecentItems).mockResolvedValue(undefined);
 	render(RecentPage);
-	await fireEvent.click(await screen.findByTestId('recent-clear-btn'));
+	const clear = await screen.findByTestId('recent-clear-btn');
+	await fireEvent.click(clear);
+	expect(clearRecentItems).not.toHaveBeenCalled();
+	await fireEvent.click(clear);
 	await waitFor(() => expect(clearRecentItems).toHaveBeenCalled());
 });
 

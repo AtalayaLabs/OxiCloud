@@ -77,7 +77,6 @@ vi.mock('$lib/api/endpoints/profile', () => ({
 }));
 
 import * as profile from '$lib/api/endpoints/profile';
-import { confirmDialog } from '$lib/stores/dialogs.svelte';
 import ProfilePage from './+page.svelte';
 
 const m = (fn: unknown) => fn as ReturnType<typeof vi.fn>;
@@ -150,13 +149,15 @@ it('changes the password when the confirmation matches', async () => {
 	await waitFor(() => expect(profile.changePassword).toHaveBeenCalled());
 });
 
-it('revokes an existing app password after confirmation', async () => {
+it('revokes an existing app password on the second click', async () => {
 	m(profile.listAppPasswords).mockResolvedValue([
 		{ id: 'ap1', label: 'CLI token', created_at: '2024-01-01T00:00:00Z' }
 	]);
-	m(confirmDialog).mockResolvedValue(true);
 	m(profile.revokeAppPassword).mockResolvedValue(undefined);
 	render(ProfilePage);
-	await fireEvent.click(await screen.findByTestId('profile-app-pw-revoke-ap1'));
+	const revoke = await screen.findByTestId('profile-app-pw-revoke-ap1');
+	await fireEvent.click(revoke);
+	expect(profile.revokeAppPassword).not.toHaveBeenCalled();
+	await fireEvent.click(revoke);
 	await waitFor(() => expect(profile.revokeAppPassword).toHaveBeenCalledWith('ap1'));
 });

@@ -16,13 +16,13 @@
 	import type { PhotoOrderBy } from '$lib/api/generated/openapi/types.gen';
 	import { fetchHashSiblings, type HashSibling } from '$lib/api/endpoints/dedup';
 	import DedupSiblingsDialog from '$lib/components/DedupSiblingsDialog.svelte';
+	import ConfirmButton from '$lib/components/ConfirmButton.svelte';
 	import { peopleEnabled } from '$lib/api/endpoints/people';
 	import { fileDownloadUrl, fileThumbnailUrl } from '$lib/api/endpoints/files';
 	import { listDrives } from '$lib/api/endpoints/drives';
 	import { driveIcon } from '$lib/stores/drives.svelte';
 	import type { Drive, FileItem } from '$lib/api/types';
 	import Icon from '$lib/icons/Icon.svelte';
-	import { confirmDialog } from '$lib/stores/dialogs.svelte';
 	import { preferences } from '$lib/stores/preferences.svelte';
 	import { t } from '$lib/i18n/index.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
@@ -456,7 +456,7 @@
 		// Single-tile trash where the server flagged `has_blob_siblings:
 		// true` — hand off to the dedup chooser so the user can decide
 		// which copies to actually trash. Multi-select stays on the
-		// plain confirm; the per-tile sibling fan-out can diverge
+		// plain delete; the per-tile sibling fan-out can diverge
 		// arbitrarily across a mixed selection and a chooser-of-choosers
 		// is not what the UX needs.
 		if (ids.length === 1) {
@@ -464,13 +464,6 @@
 			if (target && (await tryOpenDedupChooser(target))) return;
 		}
 
-		const ok = await confirmDialog({
-			title: t('photos.delete', 'Delete photos'),
-			message: t('photos.confirm_delete', { n: ids.length }, 'Move {{n}} photos to trash?'),
-			confirmText: t('common.delete', 'Delete'),
-			danger: true
-		});
-		if (!ok) return;
 		await runBatchTrash(ids);
 	}
 
@@ -487,17 +480,10 @@
 		// works regardless of what the compiler sees.
 		const asPhoto = target as PhotoItem;
 		if (await tryOpenDedupChooser(asPhoto)) return true;
-		// No chooser needed — but the lightbox's default path calls the
-		// single-file `deleteFile` endpoint, not the batchTrash /
-		// item-removal pipeline the Photos page uses. Route to the same
-		// pipeline so item-list consistency is maintained.
-		const ok = await confirmDialog({
-			title: t('photos.delete', 'Delete photo'),
-			message: t('photos.confirm_delete_one', { name: target.name }, 'Delete {{name}}?'),
-			confirmText: t('common.delete', 'Delete'),
-			danger: true
-		});
-		if (!ok) return true;
+		// The lightbox's default path calls the single-file `deleteFile`
+		// endpoint, not the batchTrash / item-removal pipeline the Photos
+		// page uses. Route to the same pipeline so item-list consistency
+		// is maintained.
 		await runBatchTrash([target.id]);
 		return true;
 	}
@@ -710,15 +696,15 @@
 							<Icon name="download" />
 							<span>{t('common.download', 'Download')}</span>
 						</button>
-						<button
+						<ConfirmButton
 							class="batch-btn batch-btn-danger"
 							title={t('common.delete', 'Delete')}
 							data-testid="photos-batch-delete-btn"
-							onclick={trashSelected}
+							onconfirm={trashSelected}
+							icon="trash"
 						>
-							<Icon name="trash" />
 							<span>{t('common.delete', 'Delete')}</span>
-						</button>
+						</ConfirmButton>
 					</div>
 				{/if}
 			</div>
@@ -1179,6 +1165,28 @@
 		display: flex;
 		align-items: center;
 		gap: var(--space-3);
+	}
+
+	/* Phones: the trailing cluster drops below the page actions and wraps
+	   left-aligned, so each filter keeps its own breathing room instead of
+	   being squeezed into a narrow column beside the display controls. */
+	@media (width <= 768px) {
+		.actions-bar__end {
+			justify-content: flex-start;
+			gap: var(--space-2);
+		}
+	}
+
+	@media (width <= 640px) {
+		.photos-head,
+		.photos-area {
+			padding: 0;
+		}
+
+		.actions-bar {
+			margin-left: 0;
+			margin-right: 0;
+		}
 	}
 
 	/* The shared `.batch-selection-bar` rule in

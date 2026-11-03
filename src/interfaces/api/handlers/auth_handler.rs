@@ -232,7 +232,7 @@ pub async fn register(
     if dto.password.is_none() && !smtp_enabled {
         return Err(AppError::new(
             StatusCode::SERVICE_UNAVAILABLE,
-            "Email-only registration requires SMTP to be configured on this server.",
+            "This server cannot send sign-in emails. Submit a password to create the account.",
             "SmtpRequired",
         ));
     }

@@ -89,7 +89,8 @@
     "primary": "主要な",
     "admin_sections": "管理セクション",
     "back_to_app": "OxiCloud に戻る",
-    "toggle": "ナビゲーションメニューを切り替えます"
+    "toggle": "ナビゲーションメニューを切り替えます",
+    "account": "アカウント"
   },
   "photos": {
     "empty_state": "写真はまだありません",
@@ -639,7 +640,8 @@
     "access_denied": "その操作を行う権限がありません。",
     "not_found": "このアイテムは存在しません。",
     "conflict": "その名前のアイテムは既に存在します。",
-    "transient_backend": "ストレージが一時的に利用できません。再試行してください。"
+    "transient_backend": "ストレージが一時的に利用できません。再試行してください。",
+    "network": "サーバーに接続できませんでした。接続を確認して、もう一度お試しください。"
   },
   "breadcrumb": {
     "home": "ホーム",
@@ -737,7 +739,7 @@
     "caps_lock": "Caps Lock がオンになっている",
     "magic_email_label": "メールアドレス",
     "magic_hint": "パスワードをお持ちでない方は、メールアドレスを入力するとワンタイムサインインリンクをお送りします。",
-    "magic_unavailable": "このサーバーではメールでのサインインは利用できません。",
+    "magic_unavailable": "このサーバーはサインイン用のメールを送信しません。パスワードでサインインしてください。",
     "passwords_match": "パスワードが一致する",
     "sign_in": "サインイン",
     "password_or_link_hint": "パスワード (サインインリンクの場合は空白のままにします)",
@@ -748,6 +750,12 @@
     "magic_send": "リンクを送信する",
     "magic_sent": "アカウントが存在する場合は、サインイン リンクが送信されています。受信箱を確認してください。",
     "register_error": "登録に失敗しました",
+    "server_unreachable": "サーバーに接続できませんでした。接続を確認して、もう一度お試しください。",
+    "invalid_credentials": "ユーザー名またはパスワードが正しくありません。確認して、もう一度お試しください。",
+    "email_taken": "このメールアドレスのアカウントはすでに存在します。代わりにサインインしてください。",
+    "username_taken": "このユーザー名はすでに使われています。別の名前を選んでください。",
+    "registration_disabled": "このサーバーでは新規登録が無効です。管理者にアカウントの作成を依頼してください。",
+    "registration_password_required": "このサーバーはサインイン用のメールを送信しません。アカウントを作成するにはパスワードを入力してください。",
     "session_expired": "セッションの有効期限が切れました。再度サインインしてください。",
     "signing_in": "サインイン中…",
     "sending": "送信中…",
@@ -841,7 +849,8 @@
     "share_success": "共有リンクを正常に作成しました",
     "upload_files_section_title": "ここではアップロードできません",
     "upload_files_section_body": "ファイルをアップロードするには「ファイル」セクションに移動してください",
-    "clear": "すべてクリア"
+    "clear": "すべてクリア",
+    "mark_all_read": "すべて既読にする"
   },
   "batch": {
     "one_selected": "1件選択中",
@@ -1857,6 +1866,7 @@
     "clear": "クリア",
     "close": "閉じる",
     "confirm": "確認",
+    "really": "本当に？",
     "copy": "コピー",
     "create": "作成",
     "delete": "削除",

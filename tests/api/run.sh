@@ -583,6 +583,8 @@ HURL_FILES=( \
   "$API_DIR/audio_id3_extraction.hurl" \
   "$API_DIR/public_shares.hurl" \
   "$API_DIR/anonymous_share_session.hurl" \
+  "$API_DIR/share_download_limits.hurl" \
+  "$API_DIR/share_download_attribution.hurl" \
   "$API_DIR/permissions.hurl" \
   "$API_DIR/grants.hurl" \
   "$API_DIR/grant_cleanup.hurl" \

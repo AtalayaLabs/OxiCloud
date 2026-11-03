@@ -29,7 +29,7 @@ This document contains the task list for the development of OxiCloud, a minimali
 - [x] Full-text search over file contents — Tantivy-backed content index, text extraction per blob (BLAKE3-keyed cache), asynchronous drain worker so writes never wait on indexing.
 
 ### UI/UX Optimizations
-- [ ] Improve responsive design for mobile devices
+- [x] Improve responsive design for mobile devices
 - [x] Implement drag & drop between folders
 - [x] Add support for multiple file selection
 - [x] Implement multiple file uploads

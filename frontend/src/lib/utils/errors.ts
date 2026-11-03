@@ -33,6 +33,10 @@ function messageForErrorType(errorType: string): string | null {
 			return t('errors.conflict', 'An item with that name is already there.');
 		case 'TransientBackend':
 			return t('errors.transient_backend', 'Storage is temporarily unavailable. Try again.');
+		// Raised by `apiErrorFromSdkError` when the fetch never produced a
+		// response — the server was down or unreachable, not a failed action.
+		case 'NetworkError':
+			return t('errors.network', "Couldn't reach the server. Check your connection and try again.");
 		default:
 			return null;
 	}

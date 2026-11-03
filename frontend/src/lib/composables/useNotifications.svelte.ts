@@ -55,6 +55,8 @@ import log from 'loglevel';
 
 const bellLog = log.getLogger('oxi:notifications');
 
+const PAGE_SIZE = 50;
+
 /**
  * Plain-string summary of a persistent notification — used for the
  * transient toast preview (fade-to-bell UX affordance) and for
@@ -123,6 +125,8 @@ class NotificationsStore {
 	#items = $state<Notification[]>([]);
 	#unread = $state<number>(0);
 	#loading = $state<boolean>(false);
+	#loadingOlder = $state<boolean>(false);
+	#hasMore = $state<boolean>(false);
 	#error = $state<string | null>(null);
 	/** Newest `created_at` we've observed, ISO 8601. Feeds the
 	 *  `?after=…` cursor on delta fetches. `null` until the first
@@ -138,6 +142,12 @@ class NotificationsStore {
 	get loading(): boolean {
 		return this.#loading;
 	}
+	get loadingOlder(): boolean {
+		return this.#loadingOlder;
+	}
+	get hasMore(): boolean {
+		return this.#hasMore;
+	}
 	get error(): string | null {
 		return this.#error;
 	}
@@ -150,16 +160,37 @@ class NotificationsStore {
 	async refresh(): Promise<void> {
 		this.#loading = true;
 		try {
-			const res = await listNotifications({ limit: 50 });
+			const res = await listNotifications({ limit: PAGE_SIZE });
 			this.#items = res.items;
 			this.#unread = res.unread_count;
 			this.#lastReceivedAt = res.items[0]?.created_at ?? this.#lastReceivedAt;
+			this.#hasMore = res.items.length === PAGE_SIZE;
 			this.#error = null;
 		} catch (e) {
 			this.#error = e instanceof Error ? e.message : String(e);
 			bellLog.warn('notifications refresh failed', e);
 		} finally {
 			this.#loading = false;
+		}
+	}
+
+	/** Next page for the full-history view. The bell never needs it; the
+	 *  Notifications page does. Keeps the existing list and appends older
+	 *  rows so the newest-first order is preserved. */
+	async loadOlder(): Promise<void> {
+		const oldest = this.#items.at(-1)?.created_at;
+		if (!oldest || this.#loadingOlder) return;
+		this.#loadingOlder = true;
+		try {
+			const res = await listNotifications({ before: oldest, limit: PAGE_SIZE });
+			this.#items = mergeById(this.#items, res.items);
+			this.#hasMore = res.items.length === PAGE_SIZE;
+			this.#error = null;
+		} catch (e) {
+			this.#error = e instanceof Error ? e.message : String(e);
+			bellLog.warn('notifications loadOlder failed', e);
+		} finally {
+			this.#loadingOlder = false;
 		}
 	}
 
@@ -294,6 +325,7 @@ class NotificationsStore {
 		this.#items = [];
 		this.#unread = 0;
 		this.#lastReceivedAt = null;
+		this.#hasMore = false;
 		this.#error = null;
 	}
 }

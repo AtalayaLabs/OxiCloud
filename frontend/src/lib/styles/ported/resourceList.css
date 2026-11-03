@@ -674,6 +674,21 @@
     }
 }
 
+/* The full-width top row places the kebab after the checkbox, which lands
+   near the middle of a narrow card. Pin it to the card's top-right corner
+   and keep the state chips clear of it. */
+@media (max-width: 768px) {
+    .files-grid-view .file-item .action-cell:has(.shared-button, .favorite-star) {
+        padding-right: calc(30px + var(--space-1));
+    }
+
+    .files-grid-view .file-item .action-cell:has(.shared-button, .favorite-star) .file-actions {
+        position: absolute;
+        top: 0;
+        right: 0;
+    }
+}
+
 .files-grid-view .file-item {
     border-radius: var(--radius-2xl);
     /* Hairline at rest → accent on hover (gallery, not form). */
@@ -828,7 +843,7 @@
 
 .files-grid-view .file-item .checkbox-cell input[type="checkbox"]:focus-visible {
     outline: 2px solid var(--color-accent);
-    outline-offset: 2px;
+    outline-offset: 0;
 }
 
 /* ── Grid card action cluster ─────────────────────────────────────
@@ -1391,6 +1406,18 @@
     color: var(--color-text-subtle);
     font-size: var(--text-md);
     padding: 0;
+}
+
+/* The 28px cell is a glyph-only box (`padding: 0`), so an armed confirm face
+ * would sit flush against both edges. Same breathing room the component gives
+ * its own `--icon` variant.
+ * The grid clause restates the armed space against the corner-cluster chip
+ * rule (`.files-grid-view .file-item .action-cell .btn-action`, 0,4,0), which
+ * re-zeroes the padding for grid view. */
+.btn-action.confirm-btn--armed,
+.files-grid-view .file-item .action-cell .btn-action.confirm-btn--armed {
+    padding-inline: var(--space-2);
+    gap: var(--space-1);
 }
 
 .btn-action:hover {

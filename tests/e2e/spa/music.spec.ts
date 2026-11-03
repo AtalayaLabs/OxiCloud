@@ -45,7 +45,7 @@ test('playlist lifecycle: create, toggle public, rename, delete', async ({ page 
   await expect(page.getByTestId(renamed)).toBeVisible({ timeout: 15_000 });
 
   await page.getByTestId('music-delete-playlist-btn').click();
-  await page.getByTestId('dialog-host-confirm-btn').click();
+  await page.getByTestId('music-delete-playlist-btn').click();
   await expect(page.getByTestId(renamed)).toHaveCount(0, { timeout: 15_000 });
 });
 

@@ -62,7 +62,7 @@ test('select-all then batch delete', async ({ page }) => {
   await page.getByTestId('resource-list-select-all-checkbox').check();
   await expect(page.getByTestId('resource-list-batch-close-btn')).toBeVisible();
   await page.getByTestId('files-batch-delete-btn').click();
-  await page.getByTestId('dialog-host-confirm-btn').click();
+  await page.getByTestId('files-batch-delete-btn').click();
 
   await expect(page.getByTestId(c1)).toHaveCount(0, { timeout: 15_000 });
   await expect(page.getByTestId(c2)).toHaveCount(0);

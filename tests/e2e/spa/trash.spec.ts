@@ -39,9 +39,9 @@ test('permanently delete an item from trash', async ({ page }) => {
   await page.goto('/trash');
   const del = page.locator('[data-testid^="trash-delete-btn-"]').first();
   await expect(del).toBeAttached({ timeout: 15_000 });
+  // Armed delete: the first click arms, the second one purges.
   await del.dispatchEvent('click');
-  const confirm = page.getByTestId('dialog-host-confirm-btn');
-  if (await confirm.isVisible().catch(() => false)) await confirm.click();
+  await del.dispatchEvent('click');
   await expect(page.getByTestId('appshell-logo-link')).toBeVisible({ timeout: 15_000 });
 });
 
@@ -52,9 +52,9 @@ test('empty the trash from the toolbar', async ({ page }) => {
 
   await page.goto('/trash');
   await expect(page.getByTestId('trash-empty-btn')).toBeVisible({ timeout: 15_000 });
+  // Armed delete: the first click arms, the second one empties.
   await page.getByTestId('trash-empty-btn').click();
-  const confirm = page.getByTestId('dialog-host-confirm-btn');
-  if (await confirm.isVisible().catch(() => false)) await confirm.click();
+  await page.getByTestId('trash-empty-btn').click();
   await expect(page.locator('[data-testid^="trash-restore-btn-"]')).toHaveCount(0, {
     timeout: 15_000,
   });

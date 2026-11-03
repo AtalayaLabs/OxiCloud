@@ -89,7 +89,8 @@
     "primary": "Primário",
     "admin_sections": "Seções administrativas",
     "back_to_app": "De volta ao OxiCloud",
-    "toggle": "Alternar menu de navegação"
+    "toggle": "Alternar menu de navegação",
+    "account": "Conta"
   },
   "photos": {
     "empty_state": "Nenhuma foto ainda",
@@ -639,7 +640,8 @@
     "access_denied": "Não tem permissão para fazer isso.",
     "not_found": "Esse item já não existe.",
     "conflict": "Já existe um item com esse nome.",
-    "transient_backend": "O armazenamento está temporariamente indisponível. Tente novamente."
+    "transient_backend": "O armazenamento está temporariamente indisponível. Tente novamente.",
+    "network": "Não foi possível conectar ao servidor. Verifique sua conexão e tente novamente."
   },
   "breadcrumb": {
     "home": "Início",
@@ -737,7 +739,7 @@
     "caps_lock": "Caps Lock ativado",
     "magic_email_label": "Endereço de e-mail",
     "magic_hint": "Sem senha? Digite seu e-mail e enviaremos um link de acesso único.",
-    "magic_unavailable": "O acesso por e-mail não está disponível neste servidor.",
+    "magic_unavailable": "Este servidor não envia e-mails de login. Entre com sua senha.",
     "passwords_match": "As palavras-passe coincidem",
     "sign_in": "Entrar",
     "password_or_link_hint": "Senha (deixe em branco para um link de login)",
@@ -748,6 +750,12 @@
     "magic_send": "Enviar link",
     "magic_sent": "Se existir uma conta, um link de login foi enviado. Verifique sua caixa de entrada.",
     "register_error": "Falha no registro",
+    "server_unreachable": "Não foi possível conectar ao servidor. Verifique sua conexão e tente novamente.",
+    "invalid_credentials": "Nome de usuário ou senha incorretos. Verifique-os e tente novamente.",
+    "email_taken": "Já existe uma conta com este e-mail. Em vez disso, faça login.",
+    "username_taken": "Esse nome de usuário já está em uso. Escolha outro.",
+    "registration_disabled": "O cadastro está desativado neste servidor. Peça a um administrador para criar sua conta.",
+    "registration_password_required": "Este servidor não envia e-mails de login. Digite uma senha para criar sua conta.",
     "session_expired": "Sua sessão expirou. Faça login novamente.",
     "signing_in": "Fazendo login…",
     "sending": "Enviando…",
@@ -841,7 +849,8 @@
     "share_success": "Link de partilha criado com sucesso",
     "upload_files_section_title": "Upload não disponível aqui",
     "upload_files_section_body": "Vá para a seção Arquivos para enviar arquivos",
-    "clear": "Limpar tudo"
+    "clear": "Limpar tudo",
+    "mark_all_read": "Marcar tudo como lido"
   },
   "batch": {
     "one_selected": "1 item selecionado",
@@ -1857,6 +1866,7 @@
     "clear": "Limpar",
     "close": "Fechar",
     "confirm": "Confirmar",
+    "really": "Tem certeza?",
     "copy": "Copiar",
     "create": "Criar",
     "delete": "Excluir",

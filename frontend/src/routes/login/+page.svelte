@@ -17,8 +17,9 @@
 		sendMagicLink,
 		setupAdmin
 	} from '$lib/api/endpoints/auth';
-	import { i18n, SUPPORTED_LOCALES, setLocale, t, type Locale } from '$lib/i18n/index.svelte';
+	import { i18n, setLocale, t, type Locale } from '$lib/i18n/index.svelte';
 	import { loginErrorMessage } from '$lib/auth/loginError';
+	import LanguageSelect from '$lib/components/LanguageSelect.svelte';
 	import { session } from '$lib/stores/session.svelte';
 	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import { hasSessionHint } from '$lib/api/csrf';
@@ -171,6 +172,20 @@
 	//     accepts either a username or an email as identifier)
 	// The `submitAsMagicLink` derived tracks which mode is active;
 	// button label + hint text render off it.
+	/**
+	 * Wrong password / unknown user. The auth service reports both as a
+	 * DomainError `AccessDenied` (403, error_type "Access Denied"); a few
+	 * legacy paths use 401. Either way the copy must be "check what you
+	 * typed", never "you lack permission".
+	 */
+	function isBadCredentials(err: ApiError): boolean {
+		return (
+			err.status === 401 ||
+			(err.status === 403 &&
+				(err.errorType === 'Access Denied' || err.errorType === 'AccessDenied'))
+		);
+	}
+
 	async function onLogin(e: SubmitEvent) {
 		e.preventDefault();
 		error = '';
@@ -223,6 +238,16 @@
 					'auth.password_login_disabled',
 					'Password login is disabled on this server. Leave the password blank to receive a sign-in link, or use SSO.'
 				);
+			} else if (err instanceof ApiError && err.status === 0) {
+				error = t(
+					'auth.server_unreachable',
+					"Couldn't reach the server. Check your connection and try again."
+				);
+			} else if (err instanceof ApiError && isBadCredentials(err)) {
+				error = t(
+					'auth.invalid_credentials',
+					'Incorrect username or password. Check them and try again.'
+				);
 			} else if (err instanceof ApiError && err.errorType === 'AccountDeactivated') {
 				// Reached ONLY after the server validated the credential
 				// — a wrong-password attempt on a deactivated account
@@ -261,12 +286,38 @@
 					: {
 							text: t(
 								'auth.magic_unavailable',
-								'Sign-in by email is not available on this server.'
+								"This server doesn't send sign-in emails. Sign in with your password."
 							),
 							ok: false
 						};
-		} catch {
-			magicStatus = { text: t('auth.magic_error', 'Something went wrong. Try again.'), ok: false };
+		} catch (err) {
+			// Server messages beat a generic line: the magic-link endpoint
+			// has real refusals (policy off, email send failed) and the user
+			// needs to know which one they hit.
+			if (err instanceof ApiError && err.status === 0) {
+				magicStatus = {
+					text: t(
+						'auth.server_unreachable',
+						"Couldn't reach the server. Check your connection and try again."
+					),
+					ok: false
+				};
+			} else if (err instanceof ApiError && err.errorType === 'MagicLinkLoginDisabled') {
+				magicStatus = {
+					text: t(
+						'auth.magic_unavailable',
+						"This server doesn't send sign-in emails. Sign in with your password."
+					),
+					ok: false
+				};
+			} else if (err instanceof ApiError && err.message) {
+				magicStatus = { text: err.message, ok: false };
+			} else {
+				magicStatus = {
+					text: t('auth.magic_error', 'Something went wrong. Try again.'),
+					ok: false
+				};
+			}
 		} finally {
 			busy = false;
 		}
@@ -311,14 +362,12 @@
 			);
 			mode = 'login';
 		} catch (err) {
-			// Branch on the server's `error_type` discriminator so each
-			// refusal gets its own user-readable string (translatable).
-			// Falls through to the server-provided message or the generic
-			// "Registration failed" when the reason is unknown — the
-			// anti-enumeration path (email/username collision) deliberately
-			// doesn't surface a distinguishable code, so there's nothing
-			// to branch on and the generic string is correct.
-			if (err instanceof ApiError && err.errorType === 'RegistrationDomainNotAllowed') {
+			if (err instanceof ApiError && err.status === 0) {
+				regError = t(
+					'auth.server_unreachable',
+					"Couldn't reach the server. Check your connection and try again."
+				);
+			} else if (err instanceof ApiError && err.errorType === 'RegistrationDomainNotAllowed') {
 				regError = t(
 					'auth.register_domain_not_allowed',
 					"This deployment doesn't accept sign-ups from that email domain. Try another address, or ask the administrator to add yours to the allow-list."
@@ -328,10 +377,28 @@
 					'auth.register_password_disabled',
 					'Password sign-up is disabled on this deployment. Leave the password blank to receive a sign-in link by email, or sign in with your identity provider.'
 				);
+			} else if (err instanceof ApiError && err.errorType === 'EmailTaken') {
+				regError = t(
+					'auth.email_taken',
+					'An account with this email already exists. Sign in instead.'
+				);
+			} else if (err instanceof ApiError && err.errorType === 'UsernameTaken') {
+				regError = t('auth.username_taken', 'That username is already taken. Pick another one.');
 			} else if (err instanceof ApiError && err.errorType === 'RegistrationDisabled') {
 				regError = t(
 					'auth.register_disabled',
 					'Sign-up is closed on this deployment. Ask an administrator for an invitation.'
+				);
+			} else if (
+				err instanceof ApiError &&
+				(err.errorType === 'SmtpRequired' || err.errorType === 'MagicLinkLoginDisabled')
+			) {
+				// The account was submitted with no password, so the server
+				// would have to email a sign-in link it cannot send. Point at
+				// the password route instead of quoting the SMTP config.
+				regError = t(
+					'auth.registration_password_required',
+					"This server doesn't send sign-in emails. Enter a password to create your account."
 				);
 			} else if (err instanceof Error && err.message) {
 				regError = err.message;
@@ -672,10 +739,11 @@
 							</div>
 						{/if}
 						{#if magicStatus}
+							<!-- Same box as the sign-up errors: one error style on
+							     this page, not a second grey bar. -->
 							<div
-								class={magicStatus.ok
-									? 'auth-status auth-status-success'
-									: 'auth-status auth-status-error'}
+								class={magicStatus.ok ? 'auth-success' : 'auth-error'}
+								style="display: block"
 								role={magicStatus.ok ? 'status' : 'alert'}
 							>
 								{magicStatus.text}
@@ -1111,16 +1179,12 @@
 			{/if}
 
 			<div class="auth-lang">
-				<select
-					aria-label={t('settings.language', 'Language')}
-					data-testid="login-language-select"
+				<LanguageSelect
+					label={t('settings.language', 'Language')}
+					testid="login-language-select"
 					value={i18n.locale}
-					onchange={(e) => setLocale(e.currentTarget.value as Locale)}
-				>
-					{#each SUPPORTED_LOCALES as loc (loc)}
-						<option value={loc}>{loc}</option>
-					{/each}
-				</select>
+					onchange={(loc) => void setLocale(loc as Locale)}
+				/>
 			</div>
 		</div>
 	</div>
@@ -1130,14 +1194,6 @@
 	.auth-lang {
 		margin-top: var(--space-5);
 		text-align: center;
-	}
-
-	.auth-lang select {
-		padding: var(--space-1) var(--space-3);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
-		background: var(--color-bg-input);
-		color: var(--color-text-muted);
 	}
 
 	.auth-error--dismissible {

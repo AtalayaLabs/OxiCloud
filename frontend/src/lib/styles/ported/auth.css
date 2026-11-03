@@ -130,10 +130,8 @@
 }
 
 .auth-input:focus {
-    outline: none;
     border-color: var(--color-accent);
     background-color: var(--color-bg-surface);
-    box-shadow: 0 0 0 3px var(--color-accent-ring);
 }
 
 .auth-input[readonly] {
@@ -531,7 +529,6 @@
     border: 1px solid var(--color-border);
     border-radius: var(--radius-lg);
     font-size: var(--text-base);
-    outline: none;
     box-sizing: border-box;
     background-color: var(--color-bg-input);
     color: var(--color-text);

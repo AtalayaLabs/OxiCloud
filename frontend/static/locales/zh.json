@@ -89,7 +89,8 @@
     "primary": "基本的",
     "admin_sections": "管理部分",
     "back_to_app": "返回奥西云",
-    "toggle": "切换导航菜单"
+    "toggle": "切换导航菜单",
+    "account": "账户"
   },
   "photos": {
     "empty_state": "还没有照片",
@@ -639,7 +640,8 @@
     "access_denied": "您没有执行此操作的权限。",
     "not_found": "该项目不再存在。",
     "conflict": "已存在同名项目。",
-    "transient_backend": "存储暂时不可用,请稍后重试。"
+    "transient_backend": "存储暂时不可用,请稍后重试。",
+    "network": "无法连接到服务器。请检查网络连接后重试。"
   },
   "breadcrumb": {
     "home": "主页",
@@ -737,7 +739,7 @@
     "caps_lock": "大写锁定已打开",
     "magic_email_label": "邮箱地址",
     "magic_hint": "没有密码？输入您的邮箱，我们将向您发送一次性登录链接。",
-    "magic_unavailable": "此服务器不支持邮箱登录。",
+    "magic_unavailable": "此服务器不发送登录邮件。请使用密码登录。",
     "passwords_match": "密码匹配",
     "sign_in": "登录",
     "password_or_link_hint": "密码（登录链接留空）",
@@ -748,6 +750,12 @@
     "magic_send": "发送链接",
     "magic_sent": "如果帐户存在，则会发送登录链接。检查您的收件箱。",
     "register_error": "注册失败",
+    "server_unreachable": "无法连接到服务器。请检查网络连接后重试。",
+    "invalid_credentials": "用户名或密码不正确。请检查后重试。",
+    "email_taken": "该邮箱已注册账号。请直接登录。",
+    "username_taken": "该用户名已被占用。请换一个。",
+    "registration_disabled": "此服务器已关闭注册。请联系管理员为你创建账号。",
+    "registration_password_required": "此服务器不发送登录邮件。请输入密码来创建账号。",
     "session_expired": "您的会话已过期。请重新登录。",
     "signing_in": "正在登录...",
     "sending": "正在发送...",
@@ -1658,7 +1666,8 @@
     "share_success": "分享链接创建成功",
     "upload_files_section_title": "此处不支持上传",
     "upload_files_section_body": "请前往文件部分上传文件",
-    "clear": "全部清除"
+    "clear": "全部清除",
+    "mark_all_read": "全部标为已读"
   },
   "upload": {
     "uploading": "正在上传...",
@@ -1857,6 +1866,7 @@
     "clear": "清除",
     "close": "关闭",
     "confirm": "确认",
+    "really": "确定？",
     "copy": "复制",
     "create": "创建",
     "delete": "删除",

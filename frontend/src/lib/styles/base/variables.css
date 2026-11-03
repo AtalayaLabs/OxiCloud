@@ -39,6 +39,7 @@
     --sidebar-width-collapsed: 72px; /* icon-rail mode (Fase 1) */
     --gutter: var(--space-6); /* shared topbar/content horizontal gutter (drops to 16px on phones) */
     --grid-card-min: 200px; /* min width of a grid card (tightens on phones) */
+    --mobile-nav-height: 60px; /* fixed bottom bar, phones only */
 
     /* ── Spacing — 4px grid ────────────────────────────────────── */
     /* Direct steps are multiples of 4; half-steps (0-5/1-5/2-5/3-5)

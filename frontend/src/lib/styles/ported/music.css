@@ -1206,7 +1206,8 @@
     transition: color 0.15s;
 }
 .music-share-remove-btn:hover {
-    color: var(--color-danger-text);
+    color: var(--color-danger-alt);
+    background: var(--color-danger-light-bg);
 }
 .music-shares-add {
     display: flex;
@@ -1227,11 +1228,7 @@
     color: var(--color-text);
 }
 .music-shares-input:focus {
-    outline: none;
-    /* Harmonised with every other text input: accent border + accent ring
-       (was a faint border-only change — weaker and off-palette). */
     border-color: var(--color-accent);
-    box-shadow: 0 0 0 3px var(--color-accent-ring);
 }
 .music-shares-write-label {
     font-size: 0.78rem;
@@ -1330,7 +1327,6 @@
     font-size: var(--text-sm);
     background: var(--color-bg-surface);
     color: var(--color-text);
-    outline: none;
 }
 .music-picker-search input:focus {
     border-color: var(--color-accent);
