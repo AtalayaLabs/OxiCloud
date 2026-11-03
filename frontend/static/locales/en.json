@@ -835,7 +835,6 @@
     "invalid_credentials": "Incorrect username or password. Check them and try again.",
     "email_taken": "An account with this email already exists. Sign in instead.",
     "username_taken": "That username is already taken. Pick another one.",
-    "registration_disabled": "Sign-ups are disabled on this server. Ask an administrator to create your account.",
     "registration_password_required": "This server doesn't send sign-in emails. Enter a password to create your account.",
     "session_expired": "Your session expired. Please sign in again.",
     "logged_out": "Successfully signed out.",

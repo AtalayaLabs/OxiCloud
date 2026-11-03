@@ -1,9 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-vi.mock('$lib/api/client', () => ({
-	apiFetch: vi.fn(),
-	apiJson: vi.fn(),
-	withBase: (p: string) => p
-}));
+// Keep the real `ApiError` class — the upload-path tests assert
+// `rejects.toMatchObject({ name: 'ApiError', errorType: … })` and
+// `instanceof ApiError` relies on the real constructor identity.
+vi.mock('$lib/api/client', async () => {
+	const actual = await vi.importActual<typeof import('$lib/api/client')>('$lib/api/client');
+	return {
+		...actual,
+		apiFetch: vi.fn(),
+		apiJson: vi.fn(),
+		withBase: (p: string) => p
+	};
+});
 vi.mock('$lib/api/csrf', () => ({ getCsrfHeaders: () => ({}) }));
 // Controllable DPoP proof — `uploadFileWithProgress` uses XHR (needed
 // for upload-progress events) and manually signs a proof. Default null
@@ -77,6 +84,7 @@ class MockXHR {
 	requestHeaders = new Map<string, string>();
 	responseHeaders = new Map<string, string>();
 	status = 0;
+	responseText = '';
 	body: unknown = null;
 	upload: {
 		onprogress: ((e: ProgressEvent) => void) | null;
@@ -110,6 +118,13 @@ class MockXHR {
 		this.status = status;
 		for (const [k, v] of Object.entries(headers)) this.responseHeaders.set(k.toLowerCase(), v);
 		this.onload?.();
+	}
+	/** Respond with a JSON body — stashes the stringified payload in
+	 * `responseText` and sets `Content-Type: application/json` so the
+	 * upload-transport's `Response` wrapper carries the parseable body. */
+	respondJson(status: number, body: unknown, headers: Record<string, string> = {}): void {
+		this.responseText = JSON.stringify(body);
+		this.respond(status, { 'Content-Type': 'application/json', ...headers });
 	}
 	fireError(): void {
 		this.onerror?.();
@@ -178,10 +193,82 @@ describe('uploadFileWithProgress — DPoP + XHR', () => {
 		const file = new File([new Uint8Array([1])], 'a.txt');
 		const p = uploadFileWithProgress(null, file, () => {});
 		const xhr = await waitForXhr(xhrs);
-		xhr.respond(507);
+		// Server now ships normalized `ApiErrorBody` on 507. Shape:
+		//   {status, error, message, error_type: "QuotaExceeded"}
+		// Pre-fix the wrapper threw a plain `Error("upload failed: 507")`
+		// with no `errorType` field, which collapsed every reason to the
+		// same opaque toast — the regression Ed hit on 2026-11-01 (upload
+		// to an over-quota shared drive silently reported "Echec du
+		// téléchargement" with no cause). The fix parses the body and
+		// throws an `ApiError` so `errorMessage()` can key the friendly
+		// i18n copy ("Not enough space…") off `errorType === "QuotaExceeded"`.
+		xhr.respondJson(507, {
+			status: '507 Insufficient Storage',
+			error: 'Drive quota exceeded: 421410098 + 1802867 > 314572800 bytes',
+			message: 'Drive quota exceeded: 421410098 + 1802867 > 314572800 bytes',
+			error_type: 'QuotaExceeded'
+		});
 		await expect(p).rejects.toMatchObject({
-			isQuota: true,
-			message: expect.stringContaining('507')
+			name: 'ApiError',
+			status: 507,
+			errorType: 'QuotaExceeded',
+			// `message` on the ApiError is the SERVER'S own message (via the
+			// constructor's `serverMessage` arg). `errorMessage()` reads
+			// `errorType` first and only falls back to this; the pin here
+			// just confirms the operator-flavoured string survives the
+			// hop in case the FE ever renders it (debug tools, etc).
+			message: expect.stringContaining('Drive quota exceeded'),
+			// Preserved so the batch orchestrator's "stop pulling work on a
+			// full disk" short-circuit (`uploadAll` at
+			// `files/[...path]/+page.svelte:756`) keeps working.
+			isQuota: true
+		});
+	});
+
+	it('surfaces a 403 with parsed errorType + server message', async () => {
+		// Any non-507 error must also parse the normalized ApiErrorBody —
+		// pre-fix every non-OK response collapsed into
+		// `Error("upload failed: ${status}")` with no errorType, so UX
+		// couldn't distinguish quota from permissions from quota-less
+		// server errors. Pin on 403 so a regression that reverted the
+		// parser to the generic Error path trips here too, not just on
+		// quota.
+		const file = new File([new Uint8Array([1])], 'a.txt');
+		const p = uploadFileWithProgress(null, file, () => {});
+		const xhr = await waitForXhr(xhrs);
+		xhr.respondJson(403, {
+			status: '403 Forbidden',
+			error: 'Create permission required on folder',
+			message: 'Create permission required on folder',
+			error_type: 'AccessDenied'
+		});
+		await expect(p).rejects.toMatchObject({
+			name: 'ApiError',
+			status: 403,
+			errorType: 'AccessDenied',
+			message: expect.stringContaining('Create permission'),
+			isQuota: false
+		});
+	});
+
+	it('throws ApiError with undefined errorType when the body is not JSON', async () => {
+		// A proxied 503 page, a timeout gateway, or a buggy middleware can
+		// return a non-JSON 5xx body. Pre-fix the parser crashed and the
+		// upload reported "Upload failed" with no diagnostics. Shape-
+		// tolerance guard: still throw an ApiError (so downstream
+		// `errorMessage` can fall back to the status text), with
+		// `errorType` undefined (no claim about the error_type we
+		// couldn't parse).
+		const file = new File([new Uint8Array([1])], 'a.txt');
+		const p = uploadFileWithProgress(null, file, () => {});
+		const xhr = await waitForXhr(xhrs);
+		xhr.responseText = '<html><body>502 Bad Gateway</body></html>';
+		xhr.respond(502, { 'Content-Type': 'text/html' });
+		await expect(p).rejects.toMatchObject({
+			name: 'ApiError',
+			status: 502,
+			errorType: undefined,
+			isQuota: false
 		});
 	});
 
@@ -228,7 +315,14 @@ describe('uploadFileWithProgress — DPoP + XHR', () => {
 			'DPoP-Nonce': 'srv-fresher'
 		});
 
-		await expect(p).rejects.toThrow(/upload failed: 401/);
+		// Pre-fix the wrapper threw `Error("upload failed: 401")`; post-fix
+		// it throws an `ApiError` whose default message (no server body to
+		// parse — the 401 is a bare DPoP challenge) follows the format
+		// `API ${status} ${statusText} for ${resource}`. The point of this
+		// pin is "the second 401 is NOT retried a third time" — assert
+		// on the ApiError shape + status instead of the message string so
+		// a future ApiError.message tweak doesn't break the retry pin.
+		await expect(p).rejects.toMatchObject({ name: 'ApiError', status: 401 });
 		expect(xhrs).toHaveLength(2); // never a third
 	});
 });

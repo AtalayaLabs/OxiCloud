@@ -85,23 +85,26 @@ HTTP 403
 
 
 # ─────────────────────────────────────────────────────────────
-# Case 7 — /api/auth/oidc/providers advertises the auth-method
-#           policy the SPA needs to render the correct forms.
+# Case 7 — /api/config.auth.* advertises the auth-method policy
+#           the SPA needs to render the correct forms.
 #
-# tests/common/server.env has OXICLOUD_OIDC_ENABLED=false,
-# OXICLOUD_SMTP_MOCK=true (so SMTP is "wired"), and the default
-# OXICLOUD_AUTH_METHODS (both methods allowed). Expected shape:
-#   enabled: false                  — no OIDC IdP configured
-#   password_login_enabled: true    — default allowlist includes it
-#   magic_link_login_enabled: true  — SMTP wired + allowlist + no OIDC
-#   require_verified_email: false   — default
+# Was `GET /api/auth/oidc/providers` (retired on feat/registration);
+# the four auth-method flags moved onto `/api/config.auth.*` as
+# sub-objects per concern. The shape pins live in
+# `auth_config_discovery.hurl`; this case re-pins the exact VALUES
+# a server booted from `tests/common/server.env` is expected to
+# publish:
+#   OXICLOUD_OIDC_ENABLED=false       → auth.oidc.enabled: false
+#   OXICLOUD_SMTP_MOCK=true           → auth.magic_link.enabled: true
+#   default OXICLOUD_AUTH_METHODS     → auth.password.enabled: true
+#   default (not set)                 → auth.require_verified_email: false
 # ─────────────────────────────────────────────────────────────
-GET {{base_url}}/api/auth/oidc/providers
+GET {{base_url}}/api/config
 
 HTTP 200
 [Asserts]
-jsonpath "$.enabled" == false
-jsonpath "$.password_login_enabled" == true
-jsonpath "$.magic_link_login_enabled" == true
-jsonpath "$.require_verified_email" == false
+jsonpath "$.auth.oidc.enabled" == false
+jsonpath "$.auth.password.enabled" == true
+jsonpath "$.auth.magic_link.enabled" == true
+jsonpath "$.auth.require_verified_email" == false
 

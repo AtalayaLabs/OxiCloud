@@ -1,8 +1,25 @@
 import { uploadTransport } from '../upload-transport';
 /** File endpoints — ported from fileOperations.js. */
-import { apiFetch, withBase } from '$lib/api/client';
+import { ApiError, apiErrorFromResponse, apiFetch, withBase } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import type { FileItem } from '$lib/api/types';
+
+/**
+ * Thin upload-specific wrapper around `apiErrorFromResponse` — the shared
+ * helper parses the normalized `ApiErrorBody` into an `ApiError`; this
+ * one adds the upload-specific `.isQuota` tag so the batch orchestrator's
+ * "stop pulling new work on a full disk" short-circuit (`uploadAll` at
+ * `+page.svelte:756`) keeps working. Non-upload endpoints call
+ * `apiErrorFromResponse` directly.
+ */
+async function uploadErrorFromResponse(
+	response: Response,
+	resource: string
+): Promise<ApiError & { isQuota: boolean }> {
+	const err = (await apiErrorFromResponse(response, resource)) as ApiError & { isQuota: boolean };
+	err.isQuota = response.status === 507;
+	return err;
+}
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
@@ -27,7 +44,7 @@ export async function createFileByHash(
 	 * refused by the server's pre-2000 floor.
 	 */
 	sourceModifiedAt?: number
-): Promise<{ ok: boolean; status: number; data?: unknown }> {
+): Promise<{ ok: boolean; status: number; data?: unknown; errorBody?: unknown }> {
 	const res = await apiFetch('/api/files/by-hash', {
 		method: 'POST',
 		credentials: 'same-origin',
@@ -39,8 +56,15 @@ export async function createFileByHash(
 			...(sourceModifiedAt ? { source_modified_at: sourceModifiedAt } : {})
 		})
 	});
-	const data = res.ok ? await res.json().catch(() => undefined) : undefined;
-	return { ok: res.ok, status: res.status, data };
+	if (res.ok) {
+		const data = await res.json().catch(() => undefined);
+		return { ok: true, status: res.status, data };
+	}
+	// Preserve the error body so callers like `instantUploadOwned` can thread
+	// the server's `error_type` + `message` into the thrown `ApiError`,
+	// instead of swallowing it into a hardcoded "Storage quota exceeded".
+	const errorBody = await res.json().catch(() => undefined);
+	return { ok: false, status: res.status, errorBody };
 }
 
 /**
@@ -102,7 +126,7 @@ export async function uploadFile(folderId: string | null, file: File): Promise<F
 		headers: getCsrfHeaders(), // multipart boundary set automatically; do not set Content-Type
 		body: form
 	});
-	if (!res.ok) throw new Error(`upload failed: ${res.status}`);
+	if (!res.ok) throw await uploadErrorFromResponse(res, '/api/files/upload');
 	// Tolerate a body-less success: the upload itself is what matters,
 	// and an older/proxied response shape must not turn a completed
 	// upload into a thrown error.
@@ -129,9 +153,7 @@ export async function uploadFileWithProgress(
 		fetch: uploadTransport(form, onProgress)
 	});
 	if (!response.ok) {
-		const error = new Error(`upload failed: ${response.status}`) as Error & { isQuota?: boolean };
-		error.isQuota = response.status === 507;
-		throw error;
+		throw await uploadErrorFromResponse(response, '/api/files/upload');
 	}
 }
 
@@ -142,7 +164,7 @@ export async function renameFile(fileId: string, name: string): Promise<void> {
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 		body: JSON.stringify({ name })
 	});
-	if (!res.ok) throw new Error(`rename file failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 }
 
 export async function moveFile(fileId: string, targetFolderId: string | null): Promise<void> {
@@ -152,7 +174,7 @@ export async function moveFile(fileId: string, targetFolderId: string | null): P
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 		body: JSON.stringify({ folder_id: targetFolderId || null })
 	});
-	if (!res.ok) throw new Error(`move file failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 }
 
 export async function deleteFile(fileId: string): Promise<void> {
@@ -161,7 +183,7 @@ export async function deleteFile(fileId: string): Promise<void> {
 		credentials: 'same-origin',
 		headers: getCsrfHeaders()
 	});
-	if (!res.ok) throw new Error(`delete file failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 }
 
 /**
@@ -179,7 +201,7 @@ export async function getFile(fileId: string): Promise<FileItem> {
 	const res = await apiFetch(`/api/files/${fileId}?metadata=true`, {
 		credentials: 'same-origin'
 	});
-	if (!res.ok) throw new Error(`file metadata failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 	return (await res.json()) as FileItem;
 }
 

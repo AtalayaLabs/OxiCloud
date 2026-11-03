@@ -18,7 +18,8 @@ export {
 	setSessionExpiredHandler,
 	setPasswordChangeRequiredHandler,
 	setLogoutInProgress,
-	isLogoutInProgress
+	isLogoutInProgress,
+	onSessionRefreshed
 } from './transport';
 export type { FetchFn, ApiClientDeps } from './transport';
 
@@ -85,9 +86,56 @@ export async function apiFetch(
 export async function apiJson<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
 	const res = await apiFetch(input, init);
 	if (!res.ok) {
-		throw new ApiError(res.status, res.statusText, input);
+		throw await apiErrorFromResponse(res, input);
 	}
 	return (await res.json()) as T;
+}
+
+/**
+ * Build an `ApiError` from a non-ok `Response`, parsing the server's
+ * normalized `ApiErrorBody` so the thrown error carries `errorType` + the
+ * server's own `message`. The toast layer (`lib/utils/errors.ts`'s
+ * `errorMessage()`) keys friendly i18n copy off `errorType`, so any
+ * wrapper that threw a plain `Error("<action> failed: ${status}")`
+ * silently collapsed every error into the opaque "X failed: ${status}"
+ * sentence — the regression Ed hit on 2026-11-01 across `uploadFile`,
+ * `createFileByHash`, `createFolder`, and ~25 other wrappers.
+ *
+ * Shape-tolerant: a response that isn't JSON (proxied 502 HTML page, a
+ * timeout gateway), or lacks the ApiErrorBody fields, yields an
+ * `ApiError` whose `errorType` is undefined and whose message falls
+ * through to the `ApiError` constructor's default. The function never
+ * throws from the body-read — it ALWAYS returns an `ApiError` the caller
+ * can throw.
+ *
+ * `resource` defaults to `res.url` (populated by the Fetch API with the
+ * final request URL). Pass an explicit resource only when `res.url` is
+ * unreliable (test mocks that don't set it, or when the caller has a
+ * more useful identifier than the raw URL).
+ *
+ * Usage: `if (!res.ok) throw await apiErrorFromResponse(res);`
+ */
+export async function apiErrorFromResponse(
+	res: Response,
+	resource: RequestInfo | URL = res.url
+): Promise<ApiError> {
+	let errorType: string | undefined;
+	let serverMessage: string | undefined;
+	try {
+		const body = (await res.clone().json()) as {
+			error_type?: unknown;
+			message?: unknown;
+			error?: unknown;
+		};
+		if (typeof body.error_type === 'string') errorType = body.error_type;
+		if (typeof body.message === 'string') serverMessage = body.message;
+		else if (typeof body.error === 'string') serverMessage = body.error;
+	} catch {
+		// Non-JSON body or empty body — fall through to the ApiError
+		// constructor's default message, which includes status + statusText
+		// + the resource path.
+	}
+	return new ApiError(res.status, res.statusText, resource, errorType, serverMessage);
 }
 
 export class ApiError extends Error {

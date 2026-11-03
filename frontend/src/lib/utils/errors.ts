@@ -5,7 +5,7 @@ import { ui } from '$lib/stores/ui.svelte';
 
 /**
  * Human sentences for the `error_type` values the backend emits
- * (`ErrorKind::as_str`, a wire contract — see `src/domain/errors.rs`).
+ * (`ErrorKind::wire_name`, PascalCase — see `src/domain/errors.rs`).
  *
  * Keyed on `error_type` and never on message text, per the project's error
  * contract. The server's own message is accurate but written for an operator:
@@ -19,19 +19,19 @@ import { ui } from '$lib/stores/ui.svelte';
  */
 function messageForErrorType(errorType: string): string | null {
 	switch (errorType) {
-		case 'Quota Exceeded':
+		case 'QuotaExceeded':
 			return t(
 				'errors.quota_exceeded',
 				'Not enough space. Free some up, or ask an administrator to raise the quota.'
 			);
-		case 'Access Denied':
+		case 'AccessDenied':
 			return t('errors.access_denied', "You don't have permission to do that.");
-		case 'Not Found':
+		case 'NotFound':
 			return t('errors.not_found', 'That item no longer exists.');
-		case 'Already Exists':
+		case 'AlreadyExists':
 		case 'Conflict':
 			return t('errors.conflict', 'An item with that name is already there.');
-		case 'Transient Backend':
+		case 'TransientBackend':
 			return t('errors.transient_backend', 'Storage is temporarily unavailable. Try again.');
 		// Raised by `apiErrorFromSdkError` when the fetch never produced a
 		// response — the server was down or unreachable, not a failed action.

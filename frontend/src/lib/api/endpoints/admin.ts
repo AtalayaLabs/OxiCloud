@@ -4,7 +4,7 @@ import { client as generatedClient } from '../generated/openapi/client.gen';
  * (incl. logs/retention/live SSE tail), dashboard, settings (OIDC/storage/SMTP),
  * and storage migration (incl. the verify integrity check).
  */
-import { apiFetch, apiJson } from '$lib/api/client';
+import { apiErrorFromResponse, apiFetch, apiJson } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import type {
 	AdminSessionsPage,
@@ -28,10 +28,7 @@ async function mutate(url: string, method: string, body?: unknown): Promise<void
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 		body: body === undefined ? undefined : JSON.stringify(body)
 	});
-	if (!res.ok) {
-		const e = (await res.json().catch(() => ({}))) as { message?: string };
-		throw new Error(e.message || `${method} ${url} failed: ${res.status}`);
-	}
+	if (!res.ok) throw await apiErrorFromResponse(res);
 }
 
 /** POST with no request body that returns a JSON payload (throws on non-2xx). */
@@ -41,10 +38,7 @@ async function postJson<T>(url: string): Promise<T> {
 		credentials: 'same-origin',
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() }
 	});
-	if (!res.ok) {
-		const e = (await res.json().catch(() => ({}))) as { message?: string };
-		throw new Error(e.message || `POST ${url} failed: ${res.status}`);
-	}
+	if (!res.ok) throw await apiErrorFromResponse(res);
 	return (await res.json()) as T;
 }
 
@@ -112,16 +106,7 @@ export async function addDriveMemberAdmin(
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 		body: JSON.stringify({ subject, role, expires_at: expiresAt ?? null })
 	});
-	if (!res.ok) {
-		let detail = '';
-		try {
-			const parsed = (await res.json()) as { error?: string; message?: string };
-			detail = parsed.error ?? parsed.message ?? '';
-		} catch {
-			/* response body wasn't JSON */
-		}
-		throw new Error(detail || `add member failed: ${res.status}`);
-	}
+	if (!res.ok) throw await apiErrorFromResponse(res);
 	return (await res.json()) as DriveMember;
 }
 
@@ -142,16 +127,7 @@ export async function removeDriveMemberAdmin(
 		credentials: 'same-origin',
 		headers: getCsrfHeaders()
 	});
-	if (!res.ok) {
-		let detail = '';
-		try {
-			const parsed = (await res.json()) as { error?: string; message?: string };
-			detail = parsed.error ?? parsed.message ?? '';
-		} catch {
-			/* response body wasn't JSON */
-		}
-		throw new Error(detail || `remove member failed: ${res.status}`);
-	}
+	if (!res.ok) throw await apiErrorFromResponse(res);
 }
 
 /**
@@ -194,16 +170,7 @@ export async function updateDriveQuota(
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 		body: JSON.stringify({ quota_bytes: quotaBytes })
 	});
-	if (!res.ok) {
-		let detail = '';
-		try {
-			const parsed = (await res.json()) as { error?: string; message?: string };
-			detail = parsed.error ?? parsed.message ?? '';
-		} catch {
-			/* response body wasn't JSON */
-		}
-		throw new Error(detail || `update drive quota failed: ${res.status}`);
-	}
+	if (!res.ok) throw await apiErrorFromResponse(res);
 	const body = (await res.json()) as { quota_bytes: number | null };
 	return body.quota_bytes;
 }
@@ -214,17 +181,10 @@ export async function deleteDriveAdmin(driveId: string): Promise<void> {
 		credentials: 'same-origin',
 		headers: getCsrfHeaders()
 	});
-	if (!res.ok) {
-		let detail = '';
-		try {
-			const parsed = (await res.json()) as { error?: string; message?: string };
-			detail = parsed.error ?? parsed.message ?? '';
-		} catch {
-			/* response body wasn't JSON */
-		}
-		// 405 / 409 carry actionable messages from the backend; bubble them.
-		throw new Error(detail || `delete drive failed: ${res.status}`);
-	}
+	// 405 / 409 carry actionable messages from the backend; `apiErrorFromResponse`
+	// extracts `message` (or `error`) from the normalized `ApiErrorBody` and
+	// surfaces them as the thrown `ApiError.message`.
+	if (!res.ok) throw await apiErrorFromResponse(res);
 }
 
 // ── Sessions (admin panel) ──────────────────────────────────────────────
@@ -736,16 +696,7 @@ async function putDefaults<T>(
 			body: JSON.stringify(bag)
 		}
 	);
-	if (!res.ok) {
-		let detail = '';
-		try {
-			const e = (await res.json()) as { message?: string };
-			detail = e.message ?? '';
-		} catch {
-			/* non-JSON error body */
-		}
-		throw new Error(detail || `drive policy defaults failed: ${res.status}`);
-	}
+	if (!res.ok) throw await apiErrorFromResponse(res);
 	return (await res.json()) as T;
 }
 
@@ -1005,10 +956,7 @@ export async function createOpsBanner(input: OpsBannerInput): Promise<OpsBanner>
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 		body: JSON.stringify(input)
 	});
-	if (!res.ok) {
-		const e = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
-		throw new Error(e.message || e.error || `create banner failed: ${res.status}`);
-	}
+	if (!res.ok) throw await apiErrorFromResponse(res);
 	return (await res.json()) as OpsBanner;
 }
 
@@ -1026,10 +974,7 @@ export async function updateOpsBanner(id: string, input: OpsBannerInput): Promis
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 		body: JSON.stringify(input)
 	});
-	if (!res.ok) {
-		const e = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
-		throw new Error(e.message || e.error || `update banner failed: ${res.status}`);
-	}
+	if (!res.ok) throw await apiErrorFromResponse(res);
 	return (await res.json()) as OpsBanner;
 }
 
@@ -1077,10 +1022,7 @@ export async function installPlugin(bundle: File): Promise<PluginInfo> {
 		headers: { ...getCsrfHeaders() },
 		body: form
 	});
-	if (!res.ok) {
-		const e = (await res.json().catch(() => ({}))) as { message?: string };
-		throw new Error(e.message || `install failed: ${res.status}`);
-	}
+	if (!res.ok) throw await apiErrorFromResponse(res);
 	return (await res.json()) as PluginInfo;
 }
 
@@ -1110,7 +1052,7 @@ export interface PluginsResult {
 export async function listPlugins(): Promise<PluginsResult> {
 	const res = await apiFetch('/api/admin/plugins', { credentials: 'same-origin' });
 	if (res.status === 503) return { available: false, plugins: [] };
-	if (!res.ok) throw new Error(`plugins failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 	const data = (await res.json()) as { enabled?: boolean; plugins?: PluginInfo[] };
 	return { available: true, enabled: data.enabled, plugins: data.plugins ?? [] };
 }
@@ -1194,10 +1136,7 @@ export async function createExternalMount(input: CreateExternalMountInput): Prom
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 		body: JSON.stringify(input)
 	});
-	if (!res.ok) {
-		const e = (await res.json().catch(() => ({}))) as { message?: string };
-		throw new Error(e.message || `Create mount failed: ${res.status}`);
-	}
+	if (!res.ok) throw await apiErrorFromResponse(res);
 	return (await res.json()) as ExternalMount;
 }
 

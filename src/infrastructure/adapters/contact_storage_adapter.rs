@@ -163,9 +163,11 @@ impl ContactStoragePort for ContactStorageAdapter {
         &self,
         address_book_id: &Uuid,
         query: &str,
+        limit: i64,
+        offset: i64,
     ) -> Result<Vec<Contact>, DomainError> {
         self.contact_repository
-            .search_contacts(address_book_id, query)
+            .search_contacts(address_book_id, query, limit, offset)
             .await
     }
 

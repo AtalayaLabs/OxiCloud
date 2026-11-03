@@ -29,6 +29,7 @@ pub mod recent_handler;
 pub mod rt_ticket_handler;
 pub mod rt_ws;
 pub mod search_handler;
+pub mod server_status_handler;
 pub mod share_handler;
 pub mod subject_group_handler;
 pub mod trash_handler;

@@ -140,6 +140,29 @@ jsonpath "$[0].full_name" == "John Doe"
 
 
 # ─────────────────────────────────────────────────────────────
+# Step 6b – Server-side search (trigram-indexed ILIKE)
+#           `search` must filter inside the book, not fetch
+#           everything and let the browser sift it.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/address-books/{{book_id}}/contacts?search=doe
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$" count == 1
+jsonpath "$[0].id" == {{contact_id}}
+jsonpath "$[0].full_name" == "John Doe"
+
+
+GET {{base_url}}/api/address-books/{{book_id}}/contacts?search=nobody-matches-this
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$" count == 0
+
+
+# ─────────────────────────────────────────────────────────────
 # Step 7 – Get John Doe by id and verify all fields
 # ─────────────────────────────────────────────────────────────
 GET {{base_url}}/api/address-books/{{book_id}}/contacts/{{contact_id}}
@@ -355,10 +378,23 @@ jsonpath "$[*].id" not contains {{share_book_id}}
 
 
 # Step 18a — Direct GET on Alice's book: 404 (anti-enum).
+#
+# Also pins the normalized ApiErrorBody shape on the contacts
+# handler's `domain_err_to_response` path — pre-normalization it
+# emitted a bare `{"error": "..."}` tuple from a bespoke mapper, now
+# routes through `AppError::from(DomainError)` → full ApiErrorBody.
+# This 404 is the ONLY contacts-handler-shape pin, so if a reviewer
+# removes it, every one of the 20 call sites that funnel through
+# `domain_err_to_response` is left shape-unverified.
 GET {{base_url}}/api/address-books/{{share_book_id}}/contacts
 Authorization: Bearer {{bob_token}}
 
 HTTP 404
+[Asserts]
+jsonpath "$.error_type" == "NotFound"
+jsonpath "$.status"     == "404 Not Found"
+jsonpath "$.message"    exists
+jsonpath "$.error"      exists
 
 
 # Step 18b — Contact-write into Alice's book: 404. Bob has no
@@ -377,6 +413,25 @@ Content-Type: application/json
 }
 
 HTTP 404
+[Asserts]
+jsonpath "$.error_type" == "NotFound"
+
+
+# Step 18c — Direct GET on a nonexistent contact id in Bob's own
+# system book. Hits `domain_err_to_response` on a true NotFound
+# (not authz anti-enum) — the service returns `NotFound("Contact",
+# _)` which the normalized mapper rewrites to the uniform
+# ApiErrorBody. Separate from 18a/b so a reviewer can tell at a
+# glance that both the authz-denial and the real-404 paths go
+# through the same shape.
+GET {{base_url}}/api/address-books/system/contacts/00000000-0000-0000-0000-000000000000
+Authorization: Bearer {{bob_token}}
+
+HTTP 404
+[Asserts]
+jsonpath "$.error_type" == "NotFound"
+jsonpath "$.status"     == "404 Not Found"
+jsonpath "$.message"    exists
 
 
 # Step 19 — Alice shares the book with Bob as Viewer via the

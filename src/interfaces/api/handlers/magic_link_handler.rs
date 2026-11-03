@@ -144,8 +144,8 @@ struct RedeemQuery {
     responses(
         (status = 200, description = "Cross-browser confirmation prompt (HTML page)"),
         (status = 302, description = "Redemption succeeded — redirects to the resource or to /shared-with-me"),
-        (status = 410, description = "Token is unknown, expired, or already used"),
-        (status = 503, description = "Magic-link feature is not configured on this server"),
+        (status = 410, description = "Token is unknown, expired, or already used", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 503, description = "Magic-link feature is not configured on this server", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "magic-link",
 )]

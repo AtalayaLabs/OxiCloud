@@ -27,8 +27,8 @@ use std::sync::Arc;
     responses(
         (status = 200, description = "Paginated list of trashed resources",
          body = crate::application::dtos::trash_dto::TrashResourcesDto),
-        (status = 400, description = "Invalid cursor or query parameters"),
-        (status = 501, description = "Trash feature not enabled"),
+        (status = 400, description = "Invalid cursor or query parameters", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 501, description = "Trash feature not enabled", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "trash"
@@ -45,11 +45,7 @@ pub async fn get_trash_resources(
     let trash_service = match state.trash_service.as_ref() {
         Some(service) => service,
         None => {
-            return (
-                StatusCode::NOT_IMPLEMENTED,
-                Json(json!({ "error": "Trash feature is not enabled" })),
-            )
-                .into_response();
+            return AppError::not_implemented("Trash feature is not enabled").into_response();
         }
     };
 
@@ -106,7 +102,7 @@ pub async fn get_trash_resources(
     params(("id" = String, Path, description = "File ID")),
     responses(
         (status = 200, body = Object, description = "File moved to trash"),
-        (status = 501, description = "Trash feature not enabled")
+        (status = 501, description = "Trash feature not enabled", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "trash"
@@ -126,13 +122,7 @@ pub async fn move_file_to_trash(
     let trash_service = match state.trash_service.as_ref() {
         Some(service) => service,
         None => {
-            return (
-                StatusCode::NOT_IMPLEMENTED,
-                Json(json!({
-                    "error": "Trash feature is not enabled"
-                })),
-            )
-                .into_response();
+            return AppError::not_implemented("Trash feature is not enabled").into_response();
         }
     };
 
@@ -165,7 +155,7 @@ pub async fn move_file_to_trash(
     params(("id" = String, Path, description = "Folder ID")),
     responses(
         (status = 200, body = Object, description = "Folder moved to trash"),
-        (status = 501, description = "Trash feature not enabled")
+        (status = 501, description = "Trash feature not enabled", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "trash"
@@ -185,13 +175,7 @@ pub async fn move_folder_to_trash(
     let trash_service = match state.trash_service.as_ref() {
         Some(service) => service,
         None => {
-            return (
-                StatusCode::NOT_IMPLEMENTED,
-                Json(json!({
-                    "error": "Trash feature is not enabled"
-                })),
-            )
-                .into_response();
+            return AppError::not_implemented("Trash feature is not enabled").into_response();
         }
     };
 
@@ -226,7 +210,7 @@ pub async fn move_folder_to_trash(
     params(("id" = String, Path, description = "Trash item ID")),
     responses(
         (status = 200, body = Object, description = "Item restored from trash"),
-        (status = 501, description = "Trash feature not enabled")
+        (status = 501, description = "Trash feature not enabled", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "trash"
@@ -242,13 +226,7 @@ pub async fn restore_from_trash(
     let trash_service = match state.trash_service.as_ref() {
         Some(service) => service,
         None => {
-            return (
-                StatusCode::NOT_IMPLEMENTED,
-                Json(json!({
-                    "error": "Trash feature is not enabled"
-                })),
-            )
-                .into_response();
+            return AppError::not_implemented("Trash feature is not enabled").into_response();
         }
     };
     let result = trash_service.restore_item(&trash_id, auth_user.id).await;
@@ -279,7 +257,7 @@ pub async fn restore_from_trash(
     params(("id" = String, Path, description = "Trash item ID")),
     responses(
         (status = 200, body = Object, description = "Item permanently deleted"),
-        (status = 501, description = "Trash feature not enabled")
+        (status = 501, description = "Trash feature not enabled", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "trash"
@@ -295,13 +273,7 @@ pub async fn delete_permanently(
     let trash_service = match state.trash_service.as_ref() {
         Some(service) => service,
         None => {
-            return (
-                StatusCode::NOT_IMPLEMENTED,
-                Json(json!({
-                    "error": "Trash feature is not enabled"
-                })),
-            )
-                .into_response();
+            return AppError::not_implemented("Trash feature is not enabled").into_response();
         }
     };
     let result = trash_service
@@ -333,7 +305,7 @@ pub async fn delete_permanently(
     path = "/api/trash/empty",
     responses(
         (status = 200, body = Object, description = "Trash emptied successfully"),
-        (status = 501, description = "Trash feature not enabled")
+        (status = 501, description = "Trash feature not enabled", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "trash"
@@ -342,18 +314,13 @@ pub async fn delete_permanently(
 pub async fn empty_trash(
     State(state): State<Arc<AppState>>,
     auth_user: AuthUser,
-) -> (StatusCode, Json<serde_json::Value>) {
+) -> axum::response::Response {
     debug!("Request to empty trash for user {}", auth_user.id);
 
     let trash_service = match state.trash_service.as_ref() {
         Some(service) => service,
         None => {
-            return (
-                StatusCode::NOT_IMPLEMENTED,
-                Json(json!({
-                    "error": "Trash feature is not enabled"
-                })),
-            );
+            return AppError::not_implemented("Trash feature is not enabled").into_response();
         }
     };
     let result = trash_service.empty_trash(auth_user.id).await;
@@ -368,15 +335,11 @@ pub async fn empty_trash(
                     "message": "Trash emptied successfully"
                 })),
             )
+                .into_response()
         }
         Err(e) => {
             error!("Error emptying trash: {:?}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({
-                    "error": "Error emptying trash"
-                })),
-            )
+            AppError::internal_error("Error emptying trash").into_response()
         }
     }
 }
@@ -398,8 +361,8 @@ pub async fn empty_trash(
     params(("drive_id" = Uuid, Path, description = "Drive UUID")),
     responses(
         (status = 200, body = Object, description = "Drive trash emptied successfully"),
-        (status = 404, description = "Caller lacks Delete on this drive"),
-        (status = 501, description = "Trash feature not enabled"),
+        (status = 404, description = "Caller lacks Delete on this drive", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 501, description = "Trash feature not enabled", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "trash"
@@ -418,11 +381,7 @@ pub async fn empty_trash_for_drive(
     let trash_service = match state.trash_service.as_ref() {
         Some(service) => service,
         None => {
-            return (
-                StatusCode::NOT_IMPLEMENTED,
-                Json(json!({ "error": "Trash feature is not enabled" })),
-            )
-                .into_response();
+            return AppError::not_implemented("Trash feature is not enabled").into_response();
         }
     };
 

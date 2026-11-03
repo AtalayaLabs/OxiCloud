@@ -4,7 +4,12 @@ import type { SelfUser } from '$lib/api/types';
 // `vi.mock` is hoisted above imports, so the spy it references must be created
 // with `vi.hoisted` (a plain top-level const isn't initialised yet when the
 // factory runs).
-const { fetchMeMock } = vi.hoisted(() => ({ fetchMeMock: vi.fn() }));
+const { fetchMeMock, listDrivesMock } = vi.hoisted(() => ({
+	fetchMeMock: vi.fn(),
+	listDrivesMock: vi.fn()
+}));
+
+vi.mock('$lib/api/endpoints/drives', () => ({ listDrives: () => listDrivesMock() }));
 
 vi.mock('$lib/api/endpoints/auth', () => ({
 	fetchMe: () => fetchMeMock(),
@@ -13,6 +18,7 @@ vi.mock('$lib/api/endpoints/auth', () => ({
 }));
 
 import { session } from './session.svelte';
+import { drives } from './drives.svelte';
 
 // `storage_used_bytes` moved to `FullUser` (embedded inside `SelfUser`)
 // as part of the three-layer UserDto refactor
@@ -49,5 +55,30 @@ describe('session.refresh', () => {
 		fetchMeMock.mockRejectedValue(new Error('network'));
 		await session.refresh();
 		expect(session.me?.full.storage_used_bytes).toBe(2048);
+	});
+});
+
+// Regression: logout → login as another user in the same tab resolved the
+// new user's home from the previous user's cached drives (404 on /files).
+// `session.reset()` never cleared the drives store. Store layer.
+describe('session.reset', () => {
+	it('drops the cached drives so the next user does not inherit them', () => {
+		drives.drives = [{ id: 'd1', root_folder_id: 'r1' } as never];
+		drives.loaded = true;
+		session.reset();
+		expect(drives.drives).toEqual([]);
+		expect(drives.loaded).toBe(false);
+		expect(drives.findDefault()).toBeNull();
+	});
+
+	it('ignores a drives fetch that settles after the reset', async () => {
+		let resolve!: (v: never[]) => void;
+		listDrivesMock.mockReturnValue(new Promise<never[]>((r) => (resolve = r)));
+		const pending = drives.load();
+		session.reset();
+		resolve([{ id: 'old', root_folder_id: 'r-old' } as never]);
+		await pending;
+		expect(drives.drives).toEqual([]);
+		expect(drives.loaded).toBe(false);
 	});
 });

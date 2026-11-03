@@ -12,20 +12,26 @@ class DrivesStore {
 	drives = $state<Drive[]>([]);
 	loaded = $state(false);
 	private inflight: Promise<Drive[]> | null = null;
+	// Bumped by `reset()` so a fetch started before it cannot repopulate the
+	// store with the previous user's drives when it settles.
+	private gen = 0;
 
 	async load(): Promise<Drive[]> {
 		if (this.loaded) return this.drives;
 		if (this.inflight) return this.inflight;
+		const gen = this.gen;
 		this.inflight = (async () => {
+			let result: Drive[];
 			try {
-				this.drives = await listDrives();
+				result = await listDrives();
 			} catch {
-				this.drives = [];
-			} finally {
-				this.loaded = true;
-				this.inflight = null;
+				result = [];
 			}
-			return this.drives;
+			if (gen !== this.gen) return result;
+			this.drives = result;
+			this.loaded = true;
+			this.inflight = null;
+			return result;
 		})();
 		return this.inflight;
 	}
@@ -47,6 +53,17 @@ class DrivesStore {
 	async refresh(): Promise<Drive[]> {
 		this.loaded = false;
 		return this.load();
+	}
+
+	/**
+	 * Drop the cached list. Called on logout so the next user in the same
+	 * tab never sees (or resolves their home from) the previous user's drives.
+	 */
+	reset(): void {
+		this.drives = [];
+		this.loaded = false;
+		this.inflight = null;
+		this.gen++;
 	}
 
 	/** Caller's default-personal drive (one per internal user), or null. */

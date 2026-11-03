@@ -22,16 +22,22 @@ import { MessageChannel as NodeMessageChannel } from 'node:worker_threads';
 // a specific-shape implementation (e.g. the hanging-fetch stub in
 // the AbortController test) without TypeScript narrowing fighting
 // each `mockImplementationOnce`.
-const { apiJsonMock, csrfMock } = vi.hoisted(() => ({
+const { apiJsonMock, csrfMock, onSessionRefreshedMock } = vi.hoisted(() => ({
 	apiJsonMock: vi.fn<(url: string, init?: RequestInit) => Promise<unknown>>(async () => ({
 		ticket: 'uuid-1',
 		expires_in_seconds: 30,
 		subprotocol: 'oxi.ticket.uuid-1'
 	})),
-	csrfMock: vi.fn(() => ({ 'X-CSRF-Token': 'test-csrf' }))
+	csrfMock: vi.fn(() => ({ 'X-CSRF-Token': 'test-csrf' })),
+	// The bridge subscribes at construction so the mock must hand back
+	// a no-op unsubscribe. Returning `undefined` would throw in close().
+	onSessionRefreshedMock: vi.fn<(fn: () => void) => () => void>(() => () => {})
 }));
 
-vi.mock('$lib/api/client', () => ({ apiJson: apiJsonMock }));
+vi.mock('$lib/api/client', () => ({
+	apiJson: apiJsonMock,
+	onSessionRefreshed: onSessionRefreshedMock
+}));
 vi.mock('$lib/api/csrf', () => ({ getCsrfHeaders: csrfMock }));
 vi.mock('$app/paths', () => ({ base: '' }));
 

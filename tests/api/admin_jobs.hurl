@@ -236,7 +236,14 @@ Authorization: Bearer {{admin_token}}
 
 HTTP 404
 [Asserts]
-jsonpath "$.error" == "run not found"
+# Normalized ApiErrorBody shape — the handler used to emit a bare
+# `{"error": "run not found"}`; after the normalize-errors sweep the
+# message carries the run-id (folded context, pending Phase 2's
+# `params` carrier) and the body carries the full ApiErrorBody.
+jsonpath "$.error_type" == "NotFound"
+jsonpath "$.message"    contains "run not found"
+jsonpath "$.message"    contains "00000000-0000-0000-0000-000000000000"
+jsonpath "$.error"      contains "run not found"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -351,8 +358,15 @@ Authorization: Bearer {{admin_token}}
 
 HTTP 404
 [Asserts]
-jsonpath "$.error" == "job not registered"
-jsonpath "$.name"  == "no_such_job"
+# Normalized ApiErrorBody shape — pre-normalization the handler
+# emitted `{"error": "job not registered", "name": "no_such_job"}`
+# (multi-key payload). After the sweep the `name` is folded into the
+# message string (pending Phase 2's `params` carrier) and the body
+# carries the full ApiErrorBody. The job name MUST still appear in
+# the message so operators see which job they tried to trigger.
+jsonpath "$.error_type" == "NotFound"
+jsonpath "$.message"    contains "job not registered"
+jsonpath "$.message"    contains "no_such_job"
 
 
 # ─────────────────────────────────────────────────────────────

@@ -73,9 +73,9 @@ type AppStateRef = Arc<AppState>;
     request_body = CreateGrantDto,
     responses(
         (status = 201, description = "Grant(s) created", body = CreateGrantResponseDto),
-        (status = 400, description = "Invalid input (both/neither of permissions+role provided)"),
-        (status = 404, description = "Resource not found OR caller lacks Share permission"),
-        (status = 405, description = "Drive resource: personal drives have immutable membership"),
+        (status = 400, description = "Invalid input (both/neither of permissions+role provided)", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Resource not found OR caller lacks Share permission", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 405, description = "Drive resource: personal drives have immutable membership", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "grants"
@@ -501,7 +501,7 @@ pub async fn create_grant(
     params(("id" = String, Path, description = "Grant UUID")),
     responses(
         (status = 204, description = "Grant revoked (or did not exist)"),
-        (status = 404, description = "Caller lacks Share permission on the underlying resource"),
+        (status = 404, description = "Caller lacks Share permission on the underlying resource", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "grants"
@@ -642,9 +642,9 @@ pub async fn revoke_grant(
     responses(
         (status = 204, description = "Notification(s) dispatched"),
         (status = 200, description = "Mixed outcome (some recipients coalesced / not-applicable); body carries the full NotifyOutcomeSet", body = NotifyOutcomeSetDto),
-        (status = 404, description = "Grant not found OR caller is not the granter"),
-        (status = 409, description = "Token subject (use the existing /magic/v1/{token}/resend channel)"),
-        (status = 429, description = "Per-recipient hard rate limit exceeded"),
+        (status = 404, description = "Grant not found OR caller is not the granter", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 409, description = "Token subject (use the existing /magic/v1/{token}/resend channel)", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 429, description = "Per-recipient hard rate limit exceeded", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "grants"
@@ -829,9 +829,9 @@ pub async fn notify_grant_recipient(
     request_body = UpdateGrantRoleDto,
     responses(
         (status = 200, description = "Role applied; returns the new full grant set", body = Vec<GrantDto>),
-        (status = 400, description = "Drive resource: shared-drive last-owner demotion refused"),
-        (status = 404, description = "Resource not found or caller lacks Share"),
-        (status = 405, description = "Drive resource: personal drives have immutable membership"),
+        (status = 400, description = "Drive resource: shared-drive last-owner demotion refused", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Resource not found or caller lacks Share", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 405, description = "Drive resource: personal drives have immutable membership", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "grants"
@@ -1180,7 +1180,7 @@ pub struct OnResourceQuery {
     params(OnResourceQuery),
     responses(
         (status = 200, description = "Grants on the specified resource", body = Vec<GrantDto>),
-        (status = 404, description = "Resource not found or caller lacks Share"),
+        (status = 404, description = "Resource not found or caller lacks Share", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "grants"

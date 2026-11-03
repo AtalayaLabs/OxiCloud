@@ -21,6 +21,21 @@ use crate::domain::services::authorization::{Permission, Resource, Role, Subject
 use crate::infrastructure::adapters::contact_storage_adapter::ContactStorageAdapter;
 use crate::infrastructure::services::pg_acl_engine::PgAclEngine;
 
+/// Merge a text field from an update DTO with its stored value.
+///
+/// `None` means "field absent from the request" (keep the old value), while an
+/// empty / whitespace-only string means "clear it". Without the second arm a
+/// browser could never erase a nickname, title or note: sending `""` would
+/// store an empty string (indistinguishable from missing in the UI), and
+/// sending `null` deserialises to `None` and therefore keeps the old value.
+fn merge_text(new: Option<String>, old: Option<String>) -> Option<String> {
+    match new {
+        Some(value) if value.trim().is_empty() => None,
+        Some(value) => Some(value),
+        None => old,
+    }
+}
+
 /// Contact service — the CardDAV / REST entry point for every
 /// address-book or contact operation. Every method routes through
 /// `AuthorizationEngine`; the pre-Round-3 `check_address_book_access`
@@ -707,17 +722,17 @@ impl ContactUseCase for ContactService {
             id,
             parts.address_book_id,
             parts.uid,
-            update.full_name.or(parts.full_name),
-            update.first_name.or(parts.first_name),
-            update.last_name.or(parts.last_name),
-            update.nickname.or(parts.nickname),
+            merge_text(update.full_name, parts.full_name),
+            merge_text(update.first_name, parts.first_name),
+            merge_text(update.last_name, parts.last_name),
+            merge_text(update.nickname, parts.nickname),
             email,
             phone,
             address,
-            update.organization.or(parts.organization),
-            update.title.or(parts.title),
-            update.notes.or(parts.notes),
-            update.photo_url.or(parts.photo_url),
+            merge_text(update.organization, parts.organization),
+            merge_text(update.title, parts.title),
+            merge_text(update.notes, parts.notes),
+            merge_text(update.photo_url, parts.photo_url),
             update.birthday.or(parts.birthday),
             update.anniversary.or(parts.anniversary),
             parts.vcard,                // Will be regenerated
@@ -875,6 +890,8 @@ impl ContactUseCase for ContactService {
         &self,
         address_book_id: &str,
         query: &str,
+        limit: i64,
+        offset: i64,
         user_id: Uuid,
     ) -> Result<Vec<ContactDto>, DomainError> {
         let id = Uuid::parse_str(address_book_id)
@@ -883,8 +900,11 @@ impl ContactUseCase for ContactService {
         // Check if user has access to the address book
         self.require_address_book_read(&id, &user_id).await?;
 
-        // Search contacts
-        let contacts = self.contact_storage.search_contacts(&id, query).await?;
+        // Search contacts (bounded — the trigram indexes do the filtering)
+        let contacts = self
+            .contact_storage
+            .search_contacts(&id, query, limit, offset)
+            .await?;
         let dtos = contacts.into_iter().map(ContactDto::from).collect();
 
         Ok(dtos)
@@ -1454,5 +1474,19 @@ mod parse_vcard_tests {
         assert_eq!(c.phone()[0].number, "+15551234567");
         assert_eq!(c.address().len(), 1);
         assert_eq!(c.address()[0].city.as_deref(), Some("Paris"));
+    }
+
+    #[test]
+    fn merge_text_distinguishes_absent_from_clear() {
+        // Regression pin: the contacts editor sends `""` to clear an
+        // optional field and `null` (→ None) for untouched ones. Before
+        // `merge_text`, blank text was stored verbatim and a cleared
+        // field could never become None again.
+        assert_eq!(merge_text(None, Some("Ada".into())), Some("Ada".into()));
+        assert_eq!(merge_text(Some("  ".into()), Some("Ada".into())), None);
+        assert_eq!(
+            merge_text(Some("Grace".into()), Some("Ada".into())),
+            Some("Grace".into())
+        );
     }
 }

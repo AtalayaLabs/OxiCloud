@@ -1,5 +1,5 @@
 /** Trash endpoints — ported from trashModel.js + views/trash. */
-import { apiFetch } from '$lib/api/client';
+import { apiErrorFromResponse, apiFetch } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import { t } from '$lib/i18n/index.svelte';
 import { fetchResourcePage, type ResourcePage, type ResourcePageOpts } from './resources';
@@ -102,7 +102,7 @@ export async function restoreTrashItem(trashId: string): Promise<void> {
 		headers: { 'Content-Type': 'application/json', ...getCsrfHeaders() },
 		body: '{}'
 	});
-	if (!res.ok) throw new Error(`restore failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 }
 
 export async function deleteTrashItem(trashId: string): Promise<void> {
@@ -111,7 +111,7 @@ export async function deleteTrashItem(trashId: string): Promise<void> {
 		credentials: 'same-origin',
 		headers: getCsrfHeaders()
 	});
-	if (!res.ok) throw new Error(`permanent delete failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 }
 
 export async function emptyTrash(): Promise<void> {
@@ -120,7 +120,7 @@ export async function emptyTrash(): Promise<void> {
 		credentials: 'same-origin',
 		headers: getCsrfHeaders()
 	});
-	if (!res.ok) throw new Error(`empty trash failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 }
 
 /**
@@ -136,5 +136,5 @@ export async function emptyTrashForDrive(driveId: string): Promise<void> {
 		credentials: 'same-origin',
 		headers: getCsrfHeaders()
 	});
-	if (!res.ok) throw new Error(`empty drive trash failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 }

@@ -28,8 +28,8 @@ pub struct PaginationQuery {
     path = "/api/playlists",
     responses(
         (status = 201, body = PlaylistDto, description = "Playlist created"),
-        (status = 400, description = "Bad request"),
-        (status = 401, description = "Unauthorized")
+        (status = 400, description = "Bad request", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "playlists"
@@ -51,8 +51,8 @@ pub async fn create_playlist(
     params(("playlist_id" = String, Path, description = "Playlist ID")),
     responses(
         (status = 200, body = PlaylistDto, description = "Playlist details"),
-        (status = 401, description = "Unauthorized"),
-        (status = 404, description = "Playlist not found")
+        (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Playlist not found", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "playlists"
@@ -78,7 +78,7 @@ pub async fn get_playlist(
     ),
     responses(
         (status = 200, body = Vec<PlaylistDto>, description = "List of playlists"),
-        (status = 401, description = "Unauthorized")
+        (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "playlists"
@@ -100,8 +100,8 @@ pub async fn list_playlists(
     params(("playlist_id" = String, Path, description = "Playlist ID")),
     responses(
         (status = 200, body = PlaylistDto, description = "Playlist updated"),
-        (status = 401, description = "Unauthorized"),
-        (status = 404, description = "Playlist not found")
+        (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Playlist not found", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "playlists"
@@ -127,8 +127,8 @@ pub async fn update_playlist(
     params(("playlist_id" = String, Path, description = "Playlist ID")),
     responses(
         (status = 204, description = "Playlist deleted"),
-        (status = 401, description = "Unauthorized"),
-        (status = 404, description = "Playlist not found")
+        (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Playlist not found", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "playlists"
@@ -153,8 +153,8 @@ pub async fn delete_playlist(
     params(("playlist_id" = String, Path, description = "Playlist ID")),
     responses(
         (status = 201, body = Vec<PlaylistItemDto>, description = "Tracks added"),
-        (status = 401, description = "Unauthorized"),
-        (status = 404, description = "Playlist not found")
+        (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Playlist not found", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "playlists"
@@ -183,8 +183,8 @@ pub async fn add_tracks(
     ),
     responses(
         (status = 204, description = "Track removed"),
-        (status = 401, description = "Unauthorized"),
-        (status = 404, description = "Playlist or track not found")
+        (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Playlist or track not found", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "playlists"
@@ -209,8 +209,8 @@ pub async fn remove_track(
     params(("playlist_id" = String, Path, description = "Playlist ID")),
     responses(
         (status = 204, description = "Tracks reordered"),
-        (status = 401, description = "Unauthorized"),
-        (status = 404, description = "Playlist not found")
+        (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Playlist not found", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "playlists"
@@ -236,8 +236,8 @@ pub async fn reorder_tracks(
     params(("playlist_id" = String, Path, description = "Playlist ID")),
     responses(
         (status = 200, body = Vec<PlaylistItemDto>, description = "List of playlist tracks"),
-        (status = 401, description = "Unauthorized"),
-        (status = 404, description = "Playlist not found")
+        (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Playlist not found", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "playlists"
@@ -262,8 +262,8 @@ pub async fn list_playlist_tracks(
     params(("playlist_id" = String, Path, description = "Playlist ID")),
     responses(
         (status = 204, description = "Playlist shared"),
-        (status = 401, description = "Unauthorized"),
-        (status = 404, description = "Playlist not found")
+        (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Playlist not found", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "playlists"
@@ -292,8 +292,8 @@ pub async fn share_playlist(
     ),
     responses(
         (status = 204, description = "Share removed"),
-        (status = 401, description = "Unauthorized"),
-        (status = 404, description = "Playlist or share not found")
+        (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Playlist or share not found", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "playlists"
@@ -318,8 +318,8 @@ pub async fn remove_share(
     params(("playlist_id" = String, Path, description = "Playlist ID")),
     responses(
         (status = 200, body = Vec<PlaylistShareInfoDto>, description = "List of playlist shares"),
-        (status = 401, description = "Unauthorized"),
-        (status = 404, description = "Playlist not found")
+        (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "Playlist not found", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "playlists"
@@ -344,8 +344,8 @@ pub async fn get_playlist_shares(
     params(("file_id" = String, Path, description = "Audio file ID")),
     responses(
         (status = 200, body = AudioMetadataDto, description = "Audio metadata"),
-        (status = 401, description = "Unauthorized"),
-        (status = 404, description = "File not found")
+        (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 404, description = "File not found", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "playlists"

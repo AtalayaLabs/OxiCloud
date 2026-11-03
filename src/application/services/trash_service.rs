@@ -14,7 +14,9 @@ use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::application::ports::file_lifecycle::FileLifecycleHook;
 use crate::application::ports::message_bus_ports::{MessageBus, MessageBusEvent, Topic};
 use crate::application::ports::storage_ports::FileWritePort;
+use crate::application::ports::storage_ports::StorageUsagePort;
 use crate::application::ports::trash_ports::TrashUseCase;
+use crate::application::services::storage_usage_service::StorageUsageService;
 use crate::common::errors::{DomainError, ErrorKind, Result};
 use crate::domain::entities::file::File;
 use crate::domain::entities::trashed_item::{TrashedItem, TrashedItemType};
@@ -80,6 +82,19 @@ pub struct TrashService {
     /// publishes on that path. If a future endpoint routes file delete
     /// through this service, add the file-arm publish here too.
     bus: Option<Arc<dyn MessageBus>>,
+
+    /// Storage-usage service — queried by `restore_item` to run the
+    /// quota precheck (envelope + per-drive) before the repo UPDATE
+    /// flips `is_trashed = FALSE`. Trash doesn't decrement
+    /// `drive.used_bytes` immediately (deletes drift, sweep
+    /// reconciles) but the quota-reconcile sweep itself filters
+    /// `WHERE NOT is_trashed`, so a user who trashed something while
+    /// over quota, waited for the sweep to drop `used_bytes`, then
+    /// restored would compound the overage without this check.
+    /// `None` when the service isn't wired (tests / stubs) — in that
+    /// case the precheck is skipped and restore behaves as it did
+    /// pre-feat/restore-and-overquota (no quota enforcement).
+    storage_usage_service: Option<Arc<StorageUsageService>>,
 }
 
 impl TrashService {
@@ -103,6 +118,7 @@ impl TrashService {
             authz,
             drive_repo,
             bus: None,
+            storage_usage_service: None,
         }
     }
 
@@ -118,6 +134,16 @@ impl TrashService {
     /// Silent no-op if never called (unit tests skip this).
     pub fn with_message_bus(mut self, bus: Arc<dyn MessageBus>) -> Self {
         self.bus = Some(bus);
+        self
+    }
+
+    /// Wire the storage-usage service. Enables the quota precheck on
+    /// `restore_item` — without it, restore skips quota entirely
+    /// (the behaviour pre-`feat/restore-and-overquota`). Production
+    /// DI always calls this; tests that don't exercise quota wire a
+    /// mock or omit.
+    pub fn with_storage_usage_service(mut self, svc: Arc<StorageUsageService>) -> Self {
+        self.storage_usage_service = Some(svc);
         self
     }
 
@@ -386,6 +412,44 @@ impl TrashUseCase for TrashService {
                         let file_id = item.original_id().to_string();
                         let original_path = item.original_path().to_string();
 
+                        // Quota precheck. The trashed file's bytes are
+                        // about to re-count against the drive and (for
+                        // personal drives) the user envelope. The
+                        // quota-reconcile sweep filters out `is_trashed`
+                        // rows, so `used_bytes` may already have dropped
+                        // after trash; restoring over the current cap
+                        // compounds the overage. Skipping the precheck
+                        // and letting the restore succeed would reinstate
+                        // the bytes to a drive the user can't legitimately
+                        // claim slot for. Mirror the upload-path order:
+                        // envelope first, drive second — both must pass.
+                        //
+                        // Service is `Option<Arc<StorageUsageService>>` to
+                        // match the existing stub pattern — tests that
+                        // don't wire it skip the check.
+                        if let Some(storage_svc) = &self.storage_usage_service {
+                            let original_uuid = item.original_id();
+                            if let Some((size, folder_uuid)) =
+                                storage_svc.trashed_file_destination(original_uuid).await?
+                            {
+                                let size_u64 = size.max(0) as u64;
+                                storage_svc
+                                    .check_storage_quota(user_id, size_u64)
+                                    .await
+                                    .map_err(|e| DomainError::new(e.kind, "File", e.message))?;
+                                storage_svc
+                                    .check_drive_quota_by_folder(folder_uuid, size_u64)
+                                    .await
+                                    .map_err(|e| DomainError::new(e.kind, "File", e.message))?;
+                            }
+                            // `None` from `trashed_file_destination` =
+                            // the row is live (already restored) or
+                            // doesn't exist; the restore call below
+                            // handles that case via NotFound, matching
+                            // the pre-feat/restore-and-overquota
+                            // behaviour.
+                        }
+
                         info!(
                             "Restoring file from trash: ID={}, OriginalPath={}",
                             file_id, original_path
@@ -407,10 +471,17 @@ impl TrashUseCase for TrashService {
                                     );
                                     // We continue so we can clean up the trash entry
                                 } else {
-                                    // Return error for other kinds of errors
+                                    // Preserve the inner `kind` so semantic errors
+                                    // (notably `AlreadyExists` from the repo's 23505
+                                    // translation — the restore-into-live-collision
+                                    // case) surface as the right wire shape rather
+                                    // than collapsing to 500 InternalError. Same
+                                    // bug class as the pre-fix
+                                    // `folder_service::rename_folder_with_perms`
+                                    // (commit 9043d1a9).
                                     error!("Error restoring file from trash: {} - {}", file_id, e);
                                     return Err(DomainError::new(
-                                        ErrorKind::InternalError,
+                                        e.kind,
                                         "File",
                                         format!(
                                             "Error restoring file {} from trash: {}",
@@ -425,6 +496,46 @@ impl TrashUseCase for TrashService {
                         // Restore the folder to its original location
                         let folder_id = item.original_id().to_string();
                         let original_path = item.original_path().to_string();
+
+                        // Quota precheck. The subtree's bytes about to
+                        // re-count are those files
+                        // `restore_from_trash` would un-trash:
+                        // cascade-trashed descendants only (files with
+                        // `original_folder_id IS NULL`). Independently-
+                        // trashed descendants stay in trash and are
+                        // excluded from the quota math.
+                        // `pending_restore_folder_subtree_bytes` mirrors
+                        // the WHERE clause of
+                        // `folder_db_repository::restore_from_trash` so
+                        // the quota computation matches exactly what the
+                        // UPDATE would un-trash.
+                        //
+                        // `check_drive_quota_by_folder` resolves the
+                        // drive from the folder itself (trash doesn't
+                        // change `drive_id`), so passing the folder's
+                        // id lands on the right drive even though the
+                        // folder is currently trashed.
+                        if let Some(storage_svc) = &self.storage_usage_service {
+                            let original_uuid = item.original_id();
+                            let subtree_bytes = storage_svc
+                                .pending_restore_folder_subtree_bytes(original_uuid)
+                                .await?;
+                            let subtree_u64 = subtree_bytes.max(0) as u64;
+                            if subtree_u64 > 0 {
+                                storage_svc
+                                    .check_storage_quota(user_id, subtree_u64)
+                                    .await
+                                    .map_err(|e| DomainError::new(e.kind, "Folder", e.message))?;
+                                storage_svc
+                                    .check_drive_quota_by_folder(original_uuid, subtree_u64)
+                                    .await
+                                    .map_err(|e| DomainError::new(e.kind, "Folder", e.message))?;
+                            }
+                            // Empty subtree (`subtree_u64 == 0`) can
+                            // never exceed quota — skip the two
+                            // service calls rather than invoke them
+                            // for a trivially-passing check.
+                        }
 
                         info!(
                             "Restoring folder from trash: ID={}, OriginalPath={}",
@@ -447,13 +558,14 @@ impl TrashUseCase for TrashService {
                                     );
                                     // We continue so we can clean up the trash entry
                                 } else {
-                                    // Return error for other kinds of errors
+                                    // Preserve the inner `kind` — see the file
+                                    // branch above for the full rationale.
                                     error!(
                                         "Error restoring folder from trash: {} - {}",
                                         folder_id, e
                                     );
                                     return Err(DomainError::new(
-                                        ErrorKind::InternalError,
+                                        e.kind,
                                         "Folder",
                                         format!(
                                             "Error restoring folder {} from trash: {}",

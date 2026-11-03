@@ -24,23 +24,25 @@
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 1 — Providers discovery reports the standalone-OIDC posture.
-#          The SPA no longer reads auto_redirect_to_oidc (server-side
+# Step 1 — Config discovery reports the standalone-OIDC posture.
+#          The SPA no longer reads `auto_redirect` (server-side
 #          redirect handles it), but the field is still exposed for
-#          diagnostics / future clients.
+#          diagnostics / future clients. Was `/api/auth/oidc/providers`
+#          (retired on feat/registration); fields moved under
+#          `/api/config.auth.*` sub-objects.
 # ─────────────────────────────────────────────────────────────
-GET {{base_url}}/api/auth/oidc/providers
+GET {{base_url}}/api/config
 
 HTTP 200
 [Asserts]
-jsonpath "$.enabled" == true
-jsonpath "$.password_login_enabled" == false
+jsonpath "$.auth.oidc.enabled" == true
+jsonpath "$.auth.password.enabled" == false
 # Magic-link is hard-off whenever OIDC is enabled (OIDC master rule)
 # regardless of what AUTH_METHODS says. Belt-and-braces with the
 # allowlist which also excludes it.
-jsonpath "$.magic_link_login_enabled" == false
+jsonpath "$.auth.magic_link.enabled" == false
 # The policy is on, no other method is live, so the flag resolves true.
-jsonpath "$.auto_redirect_to_oidc" == true
+jsonpath "$.auth.oidc.auto_redirect" == true
 
 
 # ─────────────────────────────────────────────────────────────

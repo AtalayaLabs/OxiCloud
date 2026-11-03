@@ -6,6 +6,8 @@ use axum::{
 };
 use std::sync::Arc;
 
+use crate::interfaces::errors::AppError;
+
 use crate::application::dtos::i18n_dto::{
     LocaleDto, TranslationErrorDto, TranslationRequestDto, TranslationResponseDto,
 };
@@ -101,12 +103,7 @@ impl I18nHandler {
         let locale = match Locale::from_code(&locale_code) {
             Some(locale) => locale,
             None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({
-                        "error": format!("Unsupported locale: {}", locale_code)
-                    })),
-                )
+                return AppError::bad_request(format!("Unsupported locale: {}", locale_code))
                     .into_response();
             }
         };
@@ -160,7 +157,7 @@ pub async fn get_locales(state: State<AppState>) -> impl IntoResponse {
     responses(
         (status = 200, description = "Translation", body = TranslationResponseDto),
         (status = 400, description = "Unsupported locale", body = TranslationErrorDto),
-        (status = 404, description = "Key not found"),
+        (status = 404, description = "Key not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "i18n"
 )]
@@ -177,7 +174,7 @@ pub async fn translate(
     params(("locale_code" = String, Path, description = "Locale code, e.g. en, fr, de")),
     responses(
         (status = 200, body = Object, description = "All translations for this locale"),
-        (status = 400, description = "Unsupported locale"),
+        (status = 400, description = "Unsupported locale", body = crate::interfaces::errors::ApiErrorBody),
     ),
     tag = "i18n"
 )]

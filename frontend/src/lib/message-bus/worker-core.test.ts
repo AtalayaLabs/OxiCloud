@@ -58,6 +58,7 @@ function makeFakeTransport(initialState: ConnectionState = 'connected'): {
 	sendBinaryMock: ReturnType<typeof vi.fn>;
 	reconnectMock: ReturnType<typeof vi.fn>;
 	provideTicketMock: ReturnType<typeof vi.fn>;
+	sessionRefreshedMock: ReturnType<typeof vi.fn>;
 } {
 	let state: ConnectionState = initialState;
 	const eventListeners = new Set<(topic: string, params: RtEventParams) => void>();
@@ -80,6 +81,7 @@ function makeFakeTransport(initialState: ConnectionState = 'connected'): {
 	const needTicketListeners = new Set<(n: number) => void>();
 	const provideTicketMock = vi.fn<(subprotocol: string, nonce: number) => void>();
 	const ticketFetchFailedMock = vi.fn<(nonce: number) => void>();
+	const sessionRefreshedMock = vi.fn<() => void>();
 
 	const transport: BusTransport = {
 		get state() {
@@ -120,7 +122,8 @@ function makeFakeTransport(initialState: ConnectionState = 'connected'): {
 			return () => needTicketListeners.delete(cb);
 		},
 		provideTicket: (sp, n) => provideTicketMock(sp, n),
-		ticketFetchFailed: (n) => ticketFetchFailedMock(n)
+		ticketFetchFailed: (n) => ticketFetchFailedMock(n),
+		sessionRefreshed: () => sessionRefreshedMock()
 	};
 
 	return {
@@ -150,7 +153,8 @@ function makeFakeTransport(initialState: ConnectionState = 'connected'): {
 		pingMock,
 		sendBinaryMock,
 		reconnectMock,
-		provideTicketMock
+		provideTicketMock,
+		sessionRefreshedMock
 	};
 }
 
@@ -638,6 +642,25 @@ describe('WorkerCore — request-reconnect envelope', () => {
 		expect(fixture.reconnectMock).not.toHaveBeenCalled();
 		await core.handlePortMessage(out, { kind: 'request-reconnect' });
 		expect(fixture.reconnectMock).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe('WorkerCore — session-refreshed envelope', () => {
+	// Regression pin: the envelope was added to the parser, to the
+	// routing switch, and to TAB_TO_WORKER_KINDS — but a mirror set
+	// in `#isTabToWorker` was left out, so the direction gate dropped
+	// every `session-refreshed` with `port message dropped — wrong
+	// direction` before the switch ran. Observed on Ed's sandbox the
+	// first time he blocked `/api/rt/ticket` to force a breaker trip.
+	// The fix is one case line in `#isTabToWorker`; this pin ensures
+	// a future envelope added to the parser also lands in the gate.
+	it('routes `session-refreshed` to transport.sessionRefreshed()', async () => {
+		const fixture = makeFakeTransport('unavailable');
+		const core = new WorkerCore(fixture.transport, 'v');
+		const { out } = newChannel();
+		core.registerPort(out);
+		await core.handlePortMessage(out, { kind: 'session-refreshed' });
+		expect(fixture.sessionRefreshedMock).toHaveBeenCalledTimes(1);
 	});
 });
 

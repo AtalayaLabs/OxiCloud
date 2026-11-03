@@ -15,10 +15,12 @@ vi.mock('$lib/api/endpoints/files', () => ({
 	dedupCheckBatch: batchMock
 }));
 
+import { ApiError } from '$lib/api/client';
 import {
 	DELTA_UPLOAD_MIN_SIZE,
 	instantUploadOwned,
 	resolveOwnedHashes,
+	throwFromDedupAnswer,
 	tryDeltaUpload
 } from './deltaUpload';
 
@@ -89,13 +91,49 @@ describe('tryDeltaUpload (delta worker)', () => {
 		expect(await p).toBeNull();
 	});
 
-	it('reports a quota error on a 507 done message', async () => {
+	it('reports a quota error on a legacy 507 done message (no error_type)', async () => {
+		// Legacy body — only `error`, no `error_type`. The worker-msg path
+		// must still surface a quota answer so the orchestrator renders
+		// SOMETHING on the toast; `errorType` is undefined so the
+		// orchestrator's `ApiError` will fall through to the raw server
+		// message (acceptable fallback). This arm covers deployments mid-
+		// migration where the server hasn't yet shipped normalized bodies.
 		const p = tryDeltaUpload(bigFile(), 'folder');
 		await Promise.resolve();
 		lastWorker!.emit({ type: 'done', status: 507, body: { error: 'over quota' } });
 		const res = await p;
 		expect(res?.isQuotaError).toBe(true);
 		expect(res?.errorMsg).toBe('over quota');
+		expect(res?.errorType).toBeUndefined();
+		expect(res?.status).toBe(507);
+	});
+
+	it('threads error_type on a normalized 507 done message', async () => {
+		// Post-normalization the server emits the full `ApiErrorBody` and
+		// the worker forwards it verbatim as `msg.body`. The delta path
+		// must read `error_type` (just like `instantUploadOwned` reads
+		// `errorBody.error_type` from `createFileByHash`) so the thrown
+		// `ApiError` carries `errorType: 'QuotaExceeded'` and the toast
+		// lands the friendly i18n copy ("Espace insuffisant…") instead
+		// of the server's byte-arithmetic `message`. A regression that
+		// drops the `msg.body.error_type` read trips here.
+		const p = tryDeltaUpload(bigFile(), 'folder');
+		await Promise.resolve();
+		lastWorker!.emit({
+			type: 'done',
+			status: 507,
+			body: {
+				status: '507 Insufficient Storage',
+				error: 'Drive quota exceeded: 420192487 + 427741 > 314572800 bytes',
+				message: 'Drive quota exceeded: 420192487 + 427741 > 314572800 bytes',
+				error_type: 'QuotaExceeded'
+			} as unknown as { message?: string; error?: string; still_missing?: unknown }
+		});
+		const res = await p;
+		expect(res?.isQuotaError).toBe(true);
+		expect(res?.errorType).toBe('QuotaExceeded');
+		expect(res?.errorMsg).toContain('Drive quota exceeded');
+		expect(res?.status).toBe(507);
 	});
 
 	it('resolves null on a worker error', async () => {
@@ -172,12 +210,135 @@ describe('instantUploadOwned (zero-byte create)', () => {
 		expect(await instantUploadOwned('folder', fakeFile(2 * MB), hashOf('a'))).toBeNull();
 	});
 
-	it('surfaces a quota error on 507', async () => {
-		byHashMock.mockResolvedValue({ ok: false, status: 507 });
+	it('surfaces a quota error on 507 with the server message + errorType', async () => {
+		// Server ships normalized ApiErrorBody on 507; `instantUploadOwned`
+		// must thread `error_type` and the real `message` through the
+		// DeltaUploadAnswer so the upload orchestrator can construct an
+		// `ApiError` whose `errorMessage()` lookup lands the friendly i18n
+		// copy ("Espace insuffisant…") instead of the hardcoded English
+		// string that was in `errorMsg` pre-fix. Pin against the exact
+		// server shape — if `createFileByHash` ever stops returning
+		// `errorBody`, or `instantUploadOwned` drops the error_type /
+		// server message read, the toast silently reverts to the raw
+		// English string and this trips.
+		byHashMock.mockResolvedValue({
+			ok: false,
+			status: 507,
+			errorBody: {
+				status: '507 Insufficient Storage',
+				error: 'Drive quota exceeded: 420192487 + 427741 > 314572800 bytes',
+				message: 'Drive quota exceeded: 420192487 + 427741 > 314572800 bytes',
+				error_type: 'QuotaExceeded'
+			}
+		});
 		expect(await instantUploadOwned('folder', fakeFile(2 * MB), hashOf('a'))).toEqual({
 			ok: false,
 			isQuotaError: true,
-			errorMsg: 'Storage quota exceeded'
+			errorMsg: 'Drive quota exceeded: 420192487 + 427741 > 314572800 bytes',
+			errorType: 'QuotaExceeded',
+			status: 507
 		});
+	});
+
+	it('falls back to a hardcoded message when the 507 body is missing', async () => {
+		// Shape-tolerance guard: a 507 that arrived with no body (misconfigured
+		// proxy, legacy server pre-normalization) still surfaces as an
+		// `isQuotaError` answer so the orchestrator renders a non-empty
+		// toast — just without the friendly i18n copy (errorType undefined).
+		byHashMock.mockResolvedValue({ ok: false, status: 507, errorBody: undefined });
+		expect(await instantUploadOwned('folder', fakeFile(2 * MB), hashOf('a'))).toEqual({
+			ok: false,
+			isQuotaError: true,
+			errorMsg: 'Storage quota exceeded',
+			errorType: undefined,
+			status: 507
+		});
+	});
+});
+
+describe('throwFromDedupAnswer', () => {
+	// `uploadOneFile` in `+page.svelte` is a Svelte-component method, hard
+	// to isolate without mounting the component. The wrap-DeltaUploadAnswer-
+	// to-ApiError logic was extracted into this util so a plain Vitest can
+	// pin the glue that connects `instantUploadOwned` / `tryDeltaUpload`
+	// (which hand back a `DeltaUploadAnswer`) to `lib/utils/errors.ts`'s
+	// `errorMessage()` lookup (which keys the friendly i18n copy off
+	// `errorType`). A regression that drops `answer.errorType` or
+	// `answer.errorMsg` from the ApiError construction trips here.
+
+	it('throws an ApiError carrying the server-side errorType + message on QuotaExceeded', () => {
+		expect(() =>
+			throwFromDedupAnswer(
+				{
+					ok: false,
+					isQuotaError: true,
+					errorMsg: 'Drive quota exceeded: 420192487 + 427741 > 314572800 bytes',
+					errorType: 'QuotaExceeded',
+					status: 507
+				},
+				'/api/files/by-hash'
+			)
+		).toThrow(ApiError);
+		// Separate call so we can inspect the thrown value — Vitest's
+		// toThrow receives either the class or a matcher, not both.
+		try {
+			throwFromDedupAnswer(
+				{
+					ok: false,
+					isQuotaError: true,
+					errorMsg: 'Drive quota exceeded: …',
+					errorType: 'QuotaExceeded',
+					status: 507
+				},
+				'/api/files/by-hash'
+			);
+		} catch (e) {
+			const err = e as ApiError & { isQuota: boolean };
+			expect(err.name).toBe('ApiError');
+			expect(err.status).toBe(507);
+			expect(err.errorType).toBe('QuotaExceeded');
+			expect(err.message).toBe('Drive quota exceeded: …');
+			expect(err.isQuota).toBe(true);
+			expect(err.resource).toBe('/api/files/by-hash');
+		}
+	});
+
+	it('defaults status to 507 when the DeltaUploadAnswer carries none', () => {
+		// Pre-fix the inline wrap in `+page.svelte` used `new Error(…)` and
+		// had no status at all; the extraction preserves the historical
+		// "dedup failures without a status are 507" invariant (the only
+		// non-fallback status the dedup paths emitted). A regression that
+		// changes the default to 500 (or 400) would mis-route the toast
+		// through non-quota branches and break the batch `isQuota` short-
+		// circuit — pin so the default stays wire-correct.
+		try {
+			throwFromDedupAnswer(
+				{ ok: false, errorMsg: 'something', errorType: 'InternalError' },
+				'/api/files/by-hash'
+			);
+		} catch (e) {
+			const err = e as ApiError & { isQuota: boolean };
+			expect(err.status).toBe(507);
+			expect(err.isQuota).toBe(false);
+		}
+	});
+
+	it('propagates undefined errorType — the orchestrator must still throw', () => {
+		// Shape-tolerance guard: `tryDeltaUpload` on a legacy pre-normalization
+		// server returns `{ok:false, errorMsg, errorType: undefined}`.
+		// `throwFromDedupAnswer` must still throw an ApiError (so the toast
+		// renders), with `errorType` undefined so `errorMessage()` falls
+		// through to the server's own message rather than any default copy.
+		try {
+			throwFromDedupAnswer(
+				{ ok: false, isQuotaError: true, errorMsg: 'over quota', status: 507 },
+				'/api/files/by-hash'
+			);
+		} catch (e) {
+			const err = e as ApiError & { isQuota: boolean };
+			expect(err.errorType).toBeUndefined();
+			expect(err.message).toBe('over quota');
+			expect(err.isQuota).toBe(true);
+		}
 	});
 });

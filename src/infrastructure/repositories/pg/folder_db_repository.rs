@@ -834,7 +834,28 @@ impl FolderRepository for FolderDbRepository {
             .fetch_optional(self.pool())
         })
         .await
-        .map_err(|e| DomainError::internal_error("FolderDb", format!("move: {e}")))?
+        .map_err(|e| {
+            // Translate the PG unique-violation (23505 on
+            // `idx_folders_unique_name`) to the semantic
+            // `AlreadyExists` DomainError so the handler layer
+            // surfaces 409 + `error_type: AlreadyExists` instead of a
+            // 500 InternalError. Mirrors the mapping `rename_folder`
+            // already does — moving a folder INTO a parent that already
+            // holds a sibling with the same name is semantically the
+            // same failure as renaming to that sibling's name, and
+            // must surface the same way so the SPA's `errors.ts`
+            // switch lands the friendly "An item with that name is
+            // already there" copy. Reported by Ed on 2026-11-01.
+            if let sqlx::Error::Database(ref db_err) = e
+                && db_err.code().as_deref() == Some("23505")
+            {
+                return DomainError::already_exists(
+                    "Folder",
+                    "destination already contains a folder with the same name".to_string(),
+                );
+            }
+            DomainError::internal_error("FolderDb", format!("move: {e}"))
+        })?
         .ok_or_else(|| DomainError::not_found("Folder", id))?;
 
         Self::row_to_folder(
@@ -1053,7 +1074,28 @@ impl FolderRepository for FolderDbRepository {
             .fetch_one(self.pool())
         })
         .await
-        .map_err(|e| DomainError::internal_error("FolderDb", format!("restore: {e}")))?;
+        .map_err(|e| {
+            // 23505 → AlreadyExists. Restore sets `is_trashed = FALSE`
+            // and `parent_id = COALESCE(original_parent_id, parent_id)`;
+            // if the user created a new folder with the same name at
+            // the original location while this one was in trash, the
+            // UPDATE collides on `idx_folders_unique_name`. The SPA
+            // then surfaces "An item with that name is already there"
+            // and the user can rename the live folder (or the trashed
+            // entry via a separate restore flow — not implemented
+            // today) before retrying. Mirrors `rename_folder` and
+            // `move_folder` 23505 translations.
+            if let sqlx::Error::Database(ref db_err) = e
+                && db_err.code().as_deref() == Some("23505")
+            {
+                return DomainError::already_exists(
+                    "Folder",
+                    "the original location already contains a folder with the same name"
+                        .to_string(),
+                );
+            }
+            DomainError::internal_error("FolderDb", format!("restore: {e}"))
+        })?;
 
         if result == 0 {
             return Err(DomainError::not_found("Folder", folder_id));

@@ -1,5 +1,5 @@
 /** Folder endpoints — ported from filesModel.js + fileOperations.js. */
-import { apiFetch, apiJson } from '$lib/api/client';
+import { apiErrorFromResponse, apiFetch, apiJson } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import { rememberFolderName } from '$lib/utils/folderCache';
 import type { FileItem, FolderAncestorsResponse, FolderItem, ItemType } from '$lib/api/types';
@@ -167,7 +167,7 @@ export async function fetchFolderPage(
 		cache: 'no-store'
 	});
 	if (res.status === 403) throw Object.assign(new Error('Forbidden'), { status: 403 });
-	if (!res.ok) throw new Error(`listing failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 	const page = (await res.json()) as {
 		items?: { resource_type: ItemType; resource: FolderItem | FileItem }[];
 		next_cursor?: string;
@@ -232,7 +232,7 @@ export async function createFolder(name: string, parentId: string | null): Promi
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 		body: JSON.stringify({ name, parent_id: parentId })
 	});
-	if (!res.ok) throw new Error(`create folder failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 	return (await res.json()) as FolderItem;
 }
 
@@ -243,7 +243,7 @@ export async function renameFolder(folderId: string, name: string): Promise<void
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 		body: JSON.stringify({ name })
 	});
-	if (!res.ok) throw new Error(`rename folder failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 }
 
 export async function moveFolder(folderId: string, targetFolderId: string | null): Promise<void> {
@@ -253,7 +253,7 @@ export async function moveFolder(folderId: string, targetFolderId: string | null
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 		body: JSON.stringify({ parent_id: targetFolderId || null })
 	});
-	if (!res.ok) throw new Error(`move folder failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 }
 
 export async function deleteFolder(folderId: string): Promise<void> {
@@ -262,7 +262,7 @@ export async function deleteFolder(folderId: string): Promise<void> {
 		credentials: 'same-origin',
 		headers: getCsrfHeaders()
 	});
-	if (!res.ok) throw new Error(`delete folder failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 }
 
 export function folderZipUrl(folderId: string, shareId?: string | null): string {

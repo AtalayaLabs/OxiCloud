@@ -4,11 +4,12 @@ Non-obvious rules that trip up new code. Terse on purpose.
 
 ## Auth policy
 
-- **OIDC is the master identity provider.** Whenever `AuthApplicationService::oidc_enabled()` returns true, magic-link login MUST be off — `is_magic_link_login_allowed()` returns false regardless of `OXICLOUD_AUTH_METHODS`. Rationale: OIDC may enforce 2FA / step-up; a mailbox-possession bypass would silently sidestep it.
-- **Password / magic-link handlers gate via `is_password_login_allowed()` / `is_magic_link_login_allowed()`**, never raw config or `password_login_disabled()` alone. The composed helpers merge the legacy OIDC-only flag, `OXICLOUD_AUTH_METHODS`, SMTP wiring, and the OIDC-master rule in one place.
-- **Magic-link redemption** distinguishes login tokens (`resource_kind = None`) from invitation tokens (File / Folder). The login gate only applies to the None case; invitations follow their own admin-mediated trust chain.
+- **`OXICLOUD_AUTH_METHODS` is authoritative for the deployment surface.** `/api/config.auth.{password,magic_link,oidc}.enabled` mirrors the allowlist DIRECTLY — no silent composition. Boot panics in `main.rs` catch the two cases where advertising a method without the backing wiring would be a lie: `magic_link` without SMTP, `oidc` without an effective OIDC provider.
+- **Per-user eligibility lives in `magic_link_eligibility(user, open_to_password_users, open_to_oidc_users)`.** OIDC-federated and has-password accounts receive a COACHING email ("sign in via SSO" / "sign in with your password") instead of a magic link, unless the operator opts in via `OXICLOUD_AUTH_POLICIES=permit_magic_link_for_{oidc,password}_users`. External users (no password, no federation) are always allowed. See `docs/config/authentication.md § Magic-link eligibility` for the full matrix.
+- **Password / magic-link handlers gate via `is_password_login_allowed()` / `is_magic_link_login_allowed()`**, never raw config or `password_login_disabled()` alone. Both methods now just check SMTP wiring (for magic-link) + AUTH_METHODS membership — the former deployment-wide OIDC-master rule retired on feat/registration.
+- **Magic-link redemption** distinguishes login tokens (`resource_kind = None`) from invitation tokens (File / Folder). The login gate only applies to the None case; invitations follow their own admin-mediated trust chain and the per-user eligibility matrix does not apply (the invite path is explicitly for users with no credential yet).
 - **`OXICLOUD_REQUIRE_VERIFIED_EMAIL`** gates login on `email_verified_at IS NOT NULL`. Admin-created (`admin_create_user`) and setup-admin (`setup_create_admin`) users are stamped verified at creation — admin fiat counts. OIDC-JIT already stamps verified. Admins are EXEMPT from the gate at login regardless of `email_verified_at` — pre-existing admin accounts from before this flag shipped must never be locked out of their own instance. Regular users hit the gate; the frontend detects the `EmailNotVerified` error_type and offers a resend-magic-link CTA.
-- **Startup gate in `main.rs`**: magic-link-only allowlist + no SMTP = panic. Never soften to warn.
+- **Startup gates in `main.rs`**: `magic_link` in AUTH_METHODS + no SMTP = panic; `oidc` in AUTH_METHODS + no effective OIDC provider = panic. Never soften to warn.
 
 ## New auth surfaces
 

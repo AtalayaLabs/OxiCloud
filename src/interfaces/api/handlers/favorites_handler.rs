@@ -46,7 +46,7 @@ pub struct BatchFavoritesRequest {
     ),
     responses(
         (status = 201, body = Object, description = "Item added to favorites"),
-        (status = 400, description = "Invalid item type")
+        (status = 400, description = "Invalid item type", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "favorites"
@@ -60,13 +60,7 @@ pub async fn add_favorite(
 
     // Validate item_type
     if item_type != "file" && item_type != "folder" {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "Item type must be 'file' or 'folder'"
-            })),
-        )
-            .into_response();
+        return AppError::bad_request("Item type must be 'file' or 'folder'").into_response();
     }
 
     match favorites_service
@@ -102,7 +96,7 @@ pub async fn add_favorite(
     ),
     responses(
         (status = 200, body = Object, description = "Item removed from favorites"),
-        (status = 404, description = "Item not in favorites")
+        (status = 404, description = "Item not in favorites", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "favorites"
@@ -130,13 +124,7 @@ pub async fn remove_favorite(
                     .into_response()
             } else {
                 info!("Item {} '{}' was not in favorites", item_type, item_id);
-                (
-                    StatusCode::NOT_FOUND,
-                    Json(serde_json::json!({
-                        "message": "Item was not in favorites"
-                    })),
-                )
-                    .into_response()
+                AppError::not_found("Item was not in favorites").into_response()
             }
         }
         // Same rationale as `add_favorite` — preserve DomainError→HTTP
@@ -157,7 +145,7 @@ pub async fn remove_favorite(
     responses(
         (status = 200, description = "Paginated list of favorited resources",
          body = crate::application::dtos::favorites_dto::FavoritesResourcesDto),
-        (status = 400, description = "Invalid cursor or query parameters"),
+        (status = 400, description = "Invalid cursor or query parameters", body = crate::interfaces::errors::ApiErrorBody),
     ),
     security(("bearerAuth" = [])),
     tag = "favorites"
@@ -312,7 +300,7 @@ pub async fn list_favorites_resources(
     path = "/api/favorites/batch",
     responses(
         (status = 200, description = "Batch add result", body = crate::application::dtos::favorites_dto::BatchFavoritesResult),
-        (status = 400, description = "Invalid request")
+        (status = 400, description = "Invalid request", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "favorites"
@@ -325,23 +313,17 @@ pub async fn batch_add_favorites(
     let user_id = auth_user.id;
 
     if body.items.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "items array must not be empty" })),
-        )
-            .into_response();
+        return AppError::bad_request("items array must not be empty").into_response();
     }
 
     // Validate item types
     for item in &body.items {
         if item.item_type != "file" && item.item_type != "folder" {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": format!("Item type must be 'file' or 'folder', got '{}'", item.item_type)
-                })),
-            )
-                .into_response();
+            return AppError::bad_request(format!(
+                "Item type must be 'file' or 'folder', got '{}'",
+                item.item_type
+            ))
+            .into_response();
         }
     }
 

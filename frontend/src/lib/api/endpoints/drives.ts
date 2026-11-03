@@ -6,7 +6,7 @@
  * which dedupes the request and caches the list — touch this module directly
  * only when bypassing the cache is intentional (e.g. an explicit refresh).
  */
-import { apiFetch, apiJson } from '$lib/api/client';
+import { apiErrorFromResponse, apiFetch, apiJson } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import type {
 	CreateDriveBody,
@@ -39,16 +39,7 @@ export async function createDrive(body: CreateDriveBody): Promise<Drive> {
 		credentials: 'same-origin',
 		body: JSON.stringify(body)
 	});
-	if (!res.ok) {
-		let detail = '';
-		try {
-			const parsed = (await res.json()) as { error?: string; message?: string };
-			detail = parsed.error ?? parsed.message ?? '';
-		} catch {
-			/* response body wasn't JSON */
-		}
-		throw new Error(detail || `create drive failed: ${res.status}`);
-	}
+	if (!res.ok) throw await apiErrorFromResponse(res);
 	return (await res.json()) as Drive;
 }
 
@@ -79,7 +70,7 @@ export async function addDriveMember(
 		credentials: 'same-origin',
 		body: JSON.stringify({ subject, role, expires_at: expiresAt ?? null })
 	});
-	if (!res.ok) throw new Error(`add member failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 	return (await res.json()) as DriveMember;
 }
 
@@ -102,7 +93,7 @@ export async function updateDriveMember(
 		credentials: 'same-origin',
 		body: JSON.stringify({ role, expires_at: expiresAt ?? null })
 	});
-	if (!res.ok) throw new Error(`update member failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 	return (await res.json()) as DriveMember;
 }
 
@@ -120,16 +111,7 @@ export async function deleteDrive(driveId: string): Promise<void> {
 		credentials: 'same-origin',
 		headers: getCsrfHeaders()
 	});
-	if (!res.ok) {
-		let detail = '';
-		try {
-			const parsed = (await res.json()) as { error?: string; message?: string };
-			detail = parsed.error ?? parsed.message ?? '';
-		} catch {
-			/* response body wasn't JSON */
-		}
-		throw new Error(detail || `delete drive failed: ${res.status}`);
-	}
+	if (!res.ok) throw await apiErrorFromResponse(res);
 }
 
 /**
@@ -154,16 +136,7 @@ export async function updateDrivePolicies(
 		credentials: 'same-origin',
 		body: JSON.stringify(partial)
 	});
-	if (!res.ok) {
-		let detail = '';
-		try {
-			const parsed = (await res.json()) as { error?: string; message?: string };
-			detail = parsed.error ?? parsed.message ?? '';
-		} catch {
-			/* response body wasn't JSON */
-		}
-		throw new Error(detail || `update policies failed: ${res.status}`);
-	}
+	if (!res.ok) throw await apiErrorFromResponse(res);
 	return (await res.json()) as DrivePolicies;
 }
 
@@ -184,5 +157,5 @@ export async function removeDriveMember(
 		headers: getCsrfHeaders(),
 		credentials: 'same-origin'
 	});
-	if (!res.ok) throw new Error(`remove member failed: ${res.status}`);
+	if (!res.ok) throw await apiErrorFromResponse(res);
 }

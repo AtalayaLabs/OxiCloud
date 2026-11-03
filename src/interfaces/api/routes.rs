@@ -734,6 +734,20 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     // Registration happens in `main.rs` where the outer router owns
     // the middleware layering.
 
+    // Authenticated runtime server-status snapshot. Shape = full
+    // HeaderPayload (same as the X-Server-Status response header on
+    // every authenticated response). Carries migration / rotation /
+    // holder — the fields `/api/config.server_status` deliberately
+    // omits because they'd leak infrastructure topology
+    // (`migration.target` is a backend name, `holder.display` is an
+    // operator-authored label) to anonymous callers. See
+    // `handlers/server_status_handler.rs`.
+    router = router.route(
+        "/status",
+        get(crate::interfaces::api::handlers::server_status_handler::get_server_status)
+            .with_state(app_state.clone()),
+    );
+
     // Collector for any unknown `/api/*` path. Without this, an
     // unmatched API URL falls through Axum's matcher to the
     // ServeDir fallback and is logged under `http::web` — wrong

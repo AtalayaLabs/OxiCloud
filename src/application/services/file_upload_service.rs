@@ -253,7 +253,27 @@ impl FileUploadService {
         };
 
         // ── Quota on the logical size, before taking any reference ──
+        //
+        // Two caps apply, same order and same comparison as every other
+        // upload path:
+        //   1. User envelope (`auth.users.storage_quota_bytes`) — caps
+        //      the SUM across the caller's personal drives.
+        //   2. Per-drive (`storage.drives.quota_bytes`) — caps the drive
+        //      the target folder lives in. Pre-fix the instant path ran
+        //      only step 1, which admitted dedup-hit uploads past a
+        //      shared/explicit drive quota: the user envelope is
+        //      typically far looser than a per-drive cap (or NULL for
+        //      admins), so a tenant well under envelope could still blow
+        //      the drive's budget and `drives.used_bytes` would compound
+        //      past `quota_bytes`. Sibling paths that already enforce
+        //      step 2: `file_handler.rs::upload_file_impl` line 462,
+        //      `chunked_upload_handler.rs::finish_upload` line 236,
+        //      `delta_upload_service.rs::commit_delta_upload` line 393,
+        //      `nextcloud/webdav_handler.rs::put_file` line ~1000.
         quota.check_storage_quota(caller_id, metadata.size).await?;
+        quota
+            .check_drive_quota_by_folder(folder_uuid, metadata.size)
+            .await?;
 
         // The manifest knows the original content type; fall back to the
         // new name's extension when the stored one is generic.

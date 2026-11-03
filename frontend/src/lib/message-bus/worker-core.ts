@@ -116,6 +116,13 @@ export interface BusTransport {
 	 *  failure immediately rather than waiting the 5 s need-ticket
 	 *  budget. Stale nonces (bridge replies late) are ignored. */
 	ticketFetchFailed(nonce: number): void;
+	/** A tab's `apiFetch` just completed a 401→refresh→retry
+	 *  successfully — session is fresh. Reset the ticket-fetch
+	 *  circuit breaker; if it had tripped to `unavailable`, schedule
+	 *  a reconnect immediately. See `SessionRefreshedMessage` in
+	 *  `port-protocol.ts` and the
+	 *  `project_message_bus_breaker_trip_silent` memory. */
+	sessionRefreshed(): void;
 }
 
 /** Test-only knobs for timing — production code passes nothing and
@@ -516,6 +523,9 @@ export class WorkerCore {
 			case 'port-pong':
 				this.#handlePortPong(port, msg.nonce);
 				return;
+			case 'session-refreshed':
+				this.#transport.sessionRefreshed();
+				return;
 		}
 	}
 
@@ -843,6 +853,7 @@ export class WorkerCore {
 			case 'request-reconnect':
 			case 'ticket-fetch-failed':
 			case 'port-pong':
+			case 'session-refreshed':
 				return true;
 			default:
 				return false;

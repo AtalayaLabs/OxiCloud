@@ -68,6 +68,11 @@ describe('parsePortMessage — roundtrip for every envelope kind', () => {
 		{ kind: 'provide-ticket', subprotocol: 'oxi.ticket.abc', nonce: 1 },
 		{ kind: 'provide-ticket', subprotocol: 'oxi.ticket.primer', nonce: 0 },
 		{ kind: 'request-reconnect' },
+		// `session-refreshed` is a body-less tab→worker signal fired
+		// when any tab's apiFetch 401→refresh→retry dance succeeds.
+		// Pin the shape so a future rename or body addition fails here
+		// instead of silently corrupting the recovery path.
+		{ kind: 'session-refreshed' },
 		// Worker → Tab
 		{
 			kind: 'hello-ack',

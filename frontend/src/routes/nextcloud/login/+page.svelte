@@ -3,8 +3,7 @@
 	// Route-scoped auth styles (this page uses the .auth-* classes).
 	import '$lib/styles/ported/auth.css';
 	import { page } from '$app/state';
-	import { onMount } from 'svelte';
-	import { getOidcProviders } from '$lib/api/endpoints/auth';
+	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import { t } from '$lib/i18n/index.svelte';
 
 	// Nextcloud Login Flow v2. The form does a NATIVE POST to the backend flow
@@ -14,17 +13,15 @@
 	const validToken = $derived(/^[0-9a-fA-F]+$/.test(token));
 	const formAction = $derived(`/login/v2/flow/${token}`);
 
-	let oidcEnabled = $state(false);
-	let oidcProvider = $state('SSO');
-	let passwordLoginEnabled = $state(true);
-
-	onMount(async () => {
-		const info = await getOidcProviders();
-		if (!info.enabled) return;
-		oidcEnabled = true;
-		oidcProvider = info.provider_name || 'SSO';
-		passwordLoginEnabled = info.password_login_enabled !== false;
-	});
+	// Auth-method state from `/api/config.auth.*` (hydrated by
+	// `serverConfig.load()` at boot). The pre-consolidation
+	// `getOidcProviders()` fetch is retired. First-provider lookup
+	// matches the single-provider deployment reality today; a future
+	// multi-provider deployment on this flow would need the provider
+	// picker that `/login` already renders.
+	const oidcEnabled = $derived(serverConfig.auth.oidc.enabled);
+	const oidcProvider = $derived(serverConfig.auth.oidc.providers[0]?.provider_name || 'SSO');
+	const passwordLoginEnabled = $derived(serverConfig.auth.password.enabled);
 </script>
 
 <svelte:head><title>{t('app.title', 'OxiCloud')}</title></svelte:head>
