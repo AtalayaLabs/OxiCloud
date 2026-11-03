@@ -12,7 +12,11 @@ src/lib/styles/ported/
 src/lib/styles/ported.css
 src/lib/icons/registry.ts
 src/lib/api/generated/
-static/locales/
+# NOT ignored: static/locales/. They are hand-authored, not vendored, and
+# exempting them let the indentation drift unnoticed — a branch once
+# rebased en.json from 2-space to tabs, producing a 2158-line diff against
+# a 4-line change, and a reverted string hid inside it. See the
+# `static/locales/*.json` override in .prettierrc.
 static/vendors/
 static/workers/
 static/basemaps/
