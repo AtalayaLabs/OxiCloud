@@ -221,7 +221,7 @@ GET {{base_url}}/api/files/{{loose_file_id}}
 
 HTTP 403
 [Asserts]
-jsonpath "$.error_type" == "Access Denied"
+jsonpath "$.error_type" == "AccessDenied"
 jsonpath "$.error" contains "Download limit reached"
 
 
@@ -236,7 +236,7 @@ GET {{base_url}}/api/folders/{{zip_folder_id}}/download?format=zip
 
 HTTP 403
 [Asserts]
-jsonpath "$.error_type" == "Access Denied"
+jsonpath "$.error_type" == "AccessDenied"
 
 
 # The link still resolves after its allowance is spent: the page

@@ -1,11 +1,11 @@
 # =============================================================
 # OxiCloud — which link pays for a download
 # =============================================================
-# A browser can hold several share links at once (`oxi_shares`), and
-# the ring is ordered oldest-first. Before this fix the server charged
-# whichever link happened to authorize the request, so with two links
-# on the same file an exhausted link 1 refused every download through
-# link 2, and link 2's counter never moved.
+# A browser can hold several share links at once (`oxi_shares`), and the
+# ring is ordered by last unlock — re-opening a link moves it to the back.
+# Before this fix the server charged whichever link happened to authorize
+# the request, so with two links on the same file an exhausted link 1
+# refused every download through link 2, and link 2's counter never moved.
 #
 # The share page now names its link (`?share=<share id>`) on every
 # content request: previews, downloads and ZIPs. The server charges
@@ -83,7 +83,7 @@ HTTP 200
 
 GET {{base_url}}/api/auth/me
 
-HTTP 403
+HTTP 401
 
 
 # Both links are unlocked in the SAME cookie jar. Ring order is
@@ -125,7 +125,7 @@ GET {{base_url}}/api/files/{{shared_file_id}}?share={{share_b_id}}
 
 HTTP 403
 [Asserts]
-jsonpath "$.error_type" == "Access Denied"
+jsonpath "$.error_type" == "AccessDenied"
 jsonpath "$.error" contains "Download limit reached"
 
 
@@ -142,19 +142,23 @@ HTTP 200
 jsonpath "$.download_count" == 1
 
 
-# A request with no `share` keeps the fallback: the credential that
-# authorized it (A, still first in the ring) pays. External clients
-# that never send `share` therefore cannot dodge the cap.
+# A request with no `share` falls back to the first link in the ring
+# that grants Read. The `/api/s/` hit above re-unlocked A, and a
+# re-unlock moves a link to the BACK of the ring, so the fallback now
+# reaches B first — and B is spent. Omitting `share` therefore cannot
+# buy a download the caps did not allow.
 GET {{base_url}}/api/files/{{shared_file_id}}
 
-HTTP 200
+HTTP 403
+[Asserts]
+jsonpath "$.error_type" == "AccessDenied"
 
 
 GET {{base_url}}/api/s/{{share_a_token}}
 
 HTTP 200
 [Asserts]
-jsonpath "$.download_count" == 2
+jsonpath "$.download_count" == 1
 
 
 # ─────────────────────────────────────────────────────────────
