@@ -206,6 +206,9 @@ class SessionStore {
 		this.me = null;
 		this.homeFolderId = null;
 		this.homeFolderName = null;
+		// The drives cache is per-user; keeping it would make the next login
+		// in this tab resolve its home from the previous user's drives.
+		drives.reset();
 		// Mark the store as `loaded` so any subsequent `session.load()` —
 		// notably the login page's existing-session probe and the root
 		// layout's post-nav mount — short-circuits to `null` instead of
