@@ -1046,11 +1046,6 @@
 	<CommandPalette autoOpen />
 {/if}
 
-{#if palette.component}
-	{@const CommandPalette = palette.component}
-	<CommandPalette autoOpen />
-{/if}
-
 <style>
 	/* Body becomes the sidebar+main flex row only while the shell is mounted. */
 	:global(body) {
