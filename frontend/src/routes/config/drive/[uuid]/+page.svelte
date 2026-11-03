@@ -13,6 +13,7 @@
 	import PolicyList from '$lib/components/PolicyList.svelte';
 	import Banner from '$lib/components/Banner.svelte';
 	import ShareDialog from '$lib/components/ShareDialog.svelte';
+	import ConfirmButton from '$lib/components/ConfirmButton.svelte';
 	import UserVignette from '$lib/components/UserVignette.svelte';
 	import GroupVignette from '$lib/components/GroupVignette.svelte';
 	import { ensureResolvers } from '$lib/api/endpoints/recipients';
@@ -52,13 +53,6 @@
 
 	async function confirmAndDelete() {
 		if (!drive) return;
-		const confirmText = t(
-			'drive.delete_confirm',
-			{ name: drive.name },
-			'Delete drive "{{name}}"? This cannot be undone — the drive ' +
-				'must be empty first or the server will refuse.'
-		);
-		if (typeof window === 'undefined' || !window.confirm(confirmText)) return;
 		deleting = true;
 		try {
 			await deleteDrive(drive.id);
@@ -450,16 +444,15 @@
 						'Deleting a drive removes it permanently. The drive must be empty (no live files or folders) before delete is allowed.'
 					)}
 				</p>
-				<button
-					type="button"
+				<ConfirmButton
 					class="btn btn-danger"
 					data-testid="drive-delete-btn"
-					onclick={confirmAndDelete}
+					onconfirm={confirmAndDelete}
 					disabled={deleting}
+					icon="trash-alt"
 				>
-					<Icon name="trash-alt" />
 					{deleting ? t('common.deleting', 'Deleting…') : t('drive.delete', 'Delete drive')}
-				</button>
+				</ConfirmButton>
 			</div>
 		{/if}
 	{/if}

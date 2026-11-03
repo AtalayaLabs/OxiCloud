@@ -52,6 +52,7 @@
 	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import type { DrivePolicies, FileItem, FolderItem, ItemType } from '$lib/api/types';
 	import Banner from '$lib/components/Banner.svelte';
+	import ConfirmButton from '$lib/components/ConfirmButton.svelte';
 	import FolderBreadcrumb from '$lib/components/FolderBreadcrumb.svelte';
 	import ResourceList, {
 		isFile,
@@ -1085,14 +1086,7 @@
 		}
 	}
 
-	async function deleteItem(kind: 'file' | 'folder', id: string, name: string) {
-		const ok = await confirmDialog({
-			title: t('common.delete', 'Delete'),
-			message: t('files.confirm_delete', { name }, 'Move "{{name}}" to trash?'),
-			confirmText: t('common.delete', 'Delete'),
-			danger: true
-		});
-		if (!ok) return;
+	async function deleteItem(kind: 'file' | 'folder', id: string) {
 		try {
 			if (kind === 'file') await deleteFile(id);
 			else await deleteFolder(id);
@@ -1307,7 +1301,8 @@
 		} else if (e.key === 'Delete' && selected.size) {
 			// Delete only — Backspace was dropped: it triggered accidental deletes.
 			e.preventDefault();
-			void batchDelete();
+			// A keypress has no button to arm, so the shortcut keeps the dialog.
+			void confirmAndBatchDelete();
 		}
 		// Ctrl+A "select all" moved to the list-header checkbox owned by
 		// ResourceList — the row-level selection UX now lives entirely
@@ -1316,15 +1311,18 @@
 		// gestures that reference the local `selected` mirror.
 	}
 
-	async function batchDelete() {
-		const ids = [...selected];
+	async function confirmAndBatchDelete() {
 		const ok = await confirmDialog({
 			title: t('files.batch_delete', 'Delete selected'),
-			message: t('files.confirm_batch_delete', { n: ids.length }, 'Move {{n}} items to trash?'),
+			message: t('files.confirm_batch_delete', { n: selected.size }, 'Move {{n}} items to trash?'),
 			confirmText: t('common.delete', 'Delete'),
 			danger: true
 		});
-		if (!ok) return;
+		if (ok) await batchDelete();
+	}
+
+	async function batchDelete() {
+		const ids = [...selected];
 		// Bounded fan-out instead of a serial await per item: 100 deletes at
 		// ~30 ms RTT collapse from ~3 s of waterfall to a few round-trip
 		// windows. Failures toast individually and the rest still proceed,
@@ -2427,15 +2425,15 @@
 				<Icon name="download" />
 				<span>{t('common.download', 'Download')}</span>
 			</button>
-			<button
+			<ConfirmButton
 				class="batch-btn batch-btn-danger"
 				title={t('common.delete', 'Delete')}
 				data-testid="files-batch-delete-btn"
-				onclick={batchDelete}
+				onconfirm={batchDelete}
+				icon="trash"
 			>
-				<Icon name="trash" />
 				<span>{t('common.delete', 'Delete')}</span>
-			</button>
+			</ConfirmButton>
 		{/snippet}
 	</ResourceList>
 </div>
@@ -2519,7 +2517,7 @@
 	>
 		{#if ctxTarget.kind === 'folder'}
 			<button
-				class="ctx-item"
+				class="menu-item"
 				role="menuitem"
 				data-testid="files-ctx-folder-open-item"
 				onclick={() => {
@@ -2530,7 +2528,7 @@
 				}}><Icon name="folder-open" /> {t('files.open', 'Open')}</button
 			>
 			<button
-				class="ctx-item"
+				class="menu-item"
 				role="menuitem"
 				data-testid="files-ctx-download-zip-item"
 				onclick={() => {
@@ -2541,7 +2539,7 @@
 			>
 		{:else}
 			<button
-				class="ctx-item"
+				class="menu-item"
 				role="menuitem"
 				data-testid="files-ctx-file-open-item"
 				onclick={() => {
@@ -2552,7 +2550,7 @@
 			>
 			{#if ctxCanEditWopi}
 				<button
-					class="ctx-item"
+					class="menu-item"
 					role="menuitem"
 					data-testid="files-ctx-edit-item"
 					onclick={() => {
@@ -2562,7 +2560,7 @@
 					}}><Icon name="pen" /> {t('files.edit', 'Edit')}</button
 				>
 				<button
-					class="ctx-item"
+					class="menu-item"
 					role="menuitem"
 					data-testid="files-ctx-edit-new-tab-item"
 					onclick={() => {
@@ -2573,7 +2571,7 @@
 				>
 			{/if}
 			<a
-				class="ctx-item"
+				class="menu-item"
 				role="menuitem"
 				href={fileDownloadUrl(ctxTarget.id)}
 				rel="external"
@@ -2582,7 +2580,7 @@
 				onclick={closeContext}><Icon name="download" /> {t('common.download', 'Download')}</a
 			>
 			<button
-				class="ctx-item"
+				class="menu-item"
 				role="menuitem"
 				data-testid="files-ctx-open-parent-item"
 				onclick={() => {
@@ -2593,7 +2591,7 @@
 			>
 			{#if isAudio(listing.files.find((x) => x.id === ctxTarget!.id))}
 				<button
-					class="ctx-item"
+					class="menu-item"
 					role="menuitem"
 					data-testid="files-ctx-add-playlist-item"
 					onclick={() => {
@@ -2605,7 +2603,7 @@
 			{/if}
 		{/if}
 		<button
-			class="ctx-item"
+			class="menu-item"
 			role="menuitem"
 			data-testid="files-ctx-share-item"
 			onclick={() => {
@@ -2615,7 +2613,7 @@
 			}}><Icon name="share-alt" /> {t('files.share', 'Share')}</button
 		>
 		<button
-			class="ctx-item"
+			class="menu-item"
 			role="menuitem"
 			data-testid="files-ctx-move-item"
 			onclick={() => {
@@ -2625,7 +2623,7 @@
 			}}><Icon name="arrows-alt" /> {t('files.move', 'Move')}</button
 		>
 		<button
-			class="ctx-item"
+			class="menu-item"
 			role="menuitem"
 			data-testid="files-ctx-copy-item"
 			onclick={() => {
@@ -2635,7 +2633,7 @@
 			}}><Icon name="copy" /> {t('files.copy', 'Copy')}</button
 		>
 		<button
-			class="ctx-item"
+			class="menu-item"
 			role="menuitem"
 			data-testid="files-ctx-favorite-item"
 			onclick={() => {
@@ -2650,7 +2648,7 @@
 				: t('files.favorite', 'Add favorite')}
 		</button>
 		<button
-			class="ctx-item"
+			class="menu-item"
 			role="menuitem"
 			data-testid="files-ctx-rename-item"
 			onclick={() => {
@@ -2659,16 +2657,20 @@
 				void renameItem(tg.kind, tg.id, tg.name);
 			}}><Icon name="pen" /> {t('common.rename', 'Rename')}</button
 		>
-		<button
-			class="ctx-item ctx-item--danger"
+		<ConfirmButton
+			icon="trash"
+			class="menu-item menu-item--danger"
 			role="menuitem"
 			data-testid="files-ctx-delete-item"
-			onclick={() => {
+			title={t('common.delete', 'Delete')}
+			onconfirm={() => {
 				const tg = ctxTarget!;
 				closeContext();
-				void deleteItem(tg.kind, tg.id, tg.name);
-			}}><Icon name="trash" /> {t('common.delete', 'Delete')}</button
+				void deleteItem(tg.kind, tg.id);
+			}}
 		>
+			{t('common.delete', 'Delete')}
+		</ConfirmButton>
 	</div>
 {/if}
 
@@ -2698,32 +2700,5 @@
 		border: 1px solid var(--color-border);
 		border-radius: var(--radius-md);
 		box-shadow: var(--shadow-lg, 0 10px 30px var(--color-overlay-shadow));
-	}
-
-	.ctx-item {
-		display: flex;
-		align-items: center;
-		gap: 0.6rem;
-		width: 100%;
-		padding: 0.5rem 0.6rem;
-		border: none;
-		background: none;
-		color: var(--color-text);
-		cursor: pointer;
-		text-align: left;
-		text-decoration: none;
-		border-radius: var(--radius-sm);
-		font-size: var(--text-sm);
-	}
-
-	.ctx-item:hover {
-		background: var(--color-bg-hover);
-	}
-
-	.ctx-item--danger {
-		/* Danger *foreground* on the light menu surface — must be the red accent,
-		   not --color-danger-text (which is white, for text ON a red fill, and
-		   rendered near-invisible here). Mirrors the user-menu logout red. */
-		color: var(--color-danger-alt);
 	}
 </style>

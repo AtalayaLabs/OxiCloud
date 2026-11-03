@@ -60,10 +60,9 @@ test('select photos and batch-delete', async ({ page }) => {
   await tileCheck.dispatchEvent('click');
   await expect(page.getByTestId('photos-batch-bar')).toBeVisible({ timeout: 5_000 });
 
-  // Batch-delete the selection (confirm if prompted).
+  // Batch-delete the selection: first click arms the button, second confirms.
   await page.getByTestId('photos-batch-delete-btn').click();
-  const confirm = page.getByTestId('dialog-host-confirm-btn');
-  if (await confirm.isVisible().catch(() => false)) await confirm.click();
+  await page.getByTestId('photos-batch-delete-btn').click();
 });
 
 test('photos subnav switches to places and people', async ({ page }) => {

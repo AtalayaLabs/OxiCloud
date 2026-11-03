@@ -268,14 +268,18 @@ it('creates a new text document from the bundled blank template', async () => {
 	vi.unstubAllGlobals();
 });
 
-it('batch-deletes the whole selection after confirmation', async () => {
+it('batch-deletes the whole selection on the second click', async () => {
 	withListing();
-	confirmDialog.mockResolvedValue(true);
 	m(deleteFolder).mockResolvedValue(undefined);
 	m(deleteFile).mockResolvedValue(undefined);
 	render(FilesPage);
 	await fireEvent.click(await screen.findByTestId('resource-list-select-all-checkbox'));
-	await fireEvent.click(await screen.findByTestId('files-batch-delete-btn'));
+	const del = await screen.findByTestId('files-batch-delete-btn');
+	// First click only arms the button — nothing is deleted until it is
+	// confirmed, which is what replaced the old confirm dialog.
+	await fireEvent.click(del);
+	expect(deleteFolder).not.toHaveBeenCalled();
+	await fireEvent.click(del);
 	await waitFor(() => expect(deleteFolder).toHaveBeenCalledWith('sub1'));
 	await waitFor(() => expect(deleteFile).toHaveBeenCalledWith('f1'));
 });

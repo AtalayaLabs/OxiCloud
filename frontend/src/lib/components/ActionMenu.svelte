@@ -208,11 +208,11 @@
 	}
 
 	.am-item--danger:not(:disabled) {
-		color: var(--color-danger-text);
+		color: var(--color-danger-alt);
 	}
 
 	.am-item--danger:hover:not(:disabled) {
-		background: var(--color-danger-bg);
+		background: var(--color-danger-light-bg);
 	}
 
 	.am-item__text {

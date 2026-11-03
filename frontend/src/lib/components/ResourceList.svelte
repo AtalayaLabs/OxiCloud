@@ -103,6 +103,7 @@
 	// `/files` was already routing its group-by through the same function.
 	import { typeLabel } from '$lib/utils/resourceBuckets';
 	import Icon from '$lib/icons/Icon.svelte';
+	import ConfirmButton from '$lib/components/ConfirmButton.svelte';
 	import EmptyState from '$lib/components/EmptyState.svelte';
 	import SkeletonList from '$lib/components/SkeletonList.svelte';
 	import ActionBar from '$lib/components/ActionBar.svelte';
@@ -1655,24 +1656,37 @@
 	>
 		{#each visibleActions as action (action.key)}
 			{@const dis = action.disabled?.(ctxItem!, ctxOf(ctxItem!.id)) === true}
-			<button
-				class="rl-ctx-item"
-				class:rl-ctx-item--danger={action.danger}
-				class:rl-ctx-item--disabled={dis}
-				role="menuitem"
-				disabled={dis}
-				aria-disabled={dis}
-				data-testid={`resource-list-context-${action.key}-item`}
-				onclick={() => {
-					if (dis) return;
-					const target = ctxItem!;
-					closeContext();
-					action.run(target, ctxOf(target.id));
-				}}
-			>
-				<Icon name={action.icon} />
-				{action.label}
-			</button>
+			{#if action.danger}
+				<ConfirmButton
+					icon={action.icon}
+					class="menu-item menu-item--danger"
+					role="menuitem"
+					disabled={dis}
+					data-testid={`resource-list-context-${action.key}-item`}
+					onconfirm={() => {
+						const target = ctxItem!;
+						closeContext();
+						action.run(target, ctxOf(target.id));
+					}}
+				>
+					{action.label}
+				</ConfirmButton>
+			{:else}
+				<button
+					class="menu-item"
+					role="menuitem"
+					disabled={dis}
+					data-testid={`resource-list-context-${action.key}-item`}
+					onclick={() => {
+						const target = ctxItem!;
+						closeContext();
+						action.run(target, ctxOf(target.id));
+					}}
+				>
+					<Icon name={action.icon} />
+					{action.label}
+				</button>
+			{/if}
 		{/each}
 	</div>
 {/if}
@@ -1881,44 +1895,5 @@
 		border: 1px solid var(--color-border);
 		border-radius: var(--radius-md);
 		box-shadow: var(--shadow-lg);
-	}
-
-	.rl-ctx-item {
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
-		width: 100%;
-		padding: var(--space-2) var(--space-3);
-		border: none;
-		border-radius: var(--radius-sm);
-		background: transparent;
-		color: var(--color-text);
-		text-align: left;
-		cursor: pointer;
-	}
-
-	.rl-ctx-item:hover:not(:disabled) {
-		background: var(--color-bg-hover);
-	}
-
-	/* Disabled entry — dimmed but STILL RENDERED so the user sees that
-	   the option exists and infers "I can't do this here" rather than
-	   assuming a forgotten feature. No `cursor: not-allowed` badge on
-	   hover (deliberate — a forbidden-sign cursor reads as alarming for
-	   an entry the user didn't try to activate). The `disabled`
-	   attribute alone still blocks click + keyboard activation and
-	   flags the element to assistive tech via `aria-disabled`. */
-	.rl-ctx-item--disabled {
-		opacity: 0.5;
-	}
-
-	.rl-ctx-item--disabled:hover {
-		background: transparent;
-	}
-
-	.rl-ctx-item--danger {
-		/* Danger *foreground* on the light menu surface — the red accent, not
-		   --color-danger-text (white, for text ON a red fill, invisible here). */
-		color: var(--color-danger-alt);
 	}
 </style>

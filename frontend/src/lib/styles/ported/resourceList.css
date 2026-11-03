@@ -1408,6 +1408,18 @@
     padding: 0;
 }
 
+/* The 28px cell is a glyph-only box (`padding: 0`), so an armed confirm face
+ * would sit flush against both edges. Same breathing room the component gives
+ * its own `--icon` variant.
+ * The grid clause restates the armed space against the corner-cluster chip
+ * rule (`.files-grid-view .file-item .action-cell .btn-action`, 0,4,0), which
+ * re-zeroes the padding for grid view. */
+.btn-action.confirm-btn--armed,
+.files-grid-view .file-item .action-cell .btn-action.confirm-btn--armed {
+    padding-inline: var(--space-2);
+    gap: var(--space-1);
+}
+
 .btn-action:hover {
     background: var(--color-border-subtle);
     /* Accent (orange) hover matches `.file-actions` (kebab) and the

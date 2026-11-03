@@ -630,6 +630,6 @@
 	}
 
 	.link-btn--danger {
-		color: var(--color-danger-text);
+		color: var(--color-danger-alt);
 	}
 </style>

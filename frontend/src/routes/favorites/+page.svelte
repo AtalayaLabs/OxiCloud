@@ -25,7 +25,7 @@
 		type GroupByDef,
 		type ItemContext
 	} from '$lib/components/ResourceList.svelte';
-	import { confirmDialog, promptDialog } from '$lib/stores/dialogs.svelte';
+	import { promptDialog } from '$lib/stores/dialogs.svelte';
 	import { folderAccessCached, probeFolderAccess } from '$lib/utils/folderAccess';
 	import type { FavoritesOrderBy } from '$lib/api/generated/openapi/types.gen';
 	import { t } from '$lib/i18n/index.svelte';
@@ -187,13 +187,6 @@
 	}
 
 	async function remove(item: FileItem | FolderItem) {
-		const ok = await confirmDialog({
-			title: t('common.delete', 'Delete'),
-			message: t('files.confirm_delete', { name: item.name }, 'Delete "{{name}}"?'),
-			confirmText: t('common.delete', 'Delete'),
-			danger: true
-		});
-		if (!ok) return;
 		try {
 			if (isFile(item)) await deleteFile(item.id);
 			else await deleteFolder(item.id);

@@ -107,6 +107,7 @@
 		setNotificationSinkMissing
 	} from '$lib/stores/adminAdvisories.svelte';
 	import ActionMenu, { type ActionMenuItem } from '$lib/components/ActionMenu.svelte';
+	import ConfirmButton from '$lib/components/ConfirmButton.svelte';
 	import Banner from '$lib/components/Banner.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import OwnerAvatarStack from '$lib/components/OwnerAvatarStack.svelte';
@@ -2096,12 +2097,6 @@
 	// refuses the default Personal drive (405) and any non-empty drive
 	// (409); we surface those as toasts rather than silently swallow.
 	async function requestDeleteDrive(d: Drive) {
-		const msg = t(
-			'admin.drive_delete_confirm',
-			{ name: d.name },
-			'Delete drive "{{name}}"? This cannot be undone.'
-		);
-		if (!(await showConfirm(msg))) return;
 		try {
 			await deleteDriveAdmin(d.id);
 			// Refresh the listing + the sidebar picker. Both have a cached
@@ -2165,12 +2160,6 @@
 	}
 
 	async function removePlugin(p: PluginInfo) {
-		if (
-			!(await showConfirm(
-				t('admin.confirm_delete_plugin', { name: p.name }, 'Delete plugin {{name}}?')
-			))
-		)
-			return;
 		try {
 			await deletePlugin(p.id);
 			await loadPlugins();
@@ -3724,14 +3713,13 @@
 								{/if}
 							</span>
 							{#if idx > 0}
-								<button
-									type="button"
-									class="btn btn-secondary btn-sm ops-banner-editor__remove-locale"
-									onclick={() => removeLanguageAt(idx)}
-									aria-label={t('admin.ops_banner_remove_locale', 'Remove this language')}
-								>
-									{t('admin.ops_banner_remove_locale_label', 'Remove')}
-								</button>
+								<ConfirmButton
+									icon="trash-alt"
+									variant="icon"
+									data-testid="admin-ops-banner-remove-locale"
+									title={t('admin.ops_banner_remove_locale', 'Remove this language')}
+									onconfirm={() => removeLanguageAt(idx)}
+								/>
 							{/if}
 						</span>
 						<textarea
@@ -4753,15 +4741,13 @@
 									     placeholder so the row's columns still line up
 									     with the deletable rows above and below. -->
 									{#if !d.default_for_user}
-										<button
-											class="icon-btn icon-btn--danger"
+										<ConfirmButton
+											icon="trash-alt"
+											variant="icon"
 											data-testid={`admin-drive-delete-${d.id}`}
 											title={t('admin.drive_delete', 'Delete drive')}
-											aria-label={t('admin.drive_delete', 'Delete drive')}
-											onclick={() => requestDeleteDrive(d)}
-										>
-											<Icon name="trash-alt" />
-										</button>
+											onconfirm={() => requestDeleteDrive(d)}
+										/>
 									{:else}
 										<span class="icon-btn icon-btn--placeholder" aria-hidden="true"></span>
 									{/if}
@@ -4880,15 +4866,13 @@
 								>
 									<Icon name={p.enabled ? 'pause' : 'play'} />
 								</button>
-								<button
-									class="icon-btn icon-btn--danger"
+								<ConfirmButton
+									icon="trash-alt"
+									variant="icon"
 									data-testid={`admin-plugin-delete-${p.id}`}
 									title={t('common.delete', 'Delete')}
-									aria-label={t('common.delete', 'Delete')}
-									onclick={() => removePlugin(p)}
-								>
-									<Icon name="trash-alt" />
-								</button>
+									onconfirm={() => removePlugin(p)}
+								/>
 							</td>
 						</tr>
 					{/each}
@@ -6191,7 +6175,7 @@
 	}
 
 	.icon-btn--danger {
-		color: var(--color-error-text);
+		color: var(--color-danger-alt);
 	}
 
 	.icon-btn--success {

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Button from '$lib/components/Button.svelte';
+	import ConfirmButton from '$lib/components/ConfirmButton.svelte';
 	import { useOwnerCache } from '$lib/composables/useOwnerCache.svelte';
 	import { errorToast } from '$lib/utils/errors';
 	import { goto } from '$app/navigation';
@@ -45,7 +46,7 @@
 		type GroupByDef,
 		type ItemContext
 	} from '$lib/components/ResourceList.svelte';
-	import { confirmDialog, promptDialog } from '$lib/stores/dialogs.svelte';
+	import { promptDialog } from '$lib/stores/dialogs.svelte';
 	// `preferences.hideDotfiles` + `isDotfile` are read here only to
 	// derive `hiddenCount` for the empty-state message — the actual
 	// filter is inside ResourceList (gated on `showDotfileToggle`).
@@ -221,12 +222,6 @@
 	}
 
 	async function clearAll() {
-		const ok = await confirmDialog({
-			title: t('recent.clear', 'Clear recent'),
-			message: t('recent.confirm_clear', 'Clear your recent items?'),
-			confirmText: t('recent.clear', 'Clear recent')
-		});
-		if (!ok) return;
 		try {
 			await clearRecentItems({ throwOnError: true });
 			raw = [];
@@ -260,13 +255,6 @@
 	}
 
 	async function remove(item: FileItem | FolderItem) {
-		const ok = await confirmDialog({
-			title: t('common.delete', 'Delete'),
-			message: t('files.confirm_delete', { name: item.name }, 'Delete "{{name}}"?'),
-			confirmText: t('common.delete', 'Delete'),
-			danger: true
-		});
-		if (!ok) return;
 		try {
 			if (isFile(item)) await deleteFile(item.id);
 			else await deleteFolder(item.id);
@@ -446,9 +434,15 @@
 >
 	{#snippet actions()}
 		{#if items.length > 0}
-			<Button icon="broom" data-testid="recent-clear-btn" onclick={clearAll}
-				>{t('recent.clear', 'Clear recent')}</Button
+			<ConfirmButton
+				class="btn"
+				title={t('recent.clear', 'Clear recent')}
+				data-testid="recent-clear-btn"
+				onconfirm={clearAll}
+				icon="broom"
 			>
+				{t('recent.clear', 'Clear recent')}
+			</ConfirmButton>
 		{/if}
 	{/snippet}
 	{#snippet batchActions(sel)}

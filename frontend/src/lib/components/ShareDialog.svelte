@@ -1757,8 +1757,13 @@
 		font-style: italic;
 	}
 
+	.btn-action--delete {
+		color: var(--color-danger-alt);
+	}
+
 	.btn-action--delete:hover {
-		color: var(--color-danger-text);
+		color: var(--color-danger-alt);
+		background: var(--color-danger-light-bg);
 	}
 
 	.btn-action--on {

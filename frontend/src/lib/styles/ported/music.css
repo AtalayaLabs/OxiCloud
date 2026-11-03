@@ -1206,7 +1206,8 @@
     transition: color 0.15s;
 }
 .music-share-remove-btn:hover {
-    color: var(--color-danger-text);
+    color: var(--color-danger-alt);
+    background: var(--color-danger-light-bg);
 }
 .music-shares-add {
     display: flex;

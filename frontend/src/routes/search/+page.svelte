@@ -25,7 +25,7 @@
 	import { folderAccessCached, probeFolderAccess } from '$lib/utils/folderAccess';
 	import Icon from '$lib/icons/Icon.svelte';
 	import { t } from '$lib/i18n/index.svelte';
-	import { confirmDialog, promptDialog } from '$lib/stores/dialogs.svelte';
+	import { promptDialog } from '$lib/stores/dialogs.svelte';
 	import { files as filesStore } from '$lib/stores/files.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 
@@ -496,13 +496,6 @@
 	}
 
 	async function remove(item: FileItem | FolderItem) {
-		const ok = await confirmDialog({
-			title: t('common.delete', 'Delete'),
-			message: t('files.confirm_delete', { name: item.name }, 'Delete "{{name}}"?'),
-			confirmText: t('common.delete', 'Delete'),
-			danger: true
-		});
-		if (!ok) return;
 		try {
 			if (isFile(item)) await deleteFile(item.id);
 			else await deleteFolder(item.id);

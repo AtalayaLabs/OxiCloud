@@ -30,6 +30,7 @@
 	import { SUPPORTED_LOCALES, setLocale, t, type Locale } from '$lib/i18n/index.svelte';
 	import Icon from '$lib/icons/Icon.svelte';
 	import { confirmDialog } from '$lib/stores/dialogs.svelte';
+	import ConfirmButton from '$lib/components/ConfirmButton.svelte';
 	import { preferences } from '$lib/stores/preferences.svelte';
 	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import { session } from '$lib/stores/session.svelte';
@@ -412,13 +413,6 @@
 	}
 
 	async function revokePw(p: AppPasswordSummaryDto) {
-		const ok = await confirmDialog({
-			title: t('profile.app_pw_revoke', 'Revoke app password'),
-			message: t('profile.confirm_revoke', { label: p.label }, 'Revoke "{{label}}"?'),
-			confirmText: t('profile.app_pw_revoke', 'Revoke'),
-			danger: true
-		});
-		if (!ok) return;
 		try {
 			await revokeAppPassword(p.id);
 			generated = null;
@@ -977,14 +971,13 @@
 									</td>
 									<td>
 										{#if p.active !== false}
-											<button
-												class="btn-action btn-action--danger"
+											<ConfirmButton
+												icon="trash-alt"
+												variant="icon"
 												data-testid={`profile-app-pw-revoke-${p.id}`}
 												title={t('profile.revoke_title', 'Revoke')}
-												onclick={() => revokePw(p)}
-											>
-												<Icon name="trash-alt" />
-											</button>
+												onconfirm={() => revokePw(p)}
+											/>
 										{/if}
 									</td>
 								</tr>
@@ -1032,14 +1025,13 @@
 											>
 											<td>
 												{#if p.active !== false}
-													<button
-														class="btn-action btn-action--danger"
+													<ConfirmButton
+														icon="trash-alt"
+														variant="icon"
 														data-testid={`profile-app-pw-auto-revoke-${p.id}`}
 														title={t('profile.revoke_title', 'Revoke')}
-														onclick={() => revokePw(p)}
-													>
-														<Icon name="trash-alt" />
-													</button>
+														onconfirm={() => revokePw(p)}
+													/>
 												{/if}
 											</td>
 										</tr>
@@ -1583,7 +1575,7 @@
 	}
 
 	.link-btn--danger {
-		color: var(--color-danger-text);
+		color: var(--color-danger-alt);
 	}
 
 	@media (width <= 32rem) {

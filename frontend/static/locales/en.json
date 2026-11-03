@@ -1935,6 +1935,7 @@
     "clear": "Clear",
     "close": "Close",
     "confirm": "Confirm",
+    "really": "Really?",
     "copied": "Copied to clipboard",
     "copy": "Copy",
     "copy_failed": "Copy failed",

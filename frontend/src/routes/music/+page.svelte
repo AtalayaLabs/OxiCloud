@@ -27,7 +27,8 @@
 	import { searchResources } from '$lib/api/endpoints/search';
 	import type { FileItem } from '$lib/api/types';
 	import Icon from '$lib/icons/Icon.svelte';
-	import { confirmDialog, promptDialog } from '$lib/stores/dialogs.svelte';
+	import { promptDialog } from '$lib/stores/dialogs.svelte';
+	import ConfirmButton from '$lib/components/ConfirmButton.svelte';
 	import { t } from '$lib/i18n/index.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 
@@ -141,13 +142,6 @@
 	}
 
 	async function onDelete(p: Playlist) {
-		const ok = await confirmDialog({
-			title: t('music.delete_playlist', 'Delete playlist'),
-			message: t('music.confirm_delete', { name: p.name }, 'Delete playlist "{{name}}"?'),
-			confirmText: t('common.delete', 'Delete'),
-			danger: true
-		});
-		if (!ok) return;
 		try {
 			await deletePlaylist(p.id);
 			playlists = playlists.filter((x) => x.id !== p.id);
@@ -638,15 +632,13 @@
 							>
 								<Icon name="users" />
 							</button>
-							<button
+							<ConfirmButton
+								icon="trash"
 								class="btn btn-secondary"
 								data-testid="music-delete-playlist-btn"
-								onclick={() => onDelete(current!)}
+								onconfirm={() => onDelete(current!)}
 								title={t('common.delete', 'Delete')}
-								aria-label={t('common.delete', 'Delete')}
-							>
-								<Icon name="trash" />
-							</button>
+							/>
 						</div>
 
 						<div class="music-track-list">

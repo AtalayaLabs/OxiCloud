@@ -108,11 +108,13 @@ it('renames the current playlist', async () => {
 	await waitFor(() => expect(renamePlaylist).toHaveBeenCalledWith('p1', 'Renamed'));
 });
 
-it('deletes the current playlist after confirmation', async () => {
+it('deletes the current playlist on the second click', async () => {
 	m(listPlaylists).mockResolvedValue([playlist]);
-	confirmDialog.mockResolvedValue(true);
 	m(deletePlaylist).mockResolvedValue(undefined);
 	render(MusicPage);
-	await fireEvent.click(await screen.findByTestId('music-delete-playlist-btn'));
+	const del = await screen.findByTestId('music-delete-playlist-btn');
+	await fireEvent.click(del);
+	expect(deletePlaylist).not.toHaveBeenCalled();
+	await fireEvent.click(del);
 	await waitFor(() => expect(deletePlaylist).toHaveBeenCalledWith('p1'));
 });

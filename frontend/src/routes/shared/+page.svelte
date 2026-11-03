@@ -1063,7 +1063,7 @@
 	}
 
 	.ms-menu__item--danger {
-		color: var(--color-danger-text);
+		color: var(--color-danger-alt);
 	}
 
 	.ms-menu__sep {

@@ -299,7 +299,7 @@
 	}
 
 	.device__deny {
-		color: var(--color-danger-text);
+		color: var(--color-danger-alt);
 	}
 
 	.device__ok {

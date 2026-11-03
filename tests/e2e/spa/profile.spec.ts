@@ -74,12 +74,11 @@ test('generate and revoke an app password', async ({ page }) => {
   await expect(page.getByTestId('profile-app-pw-copy-btn')).toBeVisible({ timeout: 15_000 });
   await page.getByTestId('profile-app-pw-copy-btn').click().catch(() => {});
 
-  // Revoke the app password we just created.
+  // Revoke the app password we just created (armed: click twice).
   const revoke = page.locator('[data-testid^="profile-app-pw-revoke-"]').first();
   if (await revoke.isVisible().catch(() => false)) {
     await revoke.click();
-    const confirm = page.getByTestId('dialog-host-confirm-btn');
-    if (await confirm.isVisible().catch(() => false)) await confirm.click();
+    await revoke.click();
   }
   await expect(page.getByTestId('profile-app-pw-generate-btn')).toBeVisible();
 });
