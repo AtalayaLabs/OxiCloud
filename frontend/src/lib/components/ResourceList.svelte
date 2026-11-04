@@ -62,6 +62,17 @@
 		icon: string;
 		danger?: boolean;
 		/**
+		 * This action deletes a FILE, so its armed confirm should say
+		 * "Permanently?" instead of "Really?" when `features.trash` is
+		 * off — with no trash there is nothing to undo from.
+		 *
+		 * Opt-in per action rather than inferred from `danger`, because
+		 * this one menu serves file lists AND the admin user list: a
+		 * user delete is irreversible whatever the trash flag says, so
+		 * keying its wording off that flag would be misleading.
+		 */
+		permanentWhenNoTrash?: boolean;
+		/**
 		 * Optional per-item visibility gate. Called at menu-open time
 		 * with the target item + context; return `false` to hide the
 		 * entry entirely for that row (e.g. `open_parent` on a drive-
@@ -109,6 +120,7 @@
 	import ActionBar from '$lib/components/ActionBar.svelte';
 	import DisplayModeControls from '$lib/components/DisplayModeControls.svelte';
 	import UserVignette from '$lib/components/UserVignette.svelte';
+	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import VirtualList from '$lib/components/VirtualList.svelte';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
@@ -116,6 +128,7 @@
 	import { ui } from '$lib/stores/ui.svelte';
 	import { files as filesStore } from '$lib/stores/files.svelte';
 	import { preferences } from '$lib/stores/preferences.svelte';
+	import { deleteConfirmLabel } from '$lib/utils/deleteConfirm';
 	import { formatBytes } from '$lib/utils/format';
 	import { formatDate, iconNameFor, fileIconKindClass } from '$lib/utils/display';
 	import { gridColumns } from '$lib/utils/grid';
@@ -1294,7 +1307,19 @@
 		-->
 		{#if hasActionCell}
 			<div class="action-cell">
-				{#if onshared}
+				<!--
+					Share button is gated on `features.sharing` AND on the
+					caller supplying an `onshared` handler. One central
+					gate here covers every ResourceList caller
+					(files / favorites / search / shared-with-me / music …)
+					without changing each page: when the operator sets
+					`OXICLOUD_ENABLE_FILE_SHARING=false` the backend's
+					`/api/shares/*` routes aren't mounted (`routes.rs:114,
+					337` guard on `share_service.is_some()`), so a visible
+					button would 404 on click. See `common/di.rs::create
+					_share_service` for the server-side side.
+				-->
+				{#if onshared && serverConfig.features.sharing}
 					<button
 						class="shared-button"
 						class:active={item.is_shared}
@@ -1662,6 +1687,7 @@
 					class="menu-item menu-item--danger"
 					role="menuitem"
 					disabled={dis}
+					confirmLabel={action.permanentWhenNoTrash ? deleteConfirmLabel() : undefined}
 					data-testid={`resource-list-context-${action.key}-item`}
 					onconfirm={() => {
 						const target = ctxItem!;

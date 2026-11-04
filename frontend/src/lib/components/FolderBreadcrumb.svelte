@@ -4,6 +4,7 @@
 	import type { AccessSource, FolderAncestor, FolderAncestorsResponse } from '$lib/api/types';
 	import Icon from '$lib/icons/Icon.svelte';
 	import UserAvatar from '$lib/components/UserAvatar.svelte';
+	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import { t } from '$lib/i18n/index.svelte';
 
 	/**
@@ -434,7 +435,7 @@
 			and fetching it just to tint an icon would put a request on
 			every breadcrumb render.
 		-->
-		{#if onShare && shareTarget}
+		{#if onShare && shareTarget && serverConfig.features.sharing}
 			{@const target = shareTarget}
 			<button
 				type="button"

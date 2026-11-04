@@ -43,11 +43,19 @@ const DEFAULT_SEVERITY: &str = "data_loss";
 const DEFAULT_KIND: &str = "selftest_finding";
 
 static PARAMETERS: [JobParam; 4] = [
-    JobParam::string(
+    // The severity vocabulary is closed and load-bearing: the whole
+    // notify threshold keys off it (`NotifyThreshold::admits`), so a typo
+    // here would silently select a different delivery behaviour. Declaring
+    // it enumerated makes that a 400 at the trigger and a select in the
+    // panel — and gives the default a value instead of rendering
+    // "no default" above a description that names one.
+    JobParam::enumerated(
         "severity",
-        "Severity to record: data_loss (default), inconsistent or anomaly. \
-         Findings below OXICLOUD_JOBS_NOTIFY_MIN_SEVERITY are recorded but \
-         not delivered — which is itself worth testing.",
+        &["data_loss", "inconsistent", "anomaly"],
+        "data_loss",
+        "Severity to record. Findings below \
+         OXICLOUD_JOBS_NOTIFY_MIN_SEVERITY are recorded but not delivered \
+         — which is itself worth testing.",
     ),
     JobParam::string(
         "kind",

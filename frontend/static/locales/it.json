@@ -115,7 +115,8 @@
     "tab_places": "Luoghi",
     "tab_people": "Persone",
     "map_loading": "Caricamento mappa...",
-    "map_error": "Impossibile caricare la mappa"
+    "map_error": "Impossibile caricare la mappa",
+    "confirm_delete_one_permanent": "Eliminare definitivamente «{{name}}»? Questa azione non può essere annullata."
   },
   "music": {
     "create_playlist": "Crea Playlist",
@@ -568,7 +569,9 @@
     "new_text_file_prompt": "Nome del file (es. notes.md)",
     "new_text_file_hint": "Includi l'estensione nel nome del file (es. .md, .txt, .c, .py, .rs).",
     "new_text_file_binary_ext_title": "Estensione non testuale",
-    "new_text_file_binary_ext_message": "«{{name}}» non sembra un file di testo. L'editor lo aprirà come testo — di solito questo danneggia i formati binari. Continuare comunque?"
+    "new_text_file_binary_ext_message": "«{{name}}» non sembra un file di testo. L'editor lo aprirà come testo — di solito questo danneggia i formati binari. Continuare comunque?",
+    "confirm_delete_permanent": "Eliminare definitivamente «{{name}}»? Questa azione non può essere annullata.",
+    "confirm_batch_delete_permanent": "Eliminare definitivamente {{n}} elementi? Questa azione non può essere annullata."
   },
   "dialogs": {
     "rename_folder": "Rinomina cartella",
@@ -1348,9 +1351,6 @@
       "notices_present_tooltip": "Risultati informativi: nessuna azione richiesta. Espandi per i dettagli.",
       "purge": "Elimina le vecchie esecuzioni",
       "purge_hint": "Elimina la cronologia delle esecuzioni completate e non riuscite precedente alla finestra di conservazione scelta. I risultati diminuiscono con le corse principali. Le esecuzioni non terminali vengono sempre conservate.",
-      "purge_body": "Elimina la cronologia delle esecuzioni completate e non riuscite precedente al numero di giorni scelto. I risultati diminuiscono con le corse principali. Le esecuzioni non terminali (in esecuzione, in pausa, con richiesta di annullamento) vengono sempre conservate.",
-      "purge_days_label": "Conservazione (giorni)",
-      "purge_confirm": "Eliminazione",
       "purge_done": "{{n}} vecchie analisi eliminate (conservazione {{days}} giorni)",
       "state_running": "corsa",
       "never": "Mai",
@@ -1368,7 +1368,6 @@
       "title": "Attività in background",
       "hint": "Questa sezione riguarda le attività interne in background: attività periodiche e su richiesta. I controlli di coerenza sono sicuri da eseguire in qualsiasi momento — sono di sola lettura.",
       "none_registered": "Nessuna attività in background registrata.",
-      "purge_title": "Elimina cronologia attività precedenti",
       "run_repair": "Ripara i ref_counts",
       "run_repair_hint": "Corregge eventuali ref_count fuori sincrono (blob + manifest) trovati dall’audit. Sicuro per i contenuti — cambiano solo i contatori, non i dati.",
       "run_repair_confirm_title_scoped": "Eseguire {{name}} in modalità riparazione?",
@@ -1867,6 +1866,7 @@
     "close": "Chiudi",
     "confirm": "Conferma",
     "really": "Davvero?",
+    "permanently": "Definitivamente?",
     "copy": "Copia",
     "create": "Crea",
     "delete": "Elimina",

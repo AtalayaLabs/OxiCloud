@@ -34,6 +34,17 @@
 		/** e2e hook forwarded to the underlying `<button>`. */
 		'data-testid'?: string;
 		children?: Snippet;
+		/**
+		 * Wording for the ARMED state — the visible label, and the
+		 * accessible name while armed. Defaults to "Really?".
+		 *
+		 * Override it when the second click does something the default
+		 * does not describe. The case this exists for: a delete is
+		 * reversible on a deployment with trash enabled and irreversible
+		 * without it, and "Really?" reads identically for both — the one
+		 * distinction a confirm exists to draw. See `PhotoLightbox`.
+		 */
+		confirmLabel?: string;
 	}
 
 	let {
@@ -45,7 +56,8 @@
 		title,
 		role,
 		'data-testid': testid,
-		children
+		children,
+		confirmLabel: confirmLabelProp
 	}: Props = $props();
 
 	let armed = $state(false);
@@ -68,7 +80,7 @@
 		onconfirm(e);
 	}
 
-	const confirmLabel = $derived(t('common.really', 'Really?'));
+	const confirmLabel = $derived(confirmLabelProp ?? t('common.really', 'Really?'));
 </script>
 
 <svelte:window

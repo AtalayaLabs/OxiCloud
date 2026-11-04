@@ -280,7 +280,14 @@
 			run: (item) => void unfavorite(item)
 		},
 		{ key: 'rename', label: t('common.rename', 'Rename'), icon: 'pen', run: rename },
-		{ key: 'delete', label: t('common.delete', 'Delete'), icon: 'trash', danger: true, run: remove }
+		{
+			key: 'delete',
+			label: t('common.delete', 'Delete'),
+			icon: 'trash',
+			danger: true,
+			permanentWhenNoTrash: true,
+			run: remove
+		}
 	];
 
 	// ── Selection + batch ─────────────────────────────────────────────────────

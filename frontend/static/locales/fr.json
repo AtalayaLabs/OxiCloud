@@ -115,7 +115,8 @@
     "tab_places": "Lieux",
     "tab_people": "Personnes",
     "map_loading": "Chargement de la carte…",
-    "map_error": "Impossible de charger la carte"
+    "map_error": "Impossible de charger la carte",
+    "confirm_delete_one_permanent": "Supprimer définitivement « {{name}} » ? Cette action est irréversible."
   },
   "music": {
     "create_playlist": "Créer une Playlist",
@@ -568,7 +569,9 @@
     "new_text_file_prompt": "Nom du fichier (ex. notes.md)",
     "new_text_file_hint": "Incluez l'extension dans le nom du fichier (ex. .md, .txt, .c, .py, .rs).",
     "new_text_file_binary_ext_title": "Extension non textuelle",
-    "new_text_file_binary_ext_message": "« {{name}} » ne ressemble pas à un fichier texte. L'éditeur l'ouvrira comme du texte — cela endommage généralement les formats binaires. Continuer quand même ?"
+    "new_text_file_binary_ext_message": "« {{name}} » ne ressemble pas à un fichier texte. L'éditeur l'ouvrira comme du texte — cela endommage généralement les formats binaires. Continuer quand même ?",
+    "confirm_delete_permanent": "Supprimer définitivement « {{name}} » ? Cette action est irréversible.",
+    "confirm_batch_delete_permanent": "Supprimer définitivement {{n}} éléments ? Cette action est irréversible."
   },
   "dialogs": {
     "rename_folder": "Renommer le dossier",
@@ -1372,9 +1375,6 @@
       "notices_present_tooltip": "Résultats informatifs – aucune action requise. Développez pour plus de détails.",
       "purge": "Purger les anciennes exécutions",
       "purge_hint": "Supprimer l’historique des exécutions terminées et échouées plus ancien que la fenêtre de conservation choisie. Les résultats sont supprimés avec leurs exécutions parentes. Les exécutions non terminales sont toujours préservées.",
-      "purge_body": "Supprimez l’historique des exécutions terminées et échouées plus ancienne que le nombre de jours choisi. Les résultats tombent avec leurs exécutions parentes. Les exécutions non terminales (en cours d’exécution, en pause, demandées en annulation) sont toujours conservées.",
-      "purge_days_label": "Rétention (jours)",
-      "purge_confirm": "Purger",
       "purge_done": "{{n}} anciennes exécutions purgées (rétention {{days}} jours)",
       "state_running": "en cours d'exécution",
       "never": "jamais",
@@ -1392,7 +1392,6 @@
       "title": "Tâches en arrière-plan",
       "hint": "Cette section concerne les tâches internes en arrière-plan : tâches périodiques et à la demande. Les contrôles de cohérence peuvent être exécutés à tout moment — ils sont en lecture seule.",
       "none_registered": "Aucune tâche en arrière-plan enregistrée.",
-      "purge_title": "Purger l’ancien historique des tâches",
       "run_repair_confirm_title_scoped": "Lancer {{name}} en mode réparation ?",
       "run_mutating_confirm_title": "Lancer {{name}} ?",
       "run_mutating_confirm_body": "Cette tâche modifie l’état stocké lorsqu’elle s’exécute.",
@@ -1867,6 +1866,7 @@
     "close": "Fermer",
     "confirm": "Confirmer",
     "really": "Vraiment ?",
+    "permanently": "Définitivement ?",
     "copy": "Copier",
     "create": "Créer",
     "delete": "Supprimer",

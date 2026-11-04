@@ -115,7 +115,8 @@
     "tab_places": "Lugares",
     "tab_people": "Pessoas",
     "map_loading": "Carregando mapa…",
-    "map_error": "Não foi possível carregar o mapa"
+    "map_error": "Não foi possível carregar o mapa",
+    "confirm_delete_one_permanent": "Excluir permanentemente «{{name}}»? Esta ação não pode ser desfeita."
   },
   "music": {
     "create_playlist": "Criar Playlist",
@@ -568,7 +569,9 @@
     "new_text_file_prompt": "Nome do ficheiro (ex. notes.md)",
     "new_text_file_hint": "Inclua a extensão no nome do ficheiro (ex. .md, .txt, .c, .py, .rs).",
     "new_text_file_binary_ext_title": "Extensão não textual",
-    "new_text_file_binary_ext_message": "«{{name}}» não parece ser um ficheiro de texto. O editor abri-lo-á como texto — isso costuma danificar formatos binários. Continuar mesmo assim?"
+    "new_text_file_binary_ext_message": "«{{name}}» não parece ser um ficheiro de texto. O editor abri-lo-á como texto — isso costuma danificar formatos binários. Continuar mesmo assim?",
+    "confirm_delete_permanent": "Excluir permanentemente «{{name}}»? Esta ação não pode ser desfeita.",
+    "confirm_batch_delete_permanent": "Excluir permanentemente {{n}} itens? Esta ação não pode ser desfeita."
   },
   "dialogs": {
     "rename_folder": "Renomear pasta",
@@ -1348,9 +1351,6 @@
       "notices_present_tooltip": "Resultados informativos — nenhuma ação é necessária. Expanda para obter detalhes.",
       "purge": "Limpar execuções antigas",
       "purge_hint": "Exclua o histórico de execução concluída e com falha anterior à janela de retenção escolhida. As descobertas diminuem com as execuções dos pais. As execuções não terminais são sempre preservadas.",
-      "purge_body": "Exclua o histórico de execução concluída e com falha anterior ao número de dias escolhido. As descobertas diminuem com as execuções dos pais. As execuções não terminais (em execução, pausadas, solicitadas por cancelamento) são sempre preservadas.",
-      "purge_days_label": "Retenção (dias)",
-      "purge_confirm": "Purga",
       "purge_done": "{{n}} execuções antigas eliminadas (retenção {{days}} dias)",
       "state_running": "correndo",
       "never": "nunca",
@@ -1368,7 +1368,6 @@
       "title": "Tarefas em segundo plano",
       "hint": "Esta seção diz respeito às tarefas internas em segundo plano: tarefas periódicas e sob demanda. As verificações de consistência são seguras para executar a qualquer momento — são somente leitura.",
       "none_registered": "Nenhuma tarefa em segundo plano registrada.",
-      "purge_title": "Limpar histórico de tarefas antigas",
       "run_repair": "Reparar ref_counts",
       "run_repair_hint": "Corrige quaisquer ref_counts desalinhados (blobs + manifests) encontrados pela auditoria. Seguro para o conteúdo — só os contadores mudam, não os dados.",
       "run_repair_confirm_title_scoped": "Executar {{name}} no modo de reparação?",
@@ -1867,6 +1866,7 @@
     "close": "Fechar",
     "confirm": "Confirmar",
     "really": "Tem certeza?",
+    "permanently": "Permanentemente?",
     "copy": "Copiar",
     "create": "Criar",
     "delete": "Excluir",

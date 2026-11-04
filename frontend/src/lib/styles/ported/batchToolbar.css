@@ -78,14 +78,20 @@
     background: var(--color-multiselect-action-hover);
 }
 
+/* Foreground is `--color-danger-text` (a solid #ffffff), NOT
+ * `--color-bg-surface`. The latter is `light-dark(#ffffff, #1e293b)`, so in
+ * dark mode the label on this red fill turned near-black navy — 3.89:1, and
+ * reading as a disabled control rather than a destructive one. A *surface*
+ * token was never a foreground; `.btn-danger` in buttons.css has always used
+ * `--color-danger-text` and this rule was the outlier. */
 .batch-btn-danger {
     background: var(--color-danger-bg);
-    color: var(--color-bg-surface);
+    color: var(--color-danger-text);
 }
 
 .batch-btn-danger:hover {
     background: var(--color-danger-bg-hover);
-    color: var(--color-bg-surface);
+    color: var(--color-danger-text);
 }
 
 @media (max-width: 640px) {

@@ -1,4 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
+import * as fs from 'fs';
 import * as path from 'path';
 import { loadEnv } from './load-env';
 
@@ -65,6 +66,142 @@ const SHARED_WORKER_MODE = process.env.OXICLOUD_SHARED_WORKER_MODE === '1';
  *  worker fan-out / reconnect / fallback properties. */
 const SHARED_WORKER_SPECS = /message-bus-.*\.spec\.ts/;
 
+/**
+ * Pick the server command: reuse an already-built binary when one is there
+ * and demonstrably usable, else `cargo run`.
+ *
+ * `cargo run` is a 5-minute rebuild whenever the last cargo invocation used a
+ * different feature set — `cargo clippy --all-features` and
+ * `just gen-openapi` (`--features dev_tools`) both do, so in practice an
+ * ordinary dev loop pays that cost on nearly every e2e run even though
+ * `target/debug/oxicloud` is sitting right there.
+ *
+ * Reuse is only safe if the binary is actually equivalent to what `cargo run`
+ * would have produced, so BOTH guards must pass. Either failing falls back to
+ * `cargo run`, which rebuilds correctly — a wasted 5 minutes is the acceptable
+ * failure, silently testing the wrong server is not:
+ *
+ *  1. **Not stale.** Newer than every `.rs` under `src/`, than `migrations/`,
+ *     and than `Cargo.toml`/`Cargo.lock`. Without this a forgotten rebuild
+ *     makes the suite grade the previous commit — green on code that no
+ *     longer exists, which is worse than no run at all.
+ *  2. **Built with `--features plugins`.** This config sets
+ *     `OXICLOUD_ENABLE_PLUGINS=true` and the admin Plugins tab specs install
+ *     the hello fixture. The feature set is not recorded anywhere on disk
+ *     (`--version` doesn't report it), so probe for linked wasmtime symbols:
+ *     present in a plugins build, absent entirely otherwise.
+ *
+ * `BUILD_TARGET` keeps its old meaning exactly — an explicit "use
+ * target/<profile>/oxicloud", unconditional, no probing. That is the CI path
+ * (CI just built it, from a known feature set) and it stays untouched.
+ * `E2E_BUILD=cargo` forces the cargo path when you want to be sure.
+ */
+function newestMtime(paths: string[]): number {
+  let newest = 0;
+  const visit = (p: string) => {
+    let st: fs.Stats;
+    try {
+      st = fs.statSync(p);
+    } catch {
+      return; // absent is not newer than anything
+    }
+    if (st.isDirectory()) {
+      for (const entry of fs.readdirSync(p)) visit(path.join(p, entry));
+    } else if (st.mtimeMs > newest) {
+      newest = st.mtimeMs;
+    }
+  };
+  paths.forEach(visit);
+  return newest;
+}
+
+function hasPluginsFeature(bin: string): boolean {
+  // Byte scan rather than shelling out to `nm`/`strings`, so this works the
+  // same wherever Node runs. ~0.2 s on a 116 MB debug binary, once per run.
+  try {
+    return fs.readFileSync(bin).includes('wasmtime');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Refuse to run against a `static-dist/` older than the frontend sources.
+ *
+ * The suite serves `static-dist/`, which Vite only writes on an explicit
+ * build — so editing a component and running Playwright tests the PREVIOUS
+ * bundle. The failure is silent and reads as a product bug: a new
+ * `data-testid` is simply absent, so the test either times out or, worse,
+ * hits a tolerant guard and SKIPS.
+ *
+ * This bit twice in one session. First a dialog that did not exist in the
+ * bundle, then a green run that never exercised the code it was meant to
+ * verify. Both times the output looked fine.
+ *
+ * Throwing here is the point: a false green is worse than a failed run, and
+ * the fix is one command. Not auto-built — a 40-second build triggered from
+ * a config file is a surprise, and the explicit step is also the record of
+ * WHICH bundle was tested.
+ */
+function assertFreshBundle(): void {
+  const dist = path.join(workspace, 'static-dist');
+  if (!fs.existsSync(path.join(dist, 'index.html'))) {
+    throw new Error(
+      '[e2e] static-dist/index.html is missing — build the instrumented SPA first:\n' +
+        '        just fe-build-e2e\n'
+    );
+  }
+  const distAge = newestMtime([dist]);
+  const srcAge = newestMtime([path.join(workspace, 'frontend', 'src')]);
+  if (srcAge > distAge) {
+    throw new Error(
+      `[e2e] static-dist/ is OLDER than frontend/src/ — the suite would test the previous bundle,\n` +
+        `      and a missing data-testid reads as a product bug rather than a stale build.\n` +
+        `        static-dist:  ${new Date(distAge).toISOString()}\n` +
+        `        frontend/src: ${new Date(srcAge).toISOString()}\n` +
+        `      Rebuild first:  just fe-build-e2e\n`
+    );
+  }
+}
+
+function serverCommand(): string {
+  if (process.env.BUILD_TARGET) {
+    return `bash "${startScript}" "${workspace}/target/${process.env.BUILD_TARGET}/oxicloud"`;
+  }
+
+  const cargo = `bash "${startScript}" cargo run --features plugins`;
+  if (process.env.E2E_BUILD === 'cargo') return cargo;
+
+  const bin = path.join(workspace, 'target', 'debug', 'oxicloud');
+  if (!fs.existsSync(bin)) return cargo;
+
+  const binAge = fs.statSync(bin).mtimeMs;
+  const srcAge = newestMtime([
+    path.join(workspace, 'src'),
+    path.join(workspace, 'migrations'),
+    path.join(workspace, 'Cargo.toml'),
+    path.join(workspace, 'Cargo.lock'),
+  ]);
+  if (srcAge > binAge) {
+    console.log('[e2e] target/debug/oxicloud is older than the sources — rebuilding via cargo.');
+    return cargo;
+  }
+  if (!hasPluginsFeature(bin)) {
+    console.log(
+      '[e2e] target/debug/oxicloud was not built with --features plugins — rebuilding via cargo.'
+    );
+    return cargo;
+  }
+
+  console.log(
+    `[e2e] reusing target/debug/oxicloud (built ${new Date(binAge).toISOString()}). ` +
+      'Set E2E_BUILD=cargo to force a rebuild.'
+  );
+  return `bash "${startScript}" "${bin}"`;
+}
+
+assertFreshBundle();
+
 export default defineConfig({
   testDir: './spa',
   fullyParallel: false,
@@ -105,9 +242,7 @@ export default defineConfig({
   ],
 
   webServer: {
-    command: process.env.BUILD_TARGET
-      ? `bash "${startScript}" "${workspace}/target/${process.env.BUILD_TARGET}/oxicloud"`
-      : `bash "${startScript}" cargo run --features plugins`,
+    command: serverCommand(),
     url: 'http://127.0.0.1:8088/ready',
     timeout: 600_000,
     reuseExistingServer: false,

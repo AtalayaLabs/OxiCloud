@@ -69,7 +69,7 @@ use super::types::{JobOutcome, JobParam, JobRunArgs, Mutates};
 /// `params.cancel_intent = "terminate"` alongside the CancelRequested
 /// flip; engine post-processes handler's Paused return → Cancelled), or
 /// (2) admin cancel on an already-Paused row (direct DB flip).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub enum RunStatus {
     Running,
     Paused,

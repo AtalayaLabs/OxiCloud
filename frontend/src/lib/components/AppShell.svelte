@@ -74,32 +74,112 @@
 		admin?: boolean;
 	}
 
-	const LINKS: NavLink[] = [
-		{ href: '/files', label: t('nav.files', 'Files'), icon: 'folder', section: 'files' },
-		{ href: '/shared', label: t('nav.shared', 'Shared'), icon: 'oxiexport', section: 'shared' },
-		{
-			href: '/shared-with-me',
-			label: t('nav.shared_with_me', 'Shared with me'),
-			icon: 'oxiimport',
-			section: 'shared-with-me'
-		},
-		{ href: '/recent', label: t('nav.recent', 'Recent'), icon: 'clock', section: 'recent' },
-		{
-			href: '/favorites',
-			label: t('nav.favorites', 'Favorites'),
-			icon: 'star',
-			section: 'favorites'
-		},
-		{ href: '/photos', label: t('nav.photos', 'Photos'), icon: 'images', section: 'photos' },
-		{ href: '/music', label: t('nav.music', 'Music'), icon: 'music', section: 'music' },
-		{
-			href: '/contacts',
-			label: t('nav.contacts', 'Contacts'),
-			icon: 'id-card',
-			section: 'contacts'
-		},
-		{ href: '/trash', label: t('nav.trash', 'Trash'), icon: 'trash', section: 'trash' }
-	];
+	// `$derived.by` so feature-flag gating drops entries when a feature is
+	// disabled server-side. Mirrors the ADMIN_LINKS pattern below: the
+	// backend's `/api/{photos,music,trash,shares,search}/*` routes are
+	// also gated on these flags, so hiding the sidebar link keeps the
+	// SPA consistent with what the backend serves — a stale link would
+	// land on a 404. See `$lib/stores/serverConfig.svelte.ts` and
+	// `src/common/di.rs` for the server-side side of each gate.
+	const LINKS = $derived.by<NavLink[]>(() => {
+		const links: NavLink[] = [
+			{ href: '/files', label: t('nav.files', 'Files'), icon: 'folder', section: 'files' }
+		];
+		if (serverConfig.features.sharing) {
+			links.push(
+				{
+					href: '/shared',
+					label: t('nav.shared', 'Shared'),
+					icon: 'oxiexport',
+					section: 'shared'
+				},
+				{
+					href: '/shared-with-me',
+					label: t('nav.shared_with_me', 'Shared with me'),
+					icon: 'oxiimport',
+					section: 'shared-with-me'
+				}
+			);
+		}
+		links.push(
+			{ href: '/recent', label: t('nav.recent', 'Recent'), icon: 'clock', section: 'recent' },
+			{
+				href: '/favorites',
+				label: t('nav.favorites', 'Favorites'),
+				icon: 'star',
+				section: 'favorites'
+			}
+		);
+		if (serverConfig.features.photos) {
+			links.push({
+				href: '/photos',
+				label: t('nav.photos', 'Photos'),
+				icon: 'images',
+				section: 'photos'
+			});
+		}
+		if (serverConfig.features.music) {
+			links.push({
+				href: '/music',
+				label: t('nav.music', 'Music'),
+				icon: 'music',
+				section: 'music'
+			});
+		}
+		// `features.contacts`, NOT `features.carddav`: that flag governs the
+		// DAV sync endpoint, this one governs `/api/contacts` + this page,
+		// and a deployment may want either without the other.
+		if (serverConfig.features.contacts) {
+			links.push({
+				href: '/contacts',
+				label: t('nav.contacts', 'Contacts'),
+				icon: 'id-card',
+				section: 'contacts'
+			});
+		}
+		// ── TO THE /calendar IMPLEMENTER (PR #853) ───────────────────────
+		// `serverConfig.features.calendars` already exists end to end —
+		// `OXICLOUD_ENABLE_CALENDARS` → `FeaturesConfig::enable_calendars`
+		// → `/api/config.features.calendars` → the generated SDK type.
+		// It was added ahead of the feature so nothing about the flag has
+		// to be invented while landing the page. Add the nav entry here,
+		// gated the same way its neighbours are:
+		//
+		//   if (serverConfig.features.calendars) {
+		//     links.push({
+		//       href: '/calendars',
+		//       label: t('nav.calendars', 'Calendars'),
+		//       icon: 'calendar',
+		//       section: 'calendars'
+		//     });
+		//   }
+		//
+		// ⚠ PLURAL route, to match `/contacts` and `/photos` above, the
+		// `features.calendars` flag and the `/api/calendars` REST surface.
+		// PR #853 as currently written is split on this — its API is
+		// `/api/calendars` but its page is `/calendar`. Settle it one way
+		// when landing; this file's convention is that `section` equals
+		// the last path segment, which the `appshell-nav-${section}-link`
+		// test id depends on.
+		//
+		// Two things to do with it beyond this block: gate the
+		// `/api/calendars` router in `routes.rs` on
+		// `features.enable_calendars` (mirror the `/api/contacts` gate
+		// above it) so non-SPA clients get a 404 rather than a surface
+		// the SPA merely hides, and add the hide/show pins to
+		// `AppShell.test.ts` next to the contacts ones. Gate on
+		// `calendars`, NOT `caldav` — that is the sync protocol.
+		// https://github.com/AtalayaLabs/OxiCloud/pull/853
+		if (serverConfig.features.trash) {
+			links.push({
+				href: '/trash',
+				label: t('nav.trash', 'Trash'),
+				icon: 'trash',
+				section: 'trash'
+			});
+		}
+		return links;
+	});
 
 	// Admin sidebar — populated when the URL is under /admin. The
 	// admin +page.svelte used to render its own horizontal tab
@@ -386,13 +466,28 @@
 			return;
 		}
 
-		// Trash: destructive → gate on confirm.
+		// Trash: destructive → gate on confirm. Adapt copy to the
+		// deployment's trash state (see the files/[...path] page's
+		// `deleteItem` helper for the server-side rationale).
+		const trashOn = serverConfig.features.trash;
 		const ok = await dialogs.confirm({
 			title: t('files.batch_delete', 'Delete selected'),
 			message:
 				items.length === 1
-					? t('files.confirm_delete', { name: items[0].name }, 'Move "{{name}}" to trash?')
-					: t('files.confirm_batch_delete', { n: items.length }, 'Move {{n}} items to trash?'),
+					? trashOn
+						? t('files.confirm_delete', { name: items[0].name }, 'Move "{{name}}" to trash?')
+						: t(
+								'files.confirm_delete_permanent',
+								{ name: items[0].name },
+								'Permanently delete "{{name}}"? This cannot be undone.'
+							)
+					: trashOn
+						? t('files.confirm_batch_delete', { n: items.length }, 'Move {{n}} items to trash?')
+						: t(
+								'files.confirm_batch_delete_permanent',
+								{ n: items.length },
+								'Permanently delete {{n}} items? This cannot be undone.'
+							),
 			confirmText: t('common.delete', 'Delete'),
 			danger: true
 		});
@@ -723,98 +818,118 @@
 			<Icon name="bars" />
 		</button>
 
-		<!-- Mobile: icon-only button that expands the full-width search overlay. -->
-		<button
-			class="search-toggle-btn"
-			id="search-toggle-btn"
-			aria-label={t('actions.search_btn', 'Search')}
-			data-testid="appshell-search-toggle-btn"
-			onclick={openMobileSearch}
-		>
-			<Icon name="search" />
-		</button>
+		<!--
+			Search surface is gated on `serverConfig.features.search` —
+			when the operator sets `OXICLOUD_ENABLE_SEARCH=false` the
+			backend returns 404 on `/api/search/*` (routes aren't mounted
+			via `routes.rs:313`'s `if search_service.is_some()`), so the
+			SPA must not render a search bar that would issue requests
+			that can't succeed. The mobile toggle + back-arrow are
+			icon-only and sized by their intrinsic width, so hiding them
+			via `{#if}` doesn't shift the layout. The `.search-slot`
+			stays always-rendered as the flex-grow spacer — hiding its
+			CONTENT (not the slot itself) keeps notifications + the
+			user menu anchored on the right instead of collapsing left.
+		-->
+		{#if serverConfig.features.search}
+			<!-- Mobile: icon-only button that expands the full-width search overlay. -->
+			<button
+				class="search-toggle-btn"
+				id="search-toggle-btn"
+				aria-label={t('actions.search_btn', 'Search')}
+				data-testid="appshell-search-toggle-btn"
+				onclick={openMobileSearch}
+			>
+				<Icon name="search" />
+			</button>
 
-		<!-- Mobile: back arrow shown while the search overlay is expanded. -->
-		<button
-			class="search-back-btn"
-			aria-label={t('common.close', 'Close')}
-			data-testid="appshell-search-back-btn"
-			onclick={closeMobileSearch}
-		>
-			<Icon name="arrow-left" />
-		</button>
+			<!-- Mobile: back arrow shown while the search overlay is expanded. -->
+			<button
+				class="search-back-btn"
+				aria-label={t('common.close', 'Close')}
+				data-testid="appshell-search-back-btn"
+				onclick={closeMobileSearch}
+			>
+				<Icon name="arrow-left" />
+			</button>
+		{/if}
 
 		<div class="search-slot">
-			<form class="search-container" onsubmit={onSearch}>
-				<input
-					type="text"
-					bind:this={searchInputEl}
-					bind:value={searchQuery}
-					data-testid="appshell-search-input"
-					oninput={onSearchInput}
-					onfocus={() => (suggestOpen = suggestions.length > 0)}
-					onblur={() => setTimeout(() => (suggestOpen = false), 150)}
-					placeholder={t('actions.search', 'Search files, folders...')}
-					autocomplete="off"
-				/>
-				{#if searchQuery}
+			{#if serverConfig.features.search}
+				<form class="search-container" onsubmit={onSearch}>
+					<Icon name="search" class="search-icon" />
+					<input
+						type="text"
+						bind:this={searchInputEl}
+						bind:value={searchQuery}
+						data-testid="appshell-search-input"
+						oninput={onSearchInput}
+						onfocus={() => (suggestOpen = suggestions.length > 0)}
+						onblur={() => setTimeout(() => (suggestOpen = false), 150)}
+						placeholder={t('actions.search', 'Search files, folders...')}
+						autocomplete="off"
+					/>
+					{#if searchQuery}
+						<button
+							class="search-clear"
+							type="button"
+							title={t('common.clear', 'Clear')}
+							aria-label={t('common.clear', 'Clear')}
+							data-testid="appshell-search-clear-btn"
+							onclick={clearSearch}
+						>
+							<Icon name="times" />
+						</button>
+					{/if}
 					<button
-						class="search-clear"
-						type="button"
-						title={t('common.clear', 'Clear')}
-						aria-label={t('common.clear', 'Clear')}
-						data-testid="appshell-search-clear-btn"
-						onclick={clearSearch}
+						class="search-button"
+						type="submit"
+						title={t('actions.search_btn', 'Search')}
+						aria-label={t('actions.search_btn', 'Search')}
+						data-testid="appshell-search-submit-btn"
 					>
-						<Icon name="times" />
+						<Icon name="search" />
 					</button>
-				{/if}
-				<button
-					class="search-button"
-					type="submit"
-					title={t('actions.search_btn', 'Search')}
-					aria-label={t('actions.search_btn', 'Search')}
-					data-testid="appshell-search-submit-btn"
-				>
-					<Icon name="search" />
-				</button>
 
-				{#if suggestOpen}
-					<ul class="suggest">
-						{#each suggestions as s (s.kind + s.item.id)}
+					{#if suggestOpen}
+						<ul class="suggest">
+							{#each suggestions as s (s.kind + s.item.id)}
+								<li>
+									<button
+										class="suggest__item"
+										type="button"
+										data-testid={`appshell-search-suggestion-${s.kind}-${s.item.id}-item`}
+										onmousedown={() => pickSuggestion(s)}
+									>
+										<span class="suggest__icon">
+											{#if s.kind === 'folder'}
+												<Icon name="folder" />
+											{:else}
+												<Icon name={iconNameFor(s.item.name, s.item.mime_type)} />
+											{/if}
+										</span>
+										<span class="suggest__name">{s.item.name}</span>
+									</button>
+								</li>
+							{/each}
 							<li>
 								<button
-									class="suggest__item"
+									class="suggest__all"
 									type="button"
-									data-testid={`appshell-search-suggestion-${s.kind}-${s.item.id}-item`}
-									onmousedown={() => pickSuggestion(s)}
+									data-testid="appshell-search-see-all-btn"
+									onmousedown={goToResults}
 								>
-									<span class="suggest__icon">
-										{#if s.kind === 'folder'}
-											<Icon name="folder" />
-										{:else}
-											<Icon name={iconNameFor(s.item.name, s.item.mime_type)} />
-										{/if}
-									</span>
-									<span class="suggest__name">{s.item.name}</span>
+									{t('search.see_all', 'See all results')}
 								</button>
 							</li>
-						{/each}
-						<li>
-							<button
-								class="suggest__all"
-								type="button"
-								data-testid="appshell-search-see-all-btn"
-								onmousedown={goToResults}
-							>
-								{t('search.see_all', 'See all results')}
-							</button>
-						</li>
-					</ul>
-				{:else if suggestBusy}
-					<ul class="suggest"><li class="suggest__busy">{t('common.loading', 'Loading…')}</li></ul>
-				{/if}
-			</form>
+						</ul>
+					{:else if suggestBusy}
+						<ul class="suggest">
+							<li class="suggest__busy">{t('common.loading', 'Loading…')}</li>
+						</ul>
+					{/if}
+				</form>
+			{/if}
 		</div>
 
 		<div class="user-controls">
@@ -1040,11 +1155,6 @@
 <MobileNav />
 
 <AboutDialog bind:open={aboutOpen} />
-
-{#if palette.component}
-	{@const CommandPalette = palette.component}
-	<CommandPalette autoOpen />
-{/if}
 
 {#if palette.component}
 	{@const CommandPalette = palette.component}

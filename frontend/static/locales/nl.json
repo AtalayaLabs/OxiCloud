@@ -115,7 +115,8 @@
     "tab_places": "Plaatsen",
     "tab_people": "Mensen",
     "map_loading": "Kaart laden…",
-    "map_error": "Kan de kaart niet laden"
+    "map_error": "Kan de kaart niet laden",
+    "confirm_delete_one_permanent": "\"{{name}}\" definitief verwijderen? Deze actie kan niet ongedaan worden gemaakt."
   },
   "music": {
     "create_playlist": "Afspeellijst Maken",
@@ -568,7 +569,9 @@
     "new_text_file_prompt": "Bestandsnaam (bv. notes.md)",
     "new_text_file_hint": "Zet de extensie in de bestandsnaam (bv. .md, .txt, .c, .py, .rs).",
     "new_text_file_binary_ext_title": "Niet-tekst-extensie",
-    "new_text_file_binary_ext_message": "\"{{name}}\" lijkt geen tekstbestand. De editor opent het als tekst — dat beschadigt doorgaans binaire formaten. Toch doorgaan?"
+    "new_text_file_binary_ext_message": "\"{{name}}\" lijkt geen tekstbestand. De editor opent het als tekst — dat beschadigt doorgaans binaire formaten. Toch doorgaan?",
+    "confirm_delete_permanent": "\"{{name}}\" definitief verwijderen? Deze actie kan niet ongedaan worden gemaakt.",
+    "confirm_batch_delete_permanent": "{{n}} items definitief verwijderen? Deze actie kan niet ongedaan worden gemaakt."
   },
   "dialogs": {
     "rename_folder": "Map hernoemen",
@@ -1348,9 +1351,6 @@
       "notices_present_tooltip": "Informatieve bevindingen — geen actie vereist. Vouw uit voor details.",
       "purge": "Oude runs opruimen",
       "purge_hint": "Verwijder de voltooide en mislukte rungeschiedenis die ouder is dan de gekozen bewaarperiode. De bevindingen dalen naarmate hun ouders rennen. Niet-terminale runs blijven altijd behouden.",
-      "purge_body": "Verwijder de voltooide en mislukte rungeschiedenis die ouder is dan het gekozen aantal dagen. De bevindingen dalen naarmate hun ouders rennen. Niet-terminale runs (actief, gepauzeerd, opgevraagde annulering) blijven altijd behouden.",
-      "purge_days_label": "Retentie (dagen)",
-      "purge_confirm": "Zuiveren",
       "purge_done": "{{n}} oude run(s) verwijderd (retentie {{days}} dagen)",
       "state_running": "rennen",
       "never": "nooit",
@@ -1368,7 +1368,6 @@
       "title": "Achtergrondtaken",
       "hint": "Deze sectie betreft interne achtergrondtaken: periodieke en on-demand taken. Consistentiecontroles kunnen op elk moment veilig worden uitgevoerd — ze zijn alleen-lezen.",
       "none_registered": "Geen achtergrondtaken geregistreerd.",
-      "purge_title": "Oude taakgeschiedenis wissen",
       "run_repair": "ref_counts repareren",
       "run_repair_hint": "Corrigeert gedriftete ref_counts (blobs + manifests) die de audit vindt. Inhoudveilig — alleen tellers wijzigen, geen gegevens.",
       "run_repair_confirm_title_scoped": "{{name}} in reparatiemodus uitvoeren?",
@@ -1867,6 +1866,7 @@
     "close": "Sluiten",
     "confirm": "Bevestigen",
     "really": "Zeker?",
+    "permanently": "Definitief?",
     "copy": "Kopiëren",
     "create": "Maken",
     "delete": "Verwijderen",

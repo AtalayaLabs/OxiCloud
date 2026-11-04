@@ -262,6 +262,11 @@ pub struct FeaturesDto {
     // `StorageUsageService` unconditionally.
     /// Music player + playlists. See `FeaturesConfig::enable_music`.
     pub music: bool,
+    /// Photo library (`/api/photos`, `/photos` SPA route). The SPA hides
+    /// the top-nav "Photos" entry when this is false; sub-flags
+    /// `places` + `faces` are then moot. See
+    /// `FeaturesConfig::enable_photos`.
+    pub photos: bool,
     /// Photo-map ("Places") tab. See `FeaturesConfig::enable_places`.
     pub places: bool,
     /// Face detection + identity clustering ("People"). Biometric —
@@ -273,6 +278,37 @@ pub struct FeaturesDto {
     /// Admin-configured external filesystem mounts. See
     /// `FeaturesConfig::enable_external_mounts`.
     pub external_mounts: bool,
+    /// WebDAV protocol surface (`/webdav/*`). When off the router is
+    /// not mounted; the SPA admin dashboard reflects the state.
+    /// See `FeaturesConfig::enable_webdav`.
+    pub webdav: bool,
+    /// CalDAV protocol surface (`/caldav/*` + well-known discovery).
+    /// See `FeaturesConfig::enable_caldav`.
+    pub caldav: bool,
+    /// CardDAV protocol surface (`/carddav/*` + well-known discovery).
+    /// See `FeaturesConfig::enable_carddav`.
+    pub carddav: bool,
+    /// Calendars browse surface — `/api/calendars` plus the SPA's
+    /// `/calendars` page.
+    ///
+    /// **PLACEHOLDER**: advertised before anything consumes it, so the
+    /// wire field and SDK type exist when
+    /// <https://github.com/AtalayaLabs/OxiCloud/pull/853> lands. Reads
+    /// `true` by default; a client gating on it today simply always
+    /// shows the feature. Separate from `caldav` for the same reason
+    /// `contacts` is separate from `carddav`.
+    pub calendars: bool,
+    /// Contacts browse surface — `/api/contacts` plus the SPA's
+    /// `/contacts` page, whose nav entry is hidden when this is false.
+    /// Deliberately separate from `carddav`: that is the sync protocol,
+    /// this is the browse UI, and a deployment may want either without
+    /// the other. See `FeaturesConfig::enable_contacts`.
+    pub contacts: bool,
+    /// NextCloud compatibility surface (`/index.php`, `/remote.php`,
+    /// `/ocs/`, `/status.php`, NC login flow v2, NC trashbin). OFF by
+    /// default — opt-in per deployment. See
+    /// `FeaturesConfig::enable_nextcloud`.
+    pub nextcloud: bool,
     /// Collaborative `.md` editing over the message-bus WebSocket
     /// (Yjs CRDT). When `false`, the FE hides the "New markdown"
     /// menu entry and falls back to the plain `.md` viewer when
@@ -398,10 +434,17 @@ pub async fn get_config(State(state): State<Arc<AppState>>) -> Json<ServerConfig
             search: f.enable_search,
             sharing: f.enable_file_sharing,
             music: f.enable_music,
+            photos: f.enable_photos,
             places: f.enable_places,
             faces: f.enable_faces,
             video_thumbnails: f.enable_video_thumbnails,
             external_mounts: f.enable_external_mounts,
+            webdav: f.enable_webdav,
+            caldav: f.enable_caldav,
+            carddav: f.enable_carddav,
+            calendars: f.enable_calendars,
+            contacts: f.enable_contacts,
+            nextcloud: f.enable_nextcloud,
             markdown_collab: f.enable_markdown_collab,
             shared_worker_bus: f.enable_shared_worker_bus,
         },

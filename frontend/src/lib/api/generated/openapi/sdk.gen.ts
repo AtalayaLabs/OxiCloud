@@ -508,6 +508,13 @@ export const updateDriveMemberAdmin = <ThrowOnError extends boolean = false>(opt
 });
 
 /**
+ * `body` is spelled out rather than left as `Object`: the admin panel
+ * switches on `mutates`, `parameters[].type` and `parameters[].allowed`,
+ * and an untyped body meant the generated SDK carried no TS type for any
+ * of them — so the panel's `JobSummary`/`JobParam` were hand-written and
+ * ungoverned, exactly the drift `PhotoResourceItemDto` was registered to
+ * stop.
+ *
  * Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.
  */
 export const listJobs = <ThrowOnError extends boolean = false>(options?: Options<ListJobsData, ThrowOnError>): RequestResult<ListJobsResponses, ListJobsErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<ListJobsResponses, ListJobsErrors, ThrowOnError, 'data'>({

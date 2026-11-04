@@ -482,8 +482,14 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         .nest("/recent", recent_router)
         .nest("/notifications", notifications_router);
 
-    // Photos timeline endpoint — lists all image/video files sorted by capture date
-    {
+    // Photos timeline endpoint — lists all image/video files sorted by capture date.
+    // Top-level gate on `features.enable_photos`: when the operator sets
+    // `OXICLOUD_ENABLE_PHOTOS=false` the whole `/api/photos` prefix stays
+    // unmounted (same shape as the search gate), so non-SPA clients also
+    // see a 404 rather than a surface the SPA merely hides. The inner
+    // `places_service.is_some()` gate on `/geo` keeps the finer-grained
+    // sub-feature control exactly as before.
+    if app_state.core.config.features.enable_photos {
         use crate::interfaces::api::handlers::photos_handler;
 
         let mut photos_router =
@@ -614,7 +620,16 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
 
     // REST browse API for CardDAV contacts, groups, and OxiCloud users.
     // Write operations and protocol sync remain on the /carddav endpoint.
-    if let Some(contact_service) = app_state.contact_use_case.clone() {
+    //
+    // Gated on `features.enable_contacts` the same way `/api/photos` is
+    // gated on `enable_photos`: with the flag off the whole `/api/contacts`
+    // prefix stays unmounted, so a non-SPA client gets a 404 rather than a
+    // surface the SPA merely hides. The flag is NOT `enable_carddav` —
+    // that governs the sync protocol, this governs the browse UI, and
+    // either can be wanted without the other.
+    if app_state.core.config.features.enable_contacts
+        && let Some(contact_service) = app_state.contact_use_case.clone()
+    {
         use crate::interfaces::api::handlers::contacts_handler::{self, ContactsApiState};
 
         let auth_svc = app_state

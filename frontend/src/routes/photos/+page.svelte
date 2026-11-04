@@ -4,6 +4,7 @@
 	import { lazyComponent } from '$lib/composables/lazyComponent.svelte';
 	import { useSelection } from '$lib/composables/useSelection.svelte';
 	import { errorToast } from '$lib/utils/errors';
+	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import { onMount } from 'svelte';
 	import {
 		batchTrash,
@@ -26,6 +27,7 @@
 	import { preferences } from '$lib/stores/preferences.svelte';
 	import { t } from '$lib/i18n/index.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
+	import { deleteConfirmLabel } from '$lib/utils/deleteConfirm';
 	import { filterDotfiles } from '$lib/utils/dotfileFilter';
 	import { dateTimeFormatFor } from '$lib/utils/display';
 	import { isVideo, photoTimestamp } from '$lib/utils/media';
@@ -618,17 +620,19 @@
 		>
 			{t('photos.tab_moments', 'Moments')}
 		</button>
-		<button
-			class="subnav__tab"
-			class:active={tab === 'places'}
-			role="tab"
-			aria-selected={tab === 'places'}
-			data-testid="photos-tab-places"
-			onclick={() => (tab = 'places')}
-		>
-			{t('photos.tab_places', 'Places')}
-		</button>
-		{#if peopleAvailable}
+		{#if serverConfig.features.places}
+			<button
+				class="subnav__tab"
+				class:active={tab === 'places'}
+				role="tab"
+				aria-selected={tab === 'places'}
+				data-testid="photos-tab-places"
+				onclick={() => (tab = 'places')}
+			>
+				{t('photos.tab_places', 'Places')}
+			</button>
+		{/if}
+		{#if peopleAvailable && serverConfig.features.faces}
 			<button
 				class="subnav__tab"
 				class:active={tab === 'people'}
@@ -699,6 +703,7 @@
 						<ConfirmButton
 							class="batch-btn batch-btn-danger"
 							title={t('common.delete', 'Delete')}
+							confirmLabel={deleteConfirmLabel()}
 							data-testid="photos-batch-delete-btn"
 							onconfirm={trashSelected}
 							icon="trash"
