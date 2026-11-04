@@ -84,7 +84,17 @@ it('selects the first playlist and loads its tracks', async () => {
 
 it('creates a playlist from the header button', async () => {
 	m(listPlaylists).mockResolvedValue([playlist]);
-	promptDialog.mockResolvedValue('Chill');
+	// `promptDialog` callers migrated to the inline-error UX pattern pass
+	// `action: async (name) => createPlaylist(name)` instead of running
+	// the mutation outside the await. The real `dialogs.resolve` invokes
+	// `action` on submit; a plain `mockResolvedValue` short-circuits it,
+	// so `createPlaylist` never runs and the assertion fails. Simulate
+	// the real flow by invoking `opts.action` with the submitted value
+	// before resolving. See `frontend/AGENTS.md § Dialog error UX`.
+	promptDialog.mockImplementation(async (opts) => {
+		if (opts.action) await opts.action('Chill');
+		return 'Chill';
+	});
 	m(createPlaylist).mockResolvedValue({ ...playlist, id: 'p2', name: 'Chill' });
 	render(MusicPage);
 	await screen.findByTestId('music-create-playlist-btn');
@@ -101,7 +111,11 @@ it('surfaces a load error', async () => {
 
 it('renames the current playlist', async () => {
 	m(listPlaylists).mockResolvedValue([playlist]);
-	promptDialog.mockResolvedValue('Renamed');
+	// See `creates a playlist` above for why we invoke `opts.action`.
+	promptDialog.mockImplementation(async (opts) => {
+		if (opts.action) await opts.action('Renamed');
+		return 'Renamed';
+	});
 	m(renamePlaylist).mockResolvedValue(undefined);
 	render(MusicPage);
 	await fireEvent.click(await screen.findByTestId('music-rename-playlist-btn'));

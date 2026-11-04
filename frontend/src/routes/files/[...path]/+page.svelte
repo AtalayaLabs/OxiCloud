@@ -541,33 +541,35 @@
 	}
 
 	async function onNewFolder() {
-		const name = await promptDialog({
+		await promptDialog({
 			title: t('files.new_folder', 'New folder'),
 			placeholder: t('files.new_folder_prompt', 'New folder name'),
-			confirmText: t('common.create', 'Create')
-		});
-		if (!name) return;
-		try {
-			await createFolder(name, currentId);
-			await reloadAndTrackNew();
-			// Vanish-warning: user just made a `.folder` and it's
-			// already hidden by their preference — otherwise the new
-			// folder would appear to have not been created. Third hook
-			// point in the "creating a dotfile while hide is on" family
-			// (upload + rename cover the other two).
-			if (preferences.hideDotfiles && name.startsWith('.')) {
-				ui.notify(
-					t(
-						'files.new_folder_dotfile_hidden',
-						{ name },
-						"Created folder '{{name}}' — hidden by your dotfile preference."
-					),
-					'info'
-				);
+			confirmText: t('common.create', 'Create'),
+			// Inline-error UX — e.g. "An item with that name is already
+			// there" renders in the dialog and the user can edit the
+			// name and retry without losing their typing. See
+			// `frontend/AGENTS.md § Dialog error UX`.
+			action: async (name) => {
+				if (!name) return;
+				await createFolder(name, currentId);
+				await reloadAndTrackNew();
+				// Vanish-warning: user just made a `.folder` and it's
+				// already hidden by their preference — otherwise the new
+				// folder would appear to have not been created. Third hook
+				// point in the "creating a dotfile while hide is on" family
+				// (upload + rename cover the other two).
+				if (preferences.hideDotfiles && name.startsWith('.')) {
+					ui.notify(
+						t(
+							'files.new_folder_dotfile_hidden',
+							{ name },
+							"Created folder '{{name}}' — hidden by your dotfile preference."
+						),
+						'info'
+					);
+				}
 			}
-		} catch (e) {
-			errorToast(e);
-		}
+		});
 	}
 
 	// Upload at most this many files concurrently. Kept low so we stay well under
@@ -1075,39 +1077,44 @@
 	}
 
 	async function renameItem(kind: 'file' | 'folder', id: string, current: string) {
-		const name = await promptDialog({
+		await promptDialog({
 			title: t('common.rename', 'Rename'),
 			defaultValue: current,
-			confirmText: t('common.save', 'Save')
+			// Pre-select the filename stem — the extension survives
+			// typing. Same decision as favorites/search/recent renames;
+			// `'name'` mode selects everything before the last dot
+			// (`report.pdf` → `report` selected, `.pdf` preserved).
+			selectOnOpen: 'name',
+			confirmText: t('common.save', 'Save'),
+			// Inline-error UX via `action` — see
+			// `frontend/AGENTS.md § Dialog error UX`.
+			action: async (name) => {
+				if (!name || name === current) return;
+				if (kind === 'file') await renameFile(id, name);
+				else {
+					await renameFolder(id, name);
+					rememberFolderName(id, name); // keep breadcrumbs current immediately
+				}
+				await reload();
+				// Vanish-warning: the file didn't start with `.` before but
+				// does now, AND the user has hide-dotfiles on → the row is
+				// about to disappear from the grid. Toast so the operation
+				// doesn't feel like a silent failure. Only fires on the
+				// transition (`.env` renamed to `.env2` doesn't need the
+				// nudge — it was already hidden). No toast when hide is off
+				// because nothing vanished.
+				if (preferences.hideDotfiles && name.startsWith('.') && !current.startsWith('.')) {
+					ui.notify(
+						t(
+							'files.rename_dotfile_hidden',
+							{ name },
+							"Renamed to '{{name}}' — now hidden by your preference."
+						),
+						'info'
+					);
+				}
+			}
 		});
-		if (!name || name === current) return;
-		try {
-			if (kind === 'file') await renameFile(id, name);
-			else {
-				await renameFolder(id, name);
-				rememberFolderName(id, name); // keep breadcrumbs current immediately
-			}
-			await reload();
-			// Vanish-warning: the file didn't start with `.` before but
-			// does now, AND the user has hide-dotfiles on → the row is
-			// about to disappear from the grid. Toast so the operation
-			// doesn't feel like a silent failure. Only fires on the
-			// transition (`.env` renamed to `.env2` doesn't need the
-			// nudge — it was already hidden). No toast when hide is off
-			// because nothing vanished.
-			if (preferences.hideDotfiles && name.startsWith('.') && !current.startsWith('.')) {
-				ui.notify(
-					t(
-						'files.rename_dotfile_hidden',
-						{ name },
-						"Renamed to '{{name}}' — now hidden by your preference."
-					),
-					'info'
-				);
-			}
-		} catch (e) {
-			errorToast(e);
-		}
 	}
 
 	async function deleteItem(kind: 'file' | 'folder', id: string) {
@@ -1689,7 +1696,7 @@
 			return;
 		}
 		const existing = playlists.map((p) => p.name).join(', ');
-		const name = await promptDialog({
+		await promptDialog({
 			title: t('music.add_to_playlist', 'Add to playlist'),
 			message: existing
 				? t(
@@ -1699,17 +1706,19 @@
 					)
 				: t('music.create_playlist_hint', 'Type a playlist name to create one.'),
 			placeholder: t('music.playlist_name', 'Playlist name'),
-			confirmText: t('common.add', 'Add')
+			confirmText: t('common.add', 'Add'),
+			// Inline-error UX via `action` — a duplicate-name playlist
+			// create or an authz denial renders inline and the user can
+			// edit the name without losing the typing. See
+			// `frontend/AGENTS.md § Dialog error UX`.
+			action: async (name) => {
+				if (!name) return;
+				const match = playlists.find((p) => p.name.toLowerCase() === name.toLowerCase());
+				const playlist = match ?? (await createPlaylist(name));
+				await addTracks(playlist.id, [file.id]);
+				ui.notify(t('music.added_to_playlist', 'Added to playlist'), 'success');
+			}
 		});
-		if (!name) return;
-		try {
-			const match = playlists.find((p) => p.name.toLowerCase() === name.toLowerCase());
-			const playlist = match ?? (await createPlaylist(name));
-			await addTracks(playlist.id, [file.id]);
-			ui.notify(t('music.added_to_playlist', 'Added to playlist'), 'success');
-		} catch (e) {
-			errorToast(e);
-		}
 	}
 
 	// ── Open the parent folder of a file ──────────────────────────────────────
@@ -2092,59 +2101,10 @@
 		// "text" kind asks for a full filename including the
 		// extension, so the user can pick `.md` / `.rs` / `.py` /
 		// etc.
-		const name = await promptDialog({
-			title: isVirtualText
-				? t('files.new_text_file', 'New text file')
-				: t('files.new_document', 'New document'),
-			// The virtual "text" kind lets the user pick any text
-			// extension (`.md`, `.txt`, `.c`, `.py`, `.rs`, …), so
-			// the prompt spells out that the extension is part of
-			// the filename. WOPI kinds append their fixed ext, so no
-			// hint is needed there.
-			message: isVirtualText
-				? t(
-						'files.new_text_file_hint',
-						'Include the extension in the filename (e.g. .md, .txt, .c, .py, .rs).'
-					)
-				: undefined,
-			placeholder: isVirtualText
-				? t('files.new_text_file_prompt', 'Filename (e.g. notes.md)')
-				: t('files.new_document_prompt', 'Document name'),
-			confirmText: t('common.create', 'Create')
-		});
-		if (!name) return;
-
-		// Build the final filename. WOPI kinds append the kind's ext
-		// unless the user already typed it. Text kind uses the user's
-		// input verbatim.
-		let fname: string;
-		if (isVirtualText) {
-			fname = name;
-		} else {
-			fname = name.toLowerCase().endsWith(`.${kind}`) ? name : `${name}.${kind}`;
-		}
-
-		// Warn if the text kind's filename doesn't look text-shaped —
-		// e.g. `test.jpg` would open an editable-looking editor over
-		// binary bytes. TEXTY_EXT_RE mirrors the FileViewer's own
-		// gate so what the user sees is what they'll be able to
-		// open. Names without ANY extension pass through — a
-		// filename like `README` is legitimate text.
-		if (isVirtualText && /\.[^./\\]+$/.test(fname) && !TEXTY_EXT_RE.test(fname)) {
-			const proceed = await confirmDialog({
-				title: t('files.new_text_file_binary_ext_title', 'Non-text extension'),
-				message: t(
-					'files.new_text_file_binary_ext_message',
-					{ name: fname },
-					'"{{name}}" doesn\'t look like a text file. The editor will open it as text — that usually breaks binary formats. Continue anyway?'
-				),
-				confirmText: t('common.create', 'Create'),
-				danger: true
-			});
-			if (!proceed) return;
-		}
-
-		try {
+		// Extracted so both the inline-UX common path (inside action)
+		// and the non-text-ext fallback (after the dialog closes) share
+		// the same upload+open logic.
+		async function createDoc(fname: string): Promise<void> {
 			let file: File;
 			if (handler === 'wopi') {
 				const res = await fetchAsset(`${base}/templates/blank.${kind}`);
@@ -2162,6 +2122,96 @@
 				if (handler === 'wopi') openWopi(created.id, created.name, 'edit');
 				else openFile(created);
 			}
+		}
+
+		// `fname` + `needsNonTextConfirm` are shared between the action
+		// (which runs while the dialog is still open) and the fallback
+		// path below. The non-text-ext confirm must happen AFTER the
+		// prompt closes — dialogs queue single-at-a-time, so an
+		// awaited nested confirm inside `action` would deadlock
+		// (`frontend/AGENTS.md § Dialog error UX`). The action flags
+		// the case and returns normally; this outer flow runs the
+		// confirm then re-attempts the upload.
+		let fname: string | null = null;
+		let needsNonTextConfirm = false;
+
+		await promptDialog({
+			title: isVirtualText
+				? t('files.new_text_file', 'New text file')
+				: t('files.new_document', 'New document'),
+			// The virtual "text" kind lets the user pick any text
+			// extension (`.md`, `.txt`, `.c`, `.py`, `.rs`, …), so
+			// the prompt spells out that the extension is part of
+			// the filename. WOPI kinds append their fixed ext, so no
+			// hint is needed there.
+			message: isVirtualText
+				? t(
+						'files.new_text_file_hint',
+						'Include the extension in the filename (e.g. .md, .txt, .c, .py, .rs).'
+					)
+				: undefined,
+			placeholder: isVirtualText
+				? t('files.new_text_file_prompt', 'Filename (e.g. notes.md)')
+				: t('files.new_document_prompt', 'Document name'),
+			confirmText: t('common.create', 'Create'),
+			action: async (name) => {
+				if (!name) return;
+				// Build the final filename. WOPI kinds append the
+				// kind's ext unless the user already typed it. Text
+				// kind uses the user's input verbatim.
+				fname = isVirtualText
+					? name
+					: name.toLowerCase().endsWith(`.${kind}`)
+						? name
+						: `${name}.${kind}`;
+
+				// Non-text-ext check: warn the user if the virtual-
+				// text filename doesn't look text-shaped — e.g.
+				// `test.jpg` would open an editable-looking editor
+				// over binary bytes. TEXTY_EXT_RE mirrors the
+				// FileViewer's own gate. Names without ANY extension
+				// pass through (`README` is legitimate text). This
+				// path CANNOT nest a confirm inside the action; flag
+				// it and let the dialog close so the outer flow can
+				// fire the confirm.
+				if (isVirtualText && /\.[^./\\]+$/.test(fname) && !TEXTY_EXT_RE.test(fname)) {
+					needsNonTextConfirm = true;
+					return;
+				}
+
+				// Common path (markdown, .docx, .pptx, .xlsx, …):
+				// upload inside the action so a duplicate-name /
+				// quota / permission failure renders inline and the
+				// user keeps their typed name on retry.
+				await createDoc(fname);
+			}
+		});
+
+		// Nothing more to do unless the non-text-ext confirm needs to
+		// fire. If the user cancelled the prompt OR the common path
+		// completed, we return cleanly (upload either didn't happen
+		// or already succeeded inside the action).
+		if (!needsNonTextConfirm || !fname) return;
+
+		const proceed = await confirmDialog({
+			title: t('files.new_text_file_binary_ext_title', 'Non-text extension'),
+			message: t(
+				'files.new_text_file_binary_ext_message',
+				{ name: fname },
+				'"{{name}}" doesn\'t look like a text file. The editor will open it as text — that usually breaks binary formats. Continue anyway?'
+			),
+			confirmText: t('common.create', 'Create'),
+			danger: true
+		});
+		if (!proceed) return;
+
+		// Non-text-ext fallback: the user ack'd the warning. Upload
+		// outside the dialog — error is a toast rather than inline
+		// since the prompt has already closed. Acceptable trade-off
+		// for the rare "I know what I'm doing" path; the common path
+		// above gets the full inline-error UX.
+		try {
+			await createDoc(fname);
 		} catch (e) {
 			errorToast(e);
 		}

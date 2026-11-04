@@ -40,6 +40,43 @@
 		);
 	}
 
+	/**
+	 * Is this element a text-entry control that should take initial focus on
+	 * open? `<input>` with a text-shaped `type` (so the password-reveal
+	 * eyedropper button nested in some auth forms doesn't match on `type=
+	 * button`), `<textarea>`, and anything explicitly marked
+	 * `contenteditable`. Excludes `<select>` on purpose — it's a dropdown,
+	 * not a typing surface, and auto-opening its menu on dialog open
+	 * surprises users.
+	 */
+	function isTextEntry(el: HTMLElement): boolean {
+		if (el instanceof HTMLTextAreaElement) return true;
+		if (el.isContentEditable) return true;
+		if (el instanceof HTMLInputElement) {
+			// Empty `type` defaults to text. Everything else must be an
+			// opt-in text-entry type — buttons, checkboxes, radios, files,
+			// colour pickers, and the like are explicitly NOT what the
+			// user wants to type into on open.
+			const t = el.type.toLowerCase();
+			return (
+				t === '' ||
+				t === 'text' ||
+				t === 'search' ||
+				t === 'email' ||
+				t === 'url' ||
+				t === 'password' ||
+				t === 'tel' ||
+				t === 'number' ||
+				t === 'date' ||
+				t === 'datetime-local' ||
+				t === 'month' ||
+				t === 'time' ||
+				t === 'week'
+			);
+		}
+		return false;
+	}
+
 	function onkeydown(e: KeyboardEvent) {
 		if (e.key === 'Escape') {
 			close();
@@ -64,12 +101,21 @@
 
 	// On open: remember the previously focused element and move focus into the
 	// dialog. On close: restore focus so keyboard users aren't dumped at <body>.
+	//
+	// Prefer the first text-entry control (input/textarea/[contenteditable])
+	// over any other focusable, because the header's close button (`×`) is
+	// almost always the first focusable in reading order — and in a rename
+	// or new-folder dialog the user wants to type immediately, not reach
+	// for the mouse. Confirmation modals with no text input fall through
+	// to the existing first-focusable behaviour (usually the Cancel button,
+	// which is also safer than auto-focusing a destructive Delete button).
 	$effect(() => {
 		if (open) {
 			prevFocus = (document.activeElement as HTMLElement | null) ?? null;
 			requestAnimationFrame(() => {
 				const items = focusables();
-				(items[0] ?? dialogEl)?.focus();
+				const textEntry = items.find(isTextEntry);
+				(textEntry ?? items[0] ?? dialogEl)?.focus();
 			});
 		} else if (prevFocus) {
 			prevFocus.focus();

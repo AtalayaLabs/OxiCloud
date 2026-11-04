@@ -171,19 +171,27 @@
 	}
 
 	async function rename(item: FileItem | FolderItem) {
-		const name = await promptDialog({
+		await promptDialog({
 			title: t('common.rename', 'Rename'),
 			defaultValue: item.name,
-			confirmText: t('common.rename', 'Rename')
+			// Pre-select the filename stem so typing immediately replaces
+			// just the name — the `.pdf` / `.jpg` extension survives even
+			// if the user starts typing without a manual select-all.
+			selectOnOpen: 'name',
+			confirmText: t('common.rename', 'Rename'),
+			// `action` keeps the dialog open on error with an inline
+			// message, so the user can edit the name and retry without
+			// losing their typing — see `frontend/AGENTS.md § Dialog
+			// error UX`. The outer try/catch pattern is replaced by
+			// `throw` inside the action; `dialogs.resolve` catches and
+			// surfaces it.
+			action: async (name) => {
+				if (!name || name === item.name) return;
+				if (isFile(item)) await renameFile(item.id, name);
+				else await renameFolder(item.id, name);
+				await load(true, orderByForGroup());
+			}
 		});
-		if (!name || name === item.name) return;
-		try {
-			if (isFile(item)) await renameFile(item.id, name);
-			else await renameFolder(item.id, name);
-			await load(true, orderByForGroup());
-		} catch (e) {
-			errorToast(e);
-		}
 	}
 
 	async function remove(item: FileItem | FolderItem) {

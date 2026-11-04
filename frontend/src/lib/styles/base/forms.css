@@ -58,3 +58,29 @@
 .danger:hover {
     background-color: var(--color-danger-bg-hover);
 }
+
+/*
+ * Shared inline-error state for any dialog or form that surfaces a
+ * failed submit next to the input the user needs to fix. Replaces
+ * per-component `.dlg-error` / `.mv-error` / `.jobs-panel__status--error`
+ * duplicates — one class, one color token, one place to tune (dark-mode,
+ * i18n length tweaks, a11y contrast adjustments all land here).
+ *
+ * `--color-error-text` is the actual error-text red (dark-mode-aware
+ * via `light-dark`). Do NOT substitute `--color-danger-text` — that's
+ * white, meant for text ON a red button background, invisible here.
+ *
+ * Pair `.form-error` (the message paragraph) with
+ * `.form-input--invalid` (the input border) and
+ * `aria-invalid="true"` + `aria-describedby` on the input pointing at
+ * the message's id. See `frontend/AGENTS.md § Dialog error UX`.
+ */
+.form-error {
+    margin: var(--space-3) 0 0;
+    color: var(--color-error-text);
+    font-size: var(--text-sm);
+}
+
+.form-input--invalid {
+    border-color: var(--color-error-text);
+}

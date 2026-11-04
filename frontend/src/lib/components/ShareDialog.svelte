@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { errorToast } from '$lib/utils/errors';
+	import { useAsyncAction } from '$lib/composables/useAsyncAction.svelte';
 	import {
 		copyShareLink,
 		createShare,
@@ -31,7 +32,7 @@
 	import { getFolderAncestorsWithGrants } from '$lib/api/endpoints/folders';
 	import { getFile } from '$lib/api/endpoints/files';
 	import { resolve } from '$app/paths';
-	import type { ShareItem } from '$lib/api/types';
+	import type { ItemType, ShareItem } from '$lib/api/types';
 	import type { GrantResourceType } from '$lib/api/endpoints/grants';
 	import Icon from '$lib/icons/Icon.svelte';
 	import Modal from '$lib/components/Modal.svelte';
@@ -195,7 +196,14 @@
 	 * lets the role be decided first, and makes [Add] the moment of commit.
 	 */
 	let selected = $state<Recipient | null>(null);
-	let adding = $state(false);
+	// Add-grant inline-error UX via the shared composable — a failed
+	// `createGrant` (duplicate grant, policy-forbidden, authz denial)
+	// renders inline below the add row instead of as a corner toast.
+	// Per-row grant mutations (`changeRole`, `removeMember`, …) stay on
+	// toast — attaching per-row error state is heavier than the UX win
+	// warrants for inline-row controls. See
+	// `frontend/AGENTS.md § Dialog error UX`.
+	const addGrantAction = useAsyncAction();
 	let searchTimer: ReturnType<typeof setTimeout> | null = null;
 
 	function isoToDate(iso: string | null | undefined): string | null {
@@ -392,12 +400,11 @@
 	}
 
 	async function addSelected() {
-		if (!item || !selected || adding) return;
-		adding = true;
-		try {
+		if (!item || !selected || addGrantAction.busy) return;
+		await addGrantAction.run(async () => {
 			const res = await createGrant(
-				subjectInput(selected),
-				{ type: item.kind, id: item.id },
+				subjectInput(selected!),
+				{ type: item!.kind, id: item!.id },
 				newRole,
 				expiryToIso(newExpiry)
 			);
@@ -406,14 +413,10 @@
 			// each, which is the common case.
 			selected = null;
 			summarizeNotifications(res.notification.outcomes);
-			onshared?.(item.id);
-			onchange?.(item.id);
+			onshared?.(item!.id);
+			onchange?.(item!.id);
 			await loadGrants();
-		} catch (e) {
-			errorToast(e);
-		} finally {
-			adding = false;
-		}
+		});
 	}
 
 	async function changeRole(m: Member, role: ShareRole) {
@@ -503,7 +506,9 @@
 	// ── Public link ──────────────────────────────────────────────────────────
 	let shares = $state<ShareItem[]>([]);
 	let linkLoading = $state(false);
-	let creating = $state(false);
+	// Create-link inline-error UX via the shared composable. See the
+	// `addGrantAction` comment above for the scope rationale.
+	const createLinkAction = useAsyncAction();
 	let newLinkName = $state('');
 	let password = $state('');
 	let expiresAt = $state<string | null>(null);
@@ -645,12 +650,18 @@
 		// stands, but a keyboard submit or a policy that changed under an
 		// open dialog would otherwise reach the server and come back 405.
 		if (linkBlockedReason) return;
-		creating = true;
-		try {
+		// Capture the narrowed `item` + its narrowed kind into locals so
+		// TypeScript's narrowing (`kind !== 'drive'`) survives the
+		// arrow-function closure handed to `run()`. The non-null `item!`
+		// alone would re-widen `kind` back to `GrantResourceType` and
+		// mis-type the `createShare` argument as including 'drive'.
+		const target = item;
+		const targetKind: ItemType = item.kind;
+		const ok = await createLinkAction.run(async () => {
 			await createShare({
-				itemId: item.id,
-				itemName: newLinkName.trim() || item.name,
-				itemType: item.kind,
+				itemId: target.id,
+				itemName: newLinkName.trim() || target.name,
+				itemType: targetKind,
 				password: password || null,
 				expiresAt: expiresAt || null,
 				maxDownloads
@@ -659,14 +670,14 @@
 			password = '';
 			expiresAt = null;
 			maxDownloads = null;
-			onshared?.(item.id);
-			onchange?.(item.id);
+			onshared?.(target.id);
+			onchange?.(target.id);
 			await loadShares();
+		});
+		if (ok) {
+			// Success toast — kept for the "something happened" breadcrumb;
+			// only the failure path moved to inline.
 			ui.notify(t('share.created', 'Public link created'), 'success');
-		} catch (e) {
-			errorToast(e);
-		} finally {
-			creating = false;
 		}
 	}
 
@@ -923,12 +934,15 @@
 					<button
 						class="btn btn-primary add-row__submit"
 						data-testid="share-dialog-add-btn"
-						disabled={!selected || adding}
+						disabled={!selected || addGrantAction.busy}
 						onclick={addSelected}
 					>
-						{adding ? t('share.adding', 'Adding…') : t('share.add', 'Add')}
+						{addGrantAction.busy ? t('share.adding', 'Adding…') : t('share.add', 'Add')}
 					</button>
 				</div>
+				{#if addGrantAction.error}
+					<p class="form-error" role="alert">{addGrantAction.error}</p>
+				{/if}
 			{/if}
 
 			{#if grantsLoading}
@@ -1166,13 +1180,18 @@
 				<button
 					class="btn btn-primary sh-create__submit"
 					data-testid="share-dialog-create-btn"
-					disabled={creating || linkBlockedReason !== null}
+					disabled={createLinkAction.busy || linkBlockedReason !== null}
 					onclick={createLink}
 					aria-describedby={linkBlockedReason || linkPolicyHint ? 'share-link-policy' : undefined}
 					title={linkBlockedReason ?? undefined}
 				>
-					{t('share.create_link', 'Create link')}
+					{createLinkAction.busy
+						? t('common.loading', 'Loading…')
+						: t('share.create_link', 'Create link')}
 				</button>
+				{#if createLinkAction.error}
+					<p class="form-error" role="alert">{createLinkAction.error}</p>
+				{/if}
 			</section>
 
 			{#if linkLoading}

@@ -84,3 +84,89 @@ store names, and logger namespaces:
   (folder-view sugar with per-verb handlers).
 - Logger namespace: `oxi:message-bus`.
 - localStorage keys (if any): `oxi-message-bus-*`.
+
+## Dialog error UX
+
+**Mutating actions in a `promptDialog` MUST pass `action` instead of
+awaiting the dialog's return value and running the mutation outside.**
+
+Without `action`, the dialog resolves and closes before the mutation
+runs; a backend error (409 AlreadyExists, 507 QuotaExceeded, …) then
+surfaces as a corner toast and the user has lost their typed value. The
+dialog store already supports the better flow — it runs the `action`
+inside its own try/catch, keeps the modal open on reject with an
+inline error, and resolves only on success.
+
+Preferred shape:
+
+```ts
+await promptDialog({
+	title: t('common.rename', 'Rename'),
+	defaultValue: item.name,
+	selectOnOpen: 'name', // file/folder: preserve extension on retype
+	confirmText: t('common.rename', 'Rename'),
+	action: async (name) => {
+		if (!name || name === item.name) return; // normal close, no-op
+		await renameFile(item.id, name); // throw → inline error
+		await reload();
+	}
+});
+```
+
+Discouraged shape (loses typed value on error):
+
+```ts
+const name = await promptDialog({ title: '…', defaultValue: item.name });
+if (!name) return;
+try {
+	await renameFile(item.id, name);
+} catch (e) {
+	errorToast(e); // toast appears, modal is already gone
+}
+```
+
+Exceptions where the old pattern is correct:
+
+- **Multi-step flows** (prompt → confirm → mutate). Dialogs are a
+  single-at-a-time queue, so firing a second dialog inside `action`
+  deadlocks: the queued dialog can't open while the first is still
+  current. `files/[...path]/+page.svelte::onNewDocument` is the
+  canonical example (prompt → non-text-ext confirm → upload). Keep
+  the old pattern; errors in the final mutation step toast.
+- **Confirm-only dialogs with no form state to preserve** — a plain
+  `confirmDialog` of "Delete X?" can safely toast on failure. The user
+  lost nothing by the dialog closing. Still OK to use `action` for
+  consistency, but not required.
+
+The DialogHost renders inline errors with `role="alert"` and an
+`aria-invalid`/`aria-describedby` pairing on the input, clears the
+error on `oninput`, and refocuses the input after a failed submit so
+the keyboard flow stays continuous.
+
+**Shared error-state classes** live in `lib/styles/base/forms.css`:
+
+- `.form-error` — the inline message paragraph (red via
+  `--color-error-text`, dark-mode aware).
+- `.form-input--invalid` — the matching red border on the input
+  while the error is set.
+
+Use these in any new modal rather than coining a per-component
+error class — one place to tune contrast, dark-mode, and spacing.
+Note `--color-danger-text` (one letter apart) is `#ffffff` white —
+meant for text ON a red button background; using it on a dialog
+surface renders invisible text. The right token is
+`--color-error-text`.
+
+**Custom-content modals (not using `promptDialog`)** — e.g.
+`ShareDialog`, `MoveDialog`, `DrivePoliciesModal`, `QuotaEditor` —
+should follow the same shape: local `error`/`busy` state, clear on
+input, disable submit while busy, render inline rather than toast. A
+shared composable at `$lib/composables/useAsyncAction.svelte.ts`
+codifies the pattern — reach for it when adding a new custom modal
+instead of hand-rolling the state machine.
+
+Rename flows also pass `selectOnOpen: 'name'` (file/folder — selects
+the stem before the last dot, preserving the extension) or
+`selectOnOpen: true` (names without extension semantics — people,
+groups, playlists — where `'name'` would misfire on dots in the
+middle of a value).

@@ -18,7 +18,6 @@
 	import type { FileItem } from '$lib/api/types';
 	import { promptDialog } from '$lib/stores/dialogs.svelte';
 	import { t } from '$lib/i18n/index.svelte';
-	import { errorMessage } from '$lib/utils/errors';
 	import { minimalPhotoItem } from '$lib/utils/media';
 	import { onMount } from 'svelte';
 
@@ -75,23 +74,27 @@
 		if (!current) return;
 		const placeholder = t('people.unnamed', 'Unnamed');
 		const value = current.name === placeholder ? '' : current.name;
-		const next = await promptDialog({
+		await promptDialog({
 			title: t('people.rename_title', 'Name this person'),
 			message: t('people.name_label', 'Name'),
-			defaultValue: value
+			defaultValue: value,
+			// Select all — a person's name is treated as one unit (no
+			// extension semantic). `selectOnOpen: 'name'` would misfire
+			// on names containing dots like "Dr. Smith" (would pre-
+			// select only "Dr"); plain `true` selects the full string.
+			selectOnOpen: true,
+			// Inline-error UX — see `frontend/AGENTS.md § Dialog error UX`.
+			action: async (next) => {
+				if (next === null) return;
+				const trimmed = next.trim();
+				await renamePerson(current!.id, trimmed || null);
+				current = { id: current!.id, name: trimmed || placeholder };
+				// Keep the list in sync so a return trip shows the new name.
+				people = people.map((p) =>
+					p.id === current?.id ? { ...p, name: trimmed || undefined } : p
+				);
+			}
 		});
-		if (next === null) return;
-		const trimmed = next.trim();
-		try {
-			await renamePerson(current.id, trimmed || null);
-			current = { id: current.id, name: trimmed || placeholder };
-			// Keep the list in sync so a return trip shows the new name.
-			people = people.map((p) => (p.id === current?.id ? { ...p, name: trimmed || undefined } : p));
-		} catch (e) {
-			// Surface the failure inline via the dialog's own error channel is not
-			// available here; fall back to logging — rename is non-destructive.
-			console.error('rename failed:', errorMessage(e));
-		}
 	}
 
 	function onDeletePhoto(id: string) {

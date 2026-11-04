@@ -239,19 +239,22 @@
 	let shareTarget = $state<{ id: string; name: string; kind: ItemType } | null>(null);
 
 	async function rename(item: FileItem | FolderItem) {
-		const name = await promptDialog({
+		await promptDialog({
 			title: t('common.rename', 'Rename'),
 			defaultValue: item.name,
-			confirmText: t('common.rename', 'Rename')
+			// Pre-select the filename stem — see favorites/+page.svelte
+			// for the same decision on the identical rename flow.
+			selectOnOpen: 'name',
+			confirmText: t('common.rename', 'Rename'),
+			// Inline-error UX via `action` — see
+			// `frontend/AGENTS.md § Dialog error UX`.
+			action: async (name) => {
+				if (!name || name === item.name) return;
+				if (isFile(item)) await renameFile(item.id, name);
+				else await renameFolder(item.id, name);
+				await load(true, orderByForGroup());
+			}
 		});
-		if (!name || name === item.name) return;
-		try {
-			if (isFile(item)) await renameFile(item.id, name);
-			else await renameFolder(item.id, name);
-			await load(true, orderByForGroup());
-		} catch (e) {
-			errorToast(e);
-		}
 	}
 
 	async function remove(item: FileItem | FolderItem) {

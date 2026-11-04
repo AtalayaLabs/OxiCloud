@@ -90,55 +90,56 @@
 	}
 
 	async function onCreate() {
-		const name = await promptDialog({
+		await promptDialog({
 			title: t('music.new_playlist', 'New playlist'),
-			confirmText: t('common.create', 'Create')
+			confirmText: t('common.create', 'Create'),
+			// Inline-error UX — see `frontend/AGENTS.md § Dialog error UX`.
+			action: async (name) => {
+				if (!name) return;
+				const p = await createPlaylist(name);
+				playlists = [p, ...playlists];
+				await select(p);
+				ui.notify(t('music.created', { name: p.name }, 'Created “{{name}}”.'), 'success');
+			}
 		});
-		if (!name) return;
-		try {
-			const p = await createPlaylist(name);
-			playlists = [p, ...playlists];
-			await select(p);
-			ui.notify(t('music.created', { name: p.name }, 'Created “{{name}}”.'), 'success');
-		} catch (e) {
-			errorToast(e);
-		}
 	}
 
 	async function onRenamePlaylist() {
 		if (!current) return;
-		const name = await promptDialog({
+		await promptDialog({
 			title: t('music.rename_playlist', 'Rename playlist'),
 			defaultValue: current.name,
-			confirmText: t('common.save', 'Save')
+			// Select all — playlist names have no extension semantic.
+			// `'name'` mode would misfire on titles containing dots
+			// (e.g. "Favs v2.0" → only "Favs v2" would be selected).
+			selectOnOpen: true,
+			confirmText: t('common.save', 'Save'),
+			// Inline-error UX — see `frontend/AGENTS.md § Dialog error UX`.
+			action: async (name) => {
+				if (!name || name === current!.name) return;
+				await renamePlaylist(current!.id, name);
+				current!.name = name;
+				playlists = playlists.map((p) => (p.id === current!.id ? { ...p, name } : p));
+			}
 		});
-		if (!name || name === current.name) return;
-		try {
-			await renamePlaylist(current.id, name);
-			current.name = name;
-			playlists = playlists.map((p) => (p.id === current!.id ? { ...p, name } : p));
-		} catch (e) {
-			errorToast(e);
-		}
 	}
 
 	async function onEditDescription() {
 		if (!current) return;
-		const desc = await promptDialog({
+		await promptDialog({
 			title: t('music.edit_description', 'Edit description'),
 			defaultValue: current.description ?? '',
-			confirmText: t('common.save', 'Save')
+			confirmText: t('common.save', 'Save'),
+			// Inline-error UX — see `frontend/AGENTS.md § Dialog error UX`.
+			action: async (desc) => {
+				if (desc === null) return;
+				await updatePlaylist(current!.id, { description: desc || null });
+				current!.description = desc || null;
+				playlists = playlists.map((p) =>
+					p.id === current!.id ? { ...p, description: desc || null } : p
+				);
+			}
 		});
-		if (desc === null) return;
-		try {
-			await updatePlaylist(current.id, { description: desc || null });
-			current.description = desc || null;
-			playlists = playlists.map((p) =>
-				p.id === current!.id ? { ...p, description: desc || null } : p
-			);
-		} catch (e) {
-			errorToast(e);
-		}
 	}
 
 	async function onDelete(p: Playlist) {

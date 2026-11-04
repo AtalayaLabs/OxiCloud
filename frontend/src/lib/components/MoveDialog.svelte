@@ -9,6 +9,7 @@
 	import { t } from '$lib/i18n/index.svelte';
 	import { drives as drivesStore, driveIcon } from '$lib/stores/drives.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
+	import { useAsyncAction } from '$lib/composables/useAsyncAction.svelte';
 
 	// A drive accepts new items only if the caller can Create on its
 	// root. Drive-scope roles are the management-ladder subset —
@@ -59,7 +60,13 @@
 	let currentId = $state<string | null>(null);
 	let selectedDriveId = $state<string | null>(null);
 	let loading = $state(false);
-	let working = $state(false);
+
+	// Managed `{busy, error, run, clearError}` state so a failed move or
+	// copy (duplicate-name 409, quota 507, permission denial, …)
+	// surfaces inline in the dialog instead of as a corner toast —
+	// user keeps their picked destination and can retry or back out
+	// without reopening. See `frontend/AGENTS.md § Dialog error UX`.
+	const action = useAsyncAction();
 
 	const writableDrives = $derived(
 		[...drivesStore.drives].filter(isWritable).sort((a, b) => {
@@ -74,6 +81,10 @@
 
 	async function loadInto(id: string) {
 		loading = true;
+		// User is picking a new destination — clear any inline error
+		// from a previous failed attempt. Mirror of the oninput-clears
+		// pattern DialogHost uses for prompt dialogs.
+		action.clearError();
 		try {
 			currentId = id;
 			folders = (await listFolder(id)).folders;
@@ -128,28 +139,31 @@
 
 	async function confirmMove() {
 		if (!targets.length || !currentId) return;
-		working = true;
-		try {
+		const ok = await action.run(async () => {
 			if (mode === 'copy') {
 				const fileIds = targets.filter((x) => x.kind === 'file').map((x) => x.id);
 				const folderIds = targets.filter((x) => x.kind === 'folder').map((x) => x.id);
-				await copyFiles(fileIds, currentId);
-				await copyFolders(folderIds, currentId);
-				ui.notify(t('files.copied', 'Copied'), 'success');
+				await copyFiles(fileIds, currentId!);
+				await copyFolders(folderIds, currentId!);
 			} else {
 				for (const tgt of targets) {
 					if (tgt.id === currentId) continue;
-					if (tgt.kind === 'file') await moveFile(tgt.id, currentId);
-					else await moveFolder(tgt.id, currentId);
+					if (tgt.kind === 'file') await moveFile(tgt.id, currentId!);
+					else await moveFolder(tgt.id, currentId!);
 				}
-				ui.notify(t('files.moved', 'Moved'), 'success');
 			}
+		});
+		if (ok) {
+			// Toast kept for success — a user who just saw the dialog
+			// close may not notice the row appeared/disappeared from
+			// the listing without this breadcrumb. Only the failure
+			// path moved from toast to inline.
+			ui.notify(
+				mode === 'copy' ? t('files.copied', 'Copied') : t('files.moved', 'Moved'),
+				'success'
+			);
 			open = false;
 			onmoved?.();
-		} catch (e) {
-			errorToast(e);
-		} finally {
-			working = false;
 		}
 	}
 
@@ -236,7 +250,7 @@
 						<button
 							class="mv-folder"
 							data-testid={`move-dialog-folder-${f.id}`}
-							disabled={targetIds.has(f.id)}
+							disabled={targetIds.has(f.id) || action.busy}
 							onclick={() => enter(f)}
 						>
 							<Icon name="folder" /> <span>{f.name}</span>
@@ -246,12 +260,17 @@
 				{/each}
 			</ul>
 		{/if}
+
+		{#if action.error}
+			<p class="form-error" id="move-dialog-error" role="alert">{action.error}</p>
+		{/if}
 	</div>
 
 	{#snippet footer()}
 		<button
 			class="btn btn-secondary"
 			data-testid="move-dialog-cancel-btn"
+			disabled={action.busy}
 			onclick={() => (open = false)}
 		>
 			{t('common.cancel', 'Cancel')}
@@ -259,10 +278,14 @@
 		<button
 			class="btn btn-primary"
 			data-testid="move-dialog-confirm-btn"
-			disabled={working || !currentId}
+			disabled={action.busy || !currentId}
 			onclick={confirmMove}
 		>
-			{mode === 'copy' ? t('files.copy_here', 'Copy here') : t('files.move_here', 'Move here')}
+			{action.busy
+				? t('common.loading', 'Loading…')
+				: mode === 'copy'
+					? t('files.copy_here', 'Copy here')
+					: t('files.move_here', 'Move here')}
 		</button>
 	{/snippet}
 </Modal>
@@ -408,4 +431,8 @@
 		padding: 1rem 0;
 		text-align: center;
 	}
+
+	/* `.form-error` lives in `lib/styles/base/forms.css` — one
+	   place for every dialog's error state. See
+	   `frontend/AGENTS.md § Dialog error UX`. */
 </style>
