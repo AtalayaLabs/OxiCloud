@@ -7633,6 +7633,387 @@
         ]
       }
     },
+    "/api/calendars": {
+      "get": {
+        "tags": [
+          "calendars"
+        ],
+        "summary": "List every calendar the caller can see (owned + shared).",
+        "operationId": "list_calendars",
+        "responses": {
+          "200": {
+            "description": "List of accessible calendars",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CalendarResponse"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "calendars"
+        ],
+        "summary": "Create a calendar owned by the caller.",
+        "operationId": "create_calendar",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateCalendarRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Calendar created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CalendarResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/calendars/{calendar_id}": {
+      "put": {
+        "tags": [
+          "calendars"
+        ],
+        "summary": "Rename / recolour a calendar. Owner only (the service gates it).",
+        "operationId": "update_calendar",
+        "parameters": [
+          {
+            "name": "calendar_id",
+            "in": "path",
+            "description": "Calendar UUID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateCalendarRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Calendar updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CalendarResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not the owner"
+          },
+          "404": {
+            "description": "Calendar not found"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "calendars"
+        ],
+        "summary": "Delete a calendar and everything in it. Owner only.",
+        "operationId": "delete_calendar",
+        "parameters": [
+          {
+            "name": "calendar_id",
+            "in": "path",
+            "description": "Calendar UUID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Calendar deleted"
+          },
+          "403": {
+            "description": "Not the owner"
+          },
+          "404": {
+            "description": "Calendar not found"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/calendars/{calendar_id}/events": {
+      "get": {
+        "tags": [
+          "calendars"
+        ],
+        "summary": "Events overlapping the requested window. Recurring masters are\nreturned once (not expanded); the client expands occurrences for the\nvisible range.",
+        "operationId": "list_events",
+        "parameters": [
+          {
+            "name": "calendar_id",
+            "in": "path",
+            "description": "Calendar UUID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start",
+            "in": "query",
+            "description": "Window start (RFC 3339)",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "description": "Window end (RFC 3339)",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Events in range",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CalendarEventResponse"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid range"
+          },
+          "404": {
+            "description": "Calendar not found"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "calendars"
+        ],
+        "summary": "Create an event. The iCalendar body is generated server-side so the\nUID is authoritative and CalDAV clients see the full component.",
+        "operationId": "create_event",
+        "parameters": [
+          {
+            "name": "calendar_id",
+            "in": "path",
+            "description": "Calendar UUID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaveEventRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Event created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CalendarEventResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "403": {
+            "description": "No create permission"
+          },
+          "404": {
+            "description": "Calendar not found"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/calendars/{calendar_id}/events/{event_id}": {
+      "put": {
+        "tags": [
+          "calendars"
+        ],
+        "summary": "Replace an event. The service re-checks that the caller may modify\nthe owning calendar; an Editor-or-above is required even though the\nunderlying write is a `Create`-gated upsert. Properties outside the\nJSON DTO are preserved from the stored component (see\n[`merge_event_ical`]); unchanged timing keeps its original\n`TZID`/`VALUE=DATE` value form.",
+        "operationId": "update_event",
+        "parameters": [
+          {
+            "name": "calendar_id",
+            "in": "path",
+            "description": "Calendar UUID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "event_id",
+            "in": "path",
+            "description": "Event UUID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaveEventRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Event updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CalendarEventResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "403": {
+            "description": "No update permission"
+          },
+          "404": {
+            "description": "Event not found"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "calendars"
+        ],
+        "summary": "Delete an event.",
+        "operationId": "delete_event",
+        "parameters": [
+          {
+            "name": "calendar_id",
+            "in": "path",
+            "description": "Calendar UUID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "event_id",
+            "in": "path",
+            "description": "Event UUID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Event deleted"
+          },
+          "403": {
+            "description": "No delete permission"
+          },
+          "404": {
+            "description": "Event not found"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
     "/api/config": {
       "get": {
         "tags": [
@@ -15765,6 +16146,138 @@
           }
         }
       },
+      "CalendarEventResponse": {
+        "type": "object",
+        "description": "Event projection for the UI. Deliberately drops `ical_data` — the\nstored iCalendar blob is the CalDAV read path's payload, not a field\nthe JSON client needs (and it can run to tens of KB per row).",
+        "required": [
+          "id",
+          "calendar_id",
+          "summary",
+          "start_time",
+          "end_time",
+          "all_day",
+          "ical_uid",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "all_day": {
+            "type": "boolean"
+          },
+          "calendar_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "end_time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "ical_uid": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "location": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "recurrence_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "rrule": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "start_time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "timezone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "IANA zone from the stored DTSTART, when the event carries one.\nThe SPA expands recurrence in this zone so wall-clock times do\nnot drift across DST; absent means the series is UTC."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "CalendarResponse": {
+        "type": "object",
+        "description": "A calendar plus the caller's access level on it.",
+        "required": [
+          "id",
+          "name",
+          "owner_id",
+          "access",
+          "is_readonly",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "access": {
+            "type": "string",
+            "description": "`read` | `contribute` | `edit` | `own`. The SPA gates the\nrename/delete controls on this."
+          },
+          "color": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "is_readonly": {
+            "type": "boolean",
+            "description": "True when the caller cannot even add objects (Viewer/Commenter)."
+          },
+          "name": {
+            "type": "string"
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
       "ChangePasswordDto": {
         "type": "object",
         "required": [
@@ -16100,6 +16613,29 @@
           "scopes": {
             "type": "string",
             "description": "Comma-separated scopes (defaults to all DAV protocols)"
+          }
+        }
+      },
+      "CreateCalendarRequest": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "color": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
           }
         }
       },
@@ -17872,7 +18408,7 @@
           },
           "calendars": {
             "type": "boolean",
-            "description": "Calendars browse surface — `/api/calendars` plus the SPA's\n`/calendars` page.\n\n**PLACEHOLDER**: advertised before anything consumes it, so the\nwire field and SDK type exist when\n<https://github.com/AtalayaLabs/OxiCloud/pull/853> lands. Reads\n`true` by default; a client gating on it today simply always\nshows the feature. Separate from `caldav` for the same reason\n`contacts` is separate from `carddav`."
+            "description": "Calendars browse surface — `/api/calendars` plus the SPA's\n`/calendars` page, whose nav entry is hidden when this is false.\nDeliberately separate from `caldav`: that is the sync protocol,\nthis is the browse UI, and a deployment may want either without\nthe other. See `FeaturesConfig::enable_calendars`."
           },
           "carddav": {
             "type": "boolean",
@@ -20933,6 +21469,56 @@
           "Cancelled"
         ]
       },
+      "SaveEventRequest": {
+        "type": "object",
+        "description": "Full replacement payload shared by create and update. The update\npath replaces only the VEVENT properties this DTO models, so\n\"absent\" means \"cleared\" for those; unmodelled properties in the\nstored component are preserved.",
+        "required": [
+          "summary",
+          "start_time",
+          "end_time"
+        ],
+        "properties": {
+          "all_day": {
+            "type": "boolean"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "end_time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "location": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rrule": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "start_time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "timezone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "IANA zone the caller entered the wall-clock time in (for example\n`Europe/Paris`). Timed events are stored with a matching\n`DTSTART;TZID=…`, so their recurrence keeps the same local time\nacross DST changes. Absent/`null` keeps the legacy UTC storage."
+          }
+        }
+      },
       "SaveOidcSettingsDto": {
         "type": "object",
         "description": "Request body for saving OIDC settings from the admin panel",
@@ -22591,6 +23177,29 @@
           }
         }
       },
+      "UpdateCalendarRequest": {
+        "type": "object",
+        "properties": {
+          "color": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "UpdateContactRequest": {
         "type": "object",
         "description": "Request body for updating a contact (all fields optional).",
@@ -23245,6 +23854,10 @@
     {
       "name": "contacts",
       "description": "Address books, contacts, and groups endpoints"
+    },
+    {
+      "name": "calendars",
+      "description": "Calendars and events endpoints (SPA JSON surface)"
     },
     {
       "name": "admin",
