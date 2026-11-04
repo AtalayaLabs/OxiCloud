@@ -5164,6 +5164,31 @@ export type SelfUserDto = {
      */
     is_dpop_bound: boolean;
     /**
+     * Caller-scoped: would `POST /api/auth/upgrade-to-internal`
+     * succeed for me right now?
+     *
+     * `is_external && not IdP-managed && registration enabled && my
+     * email domain is allowed` — every condition the endpoint itself
+     * enforces, so the SPA can hide the "Get your own storage" banner
+     * instead of offering a button that answers 403. The conjunction
+     * lives in
+     * [`crate::application::services::registration_policy::upgrade_offer_allowed`].
+     *
+     * Exists because the client cannot derive it. Registration being
+     * open is on `/api/config`, but the DOMAIN allowlist deliberately
+     * is not: publishing it to anonymous callers would leak operator
+     * policy and help someone enumerate which domains a deployment
+     * accepts. This field answers the question for ONE authenticated
+     * user — which they would learn anyway by clicking — without
+     * disclosing the rule.
+     *
+     * A required constructor argument for the same reason `is_online`
+     * is: a defaulted `false` would silently hide the upgrade path on
+     * every emitter that forgot to set it, and a defaulted `true`
+     * would promise an upgrade the server refuses.
+     */
+    is_upgradable: boolean;
+    /**
      * Whether I want share-notification emails.
      */
     notify_on_share: boolean;

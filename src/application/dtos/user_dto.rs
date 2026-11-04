@@ -260,6 +260,29 @@ pub struct SelfUserDto {
     /// OIDC users whose avatar comes from the IdP. Only meaningful when
     /// caller == subject; nonsense on any other DTO.
     pub can_edit_image: bool,
+    /// Caller-scoped: would `POST /api/auth/upgrade-to-internal`
+    /// succeed for me right now?
+    ///
+    /// `is_external && not IdP-managed && registration enabled && my
+    /// email domain is allowed` — every condition the endpoint itself
+    /// enforces, so the SPA can hide the "Get your own storage" banner
+    /// instead of offering a button that answers 403. The conjunction
+    /// lives in
+    /// [`crate::application::services::registration_policy::upgrade_offer_allowed`].
+    ///
+    /// Exists because the client cannot derive it. Registration being
+    /// open is on `/api/config`, but the DOMAIN allowlist deliberately
+    /// is not: publishing it to anonymous callers would leak operator
+    /// policy and help someone enumerate which domains a deployment
+    /// accepts. This field answers the question for ONE authenticated
+    /// user — which they would learn anyway by clicking — without
+    /// disclosing the rule.
+    ///
+    /// A required constructor argument for the same reason `is_online`
+    /// is: a defaulted `false` would silently hide the upgrade path on
+    /// every emitter that forgot to set it, and a defaulted `true`
+    /// would promise an upgrade the server refuses.
+    pub is_upgradable: bool,
 }
 
 impl PublicUserDto {
@@ -368,6 +391,7 @@ impl SelfUserDto {
         is_dpop_bound: bool,
         force_password_change: bool,
         can_edit_image: bool,
+        is_upgradable: bool,
     ) -> Self {
         Self {
             full,
@@ -376,6 +400,7 @@ impl SelfUserDto {
             is_dpop_bound,
             force_password_change,
             can_edit_image,
+            is_upgradable,
         }
     }
 }
@@ -738,6 +763,7 @@ mod three_layer_quarantine {
             is_dpop_bound: false,
             force_password_change: false,
             can_edit_image: true,
+            is_upgradable: false,
         };
         let json: Value = serde_json::to_value(&self_dto).expect("SelfUserDto serialises");
         assert!(
@@ -761,6 +787,10 @@ mod three_layer_quarantine {
             "is_dpop_bound",
             "force_password_change",
             "can_edit_image",
+            // Caller-scoped like the rest: it answers "can *I* upgrade",
+            // so leaking it into `.full` would attach one user's answer
+            // to every other user's row.
+            "is_upgradable",
         ] {
             assert!(json.get(k).is_some(), "{k} at top level");
             assert!(

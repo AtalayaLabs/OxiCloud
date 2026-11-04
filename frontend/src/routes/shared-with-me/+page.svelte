@@ -31,7 +31,14 @@
 	// their own, this view IS their entry point. Internal users don't
 	// see the banner even when their /shared-with-me happens to be
 	// non-empty (they already have a drive; nothing to upgrade).
-	const showUpgradeBanner = $derived(session.isExternalUser);
+	//
+	// `canUpgradeAccount`, not `isExternalUser`: the server answers
+	// whether the upgrade would actually succeed (external AND
+	// registration open AND domain allowed). Re-deriving that here
+	// would be a second copy of the policy — and an incomplete one,
+	// since the domain allowlist is deliberately not published to
+	// clients.
+	const showUpgradeBanner = $derived(session.canUpgradeAccount);
 
 	let raw = $state<IncomingGrantItem[]>([]);
 	let cursor = $state<string | undefined>(undefined);

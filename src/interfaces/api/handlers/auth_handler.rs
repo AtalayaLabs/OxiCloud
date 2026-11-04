@@ -15,6 +15,7 @@ use crate::application::dtos::user_dto::{
     PublicUserDto, RefreshTokenDto, RegisterDto, SelfUserDto, SetupAdminDto, UpgradeToInternalDto,
 };
 use crate::application::services::auth_application_service::{OidcCallbackResult, RegisterResult};
+use crate::application::services::registration_policy::domain_allowed;
 use crate::common::di::AppState;
 use crate::interfaces::api::cookie_auth;
 use crate::interfaces::errors::AppError;
@@ -79,6 +80,58 @@ pub fn refresh_route() -> Router<Arc<AppState>> {
 /// Public setup route, only active before the first admin is created.
 pub fn setup_route() -> Router<Arc<AppState>> {
     Router::new().route("/setup", post(setup_admin))
+}
+
+/// `OXICLOUD_REGISTRATION_ALLOWED_EMAIL_DOMAINS` gate, shared by the two
+/// ways an account becomes internal on this deployment WITHOUT an admin:
+/// `POST /api/auth/register` and `POST /api/auth/upgrade-to-internal`.
+///
+/// One function on purpose. The two were copies, and copies drift: a
+/// subdomain rule or a normalisation fix applied to registration but not
+/// to self-promotion would reopen the hole the upgrade gate exists to
+/// close — an invitation becoming a way around the operator's policy.
+/// Whatever this accepts for signup, it accepts for promotion.
+///
+/// The matching rule itself lives in
+/// [`crate::application::services::registration_policy::domain_allowed`]
+/// — this is only the audit + HTTP wrapper around it. The same
+/// predicate answers `SelfUserDto::is_upgradable`, so what the server
+/// accepts and what the SPA offers cannot disagree.
+///
+/// `audit_event` differs per caller because operators filter on it —
+/// `auth.register_rejected` vs `user.upgrade_rejected` — and `user_id`
+/// is `None` at registration, where no account exists yet.
+fn require_registration_domain_allowed(
+    allow_list: &[String],
+    email: &str,
+    audit_event: &'static str,
+    user_id: Option<Uuid>,
+) -> Result<(), AppError> {
+    if domain_allowed(allow_list, email) {
+        return Ok(());
+    }
+    let domain = email
+        .split('@')
+        .nth(1)
+        .map(|d| d.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+    // Audited at the `audit` target so operators can spot enumeration /
+    // probe attempts — same shape as the magic-link domain rejection in
+    // `magic_link_invite_service.rs`.
+    tracing::info!(
+        target: "audit",
+        event = audit_event,
+        reason = "domain_not_allowed",
+        user_id = user_id.map(|id| id.to_string()).unwrap_or_default(),
+        domain = %domain,
+        "👮🏻‍♂️ refused: email domain not in \
+         OXICLOUD_REGISTRATION_ALLOWED_EMAIL_DOMAINS",
+    );
+    Err(AppError::new(
+        StatusCode::FORBIDDEN,
+        "Registration is not open to this email domain.",
+        "RegistrationDomainNotAllowed",
+    ))
 }
 
 /// Register a new user account.
@@ -183,46 +236,12 @@ pub async fn register(
         ));
     }
 
-    // Operator-configured allowlist of email domains that can
-    // self-register. Empty list = no restriction (any domain accepted).
-    // Distinct from `OXICLOUD_EXTERNAL_EMAIL_DOMAINS`, which gates
-    // magic-link / grant invitations — an operator can leave that
-    // permissive while locking self-registration down, or vice versa.
-    //
-    // Matching mirrors the magic-link list:
-    //   * post-`@` part of the address is extracted and lowercased
-    //   * case-insensitive exact match against the allowlist
-    //   * no wildcard / subdomain expansion (list every domain
-    //     explicitly, per the config docstring)
-    //
-    // Audit-log denials at the `audit` target so operators can spot
-    // enumeration / probe attempts — mirrors the shape used by the
-    // magic-link domain rejection at
-    // `magic_link_invite_service.rs`.
-    let allow_list = &state.core.config.auth.registration_allowed_email_domains;
-    if !allow_list.is_empty() {
-        let domain = dto
-            .email
-            .split('@')
-            .nth(1)
-            .map(|d| d.trim().to_ascii_lowercase())
-            .unwrap_or_default();
-        if domain.is_empty() || !allow_list.iter().any(|d| d == &domain) {
-            tracing::info!(
-                target: "audit",
-                event = "auth.register_rejected",
-                reason = "domain_not_allowed",
-                domain = %domain,
-                "👮🏻‍♂️ Public registration refused: email domain not in \
-                 OXICLOUD_REGISTRATION_ALLOWED_EMAIL_DOMAINS"
-            );
-            return Err(AppError::new(
-                StatusCode::FORBIDDEN,
-                "Registration is not open to this email domain.",
-                "RegistrationDomainNotAllowed",
-            ));
-        }
-    }
+    require_registration_domain_allowed(
+        &state.core.config.auth.registration_allowed_email_domains,
+        &dto.email,
+        "auth.register_rejected",
+        None,
+    )?;
 
     // Email-only signup requires SMTP. Without it the welcome mail
     // can't be dispatched and the user is stranded with no way to log
@@ -871,46 +890,58 @@ pub async fn upgrade_to_internal(
         .as_ref()
         .ok_or_else(|| AppError::internal_error("Authentication service not configured"))?;
 
-    // Domain gate. Mirrors the register handler
-    // (`OXICLOUD_REGISTRATION_ALLOWED_EMAIL_DOMAINS`). Rationale: an
-    // internal-user invitation must NOT become a way around the
-    // operator's self-registration policy. If a domain isn't
-    // allowlisted for register, it shouldn't be allowed for upgrade
-    // either. External users on non-allowlisted domains remain
-    // external — they can still act on shared resources but never own
-    // a drive of their own on this deployment.
+    // Registration switch. SELF-promotion is self-registration by
+    // another name: it turns an invited guest into a full internal
+    // account with its own drive and quota, which is exactly what
+    // `OXICLOUD_DISABLE_REGISTRATION` / the dashboard toggle exist to
+    // stop. Without this the two controls diverged — an operator who
+    // closed registration still had every outstanding invitation as an
+    // open door, and with no domain allowlist configured there was no
+    // barrier left on this path at all.
+    //
+    // Scope is the SELF path only. `admin_promote_external_to_internal`
+    // deliberately has no such gate: an admin promoting someone is not
+    // self-registration, and closing registration must not take an
+    // administrative capability away.
+    if let Some(admin_svc) = state.admin_settings_service.as_ref()
+        && !admin_svc.get_registration_enabled().await
+    {
+        tracing::info!(
+            target: "audit",
+            event = "user.upgrade_rejected",
+            reason = "registration_disabled",
+            user_id = %user_id,
+            "👮🏻‍♂️ upgrade refused: public registration is disabled on this deployment",
+        );
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "Public registration has been disabled by the administrator.",
+            "RegistrationDisabled",
+        ));
+    }
+
+    // Domain gate — the SAME check `register` applies, by construction:
+    // an invitation must not become a way around the operator's
+    // self-registration policy. A user whose domain is refused stays
+    // external; they can still act on shared resources, but never own a
+    // drive on this deployment.
     let allow_list = &state.core.config.auth.registration_allowed_email_domains;
     if !allow_list.is_empty() {
-        // The service re-fetches the user inside `upgrade_to_internal`;
-        // one extra id-lookup here just to extract the email is cheap
-        // and keeps the domain check at the same layer as the register
-        // handler for consistency.
+        // Only pay for the lookup when there is an allowlist to check
+        // against. The service re-fetches the user inside
+        // `upgrade_to_internal`; this extra id-lookup just extracts the
+        // email.
         let email = auth_service
             .auth_application_service
             .get_user_by_id(user_id)
             .await
             .map(|dto| dto.email)?;
-        let domain = email
-            .split('@')
-            .nth(1)
-            .map(|d| d.trim().to_ascii_lowercase())
-            .unwrap_or_default();
-        if domain.is_empty() || !allow_list.iter().any(|d| d == &domain) {
-            tracing::info!(
-                target: "audit",
-                event = "user.upgrade_rejected",
-                reason = "domain_not_allowed",
-                user_id = %user_id,
-                domain = %domain,
-                "👮🏻‍♂️ upgrade refused: email domain not in \
-                 OXICLOUD_REGISTRATION_ALLOWED_EMAIL_DOMAINS"
-            );
-            return Err(AppError::new(
-                StatusCode::FORBIDDEN,
-                "This deployment does not accept new accounts from your email domain.",
-                "RegistrationDomainNotAllowed",
-            ));
-        }
+        require_registration_domain_allowed(
+            allow_list,
+            &email,
+            "user.upgrade_rejected",
+            Some(user_id),
+        )?;
     }
 
     // Apply the upgrade. Service returns the updated `PublicUserDto`;
@@ -1997,4 +2028,39 @@ pub async fn send_magic_link(
         .map_err(AppError::from)?;
 
     Ok(uniform_ok())
+}
+
+#[cfg(test)]
+mod registration_domain_gate_tests {
+    //! The HTTP wrapper only. The matching rule itself is pinned in
+    //! `application::services::registration_policy` — duplicating those
+    //! cases here would recreate, in tests, the very split this
+    //! refactor removed from the production code.
+    use super::require_registration_domain_allowed;
+    use uuid::Uuid;
+
+    const EVENT: &str = "test.rejected";
+
+    #[test]
+    fn an_allowed_domain_passes_through() {
+        let list = vec!["example.com".to_string()];
+        assert!(require_registration_domain_allowed(&list, "bob@example.com", EVENT, None).is_ok());
+    }
+
+    #[test]
+    fn the_rejection_is_a_403_with_a_stable_error_type() {
+        // The SPA switches on `error_type`, not on the message, and both
+        // callers must produce the same one so a client can treat
+        // "refused signup" and "refused promotion" alike.
+        let list = vec!["example.com".to_string()];
+        let err = require_registration_domain_allowed(
+            &list,
+            "mallory@evil.test",
+            EVENT,
+            Some(Uuid::nil()),
+        )
+        .expect_err("off-allowlist domain must be refused");
+        assert_eq!(err.status_code, axum::http::StatusCode::FORBIDDEN);
+        assert_eq!(err.error_type, "RegistrationDomainNotAllowed");
+    }
 }

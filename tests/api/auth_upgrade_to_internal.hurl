@@ -208,7 +208,103 @@ jsonpath "$.full.user.is_external" == true
 
 
 # ─────────────────────────────────────────────────────────────
-# Cleanup — admin deletes both test users.
+# Step 7 — Self-promotion obeys the REGISTRATION SWITCH, not just
+#          the domain allowlist.
+#
+# Self-promotion is self-registration by another name: it turns an
+# invited guest into a full internal account with its own drive and
+# quota. `OXICLOUD_DISABLE_REGISTRATION` / the dashboard toggle exist
+# to stop exactly that, and the upgrade handler did not consult them —
+# so an operator who closed registration still had every outstanding
+# invitation as an open door, with no barrier at all on a deployment
+# that sets no domain allowlist.
+#
+# Dave is on `example.com`, which IS allowlisted, so the domain gate
+# cannot be what refuses him. That is the point: it isolates the
+# switch from the gate Step 6 already covers.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/admin/users
+Authorization: Bearer {{alice_token}}
+Content-Type: application/json
+{
+  "username":    "dave-upgrade",
+  "email":       "dave-upgrade@example.com",
+  "password":    "TempExtPass1!",
+  "role":        "user",
+  "is_external": true
+}
+
+HTTP 201
+[Captures]
+dave_user_id: jsonpath "$.user.id"
+
+
+POST {{base_url}}/api/auth/login
+Content-Type: application/json
+{ "username": "dave-upgrade", "password": "TempExtPass1!" }
+
+HTTP 200
+[Captures]
+dave_token: jsonpath "$.access_token"
+
+
+# Admin closes public registration.
+PUT {{base_url}}/api/admin/settings/registration
+Authorization: Bearer {{alice_token}}
+Content-Type: application/json
+{ "registration_enabled": false }
+
+HTTP 200
+
+
+# Dave's self-promotion must now be refused — same error shape the
+# register endpoint returns, so a client can treat them alike.
+POST {{base_url}}/api/auth/upgrade-to-internal
+Authorization: Bearer {{dave_token}}
+Content-Type: application/json
+{ "password": "RealInternalPass1!" }
+
+HTTP 403
+[Asserts]
+jsonpath "$.error_type" == "RegistrationDisabled"
+
+
+# …and he is still external: refused means unchanged, not
+# half-applied.
+GET {{base_url}}/api/auth/me
+Authorization: Bearer {{dave_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.full.user.is_external" == true
+
+
+# ⚠ Re-open registration before anything else runs. This setting is
+# DB-backed and the suite shares one database serially, so leaving it
+# off would fail `registration.hurl` and every later self-signup.
+PUT {{base_url}}/api/admin/settings/registration
+Authorization: Bearer {{alice_token}}
+Content-Type: application/json
+{ "registration_enabled": true }
+
+HTTP 200
+
+
+# With the switch back on the same request succeeds — which is what
+# proves the 403 above came from the switch and not from some other
+# precondition of Dave's account.
+POST {{base_url}}/api/auth/upgrade-to-internal
+Authorization: Bearer {{dave_token}}
+Content-Type: application/json
+{ "password": "RealInternalPass1!" }
+
+HTTP 200
+[Asserts]
+jsonpath "$.full.user.is_external" == false
+
+
+# ─────────────────────────────────────────────────────────────
+# Cleanup — admin deletes the test users.
 # ─────────────────────────────────────────────────────────────
 DELETE {{base_url}}/api/admin/users/{{bob_user_id}}
 Authorization: Bearer {{alice_token}}
@@ -216,6 +312,11 @@ Authorization: Bearer {{alice_token}}
 HTTP *
 
 DELETE {{base_url}}/api/admin/users/{{carol_user_id}}
+Authorization: Bearer {{alice_token}}
+
+HTTP *
+
+DELETE {{base_url}}/api/admin/users/{{dave_user_id}}
 Authorization: Bearer {{alice_token}}
 
 HTTP *

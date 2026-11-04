@@ -2008,6 +2008,7 @@
   "upgrade": {
     "title": "Auf vollständiges Konto upgraden",
     "lede": "Erhalten Sie Ihren eigenen Speicher und beginnen Sie, Dateien hochzuladen. Ihre bestehenden Freigaben bleiben unverändert.",
+    "unavailable": "Ein Upgrade ist für Ihr Konto derzeit nicht verfügbar. Ihr Gastzugang bleibt unverändert — bitten Sie einen Administrator, Sie hochzustufen.",
     "busy": "Upgrade läuft…",
     "submit": "Mein Konto upgraden",
     "cancel": "Nicht jetzt — zurück zu den Freigaben",

@@ -707,6 +707,16 @@ pub struct AuthApplicationService {
     /// `email_verified_at IS NULL`. Mirrors
     /// `AuthConfig::require_verified_email`.
     require_verified_email: bool,
+    /// Snapshot of `OXICLOUD_REGISTRATION_ALLOWED_EMAIL_DOMAINS`, used
+    /// to compute `SelfUserDto::is_upgradable`. Empty = unrestricted.
+    /// Process-static, so a snapshot is honest here.
+    registration_allowed_domains: Vec<String>,
+    /// Shared handle on `AppState::registration_enabled` — NOT a copy
+    /// of its value: an admin can flip the switch at runtime and
+    /// `set_registration_setting` mirrors the change into this atomic.
+    /// `None` in test builds that skip the DI builder; see
+    /// [`Self::registration_open`] for the default.
+    registration_enabled: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// OPAQUE envelope repo — populated when the OPAQUE substrate is
     /// wired (`OXICLOUD_AUTH_OPAQUE_MODE != off`). `login()` consults it to
     /// enforce the Phase 4 gate: once a user has completed at least
@@ -801,6 +811,8 @@ impl AuthApplicationService {
             min_password_length: 8,
             auth_policies: Vec::new(),
             require_verified_email: false,
+            registration_allowed_domains: Vec::new(),
+            registration_enabled: None,
             opaque_repo: None,
             login_coaching_dispatcher: OnceLock::new(),
             login_recovery_per_email_rate_limiter: OnceLock::new(),
@@ -855,6 +867,39 @@ impl AuthApplicationService {
         self.require_verified_email = require_verified_email;
         self.min_password_length = min_password_length;
         self
+    }
+
+    /// Wire the self-registration policy, so `SelfUserDto::is_upgradable`
+    /// answers the same question `POST /api/auth/upgrade-to-internal`
+    /// enforces. Same reasoning as [`Self::with_auth_policy`]: one
+    /// snapshot here beats every callsite reaching into `AppConfig`.
+    ///
+    /// `allowed_domains` is a snapshot — `OXICLOUD_REGISTRATION_ALLOWED_EMAIL_DOMAINS`
+    /// is process-static. `registration_enabled` is the SHARED handle
+    /// from `AppState`, not a copy of its value, because an admin can
+    /// flip it at runtime: `set_registration_setting` writes the DB and
+    /// mirrors into this atomic, so holding the `Arc` keeps every
+    /// `/me`, login and refresh response current without a DB round
+    /// trip. A snapshot would answer with whatever was true at boot.
+    pub fn with_registration_policy(
+        mut self,
+        allowed_domains: Vec<String>,
+        registration_enabled: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        self.registration_allowed_domains = allowed_domains;
+        self.registration_enabled = Some(registration_enabled);
+        self
+    }
+
+    /// Is self-registration open? `true` when unwired, matching the
+    /// `AppState` atomic's own default — a service built without the
+    /// policy (tests, the admin-settings fixture) behaves as it did
+    /// before this field existed.
+    fn registration_open(&self) -> bool {
+        self.registration_enabled
+            .as_ref()
+            .map(|f| f.load(std::sync::atomic::Ordering::Relaxed))
+            .unwrap_or(true)
     }
 
     /// Advertised minimum password length. Used by `/api/config` so the
@@ -1872,6 +1917,18 @@ impl AuthApplicationService {
         let (user, flags) =
             UserStoragePort::get_user_with_derived_flags(&*self.user_storage, user_id).await?;
         let can_edit_image = !user.is_oidc_user();
+        // Mirrors the endpoint's own guards, in the same order. The
+        // conjunction and the domain matcher both live in
+        // `registration_policy`, which the register + upgrade handlers
+        // also call — so the offer and the enforcement cannot disagree.
+        let is_upgradable =
+            crate::application::services::registration_policy::upgrade_offer_allowed(
+                user.is_external(),
+                user.is_oidc_user(),
+                self.registration_open(),
+                &self.registration_allowed_domains,
+                user.email(),
+            );
         let ui_preferences = user.ui_preferences().clone();
         let notify_on_share = user.notify_on_share();
         let force_password_change = self.read_force_password_change(user_id).await;
@@ -1883,6 +1940,7 @@ impl AuthApplicationService {
             is_dpop_bound,
             force_password_change,
             can_edit_image,
+            is_upgradable,
         ))
     }
 

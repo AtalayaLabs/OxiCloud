@@ -19,6 +19,10 @@ pub async fn create_auth_services(
     pool: Arc<PgPool>,
     user_lifecycle: Arc<UserLifecycleService>,
     opaque_repo: Option<Arc<dyn crate::application::ports::opaque_ports::OpaqueRepositoryPort>>,
+    // Shared handle on `AppState::registration_enabled`, so
+    // `SelfUserDto::is_upgradable` tracks the admin's runtime toggle
+    // rather than a boot-time snapshot.
+    registration_enabled: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<AuthServices> {
     // Create JWT token service (TokenServicePort implementation)
     let token_service: Arc<JwtTokenService> = Arc::new(JwtTokenService::new(
@@ -67,6 +71,16 @@ pub async fn create_auth_services(
         config.auth.auth_policies.clone(),
         config.auth.require_verified_email,
         config.auth.min_password_length,
+    );
+
+    // Self-registration policy, for the same reason: one snapshot the
+    // service can consult instead of every caller reaching into
+    // `AppConfig`. Drives `SelfUserDto::is_upgradable`, which is what
+    // lets the SPA hide the upgrade banner rather than offer a button
+    // the endpoint answers 403 to.
+    auth_app_service = auth_app_service.with_registration_policy(
+        config.auth.registration_allowed_email_domains.clone(),
+        registration_enabled,
     );
 
     // Wire the magic-link token repo. Enables `GET /magic/v1/{token}`

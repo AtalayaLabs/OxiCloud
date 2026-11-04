@@ -21608,7 +21608,8 @@
           "notify_on_share",
           "is_dpop_bound",
           "force_password_change",
-          "can_edit_image"
+          "can_edit_image",
+          "is_upgradable"
         ],
         "properties": {
           "can_edit_image": {
@@ -21626,6 +21627,10 @@
           "is_dpop_bound": {
             "type": "boolean",
             "description": "Session-scoped: my current session carries a DPoP thumbprint.\nSPA reads this on `session.load()` to skip a redundant\n`POST /api/auth/dpop/bind` when the session is already bound."
+          },
+          "is_upgradable": {
+            "type": "boolean",
+            "description": "Caller-scoped: would `POST /api/auth/upgrade-to-internal`\nsucceed for me right now?\n\n`is_external && not IdP-managed && registration enabled && my\nemail domain is allowed` — every condition the endpoint itself\nenforces, so the SPA can hide the \"Get your own storage\" banner\ninstead of offering a button that answers 403. The conjunction\nlives in\n[`crate::application::services::registration_policy::upgrade_offer_allowed`].\n\nExists because the client cannot derive it. Registration being\nopen is on `/api/config`, but the DOMAIN allowlist deliberately\nis not: publishing it to anonymous callers would leak operator\npolicy and help someone enumerate which domains a deployment\naccepts. This field answers the question for ONE authenticated\nuser — which they would learn anyway by clicking — without\ndisclosing the rule.\n\nA required constructor argument for the same reason `is_online`\nis: a defaulted `false` would silently hide the upgrade path on\nevery emitter that forgot to set it, and a defaulted `true`\nwould promise an upgrade the server refuses."
           },
           "notify_on_share": {
             "type": "boolean",
