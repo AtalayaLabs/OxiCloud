@@ -2461,7 +2461,15 @@ pub struct FeaturesConfig {
     /// of them so the flag, its `/api/config.features.calendars` wire
     /// field and the generated SDK type are already in place when that
     /// PR lands — the implementer adds the route gate in `routes.rs` and
-    /// the nav gate in `AppShell.svelte` and nothing else moves.
+    /// the nav gate in `AppShell.svelte`.
+    ///
+    /// One thing DOES move, though: a `POST /api/calendars` needs the
+    /// per-route `require_internal_user_layer` that the address-book
+    /// and playlist creates carry in `routes.rs`, because
+    /// `CalendarService::create_calendar` has no gate of its own (see
+    /// the TODO(#853) on that method). Externals own no resources —
+    /// today the only caller is CalDAV `MKCALENDAR`, already behind
+    /// that layer, so REST would be the first ungated door.
     ///
     /// Same split as [`Self::enable_contacts`] vs
     /// [`Self::enable_carddav`]: this is the browse UI, `enable_caldav`

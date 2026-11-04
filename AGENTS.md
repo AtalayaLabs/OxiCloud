@@ -258,6 +258,36 @@ Never duplicate logic across handlers or services. If the same behaviour is need
 
 This rule prevents drift between layers and ensures every code path goes through the same policy. New service methods that touch a user-scoped resource must take `caller_id: Uuid` and call `authz.require(...)` before any read or mutation.
 
+#### Grant vs scope
+
+Two different questions. Only the first is a grant, and the rule above is
+about that one alone:
+
+- **Grant** — may this caller act on THIS resource? → service layer,
+  `authz.require`, `_with_perms`. Never a handler.
+- **Scope** — may this KIND of caller reach this surface at all? → router
+  middleware. There is no resource to name, so `authz.require` cannot answer
+  it: `require_internal_user_layer`, `require_no_password_change_pending_layer`,
+  `require_dpop_layer`, `anonymous_allowlist_layer`, applied to the `/webdav`,
+  `/caldav` and `/carddav` nests in `main.rs`. These belong in the router.
+  Don't "fix" them into services.
+
+**A top-level create has no parent to `authz.require` on**, so it is a scope
+question wearing a grant's clothes — and the grant rule alone yields no check
+at all. `create_calendar` / `create_address_book` / `create_playlist` each
+take a `caller_id`, stamp it as `owner_id` and seed the caller an Owner grant;
+handler, service and router each read as though one of the others held the
+gate. That is how externals could own playlists and address books over REST
+while the CardDAV door to the same service method was gated all along. When
+adding one:
+
+- name the principal kinds that may call it, and gate it — in the service when
+  it can resolve a user, else per-route in `routes.rs`;
+- gate **every** door to that method. REST and DAV share service methods, and
+  a gate on one is a hole in the other;
+- pin it in `tests/api/external_users.hurl`: the refusal **and** an allowed
+  caller succeeding — a gate that refuses everyone passes the refusal pin.
+
 ### Audit logging for denials and rejections
 
 **Every permission denial or auth rejection MUST emit a structured audit log line before returning the error.** Without one, security-relevant outcomes are invisible to operators and incident response loses its primary signal.

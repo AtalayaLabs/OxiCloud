@@ -329,6 +329,132 @@ Depth: 0
 
 HTTP 403
 
+# 11k — bob CANNOT create an address book over REST. The CardDAV
+#        door to the very same `ContactService::create_address_book`
+#        was gated by `require_internal_user_layer` on /carddav (11j)
+#        from the start, but `POST /api/address-books` reached it with
+#        no gate at all — handler, service and router each assumed one
+#        of the others had it. An invited guest could own a book, and
+#        then contacts and groups inside it, on an instance where
+#        externals are supposed to own nothing. Gated per-route in
+#        `routes.rs`, NOT per-nest — see 11m for the half this must
+#        not break.
+POST {{base_url}}/api/address-books
+Authorization: Bearer {{bob_access_token}}
+Content-Type: application/json
+{ "name": "rogue-book" }
+
+HTTP 403
+
+# 11l — bob CANNOT create a playlist. Same hole, same shape:
+#        `MusicService::create_playlist` says "No pre-write gate"
+#        outright and seeds the caller an Owner grant, so REST was the
+#        only thing standing between a guest and unbounded owned rows
+#        (nothing quotas playlist or contact rows).
+POST {{base_url}}/api/playlists
+Authorization: Bearer {{bob_access_token}}
+Content-Type: application/json
+{ "name": "rogue-list" }
+
+HTTP 403
+
+# 11m — …but bob CAN still READ both surfaces. This is the half the
+#        fix must not break, and the reason the gate is per-route
+#        rather than on the whole nest: address books and playlists
+#        can be SHARED with an external, which is the entire point of
+#        an invited user. Gating the nest would have 403'd a guest out
+#        of a book shared with them, and made the external-caller
+#        branch in `list_address_books` (it hides the system
+#        "OxiCloud Users" book) dead code.
+#
+#        200, not 403 — that status IS the assertion. Deliberately no
+#        count assertion: `list_user_address_books` unions grants with
+#        PUBLIC books, so a `count == 0` here would be a claim about
+#        every other .hurl file's fixtures in the shared DB. The
+#        `not contains` pins what this test actually owns — 11k's write
+#        was refused, so bob's book must not be in his own listing.
+GET {{base_url}}/api/address-books
+Authorization: Bearer {{bob_access_token}}
+
+HTTP 200
+[Asserts]
+body not contains "rogue-book"
+
+GET {{base_url}}/api/playlists
+Authorization: Bearer {{bob_access_token}}
+
+HTTP 200
+[Asserts]
+body not contains "rogue-list"
+
+# 11n — alice (internal) CAN create both. Pins that the per-route
+#        layer gates on principal kind and nothing else — a gate that
+#        403'd everyone would satisfy 11k/11l just as well, and this
+#        is what catches that.
+POST {{base_url}}/api/address-books
+Authorization: Bearer {{alice_token}}
+Content-Type: application/json
+{ "name": "alice-book" }
+
+HTTP 201
+[Captures]
+alice_book_id: jsonpath "$.id"
+
+POST {{base_url}}/api/playlists
+Authorization: Bearer {{alice_token}}
+Content-Type: application/json
+{ "name": "alice-list" }
+
+HTTP 201
+[Captures]
+alice_playlist_id: jsonpath "$.id"
+
+# 11o — the SYSTEM address book ("OxiCloud Users", id `system`) is the
+#        internal-user directory, not a real book: it's synthesised in
+#        the listing from `auth_service.list_users`. An external must
+#        not see it at all — it would hand an invited guest the
+#        instance's user roster, which `GET /api/users/{id}` and
+#        `/api/groups/search` (11e, 11g) refuse them one at a time.
+#
+#        Alice's assertion comes FIRST on purpose. The book only exists
+#        when `OXICLOUD_EXPOSE_SYSTEM_USERS=true` (set in
+#        tests/common/server.env) — without this line, flipping that
+#        flag off would make bob's `not contains` pass for the wrong
+#        reason and silently retire the check.
+GET {{base_url}}/api/address-books
+Authorization: Bearer {{alice_token}}
+
+HTTP 200
+[Asserts]
+body contains "OxiCloud Users"
+
+GET {{base_url}}/api/address-books
+Authorization: Bearer {{bob_access_token}}
+
+HTTP 200
+[Asserts]
+body not contains "OxiCloud Users"
+
+# 11p — and bob cannot reach its CONTENTS by guessing the id, which is
+#        the literal string `system` rather than a UUID. Hiding a row
+#        from a listing is not access control; the enumeration this
+#        blocks is the whole point, so both doors get a pin.
+GET {{base_url}}/api/address-books/system/contacts
+Authorization: Bearer {{bob_access_token}}
+
+HTTP 403
+
+GET {{base_url}}/api/address-books/system/contacts/{{alice_user_id}}
+Authorization: Bearer {{bob_access_token}}
+
+HTTP 403
+
+# …while alice reads it fine. Same non-vacuity reason as 11o.
+GET {{base_url}}/api/address-books/system/contacts
+Authorization: Bearer {{alice_token}}
+
+HTTP 200
+
 
 # ─────────────────────────────────────────────────────────────
 # Step 12 — /api/users/{id} happy path (Alice → Bob).
@@ -554,11 +680,21 @@ jsonpath "$.message" contains "sign-in link"
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 12 — Cleanup. Alice trashes the two test folders and
-#           deletes bob + the two rate-limit-test externals via
-#           the admin API so the suite's storage-check sweep at
-#           run.sh end sees a clean DB.
+# Step 12 — Cleanup. Alice drops the address book + playlist from
+#           11n, trashes the two test folders, and deletes bob + the
+#           two rate-limit-test externals via the admin API so the
+#           suite's storage-check sweep at run.sh end sees a clean DB.
 # ─────────────────────────────────────────────────────────────
+DELETE {{base_url}}/api/address-books/{{alice_book_id}}
+Authorization: Bearer {{alice_token}}
+
+HTTP *
+
+DELETE {{base_url}}/api/playlists/{{alice_playlist_id}}
+Authorization: Bearer {{alice_token}}
+
+HTTP *
+
 DELETE {{base_url}}/api/folders/{{ext_folder_id_2}}
 Authorization: Bearer {{alice_token}}
 

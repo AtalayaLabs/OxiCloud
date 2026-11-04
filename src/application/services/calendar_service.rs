@@ -137,6 +137,21 @@ impl CalendarUseCase for CalendarService {
         // (like creating a folder in your own drive). Storage stamps
         // `owner_id = user_id`; we then seed an Owner role_grant so
         // the engine's cache warms on first-read.
+        //
+        // TODO(#853): this method has exactly ONE caller today —
+        // `handle_mkcalendar`, under `require_internal_user_layer` on
+        // the `/caldav` nest — so an external cannot reach it. The
+        // moment the calendars REST API lands (PR #853: `POST
+        // /api/calendars`, events), wire the SAME per-route gate the
+        // address-book and playlist creates got in `routes.rs`, or an
+        // invited guest owns calendars on an instance where externals
+        // are supposed to own nothing. Pin it in
+        // `tests/api/external_users.hurl` next to 11k/11l.
+        //
+        // The honest fix is a gate HERE rather than a third copy in the
+        // router — AGENTS.md puts AuthZ in the service layer — but
+        // `CalendarService` holds no handle that can resolve a user, so
+        // that waits for a user port on this service.
         let created = self
             .calendar_storage
             .create_calendar(calendar, user_id)
