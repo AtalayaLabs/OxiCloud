@@ -187,7 +187,6 @@ pub const KNOWN: &[(&str, &str)] = &[
     ("features", "OXICLOUD_CONTENT_INDEX_FLUSH_MS"),
     ("features", "OXICLOUD_CONTENT_INDEX_MAX_FILE_BYTES"),
     ("features", "OXICLOUD_CONTENT_INDEX_MAX_TEXT_BYTES"),
-    ("features", "OXICLOUD_ENABLE_AUTH"),
     ("features", "OXICLOUD_ENABLE_CALDAV"),
     ("features", "OXICLOUD_ENABLE_CARDDAV"),
     ("features", "OXICLOUD_ENABLE_CONTACTS"),

@@ -133,7 +133,6 @@ rather than as a visible error.
 
 | Variable | Default | Description |
 |---|---|---|
-| `OXICLOUD_ENABLE_AUTH` | `true` | Enable authentication |
 | `OXICLOUD_ENABLE_FILE_SHARING` | `true` | File/folder sharing |
 | `OXICLOUD_ENABLE_TRASH` | `true` | Trash / recycle bin |
 | `OXICLOUD_ENABLE_SEARCH` | `true` | Full-text and metadata search |

@@ -2412,7 +2412,6 @@ impl MagicLinkConfig {
 /// Feature configuration (feature flags)
 #[derive(Debug, Clone)]
 pub struct FeaturesConfig {
-    pub enable_auth: bool,
     pub enable_file_sharing: bool,
     pub enable_trash: bool,
     pub enable_search: bool,
@@ -3100,7 +3099,6 @@ impl Default for GrantCleanupConfig {
 impl Default for FeaturesConfig {
     fn default() -> Self {
         Self {
-            enable_auth: true,             // Enable authentication by default
             enable_file_sharing: true,     // Enable file sharing by default
             enable_trash: true,            // Enable trash feature
             enable_search: true,           // Enable search feature
@@ -3919,14 +3917,14 @@ impl AppConfig {
             // recommends ≥256 bits for HS256). Panic on dangerously short
             // secrets, warn on sub-optimal ones.
             let len = jwt_secret.len();
-            if config.features.enable_auth && len < 16 {
+            if len < 16 {
                 panic!(
                     "FATAL: OXICLOUD_JWT_SECRET is dangerously short ({} bytes). \
                      Minimum: 32 bytes (256 bits) for HS256. \
                      Generate a secure secret with: openssl rand -hex 32",
                     len
                 );
-            } else if config.features.enable_auth && len < 32 {
+            } else if len < 32 {
                 tracing::warn!("==========================================================");
                 tracing::warn!(
                     "OXICLOUD_JWT_SECRET is only {} bytes — recommended minimum is 32 (256 bits).",
@@ -3940,7 +3938,7 @@ impl AppConfig {
 
         // SECURITY: Auto-persist JWT secret to storage so it survives restarts.
         // Priority: env var > persisted file > generate new.
-        if config.features.enable_auth && config.auth.jwt_secret.is_empty() {
+        if config.auth.jwt_secret.is_empty() {
             let secret_file = config.storage_path.join(".jwt_secret");
 
             if secret_file.exists() {
@@ -4328,12 +4326,6 @@ impl AppConfig {
         }
 
         // Feature flags
-        if let Ok(enable_auth) = env::var("OXICLOUD_ENABLE_AUTH").map(|v| v.parse::<bool>())
-            && let Ok(val) = enable_auth
-        {
-            config.features.enable_auth = val;
-        }
-
         if let Ok(enable_file_sharing) =
             env::var("OXICLOUD_ENABLE_FILE_SHARING").map(|v| v.parse::<bool>())
             && let Ok(val) = enable_file_sharing
@@ -5161,14 +5153,6 @@ impl AppConfig {
     pub fn with_features(mut self, features: FeaturesConfig) -> Self {
         self.features = features;
         self
-    }
-
-    pub fn db_enabled(&self) -> bool {
-        self.features.enable_auth
-    }
-
-    pub fn auth_enabled(&self) -> bool {
-        self.features.enable_auth
     }
 
     /// Build the public base URL for generating share links and other external URLs.
