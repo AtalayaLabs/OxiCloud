@@ -1875,6 +1875,136 @@ mod integration_tests {
     }
 
     #[tokio::test]
+    async fn user_deletion_clears_membership_provenance() {
+        type Membership = (
+            Uuid,
+            Option<Uuid>,
+            Option<Uuid>,
+            chrono::DateTime<chrono::Utc>,
+            Option<Uuid>,
+        );
+
+        let repo = test_repo().await;
+        sqlx::query("DELETE FROM auth.subject_groups WHERE name LIKE 'rust-test-provenance-%'")
+            .execute(repo.pool.as_ref())
+            .await
+            .expect("clean stale provenance groups before their adders");
+        sqlx::query(
+            "DELETE FROM auth.users WHERE email LIKE 'rust-test-provenance-%@example.invalid'",
+        )
+        .execute(repo.pool.as_ref())
+        .await
+        .expect("clean stale provenance users");
+
+        let adder = Uuid::new_v4();
+        let member = Uuid::new_v4();
+        let parent = Uuid::new_v4();
+        let child = Uuid::new_v4();
+        let group_ids = [parent, child];
+        for id in [adder, member] {
+            let username = format!("rust-test-provenance-{id}");
+            sqlx::query(
+                "INSERT INTO auth.users (id, username, email, password_hash, role)
+                 VALUES ($1, $2, $3, 'placeholder-not-validated', 'user')",
+            )
+            .bind(id)
+            .bind(&username)
+            .bind(format!("{username}@example.invalid"))
+            .execute(repo.pool.as_ref())
+            .await
+            .expect("insert provenance user");
+        }
+        for id in group_ids {
+            sqlx::query("INSERT INTO auth.subject_groups (id, name) VALUES ($1, $2)")
+                .bind(id)
+                .bind(format!("rust-test-provenance-{id}"))
+                .execute(repo.pool.as_ref())
+                .await
+                .expect("insert provenance group");
+        }
+        sqlx::query(
+            "INSERT INTO auth.subject_group_members
+                (group_id, member_user_id, member_group_id, added_by)
+             VALUES ($1, $3, NULL, $4), ($1, NULL, $2, $4),
+                    ($2, $4, NULL, $3), ($2, $3, NULL, $3)",
+        )
+        .bind(parent)
+        .bind(child)
+        .bind(member)
+        .bind(adder)
+        .execute(repo.pool.as_ref())
+        .await
+        .expect("insert memberships attributed to live users");
+
+        let invalid_adder = sqlx::query(
+            "INSERT INTO auth.subject_group_members (group_id, member_group_id, added_by)
+             VALUES ($1, $2, $3)",
+        )
+        .bind(child)
+        .bind(parent)
+        .bind(Uuid::new_v4())
+        .execute(repo.pool.as_ref())
+        .await
+        .expect_err("a nonexistent adder must still violate the foreign key");
+        assert_eq!(
+            invalid_adder
+                .as_database_error()
+                .and_then(|e| e.code())
+                .as_deref(),
+            Some("23503")
+        );
+
+        let memberships = "SELECT group_id, member_user_id, member_group_id, added_at, added_by
+                           FROM auth.subject_group_members WHERE group_id = ANY($1)
+                           ORDER BY group_id, member_user_id NULLS LAST, member_group_id";
+        let before = sqlx::query_as::<_, Membership>(memberships)
+            .bind(group_ids.as_slice())
+            .fetch_all(repo.pool.as_ref())
+            .await
+            .expect("read original memberships");
+        assert_eq!(before.len(), 4);
+
+        // #816: deleting a former owner failed on added_by's FK. Repository deletion
+        // must preserve others' user/group memberships and timestamps, clearing only provenance.
+        UserRepository::delete_user(&repo, adder)
+            .await
+            .expect("delete a user who added memberships");
+        let user_exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM auth.users WHERE id = $1)")
+                .bind(adder)
+                .fetch_one(repo.pool.as_ref())
+                .await
+                .expect("check deleted user");
+        assert!(!user_exists);
+        let after = sqlx::query_as::<_, Membership>(memberships)
+            .bind(group_ids.as_slice())
+            .fetch_all(repo.pool.as_ref())
+            .await
+            .expect("read surviving memberships");
+        let expected: Vec<_> = before
+            .into_iter()
+            .filter(|row| row.1 != Some(adder))
+            .map(|mut row| {
+                if row.4 == Some(adder) {
+                    row.4 = None;
+                }
+                row
+            })
+            .collect();
+        assert_eq!(after, expected);
+        assert_eq!(after.len(), 3);
+
+        sqlx::query("DELETE FROM auth.subject_groups WHERE id = ANY($1)")
+            .bind(group_ids.as_slice())
+            .execute(repo.pool.as_ref())
+            .await
+            .expect("clean provenance groups");
+        UserRepository::delete_user(&repo, member)
+            .await
+            .expect("clean surviving provenance user");
+    }
+
+    #[tokio::test]
     async fn compact_listing_maps_narrow_columns_and_stably_breaks_timestamp_ties() {
         let repo = test_repo().await;
         sqlx::query("DELETE FROM auth.users WHERE email LIKE 'perf-summary-%@example.invalid'")
