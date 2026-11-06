@@ -105,6 +105,17 @@
     }
 }
 
+@media (max-width: 768px) {
+    .batch-selection-bar {
+        padding: 0 var(--space-2-5);
+    }
+
+    .batch-selection-bar .batch-btn {
+        min-height: 0;
+        height: 32px;
+    }
+}
+
 @media (max-width: 640px) {
     .batch-bar-actions {
         flex: 1 1 0;
