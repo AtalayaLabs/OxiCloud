@@ -98,6 +98,7 @@ Deployment details: [deployment guide](docs/config/deployment.md) · [example.en
 
 <a href="https://repocloud.io/details/OxiCloud/"><img src="https://d16t0pc4846x52.cloudfront.net/deploylobe.svg" alt="Deploy on RepoCloud" height="42"></a>
 <a href="https://railway.com/deploy/oxicloud"><img src="https://railway.com/button.svg" alt="Deploy on Railway" height="42"></a>
+<a href="https://zop.dev/zopday/app/deploy?image=atalayalabs/oxicloud&port=8086&name=oxicloud&utm_source=github&utm_medium=one_click&utm_content=oxicloud"><img src="https://zop.dev/deploytozopday-inkhard.svg" alt="Deploy to ZopDay" height="42"></a>
 
 ## What You Get
 
