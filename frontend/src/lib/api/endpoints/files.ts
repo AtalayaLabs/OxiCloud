@@ -141,7 +141,8 @@ export async function uploadFile(folderId: string | null, file: File): Promise<F
 export async function uploadFileWithProgress(
 	folderId: string | null,
 	file: File,
-	onProgress: (fraction: number) => void
+	onProgress: (fraction: number) => void,
+	signal?: AbortSignal
 ): Promise<void> {
 	const form = new FormData();
 	if (folderId) form.append('folder_id', folderId);
@@ -150,6 +151,7 @@ export async function uploadFileWithProgress(
 	const response = await apiFetch('/api/files/upload', {
 		method: 'POST',
 		body: form,
+		signal,
 		fetch: uploadTransport(form, onProgress)
 	});
 	if (!response.ok) {

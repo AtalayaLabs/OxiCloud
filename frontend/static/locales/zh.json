@@ -79,7 +79,7 @@
     "shared": "共享",
     "recent": "最近",
     "favorites": "收藏",
-    "photos": "照片",
+    "photos": "媒体",
     "music": "音乐",
     "trash": "回收站",
     "sharedwithme": "与我共享",
@@ -90,7 +90,9 @@
     "admin_sections": "管理部分",
     "back_to_app": "返回奥西云",
     "toggle": "切换导航菜单",
-    "account": "账户"
+    "account": "账户",
+    "section_library": "资料库",
+    "section_sharing": "共享"
   },
   "photos": {
     "empty_state": "还没有照片",

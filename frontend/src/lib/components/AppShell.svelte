@@ -43,7 +43,6 @@
 	import { serverStatus } from '$lib/stores/serverStatus.svelte';
 	import { dialogs } from '$lib/stores/dialogs.svelte';
 	import { files as filesStore } from '$lib/stores/files.svelte';
-	import { preferences } from '$lib/stores/preferences.svelte';
 	import { session } from '$lib/stores/session.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 	import {
@@ -74,31 +73,61 @@
 		admin?: boolean;
 	}
 
-	const LINKS: NavLink[] = [
-		{ href: '/files', label: t('nav.files', 'Files'), icon: 'folder', section: 'files' },
-		{ href: '/shared', label: t('nav.shared', 'Shared'), icon: 'oxiexport', section: 'shared' },
+	interface NavGroup {
+		label: string | null;
+		links: NavLink[];
+		/** Indents the rows one step so they read as children of the header. */
+		nested?: boolean;
+	}
+
+	const NAV_GROUPS: NavGroup[] = [
 		{
-			href: '/shared-with-me',
-			label: t('nav.shared_with_me', 'Shared with me'),
-			icon: 'oxiimport',
-			section: 'shared-with-me'
+			label: null,
+			links: [{ href: '/files', label: t('nav.files', 'Files'), icon: 'folder', section: 'files' }]
 		},
-		{ href: '/recent', label: t('nav.recent', 'Recent'), icon: 'clock', section: 'recent' },
 		{
-			href: '/favorites',
-			label: t('nav.favorites', 'Favorites'),
-			icon: 'star',
-			section: 'favorites'
+			label: t('nav.section_library', 'Library'),
+			nested: true,
+			links: [
+				{ href: '/recent', label: t('nav.recent', 'Recent'), icon: 'clock', section: 'recent' },
+				{
+					href: '/favorites',
+					label: t('nav.favorites', 'Favorites'),
+					icon: 'star',
+					section: 'favorites'
+				},
+				{ href: '/photos', label: t('nav.photos', 'Media'), icon: 'images', section: 'photos' },
+				{ href: '/music', label: t('nav.music', 'Music'), icon: 'music', section: 'music' }
+			]
 		},
-		{ href: '/photos', label: t('nav.photos', 'Photos'), icon: 'images', section: 'photos' },
-		{ href: '/music', label: t('nav.music', 'Music'), icon: 'music', section: 'music' },
 		{
-			href: '/contacts',
-			label: t('nav.contacts', 'Contacts'),
-			icon: 'id-card',
-			section: 'contacts'
+			label: t('nav.section_sharing', 'Sharing'),
+			nested: true,
+			links: [
+				{
+					href: '/shared',
+					label: t('nav.shared', 'My shares'),
+					icon: 'oxiexport',
+					section: 'shared'
+				},
+				{
+					href: '/shared-with-me',
+					label: t('nav.shared_with_me', 'Shared with me'),
+					icon: 'oxiimport',
+					section: 'shared-with-me'
+				},
+				{
+					href: '/contacts',
+					label: t('nav.contacts', 'Contacts'),
+					icon: 'id-card',
+					section: 'contacts'
+				}
+			]
 		},
-		{ href: '/trash', label: t('nav.trash', 'Trash'), icon: 'trash', section: 'trash' }
+		{
+			label: null,
+			links: [{ href: '/trash', label: t('nav.trash', 'Trash'), icon: 'trash', section: 'trash' }]
+		}
 	];
 
 	// Admin sidebar — populated when the URL is under /admin. The
@@ -257,7 +286,9 @@
 	// startsWith so a trailing slash / query params / hash don't
 	// desync. Root `/admin` counts too (dashboard).
 	const isAdminSection = $derived(appPath(page.url.pathname).startsWith('/admin'));
-	const currentLinks = $derived(isAdminSection ? ADMIN_LINKS : LINKS);
+	const navGroups: NavGroup[] = $derived(
+		isAdminSection ? [{ label: null, links: ADMIN_LINKS }] : NAV_GROUPS
+	);
 
 	function active(href: string): boolean {
 		const path = appPath(page.url.pathname);
@@ -276,7 +307,7 @@
 	}
 
 	/**
-	 * Data-driven sidebar links (`LINKS`, `ADMIN_LINKS`) hold
+	 * Data-driven sidebar links (`NAV_GROUPS`, `ADMIN_LINKS`) hold
 	 * runtime strings, not compile-time route keys. SvelteKit's
 	 * typed `resolve()` refuses them; we know they're valid
 	 * routes at runtime. Cast at the callsite, one place, so
@@ -401,6 +432,64 @@
 	}
 
 	let sidebarOpen = $state(false);
+	let sidebarCollapsed = $state(false);
+	// Read after mount, not at init: SSR renders the expanded sidebar and a
+	// localStorage-seeded `$state` would desync hydration.
+	onMount(() => {
+		try {
+			sidebarCollapsed = localStorage.getItem('oxi-sidebar-collapsed') === '1';
+		} catch {
+			/* private mode / quota — stay expanded */
+		}
+	});
+
+	function toggleSidebarCollapsed() {
+		sidebarCollapsed = !sidebarCollapsed;
+		try {
+			localStorage.setItem('oxi-sidebar-collapsed', sidebarCollapsed ? '1' : '0');
+		} catch {
+			/* private mode / quota — the toggle still works this session */
+		}
+	}
+
+	let sidebarEl = $state<HTMLElement | null>(null);
+	let sidebarReturnFocus: HTMLElement | null = null;
+
+	$effect(() => {
+		if (typeof document === 'undefined') return;
+		if (sidebarOpen) {
+			sidebarReturnFocus = document.activeElement as HTMLElement | null;
+			queueMicrotask(() =>
+				sidebarEl?.querySelector<HTMLElement>('a[href], button:not([disabled])')?.focus()
+			);
+		} else {
+			sidebarReturnFocus?.focus?.();
+			sidebarReturnFocus = null;
+		}
+	});
+
+	function trapSidebarFocus(e: KeyboardEvent) {
+		if (e.key !== 'Tab' || !sidebarOpen || !sidebarEl) return;
+		const root = sidebarEl;
+		const focusables = [
+			...root.querySelectorAll<HTMLElement>(
+				'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])'
+			)
+		];
+		if (!focusables.length) return;
+		const first = focusables[0];
+		const last = focusables[focusables.length - 1];
+		if (!root.contains(document.activeElement)) {
+			e.preventDefault();
+			first.focus();
+			return;
+		}
+		if (!e.shiftKey && document.activeElement === last) {
+			e.preventDefault();
+			first.focus();
+		}
+	}
+
 	let notifOpen = $state(false);
 	let menuOpen = $state(false);
 	let searchQuery = $state('');
@@ -408,6 +497,23 @@
 	let searchActive = $state(false);
 	let aboutOpen = $state(false);
 	let searchInputEl = $state<HTMLInputElement | null>(null);
+	let shortcutLabel = $state('Ctrl K');
+	onMount(() => {
+		if (/Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent)) {
+			shortcutLabel = '⌘K';
+		}
+	});
+	let online = $state(true);
+	onMount(() => {
+		online = navigator.onLine;
+		const update = () => (online = navigator.onLine);
+		window.addEventListener('online', update);
+		window.addEventListener('offline', update);
+		return () => {
+			window.removeEventListener('online', update);
+			window.removeEventListener('offline', update);
+		};
+	});
 
 	// Bell ring/auto-open: react to the store's bellPing token (bumped on upload
 	// start etc.). Open the panel and replay the ring animation.
@@ -462,6 +568,35 @@
 	// resolving after a newer one and overwriting its suggestions.
 	let suggestSeq = 0;
 	let suggestInflight: AbortController | null = null;
+	let suggestIndex = $state(-1);
+
+	$effect(() => {
+		void suggestions;
+		void searchQuery;
+		suggestIndex = -1;
+	});
+
+	function onSearchKeydown(e: KeyboardEvent) {
+		if (e.key === 'Escape' && suggestOpen) {
+			e.preventDefault();
+			suggestOpen = false;
+			suggestIndex = -1;
+			return;
+		}
+		if (!suggestOpen) return;
+		const total = suggestions.length + 1;
+		if (e.key === 'ArrowDown') {
+			e.preventDefault();
+			suggestIndex = (suggestIndex + 1) % total;
+		} else if (e.key === 'ArrowUp') {
+			e.preventDefault();
+			suggestIndex = (suggestIndex - 1 + total) % total;
+		} else if (e.key === 'Enter' && suggestIndex >= 0) {
+			e.preventDefault();
+			if (suggestIndex < suggestions.length) pickSuggestion(suggestions[suggestIndex]);
+			else goToResults();
+		}
+	}
 
 	function goToResults() {
 		const q = searchQuery.trim();
@@ -554,24 +689,12 @@
 		notifOpen = false;
 		menuOpen = false;
 	}
-
-	/**
-	 * True when the shortcut target is a text-input surface — <input>,
-	 * <textarea>, or any `contenteditable` element. Used by the
-	 * Cmd/Ctrl+Shift+. shortcut to defer to normal typing when the
-	 * user is composing text (otherwise typing `.` while holding Shift
-	 * in a filename dialog would fight the shortcut).
-	 */
-	function isTextFieldFocused(target: EventTarget | null): boolean {
-		if (!(target instanceof HTMLElement)) return false;
-		const tag = target.tagName;
-		return tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable;
-	}
 </script>
 
 <svelte:window
 	onclick={closeMenus}
 	onkeydown={(e) => {
+		trapSidebarFocus(e);
 		// First Cmd/Ctrl+K loads the palette and mounts it open; once mounted,
 		// the palette's own handler takes over toggling/closing.
 		if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k' && !palette.component) {
@@ -579,34 +702,14 @@
 			void palette.load();
 			return;
 		}
-		// Cmd/Ctrl+Shift+. toggles dotfile visibility — matches macOS
-		// Finder's convention. `e.code === 'Period'` targets the
-		// physical key regardless of keyboard layout (Cmd+Shift+.
-		// yields `.key === '>'` on some layouts). Skip when focus is
-		// inside a text field so users can still type `.` in inputs.
-		if (
-			(e.metaKey || e.ctrlKey) &&
-			e.shiftKey &&
-			e.code === 'Period' &&
-			!isTextFieldFocused(e.target)
-		) {
-			e.preventDefault();
-			preferences.toggleHideDotfiles();
-			ui.notify(
-				preferences.hideDotfiles
-					? t('files.dotfiles_hidden_toast', 'Dotfiles hidden')
-					: t('files.dotfiles_shown_toast', 'Dotfiles shown'),
-				'info',
-				2000,
-				false
-			);
-			return;
-		}
 		if (e.key !== 'Escape') return;
 		if (searchActive) closeMobileSearch();
+		else if (sidebarOpen) sidebarOpen = false;
 		else closeMenus();
 	}}
 />
+
+<a class="skip-link" href="#main-content">{t('nav.skip_to_content', 'Skip to content')}</a>
 
 <div
 	class="sidebar-overlay"
@@ -615,8 +718,32 @@
 	role="presentation"
 ></div>
 
-<div class="sidebar" class:open={sidebarOpen}>
-	<BrandMark href={resolve('/files')} testId="appshell-logo-link" />
+<aside
+	class="sidebar"
+	class:open={sidebarOpen}
+	class:sidebar--collapsed={sidebarCollapsed}
+	bind:this={sidebarEl}
+>
+	<div class="sidebar-header">
+		<BrandMark href={resolve('/files')} testId="appshell-logo-link" />
+		<hr class="sidebar-divider" />
+		<button
+			class="sidebar-collapse-btn"
+			aria-label={sidebarCollapsed
+				? t('nav.expand', 'Expand sidebar')
+				: t('nav.collapse', 'Collapse sidebar')}
+			aria-expanded={!sidebarCollapsed}
+			title={sidebarCollapsed
+				? t('nav.expand', 'Expand sidebar')
+				: t('nav.collapse', 'Collapse sidebar')}
+			data-testid="appshell-sidebar-collapse-btn"
+			onclick={toggleSidebarCollapsed}
+		>
+			<Icon name={sidebarCollapsed ? 'chevron-right' : 'chevron-left'} />
+		</button>
+	</div>
+
+	<hr class="sidebar-divider" />
 
 	<nav
 		class="nav-menu"
@@ -637,6 +764,7 @@
 				class="nav-item nav-item--back"
 				href={resolve('/files')}
 				data-testid="appshell-nav-admin-back-link"
+				title={sidebarCollapsed ? t('nav.back_to_app', 'Back to OxiCloud') : undefined}
 				onclick={() => (sidebarOpen = false)}
 			>
 				<Icon name="arrow-left" />
@@ -644,7 +772,7 @@
 			</a>
 		{/if}
 		<!--
-		  Sidebar links come from data-driven arrays (LINKS,
+		  Sidebar links come from data-driven arrays (NAV_GROUPS,
 		  ADMIN_LINKS), so hrefs are runtime strings rather than
 		  compile-time-known route keys. `navHref()` internally
 		  routes them through `resolve()`, but ESLint's static
@@ -652,27 +780,36 @@
 		  rule here rather than sprinkling per-line directives.
 		-->
 		<!-- eslint-disable svelte/no-navigation-without-resolve -->
-		{#each currentLinks as link (link.href)}
-			{@const isDropTarget =
-				!isAdminSection && (link.href === '/favorites' || link.href === '/trash')}
-			<a
-				class="nav-item"
-				class:active={activeLink(link.href)}
-				class:nav-item--drop-target={isDropTarget && sidebarDropHref === link.href}
-				href={navHref(link.href)}
-				data-section={link.section}
-				data-testid={`appshell-nav-${link.section}-link`}
-				onclick={() => (sidebarOpen = false)}
-				ondragover={isDropTarget ? (e) => sidebarOnDragOver(e, link.href) : undefined}
-				ondragleave={isDropTarget ? () => sidebarOnDragLeave(link.href) : undefined}
-				ondrop={isDropTarget ? (e) => void sidebarOnDrop(e, link.href) : undefined}
-			>
-				<Icon name={link.icon} />
-				<span>{link.label}</span>
-			</a>
-			{#if !isAdminSection && link.href === '/files' && !session.isExternalUser}
-				<DrivePicker onnavigate={() => (sidebarOpen = false)} />
-			{/if}
+		{#each navGroups as group, i (group.links[0].href)}
+			{#if i > 0}<hr class="sidebar-divider" />{/if}
+			<div class="nav-group" class:nav-group--nested={group.nested}>
+				{#if group.label}
+					<div class="nav-group__label">{group.label}</div>
+				{/if}
+				{#each group.links as link (link.href)}
+					{@const isDropTarget =
+						!isAdminSection && (link.href === '/favorites' || link.href === '/trash')}
+					<a
+						class="nav-item"
+						class:active={activeLink(link.href)}
+						class:nav-item--drop-target={isDropTarget && sidebarDropHref === link.href}
+						href={navHref(link.href)}
+						data-section={link.section}
+						data-testid={`appshell-nav-${link.section}-link`}
+						title={sidebarCollapsed ? link.label : undefined}
+						onclick={() => (sidebarOpen = false)}
+						ondragover={isDropTarget ? (e) => sidebarOnDragOver(e, link.href) : undefined}
+						ondragleave={isDropTarget ? () => sidebarOnDragLeave(link.href) : undefined}
+						ondrop={isDropTarget ? (e) => void sidebarOnDrop(e, link.href) : undefined}
+					>
+						<Icon name={link.icon} />
+						<span>{link.label}</span>
+					</a>
+					{#if !isAdminSection && link.href === '/files' && !session.isExternalUser}
+						<DrivePicker onnavigate={() => (sidebarOpen = false)} />
+					{/if}
+				{/each}
+			</div>
 		{/each}
 		<!-- eslint-enable svelte/no-navigation-without-resolve -->
 	</nav>
@@ -709,7 +846,7 @@
 			</div>
 		</div>
 	{/if}
-</div>
+</aside>
 
 <div class="main-content">
 	<div class="top-bar" class:top-bar--search-active={searchActive}>
@@ -752,11 +889,16 @@
 					bind:value={searchQuery}
 					data-testid="appshell-search-input"
 					oninput={onSearchInput}
+					onkeydown={onSearchKeydown}
+					aria-keyshortcuts="Control+K Meta+K"
 					onfocus={() => (suggestOpen = suggestions.length > 0)}
 					onblur={() => setTimeout(() => (suggestOpen = false), 150)}
 					placeholder={t('actions.search', 'Search files, folders...')}
 					autocomplete="off"
 				/>
+				{#if !searchQuery}
+					<kbd class="search-kbd" aria-hidden="true">{shortcutLabel}</kbd>
+				{/if}
 				{#if searchQuery}
 					<button
 						class="search-clear"
@@ -781,10 +923,11 @@
 
 				{#if suggestOpen}
 					<ul class="suggest">
-						{#each suggestions as s (s.kind + s.item.id)}
+						{#each suggestions as s, i (s.kind + s.item.id)}
 							<li>
 								<button
 									class="suggest__item"
+									class:suggest__item--active={i === suggestIndex}
 									type="button"
 									data-testid={`appshell-search-suggestion-${s.kind}-${s.item.id}-item`}
 									onmousedown={() => pickSuggestion(s)}
@@ -803,6 +946,7 @@
 						<li>
 							<button
 								class="suggest__all"
+								class:suggest__all--active={suggestIndex === suggestions.length}
 								type="button"
 								data-testid="appshell-search-see-all-btn"
 								onmousedown={goToResults}
@@ -919,7 +1063,17 @@
 		</div>
 	</div>
 
-	<div class="content-area">
+	<main class="content-area" id="main-content" tabindex="-1">
+		{#if !online}
+			<Banner
+				severity="warning"
+				title={t('offline.title', 'You are offline')}
+				body={t('offline.body', 'Uploads and changes will fail until the connection comes back.')}
+				role="status"
+				testid="offline-banner"
+				ariaLabel={t('offline.title', 'You are offline')}
+			/>
+		{/if}
 		<!-- Server-wide maintenance banner. Fed by the
 		     `x-server-status` header read on every API response by
 		     `apiFetch` — no polling. Shows for every logged-in user
@@ -1034,7 +1188,7 @@
 			/>
 		{/if}
 		{@render children()}
-	</div>
+	</main>
 </div>
 
 <MobileNav />
@@ -1046,15 +1200,14 @@
 	<CommandPalette autoOpen />
 {/if}
 
-{#if palette.component}
-	{@const CommandPalette = palette.component}
-	<CommandPalette autoOpen />
-{/if}
-
 <style>
 	/* Body becomes the sidebar+main flex row only while the shell is mounted. */
 	:global(body) {
 		display: flex;
+	}
+
+	#main-content:focus-visible {
+		outline: none;
 	}
 
 	/* Clear (×) button sits left of the submit button inside the search field. */
@@ -1075,6 +1228,27 @@
 	.search-clear:hover {
 		background: var(--color-bg-hover);
 		color: var(--color-text);
+	}
+
+	.search-kbd {
+		position: absolute;
+		right: 50px;
+		display: none;
+		padding: 1px var(--space-1-5);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm);
+		background: var(--color-bg-subtle);
+		color: var(--color-text-muted);
+		font-family: var(--font-sans);
+		font-size: var(--text-2xs);
+		line-height: 1.4;
+		pointer-events: none;
+	}
+
+	@media (width >= 769px) {
+		.search-kbd {
+			display: block;
+		}
 	}
 
 	.suggest {
@@ -1115,6 +1289,11 @@
 	.suggest__item:hover,
 	.suggest__all:hover {
 		background: var(--color-bg-hover);
+	}
+
+	.suggest__item--active,
+	.suggest__all--active {
+		background: var(--color-accent-bg-sm);
 	}
 
 	.suggest__all {

@@ -79,7 +79,7 @@
     "shared": "Gedeeld",
     "recent": "Recente",
     "favorites": "Favorieten",
-    "photos": "Foto's",
+    "photos": "Media",
     "music": "Muziek",
     "trash": "Prullenbak",
     "sharedwithme": "Gedeeld met mij",
@@ -90,7 +90,9 @@
     "admin_sections": "Beheerderssecties",
     "back_to_app": "Terug naar OxiCloud",
     "toggle": "Schakel navigatiemenu in",
-    "account": "Account"
+    "account": "Account",
+    "section_library": "Bibliotheek",
+    "section_sharing": "Delen"
   },
   "photos": {
     "empty_state": "Nog geen foto's",

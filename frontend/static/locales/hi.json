@@ -79,7 +79,7 @@
     "shared": "साझा",
     "recent": "हाल ही में",
     "favorites": "पसंदीदा",
-    "photos": "फ़ोटो",
+    "photos": "मीडिया",
     "music": "संगीत",
     "trash": "रद्दी",
     "sharedwithme": "मेरे साथ साझा किए गए",
@@ -90,7 +90,9 @@
     "admin_sections": "व्यवस्थापक अनुभाग",
     "back_to_app": "ऑक्सीक्लाउड पर वापस",
     "toggle": "नेविगेशन मेनू टॉगल करें",
-    "account": "खाता"
+    "account": "खाता",
+    "section_library": "लाइब्रेरी",
+    "section_sharing": "साझाकरण"
   },
   "photos": {
     "empty_state": "अभी कोई फ़ोटो नहीं",

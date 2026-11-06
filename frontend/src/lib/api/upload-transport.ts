@@ -56,7 +56,11 @@ export function uploadTransport(
 			};
 			xhr.onabort = () => {
 				cleanup();
-				reject(new Error('upload stalled — aborted'));
+				reject(
+					request.signal.aborted
+						? (request.signal.reason ?? new Error('upload cancelled'))
+						: new Error('upload stalled — aborted')
+				);
 			};
 			if (request.signal.aborted) {
 				reject(request.signal.reason);

@@ -159,7 +159,6 @@
 		padding-inline-start: var(--space-1);
 		white-space: nowrap;
 		overflow: hidden;
-		font-weight: 600;
 		letter-spacing: normal;
 		animation: confirm-btn-in var(--motion-base) var(--ease-standard);
 	}

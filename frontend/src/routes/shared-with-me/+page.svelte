@@ -247,10 +247,6 @@
 		}
 	}
 
-	// Favorite entry mirrors the star toggle in the row action cell —
-	// same wording, same behavior. Context-menu label flips based on
-	// `item.is_favorite` so keyboard users get the same state read as
-	// the button-hovering ones.
 	const contextActions: ContextAction[] = [
 		{
 			key: 'download',
@@ -265,20 +261,6 @@
 			icon: 'download',
 			visible: (item) => !isFile(item),
 			run: downloadItem
-		},
-		{
-			key: 'favorite_add',
-			label: t('files.favorite', 'Add favorite'),
-			icon: 'star',
-			visible: (item) => !item.is_favorite,
-			run: toggleFavorite
-		},
-		{
-			key: 'favorite_remove',
-			label: t('files.unfavorite', 'Remove favorite'),
-			icon: 'star',
-			visible: (item) => item.is_favorite,
-			run: toggleFavorite
 		}
 	];
 
@@ -310,6 +292,7 @@
 
 <ResourceList
 	title={t('nav.shared_with_me', 'Shared with me')}
+	titleInToolbar
 	{items}
 	{contextMap}
 	resolveOwnerName={(id) => sharers.name(id)}
@@ -317,6 +300,7 @@
 	{loading}
 	{error}
 	emptyText={t('shared_with_me.empty', 'Nothing has been shared with you yet.')}
+	emptyIcon="oxiimport"
 	hasMore={!!cursor}
 	showOwner={true}
 	ownerLabel={t('share.col_shared_by', 'Shared by')}

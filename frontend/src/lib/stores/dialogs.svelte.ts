@@ -36,9 +36,32 @@ export interface PromptOptions {
 	action?: (value: string) => Promise<void> | void;
 }
 
+export interface FormField {
+	key: string;
+	label: string;
+	value?: string;
+	placeholder?: string;
+	multiline?: boolean;
+}
+
+export interface FormOptions {
+	title: string;
+	message?: string;
+	fields: FormField[];
+	confirmText?: string;
+	cancelText?: string;
+	/** Optional async action run with the collected values; rejection keeps it open. */
+	action?: (values: Record<string, string>) => Promise<void> | void;
+}
+
 type Pending =
 	| { kind: 'confirm'; opts: ConfirmOptions; resolve: (v: boolean) => void }
-	| { kind: 'prompt'; opts: PromptOptions; resolve: (v: string | null) => void };
+	| { kind: 'prompt'; opts: PromptOptions; resolve: (v: string | null) => void }
+	| {
+			kind: 'form';
+			opts: FormOptions;
+			resolve: (v: Record<string, string> | null) => void;
+	  };
 
 class DialogStore {
 	current = $state<Pending | null>(null);
@@ -71,30 +94,43 @@ class DialogStore {
 		return new Promise((resolve) => this.#enqueue({ kind: 'prompt', opts, resolve }));
 	}
 
+	form(opts: FormOptions): Promise<Record<string, string> | null> {
+		return new Promise((resolve) => this.#enqueue({ kind: 'form', opts, resolve }));
+	}
+
 	/**
 	 * Called by the host when the user confirms (with a value for prompts).
 	 * When the dialog carries an `action`, runs it first: on success the dialog
 	 * closes and the promise resolves; on failure the dialog stays open with an
 	 * inline error and the promise does NOT resolve yet.
 	 */
-	async resolve(value: boolean | string | null) {
+	async resolve(value: boolean | string | Record<string, string> | null) {
 		const c = this.current;
 		if (!c) return;
-		const action = c.kind === 'confirm' ? c.opts.action : (c.opts as PromptOptions).action;
-		if (action) {
+		const run = async (action: () => Promise<void> | void): Promise<boolean> => {
 			this.busy = true;
 			this.error = null;
 			try {
-				if (c.kind === 'confirm') await (action as () => Promise<void> | void)();
-				else await (action as (v: string) => Promise<void> | void)(value as string);
+				await action();
+				return true;
 			} catch (err) {
 				this.busy = false;
 				this.error = errorMessage(err);
-				return; // keep the dialog open
+				return false; // keep the dialog open
 			}
+		};
+		if (c.kind === 'confirm') {
+			if (c.opts.action && !(await run(c.opts.action))) return;
+			c.resolve(value as boolean);
+		} else if (c.kind === 'prompt') {
+			const action = c.opts.action;
+			if (action && !(await run(() => action(value as string)))) return;
+			c.resolve(value as string | null);
+		} else {
+			const action = c.opts.action;
+			if (action && !(await run(() => action(value as Record<string, string>)))) return;
+			c.resolve(value as Record<string, string> | null);
 		}
-		if (c.kind === 'confirm') c.resolve(value as boolean);
-		else c.resolve(value as string | null);
 		this.#next();
 	}
 
@@ -113,3 +149,4 @@ export const dialogs = new DialogStore();
 /** Convenience wrappers. */
 export const confirmDialog = (opts: ConfirmOptions) => dialogs.confirm(opts);
 export const promptDialog = (opts: PromptOptions) => dialogs.prompt(opts);
+export const formDialog = (opts: FormOptions) => dialogs.form(opts);

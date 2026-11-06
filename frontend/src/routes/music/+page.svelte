@@ -15,7 +15,6 @@
 		listTracks,
 		removeShare,
 		removeTrack,
-		renamePlaylist,
 		reorderTracks,
 		sharePlaylist,
 		updatePlaylist,
@@ -27,7 +26,8 @@
 	import { searchResources } from '$lib/api/endpoints/search';
 	import type { FileItem } from '$lib/api/types';
 	import Icon from '$lib/icons/Icon.svelte';
-	import { promptDialog } from '$lib/stores/dialogs.svelte';
+	import EmptyState from '$lib/components/EmptyState.svelte';
+	import { formDialog, promptDialog } from '$lib/stores/dialogs.svelte';
 	import ConfirmButton from '$lib/components/ConfirmButton.svelte';
 	import { t } from '$lib/i18n/index.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
@@ -105,37 +105,36 @@
 		}
 	}
 
-	async function onRenamePlaylist() {
+	async function openEdit() {
 		if (!current) return;
-		const name = await promptDialog({
-			title: t('music.rename_playlist', 'Rename playlist'),
-			defaultValue: current.name,
+		const playlist = current;
+		const values = await formDialog({
+			title: t('music.edit_playlist', 'Edit playlist'),
+			fields: [
+				{
+					key: 'name',
+					label: t('music.playlist_name', 'Playlist name'),
+					value: playlist.name
+				},
+				{
+					key: 'description',
+					label: t('music.description', 'Description'),
+					value: playlist.description ?? '',
+					multiline: true
+				}
+			],
 			confirmText: t('common.save', 'Save')
 		});
-		if (!name || name === current.name) return;
+		if (!values) return;
+		const name = values.name.trim();
+		if (!name) return;
+		const description = values.description.trim() || null;
+		if (name === playlist.name && description === playlist.description) return;
 		try {
-			await renamePlaylist(current.id, name);
+			await updatePlaylist(playlist.id, { name, description });
 			current.name = name;
-			playlists = playlists.map((p) => (p.id === current!.id ? { ...p, name } : p));
-		} catch (e) {
-			errorToast(e);
-		}
-	}
-
-	async function onEditDescription() {
-		if (!current) return;
-		const desc = await promptDialog({
-			title: t('music.edit_description', 'Edit description'),
-			defaultValue: current.description ?? '',
-			confirmText: t('common.save', 'Save')
-		});
-		if (desc === null) return;
-		try {
-			await updatePlaylist(current.id, { description: desc || null });
-			current.description = desc || null;
-			playlists = playlists.map((p) =>
-				p.id === current!.id ? { ...p, description: desc || null } : p
-			);
+			current.description = description;
+			playlists = playlists.map((p) => (p.id === current!.id ? { ...p, name, description } : p));
 		} catch (e) {
 			errorToast(e);
 		}
@@ -497,21 +496,21 @@
 	{:else if loading && playlists.length === 0}
 		<div class="music-loading"><Icon name="spinner" /></div>
 	{:else if playlists.length === 0}
-		<div class="music-empty-state">
-			<div class="music-empty-state-icon"><Icon name="music" /></div>
-			<h3 class="music-empty-state-title">{t('music.no_playlists', 'No playlists yet.')}</h3>
-			<p class="music-empty-state-desc">
-				{t('music.empty_hint', 'Create a playlist to start collecting your tracks.')}
-			</p>
+		<EmptyState
+			icon="music"
+			title={t('music.no_playlists', 'No playlists yet.')}
+			hint={t('music.empty_hint', 'Create a playlist to start collecting your tracks.')}
+		>
 			<button
 				class="btn btn-primary"
 				data-testid="music-create-playlist-empty-btn"
 				onclick={onCreate}
+				aria-label={t('music.create_playlist', 'Create playlist')}
+				title={t('music.create_playlist', 'Create playlist')}
 			>
 				<Icon name="plus" />
-				<span>{t('music.create_playlist', 'Create playlist')}</span>
 			</button>
-		</div>
+		</EmptyState>
 	{:else}
 		<div class="music-content">
 			<div class="music-sidebar">
@@ -540,10 +539,12 @@
 							<div class="music-playlist-icon"><Icon name="music" /></div>
 							<div class="music-playlist-item-info">
 								<span class="music-playlist-item-name">{p.name}</span>
-								<span class="music-playlist-item-count"
-									>{p.track_count}
-									{t('music.tracks', 'tracks')}</span
-								>
+								{#if p.track_count != null}
+									<span class="music-playlist-item-count"
+										>{p.track_count}
+										{t('music.tracks', 'tracks')}</span
+									>
+								{/if}
 							</div>
 						</div>
 					{/each}
@@ -571,7 +572,7 @@
 							<div class="music-playlist-info">
 								<h2>{current.name}</h2>
 								<p>
-									{t('music.track_count', { n: current.track_count }, '{{n}} tracks')}
+									{t('music.track_count', { n: tracks.length }, '{{n}} tracks')}
 									{#if current.description}· {current.description}{/if}
 								</p>
 							</div>
@@ -601,27 +602,19 @@
 								class="btn btn-secondary"
 								data-testid="music-add-tracks-btn"
 								onclick={openAdd}
+								title={t('music.add_tracks', 'Add tracks')}
+								aria-label={t('music.add_tracks', 'Add tracks')}
 							>
 								<Icon name="plus" />
-								<span>{t('music.add_tracks', 'Add tracks')}</span>
 							</button>
 							<button
 								class="btn btn-secondary"
 								data-testid="music-rename-playlist-btn"
-								onclick={onRenamePlaylist}
-								title={t('common.rename', 'Rename')}
-								aria-label={t('common.rename', 'Rename')}
+								onclick={openEdit}
+								title={t('music.edit_playlist', 'Edit playlist')}
+								aria-label={t('music.edit_playlist', 'Edit playlist')}
 							>
 								<Icon name="pen" />
-							</button>
-							<button
-								class="btn btn-secondary"
-								data-testid="music-edit-description-btn"
-								onclick={onEditDescription}
-								title={t('music.edit_description', 'Edit description')}
-								aria-label={t('music.edit_description', 'Edit description')}
-							>
-								<Icon name="pencil-alt" />
 							</button>
 							<button
 								class="btn btn-secondary"

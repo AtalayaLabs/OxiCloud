@@ -79,7 +79,7 @@
     "shared": "共享",
     "recent": "最近",
     "favorites": "收藏",
-    "photos": "照片",
+    "photos": "媒體",
     "music": "音樂",
     "trash": "回收站",
     "sharedwithme": "與我共享",
@@ -90,7 +90,9 @@
     "admin_sections": "管理部分",
     "back_to_app": "返回奧西雲",
     "toggle": "切換導航選單",
-    "account": "帳戶"
+    "account": "帳戶",
+    "section_library": "資料庫",
+    "section_sharing": "共用"
   },
   "photos": {
     "empty_state": "還沒有照片",

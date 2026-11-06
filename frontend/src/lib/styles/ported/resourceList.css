@@ -609,10 +609,20 @@
         transition: opacity var(--motion-fast) var(--ease-standard);
     }
 
+    .files-grid-view .file-item .grid-meta button.file-actions {
+        opacity: 0;
+        transition: opacity var(--motion-fast) var(--ease-standard);
+    }
+
     .files-list-view .file-item:hover .action-cell button.file-actions,
     .files-grid-view .file-item:hover .action-cell button.file-actions,
     .files-list-view .file-item .action-cell button.file-actions:focus-visible,
     .files-grid-view .file-item .action-cell button.file-actions:focus-visible {
+        opacity: 1;
+    }
+
+    .files-grid-view .file-item:hover .grid-meta button.file-actions,
+    .files-grid-view .file-item .grid-meta button.file-actions:focus-visible {
         opacity: 1;
     }
 }
@@ -674,33 +684,18 @@
     }
 }
 
-/* The full-width top row places the kebab after the checkbox, which lands
-   near the middle of a narrow card. Pin it to the card's top-right corner
-   and keep the state chips clear of it. */
-@media (max-width: 768px) {
-    .files-grid-view .file-item .action-cell:has(.shared-button, .favorite-star) {
-        padding-right: calc(30px + var(--space-1));
-    }
-
-    .files-grid-view .file-item .action-cell:has(.shared-button, .favorite-star) .file-actions {
-        position: absolute;
-        top: 0;
-        right: 0;
-    }
-}
-
 .files-grid-view .file-item {
     border-radius: var(--radius-2xl);
     /* Hairline at rest → accent on hover (gallery, not form). */
     border: 1px solid var(--color-border);
-    padding: var(--space-3);
+    padding: var(--space-2);
     display: flex;
     flex-direction: column;
     align-items: center;
     box-shadow: 0 1px 2px var(--color-shadow-xs);
     cursor: pointer;
     width: 100%;
-    min-height: 160px;
+    min-height: 140px;
     position: relative;
     transition:
         transform var(--motion-base) var(--ease-standard),
@@ -715,7 +710,6 @@
 }
 
 .files-grid-view .file-item:hover {
-    transform: translateY(-3px);
     box-shadow: 0 12px 28px -8px var(--color-shadow-md);
     border-color: var(--color-accent);
 }
@@ -757,8 +751,8 @@
    card corner. */
 .files-grid-view .file-item .checkbox-cell {
     position: absolute;
-    top: calc(var(--space-3) + 8px);
-    left: calc(var(--space-3) + 8px);
+    top: calc(var(--space-2) + 8px);
+    left: calc(var(--space-2) + 8px);
     /* 30x30 matches the action-cell chip pills (`.file-actions`, star,
        shared, `.btn-action`) so the checkbox and the corner-cluster
        buttons read as siblings of one visual size (Ed 2026-07-26). */
@@ -783,6 +777,12 @@
 .files-grid-view .file-item:hover .checkbox-cell,
 .files-grid-view .file-item.selected .checkbox-cell {
     opacity: 1;
+}
+
+@media (width <= 768px), (hover: none) {
+    .files-grid-view .file-item .checkbox-cell {
+        opacity: 1;
+    }
 }
 
 /* Custom-drawn checkbox: an empty white box that fills with accent and shows a
@@ -862,8 +862,8 @@
    the row template hands it. */
 .files-grid-view .file-item .action-cell {
     position: absolute;
-    top: calc(var(--space-3) + 8px);
-    right: calc(var(--space-3) + 8px);
+    top: calc(var(--space-2) + 8px);
+    right: calc(var(--space-2) + 8px);
     z-index: 10;
     display: flex;
     gap: var(--space-1);
@@ -894,8 +894,8 @@
        so the left group aligns visually with the checkbox row. Kept in
        sync with `.checkbox-cell` width above — the two share this
        constant. */
-    left: calc(var(--space-3) + 8px + 30px + var(--space-2));
-    right: calc(var(--space-3) + 8px);
+    left: calc(var(--space-2) + 8px + 30px + var(--space-2));
+    right: calc(var(--space-2) + 8px);
     display: flex;
     align-items: center;
     justify-content: flex-start;
@@ -966,6 +966,7 @@
    shared appear always-visible in grid view regardless of hover /
    `.active` state. */
 .files-grid-view .file-item .action-cell .file-actions,
+.files-grid-view .file-item .grid-meta .file-actions,
 .files-grid-view .file-item .action-cell .favorite-star,
 .files-grid-view .file-item .action-cell .shared-button,
 .files-grid-view .file-item .action-cell .btn-action {
@@ -1006,6 +1007,7 @@
    simpler `.btn-action:hover` didn't take effect inside the corner
    cluster. */
 .files-grid-view .file-item .action-cell .file-actions:hover,
+.files-grid-view .file-item .grid-meta .file-actions:hover,
 .files-grid-view .file-item .action-cell .btn-action:hover,
 .files-grid-view .file-item .action-cell .favorite-star:hover,
 .files-grid-view .file-item .action-cell .shared-button:hover {
@@ -1064,7 +1066,6 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    margin-top: var(--space-1);
 }
 
 /* Narrowed from the pre-fix `.name-cell span` (descendant selector) to
@@ -1072,16 +1073,14 @@
    `.name-cell` — including the `.file-icon__badge` overlay and, inside
    it, `<UserAvatar>`'s `.ua` wrapper — and slapped 8 px of top/bottom
    padding on them, which crushed the badge's `<img>` from 22 × 22 down
-   to 22 × 6 (Ed 2026-07-26). Text ellipsis / padding stays on the text
-   span alone; overlay children in `.file-icon` are unaffected. */
+   to 22 × 6 (Ed 2026-07-26). Text ellipsis stays on the text span
+   alone; overlay children in `.file-icon` are unaffected. */
 .files-grid-view .file-item .name-cell__text {
     display: block;
     max-width: 100%;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    padding-top: var(--space-2);
-    padding-bottom: var(--space-2);
 }
 
 .files-grid-view .file-item .name-cell svg.favorite-star-inline {
@@ -1108,11 +1107,24 @@
     align-items: center;
     justify-content: center;
     gap: var(--space-1);
+    width: 100%;
     max-width: 100%;
     margin-top: 2px;
+    position: relative;
     font-size: var(--text-2xs);
     color: var(--color-text-muted);
     line-height: var(--leading-snug);
+}
+
+.files-grid-view .file-item .grid-meta .file-actions {
+    position: absolute;
+    right: 0;
+    top: 50%;
+    transform: translateY(-80%);
+}
+
+.files-grid-view .file-item .grid-meta--with-actions {
+    padding-right: calc(30px + var(--space-1));
 }
 
 /* On a narrow card the relative date truncates first; the size never clips. */
@@ -1154,7 +1166,7 @@
        colourful tile keyed to their type instead of a flat grey panel. */
     background: color-mix(in srgb, var(--fk) 9%, var(--color-bg-input));
     box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fk) 22%, var(--color-border));
-    margin: 0 0 var(--space-3);
+    margin: 0 0 var(--space-2);
     font-size: 30px;
 }
 

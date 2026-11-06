@@ -1,6 +1,6 @@
 import { it, expect, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/svelte';
-import { dialogs, confirmDialog, promptDialog } from '$lib/stores/dialogs.svelte';
+import { dialogs, confirmDialog, promptDialog, formDialog } from '$lib/stores/dialogs.svelte';
 import DialogHost from './DialogHost.svelte';
 
 beforeEach(() => {
@@ -38,4 +38,22 @@ it('prefills the prompt input with the default value', async () => {
 	const input = (await screen.findByTestId('dialog-host-prompt-input')) as HTMLInputElement;
 	await waitFor(() => expect(input.value).toBe('preset.txt'));
 	dialogs.cancel();
+});
+
+it('submits a form dialog with every field value', async () => {
+	render(DialogHost);
+	const p = formDialog({
+		title: 'Edit',
+		fields: [
+			{ key: 'name', label: 'Name', value: 'old' },
+			{ key: 'description', label: 'Description', value: 'old desc', multiline: true }
+		]
+	});
+	const name = await screen.findByTestId('dialog-host-input-name');
+	await fireEvent.input(name, { target: { value: 'new' } });
+	await fireEvent.input(screen.getByTestId('dialog-host-input-description'), {
+		target: { value: 'new desc' }
+	});
+	await fireEvent.click(screen.getByTestId('dialog-host-submit-btn'));
+	await expect(p).resolves.toEqual({ name: 'new', description: 'new desc' });
 });

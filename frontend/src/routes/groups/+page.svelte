@@ -226,7 +226,7 @@
 
 <svelte:head><title>{t('nav.groups', 'Groups')} · OxiCloud</title></svelte:head>
 
-<main class="groups">
+<div class="groups">
 	<header class="groups__head">
 		<h1>{t('nav.groups', 'Groups')}</h1>
 		<button class="btn btn--primary" data-testid="groups-create-btn" onclick={onCreate}
@@ -379,7 +379,7 @@
 			</button>
 		{/if}
 	{/if}
-</main>
+</div>
 
 <style>
 	.groups {

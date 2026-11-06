@@ -40,9 +40,11 @@ test('playlist lifecycle: create, toggle public, rename, delete', async ({ page 
   await expect(page.getByTestId('music-rename-playlist-btn')).toBeVisible({ timeout: 15_000 });
 
   await page.getByTestId('music-rename-playlist-btn').click();
-  await page.getByTestId('dialog-host-prompt-input').fill(renamed);
+  await page.getByTestId('dialog-host-input-name').fill(renamed);
+  await page.getByTestId('dialog-host-input-description').fill('e2e playlist description');
   await page.getByTestId('dialog-host-submit-btn').click();
   await expect(page.getByTestId(renamed)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText('e2e playlist description')).toBeVisible();
 
   await page.getByTestId('music-delete-playlist-btn').click();
   await page.getByTestId('music-delete-playlist-btn').click();
@@ -126,14 +128,6 @@ test('add an audio track and drive the player', async ({ page }) => {
     .click({ timeout: 2_000 })
     .catch(() => {});
   await page.getByTestId('music-queue-close-btn').click({ timeout: 3_000 }).catch(() => {});
-
-  // Edit the playlist description.
-  await page.getByTestId('music-edit-description-btn').click({ timeout: 3_000 }).catch(() => {});
-  const descInput = page.getByTestId('dialog-host-prompt-input');
-  if (await descInput.isVisible().catch(() => false)) {
-    await descInput.fill('e2e description');
-    await page.getByTestId('dialog-host-submit-btn').click().catch(() => {});
-  }
 
   // Manage-shares dialog.
   await page.getByTestId('music-manage-shares-btn').click({ timeout: 3_000 }).catch(() => {});

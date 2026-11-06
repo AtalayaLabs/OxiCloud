@@ -8,7 +8,60 @@
     height: 100%;
     flex-shrink: 0;
     box-shadow: 2px 0 12px var(--color-shadow-md);
-    transition: transform var(--motion-slow) var(--ease-emphasized);
+    transition:
+        transform var(--motion-slow) var(--ease-emphasized),
+        width var(--motion-slow) var(--ease-emphasized);
+}
+
+.sidebar-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.sidebar-header .logo-container {
+    flex-grow: 1;
+    min-width: 0;
+}
+
+.sidebar-collapse-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 32px;
+    height: 32px;
+    margin-inline-end: var(--space-3);
+    border: none;
+    border-radius: var(--radius-md);
+    background: none;
+    color: var(--color-sidebar-text);
+    cursor: pointer;
+}
+
+.sidebar-collapse-btn:hover {
+    background-color: var(--color-sidebar-hover-bg);
+    color: var(--color-sidebar-text-hover);
+}
+
+/* Only drawn in icon-rail mode — the expanded sidebar already reads as
+   sections from its group labels. One style everywhere: 1px line inset by
+   the same amount from both edges, whether it sits in the header or between
+   nav groups. */
+.sidebar-divider {
+    display: none;
+    border: none;
+    border-top: 1px solid var(--color-sidebar-text);
+    opacity: 0.3;
+    margin: var(--space-2) 0;
+}
+
+.sidebar-header .sidebar-divider {
+    margin-inline: var(--space-3);
+}
+
+[dir="rtl"] .sidebar-collapse-btn .oxi-icon {
+    transform: scaleX(-1);
 }
 
 /* Sidebar overlay for mobile */
@@ -38,10 +91,22 @@
         top: 0;
         z-index: 999;
         transform: translateX(-100%);
+        visibility: hidden;
+        padding-top: env(safe-area-inset-top, 0px);
+        padding-bottom: env(safe-area-inset-bottom, 0px);
+        transition:
+            transform var(--motion-slow) var(--ease-emphasized),
+            visibility 0s linear var(--motion-slow);
     }
 
     .sidebar.open {
         transform: translateX(0);
+        visibility: visible;
+        transition: transform var(--motion-slow) var(--ease-emphasized);
+    }
+
+    body:has(.sidebar.open) .content-area {
+        overflow: hidden;
     }
 
     [dir="rtl"] .sidebar {
@@ -53,13 +118,77 @@
     [dir="rtl"] .sidebar.open {
         transform: translateX(0);
     }
+
+    .sidebar-collapse-btn {
+        display: none;
+    }
+}
+
+/* Icon-rail mode. Desktop only: on phones the sidebar is an off-canvas
+   drawer and the collapse toggle is hidden. */
+@media (min-width: 769px) {
+    .sidebar--collapsed {
+        width: var(--sidebar-width-collapsed);
+    }
+
+    .sidebar--collapsed .sidebar-header {
+        flex-direction: column;
+        justify-content: center;
+        padding-top: var(--space-3);
+    }
+
+    .sidebar--collapsed .logo-container {
+        display: flex;
+        justify-content: center;
+        padding: 0;
+        margin: 0;
+    }
+
+    .sidebar--collapsed .logo {
+        margin: 0;
+    }
+
+    .sidebar--collapsed .app-name,
+    .sidebar--collapsed .nav-group__label,
+    .sidebar--collapsed .storage-container,
+    .sidebar--collapsed .drive-picker {
+        display: none;
+    }
+
+    .sidebar--collapsed .nav-item {
+        justify-content: center;
+        padding-inline: 0;
+        border-inline-start-width: 0;
+    }
+
+    .sidebar--collapsed .sidebar-divider {
+        display: block;
+    }
+
+    .sidebar--collapsed .sidebar-collapse-btn {
+        margin-inline-end: 0;
+    }
+
+    .sidebar--collapsed .nav-item span {
+        display: none;
+    }
+
+    .sidebar--collapsed .nav-item i,
+    .sidebar--collapsed .nav-item .nav-icon,
+    .sidebar--collapsed .nav-item .oxi-icon {
+        margin-inline: 0;
+    }
+
+    .sidebar--collapsed .nav-group--nested .nav-item {
+        margin-inline-start: 0;
+        width: 100%;
+    }
 }
 
 .logo-container {
-    padding: 22px var(--space-5);
+    padding: 15px var(--space-5);
     display: flex;
     align-items: center;
-    border-bottom: 1px solid var(--color-sidebar-separator);
     margin-bottom: var(--space-2);
     text-decoration: none;
     color: inherit;
@@ -111,6 +240,26 @@
     flex-grow: 1;
     padding: var(--space-2) var(--space-3);
     gap: var(--space-0-5);
+}
+
+.nav-group {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-0-5);
+}
+
+.nav-group--nested .nav-item {
+    margin-inline-start: var(--space-3);
+    width: auto;
+}
+
+.nav-group__label {
+    padding: var(--space-3) var(--space-3-5) var(--space-1);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--color-sidebar-storage-faint);
 }
 
 .nav-item {
@@ -186,7 +335,7 @@
 }
 
 /* Colored icons per section.
-   Keyed off the stable `data-section` attribute (set in AppShell's LINKS), NOT
+   Keyed off the stable `data-section` attribute (set in AppShell's NAV_GROUPS), NOT
    DOM order — adding/reordering nav items can no longer desync the colours from
    their labels. Each section maps to one curated calendar-dot hue (the same
    --color-cal-* family used elsewhere), spread around the wheel so they read as
@@ -238,18 +387,9 @@
     color: var(--color-accent);
 }
 
-.nav-item:hover i,
-.nav-item:hover .oxi-icon {
-    transform: scale(1.1);
-}
-
 /* Storage indicator */
 .storage-container {
-    margin: auto var(--space-3) var(--space-4) var(--space-3);
-    background: var(--color-sidebar-storage-bg);
-    border: 1px solid var(--color-sidebar-storage-border);
-    border-radius: var(--radius-2xl);
-    padding: var(--space-4);
+    padding: var(--space-2);
 }
 
 .storage-title {

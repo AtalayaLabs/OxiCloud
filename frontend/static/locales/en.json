@@ -118,7 +118,7 @@
     "sharedwithme": "Shared with me",
     "recent": "Recent",
     "favorites": "Favorites",
-    "photos": "Photos",
+    "photos": "Media",
     "music": "Music",
     "trash": "Trash",
     "account": "Account",
@@ -128,7 +128,9 @@
     "back_to_app": "Back to OxiCloud",
     "profile": "Profile",
     "shared_with_me": "Shared with me",
-    "toggle": "Toggle navigation menu"
+    "toggle": "Toggle navigation menu",
+    "section_library": "Library",
+    "section_sharing": "Sharing"
   },
   "photos": {
     "empty_state": "No photos yet",
@@ -261,7 +263,9 @@
     "created": "Created “{{name}}”.",
     "delete_playlist": "Delete playlist",
     "deleted": "Deleted “{{name}}”.",
+    "description": "Description",
     "edit_description": "Edit description",
+    "edit_playlist": "Edit playlist",
     "empty_playlist": "This playlist has no tracks yet.",
     "new_playlist": "New playlist",
     "no_audio": "No audio files found.",

@@ -601,54 +601,47 @@
 
 <svelte:head><title>{t('nav.photos', 'Photos')} · OxiCloud</title></svelte:head>
 
-<!-- Title + subnav live ABOVE the sticky block — they scroll away
-     with the page so vertical space is only paid for them while the
-     user is near the top. Only the Moments toolbar sticks (next
-     block) so the batch cluster stays reachable during long scrolls. -->
-<div class="photos-head">
-	<h1 class="page-title">{t('nav.photos', 'Photos')}</h1>
-	<div class="photos-subnav" role="tablist" aria-label={t('nav.photos', 'Photos')}>
-		<button
-			class="subnav__tab"
-			class:active={tab === 'moments'}
-			role="tab"
-			aria-selected={tab === 'moments'}
-			data-testid="photos-tab-moments"
-			onclick={() => (tab = 'moments')}
-		>
-			{t('photos.tab_moments', 'Moments')}
-		</button>
-		<button
-			class="subnav__tab"
-			class:active={tab === 'places'}
-			role="tab"
-			aria-selected={tab === 'places'}
-			data-testid="photos-tab-places"
-			onclick={() => (tab = 'places')}
-		>
-			{t('photos.tab_places', 'Places')}
-		</button>
-		{#if peopleAvailable}
-			<button
-				class="subnav__tab"
-				class:active={tab === 'people'}
-				role="tab"
-				aria-selected={tab === 'people'}
-				data-testid="photos-tab-people"
-				onclick={() => (tab = 'people')}
-			>
-				{t('photos.tab_people', 'People')}
-			</button>
-		{/if}
-	</div>
-</div>
-
-<!-- Sticky block — carries ONLY the Moments toolbar. Title + subnav
-     above have already scrolled off; the toolbar (and the batch
-     cluster inside it) stays reachable during long gallery scrolls. -->
 <div class="page-sticky-header">
-	{#if tab === 'moments'}
-		<!-- Toolbar uses the shared `.actions-bar` class from
+	<div class="actions-bar">
+		<div class="photos-head">
+			<h1 class="page-title">{t('nav.photos', 'Photos')}</h1>
+			<div class="photos-subnav" role="tablist" aria-label={t('nav.photos', 'Photos')}>
+				<button
+					class="subnav__tab"
+					class:active={tab === 'moments'}
+					role="tab"
+					aria-selected={tab === 'moments'}
+					data-testid="photos-tab-moments"
+					onclick={() => (tab = 'moments')}
+				>
+					{t('photos.tab_moments', 'Moments')}
+				</button>
+				<button
+					class="subnav__tab"
+					class:active={tab === 'places'}
+					role="tab"
+					aria-selected={tab === 'places'}
+					data-testid="photos-tab-places"
+					onclick={() => (tab = 'places')}
+				>
+					{t('photos.tab_places', 'Places')}
+				</button>
+				{#if peopleAvailable}
+					<button
+						class="subnav__tab"
+						class:active={tab === 'people'}
+						role="tab"
+						aria-selected={tab === 'people'}
+						data-testid="photos-tab-people"
+						onclick={() => (tab = 'people')}
+					>
+						{t('photos.tab_people', 'People')}
+					</button>
+				{/if}
+			</div>
+		</div>
+		{#if tab === 'moments'}
+			<!-- Toolbar uses the shared `.actions-bar` class from
 		     `styles/ported/content.css` (same contract as /files,
 		     /favorites, /recent, /trash via ResourceList's ActionBar).
 		     Fixed 60px height eliminates layout shift when
@@ -658,7 +651,6 @@
 		     The start slot carries `flex: auto` globally so the batch
 		     pill fills the leading space, pushing filter clusters to
 		     the trailing edge. -->
-		<div class="actions-bar">
 			<!-- Start slot. `.action-buttons` always renders (reserves
 			     the leading space + carries `flex: auto` so the slot
 			     fills); when selection is non-empty it ALSO gets the
@@ -694,7 +686,6 @@
 							onclick={downloadSelected}
 						>
 							<Icon name="download" />
-							<span>{t('common.download', 'Download')}</span>
 						</button>
 						<ConfirmButton
 							class="batch-btn batch-btn-danger"
@@ -702,9 +693,7 @@
 							data-testid="photos-batch-delete-btn"
 							onconfirm={trashSelected}
 							icon="trash"
-						>
-							<span>{t('common.delete', 'Delete')}</span>
-						</ConfirmButton>
+						/>
 					</div>
 				{/if}
 			</div>
@@ -768,206 +757,210 @@
 				>
 					<Icon name="star" />
 				</button>
-				{#if availableDrives.length > 0}
-					<!-- Drive filter — uses the shared `.group-by-selector`
-			     dropdown classes (styles/ported/buttons.css) so photos,
-			     /shared, and every `DisplayModeControls` consumer share
-			     the same trigger-button + popup pattern. -->
-					<div class="group-by-selector drive-filter" data-testid="photos-drive-filter">
-						<button
-							type="button"
-							class="toggle-btn group-by-btn active"
-							title={t('photos.filter_drive', 'Drive')}
-							aria-haspopup="true"
-							aria-expanded={driveFilterOpen}
-							data-testid="photos-drive-filter-btn"
-							onclick={(e) => {
-								e.stopPropagation();
-								driveFilterOpen = !driveFilterOpen;
-							}}
-						>
-							<Icon name={driveFilterIcon} />
-							<span class="group-by-label">{driveFilterLabel}</span>
-						</button>
-						{#if driveFilterOpen}
-							<div
-								class="group-by-menu"
-								role="menu"
-								tabindex="-1"
-								onclick={(e) => e.stopPropagation()}
-								onkeydown={(e) => e.key === 'Escape' && (driveFilterOpen = false)}
-							>
-								<button
-									type="button"
-									class="group-by-option"
-									class:active={driveFilter === null}
-									data-testid="photos-drive-filter-all"
-									onclick={() => {
-										setDriveFilter(null);
-										driveFilterOpen = false;
-									}}
-								>
-									<Icon name="hdd" />
-									{t('photos.all_drives', 'All drives')}
-								</button>
-								{#each availableDrives as drive (drive.id)}
-									<button
-										type="button"
-										class="group-by-option"
-										class:active={driveFilter === drive.id}
-										data-testid={`photos-drive-filter-${drive.id}`}
-										onclick={() => {
-											setDriveFilter(drive.id);
-											driveFilterOpen = false;
-										}}
-									>
-										<Icon name={driveIcon(drive)} />
-										{drive.name}
-									</button>
-								{/each}
-							</div>
-						{/if}
-					</div>
-				{/if}
-				<!-- Group-by (day / month / year) — aggregation axis for
-		     the timeline. Dropdown mirrors the `.group-by-selector`
-		     pattern used by the drive and order-by filters so the
-		     trigger button + popup + layer-group icon per option
-		     look identical to the files-list toolbar. -->
-				<div class="group-by-selector group-mode-filter" data-testid="photos-group-by-filter">
-					<button
-						type="button"
-						class="toggle-btn group-by-btn active"
-						title={t('photos.group_by', 'Group by')}
-						aria-haspopup="true"
-						aria-expanded={groupByOpen}
-						data-testid="photos-group-by-filter-btn"
-						onclick={(e) => {
-							e.stopPropagation();
-							groupByOpen = !groupByOpen;
-						}}
-					>
-						<Icon name="layer-group" />
-						<span class="group-by-label">{groupModeLabel}</span>
-					</button>
-					{#if groupByOpen}
-						<div
-							class="group-by-menu"
-							role="menu"
-							tabindex="-1"
-							onclick={(e) => e.stopPropagation()}
-							onkeydown={(e) => e.key === 'Escape' && (groupByOpen = false)}
-						>
-							{#each MODES as m (m)}
-								<button
-									type="button"
-									class="group-by-option"
-									class:active={groupMode === m}
-									data-testid={`photos-group-by-${m}`}
-									onclick={() => {
-										setGroupMode(m);
-										groupByOpen = false;
-									}}
-								>
-									<Icon name="layer-group" />
-									{m === 'day'
-										? t('photos.view_daily', 'Day')
-										: m === 'month'
-											? t('photos.view_monthly', 'Month')
-											: t('photos.view_yearly', 'Year')}
-								</button>
-							{/each}
-						</div>
-					{/if}
-				</div>
-				<!-- §3 — Sort axis dropdown + direction toggle. Mirrors the
+				<div class="actions-bar__view">
+					<span class="view-toggle-separator"></span>
+					<!-- §3 — Sort axis dropdown + direction toggle. Mirrors the
 		     `.group-by-selector` + `.sort-dir-btn` pattern from
 		     ListToolbar so the trigger button + popup + arrow look
 		     identical to the files-list toolbar. Three axes:
 		     Captured (default, EXIF with upload-time fallback),
 		     Upload (pure created_at), Modified (updated_at). The
 		     up-arrow glyph flips class:active when `reverse=true`. -->
-				<div class="group-by-selector order-by-filter" data-testid="photos-order-by-filter">
-					<button
-						type="button"
-						class="toggle-btn group-by-btn active"
-						title={t('photos.sort.title', 'Sort by')}
-						aria-haspopup="true"
-						aria-expanded={orderByOpen}
-						data-testid="photos-order-by-filter-btn"
-						onclick={(e) => {
-							e.stopPropagation();
-							orderByOpen = !orderByOpen;
-						}}
-					>
-						<Icon name="arrow-up-a-z" />
-						<span class="group-by-label">{orderByLabel}</span>
-					</button>
-					<button
-						type="button"
-						class="toggle-btn sort-dir-btn"
-						class:active={reverse}
-						title={t('photos.sort.direction', 'Sort direction')}
-						aria-label={t('photos.sort.direction', 'Sort direction')}
-						aria-pressed={reverse}
-						data-testid="photos-sort-direction-btn"
-						onclick={toggleReverse}
-					>
-						<Icon name="arrow-up" />
-					</button>
-					{#if orderByOpen}
-						<div
-							class="group-by-menu"
-							role="menu"
-							tabindex="-1"
-							onclick={(e) => e.stopPropagation()}
-							onkeydown={(e) => e.key === 'Escape' && (orderByOpen = false)}
+					<div class="group-by-selector order-by-filter" data-testid="photos-order-by-filter">
+						<button
+							type="button"
+							class="toggle-btn sort-dir-btn"
+							class:active={reverse}
+							title={t('photos.sort.direction', 'Sort direction')}
+							aria-label={t('photos.sort.direction', 'Sort direction')}
+							aria-pressed={reverse}
+							data-testid="photos-sort-direction-btn"
+							onclick={toggleReverse}
 						>
+							<Icon name="arrow-up" />
+						</button>
+						<button
+							type="button"
+							class="toggle-btn group-by-btn active"
+							title={t('photos.sort.title', 'Sort by')}
+							aria-haspopup="true"
+							aria-expanded={orderByOpen}
+							data-testid="photos-order-by-filter-btn"
+							onclick={(e) => {
+								e.stopPropagation();
+								orderByOpen = !orderByOpen;
+							}}
+						>
+							<Icon name="arrow-up-a-z" />
+							<span class="group-by-label">{orderByLabel}</span>
+						</button>
+						{#if orderByOpen}
+							<div
+								class="group-by-menu"
+								role="menu"
+								tabindex="-1"
+								onclick={(e) => e.stopPropagation()}
+								onkeydown={(e) => e.key === 'Escape' && (orderByOpen = false)}
+							>
+								<button
+									type="button"
+									class="group-by-option"
+									class:active={orderBy === 'captured_at'}
+									data-testid="photos-order-by-captured-at"
+									onclick={() => {
+										setOrderBy('captured_at');
+										orderByOpen = false;
+									}}
+								>
+									<Icon name="arrow-up-a-z" />
+									{t('photos.sort.captured_at', 'Captured date')}
+								</button>
+								<button
+									type="button"
+									class="group-by-option"
+									class:active={orderBy === 'created_at'}
+									data-testid="photos-order-by-created-at"
+									onclick={() => {
+										setOrderBy('created_at');
+										orderByOpen = false;
+									}}
+								>
+									<Icon name="arrow-up-a-z" />
+									{t('photos.sort.created_at', 'Upload date')}
+								</button>
+								<button
+									type="button"
+									class="group-by-option"
+									class:active={orderBy === 'modified_at'}
+									data-testid="photos-order-by-updated-at"
+									onclick={() => {
+										setOrderBy('modified_at');
+										orderByOpen = false;
+									}}
+								>
+									<Icon name="arrow-up-a-z" />
+									{t('photos.sort.updated_at', 'Last modified')}
+								</button>
+							</div>
+						{/if}
+					</div>
+					<span class="view-toggle-separator"></span>
+					{#if availableDrives.length > 0}
+						<!-- Drive filter — uses the shared `.group-by-selector`
+			     dropdown classes (styles/ported/buttons.css) so photos,
+			     /shared, and every `DisplayModeControls` consumer share
+			     the same trigger-button + popup pattern. -->
+						<div class="group-by-selector drive-filter" data-testid="photos-drive-filter">
 							<button
 								type="button"
-								class="group-by-option"
-								class:active={orderBy === 'captured_at'}
-								data-testid="photos-order-by-captured-at"
-								onclick={() => {
-									setOrderBy('captured_at');
-									orderByOpen = false;
+								class="toggle-btn group-by-btn active"
+								title={t('photos.filter_drive', 'Drive')}
+								aria-haspopup="true"
+								aria-expanded={driveFilterOpen}
+								data-testid="photos-drive-filter-btn"
+								onclick={(e) => {
+									e.stopPropagation();
+									driveFilterOpen = !driveFilterOpen;
 								}}
 							>
-								<Icon name="arrow-up-a-z" />
-								{t('photos.sort.captured_at', 'Captured date')}
+								<Icon name={driveFilterIcon} />
+								<span class="group-by-label">{driveFilterLabel}</span>
 							</button>
-							<button
-								type="button"
-								class="group-by-option"
-								class:active={orderBy === 'created_at'}
-								data-testid="photos-order-by-created-at"
-								onclick={() => {
-									setOrderBy('created_at');
-									orderByOpen = false;
-								}}
-							>
-								<Icon name="arrow-up-a-z" />
-								{t('photos.sort.created_at', 'Upload date')}
-							</button>
-							<button
-								type="button"
-								class="group-by-option"
-								class:active={orderBy === 'modified_at'}
-								data-testid="photos-order-by-updated-at"
-								onclick={() => {
-									setOrderBy('modified_at');
-									orderByOpen = false;
-								}}
-							>
-								<Icon name="arrow-up-a-z" />
-								{t('photos.sort.updated_at', 'Last modified')}
-							</button>
+							{#if driveFilterOpen}
+								<div
+									class="group-by-menu"
+									role="menu"
+									tabindex="-1"
+									onclick={(e) => e.stopPropagation()}
+									onkeydown={(e) => e.key === 'Escape' && (driveFilterOpen = false)}
+								>
+									<button
+										type="button"
+										class="group-by-option"
+										class:active={driveFilter === null}
+										data-testid="photos-drive-filter-all"
+										onclick={() => {
+											setDriveFilter(null);
+											driveFilterOpen = false;
+										}}
+									>
+										<Icon name="hdd" />
+										{t('photos.all_drives', 'All drives')}
+									</button>
+									{#each availableDrives as drive (drive.id)}
+										<button
+											type="button"
+											class="group-by-option"
+											class:active={driveFilter === drive.id}
+											data-testid={`photos-drive-filter-${drive.id}`}
+											onclick={() => {
+												setDriveFilter(drive.id);
+												driveFilterOpen = false;
+											}}
+										>
+											<Icon name={driveIcon(drive)} />
+											{drive.name}
+										</button>
+									{/each}
+								</div>
+							{/if}
 						</div>
 					{/if}
+					<!-- Group-by (day / month / year) — aggregation axis for
+		     the timeline. Dropdown mirrors the `.group-by-selector`
+		     pattern used by the drive and order-by filters so the
+		     trigger button + popup + layer-group icon per option
+		     look identical to the files-list toolbar. -->
+					<div class="group-by-selector group-mode-filter" data-testid="photos-group-by-filter">
+						<button
+							type="button"
+							class="toggle-btn group-by-btn active"
+							title={t('photos.group_by', 'Group by')}
+							aria-haspopup="true"
+							aria-expanded={groupByOpen}
+							data-testid="photos-group-by-filter-btn"
+							onclick={(e) => {
+								e.stopPropagation();
+								groupByOpen = !groupByOpen;
+							}}
+						>
+							<Icon name="layer-group" />
+							<span class="group-by-label">{groupModeLabel}</span>
+						</button>
+						{#if groupByOpen}
+							<div
+								class="group-by-menu"
+								role="menu"
+								tabindex="-1"
+								onclick={(e) => e.stopPropagation()}
+								onkeydown={(e) => e.key === 'Escape' && (groupByOpen = false)}
+							>
+								{#each MODES as m (m)}
+									<button
+										type="button"
+										class="group-by-option"
+										class:active={groupMode === m}
+										data-testid={`photos-group-by-${m}`}
+										onclick={() => {
+											setGroupMode(m);
+											groupByOpen = false;
+										}}
+									>
+										<Icon name="layer-group" />
+										{m === 'day'
+											? t('photos.view_daily', 'Day')
+											: m === 'month'
+												? t('photos.view_monthly', 'Month')
+												: t('photos.view_yearly', 'Year')}
+									</button>
+								{/each}
+							</div>
+						{/if}
+					</div>
 				</div>
 			</div>
-		</div>
-	{/if}
+		{/if}
+	</div>
 </div>
 
 {#if tab === 'moments'}
@@ -1106,21 +1099,14 @@
 	.photos-head {
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
-		gap: var(--space-3);
+		gap: var(--space-4);
 		flex-wrap: wrap;
-		/* No top/left padding — the parent `.content-area` already
-		   provides the gutter, and the sticky `.actions-bar` below
-		   shouldn't inherit a double-indent on its leading edge. */
-		padding: 0 1rem 0 0;
 	}
 
 	.page-title {
-		/* Keep the shared `.page-title` margin-bottom (var(--space-5))
-		   from `styles/ported/content.css` so Photos sits at the same
-		   vertical rhythm as /files / /favorites / /recent / /trash.
-		   Only override font-size + colour-token to match the Photos
-		   look (slightly smaller, dedicated heading colour). */
+		/* Inside the sticky toolbar row now, so the shared
+		   `.page-title` bottom margin would push the row off-centre. */
+		margin: 0;
 		font-size: 1.5rem;
 		color: var(--color-text-heading);
 	}
@@ -1145,35 +1131,83 @@
 		border-bottom-color: var(--color-accent);
 	}
 
-	/* Toolbar visual contract (fixed height, flex row, padding) comes
-	   from the shared `.actions-bar` rule in
-	   `styles/ported/content.css` — Photos only adds a side-margin to
-	   align with the sticky-header padding and `align-items: center`
-	   so the segmented controls / dropdown / star all vertically
-	   centre on the 60 px row the shared rule reserves. */
+	/* Toolbar visual contract (fixed height, flex row) comes from the shared
+	   `.actions-bar` rule in `styles/ported/content.css` — Photos only adds
+	   `align-items: center` so the segmented controls / dropdown / star
+	   vertically centre on the row. Padding and side margins are zeroed so
+	   the title and the gallery line up with the other sections. */
 	.actions-bar {
 		align-items: center;
-		margin-left: 1rem;
-		margin-right: 1rem;
+		padding: 0;
 	}
 
-	/* End slot — groups the group-by segment, kind filter, drive
-	   dropdown, and favourites toggle so the `.actions-bar`'s
+	/* End slot — groups the kind filter, favourites toggle, drive
+	   dropdown, group-by, and order-by so the `.actions-bar`'s
 	   `justify-content: space-between` sees exactly two children:
-	   `.action-buttons` (start, auto-grow) and this trailing cluster. */
+	   `.action-buttons` (start, auto-grow) and this trailing cluster.
+	   Carries the same container look as the shared `.view-toggle`
+	   pill used by every other section. */
 	.actions-bar__end {
 		display: flex;
 		align-items: center;
-		gap: var(--space-3);
+		gap: var(--space-1);
+		padding: 3px;
+		background-color: var(--color-bg-muted);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-xl);
 	}
 
-	/* Phones: the trailing cluster drops below the page actions and wraps
-	   left-aligned, so each filter keeps its own breathing room instead of
-	   being squeezed into a narrow column beside the display controls. */
+	/* Sort + drive + group as one cluster, so the phone break moves all three
+	   to the second row as a unit instead of splitting at whatever control
+	   happens not to fit. */
+	.actions-bar__view {
+		display: flex;
+		align-items: center;
+		gap: var(--space-1);
+	}
+
+	/* Phones: the trailing cluster drops below the page actions — kind +
+	   favourites centred, the view filters left-aligned on their own row — so
+	   each filter keeps its own breathing room instead of being squeezed into
+	   a narrow column beside the display controls. */
 	@media (width <= 768px) {
+		/* The bar itself must wrap: without this the end cluster, given a
+		   100% flex basis by the shared mobile rule, is shrunk onto the
+		   title's line instead of starting a new one. */
+		.actions-bar {
+			flex-wrap: wrap;
+		}
+
 		.actions-bar__end {
-			justify-content: flex-start;
+			justify-content: center;
 			gap: var(--space-2);
+			padding: 0;
+			border: 0;
+			background: none;
+		}
+
+		/* Second row: the view controls as plain chips, no container chrome.
+		   `flex-basis: 100%` is what forces the break after kind + favourites. */
+		.actions-bar__view {
+			flex: 1 1 100%;
+			flex-wrap: wrap;
+			gap: var(--space-2);
+		}
+
+		/* Dividers only make sense while everything shares one line. */
+		.actions-bar__view :global(.view-toggle-separator) {
+			display: none;
+		}
+
+		/* Selection keeps the header but gives the batch bar its own row;
+		   the filters step aside until the selection is cleared. */
+		.actions-bar:has(.batch-selection-bar) .actions-bar__end {
+			display: none;
+		}
+
+		.actions-bar:has(.batch-selection-bar) .action-buttons {
+			flex: 1 1 100%;
+			margin-right: 0;
 		}
 	}
 
@@ -1204,8 +1238,7 @@
 
 	.seg {
 		display: flex;
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
+		border-radius: var(--radius-lg);
 		overflow: hidden;
 	}
 
@@ -1225,7 +1258,7 @@
 		height: 32px;
 		padding: 0 var(--space-3);
 		border: none;
-		background: var(--color-bg-surface);
+		background: transparent;
 		color: var(--color-text-muted);
 		cursor: pointer;
 		text-transform: capitalize;
@@ -1267,7 +1300,7 @@
 	}
 
 	.photos-area {
-		padding: 0 1rem;
+		padding: 0;
 	}
 
 	/* Date header — fixed height (set inline) so the virtualizer's offset table
@@ -1282,9 +1315,16 @@
 	}
 
 	.photos-group__count {
-		color: var(--color-text-muted);
-		font-size: var(--text-sm);
-		font-weight: var(--weight-normal);
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 1.5em;
+		border-radius: 50%;
+		background: var(--color-accent-bg);
+		color: var(--color-accent);
+		font-size: 0.85em;
+		font-variant-numeric: tabular-nums;
+		margin-bottom: 4px;
 	}
 
 	/* A horizontal strip of explicitly-sized tiles — one virtualized row, used by

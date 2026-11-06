@@ -31,6 +31,7 @@
 	let index = $state(0);
 	let input = $state<HTMLInputElement | null>(null);
 	let listEl = $state<HTMLUListElement | null>(null);
+	let panelEl = $state<HTMLElement | null>(null);
 	let fileMatches = $state<Command[]>([]);
 	let searchTimer: ReturnType<typeof setTimeout> | null = null;
 	// Element focused before the palette opened, restored on close.
@@ -241,6 +242,21 @@
 		});
 	}
 
+	function onPanelKey(e: KeyboardEvent) {
+		if (e.key !== 'Tab' || !panelEl) return;
+		const items = [...panelEl.querySelectorAll<HTMLElement>('button:not([disabled]), input')];
+		if (!items.length) return;
+		const first = items[0];
+		const last = items[items.length - 1];
+		if (!e.shiftKey && document.activeElement === last) {
+			e.preventDefault();
+			first.focus();
+		} else if (e.shiftKey && document.activeElement === first) {
+			e.preventDefault();
+			last.focus();
+		}
+	}
+
 	function onGlobalKey(e: KeyboardEvent) {
 		if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
 			e.preventDefault();
@@ -291,8 +307,11 @@
 	>
 		<div
 			class="cmdk__panel"
+			bind:this={panelEl}
+			onkeydown={onPanelKey}
 			role="dialog"
 			aria-modal="true"
+			tabindex="-1"
 			aria-label={t('cmdk.title', 'Command palette')}
 			data-testid="command-palette-panel"
 		>

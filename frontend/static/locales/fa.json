@@ -79,7 +79,7 @@
     "shared": "هم‌رسانی‌های من",
     "recent": "اخیر",
     "favorites": "موردعلاقه‌ها",
-    "photos": "عکس‌ها",
+    "photos": "رسانه",
     "music": "موسیقی",
     "trash": "سطل زباله",
     "sharedwithme": "به اشتراک‌گذاشته شده با من",
@@ -90,7 +90,9 @@
     "admin_sections": "بخش های مدیریت",
     "back_to_app": "بازگشت به OxiCloud",
     "toggle": "منوی پیمایش را تغییر دهید",
-    "account": "حساب"
+    "account": "حساب",
+    "section_library": "کتابخانه",
+    "section_sharing": "اشتراک‌گذاری"
   },
   "photos": {
     "empty_state": "هنوز عکسی نیست",

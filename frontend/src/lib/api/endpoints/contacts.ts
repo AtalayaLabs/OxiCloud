@@ -1,5 +1,5 @@
 /** Contacts (CardDAV address books) REST browse endpoints. */
-import { apiJson } from '$lib/api/client';
+import { apiErrorFromResponse, apiFetch, apiJson } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import type {
 	AddressBookResponse,
@@ -98,4 +98,14 @@ export function updateContact(
 		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
 		body: JSON.stringify(update)
 	});
+}
+
+/** Delete a contact. The system book and read-only books reject this server-side. */
+export async function deleteContact(bookId: string, contactId: string): Promise<void> {
+	const res = await apiFetch(`${contactsUrl(bookId)}/${enc(contactId)}`, {
+		method: 'DELETE',
+		credentials: 'same-origin',
+		headers: getCsrfHeaders()
+	});
+	if (!res.ok) throw await apiErrorFromResponse(res);
 }

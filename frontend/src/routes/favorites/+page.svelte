@@ -268,17 +268,6 @@
 				moveOpen = true;
 			}
 		},
-		{
-			// Every row on /favorites IS a favorite, so the entry is always
-			// "Remove favorite" — no per-item state lookup needed. Mirrors
-			// the star-widget behaviour: click, row un-stars, disappears
-			// from the list on next reload. Placed between Move and Rename
-			// to match the canonical context-menu order on `/files`.
-			key: 'unfavorite',
-			label: t('files.unfavorite', 'Remove favorite'),
-			icon: 'star-outline',
-			run: (item) => void unfavorite(item)
-		},
 		{ key: 'rename', label: t('common.rename', 'Rename'), icon: 'pen', run: rename },
 		{ key: 'delete', label: t('common.delete', 'Delete'), icon: 'trash', danger: true, run: remove }
 	];
@@ -302,6 +291,7 @@
 
 <ResourceList
 	title={t('nav.favorites', 'Favorites')}
+	titleInToolbar
 	{items}
 	{contextMap}
 	resolveOwnerName={(id) => owners.name(id)}
@@ -351,14 +341,18 @@
 		-->
 		<Button
 			icon="download"
+			class="batch-btn"
+			title={t('common.download', 'Download')}
 			data-testid="favorites-batch-download-btn"
-			onclick={() => batchDownload(sel)}>{t('common.download', 'Download')}</Button
-		>
+			onclick={() => batchDownload(sel)}
+		></Button>
 		<Button
 			icon="star-outline"
+			class="batch-btn"
+			title={t('files.unfavorite', 'Remove favorite')}
 			data-testid="favorites-batch-remove-btn"
-			onclick={() => sel.forEach(unfavorite)}>{t('files.unfavorite', 'Remove favorite')}</Button
-		>
+			onclick={() => sel.forEach(unfavorite)}
+		></Button>
 	{/snippet}
 </ResourceList>
 
