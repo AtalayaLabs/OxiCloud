@@ -1,5 +1,5 @@
 import { test, expect } from './coverage-helpers';
-import { apiLogin, apiCreateFolder } from './helpers';
+import { apiLogin, apiCreateFolder, switchToListView } from './helpers';
 
 /**
  * Batch selection bar — select-all then batch favorite / batch delete, each in
@@ -25,7 +25,7 @@ async function openFolderWithChildren(
   await apiCreateFolder(page, c2, parent.id);
   await page.goto(`/files/${parent.id}`);
   await expect(page.getByTestId(c1)).toBeVisible({ timeout: 15_000 });
-  await page.getByTestId('display-mode-view-list-btn').click();
+  await switchToListView(page);
   return { c1, c2 };
 }
 
