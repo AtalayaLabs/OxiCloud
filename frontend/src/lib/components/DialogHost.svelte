@@ -5,6 +5,7 @@
 
 	// Local input value for prompt dialogs; reset whenever a new prompt opens.
 	let value = $state('');
+	let values = $state<Record<string, string>>({});
 	let lastId: object | null = null;
 	let inputEl = $state<HTMLInputElement | null>(null);
 	// Track the last error message so we only re-focus the input on a
@@ -17,6 +18,10 @@
 			lastId = c;
 			value = c.kind === 'prompt' ? (c.opts.defaultValue ?? '') : '';
 			lastErrorSeen = null;
+			values =
+				c.kind === 'form'
+					? Object.fromEntries(c.opts.fields.map((f) => [f.key, f.value ?? '']))
+					: {};
 			if (c.kind === 'prompt' && c.opts.selectOnOpen) {
 				const select = c.opts.selectOnOpen;
 				requestAnimationFrame(() => {
@@ -61,6 +66,7 @@
 		if (!c || dialogs.busy) return;
 		// `resolve` runs any async action and keeps the dialog open on failure.
 		if (c.kind === 'prompt') void dialogs.resolve(value);
+		else if (c.kind === 'form') void dialogs.resolve(values);
 		else void dialogs.resolve(true);
 	}
 
@@ -95,6 +101,32 @@
 					disabled={dialogs.busy}
 				/>
 			</form>
+		{:else if c.kind === 'form'}
+			<form id="dialog-form" onsubmit={submit}>
+				{#if c.opts.message}<p class="dlg-msg">{c.opts.message}</p>{/if}
+				{#each c.opts.fields as field (field.key)}
+					<label>
+						<span>{field.label}</span>
+						{#if field.multiline}
+							<textarea
+								rows="3"
+								data-testid={`dialog-host-input-${field.key}`}
+								bind:value={values[field.key]}
+								placeholder={field.placeholder ?? ''}
+								disabled={dialogs.busy}></textarea>
+						{:else}
+							<input
+								type="text"
+								data-testid={`dialog-host-input-${field.key}`}
+								bind:value={values[field.key]}
+								placeholder={field.placeholder ?? ''}
+								autocomplete="off"
+								disabled={dialogs.busy}
+							/>
+						{/if}
+					</label>
+				{/each}
+			</form>
 		{:else if c.opts.message}
 			<p class="dlg-msg">{c.opts.message}</p>
 		{/if}
@@ -112,13 +144,12 @@
 			>
 				{c.opts.cancelText ?? t('common.cancel', 'Cancel')}
 			</button>
-			{#if c.kind === 'prompt'}
+			{#if c.kind === 'confirm'}
 				<button
-					class="btn btn-primary"
-					data-testid="dialog-host-submit-btn"
-					type="submit"
-					form="dialog-form"
+					class="btn {c.opts.danger ? 'btn-danger' : 'btn-primary'}"
+					data-testid="dialog-host-confirm-btn"
 					disabled={dialogs.busy}
+					onclick={() => dialogs.resolve(true)}
 				>
 					{dialogs.busy
 						? t('common.loading', 'Loading…')
@@ -126,10 +157,11 @@
 				</button>
 			{:else}
 				<button
-					class="btn {c.opts.danger ? 'btn-danger' : 'btn-primary'}"
-					data-testid="dialog-host-confirm-btn"
+					class="btn btn-primary"
+					data-testid="dialog-host-submit-btn"
+					type="submit"
+					form="dialog-form"
 					disabled={dialogs.busy}
-					onclick={() => dialogs.resolve(true)}
 				>
 					{dialogs.busy
 						? t('common.loading', 'Loading…')

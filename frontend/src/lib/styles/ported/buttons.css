@@ -1,5 +1,5 @@
 .btn {
-    padding: var(--space-3) var(--space-6);
+    padding: var(--space-3) var(--space-3);
     border-radius: var(--radius-2xl);
     border: none;
     cursor: pointer;
@@ -129,7 +129,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 36px;
+    width: 32px;
     height: 32px;
     background-color: transparent;
     border: none;
@@ -159,9 +159,10 @@
 .view-toggle-separator {
     width: 1px;
     height: 20px;
+    flex-shrink: 0;
     background: var(--color-border-medium);
     align-self: center;
-    margin: 0 var(--space-0-5);
+    margin: 0 var(--space-1);
 }
 
 .view-toggle-separator.hidden {
@@ -172,6 +173,7 @@
     display: flex;
     align-items: center;
     position: relative;
+    gap: var(--space-1);
 }
 
 .group-by-selector.hidden {
@@ -261,4 +263,27 @@
 .group-by-option.active {
     color: var(--color-accent);
     font-weight: var(--weight-semibold);
+}
+
+.link-btn {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--color-accent-text);
+    cursor: pointer;
+    font-size: var(--text-sm);
+}
+
+.link-btn:hover {
+    text-decoration: underline;
+}
+
+.link-btn--danger {
+    color: var(--color-danger-text);
+}
+
+.link-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    text-decoration: none;
 }

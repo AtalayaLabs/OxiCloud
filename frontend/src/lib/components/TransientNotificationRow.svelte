@@ -52,6 +52,18 @@
 						)}
 					</span>
 				{/if}
+				{#if n.onCancel}
+					<button
+						class="notif-cancel"
+						type="button"
+						onclick={(e) => {
+							e.stopPropagation();
+							n.onCancel?.();
+						}}
+					>
+						{t('common.cancel', 'Cancel')}
+					</button>
+				{/if}
 			</div>
 		{:else}
 			<div class="notif-item-time">{formatTime(n.at)}</div>
@@ -81,6 +93,19 @@
 		margin-top: 0.25rem;
 		font-size: var(--text-xs, 0.75rem);
 		color: var(--color-text-muted);
+	}
+
+	.notif-cancel {
+		padding: 0;
+		border: none;
+		background: none;
+		color: var(--color-danger-text);
+		font: inherit;
+		cursor: pointer;
+	}
+
+	.notif-cancel:hover {
+		text-decoration: underline;
 	}
 
 	.notif-item-current {

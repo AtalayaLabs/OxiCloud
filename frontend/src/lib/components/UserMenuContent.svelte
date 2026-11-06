@@ -3,7 +3,6 @@
 	import Icon from '$lib/icons/Icon.svelte';
 	import SelfAvatar from '$lib/components/SelfAvatar.svelte';
 	import { isAtLeastAdmin } from '$lib/utils/roles';
-	import { formatBytes, storagePercent } from '$lib/utils/format';
 	import { i18n, LANGUAGES, setLocale, t, type Locale } from '$lib/i18n/index.svelte';
 	import { session } from '$lib/stores/session.svelte';
 	import { theme, type Theme } from '$lib/stores/theme.svelte';
@@ -17,14 +16,9 @@
 	let { onNavigate, onabout }: Props = $props();
 
 	let langOpen = $state(false);
+	let langToggle: HTMLButtonElement | undefined;
 
 	const isAdmin = $derived(isAtLeastAdmin(session.user?.role));
-	const storagePct = $derived(
-		storagePercent(
-			session.me?.full.storage_used_bytes ?? 0,
-			session.me?.full.storage_quota_bytes ?? 0
-		)
-	);
 
 	const THEMES: { mode: Theme; icon: string; label: string }[] = [
 		{ mode: 'light', icon: 'sun', label: t('user_menu.theme.light', 'Light') },
@@ -38,6 +32,50 @@
 		langOpen = false;
 		await setLocale(loc);
 	}
+
+	function placePopover(node: HTMLElement) {
+		if (!langToggle) return;
+		const gap = 4;
+		const pad = 8;
+		const rect = langToggle.getBoundingClientRect();
+		const width = node.offsetWidth;
+		const height = node.offsetHeight;
+		const belowRoom = window.innerHeight - rect.bottom - gap - pad;
+		const aboveRoom = rect.top - gap - pad;
+		const below = belowRoom >= height || belowRoom >= aboveRoom;
+		const room = Math.max(96, below ? belowRoom : aboveRoom);
+		if (room < height) node.style.maxHeight = `${room}px`;
+		node.style.top = `${below ? rect.bottom + gap : Math.max(pad, rect.top - gap - Math.min(height, room))}px`;
+		node.style.left = `${Math.max(pad, Math.min(rect.right - width, window.innerWidth - width - pad))}px`;
+	}
+
+	function topLayerMenu(node: HTMLElement) {
+		node.showPopover();
+		placePopover(node);
+		const dismiss = (event: Event) => {
+			if (
+				event.target instanceof Node &&
+				(node.contains(event.target) || langToggle?.contains(event.target))
+			)
+				return;
+			langOpen = false;
+		};
+		const onKey = (event: KeyboardEvent) => {
+			if (event.key === 'Escape') langOpen = false;
+		};
+		window.addEventListener('pointerdown', dismiss, { capture: true });
+		window.addEventListener('scroll', dismiss, { capture: true, passive: true });
+		window.addEventListener('resize', dismiss);
+		window.addEventListener('keydown', onKey);
+		return {
+			destroy: () => {
+				window.removeEventListener('pointerdown', dismiss, { capture: true });
+				window.removeEventListener('scroll', dismiss, { capture: true });
+				window.removeEventListener('resize', dismiss);
+				window.removeEventListener('keydown', onKey);
+			}
+		};
+	}
 </script>
 
 <svelte:window onclick={() => (langOpen = false)} />
@@ -46,41 +84,16 @@
 	<div class="user-menu-header">
 		<SelfAvatar large />
 		<div class="user-menu-id">
-			<div class="user-menu-name">{session.user.username || session.user.email}</div>
+			<div class="user-menu-identity">
+				<div class="user-menu-name">{session.user.username || session.user.email}</div>
+				{#if isAdmin}
+					<span class="role-badge role-badge-admin">
+						<Icon name="shield-alt" />
+						{t('user_menu.admin', 'Admin')}
+					</span>
+				{/if}
+			</div>
 			<div class="user-menu-email">{session.user.email}</div>
-		</div>
-	</div>
-
-	{#if isAdmin}
-		<div class="user-menu-role-badge">
-			<span class="role-badge role-badge-admin">
-				<Icon name="shield-alt" />
-				{t('user_menu.admin', 'Admin')}
-			</span>
-		</div>
-	{/if}
-
-	<div class="user-menu-storage">
-		<div class="user-menu-storage-label">
-			<Icon name="database" /> <span>{t('storage.title', 'Storage')}</span>
-		</div>
-		<div class="user-menu-storage-bar">
-			<div class="user-menu-storage-fill" style:width="{storagePct}%"></div>
-		</div>
-		<div class="user-menu-storage-text">
-			{#if (session.me?.full.storage_quota_bytes ?? 0) > 0}
-				{t(
-					'storage.used',
-					{
-						percentage: Math.round(storagePct),
-						used: formatBytes(session.me?.full.storage_used_bytes ?? 0),
-						total: formatBytes(session.me?.full.storage_quota_bytes ?? 0)
-					},
-					'{{percentage}}% used ({{used}} / {{total}})'
-				)}
-			{:else}
-				{formatBytes(session.me?.full.storage_used_bytes ?? 0)}
-			{/if}
 		</div>
 	</div>
 {/if}
@@ -124,6 +137,7 @@
 		<button
 			type="button"
 			class="lang-selector__toggle"
+			bind:this={langToggle}
 			aria-haspopup="listbox"
 			aria-expanded={langOpen}
 			data-testid="appshell-lang-toggle-btn"
@@ -136,7 +150,7 @@
 			<Icon name="chevron-down" class="lang-selector__arrow" />
 		</button>
 		{#if langOpen}
-			<ul class="lang-selector__dropdown" role="listbox">
+			<ul class="lang-selector__dropdown" role="listbox" popover="manual" use:topLayerMenu>
 				{#each LANGUAGES as lang (lang.code)}
 					<li>
 						<button
@@ -219,12 +233,20 @@
 		min-width: 0;
 	}
 
+	.user-menu-identity {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		min-width: 0;
+	}
+
 	.user-menu-name {
 		font-weight: var(--weight-semibold);
 		color: var(--color-text-heading);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+		min-width: 0;
 	}
 
 	.user-menu-email {
@@ -278,9 +300,8 @@
 	}
 
 	.lang-selector__dropdown {
-		position: absolute;
-		bottom: calc(100% + 4px);
-		right: 0;
+		position: fixed;
+		inset: auto;
 		z-index: var(--z-dropdown);
 		min-width: 12rem;
 		max-height: 18rem;
@@ -292,11 +313,6 @@
 		border: 1px solid var(--color-border);
 		border-radius: var(--radius-lg, var(--radius-md));
 		box-shadow: var(--shadow-lg, 0 10px 30px var(--color-overlay-shadow));
-	}
-
-	:global([dir='rtl']) .lang-selector__dropdown {
-		right: auto;
-		left: 0;
 	}
 
 	.lang-option {

@@ -28,7 +28,6 @@
 	import { errorMessage } from '$lib/utils/errors';
 	import { confirmDialog } from '$lib/stores/dialogs.svelte';
 	import { formatDate } from '$lib/utils/display';
-	import PolicyList from '$lib/components/PolicyList.svelte';
 	import {
 		getDrivePolicyDefaults,
 		getDrivePolicyDrift,
@@ -41,6 +40,7 @@
 	import { listFindings, listRuns, triggerJob } from '$lib/api/endpoints/adminJobs';
 	import {
 		isDefaultable,
+		isPolicyImplied,
 		policyControl,
 		policyDefs,
 		readAllPolicies,
@@ -611,59 +611,116 @@
 		)}
 	</p>
 
-	<div class="dp__cards">
+	<div class="admin-card dp__card" data-testid="admin-policy-defaults-table">
+		<table class="dp__table">
+			<thead>
+				<tr>
+					<th scope="col">{t('admin.drive_policies.policy', 'Policy')}</th>
+					{#each KINDS as kind (kind)}
+						<th scope="col">
+							{kind === 'personal'
+								? t('admin.drive_policies.personal', 'Personal drives')
+								: t('admin.drive_policies.shared', 'Shared drives')}
+						</th>
+					{/each}
+				</tr>
+			</thead>
+			<tbody>
+				{#each policyDefs as def (def.key)}
+					<tr>
+						<th scope="row">
+							<span class="dp__policy-title">{def.label()}</span>
+							<span class="dp__policy-help muted">{def.help()}</span>
+						</th>
+						{#each KINDS as kind (kind)}
+							{@const state = states[kind]}
+							<td class="dp__policy-cell">
+								{#if !state.loaded}
+									<span class="muted">…</span>
+								{:else if !isDefaultable(def, kind)}
+									<span class="dp__excluded muted">
+										{def.defaultable === false
+											? t(
+													'admin.drive_policies.not_defaultable',
+													'Set per drive — this is an operational state, not a default.'
+												)
+											: t(
+													'admin.drive_policies.not_applicable',
+													'Does not apply to this kind of drive.'
+												)}
+									</span>
+								{:else}
+									{@const implied = isPolicyImplied(def, state.draft)}
+									{#if policyControl(def) === 'days'}
+										<input
+											type="number"
+											class="dp__days"
+											min="1"
+											step="1"
+											placeholder="—"
+											value={typeof state.draft[def.key] === 'number' ? state.draft[def.key] : ''}
+											data-testid={`admin-default-${kind}-${def.key}`}
+											disabled={implied}
+											onchange={(e) => {
+												const raw = (e.currentTarget as HTMLInputElement).value.trim();
+												const n = raw === '' ? null : Number(raw);
+												(state.draft as Record<string, unknown>)[def.key] =
+													n !== null && Number.isFinite(n) && n > 0 ? n : null;
+												scheduleSave(kind);
+											}}
+										/>
+									{:else}
+										<input
+											type="checkbox"
+											checked={state.draft[def.key] === true}
+											data-testid={`admin-default-${kind}-${def.key}`}
+											disabled={implied}
+											onchange={(e) => {
+												(state.draft as Record<string, unknown>)[def.key] = (
+													e.currentTarget as HTMLInputElement
+												).checked;
+												scheduleSave(kind);
+											}}
+										/>
+									{/if}
+									{#if implied && def.impliedHint}
+										<span class="dp__implied muted">{def.impliedHint()}</span>
+									{/if}
+								{/if}
+							</td>
+						{/each}
+					</tr>
+				{/each}
+			</tbody>
+		</table>
+
 		{#each KINDS as kind (kind)}
-			<div class="card dp__card" data-testid={`admin-policy-defaults-${kind}`}>
-				<h2>
+			{#if states[kind].error}
+				<p class="admin-result admin-result--error">{states[kind].error}</p>
+			{/if}
+			<p
+				class="dp__savestate"
+				class:is-hidden={!states[kind].busy && !states[kind].saved}
+				data-testid={`admin-policy-savestate-${kind}`}
+				aria-live="polite"
+			>
+				<strong>
 					{kind === 'personal'
 						? t('admin.drive_policies.personal', 'Personal drives')
 						: t('admin.drive_policies.shared', 'Shared drives')}
-				</h2>
-
-				{#if !states[kind].loaded}
-					<p class="status">{t('common.loading', 'Loading…')}</p>
-				{:else}
-					<!-- Deliberately NOT disabled while saving. Under auto-save a
-					     write is in flight after every toggle, so binding `busy`
-					     here would grey the whole list on each click. The write
-					     replaces the bag wholesale and is debounced, so a toggle
-					     landing mid-flight is safe — the next save carries it. -->
-					<PolicyList
-						values={states[kind].draft}
-						testIdPrefix={`admin-default-${kind}`}
-						defaultsForKind={kind}
-						onchange={(key, next) => {
-							(states[kind].draft as Record<string, unknown>)[key] = next;
-							scheduleSave(kind);
-						}}
-					/>
-
-					{#if states[kind].error}
-						<p class="status--error">{states[kind].error}</p>
-					{/if}
-					<!-- Always in the layout, never appearing and disappearing.
-					     This line changes on every toggle, and a node that comes
-					     and goes would shift the knob list under the pointer of
-					     someone working through several in a row. -->
-					<p
-						class="dp__savestate"
-						class:is-hidden={!states[kind].busy && !states[kind].saved}
-						data-testid={`admin-policy-savestate-${kind}`}
-						aria-live="polite"
-					>
-						{states[kind].busy
-							? t('common.saving', 'Saving…')
-							: t(
-									'admin.drive_policies.saved',
-									'Saved — applied to every drive of this kind that has not overridden it.'
-								)}
-					</p>
-				{/if}
-			</div>
+				</strong>
+				—
+				{states[kind].busy
+					? t('common.saving', 'Saving…')
+					: t(
+							'admin.drive_policies.saved',
+							'Saved — applied to every drive of this kind that has not overridden it.'
+						)}
+			</p>
 		{/each}
 	</div>
 
-	<div class="card" bind:this={driftCardEl}>
+	<div class="admin-card" bind:this={driftCardEl}>
 		<h2>
 			{t(
 				'admin.drive_policies.drift_title',
@@ -679,11 +736,11 @@
 		</p>
 
 		{#if driftError}
-			<p class="status--error">{driftError}</p>
+			<p class="admin-result admin-result--error">{driftError}</p>
 		{:else if drift === null}
-			<p class="status">{t('common.loading', 'Loading…')}</p>
+			<p class="muted">{t('common.loading', 'Loading…')}</p>
 		{:else if drift.length === 0}
-			<p class="status">
+			<p class="muted">
 				{t(
 					'admin.drive_policies.drift_none',
 					'None — every drive is at least as strict as its default.'
@@ -698,7 +755,7 @@
 		{/if}
 	</div>
 
-	<div class="card">
+	<div class="admin-card">
 		<h2>{t('admin.drive_policies.reports', 'Compliance')}</h2>
 		<p class="muted">
 			{t(
@@ -725,9 +782,9 @@
 		</div>
 
 		{#if findingsError}
-			<p class="status--error">{findingsError}</p>
+			<p class="admin-result admin-result--error">{findingsError}</p>
 		{:else if findings === null}
-			<p class="status">{t('common.loading', 'Loading…')}</p>
+			<p class="muted">{t('common.loading', 'Loading…')}</p>
 		{:else}
 			<h3 class="dp__sub">
 				{t(
@@ -744,14 +801,14 @@
 				and in the last two cases a real violation may exist, unseen.
 			-->
 			{#if lastScanScope === 'none'}
-				<p class="status">
+				<p class="muted">
 					{t(
 						'admin.drive_policies.shares_never_scanned',
 						'Not scanned yet — run the scan to see whether any share breaks its drive policy.'
 					)}
 				</p>
 			{:else if lastScanScope !== 'all'}
-				<p class="status--warn">
+				<p class="admin-result admin-result--warn">
 					{t(
 						'admin.drive_policies.shares_partial',
 						{ name: driveLabel(lastScanScope) },
@@ -760,7 +817,7 @@
 				</p>
 			{/if}
 			{#if shareFindings.length === 0 && lastScanScope === 'all'}
-				<p class="status">
+				<p class="muted">
 					{t(
 						'admin.drive_policies.shares_none',
 						'None — every link and grant matches its drive policy.'
@@ -790,10 +847,10 @@
 						<details class="dp__drive" open={sharesByDrive.length === 1}>
 							<summary class="dp__drive-summary">
 								{#if driveKindLabel(group.driveId)}
-									<span class="dp__kind">{driveKindLabel(group.driveId)}</span>
+									<span class="admin-chip">{driveKindLabel(group.driveId)}</span>
 								{/if}
 								<span class="dp__drive-name">{driveLabel(group.driveId)}</span>
-								<span class="dp__count">{group.items.length}</span>
+								<span class="admin-chip">{group.items.length}</span>
 								<!-- A trailing action rather than the row itself: the
 								     summary's job is to expand, so editing gets its own
 								     target. `preventDefault` stops the click toggling too. -->
@@ -816,7 +873,7 @@
 								     one. Destructive, so it confirms first. -->
 								<button
 									type="button"
-									class="btn dp__drive-revoke"
+									class="btn btn-sm btn-danger dp__drive-revoke"
 									disabled={revoking !== null}
 									onclick={(e) => {
 										e.preventDefault();
@@ -851,7 +908,7 @@
 	</div>
 
 	{#if policyDriveError}
-		<p class="status--error">{policyDriveError}</p>
+		<p class="admin-result admin-result--error">{policyDriveError}</p>
 	{/if}
 
 	<!--
@@ -904,65 +961,97 @@
 />
 
 <style>
-	/*
-	 * Status lines.
-	 *
-	 * Defined here because the admin route's `.status*` rules are scoped to
-	 * that route's own markup and never reach a child component — the same
-	 * trap `.card` fell into below. Until this, every status line in this
-	 * panel rendered as plain unstyled text, errors included, which is the
-	 * one place colour is doing real work.
-	 */
-	.status,
-	.status--error,
-	.status--warn {
-		margin: var(--space-2) 0;
-		font-size: 0.875rem;
+	/* The panel's sections are `.admin-card` (global). Lay them out here;
+	   the shared stylesheet owns the surface, radius and shadow. */
+	.dp {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-4);
 	}
 
-	.status {
+	.dp__card {
+		min-width: 0;
+		max-width: 100%;
+		overflow-x: auto;
+	}
+
+	.dp__table {
+		width: 100%;
+		border-collapse: collapse;
+	}
+
+	.dp__table th,
+	.dp__table td {
+		padding: var(--space-2) var(--space-3);
+		border-bottom: 1px solid var(--color-border);
+		text-align: left;
+	}
+
+	.dp__table thead th {
+		font-size: var(--text-sm);
+		font-weight: var(--weight-medium);
 		color: var(--color-text-muted);
+		white-space: nowrap;
 	}
 
-	.status--error {
-		color: var(--color-danger-alt);
+	.dp__table tbody th {
+		min-width: 18rem;
+		font-weight: normal;
 	}
 
-	/* Amber rather than red: a partial scan is not a failure, it is a claim
-	   the panel is declining to make. */
-	.status--warn {
-		color: var(--color-warning-text);
+	.dp__policy-title {
+		display: block;
+		font-weight: var(--weight-semibold);
 	}
 
-	/*
-	 * Spacing between the panel's top-level sections.
-	 *
-	 * `.card` is NOT inherited here: the admin route defines one, but Svelte
-	 * scopes it to that route's own markup, so these sections arrive with no
-	 * margin of their own and the defaults, the drift list and the
-	 * compliance report ran into each other. Only the spacing is set —
-	 * `> .card` so the two kind cards inside `.dp__cards` keep taking their
-	 * separation from the grid gap instead of stacking two rules.
-	 */
-	.dp > .card {
-		margin-bottom: var(--space-6);
+	.dp__policy-help {
+		display: block;
+		margin-top: var(--space-1);
+		font-size: var(--text-sm);
 	}
 
-	.dp > .card h2 {
-		margin-top: 0;
-		margin-bottom: var(--space-2);
+	.dp__policy-cell {
+		width: 9rem;
+		text-align: center;
+		vertical-align: middle;
 	}
 
-	.dp__cards {
-		display: grid;
-		grid-template-columns: 1fr;
-		gap: 1rem;
-		margin-bottom: var(--space-6);
+	.dp__policy-cell input[type='checkbox'] {
+		margin: 0;
+		vertical-align: middle;
 	}
 
-	@media (width >= 60rem) {
-		.dp__cards {
-			grid-template-columns: 1fr 1fr;
+	.dp__days {
+		width: 5rem;
+	}
+
+	.dp__excluded,
+	.dp__implied {
+		display: block;
+		font-size: var(--text-xs);
+		font-style: italic;
+	}
+
+	.dp__implied {
+		margin-top: var(--space-1);
+	}
+
+	@media (width <= 48rem) {
+		.dp__table thead th {
+			white-space: normal;
+		}
+
+		.dp__table tbody th {
+			min-width: 0;
+		}
+
+		.dp__policy-cell {
+			width: auto;
+		}
+
+		.dp__table th,
+		.dp__table td {
+			padding: var(--space-2);
 		}
 	}
 
@@ -971,6 +1060,11 @@
 		flex-wrap: wrap;
 		gap: 0.5rem;
 		margin-top: 0.75rem;
+	}
+
+	.dp__actions .btn {
+		flex: 1 1 0;
+		min-width: 0;
 	}
 
 	.dp__sub {
@@ -1034,56 +1128,16 @@
 		overflow-wrap: anywhere;
 	}
 
-	/* The number of violations on this drive — the reason to expand it, so
-	   it has to be legible while collapsed. */
-	.dp__count {
-		flex: 0 0 auto;
-		min-width: 1.75em;
-		padding: 0 0.45em;
-		border-radius: 999px;
-		background: var(--color-bg-subtle, var(--color-bg-surface));
-		border: 1px solid var(--color-border);
-		font-size: 0.8125rem;
-		font-weight: 400;
-		text-align: center;
-		color: var(--color-text-muted);
-	}
-
 	.dp__drive-edit {
 		flex: 0 0 auto;
 		font-size: 0.8125rem;
 		font-weight: 400;
 	}
 
-	/* Destructive, and styled to look it — this withdraws access with no
-	   undo, so it must not read as just another link beside "Manage
-	   policies".
-	   Background and border are BOTH set explicitly: the shared `.btn`
-	   declares `border: none` and no background at all, so a bare button
-	   fell back to the user agent's grey `buttonface` — and danger-coloured
-	   text on that grey is the contrast problem. Setting only
-	   `border-color` was inert for the same reason.
-	   `--color-danger-alt` is the danger hue as TEXT; `--color-danger-text`
-	   is white, meant as a foreground on a danger FILL, and would be
-	   invisible here. */
+	/* Destructive, and kept last in the row so it cannot be hit by muscle
+	   memory while scanning "Manage policies". */
 	.dp__drive-revoke {
 		flex: 0 0 auto;
-		padding: 0.15rem 0.5rem;
-		background: transparent;
-		border: 1px solid var(--color-danger-alt);
-		border-radius: var(--radius-md);
-		color: var(--color-danger-alt);
-		font-size: 0.8125rem;
-		font-weight: 400;
-	}
-
-	.dp__drive-revoke:hover:not(:disabled) {
-		background: var(--color-danger-light-bg);
-	}
-
-	.dp__drive-revoke:disabled {
-		opacity: 0.55;
-		cursor: not-allowed;
 	}
 
 	/* Indent the violations under the drive they belong to. */
@@ -1094,15 +1148,6 @@
 
 	/* Personal vs Shared — the distinction changes what the name beside it
 	   means, so it reads as a label rather than as part of the name. */
-	.dp__kind {
-		padding: 0 0.4em;
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-sm, 4px);
-		font-size: 0.75rem;
-		font-weight: 400;
-		color: var(--color-text-muted);
-		white-space: nowrap;
-	}
 
 	.dp__savestate {
 		margin: var(--space-2) 0 0;

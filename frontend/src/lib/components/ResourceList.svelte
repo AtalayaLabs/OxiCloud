@@ -141,6 +141,11 @@
 		preloadPdf,
 		queueGenerate as queueThumbnailGenerate
 	} from '$lib/utils/thumbnail';
+	import {
+		clampMenuToViewport,
+		focusFirstMenuItem,
+		handleMenuKeydown
+	} from '$lib/utils/menuKeyboard';
 
 	interface Props {
 		/**
@@ -336,6 +341,13 @@
 		 */
 		actions?: Snippet;
 		/**
+		 * Action-bar right cluster — rendered inside the display
+		 * controls, immediately after the dotfile eye toggle. For page
+		 * actions that belong next to the view controls rather than in
+		 * the left cluster.
+		 */
+		displayActions?: Snippet;
+		/**
 		 * Action-bar left cluster when selection is non-empty —
 		 * replaces `actions`. Receives the selected items so buttons
 		 * can be scoped to the batch. Replaces the phase-1
@@ -357,6 +369,13 @@
 		 * their click / drag-drop behavior.
 		 */
 		breadcrumb?: Snippet;
+		/**
+		 * Renders the page title inside the sticky action-bar row, left of
+		 * the action cluster, instead of on its own line above it. The
+		 * merged row is skipped while a batch selection is active so the
+		 * batch bar keeps the full width it needs.
+		 */
+		titleInToolbar?: boolean;
 		/**
 		 * When true, drops from the OS file system on the ResourceList
 		 * wrapper are forwarded to `onsystemdrop` (upload path). When
@@ -501,9 +520,11 @@
 		itemActions,
 		cardOverlay,
 		actions,
+		displayActions,
 		batchActions,
 		rowBadge,
 		breadcrumb,
+		titleInToolbar = false,
 		enableSystemDrop = false,
 		onsystemdrop,
 		systemDropOverlayActive = false,
@@ -954,6 +975,8 @@
 		return picked.map((p) => p.item);
 	});
 
+	const mergeTitleIntoBar = $derived(titleInToolbar && !!title);
+
 	// Listen for out-of-band `is_favorite` changes broadcast by other
 	// surfaces — the sidebar drop-on-Favorites target in `AppShell` is
 	// today's only emitter, but any future "toggle from elsewhere"
@@ -1000,6 +1023,16 @@
 	let ctxX = $state(0);
 	let ctxY = $state(0);
 	let ctxItem = $state<FileItem | FolderItem | null>(null);
+	let ctxMenuEl = $state<HTMLElement | null>(null);
+	let ctxReturnFocus: HTMLElement | null = null;
+
+	$effect(() => {
+		if (!ctxOpen || !ctxMenuEl) return;
+		focusFirstMenuItem(ctxMenuEl);
+		const { x, y } = clampMenuToViewport(ctxMenuEl);
+		if (x !== ctxX) ctxX = x;
+		if (y !== ctxY) ctxY = y;
+	});
 
 	async function openContext(e: MouseEvent, item: FileItem | FolderItem) {
 		if (!contextActions?.length) return;
@@ -1008,8 +1041,11 @@
 		// Snapshot the pointer coords now — after an `await menuPrepare`
 		// tick the event object may be reused / stale, and reading
 		// `e.clientX` post-await could pin the menu to the wrong spot.
-		const x = Math.min(e.clientX, window.innerWidth - 220);
-		const y = Math.min(e.clientY, window.innerHeight - (contextActions.length * 44 + 24));
+		const x = Math.max(8, Math.min(e.clientX, window.innerWidth - 220));
+		const y = Math.max(
+			8,
+			Math.min(e.clientY, window.innerHeight - (contextActions.length * 44 + 24))
+		);
 		// Give the page a chance to prime any per-item cache the
 		// `visible?` predicates read (e.g. folder-access on /recent +
 		// /favorites for the "Open parent folder" entry). Awaited so the
@@ -1023,6 +1059,7 @@
 			}
 		}
 		ctxItem = item;
+		ctxReturnFocus = e.currentTarget as HTMLElement | null;
 		ctxX = x;
 		ctxY = y;
 		ctxOpen = true;
@@ -1030,6 +1067,8 @@
 	function closeContext() {
 		ctxOpen = false;
 		ctxItem = null;
+		ctxReturnFocus?.focus?.();
+		ctxReturnFocus = null;
 	}
 
 	// ── Infinite scroll (IntersectionObserver) ────────────────────────────────
@@ -1153,6 +1192,23 @@
 	}
 </script>
 
+{#snippet kebabAction(item: FileItem | FolderItem)}
+	<button
+		class="file-actions"
+		data-testid={`resource-list-more-${item.id}-btn`}
+		title={t('files.more_actions', 'More actions')}
+		aria-label={t('files.more_actions', 'More actions')}
+		aria-haspopup="menu"
+		onclick={(e) => {
+			e.stopPropagation();
+			if (onContextMenuOverride) onContextMenuOverride(e, item);
+			else void openContext(e, item);
+		}}
+	>
+		<Icon name="ellipsis-v" />
+	</button>
+{/snippet}
+
 {#snippet row(item: FileItem | FolderItem)}
 	{@const kind = isFile(item) ? 'file' : 'folder'}
 	{@const iconName = kind === 'folder' ? 'folder' : iconNameFor(item.name, mimeOf(item))}
@@ -1272,7 +1328,11 @@
 				{#if dateCell}{@render dateCell(item, ctx)}{:else}{formatDate(dateVal)}{/if}
 			</div>
 		{/if}
-		<div class="grid-meta">
+		<div
+			class="grid-meta"
+			class:grid-meta--with-actions={filesStore.viewMode === 'grid' &&
+				(onContextMenuOverride || contextActions?.length)}
+		>
 			<!-- Grid-view meta line — size + modified date at the bottom of
 			     the card. The `dateCell` snippet override (used by /trash
 			     for the expiration chip) intentionally does NOT render
@@ -1285,6 +1345,9 @@
 				{#if sizeVal != null}<span class="grid-meta__size">{formatBytes(sizeVal)}</span>{/if}
 				{#if dateVal != null}<span class="grid-meta__date">{formatDate(dateVal)}</span>{/if}
 			</span>
+			{#if filesStore.viewMode === 'grid' && (onContextMenuOverride || contextActions?.length)}
+				{@render kebabAction(item)}
+			{/if}
 		</div>
 		<!--
 			Every row that surfaces an action puts everything into a single
@@ -1352,21 +1415,8 @@
 					</button>
 				{/if}
 				{#if itemActions}{@render itemActions(item)}{/if}
-				{#if onContextMenuOverride || contextActions?.length}
-					<button
-						class="file-actions"
-						data-testid={`resource-list-more-${item.id}-btn`}
-						title={t('files.more_actions', 'More actions')}
-						aria-label={t('files.more_actions', 'More actions')}
-						aria-haspopup="menu"
-						onclick={(e) => {
-							e.stopPropagation();
-							if (onContextMenuOverride) onContextMenuOverride(e, item);
-							else void openContext(e, item);
-						}}
-					>
-						<Icon name="ellipsis-v" />
-					</button>
+				{#if filesStore.viewMode === 'list' && (onContextMenuOverride || contextActions?.length)}
+					{@render kebabAction(item)}
 				{/if}
 			</div>
 		{/if}
@@ -1421,13 +1471,17 @@
 	-->
 	{#if heading}
 		{@render heading()}
-	{:else if title}
+	{:else if title && !mergeTitleIntoBar}
 		<h1 class="page-title">{title}</h1>
 	{/if}
 	<div class="page-sticky-header">
-		<ActionBar>
-			{#snippet start()}
-				<!--
+		<div class="rl-toolbar" class:rl-toolbar--with-title={mergeTitleIntoBar}>
+			{#if mergeTitleIntoBar}
+				<h1 class="page-title rl-toolbar-title">{title}</h1>
+			{/if}
+			<ActionBar>
+				{#snippet start()}
+					<!--
 				The action-bar left cluster has two states:
 				  1. `batchActions` — when the user has selected items, the
 				     page's batch buttons (Move / Delete / Restore / …)
@@ -1441,43 +1495,45 @@
 				  2. `actions` — the page's default cluster
 				     (Upload / New folder / Empty trash / Clear recent).
 			-->
-				<div
-					class="action-buttons"
-					class:batch-selection-bar={selectable && selected.size > 0 && batchActions}
-				>
-					{#if selectable && selected.size > 0 && batchActions}
-						<button
-							class="batch-bar-close"
-							title={t('common.clear', 'Clear selection')}
-							aria-label={t('common.clear', 'Clear selection')}
-							data-testid="resource-list-batch-close-btn"
-							onclick={clearSelection}
-						>
-							<Icon name="times" />
-						</button>
-						<span class="batch-bar-count"
-							>{t('files.selected_count', { count: selected.size }, '{{count}} selected')}</span
-						>
-						<div class="batch-bar-actions">
-							{@render batchActions(selectedItems)}
-						</div>
-					{:else if actions}
-						{@render actions()}
-					{/if}
-				</div>
-			{/snippet}
-			{#snippet end()}
-				<DisplayModeControls
-					groups={groupBys}
-					{groupBy}
-					{reversed}
-					ongroup={selectGroup}
-					ondirection={toggleDirection}
-					showViewMode={showViewToggle}
-					{showDotfileToggle}
-				/>
-			{/snippet}
-		</ActionBar>
+					<div
+						class="action-buttons"
+						class:batch-selection-bar={selectable && selected.size > 0 && batchActions}
+					>
+						{#if selectable && selected.size > 0 && batchActions}
+							<button
+								class="batch-bar-close"
+								title={t('common.clear', 'Clear selection')}
+								aria-label={t('common.clear', 'Clear selection')}
+								data-testid="resource-list-batch-close-btn"
+								onclick={clearSelection}
+							>
+								<Icon name="times" />
+							</button>
+							<span class="batch-bar-count"
+								>{t('files.selected_count', { count: selected.size }, '{{count}} selected')}</span
+							>
+							<div class="batch-bar-actions">
+								{@render batchActions(selectedItems)}
+							</div>
+						{:else if actions}
+							{@render actions()}
+						{/if}
+					</div>
+				{/snippet}
+				{#snippet end()}
+					<DisplayModeControls
+						groups={groupBys}
+						{groupBy}
+						{reversed}
+						ongroup={selectGroup}
+						ondirection={toggleDirection}
+						showViewMode={showViewToggle}
+						{showDotfileToggle}
+						afterDotfileToggle={displayActions}
+					/>
+				{/snippet}
+			</ActionBar>
+		</div>
 		{#if breadcrumb}
 			<!--
 				Breadcrumb sits BELOW the action bar (same sticky block) so
@@ -1674,9 +1730,12 @@
 	></div>
 	<div
 		class="rl-ctx-menu"
+		bind:this={ctxMenuEl}
+		onkeydown={(e) => handleMenuKeydown(e, ctxMenuEl, closeContext)}
 		style:left="{ctxX}px"
 		style:top="{ctxY}px"
 		role="menu"
+		tabindex="-1"
 		data-testid="resource-list-context-menu"
 	>
 		{#each visibleActions as action (action.key)}
@@ -1802,6 +1861,85 @@
 		pointer-events: none;
 	}
 
+	/* ── Title merged into the action-bar row ── */
+	.rl-toolbar--with-title {
+		display: flex;
+		align-items: center;
+		gap: var(--space-4);
+		margin-bottom: var(--space-4);
+	}
+
+	.rl-toolbar--with-title :global(.actions-bar) {
+		flex: 1 1 auto;
+		min-width: 0;
+		height: auto;
+		margin: 0;
+		padding: 0;
+		justify-content: flex-end;
+		align-items: center;
+		gap: var(--space-3);
+	}
+
+	.rl-toolbar--with-title .action-buttons {
+		flex: 1 1 auto;
+		min-width: 0;
+		justify-content: flex-end;
+	}
+
+	.rl-toolbar--with-title .action-buttons.batch-selection-bar {
+		justify-content: flex-start;
+		margin-right: 0;
+		transform: none;
+	}
+
+	.rl-toolbar--with-title :global(.view-toggle) {
+		height: 40px;
+		padding: 3px;
+		box-sizing: border-box;
+	}
+
+	.rl-toolbar--with-title :global(.view-toggle .toggle-btn) {
+		min-height: 0;
+		height: 32px;
+		min-width: 32px;
+	}
+
+	.rl-toolbar-title {
+		flex: 0 1 auto;
+		min-width: 0;
+		margin: 0;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	@media (width <= 768px) {
+		.rl-toolbar--with-title {
+			flex-wrap: wrap;
+			gap: var(--space-2);
+		}
+
+		/* Keep the title and view controls; the selection actions drop to a
+		   second row so the batch bar gets the full width. */
+		.rl-toolbar--with-title :global(.actions-bar) {
+			display: contents;
+		}
+
+		.rl-toolbar--with-title .action-buttons {
+			order: 1;
+		}
+
+		.rl-toolbar--with-title :global(.view-toggle) {
+			order: 2;
+			margin-left: auto;
+		}
+
+		.rl-toolbar--with-title .action-buttons.batch-selection-bar {
+			order: 3;
+			flex: 1 1 100%;
+		}
+	}
+
 	/* ── Breadcrumb strip inside the sticky header ── */
 	.rl-breadcrumb {
 		display: flex;
@@ -1898,11 +2036,13 @@
 		display: inline-flex;
 		position: absolute;
 		left: 50%;
-		bottom: 0;
+		bottom: 8px;
 		transform: translateX(-50%);
 		z-index: 2;
 		white-space: nowrap;
 		pointer-events: none;
+		border: 1px solid var(--color-warning-border);
+		border-radius: var(--radius-md);
 	}
 
 	/* ── Context menu ── */
@@ -1916,6 +2056,8 @@
 		position: fixed;
 		z-index: 1001;
 		min-width: 200px;
+		max-height: calc(100dvh - 16px);
+		overflow-y: auto;
 		padding: var(--space-1);
 		background: var(--color-bg-surface);
 		border: 1px solid var(--color-border);

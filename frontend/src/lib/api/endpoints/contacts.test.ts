@@ -1,11 +1,16 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 
-vi.mock('$lib/api/client', () => ({ apiJson: vi.fn() }));
+vi.mock('$lib/api/client', () => ({
+	apiFetch: vi.fn(),
+	apiErrorFromResponse: vi.fn(),
+	apiJson: vi.fn()
+}));
 vi.mock('$lib/api/csrf', () => ({ getCsrfHeaders: () => ({ 'X-CSRF-Token': 'csrf' }) }));
 
-import { apiJson } from '$lib/api/client';
+import { apiFetch, apiJson } from '$lib/api/client';
 import {
 	createContact,
+	deleteContact,
 	getContact,
 	listAddressBooks,
 	listContacts,
@@ -13,10 +18,13 @@ import {
 } from './contacts';
 
 const json = vi.mocked(apiJson);
+const fetchMock = vi.mocked(apiFetch);
 
 beforeEach(() => {
 	json.mockReset();
 	json.mockResolvedValue([]);
+	fetchMock.mockReset();
+	fetchMock.mockResolvedValue({ ok: true } as Response);
 });
 
 it('lists address books', async () => {
@@ -76,5 +84,14 @@ it('serializes updates to PUT with CSRF headers', async () => {
 		credentials: 'same-origin',
 		headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': 'csrf' },
 		body: '{"first_name":"Ada","email":[]}'
+	});
+});
+
+it('deletes a contact with CSRF headers', async () => {
+	await deleteContact('book', 'c 1');
+	expect(fetchMock).toHaveBeenCalledWith('/api/address-books/book/contacts/c%201', {
+		method: 'DELETE',
+		credentials: 'same-origin',
+		headers: { 'X-CSRF-Token': 'csrf' }
 	});
 });

@@ -115,10 +115,12 @@ type WorkerMsg = ProgressMsg | FallbackMsg | DoneMsg | LogMsg | HeartbeatMsg;
 export function tryDeltaUpload(
 	file: File,
 	folderId: string | null | undefined,
-	onProgress?: (pct: number) => void
+	onProgress?: (pct: number) => void,
+	signal?: AbortSignal
 ): Promise<DeltaUploadAnswer | null> {
 	const id = newUploadId();
 	if (
+		signal?.aborted ||
 		!folderId ||
 		file.size < DELTA_UPLOAD_MIN_SIZE ||
 		usable === false ||
@@ -167,12 +169,17 @@ export function tryDeltaUpload(
 		// spuriously — poisoning `usable = false` for the rest of the
 		// session even though the worker was healthy the whole time.
 		let visibilityListener: (() => void) | null = null;
+		let abortListener: (() => void) | null = null;
 		const settle = (answer: DeltaUploadAnswer | null) => {
 			clearTimeout(timer);
 			clearTimeout(stallTimer);
 			if (visibilityListener) {
 				document.removeEventListener('visibilitychange', visibilityListener);
 				visibilityListener = null;
+			}
+			if (abortListener) {
+				signal?.removeEventListener('abort', abortListener);
+				abortListener = null;
 			}
 			worker.terminate();
 			resolve(answer);
@@ -220,6 +227,12 @@ export function tryDeltaUpload(
 			document.addEventListener('visibilitychange', visibilityListener);
 		}
 		armStall();
+
+		if (signal) {
+			abortListener = () => settle(null);
+			signal.addEventListener('abort', abortListener, { once: true });
+			if (signal.aborted) abortListener();
+		}
 
 		worker.onmessage = (event: MessageEvent<WorkerMsg>) => {
 			armStall(); // worker is alive — reset the liveness watchdog

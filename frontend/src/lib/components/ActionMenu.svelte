@@ -172,6 +172,28 @@
 		z-index: 900;
 	}
 
+	/* Match the list-view kebab in the file list — the trigger is the same
+	   `ellipsis-v` glyph and should carry the same ghost-button treatment. */
+	.icon-btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 28px;
+		height: 28px;
+		padding: 0;
+		border: none;
+		border-radius: var(--radius-lg);
+		background: transparent;
+		color: var(--color-text-subtle);
+		font-size: var(--text-md);
+		cursor: pointer;
+	}
+
+	.icon-btn:hover {
+		background: var(--color-border-subtle);
+		color: var(--color-accent);
+	}
+
 	.am-menu {
 		position: fixed;
 		z-index: 901;

@@ -79,7 +79,7 @@
     "shared": "مشاركاتي",
     "recent": "الأخيرة",
     "favorites": "المفضلة",
-    "photos": "الصور",
+    "photos": "الوسائط",
     "music": "الموسيقى",
     "trash": "سلة المهملات",
     "sharedwithme": "مشتركة معي",
@@ -90,7 +90,9 @@
     "admin_sections": "أقسام المشرف",
     "back_to_app": "العودة إلى أوكسي كلاود",
     "toggle": "تبديل قائمة التنقل",
-    "account": "الحساب"
+    "account": "الحساب",
+    "section_library": "المكتبة",
+    "section_sharing": "المشاركة"
   },
   "photos": {
     "empty_state": "لا توجد صور بعد",

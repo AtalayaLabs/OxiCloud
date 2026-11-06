@@ -65,6 +65,12 @@
 		 *  page-local controls that want to sit alongside the
 		 *  built-ins land here. */
 		beforeGroupBy?: Snippet;
+
+		/** Rendered right after the dotfile eye toggle, inside
+		 *  `.view-toggle`. Page actions that belong with the view
+		 *  controls rather than the action bar's left cluster land
+		 *  here. */
+		afterDotfileToggle?: Snippet;
 	}
 
 	let {
@@ -76,7 +82,8 @@
 		showSort,
 		showViewMode = false,
 		showDotfileToggle = false,
-		beforeGroupBy
+		beforeGroupBy,
+		afterDotfileToggle
 	}: Props = $props();
 
 	// Sort toggle defaults ON when a group-by list is provided —
@@ -104,12 +111,28 @@
 	// then collapses to its start-only layout without an empty
 	// right block occupying space.
 	const anyVisible = $derived(
-		(groups?.length ?? 0) > 0 || showViewMode || showDotfileToggle || !!beforeGroupBy
+		(groups?.length ?? 0) > 0 ||
+			showViewMode ||
+			showDotfileToggle ||
+			!!beforeGroupBy ||
+			!!afterDotfileToggle
 	);
 </script>
 
 {#if anyVisible}
 	<div class="view-toggle" role="group" aria-label={t('view.label', 'View options')}>
+		{#if groups?.length && sortVisible}
+			<button
+				class="toggle-btn sort-dir-btn"
+				class:active={reversed}
+				title={t('sortdir.title', 'Sort direction')}
+				aria-label={t('sort.direction', 'Sort direction')}
+				data-testid="display-mode-sort-direction-btn"
+				onclick={() => ondirection?.()}
+			>
+				<Icon name="arrow-up" />
+			</button>
+		{/if}
 		{#if beforeGroupBy}{@render beforeGroupBy()}{/if}
 		{#if groups?.length}
 			<div class="group-by-selector" data-testid="display-mode-groupby-menu">
@@ -124,18 +147,6 @@
 					<Icon name={active?.icon ?? 'layer-group'} />
 					<span class="group-by-label">{active?.label ?? ''}</span>
 				</button>
-				{#if sortVisible}
-					<button
-						class="toggle-btn sort-dir-btn"
-						class:active={reversed}
-						title={t('sortdir.title', 'Sort direction')}
-						aria-label={t('sort.direction', 'Sort direction')}
-						data-testid="display-mode-sort-direction-btn"
-						onclick={() => ondirection?.()}
-					>
-						<Icon name="arrow-up" />
-					</button>
-				{/if}
 				{#if menuOpen}
 					<div class="group-by-menu">
 						{#each groups as g (g.key)}
@@ -152,29 +163,7 @@
 					</div>
 				{/if}
 			</div>
-			{#if showViewMode}<span class="view-toggle-separator"></span>{/if}
-		{/if}
-		{#if showViewMode}
-			<button
-				class="toggle-btn"
-				class:active={filesStore.viewMode === 'grid'}
-				title={t('view.grid', 'Grid view')}
-				aria-pressed={filesStore.viewMode === 'grid'}
-				data-testid="display-mode-view-grid-btn"
-				onclick={() => filesStore.setViewMode('grid')}
-			>
-				<Icon name="th" />
-			</button>
-			<button
-				class="toggle-btn"
-				class:active={filesStore.viewMode === 'list'}
-				title={t('view.list', 'List view')}
-				aria-pressed={filesStore.viewMode === 'list'}
-				data-testid="display-mode-view-list-btn"
-				onclick={() => filesStore.setViewMode('list')}
-			>
-				<Icon name="list" />
-			</button>
+			<span class="view-toggle-separator"></span>
 		{/if}
 		{#if showDotfileToggle}
 			<button
@@ -188,6 +177,25 @@
 				onclick={() => preferences.toggleHideDotfiles()}
 			>
 				<Icon name={preferences.hideDotfiles ? 'eye-slash' : 'eye'} />
+			</button>
+		{/if}
+		{#if afterDotfileToggle}{@render afterDotfileToggle()}{/if}
+		{#if showViewMode && showDotfileToggle}
+			<span class="view-toggle-separator"></span>
+		{/if}
+		{#if showViewMode}
+			<button
+				class="toggle-btn"
+				title={filesStore.viewMode === 'grid'
+					? t('view.list', 'List view')
+					: t('view.grid', 'Grid view')}
+				aria-label={filesStore.viewMode === 'grid'
+					? t('view.list', 'List view')
+					: t('view.grid', 'Grid view')}
+				data-testid="display-mode-view-toggle-btn"
+				onclick={() => filesStore.setViewMode(filesStore.viewMode === 'grid' ? 'list' : 'grid')}
+			>
+				<Icon name={filesStore.viewMode === 'grid' ? 'list' : 'th'} />
 			</button>
 		{/if}
 	</div>

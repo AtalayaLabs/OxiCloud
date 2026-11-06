@@ -180,7 +180,10 @@
 /* Mobile responsive styles for top bar */
 @media (max-width: 768px) {
     .top-bar {
-        padding: 0 var(--space-4);
+        height: calc(70px + env(safe-area-inset-top, 0px));
+        min-height: calc(70px + env(safe-area-inset-top, 0px));
+        max-height: calc(70px + env(safe-area-inset-top, 0px));
+        padding: env(safe-area-inset-top, 0px) var(--space-4) 0;
     }
 
     .sidebar-toggle {
