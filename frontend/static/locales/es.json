@@ -2008,6 +2008,7 @@
   "upgrade": {
     "title": "Pasar a una cuenta completa",
     "lede": "Consigue tu propio almacenamiento y empieza a subir archivos. Tus recursos compartidos existentes permanecen intactos.",
+    "unavailable": "La actualización no está disponible para tu cuenta en este momento. Tu acceso de invitado no se ve afectado: pide a un administrador que te actualice.",
     "busy": "Actualizando…",
     "submit": "Actualizar mi cuenta",
     "cancel": "Ahora no — volver a compartidos conmigo",

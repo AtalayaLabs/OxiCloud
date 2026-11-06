@@ -65,6 +65,21 @@ class SessionStore {
 	 * works via this derived accessor. */
 	user = $derived<PublicUser | null>(this.me?.full.user ?? null);
 	isExternalUser = $derived(this.me?.full.user.is_external ?? false);
+	/**
+	 * Would `POST /api/auth/upgrade-to-internal` succeed for me right
+	 * now? Server-computed: external AND registration open AND my email
+	 * domain allowed.
+	 *
+	 * Use this, not `isExternalUser`, to decide whether to OFFER the
+	 * upgrade. The domain allowlist is deliberately absent from
+	 * `/api/config` — publishing it would leak operator policy — so the
+	 * client cannot derive this, and gating on `isExternalUser` alone
+	 * shows a guest a button that answers 403.
+	 *
+	 * Defaults `false` before `/me` resolves: better to reveal the
+	 * banner a tick late than to offer an upgrade that fails.
+	 */
+	canUpgradeAccount = $derived(this.me?.is_upgradable ?? false);
 	isAuthenticated = $derived(this.me !== null);
 	/**
 	 * TRUE when the backend has set `force_password_change_at_next_login`

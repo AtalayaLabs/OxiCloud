@@ -2008,6 +2008,7 @@
   "upgrade": {
     "title": "Passa a un account completo",
     "lede": "Ottieni il tuo spazio di archiviazione e inizia a caricare file. Le tue condivisioni esistenti rimangono intatte.",
+    "unavailable": "L'aggiornamento non è disponibile per il tuo account in questo momento. Il tuo accesso come ospite resta invariato: chiedi a un amministratore di aggiornarlo.",
     "busy": "Aggiornamento…",
     "submit": "Aggiorna il mio account",
     "cancel": "Non ora — torna a condivisi con me",

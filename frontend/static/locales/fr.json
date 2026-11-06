@@ -2008,6 +2008,7 @@
   "upgrade": {
     "title": "Passer à un compte complet",
     "lede": "Obtenez votre propre espace de stockage et commencez à téléverser des fichiers. Vos partages existants restent intacts.",
+    "unavailable": "La mise à niveau n'est pas disponible pour votre compte pour le moment. Votre accès invité reste inchangé — demandez à un administrateur de vous mettre à niveau.",
     "busy": "Mise à niveau…",
     "submit": "Mettre à niveau mon compte",
     "cancel": "Pas maintenant — retour aux partages reçus",

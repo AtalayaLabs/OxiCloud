@@ -2008,6 +2008,7 @@
   "upgrade": {
     "title": "Rozszerz do pełnego konta",
     "lede": "Uzyskaj własną przestrzeń i zacznij przesyłać pliki. Twoje istniejące udostępnienia pozostają nienaruszone.",
+    "unavailable": "Rozszerzenie konta jest w tej chwili niedostępne. Twój dostęp gościa pozostaje bez zmian — poproś administratora o rozszerzenie konta.",
     "busy": "Rozszerzanie…",
     "submit": "Rozszerz moje konto",
     "cancel": "Nie teraz — powrót do udostępnionych mi",

@@ -1537,6 +1537,18 @@ impl AppServiceFactory {
         &self,
         db_pools: Option<DbPools>,
     ) -> Result<AppState, DomainError> {
+        // Hoisted so ONE atomic is shared between `AppState` (read by
+        // `/api/config` and the register gate) and `AuthApplicationService`
+        // (which folds it into `SelfUserDto::is_upgradable`). Built here
+        // rather than inline in the `AppState` literal below because the
+        // auth factory is constructed first and needs the same handle —
+        // two atomics would let the admin toggle move one and not the
+        // other, so the SPA would be told it can upgrade while the
+        // endpoint refuses. Seeded `true`, then overwritten from
+        // `AdminSettingsService::get_registration_enabled()` during
+        // startup.
+        let registration_enabled = Arc::new(std::sync::atomic::AtomicBool::new(true));
+
         // Database is REQUIRED in 100% blob storage model
         let pools = db_pools.ok_or_else(|| {
             DomainError::internal_error(
@@ -2427,6 +2439,7 @@ impl AppServiceFactory {
                 pool.clone(),
                 user_lifecycle.clone(),
                 opaque_repo_for_auth,
+                registration_enabled.clone(),
             )
             .await
             .map_err(|e| {
@@ -2688,7 +2701,7 @@ impl AppServiceFactory {
             // the pre-seed window keeps the register endpoint behaving
             // the same as "no override set" — anything stricter would
             // block registration during the ~ms before the seed runs.
-            registration_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            registration_enabled,
             backend_write_gate: backend_write_gate.clone(),
             ops_banner_service: ops_banner_service.clone(),
             migration_progress: Arc::new(std::sync::RwLock::new(None)),

@@ -1,5 +1,6 @@
 use crate::application::services::batch_operations::BatchOperationService;
 use crate::common::di::AppState;
+use crate::interfaces::middleware::user::require_internal_user_layer;
 use axum::{
     Router,
     body::Body,
@@ -580,8 +581,29 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     if let Some(ref music_svc) = app_state.music_service {
         use crate::interfaces::api::handlers::music_handler;
 
-        let music_router = Router::new()
+        // Creating a playlist is internal-only, and ONLY the create
+        // route is gated. Everything else in this nest stays reachable
+        // for externals: a playlist can be shared with a guest
+        // (`POST /{id}/share`), and the per-resource handlers already
+        // demand a grant via `require_playlist_perm`. Blocking the whole
+        // nest would take shared-playlist access away from exactly the
+        // principal kind grants exist for.
+        //
+        // Why a layer here instead of a check in `create_playlist`:
+        // `MusicService::create_playlist` has no pre-write gate (it
+        // seeds the caller an Owner grant and returns), and the service
+        // holds no handle that can resolve a user, so the router is
+        // where this costs nothing. A service-layer gate is the better
+        // home the day `MusicService` grows a user port.
+        let music_create = Router::new()
             .route("/", post(music_handler::create_playlist))
+            .with_state(music_svc.clone())
+            .layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
+                require_internal_user_layer,
+            ));
+
+        let music_router = Router::new()
             .route("/", get(music_handler::list_playlists))
             .route("/{playlist_id}", get(music_handler::get_playlist))
             .route("/{playlist_id}", put(music_handler::update_playlist))
@@ -612,7 +634,8 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
                 "/audio-metadata/{file_id}",
                 get(music_handler::get_audio_metadata),
             )
-            .with_state(music_svc.clone());
+            .with_state(music_svc.clone())
+            .merge(music_create);
 
         router = router.nest("/playlists", music_router);
         tracing::info!("Music routes initialized");
@@ -643,12 +666,30 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
             expose_system_users: app_state.core.config.features.expose_system_users,
         };
 
+        // Creating an address book is internal-only — same reasoning as
+        // the playlist create above, and the same narrow scope. The
+        // CardDAV door to this service method (`MKCOL`) has been gated
+        // all along by `require_internal_user_layer` on `/carddav`; REST
+        // reached the identical `ContactService::create_address_book`
+        // with no gate at all, which is the inconsistency this closes.
+        //
+        // Reads and in-book writes stay open: an address book can be
+        // shared, `create_contact` / `create_group` already demand
+        // `Permission::Create` on the book, and `list_address_books`
+        // deliberately handles an external caller (it hides the system
+        // "OxiCloud Users" book from them). Gating the nest would make
+        // that branch dead code and cut guests off from books shared
+        // with them.
+        let contacts_create = Router::new()
+            .route("/", post(contacts_handler::create_address_book))
+            .with_state(contacts_state.clone())
+            .layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
+                require_internal_user_layer,
+            ));
+
         let contacts_router = Router::new()
-            .route(
-                "/",
-                get(contacts_handler::list_address_books)
-                    .post(contacts_handler::create_address_book),
-            )
+            .route("/", get(contacts_handler::list_address_books))
             .route(
                 "/{book_id}",
                 put(contacts_handler::update_address_book)
@@ -683,7 +724,8 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
                 "/{book_id}/groups/{group_id}/contacts/{contact_id}",
                 delete(contacts_handler::remove_contact_from_group),
             )
-            .with_state(contacts_state);
+            .with_state(contacts_state)
+            .merge(contacts_create);
 
         router = router.nest("/address-books", contacts_router);
         tracing::info!("Contacts REST API routes initialized");

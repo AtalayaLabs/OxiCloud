@@ -34,6 +34,25 @@
 		}
 	});
 
+	// No upgrade path → show the reason instead of a form that can only
+	// 403. Two server-side rules can close it: registration is disabled
+	// (self-promotion IS self-registration under another name), or the
+	// caller's email domain is outside
+	// `OXICLOUD_REGISTRATION_ALLOWED_EMAIL_DOMAINS`. Both are folded
+	// into `me.is_upgradable`, so the page asks the one flag rather
+	// than re-deriving a policy it cannot fully see — the allowlist is
+	// deliberately not published to clients.
+	//
+	// Hiding the banner on /shared-with-me is not enough: this URL is
+	// reachable directly, from a bookmark or a stale tab.
+	//
+	// Gated on `session.loaded` and `isExternalUser` so neither the
+	// pre-/me tick nor an internal user mid-redirect (see `onMount`)
+	// flashes a refusal at someone it doesn't apply to.
+	const upgradeUnavailable = $derived(
+		session.loaded && session.isExternalUser && !session.canUpgradeAccount
+	);
+
 	async function onSubmit(e: SubmitEvent) {
 		e.preventDefault();
 		error = '';
@@ -138,66 +157,75 @@
 			<div class="auth-error" style="display: block" role="alert">{error}</div>
 		{/if}
 
-		<form class="auth-form" data-testid="upgrade-form" onsubmit={onSubmit} novalidate>
-			<div class="auth-input-group">
-				<label class="auth-label" for="upgrade-password">
-					{passwordRequired
-						? t('auth.password', 'Password')
-						: t('auth.password_optional', 'Password (optional)')}
-				</label>
-				<div class="auth-input-wrap auth-input-wrap--lock">
-					<input
-						id="upgrade-password"
-						class="auth-input"
-						data-testid="upgrade-password-input"
-						type="password"
-						bind:value={password}
-						autocomplete="new-password"
-						required={passwordRequired}
-						disabled={busy}
-					/>
-				</div>
+		{#if upgradeUnavailable}
+			<div class="auth-error" style="display: block" role="status" data-testid="upgrade-closed">
+				{t(
+					'upgrade.unavailable',
+					"Upgrading isn't available for your account right now. Your guest access is unaffected — ask an administrator to upgrade you."
+				)}
 			</div>
-
-			{#if password.length > 0}
+		{:else}
+			<form class="auth-form" data-testid="upgrade-form" onsubmit={onSubmit} novalidate>
 				<div class="auth-input-group">
-					<label class="auth-label" for="upgrade-confirm">
-						{t('auth.confirm_password', 'Confirm password')}
+					<label class="auth-label" for="upgrade-password">
+						{passwordRequired
+							? t('auth.password', 'Password')
+							: t('auth.password_optional', 'Password (optional)')}
 					</label>
 					<div class="auth-input-wrap auth-input-wrap--lock">
 						<input
-							id="upgrade-confirm"
+							id="upgrade-password"
 							class="auth-input"
-							data-testid="upgrade-confirm-input"
+							data-testid="upgrade-password-input"
 							type="password"
-							bind:value={confirm}
+							bind:value={password}
 							autocomplete="new-password"
-							required
+							required={passwordRequired}
 							disabled={busy}
 						/>
 					</div>
-					{#if matchState}
-						<div
-							class="auth-match show {matchState === 'ok' ? 'auth-match--ok' : 'auth-match--bad'}"
-						>
-							{matchState === 'ok'
-								? t('auth.passwords_match', 'Passwords match')
-								: t('auth.passwords_mismatch', "Passwords don't match")}
-						</div>
-					{/if}
 				</div>
-			{/if}
 
-			<button
-				class="auth-button"
-				type="submit"
-				data-testid="upgrade-submit-btn"
-				disabled={busy}
-				aria-busy={busy}
-			>
-				{busy ? t('upgrade.busy', 'Upgrading…') : t('upgrade.submit', 'Upgrade my account')}
-			</button>
-		</form>
+				{#if password.length > 0}
+					<div class="auth-input-group">
+						<label class="auth-label" for="upgrade-confirm">
+							{t('auth.confirm_password', 'Confirm password')}
+						</label>
+						<div class="auth-input-wrap auth-input-wrap--lock">
+							<input
+								id="upgrade-confirm"
+								class="auth-input"
+								data-testid="upgrade-confirm-input"
+								type="password"
+								bind:value={confirm}
+								autocomplete="new-password"
+								required
+								disabled={busy}
+							/>
+						</div>
+						{#if matchState}
+							<div
+								class="auth-match show {matchState === 'ok' ? 'auth-match--ok' : 'auth-match--bad'}"
+							>
+								{matchState === 'ok'
+									? t('auth.passwords_match', 'Passwords match')
+									: t('auth.passwords_mismatch', "Passwords don't match")}
+							</div>
+						{/if}
+					</div>
+				{/if}
+
+				<button
+					class="auth-button"
+					type="submit"
+					data-testid="upgrade-submit-btn"
+					disabled={busy}
+					aria-busy={busy}
+				>
+					{busy ? t('upgrade.busy', 'Upgrading…') : t('upgrade.submit', 'Upgrade my account')}
+				</button>
+			</form>
+		{/if}
 
 		<div class="auth-toggle">
 			<button

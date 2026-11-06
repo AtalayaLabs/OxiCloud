@@ -2093,6 +2093,7 @@
   "upgrade": {
     "title": "Upgrade to a full account",
     "lede": "Get your own storage and start uploading files. Your existing shares stay untouched.",
+    "unavailable": "Upgrading isn't available for your account right now. Your guest access is unaffected — ask an administrator to upgrade you.",
     "busy": "Upgrading…",
     "submit": "Upgrade my account",
     "cancel": "Not now — back to shared with me",

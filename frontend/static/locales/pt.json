@@ -2008,6 +2008,7 @@
   "upgrade": {
     "title": "Atualizar para conta completa",
     "lede": "Obtenha seu próprio armazenamento e comece a enviar arquivos. Seus compartilhamentos existentes permanecem intactos.",
+    "unavailable": "A atualização não está disponível para sua conta neste momento. Seu acesso de convidado permanece intacto — peça a um administrador para atualizá-la.",
     "busy": "Atualizando…",
     "submit": "Atualizar minha conta",
     "cancel": "Agora não — voltar a compartilhados comigo",

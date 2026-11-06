@@ -2008,6 +2008,7 @@
   "upgrade": {
     "title": "Upgraden naar een volledig account",
     "lede": "Krijg je eigen opslag en begin met het uploaden van bestanden. Je bestaande gedeelde items blijven onaangeroerd.",
+    "unavailable": "Upgraden is momenteel niet beschikbaar voor je account. Je gasttoegang blijft onaangeroerd — vraag een beheerder om je te upgraden.",
     "busy": "Upgraden…",
     "submit": "Mijn account upgraden",
     "cancel": "Niet nu — terug naar met mij gedeeld",
