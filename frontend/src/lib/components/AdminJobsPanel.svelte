@@ -1989,6 +1989,7 @@
 		align-items: center;
 		flex-wrap: wrap;
 	}
+
 	.jobs-panel__link {
 		display: inline-flex;
 		align-items: center;

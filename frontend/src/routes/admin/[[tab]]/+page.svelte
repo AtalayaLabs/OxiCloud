@@ -6313,10 +6313,6 @@
 		gap: var(--space-2);
 	}
 
-	.ops-banner-editor__add-language > .btn {
-		align-self: flex-start;
-	}
-
 	.ops-banner-editor__add-language-actions {
 		display: flex;
 		gap: var(--space-2);
