@@ -55,6 +55,7 @@
 //!   --my-content "alpha " \
 //!   --settle-ms 500 \
 //!   --ready-file /tmp/ready.c0 \
+//!   --start-file /tmp/start \
 //!   --output /tmp/s29_c0.json \
 //!   --timeout 15s
 //! ```
@@ -126,6 +127,11 @@ struct Args {
     /// in time" race that occasionally dropped events on slow /
     /// cold-cache runs. Off by default; only used by the smoke test.
     ready_file: Option<String>,
+    /// `--start-file <path>` — collab-converge: after touching
+    /// `--ready-file`, hold the insert until this path exists, so the
+    /// orchestrator can release every client together. Without it the
+    /// client inserts as soon as it is ready.
+    start_file: Option<String>,
     /// `--file <uuid>` — the target file for `collab-sync-probe`,
     /// `collab-fanout-listen` and `collab-fanout-write`. Parsed to
     /// 16 raw bytes so the helper can emit the wire header
@@ -269,6 +275,7 @@ fn parse_args() -> Result<Args, String> {
     let mut timeout = Duration::from_secs(3);
     let mut output = None;
     let mut ready_file = None;
+    let mut start_file = None;
     let mut file_id = None;
     let mut content = None;
     let mut expect_content = None;
@@ -303,6 +310,7 @@ fn parse_args() -> Result<Args, String> {
             "--timeout" => timeout = parse_duration(&value)?,
             "--output" => output = Some(value),
             "--ready-file" => ready_file = Some(value),
+            "--start-file" => start_file = Some(value),
             "--file" => file_id = Some(parse_uuid_bytes(&value)?),
             "--content" => content = Some(value),
             "--expect-content" => expect_content = Some(value),
@@ -340,6 +348,7 @@ fn parse_args() -> Result<Args, String> {
         timeout,
         output,
         ready_file,
+        start_file,
         file_id,
         content,
         expect_content,
@@ -1415,15 +1424,25 @@ async fn collab_converge(args: Args) -> Result<(), HelperError> {
         }
     }
 
-    // 3. Ready-file AFTER sync-step-2 caught up. The orchestrator's
-    //    barrier ensures every peer has both subscribed AND finished
-    //    its catch-up before any of them broadcasts — no client
-    //    inserts into a Doc that's about to receive a peer's
-    //    "existing" state.
+    // 3. Ready-file AFTER sync-step-2 caught up, then wait at the
+    //    start-file. Together they are the orchestrator's barrier: every
+    //    peer has both subscribed AND finished its catch-up before any of
+    //    them broadcasts. A client that went ahead would hear nothing for
+    //    `settle` and exit without its peers' inserts.
     if let Some(path) = args.ready_file.as_deref()
         && let Err(e) = std::fs::write(path, b"")
     {
         eprintln!("rt-hurl-helper: could not touch --ready-file {path}: {e}");
+    }
+    if let Some(path) = args.start_file.as_deref() {
+        while !std::path::Path::new(path).exists() {
+            if tokio::time::Instant::now() >= deadline {
+                return Err(HelperError::Expectation(format!(
+                    "timeout waiting for --start-file {path}"
+                )));
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 
     // 4. Local insert. Position 0. Different clients insert different

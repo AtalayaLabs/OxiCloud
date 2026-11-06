@@ -2150,10 +2150,11 @@ S29_CLIENTS=5
 s29_ready_files=()
 s29_output_files=()
 s29_pids=()
+s29_start=$(mktemp -t "rtbus_s29_start.XXXXXX"); rm -f "$s29_start"
 
-# Launch all 5 clients in parallel. Each blocks on its own ready-file
-# path, so orchestration waits for all subscribes to install BEFORE
-# any peer's UPDATE goes out. Without that, a slow subscribe would
+# Launch all 5 clients in parallel. Each reports on its own ready-file
+# path, then blocks on the shared start-file, so all subscribes install
+# BEFORE any peer's UPDATE goes out. Without that, a slow subscribe would
 # miss earlier peers' initial inserts and the final text would be
 # missing that peer's contribution — surfacing as divergence rather
 # than a stuck peer.
@@ -2170,8 +2171,15 @@ for i in $(seq 0 $((S29_CLIENTS - 1))); do
     --settle-ms 800 \
     --timeout 15s \
     --ready-file "$ready" \
+    --start-file "$s29_start" \
     --output "$out" &
   s29_pids+=($!)
+  # Longer than --settle-ms on purpose. CI regression: a client used to insert
+  # as soon as it was ready, so one that got ahead heard nothing for the settle
+  # window and exited with only its own text ("client 1 diverged", c1 applied 0
+  # updates). This stagger turns that intermittent race into a certain failure
+  # should --start-file ever stop holding the clients back.
+  sleep 1
 done
 
 # Wait for every client's subscribe ack.
@@ -2179,8 +2187,9 @@ for ready in "${s29_ready_files[@]}"; do
   wait_ready "$ready"
 done
 
-# All 5 subscribes installed — now the clients start broadcasting
-# their inserts. Wait for every client to exit.
+# All 5 subscribes installed — release the clients to broadcast their inserts,
+# then wait for every client to exit.
+: > "$s29_start"
 s29_failed=0
 for pid in "${s29_pids[@]}"; do
   if ! wait "$pid"; then
@@ -2226,6 +2235,7 @@ done
 
 # Cleanup
 for out in "${s29_output_files[@]}"; do rm -f "$out"; done
+rm -f "$s29_start"
 log "S29 OK (5 clients converged: $c0_len chars, text=$c0_text)"
 
 log "All twenty-nine message-bus scenarios passed."
