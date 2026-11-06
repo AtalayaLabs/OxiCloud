@@ -985,7 +985,6 @@
 		<div class="search-slot">
 			{#if serverConfig.features.search}
 				<form class="search-container" onsubmit={onSearch}>
-					<Icon name="search" class="search-icon" />
 					<input
 						type="text"
 						bind:this={searchInputEl}
