@@ -151,7 +151,9 @@
     .sidebar--collapsed .app-name,
     .sidebar--collapsed .nav-group__label,
     .sidebar--collapsed .storage-container,
-    .sidebar--collapsed .drive-picker {
+    /* DrivePicker's scoped `display: flex` ties the two-class selector, so
+       the extra `.nav-menu` is what makes this hide rule win. */
+    .sidebar--collapsed .nav-menu .drive-picker {
         display: none;
     }
 
