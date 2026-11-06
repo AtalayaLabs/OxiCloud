@@ -28,6 +28,7 @@ jobs:
       migrations: ${{ steps.filter.outputs.migrations }}
       asyncapi_spec: ${{ steps.filter.outputs.asyncapi_spec }}
       openapi_spec: ${{ steps.filter.outputs.openapi_spec }}
+      nextcloudcmd: ${{ steps.filter.outputs.nextcloudcmd }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -54,6 +55,19 @@ jobs:
               - 'src/application/adapters/plugin_user_lifecycle_hook.rs'
             migrations:
               - 'migrations/**'
+            nextcloudcmd:
+              # Everything a desktop sync touches: the NC DAV surface, the
+              # services and storage beneath it, the schema. REST-handler-only
+              # and frontend-only changes cannot alter what the client sees.
+              - 'src/interfaces/nextcloud/**'
+              - 'src/application/**'
+              - 'src/domain/**'
+              - 'src/infrastructure/**'
+              - 'src/common/**'
+              - 'migrations/**'
+              - 'Cargo.lock'
+              - 'tests/nextcloudcmd/**'
+              - 'tests/common/**'
             asyncapi_spec:
               # The lockfile is in scope alongside package.json because the
               # job regenerates the DTOs with `npm ci`, which installs the
@@ -946,6 +960,55 @@ jobs:
         with:
           name: caldav-server-log
           path: tests/caldav/server.log
+          retention-days: 7
+
+  nextcloudcmd-test:
+    # Sync convergence under the real Nextcloud desktop sync engine
+    # (`nextcloudcmd`, image pinned in tests/nextcloudcmd/Dockerfile).
+    # Changes files on both sides between syncs — renames, moves, delete +
+    # restore from trash, conflicting edits, killed transfers, seeded random
+    # churn — and fails unless local and server trees end byte-identical.
+    # Litmus proves the protocol; this proves the client NextCloud users
+    # actually install keeps their data intact.
+    #
+    # Path-filtered (`changes.nextcloudcmd`): a run builds the client image
+    # and spends a few minutes in throttled transfers, which is wasted on
+    # frontend- or REST-only PRs. Runs beside litmus, not after it — it
+    # shares nothing with it but the binary.
+    name: Sync convergence — nextcloudcmd
+    needs: [changes, build]
+    if: github.event_name == 'pull_request' && needs.changes.outputs.nextcloudcmd == 'true'
+    # Jammy, like every other job consuming the pre-built binary (glibc).
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: oxicloud-release
+          path: target/release/
+
+      - name: Set execute bit on pre-built binary
+        run: chmod +x target/release/oxicloud
+
+      - name: Install jq + python3 venv
+        run: sudo apt-get update -q && sudo apt-get install -y jq python3 python3-venv
+
+      - name: Run nextcloudcmd suite
+        run: bash tests/nextcloudcmd/run.sh
+        env:
+          BUILD_TARGET: release
+
+      - name: Upload server log, sync logs and local trees on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextcloudcmd-logs
+          path: |
+            tests/nextcloudcmd/server.log
+            tests/nextcloudcmd/.work/
+          include-hidden-files: true
           retention-days: 7
 
   front-test:

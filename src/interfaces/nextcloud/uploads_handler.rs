@@ -10,6 +10,7 @@ use crate::application::ports::file_ports::FileUploadUseCase;
 use crate::common::di::AppState;
 use crate::common::mime_detect::filename_from_path;
 use crate::interfaces::errors::AppError;
+use crate::interfaces::nextcloud::webdav_handler::with_nc_write_headers;
 use crate::interfaces::upload_ingest::{
     discard_ingested, ingest_stream_to_cas, stream_body_to_path, stream_from_files,
 };
@@ -493,24 +494,18 @@ async fn handle_assemble(
             return Err(AppError::from(e));
         }
     };
-    let etag: Option<String> = Some(dto.etag);
-
     // Cleanup session.
     let _ = nc.chunked_uploads.cleanup(&user.username, upload_id).await;
 
-    if let Some(tag) = etag {
-        return Ok(Response::builder()
-            .status(StatusCode::CREATED)
-            .header(header::ETAG, format!("\"{}\"", tag))
-            .header("oc-etag", format!("\"{}\"", tag))
-            .body(Body::empty())
-            .unwrap());
-    }
-
-    Ok(Response::builder()
-        .status(StatusCode::CREATED)
-        .body(Body::empty())
-        .unwrap())
+    Ok(with_nc_write_headers(
+        Response::builder().status(StatusCode::CREATED),
+        &dto,
+        oc_mtime,
+        Some(&nc.file_ids),
+    )
+    .await
+    .body(Body::empty())
+    .unwrap())
 }
 
 /// DELETE — abort an upload session.
