@@ -143,7 +143,10 @@ check_no_unwired_scenarios() {
   for f in "$API_DIR"/*.hurl; do
     base="$(basename "$f" .hurl)"
     [[ "$base" == *_diag ]] && continue
-    printf '%s\n' "$wired" | grep -qx "$base" && continue
+    # Here-string, not `printf | grep -q`: grep -q exits on the first match, and
+    # under pipefail the resulting SIGPIPE in printf failed the pipeline, so a
+    # wired file (seen with admin_jobs) was intermittently reported as unwired.
+    grep -qx "$base" <<<"$wired" && continue
     # shellcheck disable=SC2076
     [[ " ${UNWIRED_KNOWN[*]} " == *" $base "* ]] && continue
     unwired+=("$base")
