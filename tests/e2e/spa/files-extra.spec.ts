@@ -1,9 +1,9 @@
 import { test, expect } from './coverage-helpers';
-import { apiLogin, apiCreateFolder, apiUploadFile, SAMPLE_FILES } from './helpers';
+import { apiLogin, apiCreateFolder, apiUploadFile, favoriteRow, SAMPLE_FILES } from './helpers';
 
 /**
  * Deeper files-page coverage (the largest source file): list/grid view toggle,
- * column sorting, group-by lanes, breadcrumb navigation, and copy-via-dialog.
+ * group-by lanes and sort direction, breadcrumb navigation, and copy-via-dialog.
  */
 test.beforeEach(async ({ page }) => {
   await apiLogin(page);
@@ -13,22 +13,21 @@ function uniq(p: string): string {
   return `${p}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 }
 
-test('sort columns and toggle list/grid views', async ({ page }) => {
+test('toggle list and grid views', async ({ page }) => {
   const folder = await apiCreateFolder(page, uniq('SortHost'));
   await apiUploadFile(page, SAMPLE_FILES.text(), folder.id);
   await apiUploadFile(page, SAMPLE_FILES.json(), folder.id);
   await page.goto(`/files/${folder.id}`);
   await expect(page.getByTestId(SAMPLE_FILES.text().name)).toBeVisible({ timeout: 15_000 });
 
-  await page.getByTestId('display-mode-view-list-btn').click();
-  // Column sort buttons live in the list-view header.
-  await page.getByTestId('files-sort-name-btn').click({ timeout: 5_000 }).catch(() => {});
-  await page.getByTestId('files-sort-size-btn').click({ timeout: 5_000 }).catch(() => {});
-  await page.getByTestId('files-sort-modified_at-btn').click({ timeout: 5_000 }).catch(() => {});
-  await page.getByTestId('display-mode-view-grid-btn').click();
+  // One button flips both ways; the list header is the observable difference.
+  await page.getByTestId('display-mode-view-toggle-btn').click();
+  await expect(page.getByTestId('resource-list-select-all-checkbox')).toBeVisible();
+  await page.getByTestId('display-mode-view-toggle-btn').click();
+  await expect(page.getByTestId('resource-list-select-all-checkbox')).toHaveCount(0);
 });
 
-test('sort by every column and group by every dimension', async ({ page }) => {
+test('sort direction and group by every dimension', async ({ page }) => {
   const folder = await apiCreateFolder(page, uniq('Dims'));
   await apiUploadFile(page, SAMPLE_FILES.text(), folder.id);
   await apiUploadFile(page, SAMPLE_FILES.png(), folder.id);
@@ -36,11 +35,6 @@ test('sort by every column and group by every dimension', async ({ page }) => {
   await page.goto(`/files/${folder.id}`);
   await expect(page.getByTestId(SAMPLE_FILES.text().name)).toBeVisible({ timeout: 15_000 });
 
-  // List view exposes the column-sort buttons.
-  await page.getByTestId('display-mode-view-list-btn').click();
-  for (const col of ['name', 'owner', 'type', 'size', 'modified_at']) {
-    await page.getByTestId(`files-sort-${col}-btn`).click({ timeout: 3_000 }).catch(() => {});
-  }
   // Flip the sort direction.
   await page.getByTestId('display-mode-sort-direction-btn').click({ timeout: 3_000 }).catch(() => {});
 
@@ -64,7 +58,7 @@ test('group files by type', async ({ page }) => {
   await expect(page.getByTestId(SAMPLE_FILES.text().name)).toBeVisible();
 });
 
-test('file context menu: favorite, copy, open-parent', async ({ page }) => {
+test('file context menu: copy, open-parent', async ({ page }) => {
   const folder = await apiCreateFolder(page, uniq('Ctx'));
   await apiCreateFolder(page, uniq('CtxDest'));
   const f = SAMPLE_FILES.text();
@@ -72,10 +66,11 @@ test('file context menu: favorite, copy, open-parent', async ({ page }) => {
   await page.goto(`/files/${folder.id}`);
   await expect(page.getByTestId(f.name)).toBeVisible({ timeout: 15_000 });
 
-  // Favorite the file from its context menu.
-  await page.getByTestId(f.name).click({ button: 'right' });
-  await page.getByTestId('files-ctx-favorite-item').click();
-  await expect(page.getByTestId('files-context-menu')).toHaveCount(0);
+  // Favorite the file from its row star.
+  await favoriteRow(page, f.name);
+  await expect(
+    page.getByTestId(f.name).locator('[data-testid^="resource-list-favorite-"]')
+  ).toHaveAttribute('aria-pressed', 'true');
 
   // Copy → opens the move dialog (copy mode); cancel.
   await page.getByTestId(f.name).click({ button: 'right' });

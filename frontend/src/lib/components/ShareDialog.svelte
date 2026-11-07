@@ -1395,18 +1395,18 @@
 		flex-wrap: wrap;
 	}
 
-	/* Far right, on whichever line it ends up on. `.search` is `flex: 1`, so
-	   on a wide dialog this sits right already — but the row wraps, and
-	   without the auto margin the button starts from the left of the second
-	   line the moment the dialog is narrow. */
+	/* Stays on the row's right edge. The row wraps only when the fixed
+	   members (role, expiry, button) alone are wider than the dialog —
+	   the search box gives up its width first. */
 	.add-row__submit {
 		margin-left: auto;
+		flex: none;
 	}
 
 	.search {
 		position: relative;
 		flex: 1;
-		min-width: 12rem;
+		min-width: 0;
 	}
 
 	.search input,
@@ -1689,21 +1689,10 @@
 		margin-bottom: var(--space-4);
 	}
 
-	/*
-	 * The commit action for this form, bottom-right where a reader expects it.
-	 *
-	 * `width: fit-content` is the part that matters: `.btn` is
-	 * `display: flex`, so as a block-level flex container it stretched to the
-	 * full width of the section — which is why it read as a left-aligned
-	 * banner rather than a button. Shrinking it to its content is what lets
-	 * `margin-left: auto` push it right at all.
-	 *
-	 * Set apart from the fields above so it does not look like another one.
-	 */
+	/* Full-width commit action under the fields. */
 	.sh-create__submit {
-		width: fit-content;
+		width: 100%;
 		margin-top: var(--space-4);
-		margin-left: auto;
 	}
 
 	/* Informational mode: the drive's rules, stated before they are broken.
@@ -1732,18 +1721,15 @@
 	}
 
 	.sh-fields {
-		display: flex;
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
 		gap: var(--space-3);
-		margin-bottom: var(--space-3);
-		flex-wrap: wrap;
 	}
 
 	.sh-fields label {
 		display: flex;
 		flex-direction: column;
 		gap: 0.25rem;
-		flex: 1;
-		min-width: 8rem;
 		font-size: var(--text-sm);
 	}
 
@@ -1800,7 +1786,7 @@
 		display: inline-flex;
 		align-items: center;
 		gap: var(--space-1);
-		padding: var(--space-1) var(--space-2);
+		padding: var(--space-2) var(--space-2);
 		border-radius: var(--radius-pill, 999px);
 		border: 1px solid var(--color-border);
 		font-size: var(--text-sm);

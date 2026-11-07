@@ -79,7 +79,7 @@
     "shared": "Compartilhamentos",
     "recent": "Recentes",
     "favorites": "Favoritos",
-    "photos": "Fotos",
+    "photos": "Mídia",
     "music": "Música",
     "trash": "Lixeira",
     "sharedwithme": "Compartilhados comigo",
@@ -90,7 +90,9 @@
     "admin_sections": "Seções administrativas",
     "back_to_app": "De volta ao OxiCloud",
     "toggle": "Alternar menu de navegação",
-    "account": "Conta"
+    "account": "Conta",
+    "section_library": "Biblioteca",
+    "section_sharing": "Compartilhamento"
   },
   "photos": {
     "empty_state": "Nenhuma foto ainda",

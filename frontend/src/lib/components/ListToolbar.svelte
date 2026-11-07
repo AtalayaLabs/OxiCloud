@@ -82,6 +82,18 @@
 
 	{#if groups?.length || showViewToggle || beforeGroupBy || showDotfileToggle}
 		<div class="view-toggle" role="group" aria-label={t('view.label', 'View options')}>
+			{#if groups?.length}
+				<button
+					class="toggle-btn sort-dir-btn"
+					class:active={reversed}
+					title={t('sortdir.title', 'Sort direction')}
+					aria-label={t('sort.direction', 'Sort direction')}
+					data-testid="list-toolbar-sort-direction-btn"
+					onclick={() => ondirection?.()}
+				>
+					<Icon name="arrow-up" />
+				</button>
+			{/if}
 			{#if beforeGroupBy}{@render beforeGroupBy()}{/if}
 			{#if groups?.length}
 				<div class="group-by-selector" data-testid="list-toolbar-groupby-menu">
@@ -95,16 +107,6 @@
 					>
 						<Icon name={active?.icon ?? 'layer-group'} />
 						<span class="group-by-label">{active?.label ?? ''}</span>
-					</button>
-					<button
-						class="toggle-btn sort-dir-btn"
-						class:active={reversed}
-						title={t('sortdir.title', 'Sort direction')}
-						aria-label={t('sort.direction', 'Sort direction')}
-						data-testid="list-toolbar-sort-direction-btn"
-						onclick={() => ondirection?.()}
-					>
-						<Icon name="arrow-up" />
 					</button>
 					{#if menuOpen}
 						<div class="group-by-menu">
@@ -123,24 +125,6 @@
 					{/if}
 				</div>
 				{#if showViewToggle}<span class="view-toggle-separator"></span>{/if}
-			{/if}
-			{#if showViewToggle}
-				<button
-					class="toggle-btn"
-					class:active={filesStore.viewMode === 'grid'}
-					title={t('view.grid', 'Grid view')}
-					aria-pressed={filesStore.viewMode === 'grid'}
-					data-testid="list-toolbar-view-grid-btn"
-					onclick={() => filesStore.setViewMode('grid')}><Icon name="th" /></button
-				>
-				<button
-					class="toggle-btn"
-					class:active={filesStore.viewMode === 'list'}
-					title={t('view.list', 'List view')}
-					aria-pressed={filesStore.viewMode === 'list'}
-					data-testid="list-toolbar-view-list-btn"
-					onclick={() => filesStore.setViewMode('list')}><Icon name="list" /></button
-				>
 			{/if}
 			{#if showDotfileToggle}
 				<!--
@@ -162,6 +146,27 @@
 					data-testid="list-toolbar-dotfile-toggle-btn"
 					onclick={() => preferences.toggleHideDotfiles()}
 					><Icon name={preferences.hideDotfiles ? 'eye-slash' : 'eye'} /></button
+				>
+			{/if}
+			{#if showViewToggle && showDotfileToggle}
+				<span class="view-toggle-separator"></span>
+			{/if}
+			{#if showViewToggle}
+				<button
+					class="toggle-btn"
+					class:active={filesStore.viewMode === 'grid'}
+					title={t('view.grid', 'Grid view')}
+					aria-pressed={filesStore.viewMode === 'grid'}
+					data-testid="list-toolbar-view-grid-btn"
+					onclick={() => filesStore.setViewMode('grid')}><Icon name="th" /></button
+				>
+				<button
+					class="toggle-btn"
+					class:active={filesStore.viewMode === 'list'}
+					title={t('view.list', 'List view')}
+					aria-pressed={filesStore.viewMode === 'list'}
+					data-testid="list-toolbar-view-list-btn"
+					onclick={() => filesStore.setViewMode('list')}><Icon name="list" /></button
 				>
 			{/if}
 		</div>

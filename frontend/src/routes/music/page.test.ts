@@ -1,13 +1,14 @@
 import { it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/svelte';
 
-const { ui, promptDialog, confirmDialog } = vi.hoisted(() => ({
+const { ui, promptDialog, formDialog, confirmDialog } = vi.hoisted(() => ({
 	ui: { notify: vi.fn() },
 	promptDialog: vi.fn(),
+	formDialog: vi.fn(),
 	confirmDialog: vi.fn()
 }));
 vi.mock('$lib/stores/ui.svelte', () => ({ ui }));
-vi.mock('$lib/stores/dialogs.svelte', () => ({ promptDialog, confirmDialog }));
+vi.mock('$lib/stores/dialogs.svelte', () => ({ promptDialog, formDialog, confirmDialog }));
 vi.mock('$lib/api/endpoints/files', () => ({ fileInlineUrl: () => '/in' }));
 vi.mock('$lib/api/endpoints/search', () => ({ searchFiles: vi.fn(async () => ({ items: [] })) }));
 vi.mock('$lib/api/endpoints/music', () => ({
@@ -30,7 +31,7 @@ import {
 	listPlaylists,
 	listTracks,
 	createPlaylist,
-	renamePlaylist,
+	updatePlaylist,
 	deletePlaylist
 } from '$lib/api/endpoints/music';
 import MusicPage from './+page.svelte';
@@ -109,17 +110,27 @@ it('surfaces a load error', async () => {
 	await waitFor(() => expect(screen.getByText('boom')).toBeTruthy());
 });
 
-it('renames the current playlist', async () => {
+it('edits name and description together', async () => {
 	m(listPlaylists).mockResolvedValue([playlist]);
-	// See `creates a playlist` above for why we invoke `opts.action`.
-	promptDialog.mockImplementation(async (opts) => {
-		if (opts.action) await opts.action('Renamed');
-		return 'Renamed';
-	});
-	m(renamePlaylist).mockResolvedValue(undefined);
+	formDialog.mockResolvedValue({ name: 'Renamed', description: 'new description' });
+	m(updatePlaylist).mockResolvedValue(undefined);
 	render(MusicPage);
 	await fireEvent.click(await screen.findByTestId('music-rename-playlist-btn'));
-	await waitFor(() => expect(renamePlaylist).toHaveBeenCalledWith('p1', 'Renamed'));
+	await waitFor(() =>
+		expect(updatePlaylist).toHaveBeenCalledWith('p1', {
+			name: 'Renamed',
+			description: 'new description'
+		})
+	);
+});
+
+// Regression: `track_count` is Option<i64> on the wire and reaches the client
+// as null, so the raw interpolation rendered "null tracks" in the sidebar.
+it('does not render a null track count', async () => {
+	m(listPlaylists).mockResolvedValue([{ ...playlist, track_count: null }]);
+	render(MusicPage);
+	await screen.findByTestId('Roadtrip');
+	expect(screen.queryByText(/null/)).toBeNull();
 });
 
 it('deletes the current playlist on the second click', async () => {

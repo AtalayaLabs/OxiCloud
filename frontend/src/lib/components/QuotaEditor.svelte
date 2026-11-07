@@ -138,7 +138,7 @@
 	</form>
 	{#snippet footer()}
 		<button
-			class="btn"
+			class="btn btn-secondary"
 			type="button"
 			data-testid={`${testIdPrefix}-cancel-btn`}
 			onclick={onclose}
@@ -147,7 +147,7 @@
 			{t('common.cancel', 'Cancel')}
 		</button>
 		<button
-			class="btn btn--primary"
+			class="btn btn-primary"
 			type="submit"
 			form="quota-editor-form"
 			data-testid={`${testIdPrefix}-save-btn`}
@@ -159,13 +159,12 @@
 </Modal>
 
 <style>
-	/* Svelte 5 scopes styles per component, and CSS classes used
-	   in this file's markup — including inside `{#snippet footer}`
-	   — carry this component's hash. The local `.btn` / `.form` /
-	   `.quota-input` / `.muted` / `.status--error` / `.btn--primary`
-	   rules on `/admin/+page.svelte` don't reach across; mirror them
-	   here so the QuotaEditor visually matches every other modal in
-	   the admin panel (same paddings, colours, primary button look). */
+	/* Svelte 5 scopes styles per component, and CSS classes used in
+	   this file's markup carry this component's hash. The local
+	   `.form` / `.quota-input` / `.muted` / `.status--error` rules on
+	   `/admin/+page.svelte` don't reach across; mirror them here so
+	   the QuotaEditor visually matches every other modal in the admin
+	   panel. Buttons use the global `.btn` classes. */
 	.form {
 		display: flex;
 		flex-direction: column;
@@ -193,8 +192,10 @@
 		gap: var(--space-2);
 	}
 
-	.quota-input input {
-		flex: 1;
+	.quota-input input,
+	.quota-input select {
+		flex: 1 1 0;
+		min-width: 0;
 	}
 
 	.muted {
@@ -204,25 +205,5 @@
 
 	.status--error {
 		color: var(--color-error-text);
-	}
-
-	.btn {
-		padding: 0.5rem 0.875rem;
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
-		background: var(--color-bg-surface);
-		color: var(--color-text);
-		cursor: pointer;
-	}
-
-	.btn--primary {
-		background: var(--color-primary);
-		color: var(--color-text-light);
-		border-color: transparent;
-	}
-
-	.btn:disabled {
-		opacity: 0.55;
-		cursor: not-allowed;
 	}
 </style>

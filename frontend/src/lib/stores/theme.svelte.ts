@@ -29,11 +29,34 @@ function readInitial(): Theme {
 
 const store = $state<{ theme: Theme }>({ theme: readInitial() });
 
+const CHROME_COLORS = { light: '#f5f7fa', dark: '#0f172a' } as const;
+
+function prefersDark(): boolean {
+	return (
+		typeof window !== 'undefined' && !!window.matchMedia?.('(prefers-color-scheme: dark)').matches
+	);
+}
+
+function applyChrome(theme: Theme): void {
+	if (typeof document === 'undefined') return;
+	const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+	if (!meta) return;
+	meta.content = CHROME_COLORS[theme === 'auto' ? (prefersDark() ? 'dark' : 'light') : theme];
+}
+
 function apply(theme: Theme): void {
 	if (typeof document === 'undefined') return;
 	const html = document.documentElement;
 	if (theme === 'light' || theme === 'dark') html.setAttribute('data-color-scheme', theme);
 	else html.removeAttribute('data-color-scheme');
+	applyChrome(theme);
+}
+
+if (typeof window !== 'undefined') {
+	window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', () => {
+		if (store.theme === 'auto') applyChrome('auto');
+	});
+	applyChrome(store.theme);
 }
 
 export function setTheme(theme: Theme): void {

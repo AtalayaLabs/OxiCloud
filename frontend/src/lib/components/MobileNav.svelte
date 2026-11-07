@@ -51,8 +51,8 @@
 		right: 0;
 		bottom: 0;
 		z-index: var(--z-sticky);
-		height: var(--mobile-nav-height);
-		padding: 0 var(--space-2);
+		height: calc(var(--mobile-nav-height) + env(safe-area-inset-bottom, 0px));
+		padding: 0 var(--space-2) env(safe-area-inset-bottom, 0);
 		background: var(--color-bg-surface);
 		border-top: 1px solid var(--color-border);
 		box-sizing: border-box;

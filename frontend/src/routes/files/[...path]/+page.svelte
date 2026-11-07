@@ -72,6 +72,11 @@
 	import { ui } from '$lib/stores/ui.svelte';
 	import { dateBucket, sizeBucket, typeLabel } from '$lib/stores/files.svelte';
 	import { replaceSet } from '$lib/utils/sets';
+	import {
+		clampMenuToViewport,
+		focusFirstMenuItem,
+		handleMenuKeydown
+	} from '$lib/utils/menuKeyboard';
 
 	// Message-bus logger. Users can tune with
 	//   oxi.setLogLevel('oxi:message-bus', 'debug')
@@ -189,6 +194,7 @@
 	let error = $state<string | null>(null);
 	let fileInput = $state<HTMLInputElement | null>(null);
 	let uploading = $state(false);
+	let uploadAbort: AbortController | null = null;
 
 	interface ActionTarget {
 		id: string;
@@ -615,16 +621,19 @@
 		folderId: string | null,
 		file: File,
 		report: (frac: number) => void,
-		ownedHash: string | null
+		ownedHash: string | null,
+		signal?: AbortSignal
 	): Promise<number> {
+		if (signal?.aborted) throw signal.reason ?? new Error('upload cancelled');
 		const dedup =
 			(ownedHash && folderId ? await instantUploadOwned(folderId, file, ownedHash) : null) ??
-			(await tryDeltaUpload(file, folderId, (pct) => report(pct / 100)));
+			(await tryDeltaUpload(file, folderId, (pct) => report(pct / 100), signal));
+		if (signal?.aborted) throw signal.reason ?? new Error('upload cancelled');
 		if (dedup) {
 			if (!dedup.ok) throwFromDedupAnswer(dedup, '/api/files/by-hash');
 			return dedup.savedBytes ?? 0;
 		}
-		await uploadFileWithProgress(folderId, file, report);
+		await uploadFileWithProgress(folderId, file, report, signal);
 		return 0;
 	}
 
@@ -640,14 +649,22 @@
 		folderId: string | null,
 		file: File,
 		report: (frac: number) => void,
-		ownedHash: string | null
+		ownedHash: string | null,
+		signal?: AbortSignal
 	): Promise<number> {
 		try {
-			return await withTimeout(uploadOneFile(folderId, file, report, ownedHash), FILE_BACKSTOP_MS);
+			return await withTimeout(
+				uploadOneFile(folderId, file, report, ownedHash, signal),
+				FILE_BACKSTOP_MS
+			);
 		} catch (e) {
+			if (signal?.aborted) throw e;
 			if ((e as { isQuota?: boolean } | null)?.isQuota) throw e;
 			report(0); // reset this file's progress for the second attempt
-			return await withTimeout(uploadOneFile(folderId, file, report, ownedHash), FILE_BACKSTOP_MS);
+			return await withTimeout(
+				uploadOneFile(folderId, file, report, ownedHash, signal),
+				FILE_BACKSTOP_MS
+			);
 		}
 	}
 
@@ -718,8 +735,10 @@
 	async function uploadAll(
 		items: { file: File; folderId: string | null }[],
 		nid: number,
-		label: (done: number) => string
-	): Promise<{ savedBytes: number; failures: number; firstError: unknown }> {
+		label: (done: number) => string,
+		signal: AbortSignal
+	): Promise<{ savedBytes: number; failures: number; firstError: unknown; completed: number }> {
+		if (signal.aborted) return { savedBytes: 0, failures: 0, firstError: undefined, completed: 0 };
 		const total = items.length;
 		const owned = await resolveOwnedHashes(items.map((it) => it.file));
 		const frac = new Array<number>(total).fill(0);
@@ -727,6 +746,7 @@
 		let savedBytes = 0;
 		let failures = 0;
 		let firstError: unknown = undefined;
+		let completed = 0;
 		let next = 0;
 
 		const refresh = () => {
@@ -739,6 +759,7 @@
 
 		const worker = async () => {
 			while (next < total) {
+				if (signal.aborted) return;
 				const i = next++;
 				const { file, folderId } = items[i];
 				const report = (f: number) => {
@@ -750,8 +771,16 @@
 					refresh();
 				};
 				try {
-					savedBytes += await uploadWithRetry(folderId, file, report, owned.get(file) ?? null);
+					savedBytes += await uploadWithRetry(
+						folderId,
+						file,
+						report,
+						owned.get(file) ?? null,
+						signal
+					);
+					completed++;
 				} catch (e) {
+					if (signal.aborted) return;
 					failures++;
 					// Hold on to the first error so `finishUpload` can surface its
 					// specific reason (e.g. "Not enough space.") on the bell
@@ -763,15 +792,17 @@
 					// work so we don't fire hundreds of doomed uploads.
 					if ((e as { isQuota?: boolean } | null)?.isQuota) next = total;
 				} finally {
-					progressSum += 1 - frac[i];
-					frac[i] = 1;
-					refresh();
+					if (!signal.aborted) {
+						progressSum += 1 - frac[i];
+						frac[i] = 1;
+						refresh();
+					}
 				}
 			}
 		};
 
 		await Promise.all(Array.from({ length: Math.min(UPLOAD_CONCURRENCY, total) }, worker));
-		return { savedBytes, failures, firstError };
+		return { savedBytes, failures, firstError, completed };
 	}
 
 	/** Resolve the upload's bell notification: success, partial, skipped, or failure.
@@ -836,6 +867,16 @@
 		return t('files.uploaded_saved', { mb }, `Upload complete — ${mb} MB deduplicated`);
 	}
 
+	function uploadCancelledMessage(done: number, total: number): string {
+		return done > 0
+			? t(
+					'files.upload_cancelled_partial',
+					{ done, total },
+					`Upload cancelled — ${done} of ${total} files uploaded`
+				)
+			: t('files.upload_cancelled', 'Upload cancelled');
+	}
+
 	/**
 	 * Upload a batch of files into the current folder, reporting aggregate
 	 * progress through a single bell notification with a progress bar.
@@ -889,8 +930,17 @@
 				? files[0].name
 				: t('files.n_files_batch', { n: files.length }, `${files.length} files`);
 		const batchHandle = markUploadStarted(batchDescription, currentId);
+		const ctl = new AbortController();
+		uploadAbort = ctl;
 		const nid = ui.startProgress(
-			t('files.uploading_n', { done: 0, total: files.length }, `Uploading 0/${files.length} files…`)
+			t(
+				'files.uploading_n',
+				{ done: 0, total: files.length },
+				`Uploading 0/${files.length} files…`
+			),
+			'cloud-upload-alt',
+			undefined,
+			() => ctl.abort()
 		);
 		try {
 			// Filter out non-regular files (FIFOs/sockets/devices) up front so they
@@ -902,12 +952,17 @@
 					? t('files.uploading_file', { name: readable[0].name }, `Uploading ${readable[0].name}…`)
 					: t('files.uploading_n', { done, total }, `Uploading ${done}/${total} files…`);
 			if (total > 0) {
-				const { savedBytes, failures, firstError } = await uploadAll(
+				const { savedBytes, failures, firstError, completed } = await uploadAll(
 					readable.map((file) => ({ file, folderId: currentId })),
 					nid,
-					label
+					label,
+					ctl.signal
 				);
-				finishUpload(nid, savedBytes, failures, total, skipped.length, firstError);
+				if (ctl.signal.aborted) {
+					ui.finishProgress(nid, uploadCancelledMessage(completed, total), 'warning');
+				} else {
+					finishUpload(nid, savedBytes, failures, total, skipped.length, firstError);
+				}
 			} else {
 				finishUpload(nid, 0, 0, 0, skipped.length);
 			}
@@ -936,8 +991,13 @@
 				}
 			}
 		} catch (err) {
-			ui.finishProgress(nid, errorMessage(err), 'error');
+			if (ctl.signal.aborted) {
+				ui.finishProgress(nid, t('files.upload_cancelled', 'Upload cancelled'), 'warning');
+			} else {
+				ui.finishProgress(nid, errorMessage(err), 'error');
+			}
 		} finally {
+			if (uploadAbort === ctl) uploadAbort = null;
 			uploading = false;
 			markUploadFinished(batchHandle);
 			releaseUploadGuard();
@@ -1597,19 +1657,32 @@
 	let ctxX = $state(0);
 	let ctxY = $state(0);
 	let ctxTarget = $state<ActionTarget | null>(null);
+	let ctxMenuEl = $state<HTMLElement | null>(null);
+	let ctxReturnFocus: HTMLElement | null = null;
+
+	$effect(() => {
+		if (!ctxOpen || !ctxMenuEl) return;
+		focusFirstMenuItem(ctxMenuEl);
+		const { x, y } = clampMenuToViewport(ctxMenuEl);
+		if (x !== ctxX) ctxX = x;
+		if (y !== ctxY) ctxY = y;
+	});
 
 	function openContext(e: MouseEvent, kind: ItemType, id: string, name: string) {
 		e.preventDefault();
 		e.stopPropagation();
 		ctxTarget = { id, name, kind };
+		ctxReturnFocus = e.currentTarget as HTMLElement | null;
 		// Clamp to viewport so the menu never overflows offscreen.
-		ctxX = Math.min(e.clientX, window.innerWidth - 200);
-		ctxY = Math.min(e.clientY, window.innerHeight - 320);
+		ctxX = Math.max(8, Math.min(e.clientX, window.innerWidth - 200));
+		ctxY = Math.max(8, Math.min(e.clientY, window.innerHeight - 320));
 		ctxOpen = true;
 	}
 	function closeContext() {
 		ctxOpen = false;
 		ctxTarget = null;
+		ctxReturnFocus?.focus?.();
+		ctxReturnFocus = null;
 	}
 
 	// ── WOPI office editor (context-menu entries) ────────────────────────────
@@ -1760,12 +1833,17 @@
 		);
 		// Same bell progress notification as uploadBatch, so folder uploads show
 		// live progress + a final result instead of staying silent until the end.
+		const ctl = new AbortController();
+		uploadAbort = ctl;
 		const nid = ui.startProgress(
 			t(
 				'files.uploading_n',
 				{ done: 0, total: entries.length },
 				`Uploading 0/${entries.length} files…`
-			)
+			),
+			'cloud-upload-alt',
+			undefined,
+			() => ctl.abort()
 		);
 		try {
 			// Drop non-regular files (FIFOs/sockets/devices) before building the tree
@@ -1800,18 +1878,33 @@
 			// files into it with bounded concurrency.
 			const items: { file: File; folderId: string | null }[] = [];
 			for (const { file, relativePath } of readable) {
+				if (ctl.signal.aborted) break;
 				const segs = relativePath.split('/');
 				segs.pop(); // drop the filename, keep the directory trail
 				items.push({ file, folderId: await ensureDir(segs.join('/')) });
 			}
 
-			const { savedBytes, failures, firstError } = await uploadAll(items, nid, label);
-			finishUpload(nid, savedBytes, failures, total, skipped.length, firstError);
+			const { savedBytes, failures, firstError, completed } = await uploadAll(
+				items,
+				nid,
+				label,
+				ctl.signal
+			);
+			if (ctl.signal.aborted) {
+				ui.finishProgress(nid, uploadCancelledMessage(completed, total), 'warning');
+			} else {
+				finishUpload(nid, savedBytes, failures, total, skipped.length, firstError);
+			}
 			await reloadAndTrackNew();
 			void session.refresh();
 		} catch (err) {
-			ui.finishProgress(nid, errorMessage(err), 'error');
+			if (ctl.signal.aborted) {
+				ui.finishProgress(nid, t('files.upload_cancelled', 'Upload cancelled'), 'warning');
+			} else {
+				ui.finishProgress(nid, errorMessage(err), 'error');
+			}
 		} finally {
+			if (uploadAbort === ctl) uploadAbort = null;
 			uploading = false;
 			markUploadFinished(treeHandle);
 			releaseUploadGuard();
@@ -2319,6 +2412,7 @@
 
 	<ResourceList
 		title={t('nav.files', 'Files')}
+		titleInToolbar
 		items={rlItems}
 		emptyText={hiddenCount > 0
 			? t('files.empty_hidden_title', { n: hiddenCount }, '{{n}} hidden item(s) in this folder')
@@ -2329,7 +2423,7 @@
 					"Files whose name starts with '.' are hidden. Toggle the setting to see them."
 				)
 			: t('files.empty_hint', 'Drop files here or use the Upload button to add files.')}
-		emptyIcon={hiddenCount > 0 ? 'eye-slash' : undefined}
+		emptyIcon={hiddenCount > 0 ? 'eye-slash' : 'folder'}
 		{loading}
 		error={error ?? undefined}
 		selectable
@@ -2412,9 +2506,10 @@
 					onclick={() => (addMenuOpen = !addMenuOpen)}
 					aria-haspopup="true"
 					aria-expanded={addMenuOpen}
+					aria-label={uploading ? t('files.uploading', 'Uploading…') : t('actions.add', 'Add')}
+					title={uploading ? t('files.uploading', 'Uploading…') : t('actions.add', 'Add')}
 				>
 					<Icon name="plus" class="icon-mr" />
-					<span>{uploading ? t('files.uploading', 'Uploading…') : t('actions.add', 'Add')}</span>
 					<Icon name="caret-down" class="upload-caret" />
 				</button>
 				{#if addMenuOpen}
@@ -2481,7 +2576,6 @@
 				onclick={() => void batchFavorites()}
 			>
 				<Icon name="star" />
-				<span>{t('files.add_favorites', 'Add to favorites')}</span>
 			</button>
 			<button
 				class="batch-btn"
@@ -2490,7 +2584,6 @@
 				onclick={batchMove}
 			>
 				<Icon name="arrows-alt" />
-				<span>{t('files.move', 'Move')}</span>
 			</button>
 			<button
 				class="batch-btn"
@@ -2499,7 +2592,6 @@
 				onclick={batchCopy}
 			>
 				<Icon name="copy" />
-				<span>{t('files.copy', 'Copy')}</span>
 			</button>
 			<button
 				class="batch-btn"
@@ -2508,7 +2600,6 @@
 				onclick={() => void batchDownload()}
 			>
 				<Icon name="download" />
-				<span>{t('common.download', 'Download')}</span>
 			</button>
 			<ConfirmButton
 				class="batch-btn batch-btn-danger"
@@ -2517,9 +2608,7 @@
 				data-testid="files-batch-delete-btn"
 				onconfirm={batchDelete}
 				icon="trash"
-			>
-				<span>{t('common.delete', 'Delete')}</span>
-			</ConfirmButton>
+			/>
 		{/snippet}
 	</ResourceList>
 </div>
@@ -2596,9 +2685,12 @@
 	></div>
 	<div
 		class="ctx-menu"
+		bind:this={ctxMenuEl}
+		onkeydown={(e) => handleMenuKeydown(e, ctxMenuEl, closeContext)}
 		style:left="{ctxX}px"
 		style:top="{ctxY}px"
 		role="menu"
+		tabindex="-1"
 		data-testid="files-context-menu"
 	>
 		{#if ctxTarget.kind === 'folder'}
@@ -2723,21 +2815,6 @@
 		<button
 			class="menu-item"
 			role="menuitem"
-			data-testid="files-ctx-favorite-item"
-			onclick={() => {
-				const tg = ctxTarget!;
-				closeContext();
-				void toggleFavorite(tg.kind, tg.id);
-			}}
-		>
-			<Icon name="star" />
-			{orderedItems.find((it) => it.id === ctxTarget!.id)?.is_favorite
-				? t('files.unfavorite', 'Remove favorite')
-				: t('files.favorite', 'Add favorite')}
-		</button>
-		<button
-			class="menu-item"
-			role="menuitem"
 			data-testid="files-ctx-rename-item"
 			onclick={() => {
 				const tg = ctxTarget!;
@@ -2784,6 +2861,8 @@
 		position: fixed;
 		z-index: 1001;
 		min-width: 12rem;
+		max-height: calc(100dvh - 16px);
+		overflow-y: auto;
 		padding: var(--space-1);
 		background: var(--color-bg-surface);
 		border: 1px solid var(--color-border);

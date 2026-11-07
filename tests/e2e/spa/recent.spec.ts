@@ -1,5 +1,5 @@
 import { test, expect } from './coverage-helpers';
-import { apiLogin, apiCreateFolder, apiRecordRecent } from './helpers';
+import { apiLogin, apiCreateFolder, apiRecordRecent, switchToListView } from './helpers';
 
 /**
  * Recent route — populate it via the recents API (the SPA doesn't auto-record
@@ -27,12 +27,9 @@ test('recent shows accessed items, batch selection, and clear', async ({ page })
   // (destructive-to-content actions moved into the row context menu),
   // so this exercises the new remove-from-recent batch instead of the
   // old batch-move-into-dialog flow.
-  await page.getByTestId('display-mode-view-list-btn').click({ timeout: 3_000 }).catch(() => {});
-  const selectAll = page.getByTestId('resource-list-select-all-checkbox');
-  if (await selectAll.isVisible().catch(() => false)) {
-    await selectAll.check();
-    await page.getByTestId('recent-batch-remove-btn').click({ timeout: 3_000 }).catch(() => {});
-  }
+  await switchToListView(page);
+  await page.getByTestId('resource-list-select-all-checkbox').check();
+  await page.getByTestId('recent-batch-remove-btn').click({ timeout: 3_000 }).catch(() => {});
 
   // Clear the history if the control is present (armed: click twice).
   const clearBtn = page.getByTestId('recent-clear-btn');
@@ -47,7 +44,6 @@ test('recent grouping and sort cycle (ResourceList toolbar)', async ({ page }) =
   await apiRecordRecent(page, 'folder', a.id);
   await page.goto('/recent');
   await expect(page.getByTestId('appshell-logo-link')).toBeVisible({ timeout: 15_000 });
-  await page.getByTestId('display-mode-view-list-btn').click({ timeout: 3_000 }).catch(() => {});
 
   // Cycle every group-by dimension exposed by the shared ResourceList toolbar.
   for (let i = 0; i < 5; i++) {

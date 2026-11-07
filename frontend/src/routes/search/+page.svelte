@@ -633,6 +633,7 @@
 {:else}
 	<ResourceList
 		title={resultsTitle}
+		titleInToolbar
 		{items}
 		{loading}
 		{error}

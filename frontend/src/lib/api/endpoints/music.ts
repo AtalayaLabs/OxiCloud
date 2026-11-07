@@ -10,7 +10,7 @@ export interface Playlist {
 	description: string | null;
 	owner_id: string;
 	cover_file_id: string | null;
-	track_count: number;
+	track_count: number | null;
 	total_duration_secs: number;
 	created_at: number;
 	updated_at: number;

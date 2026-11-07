@@ -625,6 +625,10 @@
 		margin-bottom: 1rem;
 	}
 
+	.drive-title > :global(.oxi-icon) {
+		font-size: 1.5rem;
+	}
+
 	.drive-title__name {
 		margin: 0;
 	}

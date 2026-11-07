@@ -1,9 +1,9 @@
 import { test, expect } from './coverage-helpers';
-import { apiLogin, apiCreateFolder } from './helpers';
+import { apiLogin, apiCreateFolder, favoriteRow, switchToListView } from './helpers';
 
 /**
- * Favorites route — favorite a folder from the files context menu, see it in
- * /favorites, then unfavorite it via the row star. Covers the favorites page +
+ * Favorites route — favorite a folder from its row star, see it in
+ * /favorites, then unfavorite it via the same star. Covers the favorites page +
  * favorites endpoint.
  */
 test.beforeEach(async ({ page }) => {
@@ -20,19 +20,15 @@ test('favorite, view, and unfavorite a folder', async ({ page }) => {
 
   await page.goto('/files');
   await expect(page.getByTestId(name)).toBeVisible({ timeout: 15_000 });
-  await page.getByTestId(name).click({ button: 'right' });
-  // The context-menu `favorite` click is fire-and-forget in the SPA
-  // (closeContext() runs before the POST) — the test's next
-  // navigation can race the write. Wait for the actual POST to
-  // land before going to /favorites so the list-fetch there sees
-  // the new row committed. The batch test doesn't need this because
-  // it queues 2 POSTs sequentially, which naturally gives the first
-  // one time to commit.
+  // The star's handler is fire-and-forget (`void toggleFavorite`), so the
+  // test's next navigation can race the write. Wait for the actual POST to
+  // land before going to /favorites so the list-fetch there sees the new row
+  // committed. The batch test doesn't need this because it queues 2 POSTs
+  // sequentially, which naturally gives the first one time to commit.
   const favorited = page.waitForResponse(
     (r) => r.url().includes('/api/favorites') && r.request().method() === 'POST' && r.ok()
   );
-  await page.getByTestId('files-ctx-favorite-item').click();
-  await expect(page.getByTestId('files-context-menu')).toHaveCount(0);
+  await favoriteRow(page, name);
   await favorited;
 
   await page.goto('/favorites');
@@ -50,19 +46,17 @@ test('favorites batch select-all then move dialog', async ({ page }) => {
   await apiCreateFolder(page, f1);
   await apiCreateFolder(page, f2);
 
-  // Favorite both via the files context menu.
+  // Favorite both from the row star.
   await page.goto('/files');
   for (const n of [f1, f2]) {
     await expect(page.getByTestId(n)).toBeVisible({ timeout: 15_000 });
-    await page.getByTestId(n).click({ button: 'right' });
-    await page.getByTestId('files-ctx-favorite-item').click();
-    await expect(page.getByTestId('files-context-menu')).toHaveCount(0);
+    await favoriteRow(page, n);
   }
 
   await page.goto('/favorites');
   await expect(page.getByTestId(f1)).toBeVisible({ timeout: 15_000 });
   // The select-all checkbox lives in the list-view header.
-  await page.getByTestId('display-mode-view-list-btn').click();
+  await switchToListView(page);
   await page.getByTestId('resource-list-select-all-checkbox').check();
   await expect(page.getByTestId('resource-list-batch-close-btn')).toBeVisible();
 

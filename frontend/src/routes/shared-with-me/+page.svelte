@@ -254,10 +254,6 @@
 		}
 	}
 
-	// Favorite entry mirrors the star toggle in the row action cell —
-	// same wording, same behavior. Context-menu label flips based on
-	// `item.is_favorite` so keyboard users get the same state read as
-	// the button-hovering ones.
 	const contextActions: ContextAction[] = [
 		{
 			key: 'download',
@@ -272,20 +268,6 @@
 			icon: 'download',
 			visible: (item) => !isFile(item),
 			run: downloadItem
-		},
-		{
-			key: 'favorite_add',
-			label: t('files.favorite', 'Add favorite'),
-			icon: 'star',
-			visible: (item) => !item.is_favorite,
-			run: toggleFavorite
-		},
-		{
-			key: 'favorite_remove',
-			label: t('files.unfavorite', 'Remove favorite'),
-			icon: 'star',
-			visible: (item) => item.is_favorite,
-			run: toggleFavorite
 		}
 	];
 
@@ -317,6 +299,7 @@
 
 <ResourceList
 	title={t('nav.shared_with_me', 'Shared with me')}
+	titleInToolbar
 	{items}
 	{contextMap}
 	resolveOwnerName={(id) => sharers.name(id)}
@@ -324,6 +307,7 @@
 	{loading}
 	{error}
 	emptyText={t('shared_with_me.empty', 'Nothing has been shared with you yet.')}
+	emptyIcon="oxiimport"
 	hasMore={!!cursor}
 	showOwner={true}
 	ownerLabel={t('share.col_shared_by', 'Shared by')}
@@ -341,12 +325,12 @@
 >
 	{#snippet cardOverlay(_item, ctx)}
 		<!--
-			Sharer avatar anchored to the bottom-right of the CARD (not
-			the file-icon). Uses ResourceList's `cardOverlay` slot,
-			which renders inside `.file-item` as a sibling of
-			`.action-cell` — same positioned ancestor, so the offset
-			matches the top-right cluster exactly. Grid view only;
-			list view surfaces the sharer through the owner column.
+			Sharer avatar anchored to the bottom-right of the PREVIEW
+			tile (not the card footer). ResourceList's `cardOverlay`
+			slot renders inside `.file-icon`, so the chip sits on the
+			thumbnail and leaves the footer's bottom-right free for
+			the kebab. Grid view only; list view surfaces the sharer
+			through the owner column.
 
 			Positioning lives in the `<style>` block below; the snippet
 			just emits the chip and lets CSS place it. `ctx.ownerId`
@@ -355,7 +339,7 @@
 		-->
 		{#if ctx?.ownerId}
 			<span class="shared-with-me__sharer">
-				<UserAvatar userId={ctx.ownerId} size={30} />
+				<UserAvatar userId={ctx.ownerId} size={24} />
 			</span>
 		{/if}
 	{/snippet}
@@ -383,14 +367,15 @@
 
 <style>
 	/*
-	 * Sharer avatar chip — anchored to the bottom-right of the card
-	 * (grid view). Rendered inside `.file-item` via ResourceList's
-	 * `cardOverlay` snippet slot, so `position: absolute` climbs to
-	 * `.file-item`'s own `position: relative` (the same containing
-	 * block `.action-cell` uses in the top-right). The `right` +
-	 * `bottom` offset matches `.action-cell`'s `top` + `right`
-	 * offset so the two chips sit in the same vertical column at
-	 * opposite corners — Ed 2026-07-26.
+	 * Sharer avatar chip — anchored to the bottom-right of the preview
+	 * tile (grid view). Rendered inside `.file-icon` via ResourceList's
+	 * `cardOverlay` slot, so `position: absolute` climbs to
+	 * `.file-icon`'s own `position: relative`. Keeping it on the
+	 * thumbnail leaves the card footer's bottom-right to the kebab,
+	 * which the two used to contest.
+	 *
+	 * The ring uses `--color-bg-surface` so the chip stays legible over
+	 * any thumbnail (photo, type-tinted tile, dark mode).
 	 *
 	 * The wrapper is `:global` so the scoped-CSS renaming Svelte
 	 * applies to the `<span>` this snippet emits doesn't strip our
@@ -398,17 +383,16 @@
 	 * `{@render cardOverlay}` in ResourceList already gates on
 	 * `filesStore.viewMode === 'grid'`, so no need to gate here.
 	 */
-	:global(.files-grid-view .file-item .shared-with-me__sharer) {
+	:global(.files-grid-view .file-item .file-icon .shared-with-me__sharer) {
 		position: absolute;
 		right: 5px;
-		/* Pushed 15 px closer to the card bottom so the chip sits at
-		   the same vertical band as the item title instead of hovering
-		   above it (Ed 2026-07-26). `calc(var(--space-3) + 8px)` was
-		   20 px from the bottom edge, right in the thumbnail area
-		   overlapping the title's top; 5 px anchors the chip cleanly
-		   at the card's bottom-right corner. */
 		bottom: 5px;
 		z-index: 10;
+		display: inline-flex;
+		border-radius: var(--radius-full);
+		box-shadow:
+			0 0 0 2px var(--color-bg-surface),
+			0 1px 3px var(--color-shadow-sm);
 	}
 
 	.upgrade-banner {

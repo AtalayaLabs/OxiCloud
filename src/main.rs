@@ -1599,7 +1599,7 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
                 HeaderValue::from_static(
                     "default-src 'self'; \
                      script-src 'self'; \
-                     worker-src 'self'; \
+                     worker-src 'self' blob:; \
                      style-src 'self' 'unsafe-inline'; \
                      img-src 'self' data: blob: https:; \
                      media-src 'self' blob:; \

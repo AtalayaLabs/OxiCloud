@@ -190,7 +190,7 @@
 
 	/**
 	 * Remove a single item from the caller's recent history. The
-	 * per-row "broom" affordance replaces the favorite-star that
+	 * per-row "eraser" affordance replaces the favorite-star that
 	 * existed here before — /recent is a history view, so surfacing
 	 * "forget this one" is more useful than "favorite this one"
 	 * (users go to the item's real home to favorite it).
@@ -334,20 +334,6 @@
 				moveOpen = true;
 			}
 		},
-		{
-			key: 'favorite_add',
-			label: t('files.favorite', 'Add favorite'),
-			icon: 'star',
-			visible: (item) => !item.is_favorite,
-			run: toggleFavorite
-		},
-		{
-			key: 'favorite_remove',
-			label: t('files.unfavorite', 'Remove favorite'),
-			icon: 'star',
-			visible: (item) => item.is_favorite,
-			run: toggleFavorite
-		},
 		{ key: 'rename', label: t('common.rename', 'Rename'), icon: 'pen', run: rename },
 		{
 			key: 'delete',
@@ -393,6 +379,7 @@
 
 <ResourceList
 	title={t('nav.recent', 'Recent')}
+	titleInToolbar
 	{items}
 	{contextMap}
 	resolveOwnerName={(id) => owners.name(id)}
@@ -442,17 +429,15 @@
 		load(true, orderBy, rev);
 	}}
 >
-	{#snippet actions()}
+	{#snippet displayActions()}
 		{#if items.length > 0}
 			<ConfirmButton
-				class="btn"
+				class="toggle-btn"
 				title={t('recent.clear', 'Clear recent')}
 				data-testid="recent-clear-btn"
 				onconfirm={clearAll}
-				icon="broom"
-			>
-				{t('recent.clear', 'Clear recent')}
-			</ConfirmButton>
+				icon="eraser"
+			/>
 		{/if}
 	{/snippet}
 	{#snippet batchActions(sel)}
@@ -468,19 +453,22 @@
 		-->
 		<Button
 			icon="download"
+			class="batch-btn"
+			title={t('common.download', 'Download')}
 			data-testid="recent-batch-download-btn"
-			onclick={() => batchDownload(sel)}>{t('common.download', 'Download')}</Button
-		>
+			onclick={() => batchDownload(sel)}
+		></Button>
 		<Button
-			icon="broom"
+			icon="eraser"
+			class="batch-btn"
+			title={t('recent.remove_item', 'Remove from recent')}
 			data-testid="recent-batch-remove-btn"
 			onclick={() => sel.forEach(removeItem)}
-			>{t('recent.remove_item', 'Remove from recent')}</Button
-		>
+		></Button>
 	{/snippet}
 	{#snippet itemActions(item)}
 		<!--
-			Per-row "broom" — remove this single item from the recent
+			Per-row "eraser" — remove this single item from the recent
 			history. Replaces the favorite star; on a history view a
 			"forget this one" affordance is more useful than a
 			favorite gesture. Grid view: the shared corner-cluster
@@ -499,7 +487,7 @@
 				void removeItem(item);
 			}}
 		>
-			<Icon name="broom" />
+			<Icon name="eraser" />
 		</button>
 	{/snippet}
 </ResourceList>

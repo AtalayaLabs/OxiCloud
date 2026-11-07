@@ -79,7 +79,7 @@
     "shared": "Общие",
     "recent": "Недавние",
     "favorites": "Избранное",
-    "photos": "Фото",
+    "photos": "Медиа",
     "music": "Музыка",
     "trash": "Корзина",
     "sharedwithme": "Доступно мне",
@@ -90,7 +90,9 @@
     "admin_sections": "Административные разделы",
     "back_to_app": "Вернуться в OxiCloud",
     "toggle": "Переключить меню навигации",
-    "account": "Аккаунт"
+    "account": "Аккаунт",
+    "section_library": "Библиотека",
+    "section_sharing": "Общий доступ"
   },
   "photos": {
     "empty_state": "Фотографий пока нет",

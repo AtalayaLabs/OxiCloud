@@ -7,6 +7,7 @@ import {
   apiRecordRecent,
   apiTrashFolder,
   apiUploadFile,
+  favoriteRow,
 } from './helpers';
 
 /**
@@ -65,14 +66,12 @@ test('favorites list renders real dates', async ({ page }) => {
   await apiCreateFolder(page, name);
   await page.goto('/files');
   await expect(page.getByTestId(name)).toBeVisible({ timeout: 15_000 });
-  await page.getByTestId(name).click({ button: 'right' });
-  // The context-menu `favorite` click is fire-and-forget — wait for the POST
-  // to land before leaving the page (same pattern as favorites.spec.ts).
-  const favBtn = page.getByRole('menuitem', { name: /favorite/i });
+  // The row star's handler is fire-and-forget — wait for the POST to land
+  // before leaving the page (same pattern as favorites.spec.ts).
   const favPost = page.waitForResponse(
     (r) => r.url().includes('/api/favorites/') && r.request().method() === 'POST' && r.ok(),
   );
-  await favBtn.click();
+  await favoriteRow(page, name);
   await favPost;
   await page.goto('/favorites');
   await expect(page.getByTestId(name)).toBeVisible({ timeout: 15_000 });

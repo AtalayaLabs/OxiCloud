@@ -1,5 +1,5 @@
 import { test, expect } from './coverage-helpers';
-import { apiLogin, apiCreateFolder, apiUploadFile, SAMPLE_FILES } from './helpers';
+import { apiLogin, apiCreateFolder, apiUploadFile, favoriteRow, SAMPLE_FILES } from './helpers';
 
 /**
  * File-browser CRUD against the SvelteKit `/files` route — the single largest
@@ -42,18 +42,16 @@ test('rename a folder via the context menu', async ({ page }) => {
   await expect(page.getByTestId(before)).toHaveCount(0);
 });
 
-test('favorite a folder via the context menu', async ({ page }) => {
+test('favorite a folder from its row star', async ({ page }) => {
   const name = uniq('Fav');
   await apiCreateFolder(page, name);
   await page.goto('/files');
   await expect(page.getByTestId(name)).toBeVisible({ timeout: 15_000 });
 
-  await page.getByTestId(name).click({ button: 'right' });
-  await page.getByTestId('files-ctx-favorite-item').click();
-
-  // Action completed — the row is still present and the menu has closed.
-  await expect(page.getByTestId('files-context-menu')).toHaveCount(0);
-  await expect(page.getByTestId(name)).toBeVisible();
+  await favoriteRow(page, name);
+  await expect(
+    page.getByTestId(name).locator('[data-testid^="resource-list-favorite-"]')
+  ).toHaveAttribute('aria-pressed', 'true');
 });
 
 test('delete a folder via the context menu', async ({ page }) => {

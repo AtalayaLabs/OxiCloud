@@ -79,7 +79,7 @@
     "shared": "共有",
     "recent": "最近",
     "favorites": "お気に入り",
-    "photos": "写真",
+    "photos": "メディア",
     "music": "音楽",
     "trash": "ゴミ箱",
     "sharedwithme": "自分と共有",
@@ -90,7 +90,9 @@
     "admin_sections": "管理セクション",
     "back_to_app": "OxiCloud に戻る",
     "toggle": "ナビゲーションメニューを切り替えます",
-    "account": "アカウント"
+    "account": "アカウント",
+    "section_library": "ライブラリ",
+    "section_sharing": "共有"
   },
   "photos": {
     "empty_state": "写真はまだありません",
