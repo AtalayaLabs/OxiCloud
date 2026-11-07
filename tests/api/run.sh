@@ -549,6 +549,7 @@ HURL_FILES=( \
   "$API_DIR/cache_header.hurl" \
   "$API_DIR/broken_pdf_resilience.hurl" \
   "$API_DIR/upload_mime_sniffing.hurl" \
+  "$API_DIR/user_content_xss_headers.hurl" \
   "$API_DIR/transcode_import.hurl" \
   "$API_DIR/dedup_admin_gate.hurl" \
   "$API_DIR/admin_jobs.hurl" \

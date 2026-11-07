@@ -1532,6 +1532,38 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
     // header set, including on 304s (benches/ROUND12.md §M3). They are
     // inserted BEFORE the 304 early-return below because the standalone
     // layers stamped 304s too.
+    /// Lowercased mime of a response that carries a FILE BODY, or `None`
+    /// for everything else (API JSON, the SPA shell, static assets).
+    ///
+    /// Keyed on `Content-Disposition` — present on downloads, inline
+    /// previews and ZIP exports, absent everywhere else. Same test the
+    /// compression predicate uses, deliberately: one meaning of "this is
+    /// a file body", not two that can drift.
+    ///
+    /// A file body with no `Content-Type` returns `Some("")`, which
+    /// matches no safe prefix and is therefore sandboxed. That is the
+    /// intended answer — an untyped body is exactly the one a browser
+    /// might sniff.
+    fn user_content_mime<B>(res: &axum::http::Response<B>) -> Option<String> {
+        let h = res.headers();
+        if !h.contains_key(axum::http::header::CONTENT_DISPOSITION) {
+            return None;
+        }
+        Some(
+            h.get(axum::http::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .map(|v| {
+                    // Strip any `; charset=…` parameter before matching.
+                    v.split(';')
+                        .next()
+                        .unwrap_or("")
+                        .trim()
+                        .to_ascii_lowercase()
+                })
+                .unwrap_or_default(),
+        )
+    }
+
     async fn content_security_policy(
         req: axum::extract::Request,
         next: axum::middleware::Next,
@@ -1572,6 +1604,46 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
         if res.status() == axum::http::StatusCode::NOT_MODIFIED {
             return res;
         }
+
+        // ── USER-UPLOADED CONTENT: neutralise it ────────────────────
+        // Checked BEFORE the `is_html` branch below, and that order is
+        // the whole fix. That branch sends NO CSP on `text/html` so the
+        // SPA's own hash-based <meta> policy can govern the shell — but
+        // it keys on Content-Type, which cannot tell our shell from a
+        // file a user uploaded. So `GET /api/files/{id}/download?inline=true`
+        // on an uploaded .html returned a fully-privileged same-origin
+        // document with zero CSP: inline script ran and could call
+        // /api/* with the victim's cookies. Reported by a user; reachable
+        // in one click from the file viewer's "open in new tab" anchor
+        // and from the global search box, and by a direct link from any
+        // caller who can drop a file where the victim can read it —
+        // including an anonymous public-share visitor, since `/s/{token}`
+        // is only a login method and the download itself goes through
+        // these same routes.
+        //
+        // `Content-Disposition` is the discriminator because it already
+        // means "this response is a file body" in this codebase — the
+        // compression predicate above uses exactly the same test. That
+        // makes this structural rather than a list of routes to
+        // remember: a new download handler is covered the day it is
+        // written, which is the property an enumerated allowlist never
+        // has.
+        // EVERY user-content body gets an explicit policy, media
+        // included — the app's own CSP below exists for the SPA
+        // (`script-src 'self'` and friends) and says nothing useful
+        // about a file someone uploaded. `sandbox` is the only axis
+        // that varies, and the single `is_scriptable_document`
+        // classifier in `interfaces::user_content` decides it for both
+        // this header and the `inline`/`attachment` disposition, so the
+        // two cannot disagree about which types are documents.
+        if let Some(mime) = user_content_mime(&res) {
+            res.headers_mut().insert(
+                axum::http::header::CONTENT_SECURITY_POLICY,
+                HeaderValue::from_static(crate::interfaces::user_content::csp_for(&mime)),
+            );
+            return res;
+        }
+
         let is_html = res
             .headers()
             .get(axum::http::header::CONTENT_TYPE)

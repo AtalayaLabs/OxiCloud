@@ -1,0 +1,36 @@
+<!doctype html>
+<!--
+  Fixture for tests/api/user_content_xss_headers.hurl.
+
+  Stands in for the file a user reported: an uploaded .html that the
+  server served with `Content-Disposition: inline`, `Content-Type:
+  text/html` and NO Content-Security-Policy, because the global CSP
+  middleware deliberately skips text/html so the SPA's own <meta>
+  policy can govern the shell. Rendered as a same-origin document, the
+  script below would run with the victim's session.
+
+  The test never executes this — Hurl asserts on response HEADERS. The
+  script is here so the fixture is an honest reproduction, and so the
+  payload is obvious to anyone who opens the file.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>XSS payload fixture</title>
+  </head>
+  <body>
+    <p>OXICLOUD-XSS-FIXTURE</p>
+    <script>
+      // Representative of the real impact: same-origin fetch to the API
+      // carrying the victim's cookies. Exfiltration target omitted.
+      fetch('/api/auth/me', { credentials: 'same-origin' })
+        .then((r) => r.json())
+        .then((me) => {
+          document.body.textContent = 'EXECUTED as ' + (me?.full?.user?.email ?? 'unknown');
+        })
+        .catch(() => {
+          document.body.textContent = 'EXECUTED';
+        });
+    </script>
+  </body>
+</html>

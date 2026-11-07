@@ -14,7 +14,7 @@
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { searchResources } from '$lib/api/endpoints/search';
-	import { fileInlineUrl, deleteFile } from '$lib/api/endpoints/files';
+	import { deleteFile } from '$lib/api/endpoints/files';
 	import { deleteFolder } from '$lib/api/endpoints/folders';
 	import { addFavorite } from '$lib/api/endpoints/favorites';
 	import type { FileItem, FolderItem, ItemType } from '$lib/api/types';
@@ -760,8 +760,21 @@
 
 	function pickSuggestion(s: Suggestion) {
 		suggestOpen = false;
-		if (s.kind === 'folder') goto(resolve(`/files/${s.item.id}`));
-		else window.open(fileInlineUrl(s.item.id), '_blank', 'noopener');
+		if (s.kind === 'folder') {
+			goto(resolve(`/files/${s.item.id}`));
+			return;
+		}
+		// Open the file in the VIEWER, not by navigating the browser to
+		// its raw bytes. The old `window.open(fileInlineUrl(id))` was a
+		// top-level navigation to `?inline=true` with no mime check at
+		// all, so picking an uploaded .html from search rendered it as a
+		// document on this origin — one click, attacker-controlled HTML,
+		// the victim's session. The server now sandboxes that response
+		// (see the user-content CSP branch in `main.rs`), but the UI
+		// should not be asking the browser to render user content as a
+		// document in the first place: the viewer dispatches on type and
+		// keeps text in a read-only pane.
+		goto(resolve(`/files/${s.item.folder_id}?file=${s.item.id}`));
 	}
 
 	const storagePct = $derived(
