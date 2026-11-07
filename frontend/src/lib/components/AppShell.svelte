@@ -770,10 +770,11 @@
 		// all, so picking an uploaded .html from search rendered it as a
 		// document on this origin — one click, attacker-controlled HTML,
 		// the victim's session. The server now sandboxes that response
-		// (see the user-content CSP branch in `main.rs`), but the UI
-		// should not be asking the browser to render user content as a
-		// document in the first place: the viewer dispatches on type and
-		// keeps text in a read-only pane.
+		// (see the user-content branch in
+		// `interfaces::middleware::security_headers`), but the UI should
+		// not be asking the browser to render user content as a document
+		// in the first place: the viewer dispatches on type and keeps
+		// text in a read-only pane.
 		goto(resolve(`/files/${s.item.folder_id}?file=${s.item.id}`));
 	}
 

@@ -9,6 +9,12 @@ use uuid::Uuid;
 use crate::application::ports::file_ports::FileUploadUseCase;
 use crate::common::di::AppState;
 use crate::common::mime_detect::filename_from_path;
+// Keeps the PROPFIND response well-formed if a chunk name or username
+// ever contains a markup character. Was a private copy here; it and
+// `avatar_handler`'s had drifted on the apostrophe (`&apos;` vs
+// `&#39;`), so both now call the single escaper. The numeric form won —
+// see `escape_markup` for why.
+use crate::common::text::escape_markup as xml_escape;
 use crate::interfaces::errors::AppError;
 use crate::interfaces::nextcloud::webdav_handler::with_nc_write_headers;
 use crate::interfaces::upload_ingest::{
@@ -249,18 +255,6 @@ async fn handle_propfind_session(
         .header(header::CONTENT_TYPE, "application/xml; charset=utf-8")
         .body(Body::from(body))
         .unwrap())
-}
-
-/// Minimal XML escape — every value we inject above is either a
-/// well-formed RFC 2822 date, a number, or a path segment we
-/// control, but defense-in-depth keeps the response well-formed
-/// even if a chunk name ever contained an unexpected character.
-fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
 }
 
 /// MKCOL — create upload session directory.

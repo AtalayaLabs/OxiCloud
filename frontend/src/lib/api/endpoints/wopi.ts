@@ -1,14 +1,33 @@
 /**
  * WOPI (Collabora / OnlyOffice) integration — ported from features/files/wopiEditor.js.
- * `getEditorUrl` returns the iframe action URL + access token; the office editor
- * is launched by POST-ing the token to that URL (see WopiEditor.svelte).
+ *
+ * `getEditorUrl` returns the editor's action URL + an access token. The SPA no
+ * longer POSTs to that URL itself: it iframes [`wopiHostPageUrl`], a
+ * server-rendered page on our own origin that performs the handshake and emits
+ * its own CSP naming the editor origin. See `WopiEditor.svelte` for why.
  */
 import { ApiError, apiErrorFromResponse, apiFetch } from '$lib/api/client';
+import { withBase } from '$lib/utils/appPath';
 
 export interface WopiEditorData {
 	editor_url: string;
 	access_token: string;
 	access_token_ttl: string | number;
+}
+
+/**
+ * URL of the server-rendered WOPI host page, on OUR origin.
+ *
+ * The page validates the token, re-checks the caller's live `Update`
+ * permission, re-mints the token from that (not from the `can_write` flag it
+ * was handed), and then POSTs to the editor under a CSP that names the editor's
+ * origin — the one place that value is known, since it comes from operator
+ * config and the SPA's policy is baked at build time.
+ */
+export function wopiHostPageUrl(fileId: string, accessToken: string): string {
+	return withBase(
+		`/wopi/edit/${encodeURIComponent(fileId)}?access_token=${encodeURIComponent(accessToken)}`
+	);
 }
 
 // Fallback for when `/wopi/supported-extensions` discovery fails or

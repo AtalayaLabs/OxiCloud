@@ -366,6 +366,93 @@ HTTP 404
 
 
 # ─────────────────────────────────────────────────────────────
+# Step 12 — HOST PAGE SECURITY HEADERS.
+#
+# `GET /wopi/edit/{id}` is the server-rendered page that performs
+# the editor handshake. It exists so the cross-origin form POST
+# happens where the editor's origin is KNOWN at request time:
+# the SPA's own policy is a build-time <meta> that cannot name an
+# operator's editor host, so letting the SPA post meant allowing
+# a whole scheme (`form-action https:`) — which excluded a
+# cleartext editor outright and let ANY https origin receive a
+# token-bearing form.
+#
+# These assertions are the delivery half. Unit tests
+# (`origin_of_tests`) pin how the origin is computed; only a live
+# request proves the header actually ships, and two of the values
+# below are cross-layer and invisible to any unit test:
+#
+#   * `X-Frame-Options: SAMEORIGIN` — the global security-header
+#     middleware defaults this to DENY and now skips responses
+#     that set their own. Regress that and the editor silently
+#     becomes unframeable: the SPA iframes this page, the browser
+#     refuses, and the user sees an empty modal with only a
+#     console message. The same clobber is why FileViewer
+#     round-trips PDFs through a `blob:`.
+#   * the CSP survives at all — the middleware's non-HTML branch
+#     used to `insert` the app policy unconditionally, replacing
+#     any policy a handler had set.
+#
+# `http://mock-editor.invalid` is the `urlsrc` origin from
+# tests/common/wopi_mock_discovery.js — NOT the origin of
+# OXICLOUD_WOPI_DISCOVERY_URL (127.0.0.1:9100). The mock keeps
+# those two deliberately different, which is the point: only
+# `urlsrc` is where the POST goes, and an implementation that
+# reached for the discovery URL's origin instead would pass every
+# unit test and fail here.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/wopi/editor-url?file_id={{file_id}}&action=edit
+Authorization: Bearer {{alice_token}}
+
+HTTP 200
+[Captures]
+host_page_token: jsonpath "$.access_token"
+
+
+GET {{base_url}}/wopi/edit/{{file_id}}?access_token={{host_page_token}}
+
+HTTP 200
+[Asserts]
+header "Content-Type" contains "text/html"
+# The one origin the handshake may post to, and the only origin
+# the page may frame. A wildcard or a scheme here means someone
+# widened the policy instead of naming the host.
+#
+# `matches` with a `[^;]*` scope, not `contains`: a CSP source list
+# is UNORDERED, so any substring spanning two tokens only catches
+# one spelling of the same policy.
+header "Content-Security-Policy" matches "form-action[^;]*http://mock-editor[.]invalid"
+header "Content-Security-Policy" matches "frame-src[^;]*http://mock-editor[.]invalid"
+header "Content-Security-Policy" not matches "form-action[^;]*[*]"
+header "Content-Security-Policy" not matches "frame-src[^;]*[*]"
+header "Content-Security-Policy" not matches "form-action[^;]*https:"
+# Closed by default: nothing but the nonced <script>/<style> runs.
+header "Content-Security-Policy" contains "default-src 'none'"
+header "Content-Security-Policy" contains "script-src 'nonce-"
+header "Content-Security-Policy" not contains "unsafe-inline"
+# The SPA frames this page; `'self'` is what permits that, and
+# the explicit XFO below is what stops the global DENY default
+# from overruling it.
+header "Content-Security-Policy" contains "frame-ancestors 'self'"
+header "X-Frame-Options" == "SAMEORIGIN"
+# The body embeds a freshly minted access token — never cache it.
+header "Cache-Control" contains "no-store"
+# The auto-submit script must carry a nonce, or the page's own CSP
+# blocks it and the handshake never fires. Pins that the nonce is
+# threaded into the markup, not just into the header.
+body contains "<script nonce="
+body contains "action=\"http://mock-editor.invalid/edit?"
+
+
+# A bad token must not render the page at all — the handshake
+# embeds a re-minted token, so an unauthenticated caller reaching
+# this page would be handed one.
+GET {{base_url}}/wopi/edit/{{file_id}}?access_token=not-a-real-token
+
+HTTP 401
+
+
+# ─────────────────────────────────────────────────────────────
 # Cleanup — delete the test file so subsequent Hurl files don't
 # see it. Bob user stays; other tests may reuse the `wopi-bob`
 # username, but the grants that made this test meaningful are

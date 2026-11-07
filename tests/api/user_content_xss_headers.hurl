@@ -298,7 +298,52 @@ HTTP *
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 9 — Cleanup. Hurl files share one DB; leaving the folder
+# Step 9 — The APP policy, on a response that is neither a file
+# body nor an HTML document.
+#
+# Unit tests pin the constant; this pins that the middleware
+# still runs and ships it. Both narrowed entries are asserted
+# negatively as well, because they used to be wide open so the
+# SPA could iframe and POST a token form to an editor host the
+# build cannot name:
+#
+#   frame-src   * blob:          → 'self' blob:
+#   form-action 'self' https:    → 'self'
+#
+# That handshake now lives in the server-rendered
+# `/wopi/edit/{id}` page, which names the one origin in its own
+# CSP (pinned in `wopi_authz.hurl`). A wildcard reappearing here
+# means someone put the cross-origin POST back in the SPA.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/auth/me
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+# `matches`, scoped per directive with `[^;]*`, NOT `contains`.
+# A CSP source list is UNORDERED, so a substring like
+# "form-action 'self' https:" only catches one spelling —
+# `form-action https: 'self'` is the same policy and slips past.
+# `[^;]*` also keeps each assertion inside its own directive, so a
+# legitimate `https:` elsewhere (img-src keeps one for remote
+# avatars) cannot make a correct policy fail. The first cut of
+# this test asserted `not contains "https:;"` and went red on
+# exactly that.
+header "Content-Security-Policy" matches "frame-src[^;]*'self'"
+header "Content-Security-Policy" matches "frame-src[^;]*blob:"
+header "Content-Security-Policy" not matches "frame-src[^;]*[*]"
+header "Content-Security-Policy" matches "form-action[^;]*'self'"
+header "Content-Security-Policy" not matches "form-action[^;]*https:"
+header "Content-Security-Policy" not matches "form-action[^;]*[*]"
+# img-src keeps `https:` on purpose — pinned positively so a future
+# "tighten everything" sweep has to notice it is deliberate.
+header "Content-Security-Policy" matches "img-src[^;]*https:"
+header "X-Content-Type-Options" == "nosniff"
+header "X-Frame-Options" == "DENY"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 10 — Cleanup. Hurl files share one DB; leaving the folder
 # behind would leak into the suite's end-of-run storage sweep.
 # ─────────────────────────────────────────────────────────────
 DELETE {{base_url}}/api/files/{{html_id}}

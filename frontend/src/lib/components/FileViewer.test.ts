@@ -7,14 +7,21 @@ vi.mock('$lib/api/endpoints/files', () => ({
 }));
 vi.mock('$lib/api/endpoints/wopi', () => ({
 	canEditWithWopi: vi.fn(),
-	// WopiEditor's $effect calls this on mount when an editor opens; provide it
-	// so the async handshake resolves instead of throwing an unhandled error
-	// (vitest 4 fails the whole run on unhandled errors).
+	// WopiEditor's $effect calls these on mount when an editor opens; provide
+	// them so the async handshake resolves instead of throwing an unhandled
+	// error (vitest 4 fails the whole run on unhandled errors).
+	//
+	// `wopiHostPageUrl` must be here too: the editor handshake moved into the
+	// server-rendered `/wopi/edit/{id}` host page, so WopiEditor now builds
+	// that URL instead of POSTing to `editor_url` itself. A mock missing it
+	// surfaces as an errorToast from a component this file isn't even
+	// testing — hence the explicit note.
 	getEditorUrlWithFallback: vi.fn(async () => ({
 		editor_url: 'about:blank',
 		access_token: 't',
 		access_token_ttl: 0
-	}))
+	})),
+	wopiHostPageUrl: (fileId: string, token: string) => `/wopi/edit/${fileId}?access_token=${token}`
 }));
 // Collab is off for most of these tests — a text file then takes the plain
 // preview path the older assertions describe. The one collab test flips it.
