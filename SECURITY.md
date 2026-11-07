@@ -103,6 +103,57 @@ report, or say if you'd rather stay anonymous.
 
 Coordinated disclosures we've received and resolved:
 
+- **2026-11-07** — Stored XSS via uploaded HTML served inline
+  (CWE-79). A regular user could upload an HTML document, share it, and
+  have a recipient open it through
+  `GET /api/files/{id}?inline=true`. Two independent defects lined up:
+  `build_content_disposition` let the `?inline=true` query parameter
+  promote **any** MIME type to `inline`, and the global security-header
+  middleware deliberately omits the CSP header on `text/html` so the
+  SvelteKit shell's own hash-based `<meta>` policy can govern it. That
+  exemption keyed on Content-Type, which cannot distinguish our shell
+  from a file a user uploaded — so the stored document was served as a
+  fully-privileged same-origin page with **no CSP at all**, and its
+  inline script ran with the signed-in victim's session. `HttpOnly` was
+  no help: the script never reads the cookie, the browser attaches it.
+  Reachable in one click from the file viewer's "open in new tab"
+  anchor and from the global search box (which opened any picked file
+  via `window.open(fileInlineUrl(id))` with no MIME check), and by a
+  direct link from anyone who can drop a file where the victim can
+  read it — including an anonymous public-share visitor, since
+  `/s/{token}` is only a login method and the download goes through the
+  same `/api/files` routes. `image/svg+xml` was the quieter half of the
+  same bug: it matched the `image/*` inline allowlist, so it needed no
+  query parameter at all, and an SVG is a scriptable document that
+  merely looks like a picture.
+  Fixed in `interfaces::user_content`, which now holds a single
+  `is_scriptable_document` classifier driving **both** the
+  `inline`/`attachment` decision and the CSP — two lists that had to
+  agree is what produced the bug. Scriptable bodies get
+  `default-src 'none'; sandbox` with no `allow-*` token, and
+  `?inline=true` can no longer promote one. Confirming the report
+  surfaced a second door we had missed: the WebDAV and NextCloud-DAV
+  `GET`/`HEAD`/ranged-`GET` handlers served stored bytes with no
+  `Content-Disposition`, which is the signal the new CSP branch keys
+  on, so `/webdav/…/evil.html` was still unprotected. Closed in the
+  same series. Inline preview survives throughout — every image path in
+  the SPA is an `<img>` subresource, where a disposition is ignored, a
+  response CSP does not apply, and an SVG renders in the spec's secure
+  static mode with scripts disabled; only a top-level navigation
+  changed behaviour, which is precisely the execution vector.
+  Found by **Liam Giannini** ([@Liam-G](https://github.com/Liam-G),
+  [webcracy.ch](https://webcracy.ch)) — credited as **finder** at their
+  request. The report reproduced against the official
+  `v0.10.0-x86_64-unknown-linux-musl` release tarball with a verified
+  checksum, loopback-only, with a throwaway database and a benign
+  canary; no third-party host was touched. The detail that made triage
+  fast was the canary comparing `GET /api/folders` from the executed
+  page against the anonymous share principal (403) and the signed-in
+  admin session (200) — that is what established the script ran with
+  the *victim's* authenticated context rather than merely the share's,
+  which is the difference between a curiosity and a High. A CVE was
+  requested; see the advisory thread for its status.
+
 - **2026-10-06** — Cross-user IDOR in playlist tracks. `add_tracks`
   checked only `Permission::Update` on the playlist and then accepted
   caller-supplied file ids verbatim, while the enriched track listing
