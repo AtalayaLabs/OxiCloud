@@ -217,6 +217,87 @@ header "X-Content-Type-Options" == "nosniff"
 
 
 # ─────────────────────────────────────────────────────────────
+# Step 8b — THE SAME BUG, THE OTHER DOOR: WebDAV.
+#
+# The REST fix keys "this is user content" on the presence of
+# `Content-Disposition`. The DAV GET/HEAD/ranged-GET handlers
+# served stored bytes with `Content-Type: file.mime_type` and NO
+# disposition, so `user_content_mime()` saw nothing, the response
+# fell through to the `text/html` branch — which sends no CSP so
+# the SPA shell's own <meta> policy can govern — and an uploaded
+# .html reached a browser over `/webdav/…` as a live same-origin
+# document. Identical CWE-79 to the reported `?inline=true`
+# case; the finder simply used the REST route.
+#
+# Found while confirming the advisory rather than from the
+# report, which is why it gets its own step instead of a line in
+# the one above: "fixed on the route the reporter happened to
+# use" is the failure mode this guards.
+#
+# `dav_disposition` now stamps `attachment` on exactly the
+# scriptable types, which both stops the render AND lets the
+# middleware recognise the body and sandbox it. Asserting both
+# effects, since either alone would close this.
+# ─────────────────────────────────────────────────────────────
+PUT {{base_url}}/webdav/hurl-xss-probe.html
+Authorization: Bearer {{token}}
+Content-Type: text/html
+file,fixtures/xss-payload.html;
+
+HTTP *
+
+GET {{base_url}}/webdav/hurl-xss-probe.html
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+header "Content-Disposition" startsWith "attachment"
+header "Content-Security-Policy" matches "sandbox"
+header "Content-Security-Policy" not matches "allow-scripts"
+header "X-Content-Type-Options" == "nosniff"
+
+# HEAD must advertise the same disposition as GET — a client that
+# probes with HEAD and renders the GET would otherwise see two
+# different answers for one resource.
+HEAD {{base_url}}/webdav/hurl-xss-probe.html
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+header "Content-Disposition" startsWith "attachment"
+
+# …and a real image over DAV must STILL render: `attachment` is
+# forced only for scriptable documents. Without this, forcing it
+# on every type would satisfy the assertions above and quietly
+# turn every in-browser DAV preview into a download.
+PUT {{base_url}}/webdav/hurl-xss-probe.png
+Authorization: Bearer {{token}}
+Content-Type: image/png
+file,fixtures/blue-image.png;
+
+HTTP *
+
+GET {{base_url}}/webdav/hurl-xss-probe.png
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+header "Content-Type" contains "image/png"
+header "Content-Disposition" not exists
+header "Content-Security-Policy" not matches "sandbox"
+
+DELETE {{base_url}}/webdav/hurl-xss-probe.html
+Authorization: Bearer {{token}}
+
+HTTP *
+
+DELETE {{base_url}}/webdav/hurl-xss-probe.png
+Authorization: Bearer {{token}}
+
+HTTP *
+
+
+# ─────────────────────────────────────────────────────────────
 # Step 9 — Cleanup. Hurl files share one DB; leaving the folder
 # behind would leak into the suite's end-of-run storage sweep.
 # ─────────────────────────────────────────────────────────────

@@ -47,6 +47,29 @@ pub fn is_scriptable_document(mime: &str) -> bool {
         || m == "text/xsl"
 }
 
+/// `Some("attachment")` when a protocol handler that would otherwise
+/// send no `Content-Disposition` must send one, because the body is a
+/// scriptable document.
+///
+/// For the WebDAV / NextCloud-DAV `GET`, `HEAD` and ranged-`GET`
+/// responses. Those serve stored bytes with `Content-Type:
+/// file.mime_type` and, unlike the REST download path, no disposition
+/// at all — so an uploaded `.html` reached a browser over `/webdav/…`
+/// as a live same-origin document with no CSP. Same CWE-79 as the
+/// reported REST case (`?inline=true`), different door: the
+/// security-header middleware keys "this is user content" on
+/// `Content-Disposition`, and these routes had none to key on.
+///
+/// Returns `None` for everything else on purpose. A DAV `GET` of a PNG
+/// or a PDF renders in a browser today, and forcing `attachment` on
+/// every type would turn that into a download for no security gain —
+/// those types are not documents. DAV clients ignore the header
+/// either way; only browsers act on it, which is exactly who needs
+/// stopping here.
+pub fn dav_disposition(mime: &str) -> Option<&'static str> {
+    is_scriptable_document(mime).then_some("attachment")
+}
+
 /// Strip any `; charset=…` parameter and fold case, so
 /// `Text/HTML; charset=utf-8` classifies as `text/html`.
 fn normalize(mime: &str) -> String {
@@ -190,6 +213,37 @@ mod tests {
         // into something executable.
         assert!(is_scriptable_document(""));
         assert!(is_scriptable_document("   "));
+    }
+
+    #[test]
+    fn dav_forces_attachment_only_for_documents() {
+        // The WebDAV half of the reported stored-XSS. Those handlers
+        // send `Content-Type: file.mime_type` and no disposition, so an
+        // uploaded .html reached a browser over `/webdav/…` as a live
+        // same-origin document with no CSP — the REST fix did not cover
+        // it, because the middleware keys on `Content-Disposition` and
+        // there was none to key on.
+        assert_eq!(dav_disposition("text/html"), Some("attachment"));
+        assert_eq!(
+            dav_disposition("text/html; charset=utf-8"),
+            Some("attachment")
+        );
+        assert_eq!(dav_disposition("image/svg+xml"), Some("attachment"));
+        assert_eq!(dav_disposition("application/xhtml+xml"), Some("attachment"));
+        assert_eq!(dav_disposition(""), Some("attachment"));
+
+        // And NOT for anything else: a DAV GET of a PNG or PDF renders
+        // in a browser today, and forcing a download would be a
+        // regression with no security gain — these are not documents.
+        for m in [
+            "image/png",
+            "application/pdf",
+            "video/mp4",
+            "text/plain",
+            "application/octet-stream",
+        ] {
+            assert_eq!(dav_disposition(m), None, "{m} must keep rendering");
+        }
     }
 
     #[test]
