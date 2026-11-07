@@ -1123,10 +1123,6 @@
     transform: translateY(-80%);
 }
 
-.files-grid-view .file-item .grid-meta--with-actions {
-    padding-right: calc(30px + var(--space-1));
-}
-
 /* On a narrow card the relative date truncates first; the size never clips. */
 .files-grid-view .file-item .grid-meta__date {
     min-width: 0;

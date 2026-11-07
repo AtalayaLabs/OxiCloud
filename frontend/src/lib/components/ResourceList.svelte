@@ -319,14 +319,12 @@
 		 */
 		itemActions?: Snippet<[FileItem | FolderItem]>;
 		/**
-		 * Free-form overlay rendered inside `.file-item` (as a sibling of
-		 * `.action-cell`), so the page can absolute-position content
-		 * anywhere on the card. Used by `/shared-with-me` to anchor the
-		 * sharer avatar at the bottom-right of the card — the pre-fix
-		 * `rowBadge` slot rendered inside `.file-icon` (a positioned
-		 * ancestor), which couldn't align with `.action-cell`'s
-		 * `.file-item`-scoped coordinates. The page provides its own
-		 * absolute-positioning CSS via a scoped style block.
+		 * Free-form overlay rendered inside `.file-icon` (the preview tile)
+		 * in grid view, so a page can anchor a chip to the thumbnail without
+		 * competing with the footer's kebab. Used by `/shared-with-me` for the
+		 * sharer avatar at the preview's bottom-right. The page provides its
+		 * own absolute-positioning CSS via a scoped style block; `.file-icon`
+		 * is already `position: relative`, so no new ancestor is needed.
 		 *
 		 * Fires in grid view only — list view has explicit columns
 		 * (owner cell, etc.) for the same information.
@@ -1304,6 +1302,15 @@
 				{#if rowBadge}
 					<span class="file-icon__badge">{@render rowBadge(item, ctx)}</span>
 				{/if}
+				<!--
+					Page-provided overlay — grid view only. Anchors to
+					`.file-icon` (position: relative), so it sits on the
+					preview tile rather than the card corner. Keeps the
+					footer's bottom-right slot free for the kebab.
+				-->
+				{#if cardOverlay && filesStore.viewMode === 'grid'}
+					{@render cardOverlay(item, ctx)}
+				{/if}
 			</span>
 			<span class="name-cell__text">{item.name}</span>
 		</div>
@@ -1419,17 +1426,6 @@
 					{@render kebabAction(item)}
 				{/if}
 			</div>
-		{/if}
-		<!--
-			Page-provided card overlay — grid view only. Fires as the
-			last child of `.file-item` (which is already `position:
-			relative` to anchor `.action-cell`), so the page can
-			absolute-position content anywhere inside the card without
-			creating a new positioned ancestor. See `/shared-with-me`
-			for the sharer-avatar consumer.
-		-->
-		{#if cardOverlay && filesStore.viewMode === 'grid'}
-			{@render cardOverlay(item, ctx)}
 		{/if}
 	</div>
 {/snippet}
