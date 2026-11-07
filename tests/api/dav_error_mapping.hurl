@@ -333,6 +333,64 @@ status < 500
 
 
 # ─────────────────────────────────────────────────────────────
+# Step 10b — Alice PROPFIND on admin's calendar, both depths.
+#
+# "Cannot see" has two shapes here: the collection listing
+# (depth 1, the streaming path that enumerates every object) and
+# the collection's own properties (depth 0). Both must refuse
+# BEFORE any event bytes are streamed, with the exact 404
+# anti-enum shape — a 207 that happens to be empty would still
+# confirm the collection exists.
+# ─────────────────────────────────────────────────────────────
+PROPFIND {{base_url}}/caldav/{{default_calendar_id}}/
+Authorization: Bearer {{alice_token}}
+Depth: 0
+Content-Type: application/xml
+```
+<?xml version="1.0" encoding="UTF-8"?>
+<D:propfind xmlns:D="DAV:">
+  <D:prop><D:displayname/></D:prop>
+</D:propfind>
+```
+
+HTTP 404
+
+
+PROPFIND {{base_url}}/caldav/{{default_calendar_id}}/
+Authorization: Bearer {{alice_token}}
+Depth: 1
+Content-Type: application/xml
+```
+<?xml version="1.0" encoding="UTF-8"?>
+<D:propfind xmlns:D="DAV:">
+  <D:prop><D:getetag/><D:displayname/></D:prop>
+</D:propfind>
+```
+
+HTTP 404
+[Asserts]
+body not contains "Regression sanity happy path"
+body not contains "Regression sanity task"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 10c — Alice GET on admin's whole calendar collection.
+#
+# This is the bulk-read path CalDAV clients use for a full
+# resync: it streams every VEVENT in the collection. A read
+# denial that only guarded the per-object GET would hand the
+# intruder the whole calendar through this URL instead.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/caldav/{{default_calendar_id}}/
+Authorization: Bearer {{alice_token}}
+
+HTTP 404
+[Asserts]
+body not contains "Regression sanity happy path"
+body not contains "Regression sanity task"
+
+
+# ─────────────────────────────────────────────────────────────
 # Step 11 — Alice DELETE on the well-formed event Step 4 created
 # in admin's calendar. Pre-fix: 500 on the lookup or delete step.
 # Post-fix: 4xx via NotFound anti-enum.
@@ -457,6 +515,57 @@ Content-Type: application/xml
   <D:prop><D:getetag/><C:calendar-data/></D:prop>
   <C:filter><C:comp-filter name="VCALENDAR"/></C:filter>
 </C:calendar-query>
+```
+
+HTTP 404
+[Asserts]
+body not contains "Regression sanity happy path"
+body not contains "Regression sanity task"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 16b — The same denial through the two BOUNDED REPORT
+# branches. Step 16's filter-less query is pre-checked once and
+# then streamed; a time-range query and a multiget resolve
+# objects through `get_events_in_range` / `get_events_by_ical_uids`
+# instead, so each is a separate gate. A caller with no grant
+# must not be able to harvest the calendar's contents by picking
+# a different REPORT shape.
+# ─────────────────────────────────────────────────────────────
+REPORT {{base_url}}/caldav/{{default_calendar_id}}/
+Authorization: Bearer {{alice_token}}
+Depth: 1
+Content-Type: application/xml
+```
+<?xml version="1.0" encoding="UTF-8"?>
+<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:prop><D:getetag/><C:calendar-data/></D:prop>
+  <C:filter>
+    <C:comp-filter name="VCALENDAR">
+      <C:comp-filter name="VEVENT">
+        <C:time-range start="20260101T000000Z" end="20260102T000000Z"/>
+      </C:comp-filter>
+    </C:comp-filter>
+  </C:filter>
+</C:calendar-query>
+```
+
+HTTP 404
+[Asserts]
+body not contains "Regression sanity happy path"
+
+
+REPORT {{base_url}}/caldav/{{default_calendar_id}}/
+Authorization: Bearer {{alice_token}}
+Depth: 1
+Content-Type: application/xml
+```
+<?xml version="1.0" encoding="UTF-8"?>
+<C:calendar-multiget xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:prop><D:getetag/><C:calendar-data/></D:prop>
+  <D:href>/caldav/{{default_calendar_id}}/dav-error-test-ok.ics</D:href>
+  <D:href>/caldav/{{default_calendar_id}}/dav-error-test-todo.ics</D:href>
+</C:calendar-multiget>
 ```
 
 HTTP 404

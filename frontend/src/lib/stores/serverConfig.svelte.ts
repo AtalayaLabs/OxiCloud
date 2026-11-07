@@ -46,9 +46,9 @@ const DEFAULT_FEATURES: ServerFeatures = {
 	caldav: true,
 	carddav: true,
 	contacts: true,
-	// Placeholder — nothing gates on it yet; the `/calendar` page and
-	// `/api/calendars` arrive with PR #853. Defaults true so the feature
-	// shows the moment it exists.
+	// Calendar browse UI + `/api/calendars`; gated separately from
+	// `caldav` (the sync protocol) for the same reason `contacts` is
+	// separate from `carddav`.
 	calendars: true,
 	nextcloud: false,
 	markdown_collab: false,

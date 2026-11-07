@@ -632,6 +632,55 @@ export type BatchTrashRequest = {
     folder_ids?: Array<string>;
 };
 
+/**
+ * Event projection for the UI. Deliberately drops `ical_data` — the
+ * stored iCalendar blob is the CalDAV read path's payload, not a field
+ * the JSON client needs (and it can run to tens of KB per row).
+ */
+export type CalendarEventResponse = {
+    all_day: boolean;
+    calendar_id: string;
+    created_at: string;
+    description?: string | null;
+    end_time: string;
+    ical_uid: string;
+    id: string;
+    location?: string | null;
+    recurrence_id?: string | null;
+    rrule?: string | null;
+    start_time: string;
+    summary: string;
+    /**
+     * IANA zone from the stored DTSTART, when the event carries one.
+     * The SPA expands recurrence in this zone so wall-clock times do
+     * not drift across DST; absent means the series is UTC.
+     */
+    timezone?: string | null;
+    updated_at: string;
+};
+
+/**
+ * A calendar plus the caller's access level on it.
+ */
+export type CalendarResponse = {
+    /**
+     * `read` | `contribute` | `edit` | `own`. The SPA gates the
+     * rename/delete controls on this.
+     */
+    access: string;
+    color?: string | null;
+    created_at: string;
+    description?: string | null;
+    id: string;
+    /**
+     * True when the caller cannot even add objects (Viewer/Commenter).
+     */
+    is_readonly: boolean;
+    name: string;
+    owner_id: string;
+    updated_at: string;
+};
+
 export type ChangePasswordDto = {
     current_password: string;
     new_password: string;
@@ -796,6 +845,12 @@ export type CreateAppPasswordRequestDto = {
      * Comma-separated scopes (defaults to all DAV protocols)
      */
     scopes?: string;
+};
+
+export type CreateCalendarRequest = {
+    color?: string | null;
+    description?: string | null;
+    name: string;
 };
 
 /**
@@ -2188,14 +2243,10 @@ export type FeaturesDto = {
     caldav: boolean;
     /**
      * Calendars browse surface — `/api/calendars` plus the SPA's
-     * `/calendars` page.
-     *
-     * **PLACEHOLDER**: advertised before anything consumes it, so the
-     * wire field and SDK type exist when
-     * <https://github.com/AtalayaLabs/OxiCloud/pull/853> lands. Reads
-     * `true` by default; a client gating on it today simply always
-     * shows the feature. Separate from `caldav` for the same reason
-     * `contacts` is separate from `carddav`.
+     * `/calendars` page, whose nav entry is hidden when this is false.
+     * Deliberately separate from `caldav`: that is the sync protocol,
+     * this is the browse UI, and a deployment may want either without
+     * the other. See `FeaturesConfig::enable_calendars`.
      */
     calendars: boolean;
     /**
@@ -4591,6 +4642,29 @@ export type RoleDto = 'viewer' | 'commenter' | 'contributor' | 'editor' | 'owner
 export type RunStatus = 'Running' | 'Paused' | 'CancelRequested' | 'Completed' | 'Failed' | 'Cancelled';
 
 /**
+ * Full replacement payload shared by create and update. The update
+ * path replaces only the VEVENT properties this DTO models, so
+ * "absent" means "cleared" for those; unmodelled properties in the
+ * stored component are preserved.
+ */
+export type SaveEventRequest = {
+    all_day?: boolean;
+    description?: string | null;
+    end_time: string;
+    location?: string | null;
+    rrule?: string | null;
+    start_time: string;
+    summary: string;
+    /**
+     * IANA zone the caller entered the wall-clock time in (for example
+     * `Europe/Paris`). Timed events are stored with a matching
+     * `DTSTART;TZID=…`, so their recurrence keeps the same local time
+     * across DST changes. Absent/`null` keeps the legacy UTC storage.
+     */
+    timezone?: string | null;
+};
+
+/**
  * Request body for saving OIDC settings from the admin panel
  */
 export type SaveOidcSettingsDto = {
@@ -5928,6 +6002,12 @@ export type UnreadCountDto = {
  * Request body for updating an address book.
  */
 export type UpdateAddressBookRequest = {
+    color?: string | null;
+    description?: string | null;
+    name?: string | null;
+};
+
+export type UpdateCalendarRequest = {
     color?: string | null;
     description?: string | null;
     name?: string | null;
@@ -10550,6 +10630,262 @@ export type TrashBatchResponses = {
 };
 
 export type TrashBatchResponse = TrashBatchResponses[keyof TrashBatchResponses];
+
+export type ListCalendarsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/calendars';
+};
+
+export type ListCalendarsResponses = {
+    /**
+     * List of accessible calendars
+     */
+    200: Array<CalendarResponse>;
+};
+
+export type ListCalendarsResponse = ListCalendarsResponses[keyof ListCalendarsResponses];
+
+export type CreateCalendarData = {
+    body: CreateCalendarRequest;
+    path?: never;
+    query?: never;
+    url: '/api/calendars';
+};
+
+export type CreateCalendarErrors = {
+    /**
+     * Invalid input
+     */
+    400: unknown;
+};
+
+export type CreateCalendarResponses = {
+    /**
+     * Calendar created
+     */
+    201: CalendarResponse;
+};
+
+export type CreateCalendarResponse = CreateCalendarResponses[keyof CreateCalendarResponses];
+
+export type DeleteCalendarData = {
+    body?: never;
+    path: {
+        /**
+         * Calendar UUID
+         */
+        calendar_id: string;
+    };
+    query?: never;
+    url: '/api/calendars/{calendar_id}';
+};
+
+export type DeleteCalendarErrors = {
+    /**
+     * Not the owner
+     */
+    403: unknown;
+    /**
+     * Calendar not found
+     */
+    404: unknown;
+};
+
+export type DeleteCalendarResponses = {
+    /**
+     * Calendar deleted
+     */
+    204: void;
+};
+
+export type DeleteCalendarResponse = DeleteCalendarResponses[keyof DeleteCalendarResponses];
+
+export type UpdateCalendarData = {
+    body: UpdateCalendarRequest;
+    path: {
+        /**
+         * Calendar UUID
+         */
+        calendar_id: string;
+    };
+    query?: never;
+    url: '/api/calendars/{calendar_id}';
+};
+
+export type UpdateCalendarErrors = {
+    /**
+     * Not the owner
+     */
+    403: unknown;
+    /**
+     * Calendar not found
+     */
+    404: unknown;
+};
+
+export type UpdateCalendarResponses = {
+    /**
+     * Calendar updated
+     */
+    200: CalendarResponse;
+};
+
+export type UpdateCalendarResponse = UpdateCalendarResponses[keyof UpdateCalendarResponses];
+
+export type ListEventsData = {
+    body?: never;
+    path: {
+        /**
+         * Calendar UUID
+         */
+        calendar_id: string;
+    };
+    query?: {
+        /**
+         * Window start (RFC 3339)
+         */
+        start?: string;
+        /**
+         * Window end (RFC 3339)
+         */
+        end?: string;
+    };
+    url: '/api/calendars/{calendar_id}/events';
+};
+
+export type ListEventsErrors = {
+    /**
+     * Invalid range
+     */
+    400: unknown;
+    /**
+     * Calendar not found
+     */
+    404: unknown;
+};
+
+export type ListEventsResponses = {
+    /**
+     * Events in range
+     */
+    200: Array<CalendarEventResponse>;
+};
+
+export type ListEventsResponse = ListEventsResponses[keyof ListEventsResponses];
+
+export type CreateEventData = {
+    body: SaveEventRequest;
+    path: {
+        /**
+         * Calendar UUID
+         */
+        calendar_id: string;
+    };
+    query?: never;
+    url: '/api/calendars/{calendar_id}/events';
+};
+
+export type CreateEventErrors = {
+    /**
+     * Invalid input
+     */
+    400: unknown;
+    /**
+     * No create permission
+     */
+    403: unknown;
+    /**
+     * Calendar not found
+     */
+    404: unknown;
+};
+
+export type CreateEventResponses = {
+    /**
+     * Event created
+     */
+    201: CalendarEventResponse;
+};
+
+export type CreateEventResponse = CreateEventResponses[keyof CreateEventResponses];
+
+export type DeleteEventData = {
+    body?: never;
+    path: {
+        /**
+         * Calendar UUID
+         */
+        calendar_id: string;
+        /**
+         * Event UUID
+         */
+        event_id: string;
+    };
+    query?: never;
+    url: '/api/calendars/{calendar_id}/events/{event_id}';
+};
+
+export type DeleteEventErrors = {
+    /**
+     * No delete permission
+     */
+    403: unknown;
+    /**
+     * Event not found
+     */
+    404: unknown;
+};
+
+export type DeleteEventResponses = {
+    /**
+     * Event deleted
+     */
+    204: void;
+};
+
+export type DeleteEventResponse = DeleteEventResponses[keyof DeleteEventResponses];
+
+export type UpdateEventData = {
+    body: SaveEventRequest;
+    path: {
+        /**
+         * Calendar UUID
+         */
+        calendar_id: string;
+        /**
+         * Event UUID
+         */
+        event_id: string;
+    };
+    query?: never;
+    url: '/api/calendars/{calendar_id}/events/{event_id}';
+};
+
+export type UpdateEventErrors = {
+    /**
+     * Invalid input
+     */
+    400: unknown;
+    /**
+     * No update permission
+     */
+    403: unknown;
+    /**
+     * Event not found
+     */
+    404: unknown;
+};
+
+export type UpdateEventResponses = {
+    /**
+     * Event updated
+     */
+    200: CalendarEventResponse;
+};
+
+export type UpdateEventResponse = UpdateEventResponses[keyof UpdateEventResponses];
 
 export type GetConfigData = {
     body?: never;

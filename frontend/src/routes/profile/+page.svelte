@@ -3,7 +3,7 @@
 	import { relativeTimeAgo } from '$lib/utils/time';
 	import { onMount, tick } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { resolve } from '$app/paths';
+	import { resolvePath } from '$lib/utils/navigation';
 	import type { Pathname } from '$app/types';
 	import { page } from '$app/state';
 	import { ApiError } from '$lib/api/client';
@@ -295,7 +295,8 @@
 				} catch {
 					/* stale session state is recoverable — the next request refreshes it */
 				}
-				await goto(resolve(nextAfterChange as Pathname), { replaceState: true });
+				// eslint-disable-next-line svelte/no-navigation-without-resolve
+				await goto(resolvePath(nextAfterChange as Pathname), { replaceState: true });
 			}
 		} catch (err) {
 			// Remap the backend's `PasswordUnchanged` error_type to a
