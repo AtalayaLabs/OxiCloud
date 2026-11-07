@@ -152,13 +152,18 @@
 			},
 			{ label: t('nav.section_library', 'Library'), nested: true, links: library }
 		];
-		if (sharing.length > 0) {
-			groups.push({
-				label: t('nav.section_sharing', 'Sharing'),
-				nested: true,
-				links: sharing
-			});
-		}
+		// Pushed unconditionally — the `filter` at the end of this block is
+		// what drops it when `features.sharing` and `features.contacts` are
+		// both off. This used to carry its own `if (sharing.length > 0)`
+		// guard, which made the emptiness rule exist in two places: here
+		// by hand, and there structurally. One enforcement point means a
+		// new group cannot forget it, and it keeps the filter load-bearing
+		// rather than belt-and-braces that no test can reach.
+		groups.push({
+			label: t('nav.section_sharing', 'Sharing'),
+			nested: true,
+			links: sharing
+		});
 		// ── TO THE /calendar IMPLEMENTER (PR #853) ───────────────────────
 		// `serverConfig.features.calendars` already exists end to end —
 		// `OXICLOUD_ENABLE_CALENDARS` → `FeaturesConfig::enable_calendars`
@@ -198,7 +203,21 @@
 				links: [{ href: '/trash', label: t('nav.trash', 'Trash'), icon: 'trash', section: 'trash' }]
 			});
 		}
-		return groups;
+		// Drop any group whose every link was feature-flagged away. ONE
+		// enforcement point, so a group added later cannot forget it —
+		// `Sharing` carried its own guard until this replaced it.
+		//
+		// This is not cosmetic. The render keys the group list on
+		// `group.links[0].href`, so an empty group makes `links[0]`
+		// undefined and that dereference a TypeError — which takes the
+		// whole sidebar down on every page, not just the affected
+		// section. `Sharing` empties for real whenever `features.sharing`
+		// and `features.contacts` are both off; `Library` survives only
+		// because `/recent` and `/favorites` are unconditional while
+		// Photos and Music are flagged, which is luck rather than design
+		// and stops being true the day either gets a flag (see the
+		// `features.calendars` note above for how often that happens).
+		return groups.filter((g) => g.links.length > 0);
 	});
 
 	// Admin sidebar — populated when the URL is under /admin. The

@@ -160,6 +160,39 @@ it('hides /shared and /shared-with-me when features.sharing is false', () => {
 	expect(screen.queryByTestId('appshell-nav-files-link')).toBeTruthy();
 });
 
+it('drops a nav group whose every link was flagged away, and leaves no heading', async () => {
+	// `NAV_GROUPS` ends in a `filter(g => g.links.length > 0)`. Without it
+	// an emptied group does not merely render a stray heading — the keyed
+	// each reads `group.links[0].href`, so `links[0]` being undefined is a
+	// TypeError that takes the WHOLE sidebar down, on every page.
+	//
+	// Sharing is the group that can actually empty today: both its links
+	// are behind `features.sharing`, and `/contacts` behind
+	// `features.contacts`. Turn both off and it has no links at all.
+	serverConfig.features = { ...serverConfig.features, sharing: false, contacts: false };
+	render(AppShell, { props: { children } });
+
+	// The sidebar still rendered — this is the assertion that would have
+	// caught the crash, since a throw during render leaves nothing.
+	expect(screen.queryByTestId('appshell-nav-files-link')).toBeTruthy();
+	expect(screen.queryByTestId('appshell-nav-recent-link')).toBeTruthy();
+
+	// And no orphaned "Sharing" heading above an empty group.
+	expect(screen.queryByText('Sharing')).toBeNull();
+	// Neighbouring group headings are untouched — the regression to guard
+	// against is a filter that over-matches and drops populated groups.
+	expect(screen.queryByText('Library')).toBeTruthy();
+
+	// Let AppShell's mount effects settle inside the test. Changing two
+	// feature flags at once makes this render kick off async work that
+	// logs, and without the flush that log lands after vitest has closed
+	// the worker's rpc — surfacing as
+	// `EnvironmentTeardownError: Closing rpc while "onUserConsoleLog" was
+	// pending`, which fails the RUN while every test still reports green.
+	// Only visible under full-suite load, never when this file runs alone.
+	await new Promise((r) => setTimeout(r, 0));
+});
+
 it('hides /photos when features.photos is false', () => {
 	serverConfig.features = { ...serverConfig.features, photos: false };
 	render(AppShell, { props: { children } });
