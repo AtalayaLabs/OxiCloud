@@ -1,0 +1,604 @@
+/*
+ * Shared admin surface.
+ *
+ * Imported once by `routes/admin/[[tab]]/+page.svelte`. Every selector is
+ * scoped under `.admin-page` because the stylesheet is global while the
+ * admin surface is not: `AdminJobsPanel` and `AdminDrivePoliciesPanel`
+ * render inside that root and cannot see the route's scoped styles, which
+ * is why their `.card` and `.status` blocks used to render unstyled.
+ */
+
+.admin-page {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+}
+
+/* Banner margins are the flex gap's job here; two sources of spacing made
+   every banner sit 32px off the next block. */
+.admin-page > .banner {
+    margin-bottom: 0;
+}
+
+.admin-page .admin-card > .banner:last-child {
+    margin-bottom: 0;
+}
+
+/* ── Sticky header ─────────────────────────────────────────── */
+
+.admin-page .admin-title {
+    margin: 0;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.admin-page .admin-actions {
+    flex: 1 1 auto;
+    justify-content: flex-end;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.admin-page .admin-actions--filters {
+    gap: var(--space-2);
+}
+
+.admin-page .admin-meta {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1-5);
+    font-size: var(--text-sm);
+    color: var(--color-text-muted);
+}
+
+.admin-page .admin-meta code {
+    font-family: var(--font-mono);
+    overflow-wrap: anywhere;
+}
+
+.admin-page .admin-filter {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-sm);
+    color: var(--color-text-muted);
+}
+
+.admin-page .admin-filter input[type='text'] {
+    min-width: 18ch;
+}
+
+.admin-page .admin-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-sm);
+    color: var(--color-text-muted);
+    cursor: pointer;
+}
+
+@media (max-width: 768px) {
+    /* The toolbar is title + controls on one row when they fit. A filter
+       cluster is wider than that, so it takes its own row; `flex-wrap`
+       is what lets the 100% basis below actually drop to a new line. */
+    .admin-page .actions-bar {
+        flex-wrap: wrap;
+        row-gap: var(--space-2);
+    }
+
+    .admin-page .admin-actions--filters {
+        flex: 1 1 100%;
+        justify-content: flex-start;
+    }
+
+    .admin-page .admin-filter input[type='text'] {
+        flex: 1 1 auto;
+        min-width: 0;
+    }
+}
+
+/* Phones: the primary action collapses to its glyph, like files' "+".
+   The label is visually hidden, not removed — screen readers keep it. */
+@media (max-width: 640px) {
+    .admin-page .admin-primary {
+        min-width: 2.5rem;
+        min-height: 2.5rem;
+    }
+
+    .admin-page .admin-primary .admin-primary__label {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        margin: -1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+    }
+}
+
+/* ── Card ──────────────────────────────────────────────────── */
+
+.admin-page .admin-card {
+    background: var(--color-bg-surface);
+    border-radius: var(--radius-xl);
+    box-shadow: 0 1px 3px var(--color-shadow-xs);
+    padding: var(--space-5);
+}
+
+.admin-page .admin-card > h2 {
+    margin: 0 0 var(--space-3);
+    font-size: var(--text-md);
+    font-weight: var(--weight-semibold);
+    color: var(--color-text-heading);
+}
+
+.admin-page .admin-card > h2:only-child {
+    margin-bottom: 0;
+}
+
+/* Nested panel inside a card — the storage entries and ops banners. Reads
+   as a division of its parent, not as a second competing card. */
+.admin-page .admin-subcard {
+    background: var(--color-bg-subtle);
+    border-radius: var(--radius-md);
+    padding: var(--space-3);
+}
+
+.admin-page .admin-section-title {
+    margin: var(--space-2) 0 0;
+    font-size: var(--text-lg);
+    font-weight: var(--weight-semibold);
+    color: var(--color-text-heading);
+}
+
+.admin-page .admin-section-title:first-child {
+    margin-top: 0;
+}
+
+/* ── Table ─────────────────────────────────────────────────── */
+
+.admin-page .admin-table {
+    background: var(--color-item);
+    border-radius: var(--radius-xl);
+    box-shadow: 0 1px 3px var(--color-shadow-xs);
+    /* Wide tables scroll inside the panel rather than widening the page.
+       `hidden` would clip the last columns instead. */
+    overflow-x: auto;
+}
+
+.admin-page .admin-table table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.admin-page .admin-table th,
+.admin-page .admin-table td {
+    text-align: left;
+    padding: var(--space-2) 15px;
+    border-bottom: 1px solid var(--color-border-faint);
+    font-size: var(--text-base);
+}
+
+.admin-page .admin-table th {
+    padding: 15px;
+    font-weight: var(--weight-semibold);
+    color: var(--color-text);
+    background: var(--color-bg-subtle);
+}
+
+.admin-page .admin-table tbody tr {
+    transition: background-color var(--motion-fast) var(--ease-standard);
+}
+
+.admin-page .admin-table tbody tr:hover {
+    background: var(--color-item-hover);
+}
+
+.admin-page .admin-table tbody tr:last-child td {
+    border-bottom: 0;
+}
+
+.admin-page .admin-table .col-center {
+    text-align: center;
+}
+
+.admin-page .admin-pager {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-3);
+    margin-top: var(--space-4);
+    color: var(--color-text-muted);
+    font-size: var(--text-sm);
+    font-variant-numeric: tabular-nums;
+}
+
+/* Phones: the header row goes away and each row becomes a card. Cells whose
+   value is ambiguous without its column header carry `data-label`. */
+@media (width <= 48rem) {
+    .admin-page .admin-table--cards {
+        background: transparent;
+        box-shadow: none;
+        border-radius: 0;
+        overflow: visible;
+    }
+
+    .admin-page .admin-table--cards table,
+    .admin-page .admin-table--cards tbody {
+        display: block;
+    }
+
+    .admin-page .admin-table--cards thead {
+        display: none;
+    }
+
+    .admin-page .admin-table--cards tbody tr {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        align-items: center;
+        gap: var(--space-2) var(--space-3);
+        padding: var(--space-3);
+        margin-bottom: var(--space-2);
+        background: var(--color-bg-surface);
+        border-radius: var(--radius-xl);
+        box-shadow: 0 1px 3px var(--color-shadow-xs);
+    }
+
+    .admin-page .admin-table--cards tbody td {
+        grid-column: 1;
+    }
+
+    .admin-page .admin-table--cards tbody td:last-child {
+        justify-self: end;
+    }
+
+    /* Identity left, actions right, the rest in reading order. Each typed
+       table names its own areas; a cell whose value is ambiguous without
+       its header carries `data-label`. */
+    .admin-page .admin-table--users tbody tr {
+        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-areas:
+            'who actions'
+            'role status'
+            'auth auth'
+            'quota last';
+    }
+
+    .admin-page .admin-table--users tbody td:nth-child(1) {
+        grid-area: who;
+        min-width: 0;
+    }
+
+    .admin-page .admin-table--users tbody td:nth-child(2) {
+        grid-area: role;
+    }
+
+    .admin-page .admin-table--users tbody td:nth-child(3) {
+        grid-area: auth;
+    }
+
+    .admin-page .admin-table--users tbody td:nth-child(4) {
+        grid-area: status;
+        justify-self: end;
+    }
+
+    .admin-page .admin-table--users tbody td:nth-child(5) {
+        grid-area: quota;
+    }
+
+    .admin-page .admin-table--users tbody td:nth-child(6) {
+        grid-area: last;
+        justify-self: end;
+    }
+
+    .admin-page .admin-table--users tbody td:nth-child(7) {
+        grid-area: actions;
+        place-self: start end;
+    }
+
+    .admin-page .admin-table--sessions tbody tr {
+        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-areas:
+            'who actions'
+            'origin status'
+            'created created'
+            'expires expires'
+            'ip ip'
+            'agent agent'
+            'bound bound';
+    }
+
+    .admin-page .admin-table--sessions tbody td:nth-child(1) {
+        grid-area: who;
+        min-width: 0;
+    }
+
+    .admin-page .admin-table--sessions tbody td:nth-child(2) {
+        grid-area: origin;
+    }
+
+    .admin-page .admin-table--sessions tbody td:nth-child(3) {
+        grid-area: created;
+    }
+
+    .admin-page .admin-table--sessions tbody td:nth-child(4) {
+        grid-area: expires;
+    }
+
+    .admin-page .admin-table--sessions tbody td:nth-child(5) {
+        grid-area: ip;
+    }
+
+    .admin-page .admin-table--sessions tbody td:nth-child(6) {
+        grid-area: agent;
+    }
+
+    .admin-page .admin-table--sessions tbody td:nth-child(7) {
+        grid-area: bound;
+    }
+
+    .admin-page .admin-table--sessions tbody td:nth-child(8) {
+        grid-area: status;
+        justify-self: end;
+    }
+
+    .admin-page .admin-table--sessions tbody td:nth-child(9) {
+        grid-area: actions;
+        place-self: start end;
+    }
+
+    .admin-page .admin-table--drives tbody tr {
+        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-areas:
+            'who actions'
+            'kind owners'
+            'usage created';
+    }
+
+    .admin-page .admin-table--drives tbody td:nth-child(1) {
+        grid-area: who;
+        min-width: 0;
+    }
+
+    .admin-page .admin-table--drives tbody td:nth-child(2) {
+        grid-area: kind;
+    }
+
+    .admin-page .admin-table--drives tbody td:nth-child(3) {
+        grid-area: owners;
+        justify-self: end;
+    }
+
+    .admin-page .admin-table--drives tbody td:nth-child(4) {
+        grid-area: usage;
+    }
+
+    .admin-page .admin-table--drives tbody td:nth-child(5) {
+        grid-area: created;
+        justify-self: end;
+    }
+
+    .admin-page .admin-table--drives tbody td:nth-child(6) {
+        grid-area: actions;
+        place-self: start end;
+    }
+
+    .admin-page .admin-table--cards tbody tr:last-child {
+        margin-bottom: 0;
+    }
+
+    .admin-page .admin-table--cards tbody td {
+        padding: 0;
+        border: 0;
+    }
+
+    .admin-page .admin-table--cards tbody td[data-label]::before {
+        content: attr(data-label) ' ';
+        color: var(--color-text-muted);
+        font-size: var(--text-xs);
+    }
+
+    /* 32px is a mouse target; a thumb needs more, and the card has room. */
+    .admin-page .admin-table--cards .btn-action {
+        width: 2.5rem;
+        height: 2.5rem;
+    }
+}
+
+/* ── Chip ──────────────────────────────────────────────────── */
+
+.admin-page .admin-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    padding: 0 var(--space-2);
+    border-radius: var(--radius-full);
+    background: var(--color-bg-muted);
+    color: var(--color-text-muted);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    line-height: 1.7;
+    letter-spacing: var(--tracking-wide);
+    text-transform: uppercase;
+    white-space: nowrap;
+    vertical-align: middle;
+}
+
+.admin-page .admin-chip--success,
+.admin-page .admin-chip--active,
+.admin-page .admin-chip--opaque {
+    background: var(--color-success-bg);
+    color: var(--color-success-text);
+}
+
+.admin-page .admin-chip--info,
+.admin-page .admin-chip--admin,
+.admin-page .admin-chip--oidc,
+.admin-page .admin-chip--opaque-registered {
+    background: var(--color-info-bg);
+    color: var(--color-info-text);
+}
+
+.admin-page .admin-chip--warning,
+.admin-page .admin-chip--owner,
+.admin-page .admin-chip--external,
+.admin-page .admin-chip--mail,
+.admin-page .admin-chip--env {
+    background: var(--color-warning-bg);
+    color: var(--color-warning-text);
+}
+
+.admin-page .admin-chip--inactive,
+.admin-page .admin-chip--user,
+.admin-page .admin-chip--password,
+.admin-page .admin-chip--local,
+.admin-page .admin-chip--origin {
+    background: var(--color-bg-muted);
+    color: var(--color-text-muted);
+}
+
+.admin-page .admin-chip--self {
+    background: var(--color-warning-bg);
+    color: var(--color-warning-text);
+    margin-left: var(--space-1);
+}
+
+/* ── Result line ───────────────────────────────────────────── */
+
+.admin-page .admin-result {
+    margin: var(--space-2) 0 0;
+    font-size: var(--text-sm);
+}
+
+.admin-page .admin-result--ok {
+    color: var(--color-success-text);
+}
+
+.admin-page .admin-result--error {
+    color: var(--color-error-text);
+}
+
+.admin-page .admin-result--warn {
+    color: var(--color-warning-text);
+}
+
+/* Row-action modifiers on top of the global `.btn-action`. */
+.admin-page .btn-action--delete {
+    color: var(--color-danger-alt);
+}
+
+.admin-page .btn-action--delete:hover {
+    color: var(--color-danger-alt);
+    background: var(--color-danger-light-bg);
+}
+
+.admin-page .btn-action--success {
+    color: var(--color-success-text);
+}
+
+.admin-page .btn-action--placeholder {
+    visibility: hidden;
+    pointer-events: none;
+}
+
+/* ── Form controls ─────────────────────────────────────────── */
+
+.admin-page input[type='text'],
+.admin-page input[type='email'],
+.admin-page input[type='password'],
+.admin-page input[type='number'],
+.admin-page input[type='datetime-local'],
+.admin-page select,
+.admin-page textarea {
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-bg-input);
+    color: var(--color-text);
+    font: inherit;
+    font-size: var(--text-base);
+}
+
+.admin-page input[type='text']:focus-visible,
+.admin-page input[type='email']:focus-visible,
+.admin-page input[type='password']:focus-visible,
+.admin-page input[type='number']:focus-visible,
+.admin-page input[type='datetime-local']:focus-visible,
+.admin-page select:focus-visible,
+.admin-page textarea:focus-visible {
+    outline: 2px solid var(--color-focus-ring);
+    outline-offset: 1px;
+}
+
+.admin-page input[type='checkbox'] {
+    accent-color: var(--color-accent);
+}
+
+.admin-page .admin-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+}
+
+/* A 1200px-wide text field is unreadable. The card stays full width; its
+   form does not. Modal forms keep the dialog's own width. */
+.admin-page .admin-card .admin-form {
+    max-width: 40rem;
+}
+
+.admin-page .admin-form > label {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    font-size: var(--text-sm);
+    color: var(--color-text-secondary);
+}
+
+.admin-page .admin-check {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-base);
+    color: var(--color-text);
+    cursor: pointer;
+}
+
+.admin-page .admin-form > label.admin-check {
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-2);
+}
+
+.admin-page .admin-form > .btn {
+    align-self: flex-start;
+    min-width: 8rem;
+}
+
+.admin-page .admin-form > .btn.btn-block {
+    align-self: stretch;
+}
+
+.admin-page .btn-sm {
+    padding: var(--space-2) var(--space-4);
+    font-size: var(--text-sm);
+}
+
+.admin-page .admin-mono {
+    font-family: var(--font-mono);
+}
+
+.admin-page .admin-truncate {
+    max-width: 28ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Route- and child-component-scoped styles cannot reach across Svelte
+   component boundaries; both admin panels use `.muted` for secondary copy. */
+.admin-page .muted {
+    color: var(--color-text-muted);
+    font-size: var(--text-sm);
+}

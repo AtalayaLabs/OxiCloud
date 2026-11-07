@@ -92,7 +92,6 @@
     gap: var(--space-3-5);
     padding: var(--space-5) var(--space-5) var(--space-4);
     background: var(--color-user-menu-header-bg);
-    border-bottom: 1px solid var(--color-user-menu-header-border);
 }
 
 /* The header vignette (xl, name + email) fills the available width. */
@@ -113,52 +112,9 @@
     margin-top: 1px;
 }
 
-.user-menu-storage {
-    padding: var(--space-3-5) var(--space-5);
-}
-
-.user-menu-storage-label {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    font-size: var(--text-xs);
-    font-weight: var(--weight-semibold);
-    color: var(--color-text-subtle);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    margin-bottom: var(--space-2);
-}
-
-.user-menu-storage-label i {
-    font-size: var(--text-2xs);
-    color: var(--color-text-faint);
-}
-
-.user-menu-storage-bar {
-    height: 6px;
-    background: var(--color-border-light);
-    border-radius: 3px;
-    overflow: hidden;
-    margin-bottom: var(--space-1-5);
-}
-
-.user-menu-storage-fill {
-    height: 100%;
-    background: linear-gradient(90deg, var(--color-accent), var(--color-accent-second));
-    border-radius: 3px;
-    width: 0%;
-    transition: width 0.5s ease;
-}
-
-.user-menu-storage-text {
-    font-size: 11.5px;
-    color: var(--color-text-faint);
-}
-
 .user-menu-divider {
     height: 1px;
     background: var(--color-border-light);
-    margin: var(--space-1) 0;
 }
 
 .user-menu-item {
@@ -258,10 +214,6 @@
     background: var(--color-info-bg-alt);
 }
 
-.user-menu-role-badge {
-    padding: var(--space-2) var(--space-5) var(--space-1);
-}
-
 .role-badge {
     display: inline-flex;
     align-items: center;
@@ -270,6 +222,7 @@
     font-weight: var(--weight-semibold);
     padding: var(--space-0-5) var(--space-2-5);
     border-radius: var(--radius-xl);
+    flex-shrink: 0;
 }
 
 .role-badge-admin {

@@ -656,7 +656,7 @@
 		// Colour follows `outcomeLabel` exactly — including the
 		// no-outcome-but-findings case, where a grey pill next to the word
 		// "issues" would read as nothing to do.
-		const pill = (m: string) => `jobs-panel__pill jobs-panel__pill--${m}`;
+		const pill = (m: string) => `admin-chip admin-chip--${m}`;
 		switch (jobVerdict(job)) {
 			case 'stopped':
 			case 'err':
@@ -675,19 +675,19 @@
 	function statusClass(status: RunStatus): string {
 		switch (status) {
 			case 'Running':
-				return 'jobs-panel__pill jobs-panel__pill--running';
+				return 'admin-chip admin-chip--running';
 			case 'Paused':
-				return 'jobs-panel__pill jobs-panel__pill--paused';
+				return 'admin-chip admin-chip--paused';
 			case 'CancelRequested':
-				return 'jobs-panel__pill jobs-panel__pill--paused';
+				return 'admin-chip admin-chip--paused';
 			case 'Completed':
-				return 'jobs-panel__pill jobs-panel__pill--ok';
+				return 'admin-chip admin-chip--ok';
 			case 'Failed':
-				return 'jobs-panel__pill jobs-panel__pill--err';
+				return 'admin-chip admin-chip--err';
 			case 'Cancelled':
-				return 'jobs-panel__pill jobs-panel__pill--neutral';
+				return 'admin-chip admin-chip--neutral';
 			default:
-				return 'jobs-panel__pill jobs-panel__pill--neutral';
+				return 'admin-chip admin-chip--neutral';
 		}
 	}
 
@@ -870,7 +870,7 @@
 	let batchJob = $state<JobSummary | null>(null);
 </script>
 
-<section class="jobs-panel">
+<section class="jobs-panel admin-card">
 	<header class="jobs-panel__header">
 		<div class="jobs-panel__header-text">
 			<p class="jobs-panel__hint">
@@ -884,7 +884,7 @@
 			{#if batchJob}
 				{@const batch = batchJob}
 				<button
-					class="jobs-panel__btn jobs-panel__btn--primary"
+					class="btn btn-primary"
 					disabled={busyKeys.has('trigger:consistency_batch')}
 					title={batch.description || undefined}
 					onclick={() => onTrigger('consistency_batch')}
@@ -893,7 +893,7 @@
 					{t('admin.jobs.run_all_consistency', 'Run all consistency checks')}
 				</button>
 				<button
-					class="jobs-panel__btn"
+					class="btn btn-secondary"
 					disabled={busyKeys.has('trigger:consistency_batch:deep')}
 					title={t(
 						'admin.jobs.run_deep_hint',
@@ -913,7 +913,7 @@
 				     two refcount ones. -->
 				{#if batch.repair_description}
 					<button
-						class="jobs-panel__btn jobs-panel__btn--warn"
+						class="btn btn-danger"
 						disabled={busyKeys.has('trigger:consistency_batch:repair=true')}
 						title={batch.repair_description}
 						onclick={() => openWithPreset(batch, { repair: true })}
@@ -936,7 +936,7 @@
 			{#if cleanupJob}
 				{@const cleanup = cleanupJob}
 				<button
-					class="jobs-panel__btn"
+					class="btn btn-secondary"
 					title={t(
 						'admin.jobs.purge_hint',
 						'Delete completed and failed run history older than the chosen retention window. Findings drop with their parent runs. Non-terminal runs are always preserved.'
@@ -952,59 +952,60 @@
 	</header>
 
 	{#if loadError}
-		<p class="jobs-panel__status jobs-panel__status--error">{loadError}</p>
+		<p class="admin-result admin-result--error">{loadError}</p>
 	{:else if !jobs}
-		<p class="jobs-panel__status">{t('common.loading', 'Loading…')}</p>
+		<p class="muted">{t('common.loading', 'Loading…')}</p>
 	{:else if jobs.length === 0}
-		<p class="jobs-panel__status">
+		<p class="muted">
 			{t('admin.jobs.none_registered', 'No background tasks registered.')}
 		</p>
 	{:else}
-		<table class="jobs-panel__table">
-			<thead>
-				<tr>
-					<th class="jobs-panel__col-name">{t('admin.jobs.col_name', 'Name')}</th>
-					<th>{t('admin.jobs.col_cadence', 'Cadence')}</th>
-					<th>{t('admin.jobs.col_last_run', 'Last run')}</th>
-					<th>{t('admin.jobs.col_outcome', 'Outcome')}</th>
-					<th>{t('admin.jobs.col_state', 'State')}</th>
-					<th class="jobs-panel__col-actions">{t('admin.jobs.col_actions', 'Actions')}</th>
-				</tr>
-			</thead>
-			<tbody>
-				{#each jobs as job (job.name)}
-					{@const runs = runsByJob[job.name]}
-					{@const runsErr = runsErrorByJob[job.name]}
-					{@const runsLoading = runsLoadingByJob[job.name]}
-					{@const expandedRun = expandedRunByJob[job.name] ?? null}
-					<!-- Expandable if there is anything to show: a run history,
+		<div class="admin-table admin-table--jobs">
+			<table>
+				<thead>
+					<tr>
+						<th class="jobs-panel__col-name">{t('admin.jobs.col_name', 'Name')}</th>
+						<th>{t('admin.jobs.col_cadence', 'Cadence')}</th>
+						<th>{t('admin.jobs.col_last_run', 'Last run')}</th>
+						<th>{t('admin.jobs.col_outcome', 'Outcome')}</th>
+						<th>{t('admin.jobs.col_state', 'State')}</th>
+						<th class="jobs-panel__col-actions">{t('admin.jobs.col_actions', 'Actions')}</th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each jobs as job (job.name)}
+						{@const runs = runsByJob[job.name]}
+						{@const runsErr = runsErrorByJob[job.name]}
+						{@const runsLoading = runsLoadingByJob[job.name]}
+						{@const expandedRun = expandedRunByJob[job.name] ?? null}
+						<!-- Expandable if there is anything to show: a run history,
 					     a description, or both. Gating on `recoverable` alone
 					     would leave the plain periodic jobs (dedup_gc,
 					     trash_cleanup, …) with no way to reach their
 					     description at all. -->
-					{@const canExpand = isRecoverable(job) || !!job.description}
-					<tr class="jobs-panel__row" class:jobs-panel__row--expanded={expandedJob === job.name}>
-						<td>
-							{#if canExpand}
-								<button
-									type="button"
-									class="jobs-panel__expand"
-									aria-expanded={expandedJob === job.name}
-									onclick={() => toggleJob(job)}
-								>
-									<Icon name={expandedJob === job.name ? 'chevron-down' : 'chevron-right'} />
-									<span class="jobs-panel__name">{job.name}</span>
-								</button>
-							{:else}
-								<span class="jobs-panel__name jobs-panel__name--flat">{job.name}</span>
-							{/if}
-							{#if mutatesLabel(job)}
-								<span class="jobs-panel__pill jobs-panel__pill--readonly">
-									{mutatesLabel(job)}
-								</span>
-							{/if}
-						</td>
-						<!-- "At boot" belongs in the cadence column: it answers
+						{@const canExpand = isRecoverable(job) || !!job.description}
+						<tr class="jobs-panel__row" class:jobs-panel__row--expanded={expandedJob === job.name}>
+							<td>
+								{#if canExpand}
+									<button
+										type="button"
+										class="jobs-panel__expand"
+										aria-expanded={expandedJob === job.name}
+										onclick={() => toggleJob(job)}
+									>
+										<Icon name={expandedJob === job.name ? 'chevron-down' : 'chevron-right'} />
+										<span class="jobs-panel__name">{job.name}</span>
+									</button>
+								{:else}
+									<span class="jobs-panel__name jobs-panel__name--flat">{job.name}</span>
+								{/if}
+								{#if mutatesLabel(job)}
+									<span class="admin-chip admin-chip--readonly">
+										{mutatesLabel(job)}
+									</span>
+								{/if}
+							</td>
+							<!-- "At boot" belongs in the cadence column: it answers
 						     WHEN this job runs, which is the same question
 						     `interval_ms` answers. Beside the name it read as a
 						     property of the job rather than of its schedule, and
@@ -1012,200 +1013,200 @@
 						     no interval that fires at boot is not on-demand, and
 						     the row said "on-demand" next to a badge saying
 						     otherwise. -->
-						<td class="jobs-panel__muted" data-label={t('admin.jobs.col_cadence', 'Cadence')}>
-							{cadenceLabel(job)}
-							{#if job.startup}
-								{@const bootRepair = job.startup.params?.repair === true}
-								<span
-									class="jobs-panel__pill"
-									class:jobs-panel__pill--paused={bootRepair}
-									class:jobs-panel__pill--neutral={!bootRepair}
-									title={bootRepair
-										? t(
-												'admin.jobs.startup_repair_tooltip',
-												'Configured in OXICLOUD_STARTUP_JOBS to run in repair mode at every boot.'
-											)
-										: t(
-												'admin.jobs.startup_tooltip',
-												'Configured in OXICLOUD_STARTUP_JOBS to run at every boot.'
+							<td class="muted" data-label={t('admin.jobs.col_cadence', 'Cadence')}>
+								{cadenceLabel(job)}
+								{#if job.startup}
+									{@const bootRepair = job.startup.params?.repair === true}
+									<span
+										class="admin-chip"
+										class:admin-chip--paused={bootRepair}
+										class:admin-chip--neutral={!bootRepair}
+										title={bootRepair
+											? t(
+													'admin.jobs.startup_repair_tooltip',
+													'Configured in OXICLOUD_STARTUP_JOBS to run in repair mode at every boot.'
+												)
+											: t(
+													'admin.jobs.startup_tooltip',
+													'Configured in OXICLOUD_STARTUP_JOBS to run at every boot.'
+												)}
+									>
+										{bootRepair
+											? t('admin.jobs.startup_repair', 'at boot · repair')
+											: t('admin.jobs.startup', 'at boot')}
+									</span>
+								{/if}
+							</td>
+							<td class="muted" data-label={t('admin.jobs.col_last_run', 'Last run')}>
+								{timeAgo(job.last_run_at ?? undefined)}
+							</td>
+							<td>
+								<div class="jobs-panel__outcome-cell">
+									<span class={outcomeClass(job)}>{capitalizeLabel(outcomeLabel(job))}</span>
+									{#if actionableFindingCount(job) > 0}
+										{@const findings = actionableFindingCount(job)}
+										<span
+											class="admin-chip admin-chip--err"
+											title={t(
+												'admin.jobs.findings_present_tooltip',
+												'Expand this run to see per-finding detail.'
 											)}
-								>
-									{bootRepair
-										? t('admin.jobs.startup_repair', 'at boot · repair')
-										: t('admin.jobs.startup', 'at boot')}
-								</span>
-							{/if}
-						</td>
-						<td class="jobs-panel__muted" data-label={t('admin.jobs.col_last_run', 'Last run')}>
-							{timeAgo(job.last_run_at ?? undefined)}
-						</td>
-						<td>
-							<div class="jobs-panel__outcome-cell">
-								<span class={outcomeClass(job)}>{capitalizeLabel(outcomeLabel(job))}</span>
-								{#if actionableFindingCount(job) > 0}
-									{@const findings = actionableFindingCount(job)}
-									<span
-										class="jobs-panel__pill jobs-panel__pill--err"
-										title={t(
-											'admin.jobs.findings_present_tooltip',
-											'Expand this run to see per-finding detail.'
-										)}
-									>
-										{t('admin.jobs.n_findings', { n: findings }, '{{n}} findings')}
-									</span>
-								{/if}
-								{#if anomalyFindingCount(job) > 0}
-									{@const notices = anomalyFindingCount(job)}
-									<span
-										class="jobs-panel__pill jobs-panel__pill--notice"
-										title={t(
-											'admin.jobs.notices_present_tooltip',
-											'Informational findings — no action required. Expand for detail.'
-										)}
-									>
-										{t('admin.jobs.n_notices', { n: notices }, '{{n}} notices')}
-									</span>
-								{/if}
-							</div>
-						</td>
-						<!-- STATE = where the run is in its lifecycle. Distinct
+										>
+											{t('admin.jobs.n_findings', { n: findings }, '{{n}} findings')}
+										</span>
+									{/if}
+									{#if anomalyFindingCount(job) > 0}
+										{@const notices = anomalyFindingCount(job)}
+										<span
+											class="admin-chip admin-chip--notice"
+											title={t(
+												'admin.jobs.notices_present_tooltip',
+												'Informational findings — no action required. Expand for detail.'
+											)}
+										>
+											{t('admin.jobs.n_notices', { n: notices }, '{{n}} notices')}
+										</span>
+									{/if}
+								</div>
+							</td>
+							<!-- STATE = where the run is in its lifecycle. Distinct
 						     from Outcome, which is how the work turned out.
 						     They are orthogonal: a Paused run has no outcome
 						     yet, and a Completed run's outcome may still be
 						     "issues". Conflating them is what made a paused
 						     migration render as a green "ok". -->
-						<td>
-							{#if isRunning(job)}
-								<span class="jobs-panel__pill jobs-panel__pill--running">
-									{t('admin.jobs.state_running', 'running')}
-								</span>
-							{:else if job.last_run_status}
-								<!-- From the run ROW, not from memory: the
+							<td>
+								{#if isRunning(job)}
+									<span class="admin-chip admin-chip--running">
+										{t('admin.jobs.state_running', 'running')}
+									</span>
+								{:else if job.last_run_status}
+									<!-- From the run ROW, not from memory: the
 								     in-memory outcome is empty after a restart and
 								     stale after a cancel, both of which the row
 								     gets right. Reason on hover when the run
 								     stopped on a backend failure. -->
-								<span class={statusClass(job.last_run_status)} title={stoppedReason(job)}>
-									{capitalizeLabel(runStatusLabel(job.last_run_status))}
-								</span>
-							{:else}
-								<span class="jobs-panel__muted">—</span>
-							{/if}
-						</td>
-						<td class="jobs-panel__actions">
-							{#if job.paused_run}
-								<!-- Paused row: [Resume (X/Y)] to continue, [Cancel]
+									<span class={statusClass(job.last_run_status)} title={stoppedReason(job)}>
+										{capitalizeLabel(runStatusLabel(job.last_run_status))}
+									</span>
+								{:else}
+									<span class="muted">—</span>
+								{/if}
+							</td>
+							<td class="jobs-panel__actions">
+								{#if job.paused_run}
+									<!-- Paused row: [Resume (X/Y)] to continue, [Cancel]
 								     to abandon the checkpoint (marks run Cancelled). -->
-								{@const p = job.paused_run}
-								{@const label =
-									p.total && p.total > 0
-										? t(
-												'admin.jobs.resume_progress',
-												{ scanned: p.scanned, total: p.total },
-												'Resume ({{scanned}}/{{total}})'
-											)
-										: t('admin.jobs.resume', 'Resume')}
-								<!-- ⚠ Resume stays a bare trigger — no parameter dialog.
+									{@const p = job.paused_run}
+									{@const label =
+										p.total && p.total > 0
+											? t(
+													'admin.jobs.resume_progress',
+													{ scanned: p.scanned, total: p.total },
+													'Resume ({{scanned}}/{{total}})'
+												)
+											: t('admin.jobs.resume', 'Resume')}
+									<!-- ⚠ Resume stays a bare trigger — no parameter dialog.
 								     A paused run already has args, and the engine
 								     RESTORES them on resume (`persist_or_restore_args`);
 								     offering the form here would invite changing the
 								     parameters of a run already half-done, and
 								     sending any value would override what it was
 								     started with. -->
-								<button
-									class="jobs-panel__btn jobs-panel__btn--small jobs-panel__btn--primary"
-									disabled={busyKeys.has(`trigger:${job.name}`)}
-									onclick={() => onTrigger(job.name)}
-									title={t(
-										'admin.jobs.resume_title',
-										'Continue the paused run from its last checkpoint.'
-									)}
-								>
-									{label}
-								</button>
-								<button
-									class="jobs-panel__btn jobs-panel__btn--small jobs-panel__btn--danger"
-									disabled={busyKeys.has(`cancel:${job.name}`)}
-									onclick={() => onCancel(job.name)}
-									title={t(
-										'admin.jobs.cancel_paused_title',
-										'Abandon the paused run — marks it as Cancelled. Not resumable.'
-									)}
-								>
-									{t('admin.jobs.cancel', 'Cancel')}
-								</button>
-							{:else}
-								<!-- Split-button: primary "Run" fires the default
+									<button
+										class="btn btn-sm btn-primary"
+										disabled={busyKeys.has(`trigger:${job.name}`)}
+										onclick={() => onTrigger(job.name)}
+										title={t(
+											'admin.jobs.resume_title',
+											'Continue the paused run from its last checkpoint.'
+										)}
+									>
+										{label}
+									</button>
+									<button
+										class="btn btn-sm btn-danger"
+										disabled={busyKeys.has(`cancel:${job.name}`)}
+										onclick={() => onCancel(job.name)}
+										title={t(
+											'admin.jobs.cancel_paused_title',
+											'Abandon the paused run — marks it as Cancelled. Not resumable.'
+										)}
+									>
+										{t('admin.jobs.cancel', 'Cancel')}
+									</button>
+								{:else}
+									<!-- Split-button: primary "Run" fires the default
 								     trigger; the chevron opens a menu with the
 								     tenant-specific variants (Run deep / Repair).
 								     Rows without any variant render a bare Run
 								     button — no chevron, no menu, no extra
 								     width. Preserves one-click discovery for
 								     the common case. -->
-								{@const hasRunVariants =
-									supportsDeep(job) || supportsRepair(job) || extraBooleanParams(job).length > 0}
-								<span class="jobs-panel__split">
-									<button
-										class="jobs-panel__btn jobs-panel__btn--small"
-										class:jobs-panel__split-main={hasRunVariants}
-										disabled={busyKeys.has(`trigger:${job.name}`)}
-										title={job.description || undefined}
-										onclick={() => {
-											closeAllRunMenus();
-											void openWithPreset(job);
-										}}
-									>
-										{t('admin.jobs.run', 'Run')}
-									</button>
-									{#if hasRunVariants}
+									{@const hasRunVariants =
+										supportsDeep(job) || supportsRepair(job) || extraBooleanParams(job).length > 0}
+									<span class="jobs-panel__split">
 										<button
-											class="jobs-panel__btn jobs-panel__btn--small jobs-panel__split-toggle"
-											aria-haspopup="menu"
-											aria-expanded={runMenuOpen[job.name] ?? false}
-											aria-label={t('admin.jobs.run_variants_menu', 'Run variants menu')}
-											onclick={() => toggleRunMenu(job.name)}
+											class="btn btn-secondary btn-sm"
+											class:jobs-panel__split-main={hasRunVariants}
+											disabled={busyKeys.has(`trigger:${job.name}`)}
+											title={job.description || undefined}
+											onclick={() => {
+												closeAllRunMenus();
+												void openWithPreset(job);
+											}}
 										>
-											<Icon name="caret-down" />
+											{t('admin.jobs.run', 'Run')}
 										</button>
-										{#if runMenuOpen[job.name]}
-											<div class="jobs-panel__run-menu" role="menu">
-												{#if supportsDeep(job)}
-													<button
-														type="button"
-														class="jobs-panel__run-menu-item"
-														role="menuitem"
-														disabled={busyKeys.has(`trigger:${job.name}:deep=true`)}
-														title={paramOf(job, 'deep')?.description ||
-															t(
-																'admin.jobs.run_deep_hint',
-																'Also runs slow variants (blob re-hash, bitrot detection).'
-															)}
-														onclick={() => {
-															closeAllRunMenus();
-															void openWithPreset(job, { deep: true });
-														}}
-													>
-														<Icon name="search" />
-														<span>{t('admin.jobs.run_deep', 'Run deep')}</span>
-													</button>
-												{/if}
-												{#if supportsRepair(job)}
-													<button
-														type="button"
-														class="jobs-panel__run-menu-item jobs-panel__run-menu-item--warn"
-														role="menuitem"
-														disabled={busyKeys.has(`trigger:${job.name}:repair=true`)}
-														title={job.repair_description}
-														onclick={() => {
-															closeAllRunMenus();
-															void openWithPreset(job, { repair: true });
-														}}
-													>
-														<Icon name="cog" />
-														<span>{t('admin.jobs.run_repair', 'Repair')}</span>
-													</button>
-												{/if}
-												<!-- Every other boolean the job declares, rendered from
+										{#if hasRunVariants}
+											<button
+												class="btn btn-secondary btn-sm jobs-panel__split-toggle"
+												aria-haspopup="menu"
+												aria-expanded={runMenuOpen[job.name] ?? false}
+												aria-label={t('admin.jobs.run_variants_menu', 'Run variants menu')}
+												onclick={() => toggleRunMenu(job.name)}
+											>
+												<Icon name="caret-down" />
+											</button>
+											{#if runMenuOpen[job.name]}
+												<div class="jobs-panel__run-menu" role="menu">
+													{#if supportsDeep(job)}
+														<button
+															type="button"
+															class="jobs-panel__run-menu-item"
+															role="menuitem"
+															disabled={busyKeys.has(`trigger:${job.name}:deep=true`)}
+															title={paramOf(job, 'deep')?.description ||
+																t(
+																	'admin.jobs.run_deep_hint',
+																	'Also runs slow variants (blob re-hash, bitrot detection).'
+																)}
+															onclick={() => {
+																closeAllRunMenus();
+																void openWithPreset(job, { deep: true });
+															}}
+														>
+															<Icon name="search" />
+															<span>{t('admin.jobs.run_deep', 'Run deep')}</span>
+														</button>
+													{/if}
+													{#if supportsRepair(job)}
+														<button
+															type="button"
+															class="jobs-panel__run-menu-item jobs-panel__run-menu-item--warn"
+															role="menuitem"
+															disabled={busyKeys.has(`trigger:${job.name}:repair=true`)}
+															title={job.repair_description}
+															onclick={() => {
+																closeAllRunMenus();
+																void openWithPreset(job, { repair: true });
+															}}
+														>
+															<Icon name="cog" />
+															<span>{t('admin.jobs.run_repair', 'Repair')}</span>
+														</button>
+													{/if}
+													<!-- Every other boolean the job declares, rendered from
 												     the declaration alone. This is the part that makes a
 												     newly-declared flag reachable with no frontend
 												     change — `force` on dedup_gc and grant_cleanup
@@ -1213,407 +1214,409 @@
 												     parameter name because the backend owns the
 												     wording; there is no i18n key to invent for a flag
 												     the frontend has never heard of. -->
-												{#each extraBooleanParams(job) as p (p.name)}
-													<button
-														type="button"
-														class="jobs-panel__run-menu-item"
-														role="menuitem"
-														disabled={busyKeys.has(`trigger:${job.name}:${p.name}=true`)}
-														title={p.description}
-														onclick={() => {
-															closeAllRunMenus();
-															void openWithPreset(job, { [p.name]: true });
-														}}
-													>
-														<Icon name="play" />
-														<span
-															>{t(
-																'admin.jobs.run_with_param',
-																{ param: p.name },
-																'Run with {{param}}'
-															)}</span
+													{#each extraBooleanParams(job) as p (p.name)}
+														<button
+															type="button"
+															class="jobs-panel__run-menu-item"
+															role="menuitem"
+															disabled={busyKeys.has(`trigger:${job.name}:${p.name}=true`)}
+															title={p.description}
+															onclick={() => {
+																closeAllRunMenus();
+																void openWithPreset(job, { [p.name]: true });
+															}}
 														>
-													</button>
-												{/each}
-											</div>
+															<Icon name="play" />
+															<span
+																>{t(
+																	'admin.jobs.run_with_param',
+																	{ param: p.name },
+																	'Run with {{param}}'
+																)}</span
+															>
+														</button>
+													{/each}
+												</div>
+											{/if}
 										{/if}
-									{/if}
-								</span>
-							{/if}
-							<!-- `isRecoverable`, not `canExpand`: the latter now also
+									</span>
+								{/if}
+								<!-- `isRecoverable`, not `canExpand`: the latter now also
 							     covers rows that expand only to show a description,
 							     and those must not gain a Cancel button they never
 							     had. -->
-							{#if isRunning(job) && isRecoverable(job)}
-								{#if isRecoverable(job)}
-									<!-- Recoverable running: [Pause] preserves cursor
+								{#if isRunning(job) && isRecoverable(job)}
+									{#if isRecoverable(job)}
+										<!-- Recoverable running: [Pause] preserves cursor
 									     for later resume; [Cancel] abandons terminally
 									     (engine writes Cancelled when the handler yields). -->
-									<button
-										class="jobs-panel__btn jobs-panel__btn--small"
-										disabled={busyKeys.has(`pause:${job.name}`)}
-										onclick={() => onPause(job.name)}
-										title={t(
-											'admin.jobs.pause_title',
-											'Signal a graceful pause at the next batch boundary. Run row stays as `Paused` — Resume picks up from the checkpoint.'
-										)}
-									>
-										{t('admin.jobs.pause', 'Pause')}
-									</button>
-									<button
-										class="jobs-panel__btn jobs-panel__btn--small jobs-panel__btn--danger"
-										disabled={busyKeys.has(`cancel:${job.name}`)}
-										onclick={() => onCancel(job.name)}
-										title={t(
-											'admin.jobs.cancel_running_title',
-											'Abandon the run — marks it as Cancelled at the next batch boundary. Not resumable.'
-										)}
-									>
-										{t('admin.jobs.cancel', 'Cancel')}
-									</button>
-								{:else}
-									<button
-										class="jobs-panel__btn jobs-panel__btn--small jobs-panel__btn--danger"
-										disabled={busyKeys.has(`cancel:${job.name}`)}
-										onclick={() => onCancel(job.name)}
-									>
-										{t('admin.jobs.cancel', 'Cancel')}
-									</button>
+										<button
+											class="btn btn-secondary btn-sm"
+											disabled={busyKeys.has(`pause:${job.name}`)}
+											onclick={() => onPause(job.name)}
+											title={t(
+												'admin.jobs.pause_title',
+												'Signal a graceful pause at the next batch boundary. Run row stays as `Paused` — Resume picks up from the checkpoint.'
+											)}
+										>
+											{t('admin.jobs.pause', 'Pause')}
+										</button>
+										<button
+											class="btn btn-sm btn-danger"
+											disabled={busyKeys.has(`cancel:${job.name}`)}
+											onclick={() => onCancel(job.name)}
+											title={t(
+												'admin.jobs.cancel_running_title',
+												'Abandon the run — marks it as Cancelled at the next batch boundary. Not resumable.'
+											)}
+										>
+											{t('admin.jobs.cancel', 'Cancel')}
+										</button>
+									{:else}
+										<button
+											class="btn btn-sm btn-danger"
+											disabled={busyKeys.has(`cancel:${job.name}`)}
+											onclick={() => onCancel(job.name)}
+										>
+											{t('admin.jobs.cancel', 'Cancel')}
+										</button>
+									{/if}
 								{/if}
-							{/if}
-						</td>
-					</tr>
+							</td>
+						</tr>
 
-					<!-- First row of the expanded block, and only visible there:
+						<!-- First row of the expanded block, and only visible there:
 					     the description answers "what is this job" before the
 					     run history answers "what did it do", and keeping it
 					     folded keeps the collapsed table scannable — 17 rows of
 					     two-line prose is not a table any more. -->
-					{#if expandedJob === job.name && job.description}
-						<tr class="jobs-panel__desc-row">
-							<td colspan="6">
-								<p class="jobs-panel__description">{job.description}</p>
-							</td>
-						</tr>
-					{/if}
+						{#if expandedJob === job.name && job.description}
+							<tr class="jobs-panel__desc-row">
+								<td colspan="6">
+									<p class="jobs-panel__description">{job.description}</p>
+								</td>
+							</tr>
+						{/if}
 
-					{#if expandedJob === job.name && isRecoverable(job)}
-						<tr class="jobs-panel__runs">
-							<td colspan="6">
-								<div class="jobs-panel__runs-inner">
-									<div class="jobs-panel__runs-header">
-										<h3>{t('admin.jobs.runs_title', 'Recent runs')}</h3>
-										<button
-											type="button"
-											class="jobs-panel__link"
-											onclick={() => loadRuns(job.name)}
-											disabled={!!runsLoading}
-										>
-											<Icon name="repeat" />
-											{t('admin.jobs.refresh', 'Refresh')}
-										</button>
-									</div>
-									{#if runsErr}
-										<p class="jobs-panel__status jobs-panel__status--error">{runsErr}</p>
-									{:else if !runs}
-										<p class="jobs-panel__status">{t('common.loading', 'Loading…')}</p>
-									{:else if runs.length === 0}
-										<p class="jobs-panel__status">
-											{t('admin.jobs.no_runs', 'No runs yet.')}
-										</p>
-									{:else}
-										<table class="jobs-panel__inner-table">
-											<thead>
-												<tr>
-													<th></th>
-													<th>{t('admin.jobs.col_started_at', 'Started')}</th>
-													<th>{t('admin.jobs.col_status', 'Status')}</th>
-													<th>{t('admin.jobs.col_duration', 'Duration')}</th>
-													<th class="jobs-panel__col-progress">
-														{t('admin.jobs.col_progress', 'Progress')}
-													</th>
-													<th>{t('admin.jobs.col_findings', 'Findings')}</th>
-													<th class="jobs-panel__col-error">
-														{t('admin.jobs.col_error', 'Error')}
-													</th>
-												</tr>
-											</thead>
-											<tbody>
-												{#each runs as run (run.id)}
-													{@const scanned = statNumber(run, 'scanned_count')}
-													{@const findingCount = statNumber(run, 'finding_count')}
-													{@const isRunExpanded = expandedRun === run.id}
+						{#if expandedJob === job.name && isRecoverable(job)}
+							<tr class="jobs-panel__runs">
+								<td colspan="6">
+									<div class="jobs-panel__runs-inner">
+										<div class="jobs-panel__runs-header">
+											<h3>{t('admin.jobs.runs_title', 'Recent runs')}</h3>
+											<button
+												type="button"
+												class="jobs-panel__link"
+												onclick={() => loadRuns(job.name)}
+												disabled={!!runsLoading}
+											>
+												<Icon name="repeat" />
+												{t('admin.jobs.refresh', 'Refresh')}
+											</button>
+										</div>
+										{#if runsErr}
+											<p class="admin-result admin-result--error">{runsErr}</p>
+										{:else if !runs}
+											<p class="muted">{t('common.loading', 'Loading…')}</p>
+										{:else if runs.length === 0}
+											<p class="muted">
+												{t('admin.jobs.no_runs', 'No runs yet.')}
+											</p>
+										{:else}
+											<table class="jobs-panel__inner-table">
+												<thead>
 													<tr>
-														<td>
-															<button
-																type="button"
-																class="jobs-panel__expand jobs-panel__expand--small"
-																aria-expanded={isRunExpanded}
-																onclick={() => toggleRun(job.name, run.id)}
-															>
-																<Icon name={isRunExpanded ? 'chevron-down' : 'chevron-right'} />
-															</button>
-														</td>
-														<td
-															class="jobs-panel__muted"
-															data-label={t('admin.jobs.col_started_at', 'Started')}
-														>
-															{timeAgo(run.started_at)}
-														</td>
-														<td>
-															<span class={statusClass(run.status)}>
-																{statusLabel(run.status)}
-															</span>
-														</td>
-														<td
-															class="jobs-panel__muted"
-															data-label={t('admin.jobs.col_duration', 'Duration')}
-														>
-															{runDurationLabel(run)}
-														</td>
-														<td data-label={t('admin.jobs.col_progress', 'Progress')}>
-															{#if run.progress}
-																{@const barPct = Math.min(
-																	100,
-																	Math.max(0, run.progress.fraction * 100)
-																)}
-																{@const pctLabel = (run.progress.fraction * 100).toFixed(1) + '%'}
-																<div
-																	class="jobs-panel__progress"
-																	title={run.progress.kind === 'approximate'
-																		? t(
-																				'admin.jobs.progress_approx_tooltip',
-																				{
-																					pct: pctLabel,
-																					scanned: run.progress.scanned,
-																					total: run.progress.total
-																				},
-																				'{{pct}} ({{scanned}} / {{total}} — approximate, backend proxy)'
-																			)
-																		: t(
-																				'admin.jobs.progress_exact_tooltip',
-																				{
-																					pct: pctLabel,
-																					scanned: run.progress.scanned,
-																					total: run.progress.total
-																				},
-																				'{{pct}} ({{scanned}} / {{total}})'
-																			)}
+														<th></th>
+														<th>{t('admin.jobs.col_started_at', 'Started')}</th>
+														<th>{t('admin.jobs.col_status', 'Status')}</th>
+														<th>{t('admin.jobs.col_duration', 'Duration')}</th>
+														<th class="jobs-panel__col-progress">
+															{t('admin.jobs.col_progress', 'Progress')}
+														</th>
+														<th>{t('admin.jobs.col_findings', 'Findings')}</th>
+														<th class="jobs-panel__col-error">
+															{t('admin.jobs.col_error', 'Error')}
+														</th>
+													</tr>
+												</thead>
+												<tbody>
+													{#each runs as run (run.id)}
+														{@const scanned = statNumber(run, 'scanned_count')}
+														{@const findingCount = statNumber(run, 'finding_count')}
+														{@const isRunExpanded = expandedRun === run.id}
+														<tr>
+															<td>
+																<button
+																	type="button"
+																	class="jobs-panel__expand jobs-panel__expand--small"
+																	aria-expanded={isRunExpanded}
+																	onclick={() => toggleRun(job.name, run.id)}
 																>
+																	<Icon name={isRunExpanded ? 'chevron-down' : 'chevron-right'} />
+																</button>
+															</td>
+															<td
+																class="muted"
+																data-label={t('admin.jobs.col_started_at', 'Started')}
+															>
+																{timeAgo(run.started_at)}
+															</td>
+															<td>
+																<span class={statusClass(run.status)}>
+																	{statusLabel(run.status)}
+																</span>
+															</td>
+															<td
+																class="muted"
+																data-label={t('admin.jobs.col_duration', 'Duration')}
+															>
+																{runDurationLabel(run)}
+															</td>
+															<td data-label={t('admin.jobs.col_progress', 'Progress')}>
+																{#if run.progress}
+																	{@const barPct = Math.min(
+																		100,
+																		Math.max(0, run.progress.fraction * 100)
+																	)}
+																	{@const pctLabel = (run.progress.fraction * 100).toFixed(1) + '%'}
 																	<div
-																		class="jobs-panel__progress-bar"
-																		class:jobs-panel__progress-bar--approx={run.progress.kind ===
-																			'approximate'}
+																		class="jobs-panel__progress"
+																		title={run.progress.kind === 'approximate'
+																			? t(
+																					'admin.jobs.progress_approx_tooltip',
+																					{
+																						pct: pctLabel,
+																						scanned: run.progress.scanned,
+																						total: run.progress.total
+																					},
+																					'{{pct}} ({{scanned}} / {{total}} — approximate, backend proxy)'
+																				)
+																			: t(
+																					'admin.jobs.progress_exact_tooltip',
+																					{
+																						pct: pctLabel,
+																						scanned: run.progress.scanned,
+																						total: run.progress.total
+																					},
+																					'{{pct}} ({{scanned}} / {{total}})'
+																				)}
 																	>
 																		<div
-																			class="jobs-panel__progress-fill"
-																			style:width="{barPct}%"
-																		></div>
+																			class="jobs-panel__progress-bar"
+																			class:jobs-panel__progress-bar--approx={run.progress.kind ===
+																				'approximate'}
+																		>
+																			<div
+																				class="jobs-panel__progress-fill"
+																				style:width="{barPct}%"
+																			></div>
+																		</div>
+																		<span class="jobs-panel__progress-label">
+																			{run.progress.scanned}/{run.progress.total}
+																		</span>
 																	</div>
-																	<span class="jobs-panel__progress-label">
-																		{run.progress.scanned}/{run.progress.total}
+																{:else if scanned != null}
+																	<span
+																		class="muted"
+																		title={t(
+																			'admin.jobs.progress_scanned_only_tooltip',
+																			'No total available for this run (pre-progress-bar deploy or the tenant does not report a countable subject).'
+																		)}
+																	>
+																		{t(
+																			'admin.jobs.progress_scanned_only',
+																			{ n: scanned },
+																			'{{n}} scanned'
+																		)}
 																	</span>
-																</div>
-															{:else if scanned != null}
-																<span
-																	class="jobs-panel__muted"
-																	title={t(
-																		'admin.jobs.progress_scanned_only_tooltip',
-																		'No total available for this run (pre-progress-bar deploy or the tenant does not report a countable subject).'
-																	)}
-																>
-																	{t(
-																		'admin.jobs.progress_scanned_only',
-																		{ n: scanned },
-																		'{{n}} scanned'
-																	)}
-																</span>
-															{:else}
-																<span class="jobs-panel__muted">—</span>
-															{/if}
-														</td>
-														<td
-															class="jobs-panel__num"
-															data-label={t('admin.jobs.col_findings', 'Findings')}
-														>
-															{#if findingCount && findingCount > 0}
-																<span
-																	class="jobs-panel__pill jobs-panel__pill--err"
-																	title={t(
-																		'admin.jobs.findings_present_tooltip',
-																		'Expand this run to see per-finding detail.'
-																	)}
-																>
-																	{findingCount}
-																</span>
-															{:else}
-																<span class="jobs-panel__muted">0</span>
-															{/if}
-														</td>
-														<td
-															class="jobs-panel__err-cell"
-															data-label={t('admin.jobs.col_error', 'Error')}
-														>
-															{#if run.error_message || run.error_reason}
-																<!-- Reason first: it is the short stable key, so the
+																{:else}
+																	<span class="muted">—</span>
+																{/if}
+															</td>
+															<td
+																class="jobs-panel__num"
+																data-label={t('admin.jobs.col_findings', 'Findings')}
+															>
+																{#if findingCount && findingCount > 0}
+																	<span
+																		class="admin-chip admin-chip--err"
+																		title={t(
+																			'admin.jobs.findings_present_tooltip',
+																			'Expand this run to see per-finding detail.'
+																		)}
+																	>
+																		{findingCount}
+																	</span>
+																{:else}
+																	<span class="muted">0</span>
+																{/if}
+															</td>
+															<td
+																class="jobs-panel__err-cell"
+																data-label={t('admin.jobs.col_error', 'Error')}
+															>
+																{#if run.error_message || run.error_reason}
+																	<!-- Reason first: it is the short stable key, so the
 																     cause is legible before the error chain, which can
 																     run to several lines of SDK text. -->
-																{#if run.error_reason}
-																	<span class="jobs-panel__err-reason">{run.error_reason}</span>
+																	{#if run.error_reason}
+																		<span class="jobs-panel__err-reason">{run.error_reason}</span>
+																	{/if}
+																	{#if run.error_message}
+																		<code>{run.error_message}</code>
+																	{/if}
+																{:else}
+																	<span class="muted">—</span>
 																{/if}
-																{#if run.error_message}
-																	<code>{run.error_message}</code>
-																{/if}
-															{:else}
-																<span class="jobs-panel__muted">—</span>
-															{/if}
-														</td>
-													</tr>
-													{#if isRunExpanded}
-														{@const findings = findingsByRun[run.id]}
-														{@const findingsErr = findingsErrorByRun[run.id]}
-														{@const fLoading = findingsLoadingByRun[run.id]}
-														<tr class="jobs-panel__run-detail">
-															<td colspan="7">
-																<div class="jobs-panel__run-detail-inner">
-																	<details class="jobs-panel__json">
-																		<summary>
-																			{t('admin.jobs.run_json', 'Run summary (JSON)')}
-																		</summary>
-																		<pre>{JSON.stringify(
-																				{
-																					id: run.id,
-																					status: run.status,
-																					started_at: run.started_at,
-																					last_progress_at: run.last_progress_at,
-																					completed_at: run.completed_at,
-																					stats: run.stats,
-																					params: run.params,
-																					cursor_hex: run.cursor_hex,
-																					error_reason: run.error_reason,
-																					error_message: run.error_message
-																				},
-																				null,
-																				2
-																			)}</pre>
-																	</details>
-																	<div class="jobs-panel__findings">
-																		<div class="jobs-panel__findings-header">
-																			<h4>
-																				{t('admin.jobs.findings_title', 'Findings')}
-																			</h4>
-																			<button
-																				type="button"
-																				class="jobs-panel__link"
-																				onclick={() => loadFindings(job.name, run.id)}
-																				disabled={!!fLoading}
-																			>
-																				<Icon name="repeat" />
-																				{t('admin.jobs.refresh', 'Refresh')}
-																			</button>
-																		</div>
-																		{#if findingsErr}
-																			<p class="jobs-panel__status jobs-panel__status--error">
-																				{findingsErr}
-																			</p>
-																		{:else if !findings}
-																			<p class="jobs-panel__status">
-																				{t('common.loading', 'Loading…')}
-																			</p>
-																		{:else if findings.length === 0}
-																			<p class="jobs-panel__status">
-																				{t('admin.jobs.no_findings', 'No findings — clean run.')}
-																			</p>
-																		{:else}
-																			<table
-																				class="jobs-panel__inner-table jobs-panel__findings-table"
-																			>
-																				<thead>
-																					<tr>
-																						<th>
-																							{t('admin.jobs.col_kind', 'Kind')}
-																						</th>
-																						<th>
-																							{t('admin.jobs.col_severity', 'Severity')}
-																						</th>
-																						<th>
-																							{t('admin.jobs.col_resource', 'Resource')}
-																						</th>
-																						<th>
-																							{t('admin.jobs.col_detail', 'Detail')}
-																						</th>
-																					</tr>
-																				</thead>
-																				<tbody>
-																					{#each findings as f (f.id)}
-																						{@const detail = (f.detail ?? {}) as Record<
-																							string,
-																							unknown
-																						>}
-																						{@const label =
-																							(detail.path as string | undefined) ??
-																							(detail.name as string | undefined) ??
-																							null}
-																						<tr>
-																							<td><code>{f.kind}</code></td>
-																							<td>
-																								<span
-																									class="jobs-panel__pill jobs-panel__pill--{severityPillModifier(
-																										f.severity
-																									)}"
-																								>
-																									{f.severity}
-																								</span>
-																							</td>
-																							<td
-																								data-label={t(
-																									'admin.jobs.col_resource',
-																									'Resource'
-																								)}
-																							>
-																								{#if label}
-																									<div class="jobs-panel__resource">
-																										<code class="jobs-panel__resource-name"
-																											>{label}</code
-																										>
-																										{#if f.resource_id}
-																											<code class="jobs-panel__resource-uuid"
-																												>{f.resource_id}</code
-																											>
-																										{/if}
-																									</div>
-																								{:else}
-																									<code class="jobs-panel__muted"
-																										>{f.resource_id ?? '—'}</code
-																									>
-																								{/if}
-																							</td>
-																							<td data-label={t('admin.jobs.col_detail', 'Detail')}>
-																								<code class="jobs-panel__detail"
-																									>{JSON.stringify(f.detail)}</code
-																								>
-																							</td>
-																						</tr>
-																					{/each}
-																				</tbody>
-																			</table>
-																		{/if}
-																	</div>
-																</div>
 															</td>
 														</tr>
-													{/if}
-												{/each}
-											</tbody>
-										</table>
-									{/if}
-								</div>
-							</td>
-						</tr>
-					{/if}
-				{/each}
-			</tbody>
-		</table>
+														{#if isRunExpanded}
+															{@const findings = findingsByRun[run.id]}
+															{@const findingsErr = findingsErrorByRun[run.id]}
+															{@const fLoading = findingsLoadingByRun[run.id]}
+															<tr class="jobs-panel__run-detail">
+																<td colspan="7">
+																	<div class="jobs-panel__run-detail-inner">
+																		<details class="jobs-panel__json">
+																			<summary>
+																				{t('admin.jobs.run_json', 'Run summary (JSON)')}
+																			</summary>
+																			<pre>{JSON.stringify(
+																					{
+																						id: run.id,
+																						status: run.status,
+																						started_at: run.started_at,
+																						last_progress_at: run.last_progress_at,
+																						completed_at: run.completed_at,
+																						stats: run.stats,
+																						params: run.params,
+																						cursor_hex: run.cursor_hex,
+																						error_reason: run.error_reason,
+																						error_message: run.error_message
+																					},
+																					null,
+																					2
+																				)}</pre>
+																		</details>
+																		<div class="jobs-panel__findings">
+																			<div class="jobs-panel__findings-header">
+																				<h4>
+																					{t('admin.jobs.findings_title', 'Findings')}
+																				</h4>
+																				<button
+																					type="button"
+																					class="jobs-panel__link"
+																					onclick={() => loadFindings(job.name, run.id)}
+																					disabled={!!fLoading}
+																				>
+																					<Icon name="repeat" />
+																					{t('admin.jobs.refresh', 'Refresh')}
+																				</button>
+																			</div>
+																			{#if findingsErr}
+																				<p class="admin-result admin-result--error">
+																					{findingsErr}
+																				</p>
+																			{:else if !findings}
+																				<p class="muted">
+																					{t('common.loading', 'Loading…')}
+																				</p>
+																			{:else if findings.length === 0}
+																				<p class="muted">
+																					{t('admin.jobs.no_findings', 'No findings — clean run.')}
+																				</p>
+																			{:else}
+																				<table
+																					class="jobs-panel__inner-table jobs-panel__findings-table"
+																				>
+																					<thead>
+																						<tr>
+																							<th>
+																								{t('admin.jobs.col_kind', 'Kind')}
+																							</th>
+																							<th>
+																								{t('admin.jobs.col_severity', 'Severity')}
+																							</th>
+																							<th>
+																								{t('admin.jobs.col_resource', 'Resource')}
+																							</th>
+																							<th>
+																								{t('admin.jobs.col_detail', 'Detail')}
+																							</th>
+																						</tr>
+																					</thead>
+																					<tbody>
+																						{#each findings as f (f.id)}
+																							{@const detail = (f.detail ?? {}) as Record<
+																								string,
+																								unknown
+																							>}
+																							{@const label =
+																								(detail.path as string | undefined) ??
+																								(detail.name as string | undefined) ??
+																								null}
+																							<tr>
+																								<td><code>{f.kind}</code></td>
+																								<td>
+																									<span
+																										class="admin-chip admin-chip--{severityPillModifier(
+																											f.severity
+																										)}"
+																									>
+																										{f.severity}
+																									</span>
+																								</td>
+																								<td
+																									data-label={t(
+																										'admin.jobs.col_resource',
+																										'Resource'
+																									)}
+																								>
+																									{#if label}
+																										<div class="jobs-panel__resource">
+																											<code class="jobs-panel__resource-name"
+																												>{label}</code
+																											>
+																											{#if f.resource_id}
+																												<code class="jobs-panel__resource-uuid"
+																													>{f.resource_id}</code
+																												>
+																											{/if}
+																										</div>
+																									{:else}
+																										<code class="muted">{f.resource_id ?? '—'}</code
+																										>
+																									{/if}
+																								</td>
+																								<td
+																									data-label={t('admin.jobs.col_detail', 'Detail')}
+																								>
+																									<code class="jobs-panel__detail"
+																										>{JSON.stringify(f.detail)}</code
+																									>
+																								</td>
+																							</tr>
+																						{/each}
+																					</tbody>
+																				</table>
+																			{/if}
+																		</div>
+																	</div>
+																</td>
+															</tr>
+														{/if}
+													{/each}
+												</tbody>
+											</table>
+										{/if}
+									</div>
+								</td>
+							</tr>
+						{/if}
+					{/each}
+				</tbody>
+			</table>
+		</div>
 	{/if}
 </section>
 
@@ -1633,7 +1636,15 @@
 	.jobs-panel {
 		display: flex;
 		flex-direction: column;
-		gap: 1rem;
+		gap: var(--space-4);
+	}
+
+	/* The panel is the card; the table is its content, not a second
+	   surface on top of it. */
+	.jobs-panel .admin-table {
+		background: transparent;
+		box-shadow: none;
+		border-radius: 0;
 	}
 
 	.jobs-panel__header {
@@ -1647,44 +1658,12 @@
 	.jobs-panel__hint {
 		margin: 0;
 		color: var(--color-text-muted);
-		font-size: 0.9rem;
+		font-size: var(--text-sm);
 	}
 
 	.jobs-panel__header-actions {
 		display: flex;
 		gap: 0.5rem;
-	}
-
-	.jobs-panel__status {
-		padding: 0.75rem;
-		background: var(--color-bg-subtle);
-		border-radius: 4px;
-		color: var(--color-text-muted);
-	}
-
-	.jobs-panel__status--error {
-		background: color-mix(in srgb, var(--color-error-text) 12%, var(--color-bg-surface));
-		color: var(--color-error-text);
-	}
-
-	.jobs-panel__table {
-		width: 100%;
-		border-collapse: collapse;
-		background: var(--color-bg-surface);
-	}
-
-	.jobs-panel__table th,
-	.jobs-panel__table td {
-		text-align: left;
-		padding: 0.6rem 0.75rem;
-		border-bottom: 1px solid var(--color-border);
-	}
-
-	.jobs-panel__table th {
-		font-weight: 600;
-		font-size: 0.85rem;
-		color: var(--color-text-muted);
-		background: var(--color-bg-subtle);
 	}
 
 	.jobs-panel__col-name {
@@ -1727,7 +1706,7 @@
 		padding-left: 1.3rem; /* line up with the icon-affixed rows */
 	}
 
-	.jobs-panel__muted {
+	.muted {
 		color: var(--color-text-muted);
 	}
 
@@ -1740,51 +1719,6 @@
 		display: flex;
 		gap: 0.4rem;
 		flex-wrap: wrap;
-	}
-
-	.jobs-panel__btn {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.4rem;
-		padding: 0.4rem 0.8rem;
-		border: 1px solid var(--color-border);
-		background: var(--color-bg-hover);
-		border-radius: var(--radius-xl);
-		cursor: pointer;
-		font: inherit;
-		color: var(--color-text-secondary);
-	}
-
-	.jobs-panel__btn:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-
-	.jobs-panel__btn--primary {
-		background: color-mix(in srgb, var(--color-accent) 14%, var(--color-bg-surface));
-		color: var(--color-accent-text);
-		border-color: color-mix(in srgb, var(--color-accent) 40%, var(--color-border));
-	}
-
-	.jobs-panel__btn--small {
-		padding: 0.2rem 0.5rem;
-		font-size: 0.85rem;
-	}
-
-	.jobs-panel__btn--danger {
-		background: color-mix(in srgb, var(--color-error-text) 8%, var(--color-bg-surface));
-		border-color: color-mix(in srgb, var(--color-error-text) 35%, var(--color-border));
-		color: var(--color-error-text);
-	}
-
-	/* Warn variant — used for actions that mutate data but are content-
-	   safe / reversible-in-outcome (e.g. Repair ref_counts). Signals
-	   "read the tooltip and the confirm before clicking" without the
-	   danger red reserved for destructive delete-style buttons. */
-	.jobs-panel__btn--warn {
-		background: color-mix(in srgb, var(--color-warning-text) 10%, var(--color-bg-surface));
-		border-color: color-mix(in srgb, var(--color-warning-text) 35%, var(--color-border));
-		color: var(--color-warning-text);
 	}
 
 	/* Split-button — inline flex holding a primary "Run" (fires default
@@ -1862,42 +1796,30 @@
 		color: var(--color-warning-text);
 	}
 
-	.jobs-panel__pill {
-		display: inline-block;
-		padding: 0.05rem 0.4rem;
-		border-radius: var(--radius-sm);
-		font-size: var(--text-xs, 0.7rem);
-		font-weight: var(--weight-semibold, 600);
-		line-height: 1.4;
-		vertical-align: middle;
-	}
-
-	.jobs-panel__pill--ok {
-		background: color-mix(in srgb, var(--color-success-text) 12%, var(--color-bg-surface));
+	/* Domain-specific chip tones. The pill itself is the shared
+	   `.admin-chip`; these only pick the colour family. */
+	.jobs-panel .admin-chip--ok {
+		background: var(--color-success-bg);
 		color: var(--color-success-text);
 	}
 
-	.jobs-panel__pill--err {
-		background: color-mix(in srgb, var(--color-error-text) 12%, var(--color-bg-surface));
+	.jobs-panel .admin-chip--err {
+		background: var(--color-error-bg);
 		color: var(--color-error-text);
 	}
 
-	.jobs-panel__pill--running {
-		background: color-mix(in srgb, var(--color-info-text) 12%, var(--color-bg-surface));
+	.jobs-panel .admin-chip--running,
+	.jobs-panel .admin-chip--notice {
+		background: var(--color-info-bg);
 		color: var(--color-info-text);
 	}
 
-	.jobs-panel__pill--paused {
-		background: color-mix(in srgb, var(--color-warning-text) 14%, var(--color-bg-surface));
+	.jobs-panel .admin-chip--paused {
+		background: var(--color-warning-bg);
 		color: var(--color-warning-text);
 	}
 
-	.jobs-panel__pill--notice {
-		background: color-mix(in srgb, var(--color-info-text) 12%, var(--color-bg-surface));
-		color: var(--color-info-text);
-	}
-
-	.jobs-panel__pill--neutral {
+	.jobs-panel .admin-chip--neutral {
 		background: var(--color-bg-muted);
 		color: var(--color-text-muted);
 	}
@@ -1905,13 +1827,13 @@
 	/* "read-only" sits beside the job name and answers the question an
 	   operator asks before every trigger. Deliberately quiet — it marks
 	   the safe case, so it should not compete with outcome pills. */
-	.jobs-panel__pill--readonly {
-		margin-left: 0.4rem;
+	.jobs-panel .admin-chip--readonly {
+		margin-left: var(--space-1);
 		background: var(--color-bg-subtle);
 		color: var(--color-text-muted);
-		font-size: 0.72rem;
-		font-weight: 400;
-		vertical-align: middle;
+		text-transform: none;
+		letter-spacing: normal;
+		font-weight: var(--weight-normal);
 	}
 
 	/* Opens the expanded block, so it carries the drawer's background and
@@ -2140,24 +2062,24 @@
 			width: 100%;
 		}
 
-		.jobs-panel__header-actions .jobs-panel__btn {
+		.jobs-panel__header-actions .btn {
 			justify-content: center;
 			width: 100%;
 			min-height: 2.5rem;
 		}
 
-		.jobs-panel__table,
-		.jobs-panel__table tbody,
-		.jobs-panel__table tr,
-		.jobs-panel__table td {
+		.admin-table--jobs table,
+		.admin-table--jobs tbody,
+		.admin-table--jobs tr,
+		.admin-table--jobs td {
 			display: block;
 		}
 
-		.jobs-panel__table thead {
+		.admin-table--jobs thead {
 			display: none;
 		}
 
-		.jobs-panel__table tr.jobs-panel__row {
+		.admin-table--jobs tr.jobs-panel__row {
 			display: grid;
 			grid-template-columns: minmax(0, 1fr) auto;
 			grid-template-areas:
@@ -2166,10 +2088,10 @@
 				'cadence last'
 				'actions actions';
 			gap: 0.5rem 0.75rem;
-			padding: 0.75rem;
-			margin-bottom: 0.5rem;
-			border: 1px solid var(--color-border);
-			border-radius: var(--radius-md, 6px);
+			padding: var(--space-3);
+			margin-bottom: var(--space-2);
+			border-radius: var(--radius-xl);
+			box-shadow: 0 1px 3px var(--color-shadow-xs);
 			background: var(--color-bg-surface);
 		}
 
@@ -2215,7 +2137,7 @@
 			gap: 0.5rem;
 		}
 
-		.jobs-panel__row td:nth-child(6) .jobs-panel__btn {
+		.jobs-panel__row td:nth-child(6) .btn {
 			min-height: 2.5rem;
 			padding: 0.4rem 0.8rem;
 		}

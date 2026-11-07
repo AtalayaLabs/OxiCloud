@@ -109,6 +109,9 @@
 	import ActionMenu, { type ActionMenuItem } from '$lib/components/ActionMenu.svelte';
 	import ConfirmButton from '$lib/components/ConfirmButton.svelte';
 	import Banner from '$lib/components/Banner.svelte';
+	import Button from '$lib/components/Button.svelte';
+	import EmptyState from '$lib/components/EmptyState.svelte';
+	import SkeletonList from '$lib/components/SkeletonList.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import OwnerAvatarStack from '$lib/components/OwnerAvatarStack.svelte';
 	import DrivePoliciesModal from '$lib/components/DrivePoliciesModal.svelte';
@@ -119,6 +122,7 @@
 	import { drives as drivesStore } from '$lib/stores/drives.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 	import { formatBytes } from '$lib/utils/format';
+	import '$lib/styles/ported/admin.css';
 
 	const PAGE_SIZE = 25;
 	const LOGS_PAGE_SIZE = 50;
@@ -2265,8 +2269,9 @@
 
 {#snippet envBadge(on: boolean)}
 	{#if on}
-		<span class="badge badge--env" title={t('admin.env_locked', 'Set by an environment variable')}
-			>ENV</span
+		<span
+			class="admin-chip admin-chip--env"
+			title={t('admin.env_locked', 'Set by an environment variable')}>ENV</span
 		>
 	{/if}
 {/snippet}
@@ -2278,25 +2283,84 @@
   ONLY the tab content; navigation is via the sidebar + URL. See
   `lib/components/AppShell.svelte` (ADMIN_LINKS).
 -->
-<main class="admin">
+<div class="admin-page">
 	<!--
-	  H1 + optional dashboard-only version chip on the right. Wrapping
-	  them in a header row lets the chip sit inline with the h1 rather
-	  than pushing content down — the chip is passive metadata, not a
-	  section heading. Version is dashboard-only per operator feedback:
-	  it belongs in the "system overview" tab and is redundant on the
-	  per-domain admin tabs (users, storage, sessions, …). The sidebar
-	  footer still carries it on every admin route as a fallback.
+	  Header: same sticky toolbar as /files, /photos and /contacts — title on
+	  the left, the tab's primary controls on the right. Actions used to live
+	  in a separate right-aligned `.bar` row below the title, which read as a
+	  second, unrelated header and scrolled away from the table it governed.
 	-->
-	<div class="admin-header">
-		<h1>{t('admin.title', 'Admin')} > {tabLabel}</h1>
-		{#if tab === 'dashboard' && serverConfig.loaded && serverConfig.version}
-			<p class="admin-header__version">
-				<Icon name="tag" />
-				<span>{t('admin.oxicloud_version', 'OxiCloud version')}</span>
-				<span class="admin-header__version-value">v{serverConfig.version}</span>
-			</p>
-		{/if}
+	<div class="page-sticky-header">
+		<div class="actions-bar">
+			<h1 class="page-title admin-title">
+				{t('admin.title', 'Admin')} › {tabLabel}
+			</h1>
+			<div class="action-buttons admin-actions" class:admin-actions--filters={tab === 'sessions'}>
+				{#if tab === 'dashboard'}
+					{#if serverConfig.loaded && serverConfig.version}
+						<p class="admin-meta">
+							<Icon name="tag" />
+							<span>{t('admin.oxicloud_version', 'OxiCloud version')}</span>
+							<code>v{serverConfig.version}</code>
+						</p>
+					{/if}
+				{:else if tab === 'users'}
+					<button
+						class="btn btn-primary admin-primary"
+						data-testid="admin-users-create-btn"
+						title={t('admin.create_user', 'Create user')}
+						aria-label={t('admin.create_user', 'Create user')}
+						onclick={() => (createOpen = true)}
+					>
+						<Icon name="user-plus" />
+						<span class="admin-primary__label">{t('admin.create_user', 'Create user')}</span>
+					</button>
+				{:else if tab === 'drives'}
+					<button
+						class="btn btn-primary admin-primary"
+						data-testid="admin-drives-create-btn"
+						title={t('admin.create_drive', 'Create shared drive')}
+						aria-label={t('admin.create_drive', 'Create shared drive')}
+						onclick={openDriveCreate}
+					>
+						<Icon name="plus" />
+						<span class="admin-primary__label">
+							{t('admin.create_drive', 'Create shared drive')}
+						</span>
+					</button>
+				{:else if tab === 'sessions'}
+					<label class="admin-filter">
+						{t('admin.sessions.filter_user', 'User (UUID)')}
+						<input
+							class="admin-mono"
+							type="text"
+							placeholder="00000000-…"
+							data-testid="admin-sessions-user-filter-input"
+							bind:value={sessionsFilterUserId}
+						/>
+					</label>
+					<label class="admin-toggle">
+						<input
+							type="checkbox"
+							data-testid="admin-sessions-include-revoked-checkbox"
+							bind:checked={sessionsIncludeRevoked}
+						/>
+						{t('admin.sessions.include_revoked', 'Include revoked / expired')}
+					</label>
+					<button
+						class="btn btn-secondary"
+						data-testid="admin-sessions-refresh-btn"
+						onclick={() => void loadSessions()}
+						disabled={sessionsLoading}
+					>
+						<Icon name="sync-alt" />
+						{sessionsLoading
+							? t('common.loading', 'Loading…')
+							: t('admin.sessions.refresh', 'Refresh')}
+					</button>
+				{/if}
+			</div>
+		</div>
 	</div>
 
 	<!--
@@ -2326,9 +2390,9 @@
 
 	{#if tab === 'dashboard'}
 		{#if dashboardError}
-			<p class="status status--error">{dashboardError}</p>
+			<EmptyState icon="exclamation-circle" title={dashboardError} error />
 		{:else if !dashboard}
-			<p class="status">{t('common.loading', 'Loading…')}</p>
+			<p class="muted">{t('common.loading', 'Loading…')}</p>
 		{:else}
 			<!-- Three grouped sections — one per data-nature axis. Static
 			     row counts on top (change on register/deactivate/role toggle),
@@ -2339,7 +2403,7 @@
 			     misreading "as-of-now count" as "who's here right now". -->
 
 			<!-- Section 1: User accounts — static breakdown of auth.users -->
-			<h2 class="ds-section-title">{t('admin.section_accounts', 'User accounts')}</h2>
+			<h2 class="heading-eyebrow">{t('admin.section_accounts', 'User accounts')}</h2>
 			<div class="ds-grid">
 				<div class="ds-card">
 					<span class="ds-num">{dashboard.total_users}</span>{t('admin.total_users', 'Total users')}
@@ -2370,10 +2434,10 @@
 			     value changes minute-to-minute" — same green as the
 			     admin > sessions row indicator so admins read one consistent
 			     visual for presence across the panel. -->
-			<h2 class="ds-section-title">
+			<h2 class="heading-eyebrow">
 				{t('admin.section_activity', 'Live activity')}
 				<span
-					class="ds-section-live"
+					class="admin-chip admin-chip--active"
 					title={t('admin.live_tooltip', 'Reflects sessions active in the last 5 minutes')}
 				>
 					{t('admin.live', 'live')}
@@ -2437,7 +2501,7 @@
 			     concerns not exposed on the public config surface.
 			     Adding a new feature server-side flows into this grid
 			     automatically — no template change needed. -->
-			<h2 class="ds-section-title">{t('admin.section_system', 'System')}</h2>
+			<h2 class="heading-eyebrow">{t('admin.section_system', 'System')}</h2>
 			<div class="ds-grid">
 				<div class="ds-card">
 					<span class="ds-flag" class:ds-flag--on={dashboard.oidc_configured}>
@@ -2459,30 +2523,27 @@
 			</div>
 
 			{#if dashboard.users_over_quota > 0}
-				<div class="card warn-card warn-card--danger">
-					<Icon name="exclamation-circle" />
-					<div>
-						<strong class="ds-num">{dashboard.users_over_quota}</strong>
-						{t('admin.over_quota', { n: dashboard.users_over_quota }, '{{n}} users over quota')}
-					</div>
-				</div>
+				<Banner
+					severity="critical"
+					icon="exclamation-circle"
+					title={t('admin.over_quota', { n: dashboard.users_over_quota }, '{{n}} users over quota')}
+					role="status"
+				/>
 			{/if}
 			{#if dashboard.users_over_80_percent > 0}
-				<div class="card warn-card warn-card--warn">
-					<Icon name="exclamation-triangle" />
-					<div>
-						<strong class="ds-num">{dashboard.users_over_80_percent}</strong>
-						{t(
-							'admin.over_80',
-							{ n: dashboard.users_over_80_percent },
-							'{{n}} users over 80% quota'
-						)}
-					</div>
-				</div>
+				<Banner
+					severity="warning"
+					title={t(
+						'admin.over_80',
+						{ n: dashboard.users_over_80_percent },
+						'{{n}} users over 80% quota'
+					)}
+					role="status"
+				/>
 			{/if}
 
 			<div class="storage-cards">
-				<div class="card storage-cards__quota">
+				<div class="admin-card storage-cards__quota">
 					<h2>{t('admin.quota_usage', 'Quota usage')}</h2>
 					<p class="muted storage-cards__hint">
 						{t(
@@ -2490,63 +2551,53 @@
 							'Pre-dedup, logical file sizes. Includes trashed files until permanent deletion.'
 						)}
 					</p>
-					<table class="quota-table">
-						<tbody>
-							{#each dashboard.drive_usage ?? [] as row (row.kind)}
-								{@const label =
-									row.kind === 'personal'
-										? t('admin.quota_personal', 'Personal drives')
-										: t('admin.quota_shared', 'Shared drives')}
-								{@const total = row.unlimited_count + row.capped_count}
-								{@const pct =
-									row.capped_quota_bytes && row.capped_quota_bytes > 0
-										? (row.used_bytes / row.capped_quota_bytes) * 100
-										: null}
-								{#if row.capped_count > 0 || row.unlimited_count > 0}
-									<tr>
-										<th scope="row">
-											<span class="quota-table__count">{total}</span>
-											{label}
-										</th>
-										<td class="quota-table__num">
-											{#if row.capped_quota_bytes !== null && pct !== null}
-												{formatBytes(row.used_bytes)} / {formatBytes(row.capped_quota_bytes)}
-												<span class="quota-table__pct">({pct.toFixed(1)}%)</span>
-											{:else}
-												{formatBytes(row.used_bytes)}
-											{/if}
-										</td>
-										<td class="quota-table__bar">
-											{#if pct !== null}
-												<div class="ds-bar">
-													<div
-														class="ds-fill"
-														class:ds-fill--warn={pct > 70}
-														class:ds-fill--danger={pct > 90}
-														style:width="{Math.min(pct, 100)}%"
-													></div>
-												</div>
-											{/if}
-										</td>
-										<td class="quota-table__meta">
-											{#if row.unlimited_count > 0}
-												<span class="quota-table__unlimited">
-													{t(
-														'admin.quota_unlimited',
-														{ n: row.unlimited_count },
-														'{{n}} unlimited'
-													)}
-												</span>
-											{/if}
-										</td>
-									</tr>
-								{/if}
-							{/each}
-						</tbody>
-					</table>
+					<dl class="quota-list">
+						{#each dashboard.drive_usage ?? [] as row (row.kind)}
+							{@const label =
+								row.kind === 'personal'
+									? t('admin.quota_personal', 'Personal drives')
+									: t('admin.quota_shared', 'Shared drives')}
+							{@const total = row.unlimited_count + row.capped_count}
+							{@const pct =
+								row.capped_quota_bytes && row.capped_quota_bytes > 0
+									? (row.used_bytes / row.capped_quota_bytes) * 100
+									: null}
+							{#if row.capped_count > 0 || row.unlimited_count > 0}
+								<div class="quota-list__row">
+									<dt>
+										<span class="quota-list__count">{total}</span>
+										{label}
+										{#if row.unlimited_count > 0}
+											<span class="admin-chip">
+												{t('admin.quota_unlimited', { n: row.unlimited_count }, '{{n}} unlimited')}
+											</span>
+										{/if}
+									</dt>
+									<dd>
+										{#if row.capped_quota_bytes !== null && pct !== null}
+											{formatBytes(row.used_bytes)} / {formatBytes(row.capped_quota_bytes)}
+											<span class="muted">({pct.toFixed(1)}%)</span>
+										{:else}
+											{formatBytes(row.used_bytes)}
+										{/if}
+										{#if pct !== null}
+											<div class="ds-bar">
+												<div
+													class="ds-fill"
+													class:ds-fill--warn={pct > 70}
+													class:ds-fill--danger={pct > 90}
+													style:width="{Math.min(pct, 100)}%"
+												></div>
+											</div>
+										{/if}
+									</dd>
+								</div>
+							{/if}
+						{/each}
+					</dl>
 				</div>
 
-				<div class="card storage-cards__backend">
+				<div class="admin-card storage-cards__backend">
 					<h2>{t('admin.backend_storage', 'Backend storage')}</h2>
 					{#if dashboard.total_bytes_stored !== undefined}
 						<dl class="storage-cards__stats">
@@ -2587,9 +2638,9 @@
 			</div>
 
 			{#if dashboard.registration_enabled !== undefined}
-				<div class="card">
+				<div class="admin-card">
 					<h2>{t('admin.registration', 'Registration')}</h2>
-					<label class="checkbox">
+					<label class="admin-check">
 						<input
 							type="checkbox"
 							data-testid="admin-dashboard-registration-checkbox"
@@ -2599,13 +2650,14 @@
 						<span>{t('admin.allow_registration', 'Allow public user registration')}</span>
 					</label>
 					{#if !dashboard.registration_enabled}
-						<p class="alert alert--warn registration-warning">
-							<Icon name="exclamation-triangle" />
-							{t(
+						<Banner
+							severity="warning"
+							body={t(
 								'admin.registration_disabled_warning',
 								'Public registration is disabled. Only admins can create new accounts.'
 							)}
-						</p>
+							role="status"
+						/>
 					{/if}
 				</div>
 			{/if}
@@ -2617,17 +2669,16 @@
 			     location. -->
 		{/if}
 	{:else if tab === 'oidc'}
-		<div class="card">
-			<h2>{t('admin.oidc', 'OIDC / SSO')}</h2>
+		<div class="admin-card">
 			{#if !oidc}
-				<p class="status">{t('common.loading', 'Loading…')}</p>
+				<p class="muted">{t('common.loading', 'Loading…')}</p>
 			{:else}
 				<form
-					class="form"
+					class="admin-form"
 					data-testid="admin-oidc-form"
 					onsubmit={(e) => (e.preventDefault(), doSaveOidc())}
 				>
-					<label class="checkbox checkbox--center">
+					<label class="admin-check">
 						<input
 							type="checkbox"
 							data-testid="admin-oidc-enabled-checkbox"
@@ -2635,28 +2686,30 @@
 						/>
 						<span>{t('admin.oidc_enabled', 'Enable OIDC login')}</span>
 					</label>
-					<label
-						><span
-							>{t('admin.oidc_issuer', 'Issuer URL')}{@render envBadge(
-								isEnvLocked(oidc.env_overrides, 'issuer_url')
-							)}</span
+					<div class="admin-form__issuer">
+						<label
+							><span
+								>{t('admin.oidc_issuer', 'Issuer URL')}{@render envBadge(
+									isEnvLocked(oidc.env_overrides, 'issuer_url')
+								)}</span
+							>
+							<input
+								bind:value={oidc.issuer_url}
+								data-testid="admin-oidc-issuer-input"
+								placeholder="https://idp.example.com"
+								disabled={isEnvLocked(oidc.env_overrides, 'issuer_url')}
+							/></label
 						>
-						<input
-							bind:value={oidc.issuer_url}
-							data-testid="admin-oidc-issuer-input"
-							placeholder="https://idp.example.com"
-							disabled={isEnvLocked(oidc.env_overrides, 'issuer_url')}
-						/></label
-					>
-					<button
-						type="button"
-						class="btn btn-secondary"
-						data-testid="admin-oidc-discover-btn"
-						onclick={runOidcTest}
-					>
-						<Icon name="search" />
-						{t('admin.oidc_discover', 'Test / discover')}
-					</button>
+						<button
+							type="button"
+							class="btn btn-secondary"
+							data-testid="admin-oidc-discover-btn"
+							onclick={runOidcTest}
+						>
+							<Icon name="search" />
+							{t('admin.oidc_discover', 'Test / discover')}
+						</button>
+					</div>
 					{#if oidcTest}
 						<div
 							class="discovery-result {oidcTest.success
@@ -2748,7 +2801,7 @@
 							disabled={isEnvLocked(oidc.env_overrides, 'admin_groups')}
 						/></label
 					>
-					<label class="checkbox">
+					<label class="admin-check">
 						<input
 							type="checkbox"
 							data-testid="admin-oidc-auto-provision-checkbox"
@@ -2756,7 +2809,7 @@
 						/>
 						<span>{t('admin.oidc_auto_provision', 'Auto-provision users on first login')}</span>
 					</label>
-					<label class="checkbox">
+					<label class="admin-check">
 						<input
 							type="checkbox"
 							data-testid="admin-oidc-disable-pw-checkbox"
@@ -2770,7 +2823,7 @@
 							<code title={oidc.callback_url}>{oidc.callback_url}</code>
 							<button
 								type="button"
-								class="icon-btn"
+								class="btn-action"
 								data-testid="admin-oidc-callback-copy-btn"
 								title={t('common.copy', 'Copy')}
 								aria-label={t('common.copy', 'Copy')}
@@ -2780,11 +2833,15 @@
 							</button>
 						</p>
 					{/if}
-					{#if oidcMsg}<p class={oidcMsg.ok ? 'status--ok' : 'status--error'}>
+					{#if oidcMsg}<p
+							class={oidcMsg.ok
+								? 'admin-result admin-result--ok'
+								: 'admin-result admin-result--error'}
+						>
 							{oidcMsg.text}
 						</p>{/if}
 					<button
-						class="btn btn-primary"
+						class="btn btn-primary admin-form__save"
 						type="submit"
 						data-testid="admin-oidc-save-btn"
 						disabled={oidcSaving}
@@ -2816,7 +2873,7 @@
 		     how it's stored" answers. -->
 		{#if storage}
 			<section
-				class="card storage-content-stats"
+				class="admin-card storage-content-stats"
 				data-testid="admin-storage-content-stats"
 				aria-labelledby="admin-storage-content-stats-title"
 			>
@@ -2876,7 +2933,7 @@
 		  docs/architecture/caching.md § tier topology.
 		-->
 		{#if dashboard}
-			<section class="card admin-storage__section">
+			<section class="admin-card admin-storage__section">
 				<h2>{t('admin.section_cache', 'Storage cache')}</h2>
 				<div class="cache-layout">
 					<!--
@@ -2893,7 +2950,7 @@
 					-->
 					<div class="cache-layout__memory">
 						{#if dashboard.content_cache}
-							<div class="ds-card cache-card">
+							<div class="admin-subcard cache-card">
 								<div class="cache-card__header">
 									<Icon name="bullseye" />
 									<span>{t('admin.cache_memory_files', 'Memory (moka) · File cache')}</span>
@@ -2919,7 +2976,7 @@
 							</div>
 						{/if}
 						{#if dashboard.thumbnail_cache}
-							<div class="ds-card cache-card">
+							<div class="admin-subcard cache-card">
 								<div class="cache-card__header">
 									<Icon name="bullseye" />
 									<span
@@ -2948,7 +3005,7 @@
 						{/if}
 					</div>
 					<div
-						class="ds-card cache-card cache-card--disk"
+						class="admin-subcard cache-card cache-card--disk"
 						class:cache-card--warn={!dashboard.backend_cache && dashboard.storage_cache_recommended}
 					>
 						<div class="cache-card__header">
@@ -3036,7 +3093,7 @@
 		<!-- Section 2 — Storage backend: per-entry cards (backend
 		     type, location, actions). Encryption pair-chain moved
 		     out to its own section below. -->
-		<div class="card">
+		<div class="admin-card">
 			<h2>{t('admin.storage_title', 'Storage backend')}</h2>
 			<p class="muted">
 				{t(
@@ -3045,7 +3102,7 @@
 				)}
 			</p>
 			{#if !storage}
-				<p class="status">{t('common.loading', 'Loading…')}</p>
+				<p class="muted">{t('common.loading', 'Loading…')}</p>
 			{:else if !storage.entries || storage.entries.length === 0}
 				<!-- Legacy zero-entries path — the parser synthesises a
 				     single `default` entry from flat vars and emits a
@@ -3124,20 +3181,17 @@
 								<div class="entry-card__title">
 									<code class="entry-card__name">{entry.name}</code>
 									{#if entry.is_active}
-										<span class="entry-card__badge entry-card__badge--active">
+										<span class="admin-chip admin-chip--success">
 											<Icon name="check-circle" />
 											{t('admin.entry_active', 'active')}
 										</span>
 									{:else}
-										<span class="entry-card__badge">
+										<span class="admin-chip">
 											{t('admin.entry_inactive', 'available')}
 										</span>
 									{/if}
 									{#if entry.encryption_enabled}
-										<span
-											class="entry-card__badge entry-card__badge--encrypted"
-											title="AES-256-GCM"
-										>
+										<span class="admin-chip" title="AES-256-GCM">
 											<Icon name="lock" /> AES-256
 										</span>
 									{/if}
@@ -3298,12 +3352,18 @@
 							{#if test?.result != null || test?.error != null}
 								<footer class="entry-card__test-result">
 									{#if test.error}
-										<span class="status--error"><Icon name="times-circle" /> {test.error}</span>
+										<span class="admin-result admin-result--error"
+											><Icon name="times-circle" /> {test.error}</span
+										>
 									{:else if test.result}
 										{@const ok = test.result.connected ?? false}
 										{@const rt = test.result.roundtrip_elapsed_ms}
 										{@const cleanup = test.result.cleanup_ok}
-										<span class={ok ? 'status--ok' : 'status--error'}>
+										<span
+											class={ok
+												? 'admin-result admin-result--ok'
+												: 'admin-result admin-result--error'}
+										>
 											<Icon name={ok ? 'check-circle' : 'times-circle'} />
 											{ok
 												? t('admin.storage_test_success', 'Read/write OK')
@@ -3390,11 +3450,17 @@
 				     Completed. -->
 			{/if}
 			{#if storageMsg}
-				<p class={storageMsg.ok ? 'status--ok' : 'status--error'}>{storageMsg.text}</p>
+				<p
+					class={storageMsg.ok
+						? 'admin-result admin-result--ok'
+						: 'admin-result admin-result--error'}
+				>
+					{storageMsg.text}
+				</p>
 			{/if}
 		</div>
 
-		<div class="card">
+		<div class="admin-card">
 			<h2>{t('admin.encryption', 'Encryption')}</h2>
 			<p class="muted">
 				{t(
@@ -3411,7 +3477,7 @@
 					<code title={generatedKey.key}>{generatedKey.key}</code>
 					<button
 						type="button"
-						class="icon-btn"
+						class="btn-action"
 						title={t('common.copy', 'Copy')}
 						aria-label={t('common.copy', 'Copy')}
 						onclick={() => copyText(generatedKey?.key ?? '')}
@@ -3469,7 +3535,7 @@
 		     card changed. -->
 		{#if writeLockStatus}
 			<section
-				class="card storage-write-lock"
+				class="admin-card storage-write-lock"
 				data-testid="admin-storage-write-lock"
 				aria-labelledby="admin-storage-write-lock-title"
 			>
@@ -3585,7 +3651,7 @@
 		     links / line breaks supported — tables + HTML stripped
 		     at render time. -->
 		<section
-			class="card ops-banner-editor"
+			class="admin-card ops-banner-editor"
 			data-testid="admin-ops-banners"
 			aria-labelledby="admin-ops-banners-title"
 		>
@@ -3599,9 +3665,7 @@
 				)}
 			</p>
 			{#if bannersError}
-				<p class="alert alert--warn ops-banner-editor__error" role="alert">
-					{bannersError}
-				</p>
+				<Banner severity="warning" body={bannersError} role="alert" />
 			{/if}
 			<!-- Active banner list — deletion is immediate; there is
 			     no soft-delete / history (the audit log is the trail).
@@ -3786,13 +3850,12 @@
 					{:else}
 						<button
 							type="button"
-							class="btn btn-secondary btn-sm"
+							class="link-btn"
 							onclick={openAddLanguage}
 							disabled={availableLocalesToAdd.length === 0}
 							data-testid="admin-ops-banner-add-locale"
 						>
-							<Icon name="plus" />
-							{t('admin.ops_banner_add_locale', 'Add another language')}
+							+ {t('admin.ops_banner_add_locale', 'Add another language')}
 						</button>
 					{/if}
 				</div>
@@ -3818,7 +3881,7 @@
 		     job, which reports progress, can be cancelled and resumed,
 		     and walks distinct CONTENT rather than every file. It is
 		     triggered from /admin/jobs like any other job. -->
-		<div class="card">
+		<div class="admin-card">
 			<h2>{t('admin.maintenance', 'Maintenance')}</h2>
 			<p class="muted">
 				{t(
@@ -3855,17 +3918,17 @@
 		<!-- First, because it governs both transports below: a configured
 		     webhook and a healthy relay still deliver nothing when the
 		     severity floor excludes what the job found. -->
-		<h2 class="section-heading">{t('admin.notify_alerts_section', 'Job alerts')}</h2>
+		<h2 class="admin-section-title">{t('admin.notify_alerts_section', 'Job alerts')}</h2>
 		<p class="section-hint">
 			{t(
 				'admin.notify_alerts_hint',
 				'Which job findings are sent out of band, and where. Alerts are sent when a finding first appears and again when it clears — not on every run. Configured with OXICLOUD_JOBS_NOTIFY_* in the server environment.'
 			)}
 		</p>
-		<div class="card" data-testid="admin-notify-policy">
+		<div class="admin-card" data-testid="admin-notify-policy">
 			<h2>{t('admin.notify_policy', 'Alerting')}</h2>
 			{#if !notify}
-				<p class="status">{t('common.loading', 'Loading…')}</p>
+				<p class="muted">{t('common.loading', 'Loading…')}</p>
 			{:else}
 				<dl class="kv">
 					<dt>{t('admin.notify_min_severity', 'Minimum severity')}</dt>
@@ -3891,11 +3954,11 @@
 				</dl>
 			{/if}
 		</div>
-		<h2 class="section-heading">{t('admin.notify_smtp_section', 'SMTP')}</h2>
-		<div class="card">
+		<h2 class="admin-section-title">{t('admin.notify_smtp_section', 'SMTP')}</h2>
+		<div class="admin-card">
 			<h2>{t('admin.smtp_status', 'SMTP status')}</h2>
 			{#if !smtp}
-				<p class="status">{t('common.loading', 'Loading…')}</p>
+				<p class="muted">{t('common.loading', 'Loading…')}</p>
 			{:else}
 				<dl class="kv">
 					<dt>{t('admin.smtp_enabled', 'Enabled')}</dt>
@@ -3913,7 +3976,7 @@
 				</dl>
 			{/if}
 		</div>
-		<div class="card">
+		<div class="admin-card">
 			<h2>{t('admin.smtp_test', 'Send test email')}</h2>
 			<div class="transport-test">
 				<input
@@ -3934,13 +3997,13 @@
 			</div>
 			{#if smtpResult}
 				{#if smtpResult.success}
-					<p class="status--ok">
+					<p class="admin-result admin-result--ok">
 						<strong>{t('admin.smtp_sent', 'Test email sent.')}</strong><br />
 						{t('admin.smtp_server_code', 'Server replied')}:
 						<code>{smtpResult.code ?? ''} {smtpResult.message ?? ''}</code>
 					</p>
 				{:else}
-					<p class="status--error">
+					<p class="admin-result admin-result--error">
 						<strong>{t('admin.smtp_fail', 'Send failed.')}</strong><br />
 						<code
 							>{smtpResult.error || smtpResult.message || t('common.error', 'unknown error')}</code
@@ -3952,17 +4015,17 @@
 		<!-- The other outbound transport. Same tab because an operator
 		     asking "can this instance reach me?" means both, and the result
 		     shape is deliberately identical so the two read the same way. -->
-		<h2 class="section-heading">{t('admin.notify_webhook_section', 'Webhook')}</h2>
+		<h2 class="admin-section-title">{t('admin.notify_webhook_section', 'Webhook')}</h2>
 		<p class="section-hint">
 			{t(
 				'admin.webhook_usage_hint',
 				'Consistency jobs send their findings through this channel: a message when a problem is first reported, and another when it clears. Configured with OXICLOUD_WEBHOOK_* in the server environment.'
 			)}
 		</p>
-		<div class="card">
+		<div class="admin-card">
 			<h2>{t('admin.webhook_status', 'Webhook status')}</h2>
 			{#if !webhook}
-				<p class="status">{t('common.loading', 'Loading…')}</p>
+				<p class="muted">{t('common.loading', 'Loading…')}</p>
 			{:else}
 				<dl class="kv">
 					<dt>{t('admin.webhook_enabled', 'Enabled')}</dt>
@@ -3979,18 +4042,15 @@
 				</dl>
 			{/if}
 		</div>
-		<div class="card">
+		<div class="admin-card">
 			<h2>{t('admin.webhook_test', 'Test webhook')}</h2>
-			<p class="muted">
-				{t(
-					'admin.webhook_test_hint',
-					'Sends a synthetic alert to the configured webhook. One attempt, no retry — real alerts back off and retry.'
-				)}
-			</p>
-			<!-- Same flex row as the SMTP card so the button lands in the same
-			     place; `--actions-only` right-aligns it in the absence of the
-			     input that pushes SMTP's button over. -->
-			<div class="transport-test transport-test--actions-only">
+			<div class="transport-test transport-test--webhook">
+				<p class="muted">
+					{t(
+						'admin.webhook_test_hint',
+						'Sends a synthetic alert to the configured webhook. One attempt, no retry — real alerts back off and retry.'
+					)}
+				</p>
 				<button
 					class="btn btn-primary"
 					data-testid="admin-webhook-send-btn"
@@ -4005,13 +4065,13 @@
 			</div>
 			{#if webhookResult}
 				{#if webhookResult.success}
-					<p class="status--ok">
+					<p class="admin-result admin-result--ok">
 						<strong>{t('admin.webhook_sent', 'Webhook accepted the message.')}</strong><br />
 						{t('admin.webhook_server_code', 'Receiver replied')}:
 						<code>{webhookResult.code ?? ''} {webhookResult.message ?? ''}</code>
 					</p>
 				{:else}
-					<p class="status--error">
+					<p class="admin-result admin-result--error">
 						<strong>{t('admin.webhook_fail', 'Delivery failed.')}</strong><br />
 						<code
 							>{webhookResult.code ?? ''}
@@ -4022,88 +4082,79 @@
 			{/if}
 		</div>
 	{:else if tab === 'users'}
-		<div class="bar">
-			<button
-				class="btn btn-primary"
-				data-testid="admin-users-create-btn"
-				onclick={() => (createOpen = true)}
-			>
-				<Icon name="user-plus" />
-				{t('admin.create_user', 'Create user')}
-			</button>
-		</div>
 		{#if usersError}
-			<p class="status status--error">{usersError}</p>
+			<EmptyState icon="exclamation-circle" title={usersError} error />
 		{:else}
-			<table class="table table--cards table--users">
-				<thead>
-					<tr>
-						<th>{t('admin.user', 'User')}</th>
-						<th>{t('admin.role', 'Role')}</th>
-						<th>{t('admin.auth', 'Auth')}</th>
-						<th>{t('admin.status', 'Status')}</th>
-						<th>{t('admin.quota', 'Storage usage')}</th>
-						<th>{t('admin.last_login', 'Last login')}</th>
-						<th></th>
-					</tr>
-				</thead>
-				<tbody>
-					{#each users as u (u.user.id)}
-						{@const pct = quotaPct(u)}
+			<div class="admin-table admin-table--cards admin-table--users">
+				<table>
+					<thead>
 						<tr>
-							<td>
-								<div class="user-vignette-cell">
-									<UserVignette
-										userId={u.user.id}
-										fallbackLabel={u.user.username || u.user.email}
-										fallbackSublabel={u.user.email}
-									/>
-									{#if isSelf(u)}
-										<span class="badge badge--self">{t('admin.you_badge', 'you')}</span>
-									{/if}
-								</div>
-							</td>
-							<td>
-								<!-- Two badges (role + optional external) live in this
+							<th>{t('admin.user', 'User')}</th>
+							<th>{t('admin.role', 'Role')}</th>
+							<th>{t('admin.auth', 'Auth')}</th>
+							<th>{t('admin.status', 'Status')}</th>
+							<th>{t('admin.quota', 'Storage usage')}</th>
+							<th>{t('admin.last_login', 'Last login')}</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each users as u (u.user.id)}
+							{@const pct = quotaPct(u)}
+							<tr>
+								<td>
+									<div class="user-vignette-cell">
+										<UserVignette
+											userId={u.user.id}
+											fallbackLabel={u.user.username || u.user.email}
+											fallbackSublabel={u.user.email}
+										/>
+										{#if isSelf(u)}
+											<span class="admin-chip admin-chip--self">{t('admin.you_badge', 'you')}</span>
+										{/if}
+									</div>
+								</td>
+								<td data-label={t('admin.role', 'Role')}>
+									<!-- Two badges (role + optional external) live in this
 								     cell. `.role-badges` prevents them from splitting
 								     across lines when the column narrows: nowrap + a
 								     tiny gap keeps them shoulder-to-shoulder, and each
 								     badge is `white-space: nowrap` so the badge label
 								     itself never wraps mid-word either. -->
-								<div class="role-badges">
-									<span
-										class="badge badge--{isOwner(u.user.role)
-											? 'owner'
-											: isAtLeastAdmin(u.user.role)
-												? 'admin'
-												: 'user'}"
-									>
-										{#if isOwner(u.user.role)}<Icon
-												name="crown"
-											/>{:else if isAtLeastAdmin(u.user.role)}<Icon name="shield-alt" />{/if}
-										{u.user.role}
-									</span>
-									{#if u.user.is_external}
-										<!-- Origin flag, orthogonal to `role`. Grant-only
+									<div class="role-badges">
+										<span
+											class="admin-chip admin-chip--{isOwner(u.user.role)
+												? 'owner'
+												: isAtLeastAdmin(u.user.role)
+													? 'admin'
+													: 'user'}"
+										>
+											{#if isOwner(u.user.role)}<Icon
+													name="crown"
+												/>{:else if isAtLeastAdmin(u.user.role)}<Icon name="shield-alt" />{/if}
+											{u.user.role}
+										</span>
+										{#if u.user.is_external}
+											<!-- Origin flag, orthogonal to `role`. Grant-only
 										     accounts (magic-link / OCM) can never be admin
 										     (DB CHECK `users_external_not_admin`) so the two
 										     badges never collide in practice — but the
 										     "External" badge stacks after the role badge so a
 										     future rules change wouldn't hide either signal. -->
-										<span
-											class="badge badge--external"
-											title={t(
-												'admin.external_user_hint',
-												'Grant-only account (magic-link or OCM). Cannot be admin and has no storage envelope.'
-											)}
-										>
-											<Icon name="building-circle-xmark" />
-											{t('admin.external_user', 'external')}
-										</span>
-									{/if}
-								</div>
-							</td>
-							<!-- Auth cell — capped width. The OIDC provider label is
+											<span
+												class="admin-chip admin-chip--external"
+												title={t(
+													'admin.external_user_hint',
+													'Grant-only account (magic-link or OCM). Cannot be admin and has no storage envelope.'
+												)}
+											>
+												<Icon name="building-circle-xmark" />
+												{t('admin.external_user', 'external')}
+											</span>
+										{/if}
+									</div>
+								</td>
+								<!-- Auth cell — capped width. The OIDC provider label is
 							     free-form ("keycloak", "google-workspace", …) and
 							     drives the column arbitrarily wide when localized
 							     column headers ("Authentication" → "Authentification"
@@ -4111,8 +4162,8 @@
 							     badge label with an ellipsis so the column stays
 							     narrow; the full provider stays reachable via the
 							     tooltip on the badge. -->
-							<td class="auth-cell">
-								<!--
+								<td class="auth-cell" data-label={t('admin.auth', 'Auth')}>
+									<!--
 									Auth-capability chip set — ADMIN-ONLY (fields
 									scoped to `FullUserDto`; never on
 									`UserDto`). Any user carries ZERO OR MORE of:
@@ -4132,49 +4183,50 @@
 									    recipients) and for pre-signup accounts
 									    awaiting their welcome magic-link.
 								-->
-								{#if isOidcUser(u)}
-									<span class="badge badge--oidc" title={u.federation_issuer}>
-										<Icon name="shield-alt" />
-										<span class="badge__label">oidc</span>
-									</span>
-								{/if}
-								{#if u.has_password}
-									<span
-										class="badge badge--password"
-										title={t(
-											'admin.has_password_title',
-											'User has a password on file (legacy or admin-set)'
-										)}
-									>
-										<Icon name="key" />
-										<span class="badge__label">{t('admin.auth_password', 'password')}</span>
-									</span>
-								{/if}
-								{#if u.opaque_migrated}
-									<span
-										class="badge badge--opaque"
-										title={t(
-											'admin.opaque_migrated_title',
-											'User has completed at least one OPAQUE login'
-										)}
-									>
-										<Icon name="shield-alt" />
-										<span class="badge__label">OPAQUE</span>
-									</span>
-								{:else if u.opaque_registered}
-									<span
-										class="badge badge--opaque-registered"
-										title={t(
-											'admin.opaque_registered_title',
-											'OPAQUE envelope on file — waiting for the user to complete an OPAQUE login'
-										)}
-									>
-										<Icon name="shield-alt" />
-										<span class="badge__label">{t('admin.opaque_envelope', 'envelope')}</span>
-									</span>
-								{/if}
-								{#if !isOidcUser(u) && !u.has_password && !u.opaque_registered}
-									<!--
+									{#if isOidcUser(u)}
+										<span class="admin-chip admin-chip--oidc" title={u.federation_issuer}>
+											<Icon name="shield-alt" />
+											<span class="admin-chip__label">oidc</span>
+										</span>
+									{/if}
+									{#if u.has_password}
+										<span
+											class="admin-chip admin-chip--password"
+											title={t(
+												'admin.has_password_title',
+												'User has a password on file (legacy or admin-set)'
+											)}
+										>
+											<Icon name="key" />
+											<span class="admin-chip__label">{t('admin.auth_password', 'password')}</span>
+										</span>
+									{/if}
+									{#if u.opaque_migrated}
+										<span
+											class="admin-chip admin-chip--opaque"
+											title={t(
+												'admin.opaque_migrated_title',
+												'User has completed at least one OPAQUE login'
+											)}
+										>
+											<Icon name="shield-alt" />
+											<span class="admin-chip__label">OPAQUE</span>
+										</span>
+									{:else if u.opaque_registered}
+										<span
+											class="admin-chip admin-chip--opaque-registered"
+											title={t(
+												'admin.opaque_registered_title',
+												'OPAQUE envelope on file — waiting for the user to complete an OPAQUE login'
+											)}
+										>
+											<Icon name="shield-alt" />
+											<span class="admin-chip__label">{t('admin.opaque_envelope', 'envelope')}</span
+											>
+										</span>
+									{/if}
+									{#if !isOidcUser(u) && !u.has_password && !u.opaque_registered}
+										<!--
 										`mail` chip — user's only login path is a
 										magic-link to their mailbox. Renamed from
 										`passwordless` (2026-08-05) because "mail"
@@ -4183,61 +4235,61 @@
 										email access to log in? yes) rather than
 										the absence of another one.
 									-->
-									<span
-										class="badge badge--mail"
-										title={t(
-											'admin.mail_login_title',
-											'No password, no OPAQUE envelope, no SSO — user logs in via magic-link only'
-										)}
-									>
-										<Icon name="envelope" />
-										<span class="badge__label">{t('admin.auth_mail', 'mail')}</span>
+										<span
+											class="admin-chip admin-chip--mail"
+											title={t(
+												'admin.mail_login_title',
+												'No password, no OPAQUE envelope, no SSO — user logs in via magic-link only'
+											)}
+										>
+											<Icon name="envelope" />
+											<span class="admin-chip__label">{t('admin.auth_mail', 'mail')}</span>
+										</span>
+									{/if}
+								</td>
+								<td data-label={t('admin.status', 'Status')}>
+									<span class="admin-chip admin-chip--{u.active ? 'active' : 'inactive'}">
+										{u.active ? t('admin.active', 'Active') : t('admin.inactive', 'Inactive')}
 									</span>
-								{/if}
-							</td>
-							<td>
-								<span class="badge badge--{u.active ? 'active' : 'inactive'}">
-									{u.active ? t('admin.active', 'Active') : t('admin.inactive', 'Inactive')}
-								</span>
-							</td>
-							<td>
-								{#if u.user.is_external}
-									<!-- External accounts have no storage envelope by
+								</td>
+								<td data-label={t('admin.quota', 'Storage usage')}>
+									{#if u.user.is_external}
+										<!-- External accounts have no storage envelope by
 									     design (DB CHECK `users_external_no_storage`
 									     enforces storage_quota_bytes = 0). Rendering the
 									     usage bar with `0 / 0` reads as "over quota"
 									     visually and is misleading; show an em-dash
 									     instead. -->
-									<span
-										class="muted"
-										title={t(
-											'admin.no_storage_for_external',
-											'External accounts have no storage envelope.'
-										)}>—</span
-									>
-								{:else}
-									<div class="quota-cell">
-										<div class="quota-bar">
-											<div
-												class="quota-fill"
-												class:quota-fill--warn={pct > 70}
-												class:quota-fill--danger={pct > 90}
-												style:width="{Math.min(pct, 100)}%"
-											></div>
+										<span
+											class="muted"
+											title={t(
+												'admin.no_storage_for_external',
+												'External accounts have no storage envelope.'
+											)}>—</span
+										>
+									{:else}
+										<div class="quota-cell">
+											<div class="quota-bar">
+												<div
+													class="quota-fill"
+													class:quota-fill--warn={pct > 70}
+													class:quota-fill--danger={pct > 90}
+													style:width="{Math.min(pct, 100)}%"
+												></div>
+											</div>
+											<span class="muted">
+												{formatBytes(u.storage_used_bytes)} / {u.storage_quota_bytes > 0
+													? formatBytes(u.storage_quota_bytes)
+													: '∞'}
+											</span>
 										</div>
-										<span class="muted">
-											{formatBytes(u.storage_used_bytes)} / {u.storage_quota_bytes > 0
-												? formatBytes(u.storage_quota_bytes)
-												: '∞'}
-										</span>
-									</div>
-								{/if}
-							</td>
-							<td class="muted" data-label={t('admin.last_login', 'Last login')}
-								>{timeAgo(u.last_login_at)}</td
-							>
-							<td>
-								<!-- One menu, not six icon buttons.
+									{/if}
+								</td>
+								<td class="muted" data-label={t('admin.last_login', 'Last login')}
+									>{timeAgo(u.last_login_at)}</td
+								>
+								<td>
+									<!-- One menu, not six icon buttons.
 								     The column had grown to six glyphs per row,
 								     several sharing a symbol for different things
 								     (a crown meant "make admin", "is the owner",
@@ -4245,69 +4297,46 @@
 								     that, and the fixed-width placeholder grid
 								     that kept the icons aligned is no longer
 								     needed — every row is one button wide. -->
-								<div class="actions actions--user">
-									<ActionMenu
-										items={userActions(u)}
-										label={t(
-											'admin.user_actions',
-											{ name: u.user.username ?? u.user.email },
-											'Actions for {{name}}'
-										)}
-										testId={`admin-user-actions-${u.user.id}`}
-									/>
-								</div>
-							</td>
-						</tr>
-					{/each}
-				</tbody>
-			</table>
-			<div class="pager">
-				<button
-					class="btn btn-secondary"
+									<div class="actions actions--user">
+										<ActionMenu
+											items={userActions(u)}
+											label={t(
+												'admin.user_actions',
+												{ name: u.user.username ?? u.user.email },
+												'Actions for {{name}}'
+											)}
+											testId={`admin-user-actions-${u.user.id}`}
+										/>
+									</div>
+								</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			</div>
+			<div class="admin-pager">
+				<Button
+					small
+					icon="chevron-left"
 					data-testid="admin-users-pager-prev-btn"
+					title={t('common.previous', 'Previous page')}
 					disabled={pageIndex === 0}
-					onclick={() => changePage(-1)}>‹</button
-				>
+					onclick={() => changePage(-1)}
+				/>
 				<span>{pageIndex + 1} / {Math.max(1, Math.ceil(total / PAGE_SIZE))}</span>
-				<button
-					class="btn btn-secondary"
+				<Button
+					small
+					icon="chevron-right"
 					data-testid="admin-users-pager-next-btn"
+					title={t('common.next', 'Next page')}
 					disabled={(pageIndex + 1) * PAGE_SIZE >= total}
-					onclick={() => changePage(1)}>›</button
-				>
+					onclick={() => changePage(1)}
+				/>
 			</div>
 		{/if}
 	{:else if tab === 'sessions'}
-		<div class="bar">
-			<label class="bar__filter">
-				{t('admin.sessions.filter_user', 'User (UUID)')}
-				<input
-					type="text"
-					placeholder="00000000-…"
-					data-testid="admin-sessions-user-filter-input"
-					bind:value={sessionsFilterUserId}
-				/>
-			</label>
-			<label class="bar__toggle">
-				<input
-					type="checkbox"
-					data-testid="admin-sessions-include-revoked-checkbox"
-					bind:checked={sessionsIncludeRevoked}
-				/>
-				{t('admin.sessions.include_revoked', 'Include revoked / expired')}
-			</label>
-			<button
-				class="btn btn-secondary"
-				data-testid="admin-sessions-refresh-btn"
-				onclick={() => void loadSessions()}
-				disabled={sessionsLoading}
-			>
-				<Icon name="sync-alt" />
-				{sessionsLoading ? t('common.loading', 'Loading…') : t('admin.sessions.refresh', 'Refresh')}
-			</button>
-		</div>
 		{#if sessionsError}
-			<p class="status status--error" data-testid="admin-sessions-error">{sessionsError}</p>
+			<EmptyState icon="exclamation-circle" title={sessionsError} error />
 		{:else}
 			{#if sessionsAccessTokenExpirySecs !== null}
 				<!-- Revoke-lag notice: revoke breaks the refresh path
@@ -4316,89 +4345,101 @@
 				     are opaque to revocation between refreshes). Server
 				     publishes the current TTL so this text is honest
 				     rather than a hardcoded guess. -->
-				<p class="status status--info" role="note" data-testid="admin-sessions-revoke-lag-notice">
-					{t(
+				<Banner
+					severity="info"
+					icon="clock"
+					body={t(
 						'admin.sessions.revoke_lag_notice',
 						{ secs: sessionsAccessTokenExpirySecs },
 						'Revoking a session breaks its refresh path immediately, but any JWT already in the browser stays valid for up to {{secs}} seconds until the next refresh attempt.'
 					)}
-				</p>
+					role="status"
+					testid="admin-sessions-revoke-lag-notice"
+				/>
 			{/if}
-			<table class="table table--cards table--sessions" data-testid="admin-sessions-table">
-				<thead>
-					<tr>
-						<th>{t('admin.sessions.col_user', 'User')}</th>
-						<th>{t('admin.sessions.col_origin', 'Origin')}</th>
-						<th>{t('admin.sessions.col_created', 'Created')}</th>
-						<th>{t('admin.sessions.col_expires', 'Expires')}</th>
-						<th>{t('admin.sessions.col_ip', 'IP')}</th>
-						<th>{t('admin.sessions.col_user_agent', 'User agent')}</th>
-						<th>{t('admin.sessions.col_bound', 'Bound')}</th>
-						<th class="col-center">{t('admin.sessions.col_status', 'Status')}</th>
-						<th></th>
-					</tr>
-				</thead>
-				<tbody>
-					{#each sessions as s (s.id)}
-						<tr
-							data-testid={`admin-sessions-row-${s.id}`}
-							class:muted={!s.is_active}
-							class:current-session={s.is_current}
-						>
-							<td>
-								<div class="user-vignette-cell">
-									<UserVignette userId={s.user_id} fallbackLabel={s.user_id} />
-								</div>
-							</td>
-							<td data-testid={`admin-sessions-origin-${s.id}`}>
-								<span class="badge badge--origin badge--origin-{s.origin}">
-									{t(`admin.sessions.origin.${s.origin}`, s.origin)}
-								</span>
-							</td>
-							<td data-label={t('admin.sessions.col_created', 'Created')}
-								>{new Date(s.created_at).toLocaleString()}</td
+			<div class="admin-table admin-table--cards admin-table--sessions">
+				<table data-testid="admin-sessions-table">
+					<thead>
+						<tr>
+							<th>{t('admin.sessions.col_user', 'User')}</th>
+							<th>{t('admin.sessions.col_origin', 'Origin')}</th>
+							<th>{t('admin.sessions.col_created', 'Created')}</th>
+							<th>{t('admin.sessions.col_expires', 'Expires')}</th>
+							<th>{t('admin.sessions.col_ip', 'IP')}</th>
+							<th>{t('admin.sessions.col_user_agent', 'User agent')}</th>
+							<th>{t('admin.sessions.col_bound', 'Bound')}</th>
+							<th class="col-center">{t('admin.sessions.col_status', 'Status')}</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each sessions as s (s.id)}
+							<tr
+								data-testid={`admin-sessions-row-${s.id}`}
+								class:muted={!s.is_active}
+								class:current-session={s.is_current}
 							>
-							<td data-label={t('admin.sessions.col_expires', 'Expires')}
-								>{new Date(s.expires_at).toLocaleString()}</td
-							>
-							<td class="mono" data-label={t('admin.sessions.col_ip', 'IP')}
-								>{s.ip_address ?? '—'}</td
-							>
-							<td
-								class="truncate"
-								data-label={t('admin.sessions.col_user_agent', 'User agent')}
-								title={s.user_agent ?? ''}
-							>
-								{shortUserAgent(s.user_agent)}
-							</td>
-							<td data-label={t('admin.sessions.col_bound', 'Bound')}>
-								{#if s.is_bound}
-									<span
-										class="bound-cell"
-										title={t(
-											'admin.sessions.bound_tooltip',
-											{ prefix: s.dpop_jkt_prefix ?? '' },
-											'DPoP-bound (jkt {{prefix}}…)'
-										)}
-									>
-										<Icon name="lock" />
-										<span class="mono">{s.dpop_jkt_prefix ?? ''}</span>
+								<td>
+									<div class="user-vignette-cell">
+										<UserVignette userId={s.user_id} fallbackLabel={s.user_id} />
+									</div>
+								</td>
+								<td
+									data-label={t('admin.sessions.col_origin', 'Origin')}
+									data-testid={`admin-sessions-origin-${s.id}`}
+								>
+									<span class="admin-chip admin-chip--origin admin-chip--origin-{s.origin}">
+										{t(`admin.sessions.origin.${s.origin}`, s.origin)}
 									</span>
-								{:else}
-									<span class="muted">{t('admin.sessions.unbound', 'unbound')}</span>
-								{/if}
-							</td>
-							<td class="col-center">
-								{#if s.is_revoked}
-									<span class="badge badge--inactive">
-										{t('admin.sessions.revoked', 'revoked')}
-									</span>
-								{:else if !s.is_active}
-									<span class="badge badge--inactive">
-										{t('admin.sessions.expired', 'expired')}
-									</span>
-								{:else}
-									<!--
+								</td>
+								<td data-label={t('admin.sessions.col_created', 'Created')}
+									>{dateTimeFormatFor(undefined, { dateStyle: 'short', timeStyle: 'short' }).format(
+										new Date(s.created_at)
+									)}</td
+								>
+								<td data-label={t('admin.sessions.col_expires', 'Expires')}
+									>{dateTimeFormatFor(undefined, { dateStyle: 'short', timeStyle: 'short' }).format(
+										new Date(s.expires_at)
+									)}</td
+								>
+								<td class="admin-mono" data-label={t('admin.sessions.col_ip', 'IP')}
+									>{s.ip_address ?? '—'}</td
+								>
+								<td
+									class="admin-truncate"
+									data-label={t('admin.sessions.col_user_agent', 'User agent')}
+									title={s.user_agent ?? ''}
+								>
+									{shortUserAgent(s.user_agent)}
+								</td>
+								<td data-label={t('admin.sessions.col_bound', 'Bound')}>
+									{#if s.is_bound}
+										<span
+											class="bound-cell"
+											title={t(
+												'admin.sessions.bound_tooltip',
+												{ prefix: s.dpop_jkt_prefix ?? '' },
+												'DPoP-bound (jkt {{prefix}}…)'
+											)}
+										>
+											<Icon name="lock" />
+											<span class="mono">{s.dpop_jkt_prefix ?? ''}</span>
+										</span>
+									{:else}
+										<span class="muted">{t('admin.sessions.unbound', 'unbound')}</span>
+									{/if}
+								</td>
+								<td class="col-center">
+									{#if s.is_revoked}
+										<span class="admin-chip admin-chip--inactive">
+											{t('admin.sessions.revoked', 'revoked')}
+										</span>
+									{:else if !s.is_active}
+										<span class="admin-chip admin-chip--inactive">
+											{t('admin.sessions.expired', 'expired')}
+										</span>
+									{:else}
+										<!--
 										Presence dot — filled green when the server saw a
 										request in the last 5 min (backend `is_online`),
 										outlined grey otherwise. Only rendered on active
@@ -4409,177 +4450,175 @@
 										`last_seen_at` DateTime is available as
 										`title` for the details-on-demand case.
 									-->
-									<span
-										class="presence-dot"
-										class:presence-dot--online={s.is_online}
-										class:presence-dot--idle={!s.is_online}
-										title={s.is_online
-											? t(
-													'admin.sessions.presence_online_tooltip',
-													{ ago: timeAgo(s.last_seen_at) },
-													'Online — last seen {{ago}}'
-												)
-											: t(
-													'admin.sessions.presence_idle_tooltip',
-													{ ago: timeAgo(s.last_seen_at) },
-													'Idle — last seen {{ago}}'
-												)}
-										aria-label={s.is_online
-											? t('admin.sessions.online', 'online')
-											: t('admin.sessions.idle', 'idle')}
-									></span>
-									<span class="badge badge--active">
-										{t('admin.sessions.active', 'active')}
-									</span>
-								{/if}
-								{#if s.is_current}
-									<span
-										class="badge badge--self"
-										title={t(
-											'admin.sessions.current_tooltip',
-											"This is the session you're using right now — revoking it will log you out."
-										)}
-									>
-										{t('admin.you_badge', 'you')}
-									</span>
-								{/if}
-							</td>
-							<td>
-								{#if !s.is_revoked}
+										<span
+											class="presence-dot"
+											class:presence-dot--online={s.is_online}
+											class:presence-dot--idle={!s.is_online}
+											title={s.is_online
+												? t(
+														'admin.sessions.presence_online_tooltip',
+														{ ago: timeAgo(s.last_seen_at) },
+														'Online — last seen {{ago}}'
+													)
+												: t(
+														'admin.sessions.presence_idle_tooltip',
+														{ ago: timeAgo(s.last_seen_at) },
+														'Idle — last seen {{ago}}'
+													)}
+											aria-label={s.is_online
+												? t('admin.sessions.online', 'online')
+												: t('admin.sessions.idle', 'idle')}
+										></span>
+										<span class="admin-chip admin-chip--active">
+											{t('admin.sessions.active', 'active')}
+										</span>
+									{/if}
+									{#if s.is_current}
+										<span
+											class="admin-chip admin-chip--self"
+											title={t(
+												'admin.sessions.current_tooltip',
+												"This is the session you're using right now — revoking it will log you out."
+											)}
+										>
+											{t('admin.you_badge', 'you')}
+										</span>
+									{/if}
+								</td>
+								<td>
+									{#if !s.is_revoked}
+										<button
+											class="admin-revoke-btn"
+											data-testid={`admin-sessions-revoke-btn-${s.id}`}
+											title={t('admin.sessions.revoke', 'Revoke')}
+											aria-label={t('admin.sessions.revoke', 'Revoke')}
+											onclick={() => void onRevokeSession(s.id, s.is_current)}
+											disabled={sessionRevokingId === s.id}
+										>
+											<Icon name="trash-alt" />
+										</button>
+									{/if}
+								</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			</div>
+			{#if sessions.length === 0 && !sessionsLoading}
+				<EmptyState
+					icon="key"
+					title={t('admin.sessions.empty', 'No sessions match the current filter.')}
+				/>
+			{/if}
+		{/if}
+	{:else if tab === 'mounts'}
+		<!-- External mounts tab — same vocabulary as the sibling admin tabs:
+		     creation surface in a card, table below, shared empty/error states.
+		     Previously used a bespoke `<section class="admin-section">` +
+		     `<h2>` wrapper that no other admin tab uses. -->
+		<section class="admin-card">
+			<h2>{t('admin.mounts.add', 'Add mount')}</h2>
+			<p class="muted">
+				{t(
+					'admin.mounts.help',
+					'Mount a host directory as a folder in your drive. Files stay on the host and are read live; deletes here are permanent.'
+				)}
+			</p>
+			<form
+				class="mount-form"
+				data-testid="admin-mounts-section"
+				onsubmit={(e) => {
+					e.preventDefault();
+					void createMount();
+				}}
+			>
+				<input
+					type="text"
+					placeholder={t('admin.mounts.name', 'Name')}
+					bind:value={newMount.name}
+					data-testid="mount-name"
+				/>
+				<input
+					type="text"
+					placeholder={t('admin.mounts.host_path', 'Host path (e.g. /srv/media)')}
+					bind:value={newMount.host_path}
+					data-testid="mount-path"
+				/>
+				<select bind:value={newMount.drive_id} required data-testid="mount-drive">
+					<option value="" disabled>{t('admin.mounts.drive_select', 'Select a drive')}</option>
+					{#each sortedMountDrives as drive (drive.id)}
+						<option value={drive.id}>{driveDisplayLabel(drive)}</option>
+					{/each}
+				</select>
+				<label class="admin-toggle">
+					<input type="checkbox" bind:checked={newMount.read_only} />
+					{t('admin.mounts.readonly', 'Read-only')}
+				</label>
+				<button
+					class="btn btn-primary"
+					type="submit"
+					disabled={mountCreating || !newMount.drive_id}
+					data-testid="mount-create"
+				>
+					<Icon name="plus" />
+					{t('admin.mounts.add', 'Add mount')}
+				</button>
+			</form>
+		</section>
+
+		{#if mountsError}
+			<EmptyState icon="exclamation-circle" title={mountsError} error />
+		{:else if !mounts}
+			<SkeletonList count={3} />
+		{:else if mounts.length === 0}
+			<EmptyState
+				icon="hdd"
+				title={t('admin.mounts.empty', 'No mounts configured.')}
+				hint={t('admin.mounts.help', 'Mount a host directory as a folder in your drive.')}
+			/>
+		{:else}
+			<div class="admin-table admin-table--cards">
+				<table>
+					<thead>
+						<tr>
+							<th>{t('admin.mounts.name', 'Name')}</th>
+							<th>{t('admin.mounts.kind', 'Kind')}</th>
+							<th>{t('admin.mounts.drive', 'Drive')}</th>
+							<th>{t('admin.mounts.path', 'Path')}</th>
+							<th>{t('admin.mounts.readonly', 'Read-only')}</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each mounts as m (m.mount_folder_id)}
+							<tr>
+								<td data-label={t('admin.mounts.name', 'Name')}>{m.name}</td>
+								<td data-label={t('admin.mounts.kind', 'Kind')}>{m.kind}</td>
+								<td data-label={t('admin.mounts.drive', 'Drive')}>{mountDriveName(m.drive_id)}</td>
+								<td class="muted" data-label={t('admin.mounts.path', 'Path')}>
+									{m.mount_path}
+								</td>
+								<td data-label={t('admin.mounts.readonly', 'Read-only')}>
+									{m.read_only ? t('common.yes', 'Yes') : t('common.no', 'No')}
+								</td>
+								<td>
 									<button
-										class="icon-btn icon-btn--danger"
-										data-testid={`admin-sessions-revoke-btn-${s.id}`}
-										title={t('admin.sessions.revoke', 'Revoke')}
-										aria-label={t('admin.sessions.revoke', 'Revoke')}
-										onclick={() => void onRevokeSession(s.id, s.is_current)}
-										disabled={sessionRevokingId === s.id}
+										class="btn-action btn-action--delete"
+										data-testid={`mount-delete-${m.mount_folder_id}`}
+										title={t('admin.mounts.delete_title', 'Delete mount')}
+										aria-label={t('admin.mounts.delete_title', 'Delete mount')}
+										onclick={() => void deleteMount(m.mount_folder_id)}
 									>
 										<Icon name="trash-alt" />
 									</button>
-								{/if}
-							</td>
-						</tr>
-					{/each}
-					{#if sessions.length === 0 && !sessionsLoading}
-						<tr>
-							<td colspan="9" class="muted">
-								{t('admin.sessions.empty', 'No sessions match the current filter.')}
-							</td>
-						</tr>
-					{/if}
-				</tbody>
-			</table>
-		{/if}
-	{:else if tab === 'mounts'}
-		<!-- External mounts tab — layout aligned with the sibling admin
-		     tabs (users, drives, sessions): inline creation surface on top,
-		     table below, `status status--error` / `status` / icon-btn
-		     vocabulary throughout. Previously used a bespoke
-		     `<section class="admin-section">` + `<h2>` wrapper that no
-		     other admin tab uses; dropped for consistency (the tab title
-		     is rendered by the shared page header via the `tabTitle`
-		     helper). -->
-		<form
-			class="mount-form bar"
-			data-testid="admin-mounts-section"
-			onsubmit={(e) => {
-				e.preventDefault();
-				void createMount();
-			}}
-		>
-			<input
-				type="text"
-				placeholder={t('admin.mounts.name', 'Name')}
-				bind:value={newMount.name}
-				data-testid="mount-name"
-			/>
-			<input
-				type="text"
-				placeholder={t('admin.mounts.host_path', 'Host path (e.g. /srv/media)')}
-				bind:value={newMount.host_path}
-				data-testid="mount-path"
-			/>
-			<select bind:value={newMount.drive_id} required data-testid="mount-drive">
-				<option value="" disabled>{t('admin.mounts.drive_select', 'Select a drive')}</option>
-				{#each sortedMountDrives as drive (drive.id)}
-					<option value={drive.id}>{driveDisplayLabel(drive)}</option>
-				{/each}
-			</select>
-			<label class="bar__toggle">
-				<input type="checkbox" bind:checked={newMount.read_only} />
-				{t('admin.mounts.readonly', 'Read-only')}
-			</label>
-			<button
-				class="btn btn-primary"
-				type="submit"
-				disabled={mountCreating || !newMount.drive_id}
-				data-testid="mount-create"
-			>
-				<Icon name="plus" />
-				{t('admin.mounts.add', 'Add mount')}
-			</button>
-		</form>
-
-		<p class="status status--info" role="note">
-			{t(
-				'admin.mounts.help',
-				'Mount a host directory as a folder in your drive. Files stay on the host and are read live; deletes here are permanent.'
-			)}
-		</p>
-
-		{#if mountsError}
-			<p class="status status--error" data-testid="mount-error">{mountsError}</p>
-		{:else if !mounts}
-			<p class="status">{t('common.loading', 'Loading…')}</p>
-		{:else if mounts.length === 0}
-			<p class="status">{t('admin.mounts.empty', 'No mounts configured.')}</p>
-		{:else}
-			<table class="table">
-				<thead>
-					<tr>
-						<th>{t('admin.mounts.name', 'Name')}</th>
-						<th>{t('admin.mounts.kind', 'Kind')}</th>
-						<th>{t('admin.mounts.drive', 'Drive')}</th>
-						<th>{t('admin.mounts.path', 'Path')}</th>
-						<th>{t('admin.mounts.readonly', 'Read-only')}</th>
-						<th></th>
-					</tr>
-				</thead>
-				<tbody>
-					{#each mounts as m (m.mount_folder_id)}
-						<tr>
-							<td>{m.name}</td>
-							<td>{m.kind}</td>
-							<td>{mountDriveName(m.drive_id)}</td>
-							<td class="muted">{m.mount_path}</td>
-							<td>{m.read_only ? t('common.yes', 'Yes') : t('common.no', 'No')}</td>
-							<td>
-								<button
-									class="icon-btn icon-btn--danger"
-									data-testid={`mount-delete-${m.mount_folder_id}`}
-									title={t('admin.mounts.delete_title', 'Delete mount')}
-									aria-label={t('admin.mounts.delete_title', 'Delete mount')}
-									onclick={() => void deleteMount(m.mount_folder_id)}
-								>
-									<Icon name="trash-alt" />
-								</button>
-							</td>
-						</tr>
-					{/each}
-				</tbody>
-			</table>
+								</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			</div>
 		{/if}
 	{:else if tab === 'drives'}
-		<div class="bar">
-			<button
-				class="btn btn-primary"
-				data-testid="admin-drives-create-btn"
-				onclick={openDriveCreate}
-			>
-				<Icon name="plus" />
-				{t('admin.create_drive', 'Create shared drive')}
-			</button>
-		</div>
 		<!--
 			Policies edited from this tab are per-drive OVERRIDES: they detach
 			that one drive from its kind's default and stop it following future
@@ -4598,25 +4637,26 @@
 			</a>
 		</p>
 		{#if drivesError}
-			<p class="status status--error">{drivesError}</p>
+			<EmptyState icon="exclamation-circle" title={drivesError} error />
 		{:else if drivesList.length === 0}
-			<p class="status">{t('admin.no_drives', 'No drives yet.')}</p>
+			<EmptyState icon="hdd" title={t('admin.no_drives', 'No drives yet.')} />
 		{:else}
-			<table class="table table--cards table--drives">
-				<thead>
-					<tr>
-						<th>{t('admin.drive_name', 'Name')}</th>
-						<th>{t('admin.drive_kind', 'Kind')}</th>
-						<th>{t('admin.drive_owners', 'Owners')}</th>
-						<th>{t('admin.drive_usage', 'Usage')}</th>
-						<th>{t('admin.drive_created_at', 'Created')}</th>
-						<th></th>
-					</tr>
-				</thead>
-				<tbody>
-					{#each drivesList as d (d.id)}
-						{@const owner = d.kind === 'personal' ? personalDriveOwners[d.id] : undefined}
-						<!--
+			<div class="admin-table admin-table--cards admin-table--drives">
+				<table>
+					<thead>
+						<tr>
+							<th>{t('admin.drive_name', 'Name')}</th>
+							<th>{t('admin.drive_kind', 'Kind')}</th>
+							<th>{t('admin.drive_owners', 'Owners')}</th>
+							<th>{t('admin.drive_usage', 'Usage')}</th>
+							<th>{t('admin.drive_created_at', 'Created')}</th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each drivesList as d (d.id)}
+							{@const owner = d.kind === 'personal' ? personalDriveOwners[d.id] : undefined}
+							<!--
 						  Effective quota:
 						  - Shared drive: `d.quota_bytes` (null → unlimited, shown as ∞).
 						  - Personal drive: the owner user's `storage_quota_bytes`
@@ -4626,7 +4666,7 @@
 						    fall back to the owner's cap; 0 also means "no limit"
 						    (backend convention — see `User.storage_quota_bytes` doc).
 						-->
-						<!-- Personal-drive fallback used to read
+							<!-- Personal-drive fallback used to read
 						     `owner.storage_quota_bytes` off the resolved DTO.
 						     Post the UserDto refactor
 						     (docs/plan/userdto-refactor.md) `owner` here is a
@@ -4638,146 +4678,149 @@
 						     the row renders "—" and the admin can consult the
 						     user's row for their envelope cap. Explicit
 						     shared-drive quota still surfaces as before. -->
-						{@const effectiveQuota =
-							d.kind === 'personal'
-								? null
-								: d.quota_bytes && d.quota_bytes > 0
-									? d.quota_bytes
+							{@const effectiveQuota =
+								d.kind === 'personal'
+									? null
+									: d.quota_bytes && d.quota_bytes > 0
+										? d.quota_bytes
+										: null}
+							{@const pct =
+								effectiveQuota !== null
+									? Math.min(100, (d.used_bytes / effectiveQuota) * 100)
 									: null}
-						{@const pct =
-							effectiveQuota !== null ? Math.min(100, (d.used_bytes / effectiveQuota) * 100) : null}
-						<tr>
-							<td>
-								<div class="user-cell">
-									<strong>{d.name}</strong>
-									{#if d.kind === 'personal'}
-										{#if owner}
-											<span class="muted">{owner.username ?? owner.email}</span>
-										{:else}
-											<span class="muted">{t('common.loading', 'Loading…')}</span>
+							<tr>
+								<td>
+									<div class="user-cell">
+										<strong>{d.name}</strong>
+										{#if d.kind === 'personal'}
+											{#if owner}
+												<span class="muted">{owner.username ?? owner.email}</span>
+											{:else}
+												<span class="muted">{t('common.loading', 'Loading…')}</span>
+											{/if}
 										{/if}
+									</div>
+								</td>
+								<td>
+									<div class="drive-kind-cell">
+										<span class="admin-chip admin-chip--{d.kind === 'shared' ? 'admin' : 'user'}">
+											{driveKindLabel(d)}
+										</span>
+										{#if driveDefaultSuffix(d)}
+											<span class="muted drive-kind-cell__suffix">{driveDefaultSuffix(d)}</span>
+										{/if}
+									</div>
+								</td>
+								<td>
+									{#if driveMembers[d.id]}
+										<OwnerAvatarStack members={driveMembers[d.id]} />
+									{:else}
+										<span class="muted">{t('common.loading', 'Loading…')}</span>
 									{/if}
-								</div>
-							</td>
-							<td>
-								<div class="drive-kind-cell">
-									<span class="badge badge--{d.kind === 'shared' ? 'admin' : 'user'}">
-										{driveKindLabel(d)}
-									</span>
-									{#if driveDefaultSuffix(d)}
-										<span class="muted drive-kind-cell__suffix">{driveDefaultSuffix(d)}</span>
-									{/if}
-								</div>
-							</td>
-							<td>
-								{#if driveMembers[d.id]}
-									<OwnerAvatarStack members={driveMembers[d.id]} />
-								{:else}
-									<span class="muted">{t('common.loading', 'Loading…')}</span>
-								{/if}
-							</td>
-							<td>
-								<div class="quota-cell">
-									{#if pct !== null}
-										<div class="quota-bar">
-											<div
-												class="quota-fill"
-												class:quota-fill--warn={pct > 70}
-												class:quota-fill--danger={pct > 90}
-												style:width="{pct}%"
-											></div>
-										</div>
-									{/if}
-									<span class="muted">
-										{formatBytes(d.used_bytes)} / {effectiveQuota !== null
-											? formatBytes(effectiveQuota)
-											: '∞'}
-									</span>
-								</div>
-							</td>
-							<td class="muted" data-label={t('admin.drive_created_at', 'Created')}
-								>{timeAgo(d.created_at)}</td
-							>
-							<td>
-								<!-- Wrapper div carries the `actions` flex layout; the
+								</td>
+								<td>
+									<div class="quota-cell">
+										{#if pct !== null}
+											<div class="quota-bar">
+												<div
+													class="quota-fill"
+													class:quota-fill--warn={pct > 70}
+													class:quota-fill--danger={pct > 90}
+													style:width="{pct}%"
+												></div>
+											</div>
+										{/if}
+										<span class="muted">
+											{formatBytes(d.used_bytes)} / {effectiveQuota !== null
+												? formatBytes(effectiveQuota)
+												: '∞'}
+										</span>
+									</div>
+								</td>
+								<td class="muted" data-label={t('admin.drive_created_at', 'Created')}
+									>{timeAgo(d.created_at)}</td
+								>
+								<td>
+									<!-- Wrapper div carries the `actions` flex layout; the
 								     <td> stays a plain table cell so its baseline +
 								     bottom-border align with the rest of the row even on
 								     personal-drive rows where the wrapper is empty. -->
-								<div class="actions actions--drive">
-									<!-- Each action sits in a fixed grid column so icons
+									<div class="actions actions--drive">
+										<!-- Each action sits in a fixed grid column so icons
 									     line up across rows even when the row's drive
 									     kind doesn't support some of them (personal drives
 									     have no owner roster; default drives can't be
 									     deleted). Inapplicable actions render as invisible
 									     placeholders to reserve their column. -->
-									{#if d.kind === 'shared'}
-										<button
-											class="icon-btn"
-											data-testid={`admin-drive-manage-owners-${d.id}`}
-											title={t('admin.drive_manage_owners', 'Manage owners')}
-											aria-label={t('admin.drive_manage_owners', 'Manage owners')}
-											onclick={() => openManageOwners(d)}
-										>
-											<Icon name="users-cog" />
-										</button>
-									{:else}
-										<span class="icon-btn icon-btn--placeholder" aria-hidden="true"></span>
-									{/if}
-									<!-- Shared-drive quota edit. Personal drives use the
+										{#if d.kind === 'shared'}
+											<button
+												class="btn-action"
+												data-testid={`admin-drive-manage-owners-${d.id}`}
+												title={t('admin.drive_manage_owners', 'Manage owners')}
+												aria-label={t('admin.drive_manage_owners', 'Manage owners')}
+												onclick={() => openManageOwners(d)}
+											>
+												<Icon name="users-cog" />
+											</button>
+										{:else}
+											<span class="btn-action btn-action--placeholder" aria-hidden="true"></span>
+										{/if}
+										<!-- Shared-drive quota edit. Personal drives use the
 									     owner user's `storage_quota_bytes` envelope; the
 									     backend refuses PATCH /api/drives/{id}/quota on a
 									     personal drive with 400 (see the service-layer
 									     guard and Step 25 of drive_quota.hurl). Render an
 									     invisible placeholder on personal rows so the
 									     column stays aligned. -->
-									{#if d.kind === 'shared'}
-										<button
-											class="icon-btn"
-											data-testid={`admin-drive-edit-quota-${d.id}`}
-											title={t('admin.drive_edit_quota', 'Edit quota')}
-											aria-label={t('admin.drive_edit_quota', 'Edit quota')}
-											onclick={() => openDriveQuota(d)}
-										>
-											<Icon name="gauge-simple-high" />
-										</button>
-									{:else}
-										<span class="icon-btn icon-btn--placeholder" aria-hidden="true"></span>
-									{/if}
-									<!-- Default-personal drives can never be deleted
+										{#if d.kind === 'shared'}
+											<button
+												class="btn-action"
+												data-testid={`admin-drive-edit-quota-${d.id}`}
+												title={t('admin.drive_edit_quota', 'Edit quota')}
+												aria-label={t('admin.drive_edit_quota', 'Edit quota')}
+												onclick={() => openDriveQuota(d)}
+											>
+												<Icon name="gauge-simple-high" />
+											</button>
+										{:else}
+											<span class="btn-action btn-action--placeholder" aria-hidden="true"></span>
+										{/if}
+										<!-- Default-personal drives can never be deleted
 									     (backend returns 405). Render an invisible
 									     placeholder so the row's columns still line up
 									     with the deletable rows above and below. -->
-									{#if !d.default_for_user}
-										<ConfirmButton
-											icon="trash-alt"
-											variant="icon"
-											data-testid={`admin-drive-delete-${d.id}`}
-											title={t('admin.drive_delete', 'Delete drive')}
-											onconfirm={() => requestDeleteDrive(d)}
-										/>
-									{:else}
-										<span class="icon-btn icon-btn--placeholder" aria-hidden="true"></span>
-									{/if}
-									<!-- D5 policy editor — admin-only mutation (the
+										{#if !d.default_for_user}
+											<ConfirmButton
+												icon="trash-alt"
+												variant="icon"
+												data-testid={`admin-drive-delete-${d.id}`}
+												title={t('admin.drive_delete', 'Delete drive')}
+												onconfirm={() => requestDeleteDrive(d)}
+											/>
+										{:else}
+											<span class="btn-action btn-action--placeholder" aria-hidden="true"></span>
+										{/if}
+										<!-- D5 policy editor — admin-only mutation (the
 									     owner UI no longer surfaces policies at all).
 									     Available on every drive kind including personal,
 									     so the operator can lock a personal drive's
 									     external-sharing surface from outside. -->
-									<button
-										class="icon-btn"
-										data-testid={`admin-drive-manage-policies-${d.id}`}
-										title={t('admin.drive_manage_policies', 'Manage policies')}
-										aria-label={t('admin.drive_manage_policies', 'Manage policies')}
-										onclick={() => openManagePolicies(d)}
-									>
-										<Icon name="shield-alt" />
-									</button>
-								</div>
-							</td>
-						</tr>
-					{/each}
-				</tbody>
-			</table>
+										<button
+											class="btn-action"
+											data-testid={`admin-drive-manage-policies-${d.id}`}
+											title={t('admin.drive_manage_policies', 'Manage policies')}
+											aria-label={t('admin.drive_manage_policies', 'Manage policies')}
+											onclick={() => openManagePolicies(d)}
+										>
+											<Icon name="shield-alt" />
+										</button>
+									</div>
+								</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			</div>
 		{/if}
 	{:else if tab === 'policies'}
 		<!-- Self-contained: loads its own defaults and findings, so there is
@@ -4786,22 +4829,23 @@
 	{:else if tab === 'jobs'}
 		<AdminJobsPanel />
 	{:else if !pluginsAvailable}
-		<p class="status">{t('admin.plugins_disabled', 'The plugin subsystem is disabled.')}</p>
+		<EmptyState
+			icon="box"
+			title={t('admin.plugins_disabled', 'The plugin subsystem is disabled.')}
+		/>
 	{:else if pluginsError}
-		<p class="status status--error">{pluginsError}</p>
+		<EmptyState icon="exclamation-circle" title={pluginsError} error />
 	{:else}
-		<div class="install-bar">
-			<div>
-				<strong>{t('admin.plugins_install', 'Install plugin')}</strong>
-				<span class="muted"
-					>{t('admin.plugins_install_hint', 'Upload a plugin bundle (.zip).')}</span
-				>
-			</div>
-			<label class="btn btn-primary" class:disabled={installing}>
+		<section class="admin-card">
+			<h2>{t('admin.plugins_install', 'Install plugin')}</h2>
+			<p class="muted">{t('admin.plugins_install_hint', 'Upload a plugin bundle (.zip).')}</p>
+			<label class="btn btn-primary admin-primary" class:disabled={installing}>
 				<Icon name="cloud-upload-alt" />
-				{installing
-					? t('admin.plugins_installing', 'Installing…')
-					: t('admin.plugins_upload', 'Upload .zip')}
+				<span class="admin-primary__label">
+					{installing
+						? t('admin.plugins_installing', 'Installing…')
+						: t('admin.plugins_upload', 'Upload .zip')}
+				</span>
 				<input
 					type="file"
 					data-testid="admin-plugins-install-input"
@@ -4811,764 +4855,778 @@
 					onchange={onInstallPlugin}
 				/>
 			</label>
-		</div>
-		{#if installMsg}
-			<p class={installMsg.ok ? 'status--ok' : 'status--error'}>{installMsg.text}</p>
-		{/if}
+			{#if installMsg}
+				<p
+					class={installMsg.ok
+						? 'admin-result admin-result--ok'
+						: 'admin-result admin-result--error'}
+				>
+					{installMsg.text}
+				</p>
+			{/if}
+		</section>
 		{#if plugins.length === 0}
-			<p class="status">{t('admin.no_plugins', 'No plugins installed.')}</p>
+			<EmptyState
+				icon="box"
+				title={t('admin.no_plugins', 'No plugins installed.')}
+				hint={t('admin.plugins_install_hint', 'Upload a plugin bundle (.zip).')}
+			/>
 		{:else}
-			<table class="table">
-				<thead>
-					<tr>
-						<th>{t('admin.plugin', 'Plugin')}</th>
-						<th>{t('admin.plugins_col_id', 'ID')}</th>
-						<th>{t('admin.version', 'Version')}</th>
-						<th>{t('admin.plugins_col_events', 'Events')}</th>
-						<th>{t('admin.status', 'Status')}</th>
-						<th></th>
-					</tr>
-				</thead>
-				<tbody>
-					{#each plugins as p (p.id)}
+			<div class="admin-table admin-table--cards">
+				<table>
+					<thead>
 						<tr>
-							<td>
-								<div class="user-cell">
-									<strong>{p.name}</strong>
-									{#if p.description}<span class="muted">{p.description}</span>{/if}
-								</div>
-							</td>
-							<td><code>{p.id}</code></td>
-							<td>{p.version ?? '—'}</td>
-							<td>
-								{#if p.subscriptions && p.subscriptions.length > 0}
-									<span class="events">{p.subscriptions.length}</span>
-								{:else}
-									—
-								{/if}
-							</td>
-							<td>
-								<span class="badge badge--{p.enabled ? 'active' : 'inactive'}">
-									{p.enabled ? t('admin.enabled', 'Enabled') : t('admin.disabled', 'Disabled')}
-								</span>
-							</td>
-							<td class="actions">
-								<button
-									class="icon-btn"
-									data-testid={`admin-plugin-details-${p.id}`}
-									title={t('admin.plugins_details', 'Logs & details')}
-									aria-label={t('admin.plugins_details', 'Logs & details')}
-									onclick={() => openLogs(p)}
-								>
-									<Icon name="list" />
-								</button>
-								<button
-									class="icon-btn {p.enabled ? '' : 'icon-btn--success'}"
-									data-testid={`admin-plugin-toggle-${p.id}`}
-									title={p.enabled ? t('admin.disable', 'Disable') : t('admin.enable', 'Enable')}
-									aria-label={p.enabled
-										? t('admin.disable', 'Disable')
-										: t('admin.enable', 'Enable')}
-									onclick={() => togglePlugin(p)}
-								>
-									<Icon name={p.enabled ? 'pause' : 'play'} />
-								</button>
-								<ConfirmButton
-									icon="trash-alt"
-									variant="icon"
-									data-testid={`admin-plugin-delete-${p.id}`}
-									title={t('common.delete', 'Delete')}
-									onconfirm={() => removePlugin(p)}
-								/>
-							</td>
+							<th>{t('admin.plugin', 'Plugin')}</th>
+							<th>{t('admin.plugins_col_id', 'ID')}</th>
+							<th>{t('admin.version', 'Version')}</th>
+							<th>{t('admin.plugins_col_events', 'Events')}</th>
+							<th>{t('admin.status', 'Status')}</th>
+							<th></th>
 						</tr>
-					{/each}
-				</tbody>
-			</table>
+					</thead>
+					<tbody>
+						{#each plugins as p (p.id)}
+							<tr>
+								<td data-label={t('admin.plugin', 'Plugin')}>
+									<div class="user-cell">
+										<strong>{p.name}</strong>
+										{#if p.description}<span class="muted">{p.description}</span>{/if}
+									</div>
+								</td>
+								<td data-label={t('admin.plugins_col_id', 'ID')}><code>{p.id}</code></td>
+								<td data-label={t('admin.version', 'Version')}>{p.version ?? '—'}</td>
+								<td data-label={t('admin.plugins_col_events', 'Events')}>
+									{#if p.subscriptions && p.subscriptions.length > 0}
+										<span class="admin-chip">{p.subscriptions.length}</span>
+									{:else}
+										—
+									{/if}
+								</td>
+								<td data-label={t('admin.status', 'Status')}>
+									<span class="admin-chip admin-chip--{p.enabled ? 'active' : 'inactive'}">
+										{p.enabled ? t('admin.enabled', 'Enabled') : t('admin.disabled', 'Disabled')}
+									</span>
+								</td>
+								<td class="actions">
+									<button
+										class="btn-action"
+										data-testid={`admin-plugin-details-${p.id}`}
+										title={t('admin.plugins_details', 'Logs & details')}
+										aria-label={t('admin.plugins_details', 'Logs & details')}
+										onclick={() => openLogs(p)}
+									>
+										<Icon name="list" />
+									</button>
+									<button
+										class="btn-action {p.enabled ? '' : 'btn-action--success'}"
+										data-testid={`admin-plugin-toggle-${p.id}`}
+										title={p.enabled ? t('admin.disable', 'Disable') : t('admin.enable', 'Enable')}
+										aria-label={p.enabled
+											? t('admin.disable', 'Disable')
+											: t('admin.enable', 'Enable')}
+										onclick={() => togglePlugin(p)}
+									>
+										<Icon name={p.enabled ? 'pause' : 'play'} />
+									</button>
+									<ConfirmButton
+										icon="trash-alt"
+										variant="icon"
+										data-testid={`admin-plugin-delete-${p.id}`}
+										title={t('common.delete', 'Delete')}
+										onconfirm={() => removePlugin(p)}
+									/>
+								</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			</div>
 		{/if}
 	{/if}
-</main>
 
-<Modal bind:open={createOpen} title={t('admin.create_user', 'Create user')}>
-	<form
-		id="create-user-form"
-		data-testid="admin-create-user-form"
-		onsubmit={submitCreate}
-		class="form"
-	>
-		<label
-			><span>{t('admin.username', 'Username')}</span>
-			<input
-				bind:value={newUser.username}
-				data-testid="admin-create-user-username-input"
-				minlength="3"
-				required
-			/></label
-		>
-		<label
-			><span
-				>{t('admin.email', 'Email')}
-				<span class="muted">({t('common.optional', 'optional')})</span></span
-			>
-			<input
-				type="email"
-				data-testid="admin-create-user-email-input"
-				bind:value={newUser.email}
-				placeholder={t('admin.email_auto', 'Auto-generated if left blank')}
-			/></label
-		>
-		<label
-			><span>{t('admin.password', 'Password')}</span>
-			<input
-				type="password"
-				data-testid="admin-create-user-password-input"
-				bind:value={newUser.password}
-				minlength="8"
-				required
-			/></label
-		>
-		<label
-			><span>{t('admin.role', 'Role')}</span>
-			<select bind:value={newUser.role} data-testid="admin-create-user-role-select">
-				<option value="user">user</option>
-				<option value="admin">admin</option>
-			</select></label
-		>
-		<label
-			><span>{t('admin.quota', 'Quota')}</span>
-			<div class="quota-input">
-				<input
-					type="number"
-					data-testid="admin-create-user-quota-input"
-					min="0"
-					step="0.1"
-					bind:value={newUser.quotaValue}
-				/>
-				<select bind:value={newUser.quotaUnit} data-testid="admin-create-user-quota-unit-select">
-					{#each QUOTA_UNITS as unit (unit.label)}<option value={unit.value}>{unit.label}</option
-						>{/each}
-				</select>
-			</div>
-			<span class="muted">{t('admin.quota_unlimited_hint', '0 = unlimited')}</span></label
-		>
-		{#if createError}<p class="status--error">{createError}</p>{/if}
-	</form>
-	{#snippet footer()}
-		<button
-			class="btn btn-secondary"
-			data-testid="admin-create-user-cancel-btn"
-			onclick={() => (createOpen = false)}>{t('common.cancel', 'Cancel')}</button
-		>
-		<button
-			class="btn btn-primary"
-			type="submit"
-			form="create-user-form"
-			data-testid="admin-create-user-submit-btn"
-			disabled={creating}
-		>
-			{creating ? t('admin.creating', 'Creating…') : t('common.create', 'Create')}
-		</button>
-	{/snippet}
-</Modal>
-
-<!-- Create-drive modal (D3a). Personal-drive creation is omitted because
-     the backend returns 501 for kind=personal today; see DrivePicker for
-     UI flow and drive_handler::create_drive for the wire contract. -->
-<Modal
-	open={driveCreateOpen}
-	title={t('admin.create_drive', 'Create shared drive')}
-	onclose={() => (driveCreateOpen = false)}
->
-	<form
-		id="create-drive-form"
-		class="form"
-		data-testid="admin-create-drive-form"
-		onsubmit={submitDriveCreate}
-	>
-		<label>
-			<span>{t('admin.drive_name', 'Name')}</span>
-			<input
-				bind:value={driveForm.name}
-				data-testid="admin-create-drive-name-input"
-				required
-				placeholder={t('admin.drive_name_placeholder', 'e.g. Engineering')}
-			/>
-		</label>
-		<label class="drive-owner">
-			<span>{t('admin.drive_owner', 'Owner')}</span>
-			<input
-				type="text"
-				data-testid="admin-create-drive-owner-input"
-				bind:value={driveForm.ownerQuery}
-				oninput={(e) => searchOwnerCandidates(e.currentTarget.value)}
-				placeholder={t('admin.drive_owner_placeholder', 'Search a user or group…')}
-				autocomplete="off"
-				required
-			/>
-			{#if ownerSearching}
-				<span class="muted">{t('common.loading', 'Loading…')}</span>
-			{:else if ownerSuggestions.length > 0}
-				<ul class="owner-suggest" role="listbox">
-					{#each ownerSuggestions as r (`${r.type}-${r.id}`)}
-						<li>
-							<button
-								type="button"
-								class="owner-suggest__row"
-								data-testid={`admin-drive-owner-pick-${r.type}-${r.id}`}
-								onclick={() => pickOwner(r)}
-							>
-								<Icon name={r.type === 'group' ? 'users' : 'user'} />
-								<span class="owner-suggest__label">{r.label}</span>
-								{#if r.sublabel}
-									<span class="muted">{r.sublabel}</span>
-								{/if}
-							</button>
-						</li>
-					{/each}
-				</ul>
-			{/if}
-			{#if driveForm.ownerPick}
-				<span class="muted owner-pick">
-					<Icon name={driveForm.ownerPick.type === 'group' ? 'users' : 'user'} />
-					{t('admin.drive_owner_picked', { name: driveForm.ownerPick.label }, 'Owner: {{name}}')}
-				</span>
-			{/if}
-			<span class="muted">
-				{t(
-					'admin.drive_owner_hint',
-					'Pick a user (sole Owner) or a group (every member becomes Owner via subject expansion).'
-				)}
-			</span>
-		</label>
-		<label>
-			<span>{t('admin.quota', 'Quota')}</span>
-			<div class="quota-input">
-				<input
-					type="number"
-					data-testid="admin-create-drive-quota-input"
-					min="0"
-					step="0.1"
-					bind:value={driveForm.quotaValue}
-				/>
-				<select bind:value={driveForm.quotaUnit} data-testid="admin-create-drive-quota-unit-select">
-					{#each QUOTA_UNITS as unit (unit.label)}
-						<option value={unit.value}>{unit.label}</option>
-					{/each}
-				</select>
-			</div>
-			<span class="muted">{t('admin.quota_unlimited_hint', '0 = unlimited')}</span>
-		</label>
-		{#if driveCreateError}<p class="status--error">{driveCreateError}</p>{/if}
-	</form>
-	{#snippet footer()}
-		<button
-			class="btn btn-secondary"
-			data-testid="admin-create-drive-cancel-btn"
-			onclick={() => (driveCreateOpen = false)}
-		>
-			{t('common.cancel', 'Cancel')}
-		</button>
-		<button
-			class="btn btn-primary"
-			type="submit"
-			form="create-drive-form"
-			data-testid="admin-create-drive-submit-btn"
-			disabled={driveCreating}
-		>
-			{driveCreating ? t('admin.creating', 'Creating…') : t('common.create', 'Create')}
-		</button>
-	{/snippet}
-</Modal>
-
-<!-- Manage-owners modal (D3a admin bypass — calls
-     /api/admin/drives/{id}/members POST/DELETE which skip the per-drive
-     `Manage` check). Last-owner protection still applies server-side. -->
-<Modal
-	open={manageOwnersDrive !== null}
-	title={manageOwnersDrive
-		? t(
-				'admin.drive_manage_owners_for',
-				{ name: manageOwnersDrive.name },
-				'Manage owners — {{name}}'
-			)
-		: t('admin.drive_manage_owners', 'Manage owners')}
-	onclose={closeManageOwners}
->
-	{#if manageOwnersDrive}
-		<div class="form">
-			<div>
-				<label for="manage-owners-search">
-					<span>{t('admin.drive_add_owner', 'Add owner')}</span>
-				</label>
-				<input
-					id="manage-owners-search"
-					type="text"
-					data-testid="admin-manage-owners-search-input"
-					bind:value={manageOwnersQuery}
-					oninput={(e) => searchManageOwnersCandidates(e.currentTarget.value)}
-					placeholder={t('admin.drive_owner_placeholder', 'Search a user or group…')}
-					autocomplete="off"
-					disabled={manageOwnersBusy}
-				/>
-				{#if manageOwnersSearching}
-					<span class="muted">{t('common.loading', 'Loading…')}</span>
-				{:else if manageOwnersSuggestions.length > 0}
-					<ul class="owner-suggest" role="listbox">
-						{#each manageOwnersSuggestions as r (`${r.type}-${r.id}`)}
-							<li>
-								<button
-									type="button"
-									class="owner-suggest__row"
-									data-testid={`admin-manage-owners-pick-${r.type}-${r.id}`}
-									onclick={() => addOwner(r)}
-									disabled={manageOwnersBusy}
-								>
-									<Icon name={r.type === 'group' ? 'users' : 'user'} />
-									<span class="owner-suggest__label">{r.label}</span>
-									{#if r.sublabel}<span class="muted">{r.sublabel}</span>{/if}
-								</button>
-							</li>
-						{/each}
-					</ul>
-				{/if}
-			</div>
-
-			<div>
-				<h3 class="owners-list__title">
-					{t('admin.drive_current_owners', 'Current owners')}
-					<span class="muted">({manageOwnersList.length})</span>
-				</h3>
-				{#if manageOwnersList.length === 0}
-					<p class="muted">{t('admin.drive_no_owners', 'No owners')}</p>
-				{:else}
-					<ul class="owners-list">
-						{#each manageOwnersList as m (`${m.subject.type}-${m.subject.id}`)}
-							<li class="owners-list__row">
-								{#if m.subject.type === 'user'}
-									<UserVignette userId={m.subject.id} />
-								{:else}
-									<!-- Groups don't resolve via /api/users/{id}; render an
-									     inline equivalent using the cached recipient label
-									     from the share-search resolver. -->
-									<span class="owners-list__group">
-										<span class="owners-list__group-icon"><Icon name="users" /></span>
-										<span class="owners-list__group-name">
-											{resolveRecipient('group', m.subject.id).label}
-										</span>
-									</span>
-								{/if}
-								<button
-									type="button"
-									class="icon-btn icon-btn--danger"
-									data-testid={`admin-manage-owners-remove-${m.subject.type}-${m.subject.id}`}
-									title={t('common.remove', 'Remove')}
-									aria-label={t('common.remove', 'Remove')}
-									onclick={() => removeOwner(m)}
-									disabled={manageOwnersBusy}
-								>
-									<Icon name="trash-alt" />
-								</button>
-							</li>
-						{/each}
-					</ul>
-				{/if}
-			</div>
-
-			{#if manageOwnersError}
-				<p class="status--error">{manageOwnersError}</p>
-			{/if}
-		</div>
-	{/if}
-	{#snippet footer()}
-		<button
-			class="btn btn-secondary"
-			data-testid="admin-manage-owners-close-btn"
-			onclick={closeManageOwners}
-		>
-			{t('common.close', 'Close')}
-		</button>
-	{/snippet}
-</Modal>
-
-<DrivePoliciesModal
-	drive={managePoliciesDrive}
-	onclose={closeManagePolicies}
-	onsaved={(driveId, merged) => {
-		// Refresh the drive row's policies in place so the next time the
-		// admin opens this modal they see the persisted state.
-		drivesList = drivesList.map((d) =>
-			d.id === driveId ? { ...d, policies: { ...d.policies, ...merged } } : d
-		);
-	}}
-/>
-
-<!-- User-envelope quota edit — uses the shared <QuotaEditor>.
-     "Unlimited" checkbox maps to 0 on the wire; positive value * unit
-     is sent verbatim to `setUserQuota`. -->
-<QuotaEditor
-	open={quotaModal !== null}
-	title={t('admin.edit_quota_title', 'Edit quota')}
-	subjectName={quotaModal?.username ?? ''}
-	initialBytes={quotaModal?.initialBytes ?? 0}
-	busy={quotaModalBusy}
-	error={quotaModalError}
-	testIdPrefix="admin-user-quota"
-	onclose={() => (quotaModal = null)}
-	onsave={saveQuota}
-/>
-
-<!-- Shared-drive quota edit — same component, different endpoint.
-     "Unlimited" maps to `null` on the wire (see saveDriveQuota). -->
-<QuotaEditor
-	open={driveQuotaModal !== null}
-	title={t('admin.drive_edit_quota', 'Edit quota')}
-	subjectName={driveQuotaModal?.driveName ?? ''}
-	initialBytes={driveQuotaModal?.initialBytes ?? null}
-	busy={driveQuotaBusy}
-	error={driveQuotaError}
-	testIdPrefix="admin-drive-quota"
-	onclose={() => (driveQuotaModal = null)}
-	onsave={saveDriveQuota}
-/>
-
-<!-- Reset-password modal -->
-<Modal
-	open={resetModal !== null}
-	title={t('admin.reset_password_title', 'Reset password')}
-	onclose={() => (resetModal = null)}
->
-	{#if resetModal}
+	<Modal bind:open={createOpen} title={t('admin.create_user', 'Create user')}>
 		<form
-			id="reset-pw-form"
-			class="form"
-			data-testid="admin-reset-password-form"
-			onsubmit={submitReset}
+			id="create-user-form"
+			data-testid="admin-create-user-form"
+			onsubmit={submitCreate}
+			class="admin-form"
 		>
-			<p class="muted">
-				{t('admin.reset_pw_for', 'New password for')} <strong>{resetModal.username}</strong>
-			</p>
 			<label
-				><span>{t('admin.new_password', 'New password')}</span>
+				><span>{t('admin.username', 'Username')}</span>
+				<input
+					bind:value={newUser.username}
+					data-testid="admin-create-user-username-input"
+					minlength="3"
+					required
+				/></label
+			>
+			<label
+				><span
+					>{t('admin.email', 'Email')}
+					<span class="muted">({t('common.optional', 'optional')})</span></span
+				>
+				<input
+					type="email"
+					data-testid="admin-create-user-email-input"
+					bind:value={newUser.email}
+					placeholder={t('admin.email_auto', 'Auto-generated if left blank')}
+				/></label
+			>
+			<label
+				><span>{t('admin.password', 'Password')}</span>
 				<input
 					type="password"
-					data-testid="admin-reset-password-input"
-					bind:value={resetPassword}
+					data-testid="admin-create-user-password-input"
+					bind:value={newUser.password}
 					minlength="8"
 					required
 				/></label
 			>
-			{#if resetError}<p class="status--error">{resetError}</p>{/if}
+			<label
+				><span>{t('admin.role', 'Role')}</span>
+				<select bind:value={newUser.role} data-testid="admin-create-user-role-select">
+					<option value="user">user</option>
+					<option value="admin">admin</option>
+				</select></label
+			>
+			<label
+				><span>{t('admin.quota', 'Quota')}</span>
+				<div class="quota-input">
+					<input
+						type="number"
+						data-testid="admin-create-user-quota-input"
+						min="0"
+						step="0.1"
+						bind:value={newUser.quotaValue}
+					/>
+					<select bind:value={newUser.quotaUnit} data-testid="admin-create-user-quota-unit-select">
+						{#each QUOTA_UNITS as unit (unit.label)}<option value={unit.value}>{unit.label}</option
+							>{/each}
+					</select>
+				</div>
+				<span class="muted">{t('admin.quota_unlimited_hint', '0 = unlimited')}</span></label
+			>
+			{#if createError}<p class="admin-result admin-result--error">{createError}</p>{/if}
 		</form>
-	{/if}
-	{#snippet footer()}
-		<button
-			class="btn btn-secondary"
-			data-testid="admin-reset-password-cancel-btn"
-			onclick={() => (resetModal = null)}>{t('common.cancel', 'Cancel')}</button
-		>
-		<button
-			class="btn btn-primary"
-			type="submit"
-			form="reset-pw-form"
-			data-testid="admin-reset-password-submit-btn"
-			disabled={resetting}
-		>
-			{resetting ? t('admin.resetting', 'Resetting…') : t('admin.reset_btn', 'Reset')}
-		</button>
-	{/snippet}
-</Modal>
+		{#snippet footer()}
+			<button
+				class="btn btn-secondary"
+				data-testid="admin-create-user-cancel-btn"
+				onclick={() => (createOpen = false)}>{t('common.cancel', 'Cancel')}</button
+			>
+			<button
+				class="btn btn-primary"
+				type="submit"
+				form="create-user-form"
+				data-testid="admin-create-user-submit-btn"
+				disabled={creating}
+			>
+				{creating ? t('admin.creating', 'Creating…') : t('common.create', 'Create')}
+			</button>
+		{/snippet}
+	</Modal>
 
-<!-- Delete-user confirmation modal — typed-email gate. The Delete
+	<!-- Create-drive modal (D3a). Personal-drive creation is omitted because
+     the backend returns 501 for kind=personal today; see DrivePicker for
+     UI flow and drive_handler::create_drive for the wire contract. -->
+	<Modal
+		open={driveCreateOpen}
+		title={t('admin.create_drive', 'Create shared drive')}
+		onclose={() => (driveCreateOpen = false)}
+	>
+		<form
+			id="create-drive-form"
+			class="admin-form"
+			data-testid="admin-create-drive-form"
+			onsubmit={submitDriveCreate}
+		>
+			<label>
+				<span>{t('admin.drive_name', 'Name')}</span>
+				<input
+					bind:value={driveForm.name}
+					data-testid="admin-create-drive-name-input"
+					required
+					placeholder={t('admin.drive_name_placeholder', 'e.g. Engineering')}
+				/>
+			</label>
+			<label class="drive-owner">
+				<span>{t('admin.drive_owner', 'Owner')}</span>
+				<input
+					type="text"
+					data-testid="admin-create-drive-owner-input"
+					bind:value={driveForm.ownerQuery}
+					oninput={(e) => searchOwnerCandidates(e.currentTarget.value)}
+					placeholder={t('admin.drive_owner_placeholder', 'Search a user or group…')}
+					autocomplete="off"
+					required
+				/>
+				{#if ownerSearching}
+					<span class="muted">{t('common.loading', 'Loading…')}</span>
+				{:else if ownerSuggestions.length > 0}
+					<ul class="owner-suggest" role="listbox">
+						{#each ownerSuggestions as r (`${r.type}-${r.id}`)}
+							<li>
+								<button
+									type="button"
+									class="owner-suggest__row"
+									data-testid={`admin-drive-owner-pick-${r.type}-${r.id}`}
+									onclick={() => pickOwner(r)}
+								>
+									<Icon name={r.type === 'group' ? 'users' : 'user'} />
+									<span class="owner-suggest__label">{r.label}</span>
+									{#if r.sublabel}
+										<span class="muted">{r.sublabel}</span>
+									{/if}
+								</button>
+							</li>
+						{/each}
+					</ul>
+				{/if}
+				{#if driveForm.ownerPick}
+					<span class="muted owner-pick">
+						<Icon name={driveForm.ownerPick.type === 'group' ? 'users' : 'user'} />
+						{t('admin.drive_owner_picked', { name: driveForm.ownerPick.label }, 'Owner: {{name}}')}
+					</span>
+				{/if}
+				<span class="muted">
+					{t(
+						'admin.drive_owner_hint',
+						'Pick a user (sole Owner) or a group (every member becomes Owner via subject expansion).'
+					)}
+				</span>
+			</label>
+			<label>
+				<span>{t('admin.quota', 'Quota')}</span>
+				<div class="quota-input">
+					<input
+						type="number"
+						data-testid="admin-create-drive-quota-input"
+						min="0"
+						step="0.1"
+						bind:value={driveForm.quotaValue}
+					/>
+					<select
+						bind:value={driveForm.quotaUnit}
+						data-testid="admin-create-drive-quota-unit-select"
+					>
+						{#each QUOTA_UNITS as unit (unit.label)}
+							<option value={unit.value}>{unit.label}</option>
+						{/each}
+					</select>
+				</div>
+				<span class="muted">{t('admin.quota_unlimited_hint', '0 = unlimited')}</span>
+			</label>
+			{#if driveCreateError}<p class="admin-result admin-result--error">{driveCreateError}</p>{/if}
+		</form>
+		{#snippet footer()}
+			<button
+				class="btn btn-secondary"
+				data-testid="admin-create-drive-cancel-btn"
+				onclick={() => (driveCreateOpen = false)}
+			>
+				{t('common.cancel', 'Cancel')}
+			</button>
+			<button
+				class="btn btn-primary"
+				type="submit"
+				form="create-drive-form"
+				data-testid="admin-create-drive-submit-btn"
+				disabled={driveCreating}
+			>
+				{driveCreating ? t('admin.creating', 'Creating…') : t('common.create', 'Create')}
+			</button>
+		{/snippet}
+	</Modal>
+
+	<!-- Manage-owners modal (D3a admin bypass — calls
+     /api/admin/drives/{id}/members POST/DELETE which skip the per-drive
+     `Manage` check). Last-owner protection still applies server-side. -->
+	<Modal
+		open={manageOwnersDrive !== null}
+		title={manageOwnersDrive
+			? t(
+					'admin.drive_manage_owners_for',
+					{ name: manageOwnersDrive.name },
+					'Manage owners — {{name}}'
+				)
+			: t('admin.drive_manage_owners', 'Manage owners')}
+		onclose={closeManageOwners}
+	>
+		{#if manageOwnersDrive}
+			<div class="admin-form">
+				<div>
+					<label for="manage-owners-search">
+						<span>{t('admin.drive_add_owner', 'Add owner')}</span>
+					</label>
+					<input
+						id="manage-owners-search"
+						type="text"
+						data-testid="admin-manage-owners-search-input"
+						bind:value={manageOwnersQuery}
+						oninput={(e) => searchManageOwnersCandidates(e.currentTarget.value)}
+						placeholder={t('admin.drive_owner_placeholder', 'Search a user or group…')}
+						autocomplete="off"
+						disabled={manageOwnersBusy}
+					/>
+					{#if manageOwnersSearching}
+						<span class="muted">{t('common.loading', 'Loading…')}</span>
+					{:else if manageOwnersSuggestions.length > 0}
+						<ul class="owner-suggest" role="listbox">
+							{#each manageOwnersSuggestions as r (`${r.type}-${r.id}`)}
+								<li>
+									<button
+										type="button"
+										class="owner-suggest__row"
+										data-testid={`admin-manage-owners-pick-${r.type}-${r.id}`}
+										onclick={() => addOwner(r)}
+										disabled={manageOwnersBusy}
+									>
+										<Icon name={r.type === 'group' ? 'users' : 'user'} />
+										<span class="owner-suggest__label">{r.label}</span>
+										{#if r.sublabel}<span class="muted">{r.sublabel}</span>{/if}
+									</button>
+								</li>
+							{/each}
+						</ul>
+					{/if}
+				</div>
+
+				<div>
+					<h3 class="owners-list__title">
+						{t('admin.drive_current_owners', 'Current owners')}
+						<span class="muted">({manageOwnersList.length})</span>
+					</h3>
+					{#if manageOwnersList.length === 0}
+						<p class="muted">{t('admin.drive_no_owners', 'No owners')}</p>
+					{:else}
+						<ul class="owners-list">
+							{#each manageOwnersList as m (`${m.subject.type}-${m.subject.id}`)}
+								<li class="owners-list__row">
+									{#if m.subject.type === 'user'}
+										<UserVignette userId={m.subject.id} />
+									{:else}
+										<!-- Groups don't resolve via /api/users/{id}; render an
+									     inline equivalent using the cached recipient label
+									     from the share-search resolver. -->
+										<span class="owners-list__group">
+											<span class="owners-list__group-icon"><Icon name="users" /></span>
+											<span class="owners-list__group-name">
+												{resolveRecipient('group', m.subject.id).label}
+											</span>
+										</span>
+									{/if}
+									<button
+										type="button"
+										class="btn-action btn-action--delete"
+										data-testid={`admin-manage-owners-remove-${m.subject.type}-${m.subject.id}`}
+										title={t('common.remove', 'Remove')}
+										aria-label={t('common.remove', 'Remove')}
+										onclick={() => removeOwner(m)}
+										disabled={manageOwnersBusy}
+									>
+										<Icon name="trash-alt" />
+									</button>
+								</li>
+							{/each}
+						</ul>
+					{/if}
+				</div>
+
+				{#if manageOwnersError}
+					<p class="admin-result admin-result--error">{manageOwnersError}</p>
+				{/if}
+			</div>
+		{/if}
+		{#snippet footer()}
+			<button
+				class="btn btn-secondary"
+				data-testid="admin-manage-owners-close-btn"
+				onclick={closeManageOwners}
+			>
+				{t('common.close', 'Close')}
+			</button>
+		{/snippet}
+	</Modal>
+
+	<DrivePoliciesModal
+		drive={managePoliciesDrive}
+		onclose={closeManagePolicies}
+		onsaved={(driveId, merged) => {
+			// Refresh the drive row's policies in place so the next time the
+			// admin opens this modal they see the persisted state.
+			drivesList = drivesList.map((d) =>
+				d.id === driveId ? { ...d, policies: { ...d.policies, ...merged } } : d
+			);
+		}}
+	/>
+
+	<!-- User-envelope quota edit — uses the shared <QuotaEditor>.
+     "Unlimited" checkbox maps to 0 on the wire; positive value * unit
+     is sent verbatim to `setUserQuota`. -->
+	<QuotaEditor
+		open={quotaModal !== null}
+		title={t('admin.edit_quota_title', 'Edit quota')}
+		subjectName={quotaModal?.username ?? ''}
+		initialBytes={quotaModal?.initialBytes ?? 0}
+		busy={quotaModalBusy}
+		error={quotaModalError}
+		testIdPrefix="admin-user-quota"
+		onclose={() => (quotaModal = null)}
+		onsave={saveQuota}
+	/>
+
+	<!-- Shared-drive quota edit — same component, different endpoint.
+     "Unlimited" maps to `null` on the wire (see saveDriveQuota). -->
+	<QuotaEditor
+		open={driveQuotaModal !== null}
+		title={t('admin.drive_edit_quota', 'Edit quota')}
+		subjectName={driveQuotaModal?.driveName ?? ''}
+		initialBytes={driveQuotaModal?.initialBytes ?? null}
+		busy={driveQuotaBusy}
+		error={driveQuotaError}
+		testIdPrefix="admin-drive-quota"
+		onclose={() => (driveQuotaModal = null)}
+		onsave={saveDriveQuota}
+	/>
+
+	<!-- Reset-password modal -->
+	<Modal
+		open={resetModal !== null}
+		title={t('admin.reset_password_title', 'Reset password')}
+		onclose={() => (resetModal = null)}
+	>
+		{#if resetModal}
+			<form
+				id="reset-pw-form"
+				class="admin-form"
+				data-testid="admin-reset-password-form"
+				onsubmit={submitReset}
+			>
+				<p class="muted">
+					{t('admin.reset_pw_for', 'New password for')} <strong>{resetModal.username}</strong>
+				</p>
+				<label
+					><span>{t('admin.new_password', 'New password')}</span>
+					<input
+						type="password"
+						data-testid="admin-reset-password-input"
+						bind:value={resetPassword}
+						minlength="8"
+						required
+					/></label
+				>
+				{#if resetError}<p class="admin-result admin-result--error">{resetError}</p>{/if}
+			</form>
+		{/if}
+		{#snippet footer()}
+			<button
+				class="btn btn-secondary"
+				data-testid="admin-reset-password-cancel-btn"
+				onclick={() => (resetModal = null)}>{t('common.cancel', 'Cancel')}</button
+			>
+			<button
+				class="btn btn-primary"
+				type="submit"
+				form="reset-pw-form"
+				data-testid="admin-reset-password-submit-btn"
+				disabled={resetting}
+			>
+				{resetting ? t('admin.resetting', 'Resetting…') : t('admin.reset_btn', 'Reset')}
+			</button>
+		{/snippet}
+	</Modal>
+
+	<!-- Delete-user confirmation modal — typed-email gate. The Delete
      button stays disabled until the admin re-types the target's
      email address, matching case-insensitively. Extra friction on a
      destructive, irreversible action. -->
-<Modal
-	open={deleteUserModal !== null}
-	title={t('admin.delete_user_title', 'Delete user')}
-	onclose={() => (deleteUserModal = null)}
->
-	{#if deleteUserModal}
-		<form
-			id="delete-user-form"
-			class="form"
-			data-testid="admin-delete-user-form"
-			onsubmit={(e) => {
-				e.preventDefault();
-				void confirmDeleteUser();
-			}}
-		>
-			<p>
-				{t(
-					'admin.delete_user_warning',
-					{ name: deleteUserModal.username },
-					'You are about to permanently delete "{{name}}". This will remove the account, revoke every session, and reap the personal drive. This cannot be undone.'
-				)}
-			</p>
-			<label>
-				<span>
+	<Modal
+		open={deleteUserModal !== null}
+		title={t('admin.delete_user_title', 'Delete user')}
+		onclose={() => (deleteUserModal = null)}
+	>
+		{#if deleteUserModal}
+			<form
+				id="delete-user-form"
+				class="admin-form"
+				data-testid="admin-delete-user-form"
+				onsubmit={(e) => {
+					e.preventDefault();
+					void confirmDeleteUser();
+				}}
+			>
+				<p>
 					{t(
-						'admin.delete_user_confirm_hint',
-						{ email: deleteUserModal.email },
-						'To confirm, type the account email below: {{email}}'
+						'admin.delete_user_warning',
+						{ name: deleteUserModal.username },
+						'You are about to permanently delete "{{name}}". This will remove the account, revoke every session, and reap the personal drive. This cannot be undone.'
 					)}
-				</span>
-				<input
-					type="email"
-					data-testid="admin-delete-user-email-input"
-					autocomplete="off"
-					bind:value={deleteUserEmailInput}
-					placeholder={deleteUserModal.email}
-					disabled={deleteUserBusy}
-					required
-				/>
-			</label>
-		</form>
-	{/if}
-	{#snippet footer()}
-		<button
-			class="btn btn-secondary"
-			data-testid="admin-delete-user-cancel-btn"
-			onclick={() => (deleteUserModal = null)}
-			disabled={deleteUserBusy}
-		>
-			{t('common.cancel', 'Cancel')}
-		</button>
-		<button
-			class="btn btn-danger"
-			type="submit"
-			form="delete-user-form"
-			data-testid="admin-delete-user-confirm-btn"
-			disabled={!deleteUserEmailMatches || deleteUserBusy}
-		>
-			{deleteUserBusy ? t('admin.deleting', 'Deleting…') : t('admin.delete_title', 'Delete user')}
-		</button>
-	{/snippet}
-</Modal>
+				</p>
+				<label>
+					<span>
+						{t(
+							'admin.delete_user_confirm_hint',
+							{ email: deleteUserModal.email },
+							'To confirm, type the account email below: {{email}}'
+						)}
+					</span>
+					<input
+						type="email"
+						data-testid="admin-delete-user-email-input"
+						autocomplete="off"
+						bind:value={deleteUserEmailInput}
+						placeholder={deleteUserModal.email}
+						disabled={deleteUserBusy}
+						required
+					/>
+				</label>
+			</form>
+		{/if}
+		{#snippet footer()}
+			<button
+				class="btn btn-secondary"
+				data-testid="admin-delete-user-cancel-btn"
+				onclick={() => (deleteUserModal = null)}
+				disabled={deleteUserBusy}
+			>
+				{t('common.cancel', 'Cancel')}
+			</button>
+			<button
+				class="btn btn-danger"
+				type="submit"
+				form="delete-user-form"
+				data-testid="admin-delete-user-confirm-btn"
+				disabled={!deleteUserEmailMatches || deleteUserBusy}
+			>
+				{deleteUserBusy ? t('admin.deleting', 'Deleting…') : t('admin.delete_title', 'Delete user')}
+			</button>
+		{/snippet}
+	</Modal>
 
-<!-- Styled confirm modal (replaces native confirm) -->
-<Modal
-	open={confirmState !== null}
-	title={t('common.confirm', 'Confirm')}
-	onclose={() => resolveConfirm(false)}
->
-	<p>{confirmState?.message}</p>
-	{#snippet footer()}
-		<button
-			class="btn btn-secondary"
-			data-testid="admin-confirm-cancel-btn"
-			onclick={() => resolveConfirm(false)}>{t('common.cancel', 'Cancel')}</button
-		>
-		<button
-			class="btn btn-primary"
-			data-testid="admin-confirm-ok-btn"
-			onclick={() => resolveConfirm(true)}
-		>
-			{t('common.confirm', 'Confirm')}
-		</button>
-	{/snippet}
-</Modal>
+	<!-- Styled confirm modal (replaces native confirm) -->
+	<Modal
+		open={confirmState !== null}
+		title={t('common.confirm', 'Confirm')}
+		onclose={() => resolveConfirm(false)}
+	>
+		<p>{confirmState?.message}</p>
+		{#snippet footer()}
+			<button
+				class="btn btn-secondary"
+				data-testid="admin-confirm-cancel-btn"
+				onclick={() => resolveConfirm(false)}>{t('common.cancel', 'Cancel')}</button
+			>
+			<button
+				class="btn btn-primary"
+				data-testid="admin-confirm-ok-btn"
+				onclick={() => resolveConfirm(true)}
+			>
+				{t('common.confirm', 'Confirm')}
+			</button>
+		{/snippet}
+	</Modal>
 
-<Modal
-	open={logsPlugin !== null}
-	title={logsPlugin?.name ?? t('admin.plugin_logs', 'Plugin logs')}
-	onclose={closeLogs}
->
-	{#if logsPlugin}
-		<dl class="kv plugin-meta">
-			<dt>{t('admin.plugins_col_id', 'ID')}</dt>
-			<dd><code>{logsPlugin.id}</code></dd>
-			<dt>{t('admin.version', 'Version')}</dt>
-			<dd>{logsPlugin.version ?? '—'}</dd>
-			{#if logsPlugin.abi != null}
-				<dt>ABI</dt>
-				<dd>{logsPlugin.abi}</dd>
-			{/if}
-			<dt>{t('admin.plugins_col_events', 'Events')}</dt>
-			<dd>
-				{#if logsPlugin.subscriptions && logsPlugin.subscriptions.length > 0}
-					{#each logsPlugin.subscriptions as ev (ev)}<code class="event-tag">{ev}</code>
-					{/each}
-				{:else}
-					—
+	<Modal
+		open={logsPlugin !== null}
+		title={logsPlugin?.name ?? t('admin.plugin_logs', 'Plugin logs')}
+		onclose={closeLogs}
+	>
+		{#if logsPlugin}
+			<dl class="kv plugin-meta">
+				<dt>{t('admin.plugins_col_id', 'ID')}</dt>
+				<dd><code>{logsPlugin.id}</code></dd>
+				<dt>{t('admin.version', 'Version')}</dt>
+				<dd>{logsPlugin.version ?? '—'}</dd>
+				{#if logsPlugin.abi != null}
+					<dt>ABI</dt>
+					<dd>{logsPlugin.abi}</dd>
 				{/if}
-			</dd>
-			<dt>{t('admin.status', 'Status')}</dt>
-			<dd>
-				<span class="badge badge--{logsPlugin.enabled ? 'active' : 'inactive'}">
-					{logsPlugin.enabled ? t('admin.enabled', 'Enabled') : t('admin.disabled', 'Disabled')}
-				</span>
-			</dd>
-		</dl>
-	{/if}
+				<dt>{t('admin.plugins_col_events', 'Events')}</dt>
+				<dd>
+					{#if logsPlugin.subscriptions && logsPlugin.subscriptions.length > 0}
+						{#each logsPlugin.subscriptions as ev (ev)}<code class="event-tag">{ev}</code>
+						{/each}
+					{:else}
+						—
+					{/if}
+				</dd>
+				<dt>{t('admin.status', 'Status')}</dt>
+				<dd>
+					<span class="admin-chip admin-chip--{logsPlugin.enabled ? 'active' : 'inactive'}">
+						{logsPlugin.enabled ? t('admin.enabled', 'Enabled') : t('admin.disabled', 'Disabled')}
+					</span>
+				</dd>
+			</dl>
+		{/if}
 
-	{#if retention}
-		<form
-			class="form retention-form"
-			data-testid="admin-plugin-retention-form"
-			onsubmit={(e) => (e.preventDefault(), saveRetention())}
-		>
-			<h3>{t('admin.plugins_retention', 'Log retention')}</h3>
-			<label
-				><span>{t('admin.plugins_retention_days', 'Keep for (days)')}</span>
-				<input
-					type="number"
-					data-testid="admin-plugin-retention-days-input"
-					min="0"
-					bind:value={retentionDays}
-				/></label
+		{#if retention}
+			<form
+				class="form retention-form"
+				data-testid="admin-plugin-retention-form"
+				onsubmit={(e) => (e.preventDefault(), saveRetention())}
 			>
-			<label
-				><span>{t('admin.plugins_retention_max', 'Max size (MB)')}</span>
-				<input
-					type="number"
-					data-testid="admin-plugin-retention-max-input"
-					min="0"
-					bind:value={retentionMb}
-				/></label
-			>
-			{#if retentionMsg}<p class="muted">{retentionMsg}</p>{/if}
-			<button class="btn btn-primary" type="submit" data-testid="admin-plugin-retention-save-btn"
-				>{t('admin.plugins_retention_save', 'Save retention')}</button
-			>
-		</form>
-	{/if}
+				<h3>{t('admin.plugins_retention', 'Log retention')}</h3>
+				<label
+					><span>{t('admin.plugins_retention_days', 'Keep for (days)')}</span>
+					<input
+						type="number"
+						data-testid="admin-plugin-retention-days-input"
+						min="0"
+						bind:value={retentionDays}
+					/></label
+				>
+				<label
+					><span>{t('admin.plugins_retention_max', 'Max size (MB)')}</span>
+					<input
+						type="number"
+						data-testid="admin-plugin-retention-max-input"
+						min="0"
+						bind:value={retentionMb}
+					/></label
+				>
+				{#if retentionMsg}<p class="muted">{retentionMsg}</p>{/if}
+				<button class="btn btn-primary" type="submit" data-testid="admin-plugin-retention-save-btn"
+					>{t('admin.plugins_retention_save', 'Save retention')}</button
+				>
+			</form>
+		{/if}
 
-	<div class="logs-toolbar">
-		<select
-			bind:value={logsLevel}
-			data-testid="admin-plugin-logs-level-select"
-			onchange={reloadLogsFromStart}
-		>
-			<option value="">{t('admin.logs_all', 'All levels')}</option>
-			<option value="info">info</option>
-			<option value="warn">warn</option>
-			<option value="error">error</option>
-		</select>
-		<input
-			placeholder={t('admin.logs_search', 'Search…')}
-			data-testid="admin-plugin-logs-search-input"
-			bind:value={logsSearch}
-			onkeydown={(e) => e.key === 'Enter' && reloadLogsFromStart()}
-		/>
-		<button
-			class="btn btn-secondary"
-			data-testid="admin-plugin-logs-search-btn"
-			onclick={reloadLogsFromStart}>{t('common.search', 'Search')}</button
-		>
-		<label class="live-toggle">
+		<div class="logs-toolbar">
+			<select
+				bind:value={logsLevel}
+				data-testid="admin-plugin-logs-level-select"
+				onchange={reloadLogsFromStart}
+			>
+				<option value="">{t('admin.logs_all', 'All levels')}</option>
+				<option value="info">info</option>
+				<option value="warn">warn</option>
+				<option value="error">error</option>
+			</select>
 			<input
-				type="checkbox"
-				data-testid="admin-plugin-logs-live-checkbox"
-				bind:checked={logsLive}
-				onchange={toggleLive}
+				placeholder={t('admin.logs_search', 'Search…')}
+				data-testid="admin-plugin-logs-search-input"
+				bind:value={logsSearch}
+				onkeydown={(e) => e.key === 'Enter' && reloadLogsFromStart()}
 			/>
-			<span>{t('admin.logs_live', 'Live')}</span>
-		</label>
-	</div>
-	{#if logsLoading}
-		<p class="status">{t('common.loading', 'Loading…')}</p>
-	{:else if logs.length === 0}
-		<p class="status">{t('admin.logs_empty', 'No log entries.')}</p>
-	{:else}
-		<div class="logs-table-wrap">
-			<table class="table logs-table">
-				<thead>
-					<tr>
-						<th>{t('admin.logs_time', 'Time')}</th>
-						<th>{t('admin.logs_level', 'Level')}</th>
-						<th>{t('admin.logs_kind', 'Kind')}</th>
-						<th>{t('admin.logs_invocation', 'Invocation')}</th>
-						<th>{t('admin.logs_message', 'Message')}</th>
-					</tr>
-				</thead>
-				<tbody>
-					{#each logs as entry, i (i)}
-						<tr class="log-row log-row--{(entry.level ?? 'info').toLowerCase()}">
-							<td class="log-time">{timeAgo(entry.ts ?? entry.timestamp)}</td>
-							<td>
-								<span class="log-level log-level--{(entry.level ?? 'info').toLowerCase()}"
-									>{entry.level ?? 'info'}</span
-								>
-							</td>
-							<td><code>{logKind(entry)}</code></td>
-							<td><code class="log-inv">{entry.invocation_id ?? '—'}</code></td>
-							<td class="log-msg">{logMsg(entry)}</td>
-						</tr>
-					{/each}
-				</tbody>
-			</table>
+			<button
+				class="btn btn-secondary"
+				data-testid="admin-plugin-logs-search-btn"
+				onclick={reloadLogsFromStart}>{t('common.search', 'Search')}</button
+			>
+			<label class="live-toggle">
+				<input
+					type="checkbox"
+					data-testid="admin-plugin-logs-live-checkbox"
+					bind:checked={logsLive}
+					onchange={toggleLive}
+				/>
+				<span>{t('admin.logs_live', 'Live')}</span>
+			</label>
 		</div>
-	{/if}
-	<div class="pager logs-pager">
-		<button
-			class="btn btn-secondary"
-			data-testid="admin-plugin-logs-pager-prev-btn"
-			disabled={logsPage === 0}
-			onclick={logsPrev}>‹</button
-		>
-		<span>
-			{#if logsTotal === 0}
-				{t('admin.logs_empty', 'No log entries.')}
-			{:else}
-				{t(
-					'admin.logs_showing',
-					{
-						from: logsPage * LOGS_PAGE_SIZE + 1,
-						to: Math.min((logsPage + 1) * LOGS_PAGE_SIZE, logsTotal),
-						total: logsTotal
-					},
-					'Showing {{from}}–{{to}} of {{total}}'
-				)}
-			{/if}
-		</span>
-		<button
-			class="btn btn-secondary"
-			data-testid="admin-plugin-logs-pager-next-btn"
-			disabled={(logsPage + 1) * LOGS_PAGE_SIZE >= logsTotal}
-			onclick={logsNext}>›</button
-		>
-	</div>
-	{#snippet footer()}
-		<button class="btn btn-danger" data-testid="admin-plugin-logs-clear-btn" onclick={purgeLogs}
-			>{t('admin.plugins_clear_logs', 'Clear logs')}</button
-		>
-		<button class="btn btn-secondary" data-testid="admin-plugin-logs-close-btn" onclick={closeLogs}>
-			{t('common.close', 'Close')}
-		</button>
-	{/snippet}
-</Modal>
+		{#if logsLoading}
+			<p class="muted">{t('common.loading', 'Loading…')}</p>
+		{:else if logs.length === 0}
+			<p class="muted">{t('admin.logs_empty', 'No log entries.')}</p>
+		{:else}
+			<div class="logs-table-wrap">
+				<table class="logs-table">
+					<thead>
+						<tr>
+							<th>{t('admin.logs_time', 'Time')}</th>
+							<th>{t('admin.logs_level', 'Level')}</th>
+							<th>{t('admin.logs_kind', 'Kind')}</th>
+							<th>{t('admin.logs_invocation', 'Invocation')}</th>
+							<th>{t('admin.logs_message', 'Message')}</th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each logs as entry, i (i)}
+							<tr class="log-row log-row--{(entry.level ?? 'info').toLowerCase()}">
+								<td class="log-time">{timeAgo(entry.ts ?? entry.timestamp)}</td>
+								<td>
+									<span class="log-level log-level--{(entry.level ?? 'info').toLowerCase()}"
+										>{entry.level ?? 'info'}</span
+									>
+								</td>
+								<td><code>{logKind(entry)}</code></td>
+								<td><code class="log-inv">{entry.invocation_id ?? '—'}</code></td>
+								<td class="log-msg">{logMsg(entry)}</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			</div>
+		{/if}
+		<div class="admin-pager logs-pager">
+			<Button
+				small
+				icon="chevron-left"
+				title={t('common.previous', 'Previous page')}
+				data-testid="admin-plugin-logs-pager-prev-btn"
+				disabled={logsPage === 0}
+				onclick={logsPrev}
+			/>
+			<span>
+				{#if logsTotal === 0}
+					{t('admin.logs_empty', 'No log entries.')}
+				{:else}
+					{t(
+						'admin.logs_showing',
+						{
+							from: logsPage * LOGS_PAGE_SIZE + 1,
+							to: Math.min((logsPage + 1) * LOGS_PAGE_SIZE, logsTotal),
+							total: logsTotal
+						},
+						'Showing {{from}}–{{to}} of {{total}}'
+					)}
+				{/if}
+			</span>
+			<Button
+				small
+				icon="chevron-right"
+				title={t('common.next', 'Next page')}
+				data-testid="admin-plugin-logs-pager-next-btn"
+				disabled={(logsPage + 1) * LOGS_PAGE_SIZE >= logsTotal}
+				onclick={logsNext}
+			/>
+		</div>
+		{#snippet footer()}
+			<button class="btn btn-danger" data-testid="admin-plugin-logs-clear-btn" onclick={purgeLogs}
+				>{t('admin.plugins_clear_logs', 'Clear logs')}</button
+			>
+			<button
+				class="btn btn-secondary"
+				data-testid="admin-plugin-logs-close-btn"
+				onclick={closeLogs}
+			>
+				{t('common.close', 'Close')}
+			</button>
+		{/snippet}
+	</Modal>
+</div>
 
 <style>
-	/* Admin sessions panel — accent the caller's own row so revoking
-	   it can't happen by muscle memory. Left-border stripe matches how
-	   Users' table calls out the caller via the `you` badge; JS
-	   confirms with an escalated message on top of the visual cue. */
+	/* Accent the caller's own session row so revoking it can't happen by
+	   muscle memory. */
 	.current-session td:first-child {
 		border-left: 3px solid var(--color-accent);
 	}
 
-	/* Center-align the sessions table's Status column (badge cluster
-	   reads better centered than left-flushed under a `Status` label,
-	   especially now that the `you` badge sits alongside the status
-	   pill). Scoped to this component by Svelte's default style
-	   isolation. */
 	.col-center {
 		text-align: center;
 	}
 
+	/* ── Logs modal ─────────────────────────────────────────── */
+
 	.logs-toolbar {
 		display: flex;
+		flex-wrap: wrap;
 		gap: var(--space-2);
 		margin-bottom: var(--space-3);
 	}
 
 	.logs-toolbar input {
-		flex: 1;
-		padding: var(--space-2) var(--space-3);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
-		background: var(--color-bg-input);
-		color: var(--color-text);
+		flex: 1 1 12rem;
 	}
 
 	.live-toggle {
@@ -5586,8 +5644,22 @@
 	}
 
 	.logs-table {
-		font-family: var(--font-mono, monospace);
+		width: 100%;
+		border-collapse: collapse;
+		font-family: var(--font-mono);
 		font-size: var(--text-sm);
+	}
+
+	.logs-table th,
+	.logs-table td {
+		text-align: left;
+		padding: var(--space-2);
+		border-bottom: 1px solid var(--color-border-faint);
+	}
+
+	.logs-table th {
+		background: var(--color-bg-subtle);
+		font-weight: var(--weight-semibold);
 	}
 
 	.log-time {
@@ -5596,14 +5668,14 @@
 	}
 
 	.log-inv {
-		font-size: var(--text-xs, 0.7rem);
+		font-size: var(--text-xs);
 		color: var(--color-text-muted);
 	}
 
 	.log-level {
 		text-transform: uppercase;
-		font-size: var(--text-xs, 0.7rem);
-		font-weight: var(--weight-semibold, 600);
+		font-size: var(--text-xs);
+		font-weight: var(--weight-semibold);
 	}
 
 	.log-level--error {
@@ -5622,64 +5694,18 @@
 		margin-top: var(--space-3);
 	}
 
-	.card {
-		background: var(--color-bg-surface);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-lg);
-		padding: var(--space-5);
-		margin-bottom: var(--space-4);
-	}
-
-	.card h2 {
-		margin: 0 0 var(--space-3);
-		font-size: 1.125rem;
-	}
-
-	.checkbox {
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
-	}
+	/* ── Dashboard ──────────────────────────────────────────── */
 
 	.ds-grid {
 		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+		/* auto-fill keeps the cards from stretching to half the page on a
+		   wide monitor; auto-fit did exactly that. */
+		grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
 		gap: var(--space-3);
-		margin-bottom: var(--space-4);
 	}
 
-	/* Section title bar above each dashboard grid — labels the
-	   nature of the cards below (accounts vs live activity vs
-	   system). Small, muted, so it structures the page without
-	   competing with the numbers. `text-transform: uppercase` +
-	   `letter-spacing` matches the small-caps section-header pattern
-	   used elsewhere in the admin surface. */
-	.ds-section-title {
-		display: flex;
-		align-items: baseline;
-		gap: var(--space-2);
-		margin: var(--space-4) 0 var(--space-2) 0;
-		font-size: var(--text-xs);
-		font-weight: var(--weight-semibold);
-		color: var(--color-text-muted);
-		text-transform: uppercase;
-		letter-spacing: 0.06em;
-	}
-
-	/* "live" pill next to the "Live activity" section header —
-	   subtle visual hint that the values in this grid change on
-	   their own cadence. Matches the presence-dot's success token
-	   so the whole live-activity block reads as one visual family. */
-	.ds-section-live {
-		display: inline-block;
-		padding: 0 var(--space-2);
-		border-radius: var(--radius-full);
-		background: var(--color-success-bg);
-		color: var(--color-success-text);
-		font-size: 0.65rem;
-		font-weight: var(--weight-bold);
-		letter-spacing: 0.08em;
-		vertical-align: middle;
+	.heading-eyebrow + .ds-grid {
+		margin-top: calc(-1 * var(--space-2));
 	}
 
 	.ds-card {
@@ -5688,25 +5714,19 @@
 		gap: var(--space-1);
 		padding: var(--space-4);
 		background: var(--color-bg-surface);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-lg);
+		border-radius: var(--radius-xl);
+		box-shadow: 0 1px 3px var(--color-shadow-xs);
 		color: var(--color-text-muted);
 		font-size: var(--text-sm);
 	}
 
 	.ds-num {
-		font-size: 1.5rem;
+		font-size: var(--text-2xl);
 		font-weight: var(--weight-bold);
 		color: var(--color-text-heading);
 	}
 
-	/* Live-count variant — same font size as `.ds-num`, plus a
-	   flex container so the leading presence dot aligns with the
-	   number baseline instead of the top of the digit. Reuses the
-	   `.presence-dot--online` class from the sessions-panel work
-	   so the visual signal for presence is identical across the
-	   admin surface. */
-	.ds-num.ds-num--live {
+	.ds-num--live {
 		display: inline-flex;
 		align-items: center;
 		gap: var(--space-2);
@@ -5717,7 +5737,7 @@
 		background: var(--color-bg-muted);
 		border-radius: var(--radius-full);
 		overflow: hidden;
-		margin-bottom: var(--space-2);
+		margin-top: var(--space-1);
 	}
 
 	.ds-fill {
@@ -5733,29 +5753,47 @@
 		background: var(--color-error-text);
 	}
 
+	.ds-flag {
+		font-size: var(--text-lg);
+		font-weight: var(--weight-bold);
+		color: var(--color-text-muted);
+	}
+
+	.ds-flag--on {
+		color: var(--color-success-text);
+	}
+
+	.presence-dot {
+		display: inline-block;
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		margin-right: var(--space-1);
+		vertical-align: middle;
+		box-sizing: border-box;
+	}
+
+	.presence-dot--online {
+		background: var(--color-success-alt);
+	}
+
+	.presence-dot--idle {
+		background: transparent;
+		border: 1px solid var(--color-border);
+	}
+
 	.storage-cards {
 		display: grid;
 		grid-template-columns: 2fr 1fr;
 		gap: var(--space-3);
-		margin-bottom: var(--space-4);
 	}
 
-	/* The quota table's min-content width otherwise sets the grid
-	   column width, so the card refuses to shrink and the page scrolls
-	   sideways on a phone. */
-	.storage-cards > .card {
+	.storage-cards > .admin-card {
 		min-width: 0;
 	}
 
-	@media (width <= 48rem) {
-		.storage-cards {
-			grid-template-columns: 1fr;
-		}
-	}
-
 	.storage-cards__hint {
-		margin-top: calc(-1 * var(--space-2));
-		margin-bottom: var(--space-3);
+		margin: 0 0 var(--space-3);
 		font-size: var(--text-xs);
 	}
 
@@ -5792,74 +5830,533 @@
 		cursor: help;
 	}
 
-	.quota-table {
-		width: 100%;
-		border-collapse: collapse;
+	.quota-list {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-3);
+		margin: 0;
 	}
 
-	.quota-table th,
-	.quota-table td {
-		padding: var(--space-2) var(--space-2);
-		text-align: left;
-		vertical-align: middle;
+	.quota-list__row {
+		display: grid;
+		grid-template-columns: minmax(10rem, 1fr) 2fr;
+		align-items: center;
+		gap: var(--space-2) var(--space-4);
+	}
+
+	.quota-list__row dt {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-2);
+		font-weight: var(--weight-semibold);
+		color: var(--color-text-heading);
+	}
+
+	.quota-list__row dd {
+		margin: 0;
+		font-variant-numeric: tabular-nums;
+	}
+
+	.quota-list__count {
+		display: inline-block;
+		min-width: 1.5em;
+		text-align: right;
+		font-variant-numeric: tabular-nums;
+		color: var(--color-text-heading);
+	}
+
+	.quota-list__row .ds-bar {
+		margin-top: var(--space-2);
+	}
+
+	/* ── Storage ────────────────────────────────────────────── */
+
+	.storage-content-stats__hint {
+		margin: 0 0 var(--space-3);
 		font-size: var(--text-sm);
 	}
 
-	.quota-table th {
+	.storage-content-stats__grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+		gap: var(--space-3);
+		margin: 0;
+	}
+
+	.storage-content-stats__grid > div {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+
+	.storage-content-stats__grid dt {
+		font-size: var(--text-xs);
+		color: var(--color-text-muted);
+		text-transform: uppercase;
+		letter-spacing: var(--tracking-wide);
+	}
+
+	.storage-content-stats__grid dd {
+		margin: 0;
+		font-size: var(--text-md);
 		font-weight: var(--weight-semibold);
 		color: var(--color-text-heading);
-		white-space: nowrap;
+		font-variant-numeric: tabular-nums;
 	}
 
-	/* Prepended drive count: tabular-nums so single/double/triple digits align
-	   vertically across rows; right-aligned inside a fixed-width box so the
-	   ones-digits line up across "personal" and "shared" rows regardless of
-	   how many digits each count has. */
-	.quota-table__count {
-		display: inline-block;
-		min-width: 1.5em;
-		margin-right: 0.25em;
-		text-align: right;
-		font-variant-numeric: tabular-nums;
+	.cache-layout {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: var(--space-3);
+	}
+
+	.cache-layout__memory {
+		display: grid;
+		grid-template-rows: 1fr 1fr;
+		gap: var(--space-3);
+	}
+
+	.cache-card {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+	}
+
+	.cache-card__path {
+		display: inline-flex;
+		align-items: baseline;
+		gap: var(--space-1-5);
+		font-size: var(--text-sm);
+		color: var(--color-text-muted);
+	}
+
+	.cache-card__path-label {
+		font-weight: var(--weight-semibold);
+	}
+
+	.cache-card__path code {
+		font-family: var(--font-mono);
+		overflow-wrap: anywhere;
+	}
+
+	.cache-card__hint {
+		margin: 0;
+		font-size: var(--text-sm);
+		color: var(--color-text-muted);
+	}
+
+	.cache-card__header {
+		display: flex;
+		align-items: center;
+		gap: var(--space-1-5);
+		font-weight: var(--weight-semibold);
 		color: var(--color-text-heading);
 	}
 
-	.quota-table__num {
-		font-variant-numeric: tabular-nums;
-		white-space: nowrap;
-	}
-
-	.quota-table__pct {
-		color: var(--color-text-muted);
-	}
-
-	.quota-table__bar {
-		width: 40%;
-		min-width: 6rem;
-	}
-
-	.quota-table__bar .ds-bar {
-		margin-bottom: 0;
-	}
-
-	.quota-table__meta {
-		text-align: right;
-		white-space: nowrap;
-	}
-
-	.quota-table__unlimited {
-		display: inline-block;
-		padding: 2px var(--space-2);
-		border-radius: var(--radius-full);
+	.cache-card__bar {
+		margin: 0;
+		height: 8px;
 		background: var(--color-bg-muted);
+	}
+
+	.cache-card__bar :global(.storage-fill) {
+		background: var(--color-success-text);
+	}
+
+	.cache-card__info {
+		font-size: var(--text-sm);
 		color: var(--color-text-muted);
+	}
+
+	.cache-card__info--disabled {
+		font-style: italic;
+	}
+
+	.cache-card__info--warn {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-1-5);
+		color: var(--color-warning-text);
+		font-weight: var(--weight-semibold);
+	}
+
+	.cache-card--warn {
+		box-shadow: inset 0 0 0 1px var(--color-warning-border);
+	}
+
+	.cache-card--warn .cache-card__hint {
+		color: var(--color-warning-text);
+	}
+
+	.entries-list {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-3);
+	}
+
+	.entry-card {
+		padding: var(--space-3);
+		background: var(--color-bg-subtle);
+		border-radius: var(--radius-md);
+	}
+
+	.entry-card--active {
+		box-shadow: inset 0 0 0 1px var(--color-accent);
+	}
+
+	.entry-card__header {
+		display: flex;
+		justify-content: space-between;
+		align-items: flex-start;
+		gap: var(--space-3);
+		flex-wrap: wrap;
+		margin-bottom: var(--space-3);
+	}
+
+	.entry-card__title {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		flex-wrap: wrap;
+	}
+
+	.entry-card__name {
+		font-size: var(--text-base);
+		font-weight: var(--weight-semibold);
+	}
+
+	.entry-card__actions {
+		display: flex;
+		gap: var(--space-2);
+		flex-wrap: wrap;
+		align-items: center;
+		justify-content: flex-end;
+	}
+
+	.entry-card__action-btn {
+		min-width: 10rem;
+		justify-content: center;
+	}
+
+	.entry-card__action-btn--placeholder {
+		visibility: hidden;
+		pointer-events: none;
+	}
+
+	.entry-card__grid {
+		display: grid;
+		grid-template-columns: max-content 1fr;
+		gap: var(--space-1) var(--space-3);
+		margin: 0;
+		font-size: var(--text-sm);
+	}
+
+	.entry-card__grid dt {
+		color: var(--color-text-muted);
+	}
+
+	.entry-card__grid dd {
+		margin: 0;
+	}
+
+	.entry-card__mono {
+		font-family: var(--font-mono);
 		font-size: var(--text-xs);
+		word-break: break-all;
+	}
+
+	.entry-card__test-result {
+		margin-top: var(--space-3);
+		padding-top: var(--space-2);
+		border-top: 1px solid var(--color-border);
+	}
+
+	.entry-card__pairs {
+		margin-top: var(--space-3);
+		padding-top: var(--space-2);
+		border-top: 1px solid var(--color-border);
+	}
+
+	.entry-card__pairs-title {
+		font-size: var(--text-xs);
+		font-weight: var(--weight-semibold);
+		text-transform: uppercase;
+		letter-spacing: var(--tracking-wide);
+		color: var(--color-text-muted);
+		margin: 0 0 var(--space-2);
+	}
+
+	.entry-card__pair-chain {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-1);
+	}
+
+	.entry-card__pair {
+		display: grid;
+		grid-template-columns: 3rem 6.5rem 1fr auto;
+		align-items: center;
+		gap: var(--space-2);
+		font-size: var(--text-sm);
+	}
+
+	.entry-card__pair-idx {
+		color: var(--color-text-muted);
+		font-variant-numeric: tabular-nums;
+	}
+
+	.entry-card__pair-fp {
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		color: var(--color-text-muted);
+		word-break: keep-all;
+	}
+
+	.entry-card__pair--head .entry-card__pair-cipher,
+	.entry-card__pair--head .entry-card__pair-fp {
+		color: var(--color-text);
+		font-weight: var(--weight-semibold);
+	}
+
+	.entry-card__pair-head-badge {
+		font-size: var(--text-xs);
+		padding: 0 var(--space-1);
+		background: var(--color-bg-surface);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm);
+		color: var(--color-accent-text);
+	}
+
+	.entry-card__pairs-help {
+		margin: var(--space-2) 0 0;
+	}
+
+	.storage-write-lock__banner {
+		margin: 0 0 var(--space-2);
+		padding: var(--space-2) var(--space-3);
+		border-radius: var(--radius-md);
+		background: var(--color-warning-bg);
+		color: var(--color-warning-text);
+		border-left: 3px solid var(--color-warning-border);
+	}
+
+	.storage-write-lock__hint,
+	.storage-write-lock__meta {
+		margin: 0 0 var(--space-3);
+	}
+
+	.storage-write-lock__form {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: end;
+		gap: var(--space-3);
+	}
+
+	.storage-write-lock__label {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-1);
+		flex: 1 1 20rem;
+		font-size: var(--text-sm);
+		color: var(--color-text-secondary);
+	}
+
+	.storage-write-lock__actions {
+		margin-top: var(--space-2);
+	}
+
+	.storage-legacy-warning {
+		margin-top: var(--space-3);
+	}
+
+	/* ── Ops banners ────────────────────────────────────────── */
+
+	.ops-banner-editor__empty {
+		margin: 0 0 var(--space-3);
+	}
+
+	.ops-banner-editor__list {
+		list-style: none;
+		margin: 0 0 var(--space-4);
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+	}
+
+	.ops-banner-editor__row {
+		background: var(--color-bg-subtle);
+		border-radius: var(--radius-md);
+		padding: var(--space-2) var(--space-3);
+	}
+
+	.ops-banner-editor__row-head {
+		display: flex;
+		align-items: center;
+		gap: var(--space-3);
+		flex-wrap: wrap;
+		margin-bottom: var(--space-2);
+	}
+
+	.ops-banner-editor__severity {
+		font-size: var(--text-xs);
+		text-transform: uppercase;
+		letter-spacing: var(--tracking-wide);
+		padding: 0 var(--space-2);
+		border-radius: var(--radius-full);
+		font-weight: var(--weight-semibold);
+	}
+
+	.ops-banner-editor__severity--warning {
+		background: var(--color-warning-bg);
+		color: var(--color-warning-text);
+	}
+
+	.ops-banner-editor__severity--notification {
+		background: var(--color-info-bg);
+		color: var(--color-info-text);
+	}
+
+	.ops-banner-editor__scheduled {
+		font-size: var(--text-xs);
+	}
+
+	.ops-banner-editor__delete {
+		margin-left: auto;
+	}
+
+	.ops-banner-editor__body {
+		display: flex;
+		gap: var(--space-2);
+		align-items: flex-start;
+		font-size: var(--text-sm);
+	}
+
+	.ops-banner-editor__locale {
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		min-width: 2.5rem;
+	}
+
+	.ops-banner-editor__source {
+		margin: 0;
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+	}
+
+	.ops-banner-editor__form {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-3);
+		border-top: 1px solid var(--color-border);
+		padding-top: var(--space-3);
+		max-width: 48rem;
+	}
+
+	.ops-banner-editor__form h3 {
+		margin: 0;
+		font-size: var(--text-base);
+		font-weight: var(--weight-semibold);
+		color: var(--color-text-heading);
+	}
+
+	.ops-banner-editor__row-controls {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-3);
+	}
+
+	.ops-banner-editor__field {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-1);
+		min-width: 10rem;
+		font-size: var(--text-sm);
+		color: var(--color-text-secondary);
+	}
+
+	.ops-banner-editor__field--wide {
+		width: 100%;
+	}
+
+	.ops-banner-editor__field textarea {
+		font-family: var(--font-mono);
+		font-size: var(--text-sm);
+	}
+
+	.ops-banner-editor__actions {
+		margin-top: var(--space-2);
+	}
+
+	.ops-banner-editor__locale-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--space-2);
+	}
+
+	.ops-banner-editor__locale-label {
+		display: inline-flex;
+		gap: var(--space-1);
+		align-items: baseline;
+		font-size: var(--text-sm);
+	}
+
+	.ops-banner-editor__add-language {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+	}
+
+	.ops-banner-editor__add-language-actions {
+		display: flex;
+		gap: var(--space-2);
+	}
+
+	/* ── Notifications ──────────────────────────────────────── */
+
+	.section-hint {
+		margin: 0;
+		color: var(--color-text-muted);
+		font-size: var(--text-sm);
+	}
+
+	.admin-section-title + .section-hint {
+		margin-top: calc(-1 * var(--space-3));
+	}
+
+	.transport-test {
+		display: flex;
+		gap: var(--space-2);
+		max-width: 40rem;
+	}
+
+	.transport-test--webhook {
+		align-items: center;
+		justify-content: space-between;
+		max-width: none;
+	}
+
+	.transport-test--webhook p {
+		flex: 1;
+		min-width: 0;
+		margin: 0;
+	}
+
+	.transport-test input {
+		flex: 1;
+		min-width: 0;
 	}
 
 	.kv {
 		display: grid;
-		grid-template-columns: auto 1fr;
-		gap: var(--space-1) var(--space-4);
+		grid-template-columns: minmax(8rem, auto) 1fr;
+		gap: var(--space-2) var(--space-4);
 		margin: 0;
 	}
 
@@ -5869,380 +6366,24 @@
 
 	.kv dd {
 		margin: 0;
+		overflow-wrap: anywhere;
 	}
 
-	.badge {
-		display: inline-block;
-		padding: 0.05rem 0.4rem;
-		border-radius: var(--radius-sm);
-		font-size: var(--text-xs, 0.7rem);
-		font-weight: var(--weight-semibold, 600);
-		line-height: 1.4;
-		vertical-align: middle;
-	}
+	/* ── Forms and inline rows ──────────────────────────────── */
 
-	.badge--env {
-		margin-left: var(--space-2);
-		background: var(--color-warning-bg);
-		color: var(--color-warning-text);
-	}
-
-	.badge--oidc {
-		background: var(--color-info-bg);
-		color: var(--color-info-text);
-		text-transform: uppercase;
-		display: inline-flex;
-		align-items: center;
-		gap: 0.25rem;
-	}
-
-	.badge--local {
-		background: var(--color-bg-muted);
-		color: var(--color-text-muted);
-		text-transform: uppercase;
-	}
-
-	/*
-	 * OPAQUE adoption chips — sit next to the auth-provider badge in
-	 * the admin user table. Green = user has actually logged in via
-	 * OPAQUE at least once (`opaque_migrated`); softer info shade =
-	 * envelope on file but the OPAQUE handshake hasn't landed yet
-	 * (`opaque_registered && !opaque_migrated`). The two-shade pattern
-	 * matches the way `.badge--active` vs `.badge--inactive` split
-	 * "success" from "neutral".
-	 */
-	/*
-	 * `password` chip — neutral tone since the presence of a password
-	 * is neither notably positive nor risky on its own; the OPAQUE
-	 * chip next to it (if present) carries the "hardened" signal.
-	 */
-	.badge--password {
-		background: var(--color-bg-muted);
-		color: var(--color-text-muted);
-		text-transform: uppercase;
-		display: inline-flex;
-		align-items: center;
-		gap: 0.25rem;
-	}
-
-	/*
-	 * `mail` chip — user has no password / no OPAQUE / no SSO, so
-	 * their only login path is a magic-link to their mailbox.
-	 * Warning tone because for an internal account it's usually an
-	 * in-flight-invitation state the operator wants to notice; for
-	 * externals (grant-only) it's the by-design default. Named
-	 * `mail` (not `passwordless`) so the label describes the actual
-	 * channel the operator has to care about.
-	 */
-	.badge--mail {
-		background: var(--color-warning-bg, var(--color-bg-muted));
-		color: var(--color-warning-text, var(--color-text-muted));
-		text-transform: uppercase;
-		display: inline-flex;
-		align-items: center;
-		gap: 0.25rem;
-	}
-
-	.badge--opaque {
-		background: var(--color-success-bg);
-		color: var(--color-success-text);
-		text-transform: uppercase;
-		display: inline-flex;
-		align-items: center;
-		gap: 0.25rem;
-	}
-
-	.badge--opaque-registered {
-		background: var(--color-info-bg);
-		color: var(--color-info-text);
-		text-transform: uppercase;
-		display: inline-flex;
-		align-items: center;
-		gap: 0.25rem;
-	}
-
-	.badge--active {
-		background: var(--color-success-bg);
-		color: var(--color-success-text);
-	}
-
-	.badge--inactive {
-		background: var(--color-bg-muted);
-		color: var(--color-text-muted);
-	}
-
-	.badge--admin {
-		background: var(--color-info-bg);
-		color: var(--color-info-text);
-		text-transform: uppercase;
-		display: inline-flex;
-		align-items: center;
-		gap: 0.25rem;
-	}
-
-	/* The server owner. Warmer than `--admin` so the one account that
-	   cannot be acted on reads as distinct at a glance, rather than as
-	   "admin with a different icon". */
-	.badge--owner {
-		background: var(--color-warning-bg);
-		color: var(--color-warning-text);
-		text-transform: uppercase;
-		display: inline-flex;
-		align-items: center;
-		gap: 0.25rem;
-	}
-
-	.badge--user {
-		background: var(--color-bg-muted);
-		color: var(--color-text-muted);
-		text-transform: uppercase;
-	}
-
-	.badge--self {
-		margin-left: var(--space-1);
-		background: var(--color-warning-bg);
-		color: var(--color-warning-text);
-		text-transform: uppercase;
-	}
-
-	/* Presence dot in the sessions-table Status column — filled green
-	   when the row is `is_online` (a request landed in the last 5 min),
-	   outlined grey when the row is active-but-idle. Only rendered on
-	   active rows: a revoked-but-recently-seen row must never flash
-	   green post-revocation (see the markup guard `{#if s.is_active}`).
-	   The dot sits BEFORE the `active` badge with a small gap, so the
-	   Status cell reads left-to-right as `● active` when online and
-	   `○ active` when idle.
-
-	   Tokens: `--color-success-alt` / `--color-success-border` for the
-	   filled fill is the same green used by `.badge--active`, keeping
-	   the presence signal visually consistent with the lifecycle one
-	   without stealing the badge's own colour treatment. Grey border
-	   for the idle state uses the neutral `--color-border` token so
-	   both themes (light + dark, driven by `light-dark(...)`) get a
-	   readable contrast. Fixed 8px / 8px sizing — the dot is a signal,
-	   not a click target, so relative units would over-scale on
-	   larger UI densities. */
-	.presence-dot {
-		display: inline-block;
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
-		margin-right: var(--space-1);
-		vertical-align: middle;
-		/* No border on the filled state, so both variants render at
-		   the same 8×8 footprint (the outlined variant's 1px border
-		   is inset via box-sizing: border-box below). */
-		box-sizing: border-box;
-	}
-
-	.presence-dot--online {
-		background: var(--color-success-alt);
-	}
-
-	.presence-dot--idle {
-		background: transparent;
-		border: 1px solid var(--color-border);
-	}
-
-	/* External / grant-only account marker. Sibling of `.badge--user`
-	   in the same cell so the two stack horizontally; the accent
-	   colour reuses `--color-warning-*` because "external" is the
-	   same "attention needed" family as "you". */
-	.badge--external {
-		background: var(--color-warning-bg);
-		color: var(--color-warning-text);
-		text-transform: uppercase;
-	}
-
-	/* Wrapper for the (role + optional external) badge pair in the
-	   users table. Row-flex + nowrap keeps the two on a single line
-	   when the column narrows; the sibling badges themselves also
-	   set `white-space: nowrap` so the ".EXTERNAL" label never
-	   splits mid-word either. */
-	.role-badges {
+	.mount-form {
 		display: flex;
-		/* Stack role above the (rare) external tag so the two signals
-		 * are unambiguous — one reads "admin\nexternal" instead of a
-		 * horizontal row that could be misread as "admin external"
-		 * (as-if externals-can-be-admin, which they can't). Narrow
-		 * items align left so the badges keep a consistent left edge
-		 * with the surrounding text. */
-		flex-flow: column nowrap;
-		align-items: flex-start;
-		gap: var(--space-1, 0.25rem);
-	}
-
-	.role-badges .badge {
-		white-space: nowrap;
-	}
-
-	/* Authentication column. The OIDC provider label is free-form
-	   and can widen the column arbitrarily on hosts that use long
-	   identifiers ("google-workspace-prod"). Cap the column width
-	   and ellipsis the label so the row layout stays balanced; the
-	   full provider is still reachable via the badge tooltip. */
-	.auth-cell {
-		max-width: 12ch;
-	}
-
-	.auth-cell .badge__label {
-		display: inline-block;
-		max-width: 8ch;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		vertical-align: bottom;
-	}
-
-	/* Enabled/disabled feature flag indicator on the dashboard cards. */
-	.ds-flag {
-		font-size: 1.125rem;
-		font-weight: var(--weight-bold);
-		color: var(--color-text-muted);
-	}
-
-	.ds-flag--on {
-		color: var(--color-success-text);
-	}
-
-	.warn-card {
-		display: flex;
-		align-items: center;
-		gap: var(--space-3);
-	}
-
-	.warn-card--warn {
-		border-color: var(--color-warning-text);
-		color: var(--color-warning-text);
-	}
-
-	.warn-card--danger {
-		border-color: var(--color-error-text);
-		color: var(--color-error-text);
-	}
-
-	/* Per-user storage-usage progress bar in the users table. */
-	.quota-cell {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-1);
-		min-width: 9rem;
-	}
-
-	.quota-bar {
-		height: 6px;
-		background: var(--color-bg-muted);
-		border-radius: var(--radius-full);
-		overflow: hidden;
-	}
-
-	.quota-fill {
-		height: 100%;
-		background: var(--color-success-text);
-	}
-
-	.quota-fill--warn {
-		background: var(--color-warning-text);
-	}
-
-	.quota-fill--danger {
-		background: var(--color-error-text);
-	}
-
-	.quota-input {
-		display: flex;
-		gap: var(--space-2);
-	}
-
-	.quota-input input {
-		flex: 1;
-	}
-
-	/* Icon-only row actions with hover tooltips (title attr). */
-	.icon-btn {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		width: 2rem;
-		height: 2rem;
-		/* Flex rows (key / callback URL) shrink children to fit; without
-		   this the icon button collapses into a tall rectangle. */
-		flex-shrink: 0;
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
-		background: var(--color-bg-surface);
-		color: var(--color-text);
-		cursor: pointer;
-	}
-
-	.icon-btn:disabled {
-		opacity: 0.45;
-		cursor: not-allowed;
-	}
-
-	.icon-btn--danger {
-		color: var(--color-danger-alt);
-	}
-
-	.icon-btn--success {
-		color: var(--color-success-text);
-	}
-
-	.secret-hint {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.25rem;
-		margin-top: var(--space-1);
-		font-size: var(--text-sm);
-		color: var(--color-success-text);
-	}
-
-	.registration-warning {
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
-		margin-top: var(--space-3);
-	}
-
-	.alert--warn {
-		padding: var(--space-2) var(--space-3);
-		border-radius: var(--radius-md);
-		background: var(--color-warning-bg);
-		color: var(--color-warning-text);
-	}
-
-	.storage-legacy-warning {
-		margin-top: var(--space-3);
-	}
-
-	/* Discovery / verify result panels. */
-	.discovery-result {
-		margin-top: var(--space-2);
-		padding: var(--space-3);
-		border-radius: var(--radius-md);
-		border: 1px solid var(--color-border);
-	}
-
-	.discovery-result strong {
-		display: inline-flex;
+		flex-wrap: wrap;
 		align-items: center;
 		gap: var(--space-2);
 	}
 
-	.discovery-result--ok {
-		border-color: var(--color-success-text);
-		color: var(--color-success-text);
+	.mount-form input[type='text'] {
+		flex: 1 1 14rem;
 	}
 
-	.discovery-result--fail {
-		border-color: var(--color-error-text);
-		color: var(--color-error-text);
-	}
-
-	.discovery-result .kv {
-		margin-top: var(--space-2);
-		color: var(--color-text);
+	.mount-form select {
+		flex: 0 1 14rem;
 	}
 
 	.callback-row {
@@ -6250,6 +6391,7 @@
 		align-items: center;
 		gap: var(--space-2);
 		flex-wrap: nowrap;
+		max-width: 40rem;
 	}
 
 	.callback-row span {
@@ -6264,8 +6406,6 @@
 		text-overflow: ellipsis;
 	}
 
-	/* Generated key: one line, ellipsised, with the copy control beside it.
-	   The full value stays in the title attribute. */
 	.gen-key-row {
 		display: flex;
 		align-items: center;
@@ -6294,12 +6434,44 @@
 		color: var(--color-text-heading);
 	}
 
-	@media (width <= 48rem) {
-		.gen-key-btn {
-			width: 100%;
-			margin-top: var(--space-3);
-		}
+	.discovery-result {
+		margin-top: var(--space-2);
+		padding: var(--space-3);
+		border-radius: var(--radius-md);
+		border: 1px solid var(--color-border);
 	}
+
+	.discovery-result strong {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-2);
+	}
+
+	.discovery-result--ok {
+		border-color: var(--color-success-text);
+		color: var(--color-success-text);
+	}
+
+	.discovery-result--fail {
+		border-color: var(--color-error-text);
+		color: var(--color-error-text);
+	}
+
+	.discovery-result .kv {
+		margin-top: var(--space-2);
+		color: var(--color-text);
+	}
+
+	.secret-hint {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-1);
+		margin-top: var(--space-1);
+		font-size: var(--text-sm);
+		color: var(--color-success-text);
+	}
+
+	/* ── Maintenance / migration ────────────────────────────── */
 
 	.maint-row {
 		display: flex;
@@ -6313,58 +6485,12 @@
 		font-variant-numeric: tabular-nums;
 	}
 
-	.install-bar {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--space-3);
-		padding: var(--space-3);
-		border: 1px dashed var(--color-border);
-		border-radius: var(--radius-md);
-		margin-bottom: var(--space-3);
+	.mig-status {
+		margin: var(--space-3) 0;
 	}
 
-	.install-bar .muted {
-		display: block;
-		font-size: var(--text-sm);
-	}
-
-	.install-bar .btn.disabled {
-		opacity: 0.6;
-		pointer-events: none;
-	}
-
-	.events {
-		display: inline-block;
-		min-width: 1.4rem;
-		text-align: center;
-		padding: 0 0.35rem;
-		border-radius: var(--radius-pill, 999px);
-		background: var(--color-bg-muted);
-		color: var(--color-text-muted);
-	}
-
-	.plugin-meta {
-		margin-bottom: var(--space-4);
-	}
-
-	.event-tag {
-		display: inline-block;
-		margin: 0 0.15rem 0.15rem 0;
-		padding: 0.05rem 0.35rem;
-		border-radius: var(--radius-sm);
-		background: var(--color-bg-muted);
-	}
-
-	.retention-form {
-		border-top: 1px solid var(--color-border);
-		padding-top: var(--space-3);
-		margin-bottom: var(--space-3);
-	}
-
-	.retention-form h3 {
-		margin: 0 0 var(--space-2);
-		font-size: 1rem;
+	.mig-status button {
+		margin-left: var(--space-2);
 	}
 
 	.mig-failed {
@@ -6377,7 +6503,7 @@
 		padding: var(--space-2);
 		background: var(--color-bg-muted);
 		border-radius: var(--radius-sm);
-		font-size: var(--text-xs, 0.75rem);
+		font-size: var(--text-xs);
 		white-space: pre-wrap;
 		word-break: break-all;
 	}
@@ -6385,1079 +6511,109 @@
 	.cutover-hint {
 		margin-top: var(--space-3);
 		padding: var(--space-3);
-		border: 1px solid var(--color-warning-border, var(--color-border));
+		border: 1px solid var(--color-warning-border);
 		border-radius: var(--radius-md);
-		background: var(--color-warning-bg, var(--color-bg-muted));
+		background: var(--color-warning-bg);
 	}
 
 	.cutover-hint h3 {
-		margin: 0 0 var(--space-2) 0;
-		font-size: var(--text-base, 1rem);
-	}
-
-	.cutover-hint--readonly {
-		border-color: var(--color-danger-border, var(--color-border));
-		background: var(--color-danger-bg, var(--color-bg-muted));
-	}
-
-	/* On the readonly banner the danger-tinted background swallows
-	   `.muted` (which is a light grey). Use the strong text color
-	   instead so the body message stays legible in both themes.
-	   `color-danger-text` if the design system publishes one, else
-	   fall back to the regular text color which still meets WCAG
-	   contrast against the muted-red/pink bg tokens. */
-	.cutover-hint__readonly-body {
-		margin: 0;
-		color: var(--color-danger-text, var(--color-text));
-	}
-
-	.ops-banner-editor {
-		margin-bottom: var(--space-4);
-	}
-
-	.ops-banner-editor h2 {
 		margin: 0 0 var(--space-2);
-	}
-
-	.ops-banner-editor__hint,
-	.ops-banner-editor__empty {
-		margin: 0 0 var(--space-3);
-		font-size: var(--text-sm);
-	}
-
-	.ops-banner-editor__error {
-		margin: 0 0 var(--space-3);
-	}
-
-	.ops-banner-editor__list {
-		list-style: none;
-		margin: 0 0 var(--space-4);
-		padding: 0;
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-2);
-	}
-
-	.ops-banner-editor__row {
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
-		padding: var(--space-2) var(--space-3);
-		background: var(--color-surface);
-	}
-
-	.ops-banner-editor__row-head {
-		display: flex;
-		align-items: center;
-		gap: var(--space-3);
-		margin-bottom: var(--space-2);
-	}
-
-	.ops-banner-editor__severity {
-		font-size: var(--text-xs);
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-		padding: 0 var(--space-2);
-		border-radius: var(--radius-sm);
-		font-weight: 600;
-	}
-
-	.ops-banner-editor__severity--warning {
-		background: var(--color-warning-surface, var(--color-surface-subtle));
-		color: var(--color-warning-text, var(--color-text));
-	}
-
-	.ops-banner-editor__severity--notification {
-		background: var(--color-info-surface, var(--color-surface-subtle));
-		color: var(--color-info-text, var(--color-text));
-	}
-
-	.ops-banner-editor__scheduled {
-		font-size: var(--text-xs);
-	}
-
-	.ops-banner-editor__delete {
-		margin-left: auto;
-	}
-
-	.ops-banner-editor__body {
-		display: flex;
-		gap: var(--space-2);
-		align-items: flex-start;
-		font-size: var(--text-sm);
-	}
-
-	.ops-banner-editor__locale {
-		font-family: var(--font-mono, monospace);
-		font-size: var(--text-xs);
-		min-width: 2.5rem;
-	}
-
-	.ops-banner-editor__source {
-		margin: 0;
-		font-family: var(--font-mono, monospace);
-		font-size: var(--text-xs);
-		white-space: pre-wrap;
-		overflow-wrap: anywhere;
-	}
-
-	.ops-banner-editor__form {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-3);
-		border-top: 1px solid var(--color-border);
-		padding-top: var(--space-3);
-	}
-
-	.ops-banner-editor__form h3 {
-		margin: 0;
 		font-size: var(--text-base);
 	}
 
-	.ops-banner-editor__row-controls {
-		display: flex;
-		flex-wrap: wrap;
-		gap: var(--space-3);
+	.cutover-hint--readonly {
+		border-color: var(--color-danger-bg);
+		background: var(--color-danger-light-bg);
 	}
 
-	.ops-banner-editor__field {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-1);
-		min-width: 10rem;
-	}
-
-	.ops-banner-editor__field--wide {
-		width: 100%;
-	}
-
-	.ops-banner-editor__field select,
-	.ops-banner-editor__field input,
-	.ops-banner-editor__field textarea {
-		padding: var(--space-2);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-sm);
-		background: var(--color-surface);
-		color: var(--color-text);
-		font-family: inherit;
-	}
-
-	.ops-banner-editor__field textarea {
-		font-family: var(--font-mono, monospace);
-		font-size: var(--text-sm);
-	}
-
-	.ops-banner-editor__actions {
-		margin-top: var(--space-2);
-	}
-
-	.ops-banner-editor__locale-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--space-2);
-	}
-
-	.ops-banner-editor__locale-label {
-		display: inline-flex;
-		gap: var(--space-1);
-		align-items: baseline;
-		font-size: var(--text-sm);
-	}
-
-	.ops-banner-editor__add-language {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-2);
-	}
-
-	.ops-banner-editor__add-language > .btn {
-		align-self: flex-start;
-	}
-
-	.ops-banner-editor__add-language-actions {
-		display: flex;
-		gap: var(--space-2);
-	}
-
-	.storage-write-lock {
-		margin-bottom: var(--space-4);
-	}
-
-	.storage-write-lock h2 {
-		margin: 0 0 var(--space-2);
-	}
-
-	.storage-write-lock__banner {
-		margin: 0 0 var(--space-2);
-		padding: var(--space-2) var(--space-3);
-		border-radius: var(--radius-md);
-		background: var(--color-warning-surface, var(--color-surface-subtle));
-		color: var(--color-warning-text, var(--color-text));
-		border-left: 3px solid var(--color-warning-border, var(--color-border));
-	}
-
-	.storage-write-lock__hint,
-	.storage-write-lock__meta {
-		margin: 0 0 var(--space-3);
-		font-size: var(--text-sm);
-	}
-
-	.storage-write-lock__form {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: end;
-		gap: var(--space-3);
-	}
-
-	.storage-write-lock__label {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-1);
-		flex: 1 1 20rem;
-	}
-
-	.storage-write-lock__label input {
-		padding: var(--space-2);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-sm);
-		background: var(--color-surface);
-		color: var(--color-text);
-	}
-
-	.storage-write-lock__actions {
-		margin-top: var(--space-2);
-	}
-
-	/* Phones: the write-lock and banner forms stack, with every control
-	   filling the card. The per-language "Remove" button is deliberately
-	   untouched — it belongs inline in the language header row. */
-	@media (width <= 48rem) {
-		.storage-write-lock__form,
-		.ops-banner-editor__row-controls {
-			flex-direction: column;
-			align-items: stretch;
-		}
-
-		.storage-write-lock__label,
-		.ops-banner-editor__field {
-			flex: 1 1 auto;
-			min-width: 0;
-			width: 100%;
-		}
-
-		.storage-write-lock__label input,
-		.ops-banner-editor__field select,
-		.ops-banner-editor__field input,
-		.ops-banner-editor__field textarea {
-			width: 100%;
-			box-sizing: border-box;
-		}
-
-		.storage-write-lock__form .btn,
-		.storage-write-lock__actions .btn,
-		.ops-banner-editor__actions .btn,
-		.maint-row .btn {
-			width: 100%;
-		}
-
-		/* Add + Cancel stay on one row, splitting the available width. */
-		.ops-banner-editor__add-language-actions .btn {
-			flex: 1 1 0;
-			width: auto;
-			min-width: 0;
-		}
-	}
-
-	.storage-content-stats {
-		margin-bottom: var(--space-4);
-	}
-
-	.storage-content-stats h2 {
-		margin: 0 0 var(--space-1);
-	}
-
-	.storage-content-stats__hint {
-		margin: 0 0 var(--space-3);
-		font-size: var(--text-sm);
-	}
-
-	.storage-content-stats__grid {
-		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
-		gap: var(--space-3);
+	.cutover-hint__readonly-body {
 		margin: 0;
+		color: var(--color-error-text);
 	}
 
-	.storage-content-stats__grid > div {
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
-	}
-
-	.storage-content-stats__grid dt {
-		font-size: var(--text-xs);
-		color: var(--color-text-muted);
-		text-transform: uppercase;
-		letter-spacing: 0.03em;
-	}
-
-	.storage-content-stats__grid dd {
-		margin: 0;
-		font-size: var(--text-md);
-		font-weight: var(--weight-semibold);
-		color: var(--color-text-heading);
-		font-variant-numeric: tabular-nums;
-	}
-
-	.entries-list {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-3);
-		margin-bottom: var(--space-3);
-	}
-
-	.entry-card {
-		padding: var(--space-3);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
-		background: var(--color-bg);
-	}
-
-	.entry-card--active {
-		border-color: var(--color-accent, var(--color-border));
-		box-shadow: 0 0 0 1px var(--color-accent, transparent) inset;
-	}
-
-	.entry-card__header {
-		display: flex;
-		justify-content: space-between;
-		align-items: flex-start;
-		gap: var(--space-3);
-		flex-wrap: wrap;
-		margin-bottom: var(--space-3);
-	}
-
-	.entry-card__title {
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
-		flex-wrap: wrap;
-	}
-
-	.entry-card__name {
-		font-size: var(--text-base, 1rem);
-		font-weight: 600;
-	}
-
-	.entry-card__badge {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--space-1);
-		padding: 0 var(--space-2);
-		border-radius: var(--radius-sm);
-		font-size: var(--text-xs, 0.75rem);
-		color: var(--color-text-muted);
-		background: var(--color-bg-muted);
-	}
-
-	.entry-card__badge--active {
-		color: var(--color-success-text, var(--color-text));
-		background: var(--color-success-bg, var(--color-bg-muted));
-	}
-
-	.entry-card__badge--encrypted {
-		color: var(--color-text-muted);
-	}
-
-	.entry-card__actions {
-		display: flex;
-		gap: var(--space-2);
-		flex-wrap: wrap;
-		align-items: center;
-		justify-content: flex-end;
-	}
-
-	/* Each button occupies a fixed min-width so the same slot on
-	   the next card lines up vertically. `max-content` on the label
-	   prevents the button from stretching taller than needed.
-	   Placeholders keep their layout box but the pixels are gone
-	   and the button is unclickable. */
-	.entry-card__action-btn {
-		min-width: 10rem;
-		justify-content: center;
-	}
-
-	.entry-card__action-btn--placeholder {
-		visibility: hidden;
-		pointer-events: none;
-	}
-
-	.entry-card__grid {
-		display: grid;
-		grid-template-columns: max-content 1fr;
-		gap: var(--space-1) var(--space-3);
-		margin: 0;
-		font-size: var(--text-sm, 0.875rem);
-	}
-
-	.entry-card__grid dt {
-		color: var(--color-text-muted);
-	}
-
-	.entry-card__grid dd {
-		margin: 0;
-	}
-
-	.entry-card__mono {
-		font-family: var(--font-mono, monospace);
-		font-size: var(--text-xs, 0.75rem);
-		word-break: break-all;
-	}
-
-	.entry-card__test-result {
-		margin-top: var(--space-3);
-		padding-top: var(--space-2);
-		border-top: 1px solid var(--color-border);
-	}
-
-	/* K3.7 pair-chain — one row per configured pair. Head is bolded
-	   and gets an "← head" badge so the write pair pops out. Aligns
-	   the fingerprint column so admins can eyeball-diff between
-	   entries. */
-	.entry-card__pairs {
-		margin-top: var(--space-3);
-		padding-top: var(--space-2);
-		border-top: 1px solid var(--color-border);
-	}
-
-	.entry-card__pairs-title {
-		font-size: var(--text-xs, 0.75rem);
-		font-weight: var(--weight-semibold, 600);
-		text-transform: uppercase;
-		letter-spacing: 0.5px;
-		color: var(--color-text-muted);
-		margin: 0 0 var(--space-2);
-	}
-
-	.entry-card__pair-chain {
-		list-style: none;
-		margin: 0;
-		padding: 0;
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-1);
-	}
-
-	.entry-card__pair {
-		display: grid;
-		grid-template-columns: 3rem 6.5rem 1fr auto;
-		align-items: center;
-		gap: var(--space-2);
-		font-size: var(--text-sm);
-	}
-
-	.entry-card__pair-idx {
-		color: var(--color-text-muted);
-		font-variant-numeric: tabular-nums;
-	}
-
-	.entry-card__pair-cipher {
-		color: var(--color-text);
-	}
-
-	.entry-card__pair-fp {
-		font-family: var(--font-mono, monospace);
-		font-size: var(--text-xs);
-		color: var(--color-text-muted);
-		word-break: keep-all;
-	}
-
-	.entry-card__pair--head .entry-card__pair-cipher,
-	.entry-card__pair--head .entry-card__pair-fp {
-		color: var(--color-text);
-		font-weight: var(--weight-semibold, 600);
-	}
-
-	.entry-card__pair-head-badge {
-		font-size: var(--text-xs);
-		padding: 0 var(--space-1);
-		background: var(--color-surface);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-sm);
-		color: var(--color-accent);
-	}
-
-	.entry-card__pairs-help {
-		margin: var(--space-2) 0 0;
-		font-size: var(--text-xs);
-	}
-
-	.mig-status {
-		margin: var(--space-3) 0;
-	}
-
-	.mig-status button {
-		margin-left: var(--space-2);
-	}
-
-	/* Groups the cards of one transport on the Notifications tab. Sits
-	   outside the cards so SMTP and Webhook read as two sections rather
-	   than four unrelated panels. */
-	/* Spacing only — no `font-size`. These sit outside `.card`, so they do
-	   not pick up `.card h2`'s 1.125rem and keep the page's own heading
-	   size; overriding it changed how the titles read. */
-	.section-heading {
-		margin: var(--space-4) 0 var(--space-2);
-	}
-
-	.section-heading:first-child {
-		margin-top: 0;
-	}
-
-	.section-hint {
-		margin: 0 0 var(--space-3);
-		color: var(--color-text-muted);
-		font-size: var(--font-size-sm);
-	}
-
-	/* Shared by both transport cards on the Notifications tab, so the SMTP
-	   and webhook test buttons sit in the same place. Was `.smtp-test`. */
-	.transport-test {
-		display: flex;
-		gap: var(--space-2);
-	}
-
-	/* No input to push the button right, so do it explicitly. */
-	.transport-test--actions-only {
-		justify-content: flex-end;
-	}
-
-	.transport-test input {
-		flex: 1;
-		padding: var(--space-2) var(--space-3);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
-		background: var(--color-bg-input);
-		color: var(--color-text);
-	}
-
-	/* Mount-tab inline creation form — same input treatment as
-	   `.smtp-test input` above so the two admin inline-creation
-	   surfaces render with identical field chrome (border, radius,
-	   padding, background, color). `flex: 1` lets the three text
-	   fields share whatever horizontal room the toolbar has after
-	   the checkbox + submit button have laid out. */
-	.mount-form input[type='text'],
-	.mount-form select {
-		flex: 1;
-		padding: var(--space-2) var(--space-3);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
-		background: var(--color-bg-input);
-		color: var(--color-text);
-	}
-
-	.status--ok {
-		color: var(--color-success-text);
-	}
-
-	.admin {
-		/* Raised from 64rem to 80rem so the data-dense tables (sessions
-		   row with 9+ cells, users table with vignette + role + auth
-		   chips + quota bar) have more horizontal room. At viewports
-		   above 80rem `margin: 0 auto` still centers with the leftover
-		   whitespace — DevTools shows that whitespace as horizontal
-		   margin (not padding) and is what "content looks squeezed"
-		   really means on wide displays. Vertical rhythm and the small
-		   horizontal padding are unchanged. */
-		max-width: 80rem;
-		margin: 0 auto;
-		padding: 1.5rem var(--space-2);
-		display: flex;
-		flex-direction: column;
-		gap: 1rem;
-	}
-
-	/* Admin header row — h1 on the left, optional build-identity chip
-	   on the right (dashboard tab only). Space-between pushes them to
-	   the row edges; wrap keeps the chip below the h1 on narrow
-	   viewports instead of overlapping. */
-	.admin-header {
-		display: flex;
-		align-items: baseline;
-		justify-content: space-between;
-		gap: var(--space-3, 0.75rem);
-		flex-wrap: wrap;
-	}
-
-	.admin-header h1 {
-		margin: 0;
-	}
-
-	/* Compact, muted version chip. Mono for git-describe legibility
-	   ("0.9.2-3-g4f12bd25-dirty"), `overflow-wrap: anywhere` so a long
-	   dirty describe string wraps inside the chip on tight layouts. */
-	.admin-header__version {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--space-1-5, 0.375rem);
-		margin: 0;
-		font-size: 0.8125rem;
-		color: var(--color-text-muted);
-	}
-
-	.admin-header__version-value {
-		font-family: var(--font-mono);
-		overflow-wrap: anywhere;
-	}
-
-	/* Storage-cache layout: two columns. Left stacks the two
-	   memory moka cards (File cache, Thumbnail cache); right is a
-	   single tall card for the unified on-disk tier that serves
-	   both source-file chunks AND satellite derived blobs. The
-	   right card spans the full height of the left column via
-	   grid-template-rows: 1fr so the three cards stay visually
-	   balanced regardless of individual content height. Collapses
-	   to a single column below the ds-grid breakpoint. */
-	.cache-layout {
-		display: grid;
-		grid-template-columns: 1fr 1fr;
-		gap: var(--space-3, 0.75rem);
-	}
-
-	.cache-layout__memory {
-		display: grid;
-		grid-template-rows: 1fr 1fr;
-		gap: var(--space-3, 0.75rem);
-	}
-
-	@media (width <= 48rem) {
-		.cache-layout {
-			grid-template-columns: 1fr;
-		}
-	}
-
-	/* Storage-cache card — one per tier (memory, disk). Reuses the
-	   .storage-bar / .storage-fill tokens from the sidebar storage
-	   widget so the bar visuals are uniform across the admin page
-	   and sidebar footer. */
-	.cache-card {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-2, 0.5rem);
-	}
-
-	/* Disk card is tall (spans both memory rows); let its content
-	   breathe with slightly more vertical spacing + show the on-disk
-	   path in a mono chip the operator can copy out. */
-	.cache-card--disk {
-		justify-content: flex-start;
-	}
-
-	.cache-card__path {
-		display: inline-flex;
-		align-items: baseline;
-		gap: var(--space-1-5, 0.375rem);
-		font-size: 0.8125rem;
-		color: var(--color-text-muted);
-	}
-
-	.cache-card__path-label {
-		font-weight: var(--weight-semibold);
-	}
-
-	.cache-card__path code {
-		font-family: var(--font-mono);
-		overflow-wrap: anywhere;
-	}
-
-	.cache-card__hint {
-		margin: var(--space-1, 0.25rem) 0 0;
-		font-size: 0.8125rem;
-		color: var(--color-text-muted);
-	}
-
-	.cache-card__header {
-		display: flex;
-		align-items: center;
-		gap: var(--space-1-5, 0.375rem);
-		font-weight: var(--weight-semibold);
-	}
-
-	.cache-card__bar {
-		margin: 0;
-	}
-
-	.cache-card__info {
-		font-size: 0.8125rem;
-		color: var(--color-text-muted);
-	}
-
-	.cache-card__info--disabled {
-		font-style: italic;
-	}
-
-	/* "Disabled on a remote backend" is a warning (user action
-	   recommended), as opposed to "Not applicable on a local
-	   backend" which is purely informational. Different colour
-	   signals which decision the operator needs to make. */
-	.cache-card__info--warn {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--space-1-5, 0.375rem);
-		color: var(--color-warning-text);
-		font-weight: var(--weight-semibold);
-	}
-
-	/* Whole-card warning paint for the "remote backend + cache
-	   disabled" state. Reuses the same `--color-warning-text` token
-	   the dashboard's warn-card--warn uses so the two advisories
-	   look like siblings. Border + inner hint tint; the title /
-	   icon stay their regular colour so the card doesn't scream. */
-	.cache-card--warn {
-		border-color: var(--color-warning-text);
-	}
-
-	.cache-card--warn .cache-card__hint {
-		color: var(--color-warning-text);
-	}
-
-	.bar {
-		display: flex;
-		justify-content: flex-end;
-		align-items: center;
-		gap: var(--space-3, 0.75rem);
-		flex-wrap: wrap;
-	}
-
-	/* Sessions-panel toolbar items — filter input + include-revoked
-	   checkbox pushed to the left, refresh button anchored right. */
-	.bar__filter {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--space-2, 0.5rem);
-		margin-right: auto;
-		font-size: 0.875rem;
-	}
-
-	.bar__filter input {
-		padding: 0.375rem 0.5rem;
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md, 4px);
-		background: var(--color-bg-input, var(--color-bg));
-		color: var(--color-text);
-		font-family: var(--font-mono, monospace);
-		font-size: 0.8125rem;
-		min-width: 20ch;
-	}
-
-	.bar__toggle {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--space-2, 0.5rem);
-		font-size: 0.875rem;
-		cursor: pointer;
-	}
-
-	/* Admin table user cell — UserVignette (avatar + name + email)
-	   with the "you" badge parked to its right when this row belongs
-	   to the caller. Flex + gap keeps them shoulder-to-shoulder
-	   without collapsing on narrow columns. Shared across Users +
-	   Sessions tabs; both benefit from the same avatar/name/email
-	   presentation. */
-	.user-vignette-cell {
-		display: flex;
-		align-items: center;
-		gap: var(--space-2, 0.5rem);
-		flex-wrap: wrap;
-	}
-
-	/* DPoP-bound cell: lock icon + short jkt prefix, kept tight so
-	   the column doesn't inflate on wide viewports. */
-	.bound-cell {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--space-1, 0.25rem);
-		font-size: 0.8125rem;
-	}
-
-	.table {
-		width: 100%;
-		border-collapse: collapse;
-	}
-
-	/* Phones: every admin table is 5–9 columns of prose and metadata, so it
-	   cannot reflow below ~700px. Scroll the table inside its own box rather
-	   than widening the page (which would also drag the fixed header along). */
-	@media (width <= 48rem) {
-		.table,
-		.quota-table {
-			display: block;
-			overflow-x: auto;
-			white-space: nowrap;
-		}
-	}
-
-	/* Users / Sessions / Drives opt out of that sideways scroll: their row
-	   actions sit in the last column, i.e. two to three screen widths away
-	   from the name the admin is looking at. Below the same breakpoint the
-	   header disappears and each `<tr>` becomes a bordered card laid out on
-	   a fixed grid — identity top-left, actions top-right, the rest on their
-	   own row in reading order. Cells whose value is ambiguous without its
-	   column header carry `data-label` and print it inline. */
-	@media (width <= 48rem) {
-		.table--cards {
-			display: block;
-			overflow: visible;
-			white-space: normal;
-		}
-
-		.table--cards thead {
-			display: none;
-		}
-
-		.table--cards tbody {
-			display: block;
-		}
-
-		.table--cards tbody tr {
-			display: grid;
-			align-items: center;
-			gap: var(--space-2) var(--space-3);
-			margin-bottom: var(--space-2);
-			padding: var(--space-3);
-			border: 1px solid var(--color-border);
-			border-radius: var(--radius-md);
-			background: var(--color-bg-surface);
-		}
-
-		.table--cards tbody td {
-			padding: 0;
-			border: 0;
-			text-align: left;
-		}
-
-		.table--cards tbody td[data-label]::before {
-			content: attr(data-label) ' ';
-			color: var(--color-text-muted);
-			font-size: 0.75rem;
-		}
-
-		/* 32px is a mouse target; a thumb needs more, and the card has room. */
-		.table--cards .icon-btn {
-			width: 2.5rem;
-			height: 2.5rem;
-		}
-
-		.table--cards .auth-cell {
-			max-width: none;
-		}
-
-		/* Keep the "you" badge beside the name instead of letting the
-		   vignette's `flex: 1` fling it to the card's right edge. */
-		.table--cards .user-vignette-cell {
-			width: fit-content;
-			max-width: 100%;
-		}
-
-		.table--cards tbody td:first-child {
-			grid-area: who;
-			min-width: 0;
-		}
-
-		.table--cards tbody td:last-child {
-			grid-area: actions;
-			place-self: start end;
-		}
-
-		.table--users tbody tr {
-			grid-template-columns: minmax(0, 1fr) auto;
-			grid-template-areas:
-				'who actions'
-				'role status'
-				'auth auth'
-				'quota last';
-		}
-
-		.table--users tbody td:nth-child(2) {
-			grid-area: role;
-		}
-
-		.table--users tbody td:nth-child(3) {
-			grid-area: auth;
-		}
-
-		.table--users tbody td:nth-child(4) {
-			grid-area: status;
-			justify-self: end;
-		}
-
-		.table--users tbody td:nth-child(5) {
-			grid-area: quota;
-		}
-
-		.table--users tbody td:nth-child(6) {
-			grid-area: last;
-			justify-self: end;
-		}
-
-		.table--sessions tbody tr {
-			grid-template-columns: minmax(0, 1fr) auto;
-			grid-template-areas:
-				'who actions'
-				'origin status'
-				'created created'
-				'expires expires'
-				'ip ip'
-				'bound bound'
-				'agent agent';
-		}
-
-		.table--sessions tbody td:nth-child(2) {
-			grid-area: origin;
-		}
-
-		.table--sessions tbody td:nth-child(3) {
-			grid-area: created;
-		}
-
-		.table--sessions tbody td:nth-child(4) {
-			grid-area: expires;
-		}
-
-		.table--sessions tbody td:nth-child(5) {
-			grid-area: ip;
-		}
-
-		.table--sessions tbody td:nth-child(6) {
-			grid-area: agent;
-		}
-
-		.table--sessions tbody td:nth-child(7) {
-			grid-area: bound;
-		}
-
-		.table--sessions tbody td:nth-child(8) {
-			grid-area: status;
-			justify-self: end;
-		}
-
-		.table--drives tbody tr {
-			grid-template-columns: minmax(0, 1fr) auto;
-			grid-template-areas:
-				'who actions'
-				'kind owners'
-				'usage created';
-		}
-
-		.table--drives tbody td:nth-child(2) {
-			grid-area: kind;
-		}
-
-		.table--drives tbody td:nth-child(3) {
-			grid-area: owners;
-			justify-self: end;
-		}
-
-		.table--drives tbody td:nth-child(4) {
-			grid-area: usage;
-		}
-
-		.table--drives tbody td:nth-child(5) {
-			grid-area: created;
-			justify-self: end;
-		}
-	}
-
-	.table th,
-	.table td {
-		text-align: left;
-		padding: 0.5rem 0.625rem;
-		border-bottom: 1px solid var(--color-border);
-		font-size: 0.875rem;
-	}
-
-	/* Row hover highlight — covers Users / Sessions / Drives (every
-	   admin table renders through `.table`). Header rows and empty-
-	   state rows are excluded via `tbody` scoping. `transition` keeps
-	   the tint from feeling twitchy on fast pointer movement. */
-	.table tbody tr {
-		transition: background-color 120ms ease;
-	}
-
-	.table tbody tr:hover {
-		background-color: var(--color-bg-hover);
-	}
+	/* ── Tables: user cell + row actions ────────────────────── */
 
 	.user-cell {
 		display: flex;
 		flex-direction: column;
 	}
 
-	.muted {
-		color: var(--color-text-muted);
-		font-size: 0.8125rem;
+	.user-vignette-cell {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		flex-wrap: wrap;
 	}
 
-	.admin-drives__policy-hint {
-		margin: 0 0 var(--space-3);
+	/* Auth chips used to be capped at 12ch/8ch, which ellipsised
+	   "password" to "PASSW…" in every row. The cap protected nothing —
+	   the OIDC label is the literal string "oidc" — so the cell wraps
+	   instead. */
+	.auth-cell {
+		max-width: 16rem;
 	}
 
-	/* Readable against the muted text it sits in — `--color-accent` is tuned
-	   for fills, not for small text on a page background. */
-	.admin-drives__policy-hint a {
-		color: var(--color-accent-text);
-		text-decoration: underline;
+	.auth-cell .admin-chip {
+		margin-right: var(--space-1);
+	}
+
+	/* Role + optional external flags stack so "admin external" can't be
+	   misread as a single role. */
+	.role-badges {
+		display: flex;
+		flex-flow: column nowrap;
+		align-items: flex-start;
+		gap: var(--space-1);
+	}
+
+	.role-badges .admin-chip {
+		white-space: nowrap;
+	}
+
+	.bound-cell {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-1);
+		font-size: var(--text-sm);
+	}
+
+	.drive-kind-cell {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: var(--space-1);
+	}
+
+	.drive-kind-cell__suffix {
+		font-size: var(--text-xs);
 	}
 
 	.actions {
 		display: flex;
 		flex-wrap: wrap;
-		gap: 0.5rem;
-	}
-
-	.pager {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		gap: 1rem;
-	}
-
-	.form {
-		display: flex;
-		flex-direction: column;
-		gap: 0.75rem;
-	}
-
-	.form label {
-		display: flex;
-		flex-direction: column;
-		gap: 0.25rem;
-		font-size: 0.875rem;
-	}
-
-	.form label.checkbox {
-		flex-direction: row;
-		align-items: center;
 		gap: var(--space-2);
 	}
 
-	.checkbox--center {
-		justify-content: center;
+	.actions--user {
+		display: flex;
+		justify-content: flex-end;
+		align-items: center;
 	}
 
-	.form input,
-	.form select {
-		padding: 0.5rem;
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
-		background: var(--color-bg-input);
-		color: var(--color-text);
+	.actions--drive {
+		display: grid;
+		grid-template-columns: repeat(4, auto);
+		justify-content: end;
+		align-items: center;
 	}
 
-	.btn-sm {
-		padding: var(--space-2) var(--space-4);
-		font-size: var(--text-sm);
+	.admin-drives__policy-hint {
+		margin: 0;
+	}
+
+	.admin-drives__policy-hint a {
+		color: var(--color-accent-text);
+		text-decoration: underline;
 	}
 
 	.btn-link {
@@ -7474,29 +6630,19 @@
 		text-decoration: underline;
 	}
 
-	.status {
-		color: var(--color-text-muted);
-		padding: 2rem 0;
-		text-align: center;
+	/* ── Modal helpers ──────────────────────────────────────── */
+
+	.quota-input {
+		display: flex;
+		gap: var(--space-2);
 	}
 
-	.status--error {
-		color: var(--color-error-text);
+	.quota-input input,
+	.quota-input select {
+		flex: 1 1 0;
+		min-width: 0;
 	}
 
-	.link-btn {
-		background: none;
-		border: none;
-		color: var(--color-primary);
-		cursor: pointer;
-		font-size: 0.8125rem;
-	}
-
-	.link-btn--danger {
-		color: var(--color-error-text);
-	}
-
-	/* Drive-owner autocomplete dropdown inside the create-drive modal. */
 	.drive-owner {
 		position: relative;
 	}
@@ -7540,10 +6686,10 @@
 		gap: var(--space-1);
 	}
 
-	/* Manage-owners modal — current-owners list with a remove affordance. */
 	.owners-list__title {
 		margin: var(--space-3) 0 var(--space-2);
-		font-size: 0.95rem;
+		font-size: var(--text-base);
+		font-weight: var(--weight-semibold);
 	}
 
 	.owners-list {
@@ -7570,12 +6716,9 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-		font-size: 0.8125rem;
+		font-size: var(--text-sm);
 	}
 
-	/* Inline group representation in the owners list — mirrors
-	   UserVignette's avatar+text shape so the rows line up visually
-	   even though the data sources differ. */
 	.owners-list__group {
 		display: flex;
 		flex: 1;
@@ -7603,61 +6746,148 @@
 		white-space: nowrap;
 	}
 
-	/* Policy list styles moved to `PolicyList.svelte`. The modal now
-	   embeds `<PolicyList bind:values={managePoliciesDraft} … />` and the
-	   read-only summary on `/config/drive/{uuid}` reuses the same
-	   component. */
-
-	/* Drives table action cell — same shape as `.actions` plus a fixed
-	   3-column grid so the [users] [policies] [delete] icons line up
-	   vertically across rows regardless of which actions a given drive
-	   supports. Inapplicable actions render as invisible placeholders
-	   (see `.icon-btn--placeholder`). */
-	/* Users tab actions cell — five fixed slots so icons stay column-
-	   aligned across rows even when a row skips some actions (external
-	   users skip quota-edit + reset-password; internals never get the
-	   promote button). Prevents the last icon from wrapping to a new
-	   line when a placeholder + all five buttons would together push
-	   past the cell width. */
-	/* One "⋮" trigger, so the five-column placeholder grid that used to
-	   keep icons aligned across rows is gone with the icons. */
-	.actions--user {
-		display: flex;
-		justify-content: flex-end;
-		align-items: center;
+	.retention-form {
+		border-top: 1px solid var(--color-border);
+		padding-top: var(--space-3);
+		margin-bottom: var(--space-3);
 	}
 
-	.actions--drive {
-		display: grid;
-		/* Four action slots per row: manage-owners, edit-quota, delete,
-		   policies. Fixed columns keep icons aligned across
-		   rows even when a row renders placeholders for
-		   inapplicable actions (e.g. personal drives have no
-		   owners roster). Policies sits last so the card's
-		   top-right corner is a harmless control, not the
-		   delete button. */
-		grid-template-columns: repeat(4, auto);
-		justify-content: end;
-		align-items: center;
+	.retention-form h3 {
+		margin: 0 0 var(--space-2);
+		font-size: var(--text-base);
 	}
 
-	.drive-kind-cell {
+	.plugin-meta {
+		margin-bottom: var(--space-4);
+	}
+
+	.event-tag {
+		display: inline-block;
+		margin: 0 0 var(--space-1) 0;
+		padding: 0 var(--space-2);
+		border-radius: var(--radius-full);
+		background: var(--color-bg-muted);
+	}
+
+	@media (width <= 48rem) {
+		.storage-cards,
+		.cache-layout {
+			grid-template-columns: 1fr;
+		}
+
+		.cache-layout__memory {
+			grid-template-rows: none;
+		}
+
+		.quota-list__row {
+			grid-template-columns: 1fr;
+		}
+
+		.storage-write-lock__form,
+		.ops-banner-editor__row-controls {
+			flex-direction: column;
+			align-items: stretch;
+		}
+
+		.storage-write-lock__label,
+		.ops-banner-editor__field {
+			flex: 1 1 auto;
+			min-width: 0;
+			width: 100%;
+		}
+
+		.storage-write-lock__form .btn,
+		.storage-write-lock__actions .btn,
+		.ops-banner-editor__actions .btn,
+		.maint-row .btn {
+			width: 100%;
+		}
+
+		.ops-banner-editor__add-language-actions .btn {
+			flex: 1 1 0;
+			width: auto;
+			min-width: 0;
+		}
+
+		.entry-card__pair {
+			grid-template-columns: 2rem 1fr auto;
+		}
+
+		.entry-card__pair-fp {
+			grid-column: 2 / -1;
+		}
+
+		.mount-form input[type='text'],
+		.mount-form select {
+			flex: 1 1 100%;
+		}
+	}
+
+	.admin-revoke-btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
+		width: 2rem;
+		height: 2rem;
+		padding: 0;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+		background: var(--color-bg-surface);
+		color: var(--color-danger-alt);
+		cursor: pointer;
+	}
+
+	.admin-revoke-btn:disabled {
+		opacity: 0.45;
+		cursor: not-allowed;
+	}
+
+	.admin-form {
 		display: flex;
 		flex-direction: column;
-		align-items: flex-start;
-		gap: 0.15rem;
+		gap: var(--space-3);
 	}
 
-	.drive-kind-cell__suffix {
-		font-size: 0.85em;
+	.admin-form__issuer {
+		display: flex;
+		align-items: flex-end;
+		gap: var(--space-2);
 	}
 
-	.icon-btn--placeholder {
-		/* Reserves the column width without rendering anything
-		   interactive. `visibility: hidden` keeps layout intact;
-		   pointer-events:none stops accidental focus from keyboard
-		   nav. */
-		visibility: hidden;
-		pointer-events: none;
+	.admin-form__issuer label {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.admin-form label:not(.admin-check) {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-1);
+		font-size: var(--text-sm);
+		color: var(--color-text-secondary);
+	}
+
+	.admin-form input:not([type='checkbox']) {
+		width: 100%;
+		min-width: 0;
+		padding: var(--space-2);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+		background: var(--color-bg-input);
+		color: var(--color-text);
+		font-size: var(--text-base);
+	}
+
+	.admin-form .admin-check {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		font-size: var(--text-base);
+		color: var(--color-text);
+	}
+
+	.admin-form__save {
+		width: 100%;
 	}
 </style>

@@ -27,7 +27,8 @@ test('search finds a seeded file and applies filters', async ({ page }) => {
   // Short timeouts so optional controls that aren't rendered fail fast instead
   // of waiting the full test timeout (the scope/clear buttons are conditional).
   const opt = { timeout: 2_000 };
-  await page.getByTestId('search-sort-select').selectOption({ index: 1 }, opt).catch(() => {});
+  await page.getByTestId('display-mode-groupby-btn').click(opt).catch(() => {});
+  await page.getByTestId('display-mode-groupby-name-item').click(opt).catch(() => {});
   await page.getByTestId('search-size-filter-select').selectOption({ index: 1 }, opt).catch(() => {});
   await page.getByTestId('search-date-filter-select').selectOption({ index: 1 }, opt).catch(() => {});
   await page.getByTestId('search-clear-filters-btn').click(opt).catch(() => {});

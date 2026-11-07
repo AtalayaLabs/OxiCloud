@@ -38,7 +38,9 @@
    overlapping. */
 @media (max-width: 768px) {
     .content-area {
-        padding-bottom: calc(var(--mobile-nav-height) + var(--space-4));
+        padding-bottom: calc(
+            var(--mobile-nav-height) + env(safe-area-inset-bottom, 0px) + var(--space-4)
+        );
     }
 }
 
@@ -64,20 +66,18 @@
 .page-sticky-header {
     position: sticky;
     margin: 0;
-    padding: var(--space-2-5) 0;
     /* Cancel .content-area's --space-5 top padding so the header sticks flush;
        stays correct if the gutter token ever changes. */
     top: calc(-1 * var(--space-5));
     background-color: var(--color-bg-page);
     z-index: var(--z-sticky); /* ensure header is above image preview */
+    padding-top: var(--space-2);
 }
 
 .actions-bar {
     display: flex;
     justify-content: space-between;
     margin: 0 0 var(--space-3);
-    height: 60px;
-    padding: var(--space-2-5);
 }
 
 .action-buttons {
@@ -93,7 +93,6 @@
    breadcrumb and the file rows. */
 @media (max-width: 768px) {
     .actions-bar {
-        flex-wrap: wrap;
         height: auto;
         gap: var(--space-2);
     }

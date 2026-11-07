@@ -1,12 +1,15 @@
 <script lang="ts">
 	import { onDestroy, onMount } from 'svelte';
 	import EmptyState from '$lib/components/EmptyState.svelte';
+	import ConfirmButton from '$lib/components/ConfirmButton.svelte';
 	import Icon from '$lib/icons/Icon.svelte';
 	import { errorMessage } from '$lib/utils/errors';
 	import { t } from '$lib/i18n/index.svelte';
 	import { formatDate } from '$lib/utils/display';
+	import { COUNTRIES } from '$lib/utils/countries';
 	import {
 		createContact,
+		deleteContact,
 		listAddressBooks,
 		listContacts,
 		updateContact,
@@ -66,7 +69,13 @@
 	let creating = $state(false);
 	let saving = $state(false);
 	let saveError = $state<string | null>(null);
+	let deleteError = $state<string | null>(null);
 	let form = $state<ContactForm | null>(null);
+	let countryOpen = $state<number | null>(null);
+	let countryActive = $state(0);
+	let countryDropUp = $state(false);
+	let booksOpen = $state(false);
+	let mobileDetail = $state(false);
 
 	const realBooks = $derived(books.filter((b) => !b.is_system));
 	const directoryBook = $derived(books.find((b) => b.is_system) ?? null);
@@ -173,7 +182,11 @@
 			contacts = reset ? rows : [...contacts, ...rows];
 			hasMore = !term && rows.length === PAGE_SIZE;
 			if (reset && !rows.some((c) => c.id === selectedId)) {
-				selectedId = rows[0]?.id ?? null;
+				if (rows[0]) selectContact(rows[0].id, false);
+				else {
+					selectedId = null;
+					cancelForm();
+				}
 			}
 		} catch (e) {
 			if (seq !== requestSeq) return;
@@ -186,12 +199,12 @@
 		}
 	}
 
-	function onBookChange(event: Event) {
-		const value = (event.currentTarget as HTMLSelectElement).value;
-		if (value === bookId) return;
+	function pickBook(id: string) {
+		booksOpen = false;
+		if (id === bookId) return;
 		mode = 'contacts';
-		bookId = value;
-		lastAddressBookId = value;
+		bookId = id;
+		lastAddressBookId = id;
 		query = '';
 		contacts = [];
 		selectedId = null;
@@ -207,10 +220,18 @@
 		}, SEARCH_DEBOUNCE_MS);
 	}
 
-	function selectContact(id: string) {
-		if (editing || creating) cancelForm();
+	function selectContact(id: string, show = true) {
 		selectedId = id;
 		saveError = null;
+		deleteError = null;
+		cancelForm();
+		if (canEdit) startEdit();
+		if (show) mobileDetail = true;
+	}
+
+	function closeDetail() {
+		cancelForm();
+		mobileDetail = false;
 	}
 
 	function emptyForm(): ContactForm {
@@ -262,6 +283,7 @@
 		saveError = null;
 		editing = false;
 		creating = true;
+		mobileDetail = true;
 	}
 
 	function startEdit() {
@@ -277,6 +299,49 @@
 		creating = false;
 		form = null;
 		saveError = null;
+		countryOpen = null;
+	}
+
+	function countryMatches(query: string): readonly string[] {
+		const term = query.trim().toLowerCase();
+		return term ? COUNTRIES.filter((c) => c.toLowerCase().includes(term)) : COUNTRIES;
+	}
+
+	function openCountry(row: number, input: HTMLInputElement) {
+		countryOpen = row;
+		countryActive = 0;
+		const pane = input.closest('.contacts__detail-pane');
+		const below = pane
+			? pane.getBoundingClientRect().bottom - input.getBoundingClientRect().bottom
+			: Number.POSITIVE_INFINITY;
+		countryDropUp = below < 240;
+	}
+
+	function pickCountry(row: number, country: string) {
+		if (form) form.address[row].country = country;
+		countryOpen = null;
+	}
+
+	function onCountryKey(event: KeyboardEvent, row: number) {
+		const input = event.currentTarget as HTMLInputElement;
+		const matches = countryMatches(form?.address[row]?.country ?? '');
+		if (event.key === 'Escape') {
+			countryOpen = null;
+			return;
+		}
+		if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+			event.preventDefault();
+			if (countryOpen !== row) openCountry(row, input);
+			else if (matches.length) {
+				const step = event.key === 'ArrowDown' ? 1 : -1;
+				countryActive = (countryActive + step + matches.length) % matches.length;
+			}
+			return;
+		}
+		if (event.key === 'Enter' && countryOpen === row && matches[countryActive]) {
+			event.preventDefault();
+			pickCountry(row, matches[countryActive]);
+		}
 	}
 
 	function buildUpdate(f: ContactForm): ContactUpdate {
@@ -347,17 +412,39 @@
 				if (!contacts.some((c) => c.id === created.id)) {
 					contacts = [created, ...contacts];
 				}
-				selectedId = created.id;
+				selectContact(created.id);
+				mobileDetail = false;
 			} else if (selectedId) {
 				const updated = await updateContact(bookId, selectedId, buildUpdate(form));
 				contacts = contacts.map((c) => (c.id === updated.id ? updated : c));
 				editing = false;
 				form = null;
+				mobileDetail = false;
 			}
 		} catch (e) {
 			saveError = errorMessage(e);
 		} finally {
 			saving = false;
+		}
+	}
+
+	async function removeContact() {
+		if (!selectedId || !canEdit) return;
+		const id = selectedId;
+		deleteError = null;
+		try {
+			await deleteContact(bookId, id);
+			const index = contacts.findIndex((c) => c.id === id);
+			contacts = contacts.filter((c) => c.id !== id);
+			const next = contacts[index]?.id ?? contacts[index - 1]?.id;
+			if (next) selectContact(next);
+			else {
+				selectedId = null;
+				cancelForm();
+				mobileDetail = false;
+			}
+		} catch (e) {
+			deleteError = errorMessage(e);
 		}
 	}
 
@@ -372,31 +459,34 @@
 
 <svelte:head><title>{t('nav.contacts', 'Contacts')} · OxiCloud</title></svelte:head>
 
-<main class="contacts">
-	<header class="contacts__head">
-		<div>
-			<h1>{t('nav.contacts', 'Contacts')}</h1>
-			{#if selectedBook}
-				<p class="contacts__subtitle">
-					{selectedBook.name}
-					{#if selectedBook.is_system}
-						<span class="badge">{t('contacts.system_badge', 'System')}</span>
-					{:else if selectedBook.is_readonly}
-						<span class="badge">{t('contacts.readonly_badge', 'Read only')}</span>
-					{/if}
-				</p>
-			{/if}
-		</div>
-		<button
-			class="btn btn-primary"
-			onclick={startCreate}
-			disabled={!canEdit}
-			data-testid="contacts-new"
-		>
-			<Icon name="plus" />
-			{t('contacts.new', 'New contact')}
-		</button>
-	</header>
+<div class="contacts" class:contacts--detail={mobileDetail}>
+	<div class="page-sticky-header">
+		<header class="contacts__head">
+			<div>
+				<h1 class="page-title">{t('nav.contacts', 'Contacts')}</h1>
+				{#if selectedBook}
+					<p class="contacts__subtitle">
+						{selectedBook.name}
+						{#if selectedBook.is_system}
+							<span class="badge">{t('contacts.system_badge', 'System')}</span>
+						{:else if selectedBook.is_readonly}
+							<span class="badge">{t('contacts.readonly_badge', 'Read only')}</span>
+						{/if}
+					</p>
+				{/if}
+			</div>
+			<button
+				class="btn btn-primary"
+				onclick={startCreate}
+				disabled={!canEdit}
+				data-testid="contacts-new"
+				aria-label={t('contacts.new', 'New contact')}
+				title={t('contacts.new', 'New contact')}
+			>
+				<Icon name="plus" />
+			</button>
+		</header>
+	</div>
 
 	{#if realBooks.length > 0 && directoryBook}
 		<div class="contacts__tabs" role="group" aria-label={t('contacts.sources', 'Contact sources')}>
@@ -424,17 +514,48 @@
 	<div class="contacts__toolbar">
 		{#if mode === 'contacts'}
 			{#if realBooks.length > 1}
-				<label class="contacts__book">
+				<div class="contacts__book">
 					<span>{t('contacts.address_book', 'Address book')}</span>
-					<select value={bookId} onchange={onBookChange} data-testid="contacts-book-select">
-						{#each realBooks as book (book.id)}
-							<option value={book.id}>
-								{book.name}
-								{book.is_readonly ? ` · ${t('contacts.shared_book', 'shared')}` : ''}
-							</option>
-						{/each}
-					</select>
-				</label>
+					<div class="contacts__book-picker">
+						<button
+							type="button"
+							class="contacts__book-trigger"
+							aria-haspopup="listbox"
+							aria-expanded={booksOpen}
+							onclick={() => (booksOpen = !booksOpen)}
+							onblur={() => (booksOpen = false)}
+							onkeydown={(e) => {
+								if (e.key === 'Escape') booksOpen = false;
+							}}
+							data-testid="contacts-book-select"
+						>
+							<span>
+								{selectedBook?.name}
+								{selectedBook?.is_readonly ? ` · ${t('contacts.shared_book', 'shared')}` : ''}
+							</span>
+							<Icon name="chevron-down" />
+						</button>
+						{#if booksOpen}
+							<ul class="suggest contacts__book-menu" role="listbox">
+								{#each realBooks as book (book.id)}
+									<li>
+										<button
+											type="button"
+											class="suggest__option"
+											role="option"
+											aria-selected={book.id === bookId}
+											onmousedown={(e) => e.preventDefault()}
+											onclick={() => pickBook(book.id)}
+										>
+											{book.name}
+											{book.is_readonly ? ` · ${t('contacts.shared_book', 'shared')}` : ''}
+										</button>
+									</li>
+								{/each}
+							</ul>
+						{/if}
+					</div>
+				</div>
 			{:else if selectedBook}
 				<div class="contacts__book">
 					<span>{t('contacts.address_book', 'Address book')}</span>
@@ -549,30 +670,56 @@
 				{#if form && (creating || editing)}
 					<form class="contact-form" onsubmit={save} data-testid="contacts-form">
 						<div class="contact-form__head">
+							<button
+								type="button"
+								class="contacts__back"
+								onclick={closeDetail}
+								aria-label={t('common.back', 'Back')}
+								title={t('common.back', 'Back')}
+								data-testid="contacts-back"
+							>
+								<Icon name="chevron-left" />
+							</button>
 							<h2>
 								{creating
 									? t('contacts.new_title', 'New contact')
-									: t('contacts.edit_title', 'Edit contact')}
+									: selected
+										? displayName(selected)
+										: t('contacts.edit_title', 'Edit contact')}
 							</h2>
 							<div class="contact-form__actions">
+								{#if editing}
+									<ConfirmButton
+										class="btn btn-danger contact-form__delete"
+										icon="trash"
+										title={t('common.delete', 'Delete')}
+										disabled={saving}
+										data-testid="contacts-delete"
+										onconfirm={() => void removeContact()}
+									/>
+								{/if}
 								<button
 									type="button"
 									class="btn btn-secondary"
 									onclick={cancelForm}
 									disabled={saving}
+									aria-label={t('common.cancel', 'Cancel')}
 									data-testid="contacts-cancel"
 								>
 									<Icon name="times" />
-									{t('common.cancel', 'Cancel')}
+									<span class="contact-form__label">{t('common.cancel', 'Cancel')}</span>
 								</button>
 								<button
 									type="submit"
 									class="btn btn-primary"
 									disabled={saving}
+									aria-label={saving ? t('common.saving', 'Saving…') : t('common.save', 'Save')}
 									data-testid="contacts-save"
 								>
 									<Icon name="save" />
-									{saving ? t('common.saving', 'Saving…') : t('common.save', 'Save')}
+									<span class="contact-form__label">
+										{saving ? t('common.saving', 'Saving…') : t('common.save', 'Save')}
+									</span>
 								</button>
 							</div>
 						</div>
@@ -580,19 +727,22 @@
 						{#if saveError}
 							<p class="status status--error">{saveError}</p>
 						{/if}
+						{#if deleteError}
+							<p class="status status--error">{deleteError}</p>
+						{/if}
 
 						<div class="contact-form__grid">
 							<label>
-								<span>{t('contacts.full_name', 'Display name')}</span>
-								<input bind:value={form.full_name} data-testid="contacts-field-full-name" />
-							</label>
-							<label>
-								<span>{t('contacts.first_name', 'First name')}</span>
+								<span>{t('contacts.first_name', 'First Name')}</span>
 								<input bind:value={form.first_name} data-testid="contacts-field-first-name" />
 							</label>
 							<label>
-								<span>{t('contacts.last_name', 'Last name')}</span>
+								<span>{t('contacts.last_name', 'Last Name')}</span>
 								<input bind:value={form.last_name} data-testid="contacts-field-last-name" />
+							</label>
+							<label>
+								<span>{t('contacts.full_name', 'Display Name')}</span>
+								<input bind:value={form.full_name} data-testid="contacts-field-full-name" />
 							</label>
 							<label>
 								<span>{t('contacts.nickname', 'Nickname')}</span>
@@ -603,20 +753,20 @@
 								<input bind:value={form.organization} data-testid="contacts-field-organization" />
 							</label>
 							<label>
-								<span>{t('contacts.title', 'Job title')}</span>
+								<span>{t('contacts.title', 'Job Title')}</span>
 								<input bind:value={form.title} data-testid="contacts-field-title" />
 							</label>
 						</div>
 
 						<fieldset class="contact-form__group">
-							<legend>{t('contacts.emails', 'E-mail')}</legend>
+							<legend>{t('contacts.emails', 'E-Mail')}</legend>
 							{#each form.email as row, i (i)}
 								<div class="contact-form__row">
 									<input
 										type="email"
 										bind:value={row.email}
 										placeholder={t('contacts.email_placeholder', 'name@example.com')}
-										aria-label={t('contacts.email', 'E-mail')}
+										aria-label={t('contacts.email', 'E-Mail')}
 										data-testid={`contacts-email-${i}`}
 									/>
 									<input
@@ -631,7 +781,7 @@
 										onclick={() => form?.email.splice(i, 1)}
 										aria-label={t('common.remove', 'Remove')}
 									>
-										{t('common.remove', 'Remove')}
+										<Icon name="trash" />
 									</button>
 								</div>
 							{/each}
@@ -667,7 +817,7 @@
 										onclick={() => form?.phone.splice(i, 1)}
 										aria-label={t('common.remove', 'Remove')}
 									>
-										{t('common.remove', 'Remove')}
+										<Icon name="trash" />
 									</button>
 								</div>
 							{/each}
@@ -697,30 +847,68 @@
 										data-testid={`contacts-address-city-${i}`}
 									/>
 									<input
+										bind:value={row.postal_code}
+										placeholder={t('contacts.postal_code', 'Postal Code')}
+										aria-label={t('contacts.postal_code', 'Postal Code')}
+										data-testid={`contacts-address-postal-${i}`}
+									/>
+									<input
 										bind:value={row.state}
 										placeholder={t('contacts.state', 'State')}
 										aria-label={t('contacts.state', 'State')}
 										data-testid={`contacts-address-state-${i}`}
 									/>
-									<input
-										bind:value={row.postal_code}
-										placeholder={t('contacts.postal_code', 'Postal code')}
-										aria-label={t('contacts.postal_code', 'Postal code')}
-										data-testid={`contacts-address-postal-${i}`}
-									/>
-									<input
-										bind:value={row.country}
-										placeholder={t('contacts.country', 'Country')}
-										aria-label={t('contacts.country', 'Country')}
-										data-testid={`contacts-address-country-${i}`}
-									/>
+									<div class="contact-form__combo" class:contact-form__combo--up={countryDropUp}>
+										<input
+											bind:value={row.country}
+											placeholder={t('contacts.country', 'Country')}
+											aria-label={t('contacts.country', 'Country')}
+											role="combobox"
+											autocomplete="off"
+											aria-autocomplete="list"
+											aria-expanded={countryOpen === i}
+											aria-controls={`contact-country-options-${i}`}
+											aria-activedescendant={countryOpen === i
+												? `contact-country-option-${i}-${countryActive}`
+												: undefined}
+											onfocus={(e) => openCountry(i, e.currentTarget)}
+											oninput={(e) => openCountry(i, e.currentTarget)}
+											onkeydown={(e) => onCountryKey(e, i)}
+											onblur={() => (countryOpen = null)}
+											data-testid={`contacts-address-country-${i}`}
+										/>
+										{#if countryOpen === i && countryMatches(row.country).length}
+											<ul
+												class="suggest contact-form__suggest"
+												id={`contact-country-options-${i}`}
+												role="listbox"
+											>
+												{#each countryMatches(row.country) as country, index (country)}
+													<li>
+														<button
+															type="button"
+															class="suggest__option"
+															id={`contact-country-option-${i}-${index}`}
+															role="option"
+															aria-selected={row.country === country}
+															class:suggest__option--active={index === countryActive}
+															onmousedown={(e) => e.preventDefault()}
+															onclick={() => pickCountry(i, country)}
+														>
+															{country}
+														</button>
+													</li>
+												{/each}
+											</ul>
+										{/if}
+									</div>
 									<button
 										type="button"
 										class="link-btn link-btn--danger"
 										onclick={() => form?.address.splice(i, 1)}
 										aria-label={t('common.remove', 'Remove')}
 									>
-										{t('common.remove', 'Remove')}
+										<Icon name="trash" />
 									</button>
 								</div>
 							{/each}
@@ -759,6 +947,16 @@
 				{:else}
 					<article class="contact-detail" data-testid="contacts-detail">
 						<div class="contact-detail__head">
+							<button
+								type="button"
+								class="contacts__back"
+								onclick={closeDetail}
+								aria-label={t('common.back', 'Back')}
+								title={t('common.back', 'Back')}
+								data-testid="contacts-back"
+							>
+								<Icon name="chevron-left" />
+							</button>
 							<span class="avatar avatar--lg" aria-hidden="true">{initials(selected)}</span>
 							<div>
 								<h2>{displayName(selected)}</h2>
@@ -778,7 +976,7 @@
 
 						{#if selected.email.length}
 							<section class="contact-detail__section">
-								<h3>{t('contacts.emails', 'E-mail')}</h3>
+								<h3>{t('contacts.emails', 'E-Mail')}</h3>
 								<ul>
 									{#each selected.email as email (email.email + email.type)}
 										<li>
@@ -831,11 +1029,11 @@
 								<h3>{t('contacts.details', 'Details')}</h3>
 								<dl>
 									{#if selected.first_name}
-										<dt>{t('contacts.first_name', 'First name')}</dt>
+										<dt>{t('contacts.first_name', 'First Name')}</dt>
 										<dd>{selected.first_name}</dd>
 									{/if}
 									{#if selected.last_name}
-										<dt>{t('contacts.last_name', 'Last name')}</dt>
+										<dt>{t('contacts.last_name', 'Last Name')}</dt>
 										<dd>{selected.last_name}</dd>
 									{/if}
 									{#if selected.nickname}
@@ -870,13 +1068,10 @@
 			</section>
 		</div>
 	{/if}
-</main>
+</div>
 
 <style>
 	.contacts {
-		max-width: 72rem;
-		margin: 0 auto;
-		padding: var(--space-6) var(--space-4);
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-4);
@@ -892,6 +1087,7 @@
 	.contacts__head h1 {
 		margin: 0;
 		font-size: var(--text-2xl);
+		color: var(--color-text);
 	}
 
 	.contacts__subtitle {
@@ -948,14 +1144,30 @@
 		color: var(--color-text-secondary);
 	}
 
-	.contacts__book select,
-	.contacts__search input {
+	.contacts__book-picker {
+		position: relative;
+	}
+
+	.contacts__book-trigger {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--space-2);
+		width: 100%;
 		padding: var(--space-2);
 		border: 1px solid var(--color-border);
 		border-radius: var(--radius-md);
 		background: var(--color-bg-input);
 		color: var(--color-text);
 		font-size: var(--text-base);
+		text-align: left;
+		cursor: pointer;
+	}
+
+	.contacts__book-menu {
+		top: calc(100% + var(--space-1));
+		right: 0;
+		left: 0;
 	}
 
 	.contacts__book-name {
@@ -982,7 +1194,13 @@
 	}
 
 	.contacts__search input {
+		padding: var(--space-2);
 		padding-left: var(--space-8);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+		background: var(--color-bg-input);
+		color: var(--color-text);
+		font-size: var(--text-base);
 	}
 
 	.contacts__panes {
@@ -1082,6 +1300,25 @@
 		margin-top: var(--space-2);
 	}
 
+	.contacts__back {
+		display: none;
+		align-items: center;
+		justify-content: center;
+		flex: 0 0 auto;
+		width: 2.75rem;
+		height: 2.75rem;
+		padding: 0;
+		border: none;
+		border-radius: var(--radius-md);
+		background: none;
+		color: var(--color-text);
+		cursor: pointer;
+	}
+
+	.contacts__back:hover {
+		background: var(--color-bg-hover);
+	}
+
 	.contact-detail {
 		display: flex;
 		flex-direction: column;
@@ -1114,8 +1351,6 @@
 		font-size: var(--text-sm);
 		font-weight: var(--weight-semibold);
 		color: var(--color-text-secondary);
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
 	}
 
 	.contact-detail__section ul {
@@ -1183,16 +1418,36 @@
 
 	.contact-form__head h2 {
 		margin: 0;
+		flex: 1;
+		min-width: 0;
+		overflow: hidden;
 		font-size: var(--text-xl);
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.contact-form__actions {
 		display: flex;
 		gap: var(--space-2);
+		margin-left: auto;
+		height: 42px;
+	}
+
+	/* ConfirmButton renders its own <button>, so a scoped selector cannot reach
+	   it. The flex row stretches it to the Cancel/Save height; the ratio squares
+	   the width to that height. Armed, the label needs more width, so the ratio
+	   is dropped — otherwise the height would grow with it. */
+	.contact-form__actions :global(.contact-form__delete) {
+		aspect-ratio: 1;
+	}
+
+	.contact-form__actions :global(.contact-form__delete.confirm-btn--armed) {
+		aspect-ratio: auto;
 	}
 
 	.contact-form__grid {
 		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
 		gap: var(--space-3);
 	}
 
@@ -1207,6 +1462,8 @@
 
 	.contact-form input,
 	.contact-form textarea {
+		width: 100%;
+		min-width: 0;
 		padding: var(--space-2);
 		border: 1px solid var(--color-border);
 		border-radius: var(--radius-md);
@@ -1226,35 +1483,85 @@
 
 	.contact-form__row {
 		display: grid;
-		grid-template-columns: 1fr minmax(6rem, 9rem) auto;
+		grid-template-columns: minmax(0, 1fr) minmax(5rem, 9rem) auto;
 		gap: var(--space-2);
 		align-items: center;
 	}
 
 	.contact-form__address {
 		display: grid;
+		grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
 		gap: var(--space-2);
+	}
+
+	.contact-form__address > input:nth-of-type(1) {
+		grid-column: 1 / 3;
+		grid-row: 1;
+	}
+
+	.contact-form__address + .contact-form__address {
+		margin-top: var(--space-3);
+	}
+
+	.contact-form__combo {
+		position: relative;
+		display: flex;
+		flex-direction: column;
+	}
+
+	.contact-form__suggest {
+		top: calc(100% + var(--space-1));
+		right: 0;
+		left: 0;
+	}
+
+	.contact-form__combo--up .contact-form__suggest {
+		top: auto;
+		bottom: calc(100% + var(--space-1));
+	}
+
+	.suggest {
+		position: absolute;
+		z-index: 2;
+		list-style: none;
+		margin: 0;
+		padding: var(--space-1);
+		max-height: 12rem;
+		overflow-y: auto;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+		background: var(--color-bg-surface);
+		box-shadow: var(--shadow-md);
+	}
+
+	.suggest__option {
+		display: block;
+		width: 100%;
+		padding: var(--space-2) var(--space-3);
+		border: none;
+		background: none;
+		color: var(--color-text);
+		font: inherit;
+		text-align: left;
+		cursor: pointer;
+	}
+
+	.suggest__option:hover,
+	.suggest__option[aria-selected='true'],
+	.suggest__option--active {
+		background: var(--color-bg-muted);
+	}
+
+	/* Street spans the two field columns, the rest fill two rows; the button
+	   spans all three rows so `center` lands it halfway down the block. */
+	.contact-form__address > button {
+		grid-column: 3;
+		grid-row: 1 / span 3;
+		align-self: center;
 	}
 
 	.contact-form__notes textarea {
 		resize: vertical;
-	}
-
-	.link-btn {
-		background: none;
-		border: none;
-		padding: 0;
-		color: var(--color-accent-text);
-		cursor: pointer;
-		font-size: var(--text-sm);
-	}
-
-	.link-btn:hover {
-		text-decoration: underline;
-	}
-
-	.link-btn--danger {
-		color: var(--color-danger-text);
 	}
 
 	.badge {
@@ -1273,6 +1580,53 @@
 
 	.status--error {
 		color: var(--color-error-text);
+	}
+
+	@media (width < 48rem) {
+		.contacts:not(.contacts--detail) .contacts__detail-pane,
+		.contacts--detail .contacts__list-pane,
+		.contacts--detail :global(.page-sticky-header),
+		.contacts--detail .contacts__tabs,
+		.contacts--detail .contacts__toolbar {
+			display: none;
+		}
+
+		.contacts__back {
+			display: inline-flex;
+		}
+
+		/* The content area is the scroll container at every width, and the page
+		   header is hidden in detail mode, so both heads can pin to its top. */
+		.contact-form__head,
+		.contact-detail__head {
+			position: sticky;
+			top: -18px;
+			z-index: 2;
+			margin: calc(var(--space-4) * -1) calc(var(--space-4) * -1) 0;
+			padding: var(--space-3) var(--space-4);
+			background: var(--color-bg-surface);
+		}
+
+		.contact-form__head {
+			flex-wrap: nowrap;
+		}
+
+		.contact-form__label {
+			display: none;
+		}
+
+		.contact-form__row {
+			grid-template-columns: 3fr 1fr auto;
+		}
+
+		.contact-detail__head {
+			flex-wrap: wrap;
+		}
+
+		.contact-detail__head > div {
+			flex: 1;
+			min-width: 0;
+		}
 	}
 
 	@media (width >= 48rem) {
@@ -1305,8 +1659,39 @@
 			overflow-y: auto;
 		}
 
-		.contact-form__grid {
-			grid-template-columns: repeat(2, minmax(0, 1fr));
+		/* The pane is the scroll container, so the head can stick to its top.
+		   The negative offsets cancel the pane padding and the padding puts the
+		   title back where it was, full-bleed, so nothing peeks above it. */
+		.contact-form__head {
+			position: sticky;
+			top: -16px;
+			z-index: 1;
+			margin: calc(var(--space-4) * -1) calc(var(--space-4) * -1) 0;
+			padding: var(--space-4) var(--space-4) var(--space-2);
+			background: var(--color-bg-surface);
+		}
+	}
+
+	@media (width >= 64rem) {
+		/* Street across the top, City / State / Postal Code / Country beneath it,
+		   trash centred on the right of both rows. */
+		.contact-form__address {
+			grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
+		}
+
+		.contact-form__address > input,
+		.contact-form__combo {
+			grid-column: auto;
+		}
+
+		.contact-form__address > input:nth-of-type(1) {
+			grid-column: 1 / -2;
+			grid-row: 1;
+		}
+
+		.contact-form__address > button {
+			grid-column: -2 / -1;
+			grid-row: 1 / span 2;
 		}
 	}
 </style>

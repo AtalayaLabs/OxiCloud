@@ -487,7 +487,6 @@
 />
 
 <div class="page-sticky-header">
-	<h1 class="page-title">{t('nav.shared', 'Shared')}</h1>
 	<ListToolbar
 		groups={GROUP_BYS}
 		{groupBy}
@@ -496,6 +495,9 @@
 		ondirection={toggleDirection}
 		showViewToggle={false}
 	>
+		{#snippet start()}
+			<h1 class="page-title">{t('nav.shared', 'Shared')}</h1>
+		{/snippet}
 		{#snippet beforeGroupBy()}
 			<div class="group-by-selector ms-filter" data-testid="shared-filter-menu">
 				<button
@@ -554,7 +556,7 @@
 	/>
 {:else if noMatchesForFilter}
 	<EmptyState
-		icon="filter"
+		icon="oxiexport"
 		title={t('myshares.filter.emptyTitle', 'No shares match the current filter')}
 		hint={t(
 			'myshares.filter.emptyHint',
@@ -818,6 +820,26 @@
 {/if}
 
 <style>
+	.page-sticky-header :global(.actions-bar) {
+		align-items: center;
+	}
+
+	.page-sticky-header :global(.page-title) {
+		margin: 0;
+	}
+
+	.page-sticky-header :global(.view-toggle) {
+		height: 38px;
+		padding: 2px;
+		box-sizing: border-box;
+	}
+
+	.page-sticky-header :global(.view-toggle .toggle-btn) {
+		min-height: 0;
+		height: 32px;
+		min-width: 32px;
+	}
+
 	.ms-lanes {
 		display: flex;
 		flex-direction: column;

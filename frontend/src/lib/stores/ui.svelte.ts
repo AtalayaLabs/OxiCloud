@@ -37,6 +37,8 @@ export interface Notification {
 	completed?: number;
 	/** Total files in the batch (for the "N / M files" counter). */
 	total?: number;
+	/** Aborts the in-flight operation (upload batch); undefined for plain rows. */
+	onCancel?: () => void;
 }
 
 /** Announce a message to the matching ARIA live region (errors are assertive). */
@@ -124,7 +126,12 @@ class UiStore {
 	 * Begin a progress notification (e.g. an upload). Pass `total` to show the
 	 * "N / M files" counter. Opens the bell, rings it, and announces the start.
 	 */
-	startProgress(message: string, icon = 'cloud-upload-alt', total?: number): number {
+	startProgress(
+		message: string,
+		icon = 'cloud-upload-alt',
+		total?: number,
+		onCancel?: () => void
+	): number {
 		const id = ++this.#seq;
 		this.notifications = [
 			{
@@ -135,6 +142,7 @@ class UiStore {
 				read: false,
 				progress: 0,
 				icon,
+				onCancel,
 				...(total !== undefined ? { total, completed: 0 } : {})
 			},
 			...this.notifications
@@ -174,6 +182,7 @@ class UiStore {
 						kind,
 						progress: undefined,
 						currentFile: undefined,
+						onCancel: undefined,
 						at: Date.now()
 					}
 				: n

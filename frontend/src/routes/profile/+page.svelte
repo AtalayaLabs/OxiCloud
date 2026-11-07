@@ -573,7 +573,7 @@
 
 <svelte:head><title>{t('nav.profile', 'Profile')} · OxiCloud</title></svelte:head>
 
-<main class="profile" class:profile--mandatory={mandatoryMode}>
+<div class="profile" class:profile--mandatory={mandatoryMode}>
 	<h1>{t('nav.profile', 'Profile')}</h1>
 
 	{#if mandatoryMode}
@@ -1123,7 +1123,7 @@
 	{:else}
 		<p>{t('common.loading', 'Loading…')}</p>
 	{/if}
-</main>
+</div>
 
 <style>
 	.profile {

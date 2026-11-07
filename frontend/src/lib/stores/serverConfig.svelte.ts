@@ -139,7 +139,10 @@ class ServerConfigStore {
 			const cfg: ServerConfig = await getConfig({ throwOnError: true });
 			this.version = cfg.version;
 			this.initialized = cfg.initialized;
-			this.features = cfg.features;
+			// A server older than a given flag omits the key entirely; replacing
+			// the object would turn its default into `undefined` and silently
+			// hide a feature that works. Absence means "not disabled".
+			this.features = { ...DEFAULT_FEATURES, ...cfg.features };
 			this.auth = cfg.auth ?? { ...DEFAULT_AUTH };
 			// No server_status on /api/config (feat/registration):
 			// the authenticated hydration path (`hydrateFromAuthenticatedBoot`

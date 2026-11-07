@@ -235,6 +235,7 @@
 
 <ResourceList
 	title={t('nav.trash', 'Trash')}
+	titleInToolbar
 	{items}
 	{contextMap}
 	{loading}
@@ -270,24 +271,24 @@
 	{#snippet batchActions(sel)}
 		<!--
 			Use the shared `<Button>` component here (not the icon-only
-			`.btn-action` chip used for per-row `itemActions` above). The
-			batch bar renders text next to the glyph — `.btn-action` is
-			fixed 28x28 with no room for a label, and shoving text
-			inside was overlapping the icon. `<Button>` picks up the
-			standard action-bar sizing and reads consistently with
-			`/recent` and `/favorites` batch clusters.
+			`.btn-action` chip used for per-row `itemActions` above).
+			`<Button>` picks up the standard action-bar sizing and reads
+			consistently with `/recent` and `/favorites` batch clusters.
 		-->
-		<Button icon="undo" data-testid="trash-batch-restore-btn" onclick={() => sel.forEach(restore)}
-			>{t('trash.restore', 'Restore')}</Button
-		>
+		<Button
+			icon="undo"
+			class="batch-btn"
+			title={t('trash.restore', 'Restore')}
+			data-testid="trash-batch-restore-btn"
+			onclick={() => sel.forEach(restore)}
+		></Button>
 		<ConfirmButton
 			icon="trash"
-			class="btn btn-danger"
+			class="batch-btn batch-btn-danger"
+			title={t('trash.delete', 'Delete permanently')}
 			data-testid="trash-batch-delete-btn"
 			onconfirm={() => sel.forEach(purge)}
-		>
-			{t('trash.delete', 'Delete permanently')}
-		</ConfirmButton>
+		/>
 	{/snippet}
 	{#snippet rowBadge(_item, ctx)}
 		{@const chip = expiryChip(ctx?.date)}
@@ -400,5 +401,11 @@
 	   this rule stays inert for them. */
 	:global(.files-list-view .file-item .file-icon__badge) {
 		display: none;
+	}
+
+	@media (width <= 768px) {
+		:global(.rl-toolbar--with-title .rl-toolbar-title) {
+			flex: 1 1 100%;
+		}
 	}
 </style>

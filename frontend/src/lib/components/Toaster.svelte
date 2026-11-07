@@ -41,7 +41,10 @@
 		position: fixed;
 		/* Offset clears any bottom-right FAB the file view may mount; the
 		   --toaster-offset hook lets a page lift the stack further if needed. */
-		bottom: calc(1rem + env(safe-area-inset-bottom, 0px) + var(--toaster-offset, 0px));
+		--toaster-base: 1rem;
+		bottom: calc(
+			var(--toaster-base) + env(safe-area-inset-bottom, 0px) + var(--toaster-offset, 0px)
+		);
 		right: 1rem;
 		display: flex;
 		flex-direction: column;
@@ -113,5 +116,11 @@
 
 	.toast__close:hover {
 		opacity: 1;
+	}
+
+	@media (width <= 768px) {
+		.toaster {
+			--toaster-base: calc(var(--mobile-nav-height) + var(--space-3));
+		}
 	}
 </style>

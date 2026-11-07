@@ -79,7 +79,7 @@
     "shared": "공유",
     "recent": "최근",
     "favorites": "즐겨찾기",
-    "photos": "사진",
+    "photos": "미디어",
     "music": "음악",
     "trash": "휴지통",
     "sharedwithme": "나와 공유됨",
@@ -90,7 +90,9 @@
     "toggle": "탐색 메뉴 전환",
     "admin_sections": "관리 섹션",
     "back_to_app": "OxiCloud로 돌아가기",
-    "account": "계정"
+    "account": "계정",
+    "section_library": "라이브러리",
+    "section_sharing": "공유"
   },
   "photos": {
     "empty_state": "아직 사진이 없습니다",

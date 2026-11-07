@@ -613,3 +613,20 @@ export async function goToLoginPage(page: Page) {
 
   await expect(page.locator('#login-panel')).toBeVisible();
 }
+
+/**
+ * Reach the list header every fresh context needs. `oxi-view-mode` defaults to
+ * grid, so the shared toggle flips to list in one click.
+ */
+export async function switchToListView(page: Page): Promise<void> {
+  await page.getByTestId('display-mode-view-toggle-btn').click();
+  await expect(page.getByTestId('resource-list-select-all-checkbox')).toBeVisible();
+}
+
+/** Click the hover-revealed favorite star on the row named `name`. */
+export async function favoriteRow(page: Page, name: string): Promise<void> {
+  await page
+    .getByTestId(name)
+    .locator('[data-testid^="resource-list-favorite-"]')
+    .dispatchEvent('click');
+}

@@ -75,7 +75,6 @@ h3,
 /* Tabular figures for numeric UI so digits align and don't jitter as they
    change (storage readouts, badges, stat counters). */
 .storage-info,
-.user-menu-storage-text,
 .notif-badge,
 .stat-value {
     font-variant-numeric: tabular-nums;

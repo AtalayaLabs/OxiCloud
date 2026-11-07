@@ -418,7 +418,7 @@ test('jobs tab: the parameter dialog sends a string parameter', async ({ page })
     (r) => r.url().includes('/api/admin/jobs/content_rescan/trigger') && r.method() === 'POST'
   );
 
-  await row.locator('.jobs-panel__btn--small').first().click();
+  await row.getByRole('button', { name: /^run$/i }).first().click();
 
   const dialogRun = page.getByTestId('job-params-run');
   await expect(dialogRun).toBeVisible();
