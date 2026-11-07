@@ -429,15 +429,28 @@
 		load(true, orderBy, rev);
 	}}
 >
-	{#snippet displayActions()}
+	{#snippet actions()}
 		{#if items.length > 0}
+			<!--
+				`actions`, not `displayActions`: a labelled page action in the
+				left `.action-buttons` cluster, same as `/files` (Add) and
+				`/trash` (Empty trash). As `displayActions` it rendered as a
+				bare `toggle-btn` inside `.view-toggle`, among the grid/list
+				and group-by controls — acting on the page, dressed as view
+				state. The `actions` prop doc names "Clear recent" explicitly.
+
+				`btn-primary`, like `/files`: it is this page's one action, so
+				it carries the same weight Add does there. Not trash's
+				`btn-danger` — this drops the activity history, not the files.
+			-->
 			<ConfirmButton
-				class="toggle-btn"
-				title={t('recent.clear', 'Clear recent')}
+				class="btn btn-primary"
 				data-testid="recent-clear-btn"
 				onconfirm={clearAll}
 				icon="eraser"
-			/>
+			>
+				{t('recent.clear', 'Clear recent')}
+			</ConfirmButton>
 		{/if}
 	{/snippet}
 	{#snippet batchActions(sel)}

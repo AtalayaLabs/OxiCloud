@@ -196,7 +196,18 @@ it('loads the home folder listing on mount and renders its contents', async () =
 	await waitFor(() => expect(fetchFolderPage).toHaveBeenCalledWith('home', expect.anything()));
 	// VirtualList windows rows by viewport height (0 in jsdom), so assert the
 	// surrounding chrome rendered rather than the windowed rows themselves.
-	await screen.findByTestId('files-add-btn');
+	const add = await screen.findByTestId('files-add-btn');
+
+	// Placement, not just presence. `/files` is the reference for the
+	// toolbar's two clusters: `.action-buttons` acts on the page,
+	// `.view-toggle` holds view state. `/recent` shipped its Clear button
+	// in the wrong one and every test stayed green, because they all
+	// locate by test id — so the reference page gets the pin too.
+	//
+	// `closest` rather than a parent check: Add sits inside
+	// `.upload-dropdown`, so the cluster is a grandparent.
+	expect(add.closest('.action-buttons')).toBeTruthy();
+	expect(add.closest('.view-toggle')).toBeNull();
 });
 
 it('shows an error when the listing fails with no cache', async () => {

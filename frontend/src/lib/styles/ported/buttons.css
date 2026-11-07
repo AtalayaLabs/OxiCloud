@@ -115,22 +115,51 @@
     border-top-color: transparent;
 }
 
-/* View Toggle Buttons */
+/* ── Toolbar control height ─────────────────────────────────
+   The action cluster and the view cluster sit on the same row, so they
+   must be the same height — they should differ in STYLE (raised labelled
+   buttons vs a recessed segmented pill), never in metrics.
+
+   They used to differ by 5px, by accident: `.view-toggle` is
+   padding-and-children driven (32px child + 3px padding ×2 + 1px border
+   ×2 = 40px) while `.btn` is padding-and-text driven (var(--space-3) ×2
+   + a 21px line box at --text-base/--leading-normal = 45px). Both now
+   derive from `--density-control-h`, which is 40px at default density —
+   so this is a no-op on the current look and makes the two equal by
+   construction, including under compact density (32px), where the old
+   fixed 32px child would have kept the pill at 40px while the buttons
+   shrank.
+
+   The 8px subtracted below is the pill's own chrome: 3px padding and 1px
+   border on each side. */
 .view-toggle {
     display: flex;
     gap: var(--space-0-5);
+    height: var(--density-control-h);
     padding: 3px;
     background-color: var(--color-bg-muted);
     border-radius: var(--radius-xl);
     border: 1px solid var(--color-border);
 }
 
+/* Toolbar action buttons match the pill. Scoped to the action cluster so
+   dialog, form and inline buttons keep their own padding-driven sizing —
+   this is a toolbar alignment rule, not a change to `.btn` everywhere.
+   `padding-block: 0` because the explicit height replaces the vertical
+   padding; flex centring already handles the label. The batch-selection
+   bar is excluded: it replaces the cluster wholesale and carries its own
+   `batch-btn` sizing. */
+.action-buttons:not(.batch-selection-bar) .btn {
+    height: var(--density-control-h);
+    padding-block: 0;
+}
+
 .toggle-btn {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 32px;
-    height: 32px;
+    width: calc(var(--density-control-h) - 8px);
+    height: calc(var(--density-control-h) - 8px);
     background-color: transparent;
     border: none;
     border-radius: var(--radius-lg);
