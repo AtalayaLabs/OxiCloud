@@ -232,13 +232,15 @@
 			.d-snake {
 				stroke-width: 7;
 				stroke-dasharray: 12 88;
-				animation: snake-run 1.3s linear infinite;
+				animation: snake-run 0.65s linear infinite;
 			}
-			/* The trailing dash needs its OWN keyframes, from -50 to -150.
-			   Setting `stroke-dashoffset: -50` and reusing `snake-run` (which
-			   ends at -100) makes the implicit `from` the element's own -50, so
-			   it covers half the distance in the same time — half speed — and
-			   snaps back at every loop. Same travel, half a lap apart. */
+			/* The trailing dash runs at HALF the lead's speed, which is what
+			   makes the pair interesting — they lap each other instead of
+			   holding formation. The duration carries that (2.6s over a full
+			   -50 → -150 lap), not a short keyframe range: setting
+			   `stroke-dashoffset: -50` and reusing `snake-run`, which ends at
+			   -100, makes the implicit `from` that -50, so the dash is slow
+			   AND teleports back half a lap on every repeat. */
 			@keyframes snake-run-trail {
 				from {
 					stroke-dashoffset: -50;
@@ -441,8 +443,8 @@
 			<div class="tile">
 				<h2>D · Two dashes on the circle</h2>
 				<p>
-					Variant A with a second dash half a lap behind. Busier, but motion stays visible
-					from any glance moment.
+					Variant A with a second dash starting half a lap behind and running at half the
+					speed, so the two lap each other and the figure keeps changing.
 				</p>
 				<div class="stage">
 					<svg class="mark s38" viewBox="95 67 320 320" aria-hidden="true">

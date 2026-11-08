@@ -15,11 +15,15 @@
 	 * telling the next person to "update BOTH sites at once"; this
 	 * component is that instruction made structural. The third,
 	 * `app.html`, cannot import anything — it has to paint before the CSS
-	 * bundle exists — so it stays inline, and
-	 * `AppSplash.test.ts` fails if its geometry drifts from this file's.
+	 * bundle exists — so it keeps a hand-written copy of both the frame and
+	 * the mark, with literals in place of tokens.
+	 * `AppSplash.test.ts` compares the two and fails if they drift, down to
+	 * the glyph path, the dash geometry and the animation cadence.
 	 *
 	 * Mount it conditionally; it has no internal "is loading" state.
 	 */
+	import LoaderMark from '$lib/components/LoaderMark.svelte';
+
 	interface Props {
 		/**
 		 * Accessible name, announced to screen readers. Describe what is
@@ -32,7 +36,8 @@
 </script>
 
 <div class="app-splash" role="status" aria-label={label} data-testid={testid}>
-	<div class="app-splash__spinner" aria-hidden="true"></div>
+	<!-- Decorative: the container above carries the accessible name. -->
+	<LoaderMark size={64} />
 </div>
 
 <style>
@@ -54,24 +59,6 @@
 		background: var(--color-bg-page);
 	}
 
-	.app-splash__spinner {
-		width: 38px;
-		height: 38px;
-		border: 3px solid var(--color-border);
-		border-top-color: var(--color-accent);
-		border-radius: 50%;
-		/* `spin` is the shared keyframe in `base/animations.css` — the one
-		   that replaced six local copies. */
-		animation: spin 0.7s linear infinite;
-	}
-
-	/* A spinner is the one thing that may NOT be the exception here: a
-	   boot screen can stay up for seconds, and that is long enough to
-	   matter for anyone who asked for less motion. The ring stays
-	   visible, it just stops turning — same as `#app-splash` does. */
-	@media (prefers-reduced-motion: reduce) {
-		.app-splash__spinner {
-			animation: none;
-		}
-	}
+	/* The mark and its animation live in `LoaderMark`; this component owns
+	   only the full-viewport frame around it. */
 </style>
