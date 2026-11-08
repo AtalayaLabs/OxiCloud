@@ -111,6 +111,24 @@ pub struct AncestorRow {
     pub depth: i32,
     pub has_folder_grant: bool,
     pub has_drive_grant: bool,
+    /// Does this folder carry ANY grant — link, user, group, any role?
+    ///
+    /// The badge behind the breadcrumb's per-crumb share icon, and
+    /// deliberately the same predicate the resource listing uses for
+    /// `FolderDto::is_shared`, so a folder cannot read as shared in one
+    /// place and not the other.
+    ///
+    /// Unlike the two grant checks above it is subject-agnostic — "is
+    /// this shared with anyone" rather than "can I reach it" — and
+    /// carries **no `expires_at` filter**, matching the listing: the
+    /// grant row existing is what the icon reports, expired or not.
+    /// Adding an expiry predicate here would make the breadcrumb and the
+    /// row disagree about the same folder.
+    ///
+    /// Cost: a third `EXISTS` on `idx_role_grants_resource`, the index
+    /// the two above already probe per row — so a buffer hit on a chain
+    /// of 1–6 crumbs, no extra query or round trip.
+    pub is_shared: bool,
 }
 
 /// Raw `storage.role_grants` row projected by
@@ -1586,7 +1604,12 @@ impl FolderDbRepository {
                        AND (g.expires_at IS NULL OR g.expires_at > NOW())
                        AND ((g.subject_type = 'user'  AND g.subject_id = $1)
                          OR (g.subject_type = 'group' AND g.subject_id = ANY(groups.ids)))
-                ) AS has_drive_grant
+                ) AS has_drive_grant,
+                EXISTS (
+                    SELECT 1 FROM storage.role_grants g
+                     WHERE g.resource_type = 'folder'
+                       AND g.resource_id = c.id
+                ) AS is_shared
               FROM chain c
              ORDER BY c.depth DESC
         "#;

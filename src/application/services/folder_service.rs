@@ -1506,6 +1506,7 @@ impl FolderService {
                 name: r.name,
                 parent_id: r.parent_id.map(|u| u.to_string()),
                 drive_id: r.drive_id,
+                is_shared: r.is_shared,
             })
             .collect();
 
@@ -1544,6 +1545,11 @@ impl FolderService {
                     name: segment.to_string(),
                     parent_id: Some(prev_id),
                     drive_id: synthetic_drive_id,
+                    // Same reasoning as `effective_grants` above: grants
+                    // live on the mount root and higher, which the native
+                    // walk already enumerated. A synthetic crumb holds no
+                    // row of its own, so it is never "shared" itself.
+                    is_shared: false,
                 });
                 prev_id = child_id;
             }
