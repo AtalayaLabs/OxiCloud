@@ -17,6 +17,17 @@ function uniq(p: string): string {
   return `${p}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 }
 
+/**
+ * The sidebar row for a playlist, located by its visible name.
+ *
+ * Rows carry a fixed `music-playlist-item` testid rather than their name, so
+ * a wrong name reports as a text mismatch instead of a missing element — see
+ * the comment on that testid in `routes/music/+page.svelte`.
+ */
+function playlistRow(page: import('@playwright/test').Page, name: string) {
+  return page.getByTestId('music-playlist-item').filter({ hasText: name });
+}
+
 /** Create a playlist and return its name; works whether or not others exist. */
 async function createPlaylist(page: import('@playwright/test').Page, name: string): Promise<void> {
   await page.goto('/music');
@@ -27,7 +38,7 @@ async function createPlaylist(page: import('@playwright/test').Page, name: strin
   else await emptyBtn.click();
   await page.getByTestId('dialog-host-prompt-input').fill(name);
   await page.getByTestId('dialog-host-submit-btn').click();
-  await expect(page.getByTestId(name)).toBeVisible({ timeout: 15_000 });
+  await expect(playlistRow(page, name)).toBeVisible({ timeout: 15_000 });
 }
 
 test('playlist lifecycle: create, toggle public, rename, delete', async ({ page }) => {
@@ -36,19 +47,33 @@ test('playlist lifecycle: create, toggle public, rename, delete', async ({ page 
   await createPlaylist(page, name);
 
   // Select the playlist → detail panel with its controls.
-  await page.getByTestId(name).click();
+  await playlistRow(page, name).click();
   await expect(page.getByTestId('music-rename-playlist-btn')).toBeVisible({ timeout: 15_000 });
 
   await page.getByTestId('music-rename-playlist-btn').click();
-  await page.getByTestId('dialog-host-input-name').fill(renamed);
-  await page.getByTestId('dialog-host-input-description').fill('e2e playlist description');
+  // Assert each field actually holds what was typed before submitting. The
+  // dialog's inputs bind on mount, and filling one before that binding
+  // settles has produced a submit where the description text ended up inside
+  // the NAME — which then surfaced fifteen seconds later as a missing
+  // playlist row, naming neither the field nor the value. Checking here
+  // fails at the fill, with both strings in the message.
+  const nameInput = page.getByTestId('dialog-host-input-name');
+  const descInput = page.getByTestId('dialog-host-input-description');
+  await nameInput.fill(renamed);
+  await descInput.fill('e2e playlist description');
+  await expect(nameInput).toHaveValue(renamed);
+  await expect(descInput).toHaveValue('e2e playlist description');
+
   await page.getByTestId('dialog-host-submit-btn').click();
-  await expect(page.getByTestId(renamed)).toBeVisible({ timeout: 15_000 });
+  await expect(playlistRow(page, renamed)).toBeVisible({ timeout: 15_000 });
+  // EXACT, where the row filter above is a substring match: a name that
+  // merely contains the new one — the failure mode above — has to fail here.
+  await expect(page.getByTestId('music-playlist-name')).toHaveText(renamed);
   await expect(page.getByText('e2e playlist description')).toBeVisible();
 
   await page.getByTestId('music-delete-playlist-btn').click();
   await page.getByTestId('music-delete-playlist-btn').click();
-  await expect(page.getByTestId(renamed)).toHaveCount(0, { timeout: 15_000 });
+  await expect(playlistRow(page, renamed)).toHaveCount(0, { timeout: 15_000 });
 });
 
 test('reorder playlist tracks by dragging', async ({ page }) => {
@@ -59,7 +84,7 @@ test('reorder playlist tracks by dragging', async ({ page }) => {
 
   const name = uniq('PLr2');
   await createPlaylist(page, name);
-  await page.getByTestId(name).click();
+  await playlistRow(page, name).click();
   await page.getByTestId('music-add-tracks-btn').click();
   await expect(page.getByTestId('music-add-tracks-dialog')).toBeVisible();
   await page.getByTestId('music-add-tracks-search-input').fill(token);
@@ -77,7 +102,7 @@ test('reorder playlist tracks by dragging', async ({ page }) => {
 test('add-tracks dialog opens, searches, and closes', async ({ page }) => {
   const name = uniq('PLt');
   await createPlaylist(page, name);
-  await page.getByTestId(name).click();
+  await playlistRow(page, name).click();
   await expect(page.getByTestId('music-add-tracks-btn')).toBeVisible({ timeout: 15_000 });
 
   await page.getByTestId('music-add-tracks-btn').click();
@@ -95,7 +120,7 @@ test('add an audio track and drive the player', async ({ page }) => {
 
   const name = uniq('PLp');
   await createPlaylist(page, name);
-  await page.getByTestId(name).click();
+  await playlistRow(page, name).click();
   await expect(page.getByTestId('music-add-tracks-btn')).toBeVisible({ timeout: 15_000 });
 
   // Open the picker and search by name (an empty query may match nothing).

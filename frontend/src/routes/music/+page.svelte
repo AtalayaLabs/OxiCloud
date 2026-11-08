@@ -530,15 +530,28 @@
 					{#each playlists as p (p.id)}
 						<!-- svelte-ignore a11y_click_events_have_key_events -->
 						<!-- svelte-ignore a11y_no_static_element_interactions -->
+						<!--
+							A FIXED testid plus the name in its own hook, rather than
+							`data-testid={p.name}`. Keying the hook on user data meant a
+							test looking for a playlist it had just renamed got
+							"element(s) not found" when the name came out wrong — the
+							locator and the thing under test were the same string, so
+							the failure could not say what the name actually was.
+							Specs now filter rows by text and assert the name
+							separately, which reports "expected X, received Y".
+						-->
 						<div
 							class="music-playlist-item"
 							class:active={current?.id === p.id}
-							data-testid={p.name}
+							data-testid="music-playlist-item"
+							data-playlist-id={p.id}
 							onclick={() => select(p)}
 						>
 							<div class="music-playlist-icon"><Icon name="music" /></div>
 							<div class="music-playlist-item-info">
-								<span class="music-playlist-item-name">{p.name}</span>
+								<span class="music-playlist-item-name" data-testid="music-playlist-name"
+									>{p.name}</span
+								>
 								{#if p.track_count != null}
 									<span class="music-playlist-item-count"
 										>{p.track_count}
