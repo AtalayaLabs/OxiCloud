@@ -141,6 +141,8 @@
     "repeat": "Herhalen",
     "repeat_one": "Een Herhalen",
     "queue": "Wachtrij",
+    "add_to_queue": "Aan wachtrij toevoegen",
+    "added_to_queue": "{{name}} toegevoegd aan de wachtrij",
     "queue_empty": "Wachtrij is leeg",
     "not_playing": "Niet afspelend",
     "play": "Afspelen",
@@ -855,6 +857,7 @@
     "upload_files_section_title": "Uploaden hier niet beschikbaar",
     "upload_files_section_body": "Ga naar de sectie Bestanden om bestanden te uploaden",
     "clear": "Alles wissen",
+    "mark_read": "Markeren als gelezen",
     "mark_all_read": "Alles als gelezen markeren"
   },
   "batch": {
@@ -1892,6 +1895,7 @@
     "favorite": "Favoriet",
     "ok": "OK",
     "optional": "optioneel",
+    "reorder": "Opnieuw ordenen",
     "retry": "Probeer het opnieuw",
     "select": "Selecteer",
     "select_all": "Selecteer alles",

@@ -141,6 +141,8 @@
     "repeat": "반복",
     "repeat_one": "한 곡 반복",
     "queue": "대기열",
+    "add_to_queue": "대기열에 추가",
+    "added_to_queue": "{{name}}을(를) 대기열에 추가했습니다",
     "queue_empty": "대기열이 비어 있습니다",
     "not_playing": "재생 중이 아닙니다",
     "play": "재생",
@@ -855,6 +857,7 @@
     "upload_files_section_title": "여기서는 업로드할 수 없습니다",
     "upload_files_section_body": "파일을 업로드하려면 파일 섹션으로 이동하세요",
     "clear": "모두 지우기",
+    "mark_read": "읽음으로 표시",
     "mark_all_read": "모두 읽음으로 표시"
   },
   "batch": {
@@ -1891,6 +1894,7 @@
     "favorite": "즐겨찾기",
     "ok": "확인",
     "optional": "선택 사항",
+    "reorder": "순서 변경",
     "retry": "다시 시도",
     "select": "선택",
     "select_all": "전체 선택",

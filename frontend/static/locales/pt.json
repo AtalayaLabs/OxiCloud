@@ -141,6 +141,8 @@
     "repeat": "Repetir",
     "repeat_one": "Repetir Uma",
     "queue": "Fila",
+    "add_to_queue": "Adicionar à fila",
+    "added_to_queue": "{{name}} adicionado à fila",
     "queue_empty": "Fila vazia",
     "not_playing": "Não reproduzindo",
     "play": "Reproduzir",
@@ -855,6 +857,7 @@
     "upload_files_section_title": "Upload não disponível aqui",
     "upload_files_section_body": "Vá para a seção Arquivos para enviar arquivos",
     "clear": "Limpar tudo",
+    "mark_read": "Marcar como lida",
     "mark_all_read": "Marcar tudo como lido"
   },
   "batch": {
@@ -1892,6 +1895,7 @@
     "favorite": "Favorito",
     "ok": "OK",
     "optional": "opcional",
+    "reorder": "Reordenar",
     "retry": "Tente novamente",
     "select": "Selecione",
     "select_all": "Selecionar tudo",

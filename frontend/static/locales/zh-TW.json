@@ -141,6 +141,8 @@
     "repeat": "重複",
     "repeat_one": "單曲迴圈",
     "queue": "播放佇列",
+    "add_to_queue": "加入待播清單",
+    "added_to_queue": "已將 {{name}} 加入待播清單",
     "queue_empty": "播放佇列為空",
     "not_playing": "未播放",
     "play": "播放",
@@ -1668,6 +1670,7 @@
     "upload_files_section_title": "此處不支援上傳",
     "upload_files_section_body": "請前往檔案部分上傳檔案",
     "clear": "全部清除",
+    "mark_read": "標記為已讀",
     "mark_all_read": "全部標為已讀"
   },
   "upload": {
@@ -1892,6 +1895,7 @@
     "favorite": "最喜歡的",
     "ok": "好的",
     "optional": "選修的",
+    "reorder": "重新排序",
     "retry": "再試一次",
     "select": "選擇",
     "select_all": "選擇全部",
