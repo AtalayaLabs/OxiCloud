@@ -76,3 +76,44 @@ describe('AppSplash', () => {
 		expect(component.includes('prefers-reduced-motion')).toBe(true);
 	});
 });
+
+// The no-JS twin of the splash. With scripting off, nothing ever clears
+// `#app-splash` — the app mounting is the only thing that does — so the
+// shell paints an explanation over it instead of spinning forever.
+describe('app.html noscript fallback', () => {
+	const html = readFileSync(resolve('src/app.html'), 'utf-8');
+
+	// THE load-bearing property: the message is inside <noscript>, so it does
+	// not exist in the DOM when scripting works. Moved out of that element —
+	// or gated on `@media (scripting: none)` alone, which not every supported
+	// browser honours — and a merely slow boot would accuse the visitor of
+	// having JavaScript disabled.
+	it('keeps the enable-JavaScript message inside <noscript>', () => {
+		expect(html).toMatch(/<noscript>[\s\S]*id="app-noscript"[\s\S]*<\/noscript>/);
+	});
+
+	// `both` is the part that matters: it holds opacity 0 through the delay.
+	// Without it the message paints immediately, then fades in again — the
+	// animation's own start value does not apply before it begins. The 0.5s
+	// delay itself is only a beat so the spinner registers before the swap;
+	// the <noscript> element, not the timing, is what keeps this away from a
+	// visitor whose JavaScript is merely still loading.
+	it('holds the message hidden through its entry delay', () => {
+		expect(html).toMatch(/#app-noscript \{[\s\S]*?animation: app-noscript-in [^;]*\bboth;/);
+		// Reduced motion shows it at once rather than animating.
+		expect(html).toMatch(/prefers-reduced-motion[\s\S]{0,120}#app-noscript \{\s*animation: none;/);
+	});
+
+	// The logo path is inlined at a dozen sites across the SPA and the Askama
+	// templates, and those copies have ALREADY drifted from the asset they
+	// depict (different viewBox; the asset carries a background circle). This
+	// layer renders only when scripting is off, so it can afford the one
+	// cached request and reference the asset instead of becoming copy
+	// thirteen.
+	it('references the logo asset rather than inlining its path', () => {
+		expect(html).toMatch(/id="app-noscript__logo"[\s\S]{0,200}logo\/logo-plain\.svg/);
+		// `%sveltekit.assets%` so it still resolves under a deployment prefix,
+		// the same way the <link rel="icon"> tags above it do.
+		expect(html).toContain('src="%sveltekit.assets%/logo/logo-plain.svg"');
+	});
+});

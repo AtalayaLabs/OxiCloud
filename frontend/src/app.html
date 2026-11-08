@@ -102,12 +102,120 @@
 					animation: none;
 				}
 			}
+
+			/*
+				Scripting disabled: the splash above would otherwise spin
+				forever, since the only thing that ever clears it is the app
+				mounting. This layer covers it with an explanation.
+
+				It lives in <noscript>, and that element alone is what keeps the
+				message away from a visitor whose JavaScript merely has not
+				finished loading: with scripting enabled it is not in the DOM at
+				all. (`@media (scripting: none)` would read better but is not
+				old enough to be the only gate.)
+
+				So the 0.5s delay is a beat, not a safeguard — it lets the
+				spinner register before the swap, and nothing depends on its
+				value. By the time this renders the message is already known to
+				be true, which is why it is half a second and not longer; drop
+				it to 0 and only the polish changes. `both` holds opacity 0
+				through the delay and the end state afterwards.
+
+				English only, and unavoidably so: the locale files are fetched
+				by the i18n store, which is JavaScript. Keep the wording plain
+				enough to survive machine translation by the reader.
+			*/
+			#app-noscript {
+				position: fixed;
+				inset: 0;
+				/* Above the splash (9999) — this replaces it, visually. */
+				z-index: 10000;
+				display: grid;
+				place-items: center;
+				padding: 24px;
+				background: light-dark(#f5f7fa, #0f172a);
+				color: light-dark(#0f172a, #e2e8f0);
+				font-family:
+					system-ui,
+					-apple-system,
+					'Segoe UI',
+					sans-serif;
+				text-align: center;
+				animation: app-noscript-in 300ms ease 0.5s both;
+			}
+			#app-noscript__logo {
+				width: 72px;
+				height: 72px;
+				margin: 0 auto 16px;
+				display: block;
+			}
+			#app-noscript__brand {
+				margin: 0 0 12px;
+				font-size: 1.5rem;
+				font-weight: 600;
+				letter-spacing: -0.01em;
+			}
+			#app-noscript__brand span {
+				color: #ff5e3a;
+			}
+			#app-noscript__msg {
+				margin: 0;
+				max-width: 42ch;
+				line-height: 1.6;
+				color: light-dark(#475569, #94a3b8);
+			}
+			@keyframes app-noscript-in {
+				from {
+					opacity: 0;
+				}
+				to {
+					opacity: 1;
+				}
+			}
+			/* Reduced motion: no fade. The message appears at once — with the
+			   fade gone there is nothing for the beat to lead into. */
+			@media (prefers-reduced-motion: reduce) {
+				#app-noscript {
+					animation: none;
+				}
+			}
 		</style>
 	</head>
 	<body data-sveltekit-preload-data="hover">
 		<div id="app-splash" role="status" aria-label="Loading">
 			<div id="app-splash__spinner"></div>
 		</div>
+		<!--
+			The logo is the ASSET, not a thirteenth inline copy of its path. An
+			<img> needs no JavaScript, it is the same file the <link rel="icon">
+			tags above already point at, and `%sveltekit.assets%` keeps it
+			correct under a deployment prefix.
+
+			Inlining is what the bundled surfaces do, for a reason that does not
+			apply here: they paint before the icon bundle. This layer only ever
+			renders when scripting is off, so one cached request costs nothing —
+			and the path data has drifted between those copies and this asset
+			already (different viewBox, and the asset carries a background
+			circle), which is the argument for not making another.
+		-->
+		<noscript>
+			<div id="app-noscript">
+				<div>
+					<img
+						id="app-noscript__logo"
+						src="%sveltekit.assets%/logo/logo-plain.svg"
+						alt=""
+						width="72"
+						height="72"
+					/>
+					<p id="app-noscript__brand"><span>Oxi</span>Cloud</p>
+					<p id="app-noscript__msg">
+						OxiCloud needs JavaScript to run. Please enable it for this site in your browser
+						settings, then reload this page.
+					</p>
+				</div>
+			</div>
+		</noscript>
 		<div style="display: contents">%sveltekit.body%</div>
 	</body>
 </html>
