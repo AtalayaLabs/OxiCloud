@@ -21,6 +21,42 @@ vi.mock('$lib/api/endpoints/folders', () => ({ deleteFolder: vi.fn(), moveFolder
 vi.mock('$lib/api/endpoints/batch', () => ({ copyFiles: vi.fn(), copyFolders: vi.fn() }));
 vi.mock('$lib/api/endpoints/favorites', () => ({ addFavorite: vi.fn() }));
 
+// `AppShell` calls `useNotifications()` on mount, which fetches the bell's
+// first page. Unmocked, that fetch fails in jsdom and the composable logs
+// `notifications refresh failed` — asynchronously, once per test in this
+// file. Each of those crosses Vitest's worker RPC as an `onUserConsoleLog`,
+// and a run where one is still in flight when the worker starts closing dies
+// with `EnvironmentTeardownError: Closing rpc while "onUserConsoleLog" was
+// pending`: no test fails, the FILE does, unpredictably. Silencing the work
+// is the fix; `retry` only re-rolls the dice, and a `setTimeout` flush at the
+// end of a test (tried first) just loses the race less often.
+//
+// The whole store surface is mocked, not just what `AppShell` reads:
+// `NotificationRow` and `MobileNav` import the same store and call
+// `markRead` / `delete`. A partial mock here is how an unrelated test in
+// this file broke once already — `session.reset()` calls `drives.reset()`,
+// which the drives mock below did not have.
+const { notificationsStore } = vi.hoisted(() => ({
+	notificationsStore: {
+		items: [] as unknown[],
+		unread: 0,
+		loading: false,
+		hasMore: false,
+		error: null,
+		refresh: vi.fn(async () => {}),
+		loadOlder: vi.fn(async () => {}),
+		markRead: vi.fn(async () => {}),
+		markAllRead: vi.fn(async () => {}),
+		delete: vi.fn(async () => {})
+	}
+}));
+vi.mock('$lib/composables/useNotifications.svelte', () => ({
+	notifications: notificationsStore,
+	useNotifications: vi.fn(),
+	summaryFor: (row: { kind?: string }) => row.kind ?? '',
+	mergeById: (existing: unknown[]) => existing
+}));
+
 // Two drives so `DrivePicker` renders at all — it hides itself with a
 // single drive, since there would be nowhere else to drop.
 const { driveStore } = vi.hoisted(() => ({
@@ -210,7 +246,7 @@ it('hides /shared and /shared-with-me when features.sharing is false', () => {
 	expect(screen.queryByTestId('appshell-nav-files-link')).toBeTruthy();
 });
 
-it('drops a nav group whose every link was flagged away, and leaves no heading', async () => {
+it('drops a nav group whose every link was flagged away, and leaves no heading', () => {
 	// `NAV_GROUPS` ends in a `filter(g => g.links.length > 0)`. Without it
 	// an emptied group does not merely render a stray heading — the keyed
 	// each reads `group.links[0].href`, so `links[0]` being undefined is a
@@ -232,15 +268,6 @@ it('drops a nav group whose every link was flagged away, and leaves no heading',
 	// Neighbouring group headings are untouched — the regression to guard
 	// against is a filter that over-matches and drops populated groups.
 	expect(screen.queryByText('Library')).toBeTruthy();
-
-	// Let AppShell's mount effects settle inside the test. Changing two
-	// feature flags at once makes this render kick off async work that
-	// logs, and without the flush that log lands after vitest has closed
-	// the worker's rpc — surfacing as
-	// `EnvironmentTeardownError: Closing rpc while "onUserConsoleLog" was
-	// pending`, which fails the RUN while every test still reports green.
-	// Only visible under full-suite load, never when this file runs alone.
-	await new Promise((r) => setTimeout(r, 0));
 });
 
 it('hides /photos when features.photos is false', () => {

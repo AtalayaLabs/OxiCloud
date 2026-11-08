@@ -1,4 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { allowConsole } from '$lib/testing/allowConsole';
+
+// Two deliberate sources of warnings here, so the console gate in
+// `vitest-setup.ts` would otherwise fail this file:
+//   * the smoke test calls every wrapper with `.catch(() => {})` against
+//     bare `vi.fn()` SDK stubs, so `tryRefresh` destructures `response`
+//     off `undefined`, warns and returns false — which is the point: the
+//     assertion is that each code path RAN, not that it succeeded;
+//   * `tryRefresh returns false when the refresh fails` drives the
+//     transport-error branch on purpose.
+allowConsole('warn', 'tryRefresh transport-error branch and the SDK smoke test');
 // Partial mock: stub `apiFetch` + `apiJson` so test fixtures can drive
 // the handful of legacy call sites still using them, while keeping
 // everything else (`apiProbeTransport`, `ApiError`, `withBase`, …) as

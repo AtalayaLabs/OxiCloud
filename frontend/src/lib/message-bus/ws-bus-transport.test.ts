@@ -4,6 +4,12 @@
 // the transport asks for fresh ones via `onNeedTicket(cb)`.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { allowConsole } from '$lib/testing/allowConsole';
+
+// The reconnect state machine and the breaker are the subject here, and both
+// warn as they work: need-ticket timeouts, scheduled reconnects with their
+// backoff, breaker trips. See the console gate in `vitest-setup.ts`.
+allowConsole('warn', 'need-ticket timeouts, reconnect scheduling and breaker trips');
 
 import { WsBusTransport } from './ws-bus-transport';
 import type { ConnectionState } from './client-interface';

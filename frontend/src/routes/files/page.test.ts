@@ -33,6 +33,25 @@ vi.mock('$lib/stores/session.svelte', () => ({ session }));
 vi.mock('$lib/stores/ui.svelte', () => ({ ui }));
 vi.mock('$lib/stores/dialogs.svelte', () => ({ confirmDialog, promptDialog }));
 vi.mock('$lib/api/client', () => ({ apiFetch: vi.fn(), withBase: (p: string) => p }));
+
+// The page subscribes to its folder's topic on mount. Left real, that starts
+// the message bus in a component test: the ticket exchange goes through
+// `apiJson`, which this file's `$lib/api/client` mock does not export, so
+// every attempt threw Vitest's "No apiJson export is defined on the mock"
+// INSIDE the transport — which caught it and warned
+// `ticket exchange failed — reconnect scheduled` ten times per run. Ten async
+// console writes racing worker teardown (see the gate in `vitest-setup.ts`),
+// and ten reconnect cycles for a bus that was never going to connect.
+//
+// Stubbed rather than allowed through the gate, because there is nothing to
+// test here: live updates have their own coverage in
+// `message-bus-folder-fanout.spec.ts` (e2e, real server) and in the transport
+// and bridge unit tests. `folderTopicFor` stays faithful — it is a pure
+// function and the page passes its result around.
+vi.mock('$lib/composables/useFolderTopic.svelte', () => ({
+	useFolderTopic: vi.fn(),
+	folderTopicFor: (id: string | null | undefined) => (id ? `folder:${id}` : null)
+}));
 vi.mock('$lib/api/csrf', () => ({ getCsrfHeaders: () => ({}) }));
 vi.mock('$lib/api/endpoints/deltaUpload', () => ({
 	instantUploadOwned: vi.fn(),
