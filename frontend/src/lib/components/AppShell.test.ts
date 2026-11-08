@@ -12,9 +12,59 @@ vi.mock('$lib/api/endpoints/auth', () => ({ logout: vi.fn() }));
 vi.mock('$lib/api/endpoints/search', () => ({
 	searchResources: vi.fn(async () => ({ items: [], query_time_ms: 0 }))
 }));
-vi.mock('$lib/api/endpoints/files', () => ({ fileInlineUrl: () => '/in' }));
+vi.mock('$lib/api/endpoints/files', () => ({
+	fileInlineUrl: () => '/in',
+	deleteFile: vi.fn(),
+	moveFile: vi.fn()
+}));
+vi.mock('$lib/api/endpoints/folders', () => ({ deleteFolder: vi.fn(), moveFolder: vi.fn() }));
+vi.mock('$lib/api/endpoints/batch', () => ({ copyFiles: vi.fn(), copyFolders: vi.fn() }));
+vi.mock('$lib/api/endpoints/favorites', () => ({ addFavorite: vi.fn() }));
+
+// Two drives so `DrivePicker` renders at all — it hides itself with a
+// single drive, since there would be nowhere else to drop.
+const { driveStore } = vi.hoisted(() => ({
+	driveStore: {
+		loaded: true,
+		drives: [
+			{
+				id: 'drive-a',
+				name: 'Personal',
+				kind: 'personal',
+				default_for_user: true,
+				root_folder_id: 'root-a',
+				used_bytes: 0,
+				quota_bytes: null
+			},
+			{
+				id: 'drive-b',
+				name: 'Team',
+				kind: 'shared',
+				default_for_user: false,
+				root_folder_id: 'root-b',
+				used_bytes: 0,
+				quota_bytes: null
+			}
+		],
+		load: vi.fn(async () => []),
+		findDefault: () => null,
+		findByRootFolderId: () => null,
+		// `session.reset()` calls this on logout. Omitting it threw inside
+		// the logout path, so the pre-existing logout test failed on a
+		// missing redirect rather than on anything to do with drives —
+		// mock the whole surface, not just what this file reads.
+		reset: vi.fn()
+	}
+}));
+vi.mock('$lib/stores/drives.svelte', () => ({
+	drives: driveStore,
+	driveIcon: () => 'hdd'
+}));
 
 import { logout } from '$lib/api/endpoints/auth';
+import { moveFile } from '$lib/api/endpoints/files';
+import { moveFolder } from '$lib/api/endpoints/folders';
+import { copyFiles, copyFolders } from '$lib/api/endpoints/batch';
 import { session } from '$lib/stores/session.svelte';
 import { serverConfig } from '$lib/stores/serverConfig.svelte';
 import AppShell from './AppShell.svelte';
@@ -221,6 +271,79 @@ it('keeps /contacts gated on features.contacts, NOT features.carddav', () => {
 	serverConfig.features = { ...serverConfig.features, carddav: false, contacts: true };
 	render(AppShell, { props: { children } });
 	expect(screen.queryByTestId('appshell-nav-contacts-link')).toBeTruthy();
+});
+
+// ── Drop onto a drive in the sidebar picker ──────────────────────────
+// The payload format, the copy-vs-move modifier rule and the batch
+// calls all live in AppShell, so this is where they get pinned.
+//
+// `fireEvent.drop(el, { dataTransfer })` is not enough: the handlers
+// read `types` / `getData` AND the live modifier bits, and jsdom does
+// not give DragEvent a usable DataTransfer. So build the event by hand
+// and define both onto it.
+const DRAG_TYPE = 'application/x-oxi-item';
+
+function dropOn(
+	el: Element,
+	items: { id: string; name: string; kind: 'file' | 'folder' }[],
+	opts: { copy?: boolean } = {}
+) {
+	const ev = new Event('drop', { bubbles: true, cancelable: true });
+	Object.defineProperty(ev, 'dataTransfer', {
+		value: { types: [DRAG_TYPE], getData: () => JSON.stringify(items) }
+	});
+	// jsdom reports a blank `navigator.platform`, so `IS_MAC` is false and
+	// Ctrl is the copy modifier — see `$lib/utils/dragModifiers`. Pinning
+	// the non-Mac branch keeps this deterministic across machines.
+	Object.defineProperty(ev, 'ctrlKey', { value: opts.copy === true });
+	el.dispatchEvent(ev);
+	return ev;
+}
+
+it('moves dropped items into a drive root, and copies them with the modifier held', async () => {
+	render(AppShell, { props: { children } });
+	const row = await waitFor(() => screen.getByTestId('drive-picker-row-drive-b'));
+
+	// No modifier → move, one call per item, targeting the drive's ROOT
+	// folder (not the drive id — a drive is not a folder).
+	dropOn(row, [
+		{ id: 'f1', name: 'a.txt', kind: 'file' },
+		{ id: 'd1', name: 'sub', kind: 'folder' }
+	]);
+	await waitFor(() => expect(m(moveFile)).toHaveBeenCalledWith('f1', 'root-b'));
+	expect(m(moveFolder)).toHaveBeenCalledWith('d1', 'root-b');
+	expect(m(copyFiles)).not.toHaveBeenCalled();
+
+	// Modifier held → copy, via the batch endpoints, one call per kind.
+	dropOn(row, [{ id: 'f2', name: 'b.txt', kind: 'file' }], { copy: true });
+	await waitFor(() => expect(m(copyFiles)).toHaveBeenCalledWith(['f2'], 'root-b'));
+	expect(m(copyFolders)).toHaveBeenCalledWith([], 'root-b');
+	// The copy must NOT also move — the two branches are exclusive.
+	expect(m(moveFile)).not.toHaveBeenCalledWith('f2', 'root-b');
+});
+
+it('refuses a drop onto the drive whose root is already on screen', async () => {
+	// Reported in review: dropping into the drive you are already looking
+	// at reported "moved" while the server no-opped, because the target
+	// folder WAS the items' current parent. `/files/root-b` means drive-b
+	// is that folder, so its row must accept nothing.
+	pageState.url = new URL('http://localhost/files/root-b');
+	render(AppShell, { props: { children } });
+	const row = await waitFor(() => screen.getByTestId('drive-picker-row-drive-b'));
+
+	const ev = dropOn(row, [{ id: 'f1', name: 'a.txt', kind: 'file' }]);
+	// Not consumed, so the browser would treat it as a non-target, and
+	// nothing was called.
+	expect(ev.defaultPrevented).toBe(false);
+	expect(m(moveFile)).not.toHaveBeenCalled();
+	expect(m(copyFiles)).not.toHaveBeenCalled();
+
+	// …while a SUBFOLDER of that same drive is a real move to its root.
+	pageState.url = new URL('http://localhost/files/root-b/deep-folder');
+	render(AppShell, { props: { children } });
+	const rows = await waitFor(() => screen.getAllByTestId('drive-picker-row-drive-b'));
+	dropOn(rows[rows.length - 1], [{ id: 'f1', name: 'a.txt', kind: 'file' }]);
+	await waitFor(() => expect(m(moveFile)).toHaveBeenCalledWith('f1', 'root-b'));
 });
 
 it('hides the search bar when features.search is false but keeps the slot', () => {

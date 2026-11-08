@@ -14,9 +14,12 @@
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { searchResources } from '$lib/api/endpoints/search';
-	import { deleteFile } from '$lib/api/endpoints/files';
-	import { deleteFolder } from '$lib/api/endpoints/folders';
+	import { deleteFile, moveFile } from '$lib/api/endpoints/files';
+	import { deleteFolder, moveFolder } from '$lib/api/endpoints/folders';
 	import { addFavorite } from '$lib/api/endpoints/favorites';
+	import { copyFiles, copyFolders } from '$lib/api/endpoints/batch';
+	import { isCopyDrop } from '$lib/utils/dragModifiers';
+	import type { Drive } from '$lib/api/types';
 	import type { FileItem, FolderItem, ItemType } from '$lib/api/types';
 	import { isAtLeastAdmin } from '$lib/utils/roles';
 	import { lazyComponent } from '$lib/composables/lazyComponent.svelte';
@@ -435,6 +438,138 @@
 
 	function sidebarOnDragLeave(href: string) {
 		if (sidebarDropHref === href) sidebarDropHref = null;
+	}
+
+	// ── Drop onto a drive in the picker ──────────────────────────────
+	// Moves (or with the OS copy modifier, copies) the dragged items into
+	// that drive's ROOT folder. Only reachable when the picker renders,
+	// i.e. when the account has more than one drive — with a single drive
+	// there is nowhere else to drop.
+	//
+	// Shares `sidebarDropHref` with the nav-link targets so exactly one
+	// thing in the sidebar is ever armed; drives key on their id, which
+	// cannot collide with an href.
+	let driveDropId = $state<string | null>(null);
+
+	/**
+	 * Folder currently being browsed, from `/files/<…>/<leaf>` — the last
+	 * segment, since the route is `[...path]`. `null` anywhere else.
+	 *
+	 * Used to refuse a drop onto the drive whose root you are already
+	 * looking at: the target folder would be the one the items are
+	 * already in, so the server no-ops and the UI would report a move
+	 * that did not happen. Dropping onto that same drive from a SUBFOLDER
+	 * is a real move to its root, and stays allowed.
+	 */
+	const currentFolderId = $derived.by(() => {
+		const m = /^\/files\/(.+)$/.exec(appPath(page.url.pathname));
+		if (!m) return null;
+		return (
+			m[1]
+				.split('/')
+				.filter((s) => s.length > 0)
+				.at(-1) ?? null
+		);
+	});
+
+	/** Would dropping here move items into the folder they are already in? */
+	function isCurrentFolderDrive(d: Drive): boolean {
+		return currentFolderId !== null && d.root_folder_id === currentFolderId;
+	}
+
+	function driveOnDragOver(e: DragEvent, _d: Drive) {
+		if (!e.dataTransfer?.types.includes(SIDEBAR_DRAG_TYPE)) return;
+		// Not a valid target when it resolves to the folder on screen —
+		// no `preventDefault`, so the browser shows a no-drop cursor and
+		// the row never highlights. Better than accepting the drop and
+		// reporting a move the server didn't make.
+		if (isCurrentFolderDrive(_d)) return;
+		e.preventDefault();
+		// Deliberately NOT setting `dropEffect`: leaving it alone lets the
+		// browser negotiate the cursor from the live OS modifier keys
+		// (arrow-with-plus for copy, plain for move), which is what makes
+		// the copy gesture discoverable. The nav-link targets above DO set
+		// it, because favorites/trash are single-meaning drops.
+		driveDropId = _d.id;
+	}
+
+	function driveOnDragLeave(d: Drive) {
+		if (driveDropId === d.id) driveDropId = null;
+	}
+
+	async function driveOnDrop(e: DragEvent, d: Drive) {
+		driveDropId = null;
+		if (!e.dataTransfer?.types.includes(SIDEBAR_DRAG_TYPE)) return;
+		// Belt to the dragover brace: a drop can still arrive here if the
+		// URL changed mid-drag, and silently doing nothing beats claiming
+		// a move that the server treated as a no-op.
+		if (isCurrentFolderDrive(d)) return;
+		e.preventDefault();
+		const items = parseDragItems(e);
+		if (items.length === 0) return;
+
+		// Dropping a folder onto a drive whose root IS that folder would
+		// ask the server to move it inside itself.
+		const target = d.root_folder_id;
+		const moving = items.filter((it) => it.id !== target);
+		if (moving.length === 0) return;
+
+		// Copy-vs-move read off the drop event, same rule as the folder-row
+		// and breadcrumb drops on /files — see `$lib/utils/dragModifiers`.
+		const copy = isCopyDrop(e);
+		try {
+			if (copy) {
+				// Batch endpoints: one call per kind, both independent.
+				await Promise.all([
+					copyFiles(
+						moving.filter((it) => it.kind === 'file').map((it) => it.id),
+						target
+					),
+					copyFolders(
+						moving.filter((it) => it.kind === 'folder').map((it) => it.id),
+						target
+					)
+				]);
+			} else {
+				// Per-item, bounded — mirrors `/files`'s `moveInto`. There is
+				// no batch move endpoint, and a cross-drive move can fail
+				// per item (the D5 `forbid_cross_drive_move` drive policy
+				// refuses, or the destination drive's quota check returns
+				// 507), so each is attempted and `fanout` toasts failures
+				// individually rather than abandoning the rest.
+				await fanout(moving, 6, async (it) => {
+					if (it.kind === 'file') await moveFile(it.id, target);
+					else await moveFolder(it.id, target);
+				});
+			}
+		} catch (err) {
+			errorToast(err);
+			return;
+		}
+		ui.notify(
+			copy
+				? t(
+						'drive.copied_n',
+						{ n: moving.length, drive: d.name },
+						'Copied {{n}} item(s) to {{drive}}'
+					)
+				: t(
+						'drive.moved_n',
+						{ n: moving.length, drive: d.name },
+						'Moved {{n}} item(s) to {{drive}}'
+					),
+			'success'
+		);
+		// No refresh event dispatched, matching the trash drop above: the
+		// source listing updates itself off the message bus, since the
+		// move/copy services publish and `/files` subscribes to its
+		// folder topic (`useFolderTopic`). The favorites drop needs its
+		// `oxicloud:favorite-changed` event only because a star is local
+		// UI state no server event carries.
+		//
+		// Consequence worth knowing: with the message bus disabled, the
+		// row lingers until a manual reload — exactly as it already does
+		// for a sidebar trash drop.
 	}
 
 	function parseDragItems(e: DragEvent): DragItem[] {
@@ -925,7 +1060,13 @@
 						<span>{link.label}</span>
 					</a>
 					{#if !isAdminSection && link.href === '/files' && !session.isExternalUser}
-						<DrivePicker onnavigate={() => (sidebarOpen = false)} />
+						<DrivePicker
+							onnavigate={() => (sidebarOpen = false)}
+							dropTargetId={driveDropId}
+							ondragoverDrive={driveOnDragOver}
+							ondragleaveDrive={driveOnDragLeave}
+							onDropIntoDrive={(e, d) => void driveOnDrop(e, d)}
+						/>
 					{/if}
 				{/each}
 			</div>

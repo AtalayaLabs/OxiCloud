@@ -2120,6 +2120,8 @@
       "aria": "This drive is read-only"
     },
     "back_to_files": "Back to Files",
+    "copied_n": "Copied {{n}} item(s) to {{drive}}",
+    "moved_n": "Moved {{n}} item(s) to {{drive}}",
     "danger_zone": "Danger zone",
     "delete": "Delete drive",
     "delete_confirm": "Delete drive \"{{name}}\"? This cannot be undone — the drive must be empty first or the server will refuse.",
