@@ -935,6 +935,7 @@
     "title": "Notifications",
     "empty": "No notifications",
     "mark_all_read": "Mark all read",
+    "mark_read": "Mark read",
     "link_created": "Link created",
     "share_success": "Shared link created successfully",
     "upload_files_section_title": "Upload not available here",

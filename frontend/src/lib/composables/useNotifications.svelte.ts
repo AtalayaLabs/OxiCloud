@@ -334,6 +334,20 @@ class NotificationsStore {
 export const notifications = new NotificationsStore();
 
 /**
+ * Mark EVERYTHING read — the toast history in `ui` and the persistent rows
+ * here.
+ *
+ * Two surfaces offer this, the bell dropdown and `/notifications`, and the
+ * bell's badge counts both stores. A caller that remembered only one of them
+ * would leave the badge lit over a panel showing nothing unread, so the pair
+ * lives here rather than in each surface's own handler.
+ */
+export function markEverythingRead(): void {
+	ui.markNotificationsRead();
+	void notifications.markAllRead();
+}
+
+/**
  * Wire the bell into a component's lifecycle. Fires an initial full
  * fetch on mount, subscribes to `user:{me}:notifications` for live
  * pushes, delta-fetches on reconnect (backfills rows missed during

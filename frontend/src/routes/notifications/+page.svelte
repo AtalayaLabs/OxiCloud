@@ -5,7 +5,7 @@
 	import Icon from '$lib/icons/Icon.svelte';
 	import NotificationRow from '$lib/components/NotificationRow.svelte';
 	import TransientNotificationRow from '$lib/components/TransientNotificationRow.svelte';
-	import { notifications } from '$lib/composables/useNotifications.svelte';
+	import { markEverythingRead, notifications } from '$lib/composables/useNotifications.svelte';
 	import { ui, type Notification as TransientNotification } from '$lib/stores/ui.svelte';
 	import type { Notification } from '$lib/api/types';
 	import { t } from '$lib/i18n/index.svelte';
@@ -44,10 +44,25 @@
 		else void notifications.delete(entry.item.id);
 	}
 
-	function markAllRead() {
-		ui.markNotificationsRead();
-		void notifications.markAllRead();
+	/**
+	 * Mark one row read — the right-hand swipe, and its hover button.
+	 *
+	 * NOT a toggle yet, and the missing half is server-side: the API exposes
+	 * `POST /notifications/{id}/read` and nothing that clears `read_at`
+	 * (`routes.rs`). So "mark unread" has no call to make, and a gesture that
+	 * silently did nothing on half its rows would be worse than one that only
+	 * goes one way. The swipe is idempotent either way: a row already read
+	 * stays read.
+	 */
+	function markRead(entry: FeedRow) {
+		if (entry.kind === 'transient') ui.markNotificationRead(entry.item.id);
+		else void notifications.markRead(entry.item.id);
 	}
+
+	// Shared with the bell dropdown, which offers the same action: both stores
+	// feed the badge, so marking one of them is a half-read state nobody can
+	// clear from the UI.
+	const markAllRead = markEverythingRead;
 
 	onMount(() => ui.markNotificationsRead());
 </script>
@@ -98,6 +113,16 @@
 					tone: 'danger',
 					testId: (entry) => `notifications-dismiss-${entry.id}`,
 					run: dismiss
+				}}
+				swipeRight={{
+					// Blue and additive, against the red of the dismissal — the two
+					// directions of this list are opposites, and red against blue is
+					// the pair that survives colour blindness.
+					icon: 'check-double',
+					label: t('notifications.mark_read', 'Mark read'),
+					tone: 'add',
+					testId: (entry) => `notifications-read-${entry.id}`,
+					run: markRead
 				}}
 				listLabel={t('notifications.title', 'Notifications')}
 			>

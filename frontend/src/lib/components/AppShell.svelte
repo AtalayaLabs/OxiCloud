@@ -51,6 +51,7 @@
 	import { session } from '$lib/stores/session.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 	import {
+		markEverythingRead,
 		notifications as persistentNotifications,
 		useNotifications
 	} from '$lib/composables/useNotifications.svelte';
@@ -1283,6 +1284,30 @@
 				<div class="notif-panel">
 					<div class="notif-panel-header">
 						<span class="notif-panel-title">{t('notifications.title', 'Notifications')}</span>
+						<!--
+							The same action as the one on `/notifications`, behind the
+							same helper: the bell's badge counts both stores, so marking
+							only one of them leaves it lit over a panel with nothing
+							unread in it.
+
+							Opening the panel already marks the TRANSIENT rows read, so
+							in practice this is about the persistent ones — which stay
+							unread deliberately until someone acts on them.
+						-->
+						{#if totalUnread > 0}
+							<button
+								class="notif-clear-btn"
+								title={t('notifications.mark_all_read', 'Mark all read')}
+								aria-label={t('notifications.mark_all_read', 'Mark all read')}
+								data-testid="appshell-notif-mark-all-read-btn"
+								onclick={(e) => {
+									e.stopPropagation();
+									markEverythingRead();
+								}}
+							>
+								<Icon name="check-double" />
+							</button>
+						{/if}
 						{#if ui.notifications.length > 0}
 							<button
 								class="notif-clear-btn"

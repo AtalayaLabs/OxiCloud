@@ -1,5 +1,15 @@
-import { describe, expect, it } from 'vitest';
-import { mergeById } from './useNotifications.svelte';
+import { describe, expect, it, vi } from 'vitest';
+
+// The bell marks rows read through the API; this file is about the local
+// bookkeeping, so the network call is stubbed rather than reached.
+vi.mock('$lib/api/endpoints/notifications', async (original) => ({
+	...(await original<Record<string, unknown>>()),
+	markAllNotificationsRead: vi.fn(async () => undefined)
+}));
+
+import { markEverythingRead, mergeById, notifications } from './useNotifications.svelte';
+import { markAllNotificationsRead } from '$lib/api/endpoints/notifications';
+import { ui } from '$lib/stores/ui.svelte';
 import type { Notification } from '$lib/api/types';
 
 function row(id: string, created_at: string, read_at: string | null = null): Notification {
@@ -54,5 +64,27 @@ describe('mergeById — WS-push vs delta-fetch race dedup', () => {
 		const merged = mergeById(existing, incoming);
 		expect(merged.map((n) => n.id)).toEqual(['c', 'b', 'a']);
 		expect(merged[1].read_at).toBe('2026-09-11T09:30:00Z');
+	});
+});
+
+// Two surfaces offer "mark all read" — the bell dropdown and
+// `/notifications` — and the bell's badge counts BOTH stores. A handler that
+// cleared only one of them would leave the badge lit over a panel with
+// nothing unread in it, and no way to clear it from the UI. Hence one helper
+// rather than the two-liner copied into each surface.
+describe('markEverythingRead', () => {
+	it('clears both the toast history and the persistent rows', async () => {
+		ui.notifications = [
+			{ id: 1, message: 'Upload finished', kind: 'success', at: Date.now(), read: false }
+		];
+		expect(ui.unread).toBe(1);
+
+		markEverythingRead();
+
+		expect(ui.unread).toBe(0);
+		expect(notifications.unread).toBe(0);
+		// The server has to be told, or the next fetch brings the rows back
+		// unread on every other device.
+		await vi.waitFor(() => expect(markAllNotificationsRead).toHaveBeenCalled());
 	});
 });

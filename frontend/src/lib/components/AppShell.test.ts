@@ -36,7 +36,8 @@ vi.mock('$lib/api/endpoints/favorites', () => ({ addFavorite: vi.fn() }));
 // `markRead` / `delete`. A partial mock here is how an unrelated test in
 // this file broke once already — `session.reset()` calls `drives.reset()`,
 // which the drives mock below did not have.
-const { notificationsStore } = vi.hoisted(() => ({
+const { notificationsStore, markEverythingRead } = vi.hoisted(() => ({
+	markEverythingRead: vi.fn(),
 	notificationsStore: {
 		items: [] as unknown[],
 		unread: 0,
@@ -52,6 +53,7 @@ const { notificationsStore } = vi.hoisted(() => ({
 }));
 vi.mock('$lib/composables/useNotifications.svelte', () => ({
 	notifications: notificationsStore,
+	markEverythingRead,
 	useNotifications: vi.fn(),
 	summaryFor: (row: { kind?: string }) => row.kind ?? '',
 	mergeById: (existing: unknown[]) => existing
@@ -371,6 +373,27 @@ it('refuses a drop onto the drive whose root is already on screen', async () => 
 	const rows = await waitFor(() => screen.getAllByTestId('drive-picker-row-drive-b'));
 	dropOn(rows[rows.length - 1], [{ id: 'f1', name: 'a.txt', kind: 'file' }]);
 	await waitFor(() => expect(m(moveFile)).toHaveBeenCalledWith('f1', 'root-b'));
+});
+
+// The bell dropdown gained the same "mark all read" action `/notifications`
+// has, through the same shared helper — the badge counts the toast history
+// AND the persistent rows, so a surface that cleared one of them would leave
+// it lit over a panel with nothing unread. It appears only when something is
+// unread: a permanently-present control for a no-op is one people stop
+// reading.
+it('marks everything read from the bell, and offers it only when unread', async () => {
+	notificationsStore.unread = 2;
+	render(AppShell, { props: { children } });
+	await fireEvent.click(screen.getByTestId('appshell-notif-bell-btn'));
+	await fireEvent.click(screen.getByTestId('appshell-notif-mark-all-read-btn'));
+	expect(markEverythingRead).toHaveBeenCalledOnce();
+});
+
+it('offers no mark-all-read when nothing is unread', async () => {
+	notificationsStore.unread = 0;
+	render(AppShell, { props: { children } });
+	await fireEvent.click(screen.getByTestId('appshell-notif-bell-btn'));
+	expect(screen.queryByTestId('appshell-notif-mark-all-read-btn')).toBeNull();
 });
 
 it('hides the search bar when features.search is false but keeps the slot', () => {

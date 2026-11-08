@@ -197,6 +197,11 @@ class UiStore {
 		this.notifications = this.notifications.map((n) => (n.read ? n : { ...n, read: true }));
 	}
 
+	/** Mark one history row read, leaving the rest alone. */
+	markNotificationRead(id: number): void {
+		this.notifications = this.notifications.map((n) => (n.id === id ? { ...n, read: true } : n));
+	}
+
 	/**
 	 * Drop one row from the notification history.
 	 *
