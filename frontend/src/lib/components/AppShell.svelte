@@ -18,7 +18,8 @@
 	import { deleteFolder, moveFolder } from '$lib/api/endpoints/folders';
 	import { addFavorite } from '$lib/api/endpoints/favorites';
 	import { copyFiles, copyFolders } from '$lib/api/endpoints/batch';
-	import { isCopyDrop } from '$lib/utils/dragModifiers';
+	import { isCopyDrop, ITEM_DRAG_MIME } from '$lib/utils/dragModifiers';
+	import { dragAutoScroll } from '$lib/utils/dragAutoScroll';
 	import type { Drive } from '$lib/api/types';
 	import type { FileItem, FolderItem, ItemType } from '$lib/api/types';
 	import { isAtLeastAdmin } from '$lib/utils/roles';
@@ -418,7 +419,7 @@
 	//   – Favorites: batch-add each item as a favorite (idempotent server-side).
 	//   – Trash: yes/no confirm dialog, then batch-delete on approval.
 	// Every other sidebar link stays inert (no dragover ⇒ no drop cursor).
-	const SIDEBAR_DRAG_TYPE = 'application/x-oxi-item';
+	const SIDEBAR_DRAG_TYPE = ITEM_DRAG_MIME;
 	interface DragItem {
 		id: string;
 		name: string;
@@ -1342,7 +1343,14 @@
 		</div>
 	</div>
 
-	<main class="content-area" id="main-content" tabindex="-1">
+	<!--
+		`use:dragAutoScroll` so a drag can reach a drop target above or below
+		the fold. The scroller is this element, but the listener is on the
+		window: on the way up the pointer crosses into `.top-bar` — a sibling
+		of this element — well before the window edge, so the browser's own
+		edge scrolling never engaged and only downward drags worked.
+	-->
+	<main class="content-area" id="main-content" tabindex="-1" use:dragAutoScroll>
 		{#if !online}
 			<Banner
 				severity="warning"

@@ -1,11 +1,24 @@
 /**
- * Copy-vs-move resolution for drag-and-drop, following OS convention.
+ * The drag-and-drop gesture contract: what an in-app drag carries, and how
+ * copy-vs-move is read off the drop.
  *
  * Extracted from `/files` so the sidebar drive drop reads the same
  * modifier keys the folder-row and breadcrumb drops do. A second copy of
  * this rule would mean the same gesture meaning different things in two
  * parts of the same window.
  */
+
+/**
+ * MIME of an in-app item drag. The payload is a JSON array of
+ * `{ id, name, kind }`, set by the row drag in `ResourceList`.
+ *
+ * Private (`application/x-…`) on purpose: it is what tells an OS file drag
+ * (which carries `Files`) apart from one of our own, so a drop target can
+ * accept the right one. Named here because five places need to agree on
+ * the string — the row drag that sets it, and the row, breadcrumb, sidebar
+ * and auto-scroll handlers that test for it.
+ */
+export const ITEM_DRAG_MIME = 'application/x-oxi-item';
 
 /**
  * Platform sniff, for picking which modifier means "copy".

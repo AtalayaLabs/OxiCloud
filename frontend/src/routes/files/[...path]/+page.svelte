@@ -48,7 +48,7 @@
 	import { apiFetch, withBase } from '$lib/api/client';
 	import { getCsrfHeaders } from '$lib/api/csrf';
 	import { deleteConfirmLabel } from '$lib/utils/deleteConfirm';
-	import { isCopyDrop } from '$lib/utils/dragModifiers';
+	import { isCopyDrop, ITEM_DRAG_MIME } from '$lib/utils/dragModifiers';
 	import { countHidden, filterDotfiles } from '$lib/utils/dotfileFilter';
 	import { TEXTY_EXT_RE } from '$lib/utils/textyExt';
 	import { preferences } from '$lib/stores/preferences.svelte';
@@ -1454,7 +1454,7 @@
 	}
 
 	// ── Drag-to-move ─────────────────────────────────────────────────────────
-	const DRAG_TYPE = 'application/x-oxi-item';
+	const DRAG_TYPE = ITEM_DRAG_MIME;
 	let dropFolderId = $state<string | null>(null);
 	// Per-crumb drop highlight state lived here until the breadcrumb
 	// migrated to the shared `<FolderBreadcrumb>` component (2026-07-26),

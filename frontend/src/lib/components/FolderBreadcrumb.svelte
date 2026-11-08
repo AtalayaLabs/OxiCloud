@@ -5,6 +5,7 @@
 	import Icon from '$lib/icons/Icon.svelte';
 	import UserAvatar from '$lib/components/UserAvatar.svelte';
 	import { serverConfig } from '$lib/stores/serverConfig.svelte';
+	import { ITEM_DRAG_MIME } from '$lib/utils/dragModifiers';
 	import { t } from '$lib/i18n/index.svelte';
 
 	/**
@@ -84,7 +85,7 @@
 	let {
 		folderId,
 		onDrop,
-		dragMime = 'application/x-oxi-item',
+		dragMime = ITEM_DRAG_MIME,
 		onShare,
 		oncontextmenu: onCrumbContextMenu,
 		reloadToken
