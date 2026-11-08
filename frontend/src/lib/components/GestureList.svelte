@@ -701,7 +701,15 @@
 <style>
 	.gesture-list {
 		display: flex;
-		flex: 1;
+		/* `1 1 auto`, NOT `flex: 1` — that shorthand means basis `0%`, so the
+		   list claims none of its own content's height and whatever surrounds
+		   it keeps its natural size instead. In a capped box (the player's
+		   popover is `max-height: 480px`) the rows then got a sliver that
+		   shrank further with every track added. With basis `auto` the list
+		   asks for its content and yields it under pressure — which, with
+		   `min-height: 0`, is what makes the scroll engage rather than the
+		   rows compress. */
+		flex: 1 1 auto;
 		flex-direction: column;
 		min-height: 0;
 		/* The scroller is this element, so the edge auto-scroll has one box to
@@ -715,6 +723,17 @@
 	.gesture-row {
 		position: relative;
 		display: flex;
+		/* A row keeps its height, always.
+
+		   The list is a flex column, and a flex item shrinks by default — so
+		   wherever the list has a definite height (the player's popover caps
+		   at 480px) the ROWS compressed toward their min-content instead of
+		   the list overflowing. Flex resolves before overflow, so
+		   `overflow-y: auto` had nothing left to scroll: every track added
+		   made every row thinner. On a page, where the column is auto-height
+		   and nothing pushes back, the same CSS looked perfectly fine — which
+		   is why this only ever showed up in the dropdown. */
+		flex-shrink: 0;
 		align-items: center;
 		border-radius: var(--radius-md);
 		/* The swiped row must not spill over its neighbours as it travels. */

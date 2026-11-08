@@ -253,6 +253,20 @@
 {/if}
 
 <style>
+	/* The panel's chrome does not give way; the QUEUE does.
+
+	   In the popover (`max-height: 480px`) the box runs out of room as soon as
+	   a few tracks are queued, and a flex item shrinks by default — so the
+	   cover, the transport and the volume row all squeezed a little and the
+	   queue lost its share anyway. Pinning them makes the queue the single
+	   flexible thing in the column, which is what its `overflow-y: auto` is
+	   for. */
+	.player-head,
+	.player-bar,
+	.player-queue-head {
+		flex-shrink: 0;
+	}
+
 	.player-head {
 		display: flex;
 		align-items: center;
