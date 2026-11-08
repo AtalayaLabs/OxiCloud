@@ -13,7 +13,9 @@ import { serverConfig } from '$lib/stores/serverConfig.svelte';
 beforeEach(() => {
 	pageState.url = new URL('http://localhost/files');
 	player.queue = [];
-	serverConfig.features = { ...serverConfig.features, music: true };
+	// Both optional entries on, so each gating test turns off exactly one and
+	// a flag left false by a previous test cannot pass the next one for it.
+	serverConfig.features = { ...serverConfig.features, music: true, photos: true };
 });
 
 it('renders the four mobile destinations', () => {
@@ -35,6 +37,38 @@ it('puts Player between Media and Notifications', () => {
 	expect(items).toEqual([
 		'mobile-nav-files-link',
 		'mobile-nav-photos-link',
+		'mobile-nav-player-link',
+		'mobile-nav-notifications-link',
+		'mobile-nav-account-link'
+	]);
+});
+
+// Media had NO gate at all: `ITEMS` was a flat const while the sidebar hid
+// `/photos` on `features.photos` (AppShell), so a deployment with photos off
+// still advertised it in the footer — and the link led to a page with nothing
+// behind it. Ed asked whether it was gated; it was not.
+it('omits Media when photos are disabled', () => {
+	serverConfig.features = { ...serverConfig.features, photos: false };
+	render(MobileNav);
+	expect(screen.queryByTestId('mobile-nav-photos-link')).toBeNull();
+	// The rest of the footer is untouched by that flag.
+	expect(screen.getByTestId('mobile-nav-files-link')).toBeTruthy();
+	expect(screen.getByTestId('mobile-nav-notifications-link')).toBeTruthy();
+	expect(screen.getByTestId('mobile-nav-account-link')).toBeTruthy();
+});
+
+// …and Player must not depend on Media's presence. It used to be injected
+// inside the loop with `{#if item.href === '/photos'}` — which was how it
+// found its position, and which silently made it a child of Media's
+// existence: hiding photos would have taken the player with it.
+it('keeps Player when Media is gone, in Media’s place', () => {
+	serverConfig.features = { ...serverConfig.features, photos: false, music: true };
+	const { container } = render(MobileNav);
+	const items = [...container.querySelectorAll('.mobile-nav__item')].map((el) =>
+		el.getAttribute('data-testid')
+	);
+	expect(items).toEqual([
+		'mobile-nav-files-link',
 		'mobile-nav-player-link',
 		'mobile-nav-notifications-link',
 		'mobile-nav-account-link'
