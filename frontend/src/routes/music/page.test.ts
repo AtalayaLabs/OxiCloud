@@ -129,7 +129,11 @@ it('edits name and description together', async () => {
 it('does not render a null track count', async () => {
 	m(listPlaylists).mockResolvedValue([{ ...playlist, track_count: null }]);
 	render(MusicPage);
-	await screen.findByTestId('Roadtrip');
+	// The row's hook is fixed (`music-playlist-item`) rather than the playlist
+	// name, so a wrong name reports as a text mismatch instead of a missing
+	// element — see the comment on that testid in `+page.svelte`.
+	await screen.findByTestId('music-playlist-item');
+	expect(screen.getByTestId('music-playlist-name').textContent).toBe('Roadtrip');
 	expect(screen.queryByText(/null/)).toBeNull();
 });
 

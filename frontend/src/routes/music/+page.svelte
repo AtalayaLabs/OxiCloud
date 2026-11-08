@@ -5,7 +5,7 @@
 	import { useSelection } from '$lib/composables/useSelection.svelte';
 	import { errorMessage, errorToast } from '$lib/utils/errors';
 	import { onMount } from 'svelte';
-	import { fileInlineUrl } from '$lib/api/endpoints/files';
+	import { player } from '$lib/stores/player.svelte';
 	import {
 		addTracks,
 		createPlaylist,
@@ -40,21 +40,22 @@
 
 	let dragIndex = $state<number | null>(null);
 
-	// ── Player (independent global queue) ──────────────────────────────────────
-	let audio = $state<HTMLAudioElement | null>(null);
-	/** Playback queue — independent of the visible `tracks` list. */
-	let queue = $state<PlaylistItem[]>([]);
-	let currentIndex = $state(-1);
-	let playing = $state(false);
-	let currentTime = $state(0);
-	let duration = $state(0);
-	let volume = $state(0.7);
-	let muted = $state(false);
-	let shuffle = $state(false);
-	let repeat = $state<'none' | 'all' | 'one'>('none');
-	let queueOpen = $state(false);
+	// ── Player ────────────────────────────────────────────────────────────────
+	// State and the `<audio>` element itself moved to `$lib/stores/player` and
+	// `MusicPlayer`, which `AppShell` renders above the router. They lived here
+	// until now, which is why leaving this page cut playback off mid-track.
+	// This page is a CONSUMER: it fills the queue and reflects what is playing.
 
-	const currentTrack = $derived(currentIndex >= 0 ? (queue[currentIndex] ?? null) : null);
+	/** A duration discovered by the player for a row we show as 0:00. */
+	function onTrackDuration(e: Event) {
+		const { id, seconds } = (e as CustomEvent<{ id: string; seconds: number }>).detail;
+		tracks = tracks.map((q) => (q.id === id ? { ...q, duration_secs: seconds } : q));
+	}
+
+	$effect(() => {
+		window.addEventListener('oxicloud:track-duration', onTrackDuration);
+		return () => window.removeEventListener('oxicloud:track-duration', onTrackDuration);
+	});
 
 	function fmtTime(s: number | null | undefined): string {
 		if (s == null || !Number.isFinite(s)) return '0:00';
@@ -195,24 +196,16 @@
 		return tr.title || tr.file_name || tr.file_id;
 	}
 
-	// ── Transport (operates on the independent queue) ──────────────────────────
-	/** Replace the queue (e.g. when starting playback of the visible playlist). */
-	function setQueue(list: PlaylistItem[]) {
-		queue = [...list];
-	}
-
-	function playIndex(i: number) {
-		if (i < 0 || i >= queue.length) return;
-		currentIndex = i;
-		// $effect swaps the src; ensure playback starts.
-		queueMicrotask(() => audio?.play().catch(() => {}));
-	}
+	// ── Starting playback ─────────────────────────────────────────────────────
+	// Every one of these hands the queue to the player and stops caring. The
+	// cover id goes WITH the queue rather than being read later from the
+	// selected playlist: the queue outlives the selection, so reading it later
+	// would show the wrong art as soon as you browse elsewhere.
 
 	/** Play the visible playlist from a given row, seeding the queue from it. */
 	function playFromTracks(i: number) {
 		if (i < 0 || i >= tracks.length) return;
-		setQueue(tracks);
-		playIndex(i);
+		player.play(tracks, i, current?.cover_file_id ?? null);
 	}
 
 	function playAll() {
@@ -226,118 +219,14 @@
 			const j = Math.floor(Math.random() * (i + 1));
 			[shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
 		}
-		setQueue(shuffled);
-		playIndex(0);
+		player.play(shuffled, 0, current?.cover_file_id ?? null);
 	}
 
-	function togglePlay() {
-		if (!audio) return;
-		if (currentIndex < 0 && queue.length) {
-			playIndex(0);
-			return;
-		}
-		if (playing) audio.pause();
-		else audio.play().catch(() => {});
+	/** Row play button: toggle if it is already the current track, else start it. */
+	function toggleRow(i: number) {
+		if (player.current?.id === tracks[i]?.id) player.toggle();
+		else playFromTracks(i);
 	}
-	function next() {
-		if (!queue.length) return;
-		if (shuffle) {
-			playIndex(Math.floor(Math.random() * queue.length));
-			return;
-		}
-		if (currentIndex + 1 < queue.length) playIndex(currentIndex + 1);
-		else if (repeat === 'all') playIndex(0);
-	}
-	function prev() {
-		if (!queue.length) return;
-		if (currentTime > 3 && audio) {
-			audio.currentTime = 0;
-			return;
-		}
-		// Wrap to the last track when at the start (OLD behavior).
-		playIndex(currentIndex > 0 ? currentIndex - 1 : queue.length - 1);
-	}
-	function onEnded() {
-		if (repeat === 'one') {
-			if (audio) audio.currentTime = 0;
-			audio?.play().catch(() => {});
-			return;
-		}
-		next();
-	}
-	function seek(e: Event) {
-		const v = Number((e.target as HTMLInputElement).value);
-		if (audio) audio.currentTime = v;
-	}
-	function applyVolume() {
-		if (audio) {
-			audio.volume = volume;
-			audio.muted = muted;
-		}
-	}
-	function setVolume(e: Event) {
-		volume = Number((e.target as HTMLInputElement).value);
-		muted = volume === 0;
-		applyVolume();
-	}
-	function toggleMute() {
-		muted = !muted;
-		applyVolume();
-	}
-	function cycleRepeat() {
-		repeat = repeat === 'none' ? 'all' : repeat === 'all' ? 'one' : 'none';
-	}
-
-	const volumeIcon = $derived(muted || volume === 0 ? 'volume' : 'volume-up');
-
-	function jumpQueue(i: number) {
-		playIndex(i);
-	}
-	function removeFromQueue(i: number) {
-		const next = [...queue];
-		next.splice(i, 1);
-		if (i === currentIndex) {
-			queue = next;
-			if (next.length === 0) {
-				audio?.pause();
-				currentIndex = -1;
-			} else {
-				playIndex(i >= next.length ? 0 : i);
-			}
-		} else {
-			if (i < currentIndex) currentIndex -= 1;
-			queue = next;
-		}
-	}
-
-	/** Live duration backfill: write the real duration into rows/queue lacking it. */
-	function onLoadedMetadata() {
-		duration = audio?.duration ?? 0;
-		const tr = currentTrack;
-		if (tr && audio?.duration && !tr.duration_secs) {
-			const secs = Math.round(audio.duration);
-			tr.duration_secs = secs;
-			queue = queue.map((q) => (q.id === tr.id ? { ...q, duration_secs: secs } : q));
-			tracks = tracks.map((q) => (q.id === tr.id ? { ...q, duration_secs: secs } : q));
-		}
-	}
-
-	function onAudioError() {
-		if (!currentTrack) return;
-		ui.notify(
-			t('music.playback_error', { name: trackLabel(currentTrack) }, 'Playback error: {{name}}'),
-			'error'
-		);
-		playing = false;
-	}
-
-	// Keep the <audio> src in sync with the current queued track.
-	$effect(() => {
-		if (audio && currentTrack) {
-			const url = fileInlineUrl(currentTrack.file_id);
-			if (audio.getAttribute('src') !== url) audio.src = url;
-		}
-	});
 
 	// ── Cover art picker ───────────────────────────────────────────────────────
 	let coverInput = $state<HTMLInputElement | null>(null);
@@ -670,7 +559,7 @@
 									<!-- svelte-ignore a11y_no_static_element_interactions -->
 									<div
 										class="music-track"
-										class:playing={currentTrack?.id === track.id && playing}
+										class:playing={player.current?.id === track.id && player.playing}
 										data-testid={trackLabel(track)}
 										draggable="true"
 										ondblclick={() => playFromTracks(i)}
@@ -689,12 +578,11 @@
 												data-testid={`music-track-play-${track.id}`}
 												onclick={(e) => {
 													e.stopPropagation();
-													if (currentTrack?.id === track.id) togglePlay();
-													else playFromTracks(i);
+													toggleRow(i);
 												}}
 											>
-												{#if currentTrack?.id === track.id}
-													<Icon name={playing ? 'pause' : 'play'} />
+												{#if player.current?.id === track.id}
+													<Icon name={player.playing ? 'pause' : 'play'} />
 												{:else}
 													<span class="track-num-text">{i + 1}</span>
 												{/if}
@@ -740,190 +628,12 @@
 	{/if}
 </div>
 
-<!-- Now-playing bar (persists while browsing) -->
-{#if currentTrack}
-	<div class="music-player has-track">
-		<div class="player-track-info">
-			<div class="player-album-art">
-				{#if coverUrl(current)}
-					<img src={coverUrl(current)} alt="" />
-				{:else}
-					<Icon name="music" />
-				{/if}
-			</div>
-			<div class="player-track-details">
-				<span class="player-track-name">{trackLabel(currentTrack)}</span>
-				<span class="player-track-artist">{currentTrack.artist ?? ''}</span>
-			</div>
-		</div>
-
-		<div class="player-controls">
-			<div class="player-buttons">
-				<button
-					class="player-btn"
-					class:active={shuffle}
-					title={t('music.shuffle', 'Shuffle')}
-					aria-label={t('music.shuffle', 'Shuffle')}
-					data-testid="music-player-shuffle-btn"
-					onclick={() => (shuffle = !shuffle)}
-				>
-					<Icon name="shuffle" />
-				</button>
-				<button
-					class="player-btn"
-					title={t('music.prev', 'Previous')}
-					aria-label={t('music.prev', 'Previous')}
-					data-testid="music-player-prev-btn"
-					onclick={prev}
-				>
-					<Icon name="backward" />
-				</button>
-				<button
-					class="player-btn player-btn-main"
-					title={t('music.play', 'Play')}
-					aria-label={t('music.play', 'Play')}
-					data-testid="music-player-play-btn"
-					onclick={togglePlay}
-				>
-					<Icon name={playing ? 'pause' : 'play'} />
-				</button>
-				<button
-					class="player-btn"
-					title={t('music.next', 'Next')}
-					aria-label={t('music.next', 'Next')}
-					data-testid="music-player-next-btn"
-					onclick={next}
-				>
-					<Icon name="forward" />
-				</button>
-				<button
-					class="player-btn"
-					class:active={repeat !== 'none'}
-					class:repeat-one={repeat === 'one'}
-					title={t('music.repeat', 'Repeat')}
-					aria-label={t('music.repeat', 'Repeat')}
-					data-testid="music-player-repeat-btn"
-					onclick={cycleRepeat}
-				>
-					<Icon name="repeat" />
-					{#if repeat === 'one'}<span class="repeat-one-badge">1</span>{/if}
-				</button>
-			</div>
-			<div class="player-progress">
-				<span class="player-time player-time-current">{fmtTime(currentTime)}</span>
-				<input
-					class="player-progress-range"
-					type="range"
-					min="0"
-					max={duration || 0}
-					value={currentTime}
-					oninput={seek}
-					aria-label={t('music.seek', 'Seek')}
-					data-testid="music-player-seek-input"
-				/>
-				<span class="player-time player-time-total">{fmtTime(duration)}</span>
-			</div>
-		</div>
-
-		<div class="player-extra">
-			<button
-				class="player-btn player-btn-small"
-				class:active={queueOpen}
-				title={t('music.queue', 'Queue')}
-				aria-label={t('music.queue', 'Queue')}
-				data-testid="music-player-queue-toggle-btn"
-				onclick={() => (queueOpen = !queueOpen)}
-			>
-				<Icon name="list" />
-			</button>
-			<button
-				class="player-btn player-btn-small"
-				title={t('music.mute', 'Mute')}
-				aria-label={t('music.mute', 'Mute')}
-				data-testid="music-player-mute-btn"
-				onclick={toggleMute}
-			>
-				<Icon name={volumeIcon} />
-			</button>
-			<div class="player-volume-slider">
-				<input
-					id="player-volume-input"
-					type="range"
-					min="0"
-					max="1"
-					step="0.05"
-					value={muted ? 0 : volume}
-					oninput={setVolume}
-					aria-label={t('music.volume', 'Volume')}
-					data-testid="music-player-volume-input"
-				/>
-			</div>
-		</div>
-	</div>
-
-	{#if queueOpen}
-		<div class="player-queue" data-testid="music-queue-panel">
-			<div class="player-queue-header">
-				<h3>{t('music.queue', 'Queue')}</h3>
-				<button
-					class="player-btn player-btn-small"
-					data-testid="music-queue-close-btn"
-					onclick={() => (queueOpen = false)}
-					aria-label={t('common.close', 'Close')}
-				>
-					<Icon name="times" />
-				</button>
-			</div>
-			<div class="player-queue-list">
-				{#if queue.length === 0}
-					<div class="player-queue-empty">
-						<Icon name="music" />
-						<p>{t('music.queue_empty', 'Queue is empty.')}</p>
-					</div>
-				{:else}
-					{#each queue as qt, i (qt.id)}
-						<!-- svelte-ignore a11y_click_events_have_key_events -->
-						<!-- svelte-ignore a11y_no_static_element_interactions -->
-						<div
-							class="player-queue-item"
-							class:active={i === currentIndex}
-							data-testid={trackLabel(qt)}
-							onclick={() => jumpQueue(i)}
-						>
-							<span class="queue-item-num">{i + 1}</span>
-							<span class="queue-item-info">
-								<span class="queue-item-name">{trackLabel(qt)}</span>
-								<span class="queue-item-artist">{qt.artist ?? ''}</span>
-							</span>
-							<span class="queue-item-duration">{fmtDuration(qt.duration_secs)}</span>
-							<button
-								class="queue-item-remove"
-								aria-label={t('common.remove', 'Remove')}
-								data-testid={`music-queue-remove-${qt.id}`}
-								onclick={(e) => {
-									e.stopPropagation();
-									removeFromQueue(i);
-								}}
-							>
-								<Icon name="times" />
-							</button>
-						</div>
-					{/each}
-				{/if}
-			</div>
-		</div>
-	{/if}
-{/if}
-
-<audio
-	bind:this={audio}
-	onplay={() => (playing = true)}
-	onpause={() => (playing = false)}
-	ontimeupdate={() => (currentTime = audio?.currentTime ?? 0)}
-	onloadedmetadata={onLoadedMetadata}
-	onended={onEnded}
-	onerror={onAudioError}
-></audio>
+<!--
+	The now-playing bar and its queue drawer lived here, with the <audio>
+	element. They are `MusicPlayer` in the top bar now, rendered by `AppShell`
+	above the router: playback no longer stops when you leave this page, and
+	there is one player rather than one per section.
+-->
 
 <input
 	bind:this={coverInput}
@@ -1100,14 +810,10 @@
 
 <style>
 	/* Almost all visuals come from the ported music.css (global, token-based).
-	   Only the off-screen file input and player spacing live here. */
+	   Only the off-screen file input lives here — the rule that padded the
+	   container for the fixed player bar went with the bar itself, and was
+	   already dead: nothing renders `.music-player` any more. */
 	.hidden-input {
 		display: none;
-	}
-
-	/* Leave room above the OS chrome for the fixed player bar so the last
-	   tracks/sidebar content isn't hidden behind it while playing. */
-	:global(body:has(.music-player.has-track)) .music-container {
-		padding-bottom: 90px;
 	}
 </style>

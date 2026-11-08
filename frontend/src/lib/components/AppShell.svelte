@@ -29,6 +29,7 @@
 	import Banner from '$lib/components/Banner.svelte';
 	import AboutDialog from '$lib/components/AboutDialog.svelte';
 	import MobileNav from '$lib/components/MobileNav.svelte';
+	import MusicPlayer from '$lib/components/MusicPlayer.svelte';
 	import SelfAvatar from '$lib/components/SelfAvatar.svelte';
 	import TransientNotificationRow from '$lib/components/TransientNotificationRow.svelte';
 	import UserMenuContent from '$lib/components/UserMenuContent.svelte';
@@ -1242,6 +1243,16 @@
 		</div>
 
 		<div class="user-controls">
+			<!--
+				The player lives here, above the router, so playback survives
+				navigation — its `<audio>` element used to sit inside
+				`routes/music/+page.svelte`, where leaving Music unmounted it
+				and cut the track off. Rendered unconditionally: the component
+				keeps the element outside its own `{#if open}` for the same
+				reason, and the trigger is cheap when nothing is queued.
+			-->
+			<MusicPlayer />
+
 			<!-- Notifications -->
 			<div class="notif-wrapper" class:open={notifOpen} data-testid="appshell-notif-menu">
 				<button

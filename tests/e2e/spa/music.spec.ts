@@ -137,22 +137,40 @@ test('add an audio track and drive the player', async ({ page }) => {
   await page.getByTestId('music-play-all-btn').click({ timeout: 3_000 }).catch(() => {});
   await page.getByTestId('music-shuffle-play-btn').click({ timeout: 3_000 }).catch(() => {});
 
-  // Play the track and exercise the transport controls.
+  // Play the track from its row. The player is in the top bar now, so the
+  // queue toggle and close button this test used to click no longer exist —
+  // and because every click was wrapped in `.catch(() => {})`, their removal
+  // would have gone unnoticed: the test would keep passing while exercising
+  // nothing. Assertions below instead.
   await page.locator('[data-testid^="music-track-play-"]').first().click({ timeout: 5_000 });
-  await page.getByTestId('music-player-play-btn').click({ timeout: 3_000 }).catch(() => {});
-  await page.getByTestId('music-player-shuffle-btn').click({ timeout: 3_000 }).catch(() => {});
-  await page.getByTestId('music-player-repeat-btn').click({ timeout: 3_000 }).catch(() => {});
-  await page.getByTestId('music-player-next-btn').click({ timeout: 3_000 }).catch(() => {});
-  await page.getByTestId('music-player-mute-btn').click({ timeout: 3_000 }).catch(() => {});
 
-  // Queue panel — open, remove a queued track, then close.
-  await page.getByTestId('music-player-queue-toggle-btn').click({ timeout: 3_000 }).catch(() => {});
-  await page
-    .locator('[data-testid^="music-queue-remove-"]')
-    .first()
-    .click({ timeout: 2_000 })
-    .catch(() => {});
-  await page.getByTestId('music-queue-close-btn').click({ timeout: 3_000 }).catch(() => {});
+  const trigger = page.getByTestId('music-player-toggle-btn');
+  await trigger.click();
+  await expect(page.getByTestId('music-player-title')).toContainText(
+    songName.replace('.wav', '')
+  );
+  // The queue is part of the panel now rather than a drawer behind a toggle.
+  await expect(page.getByTestId('music-queue-panel')).toBeVisible();
+
+  // Transport: pause and resume, asserted on the element rather than on the
+  // button, so a handler wired to the wrong action cannot pass.
+  const paused = () => page.evaluate(() => document.querySelector('audio')?.paused ?? true);
+  await page.getByTestId('music-player-play-btn').click();
+  await expect.poll(paused).toBe(true);
+  await page.getByTestId('music-player-play-btn').click();
+  await expect.poll(paused).toBe(false);
+
+  // THE regression this player exists to prevent: leaving Music used to
+  // unmount the <audio> element and cut the track off. Navigate away and it
+  // must still be there, still playing, still reachable.
+  await page.keyboard.press('Escape');
+  await page.getByTestId('appshell-nav-files-link').click();
+  await expect(page).toHaveURL(/\/files/);
+  await expect(trigger).toBeVisible();
+  await expect.poll(paused).toBe(false);
+
+  await page.goBack();
+  await expect(page.getByTestId('music-add-tracks-btn')).toBeVisible({ timeout: 15_000 });
 
   // Manage-shares dialog.
   await page.getByTestId('music-manage-shares-btn').click({ timeout: 3_000 }).catch(() => {});
