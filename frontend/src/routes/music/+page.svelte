@@ -488,10 +488,11 @@
 
 <div class="music-container active">
 	{#if error}
-		<div class="music-error">
-			<Icon name="exclamation-circle" />
-			<p>{error}</p>
-		</div>
+		<!-- `EmptyState` rather than a local `.music-error` block: it was a
+		     second copy of icon-over-message, and the copy that stayed on
+		     `--color-danger-text` (white in both themes) is how error states
+		     ended up invisible in light mode. One class, one token. -->
+		<EmptyState icon="exclamation-circle" title={error} error />
 	{:else if loading && playlists.length === 0}
 		<div class="music-loading"><Icon name="spinner" /></div>
 	{:else if playlists.length === 0}

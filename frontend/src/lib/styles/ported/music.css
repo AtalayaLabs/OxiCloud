@@ -414,26 +414,9 @@
     animation: spin 1s linear infinite;
 }
 
-.music-error {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: var(--space-10);
-    text-align: center;
-    color: var(--color-error-text);
-}
-
-.music-error i,
-.music-error .oxi-icon {
-    font-size: var(--text-6xl);
-    margin-bottom: var(--space-4);
-}
-
-.music-error p {
-    margin: 0;
-    font-size: var(--text-base);
-}
+/* `.music-error` retired — the page renders `EmptyState` with `error`, which
+   is the same icon-over-message shape and carries the standalone error colour
+   (`--color-error-text`) for every view at once. */
 
 /* @keyframes spin → base/animations.css (canonical, loaded via main.css). */
 
