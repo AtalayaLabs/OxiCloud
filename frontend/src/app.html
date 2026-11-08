@@ -58,6 +58,16 @@
 			faster perceived first paint. The root layout removes `#app-splash` as soon
 			as it mounts. `light-dark()` + the early `color-scheme` rules match the
 			resolved theme so there's no colour flash when the app CSS arrives.
+
+			KEEP IN SYNC with `$lib/components/AppSplash.svelte`, which paints the
+			same screen for every later wait (the session probe on a protected
+			route, the OIDC code exchange on /login). A cold boot crosses both in
+			sequence, so a difference in size, colour or cadence shows up as a
+			flicker at the handover. This copy has to stay inline — it runs before
+			any stylesheet exists, so it cannot read a custom property, hence the
+			literals. `AppSplash.test.ts` reads this file and fails if the two
+			drift, the same drift guard `theme.test.ts` applies to `oxi-theme`
+			above.
 		-->
 		<style>
 			html[data-color-scheme='dark'] {

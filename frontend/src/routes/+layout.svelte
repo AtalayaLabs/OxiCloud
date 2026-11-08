@@ -7,6 +7,7 @@
 	import { onMount } from 'svelte';
 	import '$lib/styles/app.css';
 	import AppShell from '$lib/components/AppShell.svelte';
+	import AppSplash from '$lib/components/AppSplash.svelte';
 	import DialogHost from '$lib/components/DialogHost.svelte';
 	import Toaster from '$lib/components/Toaster.svelte';
 	import { isLogoutInProgress, setPasswordChangeRequiredHandler } from '$lib/api/client';
@@ -284,17 +285,26 @@
 {:else if ready}
 	{@render children()}
 {:else}
-	<div class="app-loading" aria-busy="true">Loading…</div>
+	<!--
+		Session probe still in flight on a protected route. This picks up
+		exactly where `app.html`'s `#app-splash` left off — `onMount`
+		removes that one as soon as the app is mounted, which on a slow
+		network is well before the session resolves.
+
+		It used to be a bare left-aligned "Loading…" line, so a slow boot
+		went centred-spinner → stray text in the corner → app. Same
+		component as the OIDC callback overlay on `/login`, so every
+		waiting screen in the app is the one screen.
+	-->
+	<AppSplash testid="app-boot-loader" />
 {/if}
 
 <Toaster />
 <DialogHost />
 
-<style>
-	.app-loading {
-		display: grid;
-		place-items: center;
-		min-height: 100vh;
-		color: var(--color-text-muted);
-	}
-</style>
+<!--
+	No styles left: the boot loader's are `AppSplash`'s now. `.app-loading`
+	lived here with `place-items: center`, which centred the text inside a
+	block that `display: contents` on the body wrapper left shrink-wrapped
+	— hence "Loading…" hugging the left edge rather than the middle.
+-->
