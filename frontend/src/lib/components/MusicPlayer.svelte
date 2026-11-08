@@ -29,6 +29,24 @@
 
 	$effect(() => {
 		player.attach(audioEl);
+		// Pick the previous session back up — the queue, the modes and the
+		// position. Must follow `attach`, since restoring sets the element's
+		// source and asks it to play; `restore` itself is idempotent.
+		if (audioEl) player.restore();
+	});
+
+	// A tab can vanish without a `pause`: closed, navigated away from, or sent
+	// to the background on a phone where the OS may kill it outright.
+	// `pagehide` is the last event guaranteed to run in all three, and
+	// `visibilitychange` covers the phone case early enough to matter.
+	$effect(() => {
+		const save = () => player.persist();
+		window.addEventListener('pagehide', save);
+		document.addEventListener('visibilitychange', save);
+		return () => {
+			window.removeEventListener('pagehide', save);
+			document.removeEventListener('visibilitychange', save);
+		};
 	});
 
 	// Keep the element's source on the current track.

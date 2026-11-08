@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { player } from './player.svelte';
+import { player, PlayerStore } from './player.svelte';
 import type { PlaylistItem } from '$lib/api/endpoints/music';
 
 /** Minimal track; only `id` matters to the queue arithmetic. */
@@ -109,6 +109,122 @@ describe('player.removeAt', () => {
 		player.removeAt(2);
 		expect(ids()).toEqual(['a', 'b']);
 		expect(player.current?.id).toBe('a');
+	});
+});
+
+// Surviving Ctrl+Shift+R is the point of this group. Media Session cannot
+// help — it describes the current page session to the OS, and a refresh
+// destroys the document, the element and the session together — so the queue,
+// the modes and the position go to localStorage and come back on boot.
+describe('player persistence', () => {
+	/**
+	 * A store that has not restored yet — which is exactly what a reload
+	 * produces. `restore()` runs once per instance and the flag behind it is a
+	 * real private field, so reusing the singleton would silently return early
+	 * and pass these tests without doing anything.
+	 */
+	function freshStore(): PlayerStore {
+		const p = new PlayerStore();
+		p.attach(document.createElement('audio'));
+		return p;
+	}
+
+	beforeEach(() => {
+		localStorage.clear();
+		player.clear();
+		player.shuffle = false;
+		player.repeat = 'none';
+	});
+
+	it('writes the queue, the modes and the position', () => {
+		player.play([track('a'), track('b')], 1, 'cover-1');
+		player.shuffle = true;
+		player.repeat = 'all';
+		player.currentTime = 42;
+		player.persist();
+
+		const saved = JSON.parse(localStorage.getItem('oxi-player-state') ?? 'null');
+		expect(saved.v).toBe(1);
+		expect(saved.queue.map((t: PlaylistItem) => t.id)).toEqual(['a', 'b']);
+		expect(saved.index).toBe(1);
+		expect(saved.position).toBe(42);
+		expect(saved.coverFileId).toBe('cover-1');
+		expect(saved.shuffle).toBe(true);
+		expect(saved.repeat).toBe('all');
+	});
+
+	// An empty queue is not a session worth resuming into; leaving the key
+	// behind would restore a player nobody asked for on the next visit.
+	it('drops the saved session when the queue is cleared', () => {
+		player.play([track('a')], 0, null);
+		expect(localStorage.getItem('oxi-player-state')).not.toBeNull();
+		player.clear();
+		expect(localStorage.getItem('oxi-player-state')).toBeNull();
+	});
+
+	// The feature itself: close the tab mid-song, come back, find the queue
+	// where you left it. The POSITION is deliberately not asserted on the
+	// element here — seeking waits for `loadedmetadata`, and jsdom never
+	// loads anything — but it is carried and shown.
+	it('brings the queue, the modes and the position back', () => {
+		player.play([track('a'), track('b'), track('c')], 2, 'cover-9');
+		player.shuffle = true;
+		player.repeat = 'one';
+		player.currentTime = 73;
+		player.persist();
+
+		const revived = freshStore();
+		revived.restore();
+
+		expect(revived.queue.map((t) => t.id)).toEqual(['a', 'b', 'c']);
+		expect(revived.index).toBe(2);
+		expect(revived.current?.id).toBe('c');
+		expect(revived.currentTime).toBe(73);
+		expect(revived.coverFileId).toBe('cover-9');
+		expect(revived.shuffle).toBe(true);
+		expect(revived.repeat).toBe('one');
+	});
+
+	it('clamps an index that no longer fits the saved queue', () => {
+		localStorage.setItem(
+			'oxi-player-state',
+			JSON.stringify({ v: 1, queue: [track('a')], index: 7, position: 0 })
+		);
+		const revived = freshStore();
+		revived.restore();
+		expect(revived.index).toBe(0);
+		expect(revived.current?.id).toBe('a');
+	});
+
+	it('restores at most once, however often it is called', () => {
+		player.play([track('a')], 0, null);
+		player.persist();
+		const revived = freshStore();
+		revived.restore();
+		revived.queue = [];
+		// A second call must not resurrect what the user has since cleared.
+		revived.restore();
+		expect(revived.queue).toEqual([]);
+	});
+
+	it('ignores a stored value from another format version', () => {
+		localStorage.setItem(
+			'oxi-player-state',
+			JSON.stringify({ v: 99, queue: [track('a')], index: 0 })
+		);
+		const revived = freshStore();
+		revived.restore();
+		// Half-applying a shape we do not understand is worse than starting
+		// empty.
+		expect(revived.queue).toEqual([]);
+		expect(revived.active).toBe(false);
+	});
+
+	it('ignores a corrupt stored value rather than failing the boot', () => {
+		localStorage.setItem('oxi-player-state', '{not json');
+		const revived = freshStore();
+		expect(() => revived.restore()).not.toThrow();
+		expect(revived.queue).toEqual([]);
 	});
 });
 

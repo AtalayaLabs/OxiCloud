@@ -22,12 +22,51 @@ export type RepeatMode = 'none' | 'all' | 'one';
  *  stepping back — the convention every physical transport uses. */
 const RESTART_WINDOW_S = 3;
 
-/** Per-viewer convenience, not shared state: see `localStoragePrefs`. */
+/** Per-viewer conveniences, not shared state: see `localStoragePrefs`. */
 const VOLUME_KEY = 'oxi-player-volume';
+const STATE_KEY = 'oxi-player-state';
 
-class PlayerStore {
+/**
+ * How often the playback position is written while a track runs.
+ *
+ * `timeupdate` fires about four times a second; writing localStorage that
+ * often would be a synchronous disk-backed write per frame-ish for a value
+ * nobody reads until the next page load. Five seconds bounds what a crash
+ * can lose to five seconds of position, which is below what anyone notices
+ * in a song.
+ */
+const POSITION_WRITE_MS = 5_000;
+
+/** Bounds what a pathological queue can put in storage. */
+const MAX_PERSISTED_TRACKS = 500;
+
+/** Shape written to storage. Versioned so a format change can be ignored
+ *  rather than crashing a boot on someone's stale value. */
+interface PersistedState {
+	v: 1;
+	queue: PlaylistItem[];
+	index: number;
+	position: number;
+	coverFileId: string | null;
+	shuffle: boolean;
+	repeat: RepeatMode;
+	playing: boolean;
+}
+
+/**
+ * Exported for tests, which need a store that has not already restored —
+ * `#restored` is a real private field, so there is no reaching in to reset
+ * it, and a fresh instance is what a reload actually produces anyway.
+ * Application code uses the `player` singleton below.
+ */
+export class PlayerStore {
 	/** The element, owned by `AppShell`. Null until it mounts. */
 	#audio: HTMLAudioElement | null = null;
+	/** Position to seek to once the restored track reports its metadata. */
+	#pendingSeek: number | null = null;
+	/** Restore runs once per page, however many times `attach` is called. */
+	#restored = false;
+	#lastPositionWrite = 0;
 
 	/** Playback queue — independent of any visible track list. */
 	queue = $state<PlaylistItem[]>([]);
@@ -94,6 +133,7 @@ class PlayerStore {
 		this.queue = [...list];
 		this.coverFileId = coverFileId;
 		this.playIndex(start);
+		this.persist();
 	}
 
 	playIndex(i: number): void {
@@ -215,6 +255,8 @@ class PlayerStore {
 		this.currentTime = 0;
 		this.duration = 0;
 		this.coverFileId = null;
+		this.#pendingSeek = null;
+		this.persist();
 	}
 
 	// ── Media element events, forwarded by `AppShell` ─────────────────────────
@@ -222,20 +264,31 @@ class PlayerStore {
 	onPlay(): void {
 		this.playing = true;
 		this.#publishMediaSession();
+		this.persist();
 	}
 
 	onPause(): void {
 		this.playing = false;
+		// Pausing is the likeliest moment for a tab to be closed next.
+		this.persist();
 		this.#publishMediaSession();
 	}
 
 	onTimeUpdate(): void {
 		this.currentTime = this.#audio?.currentTime ?? 0;
+		// Throttled: see `POSITION_WRITE_MS`.
+		if (Date.now() - this.#lastPositionWrite >= POSITION_WRITE_MS) this.persist();
 	}
 
 	/** Backfills a duration the server never recorded, so rows stop showing 0:00. */
 	onLoadedMetadata(): { id: string; seconds: number } | null {
 		this.duration = this.#audio?.duration ?? 0;
+		// The restored position, now that there is a track to seek within.
+		if (this.#pendingSeek !== null && this.#audio) {
+			const target = Math.min(this.#pendingSeek, this.#audio.duration || this.#pendingSeek);
+			if (Number.isFinite(target) && target > 0) this.#audio.currentTime = target;
+			this.#pendingSeek = null;
+		}
 		const track = this.current;
 		const seconds = this.#audio?.duration;
 		if (!track || !seconds || track.duration_secs) return null;
@@ -256,6 +309,73 @@ class PlayerStore {
 
 	onError(): void {
 		this.playing = false;
+	}
+
+	// ── Surviving a reload ────────────────────────────────────────────────────
+	//
+	// Media Session does NOT help here: it describes the current page session
+	// to the OS, and a refresh destroys the document, the element and the
+	// session together. Resuming is ours to do, so the queue, the position and
+	// the modes go to localStorage — per-viewer convenience, never shared
+	// state, and nothing here is authoritative: losing it costs a resume, not
+	// data.
+
+	/** Write the current state. Cheap, but not cheap enough for `timeupdate`. */
+	persist(): void {
+		try {
+			if (this.queue.length === 0) {
+				localStorage.removeItem(STATE_KEY);
+				return;
+			}
+			const state: PersistedState = {
+				v: 1,
+				queue: this.queue.slice(0, MAX_PERSISTED_TRACKS),
+				index: this.index,
+				position: this.currentTime,
+				coverFileId: this.coverFileId,
+				shuffle: this.shuffle,
+				repeat: this.repeat,
+				playing: this.playing
+			};
+			localStorage.setItem(STATE_KEY, JSON.stringify(state));
+			this.#lastPositionWrite = Date.now();
+		} catch {
+			/* private mode / quota — the session just will not resume */
+		}
+	}
+
+	/**
+	 * Rehydrate from storage. Called once, by `MusicPlayer`, after the element
+	 * is attached.
+	 *
+	 * Playback is NOT forced: a reload carries no user gesture, so most
+	 * browsers refuse `play()` outright. We ask anyway when the tab was
+	 * playing — Chrome allows it on an origin the viewer uses often — and
+	 * otherwise stay paused at the right position, which is the part that
+	 * actually matters.
+	 */
+	restore(): void {
+		if (this.#restored) return;
+		this.#restored = true;
+		const state = readPersistedState();
+		// A value written by a future (or broken) version is ignored rather
+		// than half-applied: a player that resumes into nonsense is worse than
+		// one that starts empty.
+		if (!state || state.v !== 1 || !Array.isArray(state.queue) || state.queue.length === 0) {
+			return;
+		}
+		this.queue = state.queue;
+		this.index = Math.min(Math.max(state.index, 0), state.queue.length - 1);
+		this.coverFileId = state.coverFileId ?? null;
+		this.shuffle = !!state.shuffle;
+		this.repeat = state.repeat ?? 'none';
+		// `currentTime` is a display value until the element has the track;
+		// the real seek waits for `loadedmetadata`, the first moment a
+		// duration — and so a valid seek target — exists.
+		this.currentTime = state.position ?? 0;
+		this.#pendingSeek = state.position ?? 0;
+		this.syncSource();
+		if (state.playing) queueMicrotask(() => void this.#audio?.play().catch(() => {}));
 	}
 
 	// ── OS integration ────────────────────────────────────────────────────────
@@ -314,6 +434,22 @@ class PlayerStore {
 		if (!this.#audio) return;
 		this.#audio.volume = this.volume;
 		this.#audio.muted = this.muted;
+	}
+}
+
+/**
+ * The saved session, or null when there is nothing usable.
+ *
+ * A free function rather than a method because it must survive anything the
+ * stored value throws at it — absent, unparseable, or written by a version
+ * that shaped it differently — and return one clean answer either way.
+ */
+function readPersistedState(): PersistedState | null {
+	try {
+		const raw = localStorage.getItem(STATE_KEY);
+		return raw ? (JSON.parse(raw) as PersistedState) : null;
+	} catch {
+		return null;
 	}
 }
 
