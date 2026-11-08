@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { errorToast } from '$lib/utils/errors';
+	import { resolveDynamic } from '$lib/utils/appPath';
 	import { relativeTimeAgo } from '$lib/utils/time';
 	import { onMount, tick } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { resolve } from '$app/paths';
 	import type { Pathname } from '$app/types';
 	import { page } from '$app/state';
 	import { ApiError } from '$lib/api/client';
@@ -295,7 +295,10 @@
 				} catch {
 					/* stale session state is recoverable — the next request refreshes it */
 				}
-				await goto(resolve(nextAfterChange as Pathname), { replaceState: true });
+				// `resolveDynamic` IS `resolve` with the cast a runtime-chosen route
+				// needs; the rule cannot follow a helper. See its doc in appPath.ts.
+				// eslint-disable-next-line svelte/no-navigation-without-resolve
+				await goto(resolveDynamic(nextAfterChange as Pathname), { replaceState: true });
 			}
 		} catch (err) {
 			// Remap the backend's `PasswordUnchanged` error_type to a
