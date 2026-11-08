@@ -2,6 +2,7 @@
 	// Route-scoped styles: kept off the global critical path (Vite code-splits
 	// this into the /music route chunk, loaded only when this page renders).
 	import '$lib/styles/ported/music.css';
+	import GestureList from '$lib/components/GestureList.svelte';
 	import { useSelection } from '$lib/composables/useSelection.svelte';
 	import { errorMessage, errorToast } from '$lib/utils/errors';
 	import { onMount } from 'svelte';
@@ -37,8 +38,6 @@
 	let tracks = $state<PlaylistItem[]>([]);
 	let loading = $state(false);
 	let error = $state<string | null>(null);
-
-	let dragIndex = $state<number | null>(null);
 
 	// ── Player ────────────────────────────────────────────────────────────────
 	// State and the `<audio>` element itself moved to `$lib/stores/player` and
@@ -165,31 +164,43 @@
 		}
 	}
 
-	function onDragStart(i: number) {
-		dragIndex = i;
-	}
-	function onDragOver(e: DragEvent, i: number) {
-		e.preventDefault();
-		if (dragIndex === null || dragIndex === i) return;
+	/**
+	 * Apply a reorder, then persist it.
+	 *
+	 * The list moves first so the row lands where the finger left it, and the
+	 * server is told after. If that call fails the playlist is re-fetched
+	 * rather than patched back: the failure may be a conflict with someone
+	 * else's reorder, and the server's order is the only one worth showing.
+	 */
+	async function onReorder(from: number, to: number) {
+		if (!current || from === to) return;
+		const previous = tracks;
 		const next = [...tracks];
-		const [moved] = next.splice(dragIndex, 1);
-		next.splice(i, 0, moved);
-		dragIndex = i;
+		const [moved] = next.splice(from, 1);
+		next.splice(to, 0, moved);
 		tracks = next;
-	}
-	async function onDrop() {
-		dragIndex = null;
-		if (!current) return;
 		try {
 			await reorderTracks(
 				current.id,
-				tracks.map((tr) => tr.id)
+				next.map((tr) => tr.id)
 			);
 			ui.notify(t('music.reordered', 'Playlist reordered.'), 'success');
 		} catch (e) {
 			errorToast(e);
+			tracks = previous;
 			await select(current);
 		}
+	}
+
+	function onEnqueue(track: PlaylistItem) {
+		player.enqueue(track, current?.cover_file_id ?? null);
+		// Named, because a queue can take the same track twice and the toast is
+		// the only confirmation that THIS one landed — "Added to queue" alone
+		// says nothing about which row the gesture caught.
+		ui.notify(
+			t('music.added_to_queue', { name: trackLabel(track) }, `Added ${trackLabel(track)} to queue`),
+			'success'
+		);
 	}
 
 	function trackLabel(tr: PlaylistItem): string {
@@ -210,16 +221,6 @@
 
 	function playAll() {
 		if (tracks.length) playFromTracks(0);
-	}
-
-	function shufflePlay() {
-		if (!tracks.length) return;
-		const shuffled = [...tracks];
-		for (let i = shuffled.length - 1; i > 0; i--) {
-			const j = Math.floor(Math.random() * (i + 1));
-			[shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-		}
-		player.play(shuffled, 0, current?.cover_file_id ?? null);
 	}
 
 	/** Row play button: toggle if it is already the current track, else start it. */
@@ -490,16 +491,14 @@
 								<Icon name="play" />
 								<span>{t('music.play_all', 'Play all')}</span>
 							</button>
-							<button
-								class="btn btn-secondary"
-								data-testid="music-shuffle-play-btn"
-								onclick={shufflePlay}
-								disabled={tracks.length === 0}
-								title={t('music.shuffle', 'Shuffle')}
-								aria-label={t('music.shuffle', 'Shuffle')}
-							>
-								<Icon name="shuffle" />
-							</button>
+							<!--
+								No shuffle button here. Shuffle is a PLAYER mode, and the
+								player owns it: its own toggle stays lit, survives the next
+								playlist and can be turned off again. This button instead
+								shuffled a copy of the track list once and played that — so
+								the player showed shuffle OFF while playing in random order,
+								and there was nothing to switch back.
+							-->
 							<button
 								class="btn btn-secondary"
 								data-testid="music-add-tracks-btn"
@@ -545,74 +544,104 @@
 							{:else}
 								<div class="music-track-header">
 									<span class="music-track-col music-track-drag"></span>
-									<span class="music-track-col music-track-num">#</span>
+									<span class="music-track-col music-track-play"></span>
 									<span class="music-track-col music-track-title">{t('music.title', 'Title')}</span>
 									<span class="music-track-col music-track-artist"
 										>{t('music.artist', 'Artist')}</span
 									>
 									<span class="music-track-col music-track-album">{t('music.album', 'Album')}</span>
-									<span class="music-track-col music-track-duration"><Icon name="clock" /></span>
-									<span class="music-track-col music-track-actions"></span>
+									<!-- No clock glyph: `3:41` needs no label, and the column is
+									     also where the row's action buttons appear. -->
+									<span class="music-track-col music-track-duration"></span>
 								</div>
-								{#each tracks as track, i (track.id)}
-									<!-- svelte-ignore a11y_click_events_have_key_events -->
-									<!-- svelte-ignore a11y_no_static_element_interactions -->
-									<div
-										class="music-track"
-										class:playing={player.current?.id === track.id && player.playing}
-										data-testid={trackLabel(track)}
-										draggable="true"
-										ondblclick={() => playFromTracks(i)}
-										ondragstart={() => onDragStart(i)}
-										ondragover={(e) => onDragOver(e, i)}
-										ondrop={onDrop}
-										ondragend={() => (dragIndex = null)}
-									>
-										<span class="music-track-col music-track-drag" aria-hidden="true">
-											<Icon name="grip-vertical" />
-										</span>
-										<span class="music-track-col music-track-num">
-											<!-- svelte-ignore a11y_click_events_have_key_events -->
-											<!-- svelte-ignore a11y_no_static_element_interactions -->
-											<span
+								<!--
+									The gestures are `GestureList`'s, shared with the player's
+									queue: a grip that reorders by pointer rather than HTML5
+									drag-and-drop (which never fires on touch, so this list
+									could not be reordered on a phone at all), a swipe left
+									to remove and a swipe right to queue — each also offered
+									as a button on hover, for a pointer that has one.
+								-->
+								<GestureList
+									items={tracks}
+									key={(track) => track.id}
+									reorderCapable
+									onmove={onReorder}
+									swipeLeft={{
+										// The same eraser the player queue uses: one icon for "take
+										// this out of the list", wherever the list is. A cross reads
+										// as "close this", which is what this was before.
+										icon: 'eraser',
+										label: t('common.remove', 'Remove'),
+										tone: 'danger',
+										testId: (track) => `music-track-remove-${track.id}`,
+										run: (track) => onRemoveTrack(track)
+									}}
+									swipeRight={{
+										// "Add to queue", not "Enqueue": it is what Spotify, YouTube
+										// Music and Apple Music all call it, and it says what happens
+										// rather than naming the data structure it happens to.
+										icon: 'plus',
+										label: t('music.add_to_queue', 'Add to queue'),
+										tone: 'add',
+										testId: (track) => `music-track-queue-${track.id}`,
+										run: (track) => onEnqueue(track)
+									}}
+									ontap={(_track, i) => toggleRow(i)}
+									gripLabel={t('common.reorder', 'Reorder')}
+									listClass="music-track-rows"
+									actionsInset="1.25rem"
+								>
+									{#snippet row(track, i, state)}
+										<!-- svelte-ignore a11y_no_static_element_interactions -->
+										<div
+											class="music-track"
+											class:hovered={state.hovered}
+											class:playing={player.current?.id === track.id && player.playing}
+											data-testid={trackLabel(track)}
+											ondblclick={() => playFromTracks(i)}
+										>
+											<!--
+												A play control, not a position. The number said
+												nothing the order itself does not, and it cost the
+												title the width — so this cell now only ever holds
+												the transport icon for its own row.
+											-->
+											<button
+												class="music-track-col music-track-play"
+												aria-label={player.current?.id === track.id && player.playing
+													? t('music.pause', 'Pause')
+													: t('music.play', 'Play')}
 												data-testid={`music-track-play-${track.id}`}
 												onclick={(e) => {
 													e.stopPropagation();
 													toggleRow(i);
 												}}
 											>
-												{#if player.current?.id === track.id}
-													<Icon name={player.playing ? 'pause' : 'play'} />
-												{:else}
-													<span class="track-num-text">{i + 1}</span>
-												{/if}
-											</span>
-										</span>
-										<span class="music-track-col music-track-title">
-											<Icon name="music" class="music-track-icon" />
-											<span class="music-track-name">{trackLabel(track)}</span>
-										</span>
-										<span class="music-track-col music-track-artist">{track.artist || '—'}</span>
-										<span class="music-track-col music-track-album">{track.album || '-'}</span>
-										<span class="music-track-col music-track-duration"
-											>{fmtDuration(track.duration_secs)}</span
-										>
-										<span class="music-track-col music-track-actions">
-											<button
-												class="music-track-remove-btn"
-												title={t('common.remove', 'Remove')}
-												aria-label={t('common.remove', 'Remove')}
-												data-testid={`music-track-remove-${track.id}`}
-												onclick={(e) => {
-													e.stopPropagation();
-													onRemoveTrack(track);
-												}}
-											>
-												<Icon name="times" />
+												<Icon
+													name={player.current?.id === track.id && player.playing
+														? 'pause'
+														: 'play'}
+												/>
 											</button>
-										</span>
-									</div>
-								{/each}
+											<!-- No leading note glyph: every row in a music playlist
+											     is a track, so it marked nothing out and only took
+											     width from the title. -->
+											<span class="music-track-col music-track-title">
+												<span class="music-track-name">{trackLabel(track)}</span>
+											</span>
+											<span class="music-track-col music-track-artist">{track.artist || '—'}</span>
+											<span class="music-track-col music-track-album">{track.album || '-'}</span>
+											<!-- Steps aside for the action buttons, which sit exactly
+											     here: the duration is idle text, so the row gains two
+											     actions without giving up a column. -->
+											<span
+												class="music-track-col music-track-duration"
+												class:is-hidden={state.hovered}>{fmtDuration(track.duration_secs)}</span
+											>
+										</div>
+									{/snippet}
+								</GestureList>
 							{/if}
 						</div>
 					</div>

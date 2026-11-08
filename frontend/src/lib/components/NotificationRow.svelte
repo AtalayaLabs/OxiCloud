@@ -39,8 +39,16 @@
 		/** Called after the row-body click's mark-read/navigate — the
 		 *  bell panel wraps this to close its dropdown on activation. */
 		onactivate?: () => void;
+		/**
+		 * The row's own delete button. The bell dropdown needs it; the
+		 * `/notifications` page does not, because there the row sits inside a
+		 * `GestureList` that offers the same deletion as a swipe and as a hover
+		 * button. Two crosses on one row is one too many, and they would be two
+		 * code paths to the same API call.
+		 */
+		showClose?: boolean;
 	}
-	let { row, onactivate }: Props = $props();
+	let { row, onactivate, showClose = true }: Props = $props();
 
 	function formatPersistentTime(iso: string): string {
 		try {
@@ -209,15 +217,17 @@
 		</div>
 		<div class="notif-item-time">{formatPersistentTime(row.created_at)}</div>
 	</div>
-	<button
-		type="button"
-		class="notif-item-close"
-		aria-label={t('common.delete', 'Delete')}
-		onclick={onCloseClick}
-		onkeydown={onCloseKeydown}
-	>
-		<Icon name="times" />
-	</button>
+	{#if showClose}
+		<button
+			type="button"
+			class="notif-item-close"
+			aria-label={t('common.delete', 'Delete')}
+			onclick={onCloseClick}
+			onkeydown={onCloseKeydown}
+		>
+			<Icon name="times" />
+		</button>
+	{/if}
 </div>
 
 <style>

@@ -79,3 +79,4 @@ src/
 - [Background Jobs →](/architecture/jobs)
 - [Message Bus & Notifications →](/architecture/message-bus-and-notifications) — real-time WebSocket bus (topics, AuthZ scopes, tab-visibility grace-close), persistent notifications (bell), AsyncAPI vs OpenAPI schema ownership
 - [Dates and Timestamps →](/architecture/dates) — which column means `btime`, `mtime`, `ctime` or capture time, which WebDAV / NextCloud slot each one feeds, and how far a client-supplied date is trusted
+- [Frontend Components →](/architecture/components) — every reusable component in the SvelteKit app, what it is and why it exists; read before building UI, so the next menu or gesture list is reused rather than written a second time

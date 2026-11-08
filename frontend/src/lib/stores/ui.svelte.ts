@@ -197,6 +197,18 @@ class UiStore {
 		this.notifications = this.notifications.map((n) => (n.read ? n : { ...n, read: true }));
 	}
 
+	/**
+	 * Drop one row from the notification history.
+	 *
+	 * Not `dismiss`, which takes a TOAST off the screen: a toast and its
+	 * history entry are two records with two id spaces, and dismissing the
+	 * toast leaves the entry in the list — which is exactly what happened when
+	 * `/notifications` first wired its swipe to `dismiss`.
+	 */
+	dismissNotification(id: number): void {
+		this.notifications = this.notifications.filter((n) => n.id !== id);
+	}
+
 	clearNotifications(): void {
 		this.notifications = [];
 	}

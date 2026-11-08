@@ -1,3 +1,4 @@
+import { base } from '$app/paths';
 import { fileInlineUrl } from '$lib/api/endpoints/files';
 import type { PlaylistItem } from '$lib/api/endpoints/music';
 
@@ -39,6 +40,16 @@ const POSITION_WRITE_MS = 5_000;
 
 /** Bounds what a pathological queue can put in storage. */
 const MAX_PERSISTED_TRACKS = 500;
+
+/**
+ * Shown by the OS when a track has no cover of its own.
+ *
+ * The maskable icon rather than `logo-plain.svg`: it is already square at
+ * 512px with the safe-area padding a rounded lock-screen tile needs, and
+ * several platforms decode Media Session artwork natively and drop SVG
+ * entirely.
+ */
+const FALLBACK_ARTWORK = '/logo/maskable-512.png';
 
 /** Shape written to storage. Versioned so a format change can be ignored
  *  rather than crashing a boot on someone's stale value. */
@@ -133,6 +144,25 @@ export class PlayerStore {
 		this.queue = [...list];
 		this.coverFileId = coverFileId;
 		this.playIndex(start);
+		this.persist();
+	}
+
+	/**
+	 * Append a track to the end of the queue, leaving what is playing alone —
+	 * "add to queue" rather than "play this".
+	 *
+	 * Except when there is nothing playing at all: a track dropped into an
+	 * empty queue with nothing to follow would just sit there, so it starts.
+	 * The call always comes from a gesture or a click, which is what browsers
+	 * require before `play()`.
+	 */
+	enqueue(track: PlaylistItem, coverFileId: string | null = null): void {
+		const wasEmpty = this.queue.length === 0;
+		this.queue = [...this.queue, track];
+		if (wasEmpty) {
+			this.coverFileId = coverFileId;
+			this.playIndex(this.queue.length - 1);
+		}
 		this.persist();
 	}
 
@@ -407,7 +437,16 @@ export class PlayerStore {
 			album: track.album ?? '',
 			// The playlist cover doubles as artwork; sizes are a hint, and the
 			// OS scales whatever it gets.
-			artwork: cover ? [{ src: cover, sizes: '512x512' }] : []
+			//
+			// With no cover, the app's own mark rather than an empty list: the
+			// OS does not leave the space blank, it fills it with a generic
+			// music or browser glyph, and on a lock screen next to Spotify and
+			// a podcast app that is the one place the source should be obvious.
+			// PNG, not the SVG: several platforms decode the artwork natively
+			// and simply drop an SVG.
+			artwork: cover
+				? [{ src: cover, sizes: '512x512' }]
+				: [{ src: `${base}${FALLBACK_ARTWORK}`, sizes: '512x512', type: 'image/png' }]
 		});
 		ms.playbackState = this.playing ? 'playing' : 'paused';
 	}

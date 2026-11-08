@@ -348,6 +348,40 @@ describe('player transport', () => {
 		expect(player.coverUrl).toBeNull();
 	});
 
+	// What the OS shows: the lock screen, the macOS Now Playing widget, a car
+	// head unit. With no artwork at all the platform substitutes a generic
+	// music or browser glyph, so a queue with no cover should still say where
+	// it came from.
+	it('hands the OS the app mark when a track has no cover', () => {
+		const metadata = vi.fn();
+		const ms = { metadata: null as unknown, playbackState: 'none', setActionHandler: vi.fn() };
+		vi.stubGlobal('MediaMetadata', metadata);
+		// jsdom has no Media Session; the store feature-detects it, so the
+		// stub is also what proves the detection is not inverted.
+		Object.defineProperty(navigator, 'mediaSession', { value: ms, configurable: true });
+		try {
+			// Published on the element's own events rather than on `play()`, so
+			// the metadata follows what is actually sounding.
+			player.play([track('a')], 0, null);
+			player.onPlay();
+			const [first] = metadata.mock.calls.at(-1) ?? [];
+			expect(first.artwork).toHaveLength(1);
+			expect(first.artwork[0].src).toContain('/logo/maskable-512.png');
+			// PNG, declared: several platforms decode artwork natively and drop
+			// an SVG without a word.
+			expect(first.artwork[0].type).toBe('image/png');
+
+			// …and a real cover still wins.
+			player.play([track('b')], 0, 'cover-1');
+			player.onPlay();
+			const [second] = metadata.mock.calls.at(-1) ?? [];
+			expect(second.artwork[0].src).toContain('cover-1');
+		} finally {
+			vi.unstubAllGlobals();
+			Reflect.deleteProperty(navigator, 'mediaSession');
+		}
+	});
+
 	it('clear empties the queue and forgets the art', () => {
 		player.play([track('a')], 0, 'cover-1');
 		player.clear();

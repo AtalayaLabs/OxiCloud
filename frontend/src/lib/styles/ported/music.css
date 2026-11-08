@@ -321,8 +321,15 @@
     letter-spacing: 0.5px;
 }
 
+/* A row now sits INSIDE `GestureList`'s sliding layer rather than being the
+   row itself, so it has to fill it — `flex: 1` with `min-width: 0`, or its
+   content would set its width and the columns would drift from row to row.
+   The padding and the separator stay here, with the content: they belong to
+   what slides, not to the box the action backing fills. */
 .music-track {
     display: flex;
+    flex: 1;
+    min-width: 0;
     align-items: center;
     padding: var(--space-2-5) var(--space-4);
     border-bottom: 1px solid var(--color-border);
@@ -334,7 +341,11 @@
     border-bottom: none;
 }
 
-.music-track:hover {
+/* Driven by the LIST's hover state rather than this element's own `:hover`:
+   `GestureList`'s action buttons are siblings of this one, so with `:hover`
+   the row lost its highlight the moment the cursor reached the eraser —
+   the row read as abandoned while the thing under the cursor was its own. */
+.music-track.hovered {
     background: var(--color-item-hover);
 }
 
@@ -346,11 +357,18 @@
     padding: 0 var(--space-2);
 }
 
-.music-track-num {
+/* Was the position column; it holds only the row's play/pause control now. */
+.music-track-play {
     width: 40px;
-    text-align: center;
+    flex: 0 0 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    background: none;
     color: var(--color-text-secondary);
     font-size: var(--text-base);
+    cursor: pointer;
 }
 
 .music-track-title {
@@ -359,11 +377,6 @@
     align-items: center;
     gap: var(--space-3);
     min-width: 0;
-}
-
-.music-track-icon {
-    color: var(--color-text-secondary);
-    font-size: var(--text-base);
 }
 
 .music-track-name {
@@ -473,7 +486,40 @@
         font-size: var(--text-xl);
     }
 
+}
+
+/* ========== Track columns that give way ==========
+
+   Keyed to the LIST's own width, not the window's. The track list sits beside
+   the playlist sidebar, so it is routinely narrow while the viewport is wide —
+   a `@media` query reads the wrong box and leaves five columns fighting over
+   300px on a perfectly large screen.
+
+   Order of sacrifice: album first, then artist. The title is the only flexible
+   column, and once it starts cropping, a secondary column is worth less than
+   the name of the track. Both are dropped in the header as well, or the
+   columns part company with the rows. */
+.music-track-list {
+    container-type: inline-size;
+}
+
+@container (max-width: 640px) {
     .music-track-album {
+        display: none;
+    }
+}
+
+@container (max-width: 460px) {
+    .music-track-artist {
+        display: none;
+    }
+
+    /* The transport column goes too, and the gesture takes over: a TAP on the
+       row plays or pauses it. That is `GestureList`'s `ontap` rather than the
+       row's own click, so the tap that ends a swipe does not also start the
+       track — and it fills a real gap, since the wide layout's play action is
+       a double click, which touch never produces. */
+    .music-track-play {
         display: none;
     }
 }
@@ -495,63 +541,35 @@
 
 
 /* ========== Drag handle column ========== */
+
+/* A spacer in the HEADER only. The grip itself belongs to `GestureList`,
+   which renders it beside the row rather than inside it — so what is left
+   here is the header cell that keeps the columns lined up with it.
+
+   The grab cursor, the carried row's lift and the insertion line all moved
+   into that component with the gesture. They had to be deleted rather than
+   left unused: these are GLOBAL rules, and a `.dragging` or `.drag-over`
+   matching by class name would fight the component's own — the same way the
+   retired `.player-queue` rules above kept yanking the new panel's queue
+   into the corner of the window. */
 .music-track-drag {
     width: 28px;
     flex: 0 0 28px;
-    cursor: grab;
-    color: var(--color-text-secondary);
-    opacity: 0;
-    transition: opacity 0.15s;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-.music-track-header .music-track-drag {
-    cursor: default;
-}
-.music-track:hover .music-track-drag {
-    opacity: 0.6;
-}
-.music-track-drag:active {
-    cursor: grabbing;
-}
-.music-track.dragging {
-    opacity: 0.35;
-    background: var(--color-bg-hover);
-}
-.music-track.drag-over {
-    border-top: 2px solid var(--color-accent-hover);
-    margin-top: -2px;
 }
 
 /* ========== Track actions column ========== */
-.music-track-actions {
-    width: 36px;
-    flex: 0 0 36px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+/* The actions column is gone. `GestureList` positions its buttons over the
+   row's trailing edge and the duration steps aside for them — the same trade
+   the player queue makes, and the reason no column has to be reserved: a
+   56px spacer is pure cost on a narrow list, where the title has already run
+   out of room and the actions arrive by swipe anyway. */
+.music-track-duration.is-hidden {
+    visibility: hidden;
 }
-.music-track-remove-btn {
-    background: none;
-    border: none;
-    color: var(--color-text-secondary);
-    cursor: pointer;
-    padding: var(--space-1) var(--space-1-5);
-    border-radius: var(--radius-sm);
-    opacity: 0;
-    transition:
-        opacity 0.15s,
-        color 0.15s;
-    font-size: 0.85rem;
-}
-.music-track:hover .music-track-remove-btn {
-    opacity: 1;
-}
-.music-track-remove-btn:hover {
-    color: var(--color-danger-text);
-    background: var(--color-danger-bg);
-}
+/* The remove button is `GestureList`'s now — declared once as the left
+   swipe's action and rendered either as that swipe or as a button on hover,
+   so the two routes cannot drift into doing different things. Its styles
+   went with it. */
 
 /* ========== Cover art ========== */
 .music-playlist-cover {

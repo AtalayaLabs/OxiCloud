@@ -8,7 +8,8 @@ const { store } = vi.hoisted(() => ({
 		hasMore: false,
 		loadingOlder: false,
 		markAllRead: vi.fn(),
-		loadOlder: vi.fn()
+		loadOlder: vi.fn(),
+		delete: vi.fn()
 	}
 }));
 vi.mock('$lib/composables/useNotifications.svelte', () => ({ notifications: store }));
@@ -56,6 +57,51 @@ it('merges transient and persistent rows newest first', () => {
 it('shows the empty state when both feeds are empty', () => {
 	render(NotificationsPage);
 	expect(screen.getByText('No notifications')).toBeTruthy();
+});
+
+// The feed's wiring into `GestureList`. Dismissal takes the ROW, not an
+// index, because the two kinds leave by different doors: a toast only ever
+// existed in the UI store, a persistent row has to be deleted server-side or
+// it returns with the next fetch. One `run` for both, dispatching on kind.
+it('dismisses each row by the route its kind needs', async () => {
+	ui.notifications = [{ id: 7, message: 'Upload finished', kind: 'success', at: 2000, read: true }];
+	store.items = [
+		{
+			id: 'p1',
+			kind: 'new_login_from_new_device',
+			payload: {},
+			created_at: '2026-01-01T10:00:00Z',
+			read_at: null
+		}
+	];
+
+	render(NotificationsPage);
+
+	await fireEvent.click(screen.getByTestId('notifications-dismiss-transient-7'));
+	expect(ui.notifications.map((n) => n.id)).toEqual([]);
+	expect(store.delete).not.toHaveBeenCalled();
+
+	await fireEvent.click(screen.getByTestId('notifications-dismiss-persistent-p1'));
+	expect(store.delete).toHaveBeenCalledWith('p1');
+});
+
+// Not reorderable, and that is the point of the flag: the feed is sorted by
+// time, so a grip would offer a move the next fetch undoes.
+it('offers no reordering grip', () => {
+	store.items = [
+		{
+			id: 'p1',
+			kind: 'new_login_from_new_device',
+			payload: {},
+			created_at: '2026-01-01T10:00:00Z',
+			read_at: null
+		}
+	];
+	const { container } = render(NotificationsPage);
+	expect(container.querySelector('.gesture-grip')).toBeNull();
+	// …and the row's own cross is gone with it: the list's action is the one
+	// route to deletion here, rather than two buttons onto the same call.
+	expect(container.querySelector('.notif-item-close')).toBeNull();
 });
 
 it('marks transient and persistent rows read with one action', async () => {

@@ -133,9 +133,10 @@ test('add an audio track and drive the player', async ({ page }) => {
   await page.getByTestId('music-add-tracks-confirm-btn').click();
   await expect(page.getByTestId('music-add-tracks-dialog')).toHaveCount(0);
 
-  // Playlist-level actions on the detail panel.
+  // Playlist-level actions on the detail panel. Shuffle used to be a second
+  // button here; it is a player mode now, toggled in the player panel, so the
+  // playlist no longer shuffles a copy of its own list.
   await page.getByTestId('music-play-all-btn').click({ timeout: 3_000 }).catch(() => {});
-  await page.getByTestId('music-shuffle-play-btn').click({ timeout: 3_000 }).catch(() => {});
 
   // Play the track from its row. The player is in the top bar now, so the
   // queue toggle and close button this test used to click no longer exist —

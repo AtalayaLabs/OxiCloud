@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import Button from '$lib/components/Button.svelte';
+	import GestureList from '$lib/components/GestureList.svelte';
 	import Icon from '$lib/icons/Icon.svelte';
 	import NotificationRow from '$lib/components/NotificationRow.svelte';
 	import TransientNotificationRow from '$lib/components/TransientNotificationRow.svelte';
@@ -33,6 +34,16 @@
 
 	const unread = $derived(ui.unread + notifications.unread);
 
+	/**
+	 * Drop one row, by whichever route its kind needs: a transient toast only
+	 * ever lived in the UI store, a persistent one has to be deleted server
+	 * side or it comes back with the next fetch.
+	 */
+	function dismiss(entry: FeedRow) {
+		if (entry.kind === 'transient') ui.dismissNotification(entry.item.id);
+		else void notifications.delete(entry.item.id);
+	}
+
 	function markAllRead() {
 		ui.markNotificationsRead();
 		void notifications.markAllRead();
@@ -64,14 +75,42 @@
 			<p>{t('notifications.empty', 'No notifications')}</p>
 		</div>
 	{:else}
+		<!--
+			`GestureList` without `reorderCapable`: the feed is sorted by time,
+			so a grip here would offer a move that cannot be kept. What it gains
+			is the dismissal — a left swipe on touch, the same action as a button
+			on hover — shared with the player queue and the playlist rather than
+			hand-rolled a third time.
+
+			Dismissing takes the ROW, not an index, because the two kinds are not
+			dismissed the same way: a toast is dropped from the UI store, a
+			persistent one is deleted through the API.
+		-->
 		<div class="notifications-feed">
-			{#each feed as row (row.id)}
-				{#if row.kind === 'transient'}
-					<TransientNotificationRow n={row.item} />
-				{:else}
-					<NotificationRow row={row.item} />
-				{/if}
-			{/each}
+			<GestureList
+				items={feed}
+				key={(row) => row.id}
+				swipeLeft={{
+					// The same eraser as the player queue and the playlist: one icon
+					// for "take this out of the list", wherever the list is.
+					icon: 'eraser',
+					label: t('common.dismiss', 'Dismiss'),
+					tone: 'danger',
+					testId: (entry) => `notifications-dismiss-${entry.id}`,
+					run: dismiss
+				}}
+				listLabel={t('notifications.title', 'Notifications')}
+			>
+				{#snippet row(entry)}
+					{#if entry.kind === 'transient'}
+						<TransientNotificationRow n={entry.item} />
+					{:else}
+						<!-- No row-level cross here: the list's own action is the one
+						     route to deletion on this page. -->
+						<NotificationRow row={entry.item} showClose={false} />
+					{/if}
+				{/snippet}
+			</GestureList>
 		</div>
 
 		{#if notifications.hasMore}
