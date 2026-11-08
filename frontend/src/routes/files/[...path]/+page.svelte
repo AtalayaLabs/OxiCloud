@@ -48,6 +48,7 @@
 	import { apiFetch, withBase } from '$lib/api/client';
 	import { getCsrfHeaders } from '$lib/api/csrf';
 	import { deleteConfirmLabel } from '$lib/utils/deleteConfirm';
+	import { isCopyDrop } from '$lib/utils/dragModifiers';
 	import { countHidden, filterDotfiles } from '$lib/utils/dotfileFilter';
 	import { TEXTY_EXT_RE } from '$lib/utils/textyExt';
 	import { preferences } from '$lib/stores/preferences.svelte';
@@ -72,11 +73,7 @@
 	import { ui } from '$lib/stores/ui.svelte';
 	import { dateBucket, sizeBucket, typeLabel } from '$lib/stores/files.svelte';
 	import { replaceSet } from '$lib/utils/sets';
-	import {
-		clampMenuToViewport,
-		focusFirstMenuItem,
-		handleMenuKeydown
-	} from '$lib/utils/menuKeyboard';
+	import ContextMenu, { type ContextMenuEntry } from '$lib/components/ContextMenu.svelte';
 
 	// Message-bus logger. Users can tune with
 	//   oxi.setLogLevel('oxi:message-bus', 'debug')
@@ -1154,6 +1151,12 @@
 				else {
 					await renameFolder(id, name);
 					rememberFolderName(id, name); // keep breadcrumbs current immediately
+					// The trail renders names from its own `/ancestors`
+					// fetch, which only re-runs when the folder id changes.
+					// Renaming a CRUMB (now possible from its context menu)
+					// changes no id, so without this the old label sits
+					// there until the next navigation.
+					breadcrumbToken++;
 				}
 				await reload();
 				// Vanish-warning: the file didn't start with `.` before but
@@ -1180,7 +1183,14 @@
 	async function deleteItem(kind: 'file' | 'folder', id: string) {
 		try {
 			if (kind === 'file') await deleteFile(id);
-			else await deleteFolder(id);
+			else {
+				await deleteFolder(id);
+				// Same reason as the rename above: a deleted ANCESTOR
+				// leaves a trail pointing at folders that no longer
+				// exist. Refetching collapses it to what is still
+				// reachable.
+				breadcrumbToken++;
+			}
 			await reload();
 			void session.refresh();
 		} catch (e) {
@@ -1468,17 +1478,11 @@
 	// every browser for JS-initiated drags, but the raw modifier bits
 	// on the drop event ARE. One source of truth, one path.
 	//
-	// OS convention:
-	//   * macOS: ⌥ Option (altKey) → copy — Finder convention. ⌘
-	//     (metaKey) accepted too as a forgiving fallback.
-	//   * Windows / Linux: Ctrl (ctrlKey) → copy — Explorer / Nautilus
-	//     convention.
-	const IS_MAC =
-		typeof navigator !== 'undefined' &&
-		/Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent || '');
-	function isCopyDrop(e: DragEvent): boolean {
-		return IS_MAC ? e.altKey || e.metaKey : e.ctrlKey;
-	}
+	// OS convention and the platform sniff now live in
+	// `$lib/utils/dragModifiers` — the sidebar's drive drop needs the
+	// same rule, and the same gesture must not mean different things in
+	// two parts of one window. See that module for the reasoning this
+	// comment used to carry.
 
 	/**
 	 * Begin dragging an item. When the dragged row is part of the current
@@ -1657,25 +1661,25 @@
 	let ctxX = $state(0);
 	let ctxY = $state(0);
 	let ctxTarget = $state<ActionTarget | null>(null);
-	let ctxMenuEl = $state<HTMLElement | null>(null);
 	let ctxReturnFocus: HTMLElement | null = null;
 
-	$effect(() => {
-		if (!ctxOpen || !ctxMenuEl) return;
-		focusFirstMenuItem(ctxMenuEl);
-		const { x, y } = clampMenuToViewport(ctxMenuEl);
-		if (x !== ctxX) ctxX = x;
-		if (y !== ctxY) ctxY = y;
-	});
+	/**
+	 * Bumped after a folder rename or delete to make `<FolderBreadcrumb>`
+	 * refetch its chain — see `reloadToken` there. A counter rather than a
+	 * boolean so consecutive mutations each trigger a fetch.
+	 */
+	let breadcrumbToken = $state(0);
 
 	function openContext(e: MouseEvent, kind: ItemType, id: string, name: string) {
 		e.preventDefault();
 		e.stopPropagation();
 		ctxTarget = { id, name, kind };
 		ctxReturnFocus = e.currentTarget as HTMLElement | null;
-		// Clamp to viewport so the menu never overflows offscreen.
-		ctxX = Math.max(8, Math.min(e.clientX, window.innerWidth - 200));
-		ctxY = Math.max(8, Math.min(e.clientY, window.innerHeight - 320));
+		// Raw click coords — `ContextMenu` clamps them against the panel's
+		// measured size once it mounts, which the hard-coded `200`/`320`
+		// guesses here only approximated.
+		ctxX = e.clientX;
+		ctxY = e.clientY;
 		ctxOpen = true;
 	}
 	function closeContext() {
@@ -1811,6 +1815,168 @@
 		a.click();
 		a.remove();
 	}
+
+	/**
+	 * Entries for the row context menu, rebuilt whenever the target (or the
+	 * async WOPI-editability probe) changes.
+	 *
+	 * The kind-specific entries come first, then the ones every target
+	 * shares — same order the hand-written markup had, and the `data-testid`
+	 * on each entry is the one the e2e specs already select.
+	 *
+	 * Each `onselect` closes the menu BEFORE acting, because closing clears
+	 * `ctxTarget`; the target is captured in the closure so the action still
+	 * has it.
+	 */
+	const ctxEntries = $derived.by<ContextMenuEntry[]>(() => {
+		const tg = ctxTarget;
+		if (!tg) return [];
+		const entries: ContextMenuEntry[] = [];
+		if (tg.kind === 'folder') {
+			entries.push({
+				key: 'folder-open',
+				label: t('files.open', 'Open'),
+				icon: 'folder-open',
+				testid: 'files-ctx-folder-open-item',
+				onselect: () => {
+					closeContext();
+					// Canonical single-id URL — see `openFolder` above.
+					goto(resolve(`/files/${tg.id}`));
+				}
+			});
+			entries.push({
+				key: 'download-zip',
+				label: t('files.download_zip', 'Download as ZIP'),
+				icon: 'download',
+				testid: 'files-ctx-download-zip-item',
+				onselect: () => {
+					closeContext();
+					downloadFolderZip({ id: tg.id, name: tg.name });
+				}
+			});
+		} else {
+			const file = listing.files.find((x) => x.id === tg.id);
+			entries.push({
+				key: 'file-open',
+				label: t('files.open', 'Open'),
+				icon: 'eye',
+				testid: 'files-ctx-file-open-item',
+				onselect: () => {
+					closeContext();
+					if (file) openFile(file);
+				}
+			});
+			if (ctxCanEditWopi) {
+				entries.push({
+					key: 'edit',
+					label: t('files.edit', 'Edit'),
+					icon: 'pen',
+					testid: 'files-ctx-edit-item',
+					onselect: () => {
+						closeContext();
+						openWopi(tg.id, tg.name, 'edit');
+					}
+				});
+				entries.push({
+					key: 'edit-new-tab',
+					label: t('files.edit_new_tab', 'Edit in new tab'),
+					icon: 'external-link-alt',
+					testid: 'files-ctx-edit-new-tab-item',
+					onselect: () => {
+						closeContext();
+						void openWopiTab(tg.id, tg.name);
+					}
+				});
+			}
+			entries.push({
+				key: 'download',
+				label: t('common.download', 'Download'),
+				icon: 'download',
+				testid: 'files-ctx-download-item',
+				// Native download — the browser performs it from the href;
+				// `onselect` only dismisses the menu.
+				href: fileDownloadUrl(tg.id),
+				onselect: closeContext
+			});
+			entries.push({
+				key: 'open-parent',
+				label: t('files.open_parent', 'Open parent folder'),
+				icon: 'folder-open',
+				testid: 'files-ctx-open-parent-item',
+				onselect: () => {
+					closeContext();
+					if (file) openParentFolder(file);
+				}
+			});
+			if (isAudio(file)) {
+				entries.push({
+					key: 'add-playlist',
+					label: t('music.add_to_playlist', 'Add to playlist'),
+					icon: 'music',
+					testid: 'files-ctx-add-playlist-item',
+					onselect: () => {
+						closeContext();
+						if (file) void addToPlaylist(file);
+					}
+				});
+			}
+		}
+		if (serverConfig.features.sharing) {
+			entries.push({
+				key: 'share',
+				label: t('files.share', 'Share'),
+				icon: 'share-alt',
+				testid: 'files-ctx-share-item',
+				onselect: () => {
+					closeContext();
+					openShare(tg.kind, tg.id, tg.name);
+				}
+			});
+		}
+		entries.push({
+			key: 'move',
+			label: t('files.move', 'Move'),
+			icon: 'arrows-alt',
+			testid: 'files-ctx-move-item',
+			onselect: () => {
+				closeContext();
+				openMove(tg.kind, tg.id, tg.name);
+			}
+		});
+		entries.push({
+			key: 'copy',
+			label: t('files.copy', 'Copy'),
+			icon: 'copy',
+			testid: 'files-ctx-copy-item',
+			onselect: () => {
+				closeContext();
+				openCopy(tg.kind, tg.id, tg.name);
+			}
+		});
+		entries.push({
+			key: 'rename',
+			label: t('common.rename', 'Rename'),
+			icon: 'pen',
+			testid: 'files-ctx-rename-item',
+			onselect: () => {
+				closeContext();
+				void renameItem(tg.kind, tg.id, tg.name);
+			}
+		});
+		entries.push({
+			key: 'delete',
+			label: t('common.delete', 'Delete'),
+			icon: 'trash',
+			testid: 'files-ctx-delete-item',
+			danger: true,
+			confirmLabel: deleteConfirmLabel(),
+			onselect: () => {
+				closeContext();
+				void deleteItem(tg.kind, tg.id);
+			}
+		});
+		return entries;
+	});
 
 	// ── Recursive folder upload ──────────────────────────────────────────────
 	let folderInput = $state<HTMLInputElement | null>(null);
@@ -2490,11 +2656,20 @@
 				`.drop-target` highlight; we get the target folder id + the
 				raw event and dispatch to `onCrumbDrop`.
 			-->
+			<!--
+				`oncontextmenu` opens the SAME menu a folder row opens —
+				`openContext` with `kind: 'folder'`, so the entries, their
+				order and their e2e hooks are the row's. Nothing here is
+				breadcrumb-specific, which is the point: one menu, one
+				definition of what right-clicking a folder offers.
+			-->
 			<FolderBreadcrumb
 				folderId={currentId}
 				onDrop={(target, e) => onCrumbDrop(e, target)}
 				dragMime={DRAG_TYPE}
 				onShare={(id, name) => openShare('folder', id, name)}
+				oncontextmenu={(e, c) => openContext(e, 'folder', c.id, c.name)}
+				reloadToken={breadcrumbToken}
 			/>
 		{/snippet}
 
@@ -2676,168 +2851,14 @@
 {/if}
 
 {#if ctxOpen && ctxTarget}
-	<div
-		class="ctx-scrim"
-		role="presentation"
-		data-testid="files-context-menu-scrim"
-		onclick={closeContext}
-		oncontextmenu={(e) => e.preventDefault()}
-	></div>
-	<div
-		class="ctx-menu"
-		bind:this={ctxMenuEl}
-		onkeydown={(e) => handleMenuKeydown(e, ctxMenuEl, closeContext)}
-		style:left="{ctxX}px"
-		style:top="{ctxY}px"
-		role="menu"
-		tabindex="-1"
-		data-testid="files-context-menu"
-	>
-		{#if ctxTarget.kind === 'folder'}
-			<button
-				class="menu-item"
-				role="menuitem"
-				data-testid="files-ctx-folder-open-item"
-				onclick={() => {
-					const id = ctxTarget!.id;
-					closeContext();
-					// Canonical single-id URL — see `openFolder` above.
-					goto(resolve(`/files/${id}`));
-				}}><Icon name="folder-open" /> {t('files.open', 'Open')}</button
-			>
-			<button
-				class="menu-item"
-				role="menuitem"
-				data-testid="files-ctx-download-zip-item"
-				onclick={() => {
-					const tg = ctxTarget!;
-					closeContext();
-					downloadFolderZip({ id: tg.id, name: tg.name });
-				}}><Icon name="download" /> {t('files.download_zip', 'Download as ZIP')}</button
-			>
-		{:else}
-			<button
-				class="menu-item"
-				role="menuitem"
-				data-testid="files-ctx-file-open-item"
-				onclick={() => {
-					const f = listing.files.find((x) => x.id === ctxTarget!.id);
-					closeContext();
-					if (f) openFile(f);
-				}}><Icon name="eye" /> {t('files.open', 'Open')}</button
-			>
-			{#if ctxCanEditWopi}
-				<button
-					class="menu-item"
-					role="menuitem"
-					data-testid="files-ctx-edit-item"
-					onclick={() => {
-						const tg = ctxTarget!;
-						closeContext();
-						openWopi(tg.id, tg.name, 'edit');
-					}}><Icon name="pen" /> {t('files.edit', 'Edit')}</button
-				>
-				<button
-					class="menu-item"
-					role="menuitem"
-					data-testid="files-ctx-edit-new-tab-item"
-					onclick={() => {
-						const tg = ctxTarget!;
-						closeContext();
-						void openWopiTab(tg.id, tg.name);
-					}}><Icon name="external-link-alt" /> {t('files.edit_new_tab', 'Edit in new tab')}</button
-				>
-			{/if}
-			<a
-				class="menu-item"
-				role="menuitem"
-				href={fileDownloadUrl(ctxTarget.id)}
-				rel="external"
-				download
-				data-testid="files-ctx-download-item"
-				onclick={closeContext}><Icon name="download" /> {t('common.download', 'Download')}</a
-			>
-			<button
-				class="menu-item"
-				role="menuitem"
-				data-testid="files-ctx-open-parent-item"
-				onclick={() => {
-					const f = listing.files.find((x) => x.id === ctxTarget!.id);
-					closeContext();
-					if (f) openParentFolder(f);
-				}}><Icon name="folder-open" /> {t('files.open_parent', 'Open parent folder')}</button
-			>
-			{#if isAudio(listing.files.find((x) => x.id === ctxTarget!.id))}
-				<button
-					class="menu-item"
-					role="menuitem"
-					data-testid="files-ctx-add-playlist-item"
-					onclick={() => {
-						const f = listing.files.find((x) => x.id === ctxTarget!.id);
-						closeContext();
-						if (f) void addToPlaylist(f);
-					}}><Icon name="music" /> {t('music.add_to_playlist', 'Add to playlist')}</button
-				>
-			{/if}
-		{/if}
-		{#if serverConfig.features.sharing}
-			<button
-				class="menu-item"
-				role="menuitem"
-				data-testid="files-ctx-share-item"
-				onclick={() => {
-					const tg = ctxTarget!;
-					closeContext();
-					openShare(tg.kind, tg.id, tg.name);
-				}}><Icon name="share-alt" /> {t('files.share', 'Share')}</button
-			>
-		{/if}
-		<button
-			class="menu-item"
-			role="menuitem"
-			data-testid="files-ctx-move-item"
-			onclick={() => {
-				const tg = ctxTarget!;
-				closeContext();
-				openMove(tg.kind, tg.id, tg.name);
-			}}><Icon name="arrows-alt" /> {t('files.move', 'Move')}</button
-		>
-		<button
-			class="menu-item"
-			role="menuitem"
-			data-testid="files-ctx-copy-item"
-			onclick={() => {
-				const tg = ctxTarget!;
-				closeContext();
-				openCopy(tg.kind, tg.id, tg.name);
-			}}><Icon name="copy" /> {t('files.copy', 'Copy')}</button
-		>
-		<button
-			class="menu-item"
-			role="menuitem"
-			data-testid="files-ctx-rename-item"
-			onclick={() => {
-				const tg = ctxTarget!;
-				closeContext();
-				void renameItem(tg.kind, tg.id, tg.name);
-			}}><Icon name="pen" /> {t('common.rename', 'Rename')}</button
-		>
-		<ConfirmButton
-			icon="trash"
-			class="menu-item menu-item--danger"
-			role="menuitem"
-			data-testid="files-ctx-delete-item"
-			title={t('common.delete', 'Delete')}
-			confirmLabel={deleteConfirmLabel()}
-			onconfirm={() => {
-				const tg = ctxTarget!;
-				closeContext();
-				void deleteItem(tg.kind, tg.id);
-			}}
-		>
-			{t('common.delete', 'Delete')}
-		</ConfirmButton>
-	</div>
+	<ContextMenu
+		x={ctxX}
+		y={ctxY}
+		entries={ctxEntries}
+		testid="files-context-menu"
+		scrimTestid="files-context-menu-scrim"
+		onclose={closeContext}
+	/>
 {/if}
 
 <style>
@@ -2845,28 +2866,8 @@
 		min-height: 100%;
 	}
 
-	/* Scrim + menu must sit ABOVE `.page-sticky-header` (breadcrumb +
-	   action bar, `z-index: var(--z-sticky)` = 100) so a click on the
-	   breadcrumb or the action bar closes the menu. Otherwise the
-	   sticky header covers the scrim and swallows the outside-click.
-	   Aligns with ResourceList's built-in menu (`.rl-ctx-scrim` uses
-	   `1000` / `.rl-ctx-menu` uses `1001`). */
-	.ctx-scrim {
-		position: fixed;
-		inset: 0;
-		z-index: 1000;
-	}
-
-	.ctx-menu {
-		position: fixed;
-		z-index: 1001;
-		min-width: 12rem;
-		max-height: calc(100dvh - 16px);
-		overflow-y: auto;
-		padding: var(--space-1);
-		background: var(--color-bg-surface);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
-		box-shadow: var(--shadow-lg, 0 10px 30px var(--color-overlay-shadow));
-	}
+	/* The context menu's scrim and panel styles live in
+	   `ContextMenu.svelte` now, including the z-index pair that has to
+	   clear `.page-sticky-header` (`--z-sticky` = 100) so an outside
+	   click on the breadcrumb or action bar reaches the scrim. */
 </style>

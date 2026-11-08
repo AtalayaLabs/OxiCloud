@@ -46,8 +46,49 @@
 		 * by accident.
 		 */
 		onShare?: (folderId: string, folderName: string) => void;
+		/**
+		 * Optional right-click handler — enables a context menu on each
+		 * crumb. The host receives the raw event plus the crumb, and opens
+		 * ITS menu: on `/files` that is the very same menu a folder row
+		 * uses, so "right-click a folder" means one thing in this app
+		 * whether the folder is in the listing or in the trail above it.
+		 *
+		 * Opt-in for the `/s/[token]` reason `onShare` is: an anonymous
+		 * link visitor must not be offered rename/delete/share, and a
+		 * surface that has to ask for the menu cannot grow one by
+		 * accident.
+		 *
+		 * Right-click only — no long-press, no kebab. A crumb is a
+		 * navigation control first, and the actions are all reachable
+		 * from the listing; adding a visible affordance per crumb would
+		 * crowd the trail for a shortcut (Ed, 2026-11-08: "agree, only
+		 * right click").
+		 *
+		 * Wired on the CRUMBS only, never the root chip: for drive-kind
+		 * access that chip is the drive, whose root folder is not an
+		 * ordinary folder to rename or delete (and which has its own
+		 * settings page behind the cog in the sidebar picker).
+		 */
+		oncontextmenu?: (e: MouseEvent, crumb: FolderAncestor) => void;
+		/**
+		 * Opaque value; changing it refetches the ancestor chain.
+		 *
+		 * The chain is otherwise fetched only when `folderId` changes,
+		 * which was enough while the trail was read-only. Now that a host
+		 * can rename or delete a crumb from the context menu above, the
+		 * labels can go stale without any navigation — so the host bumps
+		 * this after a folder mutation.
+		 */
+		reloadToken?: unknown;
 	}
-	let { folderId, onDrop, dragMime = 'application/x-oxi-item', onShare }: Props = $props();
+	let {
+		folderId,
+		onDrop,
+		dragMime = 'application/x-oxi-item',
+		onShare,
+		oncontextmenu: onCrumbContextMenu,
+		reloadToken
+	}: Props = $props();
 
 	// Fetch chain when folderId changes. `$state` + `$effect` primer
 	// avoids blocking the initial render — the breadcrumb slot appears
@@ -57,6 +98,9 @@
 
 	$effect(() => {
 		const id = folderId;
+		// Registers the dependency — a bumped token refetches the chain
+		// after the host renamed or deleted one of these folders.
+		void reloadToken;
 		if (!id) {
 			chain = null;
 			return;
@@ -408,6 +452,7 @@
 				class:breadcrumb-boundary={isBoundary}
 				class:drop-target={onDrop != null && dropTargetId === c.id}
 				data-testid={isLeaf ? `folder-breadcrumb-current-${c.id}` : `folder-breadcrumb-${c.id}`}
+				oncontextmenu={onCrumbContextMenu ? (e) => onCrumbContextMenu(e, c) : undefined}
 				ondragover={onDrop
 					? (e) => e.dataTransfer?.types.includes(dragMime) && e.preventDefault()
 					: undefined}

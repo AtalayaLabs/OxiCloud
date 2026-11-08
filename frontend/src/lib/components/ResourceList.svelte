@@ -114,7 +114,6 @@
 	// `/files` was already routing its group-by through the same function.
 	import { typeLabel } from '$lib/utils/resourceBuckets';
 	import Icon from '$lib/icons/Icon.svelte';
-	import ConfirmButton from '$lib/components/ConfirmButton.svelte';
 	import EmptyState from '$lib/components/EmptyState.svelte';
 	import SkeletonList from '$lib/components/SkeletonList.svelte';
 	import ActionBar from '$lib/components/ActionBar.svelte';
@@ -141,11 +140,7 @@
 		preloadPdf,
 		queueGenerate as queueThumbnailGenerate
 	} from '$lib/utils/thumbnail';
-	import {
-		clampMenuToViewport,
-		focusFirstMenuItem,
-		handleMenuKeydown
-	} from '$lib/utils/menuKeyboard';
+	import ContextMenu from '$lib/components/ContextMenu.svelte';
 
 	interface Props {
 		/**
@@ -1021,16 +1016,7 @@
 	let ctxX = $state(0);
 	let ctxY = $state(0);
 	let ctxItem = $state<FileItem | FolderItem | null>(null);
-	let ctxMenuEl = $state<HTMLElement | null>(null);
 	let ctxReturnFocus: HTMLElement | null = null;
-
-	$effect(() => {
-		if (!ctxOpen || !ctxMenuEl) return;
-		focusFirstMenuItem(ctxMenuEl);
-		const { x, y } = clampMenuToViewport(ctxMenuEl);
-		if (x !== ctxX) ctxX = x;
-		if (y !== ctxY) ctxY = y;
-	});
 
 	async function openContext(e: MouseEvent, item: FileItem | FolderItem) {
 		if (!contextActions?.length) return;
@@ -1039,11 +1025,10 @@
 		// Snapshot the pointer coords now — after an `await menuPrepare`
 		// tick the event object may be reused / stale, and reading
 		// `e.clientX` post-await could pin the menu to the wrong spot.
-		const x = Math.max(8, Math.min(e.clientX, window.innerWidth - 220));
-		const y = Math.max(
-			8,
-			Math.min(e.clientY, window.innerHeight - (contextActions.length * 44 + 24))
-		);
+		// `ContextMenu` corrects these against the panel's measured size
+		// once it mounts, so no height guess is needed here.
+		const x = e.clientX;
+		const y = e.clientY;
 		// Give the page a chance to prime any per-item cache the
 		// `visible?` predicates read (e.g. folder-access on /recent +
 		// /favorites for the "Open parent folder" entry). Awaited so the
@@ -1714,62 +1699,35 @@
 	</div>
 {/snippet}
 
+<!--
+	Built-in row menu. The per-item `visible?` / `disabled?` predicates are
+	resolved against the target HERE and handed to `ContextMenu` as a flat
+	list — the shared component owns placement, keyboard and styling and
+	stays ignorant of items.
+-->
 {#if ctxOpen && ctxItem && contextActions}
-	{@const visibleActions = contextActions.filter(
-		(a) => a.visible?.(ctxItem!, ctxOf(ctxItem!.id)) !== false
-	)}
-	<div
-		class="rl-ctx-scrim"
-		role="presentation"
-		onclick={closeContext}
-		oncontextmenu={(e) => e.preventDefault()}
-	></div>
-	<div
-		class="rl-ctx-menu"
-		bind:this={ctxMenuEl}
-		onkeydown={(e) => handleMenuKeydown(e, ctxMenuEl, closeContext)}
-		style:left="{ctxX}px"
-		style:top="{ctxY}px"
-		role="menu"
-		tabindex="-1"
-		data-testid="resource-list-context-menu"
-	>
-		{#each visibleActions as action (action.key)}
-			{@const dis = action.disabled?.(ctxItem!, ctxOf(ctxItem!.id)) === true}
-			{#if action.danger}
-				<ConfirmButton
-					icon={action.icon}
-					class="menu-item menu-item--danger"
-					role="menuitem"
-					disabled={dis}
-					confirmLabel={action.permanentWhenNoTrash ? deleteConfirmLabel() : undefined}
-					data-testid={`resource-list-context-${action.key}-item`}
-					onconfirm={() => {
-						const target = ctxItem!;
-						closeContext();
-						action.run(target, ctxOf(target.id));
-					}}
-				>
-					{action.label}
-				</ConfirmButton>
-			{:else}
-				<button
-					class="menu-item"
-					role="menuitem"
-					disabled={dis}
-					data-testid={`resource-list-context-${action.key}-item`}
-					onclick={() => {
-						const target = ctxItem!;
-						closeContext();
-						action.run(target, ctxOf(target.id));
-					}}
-				>
-					<Icon name={action.icon} />
-					{action.label}
-				</button>
-			{/if}
-		{/each}
-	</div>
+	<ContextMenu
+		x={ctxX}
+		y={ctxY}
+		testid="resource-list-context-menu"
+		onclose={closeContext}
+		entries={contextActions
+			.filter((a) => a.visible?.(ctxItem!, ctxOf(ctxItem!.id)) !== false)
+			.map((a) => ({
+				key: a.key,
+				label: a.label,
+				icon: a.icon,
+				testid: `resource-list-context-${a.key}-item`,
+				disabled: a.disabled?.(ctxItem!, ctxOf(ctxItem!.id)) === true,
+				danger: a.danger,
+				confirmLabel: a.permanentWhenNoTrash ? deleteConfirmLabel() : undefined,
+				onselect: () => {
+					const target = ctxItem!;
+					closeContext();
+					a.run(target, ctxOf(target.id));
+				}
+			}))}
+	/>
 {/if}
 
 <style>
@@ -2042,22 +2000,6 @@
 	}
 
 	/* ── Context menu ── */
-	.rl-ctx-scrim {
-		position: fixed;
-		inset: 0;
-		z-index: 1000;
-	}
-
-	.rl-ctx-menu {
-		position: fixed;
-		z-index: 1001;
-		min-width: 200px;
-		max-height: calc(100dvh - 16px);
-		overflow-y: auto;
-		padding: var(--space-1);
-		background: var(--color-bg-surface);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
-		box-shadow: var(--shadow-lg);
-	}
+	/* The context menu's scrim and panel styles moved to
+	   `ContextMenu.svelte` along with the markup. */
 </style>
