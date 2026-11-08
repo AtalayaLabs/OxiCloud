@@ -33,6 +33,9 @@ beforeEach(() => {
 	vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined);
 	vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
 
+	// A session left behind by one test would be restored by the next one's
+	// mount, which is exactly the behaviour under test here.
+	localStorage.clear();
 	player.queue = [];
 	player.index = -1;
 	player.playing = false;
@@ -126,6 +129,40 @@ describe('MusicPlayer', () => {
 		// The element too: a hidden player that still streams would be worse
 		// than a visible one.
 		expect(container.querySelector('audio')).toBeNull();
+	});
+
+	// The store can persist and restore perfectly and still never be asked to.
+	// These two pin the wiring: who calls it, and when.
+	it('restores on mount, after attaching the element', async () => {
+		const attach = vi.spyOn(player, 'attach');
+		const restore = vi.spyOn(player, 'restore');
+
+		render(MusicPlayer);
+		await Promise.resolve();
+
+		expect(restore).toHaveBeenCalled();
+		// ORDER is the subtle part: restoring sets the element's source and
+		// may ask it to play, so calling it before `attach` would act on
+		// nothing. What restore then DOES is the store's own tests — asserting
+		// the resulting queue here would depend on whether an earlier test in
+		// this file had already consumed the singleton's one-shot restore.
+		expect(attach.mock.invocationCallOrder[0]).toBeLessThan(restore.mock.invocationCallOrder[0]);
+	});
+
+	// A tab can vanish without ever firing `pause` — closed, navigated away
+	// from, or killed by a phone OS once backgrounded. These two events are
+	// the last word in each case.
+	it('saves on pagehide and when the tab is hidden', async () => {
+		player.queue = [track('a')];
+		player.index = 0;
+		render(MusicPlayer);
+		const persist = vi.spyOn(player, 'persist');
+
+		window.dispatchEvent(new Event('pagehide'));
+		expect(persist).toHaveBeenCalledTimes(1);
+
+		document.dispatchEvent(new Event('visibilitychange'));
+		expect(persist).toHaveBeenCalledTimes(2);
 	});
 
 	it('removes the row it is asked to, not the current one', async () => {

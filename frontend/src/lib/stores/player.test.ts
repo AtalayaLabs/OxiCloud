@@ -185,6 +185,45 @@ describe('player persistence', () => {
 		expect(revived.repeat).toBe('one');
 	});
 
+	// The seek is the half of "resume" that puts you back INSIDE the track,
+	// and it cannot happen at restore time: there is no duration until the
+	// element has loaded metadata, so the position is held and applied then.
+	// jsdom loads nothing, so the element is driven by hand here.
+	it('seeks to the saved position once the track reports its metadata', () => {
+		localStorage.setItem(
+			'oxi-player-state',
+			JSON.stringify({ v: 1, queue: [track('a')], index: 0, position: 73 })
+		);
+		const el = document.createElement('audio');
+		Object.defineProperty(el, 'duration', { value: 300, configurable: true });
+		const revived = new PlayerStore();
+		revived.attach(el);
+		revived.restore();
+
+		// Nothing has been seeked yet — there was no duration to seek within.
+		expect(el.currentTime).toBe(0);
+
+		revived.onLoadedMetadata();
+		expect(el.currentTime).toBe(73);
+	});
+
+	// A saved position past the end of the track — a re-encoded file, a
+	// truncated upload — must not strand the element beyond its duration.
+	it('clamps a saved position longer than the track', () => {
+		localStorage.setItem(
+			'oxi-player-state',
+			JSON.stringify({ v: 1, queue: [track('a')], index: 0, position: 9_999 })
+		);
+		const el = document.createElement('audio');
+		Object.defineProperty(el, 'duration', { value: 120, configurable: true });
+		const revived = new PlayerStore();
+		revived.attach(el);
+		revived.restore();
+		revived.onLoadedMetadata();
+
+		expect(el.currentTime).toBe(120);
+	});
+
 	it('clamps an index that no longer fits the saved queue', () => {
 		localStorage.setItem(
 			'oxi-player-state',
