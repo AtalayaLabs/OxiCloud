@@ -141,6 +141,8 @@
     "repeat": "تكرار",
     "repeat_one": "تكرار واحد",
     "queue": "قائمة الانتظار",
+    "add_to_queue": "إضافة إلى قائمة الانتظار",
+    "added_to_queue": "تمت إضافة {{name}} إلى قائمة الانتظار",
     "queue_empty": "قائمة الانتظار فارغة",
     "not_playing": "لا يتم التشغيل",
     "play": "تشغيل",
@@ -855,6 +857,7 @@
     "upload_files_section_title": "التحميل غير متاح هنا",
     "upload_files_section_body": "انتقل إلى قسم الملفات لتحميل الملفات",
     "clear": "مسح الكل",
+    "mark_read": "تحديد كمقروء",
     "mark_all_read": "تحديد الكل كمقروء"
   },
   "batch": {
@@ -1892,6 +1895,7 @@
     "favorite": "مفضل",
     "ok": "نعم",
     "optional": "خياري",
+    "reorder": "إعادة الترتيب",
     "retry": "حاول ثانية",
     "select": "يختار",
     "select_all": "حدد الكل",

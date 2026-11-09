@@ -8,6 +8,12 @@ use bytes::Bytes;
 use std::sync::Arc;
 
 use crate::common::di::AppState;
+// Escapes XML special characters so an initial can't break out of the
+// generated SVG. Was a private `xml_escape` here and another in
+// `uploads_handler`; the two had drifted on the apostrophe, so both now
+// call the single escaper. Aliased to keep the call sites reading as
+// XML escaping, which is what they are doing.
+use crate::common::text::escape_markup as xml_escape;
 
 /// Transcoded-avatar memo: `blake3(stored data URI)` → PNG bytes.
 ///
@@ -261,15 +267,6 @@ fn svg_initials_response(username: &str, size: u32) -> Response {
         svg,
     )
         .into_response()
-}
-
-/// Escape XML special characters to prevent XSS in SVG output.
-fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
 }
 
 fn extract_initials(username: &str) -> String {

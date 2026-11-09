@@ -141,6 +141,8 @@
     "repeat": "リピート",
     "repeat_one": "1曲リピート",
     "queue": "キュー",
+    "add_to_queue": "キューに追加",
+    "added_to_queue": "{{name}} をキューに追加しました",
     "queue_empty": "キューが空です",
     "not_playing": "再生していません",
     "play": "再生",
@@ -855,6 +857,7 @@
     "upload_files_section_title": "ここではアップロードできません",
     "upload_files_section_body": "ファイルをアップロードするには「ファイル」セクションに移動してください",
     "clear": "すべてクリア",
+    "mark_read": "既読にする",
     "mark_all_read": "すべて既読にする"
   },
   "batch": {
@@ -1892,6 +1895,7 @@
     "favorite": "お気に入り",
     "ok": "わかりました",
     "optional": "オプション",
+    "reorder": "並べ替え",
     "retry": "もう一度やり直してください",
     "select": "選択",
     "select_all": "すべて選択",

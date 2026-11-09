@@ -4,6 +4,7 @@
 	import '$lib/styles/ported/auth.css';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
+	import { resolveDynamic } from '$lib/utils/appPath';
 	import { page } from '$app/state';
 	import type { Pathname } from '$app/types';
 	import { onMount } from 'svelte';
@@ -19,6 +20,7 @@
 	} from '$lib/api/endpoints/auth';
 	import { i18n, setLocale, t, type Locale } from '$lib/i18n/index.svelte';
 	import { loginErrorMessage } from '$lib/auth/loginError';
+	import AppSplash from '$lib/components/AppSplash.svelte';
 	import LanguageSelect from '$lib/components/LanguageSelect.svelte';
 	import { session } from '$lib/stores/session.svelte';
 	import { serverConfig } from '$lib/stores/serverConfig.svelte';
@@ -220,7 +222,10 @@
 					replaceState: true
 				});
 			} else {
-				await goto(resolve(redirectTarget), { replaceState: true });
+				// `resolveDynamic` IS `resolve` with the cast a runtime-chosen route
+				// needs; the rule cannot follow a helper. See its doc in appPath.ts.
+				// eslint-disable-next-line svelte/no-navigation-without-resolve
+				await goto(resolveDynamic(redirectTarget), { replaceState: true });
 			}
 		} catch (err) {
 			if (err instanceof ApiError && err.errorType === 'EmailNotVerified') {
@@ -515,7 +520,10 @@
 				// unbound one that would 401 on the very next thumbnail. See
 				// `docs/plan/dpop.md` Gate 3.
 				await bindDpopIfPossible();
-				await goto(resolve(redirectTarget), { replaceState: true });
+				// `resolveDynamic` IS `resolve` with the cast a runtime-chosen route
+				// needs; the rule cannot follow a helper. See its doc in appPath.ts.
+				// eslint-disable-next-line svelte/no-navigation-without-resolve
+				await goto(resolveDynamic(redirectTarget), { replaceState: true });
 				return;
 			}
 			// Exchange failed — fall through to the normal login UI. Drop
@@ -536,7 +544,10 @@
 				const me = await fetchMe();
 				if (me) {
 					session.setUser(me);
-					await goto(resolve(redirectTarget), { replaceState: true });
+					// `resolveDynamic` IS `resolve` with the cast a runtime-chosen route
+					// needs; the rule cannot follow a helper. See its doc in appPath.ts.
+					// eslint-disable-next-line svelte/no-navigation-without-resolve
+					await goto(resolveDynamic(redirectTarget), { replaceState: true });
 					return;
 				}
 			} catch {
@@ -607,14 +618,7 @@
 		 language selector). Auth-container below is skipped entirely
 		 during this window; if the exchange fails, `willRedirect`
 		 flips false and the normal login form takes over. -->
-	<div
-		class="auth-splash"
-		role="status"
-		aria-label="Signing in"
-		data-testid="login-redirect-loader"
-	>
-		<div class="auth-splash__spinner" aria-hidden="true"></div>
-	</div>
+	<AppSplash label="Signing in" testid="login-redirect-loader" />
 {:else}
 	<div class="auth-container">
 		<div class="auth-panel">
@@ -1234,29 +1238,8 @@
 		margin: 0;
 	}
 
-	/* OIDC-callback continuation splash — VISUALLY IDENTICAL to the
-	   boot splash in app.html so the transition boot-splash →
-	   post-exchange overlay is imperceptible: same background, same
-	   spinner dimensions, same colors, same animation cadence.
-	   Tokens match by design — `--color-bg-page` resolves to the
-	   same `light-dark(#f5f7fa, #0f172a)` the boot splash hard-codes;
-	   ditto `--color-border` and `--color-accent`. If you ever retone
-	   the splash, update BOTH sites at once (app.html + this file). */
-	.auth-splash {
-		position: fixed;
-		inset: 0;
-		z-index: 9999;
-		display: grid;
-		place-items: center;
-		background: var(--color-bg-page);
-	}
-
-	.auth-splash__spinner {
-		width: 38px;
-		height: 38px;
-		border: 3px solid var(--color-border);
-		border-top-color: var(--color-accent);
-		border-radius: 50%;
-		animation: spin 0.7s linear infinite;
-	}
+	/* The OIDC-callback continuation splash is `AppSplash` now. It used to
+	   be `.auth-splash` here, duplicating the boot splash in `app.html`
+	   under a comment asking the next editor to keep the two in step by
+	   hand. */
 </style>

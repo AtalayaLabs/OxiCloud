@@ -150,6 +150,8 @@
     "repeat": "Powtarzaj",
     "repeat_one": "Powtarzaj jeden",
     "queue": "Kolejka",
+    "add_to_queue": "Dodaj do kolejki",
+    "added_to_queue": "Dodano {{name}} do kolejki",
     "queue_empty": "Kolejka jest pusta",
     "not_playing": "Nic nie jest odtwarzane",
     "play": "Odtwórz",
@@ -855,6 +857,7 @@
     "upload_files_section_title": "Przesyłanie niedostępne tutaj",
     "upload_files_section_body": "Przejdź do sekcji Pliki, aby przesłać pliki",
     "clear": "Wyczyść wszystko",
+    "mark_read": "Oznacz jako przeczytane",
     "mark_all_read": "Oznacz wszystko jako przeczytane"
   },
   "batch": {
@@ -1892,6 +1895,7 @@
     "favorite": "Ulubiony",
     "ok": "OK",
     "optional": "fakultatywny",
+    "reorder": "Zmień kolejność",
     "retry": "Spróbuj ponownie",
     "select": "Wybierać",
     "select_all": "Zaznacz wszystko",

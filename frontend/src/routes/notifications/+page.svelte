@@ -1,10 +1,11 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import Button from '$lib/components/Button.svelte';
+	import GestureList from '$lib/components/GestureList.svelte';
 	import Icon from '$lib/icons/Icon.svelte';
 	import NotificationRow from '$lib/components/NotificationRow.svelte';
 	import TransientNotificationRow from '$lib/components/TransientNotificationRow.svelte';
-	import { notifications } from '$lib/composables/useNotifications.svelte';
+	import { markEverythingRead, notifications } from '$lib/composables/useNotifications.svelte';
 	import { ui, type Notification as TransientNotification } from '$lib/stores/ui.svelte';
 	import type { Notification } from '$lib/api/types';
 	import { t } from '$lib/i18n/index.svelte';
@@ -33,10 +34,35 @@
 
 	const unread = $derived(ui.unread + notifications.unread);
 
-	function markAllRead() {
-		ui.markNotificationsRead();
-		void notifications.markAllRead();
+	/**
+	 * Drop one row, by whichever route its kind needs: a transient toast only
+	 * ever lived in the UI store, a persistent one has to be deleted server
+	 * side or it comes back with the next fetch.
+	 */
+	function dismiss(entry: FeedRow) {
+		if (entry.kind === 'transient') ui.dismissNotification(entry.item.id);
+		else void notifications.delete(entry.item.id);
 	}
+
+	/**
+	 * Mark one row read — the right-hand swipe, and its hover button.
+	 *
+	 * NOT a toggle yet, and the missing half is server-side: the API exposes
+	 * `POST /notifications/{id}/read` and nothing that clears `read_at`
+	 * (`routes.rs`). So "mark unread" has no call to make, and a gesture that
+	 * silently did nothing on half its rows would be worse than one that only
+	 * goes one way. The swipe is idempotent either way: a row already read
+	 * stays read.
+	 */
+	function markRead(entry: FeedRow) {
+		if (entry.kind === 'transient') ui.markNotificationRead(entry.item.id);
+		else void notifications.markRead(entry.item.id);
+	}
+
+	// Shared with the bell dropdown, which offers the same action: both stores
+	// feed the badge, so marking one of them is a half-read state nobody can
+	// clear from the UI.
+	const markAllRead = markEverythingRead;
 
 	onMount(() => ui.markNotificationsRead());
 </script>
@@ -64,14 +90,52 @@
 			<p>{t('notifications.empty', 'No notifications')}</p>
 		</div>
 	{:else}
+		<!--
+			`GestureList` without `reorderCapable`: the feed is sorted by time,
+			so a grip here would offer a move that cannot be kept. What it gains
+			is the dismissal — a left swipe on touch, the same action as a button
+			on hover — shared with the player queue and the playlist rather than
+			hand-rolled a third time.
+
+			Dismissing takes the ROW, not an index, because the two kinds are not
+			dismissed the same way: a toast is dropped from the UI store, a
+			persistent one is deleted through the API.
+		-->
 		<div class="notifications-feed">
-			{#each feed as row (row.id)}
-				{#if row.kind === 'transient'}
-					<TransientNotificationRow n={row.item} />
-				{:else}
-					<NotificationRow row={row.item} />
-				{/if}
-			{/each}
+			<GestureList
+				items={feed}
+				key={(row) => row.id}
+				swipeLeft={{
+					// The same eraser as the player queue and the playlist: one icon
+					// for "take this out of the list", wherever the list is.
+					icon: 'eraser',
+					label: t('common.dismiss', 'Dismiss'),
+					tone: 'danger',
+					testId: (entry) => `notifications-dismiss-${entry.id}`,
+					run: dismiss
+				}}
+				swipeRight={{
+					// Blue and additive, against the red of the dismissal — the two
+					// directions of this list are opposites, and red against blue is
+					// the pair that survives colour blindness.
+					icon: 'check-double',
+					label: t('notifications.mark_read', 'Mark read'),
+					tone: 'add',
+					testId: (entry) => `notifications-read-${entry.id}`,
+					run: markRead
+				}}
+				listLabel={t('notifications.title', 'Notifications')}
+			>
+				{#snippet row(entry)}
+					{#if entry.kind === 'transient'}
+						<TransientNotificationRow n={entry.item} />
+					{:else}
+						<!-- No row-level cross here: the list's own action is the one
+						     route to deletion on this page. -->
+						<NotificationRow row={entry.item} showClose={false} />
+					{/if}
+				{/snippet}
+			</GestureList>
 		</div>
 
 		{#if notifications.hasMore}

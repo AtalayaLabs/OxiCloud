@@ -58,6 +58,19 @@
 			faster perceived first paint. The root layout removes `#app-splash` as soon
 			as it mounts. `light-dark()` + the early `color-scheme` rules match the
 			resolved theme so there's no colour flash when the app CSS arrives.
+
+			`$lib/components/AppSplash.svelte` paints the same screen for every
+			later wait (the session probe on a protected route, the OIDC code
+			exchange on /login), and a cold boot crosses both in sequence — so
+			the two must be indistinguishable at the handover. They now share one
+			asset for the moving part, which is the only way to guarantee that;
+			what is left to keep in step by hand is the background and the logo
+			size, and `AppSplash.test.ts` fails if those drift, the same guard
+			`theme.test.ts` applies to `oxi-theme` above.
+
+			The rules here stay inline regardless: this screen paints before the
+			CSS bundle exists, so it cannot read a custom property — hence the
+			literals.
 		-->
 		<style>
 			html[data-color-scheme='dark'] {
@@ -74,21 +87,140 @@
 				place-items: center;
 				background: light-dark(#f5f7fa, #0f172a);
 			}
-			#app-splash__spinner {
-				width: 38px;
-				height: 38px;
-				border-radius: 50%;
-				border: 3px solid light-dark(#e2e8f0, #334155);
-				border-top-color: #ff5e3a;
-				animation: app-splash-spin 0.7s linear infinite;
+			/* The brand mark with two dashes orbiting it — the hand-written twin
+			   of `$lib/components/LoaderMark.svelte`. INLINE, deliberately:
+			   pointing an <img> at a static asset was tried and it fails badly
+			   here, because the server answers an unmatched path with
+			   `index.html` (the SPA fallback), so a stale build or a proxy that
+			   drops `/logo/*` hands the <img> a page of HTML rather than a 404
+			   — and with `alt=""` that renders as nothing at all. The first
+			   screen must not be able to disappear, and inline markup cannot
+			   404 or cost a request.
+
+			   `pathLength="100"` on the dashes puts offsets in hundredths of the
+			   path, so the animation needs no JavaScript to measure anything. */
+			#app-splash__mark {
+				display: block;
 			}
-			@keyframes app-splash-spin {
+			#app-splash__track {
+				fill: none;
+				stroke: light-dark(#e2e8f0, #334155);
+				stroke-width: 7;
+			}
+			.app-splash__dash {
+				fill: none;
+				stroke: #ff5e3a;
+				stroke-width: 7;
+				stroke-linecap: round;
+				stroke-dasharray: 12 88;
+			}
+			#app-splash__lead {
+				animation: app-splash-orbit 0.65s linear infinite;
+			}
+			/* Half the lead's speed, on purpose: two dashes at the same rate are
+			   a rigid pair, two at different rates lap each other. The duration
+			   carries that, over a full -50 → -150 lap — an initial offset plus
+			   the lead's keyframes would be slow too, but by teleporting back
+			   half a lap on every repeat. */
+			#app-splash__trail {
+				animation: app-splash-orbit-trail 1.3s linear infinite;
+			}
+			@keyframes app-splash-orbit {
 				to {
-					transform: rotate(360deg);
+					stroke-dashoffset: -100;
 				}
 			}
+			@keyframes app-splash-orbit-trail {
+				from {
+					stroke-dashoffset: -50;
+				}
+				to {
+					stroke-dashoffset: -150;
+				}
+			}
+			#app-splash__glyph {
+				fill: #ff5e3a;
+			}
 			@media (prefers-reduced-motion: reduce) {
-				#app-splash__spinner {
+				#app-splash__lead,
+				#app-splash__trail {
+					animation: none;
+				}
+			}
+
+			/*
+				Scripting disabled: the splash above would otherwise spin
+				forever, since the only thing that ever clears it is the app
+				mounting. This layer covers it with an explanation.
+
+				It lives in <noscript>, and that element alone is what keeps the
+				message away from a visitor whose JavaScript merely has not
+				finished loading: with scripting enabled it is not in the DOM at
+				all. (`@media (scripting: none)` would read better but is not
+				old enough to be the only gate.)
+
+				So the 0.5s delay is a beat, not a safeguard — it lets the
+				spinner register before the swap, and nothing depends on its
+				value. By the time this renders the message is already known to
+				be true, which is why it is half a second and not longer; drop
+				it to 0 and only the polish changes. `both` holds opacity 0
+				through the delay and the end state afterwards.
+
+				English only, and unavoidably so: the locale files are fetched
+				by the i18n store, which is JavaScript. Keep the wording plain
+				enough to survive machine translation by the reader.
+			*/
+			#app-noscript {
+				position: fixed;
+				inset: 0;
+				/* Above the splash (9999) — this replaces it, visually. */
+				z-index: 10000;
+				display: grid;
+				place-items: center;
+				padding: 24px;
+				background: light-dark(#f5f7fa, #0f172a);
+				color: light-dark(#0f172a, #e2e8f0);
+				font-family:
+					system-ui,
+					-apple-system,
+					'Segoe UI',
+					sans-serif;
+				text-align: center;
+				animation: app-noscript-in 300ms ease 0.5s both;
+			}
+			#app-noscript__logo {
+				width: 72px;
+				height: 72px;
+				margin: 0 auto 16px;
+				display: block;
+			}
+			#app-noscript__brand {
+				margin: 0 0 12px;
+				font-size: 1.5rem;
+				font-weight: 600;
+				letter-spacing: -0.01em;
+			}
+			#app-noscript__brand span {
+				color: #ff5e3a;
+			}
+			#app-noscript__msg {
+				margin: 0;
+				max-width: 42ch;
+				line-height: 1.6;
+				color: light-dark(#475569, #94a3b8);
+			}
+			@keyframes app-noscript-in {
+				from {
+					opacity: 0;
+				}
+				to {
+					opacity: 1;
+				}
+			}
+			/* Reduced motion: no fade. The message appears at once — with the
+			   fade gone there is nothing for the beat to lead into. */
+			@media (prefers-reduced-motion: reduce) {
+				#app-noscript {
 					animation: none;
 				}
 			}
@@ -96,8 +228,72 @@
 	</head>
 	<body data-sveltekit-preload-data="hover">
 		<div id="app-splash" role="status" aria-label="Loading">
-			<div id="app-splash__spinner"></div>
+			<!--
+				Twin of `LoaderMark.svelte`. Orbit centred on the viewBox centre
+				(255, 227), r=150; `rotate(-90)` starts the dashes at twelve
+				o'clock. The glyph is scaled to 62% about that same centre so it
+				sits inside the orbit, and its path is the one exported as
+				`BRAND_MARK_PATH` — a literal here only because this screen
+				paints before any bundle exists.
+			-->
+			<svg id="app-splash__mark" viewBox="95 67 320 320" width="64" height="64" aria-hidden="true">
+				<circle id="app-splash__track" cx="255" cy="227" r="150" />
+				<circle
+					id="app-splash__lead"
+					class="app-splash__dash"
+					cx="255"
+					cy="227"
+					r="150"
+					pathLength="100"
+					transform="rotate(-90 255 227)"
+				/>
+				<circle
+					id="app-splash__trail"
+					class="app-splash__dash"
+					cx="255"
+					cy="227"
+					r="150"
+					pathLength="100"
+					transform="rotate(-90 255 227)"
+				/>
+				<path
+					id="app-splash__glyph"
+					transform="translate(255 227) scale(0.62) translate(-255 -227)"
+					d="M345 310c32 0 58-26 58-58s-26-58-58-58c-6.2 0-12 0.9-17.5 2.7C318 166 289 143 255 143c-34.3 0-63.1 22.6-73 53.7C176.9 195.7 171 195 165 195c-32 0-58 26-58 58s26 58 58 58h180z"
+				/>
+			</svg>
 		</div>
+		<!--
+			The logo is the ASSET, not a thirteenth inline copy of its path. An
+			<img> needs no JavaScript, it is the same file the <link rel="icon">
+			tags above already point at, and `%sveltekit.assets%` keeps it
+			correct under a deployment prefix.
+
+			Inlining is what the bundled surfaces do, for a reason that does not
+			apply here: they paint before the icon bundle. This layer only ever
+			renders when scripting is off, so one cached request costs nothing —
+			and the path data has drifted between those copies and this asset
+			already (different viewBox, and the asset carries a background
+			circle), which is the argument for not making another.
+		-->
+		<noscript>
+			<div id="app-noscript">
+				<div>
+					<img
+						id="app-noscript__logo"
+						src="%sveltekit.assets%/logo/logo-plain.svg"
+						alt=""
+						width="72"
+						height="72"
+					/>
+					<p id="app-noscript__brand"><span>Oxi</span>Cloud</p>
+					<p id="app-noscript__msg">
+						OxiCloud needs JavaScript to run. Please enable it for this site in your browser
+						settings, then reload this page.
+					</p>
+				</div>
+			</div>
+		</noscript>
 		<div style="display: contents">%sveltekit.body%</div>
 	</body>
 </html>

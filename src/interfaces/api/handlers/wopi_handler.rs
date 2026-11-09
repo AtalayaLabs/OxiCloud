@@ -13,7 +13,7 @@ use axum::{
     Router,
     body::Body,
     extract::{Path, Query, State},
-    http::{HeaderMap, Request, StatusCode},
+    http::{HeaderMap, HeaderValue, Request, StatusCode, header},
     response::{Html, IntoResponse, Response},
     routing::{any, get, post},
 };
@@ -735,13 +735,55 @@ async fn host_page(
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
-    // Escape HTML entities in file name
-    let safe_name = file
-        .name
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;");
+    // Escape HTML entities in anything interpolated into the markup
+    // below. `editor_url` comes from the admin-configured discovery
+    // document, so it is not attacker-controlled in a normal
+    // deployment — but it lands in an HTML attribute, and a stray `"`
+    // in a hand-edited discovery XML would otherwise break out of it.
+    let safe_name = crate::common::text::escape_markup(&file.name);
+    let safe_editor_url = crate::common::text::escape_markup(&editor_url);
+    let safe_token = crate::common::text::escape_markup(&token);
+
+    // Per-response nonce for the one inline <script> (the auto-submit)
+    // and the one inline <style>. A nonce rather than 'unsafe-inline'
+    // so the page's CSP can stay closed: nothing but these two blocks
+    // can execute or style here.
+    //
+    // `Uuid::new_v4` is 122 bits of randomness, regenerated per
+    // response — well past what a nonce needs, and already a dependency
+    // (no base64/rand plumbing for one string).
+    let nonce = uuid::Uuid::new_v4().simple().to_string();
+
+    // THE POINT OF THIS PAGE. The editor handshake is a cross-origin
+    // form POST carrying a WOPI access token, and the origin it goes to
+    // is operator config (`OXICLOUD_WOPI_DISCOVERY_URL`), unknowable
+    // when the SPA is built. The SPA's own policy is a build-time
+    // <meta>, so it could only permit that POST by allowing a whole
+    // SCHEME (`form-action https:`) — which excludes a cleartext editor
+    // entirely and, for everyone else, lets ANY https origin receive a
+    // token-bearing form.
+    //
+    // Rendering the handshake here instead moves the decision to where
+    // the value is known: this response names the ONE origin, computed
+    // from the same discovery document the POST targets. Cleartext,
+    // loopback, internal DNS and TLS hosts all work, and no policy
+    // anywhere has to say `https:`.
+    //
+    // `frame-ancestors 'self'` + the explicit `X-Frame-Options:
+    // SAMEORIGIN` below: the SPA frames this page. The global layer
+    // defaults XFO to DENY and only skips responses that set their own
+    // (see `middleware::security_headers`), so this header is what
+    // makes the page embeddable at all.
+    let editor_origin = origin_of(&editor_url);
+    let csp = format!(
+        "default-src 'none'; \
+         script-src 'nonce-{nonce}'; \
+         style-src 'nonce-{nonce}'; \
+         form-action {editor_origin}; \
+         frame-src {editor_origin}; \
+         frame-ancestors 'self'; \
+         base-uri 'none'"
+    );
 
     let html = format!(
         r#"<!DOCTYPE html>
@@ -749,25 +791,55 @@ async fn host_page(
 <head>
     <meta charset="utf-8">
     <title>{safe_name} - OxiCloud Editor</title>
-    <style>
+    <style nonce="{nonce}">
         body {{ margin: 0; overflow: hidden; }}
         iframe {{ width: 100%; height: 100vh; border: none; }}
     </style>
 </head>
 <body>
-    <form id="wopi_form" action="{editor_url}" method="post" target="wopi_frame">
-        <input name="access_token" value="{token}" type="hidden"/>
+    <form id="wopi_form" action="{safe_editor_url}" method="post" target="wopi_frame">
+        <input name="access_token" value="{safe_token}" type="hidden"/>
         <input name="access_token_ttl" value="{ttl}" type="hidden"/>
     </form>
     <iframe name="wopi_frame" allowfullscreen
         sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-top-navigation allow-popups-to-escape-sandbox">
     </iframe>
-    <script>document.getElementById('wopi_form').submit();</script>
+    <script nonce="{nonce}">document.getElementById('wopi_form').submit();</script>
 </body>
 </html>"#
     );
 
-    Html(html).into_response()
+    let mut res = Html(html).into_response();
+    let headers = res.headers_mut();
+    if let Ok(v) = HeaderValue::from_str(&csp) {
+        headers.insert(header::CONTENT_SECURITY_POLICY, v);
+    }
+    headers.insert(
+        axum::http::HeaderName::from_static("x-frame-options"),
+        HeaderValue::from_static("SAMEORIGIN"),
+    );
+    // The page embeds a freshly-minted access token. Never cache it.
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    res
+}
+
+/// `scheme://host[:port]` of `url`, or `'none'` when it will not parse.
+///
+/// `'none'` is the fail-CLOSED answer, and fail-closed is right here: a
+/// host page that cannot name its editor origin must not post the token
+/// anywhere. The editor then fails to load, visibly, instead of the
+/// handshake going somewhere unverified.
+fn origin_of(url: &str) -> String {
+    match url::Url::parse(url) {
+        Ok(u) => match (u.host_str(), u.port()) {
+            // `Url::port()` is None when the port is the scheme default,
+            // which is exactly what a CSP source should omit too.
+            (Some(h), Some(p)) => format!("{}://{}:{}", u.scheme(), h, p),
+            (Some(h), None) => format!("{}://{}", u.scheme(), h),
+            (None, _) => "'none'".to_string(),
+        },
+        Err(_) => "'none'".to_string(),
+    }
 }
 
 /// GET /wopi/supported-extensions — Returns extensions the editor supports.
@@ -832,4 +904,81 @@ async fn wopi_not_found() -> Response {
         .status(StatusCode::NOT_FOUND)
         .body(Body::empty())
         .unwrap()
+}
+
+#[cfg(test)]
+mod origin_of_tests {
+    use super::origin_of;
+
+    // `origin_of` is the single source for the editor origin the host
+    // page's CSP names. Get it wrong and the failure is not loud — the
+    // browser silently refuses the POST, and the editor shows an empty
+    // frame. Hence a pin per input shape.
+    //
+    // Note the source: the chosen action's `urlsrc` from the fetched
+    // discovery document, NOT `OXICLOUD_WOPI_DISCOVERY_URL`. Those two
+    // can legitimately differ — the Hurl mock has discovery on
+    // 127.0.0.1:9100 handing back a `urlsrc` on mock-editor.invalid —
+    // and only `urlsrc` is where the POST actually goes.
+
+    #[test]
+    fn keeps_a_non_default_port() {
+        // The dev/Docker shape: cleartext loopback on an explicit port,
+        // which is precisely the case the old `form-action https:`
+        // policy excluded.
+        assert_eq!(
+            origin_of("http://127.0.0.1:8099/hosting/wopi/word/edit?WOPISrc=x"),
+            "http://127.0.0.1:8099"
+        );
+    }
+
+    #[test]
+    fn omits_a_default_port() {
+        // A CSP source should not spell out :443.
+        assert_eq!(
+            origin_of("https://collabora.example.com/cool/word/edit?"),
+            "https://collabora.example.com"
+        );
+        assert_eq!(
+            origin_of("https://collabora.example.com:443/cool/word/edit?"),
+            "https://collabora.example.com"
+        );
+    }
+
+    #[test]
+    fn drops_path_query_and_fragment() {
+        // Only scheme://host[:port] is a valid CSP source expression; a
+        // path would make the whole directive invalid, not just loose.
+        assert_eq!(
+            origin_of("https://host.test/a/b?x=1#f"),
+            "https://host.test"
+        );
+    }
+
+    #[test]
+    fn an_unusable_url_fails_closed() {
+        // `'none'` blocks the POST. The alternative — omitting the
+        // directive, or emitting a truncated origin — would let the
+        // token form go somewhere unverified.
+        for bad in [
+            "",
+            "   ",
+            "not-a-url",
+            "/cool/word/edit",       // relative — no origin
+            "mock-editor.invalid/x", // scheme-less
+        ] {
+            assert_eq!(origin_of(bad), "'none'", "{bad:?} must fail closed");
+        }
+    }
+
+    #[test]
+    fn the_hurl_mocks_urlsrc_resolves() {
+        // The exact value `tests/common/wopi_mock_discovery.js` serves,
+        // so the Hurl pin on the host page's CSP and this unit test
+        // cannot disagree about what the header should say.
+        assert_eq!(
+            origin_of("http://mock-editor.invalid/edit?"),
+            "http://mock-editor.invalid"
+        );
+    }
 }

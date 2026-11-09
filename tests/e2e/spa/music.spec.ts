@@ -17,6 +17,17 @@ function uniq(p: string): string {
   return `${p}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 }
 
+/**
+ * The sidebar row for a playlist, located by its visible name.
+ *
+ * Rows carry a fixed `music-playlist-item` testid rather than their name, so
+ * a wrong name reports as a text mismatch instead of a missing element — see
+ * the comment on that testid in `routes/music/+page.svelte`.
+ */
+function playlistRow(page: import('@playwright/test').Page, name: string) {
+  return page.getByTestId('music-playlist-item').filter({ hasText: name });
+}
+
 /** Create a playlist and return its name; works whether or not others exist. */
 async function createPlaylist(page: import('@playwright/test').Page, name: string): Promise<void> {
   await page.goto('/music');
@@ -27,7 +38,7 @@ async function createPlaylist(page: import('@playwright/test').Page, name: strin
   else await emptyBtn.click();
   await page.getByTestId('dialog-host-prompt-input').fill(name);
   await page.getByTestId('dialog-host-submit-btn').click();
-  await expect(page.getByTestId(name)).toBeVisible({ timeout: 15_000 });
+  await expect(playlistRow(page, name)).toBeVisible({ timeout: 15_000 });
 }
 
 test('playlist lifecycle: create, toggle public, rename, delete', async ({ page }) => {
@@ -36,19 +47,33 @@ test('playlist lifecycle: create, toggle public, rename, delete', async ({ page 
   await createPlaylist(page, name);
 
   // Select the playlist → detail panel with its controls.
-  await page.getByTestId(name).click();
+  await playlistRow(page, name).click();
   await expect(page.getByTestId('music-rename-playlist-btn')).toBeVisible({ timeout: 15_000 });
 
   await page.getByTestId('music-rename-playlist-btn').click();
-  await page.getByTestId('dialog-host-input-name').fill(renamed);
-  await page.getByTestId('dialog-host-input-description').fill('e2e playlist description');
+  // Assert each field actually holds what was typed before submitting. The
+  // dialog's inputs bind on mount, and filling one before that binding
+  // settles has produced a submit where the description text ended up inside
+  // the NAME — which then surfaced fifteen seconds later as a missing
+  // playlist row, naming neither the field nor the value. Checking here
+  // fails at the fill, with both strings in the message.
+  const nameInput = page.getByTestId('dialog-host-input-name');
+  const descInput = page.getByTestId('dialog-host-input-description');
+  await nameInput.fill(renamed);
+  await descInput.fill('e2e playlist description');
+  await expect(nameInput).toHaveValue(renamed);
+  await expect(descInput).toHaveValue('e2e playlist description');
+
   await page.getByTestId('dialog-host-submit-btn').click();
-  await expect(page.getByTestId(renamed)).toBeVisible({ timeout: 15_000 });
+  await expect(playlistRow(page, renamed)).toBeVisible({ timeout: 15_000 });
+  // EXACT, where the row filter above is a substring match: a name that
+  // merely contains the new one — the failure mode above — has to fail here.
+  await expect(page.getByTestId('music-playlist-name')).toHaveText(renamed);
   await expect(page.getByText('e2e playlist description')).toBeVisible();
 
   await page.getByTestId('music-delete-playlist-btn').click();
   await page.getByTestId('music-delete-playlist-btn').click();
-  await expect(page.getByTestId(renamed)).toHaveCount(0, { timeout: 15_000 });
+  await expect(playlistRow(page, renamed)).toHaveCount(0, { timeout: 15_000 });
 });
 
 test('reorder playlist tracks by dragging', async ({ page }) => {
@@ -59,7 +84,7 @@ test('reorder playlist tracks by dragging', async ({ page }) => {
 
   const name = uniq('PLr2');
   await createPlaylist(page, name);
-  await page.getByTestId(name).click();
+  await playlistRow(page, name).click();
   await page.getByTestId('music-add-tracks-btn').click();
   await expect(page.getByTestId('music-add-tracks-dialog')).toBeVisible();
   await page.getByTestId('music-add-tracks-search-input').fill(token);
@@ -77,7 +102,7 @@ test('reorder playlist tracks by dragging', async ({ page }) => {
 test('add-tracks dialog opens, searches, and closes', async ({ page }) => {
   const name = uniq('PLt');
   await createPlaylist(page, name);
-  await page.getByTestId(name).click();
+  await playlistRow(page, name).click();
   await expect(page.getByTestId('music-add-tracks-btn')).toBeVisible({ timeout: 15_000 });
 
   await page.getByTestId('music-add-tracks-btn').click();
@@ -95,7 +120,7 @@ test('add an audio track and drive the player', async ({ page }) => {
 
   const name = uniq('PLp');
   await createPlaylist(page, name);
-  await page.getByTestId(name).click();
+  await playlistRow(page, name).click();
   await expect(page.getByTestId('music-add-tracks-btn')).toBeVisible({ timeout: 15_000 });
 
   // Open the picker and search by name (an empty query may match nothing).
@@ -108,26 +133,45 @@ test('add an audio track and drive the player', async ({ page }) => {
   await page.getByTestId('music-add-tracks-confirm-btn').click();
   await expect(page.getByTestId('music-add-tracks-dialog')).toHaveCount(0);
 
-  // Playlist-level actions on the detail panel.
+  // Playlist-level actions on the detail panel. Shuffle used to be a second
+  // button here; it is a player mode now, toggled in the player panel, so the
+  // playlist no longer shuffles a copy of its own list.
   await page.getByTestId('music-play-all-btn').click({ timeout: 3_000 }).catch(() => {});
-  await page.getByTestId('music-shuffle-play-btn').click({ timeout: 3_000 }).catch(() => {});
 
-  // Play the track and exercise the transport controls.
+  // Play the track from its row. The player is in the top bar now, so the
+  // queue toggle and close button this test used to click no longer exist —
+  // and because every click was wrapped in `.catch(() => {})`, their removal
+  // would have gone unnoticed: the test would keep passing while exercising
+  // nothing. Assertions below instead.
   await page.locator('[data-testid^="music-track-play-"]').first().click({ timeout: 5_000 });
-  await page.getByTestId('music-player-play-btn').click({ timeout: 3_000 }).catch(() => {});
-  await page.getByTestId('music-player-shuffle-btn').click({ timeout: 3_000 }).catch(() => {});
-  await page.getByTestId('music-player-repeat-btn').click({ timeout: 3_000 }).catch(() => {});
-  await page.getByTestId('music-player-next-btn').click({ timeout: 3_000 }).catch(() => {});
-  await page.getByTestId('music-player-mute-btn').click({ timeout: 3_000 }).catch(() => {});
 
-  // Queue panel — open, remove a queued track, then close.
-  await page.getByTestId('music-player-queue-toggle-btn').click({ timeout: 3_000 }).catch(() => {});
-  await page
-    .locator('[data-testid^="music-queue-remove-"]')
-    .first()
-    .click({ timeout: 2_000 })
-    .catch(() => {});
-  await page.getByTestId('music-queue-close-btn').click({ timeout: 3_000 }).catch(() => {});
+  const trigger = page.getByTestId('music-player-toggle-btn');
+  await trigger.click();
+  await expect(page.getByTestId('music-player-title')).toContainText(
+    songName.replace('.wav', '')
+  );
+  // The queue is part of the panel now rather than a drawer behind a toggle.
+  await expect(page.getByTestId('music-queue-panel')).toBeVisible();
+
+  // Transport: pause and resume, asserted on the element rather than on the
+  // button, so a handler wired to the wrong action cannot pass.
+  const paused = () => page.evaluate(() => document.querySelector('audio')?.paused ?? true);
+  await page.getByTestId('music-player-play-btn').click();
+  await expect.poll(paused).toBe(true);
+  await page.getByTestId('music-player-play-btn').click();
+  await expect.poll(paused).toBe(false);
+
+  // THE regression this player exists to prevent: leaving Music used to
+  // unmount the <audio> element and cut the track off. Navigate away and it
+  // must still be there, still playing, still reachable.
+  await page.keyboard.press('Escape');
+  await page.getByTestId('appshell-nav-files-link').click();
+  await expect(page).toHaveURL(/\/files/);
+  await expect(trigger).toBeVisible();
+  await expect.poll(paused).toBe(false);
+
+  await page.goBack();
+  await expect(page.getByTestId('music-add-tracks-btn')).toBeVisible({ timeout: 15_000 });
 
   // Manage-shares dialog.
   await page.getByTestId('music-manage-shares-btn').click({ timeout: 3_000 }).catch(() => {});

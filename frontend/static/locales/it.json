@@ -141,6 +141,8 @@
     "repeat": "Ripeti",
     "repeat_one": "Ripeti Una",
     "queue": "Coda",
+    "add_to_queue": "Aggiungi alla coda",
+    "added_to_queue": "{{name}} aggiunto alla coda",
     "queue_empty": "Coda vuota",
     "not_playing": "Non in riproduzione",
     "play": "Riproduci",
@@ -855,6 +857,7 @@
     "upload_files_section_title": "Caricamento non disponibile qui",
     "upload_files_section_body": "Vai alla sezione File per caricare i file",
     "clear": "Cancella tutto",
+    "mark_read": "Segna come letto",
     "mark_all_read": "Segna tutto come letto"
   },
   "batch": {
@@ -1892,6 +1895,7 @@
     "favorite": "Preferito",
     "ok": "OK",
     "optional": "opzionale",
+    "reorder": "Riordina",
     "retry": "Riprova",
     "select": "Selezionare",
     "select_all": "Seleziona tutto",

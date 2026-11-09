@@ -1,18 +1,67 @@
 <script lang="ts">
-	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
+	import type { Pathname } from '$app/types';
 	import Icon from '$lib/icons/Icon.svelte';
 	import { t } from '$lib/i18n/index.svelte';
-	import { appPath } from '$lib/utils/appPath';
+	import { appPath, resolveDynamic } from '$lib/utils/appPath';
 	import { notifications } from '$lib/composables/useNotifications.svelte';
+	import { player } from '$lib/stores/player.svelte';
+	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 
-	const ITEMS = [
-		{ href: '/files', label: t('nav.files', 'Files'), icon: 'folder' },
-		{ href: '/photos', label: t('nav.photos', 'Photos'), icon: 'images' },
-		{ href: '/notifications', label: t('notifications.title', 'Notifications'), icon: 'bell' },
-		{ href: '/account', label: t('nav.account', 'Account'), icon: 'user-circle' }
-	] as const;
+	/** Which badge, if any, an entry's icon carries. */
+	type Badge = 'unread' | 'playback';
+
+	interface NavItem {
+		/**
+		 * A route of this app. Typed as `Pathname` only at the `resolveDynamic`
+		 * call: the list is assembled with spreads, which widen a literal to
+		 * `string` and lose the route union on the way through.
+		 */
+		href: string;
+		label: string;
+		icon: string;
+		/** Test id suffix; the href's own slug for everything but `/player`. */
+		testId: string;
+		badge?: Badge;
+	}
+
+	/**
+	 * Files · Media · Player · Notifications · Account, with the two optional
+	 * ones gated on the SAME flags as the sidebar: a deployment with photos or
+	 * music off must not advertise them here either.
+	 *
+	 * Derived rather than a const, and Player is a member rather than something
+	 * rendered beside Media. It used to be injected inside the loop with
+	 * `{#if item.href === '/photos'}` for its position, which quietly tied it
+	 * to Media's existence — gating Media out would have removed Player too.
+	 * The order lives in one array now, where it can be read off.
+	 */
+	const ITEMS = $derived.by<NavItem[]>(() => [
+		{ href: '/files', label: t('nav.files', 'Files'), icon: 'folder', testId: 'files' },
+		...(serverConfig.features.photos
+			? [{ href: '/photos', label: t('nav.photos', 'Media'), icon: 'images', testId: 'photos' }]
+			: []),
+		...(serverConfig.features.music
+			? [
+					{
+						href: '/player',
+						label: t('music.player', 'Player'),
+						icon: 'music',
+						testId: 'player',
+						badge: 'playback' as const
+					}
+				]
+			: []),
+		{
+			href: '/notifications',
+			label: t('notifications.title', 'Notifications'),
+			icon: 'bell',
+			testId: 'notifications',
+			badge: 'unread'
+		},
+		{ href: '/account', label: t('nav.account', 'Account'), icon: 'user-circle', testId: 'account' }
+	]);
 
 	const path = $derived(appPath(page.url.pathname));
 	const unread = $derived(ui.unread + notifications.unread);
@@ -23,24 +72,36 @@
 </script>
 
 <nav class="mobile-nav" aria-label={t('nav.primary', 'Primary')}>
+	<!--
+		`resolveDynamic` IS `resolve`, with the one cast the route union needs
+		when the path comes from a list rather than a literal — the lint rule
+		cannot see through the wrapper. Disabled for the loop, as `AppShell`
+		does for its sidebar, rather than per line.
+	-->
+	<!-- eslint-disable svelte/no-navigation-without-resolve -->
 	{#each ITEMS as item (item.href)}
 		{@const isActive = active(item.href)}
 		<a
 			class="mobile-nav__item"
 			class:mobile-nav__item--active={isActive}
-			href={resolve(item.href)}
+			href={resolveDynamic(item.href as Pathname)}
 			aria-current={isActive ? 'page' : undefined}
-			data-testid={`mobile-nav-${item.href.slice(1)}-link`}
+			data-testid={`mobile-nav-${item.testId}-link`}
 		>
 			<span class="mobile-nav__icon">
 				<Icon name={item.icon} />
-				{#if item.href === '/notifications' && unread > 0}
+				{#if item.badge === 'unread' && unread > 0}
 					<span class="mobile-nav__badge">{unread > 99 ? '99+' : unread}</span>
+				{:else if item.badge === 'playback' && player.active}
+					<span class="mobile-nav__badge mobile-nav__badge--glyph" aria-hidden="true">
+						<Icon name={player.playing ? 'play' : 'pause'} />
+					</span>
 				{/if}
 			</span>
 			<span class="mobile-nav__label">{item.label}</span>
 		</a>
 	{/each}
+	<!-- eslint-enable svelte/no-navigation-without-resolve -->
 </nav>
 
 <style>
@@ -96,6 +157,18 @@
 		font-weight: var(--weight-bold);
 		line-height: 16px;
 		text-align: center;
+	}
+
+	/* The player's badge carries a glyph where the notification one carries a
+	   count: same circle, but centred and smaller, since a play triangle at
+	   10px fills the disc where a digit has whitespace built in. */
+	.mobile-nav__badge--glyph {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 0;
+		font-size: 7px;
+		line-height: 1;
 	}
 
 	@media (width <= 768px) {

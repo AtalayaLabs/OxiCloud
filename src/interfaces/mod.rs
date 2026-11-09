@@ -5,6 +5,7 @@ pub mod middleware;
 pub mod nextcloud;
 pub mod range_requests;
 pub mod upload_ingest;
+pub mod user_content;
 pub mod web;
 
 pub use api::create_api_routes;

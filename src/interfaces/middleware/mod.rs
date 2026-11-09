@@ -5,6 +5,7 @@ pub mod csrf;
 pub mod dpop;
 pub mod locale;
 pub mod rate_limit;
+pub mod security_headers;
 pub mod server_status;
 pub mod trace_span;
 pub mod trusted_proxy;

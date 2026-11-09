@@ -122,16 +122,35 @@ const config = {
 				'media-src': ['self', 'blob:'],
 				'connect-src': ['self'],
 				'font-src': ['self', 'data:'],
-				'frame-src': ['*', 'blob:'],
+				// `'self'` for the WOPI host page (`/wopi/edit/{id}`) and `blob:` for
+				// the PDF viewer's object URL — the only two things the SPA frames.
+				//
+				// This was `'*'`, i.e. any origin, because the WOPI modal used to
+				// iframe the admin-configured editor host directly. The editor now
+				// loads in a nested iframe INSIDE the host page, governed by that
+				// page's own CSP (which names the one origin, resolved from the
+				// discovery document's `urlsrc` at request time). So the SPA no
+				// longer frames anything cross-origin and this is build-time
+				// knowable. Do not re-add a wildcard: a cross-origin editor belongs
+				// in the host page's policy, not this one.
+				'frame-src': ['self', 'blob:'],
 				'frame-ancestors': ['none'],
 				'base-uri': ['self'],
-				// 'https:' (beyond 'self') so the in-app WOPI office editor works: the
-				// modal POSTs a hidden token form to the editor's action URL, which is
-				// a cross-origin, admin-configured Collabora/OnlyOffice host (the same
-				// host 'frame-src *' already lets us iframe). Without this the browser
-				// refuses the submit and the editor never loads. Mirrors the server
-				// header in src/main.rs.
-				'form-action': ['self', 'https:']
+				// `'self'` only. This used to carry `https:` so the WOPI modal could
+				// POST its hidden token form straight to the editor's action URL — a
+				// cross-origin, admin-configured Collabora/OnlyOffice host that this
+				// build cannot know, so a whole SCHEME was the narrowest expressible
+				// rule. Two costs: ANY https origin could receive a token-bearing
+				// form, and a CLEARTEXT editor (loopback, private network) was
+				// excluded outright, with nothing but a console CSP error to say why.
+				//
+				// The handshake now happens in `GET /wopi/edit/{id}` — a
+				// server-rendered page that emits its own CSP naming the one real
+				// editor origin, resolved from OXICLOUD_WOPI_DISCOVERY_URL at request
+				// time. Nothing in the SPA posts cross-origin any more, so this is
+				// back to `'self'`. Do not re-add a scheme here: if an editor fails to
+				// load, the origin belongs in the host page's policy, not this one.
+				'form-action': ['self']
 			}
 		}
 	}

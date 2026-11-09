@@ -3,6 +3,32 @@
 Complements the repo-root `/AGENTS.md`. Not shipped (adapter-static
 copies only `frontend/static/`).
 
+## Components — read the catalogue before writing UI
+
+**`docs/architecture/components.md` lists every reusable component**, with
+what it is and why it exists. Read it before building any UI, and add a row
+when you build something reusable.
+
+This is not bookkeeping. The recurring defect in this frontend is not a
+missing component, it is a _second_ one: three right-click menus, two boot
+splashes, three hand-rolled swipe-to-delete rows — each written because
+nobody knew the first existed, and each then drifting until the same bug had
+to be fixed in three places. A component absent from that list gets
+rewritten by the next person.
+
+- **Reuse beats writing.** Something 80% right takes a prop, not a sibling.
+  One component with a flag beats two that drift.
+- **Generalise on the SECOND caller.** When a second surface needs the same
+  behaviour, move it into `lib/components/` then — not once a third copy has
+  grown its own bugs.
+- **Open every component with why it exists**, not just what it does: the
+  duplication it prevents, the bug it was extracted after. That comment is
+  what makes the next reader reuse instead of rewrite.
+
+Known homes for shared behaviour, before you add a component at all:
+`lib/composables/` for rune logic, `lib/stores/` for global state,
+`lib/utils/` for DOM and data helpers.
+
 ## localStorage keys
 
 Prefix `oxi-`, kebab-case separators. Example: `oxi-view-mode`.

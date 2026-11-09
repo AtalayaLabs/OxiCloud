@@ -53,6 +53,31 @@ pub fn normalize_email_for_link(email: &str) -> String {
     format!("{}@{}", local_base, domain)
 }
 
+/// Escape the five markup-significant characters, for interpolating an
+/// untrusted value into XML or HTML — element text or a quoted
+/// attribute, either one.
+///
+/// The one copy. There were three: `nextcloud::uploads_handler`,
+/// `nextcloud::avatar_handler` and the WOPI host page each had a private
+/// `xml_escape`/`escape_html_attr`, and two of them had already drifted
+/// — one emitted `&apos;` for the apostrophe, the other `&#39;`.
+///
+/// `&#39;` is the form here: a numeric reference is valid in both XML
+/// and HTML, whereas `&apos;` is undefined in HTML 4 and only became
+/// legal in HTML5. Since these helpers escape values destined for SVG,
+/// WebDAV XML and HTML alike, the universally-safe spelling is the one
+/// worth standardising on.
+///
+/// Ampersand MUST be replaced first, or the `&` of a later replacement
+/// gets re-escaped into `&amp;lt;`.
+pub fn escape_markup(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,5 +187,71 @@ mod tests {
         // downstream comparison will fail naturally.
         assert_eq!(normalize_email_for_link("not-an-email"), "not-an-email");
         assert_eq!(normalize_email_for_link("  MIXED-Case  "), "mixed-case");
+    }
+
+    #[test]
+    fn escape_markup_covers_all_five() {
+        assert_eq!(
+            escape_markup(r#"<a href="x" title='y'>&</a>"#),
+            "&lt;a href=&quot;x&quot; title=&#39;y&#39;&gt;&amp;&lt;/a&gt;"
+        );
+    }
+
+    #[test]
+    fn escape_markup_replaces_the_ampersand_first() {
+        // The ordering bug this guards: if `&` were replaced LAST, each
+        // earlier substitution's own `&` would be re-escaped — `<` would
+        // come out as `&amp;lt;` instead of `&lt;`, and the markup the
+        // escape exists to produce would render as literal text.
+        //
+        // Every character that expands to an entity is listed, not just
+        // `<`: an asymmetric test reads as though the others are
+        // unhandled, and the next person to add a character here should
+        // see all of them in one place.
+        for (raw, escaped) in [
+            ("&", "&amp;"),
+            ("<", "&lt;"),
+            (">", "&gt;"),
+            ("\"", "&quot;"),
+            ("'", "&#39;"),
+        ] {
+            assert_eq!(escape_markup(raw), escaped, "escaping {raw:?}");
+            // Feeding the OUTPUT back in must escape exactly one more
+            // level — the direct check that no pass re-escapes another
+            // pass's output.
+            assert_eq!(
+                escape_markup(escaped),
+                escaped.replacen('&', "&amp;", 1),
+                "re-escaping {escaped:?} must only touch its ampersand"
+            );
+        }
+    }
+
+    #[test]
+    fn escape_markup_neutralises_an_attribute_breakout() {
+        // The shape that matters for the WOPI host page: a value
+        // interpolated into a quoted attribute must not be able to
+        // close it and add its own.
+        let hostile = r#"" onload="alert(1)"#;
+        let escaped = escape_markup(hostile);
+        assert!(!escaped.contains('"'));
+        assert_eq!(escaped, "&quot; onload=&quot;alert(1)");
+    }
+
+    #[test]
+    fn escape_markup_uses_the_numeric_apostrophe() {
+        // `&apos;` is undefined in HTML 4; the numeric form is valid in
+        // both XML and HTML. One of the three merged copies used
+        // `&apos;` — this pins which spelling won.
+        assert_eq!(escape_markup("'"), "&#39;");
+    }
+
+    #[test]
+    fn escape_markup_leaves_ordinary_text_alone() {
+        assert_eq!(
+            escape_markup("Rapport 2026 (final).docx"),
+            "Rapport 2026 (final).docx"
+        );
+        assert_eq!(escape_markup(""), "");
     }
 }

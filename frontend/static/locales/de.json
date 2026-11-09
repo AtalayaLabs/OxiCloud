@@ -141,6 +141,8 @@
     "repeat": "Wiederholen",
     "repeat_one": "Einen wiederholen",
     "queue": "Warteschlange",
+    "add_to_queue": "Zur Warteschlange hinzufügen",
+    "added_to_queue": "{{name}} zur Warteschlange hinzugefügt",
     "queue_empty": "Warteschlange ist leer",
     "not_playing": "Nicht abspielend",
     "play": "Abspielen",
@@ -855,6 +857,7 @@
     "upload_files_section_title": "Upload hier nicht verfügbar",
     "upload_files_section_body": "Wechseln Sie zum Abschnitt Dateien, um Dateien hochzuladen",
     "clear": "Alles löschen",
+    "mark_read": "Als gelesen markieren",
     "mark_all_read": "Alle als gelesen markieren"
   },
   "batch": {
@@ -1892,6 +1895,7 @@
     "favorite": "Favorit",
     "ok": "OK",
     "optional": "optional",
+    "reorder": "Neu anordnen",
     "retry": "Versuchen Sie es erneut",
     "select": "Wählen",
     "select_all": "Alles auswählen",

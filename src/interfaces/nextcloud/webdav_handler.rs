@@ -596,13 +596,22 @@ async fn handle_get(
 
     let modified_at = file.modified_at;
 
-    Ok(Response::builder()
+    let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, file.mime_type.as_ref())
         .header(header::CONTENT_LENGTH, file.size)
         .header(header::ETAG, etag)
         .header(header::ACCEPT_RANGES, "bytes")
-        .header(header::LAST_MODIFIED, modified_at.to_rfc2822())
+        .header(header::LAST_MODIFIED, modified_at.to_rfc2822());
+    // A scriptable document must never render from this origin — see
+    // `user_content::dav_disposition`. Also what makes the
+    // security-header middleware recognise the body as user content and
+    // sandbox it; it keys on `Content-Disposition`, which this route had
+    // none of.
+    if let Some(d) = crate::interfaces::user_content::dav_disposition(&file.mime_type) {
+        builder = builder.header(header::CONTENT_DISPOSITION, d);
+    }
+    Ok(builder
         .body(Body::from_stream(std::pin::Pin::from(stream)))
         .unwrap())
 }
@@ -676,13 +685,16 @@ async fn handle_head(
     // derives `Content-Length: 0` from the empty body, which is honest
     // about what's actually on the wire. Clients that need the file
     // size use PROPFIND (which is what NC and Sabre clients do).
-    Ok(Response::builder()
+    let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, file.mime_type.as_ref())
         .header(header::ETAG, format!("\"{}\"", file.etag))
-        .header(header::LAST_MODIFIED, modified_at.to_rfc2822())
-        .body(Body::empty())
-        .unwrap())
+        .header(header::LAST_MODIFIED, modified_at.to_rfc2822());
+    // HEAD must advertise the same headers as GET.
+    if let Some(d) = crate::interfaces::user_content::dav_disposition(&file.mime_type) {
+        builder = builder.header(header::CONTENT_DISPOSITION, d);
+    }
+    Ok(builder.body(Body::empty()).unwrap())
 }
 
 // ──────────────────── PROPPATCH ────────────────────

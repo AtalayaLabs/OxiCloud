@@ -1,0 +1,367 @@
+# =============================================================
+# OxiCloud — stored XSS via user-uploaded HTML / SVG (user report)
+#
+# A user reported that uploading an .html file and opening it inline
+# executed its script. Confirmed:
+#
+#   GET /api/files/{id}?inline=true
+#     → Content-Type: text/html
+#     → Content-Disposition: inline
+#     → NO Content-Security-Policy
+#
+# a fully-privileged same-origin document. Its inline script could
+# call /api/* with the victim's cookies (HttpOnly does not help — the
+# script never reads the cookie, the browser attaches it).
+#
+# ROOT CAUSE, and why this file pins headers rather than behaviour:
+# the global CSP middleware in `main.rs` deliberately sends no CSP on
+# `text/html` so the SPA's own hash-based <meta> policy governs the
+# shell. That branch keys on Content-Type, which cannot distinguish
+# our shell from a file a user uploaded. The fix adds a user-content
+# branch BEFORE it, keyed on `Content-Disposition` — already this
+# codebase's meaning of "this response is a file body" (the gzip
+# predicate uses the same test), so every download handler present and
+# future is covered without anyone maintaining a route list.
+#
+# Delivery paths that made it exploitable, for the record:
+#   * the file viewer's "open in new tab" anchor (`?inline=true`)
+#   * the global search box, which opened ANY picked file with
+#     window.open(fileInlineUrl(id)) and no mime check
+#   * a direct link from anyone who can drop a file where the victim
+#     can read it — including an anonymous public-share visitor, since
+#     /s/{token} is only a login method and the download itself goes
+#     through these same /api/files routes
+#
+# What is pinned here:
+#   1. an uploaded .html is sandboxed AND served as attachment
+#   2. ?inline=true can no longer promote it to inline
+#   3. an uploaded .svg gets the same treatment — it needed no
+#      ?inline=true at all, since image/* matched the inline allowlist
+#   4. a PNG still renders inline and is NOT sandboxed (the fix must
+#      not break image preview — a gate that neutralised everything
+#      would satisfy 1–3 just as well, which is why this case exists)
+#   5. nosniff stays on everything
+#
+# Prerequisites: setup.hurl must have run (admin user exists).
+#
+# Run:
+#   hurl --variables-file tests/api/test.env --file-root tests \
+#        --test tests/api/user_content_xss_headers.hurl
+# =============================================================
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 1 — Login
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/auth/login
+Content-Type: application/json
+{
+  "username": "{{username}}",
+  "password": "{{password}}"
+}
+
+HTTP 200
+[Captures]
+token: jsonpath "$.access_token"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 2 — Working folder
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/folders
+Authorization: Bearer {{token}}
+Content-Type: application/json
+{
+  "name": "hurl-user-content-xss"
+}
+
+HTTP 201
+[Captures]
+folder_id: jsonpath "$.id"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 3 — Upload the HTML payload. Content-Type is declared
+# text/html on the multipart part, i.e. exactly what a browser
+# sends when a user drags an .html file in. Nothing exotic is
+# needed to reproduce this.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/files/upload
+Authorization: Bearer {{token}}
+[MultipartFormData]
+folder_id: {{folder_id}}
+file: file,fixtures/xss-payload.html; text/html
+
+HTTP 201
+[Captures]
+html_id: jsonpath "$.id"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 4 — THE REGRESSION. The exact request from the report:
+# plain inline fetch of the uploaded HTML.
+#
+# `sandbox` with no allow-* tokens is what makes the document
+# inert: scripts disabled, opaque origin, so even if execution
+# were somehow reached it has no access to app-origin cookies or
+# storage. Asserted as a substring because the directive order
+# in the header is not what matters — the presence of `sandbox`
+# with no `allow-scripts` is.
+#
+# `allow-scripts` and `allow-same-origin` are asserted ABSENT
+# individually: either one re-opens this, and `allow-scripts`
+# together with `allow-same-origin` restores the vulnerability
+# in full. A future "make the preview work again" patch that
+# adds one is the single most likely way this regresses.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/files/{{html_id}}?inline=true
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+header "Content-Security-Policy" contains "sandbox"
+header "Content-Security-Policy" contains "default-src 'none'"
+header "Content-Security-Policy" not contains "allow-scripts"
+header "Content-Security-Policy" not contains "allow-same-origin"
+# Second layer, independent of the CSP: ?inline=true must no longer
+# promote a scriptable document to inline. A header can be dropped by
+# a proxy or lost in a middleware refactor; the disposition cannot.
+header "Content-Disposition" startsWith "attachment"
+header "X-Content-Type-Options" == "nosniff"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 5 — Same file without the query param, since the default
+# path must not be weaker than the explicit one.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/files/{{html_id}}
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+header "Content-Security-Policy" contains "sandbox"
+header "Content-Disposition" startsWith "attachment"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 6 — Upload the SVG payload.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/files/upload
+Authorization: Bearer {{token}}
+[MultipartFormData]
+folder_id: {{folder_id}}
+file: file,fixtures/xss-payload.svg; image/svg+xml
+
+HTTP 201
+[Captures]
+svg_id: jsonpath "$.id"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 7 — SVG is the quieter half: `image/svg+xml` matched
+# `starts_with("image/")`, so it was served INLINE with no
+# ?inline=true needed. An SVG is a scriptable document, not a
+# raster image.
+#
+# The SPA is unaffected by the attachment disposition here: it
+# renders previews through <img src=…>, and Content-Disposition
+# is ignored for subresource loads. Only a top-level navigation
+# — the thing that executed the script — changes behaviour.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/files/{{svg_id}}?inline=true
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+header "Content-Security-Policy" contains "sandbox"
+header "Content-Security-Policy" not contains "allow-scripts"
+header "Content-Disposition" startsWith "attachment"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 8 — THE OTHER HALF OF THE FIX: a real image must still
+# render inline, and must NOT be sandboxed.
+#
+# Without this, a gate that neutralised every download would
+# pass steps 4–7 and silently break image, video and PDF
+# preview.
+#
+# It still carries a CSP — every user-content body does — just
+# not the sandboxing one. The split is driven by the single
+# `is_scriptable_document` classifier that also decides the
+# disposition, so `inline` and "not sandboxed" can never
+# disagree. `default-src` is asserted ABSENT because it is the
+# one directive that could stop a natively-rendered body from
+# displaying, and the built-in PDF viewer is the fragile case.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/files/upload
+Authorization: Bearer {{token}}
+[MultipartFormData]
+folder_id: {{folder_id}}
+file: file,fixtures/blue-image.png; image/png
+
+HTTP 201
+[Captures]
+png_id: jsonpath "$.id"
+
+GET {{base_url}}/api/files/{{png_id}}?inline=true
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+header "Content-Disposition" startsWith "inline"
+header "Content-Security-Policy" not contains "sandbox"
+header "Content-Security-Policy" not contains "default-src"
+header "Content-Security-Policy" contains "frame-ancestors 'none'"
+header "X-Content-Type-Options" == "nosniff"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 8b — THE SAME BUG, THE OTHER DOOR: WebDAV.
+#
+# The REST fix keys "this is user content" on the presence of
+# `Content-Disposition`. The DAV GET/HEAD/ranged-GET handlers
+# served stored bytes with `Content-Type: file.mime_type` and NO
+# disposition, so `user_content_mime()` saw nothing, the response
+# fell through to the `text/html` branch — which sends no CSP so
+# the SPA shell's own <meta> policy can govern — and an uploaded
+# .html reached a browser over `/webdav/…` as a live same-origin
+# document. Identical CWE-79 to the reported `?inline=true`
+# case; the finder simply used the REST route.
+#
+# Found while confirming the advisory rather than from the
+# report, which is why it gets its own step instead of a line in
+# the one above: "fixed on the route the reporter happened to
+# use" is the failure mode this guards.
+#
+# `dav_disposition` now stamps `attachment` on exactly the
+# scriptable types, which both stops the render AND lets the
+# middleware recognise the body and sandbox it. Asserting both
+# effects, since either alone would close this.
+# ─────────────────────────────────────────────────────────────
+PUT {{base_url}}/webdav/hurl-xss-probe.html
+Authorization: Bearer {{token}}
+Content-Type: text/html
+file,fixtures/xss-payload.html;
+
+HTTP *
+
+GET {{base_url}}/webdav/hurl-xss-probe.html
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+header "Content-Disposition" startsWith "attachment"
+header "Content-Security-Policy" matches "sandbox"
+header "Content-Security-Policy" not matches "allow-scripts"
+header "X-Content-Type-Options" == "nosniff"
+
+# HEAD must advertise the same disposition as GET — a client that
+# probes with HEAD and renders the GET would otherwise see two
+# different answers for one resource.
+HEAD {{base_url}}/webdav/hurl-xss-probe.html
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+header "Content-Disposition" startsWith "attachment"
+
+# …and a real image over DAV must STILL render: `attachment` is
+# forced only for scriptable documents. Without this, forcing it
+# on every type would satisfy the assertions above and quietly
+# turn every in-browser DAV preview into a download.
+PUT {{base_url}}/webdav/hurl-xss-probe.png
+Authorization: Bearer {{token}}
+Content-Type: image/png
+file,fixtures/blue-image.png;
+
+HTTP *
+
+GET {{base_url}}/webdav/hurl-xss-probe.png
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+header "Content-Type" contains "image/png"
+header "Content-Disposition" not exists
+header "Content-Security-Policy" not matches "sandbox"
+
+DELETE {{base_url}}/webdav/hurl-xss-probe.html
+Authorization: Bearer {{token}}
+
+HTTP *
+
+DELETE {{base_url}}/webdav/hurl-xss-probe.png
+Authorization: Bearer {{token}}
+
+HTTP *
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 9 — The APP policy, on a response that is neither a file
+# body nor an HTML document.
+#
+# Unit tests pin the constant; this pins that the middleware
+# still runs and ships it. Both narrowed entries are asserted
+# negatively as well, because they used to be wide open so the
+# SPA could iframe and POST a token form to an editor host the
+# build cannot name:
+#
+#   frame-src   * blob:          → 'self' blob:
+#   form-action 'self' https:    → 'self'
+#
+# That handshake now lives in the server-rendered
+# `/wopi/edit/{id}` page, which names the one origin in its own
+# CSP (pinned in `wopi_authz.hurl`). A wildcard reappearing here
+# means someone put the cross-origin POST back in the SPA.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/auth/me
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+# `matches`, scoped per directive with `[^;]*`, NOT `contains`.
+# A CSP source list is UNORDERED, so a substring like
+# "form-action 'self' https:" only catches one spelling —
+# `form-action https: 'self'` is the same policy and slips past.
+# `[^;]*` also keeps each assertion inside its own directive, so a
+# legitimate `https:` elsewhere (img-src keeps one for remote
+# avatars) cannot make a correct policy fail. The first cut of
+# this test asserted `not contains "https:;"` and went red on
+# exactly that.
+header "Content-Security-Policy" matches "frame-src[^;]*'self'"
+header "Content-Security-Policy" matches "frame-src[^;]*blob:"
+header "Content-Security-Policy" not matches "frame-src[^;]*[*]"
+header "Content-Security-Policy" matches "form-action[^;]*'self'"
+header "Content-Security-Policy" not matches "form-action[^;]*https:"
+header "Content-Security-Policy" not matches "form-action[^;]*[*]"
+# img-src keeps `https:` on purpose — pinned positively so a future
+# "tighten everything" sweep has to notice it is deliberate.
+header "Content-Security-Policy" matches "img-src[^;]*https:"
+header "X-Content-Type-Options" == "nosniff"
+header "X-Frame-Options" == "DENY"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 10 — Cleanup. Hurl files share one DB; leaving the folder
+# behind would leak into the suite's end-of-run storage sweep.
+# ─────────────────────────────────────────────────────────────
+DELETE {{base_url}}/api/files/{{html_id}}
+Authorization: Bearer {{token}}
+
+HTTP *
+
+DELETE {{base_url}}/api/files/{{svg_id}}
+Authorization: Bearer {{token}}
+
+HTTP *
+
+DELETE {{base_url}}/api/files/{{png_id}}
+Authorization: Bearer {{token}}
+
+HTTP *
+
+DELETE {{base_url}}/api/folders/{{folder_id}}
+Authorization: Bearer {{token}}
+
+HTTP *

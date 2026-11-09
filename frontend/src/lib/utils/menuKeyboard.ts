@@ -4,11 +4,26 @@ export function focusFirstMenuItem(menu: HTMLElement | null): void {
 	menu?.querySelector<HTMLElement>(ITEM_SELECTOR)?.focus();
 }
 
-export function clampMenuToViewport(menu: HTMLElement, margin = 8): { x: number; y: number } {
+/**
+ * Where to place a menu anchored at (`x`, `y`) — the click coords — so it
+ * stays inside the viewport, given the panel's measured size.
+ *
+ * Reads the element's SIZE, never its current position, so the result is
+ * a pure function of the anchor and that size. Callers can therefore
+ * assign it back to the style that positions the element without the
+ * value drifting on every pass: feeding an already-clamped position back
+ * in returns the same answer.
+ */
+export function clampMenuToViewport(
+	menu: HTMLElement,
+	x: number,
+	y: number,
+	margin = 8
+): { x: number; y: number } {
 	const rect = menu.getBoundingClientRect();
 	return {
-		x: Math.round(Math.max(margin, Math.min(rect.left, window.innerWidth - rect.width - margin))),
-		y: Math.round(Math.max(margin, Math.min(rect.top, window.innerHeight - rect.height - margin)))
+		x: Math.round(Math.max(margin, Math.min(x, window.innerWidth - rect.width - margin))),
+		y: Math.round(Math.max(margin, Math.min(y, window.innerHeight - rect.height - margin)))
 	};
 }
 

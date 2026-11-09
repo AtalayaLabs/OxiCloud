@@ -1502,120 +1502,14 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
     }
 
     // ── Security headers ─────────────────────────────────────────────────
-    // Applied globally so every response (API, static, DAV) carries them.
-    use axum::http::HeaderValue;
-    use axum::http::header::HeaderName;
-
-    // Content-Security-Policy is content-type-aware.
-    //
-    // HTML documents are served by the SvelteKit SPA, which emits its OWN
-    // strict, hash-based CSP via a <meta> tag (see `kit.csp` in
-    // frontend/svelte.config.js). SvelteKit's inline bootstrap script is
-    // hashed per build, so a static `script-src 'self'` header here would
-    // block it and blank the app. We therefore do NOT send a CSP header on
-    // text/html responses and let the SPA's meta policy govern them.
-    //
-    // Every other response (API JSON, DAV XML, static JS/CSS/img) gets the
-    // strict header below. Notes:
-    //   • style-src 'unsafe-inline': the frontend sets inline styles at
-    //     runtime (e.g. element.style.display); hashes can't cover those.
-    //   • frame-src '*': only matches network schemes, so 'blob:' is listed
-    //     explicitly for inline PDF/document viewers.
-    //   • media-src 'blob:': needed for blob: video/audio playback.
-    //   • form-action 'https:': the WOPI office editor is launched by POSTing a
-    //     token form to a cross-origin, admin-configured Collabora/OnlyOffice
-    //     host. Mirrors the SPA meta policy in frontend/svelte.config.js.
-    // The four static security headers ride in the same response pass —
-    // they used to be four separate `SetResponseHeaderLayer`s stacked on
-    // top of this middleware (5 tower layers per response). Folding them
-    // here measured 1.43x per request / −26 allocs with a byte-identical
-    // header set, including on 304s (benches/ROUND12.md §M3). They are
-    // inserted BEFORE the 304 early-return below because the standalone
-    // layers stamped 304s too.
-    async fn content_security_policy(
-        req: axum::extract::Request,
-        next: axum::middleware::Next,
-    ) -> axum::response::Response {
-        let mut res = next.run(req).await;
-        {
-            let h = res.headers_mut();
-            h.insert(
-                HeaderName::from_static("x-content-type-options"),
-                HeaderValue::from_static("nosniff"),
-            );
-            h.insert(
-                HeaderName::from_static("x-frame-options"),
-                HeaderValue::from_static("DENY"),
-            );
-            h.insert(
-                HeaderName::from_static("referrer-policy"),
-                HeaderValue::from_static("strict-origin-when-cross-origin"),
-            );
-            h.insert(
-                HeaderName::from_static("permissions-policy"),
-                HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
-            );
-        }
-        // A 304 Not Modified carries no entity headers (no Content-Type) since
-        // there's no body — `is_html` would read `None` and misclassify it as
-        // "not html", attaching the strict headerless CSP below. Browsers merge
-        // a 304's headers into the cached document's effective response, so
-        // that stray header would then stack with (and defeat) the SPA's own
-        // hash-based `<meta>` CSP on every revalidated repeat visit — this was
-        // a real bug (see git blame): a browser tab reopened at `/login` after
-        // the first, freshly-fetched visit got permanently stuck behind the
-        // boot spinner because its now-conditionally-cached `200` picked up an
-        // extra hash-less `script-src 'self'` header from the 304 that
-        // revalidated it, blocking the app's own inline hydration script.
-        // Nothing to add on a 304 regardless — its headers must only carry
-        // caching metadata, never a fresh policy decision.
-        if res.status() == axum::http::StatusCode::NOT_MODIFIED {
-            return res;
-        }
-        let is_html = res
-            .headers()
-            .get(axum::http::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| v.starts_with("text/html"));
-        if is_html {
-            // `no-store` (not just `no-cache`) on the SPA shell: Chrome/Firefox/
-            // Safari all treat `no-store` as an explicit opt-out of the
-            // back-forward cache (bfcache), which is a full in-memory snapshot
-            // of the page that bypasses HTTP revalidation entirely — `no-cache`
-            // alone does NOT prevent it. Without this, a shell instance loaded
-            // before a deploy can be resurrected byte-for-byte (old inline
-            // hydration script + old CSP hash) after navigating away and back —
-            // e.g. the OIDC login round-trip's two full-page navigations — and
-            // the resurrected page's old CSP `<meta>` no longer matches assets
-            // referenced by the current build, leaving the app permanently
-            // stuck behind the boot spinner until a hard reload.
-            res.headers_mut().insert(
-                axum::http::header::CACHE_CONTROL,
-                HeaderValue::from_static("no-store"),
-            );
-        } else {
-            res.headers_mut().insert(
-                axum::http::header::CONTENT_SECURITY_POLICY,
-                HeaderValue::from_static(
-                    "default-src 'self'; \
-                     script-src 'self'; \
-                     worker-src 'self' blob:; \
-                     style-src 'self' 'unsafe-inline'; \
-                     img-src 'self' data: blob: https:; \
-                     media-src 'self' blob:; \
-                     connect-src 'self'; \
-                     font-src 'self' data:; \
-                     frame-src * blob:; \
-                     frame-ancestors 'none'; \
-                     base-uri 'self'; \
-                     form-action 'self' https:",
-                ),
-            );
-        }
-        res
-    }
-
-    app = app.layer(axum::middleware::from_fn(content_security_policy));
+    // Applied globally so every response (API, static, DAV, file bodies)
+    // carries them. The policy decisions — and why the CSP differs for a
+    // user-uploaded body, the SPA shell and everything else — live in
+    // `interfaces::middleware::security_headers`, where they are also
+    // unit-tested.
+    app = app.layer(axum::middleware::from_fn(
+        crate::interfaces::middleware::security_headers::security_headers_layer,
+    ));
 
     // Warn once at startup if auth cookies are not Secure.
     // HttpOnly + SameSite protection is nullified over plain HTTP because tokens

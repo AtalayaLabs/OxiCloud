@@ -16,7 +16,8 @@
     justify-content: center;
     text-align: center;
     padding: var(--space-20) var(--space-10);
-    min-height: calc(100dvh - 260px);
+    /* Same correction as `.music-content`: less the retired player bar. */
+    min-height: calc(100dvh - 170px);
 }
 
 .music-empty-state-icon {
@@ -57,16 +58,20 @@
     display: none;
 }
 
+/* The 200px that used to be subtracted here budgeted for the page chrome
+   PLUS the 90px fixed player bar that sat at the bottom of this route. The
+   player is in the top bar now and reserves nothing, so the old figure left a
+   90px strip of dead space under the content. The `transition` went with it:
+   it existed to animate this height as the bar appeared and disappeared. */
 .music-content {
     display: flex;
-    gap: 0;
-    height: calc(100dvh - 200px);
+    /* `gap`, not padding on `.music-main` or a margin on either side: it only
+       applies BETWEEN the two panels, so neither gains stray outer space, and
+       the mobile breakpoint — where this column-stacks — gets the same
+       separation for free, vertically, with nothing to override. */
+    gap: var(--space-6);
+    height: calc(100dvh - 110px);
     min-height: 400px;
-    transition: height 0.3s ease;
-}
-
-.music-player-active .music-content {
-    height: calc(100dvh - 290px);
 }
 
 .music-sidebar {
@@ -176,9 +181,11 @@
     color: var(--color-text-secondary);
 }
 
+/* No padding: the panel inside fills this box, and the separation from the
+   sidebar is the container's `gap`. */
 .music-main {
     flex: 1;
-    padding: var(--space-6);
+    min-width: 0;
     overflow-y: auto;
 }
 
@@ -211,8 +218,15 @@
     font-size: var(--text-base);
 }
 
+/* Fills `.music-main` rather than stopping at its content, so the panel's
+   border reaches the bottom of the view instead of floating in the middle of
+   it. A flex column, so the track list below can take whatever the header
+   leaves. */
 .music-playlist-detail {
-    max-width: 900px;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
 }
 
 .music-playlist-header {
@@ -279,11 +293,20 @@
     justify-content: center;
 }
 
+/* Takes the height the header leaves and scrolls its own rows, which also
+   keeps the column headings in view while you scroll a long playlist. The
+   `min-height: 0` is what lets it shrink below its content — without it a
+   flex item refuses to, and the list would push the panel past the bottom
+   instead of scrolling. `overflow: hidden` stays for the rounded corners;
+   `overflow-y` overrides it on the one axis that scrolls. */
 .music-track-list {
+    flex: 1;
+    min-height: 0;
     background: var(--color-item);
     border-radius: var(--radius-2xl);
     border: 1px solid var(--color-border);
     overflow: hidden;
+    overflow-y: auto;
 }
 
 .music-track-header {
@@ -298,8 +321,15 @@
     letter-spacing: 0.5px;
 }
 
+/* A row now sits INSIDE `GestureList`'s sliding layer rather than being the
+   row itself, so it has to fill it — `flex: 1` with `min-width: 0`, or its
+   content would set its width and the columns would drift from row to row.
+   The padding and the separator stay here, with the content: they belong to
+   what slides, not to the box the action backing fills. */
 .music-track {
     display: flex;
+    flex: 1;
+    min-width: 0;
     align-items: center;
     padding: var(--space-2-5) var(--space-4);
     border-bottom: 1px solid var(--color-border);
@@ -311,7 +341,11 @@
     border-bottom: none;
 }
 
-.music-track:hover {
+/* Driven by the LIST's hover state rather than this element's own `:hover`:
+   `GestureList`'s action buttons are siblings of this one, so with `:hover`
+   the row lost its highlight the moment the cursor reached the eraser —
+   the row read as abandoned while the thing under the cursor was its own. */
+.music-track.hovered {
     background: var(--color-item-hover);
 }
 
@@ -323,11 +357,18 @@
     padding: 0 var(--space-2);
 }
 
-.music-track-num {
+/* Was the position column; it holds only the row's play/pause control now. */
+.music-track-play {
     width: 40px;
-    text-align: center;
+    flex: 0 0 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    background: none;
     color: var(--color-text-secondary);
     font-size: var(--text-base);
+    cursor: pointer;
 }
 
 .music-track-title {
@@ -336,11 +377,6 @@
     align-items: center;
     gap: var(--space-3);
     min-width: 0;
-}
-
-.music-track-icon {
-    color: var(--color-text-secondary);
-    font-size: var(--text-base);
 }
 
 .music-track-name {
@@ -414,26 +450,9 @@
     animation: spin 1s linear infinite;
 }
 
-.music-error {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: var(--space-10);
-    text-align: center;
-    color: var(--color-error-text);
-}
-
-.music-error i,
-.music-error .oxi-icon {
-    font-size: var(--text-6xl);
-    margin-bottom: var(--space-4);
-}
-
-.music-error p {
-    margin: 0;
-    font-size: var(--text-base);
-}
+/* `.music-error` retired — the page renders `EmptyState` with `error`, which
+   is the same icon-over-message shape and carries the standalone error colour
+   (`--color-error-text`) for every view at once. */
 
 /* @keyframes spin → base/animations.css (canonical, loaded via main.css). */
 
@@ -467,642 +486,90 @@
         font-size: var(--text-xl);
     }
 
+}
+
+/* ========== Track columns that give way ==========
+
+   Keyed to the LIST's own width, not the window's. The track list sits beside
+   the playlist sidebar, so it is routinely narrow while the viewport is wide —
+   a `@media` query reads the wrong box and leaves five columns fighting over
+   300px on a perfectly large screen.
+
+   Order of sacrifice: album first, then artist. The title is the only flexible
+   column, and once it starts cropping, a secondary column is worth less than
+   the name of the track. Both are dropped in the header as well, or the
+   columns part company with the rows. */
+.music-track-list {
+    container-type: inline-size;
+}
+
+@container (max-width: 640px) {
     .music-track-album {
         display: none;
     }
+}
 
-    .music-main {
-        padding: var(--space-6) 0;
+@container (max-width: 460px) {
+    .music-track-artist {
+        display: none;
+    }
+
+    /* The transport column goes too, and the gesture takes over: a TAP on the
+       row plays or pauses it. That is `GestureList`'s `ontap` rather than the
+       row's own click, so the tap that ends a swipe does not also start the
+       track — and it fills a real gap, since the wide layout's play action is
+       a double click, which touch never produces. */
+    .music-track-play {
+        display: none;
     }
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   MUSIC PLAYER
+   MUSIC PLAYER — retired
+
+   The bar, its queue drawer and their mobile rules lived here. The
+   player is `$lib/components/MusicPlayer.svelte` now, rendered by
+   `AppShell` above the router, and its styles are scoped to that
+   component.
+
+   These had to go rather than merely stop being used: Svelte scopes a
+   component's own rules, but a GLOBAL rule still matches by class name,
+   so `.player-queue { position: fixed; bottom: 100px; right: 16px }`
+   kept yanking the new panel's queue out of the panel and parking it in
+   the corner of the window.
    ═══════════════════════════════════════════════════════════════ */
 
-.music-player {
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    height: 90px;
-    background: var(--color-music-background);
-    border-top: 1px solid var(--color-border);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0 var(--space-4);
-    gap: var(--space-4);
-    z-index: 1000;
-    box-shadow: 0 -4px 20px var(--color-shadow);
-    transform: translateY(100%);
-    transition: transform 0.3s ease;
-}
-
-.music-player.has-track {
-    transform: translateY(0);
-}
-
-.music-player.hidden {
-    display: none;
-}
-
-/* Track Info */
-.player-track-info {
-    display: flex;
-    align-items: center;
-    gap: var(--space-3);
-    min-width: 180px;
-    max-width: 240px;
-}
-
-.player-album-art {
-    width: 56px;
-    height: 56px;
-    border-radius: var(--radius-lg);
-    background: var(--color-music-gradient);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--color-danger-text);
-    font-size: var(--text-xl);
-    flex-shrink: 0;
-    overflow: hidden;
-}
-
-.player-album-art img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    border-radius: inherit;
-}
-
-.player-track-details {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-}
-
-.player-track-name {
-    font-weight: var(--weight-medium);
-    color: var(--color-text);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 150px;
-}
-
-.player-track-artist {
-    font-size: var(--text-xs);
-    color: var(--color-text-secondary);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 150px;
-}
-
-/* Player Controls */
-.player-controls {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: var(--space-2);
-    max-width: 600px;
-}
-
-.player-buttons {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-}
-
-.player-btn {
-    background: none;
-    border: none;
-    cursor: pointer;
-    padding: var(--space-2);
-    border-radius: 50%;
-    color: var(--color-text-secondary);
-    font-size: var(--text-md);
-    transition: all 0.2s ease;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-
-.player-btn:hover {
-    color: var(--color-text);
-    background: var(--color-bg-hover);
-}
-
-.player-btn.active {
-    color: var(--color-text);
-}
-
-.player-btn-main {
-    background: var(--color-text);
-    color: var(--color-danger-text) !important;
-    font-size: 21px;
-}
-
-.player-btn-main:hover {
-    background: var(--color-text-dark);
-    transform: scale(1.05);
-}
-
-.player-btn-small {
-    padding: var(--space-1-5);
-    font-size: var(--text-base);
-}
-
-/* Progress Bar */
-.player-progress {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    width: 100%;
-}
-
-.player-time {
-    font-size: var(--text-2xs);
-    color: var(--color-text-secondary);
-    font-variant-numeric: tabular-nums;
-    min-width: 40px;
-}
-
-.player-time-current {
-    text-align: right;
-}
-
-.player-time-total {
-    text-align: left;
-}
-
-.player-progress-bar {
-    flex: 1;
-    height: 4px;
-    background: var(--color-border);
-    border-radius: var(--radius-xs);
-    cursor: pointer;
-    position: relative;
-    overflow: visible;
-}
-
-.player-progress-fill {
-    height: 100%;
-    background: var(--color-text);
-    border-radius: var(--radius-xs);
-    transition: width 0.1s linear;
-    width: 0;
-}
-
-.player-progress-handle {
-    position: absolute;
-    top: 50%;
-    left: 0;
-    width: 12px;
-    height: 12px;
-    background: var(--color-text);
-    border-radius: 50%;
-    transform: translate(-50%, -50%);
-    opacity: 0;
-    transition: opacity 0.2s ease;
-    box-shadow: 0 2px 4px var(--color-shadow-xl);
-}
-
-.player-progress-bar:hover .player-progress-handle {
-    opacity: 1;
-}
-
-.player-progress-bar:hover .player-progress-fill {
-    height: 6px;
-    margin-top: -1px;
-}
-
-/* The Svelte port uses a native range input for the seek bar; style it to
-   match the slim progress-bar look of the old custom bar. */
-.player-progress-range {
-    flex: 1;
-    height: 4px;
-    -webkit-appearance: none;
-    appearance: none;
-    background: var(--color-border);
-    border-radius: var(--radius-xs);
-    cursor: pointer;
-}
-
-.player-progress-range::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    appearance: none;
-    width: 12px;
-    height: 12px;
-    background: var(--color-text);
-    border-radius: 50%;
-    cursor: pointer;
-}
-
-.player-progress-range::-moz-range-thumb {
-    width: 12px;
-    height: 12px;
-    background: var(--color-text);
-    border-radius: 50%;
-    cursor: pointer;
-    border: none;
-}
-
-/* Volume Controls */
-.player-extra {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    min-width: 160px;
-    justify-content: flex-end;
-}
-
-.player-close-btn {
-    opacity: 0.5;
-    transition: opacity 0.15s ease;
-    margin-left: var(--space-1);
-}
-
-.player-close-btn:hover {
-    opacity: 1;
-}
-
-.player-volume-slider {
-    width: 80px;
-    display: flex;
-    align-items: center;
-}
-
-#player-volume-input {
-    width: 100%;
-    height: 4px;
-    -webkit-appearance: none;
-    appearance: none;
-    background: var(--color-border);
-    border-radius: var(--radius-xs);
-    cursor: pointer;
-}
-
-#player-volume-input::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    appearance: none;
-    width: 12px;
-    height: 12px;
-    background: var(--color-text);
-    border-radius: 50%;
-    cursor: pointer;
-}
-
-#player-volume-input::-moz-range-thumb {
-    width: 12px;
-    height: 12px;
-    background: var(--color-text);
-    border-radius: 50%;
-    cursor: pointer;
-    border: none;
-}
-
-/* Queue Panel */
-.player-queue {
-    position: fixed;
-    bottom: 100px;
-    right: 16px;
-    width: 320px;
-    max-height: 400px;
-    background: var(--color-music-background);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-2xl);
-    box-shadow: 0 8px 30px var(--color-shadow-md);
-    display: flex;
-    flex-direction: column;
-    z-index: 1001;
-    overflow: hidden;
-}
-
-.player-queue::after {
-    content: "";
-    position: absolute;
-    bottom: -8px;
-    right: 60px;
-    width: 14px;
-    height: 14px;
-    background: var(--color-music-background);
-    border-right: 1px solid var(--color-border);
-    border-bottom: 1px solid var(--color-border);
-    transform: rotate(45deg);
-    z-index: -1;
-}
-
-.player-queue.hidden {
-    display: none;
-}
-
-.player-queue-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: var(--space-3) var(--space-4);
-    border-bottom: 1px solid var(--color-border);
-}
-
-.player-queue-header h3 {
-    margin: 0;
-    font-size: var(--text-base);
-    font-weight: var(--weight-semibold);
-    color: var(--color-text);
-}
-
-.player-queue-list {
-    flex: 1;
-    overflow-y: auto;
-    padding: var(--space-2);
-}
-
-.player-queue-item {
-    display: flex;
-    align-items: center;
-    gap: var(--space-3);
-    padding: var(--space-2) var(--space-3);
-    border-radius: var(--radius-lg);
-    cursor: pointer;
-    transition: background 0.15s ease;
-}
-
-.player-queue-item:hover {
-    background: var(--color-bg-hover);
-}
-
-.player-queue-item.active {
-    background: var(--color-bg-alt);
-}
-
-.queue-item-num {
-    width: 20px;
-    text-align: center;
-    font-size: var(--text-xs);
-    color: var(--color-text-secondary);
-}
-
-.player-queue-item.active .queue-item-num {
-    color: var(--color-text);
-    font-weight: var(--weight-semibold);
-}
-
-.queue-item-info {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-}
-
-.queue-item-name {
-    font-size: var(--text-sm);
-    font-weight: var(--weight-medium);
-    color: var(--color-text);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.queue-item-artist {
-    font-size: var(--text-2xs);
-    color: var(--color-text-secondary);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.queue-item-duration {
-    font-size: var(--text-2xs);
-    color: var(--color-text-secondary);
-}
-
-.queue-item-remove {
-    background: none;
-    border: none;
-    padding: var(--space-1);
-    cursor: pointer;
-    color: var(--color-text-secondary);
-    opacity: 0;
-    transition: opacity 0.15s ease;
-}
-
-.player-queue-item:hover .queue-item-remove {
-    opacity: 1;
-}
-
-.queue-item-remove:hover {
-    color: var(--color-error-text);
-}
-
-.player-queue-empty {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: var(--space-10) var(--space-5);
-    text-align: center;
-    color: var(--color-text-secondary);
-}
-
-.player-queue-empty i,
-.player-queue-empty .oxi-icon {
-    font-size: var(--text-4xl);
-    margin-bottom: var(--space-3);
-    color: var(--color-text-muted);
-}
-
-/* Track playing indicator */
-.music-track.playing {
-    background: var(--color-item-active);
-}
-
-.music-track.playing.selected {
-    background: var(--color-item-selected);
-}
-
-.music-track.playing .music-track-name {
-    color: var(--color-text);
-}
-
-.track-num-text.hidden {
-    display: none;
-}
-
-.track-play-icon {
-    display: none;
-    color: var(--color-text);
-}
-
-/* Repeat one icon */
-.player-btn.repeat-one i,
-.player-btn.repeat-one .oxi-icon {
-    position: relative;
-}
-
-.player-btn.repeat-one i::after,
-.player-btn.repeat-one .oxi-icon::after {
-    content: "1";
-    font-size: 8px;
-    position: absolute;
-    top: 0;
-    right: 0;
-}
-
-/* Repeat-one numeral badge (Svelte port renders the "1" as a sibling span). */
-.player-btn .repeat-one-badge {
-    position: absolute;
-    top: -2px;
-    right: -2px;
-    font-size: 8px;
-    font-weight: var(--weight-bold);
-    line-height: 1;
-}
-
-.player-btn {
-    position: relative;
-}
-
-/* Mobile player adjustments */
-@media (max-width: 768px) {
-    .music-player {
-        height: 70px;
-        justify-content: space-between;
-        padding: var(--space-1) var(--space-2) var(--space-4);
-        gap: var(--space-2);
-    }
-
-    .music-player-active .music-content {
-        height: calc(100dvh - 270px);
-    }
-
-    .player-track-info {
-        min-width: 0;
-        max-width: 120px;
-        flex: 0 1 auto;
-    }
-
-    .player-album-art {
-        width: 44px;
-        height: 44px;
-        font-size: var(--text-md);
-    }
-
-    .player-track-name {
-        max-width: 70px;
-        font-size: var(--text-xs);
-    }
-
-    .player-track-artist {
-        max-width: 70px;
-        font-size: 10px;
-    }
-
-    .player-controls {
-        max-width: none;
-    }
-
-    /* Progress sits on the bottom edge so the controls and the queue/volume
-       buttons keep the full row width on a narrow screen. */
-    .player-progress {
-        position: absolute;
-        left: var(--space-2);
-        right: var(--space-2);
-        bottom: var(--space-1);
-        width: auto;
-    }
-
-    .player-buttons {
-        gap: var(--space-1);
-    }
-
-    .player-btn {
-        padding: var(--space-1-5);
-        font-size: var(--text-base);
-    }
-
-    .player-btn-main {
-        width: 36px;
-        height: 36px;
-        font-size: var(--text-md);
-    }
-
-    .player-extra {
-        min-width: auto;
-    }
-
-    .player-volume-slider {
-        display: none;
-    }
-
-    .player-queue {
-        right: 8px;
-        left: 8px;
-        width: auto;
-    }
-}
 
 /* ========== Drag handle column ========== */
+
+/* A spacer in the HEADER only. The grip itself belongs to `GestureList`,
+   which renders it beside the row rather than inside it — so what is left
+   here is the header cell that keeps the columns lined up with it.
+
+   The grab cursor, the carried row's lift and the insertion line all moved
+   into that component with the gesture. They had to be deleted rather than
+   left unused: these are GLOBAL rules, and a `.dragging` or `.drag-over`
+   matching by class name would fight the component's own — the same way the
+   retired `.player-queue` rules above kept yanking the new panel's queue
+   into the corner of the window. */
 .music-track-drag {
     width: 28px;
     flex: 0 0 28px;
-    cursor: grab;
-    color: var(--color-text-secondary);
-    opacity: 0;
-    transition: opacity 0.15s;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-.music-track-header .music-track-drag {
-    cursor: default;
-}
-.music-track:hover .music-track-drag {
-    opacity: 0.6;
-}
-.music-track-drag:active {
-    cursor: grabbing;
-}
-.music-track.dragging {
-    opacity: 0.35;
-    background: var(--color-bg-hover);
-}
-.music-track.drag-over {
-    border-top: 2px solid var(--color-accent-hover);
-    margin-top: -2px;
 }
 
 /* ========== Track actions column ========== */
-.music-track-actions {
-    width: 36px;
-    flex: 0 0 36px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+/* The actions column is gone. `GestureList` positions its buttons over the
+   row's trailing edge and the duration steps aside for them — the same trade
+   the player queue makes, and the reason no column has to be reserved: a
+   56px spacer is pure cost on a narrow list, where the title has already run
+   out of room and the actions arrive by swipe anyway. */
+.music-track-duration.is-hidden {
+    visibility: hidden;
 }
-.music-track-remove-btn {
-    background: none;
-    border: none;
-    color: var(--color-text-secondary);
-    cursor: pointer;
-    padding: var(--space-1) var(--space-1-5);
-    border-radius: var(--radius-sm);
-    opacity: 0;
-    transition:
-        opacity 0.15s,
-        color 0.15s;
-    font-size: 0.85rem;
-}
-.music-track:hover .music-track-remove-btn {
-    opacity: 1;
-}
-.music-track-remove-btn:hover {
-    color: var(--color-danger-text);
-    background: var(--color-danger-bg);
-}
+/* The remove button is `GestureList`'s now — declared once as the left
+   swipe's action and rendered either as that swipe or as a button on hover,
+   so the two routes cannot drift into doing different things. Its styles
+   went with it. */
 
 /* ========== Cover art ========== */
 .music-playlist-cover {

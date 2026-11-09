@@ -1713,11 +1713,31 @@ pub struct MoveFilePayload {
 /// RFC 5987-compliant `Content-Disposition` with both ASCII fallback and
 /// `filename*=UTF-8''...` for non-ASCII filenames.
 pub(super) fn build_content_disposition(name: &str, mime: &str, force_inline: bool) -> String {
-    let disposition = if force_inline
-        || mime.starts_with("image/")
-        || mime == "application/pdf"
-        || mime.starts_with("video/")
-        || mime.starts_with("audio/")
+    let mime_lc = mime.to_ascii_lowercase();
+    // Second layer under the sandbox CSP (`interfaces::user_content`,
+    // applied by the security-header middleware in `main.rs`): never
+    // hand a SCRIPTABLE document an `inline` disposition, whatever the
+    // caller asked for.
+    //
+    // `force_inline` comes from `?inline=true`, which the SPA appends
+    // for every preview — and which used to override the allowlist
+    // entirely, so `?inline=true` on an uploaded .html was a one-query-
+    // param request to render attacker HTML on this origin. The param
+    // may now only REQUEST inline for a type that is already safe to
+    // inline; it can no longer promote a dangerous one.
+    //
+    // Belt and braces on purpose: the CSP alone neutralises these, but
+    // a header can be dropped by a proxy or lost in a middleware
+    // refactor, and `attachment` costs nothing for a type no browser
+    // should be rendering out of a storage product anyway. The shared
+    // classifier is what keeps this list and the CSP's from drifting.
+    let disposition = if crate::interfaces::user_content::is_scriptable_document(&mime_lc) {
+        "attachment"
+    } else if force_inline
+        || mime_lc.starts_with("image/")
+        || mime_lc == "application/pdf"
+        || mime_lc.starts_with("video/")
+        || mime_lc.starts_with("audio/")
     {
         "inline"
     } else {

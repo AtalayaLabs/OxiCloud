@@ -93,7 +93,23 @@ test.describe('SPA · session refresh survives a deleted access cookie', () => {
 			}
 		});
 
-		await page.reload();
+		// `waitUntil: 'commit'` because this reload is EXPECTED to be
+		// superseded. With no cookies a bootstrap `/api/*` call 401s, the
+		// transport retries once through `/refresh` (also 401), and
+		// `sessionExpiredHandler` then HARD-navigates — `transport.ts:317`
+		// assigns `window.location.href = '/login?source=session_expired'`.
+		// A full navigation aborts the in-flight reload, so awaiting its
+		// `load` event failed with `net::ERR_ABORTED; maybe frame was
+		// detached?` whenever that 401 chain won the race: intermittent, and
+		// only under a full run. The saved failure snapshot showed the login
+		// screen with the session-expired notice already painted — the app
+		// was right, the await was the wrong shape. Committing is enough;
+		// the assertions below already do the waiting.
+		//
+		// Note the reload above (access cookie deleted, refresh cookie kept)
+		// deliberately does NOT use this: that case must stay on /files, so
+		// a plain `load` is exactly what it should be asserting.
+		await page.reload({ waitUntil: 'commit' });
 
 		await expect(page).toHaveURL(/\/login/);
 		await expect(page.getByTestId('login-form')).toBeVisible();

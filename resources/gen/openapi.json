@@ -18126,6 +18126,7 @@
         "required": [
           "id",
           "name",
+          "is_shared",
           "drive_id"
         ],
         "properties": {
@@ -18137,6 +18138,10 @@
           "id": {
             "type": "string",
             "description": "Folder id. A native folder is a UUID string; a folder inside\nan external mount is an `ext:<mount>:<token>` string (same\nshape every other mount-aware DTO uses — [`FolderDto::id`],\n[`crate::application::dtos::resource_dto::ResourceDto`]).\nTyped as a string so the single DTO shape carries both — see\n#837: the previous `Uuid`-only field type forced the ancestor\nwalk to UUID-parse `leaf_id` before classify, so every mount\nsubfolder answered 404."
+          },
+          "is_shared": {
+            "type": "boolean",
+            "description": "`true` when this folder carries ANY `storage.role_grants` row —\nlink share (`subject_type = 'token'`), user grant, group grant or\nany role. Same predicate as [`FolderDto::is_shared`] on the\nresource listing, deliberately: the breadcrumb tints a per-crumb\nshare icon from this, and a folder must not read as shared in a\nrow and unshared in the breadcrumb above it.\n\nSubject-agnostic — \"shared with anyone\", not \"shared with me\" —\nand with **no expiry filter**, again matching the listing. An\nexpired grant still shows as shared; the row existing is the\nfact being reported. (Contrast `access_source`, which answers how\nthe CALLER got here and does filter on expiry.)\n\n`false` on synthetic external-mount crumbs: grants live on the\nmount root and above, and a mount child holds no row of its own."
           },
           "name": {
             "type": "string"

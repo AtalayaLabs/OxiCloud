@@ -13,8 +13,34 @@
 
 	interface Props {
 		onnavigate?: () => void;
+		/**
+		 * Optional drop handler — enables each drive row as a drop target
+		 * for dragged items, moving or copying them into that drive's
+		 * ROOT folder. Receives the drive so the caller can read both
+		 * `root_folder_id` (the move target) and `name` (for messages).
+		 *
+		 * Opt-in like `FolderBreadcrumb`'s `onDrop`, and for the same
+		 * reason: the drag payload format, the copy-vs-move rule and the
+		 * batch calls all live with the host, so this component stays a
+		 * presentational picker rather than growing an API dependency.
+		 *
+		 * `dropTargetId` is passed back in rather than tracked here so
+		 * the host owns the single "which target is armed" state across
+		 * every sidebar drop target — nav links and drives alike.
+		 */
+		onDropIntoDrive?: (e: DragEvent, drive: Drive) => void;
+		ondragoverDrive?: (e: DragEvent, drive: Drive) => void;
+		ondragleaveDrive?: (drive: Drive) => void;
+		/** Id of the drive currently armed as a drop target, or null. */
+		dropTargetId?: string | null;
 	}
-	let { onnavigate }: Props = $props();
+	let {
+		onnavigate,
+		onDropIntoDrive,
+		ondragoverDrive,
+		ondragleaveDrive,
+		dropTargetId = null
+	}: Props = $props();
 
 	// URL of `/files/<first>/<second>/...` — the first segment identifies the
 	// drive root the user navigated through. We use it to highlight the active
@@ -72,7 +98,23 @@
 {#if drivesStore.loaded && drivesStore.drives.length > 1}
 	<ul class="drive-picker" aria-label={t('drive.picker', 'Drives')}>
 		{#each sortedDrives as d (d.id)}
-			<li class="drive-picker__row" class:drive-picker__row--active={isActive(d)}>
+			<!--
+				Drop handlers sit on the ROW, not the button: the row is the
+				full-width target, and aiming at a drive in a narrow sidebar
+				is already fiddly without shrinking the hit area to the
+				label. The settings cog is a child, so a drop on it still
+				lands here — which is what you want, since nobody means "put
+				this file on the cog".
+			-->
+			<li
+				class="drive-picker__row"
+				class:drive-picker__row--active={isActive(d)}
+				class:drive-picker__row--drop-target={dropTargetId === d.id}
+				data-testid={`drive-picker-row-${d.id}`}
+				ondragover={ondragoverDrive ? (e) => ondragoverDrive(e, d) : undefined}
+				ondragleave={ondragleaveDrive ? () => ondragleaveDrive(d) : undefined}
+				ondrop={onDropIntoDrive ? (e) => onDropIntoDrive(e, d) : undefined}
+			>
 				<button
 					type="button"
 					class="drive-picker__item"
@@ -155,6 +197,19 @@
 	.drive-picker__row--active .drive-picker__item {
 		color: var(--color-sidebar-text-active);
 		font-weight: var(--weight-semibold);
+	}
+
+	/* Armed as a drop target. Same dashed-outline treatment as
+	   `.nav-item--drop-target` in `sidebar.css`, so "you may drop here"
+	   looks identical whether the target is a nav link or a drive —
+	   the two sit inches apart in the same strip.
+
+	   On the row rather than the item, matching where the handlers live:
+	   the whole row is the target, including the settings cog. */
+	.drive-picker__row--drop-target {
+		background-color: var(--color-warning-ring);
+		outline: 2px dashed var(--color-warning-border);
+		outline-offset: -2px;
 	}
 
 	.drive-picker__settings {

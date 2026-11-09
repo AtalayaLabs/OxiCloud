@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Fixture for tests/api/user_content_xss_headers.hurl.
+
+  The quieter half of the same vulnerability. `image/svg+xml` matched
+  `mime.starts_with("image/")` in `build_content_disposition`, so an SVG
+  was served INLINE with no `?inline=true` needed at all — and an SVG is
+  a scriptable document, not a raster image.
+
+  The SPA renders image previews through <img src=…>, which is a
+  script-free context, so this is harmless in the file viewer. A
+  TOP-LEVEL navigation to the same URL is a document load, and executes.
+
+  As with the .html fixture, the test asserts on headers and never
+  renders this.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120">
+  <rect width="120" height="120" fill="#cccccc" />
+  <text x="10" y="64" font-size="10">OXICLOUD-XSS-FIXTURE</text>
+  <script type="text/javascript">
+    // Executes on top-level navigation, not via &lt;img&gt;.
+    fetch('/api/auth/me', { credentials: 'same-origin' }).catch(() => {});
+  </script>
+</svg>

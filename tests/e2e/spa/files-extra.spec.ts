@@ -210,6 +210,39 @@ test('breadcrumb navigates back to home', async ({ page }) => {
   await expect(page.getByTestId(folderName)).toBeVisible({ timeout: 15_000 });
 });
 
+// Right-clicking a crumb opens the SAME menu a folder row opens — the page
+// passes `oncontextmenu` straight to `openContext(…, 'folder', …)`. Pinned
+// here because that wiring is the one part the unit tests can't see: they
+// cover the forwarding (FolderBreadcrumb.test.ts) and the menu
+// (ContextMenu.test.ts) separately.
+//
+// The rename half also pins `reloadToken`: the trail renders names from its
+// own `/ancestors` fetch, which is keyed on the folder id, and renaming a
+// crumb changes no id — so without the bump the old label sits there until
+// the next navigation.
+test('context menu on a breadcrumb crumb renames that folder', async ({ page }) => {
+  const parentName = uniq('CrumbCtx');
+  const renamed = uniq('CrumbCtxRenamed');
+  const parent = await apiCreateFolder(page, parentName);
+  const child = await apiCreateFolder(page, uniq('CrumbChild'), parent.id);
+
+  await page.goto(`/files/${child.id}`);
+  const crumb = page.getByTestId(`folder-breadcrumb-${parent.id}`);
+  await expect(crumb).toBeVisible({ timeout: 15_000 });
+  await expect(crumb).toContainText(parentName);
+
+  await crumb.click({ button: 'right' });
+  await expect(page.getByTestId('files-context-menu')).toBeVisible();
+
+  await page.getByTestId('files-ctx-rename-item').click();
+  await page.getByTestId('dialog-host-prompt-input').fill(renamed);
+  await page.getByTestId('dialog-host-submit-btn').click();
+
+  // Same crumb, new label, without leaving the child folder.
+  await expect(crumb).toContainText(renamed, { timeout: 15_000 });
+  await expect(page).toHaveURL(new RegExp(child.id));
+});
+
 test('open an image in the viewer and use the zoom controls', async ({ page }) => {
   const folder = await apiCreateFolder(page, uniq('ImgView'));
   const img = SAMPLE_FILES.png();

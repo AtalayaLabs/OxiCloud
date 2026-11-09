@@ -14,6 +14,11 @@
 // a negative assertion.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { allowConsole } from '$lib/testing/allowConsole';
+
+// The ticket-fetch deadline is one of the behaviours pinned here, and the
+// bridge warns when it expires — see the console gate in `vitest-setup.ts`.
+allowConsole('warn', 'ticket-fetch deadline expiry, which warns by design');
 import { MessageChannel as NodeMessageChannel } from 'node:worker_threads';
 
 // Hoisted mocks — the bridge's module graph pulls in `apiJson` and

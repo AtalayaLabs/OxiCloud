@@ -87,6 +87,19 @@ it('clears recent activity on the second click', async () => {
 	m(clearRecentItems).mockResolvedValue(undefined);
 	render(RecentPage);
 	const clear = await screen.findByTestId('recent-clear-btn');
+
+	// Placement, not just presence. This button shipped as a bare
+	// icon-only `toggle-btn` in the `displayActions` snippet, which
+	// ResourceList renders inside `.view-toggle` — so it sat among the
+	// grid/list and group-by controls, acting on the page while dressed
+	// as view state. Every test stayed green through that, because they
+	// all locate it by test id; it was found by eye.
+	//
+	// `.action-buttons` is the toolbar's act-on-the-page cluster, same
+	// as `/files` (Add) and `/trash` (Empty trash).
+	expect(clear.closest('.action-buttons')).toBeTruthy();
+	expect(clear.closest('.view-toggle')).toBeNull();
+
 	await fireEvent.click(clear);
 	expect(clearRecentItems).not.toHaveBeenCalled();
 	await fireEvent.click(clear);

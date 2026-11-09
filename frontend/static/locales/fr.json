@@ -141,6 +141,8 @@
     "repeat": "Répéter",
     "repeat_one": "Répéter Une",
     "queue": "File d'attente",
+    "add_to_queue": "Ajouter à la file d'attente",
+    "added_to_queue": "{{name}} ajouté à la file d'attente",
     "queue_empty": "File d'attente vide",
     "not_playing": "Pas en lecture",
     "play": "Lecture",
@@ -855,6 +857,7 @@
     "upload_files_section_title": "Dépôt non disponible ici",
     "upload_files_section_body": "Accédez à la section Fichiers pour déposer des fichiers",
     "clear": "Tout effacer",
+    "mark_read": "Marquer comme lu",
     "mark_all_read": "Tout marquer comme lu"
   },
   "batch": {
@@ -1892,6 +1895,7 @@
     "favorite": "Préféré",
     "ok": "D'ACCORD",
     "optional": "facultatif",
+    "reorder": "Réorganiser",
     "retry": "Essayer à nouveau",
     "select": "Sélectionner",
     "select_all": "Tout sélectionner",

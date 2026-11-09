@@ -485,6 +485,22 @@ pub struct FolderAncestorDto {
     /// but the field is preserved for debugging. Same string shape as
     /// [`Self::id`] (UUID or `ext:…`).
     pub parent_id: Option<String>,
+    /// `true` when this folder carries ANY `storage.role_grants` row —
+    /// link share (`subject_type = 'token'`), user grant, group grant or
+    /// any role. Same predicate as [`FolderDto::is_shared`] on the
+    /// resource listing, deliberately: the breadcrumb tints a per-crumb
+    /// share icon from this, and a folder must not read as shared in a
+    /// row and unshared in the breadcrumb above it.
+    ///
+    /// Subject-agnostic — "shared with anyone", not "shared with me" —
+    /// and with **no expiry filter**, again matching the listing. An
+    /// expired grant still shows as shared; the row existing is the
+    /// fact being reported. (Contrast `access_source`, which answers how
+    /// the CALLER got here and does filter on expiry.)
+    ///
+    /// `false` on synthetic external-mount crumbs: grants live on the
+    /// mount root and above, and a mount child holds no row of its own.
+    pub is_shared: bool,
     /// Drive the folder belongs to. Always populated (every folder has
     /// a drive_id in the D0+ schema). Lets clients derive the current
     /// drive from `ancestors.at(-1).drive_id` without a second

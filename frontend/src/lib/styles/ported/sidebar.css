@@ -8,15 +8,64 @@
     height: 100%;
     flex-shrink: 0;
     box-shadow: 2px 0 12px var(--color-shadow-md);
+
+    /* Short windows: scroll the WHOLE sidebar.
+       `body` is `height: 100dvh; overflow: hidden` (reset.css) and this is
+       100% of it, so anything that does not fit used to be clipped with
+       nothing able to scroll — on a short window the last nav links were
+       simply unreachable. The scroll lives here rather than on `.nav-menu`
+       so the storage block scrolls away with the links instead of holding a
+       pinned strip at the bottom; it reports usage, which is worth a scroll
+       but not permanent real estate (Ed, 2026-11-08). The header goes with
+       it for the same reason.
+
+       Note `.nav-menu` keeps `flex-grow: 1`, which still pushes the storage
+       block to the bottom whenever everything fits — the common case. */
+    overflow-y: auto;
+    /* Don't chain the scroll to what is underneath once the sidebar ends —
+       on mobile it is a fixed drawer over the content. */
+    overscroll-behavior: contain;
+    /* The global thumb (`--color-border-medium`, content.css) is tuned for the
+       light content area and reads as a bright stripe on this dark gradient. */
+    scrollbar-color: var(--color-sidebar-storage-bar) transparent;
     transition:
         transform var(--motion-slow) var(--ease-emphasized),
         width var(--motion-slow) var(--ease-emphasized);
+}
+
+/* Same thumb for WebKit, which ignores `scrollbar-color`. */
+.sidebar::-webkit-scrollbar-thumb {
+    background: var(--color-sidebar-storage-bar);
+    background-clip: padding-box;
+}
+
+.sidebar::-webkit-scrollbar-thumb:hover {
+    background: var(--color-accent);
+    background-clip: padding-box;
 }
 
 .sidebar-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
+
+    /* Stays put while the rest of the sidebar scrolls (see `.sidebar`): the
+       logo is the way home from anywhere, and the collapse button rides with
+       it. Sticky rather than fixed so it still participates in the column
+       layout and needs no placeholder height.
+
+       The background is the gradient's TOP stop, which is exactly what sits
+       behind the header at rest — so it is invisible until something scrolls
+       underneath. It works because a scroll container paints its background
+       against its own box rather than the scrolled content
+       (`background-attachment: scroll`, the default), so the gradient does
+       not move and the two keep matching. Without an opaque background the
+       nav links would show through the header as they pass. */
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--color-sidebar-bg-from);
+    flex-shrink: 0;
 }
 
 .sidebar-header .logo-container {
@@ -392,6 +441,33 @@
 /* Storage indicator */
 .storage-container {
     padding: var(--space-2);
+}
+
+/* Pinned to the bottom of the sidebar while it scrolls — but only when there
+   is height to spare for it.
+
+   Above the threshold the usage read-out is worth its strip: it is the one
+   thing in the sidebar you want to glance at rather than navigate to. Below
+   it, every pixel belongs to the links, so it goes back to being the last
+   thing you scroll to.
+
+   513px, i.e. strictly taller than 512 (Ed's threshold). Sticky rather than
+   absolute so it still occupies its place in the column at the end of the
+   scroll instead of overlapping the last link. The background is the
+   gradient's BOTTOM stop, which is what sits behind it at rest — a scroll
+   container paints its background against its own box, not the scrolled
+   content, so the two keep matching and the pinned strip is invisible until
+   links pass under it. */
+@media (min-height: 513px) {
+    .storage-container {
+        position: sticky;
+        bottom: 0;
+        z-index: 1;
+        background: var(--color-sidebar-bg-to);
+        /* Flex shrinks every shrinkable item; without this the footer would
+           give up height alongside the nav above it. */
+        flex-shrink: 0;
+    }
 }
 
 .storage-title {

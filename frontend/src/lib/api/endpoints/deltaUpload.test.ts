@@ -1,4 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { allowConsole } from '$lib/testing/allowConsole';
+
+// This suite drives the delta path's refusals on purpose: HTTP 507 quota
+// rejection, the worker asking for a no-wasm fallback, and the worker's
+// `onerror`. All three log — see the console gate in `vitest-setup.ts`.
+allowConsole('warn', 'delta quota rejection and worker fallback');
+allowConsole('error', 'delta worker onerror, which disables delta for the tab');
 
 vi.mock('$lib/api/csrf', () => ({ getCsrfToken: () => 'tok' }));
 

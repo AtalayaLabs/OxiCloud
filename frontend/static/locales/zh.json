@@ -141,6 +141,8 @@
     "repeat": "重复",
     "repeat_one": "单曲循环",
     "queue": "播放队列",
+    "add_to_queue": "添加到队列",
+    "added_to_queue": "已将 {{name}} 添加到队列",
     "queue_empty": "播放队列为空",
     "not_playing": "未播放",
     "play": "播放",
@@ -1668,6 +1670,7 @@
     "upload_files_section_title": "此处不支持上传",
     "upload_files_section_body": "请前往文件部分上传文件",
     "clear": "全部清除",
+    "mark_read": "标记为已读",
     "mark_all_read": "全部标为已读"
   },
   "upload": {
@@ -1892,6 +1895,7 @@
     "favorite": "最喜欢的",
     "ok": "好的",
     "optional": "选修的",
+    "reorder": "重新排序",
     "retry": "再试一次",
     "select": "选择",
     "select_all": "选择全部",

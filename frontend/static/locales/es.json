@@ -142,6 +142,8 @@
     "repeat": "Repetir",
     "repeat_one": "Repetir Una",
     "queue": "Cola",
+    "add_to_queue": "Añadir a la cola",
+    "added_to_queue": "{{name}} añadido a la cola",
     "queue_empty": "Cola vacía",
     "not_playing": "No reproduciendo",
     "play": "Reproducir",
@@ -855,6 +857,7 @@
     "upload_files_section_title": "Subida no disponible aquí",
     "upload_files_section_body": "Ve a la sección Archivos para subir archivos",
     "clear": "Borrar todo",
+    "mark_read": "Marcar como leída",
     "mark_all_read": "Marcar todo como leído"
   },
   "batch": {
@@ -1892,6 +1895,7 @@
     "favorite": "Favorito",
     "ok": "DE ACUERDO",
     "optional": "opcional",
+    "reorder": "Reordenar",
     "retry": "Intentar otra vez",
     "select": "Seleccionar",
     "select_all": "Seleccionar todo",

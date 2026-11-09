@@ -62,6 +62,20 @@ const proxy = {
 	// `handle_login_page` instead of letting SvelteKit's SPA
 	// fallback return 404.
 	'/login/v2': p(BACKEND),
+	// Everything NC clients address through the `/index.php` prefix: the
+	// `/index.php/204` connectivity probe, LFv2 initiate + poll
+	// (`/index.php/login/v2`, `…/poll`), `/index.php/core/preview` and
+	// `/index.php/avatar/{user}/{size}`. All registered in
+	// `interfaces/nextcloud/routes.rs`.
+	//
+	// Needed because of the two lines above this table: `X-Forwarded-Host`
+	// tells the backend it is reachable at `localhost:5173`, so that is the
+	// server URL a desktop client STORES after a successful login flow. Its
+	// next run then probes `5173/index.php/204`, which Vite answered with the
+	// SPA fallback — the client reads that as "server unreachable", greys out
+	// its reconnect button and never gets to the login flow. Nothing in
+	// production needs this: there the two origins are one.
+	'/index.php': p(BACKEND),
 	// Static assets referenced by backend-rendered Askama templates
 	// (NC drive-picker + magic-link pages). Browser loads the HTML
 	// from the backend (via the proxies above), then references these
@@ -148,13 +162,14 @@ export default defineConfig({
 		//     catches the 1-in-10 collapse to <4x without hiding a real
 		//     regression (two retries all collapsing would be deterministic
 		//     and still fail the gate).
-		//   * Worker-RPC teardown races in some component tests
-		//     ("Closing rpc while 'onUserConsoleLog' was pending") —
-		//     vitest 4.1 occasionally logs a mocked function during
-		//     teardown AFTER the worker starts closing its channel.
-		//     Nothing in the test itself fails; the "error" is scoped
-		//     to the test FILE's run, not any individual case, so retry
-		//     re-runs the file cleanly.
+		//
+		// It used to cover a second case: worker-RPC teardown races
+		// ("Closing rpc while 'onUserConsoleLog' was pending"). That is
+		// now addressed at the source instead — the console gate in
+		// `vitest-setup.ts` stops async logs from reaching the RPC at
+		// all, and fails the test that produced one. Retry was never a
+		// fix there anyway: the error is an unhandled rejection scoped
+		// to the run, so re-running the file only re-rolled the dice.
 		// Keep the number small — three attempts is enough to drown
 		// noise without masking a deterministic failure (which fails
 		// all three identically).

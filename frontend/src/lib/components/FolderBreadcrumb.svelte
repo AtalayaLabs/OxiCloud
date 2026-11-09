@@ -5,6 +5,7 @@
 	import Icon from '$lib/icons/Icon.svelte';
 	import UserAvatar from '$lib/components/UserAvatar.svelte';
 	import { serverConfig } from '$lib/stores/serverConfig.svelte';
+	import { ITEM_DRAG_MIME } from '$lib/utils/dragModifiers';
 	import { t } from '$lib/i18n/index.svelte';
 
 	/**
@@ -46,8 +47,49 @@
 		 * by accident.
 		 */
 		onShare?: (folderId: string, folderName: string) => void;
+		/**
+		 * Optional right-click handler — enables a context menu on each
+		 * crumb. The host receives the raw event plus the crumb, and opens
+		 * ITS menu: on `/files` that is the very same menu a folder row
+		 * uses, so "right-click a folder" means one thing in this app
+		 * whether the folder is in the listing or in the trail above it.
+		 *
+		 * Opt-in for the `/s/[token]` reason `onShare` is: an anonymous
+		 * link visitor must not be offered rename/delete/share, and a
+		 * surface that has to ask for the menu cannot grow one by
+		 * accident.
+		 *
+		 * Right-click only — no long-press, no kebab. A crumb is a
+		 * navigation control first, and the actions are all reachable
+		 * from the listing; adding a visible affordance per crumb would
+		 * crowd the trail for a shortcut (Ed, 2026-11-08: "agree, only
+		 * right click").
+		 *
+		 * Wired on the CRUMBS only, never the root chip: for drive-kind
+		 * access that chip is the drive, whose root folder is not an
+		 * ordinary folder to rename or delete (and which has its own
+		 * settings page behind the cog in the sidebar picker).
+		 */
+		oncontextmenu?: (e: MouseEvent, crumb: FolderAncestor) => void;
+		/**
+		 * Opaque value; changing it refetches the ancestor chain.
+		 *
+		 * The chain is otherwise fetched only when `folderId` changes,
+		 * which was enough while the trail was read-only. Now that a host
+		 * can rename or delete a crumb from the context menu above, the
+		 * labels can go stale without any navigation — so the host bumps
+		 * this after a folder mutation.
+		 */
+		reloadToken?: unknown;
 	}
-	let { folderId, onDrop, dragMime = 'application/x-oxi-item', onShare }: Props = $props();
+	let {
+		folderId,
+		onDrop,
+		dragMime = ITEM_DRAG_MIME,
+		onShare,
+		oncontextmenu: onCrumbContextMenu,
+		reloadToken
+	}: Props = $props();
 
 	// Fetch chain when folderId changes. `$state` + `$effect` primer
 	// avoids blocking the initial render — the breadcrumb slot appears
@@ -57,6 +99,9 @@
 
 	$effect(() => {
 		const id = folderId;
+		// Registers the dependency — a bumped token refetches the chain
+		// after the host renamed or deleted one of these folders.
+		void reloadToken;
 		if (!id) {
 			chain = null;
 			return;
@@ -241,15 +286,54 @@
 	 *
 	 * Cascading the two together (walk up to the drive's share
 	 * properties) is planned, not built.
+	 *
+	 * Narrowed to the drive-root case only: every VISIBLE crumb now
+	 * renders its own button in the `{#each}`, so the one thing left to
+	 * cover is the root itself, whose crumb is deduplicated out of
+	 * `visibleCrumbs`.
 	 */
-	const shareTarget = $derived<FolderAncestor | null>(
-		visibleCrumbs.length > 0
-			? visibleCrumbs[visibleCrumbs.length - 1]
-			: chain?.access_source.kind === 'drive'
-				? (chain.ancestors[0] ?? null)
-				: null
+	const rootShareTarget = $derived<FolderAncestor | null>(
+		visibleCrumbs.length === 0 && chain?.access_source.kind === 'drive'
+			? (chain.ancestors[0] ?? null)
+			: null
 	);
 </script>
+
+<!--
+	Share button for ONE crumb. Defined once and rendered from both sites
+	— the crumb loop and the drive root — so the root is not an exception
+	with its own markup to drift.
+
+	A SIBLING of its anchor, never a child: crumb children are
+	`pointer-events: none` (the drop-flicker fix in the styles below), so
+	a nested button would render and refuse every click, and a <button>
+	inside an <a> is invalid markup besides.
+
+	Tinted from `is_shared`, which the ancestors endpoint computes with
+	the SAME predicate the resource listing uses for rows — so a folder
+	reads identically here and in the list it came from, expired grants
+	included.
+
+	Not permission-gated, matching the row button in `ResourceList`: the
+	server owns that decision, and guessing client-side would hide the
+	control from people who can in fact share.
+-->
+{#snippet shareButton(c: FolderAncestor)}
+	{#if onShare && serverConfig.features.sharing}
+		<button
+			type="button"
+			class="breadcrumb-share"
+			class:active={c.is_shared}
+			data-testid={`folder-breadcrumb-share-${c.id}`}
+			title={c.is_shared ? t('files.shared', 'Shared') : t('files.share', 'Share')}
+			aria-pressed={c.is_shared}
+			aria-label={t('breadcrumb.share_folder', { name: c.name }, 'Share folder: {{name}}')}
+			onclick={() => onShare(c.id, c.name)}
+		>
+			<Icon name="oxiexport" />
+		</button>
+	{/if}
+{/snippet}
 
 {#if chain && (visibleCrumbs.length > 0 || chain.access_source.kind === 'drive')}
 	<nav class="breadcrumb" aria-label={t('breadcrumb.aria', 'Breadcrumb')}>
@@ -369,6 +453,7 @@
 				class:breadcrumb-boundary={isBoundary}
 				class:drop-target={onDrop != null && dropTargetId === c.id}
 				data-testid={isLeaf ? `folder-breadcrumb-current-${c.id}` : `folder-breadcrumb-${c.id}`}
+				oncontextmenu={onCrumbContextMenu ? (e) => onCrumbContextMenu(e, c) : undefined}
 				ondragover={onDrop
 					? (e) => e.dataTransfer?.types.includes(dragMime) && e.preventDefault()
 					: undefined}
@@ -419,34 +504,18 @@
 				{/if}
 				<span class="breadcrumb-crumb-name">{c.name}</span>
 			</a>
+			{@render shareButton(c)}
 		{/each}
 		<!--
-			Share the folder you're in. A SIBLING of the leaf anchor, never
-			a child: crumb children are `pointer-events: none` (the
-			drop-flicker fix below), so a nested button would render and
-			refuse every click — and a <button> inside an <a> is invalid
-			markup besides.
-
-			Not permission-gated here, matching the row button in
-			`ResourceList`: the server owns that decision, and guessing at
-			it client-side would hide the control from people who can in
-			fact share. Nor does it carry the row button's `.active`
-			shared-state styling — `FolderAncestor` has no `is_shared`,
-			and fetching it just to tint an icon would put a request on
-			every breadcrumb render.
+			The drive root gets the same button, not a different one — see
+			`shareButton`. It needs its own render site only because its
+			crumb is deduplicated out of `visibleCrumbs` (the root chip
+			already labels the drive), so the loop above never reaches it.
+			Without this, "share my Personal drive" — the most common case
+			per the `rootShareTarget` doc — would have no control at all.
 		-->
-		{#if onShare && shareTarget && serverConfig.features.sharing}
-			{@const target = shareTarget}
-			<button
-				type="button"
-				class="breadcrumb-share"
-				data-testid={`folder-breadcrumb-share-${target.id}`}
-				title={t('files.share', 'Share')}
-				aria-label={t('breadcrumb.share_folder', { name: target.name }, 'Share folder: {{name}}')}
-				onclick={() => onShare(target.id, target.name)}
-			>
-				<Icon name="oxiexport" />
-			</button>
+		{#if rootShareTarget}
+			{@render shareButton(rootShareTarget)}
 		{/if}
 	</nav>
 {/if}
@@ -502,19 +571,70 @@
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-		margin-left: var(--space-0-5);
-		padding: var(--space-0-5) var(--space-1);
+		/* Sit against the crumb it belongs to, not midway to the next one.
+		   The measured gaps before this: name→button 14px (4px anchor
+		   padding + 2px transparent border + 2px `.breadcrumb` flex gap +
+		   2px margin + 4px button padding) against button→next-separator
+		   10px (4px padding + 2px gap + 4px separator margin) — so each
+		   button read as belonging to the folder on its RIGHT.
+
+		   The negative margin cancels the parent's flex gap; the right
+		   margin widens the far side. Now 8px vs 14px, and the pairing is
+		   unambiguous. Adjust the two together or the asymmetry is lost. */
+		margin-left: calc(-1 * var(--space-0-5));
+		margin-right: var(--space-1);
+		padding: var(--space-0-5);
 		border: none;
 		border-radius: var(--radius-sm);
 		background: none;
 		color: var(--color-text-muted);
 		cursor: pointer;
+		/* Recessive when the folder is NOT shared. One of these sits on
+		   every crumb, so at full strength the row reads as a line of
+		   buttons competing with the path itself — the path is the
+		   content, these are affordances. Hover and focus bring it back
+		   to full so it stays discoverable, and `.active` below is never
+		   dimmed: a shared folder is information, not an affordance. */
+		opacity: 0.5;
 		transition:
 			background 0.15s,
-			color 0.15s;
+			color 0.15s,
+			opacity 0.15s;
 	}
 
-	.breadcrumb-share:hover {
+	.breadcrumb-share:hover,
+	.breadcrumb-share:focus-visible {
+		color: var(--color-accent);
+		background: var(--color-accent-bg);
+		opacity: 1;
+	}
+
+	/* Keyboard users get the same restore as the mouse — without this the
+	   focused control would still be half-faded, which is the state least
+	   able to afford it. */
+
+	/* Shared state, matching the row button in `ResourceList` — same
+	   `--color-badge-blue-text` the `.shared-button.active` rule uses in
+	   `resourceList.css`, so a folder's icon is the same blue whether you
+	   are looking at it in a list or in the breadcrumb above it.
+	   Driven by `is_shared` from the ancestors endpoint. */
+	.breadcrumb-share.active {
+		color: var(--color-badge-blue-text);
+		opacity: 1;
+	}
+
+	/* Hover/focus must beat the shared tint, and needs its own rule to do
+	   it: `.breadcrumb-share.active` and `.breadcrumb-share:hover` have
+	   EQUAL specificity (0,2,0 — `:hover` counts as a class), so the
+	   later declaration won and a shared button stayed blue under the
+	   cursor with no feedback at all. This selector is (0,3,0) and wins
+	   outright.
+
+	   Same accent as the unshared hover on purpose: hover answers "this
+	   is clickable", which is true regardless of share state, and using
+	   two different hover colours would imply two different actions. */
+	.breadcrumb-share.active:hover,
+	.breadcrumb-share.active:focus-visible {
 		color: var(--color-accent);
 		background: var(--color-accent-bg);
 	}

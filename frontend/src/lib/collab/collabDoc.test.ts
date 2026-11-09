@@ -1,4 +1,9 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { allowConsole } from '$lib/testing/allowConsole';
+
+// Revocation is one of the behaviours under test here, and the store warns
+// when a subscription is revoked — see the console gate in `vitest-setup.ts`.
+allowConsole('warn', 'collab subscription revocation, which warns by design');
 
 const { bus } = vi.hoisted(() => {
 	let release: (() => void) | null = null;

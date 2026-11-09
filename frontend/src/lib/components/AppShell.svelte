@@ -14,9 +14,13 @@
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { searchResources } from '$lib/api/endpoints/search';
-	import { fileInlineUrl, deleteFile } from '$lib/api/endpoints/files';
-	import { deleteFolder } from '$lib/api/endpoints/folders';
+	import { deleteFile, moveFile } from '$lib/api/endpoints/files';
+	import { deleteFolder, moveFolder } from '$lib/api/endpoints/folders';
 	import { addFavorite } from '$lib/api/endpoints/favorites';
+	import { copyFiles, copyFolders } from '$lib/api/endpoints/batch';
+	import { isCopyDrop, ITEM_DRAG_MIME } from '$lib/utils/dragModifiers';
+	import { dragAutoScroll } from '$lib/utils/dragAutoScroll';
+	import type { Drive } from '$lib/api/types';
 	import type { FileItem, FolderItem, ItemType } from '$lib/api/types';
 	import { isAtLeastAdmin } from '$lib/utils/roles';
 	import { lazyComponent } from '$lib/composables/lazyComponent.svelte';
@@ -25,6 +29,7 @@
 	import Banner from '$lib/components/Banner.svelte';
 	import AboutDialog from '$lib/components/AboutDialog.svelte';
 	import MobileNav from '$lib/components/MobileNav.svelte';
+	import MusicPlayer from '$lib/components/MusicPlayer.svelte';
 	import SelfAvatar from '$lib/components/SelfAvatar.svelte';
 	import TransientNotificationRow from '$lib/components/TransientNotificationRow.svelte';
 	import UserMenuContent from '$lib/components/UserMenuContent.svelte';
@@ -46,6 +51,7 @@
 	import { session } from '$lib/stores/session.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 	import {
+		markEverythingRead,
 		notifications as persistentNotifications,
 		useNotifications
 	} from '$lib/composables/useNotifications.svelte';
@@ -152,13 +158,18 @@
 			},
 			{ label: t('nav.section_library', 'Library'), nested: true, links: library }
 		];
-		if (sharing.length > 0) {
-			groups.push({
-				label: t('nav.section_sharing', 'Sharing'),
-				nested: true,
-				links: sharing
-			});
-		}
+		// Pushed unconditionally — the `filter` at the end of this block is
+		// what drops it when `features.sharing` and `features.contacts` are
+		// both off. This used to carry its own `if (sharing.length > 0)`
+		// guard, which made the emptiness rule exist in two places: here
+		// by hand, and there structurally. One enforcement point means a
+		// new group cannot forget it, and it keeps the filter load-bearing
+		// rather than belt-and-braces that no test can reach.
+		groups.push({
+			label: t('nav.section_sharing', 'Sharing'),
+			nested: true,
+			links: sharing
+		});
 		// ── TO THE /calendar IMPLEMENTER (PR #853) ───────────────────────
 		// `serverConfig.features.calendars` already exists end to end —
 		// `OXICLOUD_ENABLE_CALENDARS` → `FeaturesConfig::enable_calendars`
@@ -198,7 +209,21 @@
 				links: [{ href: '/trash', label: t('nav.trash', 'Trash'), icon: 'trash', section: 'trash' }]
 			});
 		}
-		return groups;
+		// Drop any group whose every link was feature-flagged away. ONE
+		// enforcement point, so a group added later cannot forget it —
+		// `Sharing` carried its own guard until this replaced it.
+		//
+		// This is not cosmetic. The render keys the group list on
+		// `group.links[0].href`, so an empty group makes `links[0]`
+		// undefined and that dereference a TypeError — which takes the
+		// whole sidebar down on every page, not just the affected
+		// section. `Sharing` empties for real whenever `features.sharing`
+		// and `features.contacts` are both off; `Library` survives only
+		// because `/recent` and `/favorites` are unconditional while
+		// Photos and Music are flagged, which is luck rather than design
+		// and stops being true the day either gets a flag (see the
+		// `features.calendars` note above for how often that happens).
+		return groups.filter((g) => g.links.length > 0);
 	});
 
 	// Admin sidebar — populated when the URL is under /admin. The
@@ -396,7 +421,7 @@
 	//   – Favorites: batch-add each item as a favorite (idempotent server-side).
 	//   – Trash: yes/no confirm dialog, then batch-delete on approval.
 	// Every other sidebar link stays inert (no dragover ⇒ no drop cursor).
-	const SIDEBAR_DRAG_TYPE = 'application/x-oxi-item';
+	const SIDEBAR_DRAG_TYPE = ITEM_DRAG_MIME;
 	interface DragItem {
 		id: string;
 		name: string;
@@ -416,6 +441,138 @@
 
 	function sidebarOnDragLeave(href: string) {
 		if (sidebarDropHref === href) sidebarDropHref = null;
+	}
+
+	// ── Drop onto a drive in the picker ──────────────────────────────
+	// Moves (or with the OS copy modifier, copies) the dragged items into
+	// that drive's ROOT folder. Only reachable when the picker renders,
+	// i.e. when the account has more than one drive — with a single drive
+	// there is nowhere else to drop.
+	//
+	// Shares `sidebarDropHref` with the nav-link targets so exactly one
+	// thing in the sidebar is ever armed; drives key on their id, which
+	// cannot collide with an href.
+	let driveDropId = $state<string | null>(null);
+
+	/**
+	 * Folder currently being browsed, from `/files/<…>/<leaf>` — the last
+	 * segment, since the route is `[...path]`. `null` anywhere else.
+	 *
+	 * Used to refuse a drop onto the drive whose root you are already
+	 * looking at: the target folder would be the one the items are
+	 * already in, so the server no-ops and the UI would report a move
+	 * that did not happen. Dropping onto that same drive from a SUBFOLDER
+	 * is a real move to its root, and stays allowed.
+	 */
+	const currentFolderId = $derived.by(() => {
+		const m = /^\/files\/(.+)$/.exec(appPath(page.url.pathname));
+		if (!m) return null;
+		return (
+			m[1]
+				.split('/')
+				.filter((s) => s.length > 0)
+				.at(-1) ?? null
+		);
+	});
+
+	/** Would dropping here move items into the folder they are already in? */
+	function isCurrentFolderDrive(d: Drive): boolean {
+		return currentFolderId !== null && d.root_folder_id === currentFolderId;
+	}
+
+	function driveOnDragOver(e: DragEvent, _d: Drive) {
+		if (!e.dataTransfer?.types.includes(SIDEBAR_DRAG_TYPE)) return;
+		// Not a valid target when it resolves to the folder on screen —
+		// no `preventDefault`, so the browser shows a no-drop cursor and
+		// the row never highlights. Better than accepting the drop and
+		// reporting a move the server didn't make.
+		if (isCurrentFolderDrive(_d)) return;
+		e.preventDefault();
+		// Deliberately NOT setting `dropEffect`: leaving it alone lets the
+		// browser negotiate the cursor from the live OS modifier keys
+		// (arrow-with-plus for copy, plain for move), which is what makes
+		// the copy gesture discoverable. The nav-link targets above DO set
+		// it, because favorites/trash are single-meaning drops.
+		driveDropId = _d.id;
+	}
+
+	function driveOnDragLeave(d: Drive) {
+		if (driveDropId === d.id) driveDropId = null;
+	}
+
+	async function driveOnDrop(e: DragEvent, d: Drive) {
+		driveDropId = null;
+		if (!e.dataTransfer?.types.includes(SIDEBAR_DRAG_TYPE)) return;
+		// Belt to the dragover brace: a drop can still arrive here if the
+		// URL changed mid-drag, and silently doing nothing beats claiming
+		// a move that the server treated as a no-op.
+		if (isCurrentFolderDrive(d)) return;
+		e.preventDefault();
+		const items = parseDragItems(e);
+		if (items.length === 0) return;
+
+		// Dropping a folder onto a drive whose root IS that folder would
+		// ask the server to move it inside itself.
+		const target = d.root_folder_id;
+		const moving = items.filter((it) => it.id !== target);
+		if (moving.length === 0) return;
+
+		// Copy-vs-move read off the drop event, same rule as the folder-row
+		// and breadcrumb drops on /files — see `$lib/utils/dragModifiers`.
+		const copy = isCopyDrop(e);
+		try {
+			if (copy) {
+				// Batch endpoints: one call per kind, both independent.
+				await Promise.all([
+					copyFiles(
+						moving.filter((it) => it.kind === 'file').map((it) => it.id),
+						target
+					),
+					copyFolders(
+						moving.filter((it) => it.kind === 'folder').map((it) => it.id),
+						target
+					)
+				]);
+			} else {
+				// Per-item, bounded — mirrors `/files`'s `moveInto`. There is
+				// no batch move endpoint, and a cross-drive move can fail
+				// per item (the D5 `forbid_cross_drive_move` drive policy
+				// refuses, or the destination drive's quota check returns
+				// 507), so each is attempted and `fanout` toasts failures
+				// individually rather than abandoning the rest.
+				await fanout(moving, 6, async (it) => {
+					if (it.kind === 'file') await moveFile(it.id, target);
+					else await moveFolder(it.id, target);
+				});
+			}
+		} catch (err) {
+			errorToast(err);
+			return;
+		}
+		ui.notify(
+			copy
+				? t(
+						'drive.copied_n',
+						{ n: moving.length, drive: d.name },
+						'Copied {{n}} item(s) to {{drive}}'
+					)
+				: t(
+						'drive.moved_n',
+						{ n: moving.length, drive: d.name },
+						'Moved {{n}} item(s) to {{drive}}'
+					),
+			'success'
+		);
+		// No refresh event dispatched, matching the trash drop above: the
+		// source listing updates itself off the message bus, since the
+		// move/copy services publish and `/files` subscribes to its
+		// folder topic (`useFolderTopic`). The favorites drop needs its
+		// `oxicloud:favorite-changed` event only because a star is local
+		// UI state no server event carries.
+		//
+		// Consequence worth knowing: with the message bus disabled, the
+		// row lingers until a manual reload — exactly as it already does
+		// for a sidebar trash drop.
 	}
 
 	function parseDragItems(e: DragEvent): DragItem[] {
@@ -760,8 +917,22 @@
 
 	function pickSuggestion(s: Suggestion) {
 		suggestOpen = false;
-		if (s.kind === 'folder') goto(resolve(`/files/${s.item.id}`));
-		else window.open(fileInlineUrl(s.item.id), '_blank', 'noopener');
+		if (s.kind === 'folder') {
+			goto(resolve(`/files/${s.item.id}`));
+			return;
+		}
+		// Open the file in the VIEWER, not by navigating the browser to
+		// its raw bytes. The old `window.open(fileInlineUrl(id))` was a
+		// top-level navigation to `?inline=true` with no mime check at
+		// all, so picking an uploaded .html from search rendered it as a
+		// document on this origin — one click, attacker-controlled HTML,
+		// the victim's session. The server now sandboxes that response
+		// (see the user-content branch in
+		// `interfaces::middleware::security_headers`), but the UI should
+		// not be asking the browser to render user content as a document
+		// in the first place: the viewer dispatches on type and keeps
+		// text in a read-only pane.
+		goto(resolve(`/files/${s.item.folder_id}?file=${s.item.id}`));
 	}
 
 	const storagePct = $derived(
@@ -892,7 +1063,13 @@
 						<span>{link.label}</span>
 					</a>
 					{#if !isAdminSection && link.href === '/files' && !session.isExternalUser}
-						<DrivePicker onnavigate={() => (sidebarOpen = false)} />
+						<DrivePicker
+							onnavigate={() => (sidebarOpen = false)}
+							dropTargetId={driveDropId}
+							ondragoverDrive={driveOnDragOver}
+							ondragleaveDrive={driveOnDragLeave}
+							onDropIntoDrive={(e, d) => void driveOnDrop(e, d)}
+						/>
 					{/if}
 				{/each}
 			</div>
@@ -1067,6 +1244,16 @@
 		</div>
 
 		<div class="user-controls">
+			<!--
+				The player lives here, above the router, so playback survives
+				navigation — its `<audio>` element used to sit inside
+				`routes/music/+page.svelte`, where leaving Music unmounted it
+				and cut the track off. Rendered unconditionally: the component
+				keeps the element outside its own `{#if open}` for the same
+				reason, and the trigger is cheap when nothing is queued.
+			-->
+			<MusicPlayer />
+
 			<!-- Notifications -->
 			<div class="notif-wrapper" class:open={notifOpen} data-testid="appshell-notif-menu">
 				<button
@@ -1097,6 +1284,30 @@
 				<div class="notif-panel">
 					<div class="notif-panel-header">
 						<span class="notif-panel-title">{t('notifications.title', 'Notifications')}</span>
+						<!--
+							The same action as the one on `/notifications`, behind the
+							same helper: the bell's badge counts both stores, so marking
+							only one of them leaves it lit over a panel with nothing
+							unread in it.
+
+							Opening the panel already marks the TRANSIENT rows read, so
+							in practice this is about the persistent ones — which stay
+							unread deliberately until someone acts on them.
+						-->
+						{#if totalUnread > 0}
+							<button
+								class="notif-clear-btn"
+								title={t('notifications.mark_all_read', 'Mark all read')}
+								aria-label={t('notifications.mark_all_read', 'Mark all read')}
+								data-testid="appshell-notif-mark-all-read-btn"
+								onclick={(e) => {
+									e.stopPropagation();
+									markEverythingRead();
+								}}
+							>
+								<Icon name="check-double" />
+							</button>
+						{/if}
 						{#if ui.notifications.length > 0}
 							<button
 								class="notif-clear-btn"
@@ -1168,7 +1379,14 @@
 		</div>
 	</div>
 
-	<main class="content-area" id="main-content" tabindex="-1">
+	<!--
+		`use:dragAutoScroll` so a drag can reach a drop target above or below
+		the fold. The scroller is this element, but the listener is on the
+		window: on the way up the pointer crosses into `.top-bar` — a sibling
+		of this element — well before the window edge, so the browser's own
+		edge scrolling never engaged and only downward drags worked.
+	-->
+	<main class="content-area" id="main-content" tabindex="-1" use:dragAutoScroll>
 		{#if !online}
 			<Banner
 				severity="warning"

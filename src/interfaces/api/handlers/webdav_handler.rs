@@ -1111,13 +1111,22 @@ async fn handle_get(
         .map_err(|e| AppError::internal_error(format!("Failed to stream file: {}", e)))?;
 
     // Build streaming response using Content-Length from metadata
-    Ok(Response::builder()
+    let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, &*file.mime_type)
         .header(header::CONTENT_LENGTH, file.size)
         .header(header::ETAG, etag)
         .header(header::ACCEPT_RANGES, "bytes")
-        .header(header::LAST_MODIFIED, file.created_at.to_rfc2822())
+        .header(header::LAST_MODIFIED, file.created_at.to_rfc2822());
+    // A scriptable document must never render from this origin — see
+    // `user_content::dav_disposition`. Also what makes the
+    // security-header middleware recognise the body as user content and
+    // sandbox it; it keys on `Content-Disposition`, which this route had
+    // none of.
+    if let Some(d) = crate::interfaces::user_content::dav_disposition(&file.mime_type) {
+        builder = builder.header(header::CONTENT_DISPOSITION, d);
+    }
+    Ok(builder
         .body(Body::from_stream(Box::into_pin(stream)))
         .unwrap())
 }
@@ -1185,14 +1194,19 @@ async fn handle_head(
         }
     };
 
-    Ok(Response::builder()
+    let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, &*file.mime_type)
         .header(header::CONTENT_LENGTH, file.size)
         .header(header::ETAG, format!("\"{}\"", file.etag))
-        .header(header::LAST_MODIFIED, file.created_at.to_rfc2822())
-        .body(Body::empty())
-        .unwrap())
+        .header(header::LAST_MODIFIED, file.created_at.to_rfc2822());
+    // HEAD must advertise the same headers as GET — a client that
+    // probes with HEAD and then renders the GET would otherwise see two
+    // different dispositions.
+    if let Some(d) = crate::interfaces::user_content::dav_disposition(&file.mime_type) {
+        builder = builder.header(header::CONTENT_DISPOSITION, d);
+    }
+    Ok(builder.body(Body::empty()).unwrap())
 }
 
 /// Resolve `path` to a user-owned resource using the optimized
@@ -1297,6 +1311,11 @@ pub(crate) async fn mount_file_get_response(
         .header(header::LAST_MODIFIED, file.modified_at.to_rfc2822());
     if let Some(cr) = content_range {
         builder = builder.header(header::CONTENT_RANGE, cr);
+    }
+    // Mount-backed DAV read, ranged or whole — same rule. An external
+    // mount's bytes are no more trustworthy than an upload's.
+    if let Some(d) = crate::interfaces::user_content::dav_disposition(&file.mime_type) {
+        builder = builder.header(header::CONTENT_DISPOSITION, d);
     }
     Ok(Some(builder.body(Body::from_stream(stream)).unwrap()))
 }
