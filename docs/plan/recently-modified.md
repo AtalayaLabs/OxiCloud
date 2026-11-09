@@ -31,6 +31,9 @@ Recorded so implementation does not re-open them.
 | Per-person cap | **Dropped** — the time window bounds the data instead (§4) |
 | Live updates | **No.** Polling on focus; a bus topic is overkill for this |
 | Route name | `/changes`, NOT `/people` — that name is taken by photo face clusters |
+| External users | **Denied** — router-level, `require_internal_user_layer` (§3) |
+| Window | `days` default 30, **max 90** — the bound the whole design leans on |
+| Other resources | **None for now.** Calendars/contacts have no provenance columns at all (§8) |
 
 ---
 
@@ -129,11 +132,22 @@ CREATE INDEX idx_files_content_modified_by
     WHERE NOT is_trashed;
 ```
 
-The first serves the feed (few accessible drives, window on the clock); the
-second serves the `?person=` drill-in. Both partial on `NOT is_trashed`,
-because a trashed file never appears in this view. **Confirm with `EXPLAIN` on
-a seeded database before committing to both** — the second may prove
-redundant if the planner prefers a bitmap scan.
+Both partial on `NOT is_trashed`, because a trashed file never appears here.
+
+The first serves the feed: with `drive_id` leading, Postgres walks the index
+once per accessible drive, already in clock order, and stops at the window
+boundary — no sort. The second serves `?person=` and step 2 of the lane query
+(§4), where `drive_id` is unconstrained and the feed index is therefore
+useless.
+
+**Ship the first; measure before adding the second.** Its value depends on data
+we do not have — if most changes in a window come from a few people, a bitmap
+scan over the feed index plus a filter may beat it, and a second index on this
+table costs every INSERT and every `swap_blob_hash`. The decision is an
+`EXPLAIN (ANALYZE, BUFFERS)` on a seeded database: an `Index Scan using
+idx_files_content_modified_by` with `rows` ≈ actual means keep it; a bitmap heap
+scan with a high "rows removed by filter" means it is not earning its write
+cost.
 
 ---
 
@@ -182,15 +196,38 @@ honours all three:
    engine does this per resource with `gf.lpath @> (SELECT lpath …)`
    (`pg_acl_engine.rs`).
 
-Branch 3 must **not** be written as a correlated subquery per candidate row.
-Resolve the caller's granted folder subtrees once into an `ltree[]`, then
-invert the test so it is a GiST index hit on `storage.folders.lpath`:
+### Write it as a UNION, not an OR
+
+`branch1 OR branch2 OR branch3` across three different tables is the classic
+planner killer: it typically collapses to a sequential scan on
+`storage.files`. Postgres can sometimes build a `BitmapOr` of index scans, but
+not with a join inside branch 3.
+
+So: **three separately-indexable selects over file ids, unioned and deduped,
+then joined to the payload.** Each branch gets its own index, and the dedupe is
+on `id` rather than on the wide row.
+
+Branch 3 must also not be a correlated subquery per candidate row. Resolve the
+caller's granted folder subtree roots once into an `ltree[]`, then test with
+the **indexed column as the left operand** so the GiST index on
+`storage.folders.lpath` is usable:
 
 ```sql
 -- $paths :: ltree[]  — the caller's granted folder subtree roots
 JOIN storage.folders fo ON fo.id = f.folder_id
-WHERE $paths @> fo.lpath      -- ltree[] @> ltree : "some element is an ancestor of"
+WHERE fo.lpath <@ ANY($paths::ltree[])
 ```
+
+`ANY` expands to a ScalarArrayOp, which is fine here because the array holds
+one entry per granted subtree — a handful, not a corpus. **Confirm with
+`EXPLAIN` that the GiST index is chosen**; the mirror-image form with the
+array on the left depends on operator commutators and may not be indexable.
+
+`storage.caller_accessible_drives` is `LANGUAGE sql STABLE`, so it should
+inline into a subquery the planner can hash-semi-join. Verify that too: if it
+ever materialises instead, the planner falls back to a flat 1000-row estimate
+and every join above it is costed on fiction. The photos index already depends
+on this behaviour.
 
 Rules that fall out, each of which is a test:
 
@@ -201,12 +238,20 @@ Rules that fall out, each of which is a test:
 - **Counts are computed inside the filtered query** (§4), so a lane header can
   never hint at a file the caller cannot see.
 
-**Open question for the AuthZ pass:** should external users
-(`is_external`) reach this view at all? It aggregates colleagues' activity,
-which is a different proposition for a guest than for a staff member. The
-scope-vs-grant rule puts that in the router, not the service — the
-`require_internal_user_layer` already applied to the DAV nests is the shape to
-copy if the answer is no.
+### External users: denied, in the router
+
+Decided. An external is a guest invited to specific resources; a feed of
+colleagues' activity has no meaning for them and aggregates more than the
+invitation implied. They are already 403 on the system contacts listing, on
+WebDAV/CalDAV/CardDAV and on REST address-book creation
+(`tests/api/external_users.hurl` 11b, 11h–11k).
+
+This is a **scope** question, not a grant — "may this kind of caller reach
+this surface at all", with no resource to name — so it belongs in the router
+as `require_internal_user_layer` on the route, never in the service. Pin it
+both ways in `external_users.hurl`: the external 403, **and** an internal
+caller 200 on the same path. A gate that refuses everyone satisfies a refusal
+pin on its own.
 
 ---
 
@@ -267,6 +312,54 @@ an unregistered enum silently drops from the spec
 (`project_openapi_enum_gotchas`) — and regenerate
 `resources/gen/openapi.json`.
 
+### Two statements, not one — the performance decision
+
+The obvious single query computes the lane ordering with window functions:
+
+```sql
+SELECT …, MAX(content_modified_at) OVER (PARTITION BY content_modified_by) AS lane_latest,
+          COUNT(*)                 OVER (PARTITION BY content_modified_by) AS lane_total
+  FROM visible
+ ORDER BY lane_latest DESC, content_modified_by, content_modified_at DESC, id
+ LIMIT $limit + 1
+```
+
+**Do not ship that.** Neither window function can be computed incrementally
+under a `LIMIT`: Postgres must read every qualifying row in the window, sort by
+the partition key, compute the aggregates, then sort again by the display order
+before the limit applies. So **page 7 costs exactly what page 1 costs**, and
+the cost scales with changes-in-window across all accessible drives rather than
+with page size. At 1k active users × 5 files/day × 30 days that is ~150k wide
+rows sorted per request; at the 10k target it is worse, and paging multiplies
+it.
+
+Two statements instead:
+
+1. **Lanes, on a narrow projection:**
+   ```sql
+   SELECT content_modified_by,
+          MAX(content_modified_at) AS lane_latest,
+          COUNT(*)                 AS lane_total
+     FROM visible
+    GROUP BY 1
+    ORDER BY lane_latest DESC, content_modified_by
+    LIMIT $lane_batch
+   ```
+   Still an aggregate over the window, but over three columns, returning a
+   handful of rows.
+
+2. **Rows for the lanes this page needs.** Walk the step-1 result accumulating
+   `lane_total` until it covers `$limit`, then fetch
+   `WHERE content_modified_by = ANY($lanes) AND (keyset predicate)` — an index
+   scan per person via `idx_files_content_modified_by`.
+
+Exact rather than approximate, because step 1 already computed the counts the
+lane headers wanted anyway. This is approach B's *query* shape with approach
+A's *response* shape: flat envelope, same cursor, no full-window sort.
+
+`order_by=changed_at` needs none of this — it is a plain keyset walk down
+`idx_files_drive_content_modified`, which is the cheap path and the default.
+
 ### Cursor
 
 `ChangedAt` is a plain `(changed_at, file_id)` keyset. **`Modifier` needs a
@@ -276,11 +369,20 @@ four-tuple**, because lanes are ordered by their own recency:
 ORDER BY lane_latest DESC NULLS LAST, content_modified_by, content_modified_at DESC, id
 ```
 
-where `lane_latest = MAX(content_modified_at) OVER (PARTITION BY
-content_modified_by)`. So the cursor carries `lane_ts`, `lane_id`
-(`Option<Uuid>` — the Unknown lane has none), `item_ts` and `resource_id`. The
-cursor stores its own axis, as `RecentCursor` does, so the keyset predicate and
-the `ORDER BY` cannot drift.
+where `lane_latest` comes from step 1 above. So the cursor carries `lane_ts`,
+`lane_id` (`Option<Uuid>` — the Unknown lane has none), `item_ts` and
+`resource_id`. The cursor stores its own axis, as `RecentCursor` does, so the
+keyset predicate and the `ORDER BY` cannot drift.
+
+**The nullable lane key is a correctness trap, not a nicety.**
+`content_modified_by` is NULL for the Unknown lane, and a keyset predicate over
+a nullable sort column silently misbehaves: `lane_id > $cursor_lane_id` is NULL
+— never true — so the Unknown lane either repeats forever or vanishes at the
+page boundary, depending on which side the NULL lands. `NULLS LAST` in the
+`ORDER BY` does not fix the predicate. Either `COALESCE` the lane key to a
+sentinel UUID on both sides, or branch the predicate explicitly on
+`(lane_id IS NULL)`. Pin it with a fixture that has a NULL-lane row straddling
+a page boundary — this is exactly the bug that passes every single-page test.
 
 Ordering lanes alphabetically by display name would avoid the window function
 (a plain join on `auth.users`), but "most recently active first" is the right
@@ -371,6 +473,10 @@ Backend, `tests/api/recent_changes.hurl`:
   user's invisible file present in the fixture
 - `order_by=nonsense` → 400 naming the accepted set
 - flag off → 404 on the prefix
+- an external user → 403, **and** an internal caller → 200 on the same path
+  (in `external_users.hurl`, beside 11b/11h–11k)
+- a NULL-lane row straddling a page boundary appears exactly once — the keyset
+  trap in §4, which every single-page test passes
 
 Rust, inline where the code lives:
 
@@ -389,6 +495,23 @@ Frontend:
 ---
 
 ## §8 — Deferred, with reasons
+
+- **Every other resource kind.** Confirmed out of scope, and the reason is
+  structural: the mechanism needs a content clock, a content principal and an
+  access model to filter by. Files have all three bar the principal.
+  `caldav.calendar_events` and `carddav.contacts` — the obvious analogue, since
+  shared calendars exist — carry `created_at`, `updated_at`, `etag` and **no
+  provenance columns at all**, so the same view there means adding
+  `created_by` / `updated_by` *and* a content clock *and* wiring them through
+  every iCal/vCard write path first. That is its own plan. Playlists are
+  shareable but a playlist edit is low-value news, and a collab-document edit
+  already lands as a file content change.
+
+  This is why the endpoint is namespaced `/api/files/…`: a later
+  `/api/calendars/recent-changes` is purely additive, where one polymorphic
+  `/api/recent-changes` would force a `kind` discriminator from day one — the
+  "activity stream" shape rejected above for promising audit semantics it
+  cannot deliver.
 
 - **Folders.** They have `content_modified_at`; the view is files-only because
   a folder's "content change" is a different event (a child moved) and would
