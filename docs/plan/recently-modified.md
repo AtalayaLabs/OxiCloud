@@ -21,7 +21,8 @@ Recorded so implementation does not re-open them.
 
 | Question | Decision |
 | --- | --- |
-| Is `content_modified_by` needed? | **Yes** — not derivable; see §1 |
+| Is `content_modified_by` needed? | **Yes** — not derivable; see §1. Kept for per-row display and as the seed source, even though the feed no longer reads it |
+| Does the column suffice for the feed? | **No** — last-writer-wins hides a coworker's edit the moment anyone else saves. Hence `storage.file_content_touches`, §1b |
 | Backfill | `created_by` where `content_modified_at = created_at`, else `updated_by` |
 | Which resources | **Files only.** `storage.folders` has `content_modified_at` too; out of scope |
 | Access scope | Drive-accessible **and** folder/file grants — all three branches (§3) |
@@ -151,7 +152,128 @@ cost.
 
 ---
 
-## §2 — Write path: two sites, and that is all
+## §1b — `storage.file_content_touches`: one row per (file, person)
+
+### Why the column alone cannot answer the question
+
+`content_modified_by` is last-writer-wins, and that breaks the view's actual
+use case. Ed, 2026-11-10:
+
+> I am looking for a file I know a coworker worked on yesterday but I don't
+> remember the name nor its location. […] unfortunately someone else has just
+> modified the file, I may have difficulties to find it.
+
+Bob edits on Monday, Carol edits on Tuesday: the file now exists **only** in
+Carol's lane, and Bob's work is unfindable. That is not an edge case — any file
+worth hunting for is a file several people touch. Microsoft keeps this working
+because it stores *changes*, not a current modifier.
+
+### The table
+
+```sql
+CREATE TABLE storage.file_content_touches (
+    file_id    UUID NOT NULL REFERENCES storage.files(id) ON DELETE CASCADE,
+    user_id    UUID NOT NULL REFERENCES auth.users(id)    ON DELETE CASCADE,
+    touched_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (file_id, user_id)
+);
+
+CREATE INDEX idx_touches_user_touched  ON storage.file_content_touches (user_id, touched_at DESC);
+CREATE INDEX idx_touches_touched       ON storage.file_content_touches (touched_at DESC);
+```
+
+**Not an event log.** One row per pair, holding that person's *latest* change
+to that file. Three consequences, all of them the reason to prefer this over
+an append-only log:
+
+- **Bounded by (files × distinct editors), not by edit count.** A WOPI or
+  collab autosave storm writes the same row repeatedly instead of growing the
+  table, so there is no coalescing window to tune and no retention cliff. At
+  1M files and ~1.2 editors per file that is ~1.2M rows, stable under load —
+  where an event log at 10k users × 20 changes/day would be ~6M rows per
+  30 days and climbing.
+- **The lane count becomes truthful for free.** `COUNT(*)` per `user_id` *is*
+  the number of files that person changed — no `DISTINCT`, no double-counting
+  a file someone saved forty times.
+- **`user_id NOT NULL` with `ON DELETE CASCADE` removes the nullable-lane
+  keyset trap** described in §4. A deleted user's lane disappears entirely,
+  which is also the right answer: their account is gone, their lane should go
+  with it. `content_modified_by` keeps its nullable "Unknown" semantics for
+  per-row display, where NULL is informative rather than a sort key.
+
+### Write
+
+One upsert, in the same transaction as the content mutation (§2):
+
+```sql
+INSERT INTO storage.file_content_touches (file_id, user_id, touched_at)
+VALUES ($file, $caller, $content_modified_at)
+ON CONFLICT (file_id, user_id) DO UPDATE SET touched_at = EXCLUDED.touched_at
+```
+
+`touched_at` takes the same value as `content_modified_at` — including a
+client-asserted `X-OC-Mtime` — so the feed and the file's own mtime never
+disagree about when a change happened.
+
+### Seeding
+
+So the view is not empty on the first deploy, seed one row per file from the
+`content_modified_at` / `content_modified_by` pair, restricted to the
+retention window and to rows where the principal is known:
+
+```sql
+INSERT INTO storage.file_content_touches (file_id, user_id, touched_at)
+SELECT id, content_modified_by, content_modified_at
+  FROM storage.files
+ WHERE content_modified_by IS NOT NULL
+   AND NOT is_trashed
+   AND content_modified_at > now() - interval '120 days'
+ON CONFLICT DO NOTHING;
+```
+
+This inherits §1's backfill approximation — one seeded touch per file, crediting
+the last known principal. It is the floor, not the truth: the table becomes
+accurate as people edit. Note what the seed does *not* claim: it never invents
+a second editor, so a pre-deploy file shows one lane until someone touches it
+again.
+
+### Retention
+
+**A periodic sweep is mandatory, not optional** — without it the table grows
+with every file anyone has ever touched, which is the one way this design
+degrades over years rather than under load.
+
+`file_touches_cleanup`, a daily job mirroring
+`notifications_cleanup_service` exactly: a `JobHandler` with a single
+`JobParam::number("retention_days", 120, …)` so an operator can override at
+trigger time without a redeploy, an `OXICLOUD_FILE_TOUCHES_RETENTION_DAYS`
+default read at boot, and the same self-registering
+`.register(&app_state.core.job_registry)` call from `common/di.rs` that
+`notifications_cleanup` and `ops_banner_expiry` use. It deletes rows with
+`touched_at < now() - retention`.
+
+Two properties to keep, both learned from the existing jobs:
+
+- **Clamp the parameter to a minimum of 1 day.** `retention_days = 0` would
+  purge every row on every tick — `NotificationsCleanupService`'s constructor
+  clamps for exactly this reason.
+- **A sweep that skips work must never report success.** If the delete is
+  batched and a batch fails, pause at a cursor and report it
+  (`docs/plan/jobs-handling-recoverable-error.md`). A silent partial sweep here
+  is benign — stale rows, not lost data — but the convention is what keeps the
+  loud-failure habit intact across every job.
+
+Deleting a touch row is never data loss: the file, its `content_modified_at`
+and its `content_modified_by` are untouched. The table is a cache of recency,
+and the retention window is its ceiling.
+
+**120 days, deliberately above the 90-day `days` maximum.** The window bounds
+what the view can ask for; retention bounds what the table keeps. Setting them
+equal would let a boundary request see a half-pruned window.
+
+---
+
+## §2 — Write path: two sites, three writes each
 
 `swap_blob_hash` (`file_blob_write_repository.rs`) is the single content
 mutation site. PUT, WOPI, chunked-upload finalize and delta commit all funnel
@@ -173,9 +295,16 @@ The second site is the INSERT for a new file, where the honest value is
 been uploaded once.
 
 **Invariant to state in the column comment and pin in a test:** every path
-that writes `content_modified_at` writes `content_modified_by` in the same
-statement. A future content path that sets one and not the other is the way
-this feature rots.
+that writes `content_modified_at` writes `content_modified_by` **and** upserts
+the §1b touch, in the same transaction. A future content path that does one and
+not the others is the way this feature rots — and the touch is the one that
+rots silently, because the file still looks right in every listing while
+quietly never appearing in anyone's lane.
+
+The upsert belongs in the same transaction as `swap_blob_hash`, not in a
+follow-up call: a content change that commits without its touch is a change
+the view can never recover, since there is no second source to reconcile
+against.
 
 ---
 
@@ -333,32 +462,55 @@ with page size. At 1k active users × 5 files/day × 30 days that is ~150k wide
 rows sorted per request; at the 10k target it is worse, and paging multiplies
 it.
 
-Two statements instead:
+Two statements instead, both over `storage.file_content_touches` (§1b) rather
+than over `storage.files`:
 
 1. **Lanes, on a narrow projection:**
    ```sql
-   SELECT content_modified_by,
-          MAX(content_modified_at) AS lane_latest,
-          COUNT(*)                 AS lane_total
-     FROM visible
+   SELECT t.user_id,
+          MAX(t.touched_at) AS lane_latest,
+          COUNT(*)          AS lane_total   -- = number of files, by construction
+     FROM storage.file_content_touches t
+    WHERE t.touched_at > now() - ($days || ' days')::interval
+      AND t.file_id IN (SELECT id FROM visible_files)   -- §3
     GROUP BY 1
-    ORDER BY lane_latest DESC, content_modified_by
+    ORDER BY lane_latest DESC, t.user_id
     LIMIT $lane_batch
    ```
-   Still an aggregate over the window, but over three columns, returning a
-   handful of rows.
+   An aggregate over the window, but on three columns, returning a handful of
+   rows. `COUNT(*)` is exact without `DISTINCT` — one row per (file, person) is
+   the whole point of §1b.
 
 2. **Rows for the lanes this page needs.** Walk the step-1 result accumulating
    `lane_total` until it covers `$limit`, then fetch
-   `WHERE content_modified_by = ANY($lanes) AND (keyset predicate)` — an index
-   scan per person via `idx_files_content_modified_by`.
+   `WHERE t.user_id = ANY($lanes) AND (keyset predicate)` — an index scan per
+   person down `idx_touches_user_touched`, joined to `storage.files` by primary
+   key for the payload.
 
 Exact rather than approximate, because step 1 already computed the counts the
 lane headers wanted anyway. This is approach B's *query* shape with approach
 A's *response* shape: flat envelope, same cursor, no full-window sort.
 
-`order_by=changed_at` needs none of this — it is a plain keyset walk down
-`idx_files_drive_content_modified`, which is the cheap path and the default.
+`order_by=changed_at` needs none of this — a plain keyset walk down
+`idx_touches_touched` joined to the visible-file set, which is the cheap path
+and the default.
+
+**Each row's `changed_at` is the TOUCH, not the file's mtime.** In Bob's lane
+the row says when *Bob* changed it, even if Carol has changed it since; the
+file's own `content_modified_at` rides along for a secondary label. Getting
+this backwards would make every lane read as "Carol, Carol, Carol".
+
+**A file may therefore appear more than once in one page** — once per lane that
+touched it, and in chronological mode once per person's latest touch. That is
+the feature, not a bug: "who worked on this lately" has several right answers.
+The dedupe is per lane, and §1b's primary key enforces it.
+
+Which also disposes of the **drive_id question**: the touch table deliberately
+carries no `drive_id`, so a cross-drive move (D6) cannot leave it stale. The
+cost is that the access filter reaches files by primary-key join rather than by
+a leading drive index. If profiling ever says otherwise, denormalising
+`drive_id` into the touch row is the trade — along with the invalidation that
+comes with it.
 
 ### Cursor
 
@@ -374,15 +526,19 @@ where `lane_latest` comes from step 1 above. So the cursor carries `lane_ts`,
 `resource_id`. The cursor stores its own axis, as `RecentCursor` does, so the
 keyset predicate and the `ORDER BY` cannot drift.
 
-**The nullable lane key is a correctness trap, not a nicety.**
-`content_modified_by` is NULL for the Unknown lane, and a keyset predicate over
-a nullable sort column silently misbehaves: `lane_id > $cursor_lane_id` is NULL
-— never true — so the Unknown lane either repeats forever or vanishes at the
-page boundary, depending on which side the NULL lands. `NULLS LAST` in the
-`ORDER BY` does not fix the predicate. Either `COALESCE` the lane key to a
-sentinel UUID on both sides, or branch the predicate explicitly on
-`(lane_id IS NULL)`. Pin it with a fixture that has a NULL-lane row straddling
-a page boundary — this is exactly the bug that passes every single-page test.
+**The nullable-lane keyset trap is designed out, and that was deliberate.**
+A keyset predicate over a nullable sort column silently misbehaves —
+`lane_id > $cursor_lane_id` is NULL, never true, so the lane either repeats
+forever or vanishes at a page boundary, and `NULLS LAST` in the `ORDER BY`
+does not fix the predicate. §1b avoids it by making the lane key
+`user_id NOT NULL` with `ON DELETE CASCADE`, so there is no Unknown lane in
+the feed at all. `content_modified_by` keeps its nullable "Unknown" for
+per-row display, where it is a label and never a sort key.
+
+Worth remembering if a future axis sorts on something nullable: the fix is a
+sentinel via `COALESCE` on both sides, or an explicit `(key IS NULL)` branch —
+and a fixture that straddles a page boundary, because every single-page test
+passes regardless.
 
 Ordering lanes alphabetically by display name would avoid the window function
 (a plain join on `auth.users`), but "most recently active first" is the right
@@ -469,6 +625,12 @@ Backend, `tests/api/recent_changes.hurl`:
   is the one most likely to be dropped as "an optimisation")
 - a grant with `expires_at` in the past does **not** admit its file
 - a trashed file is absent
+- **two people edited the same file, and it appears in BOTH lanes** — the
+  regression this plan was amended for. Bob touches it on Monday, Carol on
+  Tuesday; Bob's lane still carries it, dated Monday. A `content_modified_by`
+  implementation passes every other pin in this list and fails this one
+- the same person saving the same file repeatedly produces **one** row in their
+  lane, carrying the latest timestamp (the §1b primary key doing its job)
 - `lane_total` equals the number of visible rows for that lane, with a second
   user's invisible file present in the fixture
 - `order_by=nonsense` → 400 naming the accepted set
@@ -480,10 +642,12 @@ Backend, `tests/api/recent_changes.hurl`:
 
 Rust, inline where the code lives:
 
-- `swap_blob_hash` writes `content_modified_by = caller_id`, and a **failed
-  CAS writes neither clock nor principal**
-- a new file's `content_modified_by = created_by`
+- `swap_blob_hash` writes `content_modified_by = caller_id` **and** upserts the
+  touch, and a **failed CAS writes none of the three**
+- a new file's `content_modified_by = created_by`, with its touch row
 - the backfill's two arms, against a seeded row of each shape
+- the retention job deletes beyond its window and **nothing inside it**, with
+  `retention_days` honoured from the trigger parameter
 
 Frontend:
 
@@ -531,11 +695,18 @@ Frontend:
 
 ## §9 — Rollout order
 
-1. §1 migration + §2 write path, with their pins. The column is dense from the
-   first deploy, before anything reads it.
-2. §3 + §4 behind the flag, with the Hurl pins.
-3. §5 flag wiring end to end, including `/api/config`.
-4. §6 page and nav entry, with i18n.
+1. §1 migration + §1b table and seed + §2 write path, with their pins. Both
+   the column and the touch table are dense from the first deploy, before
+   anything reads them — and the touch table only accumulates truth while it
+   is unread, so there is no reason to wait.
+2. §1b retention job, registered and scheduled. Before the read path, so a
+   long-lived deployment never has an unbounded table even if §3–§6 stall.
+3. §3 + §4 behind the flag, with the Hurl pins.
+4. §5 flag wiring end to end, including `/api/config`.
+5. §6 page and nav entry, with i18n.
 
 Steps 1–2 are independently useful: a dense `content_modified_by` improves the
-existing `/recent` owner column's honesty whether or not this view ships.
+existing `/recent` owner column's honesty, and the touch table starts
+accumulating the history this view needs, whether or not the view itself
+ships. Shipping them early is also what makes the view useful on its first day
+rather than thirty days later.
