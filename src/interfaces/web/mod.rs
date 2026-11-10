@@ -173,6 +173,37 @@ pub fn create_web_routes(
             CACHE_CONTROL,
             HeaderValue::from_static("no-cache"),
         ))
+        // Keep every web response out of search indexes. A private file store
+        // has nothing it wants indexed, so this is a blanket default rather
+        // than a per-route opt-in.
+        //
+        // This is the STRONGER half of the pair with `static/robots.txt`, not
+        // a duplicate of it. `Disallow` asks a polite crawler not to fetch;
+        // `noindex` stops a page being indexed even when it IS fetched, which
+        // is the case that matters here: a public share link
+        // (`/s/<token>` — unauthenticated by design) that leaks into a
+        // crawlable page can otherwise be listed from that inbound link
+        // alone, without the crawler ever reading robots.txt for this host.
+        // `nofollow` additionally stops a crawler walking onward from a share
+        // page into whatever else that token can reach.
+        //
+        // Why it belongs on the shell layer specifically: `/s/<token>` is an
+        // unmatched client route, so it is served the SPA shell and resolved
+        // in the browser. A crawler that executes JS therefore sees real
+        // content from a 200 shell response, and the header is the only thing
+        // on that response that says "don't index this".
+        //
+        // `if_not_present`, consistent with the cache header above, so a
+        // handler that deliberately sets its own value keeps it.
+        //
+        // NOT access control, and nothing here should be mistaken for it: a
+        // share token's protection is that it is unguessable and expirable.
+        // An operator fronting OxiCloud with a public landing page overrides
+        // this at their reverse proxy.
+        .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("x-robots-tag"),
+            HeaderValue::from_static("noindex, nofollow"),
+        ))
         // Short-circuit `GET /login` to the OIDC authorize endpoint when
         // the AutoRedirectIfStandaloneOidc policy resolves. Runs BEFORE
         // the SPA shell is served, so there's no form-then-redirect flash.
