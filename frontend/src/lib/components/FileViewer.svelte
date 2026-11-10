@@ -590,8 +590,9 @@
 		overflow: hidden;
 	}
 
-	/* Same round scrim control as the photo lightbox's toolbar, so it reads
-	   over both light and dark images. */
+	/* The scrim + shadow of the controls over ResourceList thumbnails: its
+	   background follows the theme, so the arrow takes the theme's text
+	   colour and stays legible over a light image as well as a dark one. */
 	.fv__nav {
 		position: absolute;
 		top: 50%;
@@ -603,7 +604,8 @@
 		border: none;
 		border-radius: 50%;
 		background: var(--color-scrim-control);
-		color: var(--color-on-accent);
+		box-shadow: 0 1px 3px var(--color-shadow-sm);
+		color: var(--color-text);
 		cursor: pointer;
 	}
 
