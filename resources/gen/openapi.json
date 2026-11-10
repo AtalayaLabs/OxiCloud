@@ -3125,6 +3125,125 @@
         "x-oxicloud-scope": "role:admin"
       }
     },
+    "/api/admin/settings/appearance": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "operationId": "get_appearance",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppearanceDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Administrator required"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-oxicloud-scope": "role:admin"
+      },
+      "put": {
+        "tags": [
+          "admin"
+        ],
+        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "operationId": "select_theme",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SelectThemeDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppearanceDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "InvalidInput"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Administrator required"
+          },
+          "500": {
+            "description": "Persistence failed"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-oxicloud-scope": "role:admin"
+      }
+    },
+    "/api/admin/settings/appearance/reload": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "description": "Requires the deployment administrator role (`role:admin`); enforced by the `require_admin` layer on the `/api/admin` nest.",
+        "operationId": "reload_themes",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppearanceDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid active theme"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Administrator required"
+          },
+          "500": {
+            "description": "Catalogue reload failed"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-oxicloud-scope": "role:admin"
+      }
+    },
     "/api/admin/settings/oidc": {
       "get": {
         "tags": [
@@ -15239,6 +15358,47 @@
           }
         }
       },
+      "AppearanceDto": {
+        "type": "object",
+        "required": [
+          "available_themes",
+          "default_theme_id",
+          "active_theme_id",
+          "theme_diagnostics"
+        ],
+        "properties": {
+          "active_theme_id": {
+            "type": "string"
+          },
+          "available_themes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "default_theme_id": {
+            "type": "string"
+          },
+          "selected_theme_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "theme_diagnostics": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ThemeDiagnosticDto"
+            }
+          },
+          "warning": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "AudioMetadataDto": {
         "type": "object",
         "required": [
@@ -21604,6 +21764,18 @@
           "unknown"
         ]
       },
+      "SelectThemeDto": {
+        "type": "object",
+        "required": [
+          "theme_id"
+        ],
+        "properties": {
+          "theme_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
       "SelfUserDto": {
         "type": "object",
         "description": "Self view — everything the caller may see about themselves.\nReturned by `/api/auth/me` and by every `AuthResponseDto` path\n(login / refresh / OIDC callback / magic-link redemption).\n\nComposed on top of [`FullUserDto`] so `/me` and `/admin/users` share\nthe SAME \"full profile\" contract for the fields both need — new\nself+admin-visible fields go on `FullUserDto` and both endpoints get\nthem together. Fields here are pure self-scoped state: preferences,\nsession-scoped flags, and caller-scoped permissions.",
@@ -22364,6 +22536,23 @@
           "group",
           "token"
         ]
+      },
+      "ThemeDiagnosticDto": {
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "theme_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
       },
       "ThumbnailCacheInfoDto": {
         "type": "object",

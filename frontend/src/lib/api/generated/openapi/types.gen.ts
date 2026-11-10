@@ -328,6 +328,15 @@ export type AppPasswordSummaryDto = {
     scopes: string;
 };
 
+export type AppearanceDto = {
+    active_theme_id: string;
+    available_themes: Array<string>;
+    default_theme_id: string;
+    selected_theme_id?: string | null;
+    theme_diagnostics: Array<ThemeDiagnosticDto>;
+    warning?: string | null;
+};
+
 export type AudioMetadataDto = {
     album?: string | null;
     album_artist?: string | null;
@@ -5147,6 +5156,10 @@ export type SearchSuggestionsDto = {
  */
 export type SearchTypeFilter = 'all' | 'folder' | 'image' | 'video' | 'audio' | 'document' | 'archive' | 'code' | 'font' | 'unknown';
 
+export type SelectThemeDto = {
+    theme_id: string;
+};
+
 /**
  * Self view — everything the caller may see about themselves.
  * Returned by `/api/auth/me` and by every `AuthResponseDto` path
@@ -5786,6 +5799,11 @@ export type SubjectInputDto = {
 };
 
 export type SubjectTypeDto = 'user' | 'group' | 'token';
+
+export type ThemeDiagnosticDto = {
+    reason: string;
+    theme_id?: string | null;
+};
 
 /**
  * Thumbnail-moka occupancy snapshot. Separate struct from the
@@ -8072,6 +8090,94 @@ export type RevokeSessionResponses = {
 };
 
 export type RevokeSessionResponse = RevokeSessionResponses[keyof RevokeSessionResponses];
+
+export type GetAppearanceData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/admin/settings/appearance';
+};
+
+export type GetAppearanceErrors = {
+    /**
+     * Authentication required
+     */
+    401: unknown;
+    /**
+     * Administrator required
+     */
+    403: unknown;
+};
+
+export type GetAppearanceResponses = {
+    200: AppearanceDto;
+};
+
+export type GetAppearanceResponse = GetAppearanceResponses[keyof GetAppearanceResponses];
+
+export type SelectThemeData = {
+    body: SelectThemeDto;
+    path?: never;
+    query?: never;
+    url: '/api/admin/settings/appearance';
+};
+
+export type SelectThemeErrors = {
+    /**
+     * InvalidInput
+     */
+    400: unknown;
+    /**
+     * Authentication required
+     */
+    401: unknown;
+    /**
+     * Administrator required
+     */
+    403: unknown;
+    /**
+     * Persistence failed
+     */
+    500: unknown;
+};
+
+export type SelectThemeResponses = {
+    200: AppearanceDto;
+};
+
+export type SelectThemeResponse = SelectThemeResponses[keyof SelectThemeResponses];
+
+export type ReloadThemesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/admin/settings/appearance/reload';
+};
+
+export type ReloadThemesErrors = {
+    /**
+     * Invalid active theme
+     */
+    400: unknown;
+    /**
+     * Authentication required
+     */
+    401: unknown;
+    /**
+     * Administrator required
+     */
+    403: unknown;
+    /**
+     * Catalogue reload failed
+     */
+    500: unknown;
+};
+
+export type ReloadThemesResponses = {
+    200: AppearanceDto;
+};
+
+export type ReloadThemesResponse = ReloadThemesResponses[keyof ReloadThemesResponses];
 
 export type GetOidcSettingsData = {
     body?: never;

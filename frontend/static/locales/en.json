@@ -1650,7 +1650,19 @@
     "backend_stored": "Stored",
     "backend_dedup_ratio": "Dedup ratio",
     "backend_referenced": "Referenced",
-    "backend_referenced_hint": "Sum of blob references (size × ref_count). Can exceed the drive total because thumbnails, derived assets, and blobs pending garbage collection still hold references."
+    "backend_referenced_hint": "Sum of blob references (size × ref_count). Can exceed the drive total because thumbnails, derived assets, and blobs pending garbage collection still hold references.",
+    "appearance": {
+      "title": "Appearance",
+      "description": "Choose the appearance for everyone on this instance. Light, dark and system mode remain individual preferences.",
+      "active": "Active theme: {{theme}}",
+      "unavailable": "The saved theme “{{theme}}” is unavailable. The built-in default is being used.",
+      "theme": "Global theme",
+      "saved": "Saved. The theme will apply on the next full page load.",
+      "invalid": "Some installed themes were excluded. Check the server logs for details.",
+      "refresh": "Refresh",
+      "refreshed": "Theme files reloaded. Reload the page to apply CSS changes.",
+      "recovery": "The operator has forced the built-in theme for recovery. The saved selection is preserved."
+    }
   },
   "profile": {
     "page_title": "Profile",

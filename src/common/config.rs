@@ -3352,6 +3352,7 @@ impl Default for PluginConfig {
 /// Global application configuration
 #[derive(Debug, Clone)]
 pub struct AppConfig {
+    pub themes: ThemesConfig,
     /// Storage directory path
     pub storage_path: PathBuf,
     /// Static files directory path
@@ -3604,6 +3605,7 @@ fn non_empty_url(var: Result<String, env::VarError>) -> Option<String> {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            themes: ThemesConfig::default(),
             storage_path: PathBuf::from("./storage"),
             static_path: PathBuf::from("./static"),
             temp_dir: env::temp_dir(),
@@ -3656,7 +3658,17 @@ impl AppConfig {
     }
 
     pub fn from_env() -> Self {
-        let mut config = Self::default();
+        let mut config = Self {
+            themes: ThemesConfig::parse(
+                env::var("OXICLOUD_THEMES_PATH").ok(),
+                env::var("OXICLOUD_DEFAULT_THEME").ok(),
+            )
+            .and_then(|config| {
+                config.with_force_default(env::var("OXICLOUD_FORCE_DEFAULT_THEME").ok())
+            })
+            .unwrap_or_else(|error| panic!("Invalid themes configuration: {error}")),
+            ..Self::default()
+        };
 
         // Use environment variables to override default values
         if let Ok(storage_path) = env::var("OXICLOUD_STORAGE_PATH") {
@@ -6527,5 +6539,82 @@ mod db_connection_string_env_fallback_tests {
         let cfg = AppConfig::from_env();
         assert_eq!(cfg.database.connection_string, default_cs);
         wipe();
+    }
+}
+
+/// Operator-managed theme files. Presence is retained after TOML-to-env loading.
+#[derive(Debug, Clone)]
+pub struct ThemesConfig {
+    pub force_default: bool,
+    pub path: PathBuf,
+    pub path_explicit: bool,
+    pub default_theme: String,
+}
+impl Default for ThemesConfig {
+    fn default() -> Self {
+        Self {
+            force_default: false,
+            path: PathBuf::from("./resources/themes/installed"),
+            path_explicit: false,
+            default_theme: "default".into(),
+        }
+    }
+}
+impl ThemesConfig {
+    pub fn with_force_default(mut self, value: Option<String>) -> Result<Self, String> {
+        self.force_default = match value.as_deref() {
+            None | Some("false" | "0") => false,
+            Some("true" | "1") => true,
+            _ => return Err("OXICLOUD_FORCE_DEFAULT_THEME must be true or false".into()),
+        };
+        Ok(self)
+    }
+
+    pub fn parse(path: Option<String>, default_theme: Option<String>) -> Result<Self, String> {
+        let mut config = Self::default();
+        if let Some(path) = path {
+            if path.trim().is_empty() {
+                return Err("OXICLOUD_THEMES_PATH must not be empty".into());
+            }
+            config.path = PathBuf::from(path);
+            config.path_explicit = true;
+        }
+        if let Some(id) = default_theme {
+            crate::domain::entities::theme::ThemeId::parse(&id).map_err(|e| e.to_string())?;
+            config.default_theme = id;
+        }
+        Ok(config)
+    }
+}
+#[cfg(test)]
+mod themes_config_tests {
+    use super::*;
+    #[test]
+    fn explicit_path_survives_parsing() {
+        let default = ThemesConfig::parse(None, None).unwrap();
+        assert!(!default.path_explicit);
+        assert!(
+            default
+                .clone()
+                .with_force_default(Some("true".into()))
+                .unwrap()
+                .force_default
+        );
+        assert!(
+            default
+                .clone()
+                .with_force_default(Some("maybe".into()))
+                .is_err()
+        );
+        assert_eq!(default.default_theme, "default");
+        for path in ["./resources/themes/installed", "/srv/themes"] {
+            assert!(
+                ThemesConfig::parse(Some(path.into()), None)
+                    .unwrap()
+                    .path_explicit
+            );
+        }
+        assert!(ThemesConfig::parse(Some("".into()), None).is_err());
+        assert!(ThemesConfig::parse(None, Some("../bad".into())).is_err());
     }
 }

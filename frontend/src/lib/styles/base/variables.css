@@ -1,7 +1,10 @@
+@import url('../../../../../resources/themes/tokens.css') layer(oxi-theme-defaults);
+
 /*
  * OxiCloud design tokens.
  *
- * Single source of truth for light + dark colours. Each token whose value
+ * Structural scales and accessibility overrides. Visual defaults are imported
+ * from resources/themes/tokens.css. Each token whose value
  * differs between modes uses `light-dark(LIGHT, DARK)`, which the browser
  * resolves against the page's `color-scheme`.
  *
@@ -18,6 +21,7 @@
  * `themes/dark.css` that still applies the old `[data-theme="dark"]` overrides.
  */
 
+@layer oxi-theme-defaults {
 :root {
     /* Default: follow the OS preference. Overridden by html[data-color-scheme]. */
     color-scheme: light dark;
@@ -68,19 +72,19 @@
     --space-24: 96px;
 
     /* ── Radius ─────────────────────────────────────────────────── */
-    --radius-none: 0;
-    --radius-xs: 2px;
-    --radius-sm: 4px;
-    --radius-md: 6px;
-    --radius-lg: 8px;
-    --radius-xl: 10px;
-    --radius-2xl: 12px;
-    --radius-3xl: 16px;
-    --radius-4xl: 20px;
-    --radius-full: 9999px;
+
+
+
+
+
+
+
+
+
+
     /* Semantic default — resolves the legacy `var(--radius, 12px)` fallbacks
      * in share-public.css / device-verify.css (token was never defined). */
-    --radius: var(--radius-2xl);
+
 
     /* ── Typography ────────────────────────────────────────────── */
     /* Font families (single source — reset.css `*` consumes --font-sans). */
@@ -170,12 +174,12 @@
     /* ── Elevation — composed box-shadow recipes ───────────────── */
     /* Full recipes (not bare alphas) layered on the --color-shadow-*
      * alpha tokens below, so they adapt to light/dark automatically. */
-    --shadow-xs: 0 1px 2px var(--color-shadow-xs);
-    --shadow-sm: 0 1px 3px var(--color-shadow-sm), 0 1px 2px var(--color-shadow-xs);
-    --shadow-md: 0 4px 6px var(--color-shadow-sm), 0 2px 4px var(--color-shadow-xs);
-    --shadow-lg: 0 10px 15px var(--color-shadow-md), 0 4px 6px var(--color-shadow-sm);
-    --shadow-xl: 0 20px 25px var(--color-shadow-md), 0 8px 10px var(--color-shadow-sm);
-    --shadow-2xl: 0 25px 50px var(--color-shadow-lg);
+
+
+
+
+
+
 
     /* ── Breakpoints (reference tokens) ────────────────────────── */
     /* NOTE: @media cannot consume custom properties. These are the canonical
@@ -195,518 +199,11 @@
     --density-gap: var(--space-3);
     --density-control-h: 40px;
 
-    /* Backgrounds */
-    --color-bg-page: light-dark(#f5f7fa, #0f172a);
-    --color-bg-surface: light-dark(#ffffff, #1e293b);
-    --color-bg-input: light-dark(#f9fafb, #0f172a);
-    --color-bg-hover: light-dark(#f8fafc, #334155);
-    --color-bg-muted: light-dark(#f0f3f7, #1a2540);
-    --color-bg-subtle: light-dark(#f8f9fa, #162032);
-    --color-bg-alt: light-dark(#f7fafc, #0f172a);
-    --color-bg-input-alt: light-dark(#edf2f7, #253045);
-    --color-bg-empty: light-dark(#f0f0f0, #253045);
-
-    /* Borders */
-    --color-border: light-dark(#e2e8f0, #334155);
-    --color-border-light: light-dark(#f1f5f9, #334155);
-    --color-border-medium: light-dark(#cbd5e0, #475569);
-    --color-border-faint: light-dark(#e0e6ed, #2a3650);
-    --color-border-subtle: light-dark(#e0e5e8, #2a3650);
-    --color-border-xfaint: light-dark(#f0f0f0, #1e293b);
-    --color-border-ddd: light-dark(#ddd, #334155);
-
-    /* Text — collapsed to a few AA-passing tiers; every legacy name is kept as
-     * an alias so no consumer breaks (migration to the canonical names → Fase 1).
-     * Each tier clears WCAG AA 4.5:1 on #fff AND the page bg, light and dark. The
-     * muted/faint/placeholder tiers used to FAIL (2.3–4.0:1) and are now darkened. */
-    --color-text: light-dark(#2d3748, #e2e8f0); /* primary body */
-    --color-text-heading: light-dark(#1e293b, #f1f5f9); /* headings */
-    --color-text-secondary: light-dark(#475569, #cbd5e1); /* strong secondary */
-    /* Three perceptibly distinct tiers, each verified AA ≥4.5:1 on every
-     * page/surface/hover/muted background in BOTH modes. muted carries the most
-     * weight (general secondary text — by far the most-used), faint the least
-     * (timestamps, placeholders) and sits right on the AA floor. Emphasis maps
-     * to contrast: stronger = darker in light / lighter in dark. */
-    --color-text-muted: light-dark(#586472, #b2c0d0); /* muted — strongest (5.4 / 5.6) */
-    --color-text-subtle: light-dark(#5e6a78, #a6b4c6); /* subtle — middle (5.0 / 4.9) */
-    --color-text-faint: light-dark(#647082, #9fadbe); /* faint — AA floor (4.5 / 4.5) */
-    /* legacy aliases → one of the tiers above */
-    --color-text-dark: var(--color-text-secondary);
-    --color-text-dim: var(--color-text-secondary);
-    --color-text-black: var(--color-text);
-    --color-text-gray: var(--color-text-muted);
-    --color-text-medium: var(--color-text-muted);
-    --color-text-faint2: var(--color-text-faint);
-    /* "Light" = light-coloured (near-white) text for accent/dark fills, NOT a
-     * faint tier. Every consumer is a primary button (background: --color-primary),
-     * so this must resolve to the on-accent foreground, not muted grey — which
-     * rendered muddy and failed contrast on the orange accent. */
-    --color-text-light: var(--color-on-accent);
-    --color-text-placeholder: var(--color-text-faint);
-
-    /* Accent (orange) — mostly mode-agnostic. */
-    --color-accent: #ff5e3a;
-    --color-accent-hover: light-dark(#e04520, #ff7a5c);
-    /* AA-compliant accent for TEXT/LINKS: bare #ff5e3a only reaches 3.04:1 on
-     * white. Link/toggle-link consumers migrate onto this in Fase 2. */
-    --color-accent-text: light-dark(#cc3a16, #ff8a5c);
-    /* Solid foreground on accent fills (replaces reusing --color-danger-text). */
-    --color-on-accent: #ffffff;
-    /* Canonical keyboard focus-ring color (applied globally in Fase 2). */
-    --color-focus-ring: #ff5e3a;
-    /* Canonical logo gradient — unifies the divergent sidebar (#ff5e3a→#ff8a5c)
-     * vs accent (#ff5e3a→#ff2d55) logo fills. Consumers migrate in Fase 1. */
-    --color-logo-gradient: linear-gradient(135deg, #ff5e3a 0%, #ff8a5c 100%);
-    --color-accent-gradient: linear-gradient(135deg, #ff5e3a 0%, #ff2d55 100%);
-    --color-accent-shadow: rgba(255, 94, 58, 0.3);
-    --color-accent-ring: light-dark(rgba(255, 94, 58, 0.1), rgba(255, 94, 58, 0.15));
-    --color-accent-tint: light-dark(#fff5f3, #2a1a15);
-    --color-accent-mid: #ff8a5c;
-    --color-accent-shadow-lg: rgba(255, 94, 58, 0.4);
-    --color-accent-bg: rgba(255, 94, 58, 0.06);
-    --color-accent-bg-sm: rgba(255, 94, 58, 0.08);
-    --color-accent-ring-dark: rgba(255, 94, 58, 0.15);
-    --color-accent-ring-strong: rgba(255, 94, 58, 0.2);
-    --color-accent-ring-xl: rgba(255, 94, 58, 0.4);
-    --color-accent-ring-xs: rgba(255, 94, 58, 0.05);
-    --color-accent-glow: rgba(255, 94, 58, 0.2);
-    --color-accent-glow-soft: rgba(255, 94, 58, 0.1);
-
-    /* Ambient brand backdrop — shared by the external surfaces (login / share /
-       device). A centred "spotlight" (surface is brighter than page in BOTH
-       light and dark) seats the card in a pool of light; four warm brand blobs
-       fill the field so it reads as a deliberate, dimensional canvas rather than
-       flat near-white. Resolves through light-dark() automatically. */
-    --brand-ambient:
-        radial-gradient(55% 50% at 8% 4%, var(--color-accent-glow), transparent 60%),
-        radial-gradient(55% 55% at 95% 98%, var(--color-accent-glow), transparent 58%),
-        radial-gradient(48% 48% at 88% 12%, var(--color-accent-glow-soft), transparent 55%),
-        radial-gradient(50% 45% at 6% 92%, var(--color-accent-glow-soft), transparent 55%),
-        radial-gradient(78% 64% at 50% 33%, var(--color-bg-surface), transparent 70%), var(--color-bg-page);
-    /* Desaturated fractal-noise grain — kills gradient banding and adds a
-       tactile, "expensive" film. No colour inside the data-URI (token-safe);
-       applied via a low-opacity overlay pseudo-element. */
+    /* Trusted built-in texture; external themes cannot replace resource URLs.
+     * Thémable visual defaults live in resources/themes/tokens.css. */
     --brand-grain: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='g'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix type='saturate' values='0'/></filter><rect width='180' height='180' filter='url(%23g)'/></svg>");
 
-    /* Feedback — success unified to one restrained emerald; the 6 green variants
-     * now alias the canonical bg/text. (error-* is the danger tint, kept.) */
-    --color-error-bg: light-dark(#fee2e2, #3b1111);
-    --color-error-text: light-dark(#b91c1c, #fca5a5);
-    --color-success-bg: light-dark(#dcfce7, #052e16);
-    --color-success-text: light-dark(#15803d, #86efac);
-    --color-success-border: #16a34a;
-    --color-success-alt: #16a34a;
-    --color-success-bg-alt: var(--color-success-bg);
-    --color-success-text-alt: var(--color-success-text);
-    --color-success-bg-green: var(--color-success-bg);
-    --color-success-text-green: var(--color-success-text);
-
-    /* Dangerous actions — unified on #ef4444 / #dc2626; danger text-alt now uses
-     * the AA-passing error-text instead of a sub-4.5:1 red. */
-    --color-danger-bg: #ef4444;
-    --color-danger-text: #ffffff;
-    --color-danger-bg-hover: #dc2626;
-    --color-danger-alt: #ef4444;
-    --color-danger-ring: rgba(239, 68, 68, 0.3);
-    --color-danger-ring-lg: rgba(239, 68, 68, 0.4);
-    --color-danger-light-bg: light-dark(#fef2f2, #2a0c0c);
-    --color-danger-lighter: light-dark(#fef2f2, #2a0c0c);
-    --color-danger-text-alt: var(--color-error-text);
-    --color-danger-gradient: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
-
-    /* Warning — unified to one restrained amber. Text tier (#b45309) clears AA;
-     * the bright #ffc107 gold is replaced by amber-500 for borders/fills. Legacy
-     * orange/amber variants alias the canonical tokens. */
-    --color-warning-bg: light-dark(#fef3c7, #2a2410);
-    --color-warning-text: light-dark(#b45309, #fbbf24);
-    --color-warning-border: #f59e0b;
-    --color-warning-bg-dark: light-dark(#fde68a, #3d2e00);
-    --color-warning-ring: rgba(245, 158, 11, 0.12);
-    --color-warning-shadow: rgba(245, 158, 11, 0.4);
-    --color-warning-orange-bg: var(--color-warning-bg);
-    --color-warning-orange-border: var(--color-warning-border);
-    --color-warning-orange-text: var(--color-warning-text);
-    --color-warning-bg-light: var(--color-warning-bg);
-    --color-warning-text-amber: var(--color-warning-text);
-    --color-warning-bg-orange: var(--color-warning-bg);
-    --color-warning-text-orange: var(--color-warning-text);
-
-    /* Info — unified to one blue (AA text #1d4ed8, with a light-dark dark tier).
-     * Variants alias the canonical tokens. */
-    --color-info-bg: light-dark(#eff6ff, #0c2d48);
-    --color-info-text: light-dark(#1d4ed8, #93c5fd);
-    --color-info-border: #3b82f6;
-    --color-info-blue: #3b82f6;
-    --color-info-bg-alt: var(--color-info-bg);
-    --color-info-text-alt: var(--color-info-text);
-    --color-info-surface: var(--color-info-bg);
-
-    /* Shadows — stronger in dark mode for parity. Dark values form a
-     * deliberate progression (base 0.3 < md 0.34 < lg 0.38) so elevation
-     * levels stay perceptually distinct; they used to all collapse to 0.3. */
-    --color-shadow: light-dark(rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0.3));
-    --color-shadow-lg: light-dark(rgba(0, 0, 0, 0.12), rgba(0, 0, 0, 0.38));
-    --color-shadow-xs: rgba(0, 0, 0, 0.05);
-    --color-shadow-sm: rgba(0, 0, 0, 0.08);
-    --color-shadow-md: light-dark(rgba(0, 0, 0, 0.15), rgba(0, 0, 0, 0.34));
-    --color-shadow-xl: rgba(0, 0, 0, 0.2);
-    --color-shadow-2xl: rgba(0, 0, 0, 0.25);
-    --color-shadow-3xl: rgba(0, 0, 0, 0.3);
-    --color-shadow-4xl: rgba(0, 0, 0, 0.4);
-
-    /* Overlays — same in both modes; they sit on top of arbitrary content. */
-    --color-overlay: rgba(0, 0, 0, 0.5);
-    /* Frosted scrim behind overlay controls (favorite/kebab/checkbox) so they
-       stay legible on top of any thumbnail, light or dark. */
-    --color-scrim-control: light-dark(rgba(255, 255, 255, 0.92), rgba(15, 23, 42, 0.82));
-    --color-overlay-light: rgba(0, 0, 0, 0.45);
-    --color-overlay-heavy: rgba(0, 0, 0, 0.85);
-    --color-overlay-darkest: rgba(0, 0, 0, 0.92);
-    --color-overlay-shadow: rgba(0, 0, 0, 0.6);
-
-    /* Foreground / control surfaces on top of dark overlays */
-    --color-on-overlay: rgba(255, 255, 255, 0.95);
-    --color-on-overlay-muted: rgba(255, 255, 255, 0.9);
-    --color-overlay-button: rgba(255, 255, 255, 0.12);
-    --color-overlay-button-hover: rgba(255, 255, 255, 0.22);
-
-    /* Items */
-    --color-item: var(--color-bg-surface);
-    --color-item-hover: var(--color-bg-hover);
-    --color-item-active: light-dark(#f8d2ae, #5a5047);
-    --color-item-selected: light-dark(#fff8f6, #39281a);
-    --color-item-hover-accent: light-dark(#fff0ec, #3d342c);
-    --color-item-hover-blue: light-dark(#f0f8ff, #18293f);
-    --color-item-hover-sky: light-dark(#e0f2fe, #103048);
-
-    /* Sidebar — already dark-leaning in both modes; dark mode goes deeper. */
-    --color-sidebar-bg-from: light-dark(#2a3042, #0f172a);
-    --color-sidebar-bg-to: light-dark(#232838, #0c1322);
-    --color-sidebar-text: rgba(255, 255, 255, 0.65);
-    --color-sidebar-text-hover: rgba(255, 255, 255, 0.9);
-    --color-sidebar-text-active: #ffffff;
-    --color-sidebar-active-bg: rgba(255, 94, 58, 0.12);
-    --color-sidebar-hover-bg: rgba(255, 255, 255, 0.06);
-    --color-sidebar-separator: rgba(255, 255, 255, 0.07);
-    --color-sidebar-overlay: rgba(0, 0, 0, 0.5);
-    --color-sidebar-storage-bg: rgba(255, 255, 255, 0.05);
-    --color-sidebar-storage-border: rgba(255, 255, 255, 0.07);
-    --color-sidebar-storage-text: rgba(255, 255, 255, 0.8);
-    --color-sidebar-storage-bar: rgba(255, 255, 255, 0.1);
-    --color-sidebar-storage-faint: rgba(255, 255, 255, 0.5);
-    --color-sidebar-logo-gradient: linear-gradient(135deg, #ff5e3a 0%, #ff8a5c 100%);
-    --color-sidebar-progress: linear-gradient(90deg, #ff5e3a 0%, #ff8a5c 100%);
-    --color-sidebar-shadow: rgba(255, 94, 58, 0.35);
-    --color-sidebar-shadow-lg: rgba(255, 94, 58, 0.45);
-
-    /* Calendar dots — regenerated at fixed S=55% L=62%, hues evenly around the
-     * wheel, so they read as one curated family (not confetti). These also tint
-     * the sidebar nav icons (sidebar.css :nth-child rules). */
-    --color-cal-1: #d36868;
-    --color-cal-2: #d3a268;
-    --color-cal-3: #c9d368;
-    --color-cal-4: #8fd368;
-    --color-cal-5: #68d37c;
-    --color-cal-6: #68d3b6;
-    --color-cal-7: #68b6d3;
-    --color-cal-8: #687cd3;
-    --color-cal-9: #8f68d3;
-    --color-cal-10: #c968d3;
-    --color-cal-11: #d368a2;
-
-    /* File type badge colors */
-    --color-ft-html: #e34c26;
-    --color-ft-js: #2965f1;
-    --color-ft-python: #3776ab;
-    --color-ft-typescript: #3178c6;
-    --color-ft-rust: #dea584;
-    --color-ft-go: #00add8;
-    --color-ft-java: #e76f00;
-    --color-ft-shell: #555555;
-    --color-ft-csharp: #68217a;
-    --color-ft-php: #8892be;
-    --color-ft-ruby: #cc342d;
-    --color-ft-swift: #fa7343;
-    --color-ft-kotlin: #7f52ff;
-    --color-ft-scala: #e38c00;
-    --color-ft-angular: #cb171e;
-    --color-ft-cpp: #9c4221;
-    --color-ft-docker: #083fa1;
-    --color-ft-generic-blue: #556ee6;
-    --color-ft-generic-green: #4eaa25;
-    --color-ft-generic-gray: #a0aec0;
-    --color-ft-orange-light: #ffb86c;
-    --color-ft-yellow: #ffd43b;
-    --color-ft-orange-alt: #e34c26;
-    --color-ft-coffeescript: #9c4221;
-
-    /* File type icon background/text pairs */
-    --color-ft-folder-bg: #ffeaa7;
-    --color-ft-folder-tab: #fdcb6e;
-    --color-ft-doc-bg: #e0ecff;
-    --color-ft-doc-text: #3171d8;
-    --color-ft-pdf-bg: #fee2e2;
-    --color-ft-pdf-text: #e53e3e;
-    --color-ft-image-bg: #e0f2fe;
-    --color-ft-image-text: #3b82f6;
-    --color-ft-video-bg-from: #ede9fe;
-    --color-ft-video-bg-to: #fce7f3;
-    --color-ft-video-text: #8b5cf6;
-    --color-ft-audio-bg: #fef3c7;
-    --color-ft-audio-text: #f59e0b;
-    --color-ft-audio-alt-bg: #fff3e0;
-    --color-ft-spreadsheet-bg: #e6f4ea;
-    --color-ft-spreadsheet-text: #0d904f;
-    --color-ft-presentation-bg: #fef3e2;
-    --color-ft-presentation-text: #d04423;
-    --color-ft-archive-bg: #f5f0eb;
-    --color-ft-archive-text: #8d6e63;
-    --color-ft-installer-bg: #f3e8ff;
-    --color-ft-installer-text: #7c3aed;
-    --color-ft-script-bg: #e8f5e9;
-    --color-ft-script-text: #4eaa25;
-    --color-ft-config-bg: #f1f3f5;
-    --color-ft-config-text: #718096;
-
-    /* Multiselect bar — always dark */
-    --color-multiselect-bg: #1e293b;
-    --color-multiselect-border: #334155;
-    --color-multiselect-text: #ffffff;
-    --color-multiselect-text-faint: rgba(255, 255, 255, 0.7);
-    --color-multiselect-hover-bg: rgba(255, 255, 255, 0.1);
-    --color-multiselect-action-text: #ffffff;
-    --color-multiselect-action-hover: rgba(255, 255, 255, 0.2);
-    --color-multiselect-danger-bg: rgba(239, 68, 68, 0.25);
-    --color-multiselect-danger-text: #fca5a5;
-    --color-multiselect-danger-active: rgba(239, 68, 68, 0.4);
-    --color-multiselect-danger-text-active: #ffffff;
-
-    /* Notification */
-    --color-notification-bg: light-dark(#ffffff, #1e293b);
-    --color-notification-badge: #ff3b30;
-    --color-notification-success: #34c759;
-    --color-notification-error: #ff3b30;
-
-    /* Photos lightbox — always dark overlay */
-    --color-lightbox-overlay: rgba(0, 0, 0, 0.92);
-    --color-lightbox-btn-bg: rgba(255, 255, 255, 0.12);
-    --color-lightbox-btn-text: #ffffff;
-    --color-lightbox-btn-hover: rgba(255, 255, 255, 0.25);
-    --color-lightbox-gradient-top: linear-gradient(to bottom, rgba(0, 0, 0, 0.6), transparent);
-    --color-lightbox-gradient-bottom: linear-gradient(to top, rgba(0, 0, 0, 0.6), transparent);
-    --color-lightbox-text-faint: rgba(255, 255, 255, 0.5);
-    --color-lightbox-text-muted: rgba(255, 255, 255, 0.7);
-
-    /* (Removed: the --color-purple-* family had zero consumers. The music
-     * gradient and the video file-type purple are separate, retained tokens.) */
-
-    /* OIDC / auth */
-    --color-oidc-bg: var(--color-info-blue);
-    --color-oidc-shadow: rgba(79, 70, 229, 0.3);
-    --color-oidc-shadow-lg: rgba(79, 70, 229, 0.4);
-
-    /* Device verify */
-    --color-device-verify-text: #ffc107;
-    --color-device-verify-shadow: rgba(255, 193, 7, 0.5);
-    --color-device-verify-drop-shadow: rgba(255, 193, 7, 0.4);
-    --color-device-verify-border: #ffc107;
-    --color-device-verify-muted: #6c757d;
-    --color-device-verify-dim: #ccc;
-
-    /* Content area */
-    --color-content-muted: #888;
-    --color-content-bg-warn: light-dark(#ffeaa7, #3d2e00);
-    --color-content-bg-warn-dark: light-dark(#fdcb6e, #5a4200);
-
-    /* User menu */
-    --color-user-menu-header-bg: light-dark(linear-gradient(135deg, #fef5f3 0%, #fdf2f8 100%), linear-gradient(135deg, #1a2332 0%, #1e2940 100%));
-    --color-user-menu-header-border: light-dark(#fce7e1, #3a2520);
-
-    /* Share dialog */
-    --color-share-link-text: var(--color-info-text);
-    --color-share-link-hover: var(--color-info-text);
-    --color-share-remove-text: #b71c1c;
-    --color-share-owner-text: #757575;
-
-    /* Primary (style.css) */
-    /* Demoted: orange is the sole brand/primary — primary now aliases the accent
-     * (was a competing blue #2563eb). Flips device-verify / share / userMenu to brand. */
-    --color-primary: var(--color-accent);
-    --color-primary-hover: var(--color-accent-hover);
-
-    /* Recent view */
-    --color-recent-muted: #6c757d;
-    --color-recent-border: #6c757d;
-
-    /* Star colors */
-    --color-star-text: #fbbf24;
-    --color-star-text-hover: #f59e0b;
-    --color-star-active: #d97706;
-
-    /* Card drop target */
-    --color-card-drop-tint: rgba(230, 126, 34, 0.08);
-    --color-card-drop-border: #e67e22;
-
-    /* Neutral backgrounds */
-    --color-neutral-warm-bg: #f5f0eb;
-    --color-neutral-warm-text: #8d6e63;
-    --color-neutral-bg: #f1f3f5;
-
-    /* Admin/profile blue accent */
-    --color-admin-blue: #60a5fa;
-    --color-admin-blue-bg: rgba(59, 130, 246, 0.1);
-    --color-admin-blue-bg-sm: rgba(59, 130, 246, 0.15);
-
-    /* Danger hover bg (for logout etc.) */
-    --color-danger-hover-bg: rgba(239, 68, 68, 0.1);
-
-    /* Additional success rings */
-    --color-success-ring: rgba(72, 187, 120, 0.1);
-    --color-success-ring-dark: rgba(72, 187, 120, 0.15);
-    --color-success-text-strong: #2f855a;
-    --color-success-ring-vivid: rgba(74, 222, 128, 0.1);
-    --color-success-text-vivid: #86efac;
-    --color-success-ring-vivid-lg: rgba(74, 222, 128, 0.15);
-    --color-success-icon-vivid: #4ade80;
-    --color-secret-green: #059669;
-
-    /* Additional overlays */
-    --color-overlay-mid: rgba(0, 0, 0, 0.6);
-    --color-overlay-video: rgba(0, 0, 0, 0.55);
-
-    /* Progress overlays */
-    --color-progress-overlay: rgba(255, 255, 255, 0.95);
-    --color-progress-overlay-dark: rgba(30, 41, 59, 0.95);
-
-    /* Misc */
-    --color-black: #000000;
-    --color-info-border-light: #90cdf4;
-    --color-notification-error-ring: rgba(255, 59, 48, 0.1);
-    --color-accent-second: #ff2d55;
-    --color-warning-ring-xs: rgba(255, 193, 7, 0.05);
-
-    /* Avatar / profile */
-    --color-avatar-gradient: linear-gradient(135deg, #3b82f6, #6366f1);
-    --color-text-navy: #1a1a2e;
-    --color-role-admin-bg: #dbeafe;
-    --color-role-admin-text: #1d4ed8;
-    --color-dark-mid: #475569;
-    --color-role-admin-dark-bg: #1e3a5f;
-
-    /* Photo tile */
-    --color-photo-check-border: rgba(255, 255, 255, 0.8);
-
-    /* Accent shadow (smaller) */
-    --color-accent-shadow-sm: rgba(255, 94, 58, 0.25);
-
-    /* Warning faint background */
-    --color-warning-bg-faint: #fffbeb;
-
-    /* Storage progress fill gradients */
-    --color-storage-fill-green: linear-gradient(90deg, #059669, #10b981);
-    --color-storage-fill-orange: linear-gradient(90deg, #d97706, #f59e0b);
-    --color-storage-fill-red: linear-gradient(90deg, #dc2626, #ef4444);
-
-    /* Error text (dark shade) — light-mode is dark red, dark-mode is light red. */
-    --color-error-text-dark: light-dark(#991b1b, #f87171);
-
-    /* Stat warning border */
-    --color-stat-warn-border: #fbbf24;
-
-    /* Status badge — success/emerald */
-    --color-badge-success-bg: #ecfdf5;
-    --color-badge-success-bg-medium: #d1fae5;
-    --color-badge-success-text: #065f46;
-    --color-badge-success-border: #a7f3d0;
-    --color-badge-success-fill: #047857;
-    --color-badge-success-fill-dark: #064e27;
-    --color-badge-success-fill-faint: #f0fdf4;
-    --color-badge-green-bg: #ecfdf5;
-    --color-badge-green-text: #065f46;
-
-    /* Status badge — orange/coral (used by role-chip & user-vignette) */
-    --color-badge-orange-bg: light-dark(#fff5f3, #2a1814);
-    --color-badge-orange-text: light-dark(#ff5e3a, #ff8a65);
-
-    /* Status badge — error/red */
-    --color-badge-error-border: #fecaca;
-
-    /* Status badge — warning/amber */
-    --color-badge-warning-text: #92400e;
-    --color-badge-warning-border: #fde68a;
-    --color-badge-amber-bg: #fef3c7;
-    --color-badge-amber-text: #f59e0b;
-
-    /* Status badge — indigo/purple */
-    --color-badge-indigo-bg: #ede9fe;
-    --color-badge-indigo-text: #6d28d9;
-
-    /* Status badge — blue (used by role-chip & user-vignette) */
-    --color-badge-blue-bg: light-dark(#eff6ff, #0c2d48);
-    --color-badge-blue-text: light-dark(#1e40af, #93c5fd);
-    --color-badge-blue-border: #bfdbfe;
-
-    /* Status badge — gray/disabled */
-    --color-badge-gray: #d1d5db;
-
-    /* File-type glyph colours — one vivid hue per broad file family, used by the
-     * .file-icon--* buckets (resourceList.css) so the grid/list type icons read
-     * as colourful tiles instead of flat monochrome. Tile tints are derived from
-     * these with color-mix(), so only the foreground hue lives here. Dark-mode
-     * shades are lightened for contrast against the dark tile fill. */
-    --file-kind-folder: light-dark(#3b82f6, #60a5fa);
-    --file-kind-pdf: light-dark(#ef4444, #f87171);
-    --file-kind-doc: light-dark(#2563eb, #60a5fa);
-    --file-kind-sheet: light-dark(#16a34a, #4ade80);
-    --file-kind-slides: light-dark(#ea580c, #fb923c);
-    --file-kind-archive: light-dark(#d97706, #fbbf24);
-    --file-kind-code: light-dark(#7c3aed, #a78bfa);
-    --file-kind-image: light-dark(#0891b2, #22d3ee);
-    --file-kind-video: light-dark(#c026d3, #e879f9);
-    --file-kind-audio: light-dark(#db2777, #f472b6);
-    --file-kind-text: light-dark(#475569, #94a3b8);
-    --file-kind-generic: light-dark(#64748b, #94a3b8);
-
-    /* Syntax-highlighting palette — consumed by `CollabEditor.svelte`'s
-     * CodeMirror `HighlightStyle`. Every token uses `light-dark(...)`
-     * so the editor's colours flip with the surrounding
-     * `color-scheme` without needing a compartment/reconfigure hop.
-     * Palette bucketed to `@lezer/highlight` token families — see
-     * the HighlightStyle definition for which family each drives.
-     * Light values roughly GitHub-Light; dark values roughly
-     * GitHub-Dark. */
-    --syntax-keyword: light-dark(#7c3aed, #c4b5fd);
-    --syntax-string: light-dark(#047857, #6ee7b7);
-    --syntax-regexp: light-dark(#be123c, #fca5a5);
-    --syntax-comment: light-dark(#64748b, #94a3b8);
-    --syntax-number: light-dark(#c2410c, #fdba74);
-    --syntax-function: light-dark(#2563eb, #93c5fd);
-    --syntax-type: light-dark(#be123c, #fca5a5);
-    --syntax-property: light-dark(#0891b2, #67e8f9);
-    --syntax-heading: light-dark(#1e40af, #93c5fd);
-    --syntax-link: light-dark(#2563eb, #93c5fd);
-    --syntax-meta: light-dark(#6b7280, #9ca3af);
-    --syntax-operator: light-dark(#0f766e, #5eead4);
-    --syntax-escape: light-dark(#c026d3, #f0abfc);
-
-    /* (Removed: the legacy dark-mode badge tokens that lived here had zero
-     * consumers — the light-dark() badge tokens above are the single source.) */
-
-    /* Dark structural */
-    --color-dark-footer: #162032;
-    --color-scrollbar-dark: rgba(255, 255, 255, 0.15);
-    --color-border-dark-faint: rgba(255, 255, 255, 0.03);
-
-    /* Misc */
-    --color-bg-off-white: #fafbfd;
-    --color-danger-shadow: rgba(220, 38, 38, 0.2);
-    --color-danger-shadow-lg: rgba(220, 38, 38, 0.3);
-
-    --color-music-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    --color-music-background: var(--color-bg-surface);
-
-    --color-video-play: #ffffff;
-    --color-video-play-shadow: #000000;
+}
 }
 
 /* Explicit user choice overrides the OS preference. `theme-init.js` writes
@@ -733,7 +230,7 @@ html[data-density="compact"] {
  * variables/themes" invariant holds. The matching text-tier collapse + focus
  * ring (token/outline only) stay in base/a11y.css. */
 @media (prefers-contrast: more) {
-    :root {
+    html:root {
         --color-border: light-dark(#64748b, #94a3b8);
         --color-border-light: light-dark(#64748b, #94a3b8);
         --color-border-medium: light-dark(#475569, #cbd5e1);

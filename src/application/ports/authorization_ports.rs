@@ -57,6 +57,34 @@ impl AuthzDenialVisibility {
     }
 }
 
+/// Shared live-principal guard for system-administration services.
+/// Reuses the authentication service's cached, image-free flags and propagates
+/// lookup errors. Keeping the orchestration here prevents per-service drift.
+pub trait AdminCallerPort: Send + Sync {
+    fn admin_caller_flags(
+        &self,
+        id: Uuid,
+    ) -> impl std::future::Future<
+        Output = Result<crate::domain::entities::user::UserFlags, DomainError>,
+    > + Send;
+
+    fn require_admin_caller<A: AuthorizationEngine>(
+        &self,
+        authorization: &A,
+        caller_id: Uuid,
+    ) -> impl std::future::Future<Output = Result<(), DomainError>> + Send {
+        async move {
+            let flags = self.admin_caller_flags(caller_id).await?;
+            authorization.require_system_admin(
+                Subject::User(caller_id),
+                flags.role,
+                flags.is_external,
+                flags.active,
+            )
+        }
+    }
+}
+
 pub trait AuthorizationEngine: Send + Sync + 'static {
     /// Require the authenticated principal to hold the deployment-wide admin
     /// role.  System administration has no resource UUID, so it cannot be

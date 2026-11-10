@@ -41,12 +41,7 @@
 </div>
 
 <style>
-	/* Tokens, not literals — but they must RESOLVE to what the inline
-	   splash in `app.html` hard-codes, since that one runs before this
-	   stylesheet exists and cannot read a custom property:
-	   `--color-bg-page` ↔ `light-dark(#f5f7fa, #0f172a)`, plus
-	   `--color-border` and `--color-accent` (#ff5e3a). Retoning the
-	   splash means editing both. */
+	/* Both boot surfaces consume the active theme tokens. */
 	.app-splash {
 		position: fixed;
 		inset: 0;

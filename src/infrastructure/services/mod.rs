@@ -93,3 +93,7 @@ pub mod webdav_lock_service;
 pub mod webhook_notification_sink;
 pub mod wopi_discovery_service;
 pub mod zip_service;
+
+pub mod theme_loader;
+
+pub mod theme_assets;

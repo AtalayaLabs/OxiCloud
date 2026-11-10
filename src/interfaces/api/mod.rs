@@ -76,6 +76,9 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
 #[openapi(
     modifiers(&SecurityAddon),
     paths(
+        handlers::admin_appearance_handler::get_appearance,
+        handlers::admin_appearance_handler::reload_themes,
+        handlers::admin_appearance_handler::select_theme,
         // Auth handlers (public, protected, OIDC)
         handlers::auth_handler::register,
         handlers::auth_handler::login,
@@ -377,6 +380,9 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
     ),
     components(
         schemas(
+            crate::application::dtos::theme_dto::AppearanceDto,
+            crate::application::dtos::theme_dto::ThemeDiagnosticDto,
+            crate::application::dtos::theme_dto::SelectThemeDto,
             // Shared error body — every 4xx / 5xx response conforms to
             // this shape. Registered so the generated SDK and third-
             // party clients have a typed body to deserialize against

@@ -349,7 +349,7 @@
 					onclick={toggleFavorite}><Icon name={favorited ? 'star' : 'star-outline'} /></button
 				>
 				<ConfirmButton
-					variant="icon"
+					class="lb__tool"
 					title={t('common.delete', 'Delete')}
 					{confirmLabel}
 					onconfirm={remove}
@@ -392,7 +392,7 @@
 		position: absolute;
 		top: 1rem;
 		left: 1rem;
-		color: var(--color-on-accent);
+		color: var(--color-lightbox-btn-text);
 		max-width: 60vw;
 	}
 
@@ -416,8 +416,12 @@
 		line-height: 1;
 		background: none;
 		border: none;
-		color: var(--color-on-accent);
+		color: var(--color-lightbox-btn-text);
 		cursor: pointer;
+		width: var(--space-12);
+		height: var(--space-12);
+		display: grid;
+		place-items: center;
 	}
 
 	.lb__nav {
@@ -427,7 +431,7 @@
 		font-size: 2rem;
 		background: none;
 		border: none;
-		color: var(--color-on-accent);
+		color: var(--color-lightbox-btn-text);
 		cursor: pointer;
 		padding: 1rem;
 	}
@@ -451,35 +455,50 @@
 		left: 50%;
 		transform: translateX(-50%);
 		display: flex;
-		gap: var(--space-2);
+		gap: var(--space-3);
+		width: max-content;
+		max-width: calc(100% - var(--space-8));
+		flex-wrap: wrap;
+		justify-content: center;
 	}
 
-	.lb__tool {
-		width: 40px;
-		height: 40px;
-		border-radius: 50%;
+	/* Shared with ConfirmButton's child button; keep its arming behavior and
+	 * destructive confirmation colors while matching the other action targets. */
+	.lb__toolbar :global(.lb__tool) {
+		width: var(--space-12);
+		height: var(--space-12);
+		flex-shrink: 0;
+		padding: 0;
+		border-radius: var(--radius-full);
 		border: none;
-		background: var(--color-scrim-control);
-		color: var(--color-on-accent);
+		background: var(--color-lightbox-btn-bg);
+		color: var(--color-lightbox-btn-text);
 		cursor: pointer;
-		display: grid;
-		place-items: center;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: var(--space-1);
+		font-size: var(--text-lg);
 	}
 
-	.lb__tool:disabled {
+	.lb__toolbar :global(.lb__tool:disabled) {
 		opacity: 0.5;
 		cursor: default;
 	}
 
+	.lb__toolbar :global(.lb__tool.confirm-btn--armed) {
+		padding-inline: var(--space-3);
+	}
+
 	.lb__tool.active {
-		color: var(--color-accent);
+		background: var(--color-lightbox-btn-hover);
 	}
 
 	.lb__counter {
 		position: absolute;
 		bottom: 1rem;
 		right: 1rem;
-		color: var(--color-on-accent);
+		color: var(--color-lightbox-btn-text);
 		font-size: var(--text-sm);
 		opacity: 0.8;
 	}

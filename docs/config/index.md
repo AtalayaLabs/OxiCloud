@@ -22,3 +22,5 @@ OXICLOUD_SERVER_PORT=8086
 ```
 
 That's enough to get started. All other settings have sensible defaults.
+
+- [Global appearance and themes](themes.md)

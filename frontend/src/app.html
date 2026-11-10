@@ -21,6 +21,8 @@
 		<meta name="color-scheme" content="light dark" />
 		<meta name="theme-color" content="#0f172a" />
 		%sveltekit.head%
+		<!-- Operator CSS follows bundle styles so equal-specificity rules can override them. -->
+		<link id="active-theme" rel="stylesheet" href="themes/active.css" />
 		<!--
 			Anti-FOUC theme init — runs synchronously before first paint.
 			Reads the `oxi-theme` localStorage key (part of the normalised
@@ -85,7 +87,7 @@
 				z-index: 9999;
 				display: grid;
 				place-items: center;
-				background: light-dark(#f5f7fa, #0f172a);
+				background: var(--color-bg-page, light-dark(#f5f7fa, #0f172a));
 			}
 			/* The brand mark with two dashes orbiting it — the hand-written twin
 			   of `$lib/components/LoaderMark.svelte`. INLINE, deliberately:
@@ -104,12 +106,12 @@
 			}
 			#app-splash__track {
 				fill: none;
-				stroke: light-dark(#e2e8f0, #334155);
+				stroke: var(--color-border, light-dark(#e2e8f0, #334155));
 				stroke-width: 7;
 			}
 			.app-splash__dash {
 				fill: none;
-				stroke: #ff5e3a;
+				stroke: var(--color-accent, #ff5e3a);
 				stroke-width: 7;
 				stroke-linecap: round;
 				stroke-dasharray: 12 88;
@@ -139,7 +141,7 @@
 				}
 			}
 			#app-splash__glyph {
-				fill: #ff5e3a;
+				fill: var(--color-accent, #ff5e3a);
 			}
 			@media (prefers-reduced-motion: reduce) {
 				#app-splash__lead,
@@ -178,7 +180,7 @@
 				display: grid;
 				place-items: center;
 				padding: 24px;
-				background: light-dark(#f5f7fa, #0f172a);
+				background: var(--color-bg-page, light-dark(#f5f7fa, #0f172a));
 				color: light-dark(#0f172a, #e2e8f0);
 				font-family:
 					system-ui,

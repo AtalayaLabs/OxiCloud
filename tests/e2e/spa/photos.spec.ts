@@ -1,5 +1,7 @@
 import { test, expect } from './coverage-helpers';
 import { apiLogin, apiCreateFolder, apiUploadFile, SAMPLE_FILES } from './helpers';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 /**
  * Photos route — populate the grid with uploaded images, open the lightbox and
@@ -40,6 +42,62 @@ test('photo grid opens the lightbox and navigates', async ({ page }) => {
   await page.getByTestId('photo-lightbox-close-btn').click();
   await expect(page.getByTestId('photo-lightbox')).toHaveCount(0);
 });
+
+for (const mode of ['light', 'dark'] as const) {
+  test(`Modern Pro keeps lightbox controls readable in ${mode} mode`, async ({ page }) => {
+    const theme = readFileSync(
+      join(__dirname, '../../../resources/themes/installed/modern-pro/theme.css'),
+      'utf8',
+    );
+    await page.route('**/themes/active.css', route => route.fulfill({
+      contentType: 'text/css',
+      body: theme,
+    }));
+    await page.addInitScript(scheme => localStorage.setItem('oxi-theme', scheme), mode);
+    await seedPhotos(page, 2);
+    await page.goto('/photos');
+    await expect(page.locator('html')).toHaveAttribute('data-color-scheme', mode);
+    await page.locator('[data-testid^="photo-tile-"]').first().click();
+
+    const lightbox = page.getByTestId('photo-lightbox');
+    await expect(lightbox).toBeVisible();
+    // Regression pin: Modern Pro makes on-accent text dark in dark mode;
+    // lightbox captions and controls must retain their own light foreground
+    // on the dark overlay. Assert browser-computed colors, not token strings.
+    await expect(lightbox).toHaveCSS('background-color', 'rgba(0, 0, 0, 0.92)');
+    for (const selector of ['.lb__info', '.lb__close', '.lb__nav', '.lb__tool', '.lb__counter']) {
+      for (const element of await lightbox.locator(selector).all()) {
+        await expect(element).toHaveCSS('color', 'rgb(255, 255, 255)');
+      }
+    }
+    const favorite = lightbox.locator('.lb__tool[title="Favorite"]');
+    // Regression pin: larger action targets must include the ConfirmButton
+    // child, whose old icon variant stayed a small square beside round tools.
+    for (const button of await lightbox.locator('.lb__toolbar button, .lb__close, .lb__nav').all()) {
+      const bounds = await button.boundingBox();
+      expect(bounds!.width).toBeGreaterThanOrEqual(48);
+      expect(bounds!.height).toBeGreaterThanOrEqual(48);
+    }
+    const remove = page.getByTestId('photo-lightbox-delete-btn');
+    await expect(remove).toHaveCSS('border-radius', await favorite.evaluate(el => getComputedStyle(el).borderRadius));
+    await expect(remove).toHaveCSS('background-color', 'rgba(255, 255, 255, 0.12)');
+    await remove.click();
+    await expect(remove).toContainText(/Really\?|Permanently\?/);
+    await expect(lightbox).toBeVisible();
+    await expect(remove).toHaveCSS('height', '48px');
+    await favorite.focus();
+    await expect(remove).not.toHaveClass(/confirm-btn--armed/);
+    await expect(favorite).toHaveCSS('background-color', 'rgba(255, 255, 255, 0.12)');
+    await favorite.click();
+    await expect(favorite).toHaveClass(/active/);
+    await expect(favorite).toHaveCSS('color', 'rgb(255, 255, 255)');
+    await expect(favorite).toHaveCSS('background-color', 'rgba(255, 255, 255, 0.25)');
+    await favorite.click();
+    await expect(favorite).not.toHaveClass(/active/);
+    await page.getByTestId('photo-lightbox-close-btn').click();
+    await expect(lightbox).toHaveCount(0);
+  });
+}
 
 // The retired `[ Grid | Justified ]` layout toggle originally
 // shipped in 75ee9b7c (`feat(photos): justified

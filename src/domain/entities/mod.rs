@@ -24,3 +24,5 @@ pub use entity_errors::{
     FolderError, FolderResult, ShareError, ShareResult, SubjectGroupError, SubjectGroupResult,
     UserError, UserResult,
 };
+
+pub mod theme;

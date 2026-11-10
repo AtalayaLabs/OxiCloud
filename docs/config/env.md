@@ -507,3 +507,13 @@ These variables are read directly by **mimalloc**, not by OxiCloud's config pars
 | Argon2id memory cost | 64 MiB |
 | Argon2id time cost | 3 iterations |
 | Nextcloud Login Flow v2 TTL | 600 s |
+
+### Global appearance
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `OXICLOUD_THEMES_PATH` | `./resources/themes/installed` | Read-only theme catalogue, relative to the process working directory. Explicit paths must exist. |
+| `OXICLOUD_DEFAULT_THEME` | `default` | Initial selection when no administrative selection has been saved. |
+| `OXICLOUD_FORCE_DEFAULT_THEME` | `false` | Recovery override: bypass operator CSS and preserve the saved selection. |
+
+See [Themes](themes.md) for the file contract, security boundaries and deployment.

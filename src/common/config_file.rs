@@ -48,6 +48,9 @@ pub const SECTIONS: &[&str] = &[
 pub const KNOWN: &[(&str, &str)] = &[
     // ── [server] ─────────────────────────────────────────────────────────
     ("server", "OXICLOUD_BASE_PATH"),
+    ("server", "OXICLOUD_THEMES_PATH"),
+    ("server", "OXICLOUD_DEFAULT_THEME"),
+    ("server", "OXICLOUD_FORCE_DEFAULT_THEME"),
     ("server", "OXICLOUD_BASE_URL"),
     ("server", "OXICLOUD_DEFAULT_LOCALE"),
     ("server", "OXICLOUD_MAX_BLOCKING_THREADS"),

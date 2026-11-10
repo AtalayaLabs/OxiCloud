@@ -1,3 +1,4 @@
+pub mod theme;
 use crate::common::config::AppConfig;
 use crate::common::di::AppState;
 use axum::Router;
@@ -152,7 +153,7 @@ pub fn create_web_routes(
         StaticSource::Embedded => web_routes_embedded(shell),
     };
 
-    inner
+    theme::mount(inner, app_state.theme_service.clone())
         // Fallback compression for assets without a precompressed sibling
         // (filesystem) or for embedded assets that were compressed at
         // compile time and decompressed on read (bundled). Quality 4,
