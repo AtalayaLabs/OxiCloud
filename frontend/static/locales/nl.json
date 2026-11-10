@@ -118,9 +118,43 @@
     "tab_people": "Mensen",
     "map_loading": "Kaart laden…",
     "map_error": "Kan de kaart niet laden",
-    "confirm_delete_one_permanent": "\"{{name}}\" definitief verwijderen? Deze actie kan niet ongedaan worden gemaakt."
+    "confirm_delete_one_permanent": "\"{{name}}\" definitief verwijderen? Deze actie kan niet ongedaan worden gemaakt.",
+    "filter_kind": "Mediatype",
+    "filter_drive": "Schijf",
+    "all_drives": "Alle schijven",
+    "sort": {
+      "title": "Sorteren op",
+      "direction": "Sorteerrichting",
+      "captured_at": "Opnamedatum",
+      "created_at": "Uploaddatum",
+      "updated_at": "Laatst gewijzigd"
+    },
+    "filter_favorite": "Alleen favorieten",
+    "filter_favorite_on": "Alleen favorieten worden weergegeven — klik om alles te tonen",
+    "filter_favorite_off": "Alleen favorieten tonen",
+    "kind": {
+      "all": "Alles",
+      "photo": "Foto's",
+      "video": "Video's"
+    },
+    "dedup_dialog": {
+      "title": "Van deze inhoud bestaan kopieën",
+      "intro": "{{n}} bestand(en) op je schijf verwijzen naar dezelfde bytes. Eén kopie naar de prullenbak verplaatsen maakt de inhoud niet vrij — selecteer elke kopie die je naar de prullenbak wilt sturen.",
+      "trashed_note": "Er staan al {{n}} andere kopie(ën) in je prullenbak die de inhoud nog vasthouden. Verwijder ze definitief via de Prullenbak om de bytes echt vrij te maken.",
+      "truncated": "De server heeft deze lijst beperkt. Er bestaan meer kopieën die hier niet worden weergegeven.",
+      "select_all": "Alle verwijderbare selecteren",
+      "select_none": "Niets selecteren",
+      "picked": "{{n}} van {{total}} geselecteerd",
+      "origin_badge": "degene waarop je klikte",
+      "readonly_badge": "alleen-lezen",
+      "drive_root": "Hoofdmap van de schijf",
+      "readonly_note": "{{n}} kopie(ën) staan op een plek waar je alleen leesrechten hebt — die kunnen hier niet naar de prullenbak.",
+      "confirm": "{{n}} bestand(en) naar de prullenbak"
+    }
   },
   "music": {
+    "description": "Beschrijving",
+    "edit_playlist": "Afspeellijst bewerken",
     "create_playlist": "Afspeellijst Maken",
     "playlists": "Afspeellijsten",
     "no_playlists": "Nog geen afspeellijsten",
@@ -761,7 +795,6 @@
     "invalid_credentials": "Gebruikersnaam of wachtwoord is onjuist. Controleer ze en probeer het opnieuw.",
     "email_taken": "Er bestaat al een account met dit e-mailadres. Log in in plaats daarvan.",
     "username_taken": "Die gebruikersnaam is al in gebruik. Kies een andere.",
-    "registration_disabled": "Registratie is uitgeschakeld op deze server. Vraag een beheerder om je account aan te maken.",
     "registration_password_required": "Deze server verstuurt geen inlog-e-mails. Voer een wachtwoord in om je account aan te maken.",
     "session_expired": "Uw sessie is verlopen. Meld u opnieuw aan.",
     "signing_in": "Inloggen…",
@@ -1309,6 +1342,10 @@
       "delete_title": "Koppeling verwijderen"
     },
     "jobs": {
+      "params_title": "{{name}} uitvoeren",
+      "params_default": "standaard: {{value}}",
+      "params_no_default": "geen standaard",
+      "params_none": "Deze taak neemt geen parameters.",
       "run_all_consistency": "Voer alle consistentiecontroles uit",
       "run_deep": "Diepe scan",
       "run_deep_hint": "Voert ook langzame varianten uit (blob re-hash, bitrot-detectie).",
@@ -1858,7 +1895,13 @@
     "archives": "Archief",
     "documents": "Documenten",
     "images": "Afbeeldingen",
-    "installers": "Installateurs",
+    "config": "Configuratie",
+    "disk_images": "Schijfimages",
+    "ebooks": "E-books",
+    "executables": "Toepassingen",
+    "fonts": "Lettertypen",
+    "packages": "Pakketten",
+    "unknown": "Onbekend",
     "markdown": "Afwaardering",
     "presentations": "Presentaties",
     "spreadsheets": "Werkbladen",
@@ -1947,6 +1990,8 @@
     "size_label": "Grootte",
     "title": "Zoeken",
     "type": {
+      "code": "Code",
+      "folder": "Mappen",
       "audio": "Audio",
       "all": "Alle typen",
       "image": "Afbeeldingen",
@@ -2030,6 +2075,8 @@
     "banner_cta": "Upgraden"
   },
   "drive": {
+    "copied_n": "{{n}} item(s) gekopieerd naar {{drive}}",
+    "moved_n": "{{n}} item(s) verplaatst naar {{drive}}",
     "read_only_banner": {
       "title": "Deze schijf is alleen-lezen",
       "title_named": "Schijf \"{{name}}\" is alleen-lezen",

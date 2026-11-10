@@ -118,9 +118,43 @@
     "tab_people": "Persone",
     "map_loading": "Caricamento mappa...",
     "map_error": "Impossibile caricare la mappa",
-    "confirm_delete_one_permanent": "Eliminare definitivamente «{{name}}»? Questa azione non può essere annullata."
+    "confirm_delete_one_permanent": "Eliminare definitivamente «{{name}}»? Questa azione non può essere annullata.",
+    "filter_kind": "Tipo di media",
+    "filter_drive": "Unità",
+    "all_drives": "Tutte le unità",
+    "sort": {
+      "title": "Ordina per",
+      "direction": "Direzione di ordinamento",
+      "captured_at": "Data di scatto",
+      "created_at": "Data di caricamento",
+      "updated_at": "Ultima modifica"
+    },
+    "filter_favorite": "Solo preferiti",
+    "filter_favorite_on": "Vengono mostrati solo i preferiti — clicca per mostrare tutto",
+    "filter_favorite_off": "Mostra solo i preferiti",
+    "kind": {
+      "all": "Tutti",
+      "photo": "Foto",
+      "video": "Video"
+    },
+    "dedup_dialog": {
+      "title": "Questo contenuto ha delle copie",
+      "intro": "{{n}} file nella tua unità fanno riferimento agli stessi byte. Spostare una copia nel cestino non libera il contenuto — seleziona ogni copia che vuoi spostare nel cestino.",
+      "trashed_note": "Altre {{n}} copie sono già nel tuo cestino e trattengono ancora il contenuto. Svuotale dal Cestino per liberare davvero i byte.",
+      "truncated": "Il server ha limitato questo elenco. Esistono altre copie che non sono mostrate qui.",
+      "select_all": "Seleziona tutte le eliminabili",
+      "select_none": "Deseleziona tutto",
+      "picked": "{{n}} di {{total}} selezionate",
+      "origin_badge": "quella su cui hai cliccato",
+      "readonly_badge": "sola lettura",
+      "drive_root": "Radice dell'unità",
+      "readonly_note": "{{n}} copie si trovano dove hai solo accesso in lettura — non possono essere spostate nel cestino da qui.",
+      "confirm": "Sposta {{n}} file nel cestino"
+    }
   },
   "music": {
+    "description": "Descrizione",
+    "edit_playlist": "Modifica playlist",
     "create_playlist": "Crea Playlist",
     "playlists": "Playlist",
     "no_playlists": "Nessuna playlist",
@@ -761,7 +795,6 @@
     "invalid_credentials": "Nome utente o password non corretti. Controllali e riprova.",
     "email_taken": "Esiste già un account con questa email. Accedi invece.",
     "username_taken": "Questo nome utente è già in uso. Scegline un altro.",
-    "registration_disabled": "Le registrazioni sono disattivate su questo server. Chiedi a un amministratore di creare il tuo account.",
     "registration_password_required": "Questo server non invia email di accesso. Inserisci una password per creare il tuo account.",
     "session_expired": "La tua sessione è scaduta. Per favore accedi di nuovo.",
     "signing_in": "Accesso…",
@@ -1309,6 +1342,10 @@
       "delete_title": "Elimina montaggio"
     },
     "jobs": {
+      "params_title": "Esegui {{name}}",
+      "params_default": "predefinito: {{value}}",
+      "params_no_default": "nessun valore predefinito",
+      "params_none": "Questo job non accetta parametri.",
       "run_all_consistency": "Esegui tutti i controlli di coerenza",
       "run_deep": "Analisi approfondita",
       "run_deep_hint": "Esegue anche varianti lente (re-hash blob, rilevamento bitrot).",
@@ -1858,7 +1895,13 @@
     "archives": "Archivi",
     "documents": "Documenti",
     "images": "Immagini",
-    "installers": "Installatori",
+    "config": "Configurazione",
+    "disk_images": "Immagini disco",
+    "ebooks": "Ebook",
+    "executables": "Applicazioni",
+    "fonts": "Caratteri",
+    "packages": "Pacchetti",
+    "unknown": "Sconosciuto",
     "markdown": "Ribasso",
     "presentations": "Presentazioni",
     "spreadsheets": "Fogli di calcolo",
@@ -1947,6 +1990,8 @@
     "size_label": "Dimensione",
     "title": "Cerca",
     "type": {
+      "code": "Codice",
+      "folder": "Cartelle",
       "audio": "Audio",
       "all": "Tutti i tipi",
       "image": "Immagini",
@@ -2030,6 +2075,8 @@
     "banner_cta": "Aggiorna"
   },
   "drive": {
+    "copied_n": "Copiati {{n}} elementi in {{drive}}",
+    "moved_n": "Spostati {{n}} elementi in {{drive}}",
     "read_only_banner": {
       "title": "Questa unità è in sola lettura",
       "title_named": "L'unità «{{name}}» è in sola lettura",

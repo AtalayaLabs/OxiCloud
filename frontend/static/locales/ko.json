@@ -118,9 +118,43 @@
     "tab_people": "인물",
     "map_loading": "지도 로딩 중…",
     "map_error": "지도를 불러올 수 없습니다",
-    "confirm_delete_one_permanent": "\"{{name}}\"을(를) 영구적으로 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다."
+    "confirm_delete_one_permanent": "\"{{name}}\"을(를) 영구적으로 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.",
+    "filter_kind": "미디어 종류",
+    "filter_drive": "드라이브",
+    "all_drives": "모든 드라이브",
+    "sort": {
+      "title": "정렬 기준",
+      "direction": "정렬 방향",
+      "captured_at": "촬영 날짜",
+      "created_at": "업로드 날짜",
+      "updated_at": "마지막 수정"
+    },
+    "filter_favorite": "즐겨찾기만",
+    "filter_favorite_on": "즐겨찾기만 표시 중 — 클릭하면 전체 표시",
+    "filter_favorite_off": "즐겨찾기만 표시",
+    "kind": {
+      "all": "전체",
+      "photo": "사진",
+      "video": "동영상"
+    },
+    "dedup_dialog": {
+      "title": "이 콘텐츠에는 사본이 있습니다",
+      "intro": "드라이브의 파일 {{n}}개가 같은 내용을 참조합니다. 사본 하나를 휴지통으로 보내도 내용은 해제되지 않습니다 — 휴지통으로 보낼 사본을 모두 선택하세요.",
+      "trashed_note": "다른 사본 {{n}}개가 이미 휴지통에 있으며 여전히 내용을 보유하고 있습니다. 용량을 실제로 확보하려면 휴지통에서 완전히 삭제하세요.",
+      "truncated": "서버가 이 목록을 제한했습니다. 여기에 표시되지 않은 사본이 더 있습니다.",
+      "select_all": "삭제 가능한 항목 전체 선택",
+      "select_none": "선택 해제",
+      "picked": "{{total}}개 중 {{n}}개 선택",
+      "origin_badge": "클릭한 파일",
+      "readonly_badge": "읽기 전용",
+      "drive_root": "드라이브 루트",
+      "readonly_note": "사본 {{n}}개는 읽기 권한만 있는 위치에 있어 여기서 휴지통으로 보낼 수 없습니다.",
+      "confirm": "파일 {{n}}개를 휴지통으로"
+    }
   },
   "music": {
+    "description": "설명",
+    "edit_playlist": "재생목록 편집",
     "create_playlist": "재생목록 만들기",
     "playlists": "재생목록",
     "no_playlists": "아직 재생목록이 없습니다",
@@ -760,7 +794,6 @@
     "invalid_credentials": "사용자 이름 또는 비밀번호가 올바르지 않습니다. 확인한 후 다시 시도하세요.",
     "email_taken": "이 이메일로 등록된 계정이 이미 있습니다. 대신 로그인하세요.",
     "username_taken": "이 사용자 이름은 이미 사용 중입니다. 다른 이름을 선택하세요.",
-    "registration_disabled": "이 서버에서는 회원가입이 비활성화되어 있습니다. 관리자에게 계정 생성을 요청하세요.",
     "registration_password_required": "이 서버는 로그인 이메일을 보내지 않습니다. 계정을 만들려면 비밀번호를 입력하세요.",
     "session_expired": "세션이 만료되었습니다. 다시 로그인해 주세요.",
     "logged_out": "로그아웃되었습니다.",
@@ -1347,6 +1380,10 @@
       "delete_title": "마운트 삭제"
     },
     "jobs": {
+      "params_title": "{{name}} 실행",
+      "params_default": "기본값: {{value}}",
+      "params_no_default": "기본값 없음",
+      "params_none": "이 작업은 매개변수를 받지 않습니다.",
       "run_all_consistency": "모든 일관성 검사 실행",
       "run_deep": "심층 스캔",
       "run_deep_hint": "또한 느린 변형(블롭 재해시, 비트롯 감지)을 실행합니다.",
@@ -1737,7 +1774,7 @@
     "virtual_badge": "시스템",
     "member_count_zero": "구성원 없음",
     "member_count_one": "구성원 1명",
-    "member_count_other": "구성원 {count}명",
+    "member_count_other": "구성원 {{count}}명",
     "delete_confirm_label": "확인을 위해 그룹 이름을 입력하세요:",
     "delete_confirm_mismatch": "확인을 위해 그룹 이름을 정확히 입력하세요.",
     "virtual_internal_name": "내부",
@@ -1858,7 +1895,13 @@
     "archives": "압축 파일",
     "documents": "문서",
     "images": "이미지",
-    "installers": "설치 프로그램",
+    "config": "구성",
+    "disk_images": "디스크 이미지",
+    "ebooks": "전자책",
+    "executables": "응용 프로그램",
+    "fonts": "글꼴",
+    "packages": "패키지",
+    "unknown": "알 수 없음",
     "markdown": "마크다운",
     "presentations": "프레젠테이션",
     "spreadsheets": "스프레드시트",
@@ -1947,6 +1990,8 @@
     "size_label": "크기",
     "title": "검색",
     "type": {
+      "code": "코드",
+      "folder": "폴더",
       "audio": "오디오",
       "all": "모든 유형",
       "archive": "압축 파일",
@@ -2058,6 +2103,8 @@
     "banner_cta": "업그레이드"
   },
   "drive": {
+    "copied_n": "{{n}}개 항목을 {{drive}}(으)로 복사했습니다",
+    "moved_n": "{{n}}개 항목을 {{drive}}(으)로 이동했습니다",
     "read_only_banner": {
       "title": "이 드라이브는 읽기 전용입니다",
       "title_named": "드라이브 \"{{name}}\"은(는) 읽기 전용입니다",

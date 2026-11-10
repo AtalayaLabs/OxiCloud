@@ -118,9 +118,43 @@
     "tab_people": "Gente",
     "map_loading": "Cargando mapa…",
     "map_error": "No se pudo cargar el mapa",
-    "confirm_delete_one_permanent": "¿Eliminar permanentemente «{{name}}»? Esta acción no se puede deshacer."
+    "confirm_delete_one_permanent": "¿Eliminar permanentemente «{{name}}»? Esta acción no se puede deshacer.",
+    "filter_kind": "Tipo de medio",
+    "filter_drive": "Unidad",
+    "all_drives": "Todas las unidades",
+    "sort": {
+      "title": "Ordenar por",
+      "direction": "Dirección del orden",
+      "captured_at": "Fecha de captura",
+      "created_at": "Fecha de subida",
+      "updated_at": "Última modificación"
+    },
+    "filter_favorite": "Solo favoritos",
+    "filter_favorite_on": "Mostrando solo favoritos — haz clic para mostrar todo",
+    "filter_favorite_off": "Mostrar solo favoritos",
+    "kind": {
+      "all": "Todo",
+      "photo": "Fotos",
+      "video": "Vídeos"
+    },
+    "dedup_dialog": {
+      "title": "Este contenido tiene copias",
+      "intro": "{{n}} archivo(s) de tu unidad referencian los mismos bytes. Enviar una copia a la papelera no libera el contenido — elige cada copia que quieras enviar a la papelera.",
+      "trashed_note": "{{n}} copia(s) más ya están en tu papelera y siguen reteniendo el contenido. Vacíalas desde la Papelera para liberar los bytes de verdad.",
+      "truncated": "El servidor ha limitado esta lista. Existen más copias que no se muestran aquí.",
+      "select_all": "Seleccionar todas las eliminables",
+      "select_none": "No seleccionar ninguna",
+      "picked": "{{n}} de {{total}} seleccionadas",
+      "origin_badge": "la que has pulsado",
+      "readonly_badge": "solo lectura",
+      "drive_root": "Raíz de la unidad",
+      "readonly_note": "{{n}} copia(s) están donde solo tienes acceso de lectura — no se pueden enviar a la papelera desde aquí.",
+      "confirm": "Enviar {{n}} archivo(s) a la papelera"
+    }
   },
   "music": {
+    "description": "Descripción",
+    "edit_playlist": "Editar lista de reproducción",
     "create_playlist": "Crear Lista",
     "playlists": "Listas",
     "no_playlists": "Sin listas aún",
@@ -761,7 +795,6 @@
     "invalid_credentials": "El nombre de usuario o la contraseña no son correctos. Compruébalos e inténtalo de nuevo.",
     "email_taken": "Ya existe una cuenta con este correo electrónico. Inicia sesión en su lugar.",
     "username_taken": "Ese nombre de usuario ya está en uso. Elige otro.",
-    "registration_disabled": "El registro está desactivado en este servidor. Pide a un administrador que cree tu cuenta.",
     "registration_password_required": "Este servidor no envía correos de inicio de sesión. Introduce una contraseña para crear tu cuenta.",
     "session_expired": "Tu sesión expiró. Por favor inicia sesión nuevamente.",
     "signing_in": "Iniciando sesión…",
@@ -1309,6 +1342,10 @@
       "delete_title": "Eliminar montaje"
     },
     "jobs": {
+      "params_title": "Ejecutar {{name}}",
+      "params_default": "predeterminado: {{value}}",
+      "params_no_default": "sin valor predeterminado",
+      "params_none": "Esta tarea no acepta parámetros.",
       "run_all_consistency": "Ejecutar todas las comprobaciones de coherencia",
       "run_deep": "Análisis en profundidad",
       "run_deep_hint": "También ejecuta variantes lentas (repetición de blobs, detección de bitrot).",
@@ -1858,7 +1895,13 @@
     "archives": "Archivo",
     "documents": "Documentos",
     "images": "Imágenes",
-    "installers": "Instaladores",
+    "config": "Configuración",
+    "disk_images": "Imágenes de disco",
+    "ebooks": "Libros electrónicos",
+    "executables": "Aplicaciones",
+    "fonts": "Fuentes",
+    "packages": "Paquetes",
+    "unknown": "Desconocido",
     "markdown": "Reducción",
     "presentations": "Presentaciones",
     "spreadsheets": "Hojas de cálculo",
@@ -1947,6 +1990,8 @@
     "size_label": "Tamaño",
     "title": "Buscar",
     "type": {
+      "code": "Código",
+      "folder": "Carpetas",
       "audio": "Audio",
       "all": "Todos los tipos",
       "image": "Imágenes",
@@ -2030,6 +2075,8 @@
     "banner_cta": "Actualizar"
   },
   "drive": {
+    "copied_n": "{{n}} elemento(s) copiado(s) a {{drive}}",
+    "moved_n": "{{n}} elemento(s) movido(s) a {{drive}}",
     "read_only_banner": {
       "title": "Esta unidad es de solo lectura",
       "title_named": "La unidad «{{name}}» es de solo lectura",

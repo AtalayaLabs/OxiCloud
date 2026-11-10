@@ -118,9 +118,43 @@
     "tab_people": "Menschen",
     "map_loading": "Karte wird geladen…",
     "map_error": "Die Karte konnte nicht geladen werden",
-    "confirm_delete_one_permanent": "„{{name}}\" dauerhaft löschen? Diese Aktion kann nicht rückgängig gemacht werden."
+    "confirm_delete_one_permanent": "„{{name}}\" dauerhaft löschen? Diese Aktion kann nicht rückgängig gemacht werden.",
+    "filter_kind": "Medientyp",
+    "filter_drive": "Laufwerk",
+    "all_drives": "Alle Laufwerke",
+    "sort": {
+      "title": "Sortieren nach",
+      "direction": "Sortierrichtung",
+      "captured_at": "Aufnahmedatum",
+      "created_at": "Upload-Datum",
+      "updated_at": "Zuletzt geändert"
+    },
+    "filter_favorite": "Nur Favoriten",
+    "filter_favorite_on": "Es werden nur Favoriten angezeigt — klicken, um alle anzuzeigen",
+    "filter_favorite_off": "Nur Favoriten anzeigen",
+    "kind": {
+      "all": "Alle",
+      "photo": "Fotos",
+      "video": "Videos"
+    },
+    "dedup_dialog": {
+      "title": "Von diesem Inhalt gibt es Kopien",
+      "intro": "{{n}} Datei(en) auf Ihrem Laufwerk verweisen auf dieselben Bytes. Eine Kopie in den Papierkorb zu verschieben gibt den Inhalt nicht frei — wählen Sie jede Kopie aus, die in den Papierkorb soll.",
+      "trashed_note": "{{n}} weitere Kopie(n) liegen bereits in Ihrem Papierkorb und halten den Inhalt weiterhin. Löschen Sie sie im Papierkorb endgültig, um die Bytes wirklich freizugeben.",
+      "truncated": "Der Server hat diese Liste begrenzt. Es gibt weitere Kopien, die hier nicht angezeigt werden.",
+      "select_all": "Alle löschbaren auswählen",
+      "select_none": "Keine auswählen",
+      "picked": "{{n}} von {{total}} ausgewählt",
+      "origin_badge": "die angeklickte",
+      "readonly_badge": "nur lesen",
+      "drive_root": "Laufwerk-Wurzel",
+      "readonly_note": "{{n}} Kopie(n) liegen dort, wo Sie nur Lesezugriff haben — sie können von hier nicht in den Papierkorb verschoben werden.",
+      "confirm": "{{n}} Datei(en) in den Papierkorb"
+    }
   },
   "music": {
+    "description": "Beschreibung",
+    "edit_playlist": "Playlist bearbeiten",
     "create_playlist": "Playlist erstellen",
     "playlists": "Playlists",
     "no_playlists": "Noch keine Playlists",
@@ -761,7 +795,6 @@
     "invalid_credentials": "Benutzername oder Passwort ist falsch. Prüfen Sie Ihre Eingaben und versuchen Sie es erneut.",
     "email_taken": "Für diese E-Mail-Adresse existiert bereits ein Konto. Melden Sie sich stattdessen an.",
     "username_taken": "Dieser Benutzername ist bereits vergeben. Wählen Sie einen anderen.",
-    "registration_disabled": "Registrierungen sind auf diesem Server deaktiviert. Bitten Sie einen Administrator, Ihr Konto zu erstellen.",
     "registration_password_required": "Dieser Server versendet keine Anmelde-E-Mails. Geben Sie ein Passwort ein, um Ihr Konto zu erstellen.",
     "session_expired": "Ihre Sitzung ist abgelaufen. Bitte melden Sie sich erneut an.",
     "signing_in": "Anmelden…",
@@ -1309,6 +1342,10 @@
       "delete_title": "Einbindung löschen"
     },
     "jobs": {
+      "params_title": "{{name}} ausführen",
+      "params_default": "Standard: {{value}}",
+      "params_no_default": "kein Standard",
+      "params_none": "Dieser Job nimmt keine Parameter.",
       "run_all_consistency": "Alle Konsistenzprüfungen ausführen",
       "run_deep": "Tiefenprüfung",
       "run_deep_hint": "Läuft auch langsame Varianten (Blob-Re-Hash, Bitrot-Erkennung).",
@@ -1858,7 +1895,13 @@
     "archives": "Archiv",
     "documents": "Unterlagen",
     "images": "Bilder",
-    "installers": "Installateure",
+    "config": "Konfiguration",
+    "disk_images": "Datenträgerabbilder",
+    "ebooks": "E-Books",
+    "executables": "Anwendungen",
+    "fonts": "Schriftarten",
+    "packages": "Pakete",
+    "unknown": "Unbekannt",
     "markdown": "Abschlag",
     "presentations": "Präsentationen",
     "spreadsheets": "Tabellenkalkulationen",
@@ -1947,6 +1990,8 @@
     "size_label": "Größe",
     "title": "Suchen",
     "type": {
+      "code": "Code",
+      "folder": "Ordner",
       "audio": "Audio",
       "all": "Alle Typen",
       "image": "Bilder",
@@ -2030,6 +2075,8 @@
     "banner_cta": "Upgraden"
   },
   "drive": {
+    "copied_n": "{{n}} Element(e) nach {{drive}} kopiert",
+    "moved_n": "{{n}} Element(e) nach {{drive}} verschoben",
     "read_only_banner": {
       "title": "Dieses Laufwerk ist schreibgeschützt",
       "title_named": "Das Laufwerk „{{name}}\" ist schreibgeschützt",

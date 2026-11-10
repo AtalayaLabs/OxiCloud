@@ -118,9 +118,43 @@
     "tab_people": "Pessoas",
     "map_loading": "Carregando mapa…",
     "map_error": "Não foi possível carregar o mapa",
-    "confirm_delete_one_permanent": "Excluir permanentemente «{{name}}»? Esta ação não pode ser desfeita."
+    "confirm_delete_one_permanent": "Excluir permanentemente «{{name}}»? Esta ação não pode ser desfeita.",
+    "filter_kind": "Tipo de mídia",
+    "filter_drive": "Unidade",
+    "all_drives": "Todas as unidades",
+    "sort": {
+      "title": "Ordenar por",
+      "direction": "Direção da ordenação",
+      "captured_at": "Data de captura",
+      "created_at": "Data de envio",
+      "updated_at": "Última modificação"
+    },
+    "filter_favorite": "Somente favoritos",
+    "filter_favorite_on": "Mostrando somente favoritos — clique para mostrar tudo",
+    "filter_favorite_off": "Mostrar somente favoritos",
+    "kind": {
+      "all": "Tudo",
+      "photo": "Fotos",
+      "video": "Vídeos"
+    },
+    "dedup_dialog": {
+      "title": "Este conteúdo tem cópias",
+      "intro": "{{n}} arquivo(s) na sua unidade referenciam os mesmos bytes. Mover uma cópia para a lixeira não libera o conteúdo — selecione cada cópia que você quer enviar para a lixeira.",
+      "trashed_note": "Outra(s) {{n}} cópia(s) já estão na sua lixeira e ainda retêm o conteúdo. Esvazie-as na Lixeira para liberar os bytes de verdade.",
+      "truncated": "O servidor limitou esta lista. Existem mais cópias que não são mostradas aqui.",
+      "select_all": "Selecionar todas as que podem ser excluídas",
+      "select_none": "Não selecionar nenhuma",
+      "picked": "{{n}} de {{total}} selecionadas",
+      "origin_badge": "a que você clicou",
+      "readonly_badge": "só leitura",
+      "drive_root": "Raiz da unidade",
+      "readonly_note": "{{n}} cópia(s) estão onde você só tem acesso de leitura — não podem ser movidas para a lixeira daqui.",
+      "confirm": "Mover {{n}} arquivo(s) para a lixeira"
+    }
   },
   "music": {
+    "description": "Descrição",
+    "edit_playlist": "Editar lista de reprodução",
     "create_playlist": "Criar Playlist",
     "playlists": "Playlists",
     "no_playlists": "Nenhuma playlist ainda",
@@ -761,7 +795,6 @@
     "invalid_credentials": "Nome de usuário ou senha incorretos. Verifique-os e tente novamente.",
     "email_taken": "Já existe uma conta com este e-mail. Em vez disso, faça login.",
     "username_taken": "Esse nome de usuário já está em uso. Escolha outro.",
-    "registration_disabled": "O cadastro está desativado neste servidor. Peça a um administrador para criar sua conta.",
     "registration_password_required": "Este servidor não envia e-mails de login. Digite uma senha para criar sua conta.",
     "session_expired": "Sua sessão expirou. Faça login novamente.",
     "signing_in": "Fazendo login…",
@@ -1309,6 +1342,10 @@
       "delete_title": "Eliminar montagem"
     },
     "jobs": {
+      "params_title": "Executar {{name}}",
+      "params_default": "padrão: {{value}}",
+      "params_no_default": "sem padrão",
+      "params_none": "Esta tarefa não aceita parâmetros.",
       "run_all_consistency": "Executar todas as verificações de consistência",
       "run_deep": "Análise profunda",
       "run_deep_hint": "Também executa variantes lentas (re-hash de blob, detecção de bitrot).",
@@ -1858,7 +1895,13 @@
     "archives": "Arquivos",
     "documents": "Documentos",
     "images": "Imagens",
-    "installers": "Instaladores",
+    "config": "Configuração",
+    "disk_images": "Imagens de disco",
+    "ebooks": "E-books",
+    "executables": "Aplicativos",
+    "fonts": "Fontes",
+    "packages": "Pacotes",
+    "unknown": "Desconhecido",
     "markdown": "Remarcação",
     "presentations": "Apresentações",
     "spreadsheets": "Planilhas",
@@ -1947,6 +1990,8 @@
     "size_label": "Tamanho",
     "title": "Pesquisar",
     "type": {
+      "code": "Código",
+      "folder": "Pastas",
       "audio": "Áudio",
       "all": "Todos os tipos",
       "image": "Imagens",
@@ -2030,6 +2075,8 @@
     "banner_cta": "Atualizar"
   },
   "drive": {
+    "copied_n": "{{n}} item(ns) copiado(s) para {{drive}}",
+    "moved_n": "{{n}} item(ns) movido(s) para {{drive}}",
     "read_only_banner": {
       "title": "Esta unidade é somente leitura",
       "title_named": "A unidade \"{{name}}\" é somente leitura",
@@ -2128,12 +2175,12 @@
   "error": {
     "not_found": {
       "title": "Com a cabeça nas nuvens",
-      "body": "Esta nuvenzinha afastou-se um pouco demais. A página que pediu não se encontra em lugar algum.",
-      "art_alt": "Uma nuvenzinha que se afastou demasiado"
+      "body": "Esta nuvenzinha se afastou um pouco demais. A página que você pediu não foi encontrada em lugar algum.",
+      "art_alt": "Uma nuvenzinha que se afastou demais"
     },
     "generic": {
-      "title": "Ocorreu um erro",
-      "body": "Tente novamente dentro de um instante."
+      "title": "Algo deu errado",
+      "body": "Tente novamente em um instante."
     },
     "go_home": "Ir para o início"
   }
