@@ -275,10 +275,7 @@ fn web_routes_filesystem(
 
     let mut router = Router::new().nest_service(
         "/_app/immutable",
-        get_service(app_immutable).layer(SetResponseHeaderLayer::overriding(
-            CACHE_CONTROL,
-            HeaderValue::from_static("public, max-age=31536000, immutable"),
-        )),
+        get_service(app_immutable).layer(axum::middleware::map_response(immutable_cache_headers)),
     );
     if let Some(shell) = shell {
         router = router.route_service("/index.html", shell_service(shell));
@@ -314,6 +311,35 @@ fn shell_service(shell: Arc<AppShell>) -> axum::routing::MethodRouter<()> {
     })
 }
 
+/// `Cache-Control` for `/_app/immutable/*`, chosen by response status.
+///
+/// A HIT earns the year-long immutable cache: SvelteKit content-hashes
+/// these filenames, so the bytes behind a given URL can never change.
+///
+/// A MISS must not, and this is why the fn exists. It replaced a
+/// `SetResponseHeaderLayer::overriding`, which is status-blind — so a 404
+/// under this prefix was answered `public, max-age=31536000, immutable`,
+/// i.e. "cache this absence for a year". A browser that requested an
+/// asset during a deploy window, before the file existed on disk, pinned
+/// that 404 with no way to revalidate: the app stayed broken in that one
+/// profile until the user cleared their cache by hand, and nothing on the
+/// server could reach in and fix it. A hashed URL that 404s is exactly
+/// the case where you want the client to ask again.
+///
+/// Both halves of the negative value on purpose: `no-store` keeps it out
+/// of the HTTP cache, `no-cache` covers an intermediary that honours only
+/// the older directive.
+async fn immutable_cache_headers(mut res: Response) -> Response {
+    let value = if res.status().is_success() {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache, no-store"
+    };
+    res.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static(value));
+    res
+}
+
 /// Embedded-assets SPA — mirror of `web_routes_filesystem` using the
 /// [`embedded`] module's handlers instead of `ServeDir`. Same URL shape,
 /// same cache-header layers, same SPA-shell fallback semantics.
@@ -324,10 +350,8 @@ fn web_routes_embedded(shell: Option<Arc<AppShell>>) -> Router<Arc<AppState>> {
         return Router::new()
             .route(
                 "/_app/immutable/{*path}",
-                get(embedded::serve_immutable).layer(SetResponseHeaderLayer::overriding(
-                    CACHE_CONTROL,
-                    HeaderValue::from_static("public, max-age=31536000, immutable"),
-                )),
+                get(embedded::serve_immutable)
+                    .layer(axum::middleware::map_response(immutable_cache_headers)),
             )
             .route("/", get(embedded::serve_root_index))
             .fallback(get(embedded::serve_root));
@@ -335,10 +359,8 @@ fn web_routes_embedded(shell: Option<Arc<AppShell>>) -> Router<Arc<AppState>> {
     Router::new()
         .route(
             "/_app/immutable/{*path}",
-            get(embedded::serve_immutable).layer(SetResponseHeaderLayer::overriding(
-                CACHE_CONTROL,
-                HeaderValue::from_static("public, max-age=31536000, immutable"),
-            )),
+            get(embedded::serve_immutable)
+                .layer(axum::middleware::map_response(immutable_cache_headers)),
         )
         .route_service("/", shell_service(shell.clone()))
         .fallback_service({
@@ -610,6 +632,59 @@ fn find_ci(haystack: &str, needle: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression pin. `/_app/immutable/*` used to wear a status-blind
+    /// `SetResponseHeaderLayer::overriding`, so a MISS under that prefix
+    /// was answered `public, max-age=31536000, immutable` — a browser
+    /// that asked for an asset mid-deploy, before the file was on disk,
+    /// cached that 404 for a year and could not revalidate out of it.
+    /// Caught by inspecting a 404's headers, not by any test; a regression
+    /// here is silent at every other layer, because the response is
+    /// correct in every respect except one header value. Lives in this
+    /// module rather than Hurl because the fn is pure — it needs neither a
+    /// server nor an `AppState` to answer.
+    #[tokio::test]
+    async fn immutable_cache_is_negative_on_a_miss_and_long_on_a_hit() {
+        let header = |res: Response| {
+            res.headers()
+                .get(CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned)
+        };
+
+        let hit = Response::builder()
+            .status(axum::http::StatusCode::OK)
+            .body(axum::body::Body::empty())
+            .expect("valid response");
+        assert_eq!(
+            header(immutable_cache_headers(hit).await).as_deref(),
+            Some("public, max-age=31536000, immutable"),
+        );
+
+        let miss = Response::builder()
+            .status(axum::http::StatusCode::NOT_FOUND)
+            .body(axum::body::Body::empty())
+            .expect("valid response");
+        assert_eq!(
+            header(immutable_cache_headers(miss).await).as_deref(),
+            Some("no-cache, no-store"),
+        );
+
+        // A pre-set value is overwritten, not merged — the fn is the sole
+        // authority for this prefix, which is what `overriding` gave us
+        // and what the replacement has to keep.
+        let mut preset = Response::builder()
+            .status(axum::http::StatusCode::NOT_FOUND)
+            .body(axum::body::Body::empty())
+            .expect("valid response");
+        preset
+            .headers_mut()
+            .insert(CACHE_CONTROL, HeaderValue::from_static("max-age=99"));
+        assert_eq!(
+            header(immutable_cache_headers(preset).await).as_deref(),
+            Some("no-cache, no-store"),
+        );
+    }
 
     #[test]
     fn extracts_inline_script_content_verbatim() {
