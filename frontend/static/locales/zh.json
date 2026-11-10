@@ -2124,5 +2124,17 @@
   },
   "sidebar": {
     "oxicloud_version": "OxiCloud"
+  },
+  "error": {
+    "not_found": {
+      "title": "云朵飘远了",
+      "body": "这朵小云飘得有点太远了。找不到你要的页面。",
+      "art_alt": "一朵飘得太远的小云"
+    },
+    "generic": {
+      "title": "出错了",
+      "body": "请稍后再试。"
+    },
+    "go_home": "返回首页"
   }
 }

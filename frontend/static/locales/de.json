@@ -2124,5 +2124,17 @@
   },
   "sidebar": {
     "oxicloud_version": "OxiCloud"
+  },
+  "error": {
+    "not_found": {
+      "title": "Kopf in den Wolken",
+      "body": "Dieses Wölkchen ist etwas zu weit abgedriftet. Die angeforderte Seite ist nirgends zu finden.",
+      "art_alt": "Ein kleines Wölkchen, das zu weit abgedriftet ist"
+    },
+    "generic": {
+      "title": "Etwas ist schiefgelaufen",
+      "body": "Bitte versuchen Sie es in einem Moment erneut."
+    },
+    "go_home": "Zur Startseite"
   }
 }

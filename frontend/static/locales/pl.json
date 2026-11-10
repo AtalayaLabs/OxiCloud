@@ -2124,5 +2124,17 @@
   },
   "sidebar": {
     "oxicloud_version": "OxiCloud"
+  },
+  "error": {
+    "not_found": {
+      "title": "Głowa w chmurach",
+      "body": "Ta mała chmurka odpłynęła trochę za daleko. Żądanej strony nie można nigdzie znaleźć.",
+      "art_alt": "Mała chmurka, która odpłynęła za daleko"
+    },
+    "generic": {
+      "title": "Coś poszło nie tak",
+      "body": "Spróbuj ponownie za chwilę."
+    },
+    "go_home": "Wróć na stronę główną"
   }
 }

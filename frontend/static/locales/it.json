@@ -2124,5 +2124,17 @@
   },
   "sidebar": {
     "oxicloud_version": "OxiCloud"
+  },
+  "error": {
+    "not_found": {
+      "title": "Con la testa fra le nuvole",
+      "body": "Questa nuvoletta si è spinta un po' troppo lontano. La pagina richiesta non si trova da nessuna parte.",
+      "art_alt": "Una nuvoletta che si è spinta troppo lontano"
+    },
+    "generic": {
+      "title": "Qualcosa è andato storto",
+      "body": "Riprova tra un istante."
+    },
+    "go_home": "Torna alla home"
   }
 }

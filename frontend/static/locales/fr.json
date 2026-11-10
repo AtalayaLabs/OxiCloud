@@ -2124,5 +2124,17 @@
   },
   "sidebar": {
     "oxicloud_version": "OxiCloud"
+  },
+  "error": {
+    "not_found": {
+      "title": "La tête dans les nuages",
+      "body": "Ce petit nuage a dérivé un peu trop loin. La page demandée est introuvable.",
+      "art_alt": "Un petit nuage qui a dérivé trop loin"
+    },
+    "generic": {
+      "title": "Une erreur est survenue",
+      "body": "Veuillez réessayer dans un instant."
+    },
+    "go_home": "Retour à l'accueil"
   }
 }

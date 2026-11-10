@@ -2124,5 +2124,17 @@
   },
   "sidebar": {
     "oxicloud_version": "OxiCloud"
+  },
+  "error": {
+    "not_found": {
+      "title": "Met het hoofd in de wolken",
+      "body": "Dit wolkje is iets te ver afgedwaald. De opgevraagde pagina is nergens te vinden.",
+      "art_alt": "Een klein wolkje dat te ver is afgedwaald"
+    },
+    "generic": {
+      "title": "Er is iets misgegaan",
+      "body": "Probeer het over een moment opnieuw."
+    },
+    "go_home": "Naar de startpagina"
   }
 }

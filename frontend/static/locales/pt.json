@@ -2124,5 +2124,17 @@
   },
   "sidebar": {
     "oxicloud_version": "OxiCloud"
+  },
+  "error": {
+    "not_found": {
+      "title": "Com a cabeça nas nuvens",
+      "body": "Esta nuvenzinha afastou-se um pouco demais. A página que pediu não se encontra em lugar algum.",
+      "art_alt": "Uma nuvenzinha que se afastou demasiado"
+    },
+    "generic": {
+      "title": "Ocorreu um erro",
+      "body": "Tente novamente dentro de um instante."
+    },
+    "go_home": "Ir para o início"
   }
 }

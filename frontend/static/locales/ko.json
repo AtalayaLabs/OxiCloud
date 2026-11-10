@@ -2124,5 +2124,17 @@
   },
   "sidebar": {
     "oxicloud_version": "OxiCloud"
+  },
+  "error": {
+    "not_found": {
+      "title": "구름 위에서 길을 잃었어요",
+      "body": "작은 구름이 너무 멀리 흘러갔습니다. 요청한 페이지를 어디에서도 찾을 수 없습니다.",
+      "art_alt": "너무 멀리 흘러간 작은 구름"
+    },
+    "generic": {
+      "title": "문제가 발생했습니다",
+      "body": "잠시 후 다시 시도해 주세요."
+    },
+    "go_home": "홈으로 가기"
   }
 }

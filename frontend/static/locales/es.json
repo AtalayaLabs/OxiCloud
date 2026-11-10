@@ -2124,5 +2124,17 @@
   },
   "sidebar": {
     "oxicloud_version": "OxiCloud"
+  },
+  "error": {
+    "not_found": {
+      "title": "La cabeza en las nubes",
+      "body": "Esta nubecita se ha alejado demasiado. La página que buscas no aparece por ninguna parte.",
+      "art_alt": "Una nubecita que se ha alejado demasiado"
+    },
+    "generic": {
+      "title": "Algo ha ido mal",
+      "body": "Vuelve a intentarlo en un momento."
+    },
+    "go_home": "Ir al inicio"
   }
 }
