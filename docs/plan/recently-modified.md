@@ -33,7 +33,11 @@ Recorded so implementation does not re-open them.
 | Live updates | **No.** Polling on focus; a bus topic is overkill for this |
 | Route name | `/changes`, NOT `/people` — that name is taken by photo face clusters |
 | External users | **Denied** — router-level, `require_internal_user_layer` (§3) |
-| Window | `days` default 30, **max 90** — the bound the whole design leans on |
+| Window | `days` default 30, **max 90**, and `days=91` is a **400, never clamped** |
+| Public-link grants | **Excluded** — `subject_type IN ('user','group')`, never `'token'` (§3) |
+| Copy | **The copier**, for both the column and the touch — because `dates.md` already sets a copy's clock to `NOW()` (§1b) |
+| Flag off | Touches are **still written** — ops keep the data for auditability, and the view has history the day it is enabled (§5) |
+| Drive policy flag | `caller_accessible_drives($1, NULL)` for v1 — no per-drive opt-out yet |
 | Other resources | **None for now.** Calendars/contacts have no provenance columns at all (§8) |
 
 ---
@@ -215,6 +219,48 @@ ON CONFLICT (file_id, user_id) DO UPDATE SET touched_at = EXCLUDED.touched_at
 client-asserted `X-OC-Mtime` — so the feed and the file's own mtime never
 disagree about when a change happened.
 
+### Which operations write a touch
+
+Decided case by case, because "content change" is not the same question as
+"who worked on this":
+
+| Operation | `content_modified_by` | Touch |
+| --- | --- | --- |
+| Upload (new file) | `created_by` | the uploader |
+| Overwrite / PUT / WOPI / chunked / delta | caller | the caller |
+| **Copy** | **the copier** | **the copier** |
+| Rename / move (same drive) | unchanged | none |
+| Cross-drive move (D6) | unchanged | none |
+| Trash | unchanged | none |
+| Restore from trash | unchanged | none |
+
+**Copy follows the same rule as everything else, and that is the point.**
+`docs/architecture/dates.md` already settles the clock: *"COPY sets
+`content_modified_at` to `NOW()`"* — a copy is a new file whose content came
+into existence here, the answer `cp` without `-p` gives. So the principal must
+be the copier too, or the pair reads "the bytes last changed just now, by
+Bob" while Bob did nothing just now. Preserving one and resetting the other is
+the only option that produces a lie.
+
+Which collapses the special case entirely: the copy `INSERT` already writes
+`created_by = updated_by = $4` (the caller), so `content_modified_by = $4`
+sits beside them and copy needs no bespoke handling. One rule covers the whole
+table above — **whoever brings a row's content into existence or changes it is
+the clock's author and gets the touch** — and the source file is untouched, so
+the claim "these bytes are Bob's work" still lives where it always did, on
+Bob's file.
+
+**Trash and restore need no touch, and that is load-bearing.** Trash is a soft
+delete, so `ON DELETE CASCADE` does not fire and the file's touches survive
+intact; the feed hides it only because of its `NOT is_trashed` filter. Restore
+therefore returns the file to the lanes it was already in, dated as it was —
+which is what someone looking for "the file Bob worked on last week" wants.
+Only a hard delete (trash cleanup) cascades the touches away.
+
+**A cross-drive move needs none either**, because the access filter is
+evaluated at read time: the file simply moves between people's feeds according
+to who can reach its new drive.
+
 ### Seeding
 
 So the view is not empty on the first deploy, seed one row per file from the
@@ -314,11 +360,20 @@ Every row must be one the caller could already open. The predicate is a union,
 because OxiCloud's access model has three doors into a file and `require()`
 honours all three:
 
-1. **Drive-accessible** — `storage.caller_accessible_drives($1)`
+**Only `user` and `group` subjects count.** `storage.role_grants` also carries
+`subject_type = 'token'` for public links
+(`pg_acl_engine.rs::shared_resource_ids`), and a token grant is held by the
+*link*, not by a person. Branches 2 and 3 must constrain
+`subject_type IN ('user','group')` or **every publicly-linked file appears in
+every user's feed** — a leak, not a cosmetic bug, and it gets its own pin.
+
+1. **Drive-accessible** — `storage.caller_accessible_drives($1, NULL)`
    (`20261103000005`), a STABLE SQL function resolving drive `role_grants`
    including group membership via `storage.caller_group_ids` and `expires_at`.
    The photos index already scopes exactly this way
-   (`file_blob_read_repository.rs`).
+   (`file_blob_read_repository.rs`). The policy-flag argument is `NULL` for
+   v1: photos passes `include_in_photo_index`, so a per-drive "exclude from
+   recent changes" policy is possible later, but no drive opts out today.
 2. **Direct file grant** — `role_grants` with `resource_type = 'file'` on the
    file, for the caller or one of their groups.
 3. **Folder-cascade grant** — a grant on any ancestor folder. The point-check
@@ -388,7 +443,7 @@ pin on its own.
 
 ```
 GET /api/files/recent-changes
-    ?days=30            # window, default 30, max 90
+    ?days=30            # window, default 30, max 90 — 91 is a 400, not a clamp
     &order_by=modifier  # swimlane axis; default changed_at
     &person=<uuid>      # drill-in: one person, window still applies
     &limit=50&cursor=…  # standard keyset pagination
@@ -414,13 +469,21 @@ virtualisation inherited rather than rebuilt.
 `is_favorite`, `is_shared`, `drive_id`, `blob_hash` for a matching `etag`, and
 `path` cleared when the caller is not the owner — plus:
 
-- `content_modified_at`, `content_modified_by`
+- `changed_at`: **this row's touch**, i.e. when *this* person changed it
 - `modifier`: the **public tier** `UserDto`, never the self tier
   (`project_userdto_three_layer_split`) — this view names third parties to
   anyone sharing a drive with them
-- `lane_total`: `COUNT(*) OVER (PARTITION BY content_modified_by)` from inside
-  the access-filtered query, so a header can read "Bob · 14 changes" without a
-  second round trip and without leaking
+- `content_modified_at` / `content_modified_by`: the file's own latest change
+  by anyone, for a secondary label
+- `lane_total`: from inside the access-filtered lane aggregate, so a header can
+  read "Bob · 14 files" without a second round trip and without leaking
+
+**`changed_at` and `modifier` live on the DTO, not in `ItemContext`.** This is
+not a style preference: `ResourceList` resolves context as `ctxOf(item.id)`
+(`ResourceList.svelte:1198`, `:547`), one entry per file id — so a file both
+Bob and Carol touched can carry only one context, and one of the two lanes
+would show the other person's date. The same file legitimately appears in
+several lanes (§4), so anything per-row must travel on the row.
 
 ### Order-by enum
 
@@ -572,6 +635,18 @@ it is not a privacy leak — but aggregated activity is a soft surveillance
 surface, and whether a given organisation wants it is an operator's decision,
 not ours.
 
+**The flag gates the READ surface only. Touches are written regardless.**
+Decided deliberately: operators may want the record for auditability whether
+or not the view is exposed, and a deployment that enables the feature later
+then has history from day one instead of an empty page for a month. Two
+consequences to be explicit about rather than discover:
+
+- "Disabled" means *not exposed*, not *not collected*. Anyone reading the flag
+  as "we collect nothing" is wrong, and the operator docs must say so plainly.
+- The §1b retention job must therefore be registered and scheduled **even when
+  the flag is off**, or a deployment that never enables the view accumulates
+  touches forever. That is the one place where gating too much would bite.
+
 ---
 
 ## §6 — Frontend
@@ -603,8 +678,18 @@ The page is `ResourceList` with `groupBys`:
 
 typed as `GroupByDef<RecentChangesOrderBy>[]` so a retired axis fails
 `npm run check` instead of becoming a runtime 400 — `/recent` already does
-this. The modifier rides in `ItemContext` (`ownerId` override for the vignette,
-`extras` for the lane key), so `ResourceList` needs no new props.
+this. The lane key and the date come off the ROW, not from `ItemContext`, for
+the id-collision reason in §4; `ownerId` may still be overridden in context
+for the vignette, since that is per file rather than per lane.
+
+**Render the page non-`selectable` for v1.** Selection is an id-keyed
+`Set<string>` (`ResourceList.svelte:1208`, `:1245`), so ticking a file in Bob's
+lane also ticks it in Carol's — and a batch action would then act once on
+something the user appears to have selected twice. The semantics are genuinely
+ambiguous (it is one file either way), so the honest v1 is a view you click
+through rather than one you batch from. If selection is wanted later, the key
+has to become `lane:file`, which is a `useSelection` change rather than a
+page-level one.
 
 One detail the page owns: a lane can straddle a page boundary, so appending a
 page must merge into the open lane rather than draw a second header for the
@@ -633,8 +718,11 @@ Backend, `tests/api/recent_changes.hurl`:
   lane, carrying the latest timestamp (the §1b primary key doing its job)
 - `lane_total` equals the number of visible rows for that lane, with a second
   user's invisible file present in the fixture
+- **a publicly-linked file does NOT appear** for a user with no user/group
+  grant on it — the `subject_type = 'token'` leak in §3
 - `order_by=nonsense` → 400 naming the accepted set
-- flag off → 404 on the prefix
+- `days=91` → 400, and the response does **not** quietly return 90 days of data
+- flag off → 404 on the prefix, **and** the touch rows still accumulate (§5)
 - an external user → 403, **and** an internal caller → 200 on the same path
   (in `external_users.hurl`, beside 11b/11h–11k)
 - a NULL-lane row straddling a page boundary appears exactly once — the keyset
@@ -648,6 +736,12 @@ Rust, inline where the code lives:
 - the backfill's two arms, against a seeded row of each shape
 - the retention job deletes beyond its window and **nothing inside it**, with
   `retention_days` honoured from the trigger parameter
+- **a copy credits the copier in both the column and the touch**, matching the
+  `NOW()` clock `dates.md` already specifies — the pin that stops someone
+  "preserving" the source's principal and leaving the pair contradicting
+  itself (§1b)
+- a restore from trash adds no touch, and the file returns to the lanes it was
+  already in with its original dates
 
 Frontend:
 
@@ -699,8 +793,10 @@ Frontend:
    the column and the touch table are dense from the first deploy, before
    anything reads them — and the touch table only accumulates truth while it
    is unread, so there is no reason to wait.
-2. §1b retention job, registered and scheduled. Before the read path, so a
-   long-lived deployment never has an unbounded table even if §3–§6 stall.
+2. §1b retention job, registered and scheduled **unconditionally** — not
+   behind the flag. Before the read path, so a long-lived deployment never has
+   an unbounded table even if §3–§6 stall or the operator never enables the
+   view at all (§5: writes are not gated).
 3. §3 + §4 behind the flag, with the Hurl pins.
 4. §5 flag wiring end to end, including `/api/config`.
 5. §6 page and nav entry, with i18n.
