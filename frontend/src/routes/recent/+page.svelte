@@ -163,6 +163,13 @@
 
 	let viewerOpen = $state(false);
 	let viewerFile = $state<FileItem | null>(null);
+	/** What the viewer's previous / next step through: the files as listed,
+	 *  minus the dotfiles `ResourceList` hides. */
+	const viewerFiles = $derived(
+		items.filter(
+			(i): i is FileItem => isFile(i) && !(preferences.hideDotfiles && isDotfile(i.name))
+		)
+	);
 
 	// The file preview is loaded the first time a file is opened, keeping its
 	// module out of this route's initial chunk.
@@ -507,7 +514,12 @@
 
 {#if fileViewer.component}
 	{@const FileViewer = fileViewer.component}
-	<FileViewer bind:open={viewerOpen} file={viewerFile} />
+	<FileViewer
+		bind:open={viewerOpen}
+		file={viewerFile}
+		files={viewerFiles}
+		onnavigate={(f) => (viewerFile = f)}
+	/>
 {/if}
 {#if moveDialog.component}
 	{@const MoveDialog = moveDialog.component}

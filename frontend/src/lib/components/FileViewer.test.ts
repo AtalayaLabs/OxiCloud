@@ -211,3 +211,80 @@ it('remembers the editor fullscreen choice', async () => {
 	localStorage.removeItem('oxi-collab-fullscreen');
 	cfg.features.markdown_collab = false;
 });
+
+// Previous / next step through the images and videos of the list the viewer
+// was opened from. Looking through a folder of photos used to mean closing
+// the viewer and opening each one by hand.
+const folder = () => [
+	file({ id: 'a', name: 'a.jpg', mime_type: 'image/jpeg' }),
+	file({ id: 'doc', name: 'report.docx', mime_type: 'application/octet-stream' }),
+	file({ id: 'b', name: 'b.mp4', mime_type: 'video/mp4', category: 'Video' }),
+	file({ id: 'c', name: 'c.png' })
+];
+
+it('steps to the neighbouring media with the previous / next buttons', async () => {
+	const files = folder();
+	const onnavigate = vi.fn();
+	render(FileViewer, { props: { open: true, file: files[2], files, onnavigate } });
+	await screen.findByTestId('file-viewer-dialog');
+
+	// The .docx between a.jpg and b.mp4 is skipped.
+	await fireEvent.click(screen.getByTestId('file-viewer-prev-btn'));
+	expect(onnavigate).toHaveBeenLastCalledWith(files[0]);
+	await fireEvent.click(screen.getByTestId('file-viewer-next-btn'));
+	expect(onnavigate).toHaveBeenLastCalledWith(files[3]);
+});
+
+it('offers no step past either end', async () => {
+	const files = folder();
+	const first = render(FileViewer, {
+		props: { open: true, file: files[0], files, onnavigate: vi.fn() }
+	});
+	await screen.findByTestId('file-viewer-dialog');
+	expect(screen.queryByTestId('file-viewer-prev-btn')).toBeNull();
+	expect(screen.getByTestId('file-viewer-next-btn')).toBeTruthy();
+	first.unmount();
+
+	render(FileViewer, { props: { open: true, file: files[3], files, onnavigate: vi.fn() } });
+	await screen.findByTestId('file-viewer-dialog');
+	expect(screen.getByTestId('file-viewer-prev-btn')).toBeTruthy();
+	expect(screen.queryByTestId('file-viewer-next-btn')).toBeNull();
+});
+
+it('steps with the arrow keys, unless a focused player wants them', async () => {
+	const files = folder();
+	const onnavigate = vi.fn();
+	render(FileViewer, { props: { open: true, file: files[2], files, onnavigate } });
+	await screen.findByTestId('file-viewer-dialog');
+
+	await fireEvent.keyDown(window, { key: 'ArrowRight' });
+	expect(onnavigate).toHaveBeenLastCalledWith(files[3]);
+	await fireEvent.keyDown(window, { key: 'ArrowLeft' });
+	expect(onnavigate).toHaveBeenLastCalledWith(files[0]);
+	// Alt+← is the browser's Back.
+	await fireEvent.keyDown(window, { key: 'ArrowLeft', altKey: true });
+	expect(onnavigate).toHaveBeenCalledTimes(2);
+
+	// A focused <video> seeks with the arrows.
+	const video = document.querySelector('video');
+	expect(video).toBeTruthy();
+	await fireEvent.keyDown(video!, { key: 'ArrowRight' });
+	expect(onnavigate).toHaveBeenCalledTimes(2);
+});
+
+it('shows no stepping for a non-media file, or when the host does not handle it', async () => {
+	const files = folder();
+	cw.mockResolvedValue(false);
+	const doc = render(FileViewer, {
+		props: { open: true, file: files[1], files, onnavigate: vi.fn() }
+	});
+	await screen.findByTestId('file-viewer-dialog');
+	expect(screen.queryByTestId('file-viewer-prev-btn')).toBeNull();
+	expect(screen.queryByTestId('file-viewer-next-btn')).toBeNull();
+	doc.unmount();
+
+	render(FileViewer, { props: { open: true, file: files[2], files } });
+	await screen.findByTestId('file-viewer-dialog');
+	expect(screen.queryByTestId('file-viewer-prev-btn')).toBeNull();
+	expect(screen.queryByTestId('file-viewer-next-btn')).toBeNull();
+});

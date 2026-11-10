@@ -32,6 +32,22 @@
 		/** Share row id, when opened from a public link — attaches `?share=` to
 		 *  every content request so the cap charges that link. */
 		shareId?: string | null;
+		/**
+		 * The files the viewer was opened from, in the order the host shows
+		 * them. Together with `onnavigate`, an image or video gets previous /
+		 * next controls (buttons and ←/→) that step through the other images
+		 * and videos in this list. Without them, looking through a folder of
+		 * photos meant closing the viewer and opening the next file by hand.
+		 *
+		 * Only media is stepped through, the same split the public-share page
+		 * makes between `PhotoLightbox` and this viewer: stepping onto an
+		 * office document would auto-open the WOPI editor, and a text file
+		 * mounts the collab editor, which needs the arrow keys itself.
+		 */
+		files?: FileItem[];
+		/** Asked to show `file` instead. The host owns `file` — `/files` drives
+		 *  it from `?file=` — so the viewer asks rather than swapping it. */
+		onnavigate?: (file: FileItem) => void;
 	}
 
 	let {
@@ -39,7 +55,9 @@
 		file,
 		onrefresh,
 		readOnly = false,
-		shareId = null
+		shareId = null,
+		files = [],
+		onnavigate
 	}: Props = $props();
 
 	type Kind = 'image' | 'video' | 'audio' | 'pdf' | 'text' | 'other';
@@ -97,6 +115,17 @@
 	}
 
 	const kind = $derived(file ? kindOf(file) : 'other');
+
+	function isMedia(f: FileItem): boolean {
+		const k = kindOf(f);
+		return k === 'image' || k === 'video';
+	}
+
+	/** The media the previous / next controls step through — see `files`. */
+	const gallery = $derived(onnavigate && file && isMedia(file) ? files.filter(isMedia) : []);
+	const galleryIndex = $derived(file ? gallery.findIndex((f) => f.id === file.id) : -1);
+	const prevFile = $derived(galleryIndex > 0 ? gallery[galleryIndex - 1] : null);
+	const nextFile = $derived(galleryIndex >= 0 ? (gallery[galleryIndex + 1] ?? null) : null);
 
 	/** `true` when this file should open in the collab editor.
 	 *  Two-branch acceptance to catch both well-typed and MIME-hostile
@@ -171,8 +200,23 @@
 		onrefresh?.();
 	}
 
+	/** Arrow keys stay with whatever has focus when it uses them itself: a
+	 *  focused <video> seeks, a text field moves the caret. Alt+← is the
+	 *  browser's Back. */
+	function arrowsTaken(e: KeyboardEvent): boolean {
+		if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return true;
+		const el = e.target;
+		return (
+			el instanceof HTMLElement &&
+			(el.isContentEditable || el.closest('input, textarea, select, video, audio') !== null)
+		);
+	}
+
 	function onKeydown(e: KeyboardEvent) {
-		if (open && !wopiOpen && e.key === 'Escape') close();
+		if (!open || wopiOpen) return;
+		if (e.key === 'Escape') close();
+		else if (e.key === 'ArrowLeft' && prevFile && !arrowsTaken(e)) onnavigate?.(prevFile);
+		else if (e.key === 'ArrowRight' && nextFile && !arrowsTaken(e)) onnavigate?.(nextFile);
 	}
 
 	function zoomBy(factor: number) {
@@ -447,6 +491,33 @@
 					</div>
 				{/if}
 			</div>
+
+			<!-- On the panel, not in `.fv__body`: the body scrolls when an image
+			     is zoomed, and the controls must not scroll away with it. -->
+			{#if prevFile}
+				{@const target = prevFile}
+				<button
+					class="fv__nav fv__nav--prev"
+					data-testid="file-viewer-prev-btn"
+					title={t('common.previous', 'Previous')}
+					aria-label={t('common.previous', 'Previous')}
+					onclick={() => onnavigate?.(target)}
+				>
+					<Icon name="chevron-left" />
+				</button>
+			{/if}
+			{#if nextFile}
+				{@const target = nextFile}
+				<button
+					class="fv__nav fv__nav--next"
+					data-testid="file-viewer-next-btn"
+					title={t('common.next', 'Next')}
+					aria-label={t('common.next', 'Next')}
+					onclick={() => onnavigate?.(target)}
+				>
+					<Icon name="chevron-right" />
+				</button>
+			{/if}
 		</div>
 	</div>
 
@@ -509,6 +580,7 @@
 	}
 
 	.fv__panel {
+		position: relative;
 		display: flex;
 		flex-direction: column;
 		width: min(1100px, 100%);
@@ -516,6 +588,31 @@
 		background: var(--color-bg-surface);
 		border-radius: var(--radius-lg, var(--radius-md));
 		overflow: hidden;
+	}
+
+	/* Same round scrim control as the photo lightbox's toolbar, so it reads
+	   over both light and dark images. */
+	.fv__nav {
+		position: absolute;
+		top: 50%;
+		transform: translateY(-50%);
+		display: grid;
+		place-items: center;
+		width: 40px;
+		height: 40px;
+		border: none;
+		border-radius: 50%;
+		background: var(--color-scrim-control);
+		color: var(--color-on-accent);
+		cursor: pointer;
+	}
+
+	.fv__nav--prev {
+		left: 0.75rem;
+	}
+
+	.fv__nav--next {
+		right: 0.75rem;
 	}
 
 	.fv__bar {
@@ -645,6 +742,7 @@
 
 		.fv__zoom-btn,
 		.fv__tool,
+		.fv__nav,
 		.fv__close {
 			min-width: 44px;
 			min-height: 44px;
