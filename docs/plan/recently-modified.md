@@ -228,27 +228,36 @@ Decided case by case, because "content change" is not the same question as
 | --- | --- | --- |
 | Upload (new file) | `created_by` | the uploader |
 | Overwrite / PUT / WOPI / chunked / delta | caller | the caller |
-| **Copy** | **the copier** | **the copier** |
+| **Copy (file or folder tree)** | **preserved from source** | **the source's lanes, inherited** |
 | Rename / move (same drive) | unchanged | none |
 | Cross-drive move (D6) | unchanged | none |
 | Trash | unchanged | none |
 | Restore from trash | unchanged | none |
 
-**Copy follows the same rule as everything else, and that is the point.**
-`docs/architecture/dates.md` already settles the clock: *"COPY sets
-`content_modified_at` to `NOW()`"* — a copy is a new file whose content came
-into existence here, the answer `cp` without `-p` gives. So the principal must
-be the copier too, or the pair reads "the bytes last changed just now, by
-Bob" while Bob did nothing just now. Preserving one and resetting the other is
-the only option that produces a lie.
+**Copy preserves both, and inherits the lanes.** The clock and the principal
+move together or they lie, and the codebase already answers which way in
+`storage.copy_file_satellites`, where the attached-blobs arm states the rule
+for this whole class of fact: *"`uploaded_by` carries over: the person who
+supplied the bytes did not change because someone copied the file, and
+rewriting it to the copier would forge provenance."* The content clock and its
+principal are the same kind of fact, and `media_sort_date` is already
+preserved so a copied photo keeps its place in the timeline.
 
-Which collapses the special case entirely: the copy `INSERT` already writes
-`created_by = updated_by = $4` (the caller), so `content_modified_by = $4`
-sits beside them and copy needs no bespoke handling. One rule covers the whole
-table above — **whoever brings a row's content into existence or changes it is
-the clock's author and gets the touch** — and the source file is untouched, so
-the claim "these bytes are Bob's work" still lives where it always did, on
-Bob's file.
+So this lives **entirely in `copy_file_satellites`** — arm 4 preserves the two
+columns, arm 5 duplicates the touch rows — and not in the two INSERTs. That is
+what keeps the single-file and folder-tree paths from drifting: both already
+call that function, it is the stated single home for everything that follows a
+file on copy, and the alternative needs the 170-line `copy_folder_tree` body
+re-emitted with two more columns and leaves two places to forget.
+
+This **amends `docs/architecture/dates.md` § COPY**, which said a copy sets
+`content_modified_at = NOW()` and "needs no preservation plumbing". It now has
+preservation plumbing, in one function.
+
+The consequence, accepted deliberately: a copy appears in the ORIGINAL
+author's lane, dated when they wrote the bytes, and **nobody is recorded as
+having copied it**. Copying is file management, not authorship — and the
+simplification is precisely that no copy path needs to know who the copier is.
 
 **Trash and restore need no touch, and that is load-bearing.** Trash is a soft
 delete, so `ON DELETE CASCADE` does not fire and the file's touches survive
@@ -736,10 +745,14 @@ Rust, inline where the code lives:
 - the backfill's two arms, against a seeded row of each shape
 - the retention job deletes beyond its window and **nothing inside it**, with
   `retention_days` honoured from the trigger parameter
-- **a copy credits the copier in both the column and the touch**, matching the
-  `NOW()` clock `dates.md` already specifies — the pin that stops someone
-  "preserving" the source's principal and leaving the pair contradicting
-  itself (§1b)
+- **a copy preserves the principal and inherits the lanes** (§1b), and
+  **the folder-tree copy does the same** — that second one is the pin that
+  matters most for regressions: `copy_folder_tree` is 170 lines of plpgsql
+  passing two positionally-paired arrays, where the single-file path passes
+  one-element arrays and therefore cannot detect a pairing bug at all. Before
+  this plan the cascade left `content_modified_by` NULL on every copied file
+  and wrote no lanes, and nothing failed: the files looked right in every
+  listing while being invisible in the feed
 - a restore from trash adds no touch, and the file returns to the lanes it was
   already in with its original dates
 

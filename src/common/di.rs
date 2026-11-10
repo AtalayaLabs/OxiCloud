@@ -2994,6 +2994,36 @@ impl AppServiceFactory {
         .register(&app_state.core.job_registry)
         .await;
 
+        // Content-touch retention sweep (`docs/plan/recently-modified.md`
+        // §1b). Deletes `storage.file_content_touches` rows older than
+        // `OXICLOUD_FILE_TOUCHES_RETENTION_DAYS` (default 120, deliberately
+        // wider than the 90-day maximum the query accepts).
+        //
+        // Registered OUTSIDE the `enable_recent_changes` gate, on purpose:
+        // touches are written whether or not the view is exposed — operators
+        // may want the record for auditability, and enabling the view later
+        // then has history from day one — so gating the sweep would leave a
+        // deployment that never enables the feature growing the table
+        // forever. Runs on the maintenance pool so a sweep never competes
+        // with user requests.
+        // The local `maintenance_pool` has already moved into `AppState` by
+        // this point, so take the handle back from there. Falling back to the
+        // primary pool rather than skipping: a sweep that silently does not
+        // run is how an unbounded table goes unnoticed, and sharing the user
+        // pool once a day is the lesser cost.
+        let touches_pool = app_state
+            .maintenance_pool
+            .clone()
+            .unwrap_or_else(|| pool.clone());
+        let _ = Arc::new(
+            crate::infrastructure::services::file_touches_cleanup_service::FileTouchesCleanupService::new(
+                touches_pool,
+                app_state.core.config.features.file_touches_retention_days,
+            ),
+        )
+        .register(&app_state.core.job_registry)
+        .await;
+
         // 9a-collab. Collab-doc session pool (Yjs over the bus).
         // Feature-gated by `OXICLOUD_ENABLE_MARKDOWN_COLLAB` AND
         // `OXICLOUD_MESSAGEBUS_ENABLE` — collab bytes ride the bus WS

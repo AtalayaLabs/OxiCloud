@@ -223,6 +223,7 @@ pub const KNOWN: &[(&str, &str)] = &[
     ("features", "OXICLOUD_FACES_NMS_THRESHOLD"),
     ("features", "OXICLOUD_FACES_ORT_DYLIB"),
     ("features", "OXICLOUD_FFMPEG_PATH"),
+    ("features", "OXICLOUD_FILE_TOUCHES_RETENTION_DAYS"),
     ("features", "OXICLOUD_NOTIFICATIONS_RETENTION_DAYS"),
     ("features", "OXICLOUD_NOTIFY_INTERNAL_USERS_ON_SHARE"),
     ("features", "OXICLOUD_PLUGINS_DIR"),

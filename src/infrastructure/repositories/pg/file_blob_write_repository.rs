@@ -208,13 +208,19 @@ impl FileBlobWriteRepository {
         //
         // Both arms keep the `expected_hash` CAS guard, so a failed
         // compare-and-swap still writes neither.
+        //
+        // The statement is assembled with `concat!` so the two additions below
+        // can carry their reasoning inline without putting `--` comments in
+        // the SQL itself; it is still one `&'static str` at compile time, as
+        // in `pg_job_store::RUN_SUMMARY_SELECT_LIST`.
         let (old_hash, content_modified_at, matched) =
             match retry_on_deadlock("files.swap_blob_hash", || {
-                sqlx::query_as::<_, (String, i64, bool)>(
+                sqlx::query_as::<_, (String, i64, bool)>(concat!(
                     r#"
                 WITH old AS (
                     SELECT id, blob_hash FROM storage.files WHERE id = $3::uuid FOR UPDATE
-                )
+                ),
+                upd AS (
                 UPDATE storage.files f
                    SET blob_hash = CASE WHEN $6::text IS NULL OR old.blob_hash = $6
                                         THEN $1 ELSE f.blob_hash END,
@@ -225,13 +231,41 @@ impl FileBlobWriteRepository {
                        content_modified_at = CASE WHEN $6::text IS NULL OR old.blob_hash = $6
                                          THEN COALESCE(to_timestamp($4), NOW()) ELSE f.content_modified_at END,
                        updated_by = CASE WHEN $6::text IS NULL OR old.blob_hash = $6
-                                         THEN $5 ELSE f.updated_by END
+                                         THEN $5 ELSE f.updated_by END,
+"#,
+                    // The principal half of the content clock, moving with it
+                    // under the same guard. `updated_by` above cannot stand in:
+                    // it also moves on rename and move, so it would credit a
+                    // renamer for this caller's bytes.
+                    r#"
+                       content_modified_by = CASE WHEN $6::text IS NULL OR old.blob_hash = $6
+                                         THEN $5 ELSE f.content_modified_by END
                   FROM old
                  WHERE f.id = old.id
-                RETURNING old.blob_hash, EXTRACT(EPOCH FROM f.content_modified_at)::bigint,
-                          ($6::text IS NULL OR old.blob_hash = $6)
-                "#,
+                RETURNING f.id AS file_id,
+                          old.blob_hash AS old_hash,
+                          f.content_modified_at,
+                          ($6::text IS NULL OR old.blob_hash = $6) AS matched
+                ),
+"#,
+                    // `WHERE matched` is what makes a failed compare-and-swap
+                    // write NONE of the three — clock, principal, touch.
+                    // Without it a losing racer would still claim the file in
+                    // its lane on `/api/files/recent-changes` while having
+                    // changed nothing.
+                    r#"
+                touch AS (
+                    INSERT INTO storage.file_content_touches (file_id, user_id, touched_at)
+                    SELECT file_id, $5, content_modified_at FROM upd WHERE matched
+                    ON CONFLICT (file_id, user_id)
+                        DO UPDATE SET touched_at = EXCLUDED.touched_at
                 )
+                SELECT old_hash,
+                       EXTRACT(EPOCH FROM content_modified_at)::bigint,
+                       matched
+                  FROM upd
+                "#
+                ))
                 .bind(new_hash)
                 .bind(new_size)
                 .bind(file_id)
@@ -378,18 +412,36 @@ impl FileBlobWriteRepository {
         // Post-D7: `user_id` omitted from the INSERT column list and the
         // parent CTE. `drive_id` alone is the inherit-from-parent axis;
         // provenance is `created_by` / `updated_by` (§14).
+        //
+        // `content_modified_by` takes the same `$7` as those two: the uploader
+        // authored these bytes, so they are the content principal as well as
+        // the creator. The values diverge the moment anyone else overwrites the
+        // file, which is the whole reason the column exists separately.
+        //
+        // The `touch` arm records the same thing in
+        // `storage.file_content_touches` — in the SAME statement, because a
+        // content change that commits without its touch is a change
+        // `/api/files/recent-changes` can never recover; there is no second
+        // source to reconcile against. `touched_at` takes the row's own
+        // `content_modified_at` (including a client-asserted `X-OC-Mtime`) so
+        // the feed and the file's mtime never disagree about when a change
+        // happened. Its `ON CONFLICT` cannot fire for a brand-new file; it is
+        // there so every touch write in this file reads identically.
         let result = retry_on_deadlock("files.insert", || {
-            sqlx::query_as::<_, (String, String, i64, i64, Option<Uuid>, Option<Uuid>)>(
+            sqlx::query_as::<_, (String, String, i64, i64, Option<Uuid>, Option<Uuid>)>(concat!(
                 r#"
                 WITH parent AS (
                     SELECT id, drive_id, path FROM storage.folders WHERE id = $2::uuid
-                )
+                ),
+                new_file AS (
                 INSERT INTO storage.files
                     (name, folder_id, drive_id, blob_hash, size,
                      mime_type, category_order, created_by, updated_by,
+                     content_modified_by,
                      content_modified_at, media_sort_date)
                 SELECT $1, parent.id, parent.drive_id, $3, $4,
                        $5, $6, $7, $7,
+                       $7,
                        COALESCE(to_timestamp($8), NOW()),
                        -- Same value as content_modified_at, and it must be
                        -- set HERE rather than left to the column default.
@@ -418,14 +470,35 @@ impl FileBlobWriteRepository {
                        -- the `captured_at` arm still wins once it exists.
                        COALESCE(to_timestamp($8), NOW())
                   FROM parent
-                RETURNING id::text,
-                          (SELECT path FROM parent),
-                          EXTRACT(EPOCH FROM created_at)::bigint,
-                          EXTRACT(EPOCH FROM content_modified_at)::bigint,
-                          created_by,
-                          updated_by
-                "#,
-            )
+                RETURNING id, created_at, content_modified_at,
+                          created_by, updated_by
+                ),
+"#,
+                // In the SAME statement as the row it describes: a content
+                // change that commits without its touch is a change
+                // `/api/files/recent-changes` can never recover, because there
+                // is no second source to reconcile against. `touched_at` takes
+                // the row's own `content_modified_at` — including a
+                // client-asserted `X-OC-Mtime` — so the feed and the file's
+                // mtime never disagree about when a change happened. The
+                // `ON CONFLICT` cannot fire for a brand-new file; it is here so
+                // every touch write in this module reads identically.
+                r#"
+                touch AS (
+                    INSERT INTO storage.file_content_touches (file_id, user_id, touched_at)
+                    SELECT id, $7, content_modified_at FROM new_file
+                    ON CONFLICT (file_id, user_id)
+                        DO UPDATE SET touched_at = EXCLUDED.touched_at
+                )
+                SELECT id::text,
+                       (SELECT path FROM parent),
+                       EXTRACT(EPOCH FROM created_at)::bigint,
+                       EXTRACT(EPOCH FROM content_modified_at)::bigint,
+                       created_by,
+                       updated_by
+                  FROM new_file
+                "#
+            ))
             .bind(&name)
             .bind(fid)
             .bind(blob_hash)
@@ -780,6 +853,17 @@ impl FileWritePort for FileBlobWriteRepository {
         // Destination header renaming a file is the canonical caller.
         let rename_to = new_name.map(normalize_storage_name);
 
+        // Content provenance is NOT set here. `storage.copy_file_satellites`
+        // below preserves `content_modified_at` / `content_modified_by` from
+        // the source and duplicates its content-touch lanes — the same place
+        // that already carries dead properties, the blob reference and
+        // file-keyed attachments, and for the same reason it gives there:
+        // copying bytes does not make the copier their author.
+        //
+        // Both copy paths call that function, which is what keeps the
+        // single-file and folder-tree copies from drifting; projecting the
+        // columns in this INSERT would have left `copy_folder_tree` to
+        // remember separately.
         let row = retry_on_deadlock("files.copy", || async {
             let mut tx = self.pool.begin().await?;
 
@@ -1350,5 +1434,412 @@ impl FileWritePort for FileBlobWriteRepository {
             folders_copied: row.1,
             files_copied: row.2,
         })
+    }
+}
+
+// Content provenance: `content_modified_by` and `storage.file_content_touches`
+// (`docs/plan/recently-modified.md` §1b, §2). These run against a real
+// database because the invariants live in the SQL — the CAS guard on the touch
+// arm, and the `ON CONFLICT` that collapses repeated saves — and none of that
+// is observable from a unit test.
+//
+// Fixtures are prefixed `rust-test-prov-` and deleted by prefix BEFORE each
+// test seeds, not only after: cleanup at the end does not run when an
+// assertion fails, and a leaked row would then fail every later run for an
+// unrelated reason. Every assertion filters on this test's own ids — never on
+// a count over the whole table, which other suites are writing to
+// concurrently.
+#[cfg(all(test, integration_tests))]
+mod content_provenance_tests {
+    use super::*;
+    use crate::integration_test_support::{ensure_clean_test_db, test_db_url};
+    use chrono::{DateTime, Utc};
+    use sqlx::postgres::PgPoolOptions;
+
+    const PREFIX: &str = "rust-test-prov-";
+    /// Arbitrary but well-formed: `storage.files.blob_hash` has no FK, so a
+    /// fixture needs no blob on disk.
+    const HASH_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const HASH_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    async fn test_pool() -> Arc<PgPool> {
+        let pool = PgPoolOptions::new()
+            .max_connections(4)
+            .connect(&test_db_url())
+            .await
+            .expect("connect to test DB — run tests/common/spawn-db.sh first");
+        ensure_clean_test_db(&pool).await;
+        // Prefix cleanup, in FK order. Deleting the users is not enough:
+        // `storage.files.created_by` is `ON DELETE SET NULL`, not CASCADE, so
+        // a prior run's file rows outlive their owner and then collide on
+        // `idx_files_unique_name_in_folder` — which is exactly how this suite
+        // failed on its second run before this existed.
+        //
+        // Files first (their touches cascade), then folders, then users.
+        for stmt in [
+            "DELETE FROM storage.files WHERE name LIKE $1",
+            "DELETE FROM storage.folders WHERE name LIKE $1",
+            "DELETE FROM auth.users WHERE username LIKE $1",
+        ] {
+            let _ = sqlx::query(stmt)
+                .bind(format!("{PREFIX}%"))
+                .execute(&pool)
+                .await;
+        }
+        Arc::new(pool)
+    }
+
+    fn repo(pool: Arc<PgPool>) -> FileBlobWriteRepository {
+        FileBlobWriteRepository::new(
+            pool,
+            Arc::new(BlobHandler::new_stub()),
+            Cache::builder().max_capacity(64).build(),
+        )
+    }
+
+    /// A drive root to hang fixtures off, borrowed from the seeded instance.
+    async fn seeded_root(pool: &PgPool) -> (Uuid, Uuid) {
+        sqlx::query_as(
+            "SELECT d.root_folder_id, d.id
+               FROM storage.drives d
+              WHERE d.root_folder_id IS NOT NULL
+              LIMIT 1",
+        )
+        .fetch_one(pool)
+        .await
+        .expect("storage.drives must be seeded (tests/common/init-test-schema.sh)")
+    }
+
+    /// A throw-away internal user. Two of these is what makes "the copier,
+    /// not the source author" a real assertion rather than a tautology.
+    async fn user(pool: &PgPool, tag: &str) -> Uuid {
+        sqlx::query_scalar(
+            "INSERT INTO auth.users (username, email, password_hash, role)
+             VALUES ($1, $2, 'x', 'user') RETURNING id",
+        )
+        .bind(format!("{PREFIX}{tag}"))
+        .bind(format!("{PREFIX}{tag}@example.test"))
+        .fetch_one(pool)
+        .await
+        .expect("seed user")
+    }
+
+    /// A file row plus the touch its author would have left, written directly
+    /// so each test starts from "someone already worked on this".
+    async fn file_authored_by(
+        pool: &PgPool,
+        folder: Uuid,
+        drive: Uuid,
+        author: Uuid,
+        name: &str,
+    ) -> Uuid {
+        let id: Uuid = sqlx::query_scalar(
+            "INSERT INTO storage.files
+                 (name, folder_id, drive_id, blob_hash, size, mime_type,
+                  created_by, updated_by, content_modified_by)
+             VALUES ($1, $2, $3, $4, 3, 'text/plain', $5, $5, $5)
+             RETURNING id",
+        )
+        .bind(format!("{PREFIX}{name}"))
+        .bind(folder)
+        .bind(drive)
+        .bind(HASH_A)
+        .bind(author)
+        .fetch_one(pool)
+        .await
+        .expect("seed file");
+
+        sqlx::query(
+            "INSERT INTO storage.file_content_touches (file_id, user_id, touched_at)
+             SELECT id, content_modified_by, content_modified_at
+               FROM storage.files WHERE id = $1",
+        )
+        .bind(id)
+        .execute(pool)
+        .await
+        .expect("seed touch");
+        id
+    }
+
+    async fn content_principal(pool: &PgPool, file: Uuid) -> Option<Uuid> {
+        sqlx::query_scalar("SELECT content_modified_by FROM storage.files WHERE id = $1")
+            .bind(file)
+            .fetch_one(pool)
+            .await
+            .expect("read content_modified_by")
+    }
+
+    /// This file's lanes, oldest first. Scoped to one file id, so other
+    /// suites' concurrent writes cannot affect it.
+    async fn lanes(pool: &PgPool, file: Uuid) -> Vec<(Uuid, DateTime<Utc>)> {
+        sqlx::query_as(
+            "SELECT user_id, touched_at FROM storage.file_content_touches
+              WHERE file_id = $1 ORDER BY touched_at",
+        )
+        .bind(file)
+        .fetch_all(pool)
+        .await
+        .expect("read touches")
+    }
+
+    /// An overwrite moves the principal to whoever did it AND leaves the
+    /// previous author's lane standing. That second half is the whole feature:
+    /// `content_modified_by` alone is last-writer-wins, so without the touch
+    /// table Alice's work becomes unfindable the moment Bob saves.
+    #[tokio::test]
+    async fn an_overwrite_adds_a_lane_without_erasing_the_previous_one() {
+        let pool = test_pool().await;
+        let (folder, drive) = seeded_root(&pool).await;
+        let alice = user(&pool, "ovw-alice").await;
+        let bob = user(&pool, "ovw-bob").await;
+        let file = file_authored_by(&pool, folder, drive, alice, "overwrite.txt").await;
+
+        repo(pool.clone())
+            .swap_blob_hash(&file.to_string(), HASH_B, 9, None, bob, None)
+            .await
+            .expect("swap");
+
+        assert_eq!(content_principal(&pool, file).await, Some(bob));
+        let lanes = lanes(&pool, file).await;
+        assert_eq!(
+            lanes.iter().map(|(u, _)| *u).collect::<Vec<_>>(),
+            vec![alice, bob],
+            "both authors must keep a lane"
+        );
+    }
+
+    /// The same person saving twice keeps ONE lane, with the later timestamp:
+    /// the primary key plus `ON CONFLICT` is what stops an autosave storm from
+    /// filling the table and from counting one file forty times.
+    #[tokio::test]
+    async fn repeated_saves_by_one_person_collapse_to_one_lane() {
+        let pool = test_pool().await;
+        let (folder, drive) = seeded_root(&pool).await;
+        let alice = user(&pool, "rep-alice").await;
+        let file = file_authored_by(&pool, folder, drive, alice, "repeat.txt").await;
+        let first = lanes(&pool, file).await[0].1;
+
+        let r = repo(pool.clone());
+        r.swap_blob_hash(&file.to_string(), HASH_B, 9, None, alice, None)
+            .await
+            .expect("swap");
+        r.swap_blob_hash(&file.to_string(), HASH_A, 9, None, alice, None)
+            .await
+            .expect("swap again");
+
+        let lanes = lanes(&pool, file).await;
+        assert_eq!(lanes.len(), 1, "one row per (file, person)");
+        assert_eq!(lanes[0].0, alice);
+        assert!(lanes[0].1 > first, "the lane carries the LATEST change");
+    }
+
+    /// A losing compare-and-swap must write NONE of the three. Without the
+    /// `WHERE matched` guard on the touch arm, a racer that changed nothing
+    /// would still appear in the feed as having worked on the file.
+    #[tokio::test]
+    async fn a_failed_compare_and_swap_writes_neither_principal_nor_touch() {
+        let pool = test_pool().await;
+        let (folder, drive) = seeded_root(&pool).await;
+        let alice = user(&pool, "cas-alice").await;
+        let bob = user(&pool, "cas-bob").await;
+        let file = file_authored_by(&pool, folder, drive, alice, "cas.txt").await;
+
+        // A lost CAS surfaces as `PreconditionFailed`, not as an `Ok` with a
+        // flag: the `matched` column is internal to the statement, and the
+        // method converts it so a caller cannot ignore the mismatch.
+        let err = repo(pool.clone())
+            .swap_blob_hash(
+                &file.to_string(),
+                HASH_B,
+                9,
+                None,
+                bob,
+                Some("deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
+            )
+            .await
+            .expect_err("a lost compare-and-swap must not report success");
+        assert!(
+            matches!(
+                err.kind,
+                crate::domain::errors::ErrorKind::PreconditionFailed
+            ),
+            "expected PreconditionFailed, got {err:?}"
+        );
+
+        let hash: String = sqlx::query_scalar("SELECT blob_hash FROM storage.files WHERE id = $1")
+            .bind(file)
+            .fetch_one(pool.as_ref())
+            .await
+            .expect("read blob_hash");
+        assert_eq!(hash, HASH_A, "content must not have moved");
+        assert_eq!(content_principal(&pool, file).await, Some(alice));
+        assert_eq!(
+            lanes(&pool, file)
+                .await
+                .iter()
+                .map(|(u, _)| *u)
+                .collect::<Vec<_>>(),
+            vec![alice],
+            "the losing racer must not claim a lane"
+        );
+    }
+
+    /// A copy PRESERVES the content clock and its principal, and inherits the
+    /// source's lanes — `storage.copy_file_satellites` arm 4/5, on the same
+    /// argument its attached-blobs arm already makes: copying bytes does not
+    /// make the copier their author. The copier gets no lane of their own;
+    /// copying is file management, not authorship.
+    ///
+    /// Both halves matter. Without the preservation the pair reads "last
+    /// changed just now, by nobody" (the clock defaults to `NOW()`, the
+    /// principal to NULL); without the lanes the copy is invisible in the feed
+    /// that the original is visible in.
+    #[tokio::test]
+    async fn a_copy_inherits_the_source_provenance_and_lanes() {
+        let pool = test_pool().await;
+        let (folder, drive) = seeded_root(&pool).await;
+        let alice = user(&pool, "cp-alice").await;
+        let bob = user(&pool, "cp-bob").await;
+        let source = file_authored_by(&pool, folder, drive, alice, "source.txt").await;
+        let source_lane = lanes(&pool, source).await[0].1;
+
+        let copy = repo(pool.clone())
+            .copy_file(
+                &source.to_string(),
+                None,
+                Some(&format!("{PREFIX}copy.txt")),
+                bob,
+            )
+            .await
+            .expect("copy");
+        let copy_id: Uuid = copy.id().parse().expect("uuid");
+
+        assert_eq!(
+            content_principal(&pool, copy_id).await,
+            Some(alice),
+            "the author of the bytes, not whoever copied them"
+        );
+        let copy_lanes = lanes(&pool, copy_id).await;
+        assert_eq!(
+            copy_lanes.iter().map(|(u, _)| *u).collect::<Vec<_>>(),
+            vec![alice],
+            "the copy inherits the source's lanes and adds none"
+        );
+        assert_eq!(
+            copy_lanes[0].1, source_lane,
+            "and inherits the timestamp with them"
+        );
+        assert_eq!(
+            content_principal(&pool, source).await,
+            Some(alice),
+            "the source is untouched"
+        );
+    }
+
+    /// The CASCADING copy — a whole folder — must preserve provenance and
+    /// lanes exactly as the single-file path does, because both go through
+    /// `storage.copy_file_satellites`.
+    ///
+    /// This is the pin that matters most for regressions. `copy_folder_tree`
+    /// is 170 lines of plpgsql that hands the function two arrays which must
+    /// correspond POSITIONALLY; the single-file path passes one-element
+    /// arrays and so cannot detect a pairing bug at all. Before this plan the
+    /// folder path left `content_modified_by` NULL on every copied file and
+    /// wrote no lanes, and nothing failed — the files looked right in every
+    /// listing while being invisible in the feed.
+    #[tokio::test]
+    async fn a_folder_copy_carries_provenance_and_lanes_for_every_file() {
+        let pool = test_pool().await;
+        let (root, drive) = seeded_root(&pool).await;
+        let alice = user(&pool, "tree-alice").await;
+        let bob = user(&pool, "tree-bob").await;
+
+        // A source folder with one file authored by Alice.
+        let src_folder: Uuid = sqlx::query_scalar(
+            "INSERT INTO storage.folders (name, parent_id, drive_id, created_by, updated_by)
+             VALUES ($1, $2, $3, $4, $4) RETURNING id",
+        )
+        .bind(format!("{PREFIX}tree-src"))
+        .bind(root)
+        .bind(drive)
+        .bind(alice)
+        .fetch_one(pool.as_ref())
+        .await
+        .expect("seed folder");
+        let inner = file_authored_by(&pool, src_folder, drive, alice, "tree-inner.txt").await;
+        let inner_lane = lanes(&pool, inner).await[0].1;
+
+        let result = repo(pool.clone())
+            .copy_folder_tree(
+                &src_folder.to_string(),
+                Some(root.to_string()),
+                Some(format!("{PREFIX}tree-dst")),
+            )
+            .await
+            .expect("copy tree");
+        assert_eq!(result.files_copied, 1, "fixture sanity");
+
+        // The copied file, found by its new parent rather than by name, so a
+        // rename in the function cannot make this pass vacuously.
+        let copied: Uuid = sqlx::query_scalar(
+            "SELECT f.id FROM storage.files f
+               JOIN storage.folders fo ON fo.id = f.folder_id
+              WHERE fo.name = $1 AND NOT f.is_trashed",
+        )
+        .bind(format!("{PREFIX}tree-dst"))
+        .fetch_one(pool.as_ref())
+        .await
+        .expect("find the copied file");
+        assert_ne!(copied, inner, "a real copy, not the source");
+
+        assert_eq!(
+            content_principal(&pool, copied).await,
+            Some(alice),
+            "NULL here is the pre-plan behaviour; Bob here would be forged authorship"
+        );
+        let copied_lanes = lanes(&pool, copied).await;
+        assert_eq!(
+            copied_lanes.iter().map(|(u, _)| *u).collect::<Vec<_>>(),
+            vec![alice],
+            "the cascade must write lanes too, or the subtree is invisible in the feed"
+        );
+        assert_eq!(copied_lanes[0].1, inner_lane);
+        assert!(
+            !copied_lanes.iter().any(|(u, _)| *u == bob),
+            "nobody is credited for copying"
+        );
+    }
+
+    /// An upload credits the uploader in both, which is the create path's half
+    /// of the same rule.
+    #[tokio::test]
+    async fn an_upload_credits_the_uploader() {
+        let pool = test_pool().await;
+        let (folder, _) = seeded_root(&pool).await;
+        let alice = user(&pool, "up-alice").await;
+
+        let saved = repo(pool.clone())
+            .save_file_with_blob(
+                format!("{PREFIX}upload.txt"),
+                Some(folder.to_string()),
+                "text/plain".to_string(),
+                HASH_A,
+                3,
+                alice,
+                None,
+            )
+            .await
+            .expect("save");
+        let id: Uuid = saved.id().parse().expect("uuid");
+
+        assert_eq!(content_principal(&pool, id).await, Some(alice));
+        assert_eq!(
+            lanes(&pool, id)
+                .await
+                .iter()
+                .map(|(u, _)| *u)
+                .collect::<Vec<_>>(),
+            vec![alice]
+        );
     }
 }
