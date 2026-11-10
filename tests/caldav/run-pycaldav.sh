@@ -104,9 +104,11 @@ OXICLOUD_BIN="$REPO_ROOT/target/$BUILD_TARGET/oxicloud"
 # `just test-caldav` for the record.
 if [[ ! -x "$OXICLOUD_BIN" ]]; then
     log "Building OxiCloud ($BUILD_TARGET) — no pre-built binary at $OXICLOUD_BIN..."
+    # `--features plugins` to share one artifact with every other build of
+    # this binary — see `tests/common/cargo_build.sh`.
     case "$BUILD_TARGET" in
-        debug)   (cd "$REPO_ROOT" && cargo build           2>&1 | tail -n 20) || die "cargo build failed" ;;
-        release) (cd "$REPO_ROOT" && cargo build --release 2>&1 | tail -n 20) || die "cargo build --release failed" ;;
+        debug)   (cd "$REPO_ROOT" && cargo build --features plugins           2>&1 | tail -n 20) || die "cargo build failed" ;;
+        release) (cd "$REPO_ROOT" && cargo build --features plugins --release 2>&1 | tail -n 20) || die "cargo build --release failed" ;;
         *)       die "Unsupported BUILD_TARGET='$BUILD_TARGET' (expected 'debug' or 'release')" ;;
     esac
     [[ -x "$OXICLOUD_BIN" ]] || die "Build completed but $OXICLOUD_BIN is missing"
