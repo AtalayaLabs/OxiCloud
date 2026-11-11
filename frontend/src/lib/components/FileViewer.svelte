@@ -7,6 +7,8 @@
 	import Icon from '$lib/icons/Icon.svelte';
 	import WopiEditor from '$lib/components/WopiEditor.svelte';
 	import CollabEditor from '$lib/components/CollabEditor.svelte';
+	import PdfPreview from '$lib/components/PdfPreview.svelte';
+	import { hasNativePdfViewer } from '$lib/utils/pdf';
 	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import { session } from '$lib/stores/session.svelte';
 	import { t } from '$lib/i18n/index.svelte';
@@ -88,9 +90,21 @@
 	 *  API URL directly — that response carries the global `X-Frame-Options: DENY`
 	 *  + `frame-ancestors 'none'`, which the browser's framed PDF viewer honours,
 	 *  so an embedded API URL renders as a broken-document icon. A blob has no
-	 *  response headers, so it sidesteps the framing block. */
+	 *  response headers, so it sidesteps the framing block.
+	 *
+	 *  Only set on browsers that HAVE an embedded PDF viewer. Where they don't
+	 *  (`pdfData` below), framing is pointless no matter what we serve. */
 	let pdfUrl = $state<string | null>(null);
+	/** The PDF's bytes, for `PdfPreview` to render with pdf.js. Set instead of
+	 *  `pdfUrl` when the browser has no embedded viewer — Chrome on Android,
+	 *  measurably (issue #780). Only one of the two is ever populated, so the
+	 *  bytes are fetched once either way and the ~1 MB pdf.js worker is never
+	 *  pulled on a browser that doesn't need it. */
+	let pdfData = $state<ArrayBuffer | null>(null);
 	let pdfError = $state(false);
+	/** Resolved once, not per render: a browser does not grow a PDF viewer
+	 *  mid-session. */
+	const nativePdf = hasNativePdfViewer();
 
 	function isImage(f: FileItem): boolean {
 		const m = (f.mime_type ?? '').toLowerCase();
@@ -274,24 +288,38 @@
 				.finally(() => (textLoading = false));
 		}
 
-		// Fetch the PDF as a same-origin blob and view it via an object URL (see
-		// `pdfUrl`). The cleanup revokes the URL when the file changes or the
-		// viewer closes; a stale response (newer file opened mid-fetch) is dropped.
+		// One fetch, two destinations. Where the browser has an embedded PDF
+		// viewer we hand it a same-origin blob to frame (see `pdfUrl`);
+		// where it doesn't we keep the bytes and render them with pdf.js
+		// (see `pdfData`). The cleanup revokes the URL when the file changes
+		// or the viewer closes; a stale response (newer file opened
+		// mid-fetch) is dropped.
 		if (k === 'pdf') {
 			pdfError = false;
 			pdfUrl = null;
+			pdfData = null;
 			let objectUrl: string | null = null;
 			apiFetch(fileInlineUrl(f.id, shareId), { credentials: 'same-origin' })
-				.then((r) => (r.ok ? r.blob() : Promise.reject(new Error(`HTTP ${r.status}`))))
-				.then((blob) => {
+				// Annotated: without it TS infers `Promise<ArrayBuffer> | Promise<Blob>`
+				// for the branch and refuses to chain it as one promise.
+				.then((r): Promise<ArrayBuffer | Blob> => {
+					if (!r.ok) return Promise.reject(new Error(`HTTP ${r.status}`));
+					return nativePdf ? r.blob() : r.arrayBuffer();
+				})
+				.then((body) => {
 					if (file !== f || !open) return;
-					objectUrl = URL.createObjectURL(blob);
-					pdfUrl = objectUrl;
+					if (body instanceof ArrayBuffer) {
+						pdfData = body;
+					} else {
+						objectUrl = URL.createObjectURL(body);
+						pdfUrl = objectUrl;
+					}
 				})
 				.catch(() => (pdfError = true));
 			return () => {
 				if (objectUrl) URL.revokeObjectURL(objectUrl);
 				pdfUrl = null;
+				pdfData = null;
 			};
 		}
 	});
@@ -475,6 +503,8 @@
 						</div>
 					{:else if pdfUrl}
 						<iframe class="fv__pdf" src={pdfUrl} title={file.name}></iframe>
+					{:else if pdfData}
+						<PdfPreview data={pdfData} name={file.name} />
 					{:else}
 						<p class="fv__status">{t('common.loading', 'Loading…')}</p>
 					{/if}
