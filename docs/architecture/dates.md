@@ -37,8 +37,6 @@ is trusted.
 > `PhotoResourceItemDto.captured_at` is **not** a gap — it differs from the
 > generic endpoint's `created_at` by decision, see
 > [§ And one column has two wire names](#and-one-column-has-two-wire-names-on-purpose).
-> The migration path is
-> [`docs/plan/normalize-file-dates.md`](/plan/normalize-file-dates).
 
 ---
 
