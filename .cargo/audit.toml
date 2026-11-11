@@ -432,4 +432,50 @@ ignore = [
     # crypto-bigint >=0.7.6. Tracked in AtalayaLabs/OxiCloud#834; re-check
     # whenever `cargo search opaque-ke` shows a non-pre-release 4.x.
     "RUSTSEC-2026-0387",
+
+    # RUSTSEC-2026-0459 — libsqlite3-sys 0.30.1, C SQLite CVE-2026-119375.
+    #
+    # NOT COMPILED. That is a stronger claim than the rest of this file
+    # makes: the other entries argue that code which IS linked cannot be
+    # driven to the vulnerable path. This one is never built at all.
+    #
+    # Four confirmations, cheapest first:
+    #   * `Cargo.toml` asks sqlx for `postgres` only — no `sqlite` feature,
+    #     and none of our features imply one.
+    #   * zero occurrences of "sqlite" under `src/` or `migrations/`.
+    #   * `cargo tree -e features -i libsqlite3-sys` prints "nothing to
+    #     print", and still nothing with `--target all`: the crate is not
+    #     in the resolved dependency graph for ANY target.
+    #   * `nm target/debug/oxicloud | grep -ci sqlite3` → 0. The C SQLite
+    #     amalgamation is not in the artifact.
+    #
+    # Why cargo-audit reports it regardless: it reads Cargo.lock, and the
+    # lockfile is FEATURE-AGNOSTIC — it records optional dependencies of
+    # packages in the resolve whether or not a feature enables them.
+    # `sqlx-sqlite` is an optional dep of sqlx, so it and its
+    # `libsqlite3-sys` both get lock entries. Confirmed not to be historical
+    # residue: a lockfile generated from scratch against our postgres-only
+    # feature list still contains both. `default-features = false` does not
+    # change it either. No manifest change on our side removes the entry.
+    #
+    # There is no upgrade either, which is worth recording because the
+    # advisory's remedy reads "upgrade to >=0.39.0":
+    #   * sqlx-sqlite 0.8.6 requires `libsqlite3-sys ^0.30.1`, so
+    #     `cargo update -p libsqlite3-sys --precise 0.39.0` cannot resolve.
+    #   * sqlx-sqlite 0.9.0 (newest, 2026-05-21) requires
+    #     `>=0.30.1, <0.38.0`. So even a full sqlx major upgrade — which
+    #     this advisory would not justify on its own — does NOT satisfy it.
+    #
+    # UNBLOCK CONDITION: a sqlx release whose `sqlx-sqlite` accepts
+    # `libsqlite3-sys >= 0.39`. Upstream has to widen that range; nothing
+    # here can. Re-check the dependency range on the newest `sqlx-sqlite`,
+    # and keep `cargo tree -i libsqlite3-sys` empty — if that ever prints a
+    # path, sqlite got enabled by something and this entry is void.
+    #
+    # For whoever reads this file next: this whole CLASS of entry — "in the
+    # lock, not in the binary" — disappears under `cargo auditable build` +
+    # `cargo audit bin <binary>`, which audits the actually-linked
+    # dependency list instead of the lockfile. It would also retire the
+    # `plugins`-is-opt-in arguments above. Deferred, not rejected.
+    "RUSTSEC-2026-0459",
 ]

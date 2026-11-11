@@ -550,6 +550,10 @@ HURL_FILES=( \
   "$API_DIR/broken_pdf_resilience.hurl" \
   "$API_DIR/upload_mime_sniffing.hurl" \
   "$API_DIR/user_content_xss_headers.hurl" \
+  # Static web layer rather than /api: pins that a 404 under
+  # `/_app/immutable/` is NOT answered with the year-long immutable
+  # cache. Anonymous and stateless, so its position is free.
+  "$API_DIR/web_static_cache_headers.hurl" \
   "$API_DIR/transcode_import.hurl" \
   "$API_DIR/dedup_admin_gate.hurl" \
   "$API_DIR/admin_jobs.hurl" \

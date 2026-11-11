@@ -118,9 +118,43 @@
     "tab_people": "人们",
     "map_loading": "正在加载地图...",
     "map_error": "无法加载地图",
-    "confirm_delete_one_permanent": "永久删除「{{name}}」？此操作无法撤销。"
+    "confirm_delete_one_permanent": "永久删除「{{name}}」？此操作无法撤销。",
+    "filter_kind": "媒体类型",
+    "filter_drive": "云盘",
+    "all_drives": "所有云盘",
+    "sort": {
+      "title": "排序方式",
+      "direction": "排序方向",
+      "captured_at": "拍摄日期",
+      "created_at": "上传日期",
+      "updated_at": "最后修改"
+    },
+    "filter_favorite": "仅收藏",
+    "filter_favorite_on": "仅显示收藏 — 点击显示全部",
+    "filter_favorite_off": "仅显示收藏",
+    "kind": {
+      "all": "全部",
+      "photo": "照片",
+      "video": "视频"
+    },
+    "dedup_dialog": {
+      "title": "此内容存在副本",
+      "intro": "你的云盘中有 {{n}} 个文件引用相同的内容。将一个副本移入回收站不会释放内容——请选中所有想移入回收站的副本。",
+      "trashed_note": "另有 {{n}} 个副本已在回收站中，仍占用该内容。请在回收站中彻底删除，才能真正释放空间。",
+      "truncated": "服务器限制了此列表。还存在未在此显示的副本。",
+      "select_all": "选中所有可删除项",
+      "select_none": "取消选择",
+      "picked": "已选择 {{n}} / {{total}}",
+      "origin_badge": "你点击的那个",
+      "readonly_badge": "只读",
+      "drive_root": "云盘根目录",
+      "readonly_note": "{{n}} 个副本位于你只有读取权限的位置——无法从这里移入回收站。",
+      "confirm": "将 {{n}} 个文件移入回收站"
+    }
   },
   "music": {
+    "description": "说明",
+    "edit_playlist": "编辑播放列表",
     "create_playlist": "创建播放列表",
     "playlists": "播放列表",
     "no_playlists": "还没有播放列表",
@@ -761,7 +795,6 @@
     "invalid_credentials": "用户名或密码不正确。请检查后重试。",
     "email_taken": "该邮箱已注册账号。请直接登录。",
     "username_taken": "该用户名已被占用。请换一个。",
-    "registration_disabled": "此服务器已关闭注册。请联系管理员为你创建账号。",
     "registration_password_required": "此服务器不发送登录邮件。请输入密码来创建账号。",
     "session_expired": "您的会话已过期。请重新登录。",
     "signing_in": "正在登录...",
@@ -1289,6 +1322,10 @@
       "delete_title": "删除挂载"
     },
     "jobs": {
+      "params_title": "运行 {{name}}",
+      "params_default": "默认值：{{value}}",
+      "params_no_default": "无默认值",
+      "params_none": "此任务不接受参数。",
       "run_all_consistency": "运行所有一致性检查",
       "run_deep": "深度扫描",
       "run_deep_hint": "还运行缓慢的变体（blob 重新哈希、bitrot 检测）。",
@@ -1858,7 +1895,13 @@
     "archives": "档案",
     "documents": "文件",
     "images": "图片",
-    "installers": "安装人员",
+    "config": "配置",
+    "disk_images": "磁盘映像",
+    "ebooks": "电子书",
+    "executables": "应用程序",
+    "fonts": "字体",
+    "packages": "软件包",
+    "unknown": "未知",
     "markdown": "降价",
     "presentations": "演讲",
     "spreadsheets": "电子表格",
@@ -1947,6 +1990,8 @@
     "size_label": "大小",
     "title": "搜索",
     "type": {
+      "code": "代码",
+      "folder": "文件夹",
       "audio": "音频",
       "all": "所有类型",
       "image": "图片",
@@ -2030,6 +2075,8 @@
     "banner_cta": "升级"
   },
   "drive": {
+    "copied_n": "已将 {{n}} 个项目复制到 {{drive}}",
+    "moved_n": "已将 {{n}} 个项目移动到 {{drive}}",
     "read_only_banner": {
       "title": "此云盘为只读",
       "title_named": "云盘 \"{{name}}\" 为只读",
@@ -2124,5 +2171,17 @@
   },
   "sidebar": {
     "oxicloud_version": "OxiCloud"
+  },
+  "error": {
+    "not_found": {
+      "title": "云朵飘远了",
+      "body": "这朵小云飘得有点太远了。找不到你要的页面。",
+      "art_alt": "一朵飘得太远的小云"
+    },
+    "generic": {
+      "title": "出错了",
+      "body": "请稍后再试。"
+    },
+    "go_home": "返回首页"
   }
 }

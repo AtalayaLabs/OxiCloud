@@ -118,9 +118,43 @@
     "tab_people": "人々",
     "map_loading": "マップを読み込み中…",
     "map_error": "マップを読み込めませんでした",
-    "confirm_delete_one_permanent": "「{{name}}」を完全に削除しますか?この操作は取り消せません。"
+    "confirm_delete_one_permanent": "「{{name}}」を完全に削除しますか?この操作は取り消せません。",
+    "filter_kind": "メディアの種類",
+    "filter_drive": "ドライブ",
+    "all_drives": "すべてのドライブ",
+    "sort": {
+      "title": "並べ替え",
+      "direction": "並べ替えの方向",
+      "captured_at": "撮影日",
+      "created_at": "アップロード日",
+      "updated_at": "最終更新日"
+    },
+    "filter_favorite": "お気に入りのみ",
+    "filter_favorite_on": "お気に入りのみ表示中 — クリックしてすべて表示",
+    "filter_favorite_off": "お気に入りのみ表示",
+    "kind": {
+      "all": "すべて",
+      "photo": "写真",
+      "video": "動画"
+    },
+    "dedup_dialog": {
+      "title": "このコンテンツには複製があります",
+      "intro": "ドライブ内の {{n}} 件のファイルが同じ内容を参照しています。1 つの複製をゴミ箱に入れても内容は解放されません。ゴミ箱に入れたい複製をすべて選択してください。",
+      "trashed_note": "他に {{n}} 件の複製がすでにゴミ箱にあり、まだ内容を保持しています。実際に容量を解放するには、ゴミ箱から完全に削除してください。",
+      "truncated": "サーバーがこの一覧を制限しました。ここに表示されていない複製がさらに存在します。",
+      "select_all": "削除可能なものをすべて選択",
+      "select_none": "選択を解除",
+      "picked": "{{total}} 件中 {{n}} 件を選択",
+      "origin_badge": "クリックしたファイル",
+      "readonly_badge": "読み取り専用",
+      "drive_root": "ドライブのルート",
+      "readonly_note": "{{n}} 件の複製は読み取り権限のみの場所にあります。ここからゴミ箱に入れることはできません。",
+      "confirm": "{{n}} 件のファイルをゴミ箱へ"
+    }
   },
   "music": {
+    "description": "説明",
+    "edit_playlist": "プレイリストを編集",
     "create_playlist": "プレイリストを作成",
     "playlists": "プレイリスト",
     "no_playlists": "プレイリストがありません",
@@ -761,7 +795,6 @@
     "invalid_credentials": "ユーザー名またはパスワードが正しくありません。確認して、もう一度お試しください。",
     "email_taken": "このメールアドレスのアカウントはすでに存在します。代わりにサインインしてください。",
     "username_taken": "このユーザー名はすでに使われています。別の名前を選んでください。",
-    "registration_disabled": "このサーバーでは新規登録が無効です。管理者にアカウントの作成を依頼してください。",
     "registration_password_required": "このサーバーはサインイン用のメールを送信しません。アカウントを作成するにはパスワードを入力してください。",
     "session_expired": "セッションの有効期限が切れました。再度サインインしてください。",
     "signing_in": "サインイン中…",
@@ -1309,6 +1342,10 @@
       "delete_title": "マウントを削除"
     },
     "jobs": {
+      "params_title": "{{name}} を実行",
+      "params_default": "既定値: {{value}}",
+      "params_no_default": "既定値なし",
+      "params_none": "このジョブにはパラメーターがありません。",
       "run_all_consistency": "すべての整合性チェックを実行する",
       "run_deep": "詳細スキャン",
       "run_deep_hint": "低速な亜種 (BLOB 再ハッシュ、ビットロット検出) も実行します。",
@@ -1858,7 +1895,13 @@
     "archives": "アーカイブ",
     "documents": "書類",
     "images": "画像",
-    "installers": "設置者",
+    "config": "設定",
+    "disk_images": "ディスクイメージ",
+    "ebooks": "電子書籍",
+    "executables": "アプリケーション",
+    "fonts": "フォント",
+    "packages": "パッケージ",
+    "unknown": "不明",
     "markdown": "マークダウン",
     "presentations": "プレゼンテーション",
     "spreadsheets": "スプレッドシート",
@@ -1947,6 +1990,8 @@
     "size_label": "サイズ",
     "title": "検索",
     "type": {
+      "code": "コード",
+      "folder": "フォルダー",
       "audio": "音声",
       "all": "すべての種類",
       "image": "画像",
@@ -2030,6 +2075,8 @@
     "banner_cta": "アップグレード"
   },
   "drive": {
+    "copied_n": "{{n}} 件を {{drive}} にコピーしました",
+    "moved_n": "{{n}} 件を {{drive}} に移動しました",
     "read_only_banner": {
       "title": "このドライブは読み取り専用です",
       "title_named": "ドライブ「{{name}}」は読み取り専用です",
@@ -2124,5 +2171,17 @@
   },
   "sidebar": {
     "oxicloud_version": "OxiCloud"
+  },
+  "error": {
+    "not_found": {
+      "title": "雲の上で迷子",
+      "body": "小さな雲が少し遠くまで流されてしまいました。お探しのページはどこにも見つかりません。",
+      "art_alt": "遠くまで流されてしまった小さな雲"
+    },
+    "generic": {
+      "title": "問題が発生しました",
+      "body": "しばらくしてからもう一度お試しください。"
+    },
+    "go_home": "ホームに戻る"
   }
 }

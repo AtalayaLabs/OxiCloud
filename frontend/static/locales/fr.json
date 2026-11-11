@@ -118,9 +118,43 @@
     "tab_people": "Personnes",
     "map_loading": "Chargement de la carte…",
     "map_error": "Impossible de charger la carte",
-    "confirm_delete_one_permanent": "Supprimer définitivement « {{name}} » ? Cette action est irréversible."
+    "confirm_delete_one_permanent": "Supprimer définitivement « {{name}} » ? Cette action est irréversible.",
+    "filter_kind": "Type de média",
+    "filter_drive": "Disque",
+    "all_drives": "Tous les disques",
+    "sort": {
+      "title": "Trier par",
+      "direction": "Sens du tri",
+      "captured_at": "Date de prise de vue",
+      "created_at": "Date d'import",
+      "updated_at": "Dernière modification"
+    },
+    "filter_favorite": "Favoris uniquement",
+    "filter_favorite_on": "Affichage des favoris uniquement — cliquez pour tout afficher",
+    "filter_favorite_off": "Afficher uniquement les favoris",
+    "kind": {
+      "all": "Tout",
+      "photo": "Photos",
+      "video": "Vidéos"
+    },
+    "dedup_dialog": {
+      "title": "Ce contenu a des copies",
+      "intro": "{{n}} fichier(s) de votre disque référencent les mêmes octets. Mettre une copie à la corbeille ne libère pas le contenu — sélectionnez chaque copie que vous voulez envoyer à la corbeille.",
+      "trashed_note": "{{n}} autre(s) copie(s) se trouvent déjà dans votre corbeille et retiennent encore le contenu. Purgez-les depuis la Corbeille pour libérer réellement les octets.",
+      "truncated": "Le serveur a limité cette liste. D'autres copies existent mais ne sont pas affichées ici.",
+      "select_all": "Tout sélectionner (supprimables)",
+      "select_none": "Ne rien sélectionner",
+      "picked": "{{n}} sur {{total}} sélectionné(s)",
+      "origin_badge": "celle sur laquelle vous avez cliqué",
+      "readonly_badge": "lecture seule",
+      "drive_root": "Racine du disque",
+      "readonly_note": "{{n}} copie(s) se trouvent là où vous n'avez qu'un accès en lecture — elles ne peuvent pas être mises à la corbeille d'ici.",
+      "confirm": "Mettre {{n}} fichier(s) à la corbeille"
+    }
   },
   "music": {
+    "description": "Description",
+    "edit_playlist": "Modifier la liste de lecture",
     "create_playlist": "Créer une Playlist",
     "playlists": "Listes de lecture",
     "no_playlists": "Aucune playlist",
@@ -772,7 +806,6 @@
     "invalid_credentials": "Nom d'utilisateur ou mot de passe incorrect. Vérifiez-les et réessayez.",
     "email_taken": "Un compte existe déjà avec cette adresse e-mail. Connectez-vous plutôt.",
     "username_taken": "Ce nom d'utilisateur est déjà pris. Choisissez-en un autre.",
-    "registration_disabled": "Les inscriptions sont désactivées sur ce serveur. Demandez à un administrateur de créer votre compte.",
     "registration_password_required": "Ce serveur n'envoie pas d'e-mails de connexion. Saisissez un mot de passe pour créer votre compte.",
     "session_expired": "Votre session a expiré. Veuillez vous reconnecter.",
     "signing_in": "Connexion…",
@@ -1328,6 +1361,10 @@
       "delete_title": "Supprimer le montage"
     },
     "jobs": {
+      "params_title": "Exécuter {{name}}",
+      "params_default": "par défaut : {{value}}",
+      "params_no_default": "aucune valeur par défaut",
+      "params_none": "Cette tâche ne prend aucun paramètre.",
       "run_all_consistency": "Exécuter tous les contrôles de cohérence",
       "run_deep": "Analyse approfondie",
       "run_deep_hint": "Exécute également des variantes lentes (re-hachage de blob, détection bitrot).",
@@ -1858,7 +1895,13 @@
     "archives": "Archives",
     "documents": "Documents",
     "images": "Images",
-    "installers": "Installateurs",
+    "config": "Configuration",
+    "disk_images": "Images disque",
+    "ebooks": "Livres numériques",
+    "executables": "Applications",
+    "fonts": "Polices",
+    "packages": "Paquets",
+    "unknown": "Inconnu",
     "markdown": "Réduction",
     "presentations": "Présentations",
     "spreadsheets": "Feuilles de calcul",
@@ -1947,6 +1990,8 @@
     "size_label": "Taille",
     "title": "Rechercher",
     "type": {
+      "code": "Code",
+      "folder": "Dossiers",
       "audio": "Audio",
       "all": "Tous les types",
       "image": "Images",
@@ -2030,6 +2075,8 @@
     "banner_cta": "Mettre à niveau"
   },
   "drive": {
+    "copied_n": "{{n}} élément(s) copié(s) vers {{drive}}",
+    "moved_n": "{{n}} élément(s) déplacé(s) vers {{drive}}",
     "read_only_banner": {
       "title": "Ce disque est en lecture seule",
       "title_named": "Le disque « {{name}} » est en lecture seule",
@@ -2124,5 +2171,17 @@
   },
   "sidebar": {
     "oxicloud_version": "OxiCloud"
+  },
+  "error": {
+    "not_found": {
+      "title": "La tête dans les nuages",
+      "body": "Ce petit nuage a dérivé un peu trop loin. La page demandée est introuvable.",
+      "art_alt": "Un petit nuage qui a dérivé trop loin"
+    },
+    "generic": {
+      "title": "Une erreur est survenue",
+      "body": "Veuillez réessayer dans un instant."
+    },
+    "go_home": "Retour à l'accueil"
   }
 }

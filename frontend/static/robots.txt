@@ -1,0 +1,30 @@
+# OxiCloud — a private, self-hosted file store. Nothing here is meant to be
+# indexed, so this is a blanket disallow rather than a path list.
+#
+# Blanket for two reasons:
+#
+#   1. robots.txt is PUBLIC. A rule like `Disallow: /s/` would advertise that
+#      the public-share path exists and is worth a look. `Disallow: /` leaks
+#      nothing about the layout.
+#   2. Per-bot rules are a treadmill. Naming GPTBot / ClaudeBot / CCBot /
+#      Google-Extended and friends silently fails for every crawler invented
+#      after this file was written; `*` covers them and their successors
+#      without maintenance.
+#
+# This is only half the control, and the weaker half: `Disallow` asks polite
+# crawlers not to FETCH, but a URL linked from somewhere else can still be
+# listed from that link alone. The response header `X-Robots-Tag: noindex,
+# nofollow` is what prevents INDEXING even when a page is fetched; OxiCloud
+# sends it on every web response by default (see
+# `src/interfaces/web/mod.rs::create_web_routes`).
+#
+# And neither is access control. The protection for a public share link is
+# that its token is unguessable and can expire — a leaked link opened by a
+# human is unaffected by anything in this file.
+#
+# Operators who DO want something indexed (a public landing page in front of
+# an OxiCloud instance, say) should override this file and the header at their
+# reverse proxy rather than editing it here.
+
+User-agent: *
+Disallow: /
