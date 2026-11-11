@@ -104,7 +104,8 @@
 	import Icon from '$lib/icons/Icon.svelte';
 	import {
 		setCacheRecommended,
-		setNotificationSinkMissing
+		setNotificationSinkMissing,
+		setOpaqueMigrationRecommended
 	} from '$lib/stores/adminAdvisories.svelte';
 	import ActionMenu, { type ActionMenuItem } from '$lib/components/ActionMenu.svelte';
 	import ConfirmButton from '$lib/components/ConfirmButton.svelte';
@@ -476,6 +477,7 @@
 			// the flags only have visible effect on admin routes.
 			setCacheRecommended(dashboard.storage_cache_recommended === true);
 			setNotificationSinkMissing(dashboard.notification_sink_missing === true);
+			setOpaqueMigrationRecommended(dashboard.opaque_migration_recommended === true);
 		} catch (e) {
 			dashboardError = errorMessage(e);
 		}

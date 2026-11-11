@@ -1663,6 +1663,28 @@ pub async fn get_dashboard_stats(
                 });
             remote && !state.core.config.storage.cache.enabled
         },
+        // OPAQUE still off while passwords are in use. Fires only when
+        // BOTH:
+        //   - password login is allowed (`OXICLOUD_AUTH_METHODS`), so
+        //     there is a password path for an aPAKE to replace, AND
+        //   - `OXICLOUD_AUTH_OPAQUE_MODE` is `off`.
+        //
+        // Reads `config.opaque.mode` directly rather than
+        // `effective_mode()`, deliberately: that helper collapses "the
+        // operator set off" and "password auth is disabled, so OPAQUE is
+        // moot" into the same `Off`, and this banner must fire for the
+        // first and stay quiet for the second. An OIDC-only deployment
+        // would otherwise be nagged about a login path it does not have.
+        opaque_migration_recommended: {
+            use crate::common::config::AuthMethod;
+            use crate::infrastructure::services::opaque_service::OpaqueMode;
+            state
+                .core
+                .config
+                .auth
+                .is_method_allowed(AuthMethod::Password)
+                && state.core.config.opaque.mode == OpaqueMode::Off
+        },
         // No notification sink configured — see
         // [`compute_notification_sink_missing`] for the rule.
         notification_sink_missing: compute_notification_sink_missing(

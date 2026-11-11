@@ -87,11 +87,20 @@ Authorization: Bearer {{admin_token}}
 
 HTTP 200
 [Asserts]
-# Shape: both flags present, both booleans.
+# Shape: all three flags present, all booleans.
 jsonpath "$.storage_cache_recommended" isBoolean
 jsonpath "$.notification_sink_missing" isBoolean
+jsonpath "$.opaque_migration_recommended" isBoolean
 # Values matching tests/common/server.env:
 #   - active backend is local_main (first entry) → not remote → false
 jsonpath "$.storage_cache_recommended" == false
 #   - OXICLOUD_JOBS_NOTIFY_EMAIL_TO is set → sink NOT missing → false
 jsonpath "$.notification_sink_missing" == false
+#   - OXICLOUD_AUTH_OPAQUE_MODE=migrate → already migrating → false.
+#     The harness happens to be configured the way the banner advises,
+#     which makes this the useful direction to pin: flipping the suite
+#     back to `off` must surface the advisory rather than leave the
+#     field stuck. The password half of the rule is satisfied here too
+#     (`OXICLOUD_AUTH_METHODS=password,magic_link`), so a `true` would
+#     mean the mode check regressed, not the method check.
+jsonpath "$.opaque_migration_recommended" == false
