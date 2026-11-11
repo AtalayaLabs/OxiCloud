@@ -2644,7 +2644,8 @@ pub struct FeaturesConfig {
     /// gates FE behaviour only; `/api/rt/ws` + `/api/rt/ticket` are
     /// still registered (gated by `enable_message_bus`).
     ///
-    /// Env: `OXICLOUD_ENABLE_SHARED_WORKER_BUS` (default `false`).
+    /// Env: `OXICLOUD_ENABLE_SHARED_WORKER_BUS` (default `true`).
+    /// Set it to `false` to put every tab back on its own WebSocket.
     /// See `docs/plan/message-bus-via-shared-worker.md`.
     pub enable_shared_worker_bus: bool,
 
@@ -3152,15 +3153,22 @@ impl Default for FeaturesConfig {
             // pair can only be inconsistent through an explicit
             // operator override.
             enable_markdown_collab: true,
-            // Shared-worker bus — OFF by default (opt-in). See the
-            // field docstring: the fan-out reduction win is real, but
-            // production behaviour across browsers, extensions and
-            // tab-lifecycle quirks is still being observed. Operators
-            // who want the win today set
-            // OXICLOUD_ENABLE_SHARED_WORKER_BUS=true and restart; the
-            // mandatory handshake-tested fallback bounds blast radius
-            // on any browser that can't run shared mode.
-            enable_shared_worker_bus: false,
+            // Shared-worker bus — ON by default (opt-out). It shipped off
+            // for an observation window, because shared-worker behaviour
+            // varies across browsers, extensions and tab-lifecycle events;
+            // that window has closed, so the default now matches what the
+            // feature was built for: `active_ws_sessions` of roughly `U`
+            // instead of `U × T`.
+            //
+            // Flipping the default is low-risk precisely because the
+            // fallback was mandatory from the start: a browser without
+            // `SharedWorker`, blocked by CSP, or failing the 1 s handshake
+            // lands on the per-tab client with nothing user-visible. The
+            // flag only decides whether to TRY shared mode.
+            //
+            // `OXICLOUD_ENABLE_SHARED_WORKER_BUS=false` restores per-tab
+            // for an operator who needs it.
+            enable_shared_worker_bus: true,
             grant_cleanup: GrantCleanupConfig::default(),
             notifications_retention_days: 30, // 30 days is the plan's default
         }

@@ -1321,30 +1321,41 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
                     .with_state(app_state.clone())
                     .layer(access_log!("http::api")),
             );
+
+            // Shared-worker bus — ON by default since the observation
+            // window closed; `OXICLOUD_ENABLE_SHARED_WORKER_BUS=false`
+            // opts out. The flag gates FE behaviour only; routes are
+            // unchanged either way.
+            //
+            // The log condition is INVERTED along with the default, which
+            // keeps the original rule: report only the state that diverges
+            // from the default, so a default-configured instance stays
+            // quiet and an operator who made a choice sees it reflected.
+            // The opt-out is also the more useful of the two in a boot
+            // log — it is the first thing to suspect when someone reports
+            // `U × T` WebSocket sessions where they expected `U`.
+            //
+            // NESTED inside this arm deliberately: with the bus off there
+            // is no WebSocket to share, so "one per tab" describes nothing
+            // and the line would be noise in precisely the logs that
+            // already say `message_bus disabled` below. Nesting makes that
+            // dependency structural instead of a second condition for a
+            // future edit to forget.
+            if !app_state.core.config.features.enable_shared_worker_bus {
+                tracing::info!(
+                    target: "audit",
+                    event = "config.feature_disabled",
+                    feature = "shared_worker_bus",
+                    "shared-worker bus disabled (OXICLOUD_ENABLE_SHARED_WORKER_BUS=false) — \
+                     clients will open one WebSocket per TAB, not per browser",
+                );
+            }
         } else {
             tracing::info!(
                 target: "audit",
                 event = "config.feature_disabled",
                 feature = "message_bus",
                 "message bus disabled — /api/rt/ws and /api/rt/ticket not registered (404)",
-            );
-        }
-
-        // Shared-worker bus — opt-in via `OXICLOUD_ENABLE_SHARED_WORKER_BUS=true`
-        // while production behaviour across browsers, extensions and
-        // tab lifecycle is in observation. The flag gates FE behaviour
-        // only; routes are unchanged. Log the resolved state only when
-        // it diverges from the default (`false`), so operators who
-        // consciously enabled the feature can see the choice reflected
-        // without flooding default-configured instances with per-boot
-        // noise.
-        if app_state.core.config.features.enable_shared_worker_bus {
-            tracing::info!(
-                target: "audit",
-                event = "config.feature_enabled",
-                feature = "shared_worker_bus",
-                "shared-worker bus enabled (OXICLOUD_ENABLE_SHARED_WORKER_BUS=true) — \
-                 clients will open one WebSocket per browser, not per tab",
             );
         }
 

@@ -51,9 +51,11 @@ afterEach(() => {
 });
 
 describe('messageBus factory — opt-in via shared_worker_bus flag', () => {
-	it('returns the per-tab client when /api/config says shared_worker_bus=false (default)', async () => {
-		// Server at default — factory must stay per-tab regardless of
-		// browser capability.
+	it('returns the per-tab client when /api/config says shared_worker_bus=false (opt-out)', async () => {
+		// Operator opted OUT — factory must stay per-tab regardless of
+		// browser capability. (`false` used to be the server default; it
+		// is now an explicit choice, and the gate is unchanged either
+		// way: shared mode is attempted only on an explicit `true`.)
 		getConfigMock.mockResolvedValue({
 			version: 'test',
 			features: {
