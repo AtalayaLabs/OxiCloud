@@ -6,16 +6,41 @@ initial_etag: header "ETag"
 [Asserts]
 header "Content-Type" == "text/css; charset=utf-8"
 header "Cache-Control" == "no-cache"
+header "Vary" contains "Accept-Encoding"
 header "X-Content-Type-Options" == "nosniff"
 
+# Regression pin: HEAD must negotiate like GET without advertising the raw
+# CSS length for a compressed response (Axum's empty-body hint hid it).
 HEAD {{base_url}}/themes/active.css
+Accept-Encoding: gzip
 HTTP 200
 [Asserts]
 header "ETag" == "{{initial_etag}}"
+header "Content-Encoding" == "gzip"
+header "Content-Length" not exists
+# HEAD has no gzip stream to decode; inspect the actual received bytes.
+rawbytes count == 0
 
 GET {{base_url}}/themes/active.css
 If-None-Match: {{initial_etag}}
+Accept-Encoding: gzip
 HTTP 304
+[Asserts]
+header "ETag" == "{{initial_etag}}"
+header "Content-Length" not exists
+header "Content-Encoding" not exists
+body == ""
+
+# Regression pin: conditional HEAD must retain validators and never return CSS.
+HEAD {{base_url}}/themes/active.css
+If-None-Match: {{initial_etag}}
+Accept-Encoding: gzip
+HTTP 304
+[Asserts]
+header "ETag" == "{{initial_etag}}"
+header "Content-Length" not exists
+header "Content-Encoding" not exists
+body == ""
 
 GET {{base_url}}/themes/unknown.css
 HTTP 404

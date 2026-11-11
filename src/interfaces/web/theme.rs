@@ -42,75 +42,16 @@ fn matches(headers: &HeaderMap, etag: &str) -> bool {
                 .any(|tag| tag == "*" || tag.strip_prefix("W/").unwrap_or(tag) == normalized)
         })
 }
-// Encoding is selected from precomputed bytes, so GET and HEAD agree even
-// when the outer compression layer would otherwise see an empty HEAD body.
-fn representation<'a>(
-    theme: &'a PreparedTheme,
-    headers: &HeaderMap,
-) -> Option<(&'static str, &'a bytes::Bytes)> {
-    let raw = headers
-        .get_all(header::ACCEPT_ENCODING)
-        .iter()
-        .filter_map(|v| v.to_str().ok())
-        .collect::<Vec<_>>()
-        .join(",");
-    let quality = |encoding: &str| -> f32 {
-        let mut explicit = None;
-        let mut wildcard = None;
-        for item in raw.split(',') {
-            let mut fields = item.trim().split(';');
-            let name = fields.next().unwrap_or("").trim();
-            let q = fields
-                .next()
-                .map(|q| {
-                    q.trim()
-                        .strip_prefix("q=")
-                        .and_then(|v| v.parse::<f32>().ok())
-                        .filter(|q| (0.0..=1.0).contains(q))
-                        .unwrap_or(0.0)
-                })
-                .unwrap_or(1.0);
-            if name.eq_ignore_ascii_case(encoding) {
-                explicit = Some(q);
-            }
-            if name == "*" {
-                wildcard = Some(q);
-            }
-        }
-        explicit.unwrap_or_else(|| {
-            if encoding == "identity" {
-                if wildcard == Some(0.0) { 0.0 } else { 1.0 }
-            } else {
-                wildcard.unwrap_or(0.0)
-            }
-        })
-    };
-    // Identity's implicit q=1 does not override an explicitly accepted encoding.
-    let br = quality("br");
-    let gzip = quality("gzip");
-    if br > 0.0 && br >= gzip {
-        Some(("br", &theme.brotli))
-    } else if gzip > 0.0 {
-        Some(("gzip", &theme.gzip))
-    } else if quality("identity") > 0.0 {
-        Some(("identity", &theme.css))
-    } else {
-        None
-    }
-}
 fn response(theme: &PreparedTheme, headers: &HeaderMap, method: &Method) -> Response<Body> {
-    let Some((encoding, bytes)) = representation(theme, headers) else {
-        return Response::builder()
-            .status(StatusCode::NOT_ACCEPTABLE)
-            .header(header::VARY, "Accept-Encoding")
-            .body(Body::empty())
-            .expect("static response");
-    };
     let cached = matches(headers, &theme.etag);
     let body = if cached || *method == Method::HEAD {
-        Body::empty()
+        // An unknown size avoids a spurious Content-Length: 0 on 304 and lets
+        // compression use HEAD's representation length before removing it.
+        Body::from_stream(futures::stream::empty::<
+            Result<bytes::Bytes, std::convert::Infallible>,
+        >())
     } else {
-        Body::from(bytes.clone())
+        Body::from(theme.css.clone())
     };
     let mut response = Response::builder()
         .status(if cached {
@@ -121,11 +62,10 @@ fn response(theme: &PreparedTheme, headers: &HeaderMap, method: &Method) -> Resp
         .header(header::CONTENT_TYPE, "text/css; charset=utf-8")
         .header(header::CACHE_CONTROL, "no-cache")
         .header(header::ETAG, &theme.etag)
-        .header(header::CONTENT_ENCODING, encoding)
         .header(header::VARY, "Accept-Encoding")
         .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff");
     if !cached {
-        response = response.header(header::CONTENT_LENGTH, bytes.len());
+        response = response.header(header::CONTENT_LENGTH, theme.css.len());
     }
     response
         .body(body)
@@ -134,45 +74,174 @@ fn response(theme: &PreparedTheme, headers: &HeaderMap, method: &Method) -> Resp
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::interfaces::middleware::has_representation_body;
+
     #[tokio::test]
-    async fn compressed_get_and_head_share_validators_and_lengths() {
-        use std::io::Read;
-        let theme = crate::infrastructure::services::theme_assets::prepare_theme(
-            "default".into(),
+    async fn existing_layers_compress_css_without_changing_content_or_validators() {
+        use axum::http::Request;
+        use tokio::io::AsyncReadExt;
+        use tower::ServiceExt;
+        use tower_http::compression::predicate::{DefaultPredicate, Predicate, SizeAbove};
+
+        for css in [
+            ":root {}".to_owned(),
+            ":root { --color-accent: red; }".repeat(3),
             ":root { --color-accent: red; }".repeat(100),
-        );
-        for encoding in ["br", "gzip", "identity"] {
-            let mut headers = HeaderMap::new();
-            headers.insert(header::ACCEPT_ENCODING, encoding.parse().unwrap());
-            let get = response(&theme, &headers, &Method::GET);
-            let head = response(&theme, &headers, &Method::HEAD);
-            assert_eq!(get.headers(), head.headers());
-            assert_eq!(get.headers()[header::CONTENT_ENCODING], encoding);
-            let body = axum::body::to_bytes(get.into_body(), 1024 * 1024)
-                .await
-                .unwrap();
-            let mut decoded = Vec::new();
-            match encoding {
-                "gzip" => {
-                    flate2::read::GzDecoder::new(body.as_ref())
-                        .read_to_end(&mut decoded)
+        ] {
+            let theme = Arc::new(
+                crate::infrastructure::services::theme_assets::prepare_theme("default".into(), css),
+            );
+            let active = theme.clone();
+            // Regression pin: exercise compression outside the route, as in production;
+            // compressed bytes must decode to CSS and share the weak validator.
+            // The web layer uses the default 32-byte threshold; the global layer
+            // uses 256 bytes. Its MIME/download exclusions do not apply to CSS.
+            let app = Router::new()
+                .route(
+                    "/themes/active.css",
+                    get(move |headers: HeaderMap, method: Method| {
+                        let theme = active.clone();
+                        async move { response(&theme, &headers, &method) }
+                    }),
+                )
+                .layer(
+                    tower_http::compression::CompressionLayer::new()
+                        .quality(tower_http::CompressionLevel::Precise(4))
+                        .compress_when(DefaultPredicate::new().and(has_representation_body)),
+                )
+                .layer(
+                    tower_http::compression::CompressionLayer::new()
+                        .quality(tower_http::CompressionLevel::Precise(4))
+                        .compress_when(SizeAbove::new(256).and(has_representation_body)),
+                );
+            for (encoding, expected_coding) in [
+                ("", None),
+                ("br", Some("br")),
+                ("gzip", Some("gzip")),
+                ("identity", None),
+                ("gzip;q=0", None),
+                ("br;q=0, gzip;q=1", Some("gzip")),
+                ("gzip;q=0, br;q=1", Some("br")),
+                ("br;q=0.5, gzip;q=1", Some("gzip")),
+                ("br, gzip", Some("br")),
+                ("identity;q=1, gzip;q=0.5", None),
+                // tower-http ignores wildcard encodings and falls back to identity,
+                // including when identity is refused. Keep the shared HTTP policy.
+                ("*", None),
+                ("*;q=0", None),
+                ("identity;q=0, gzip;q=0, br;q=0", None),
+            ] {
+                // Regression pin: an empty HEAD body must not hide the CSS length
+                // from compression and advertise an identity length for a gzip GET.
+                for method in ["GET", "HEAD"] {
+                    let res = app
+                        .clone()
+                        .oneshot(
+                            Request::builder()
+                                .method(method)
+                                .uri("/themes/active.css")
+                                .header(header::ACCEPT_ENCODING, encoding)
+                                .body(Body::empty())
+                                .unwrap(),
+                        )
+                        .await
                         .unwrap();
-                }
-                "br" => {
-                    brotli::Decompressor::new(body.as_ref(), 4096)
-                        .read_to_end(&mut decoded)
+                    assert_eq!(res.status(), StatusCode::OK);
+                    assert_eq!(res.headers()[header::ETAG], theme.etag);
+                    assert_eq!(
+                        res.headers()[header::CONTENT_TYPE],
+                        "text/css; charset=utf-8"
+                    );
+                    assert_eq!(res.headers()[header::CACHE_CONTROL], "no-cache");
+                    assert_eq!(res.headers()[header::VARY], "Accept-Encoding");
+                    assert_eq!(res.headers()[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+                    let coding = res.headers().get(header::CONTENT_ENCODING).cloned();
+                    let expected = if theme.css.len() >= 32 {
+                        expected_coding
+                    } else {
+                        None
+                    };
+                    assert_eq!(
+                        coding.as_ref().and_then(|h| h.to_str().ok()),
+                        expected,
+                        "{method}, Accept-Encoding: {encoding}"
+                    );
+                    if coding.is_some() {
+                        assert!(!res.headers().contains_key(header::CONTENT_LENGTH));
+                    } else {
+                        assert_eq!(
+                            res.headers()[header::CONTENT_LENGTH],
+                            theme.css.len().to_string()
+                        );
+                    }
+                    let body = axum::body::to_bytes(res.into_body(), 1024 * 1024)
+                        .await
                         .unwrap();
+                    if method == "HEAD" {
+                        assert!(body.is_empty());
+                        continue;
+                    }
+                    let mut decoded = Vec::new();
+                    match coding.as_ref().and_then(|h| h.to_str().ok()) {
+                        Some("gzip") => {
+                            async_compression::tokio::bufread::GzipDecoder::new(body.as_ref())
+                                .read_to_end(&mut decoded)
+                                .await
+                                .unwrap();
+                        }
+                        Some("br") => {
+                            async_compression::tokio::bufread::BrotliDecoder::new(body.as_ref())
+                                .read_to_end(&mut decoded)
+                                .await
+                                .unwrap();
+                        }
+                        None => decoded.extend_from_slice(&body),
+                        other => panic!("Unexpected encoding: {other:?}"),
+                    }
+                    assert_eq!(decoded.as_slice(), theme.css.as_ref());
                 }
-                _ => decoded.extend_from_slice(&body),
+                for (method, validator) in [
+                    ("GET", theme.etag.clone()),
+                    ("HEAD", theme.etag.clone()),
+                    ("GET", "\"different\"".into()),
+                ] {
+                    let res = app
+                        .clone()
+                        .oneshot(
+                            Request::builder()
+                                .method(method)
+                                .uri("/themes/active.css")
+                                .header(header::ACCEPT_ENCODING, encoding)
+                                .header(header::IF_NONE_MATCH, &validator)
+                                .body(Body::empty())
+                                .unwrap(),
+                        )
+                        .await
+                        .unwrap();
+                    let cached = validator == theme.etag;
+                    assert_eq!(
+                        res.status(),
+                        if cached {
+                            StatusCode::NOT_MODIFIED
+                        } else {
+                            StatusCode::OK
+                        }
+                    );
+                    if cached {
+                        assert_eq!(res.headers()[header::ETAG], theme.etag);
+                        assert_eq!(res.headers()[header::VARY], "Accept-Encoding");
+                        assert!(!res.headers().contains_key(header::CONTENT_ENCODING));
+                        assert!(!res.headers().contains_key(header::CONTENT_LENGTH));
+                        assert!(
+                            axum::body::to_bytes(res.into_body(), 1024)
+                                .await
+                                .unwrap()
+                                .is_empty()
+                        );
+                    }
+                }
             }
-            assert_eq!(decoded.as_slice(), theme.css.as_ref());
         }
-        let mut headers = HeaderMap::new();
-        headers.insert(header::ACCEPT_ENCODING, "*;q=0".parse().unwrap());
-        assert_eq!(
-            response(&theme, &headers, &Method::GET).status(),
-            StatusCode::NOT_ACCEPTABLE
-        );
     }
     #[tokio::test]
     async fn validators_and_head_preserve_representation_headers() {

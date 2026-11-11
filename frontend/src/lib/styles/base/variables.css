@@ -14,11 +14,7 @@
  *   • `:root { color-scheme: light dark }` (default) lets the UA follow the
  *     OS preference (`prefers-color-scheme`).
  *   • `html[data-color-scheme="light"]` / `…="dark"` force a specific mode.
- *     `theme-init.js` sets the attribute from localStorage.
- *
- * Fallback: browsers that don't support `light-dark()` (Chrome < 123 /
- * Safari < 17.5 / Firefox < 120) hit a `@supports not (...)` block in
- * `themes/dark.css` that still applies the old `[data-theme="dark"]` overrides.
+ *     The inline startup script sets the attribute from localStorage.
  */
 
 @layer oxi-theme-defaults {
@@ -70,21 +66,6 @@
     --space-16: 64px;
     --space-20: 80px;
     --space-24: 96px;
-
-    /* ── Radius ─────────────────────────────────────────────────── */
-
-
-
-
-
-
-
-
-
-
-    /* Semantic default — resolves the legacy `var(--radius, 12px)` fallbacks
-     * in share-public.css / device-verify.css (token was never defined). */
-
 
     /* ── Typography ────────────────────────────────────────────── */
     /* Font families (single source — reset.css `*` consumes --font-sans). */
@@ -171,16 +152,6 @@
     --ease-out: cubic-bezier(0, 0, 0.2, 1);
     --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
 
-    /* ── Elevation — composed box-shadow recipes ───────────────── */
-    /* Full recipes (not bare alphas) layered on the --color-shadow-*
-     * alpha tokens below, so they adapt to light/dark automatically. */
-
-
-
-
-
-
-
     /* ── Breakpoints (reference tokens) ────────────────────────── */
     /* NOTE: @media cannot consume custom properties. These are the canonical
      * values for JS (matchMedia) and documentation; consuming them in @media
@@ -199,15 +170,14 @@
     --density-gap: var(--space-3);
     --density-control-h: 40px;
 
-    /* Trusted built-in texture; external themes cannot replace resource URLs.
-     * Thémable visual defaults live in resources/themes/tokens.css. */
+    /* Built-in texture; visual defaults live in resources/themes/tokens.css. */
     --brand-grain: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='g'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix type='saturate' values='0'/></filter><rect width='180' height='180' filter='url(%23g)'/></svg>");
 
 }
 }
 
-/* Explicit user choice overrides the OS preference. `theme-init.js` writes
- * the attribute from localStorage on render-blocking startup. */
+/* Explicit user choice overrides the OS preference. The inline startup script writes
+ * the attribute from localStorage before first paint. */
 html[data-color-scheme="light"] {
     color-scheme: light;
 }

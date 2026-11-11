@@ -19,21 +19,10 @@ pub fn built_in_themes() -> BTreeMap<String, Arc<PreparedTheme>> {
 }
 
 pub fn prepare_theme(id: String, css: String) -> PreparedTheme {
-    use std::io::Write;
-    let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(4));
-    gzip.write_all(css.as_bytes()).expect("in-memory encoding");
-    let gzip = bytes::Bytes::from(gzip.finish().expect("in-memory encoding"));
-    let mut brotli = brotli::CompressorWriter::new(Vec::new(), 4096, 4, 22);
-    brotli
-        .write_all(css.as_bytes())
-        .expect("in-memory encoding");
-    let brotli = bytes::Bytes::from(brotli.into_inner());
     let etag = format!("W/\"{}\"", blake3::hash(css.as_bytes()).to_hex());
     PreparedTheme {
         id,
         css: bytes::Bytes::from(css),
-        gzip,
-        brotli,
         etag,
     }
 }

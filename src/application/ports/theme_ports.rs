@@ -7,8 +7,6 @@ use std::{collections::BTreeMap, sync::Arc};
 pub struct PreparedTheme {
     pub id: String,
     pub css: Bytes,
-    pub gzip: Bytes,
-    pub brotli: Bytes,
     pub etag: String,
 }
 

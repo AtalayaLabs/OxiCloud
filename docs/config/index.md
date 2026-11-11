@@ -5,6 +5,7 @@ OxiCloud is configured entirely via **environment variables** (no config files n
 ## Sections
 
 - [Deployment & Docker](/config/deployment) — Docker Compose, Kubernetes Helm chart, image details
+- [Global Appearance & Themes](/config/themes) — install trusted CSS themes and select the instance appearance
 - [Environment Variables](/config/env) — complete reference of all `OXICLOUD_*` variables
 - [Storage Fine Tuning](/config/storage-fine-tuning) — sizing the upload caps + spool directories; tmpfs vs real disk; NVMe split layouts
 - [Thumbnail Migration](/config/thumbnail-migration) — upgrading past `.thumbnails/`: what runs on first boot, taking a snapshot first, verifying afterwards
@@ -22,5 +23,3 @@ OXICLOUD_SERVER_PORT=8086
 ```
 
 That's enough to get started. All other settings have sensible defaults.
-
-- [Global appearance and themes](themes.md)

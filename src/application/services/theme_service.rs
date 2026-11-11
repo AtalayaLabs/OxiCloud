@@ -385,7 +385,6 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(res.status(), axum::http::StatusCode::OK);
-            assert_eq!(res.headers()["Content-Encoding"], "gzip");
             let body = to_bytes(res.into_body(), 1024 * 1024).await.unwrap();
             assert_eq!(body.is_empty(), method == "HEAD");
         }

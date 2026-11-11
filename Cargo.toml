@@ -229,8 +229,6 @@ ndarray = { version = "0.17.2", optional = true }
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
 rustix = { version = "1", features = ["fs"] }
-# Already transitive through tower-http; precompress immutable theme bytes once.
-brotli = "8"
 
 [features]
 default = []

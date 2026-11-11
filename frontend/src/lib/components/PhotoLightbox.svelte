@@ -349,7 +349,7 @@
 					onclick={toggleFavorite}><Icon name={favorited ? 'star' : 'star-outline'} /></button
 				>
 				<ConfirmButton
-					class="lb__tool"
+					variant="icon"
 					title={t('common.delete', 'Delete')}
 					{confirmLabel}
 					onconfirm={remove}
@@ -418,10 +418,6 @@
 		border: none;
 		color: var(--color-lightbox-btn-text);
 		cursor: pointer;
-		width: var(--space-12);
-		height: var(--space-12);
-		display: grid;
-		place-items: center;
 	}
 
 	.lb__nav {
@@ -455,39 +451,24 @@
 		left: 50%;
 		transform: translateX(-50%);
 		display: flex;
-		gap: var(--space-3);
-		width: max-content;
-		max-width: calc(100% - var(--space-8));
-		flex-wrap: wrap;
-		justify-content: center;
+		gap: var(--space-2);
 	}
 
-	/* Shared with ConfirmButton's child button; keep its arming behavior and
-	 * destructive confirmation colors while matching the other action targets. */
-	.lb__toolbar :global(.lb__tool) {
-		width: var(--space-12);
-		height: var(--space-12);
-		flex-shrink: 0;
-		padding: 0;
-		border-radius: var(--radius-full);
+	.lb__tool {
+		width: 40px;
+		height: 40px;
+		border-radius: 50%;
 		border: none;
 		background: var(--color-lightbox-btn-bg);
 		color: var(--color-lightbox-btn-text);
 		cursor: pointer;
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		gap: var(--space-1);
-		font-size: var(--text-lg);
+		display: grid;
+		place-items: center;
 	}
 
-	.lb__toolbar :global(.lb__tool:disabled) {
+	.lb__tool:disabled {
 		opacity: 0.5;
 		cursor: default;
-	}
-
-	.lb__toolbar :global(.lb__tool.confirm-btn--armed) {
-		padding-inline: var(--space-3);
 	}
 
 	.lb__tool.active {

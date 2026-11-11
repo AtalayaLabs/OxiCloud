@@ -4631,7 +4631,6 @@ dependencies = [
  "azure_storage_blobs",
  "base64 0.22.1",
  "blake3",
- "brotli",
  "bytes",
  "chrono",
  "chrono-tz",

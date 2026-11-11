@@ -53,16 +53,12 @@ prevent the operator or another privileged host process from changing them.
 
 Use **Admin → Appearance** to select a theme. A saved selection takes priority
 over `OXICLOUD_DEFAULT_THEME` (`[server] default_theme`), which otherwise defaults
-to `default`. Environment takes priority over TOML. Selection is stored in
-`auth.admin_settings` under `appearance.active_theme`, category `appearance`,
-nonsecret, with the administrator's `updated_by`.
+to `default`. Environment takes priority over TOML.
 
-**Refresh** rereads operator files and atomically publishes the catalogue and
-active CSS. Directory failures or an unreadable active theme preserve the
-previous snapshot. Inactive unreadable entries are excluded with diagnostics.
-Selection and refresh share one mutation lock; CSS requests never wait for disk
-or SQL. Files are never read or compressed per HTTP request. Existing pages
-apply changed CSS on their next full reload, not on SPA navigation.
+**Refresh** rereads installed themes without restarting the server. Directory
+failures or an unreadable active theme retain the previous catalogue; invalid
+inactive entries are excluded with diagnostics. After selecting or refreshing,
+reload the page to apply the CSS. SPA navigation alone does not apply changes.
 
 The application does not validate CSS syntax, restrict selectors, or infer token
 types. CSS is served unchanged as UTF-8, and the browser interprets it. A theme
@@ -81,11 +77,8 @@ clear the override and restart to restore the saved selection. Database failures
 remain startup errors; this switch is an appearance recovery mechanism.
 
 This version supports one application process per deployment. Processes sharing
-a database do not synchronize their in-memory snapshots. Persistence happens
-before publication. If a database acknowledgement is lost, a write may have
-committed even though the API reports failure; the previous public snapshot is
-retained. Retry the selection, refresh, or restart to reconcile confirmed state.
-Dropping an HTTP connection does not cancel an in-flight mutation task.
+a database do not synchronize their theme catalogues or active selections.
+If saving fails, check the server logs and retry, refresh, or restart.
 
 ## CSS and filesystem contract
 
@@ -107,24 +100,12 @@ Dropping an HTTP connection does not cancel an in-flight mutation task.
   for styles, fonts and images remain subject to it. The server does not fetch
   URLs referenced by a theme.
 - The theme directory is not a static file host. Additional local assets and
-  stylesheets are not exposed. Relative CSS URLs resolve from `/themes/active.css`,
-  not from the filesystem folder. Use existing public assets or CSP-permitted
-  URLs. A separate `custom.css` is not loaded; put component rules in `theme.css`.
+  stylesheets are not exposed. Relative CSS URLs resolve from `{base}/themes/active.css`
+  (including any deployment prefix), not from the filesystem folder. Use existing
+  public assets or CSP-permitted URLs. A separate `custom.css` is not loaded; put component rules in `theme.css`.
 
-## Interfaces
+## Diagnostics
 
-`GET`/`HEAD {base}/themes/active.css` are public, with CSS Content-Type, `nosniff`,
-a weak content ETag, `Vary: Accept-Encoding`, and `Cache-Control: no-cache`.
-Brotli/gzip variants are prepared on catalogue load. Conditional requests return
-304 without a body. Unknown `/themes` paths return 404, never the SPA shell.
-
-`GET`/`PUT {base}/api/admin/settings/appearance` and
-`POST {base}/api/admin/settings/appearance/reload` require a live active internal
-administrator or owner and retain the existing session/CSRF/DPoP protections.
-PUT accepts `{ "theme_id": "modern-pro" }`. Responses contain catalogue IDs,
-selection and diagnostics, never CSS or absolute server paths.
-
-Warnings: `selected_theme_unavailable` means a saved ID is missing;
-`forced_default` means recovery mode is active. `invalid_theme` diagnostics mean
-an entry could not be loaded (ID, filesystem, encoding or size), not that its CSS
-was semantically validated. Detailed failures are logged on the server.
+The appearance page reports an unavailable saved theme or active recovery mode.
+Excluded entries mean their ID, filesystem access, encoding or size was invalid;
+the server does not validate CSS syntax. Check server logs for details.

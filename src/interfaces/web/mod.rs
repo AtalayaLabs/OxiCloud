@@ -12,7 +12,10 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tower_http::compression::CompressionLayer;
+use tower_http::compression::{
+    CompressionLayer,
+    predicate::{DefaultPredicate, Predicate},
+};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::set_header::SetResponseHeaderLayer;
 
@@ -165,7 +168,11 @@ pub fn create_web_routes(
             CompressionLayer::new()
                 .quality(tower_http::CompressionLevel::Precise(4))
                 .br(true)
-                .gzip(true),
+                .gzip(true)
+                .compress_when(
+                    DefaultPredicate::new()
+                        .and(crate::interfaces::middleware::has_representation_body),
+                ),
         )
         // `if_not_present` so the immutable assets above keep their long cache;
         // the shell itself must always revalidate so a deploy can't pin a stale

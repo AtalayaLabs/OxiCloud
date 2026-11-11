@@ -1439,6 +1439,7 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
         }
 
         let predicate = SizeAbove::new(256)
+            .and(interfaces::middleware::has_representation_body)
             .and(NotForContentType::GRPC)
             .and(NotForContentType::SSE)
             // ── already-compressed raster images (SVG intentionally absent) ──
