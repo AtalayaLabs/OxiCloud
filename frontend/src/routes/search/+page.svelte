@@ -394,6 +394,8 @@
 	// all reuse the same lazy dialogs.
 	let viewerOpen = $state(false);
 	let viewerFile = $state<FileItem | null>(null);
+	/** What the viewer's previous / next step through, in list order. */
+	const viewerFiles = $derived(items.filter(isFile));
 	let moveOpen = $state(false);
 	let moveTarget = $state<{ id: string; name: string; kind: 'file' | 'folder' } | null>(null);
 	let shareOpen = $state(false);
@@ -794,7 +796,12 @@
 
 {#if fileViewer.component}
 	{@const FileViewer = fileViewer.component}
-	<FileViewer bind:open={viewerOpen} file={viewerFile} />
+	<FileViewer
+		bind:open={viewerOpen}
+		file={viewerFile}
+		files={viewerFiles}
+		onnavigate={(f) => (viewerFile = f)}
+	/>
 {/if}
 {#if moveDialog.component}
 	{@const MoveDialog = moveDialog.component}

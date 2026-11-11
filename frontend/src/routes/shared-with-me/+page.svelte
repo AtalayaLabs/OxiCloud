@@ -132,6 +132,8 @@
 
 	let viewerOpen = $state(false);
 	let viewerFile = $state<FileItem | null>(null);
+	/** What the viewer's previous / next step through, in list order. */
+	const viewerFiles = $derived(items.filter(isFile));
 
 	// The file preview is loaded the first time a file is opened, keeping its
 	// module out of this route's initial chunk.
@@ -216,6 +218,19 @@
 			// eslint-disable-next-line svelte/no-navigation-without-resolve
 			void goto(url, { keepFocus: true, noScroll: true });
 		}
+	}
+
+	/**
+	 * The viewer's previous / next. Same URL mirror as `open`, but
+	 * `replaceState`: stepping through photos swaps the entry instead of
+	 * pushing one per photo, so Back still closes the viewer.
+	 */
+	function step(item: FileItem) {
+		viewerFile = item;
+		const url = new URL(page.url);
+		url.searchParams.set('file', item.id);
+		// eslint-disable-next-line svelte/no-navigation-without-resolve
+		void goto(url, { keepFocus: true, noScroll: true, replaceState: true });
 	}
 
 	/**
@@ -362,7 +377,7 @@
 
 {#if fileViewer.component}
 	{@const FileViewer = fileViewer.component}
-	<FileViewer bind:open={viewerOpen} file={viewerFile} />
+	<FileViewer bind:open={viewerOpen} file={viewerFile} files={viewerFiles} onnavigate={step} />
 {/if}
 
 <style>

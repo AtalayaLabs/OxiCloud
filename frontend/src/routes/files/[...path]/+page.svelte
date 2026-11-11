@@ -1201,7 +1201,12 @@
 	let viewerOpen = $state(false);
 	let viewerFile = $state<FileItem | null>(null);
 
-	function openFile(file: FileItem) {
+	/**
+	 * `replaceState` is for the viewer's previous / next: stepping through a
+	 * folder's photos swaps the entry instead of pushing one per photo, so
+	 * Back still closes the viewer rather than walking back through them.
+	 */
+	function openFile(file: FileItem, replaceState = false) {
 		// Drive the viewer from the URL (?file=<id>) so a preview is bookmarkable,
 		// reload-restorable, and Back/Forward open/close it. The effect below
 		// reflects the param into viewerOpen/viewerFile.
@@ -1210,7 +1215,7 @@
 		// Same-origin URL object built from page.url (already resolved); resolve()
 		// only accepts a route string, so it can't type a dynamic URL instance.
 		// eslint-disable-next-line svelte/no-navigation-without-resolve
-		void goto(url, { keepFocus: true, noScroll: true });
+		void goto(url, { keepFocus: true, noScroll: true, replaceState });
 	}
 
 	// ── File-preview deep link (?file=<id>) ──────────────────────────────────
@@ -2134,6 +2139,9 @@
 		return [...hoisted, ...rest];
 	});
 
+	/** What the viewer steps through: the files as listed, dotfile filter included. */
+	const viewerFiles = $derived(rlItems.filter(isFile));
+
 	// Group-by state (bound to <ResourceList>). Kept as a `string` prop
 	// value; the current `sortField` mirrors from the picked group's
 	// `orderBy` so a group-by change also drives the sort.
@@ -2838,7 +2846,12 @@
 {/if}
 {#if fileViewer.component}
 	{@const FileViewer = fileViewer.component}
-	<FileViewer bind:open={viewerOpen} file={viewerFile} />
+	<FileViewer
+		bind:open={viewerOpen}
+		file={viewerFile}
+		files={viewerFiles}
+		onnavigate={(f) => openFile(f, true)}
+	/>
 {/if}
 {#if wopiEditor.component}
 	{@const WopiEditor = wopiEditor.component}
