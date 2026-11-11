@@ -13,6 +13,45 @@ test.beforeEach(async ({ page }) => {
   await apiLogin(page);
 });
 
+/**
+ * Reap the playlists this file created, pass OR fail.
+ *
+ * The happy path deletes its own playlist at the end, which is no cleanup at
+ * all for the case that matters: a test that fails mid-way leaves its row
+ * behind, and the next run then sees two. That is how one real failure turned
+ * into fifteen under `--repeat-each=30` — each cascade failure was an
+ * unrelated strict-mode violation on a locator that assumed a single
+ * playlist, and the first genuine failure was buried under them.
+ *
+ * Matches only the `uniq()` shape below, so a playlist a developer made by
+ * hand in the same sandbox survives. The character class has to allow digits:
+ * the prefixes in use are `PL`, `PLr`, `PLr2`, `PLt` and `PLp`, and `[a-z]*`
+ * silently skipped `PLr2`.
+ */
+test.afterEach(async ({ page }) => {
+  await page
+    .evaluate(async () => {
+      const csrf = document.cookie.match(/(?:^|; )oxicloud_csrf=([^;]+)/)?.[1] ?? '';
+      const r = await fetch('/api/playlists', { credentials: 'same-origin' });
+      if (!r.ok) return;
+      const rows = (await r.json()) as Array<{ id: string; name: string }>;
+      await Promise.all(
+        rows
+          .filter((p) => /^PL[a-z0-9]*-\d{13}-\d+$/.test(p.name))
+          .map((p) =>
+            fetch(`/api/playlists/${p.id}`, {
+              method: 'DELETE',
+              credentials: 'same-origin',
+              headers: csrf ? { 'x-csrf-token': csrf } : {},
+            }),
+          ),
+      );
+    })
+    // A test that closed the page or navigated off-origin cannot be cleaned up
+    // from here, and failing the cleanup would mask the real failure.
+    .catch(() => {});
+});
+
 function uniq(p: string): string {
   return `${p}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 }
@@ -68,7 +107,15 @@ test('playlist lifecycle: create, toggle public, rename, delete', async ({ page 
   await expect(playlistRow(page, renamed)).toBeVisible({ timeout: 15_000 });
   // EXACT, where the row filter above is a substring match: a name that
   // merely contains the new one — the failure mode above — has to fail here.
-  await expect(page.getByTestId('music-playlist-name')).toHaveText(renamed);
+  //
+  // Scoped to the row rather than asserted on `page`. Unscoped, this matched
+  // EVERY playlist name on the page, so it only held when the account owned
+  // exactly one playlist — and under `--repeat-each` it tripped strict mode
+  // ("resolved to 15 elements") the moment any run left a row behind, turning
+  // one failure into a cascade that failed every later repeat for an unrelated
+  // reason. Scoping keeps the exactness that catches a concatenated name while
+  // tolerating playlists this test did not create.
+  await expect(playlistRow(page, renamed).getByTestId('music-playlist-name')).toHaveText(renamed);
   await expect(page.getByText('e2e playlist description')).toBeVisible();
 
   await page.getByTestId('music-delete-playlist-btn').click();
