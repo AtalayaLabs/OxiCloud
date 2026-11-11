@@ -114,8 +114,12 @@ pub struct CreateDriveDto {
     /// via subject expansion). `token` is refused at the service edge.
     /// For `kind="personal"` (when implemented): MUST be a `user`.
     pub owner: SubjectDto,
-    /// Optional storage cap in bytes. `None` / omitted → no quota.
-    /// Quota mutation post-creation is OxiCloud-admin-only (D4).
+    /// Optional storage cap in bytes. Omitted → the configured default
+    /// (`OXICLOUD_DEFAULT_SHARED_DRIVE_QUOTA_BYTES`, 10 GiB), NOT "no
+    /// quota" — that changed when the default stopped being 0. Send `0`
+    /// explicitly for an unlimited drive; the service normalises ≤ 0 to
+    /// `None`, which the DB stores as NULL and the quota gate reads as no
+    /// cap. Quota mutation post-creation is OxiCloud-admin-only (D4).
     #[serde(default)]
     pub quota_bytes: Option<i64>,
 }

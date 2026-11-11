@@ -38,11 +38,13 @@ Every variable below can also be written in a TOML config file — the key is th
 
 Defaults for things created from now on. Existing accounts and drives keep their quota; change those with `PUT /api/admin/users/{id}/quota` and `PATCH /api/drives/{id}/quota`. Values are bytes, `0` means unlimited, and a negative or non-numeric value stops the server at boot (an empty value counts as unset).
 
+Two quotas, not one per drive. A **personal** drive carries no quota of its own — the row is `NULL` by design and `PATCH /api/drives/{id}/quota` refuses it — so the user's own quota is the ceiling for **the sum of all their personal drives together**. A new user therefore gets 10 GiB in total, not 10 GiB per drive. A **shared** drive is the opposite: it carries its own quota and counts against nobody's user quota, so each new one adds 10 GiB of capacity on its own.
+
 | Variable | Default | Description |
 |---|---|---|
-| `OXICLOUD_DEFAULT_USER_QUOTA_BYTES` | `1073741824` | Quota for new non-admin accounts (1 GiB): self-registration, OIDC auto-provisioning, admin-created users without an explicit quota. Capped to the free space under `OXICLOUD_STORAGE_PATH` at creation time, unless `0` or any blob backend is S3/Azure. |
-| `OXICLOUD_DEFAULT_ADMIN_QUOTA_BYTES` | `107374182400` | Quota for new admin accounts (100 GiB). Capped like the user quota. |
-| `OXICLOUD_DEFAULT_SHARED_DRIVE_QUOTA_BYTES` | `0` | Quota for new shared drives created without `quota_bytes`. `0` keeps them unlimited. |
+| `OXICLOUD_DEFAULT_USER_QUOTA_BYTES` | `10737418240` | Quota for new non-admin accounts (10 GiB): self-registration, OIDC auto-provisioning, admin-created users without an explicit quota. Caps the total across the user's personal drives. Capped to the free space under `OXICLOUD_STORAGE_PATH` at creation time, unless `0` or any blob backend is S3/Azure. |
+| `OXICLOUD_DEFAULT_ADMIN_QUOTA_BYTES` | `10737418240` | Quota for new admin accounts (10 GiB). Capped like the user quota. |
+| `OXICLOUD_DEFAULT_SHARED_DRIVE_QUOTA_BYTES` | `10737418240` | Quota for new shared drives created without `quota_bytes` (10 GiB). Set to `0` to keep new shared drives unlimited, as they were before this default existed. Unlike the two above, it is **not** capped to free space — on a small disk, each new shared drive still promises its full quota. |
 
 ## Database
 

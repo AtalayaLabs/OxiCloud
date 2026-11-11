@@ -277,10 +277,24 @@ pub struct StorageConfig {
     pub timeout: TimeoutPolicy,
 }
 
-/// Quota applied to a new user account when none is given explicitly.
-/// Kept at the historical values so leaving the knobs unset changes nothing.
-const DEFAULT_USER_QUOTA_BYTES: i64 = 1_073_741_824; // 1 GiB
-const DEFAULT_ADMIN_QUOTA_BYTES: i64 = 107_374_182_400; // 100 GiB
+/// Quotas applied when none is given explicitly. One number for all three,
+/// so an operator who never touches the knobs gets one figure to remember.
+///
+/// These are NOT the historical values — the comment here used to say they
+/// were, which was the justification for the old ones. User went 1 GiB →
+/// 10 GiB, admin 100 GiB → 10 GiB (the only one that shrank, and it was
+/// already clamped to free disk space at creation, so 100 GiB mostly meant
+/// "the disk"), and shared drives 0 → 10 GiB, which is a change of KIND:
+/// they were unlimited before. `OXICLOUD_DEFAULT_SHARED_DRIVE_QUOTA_BYTES=0`
+/// restores that.
+///
+/// Note what the user figure governs: a personal drive carries no quota of
+/// its own, so the account's number caps the SUM across all of that user's
+/// personal drives — 10 GiB total, not per drive. A shared drive carries its
+/// own and counts against no account. See `docs/plan/drive.md` §7.
+const DEFAULT_USER_QUOTA_BYTES: i64 = 10_737_418_240; // 10 GiB
+const DEFAULT_ADMIN_QUOTA_BYTES: i64 = 10_737_418_240; // 10 GiB
+const DEFAULT_SHARED_DRIVE_QUOTA_BYTES: i64 = 10_737_418_240; // 10 GiB
 
 /// Default storage quotas, in bytes, for things created from now on.
 ///
@@ -305,7 +319,7 @@ impl Default for DefaultQuotas {
         Self {
             user_bytes: DEFAULT_USER_QUOTA_BYTES,
             admin_bytes: DEFAULT_ADMIN_QUOTA_BYTES,
-            shared_drive_bytes: 0,
+            shared_drive_bytes: DEFAULT_SHARED_DRIVE_QUOTA_BYTES,
         }
     }
 }
