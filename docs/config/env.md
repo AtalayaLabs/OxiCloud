@@ -331,8 +331,8 @@ A least-recently-used disk cache that can speed up repeated reads from S3 or Azu
 
 | Variable | Default | Description |
 |---|---|---|
-| `OXICLOUD_STORAGE_CACHE_ENABLED` | `false` | Enable LRU disk cache |
-| `OXICLOUD_STORAGE_CACHE_MAX_SIZE` | `53687091200` | Max cache size in bytes (50 GB) |
+| `OXICLOUD_STORAGE_CACHE_ENABLED` | `true` | Enable the LRU disk cache. **Inert on a local backend** — the decorator is only built when the *active* backend is remote, so a local deployment gets no wrapper, no `.blob-cache` directory and no `backend_cache_cleanup` job. Set `false` to make an S3/Azure instance read every blob over the network. |
+| `OXICLOUD_STORAGE_CACHE_MAX_SIZE` | `16106127360` | Max cache size in bytes (15 GiB). Only consumed on a remote backend. LRU eviction keeps the cache at this budget, but nothing checks free space before filling it — on a small volume, set this to what the disk can spare. |
 | `OXICLOUD_STORAGE_CACHE_PATH` | `{STORAGE_PATH}/.blob-cache` | Cache directory |
 
 ### Client-Side Encryption (DEPRECATED — per-entry key is the new home)

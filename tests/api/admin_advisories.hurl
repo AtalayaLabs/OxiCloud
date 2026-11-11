@@ -16,10 +16,17 @@
 # The current test env (`tests/common/server.env`) has:
 #   - OXICLOUD_JOBS_NOTIFY_EMAIL_TO = jobs-alert@oxicloud.local
 #   - OXICLOUD_WEBHOOK_URL          = (unset)
-#   - OXICLOUD_STORAGE_CACHE_ENABLED = (unset, defaults to false)
+#   - OXICLOUD_STORAGE_CACHE_ENABLED = (unset, defaults to TRUE)
 #   - Active backend                 = local_main (first entry)
 #
-# So the expected values here are BOTH `false`. The scenario pins:
+# So the expected values here are BOTH `false` — but read the cache one
+# carefully, because its reason changed when the default flipped to
+# enabled. `storage_cache_recommended` is `remote && !cache.enabled`,
+# and it is now false because the active backend is LOCAL, not because
+# the cache is off. The advisory therefore fires only for an operator
+# who explicitly disabled the cache while on a remote backend, which is
+# a narrower (and more interesting) signal than "hasn't opted in yet".
+# The scenario pins:
 #   1. Both fields exist on the DTO (regression gate against a
 #      schema removal / rename).
 #   2. Both are booleans (not strings, not null — strict shape).

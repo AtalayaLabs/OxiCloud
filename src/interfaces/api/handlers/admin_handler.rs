@@ -1627,6 +1627,13 @@ pub async fn get_dashboard_stats(
         //   - the local-disk cache wrapper is NOT currently enabled
         //     (`OXICLOUD_STORAGE_CACHE_ENABLED`).
         //
+        // Since that flag defaults to ENABLED, this now means the
+        // operator turned the cache off explicitly while running a
+        // remote backend — a deliberate choice rather than an
+        // un-taken opt-in, so the banner reads as "you are paying an
+        // RTT per blob read on purpose; here is what it costs" rather
+        // than as onboarding.
+        //
         // Looking up the active entry explicitly instead of reading
         // `config.storage.backend`: in a multi-entry deployment (the
         // common shape for OxiCloud post-storage-multi-entry) the

@@ -390,9 +390,12 @@ pub struct AzureStorageConfig {
 /// LRU local disk cache configuration for remote blob backends.
 #[derive(Debug, Clone)]
 pub struct BlobCacheConfig {
-    /// Enable the LRU disk cache (only useful for remote backends).
+    /// Enable the LRU disk cache. Default `true`, and inert on a local
+    /// backend: `di.rs` only builds the decorator when the ACTIVE backend
+    /// is non-local, so a local deployment gets no wrapper, no
+    /// `.blob-cache` directory and no `backend_cache_cleanup` job.
     pub enabled: bool,
-    /// Maximum cache size in bytes (default: 50 GB).
+    /// Maximum cache size in bytes (default: 15 GiB).
     pub max_size_bytes: u64,
     /// Cache directory path (default: `{root_dir}/.blob-cache`).
     pub cache_path: Option<String>,
@@ -401,8 +404,20 @@ pub struct BlobCacheConfig {
 impl Default for BlobCacheConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
-            max_size_bytes: 50 * 1024 * 1024 * 1024, // 50 GB
+            // On by default. Safe to default because the decorator is
+            // gated on the active backend being remote — see the field
+            // doc — so this changes nothing for a local deployment and
+            // saves a remote round-trip per blob read for everyone else.
+            enabled: true,
+            // 15 GiB, not the 50 GB this used to default to. 50 GB was
+            // chosen while the cache was opt-in, where an operator
+            // enabling it was consenting to that footprint. As a DEFAULT
+            // it would claim up to 50 GB of local disk on exactly the
+            // deployments that chose remote storage to avoid needing
+            // local disk — and nothing here checks free space first.
+            // 15 GiB holds a substantial hot set; operators with room to
+            // spare raise it with `OXICLOUD_STORAGE_CACHE_MAX_SIZE`.
+            max_size_bytes: 15 * 1024 * 1024 * 1024, // 15 GiB
             cache_path: None,
         }
     }
@@ -4782,8 +4797,18 @@ impl AppConfig {
         }
 
         // Blob cache configuration
-        if let Ok(v) = env::var("OXICLOUD_STORAGE_CACHE_ENABLED") {
-            config.storage.cache.enabled = v.parse::<bool>().unwrap_or(false);
+        // `unwrap_or(false)` used to live here, which was harmless while the
+        // default was `false` and is not now: a typo
+        // (`OXICLOUD_STORAGE_CACHE_ENABLED=yes`) would silently DISABLE a
+        // feature that is on by default, and the operator would see a
+        // remote round-trip per blob read with nothing in the log saying
+        // why. Match the let-chain the other boolean knobs use: an
+        // unparseable value leaves the default alone instead of inverting
+        // it.
+        if let Ok(parsed) = env::var("OXICLOUD_STORAGE_CACHE_ENABLED").map(|v| v.parse::<bool>())
+            && let Ok(val) = parsed
+        {
+            config.storage.cache.enabled = val;
         }
         if let Ok(v) = env::var("OXICLOUD_STORAGE_CACHE_MAX_SIZE")
             && let Ok(bytes) = v.parse::<u64>()
