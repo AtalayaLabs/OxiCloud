@@ -1104,7 +1104,7 @@
     "confirm_action": "Confirm Action",
     "confirm_yes": "Confirm",
     "confirm_no": "Cancel",
-    "error_username_short": "Username must be at least 3 characters",
+    "error_username_length": "Username must be between 2 and 64 characters",
     "error_password_short": "Password must be at least 8 characters",
     "error_generic": "Failed",
     "error_network": "Network error: {{message}}",

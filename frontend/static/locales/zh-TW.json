@@ -994,7 +994,7 @@
     "confirm_action": "確認操作",
     "confirm_yes": "確認",
     "confirm_no": "取消",
-    "error_username_short": "使用者名稱至少需要3個字元",
+    "error_username_length": "使用者名稱長度必須為2到64個字元",
     "error_password_short": "密碼至少需要8個字元",
     "error_generic": "失敗",
     "error_network": "網路錯誤：{{message}}",

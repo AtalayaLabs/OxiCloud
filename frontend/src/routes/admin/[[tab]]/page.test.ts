@@ -227,6 +227,51 @@ it('loads users when the users tab is opened and creates a user', async () => {
 	await waitFor(() => expect(admin.createUser).toHaveBeenCalled());
 });
 
+async function fillCreateUser(username: string) {
+	m(admin.createUser).mockResolvedValue(undefined);
+	setTab('users');
+	render(AdminPage);
+	await fireEvent.click(await screen.findByTestId('admin-users-create-btn'));
+	const input = await screen.findByTestId('admin-create-user-username-input');
+	await fireEvent.input(input, { target: { value: username } });
+	await fireEvent.input(screen.getByTestId('admin-create-user-password-input'), {
+		target: { value: 'Password123!' }
+	});
+	return input;
+}
+
+// The admin form rejected two-character usernames already accepted by the
+// service. Exercise submission as well as the browser's independent limits.
+it.each([
+	['two characters', 'ab', 'ab'],
+	['surrounding whitespace', '  ab  ', 'ab'],
+	['64 characters', 'a'.repeat(64), 'a'.repeat(64)]
+])('creates a user with %s in the username', async (_case, value, expected) => {
+	const input = await fillCreateUser(value);
+	expect(input.getAttribute('minlength')).toBe('2');
+	expect(input.getAttribute('maxlength')).toBe('64');
+	await fireEvent.click(screen.getByTestId('admin-create-user-submit-btn'));
+	await waitFor(() =>
+		expect(admin.createUser).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ username: expected })
+		)
+	);
+	expect(screen.queryByTestId('admin-create-user-form')).toBeNull();
+});
+
+// Direct submit bypasses native constraint validation, so the trimmed length
+// must also be checked before calling the API (including whitespace-only input).
+it.each(['', '   ', 'a', '  a  ', 'a'.repeat(65)])(
+	'rejects an out-of-range username %j before calling the API',
+	async (value) => {
+		await fillCreateUser(value);
+		await fireEvent.submit(screen.getByTestId('admin-create-user-form'));
+		expect(screen.getByText('Username must be between 2 and 64 characters')).toBeTruthy();
+		expect(admin.createUser).not.toHaveBeenCalled();
+		expect(screen.getByTestId('admin-create-user-form')).toBeTruthy();
+	}
+);
+
 it('loads OIDC settings when the OIDC tab is opened', async () => {
 	setTab('oidc');
 	render(AdminPage);

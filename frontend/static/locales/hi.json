@@ -1014,7 +1014,7 @@
     "confirm_action": "कार्रवाई की पुष्टि",
     "confirm_yes": "पुष्टि",
     "confirm_no": "रद्द",
-    "error_username_short": "नाम कम से कम 3 अक्षर",
+    "error_username_length": "उपयोगकर्ता नाम 2 से 64 अक्षरों के बीच होना चाहिए",
     "error_password_short": "पासवर्ड कम से कम 8 अक्षर",
     "error_generic": "विफल",
     "error_network": "नेटवर्क त्रुटि: {{message}}",

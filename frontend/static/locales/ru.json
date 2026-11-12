@@ -1014,7 +1014,7 @@
     "confirm_action": "Подтвердить",
     "confirm_yes": "Подтвердить",
     "confirm_no": "Отмена",
-    "error_username_short": "Имя минимум 3 символа",
+    "error_username_length": "Имя пользователя должно содержать от 2 до 64 символов",
     "error_password_short": "Пароль минимум 8 символов",
     "error_generic": "Ошибка",
     "error_network": "Ошибка сети: {{message}}",

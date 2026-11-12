@@ -1014,7 +1014,7 @@
     "confirm_action": "操作の確認",
     "confirm_yes": "確認",
     "confirm_no": "キャンセル",
-    "error_username_short": "ユーザー名は3文字以上",
+    "error_username_length": "ユーザー名は2文字以上64文字以下である必要があります",
     "error_password_short": "パスワードは8文字以上",
     "error_generic": "失敗",
     "error_network": "ネットワークエラー: {{message}}",

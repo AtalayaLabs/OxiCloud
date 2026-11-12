@@ -994,7 +994,7 @@
     "confirm_action": "تأیید عملیات",
     "confirm_yes": "تأیید",
     "confirm_no": "انصراف",
-    "error_username_short": "نام کاربری حداقل ۳ کاراکتر",
+    "error_username_length": "نام کاربری باید بین ۲ تا ۶۴ کاراکتر باشد",
     "error_password_short": "رمز عبور حداقل ۸ کاراکتر",
     "error_generic": "خطا",
     "error_network": "خطای شبکه: {{message}}",

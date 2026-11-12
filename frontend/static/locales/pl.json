@@ -1014,7 +1014,7 @@
     "confirm_action": "Potwierdź akcję",
     "confirm_yes": "Potwierdź",
     "confirm_no": "Anuluj",
-    "error_username_short": "Nazwa użytkownika musi mieć co najmniej 3 znaki",
+    "error_username_length": "Nazwa użytkownika musi mieć od 2 do 64 znaków",
     "error_password_short": "Hasło musi mieć co najmniej 8 znaków",
     "error_generic": "Niepowodzenie",
     "error_network": "Błąd sieci: {{message}}",
