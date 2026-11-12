@@ -194,6 +194,12 @@ fn section_2(manifest_chunks: usize) {
     let mut sum_after = 0usize;
     for _ in 0..reads {
         let m = manifest.clone();
+        // Iterate rather than index: clippy 1.100 made `needless_range_loop`
+        // fire here (1.99 did not), and `-D warnings` turns that into a build
+        // failure with no code change on our side. Safe for this bench — the
+        // subject being measured is `manifest.clone()` above; this sum only
+        // exists so the clone cannot be optimised away, so dropping the
+        // per-element bounds check does not change what the number means.
         for h in &m.chunk_hashes {
             sum_after += h.len();
         }
