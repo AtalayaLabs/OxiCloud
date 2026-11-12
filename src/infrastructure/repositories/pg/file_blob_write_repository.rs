@@ -1443,12 +1443,12 @@ impl FileWritePort for FileBlobWriteRepository {
 // arm, and the `ON CONFLICT` that collapses repeated saves — and none of that
 // is observable from a unit test.
 //
-// Fixtures are prefixed `rust-test-prov-` and deleted by prefix BEFORE each
-// test seeds, not only after: cleanup at the end does not run when an
-// assertion fails, and a leaked row would then fail every later run for an
-// unrelated reason. Every assertion filters on this test's own ids — never on
-// a count over the whole table, which other suites are writing to
-// concurrently.
+// Fixtures are prefixed `rust-test-prov-<test>-` — one scope PER TEST, for the
+// reason spelled out on `test_pool` — and deleted by that scope BEFORE the test
+// seeds, not only after: cleanup at the end does not run when an assertion
+// fails, and a leaked row would then fail every later run for an unrelated
+// reason. Every assertion filters on this test's own ids — never on a count
+// over the whole table, which other suites are writing to concurrently.
 #[cfg(all(test, integration_tests))]
 mod content_provenance_tests {
     use super::*;
@@ -1462,18 +1462,38 @@ mod content_provenance_tests {
     const HASH_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const HASH_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
-    async fn test_pool() -> Arc<PgPool> {
+    /// A pool plus the caller's OWN fixture prefix, `rust-test-prov-<tag>-`.
+    ///
+    /// The per-test scope is load-bearing, not tidiness. `cargo test
+    /// --workspace --tests` (what `just test-integration` runs) uses the
+    /// default thread count, so these tests run CONCURRENTLY against one
+    /// database. A cleanup keyed on the module-wide `rust-test-prov-%` then
+    /// deletes a SIBLING's fixtures between its seed and its assertions, and
+    /// the failure surfaces far from its cause:
+    ///
+    ///   * deleting a sibling's users nulls `content_modified_by` on files
+    ///     that survive (`ON DELETE SET NULL`), so a principal assertion
+    ///     reads `None` while the row is plainly still there;
+    ///   * deleting a sibling's files makes `copy_folder_tree` copy zero
+    ///     files and fail on "fixture sanity".
+    ///
+    /// Both were observed, in one run, after this module grew to six tests.
+    /// Every name a test writes therefore starts with its own scope, and the
+    /// cleanup deletes nothing outside it.
+    async fn test_pool(tag: &str) -> (Arc<PgPool>, String) {
         let pool = PgPoolOptions::new()
             .max_connections(4)
             .connect(&test_db_url())
             .await
             .expect("connect to test DB — run tests/common/spawn-db.sh first");
         ensure_clean_test_db(&pool).await;
-        // Prefix cleanup, in FK order. Deleting the users is not enough:
+        let scope = format!("{PREFIX}{tag}-");
+        // Cleanup runs BEFORE seeding: a failed assertion skips the teardown,
+        // and deleting the users is not enough to undo a leak —
         // `storage.files.created_by` is `ON DELETE SET NULL`, not CASCADE, so
         // a prior run's file rows outlive their owner and then collide on
-        // `idx_files_unique_name_in_folder` — which is exactly how this suite
-        // failed on its second run before this existed.
+        // `idx_files_unique_name_in_folder`. That is how this suite failed on
+        // its second run before this existed.
         //
         // Files first (their touches cascade), then folders, then users.
         for stmt in [
@@ -1482,11 +1502,11 @@ mod content_provenance_tests {
             "DELETE FROM auth.users WHERE username LIKE $1",
         ] {
             let _ = sqlx::query(stmt)
-                .bind(format!("{PREFIX}%"))
+                .bind(format!("{scope}%"))
                 .execute(&pool)
                 .await;
         }
-        Arc::new(pool)
+        (Arc::new(pool), scope)
     }
 
     fn repo(pool: Arc<PgPool>) -> FileBlobWriteRepository {
@@ -1512,13 +1532,13 @@ mod content_provenance_tests {
 
     /// A throw-away internal user. Two of these is what makes "the copier,
     /// not the source author" a real assertion rather than a tautology.
-    async fn user(pool: &PgPool, tag: &str) -> Uuid {
+    async fn user(pool: &PgPool, scope: &str, tag: &str) -> Uuid {
         sqlx::query_scalar(
             "INSERT INTO auth.users (username, email, password_hash, role)
              VALUES ($1, $2, 'x', 'user') RETURNING id",
         )
-        .bind(format!("{PREFIX}{tag}"))
-        .bind(format!("{PREFIX}{tag}@example.test"))
+        .bind(format!("{scope}{tag}"))
+        .bind(format!("{scope}{tag}@example.test"))
         .fetch_one(pool)
         .await
         .expect("seed user")
@@ -1528,6 +1548,7 @@ mod content_provenance_tests {
     /// so each test starts from "someone already worked on this".
     async fn file_authored_by(
         pool: &PgPool,
+        scope: &str,
         folder: Uuid,
         drive: Uuid,
         author: Uuid,
@@ -1540,7 +1561,7 @@ mod content_provenance_tests {
              VALUES ($1, $2, $3, $4, 3, 'text/plain', $5, $5, $5)
              RETURNING id",
         )
-        .bind(format!("{PREFIX}{name}"))
+        .bind(format!("{scope}{name}"))
         .bind(folder)
         .bind(drive)
         .bind(HASH_A)
@@ -1588,11 +1609,11 @@ mod content_provenance_tests {
     /// table Alice's work becomes unfindable the moment Bob saves.
     #[tokio::test]
     async fn an_overwrite_adds_a_lane_without_erasing_the_previous_one() {
-        let pool = test_pool().await;
+        let (pool, scope) = test_pool("ovw").await;
         let (folder, drive) = seeded_root(&pool).await;
-        let alice = user(&pool, "ovw-alice").await;
-        let bob = user(&pool, "ovw-bob").await;
-        let file = file_authored_by(&pool, folder, drive, alice, "overwrite.txt").await;
+        let alice = user(&pool, &scope, "alice").await;
+        let bob = user(&pool, &scope, "bob").await;
+        let file = file_authored_by(&pool, &scope, folder, drive, alice, "file.txt").await;
 
         repo(pool.clone())
             .swap_blob_hash(&file.to_string(), HASH_B, 9, None, bob, None)
@@ -1613,10 +1634,10 @@ mod content_provenance_tests {
     /// filling the table and from counting one file forty times.
     #[tokio::test]
     async fn repeated_saves_by_one_person_collapse_to_one_lane() {
-        let pool = test_pool().await;
+        let (pool, scope) = test_pool("rep").await;
         let (folder, drive) = seeded_root(&pool).await;
-        let alice = user(&pool, "rep-alice").await;
-        let file = file_authored_by(&pool, folder, drive, alice, "repeat.txt").await;
+        let alice = user(&pool, &scope, "alice").await;
+        let file = file_authored_by(&pool, &scope, folder, drive, alice, "file.txt").await;
         let first = lanes(&pool, file).await[0].1;
 
         let r = repo(pool.clone());
@@ -1638,11 +1659,11 @@ mod content_provenance_tests {
     /// would still appear in the feed as having worked on the file.
     #[tokio::test]
     async fn a_failed_compare_and_swap_writes_neither_principal_nor_touch() {
-        let pool = test_pool().await;
+        let (pool, scope) = test_pool("cas").await;
         let (folder, drive) = seeded_root(&pool).await;
-        let alice = user(&pool, "cas-alice").await;
-        let bob = user(&pool, "cas-bob").await;
-        let file = file_authored_by(&pool, folder, drive, alice, "cas.txt").await;
+        let alice = user(&pool, &scope, "alice").await;
+        let bob = user(&pool, &scope, "bob").await;
+        let file = file_authored_by(&pool, &scope, folder, drive, alice, "file.txt").await;
 
         // A lost CAS surfaces as `PreconditionFailed`, not as an `Ok` with a
         // flag: the `matched` column is internal to the statement, and the
@@ -1696,18 +1717,18 @@ mod content_provenance_tests {
     /// that the original is visible in.
     #[tokio::test]
     async fn a_copy_inherits_the_source_provenance_and_lanes() {
-        let pool = test_pool().await;
+        let (pool, scope) = test_pool("cp").await;
         let (folder, drive) = seeded_root(&pool).await;
-        let alice = user(&pool, "cp-alice").await;
-        let bob = user(&pool, "cp-bob").await;
-        let source = file_authored_by(&pool, folder, drive, alice, "source.txt").await;
+        let alice = user(&pool, &scope, "alice").await;
+        let bob = user(&pool, &scope, "bob").await;
+        let source = file_authored_by(&pool, &scope, folder, drive, alice, "source.txt").await;
         let source_lane = lanes(&pool, source).await[0].1;
 
         let copy = repo(pool.clone())
             .copy_file(
                 &source.to_string(),
                 None,
-                Some(&format!("{PREFIX}copy.txt")),
+                Some(&format!("{scope}copy.txt")),
                 bob,
             )
             .await
@@ -1749,31 +1770,31 @@ mod content_provenance_tests {
     /// listing while being invisible in the feed.
     #[tokio::test]
     async fn a_folder_copy_carries_provenance_and_lanes_for_every_file() {
-        let pool = test_pool().await;
+        let (pool, scope) = test_pool("tree").await;
         let (root, drive) = seeded_root(&pool).await;
-        let alice = user(&pool, "tree-alice").await;
-        let bob = user(&pool, "tree-bob").await;
+        let alice = user(&pool, &scope, "alice").await;
+        let bob = user(&pool, &scope, "bob").await;
 
         // A source folder with one file authored by Alice.
         let src_folder: Uuid = sqlx::query_scalar(
             "INSERT INTO storage.folders (name, parent_id, drive_id, created_by, updated_by)
              VALUES ($1, $2, $3, $4, $4) RETURNING id",
         )
-        .bind(format!("{PREFIX}tree-src"))
+        .bind(format!("{scope}src"))
         .bind(root)
         .bind(drive)
         .bind(alice)
         .fetch_one(pool.as_ref())
         .await
         .expect("seed folder");
-        let inner = file_authored_by(&pool, src_folder, drive, alice, "tree-inner.txt").await;
+        let inner = file_authored_by(&pool, &scope, src_folder, drive, alice, "inner.txt").await;
         let inner_lane = lanes(&pool, inner).await[0].1;
 
         let result = repo(pool.clone())
             .copy_folder_tree(
                 &src_folder.to_string(),
                 Some(root.to_string()),
-                Some(format!("{PREFIX}tree-dst")),
+                Some(format!("{scope}dst")),
             )
             .await
             .expect("copy tree");
@@ -1786,7 +1807,7 @@ mod content_provenance_tests {
                JOIN storage.folders fo ON fo.id = f.folder_id
               WHERE fo.name = $1 AND NOT f.is_trashed",
         )
-        .bind(format!("{PREFIX}tree-dst"))
+        .bind(format!("{scope}dst"))
         .fetch_one(pool.as_ref())
         .await
         .expect("find the copied file");
@@ -1814,13 +1835,13 @@ mod content_provenance_tests {
     /// of the same rule.
     #[tokio::test]
     async fn an_upload_credits_the_uploader() {
-        let pool = test_pool().await;
+        let (pool, scope) = test_pool("up").await;
         let (folder, _) = seeded_root(&pool).await;
-        let alice = user(&pool, "up-alice").await;
+        let alice = user(&pool, &scope, "alice").await;
 
         let saved = repo(pool.clone())
             .save_file_with_blob(
-                format!("{PREFIX}upload.txt"),
+                format!("{scope}upload.txt"),
                 Some(folder.to_string()),
                 "text/plain".to_string(),
                 HASH_A,

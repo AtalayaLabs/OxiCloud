@@ -387,6 +387,26 @@ HTTP 200
 [Asserts]
 body not contains "rogue-list"
 
+# 11n-bis — bob CANNOT reach the recent-changes feed
+#        (`docs/plan/recently-modified.md` §3). An external is a guest
+#        invited to specific resources; a feed of who-changed-what
+#        across a shared drive aggregates more than that invitation
+#        implied. Same `require_internal_user_layer` as the DAV nests,
+#        applied per-route because this one lives under `/api/files`,
+#        where everything else is open to an invited guest.
+GET {{base_url}}/api/files/recent-changes
+Authorization: Bearer {{bob_access_token}}
+
+HTTP 403
+
+# …and alice (internal) CAN, on the same path. A gate that refused
+# everyone would satisfy the refusal above on its own; this is what
+# separates "externals are blocked" from "the route is broken".
+GET {{base_url}}/api/files/recent-changes
+Authorization: Bearer {{alice_token}}
+
+HTTP 200
+
 # 11n — alice (internal) CAN create both. Pins that the per-route
 #        layer gates on principal kind and nothing else — a gate that
 #        403'd everyone would satisfy 11k/11l just as well, and this

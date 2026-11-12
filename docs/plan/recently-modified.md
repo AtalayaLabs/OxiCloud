@@ -704,9 +704,12 @@ One detail the page owns: a lane can straddle a page boundary, so appending a
 page must merge into the open lane rather than draw a second header for the
 same person.
 
-i18n: `nav.recent_changes`, the page title, the lane header for the Unknown
-bucket, and the window selector labels — English in `en.json`, then all 15
-locales (insert **before** an anchor key, per `project_i18n`).
+i18n: `nav.recent_changes`, the page title, and the window selector labels —
+English in `en.json`, then all 15 locales (insert **before** an anchor key, per
+`project_i18n`). No Unknown-lane string is needed: `modifier_id` comes from the
+touch table, where `user_id` is `NOT NULL` and cascades, so every lane has a
+person. (`content_modified_by` on the file DTO *is* nullable — but that is
+per-row display, not a lane header.)
 
 ---
 
@@ -718,26 +721,45 @@ Backend, `tests/api/recent_changes.hurl`:
 - a file reachable only through a folder-cascade grant is **present** (branch 3
   is the one most likely to be dropped as "an optimisation")
 - a grant with `expires_at` in the past does **not** admit its file
-- a trashed file is absent
-- **two people edited the same file, and it appears in BOTH lanes** — the
-  regression this plan was amended for. Bob touches it on Monday, Carol on
-  Tuesday; Bob's lane still carries it, dated Monday. A `content_modified_by`
-  implementation passes every other pin in this list and fails this one
-- the same person saving the same file repeatedly produces **one** row in their
-  lane, carrying the latest timestamp (the §1b primary key doing its job)
+- a trashed file is absent, and **restoring it returns the row carrying its
+  original timestamp and its original person** — a restore that re-touched
+  would credit whoever emptied the trash and re-date the change
 - `lane_total` equals the number of visible rows for that lane, with a second
   user's invisible file present in the fixture
 - **a publicly-linked file does NOT appear** for a user with no user/group
   grant on it — the `subject_type = 'token'` leak in §3
 - `order_by=nonsense` → 400 naming the accepted set
 - `days=91` → 400, and the response does **not** quietly return 90 days of data
-- flag off → 404 on the prefix, **and** the touch rows still accumulate (§5)
 - an external user → 403, **and** an internal caller → 200 on the same path
   (in `external_users.hurl`, beside 11b/11h–11k)
-- a NULL-lane row straddling a page boundary appears exactly once — the keyset
-  trap in §4, which every single-page test passes
+
+Three pins drafted here are **not expressible at the wire**, and saying so is
+worth more than a half-pin that passes vacuously:
+
+- *Two people on one file*, and *the same person saving twice*, both need a
+  second write to existing content. REST has no content-overwrite endpoint —
+  `POST /api/files/upload` answers 409 on a name conflict, and the overwrite
+  path (`update_file_streaming_with_perms`) is reachable only through WebDAV /
+  NextCloud / WOPI PUT or the delta protocol, neither of which can address
+  another user's file in the caller's own namespace today. Both move to the
+  integration layer below, which is the lowest layer that would fail anyway.
+- *Flag off → 404* needs a second server boot with
+  `OXICLOUD_ENABLE_RECENT_CHANGES=false`; one Hurl run has one environment.
+  It belongs in a router test, or in the operator docs as a verification step.
+- *A NULL-lane row straddling a page boundary* **cannot happen** and the pin is
+  withdrawn: §1b made `user_id` `NOT NULL` with `ON DELETE CASCADE`, so the
+  touch table has no Unknown lane. This bullet survived the §1b redesign by
+  accident — it was written against the `content_modified_by`-only shape,
+  where a deleted user did leave a NULL lane behind.
 
 Rust, inline where the code lives:
+
+- **two people edited the same file, and it appears in BOTH lanes** — the
+  regression this plan was amended for. Bob touches it on Monday, Carol on
+  Tuesday; Bob's lane still carries it, dated Monday. A `content_modified_by`
+  implementation passes every other pin in this list and fails this one
+- the same person saving the same file repeatedly produces **one** row in their
+  lane, carrying the latest timestamp (the §1b primary key doing its job)
 
 - `swap_blob_hash` writes `content_modified_by = caller_id` **and** upserts the
   touch, and a **failed CAS writes none of the three**
