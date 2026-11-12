@@ -1717,6 +1717,8 @@
 		e.preventDefault();
 		const username = newUser.username.trim();
 		const email = newUser.email.trim();
+		// Check the normalized length here: an input maxlength would truncate a
+		// valid 64-character username pasted with surrounding whitespace.
 		if (username.length < 2 || username.length > 64) {
 			createError = t(
 				'admin.error_username_length',
@@ -4960,7 +4962,6 @@
 					bind:value={newUser.username}
 					data-testid="admin-create-user-username-input"
 					minlength="2"
-					maxlength="64"
 					required
 				/></label
 			>

@@ -241,15 +241,18 @@ async function fillCreateUser(username: string) {
 }
 
 // The admin form rejected two-character usernames already accepted by the
-// service. Exercise submission as well as the browser's independent limits.
+// service. Exercise submission as well as the browser's independent minimum.
 it.each([
 	['two characters', 'ab', 'ab'],
 	['surrounding whitespace', '  ab  ', 'ab'],
-	['64 characters', 'a'.repeat(64), 'a'.repeat(64)]
+	['64 characters', 'a'.repeat(64), 'a'.repeat(64)],
+	['64 characters with whitespace', `  ${'a'.repeat(64)}  `, 'a'.repeat(64)]
 ])('creates a user with %s in the username', async (_case, value, expected) => {
 	const input = await fillCreateUser(value);
 	expect(input.getAttribute('minlength')).toBe('2');
-	expect(input.getAttribute('maxlength')).toBe('64');
+	// Native maxlength truncates a padded 64-character name before submit can
+	// trim it. Preserve the full input and validate the normalized length below.
+	expect(input.getAttribute('maxlength')).toBeNull();
 	await fireEvent.click(screen.getByTestId('admin-create-user-submit-btn'));
 	await waitFor(() =>
 		expect(admin.createUser).toHaveBeenCalledExactlyOnceWith(
