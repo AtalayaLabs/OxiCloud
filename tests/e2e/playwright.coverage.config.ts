@@ -215,7 +215,21 @@ export default defineConfig({
 
   use: {
     baseURL: 'http://127.0.0.1:8088',
-    trace: 'on-first-retry',
+    // `retain-on-failure`, NOT `on-first-retry`: `retries: 0` above means
+    // there is never a first retry, so `on-first-retry` captured a trace
+    // exactly never. Every flake we have chased in this suite — the dialog
+    // fill race, the session-expiry reload abort — arrived as a screenshot
+    // and a stack, which is why each took a reproduction loop to diagnose
+    // instead of being readable from the run that failed.
+    //
+    // Costs nothing on a green run (traces are discarded on success) and
+    // writes one zip per failing test under `test-results/`. Inspect with
+    // `npx playwright show-trace test-results/<dir>/trace.zip`.
+    //
+    // Deliberately not paired with `retries: 1`: a retry would hide the
+    // flake rate we keep needing to measure, which is the number that tells
+    // us whether a fix closed a window or merely narrowed it.
+    trace: 'retain-on-failure',
     headless: true,
     screenshot: 'only-on-failure',
     testIdAttribute: 'data-testid',
