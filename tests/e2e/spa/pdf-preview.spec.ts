@@ -113,10 +113,12 @@ test('a browser WITHOUT one renders with pdf.js (Chrome on Android)', async ({ p
   // produced the broken-document icon, and no header change fixes that.
   await expect(page.locator('iframe.fv__pdf')).toHaveCount(0);
 
-  // A sized canvas proves the real vendored pdf.js loaded from `/vendors`,
-  // started its worker and painted — all under the live CSP.
+  // A canvas is appended before rendering finishes. Wait for the preview
+  // status to clear too, so a blank canvas followed by a render failure
+  // cannot pass as a successful paint under the live CSP.
   const pages = page.locator('[data-testid="pdf-preview-pages"] canvas');
   await expect(pages.first()).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator('.pdfp__status')).toHaveCount(0, { timeout: 30_000 });
   const box = await pages.first().boundingBox();
   expect(box?.width ?? 0).toBeGreaterThan(0);
   expect(box?.height ?? 0).toBeGreaterThan(0);

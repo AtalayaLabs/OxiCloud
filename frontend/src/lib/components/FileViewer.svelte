@@ -299,15 +299,21 @@
 			pdfUrl = null;
 			pdfData = null;
 			let objectUrl: string | null = null;
-			apiFetch(fileInlineUrl(f.id, shareId), { credentials: 'same-origin' })
+			let cancelled = false;
+			const controller = new AbortController();
+			apiFetch(fileInlineUrl(f.id, shareId), {
+				credentials: 'same-origin',
+				signal: controller.signal
+			})
 				// Annotated: without it TS infers `Promise<ArrayBuffer> | Promise<Blob>`
 				// for the branch and refuses to chain it as one promise.
 				.then((r): Promise<ArrayBuffer | Blob> => {
+					if (cancelled) throw new DOMException('PDF preview cancelled', 'AbortError');
 					if (!r.ok) return Promise.reject(new Error(`HTTP ${r.status}`));
 					return nativePdf ? r.blob() : r.arrayBuffer();
 				})
 				.then((body) => {
-					if (file !== f || !open) return;
+					if (cancelled) return;
 					if (body instanceof ArrayBuffer) {
 						pdfData = body;
 					} else {
@@ -315,8 +321,12 @@
 						pdfUrl = objectUrl;
 					}
 				})
-				.catch(() => (pdfError = true));
+				.catch(() => {
+					if (!cancelled) pdfError = true;
+				});
 			return () => {
+				cancelled = true;
+				controller.abort();
 				if (objectUrl) URL.revokeObjectURL(objectUrl);
 				pdfUrl = null;
 				pdfData = null;

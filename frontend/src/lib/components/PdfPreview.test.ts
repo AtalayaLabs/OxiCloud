@@ -27,9 +27,10 @@ const renderMock = vi.fn(() => ({ promise: Promise.resolve(), cancel: cancelMock
 const cleanupMock = vi.fn();
 const destroyMock = vi.fn(() => Promise.resolve());
 const getDocumentMock = vi.fn();
+const getPdfjsMock = vi.fn(() => Promise.resolve({ getDocument: getDocumentMock }));
 
 vi.mock('$lib/utils/thumbnail', () => ({
-	getPdfjsLib: () => Promise.resolve({ getDocument: getDocumentMock })
+	getPdfjsLib: () => getPdfjsMock()
 }));
 
 function pdfWithPages(numPages: number) {
@@ -173,5 +174,85 @@ describe('PdfPreview', () => {
 		expect(cancel).toHaveBeenCalledTimes(1);
 		expect(destroyMock).toHaveBeenCalledTimes(1);
 		await waitFor(() => expect(cleanupMock).toHaveBeenCalledTimes(1));
+	});
+	it('does not start a document after the viewer closes during library loading', async () => {
+		const library = Promise.withResolvers<{ getDocument: typeof getDocumentMock }>();
+		getPdfjsMock.mockReturnValueOnce(library.promise);
+		const view = render(PdfPreview, { data: new ArrayBuffer(8), name: 'closed.pdf' });
+		await waitFor(() => expect(getPdfjsMock).toHaveBeenCalledTimes(1));
+		view.unmount();
+		library.resolve({ getDocument: getDocumentMock });
+		await library.promise;
+		expect(getDocumentMock).not.toHaveBeenCalled();
+	});
+
+	it('cleans a page that arrives after its document was replaced', async () => {
+		const oldDoc = pdfWithPages(1);
+		const oldPage = await oldDoc.getPage();
+		const pending = Promise.withResolvers<typeof oldPage>();
+		const oldCleanup = vi.fn();
+		oldPage.cleanup = oldCleanup;
+		oldDoc.getPage.mockClear().mockReturnValue(pending.promise);
+		getDocumentMock.mockReturnValueOnce({ promise: Promise.resolve(oldDoc), destroy: destroyMock });
+		const view = render(PdfPreview, { data: new ArrayBuffer(8), name: 'old.pdf' });
+		await waitFor(() => expect(oldDoc.getPage).toHaveBeenCalledTimes(1));
+		await view.rerender({ data: new ArrayBuffer(16), name: 'new.pdf' });
+		await waitFor(() => expect(renderMock).toHaveBeenCalledTimes(3));
+		pending.resolve(oldPage);
+		await waitFor(() => expect(oldCleanup).toHaveBeenCalledTimes(1));
+		expect(renderMock).toHaveBeenCalledTimes(3);
+		expect(screen.getByTestId('pdf-preview-pages').querySelectorAll('canvas')).toHaveLength(3);
+	});
+
+	it('cancels a replaced page without reporting its cancellation on the next document', async () => {
+		const pending = Promise.withResolvers<void>();
+		const cancel = vi.fn(() => pending.reject(new Error('Rendering cancelled')));
+		renderMock.mockReturnValueOnce({ promise: pending.promise, cancel });
+		const view = render(PdfPreview, { data: new ArrayBuffer(8), name: 'old.pdf' });
+		await waitFor(() => expect(renderMock).toHaveBeenCalledTimes(1));
+		await view.rerender({ data: new ArrayBuffer(16), name: 'new.pdf' });
+		await waitFor(() => expect(cleanupMock).toHaveBeenCalledTimes(4));
+		expect(cancel).toHaveBeenCalledTimes(1);
+		expect(screen.queryByText('Could not load preview.')).toBeNull();
+		expect(screen.getByTestId('pdf-preview-pages').querySelectorAll('canvas')).toHaveLength(3);
+	});
+
+	it('cleans up and reports a real rendering failure', async () => {
+		renderMock.mockImplementationOnce(() => ({
+			promise: Promise.reject(new Error('render failed')),
+			cancel: cancelMock
+		}));
+		const view = render(PdfPreview, { data: new ArrayBuffer(8), name: 'broken.pdf' });
+		await waitFor(() => expect(screen.getByText('Could not load preview.')).toBeTruthy());
+		expect(cleanupMock).toHaveBeenCalledTimes(1);
+		expect(destroyMock).toHaveBeenCalledTimes(1);
+		view.unmount();
+		expect(destroyMock).toHaveBeenCalledTimes(1);
+	});
+
+	it('cleans up when a canvas context cannot be created', async () => {
+		HTMLCanvasElement.prototype.getContext = vi.fn(() => null);
+		render(PdfPreview, { data: new ArrayBuffer(8), name: 'no-canvas.pdf' });
+		await waitFor(() => expect(screen.getByText('Could not load preview.')).toBeTruthy());
+		expect(cleanupMock).toHaveBeenCalledTimes(1);
+		expect(destroyMock).toHaveBeenCalledTimes(1);
+	});
+
+	it('does not transfer the caller-owned input buffer', async () => {
+		const data = new Uint8Array([1, 2, 3, 4]).buffer;
+		render(PdfPreview, { data, name: 'copy.pdf' });
+		await waitFor(() => expect(getDocumentMock).toHaveBeenCalledTimes(1));
+		const transferred = getDocumentMock.mock.calls[0][0].data as ArrayBuffer;
+		expect(transferred).not.toBe(data);
+		expect(new Uint8Array(transferred)).toEqual(new Uint8Array(data));
+	});
+
+	it('handles a rejected destruction without an unhandled promise', async () => {
+		destroyMock.mockRejectedValueOnce(new Error('worker teardown failed'));
+		const view = render(PdfPreview, { data: new ArrayBuffer(8), name: 'teardown.pdf' });
+		await waitFor(() => expect(cleanupMock).toHaveBeenCalledTimes(3));
+		view.unmount();
+		expect(destroyMock).toHaveBeenCalledTimes(1);
+		await Promise.resolve();
 	});
 });
