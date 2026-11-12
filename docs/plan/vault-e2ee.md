@@ -268,6 +268,10 @@ or snapshots reaching server storage, logs or backups.
 
 ## Proposed contribution sequence and acceptance gates
 
+The [P0 protection-boundary contract](vault-p0-acceptance.md) narrows the first
+backend contribution and lists its compatibility and refusal tests. It remains
+a proposal and does not enable encrypted drives.
+
 | PR | Scope | Required evidence |
 |---|---|---|
 | 1 | Bounded delta recovery, usable independently | Real worker tests for request caps, framing, recovery subset, duplicates, failure and retry limit; frontend checks/build. |
