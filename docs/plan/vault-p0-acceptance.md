@@ -39,12 +39,20 @@ These are current integration points, not a complete list of protected callers:
 |---|---|---|
 | Domain | `src/domain/entities/drive.rs` | Separate protection from kind and extensible policies; reject unknown persisted values. |
 | Persistence | `src/domain/repositories/drive_repository.rs`, `src/infrastructure/repositories/pg/drive_pg_repository.rs` | Persist/read the discriminator in all projections and create paths; migration round trips for both kinds. |
-| Application | `src/application/services/drive_management_service.rs` and content services | Resolve the source drive, enforce grants through `AuthorizationEngine`, then reject unsupported protection before content I/O or enqueueing work. |
+| Application | `src/application/services/drive_management_service.rs` and content services | Resolve every source and destination drive, enforce the required grants through `AuthorizationEngine`, then reject unsupported protection before content I/O, mutation or enqueueing work. |
 | API contract | `src/application/dtos/drive_dto.rs`, `src/interfaces/api/handlers/drive_handler.rs` | Agree any read-only wire addition; update OpenAPI and generated frontend types together. Handlers do not become authorization enforcement points. |
 | Storage | `src/infrastructure/services/blob_handler.rs` | Retain the existing content-I/O boundary. P0 introduces no plaintext/ciphertext passthrough or new storage framing. |
 
 Reuse a common application-layer protection check and carry its resolved context
-through the operation. Do not add an independent database query for every row in
+through the operation. A new upload has no source file: its destination folder's
+drive is the protection context. Copy/move, overwrite and restore must check both
+the source (including retained revision context) and destination; a plain source
+does not authorize writing into a protected target. Reject before reserving quota,
+creating a session or publishing references. Carry the checked identities into
+commit-time validation so a concurrent parent/drive change cannot redirect a
+previously authorized operation.
+
+Do not add an independent database query for every row in
 large listings. Batch/project required source-drive metadata and retain the
 existing permission filtering, pagination and query-count behavior.
 
@@ -67,12 +75,13 @@ does not claim these tests or gates exist today.
 | Migration and repository reads | Existing rows remain plain with identical IDs, grants and quota. Seeded protected rows round-trip. Unknown values fail explicitly. |
 | Drive creation and policy editing | Existing supported creation works; no public request can create, enable or downgrade protected content. Generic policy changes preserve protection. |
 | REST upload/download, preview and thumbnail | Protected fixtures fail before a blob read/write or derivative creation. Spy assertions cover zero I/O, not just an error response. |
-| Chunk/delta negotiation, by-hash lookup and finalization | No hash-existence probing, upload session, chunk registration or reference publication bypasses the gate. Rejection preserves active content and accounting. |
+| Chunk/delta negotiation, by-hash lookup and finalization | No hash-existence probing, upload session, chunk registration, direct-storage capability issuance or reference publication bypasses the target/source gate. Rejection preserves active content and accounting. |
 | Native WebDAV and Nextcloud DAV | GET/HEAD/PUT, PROPFIND, COPY/MOVE and sync/listing paths cannot expose or mutate protected resources. Specify omission/error behavior consistently and preserve plain-client compatibility. |
 | Public links and recipient mounts | Resolve protection from the source drive for every access, including after rename/move. A grant, token or mount never converts protected bytes into a supported plaintext path. |
 | WOPI and collaboration | Refuse server-readable content/session setup before fetching bytes or storing collaboration state. |
-| Search, OCR, EXIF, faces and transcoding | Exclude protected inputs before reading or enqueueing; a job already queued before a policy change must check again when executed. |
-| Copy/move across drives | Do not cross protection contexts through metadata-only operations. Rejection leaves source, destination, quota and references unchanged. Preserve same-context plain behavior. |
+| Search, OCR, EXIF, faces and transcoding | Exclude protected inputs before reading or enqueueing; a queued job must resolve and recheck its current/retained protection context when executed. |
+| Existing derivatives and search results | Seed pre-existing plaintext snippets, OCR/EXIF/face records, previews and thumbnail caches for protected fixtures. Reads must not return those artifacts even if no new blob read or worker execution is needed. Retain ordinary-source cache hits and permission filtering. |
+| Copy/move across drives | Cover plain-to-protected, protected-to-plain and protected-to-protected sources/targets, including folder trees and overwrite. Do not cross protection contexts through metadata-only operations. Rejection leaves source, destination, quota and references unchanged. Preserve same-context plain behavior. |
 | Trash, versions and restore | Preserve source context and retained metadata. Refuse unsupported restore/copy paths before mutation; a missing context does not authorize downgrade. |
 | Backup, consistency and GC | Preserve opaque protection metadata through backup/restore. A protection refusal or backend read error cannot be interpreted as missing content eligible for deletion. |
 | Flag off, restart and older client | Protected fixtures remain inaccessible after flag changes/restart. An older client cannot silently upload plaintext into protected storage. |
