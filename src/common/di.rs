@@ -3126,6 +3126,42 @@ impl AppServiceFactory {
                         .map(|m| std::time::Duration::from_secs(m.saturating_mul(60)))
                 })
                 .unwrap_or_else(|| std::time::Duration::from_secs(30 * 60));
+
+            // The TTL must exceed the debounce window, and this is FATAL
+            // rather than a warning because the two values contradict each
+            // other rather than merely being badly tuned.
+            //
+            // Idle is measured from `collab.doc_sessions.last_activity_at`,
+            // which every debounced flush bumps to `NOW()`. So a TTL at or
+            // below the debounce window asks the GC to reap sessions sooner
+            // than they are persisted: a row becomes eligible at the very
+            // moment something writes to it, and whether the sweep catches
+            // it depends on which landed first. The visible symptom is a GC
+            // that works intermittently — the hardest kind of bug to chase,
+            // which is exactly why this refuses to start instead of warning.
+            //
+            // Same posture as the `markdown_collab` + `message_bus`
+            // cross-check in `config.rs`: a self-contradictory collab
+            // configuration stops the boot.
+            //
+            // The production defaults sit 120× apart (15 s debounce vs
+            // 30 min TTL), so only a shrunken TTL can trip this — typically
+            // a test suite's, and `tests/common/server.env` is held to the
+            // same rule.
+            if default_idle_ttl <= limits.debounce_idle {
+                panic!(
+                    "FATAL: OXICLOUD_COLLAB_IDLE_TTL ({} ms) must be GREATER than \
+                     OXICLOUD_COLLAB_DEBOUNCE_IDLE_MS ({} ms). Every debounced flush \
+                     bumps the session's last_activity_at, so this configuration reaps \
+                     idle sessions sooner than it persists them and the idle-GC sweep \
+                     becomes a race. Raise OXICLOUD_COLLAB_IDLE_TTL_MINUTES / \
+                     _SECONDS, or lower OXICLOUD_COLLAB_DEBOUNCE_IDLE_MS. Refusing to \
+                     start.",
+                    default_idle_ttl.as_millis(),
+                    limits.debounce_idle.as_millis(),
+                );
+            }
+
             let default_batch_limit = std::env::var("OXICLOUD_COLLAB_IDLE_BATCH_LIMIT")
                 .ok()
                 .and_then(|s| s.parse::<u32>().ok())
