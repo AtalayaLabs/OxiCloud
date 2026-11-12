@@ -102,10 +102,17 @@ impl RecentChangesPgRepository {
     /// needed and a file saved forty times still counts once. Counted inside
     /// the access filter, so a lane total can never hint at a file the caller
     /// cannot see.
+    /// `only` restricts to named people — the `?person=` drill-in, and how the
+    /// handler re-reads the totals for a lane a cursor landed inside.
+    /// `after` is the lane keyset `(lane_latest, user_id)`, so a page-2
+    /// request resumes at the right lane instead of re-aggregating from the
+    /// top and paging by offset.
     pub async fn lanes(
         &self,
         caller_id: Uuid,
         days: i32,
+        only: Option<&[Uuid]>,
+        after: Option<(DateTime<Utc>, Uuid)>,
         limit: i64,
     ) -> Result<Vec<ChangeLane>, DomainError> {
         let sql = format!(
@@ -116,13 +123,20 @@ impl RecentChangesPgRepository {
                FROM storage.file_content_touches t
               WHERE t.touched_at > NOW() - ($2 || ' days')::interval
                 AND t.file_id IN (SELECT id FROM visible_files)
+                AND ($3::uuid[] IS NULL OR t.user_id = ANY($3))
               GROUP BY t.user_id
+             HAVING $4::timestamptz IS NULL
+                 OR MAX(t.touched_at) < $4
+                 OR (MAX(t.touched_at) = $4 AND t.user_id > $5)
               ORDER BY lane_latest DESC, t.user_id
-              LIMIT $3"
+              LIMIT $6"
         );
         let rows = sqlx::query(&sql)
             .bind(caller_id)
             .bind(days.to_string())
+            .bind(only)
+            .bind(after.map(|(ts, _)| ts))
+            .bind(after.map(|(_, id)| id))
             .bind(limit)
             .fetch_all(self.pool.as_ref())
             .await

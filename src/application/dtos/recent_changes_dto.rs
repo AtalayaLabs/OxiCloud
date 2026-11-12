@@ -13,7 +13,6 @@ use uuid::Uuid;
 
 use super::cursor::{CursorQuery, PageCursor};
 use super::file_dto::FileDto;
-use super::user_dto::PublicUserDto;
 
 /// Default window, in days.
 pub const DEFAULT_DAYS: u32 = 30;
@@ -117,10 +116,14 @@ pub struct FileChangeItemDto {
     /// latest change by anyone — in Bob's lane the row says when Bob changed
     /// it, or every lane reads as the most recent editor.
     pub changed_at: DateTime<Utc>,
-    /// Who made that change. `None` when the account has since been deleted
-    /// — the file keeps the change, the principal is gone.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub modifier: Option<PublicUserDto>,
+    /// Who made that change — an id, resolved by the client the same way it
+    /// resolves `created_by` on every other listing (`useOwnerCache` →
+    /// `/api/users/{id}`, cached across pages). Embedding a user object here
+    /// would be an N+1 per page and the only listing in the API that does it.
+    ///
+    /// Never null: `storage.file_content_touches.user_id` is NOT NULL and
+    /// cascades on user delete, so a lane's person always exists.
+    pub modifier_id: Uuid,
     /// How many files this person changed inside the window, counted AFTER
     /// the access filter — so a lane header can read "Bob · 14 files" without
     /// a second round trip and without hinting at a file the caller cannot

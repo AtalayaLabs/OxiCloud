@@ -35,7 +35,7 @@ use crate::common::locale::LocaleRegistry;
 use crate::infrastructure::repositories::pg::SharePgRepository;
 use crate::infrastructure::repositories::pg::{
     FileBlobReadRepository, FileBlobWriteRepository, FileMetadataRepository, FolderDbRepository,
-    TrashDbRepository,
+    RecentChangesPgRepository, TrashDbRepository,
 };
 use crate::infrastructure::scheduler::{JobRegistry, SchedulerEngine};
 use crate::infrastructure::services::file_content_cache::{
@@ -708,6 +708,15 @@ impl AppServiceFactory {
         // File metadata repository — EXIF/media metadata for images
         let file_metadata_repository = Arc::new(FileMetadataRepository::new(db_pool.clone()));
 
+        // Recent-changes reads. Built only when the feature is on; the route
+        // is gated on the same flag, so an off deployment has neither.
+        let recent_changes_repository = if core.config.features.enable_recent_changes {
+            Some(Arc::new(RecentChangesPgRepository::new(db_pool.clone())))
+        } else {
+            tracing::info!("Recent changes feed is disabled (enable_recent_changes = false)");
+            None
+        };
+
         tracing::info!(
             "Repository services initialized with 100% blob storage model (PG metadata + BlobHandler blobs)"
         );
@@ -720,6 +729,7 @@ impl AppServiceFactory {
             file_metadata_repository,
             i18n_repository,
             trash_repository,
+            recent_changes_repository,
         }
     }
 
@@ -3990,6 +4000,11 @@ pub struct RepositoryServices {
     pub file_metadata_repository: Arc<FileMetadataRepository>,
     pub i18n_repository: Arc<FileSystemI18nService>,
     pub trash_repository: Option<Arc<TrashDbRepository>>,
+    /// Reads for `GET /api/files/recent-changes`. `None` when
+    /// `enable_recent_changes` is off — the route is then not mounted either,
+    /// so the handler's `None` arm is unreachable belt-and-braces rather than
+    /// the gate itself.
+    pub recent_changes_repository: Option<Arc<RecentChangesPgRepository>>,
 }
 
 /// Container for application services
