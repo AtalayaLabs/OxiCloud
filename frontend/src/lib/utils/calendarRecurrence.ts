@@ -183,7 +183,10 @@ function zoneOffsetMs(instant: Date, timeZone: string): number | null {
 }
 
 /** Convert a wall date to its instant in the zone. A second offset
- * lookup settles the DST boundary where the first guess changes side. */
+ * lookup settles the DST boundary where the first guess changes side.
+ * A wall time inside a spring-forward gap has no instant at all — the
+ * conversion lands on a different wall time — so return `null` and let
+ * the caller omit the occurrence (RFC 5545 §3.3.10). */
 function wallDateToInstant(wall: Date, timeZone: string): Date | null {
 	const firstOffset = zoneOffsetMs(wall, timeZone);
 	if (firstOffset === null) return null;
@@ -192,6 +195,8 @@ function wallDateToInstant(wall: Date, timeZone: string): Date | null {
 	if (secondOffset !== null && secondOffset !== firstOffset) {
 		instant = new Date(wall.getTime() - secondOffset);
 	}
+	const roundTrip = wallDateInZone(instant, timeZone);
+	if (!roundTrip || roundTrip.getTime() !== wall.getTime()) return null;
 	return instant;
 }
 
@@ -221,9 +226,28 @@ function collectStartsInZone(
 	}
 	const wallRule: RecurrenceRule = rule.until === undefined ? rule : { ...rule, until: undefined };
 
+	// COUNT must be applied after rejecting nonexistent wall times, so
+	// `collectStarts` checks existence before counting a candidate. The
+	// cache avoids converting the same wall time twice.
+	const conversions = new Map<number, Date | null>();
+	const toInstant = (wall: Date): Date | null => {
+		const key = wall.getTime();
+		const cached = conversions.get(key);
+		if (cached !== undefined) return cached;
+		const instant = wallDateToInstant(wall, timeZone);
+		conversions.set(key, instant);
+		return instant;
+	};
+
 	const starts: Date[] = [];
-	for (const wall of collectStarts(wallStart, wallRule, wallFrom, wallTo)) {
-		const start = wallDateToInstant(wall, timeZone);
+	for (const wall of collectStarts(
+		wallStart,
+		wallRule,
+		wallFrom,
+		wallTo,
+		(candidate) => toInstant(candidate) !== null
+	)) {
+		const start = toInstant(wall);
 		if (!start) continue;
 		if (rule.until !== undefined && start.getTime() > rule.until) continue;
 		starts.push(start);
@@ -287,7 +311,8 @@ function weeklyByDayStarts(
 	start: Date,
 	rule: RecurrenceRule,
 	fromMs: number,
-	toMs: number
+	toMs: number,
+	accept?: (candidate: Date) => boolean
 ): Date[] {
 	const byday = [...(rule.byday ?? [])].sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7));
 	const weekStart = startOfWeekUtc(start);
@@ -308,9 +333,12 @@ function weeklyByDayStarts(
 			if (candidate.getTime() < start.getTime()) continue;
 			if (rule.count !== undefined && produced >= rule.count) return starts;
 			if (rule.until !== undefined && candidate.getTime() > rule.until) return starts;
-			produced++;
 			if (candidate.getTime() > toMs) return starts;
 			anyFuture = true;
+			// A nonexistent wall time (spring-forward gap) is omitted
+			// without consuming COUNT; later weeks must still run.
+			if (accept && !accept(candidate)) continue;
+			produced++;
 			if (candidate.getTime() >= fromMs) starts.push(candidate);
 		}
 		if (!anyFuture && week > 0) return starts;
@@ -318,9 +346,15 @@ function weeklyByDayStarts(
 	return starts;
 }
 
-function collectStarts(start: Date, rule: RecurrenceRule, fromMs: number, toMs: number): Date[] {
+function collectStarts(
+	start: Date,
+	rule: RecurrenceRule,
+	fromMs: number,
+	toMs: number,
+	accept?: (candidate: Date) => boolean
+): Date[] {
 	if (rule.freq === 'WEEKLY' && rule.byday && rule.byday.length > 0) {
-		return weeklyByDayStarts(start, rule, fromMs, toMs);
+		return weeklyByDayStarts(start, rule, fromMs, toMs, accept);
 	}
 
 	let produced = 0;
@@ -353,6 +387,13 @@ function collectStarts(start: Date, rule: RecurrenceRule, fromMs: number, toMs: 
 		}
 		if (rule.until !== undefined && cursor.getTime() > rule.until) break;
 		if (cursor.getTime() > toMs) break;
+		// A nonexistent wall time is omitted without consuming COUNT
+		// (RFC 5545 §3.3.10), so the next valid occurrence still runs.
+		if (accept && !accept(cursor)) {
+			step++;
+			cursor = advance(start, rule, step);
+			continue;
+		}
 		if (cursor.getTime() >= fromMs) starts.push(cursor);
 		produced++;
 		step++;
