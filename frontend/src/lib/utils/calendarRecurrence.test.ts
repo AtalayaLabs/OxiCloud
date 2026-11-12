@@ -82,6 +82,54 @@ describe('expandEvents', () => {
 		]);
 	});
 
+	// 02:30 New York does not exist on 2026-03-08 (the clock jumps
+	// 02:00 → 03:00). RFC 5545 §3.3.10 says a nonexistent generated
+	// local time is omitted and does not count toward COUNT, so the
+	// third occurrence must be March 22 — not March 15 after the gap
+	// silently consumed an occurrence.
+	it('omits a DST-gap occurrence without consuming COUNT', () => {
+		const master = event({
+			start_time: '2026-03-01T07:30:00Z',
+			end_time: '2026-03-01T08:00:00Z',
+			rrule: 'FREQ=WEEKLY;COUNT=3',
+			timezone: 'America/New_York',
+			ical_uid: 'dst-gap-count'
+		});
+		const expanded = expandEvents(
+			[master],
+			new Date('2026-03-01T00:00:00Z'),
+			new Date('2026-04-01T00:00:00Z')
+		);
+		expect(expanded.map((o) => o.start.toISOString())).toEqual([
+			'2026-03-01T07:30:00.000Z',
+			'2026-03-15T06:30:00.000Z',
+			'2026-03-22T06:30:00.000Z'
+		]);
+	});
+
+	// Same gap, but through the weekly BYDAY generator rather than the
+	// plain weekly step: the skipped candidate must not end the series
+	// or consume COUNT there either.
+	it('omits a DST-gap occurrence without consuming COUNT under BYDAY', () => {
+		const master = event({
+			start_time: '2026-03-01T07:30:00Z',
+			end_time: '2026-03-01T08:00:00Z',
+			rrule: 'FREQ=WEEKLY;BYDAY=SU;COUNT=3',
+			timezone: 'America/New_York',
+			ical_uid: 'dst-gap-byday'
+		});
+		const expanded = expandEvents(
+			[master],
+			new Date('2026-03-01T00:00:00Z'),
+			new Date('2026-04-01T00:00:00Z')
+		);
+		expect(expanded.map((o) => o.start.toISOString())).toEqual([
+			'2026-03-01T07:30:00.000Z',
+			'2026-03-15T06:30:00.000Z',
+			'2026-03-22T06:30:00.000Z'
+		]);
+	});
+
 	it('applies UNTIL in UTC to a TZID series', () => {
 		const master = event({
 			start_time: '2026-03-02T14:00:00Z',
