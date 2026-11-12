@@ -78,6 +78,7 @@
     "files": "ファイル",
     "shared": "共有",
     "recent": "最近",
+    "recent_changes": "最近の変更",
     "favorites": "お気に入り",
     "photos": "メディア",
     "music": "音楽",
@@ -860,6 +861,16 @@
     "added_msg": "お気に入りに追加しました",
     "removed_title": "お気に入りから削除しました",
     "removed_msg": "お気に入りから削除しました"
+  },
+  "changes": {
+    "empty_state": "最近の変更はありません",
+    "empty_hint": "アクセスできるファイルの変更がここに表示されます",
+    "col_changed": "変更日時",
+    "lane_files": "{{n}} 件のファイル",
+    "window": "期間",
+    "window_7": "過去 7 日間",
+    "window_30": "過去 30 日間",
+    "window_90": "過去 90 日間"
   },
   "recent": {
     "title": "最近",
@@ -1741,6 +1752,8 @@
     "type": "種類",
     "type.folders": "フォルダー",
     "accessedAt": "アクセス日",
+    "changedBy": "変更者",
+    "changedAt": "変更日",
     "modifiedAt": "更新日",
     "createdAt": "作成日",
     "size": "サイズ",

@@ -78,6 +78,7 @@
     "files": "Fichiers",
     "shared": "Partages",
     "recent": "Récents",
+    "recent_changes": "Modifications récentes",
     "favorites": "Favoris",
     "photos": "Médias",
     "music": "Musique",
@@ -860,6 +861,16 @@
     "added_msg": "ajouté aux favoris",
     "removed_title": "Retiré des favoris",
     "removed_msg": "retiré des favoris"
+  },
+  "changes": {
+    "empty_state": "Aucune modification récente",
+    "empty_hint": "Les modifications des fichiers auxquels vous avez accès apparaîtront ici",
+    "col_changed": "Modifié",
+    "lane_files": "{{n}} fichier(s)",
+    "window": "Période",
+    "window_7": "7 derniers jours",
+    "window_30": "30 derniers jours",
+    "window_90": "90 derniers jours"
   },
   "recent": {
     "title": "Récents",
@@ -1742,6 +1753,8 @@
     "shareDate": "Date de partage",
     "favoriteDate": "Date d'ajout aux favoris",
     "accessedAt": "Date d'accès",
+    "changedBy": "Modifié par",
+    "changedAt": "Date de modification",
     "modifiedAt": "Date de modification",
     "createdAt": "Date de création",
     "size": "Taille",

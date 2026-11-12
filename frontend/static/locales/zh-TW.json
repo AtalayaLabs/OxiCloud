@@ -78,6 +78,7 @@
     "files": "檔案",
     "shared": "共享",
     "recent": "最近",
+    "recent_changes": "最近變更",
     "favorites": "收藏",
     "photos": "媒體",
     "music": "音樂",
@@ -860,6 +861,16 @@
     "added_msg": "已新增到收藏",
     "removed_title": "已從收藏移除",
     "removed_msg": "已從收藏移除"
+  },
+  "changes": {
+    "empty_state": "沒有最近的變更",
+    "empty_hint": "您可存取的檔案變更將顯示在此",
+    "col_changed": "已變更",
+    "lane_files": "{{n}} 個檔案",
+    "window": "時間範圍",
+    "window_7": "最近 7 天",
+    "window_30": "最近 30 天",
+    "window_90": "最近 90 天"
   },
   "recent": {
     "title": "最近",
@@ -1741,6 +1752,8 @@
     "type": "類型",
     "type.folders": "資料夾",
     "accessedAt": "存取日期",
+    "changedBy": "變更者",
+    "changedAt": "變更日期",
     "modifiedAt": "修改日期",
     "createdAt": "建立日期",
     "size": "大小",

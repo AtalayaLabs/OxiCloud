@@ -78,6 +78,7 @@
     "files": "파일",
     "shared": "공유",
     "recent": "최근",
+    "recent_changes": "최근 변경",
     "favorites": "즐겨찾기",
     "photos": "미디어",
     "music": "음악",
@@ -860,6 +861,16 @@
     "added_msg": "즐겨찾기에 추가되었습니다",
     "removed_title": "즐겨찾기에서 삭제됨",
     "removed_msg": "즐겨찾기에서 삭제되었습니다"
+  },
+  "changes": {
+    "empty_state": "최근 변경 내역이 없습니다",
+    "empty_hint": "접근할 수 있는 파일의 변경 내역이 여기에 표시됩니다",
+    "col_changed": "변경됨",
+    "lane_files": "파일 {{n}}개",
+    "window": "기간",
+    "window_7": "최근 7일",
+    "window_30": "최근 30일",
+    "window_90": "최근 90일"
   },
   "recent": {
     "title": "최근",
@@ -1741,6 +1752,8 @@
     "type": "유형",
     "type.folders": "폴더",
     "accessedAt": "접근 날짜",
+    "changedBy": "변경한 사람",
+    "changedAt": "변경 날짜",
     "modifiedAt": "수정 날짜",
     "createdAt": "생성 날짜",
     "size": "크기",

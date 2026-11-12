@@ -1,0 +1,319 @@
+<script lang="ts">
+	// "What changed lately, and who changed it" — `docs/plan/recently-modified.md`.
+	//
+	// A sibling of `/recent`, not a tab on it: `/recent` is the viewer's own
+	// access log, this is shared provenance across everyone who can reach the
+	// file. The default axis is PEOPLE, because the question the page answers
+	// is "what did my colleagues touch", and a swimlane per person answers it
+	// at a glance where a flat chronological list does not.
+	//
+	// Phase 4: rides the generated SDK directly, like `/recent` — no
+	// hand-written endpoint wrapper to drift from the spec.
+	import { onMount } from 'svelte';
+	import { listRecentChanges } from '$lib/api/generated/openapi/sdk.gen';
+	import type {
+		FileChangeItemDto,
+		RecentChangesOrderBy
+	} from '$lib/api/generated/openapi/types.gen';
+	import ResourceList, { type GroupByDef } from '$lib/components/ResourceList.svelte';
+	import type { FileItem, FolderItem } from '$lib/api/types';
+	import { useOwnerCache } from '$lib/composables/useOwnerCache.svelte';
+	import { resolveOwnerName } from '$lib/utils/ownerName';
+	import { dateBucket } from '$lib/utils/resourceBuckets';
+	import { formatDate } from '$lib/utils/display';
+	import { lazyComponent } from '$lib/composables/lazyComponent.svelte';
+	import { t } from '$lib/i18n/index.svelte';
+
+	/**
+	 * One row of the feed: the file, plus THIS row's lane.
+	 *
+	 * The lane and the date live on the row rather than in `ResourceList`'s
+	 * `contextMap`, and that is the whole reason this type exists. The context
+	 * map is keyed by `item.id`, and one file legitimately appears in two
+	 * lanes — Bob changed it Monday, Carol on Tuesday — so a map keyed by file
+	 * id holds one of the two and silently mislabels the other. Per-row fields
+	 * cannot collide.
+	 */
+	type ChangeRow = FileItem & {
+		changedAt: string;
+		changedBy: string;
+		laneTotal: number | null;
+	};
+
+	/** `bucketOf` / snippets are typed against the component's union; every
+	 *  item this page passes is a `ChangeRow`, so this narrows without a
+	 *  per-callsite `'changedBy' in item` dance. */
+	function row(item: FileItem | FolderItem): ChangeRow {
+		return item as ChangeRow;
+	}
+
+	let raw = $state<FileChangeItemDto[]>([]);
+	let cursor = $state<string | undefined>(undefined);
+	let loading = $state(false);
+	let error = $state<string | null>(null);
+	/** People, per the plan's default. Matches `groupBys[0]`. */
+	let groupBy = $state('modifier');
+	let reversed = $state(false);
+	/** Server default is 30 and its ceiling is 90 — a larger value is a 400
+	 *  naming the bound, so the selector offers exactly what the API accepts. */
+	let days = $state(30);
+	const owners = useOwnerCache(resolveOwnerName);
+
+	const rows = $derived<ChangeRow[]>(
+		raw.map((it) => ({
+			...(it.resource as FileItem),
+			changedAt: it.changed_at,
+			changedBy: it.modifier_id,
+			laneTotal: it.lane_total ?? null
+		}))
+	);
+
+	/**
+	 * What the list renders.
+	 *
+	 * On the people axis every row is kept: a file in two lanes is the point,
+	 * and each lane is its own `#each`, so the repeated file id cannot collide.
+	 *
+	 * On the date axis there are no lanes — two people who both changed one
+	 * file today produce two rows with the same id in ONE bucket, which is a
+	 * duplicate `#each` key and a hard render error. So that axis shows each
+	 * file once, at its most recent change; the server already orders touches
+	 * newest-first, so the first occurrence is the one to keep. The per-row
+	 * badge names who made it, which is the detail the lane header would have
+	 * carried.
+	 */
+	// A plain record, not a `Set`: these are scratch lookups built inside a
+	// `$derived`, and a `SvelteSet`/`SvelteMap` there would be reactive state
+	// mutated during a derivation — the `state_unsafe_mutation` footgun. The
+	// lint rule that asks for the reactive variants is about state that
+	// outlives a computation; neither of these does.
+	const items = $derived.by<ChangeRow[]>(() => {
+		if (groupBy === 'modifier') return rows;
+		const seen: Record<string, true> = {};
+		const out: ChangeRow[] = [];
+		for (const r of rows) {
+			if (seen[r.id]) continue;
+			seen[r.id] = true;
+			out.push(r);
+		}
+		return out;
+	});
+
+	/** `lane_total` for the lane header, which the server counts AFTER the
+	 *  access filter — so "Bob · 14 files" never hints at a file the viewer
+	 *  cannot open. Arrives on the people axis only. */
+	const laneTotals = $derived.by<Record<string, number>>(() => {
+		const m: Record<string, number> = {};
+		for (const r of rows) if (r.laneTotal != null) m[r.changedBy] = r.laneTotal;
+		return m;
+	});
+
+	// Typed to the generated `RecentChangesOrderBy`, so a retired axis is an
+	// `npm run check` failure rather than a runtime 400.
+	const groupBys: GroupByDef<RecentChangesOrderBy>[] = [
+		{
+			key: 'modifier',
+			label: t('groupby.changedBy', 'Changed by'),
+			orderBy: 'modifier',
+			icon: 'pen',
+			bucketOf: (item) => row(item).changedBy,
+			labelOf: (id) => owners.label(id)
+		},
+		{
+			key: 'changedAt',
+			label: t('groupby.changedAt', 'Changed date'),
+			orderBy: 'changed_at',
+			bucketOf: (item) => dateBucket(row(item).changedAt)
+		}
+	];
+
+	function orderByForGroup(): RecentChangesOrderBy {
+		return groupBys.find((g) => g.key === groupBy)?.orderBy ?? 'changed_at';
+	}
+
+	async function load(reset = false, orderBy: RecentChangesOrderBy = orderByForGroup()) {
+		loading = true;
+		error = null;
+		try {
+			const page = await listRecentChanges({
+				throwOnError: true,
+				query: {
+					cursor: reset ? null : (cursor ?? null),
+					order_by: orderBy,
+					days,
+					limit: 50
+				}
+			});
+			const fresh = page.items as FileChangeItemDto[];
+			raw = reset ? fresh : [...raw, ...fresh];
+			cursor = page.next_cursor ?? undefined;
+			// One resolve per page, cached across pages — the DTO carries
+			// `modifier_id` rather than an embedded user precisely so this
+			// stays one batched lookup instead of an N+1.
+			void owners.resolve(fresh.map((i) => i.modifier_id));
+		} catch (e) {
+			console.error('changes: load error', e);
+			error = t('errors_loadFailed', 'Failed to load items');
+		} finally {
+			loading = false;
+		}
+	}
+
+	function setDays(next: number) {
+		if (next === days) return;
+		days = next;
+		cursor = undefined;
+		// The window decides which rows exist, so a cursor minted under the
+		// old one is refused by the server (400) rather than silently
+		// continuing across it. Always a fresh first page.
+		void load(true);
+	}
+
+	let viewerOpen = $state(false);
+	let viewerFile = $state<FileItem | null>(null);
+	const viewerFiles = $derived(items as FileItem[]);
+	const fileViewer = lazyComponent(() => import('$lib/components/FileViewer.svelte'));
+	$effect(() => {
+		if (viewerOpen) void fileViewer.load();
+	});
+
+	function open(item: FileItem | FolderItem) {
+		viewerFile = row(item);
+		viewerOpen = true;
+	}
+
+	onMount(() => {
+		void load(true);
+	});
+</script>
+
+<svelte:head><title>{t('nav.recent_changes', 'Recent changes')} · OxiCloud</title></svelte:head>
+
+<!--
+	Deliberately NOT `selectable` for v1. Selection is an id-keyed set, so
+	ticking a file in Bob's lane would tick the same file in Carol's — and a
+	batch action would then act once on something that looks doubly selected.
+	The semantics are genuinely ambiguous (it is one file either way), so the
+	honest v1 is a view you click through. Making it selectable means keying
+	selection by `lane:file`, which is a `useSelection` change, not a page one.
+-->
+<ResourceList
+	title={t('nav.recent_changes', 'Recent changes')}
+	titleInToolbar
+	{items}
+	{loading}
+	{error}
+	emptyIcon="pen"
+	emptyText={t('changes.empty_state', 'No recent changes')}
+	emptyHint={t('changes.empty_hint', 'Changes to files you can reach will appear here')}
+	hasMore={!!cursor}
+	onloadmore={() => load(false)}
+	onopen={open}
+	showPath
+	dateLabel={t('changes.col_changed', 'Changed')}
+	{groupBys}
+	bind:groupBy
+	bind:reversed
+	onreload={(orderBy, rev) => {
+		cursor = undefined;
+		reversed = rev;
+		load(true, orderBy);
+	}}
+>
+	{#snippet actions()}
+		<!-- The window, as a plain select: three values, and the server
+		     rejects anything outside them rather than clamping, so the
+		     control offers exactly the accepted set. -->
+		<label class="changes-window">
+			<span class="changes-window__label">{t('changes.window', 'Time range')}</span>
+			<select
+				class="changes-window__select"
+				data-testid="changes-days-select"
+				value={String(days)}
+				onchange={(e) => setDays(Number(e.currentTarget.value))}
+			>
+				<option value="7">{t('changes.window_7', 'Last 7 days')}</option>
+				<option value="30">{t('changes.window_30', 'Last 30 days')}</option>
+				<option value="90">{t('changes.window_90', 'Last 90 days')}</option>
+			</select>
+		</label>
+	{/snippet}
+	{#snippet bucketLabel(key, label)}
+		{@const total = laneTotals[key]}
+		<span data-testid={`changes-lane-${key}`}>{label}</span>
+		{#if total != null}
+			<span class="changes-lane__count">
+				· {t('changes.lane_files', { n: total }, '{{n}} file(s)')}
+			</span>
+		{/if}
+	{/snippet}
+	{#snippet dateCell(item)}
+		<!-- This row's own touch, not the file's latest change by anyone: in
+		     Bob's lane the date is when BOB changed it. Read off the row for
+		     the id-collision reason on `ChangeRow`. -->
+		{formatDate(row(item).changedAt)}
+	{/snippet}
+	{#snippet rowBadge(item)}
+		{#if groupBy !== 'modifier'}
+			<!-- No lane header on the date axis, so the person goes on the row. -->
+			<span class="changes-badge">{owners.label(row(item).changedBy)}</span>
+		{/if}
+	{/snippet}
+</ResourceList>
+
+{#if fileViewer.component}
+	{@const FileViewer = fileViewer.component}
+	<FileViewer
+		bind:open={viewerOpen}
+		file={viewerFile}
+		files={viewerFiles}
+		onnavigate={(f) => (viewerFile = f)}
+	/>
+{/if}
+
+<style>
+	.changes-window {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.5rem;
+	}
+
+	/* Mobile-first: the three options describe themselves, so the label is
+	   dead weight on a narrow toolbar and only earns its place once there is
+	   room. The query expands, it does not restrict. */
+	.changes-window__label {
+		color: var(--color-text-secondary);
+		display: none;
+		font-size: 0.85rem;
+	}
+
+	@media (width >= 600px) {
+		.changes-window__label {
+			display: inline;
+		}
+	}
+
+	/* Mirrors `LanguageSelect` — the one styled select in the app — rather
+	   than inventing a second look for the same control. */
+	.changes-window__select {
+		background: var(--color-bg-input);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+		color: var(--color-text);
+		font-size: 0.85rem;
+		padding: 0.35rem 0.5rem;
+	}
+
+	.changes-lane__count {
+		color: var(--color-text-secondary);
+		font-weight: 400;
+	}
+
+	.changes-badge {
+		background: var(--color-bg-subtle);
+		border-radius: var(--radius-sm);
+		color: var(--color-text-secondary);
+		font-size: 0.75rem;
+		padding: 0.1rem 0.4rem;
+	}
+</style>

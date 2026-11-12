@@ -117,6 +117,7 @@
     "shared": "My shares",
     "sharedwithme": "Shared with me",
     "recent": "Recent",
+    "recent_changes": "Recent changes",
     "favorites": "Favorites",
     "photos": "Media",
     "music": "Music",
@@ -909,6 +910,16 @@
     "added_msg": "added to favorites",
     "removed_title": "Removed from favorites",
     "removed_msg": "removed from favorites"
+  },
+  "changes": {
+    "empty_state": "No recent changes",
+    "empty_hint": "Changes to files you can reach will appear here",
+    "col_changed": "Changed",
+    "lane_files": "{{n}} file(s)",
+    "window": "Time range",
+    "window_7": "Last 7 days",
+    "window_30": "Last 30 days",
+    "window_90": "Last 90 days"
   },
   "recent": {
     "title": "Recent",
@@ -1793,6 +1804,8 @@
     "shareDate": "Share date",
     "favoriteDate": "Favorite date",
     "accessedAt": "Accessed date",
+    "changedBy": "Changed by",
+    "changedAt": "Changed date",
     "modifiedAt": "Modified date",
     "createdAt": "Added date",
     "size": "Size",

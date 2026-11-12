@@ -78,6 +78,7 @@
     "files": "Archivos",
     "shared": "Compartidos",
     "recent": "Recientes",
+    "recent_changes": "Cambios recientes",
     "favorites": "Favoritos",
     "photos": "Medios",
     "music": "Música",
@@ -860,6 +861,16 @@
     "added_msg": "añadido a favoritos",
     "removed_title": "Quitado de favoritos",
     "removed_msg": "quitado de favoritos"
+  },
+  "changes": {
+    "empty_state": "No hay cambios recientes",
+    "empty_hint": "Los cambios en los archivos a los que tienes acceso aparecerán aquí",
+    "col_changed": "Modificado",
+    "lane_files": "{{n}} archivo(s)",
+    "window": "Intervalo de tiempo",
+    "window_7": "Últimos 7 días",
+    "window_30": "Últimos 30 días",
+    "window_90": "Últimos 90 días"
   },
   "recent": {
     "title": "Recientes",
@@ -1741,6 +1752,8 @@
     "type": "Tipo",
     "type.folders": "Carpetas",
     "accessedAt": "Fecha de acceso",
+    "changedBy": "Modificado por",
+    "changedAt": "Fecha de modificación",
     "modifiedAt": "Fecha de modificación",
     "createdAt": "Fecha de creación",
     "size": "Tamaño",

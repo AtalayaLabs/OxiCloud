@@ -78,6 +78,7 @@
     "files": "File",
     "shared": "Condivisioni",
     "recent": "Recenti",
+    "recent_changes": "Modifiche recenti",
     "favorites": "Preferiti",
     "photos": "Media",
     "music": "Musica",
@@ -860,6 +861,16 @@
     "added_msg": "aggiunto ai preferiti",
     "removed_title": "Rimosso dai preferiti",
     "removed_msg": "rimosso dai preferiti"
+  },
+  "changes": {
+    "empty_state": "Nessuna modifica recente",
+    "empty_hint": "Le modifiche ai file a cui hai accesso compariranno qui",
+    "col_changed": "Modificato",
+    "lane_files": "{{n}} file",
+    "window": "Intervallo di tempo",
+    "window_7": "Ultimi 7 giorni",
+    "window_30": "Ultimi 30 giorni",
+    "window_90": "Ultimi 90 giorni"
   },
   "recent": {
     "title": "Recenti",
@@ -1741,6 +1752,8 @@
     "type": "Tipo",
     "type.folders": "Cartelle",
     "accessedAt": "Data di accesso",
+    "changedBy": "Modificato da",
+    "changedAt": "Data di modifica",
     "modifiedAt": "Data di modifica",
     "createdAt": "Data di creazione",
     "size": "Dimensione",

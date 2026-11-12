@@ -78,6 +78,7 @@
     "files": "文件",
     "shared": "共享",
     "recent": "最近",
+    "recent_changes": "最近更改",
     "favorites": "收藏",
     "photos": "媒体",
     "music": "音乐",
@@ -860,6 +861,16 @@
     "added_msg": "已添加到收藏",
     "removed_title": "已从收藏移除",
     "removed_msg": "已从收藏移除"
+  },
+  "changes": {
+    "empty_state": "暂无最近更改",
+    "empty_hint": "您可访问的文件的更改将显示在此处",
+    "col_changed": "已更改",
+    "lane_files": "{{n}} 个文件",
+    "window": "时间范围",
+    "window_7": "最近 7 天",
+    "window_30": "最近 30 天",
+    "window_90": "最近 90 天"
   },
   "recent": {
     "title": "最近",
@@ -1741,6 +1752,8 @@
     "type": "类型",
     "type.folders": "文件夹",
     "accessedAt": "访问日期",
+    "changedBy": "更改者",
+    "changedAt": "更改日期",
     "modifiedAt": "修改日期",
     "createdAt": "创建日期",
     "size": "大小",

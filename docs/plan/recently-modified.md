@@ -778,12 +778,34 @@ Rust, inline where the code lives:
 - a restore from trash adds no touch, and the file returns to the lanes it was
   already in with its original dates
 
-Frontend:
+Frontend, in `routes/changes/page.test.ts`:
 
-- `endpoints/recentChanges.test.ts` — the query builder and the 400 path
-- the page test: group-by wiring, and the lane-merge on append
-- `AppShell.test.ts` — nav entry hidden when the flag is off, mirroring
-  `hides /music when features.music is false`
+- **one file changed by two people renders in BOTH lanes** — the §1b
+  regression at the FE layer, and also the duplicate-key pin: `VirtualList`
+  keys rows by `item.id`, so the two rows survive only because each lane is
+  its own `#each`. Reading the lane out of `ResourceList`'s id-keyed
+  `contextMap` instead would drop both into one bucket and throw
+  `each_key_duplicate` — the crash the music queue hit on a twice-enqueued
+  track
+- the lane header carries the server's `lane_total`
+- an appended page MERGES into the open lane rather than drawing a second
+  header for the same person
+- the date axis shows each file once (no lanes there, so two people on one
+  file would be a duplicate key in one bucket), **and** the axis changes on
+  the wire rather than re-bucketing the same rows
+- changing the window refetches from the first page with `cursor: null`
+- the default axis is `modifier`, so the page opens on people without the
+  user touching a control
+
+- `AppShell.test.ts` — nav entry hidden when the flag is off **and present
+  when it is on**, mirroring `hides /music when features.music is false`. Both
+  halves, because a gate that renders nothing satisfies the first on its own.
+
+No `endpoints/recentChanges.test.ts`: there is no wrapper to test. The page
+rides the generated SDK directly, like `/recent` post-Phase-4, so a
+hand-written module would be the pass-through re-export the FE conventions
+forbid — and the query shape is pinned through the SDK call in the page test
+instead.
 
 ---
 
@@ -809,6 +831,14 @@ Frontend:
 - **Folders.** They have `content_modified_at`; the view is files-only because
   a folder's "content change" is a different event (a child moved) and would
   need its own semantics.
+- **Any axis beyond `changed_at` and `modifier`** (decided 2026-11-12 — do not
+  re-open without a use case). `name` / `size` / `type` exist on the other
+  listings, and they are the wrong question here: this page asks "what changed
+  lately, and who changed it", so both axes are about the change. Sorting a
+  feed alphabetically answers nothing the file listing does not already
+  answer better. Each axis also costs a typed enum variant, a keyset shape and
+  a cursor that must be refused on the wrong axis — `RecentChangesOrderBy` is
+  deliberately two values wide.
 - **Live updates.** The bus would need a topic scoped to "drives I can read",
   which is a new subscription shape. Polling on focus until someone misses it.
 - **Per-person cap.** Dropped in favour of the window; revisit if a lane with

@@ -1067,6 +1067,69 @@ export type CursorListResponseFavoritesResourceItemDto = {
  *
  * See `docs/architecture/resource-listing.md § Three layers`.
  */
+export type CursorListResponseFileChangeItemDto = {
+    items: Array<{
+        /**
+         * **This row's** touch: when *this* person changed it. NOT the file's
+         * latest change by anyone — in Bob's lane the row says when Bob changed
+         * it, or every lane reads as the most recent editor.
+         */
+        changed_at: string;
+        /**
+         * How many files this person changed inside the window, counted AFTER
+         * the access filter — so a lane header can read "Bob · 14 files" without
+         * a second round trip and without hinting at a file the caller cannot
+         * see. Present on the `modifier` axis only.
+         */
+        lane_total?: number | null;
+        /**
+         * Who made that change — an id, resolved by the client the same way it
+         * resolves `created_by` on every other listing (`useOwnerCache` →
+         * `/api/users/{id}`, cached across pages). Embedding a user object here
+         * would be an N+1 per page and the only listing in the API that does it.
+         *
+         * Never null: `storage.file_content_touches.user_id` is NOT NULL and
+         * cascades on user delete, so a lane's person always exists.
+         */
+        modifier_id: string;
+        /**
+         * The file itself, shape-identical to every other file listing.
+         */
+        resource: FileDto;
+    }>;
+    /**
+     * Opaque cursor for the next page.  Absent when this is the last page.
+     */
+    next_cursor?: string | null;
+};
+
+/**
+ * Standard response envelope for cursor-paginated listing endpoints.
+ *
+ * `next_cursor` is omitted from the JSON when `None` (i.e. last page).
+ * Callers must treat a missing `next_cursor` as end-of-results — never
+ * include a `total` count (that would require an expensive `COUNT(*)`).
+ * ⚠ **Every instantiation must be registered in `components(schemas(..))`,
+ * spelled out with its item type.** OpenAPI has no generics, so utoipa emits
+ * one schema per concrete instantiation — and if none is registered, the
+ * paths fall back to a single bare `CursorListResponse` whose `items` is
+ * hard-wired to whichever instantiation it resolved. Every endpoint then
+ * `$ref`s that one, so all but one is documented as returning the WRONG item
+ * type while its real container sits in `components.schemas` referenced by
+ * nothing.
+ *
+ * That is not cosmetic. A generated client gets the wrong item type, and a
+ * hand-written replacement has nothing checking it against the server —
+ * which is how `frontend/.../photos.ts` came to maintain `PhotoItem` by
+ * hand, and how `FileMetadata` went on declaring `captured_at` for weeks
+ * after the column became `created_at`.
+ *
+ * So adding a listing endpoint means registering
+ * `CursorListResponse<YourItemDto>` alongside `YourItemDto` itself.
+ * (`#[aliases(..)]` would be tidier, but it was removed in utoipa 5.)
+ *
+ * See `docs/architecture/resource-listing.md § Three layers`.
+ */
 export type CursorListResponseFolderResourceItemDto = {
     items: Array<{
         /**
@@ -2274,6 +2337,16 @@ export type FeaturesDto = {
      */
     places: boolean;
     /**
+     * Recent changes — "who changed what lately"
+     * (`GET /api/files/recent-changes`, the SPA's `/changes` route). The SPA
+     * hides the sidebar entry when this is false, and the API prefix is not
+     * mounted at all, so a non-SPA client gets a 404 rather than a surface
+     * the SPA merely hides. Note that content touches are RECORDED either
+     * way — "off" means not exposed, not not collected. See
+     * `FeaturesConfig::enable_recent_changes`.
+     */
+    recent_changes: boolean;
+    /**
      * Full-text and metadata search (`/api/search*`). See
      * `FeaturesConfig::enable_search`.
      */
@@ -2325,6 +2398,43 @@ export type FeaturesDto = {
  * source of truth for the three canonical values.
  */
 export type FederationKindDto = 'magic_link' | 'ocm' | 'oidc';
+
+/**
+ * One row: a file, and the one person-and-time this row is about.
+ *
+ * A file legitimately appears MORE THAN ONCE in a page — once per lane that
+ * touched it — so everything per-row travels here rather than in a
+ * context map keyed by file id (`docs/plan/recently-modified.md` §4).
+ */
+export type FileChangeItemDto = {
+    /**
+     * **This row's** touch: when *this* person changed it. NOT the file's
+     * latest change by anyone — in Bob's lane the row says when Bob changed
+     * it, or every lane reads as the most recent editor.
+     */
+    changed_at: string;
+    /**
+     * How many files this person changed inside the window, counted AFTER
+     * the access filter — so a lane header can read "Bob · 14 files" without
+     * a second round trip and without hinting at a file the caller cannot
+     * see. Present on the `modifier` axis only.
+     */
+    lane_total?: number | null;
+    /**
+     * Who made that change — an id, resolved by the client the same way it
+     * resolves `created_by` on every other listing (`useOwnerCache` →
+     * `/api/users/{id}`, cached across pages). Embedding a user object here
+     * would be an N+1 per page and the only listing in the API that does it.
+     *
+     * Never null: `storage.file_content_touches.user_id` is NOT NULL and
+     * cascades on user delete, so a lane's person always exists.
+     */
+    modifier_id: string;
+    /**
+     * The file itself, shape-identical to every other file listing.
+     */
+    resource: FileDto;
+};
 
 /**
  * Content-derived metadata for one file.
@@ -4402,6 +4512,17 @@ export type PublicUserDto = {
     role: UserRoleDto;
     username?: string | null;
 };
+
+/**
+ * Sort axis for `GET /api/files/recent-changes`.
+ *
+ * Typed rather than `Option<String>` so an unknown axis is refused at
+ * wire-decode time instead of silently falling back to the default — same
+ * discipline as [`super::recent_dto::RecentOrderBy`] and
+ * [`super::trash_dto::TrashOrderBy`]. Per-endpoint on purpose: `modifier`
+ * means nothing on a listing with no modifier.
+ */
+export type RecentChangesOrderBy = 'changed_at' | 'modifier';
 
 /**
  * DTO for recent items, enriched with item metadata via SQL JOIN
@@ -11324,6 +11445,69 @@ export type DeltaNegotiateResponses = {
 };
 
 export type DeltaNegotiateResponse2 = DeltaNegotiateResponses[keyof DeltaNegotiateResponses];
+
+export type ListRecentChangesData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Maximum items per page (1–200, default 50).
+         */
+        limit?: number;
+        /**
+         * Opaque cursor from a previous response. Omit to start from the first
+         * page.
+         */
+        cursor?: string | null;
+        /**
+         * How far back to look, in days. Default 30, maximum 90 — a larger value
+         * is a 400 naming the bound rather than a silent clamp.
+         */
+        days?: number | null;
+        /**
+         * Sort / group-by axis — see [`RecentChangesOrderBy`]. Omit for
+         * `changed_at`.
+         */
+        order_by?: null | RecentChangesOrderBy;
+        /**
+         * Restrict to one person's changes — the lane drill-in. A person the
+         * caller shares nothing with returns an empty page rather than a 403:
+         * same anti-enumeration shape the photos `drive_id` filter uses.
+         */
+        person?: string | null;
+    };
+    url: '/api/files/recent-changes';
+};
+
+export type ListRecentChangesErrors = {
+    /**
+     * Invalid cursor, unsupported order_by, or days out of range
+     */
+    400: ApiErrorBody;
+    /**
+     * Unauthorized
+     */
+    401: ApiErrorBody;
+    /**
+     * External users cannot reach this surface
+     */
+    403: ApiErrorBody;
+    /**
+     * Internal server error
+     */
+    500: ApiErrorBody;
+};
+
+export type ListRecentChangesError = ListRecentChangesErrors[keyof ListRecentChangesErrors];
+
+export type ListRecentChangesResponses = {
+    /**
+     * Page of content changes
+     */
+    200: CursorListResponseFileChangeItemDto;
+};
+
+export type ListRecentChangesResponse = ListRecentChangesResponses[keyof ListRecentChangesResponses];
 
 export type UploadFileWithThumbnailsData = {
     /**

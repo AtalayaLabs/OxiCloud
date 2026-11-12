@@ -78,6 +78,7 @@
     "files": "Arquivos",
     "shared": "Compartilhamentos",
     "recent": "Recentes",
+    "recent_changes": "Alterações recentes",
     "favorites": "Favoritos",
     "photos": "Mídia",
     "music": "Música",
@@ -860,6 +861,16 @@
     "added_msg": "adicionado aos favoritos",
     "removed_title": "Removido dos favoritos",
     "removed_msg": "removido dos favoritos"
+  },
+  "changes": {
+    "empty_state": "Sem alterações recentes",
+    "empty_hint": "As alterações nos ficheiros a que tem acesso aparecerão aqui",
+    "col_changed": "Alterado",
+    "lane_files": "{{n}} ficheiro(s)",
+    "window": "Intervalo de tempo",
+    "window_7": "Últimos 7 dias",
+    "window_30": "Últimos 30 dias",
+    "window_90": "Últimos 90 dias"
   },
   "recent": {
     "title": "Recentes",
@@ -1741,6 +1752,8 @@
     "type": "Tipo",
     "type.folders": "Pastas",
     "accessedAt": "Data de acesso",
+    "changedBy": "Alterado por",
+    "changedAt": "Data de alteração",
     "modifiedAt": "Data de modificação",
     "createdAt": "Data de criação",
     "size": "Tamanho",

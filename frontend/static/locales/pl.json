@@ -78,6 +78,7 @@
     "files": "Pliki",
     "shared": "Udostępnione",
     "recent": "Ostatnie",
+    "recent_changes": "Ostatnie zmiany",
     "favorites": "Ulubione",
     "photos": "Media",
     "music": "Muzyka",
@@ -860,6 +861,16 @@
     "added_msg": "dodano do ulubionych",
     "removed_title": "Usunięto z ulubionych",
     "removed_msg": "usunięto z ulubionych"
+  },
+  "changes": {
+    "empty_state": "Brak ostatnich zmian",
+    "empty_hint": "Zmiany w plikach, do których masz dostęp, pojawią się tutaj",
+    "col_changed": "Zmieniono",
+    "lane_files": "Pliki: {{n}}",
+    "window": "Zakres czasu",
+    "window_7": "Ostatnie 7 dni",
+    "window_30": "Ostatnie 30 dni",
+    "window_90": "Ostatnie 90 dni"
   },
   "recent": {
     "title": "Ostatnie",
@@ -1741,6 +1752,8 @@
     "type": "Typ",
     "type.folders": "Foldery",
     "accessedAt": "Data dostępu",
+    "changedBy": "Zmienione przez",
+    "changedAt": "Data zmiany",
     "modifiedAt": "Data modyfikacji",
     "createdAt": "Data utworzenia",
     "size": "Rozmiar",
