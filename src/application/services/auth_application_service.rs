@@ -1335,11 +1335,11 @@ impl AuthApplicationService {
         password: String,
     ) -> Result<PublicUserDto, DomainError> {
         // Validate username
-        if username.len() < 3 || username.len() > 254 {
+        if username.len() < 2 || username.len() > 254 {
             return Err(DomainError::new(
                 ErrorKind::InvalidInput,
                 "User",
-                "Username must be between 3 and 254 characters".to_string(),
+                "Username must be between 2 and 254 characters".to_string(),
             ));
         }
 
@@ -5657,8 +5657,9 @@ impl AuthApplicationService {
                             .to_ascii_lowercase()
                     };
 
-                    // Ensure minimum length (the padding suffix must also be filtered)
-                    if username.len() < 3 {
+                    // Ensure minimum length (the padding suffix must also be filtered).
+                    // Matches `User::validate_username` and the DB CHECK (2-64 chars).
+                    if username.len() < 2 {
                         let filtered_sub = filter_username_chars(&claims.sub);
                         username = format!("user_{}", &filtered_sub[..filtered_sub.len().min(8)]);
                     }
