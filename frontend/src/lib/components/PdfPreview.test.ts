@@ -22,9 +22,10 @@ import { render, screen, waitFor } from '@testing-library/svelte';
  * execute. The mock asserts the call shape instead.
  */
 
-const renderMock = vi.fn(() => ({ promise: Promise.resolve() }));
+const cancelMock = vi.fn();
+const renderMock = vi.fn(() => ({ promise: Promise.resolve(), cancel: cancelMock }));
 const cleanupMock = vi.fn();
-const destroyMock = vi.fn();
+const destroyMock = vi.fn(() => Promise.resolve());
 const getDocumentMock = vi.fn();
 
 vi.mock('$lib/utils/thumbnail', () => ({
@@ -53,7 +54,10 @@ import PdfPreview from './PdfPreview.svelte';
 describe('PdfPreview', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		getDocumentMock.mockReturnValue({ promise: Promise.resolve(pdfWithPages(3)) });
+		getDocumentMock.mockReturnValue({
+			promise: Promise.resolve(pdfWithPages(3)),
+			destroy: destroyMock
+		});
 		// jsdom canvases have no 2d context by default; the component treats a
 		// null context as a failure, which would mask the real assertions.
 		HTMLCanvasElement.prototype.getContext = vi.fn(
@@ -94,11 +98,80 @@ describe('PdfPreview', () => {
 	});
 
 	it('shows a message when the document cannot be read', async () => {
-		getDocumentMock.mockReturnValue({ promise: Promise.reject(new Error('corrupt')) });
+		getDocumentMock.mockReturnValue({
+			promise: Promise.reject(new Error('corrupt')),
+			destroy: destroyMock
+		});
 		render(PdfPreview, { data: new ArrayBuffer(8), name: 'broken.pdf' });
 
 		// Visible failure, not an empty pane. #780 was reported precisely
 		// because a broken preview looked like a blank one.
 		await waitFor(() => expect(screen.getByText('Could not load preview.')).toBeTruthy());
+	});
+	it('keeps the new document when an older load resolves during its render', async () => {
+		const oldLoad = Promise.withResolvers<ReturnType<typeof pdfWithPages>>();
+		const firstPage = Promise.withResolvers<void>();
+		const oldDoc = pdfWithPages(3);
+		const newDoc = pdfWithPages(3);
+		const destroyOld = vi.fn(() => Promise.resolve());
+		const destroyNew = vi.fn(() => Promise.resolve());
+		getDocumentMock.mockReturnValueOnce({ promise: oldLoad.promise, destroy: destroyOld });
+		getDocumentMock.mockReturnValueOnce({ promise: Promise.resolve(newDoc), destroy: destroyNew });
+		renderMock.mockReturnValueOnce({ promise: firstPage.promise, cancel: cancelMock });
+		const view = render(PdfPreview, { data: new ArrayBuffer(8), name: 'old.pdf' });
+		await waitFor(() => expect(getDocumentMock).toHaveBeenCalledTimes(1));
+		await view.rerender({ data: new ArrayBuffer(16), name: 'new.pdf' });
+		await waitFor(() => expect(renderMock).toHaveBeenCalledTimes(1));
+		oldLoad.resolve(oldDoc);
+		await oldLoad.promise;
+		firstPage.resolve();
+		await waitFor(() => expect(newDoc.getPage).toHaveBeenCalledTimes(3));
+		expect(oldDoc.getPage).not.toHaveBeenCalled();
+		expect(destroyOld).toHaveBeenCalledTimes(1);
+		expect(destroyNew).not.toHaveBeenCalled();
+		expect(screen.queryByText('Could not load preview.')).toBeNull();
+		view.unmount();
+		expect(destroyNew).toHaveBeenCalledTimes(1);
+	});
+
+	it('destroys a completed document when another file replaces it', async () => {
+		const view = render(PdfPreview, { data: new ArrayBuffer(8), name: 'old.pdf' });
+		await waitFor(() => expect(cleanupMock).toHaveBeenCalledTimes(3));
+		const destroyNew = vi.fn(() => Promise.resolve());
+		getDocumentMock.mockReturnValueOnce({
+			promise: Promise.resolve(pdfWithPages(1)),
+			destroy: destroyNew
+		});
+		await view.rerender({ data: new ArrayBuffer(16), name: 'new.pdf' });
+		await waitFor(() => expect(cleanupMock).toHaveBeenCalledTimes(4));
+		expect(destroyMock).toHaveBeenCalledTimes(1);
+		expect(destroyNew).not.toHaveBeenCalled();
+		view.unmount();
+		expect(destroyMock).toHaveBeenCalledTimes(1);
+		expect(destroyNew).toHaveBeenCalledTimes(1);
+	});
+
+	it('destroys a pending load on unmount and handles its rejection', async () => {
+		const load = Promise.withResolvers<ReturnType<typeof pdfWithPages>>();
+		getDocumentMock.mockReturnValueOnce({ promise: load.promise, destroy: destroyMock });
+		const view = render(PdfPreview, { data: new ArrayBuffer(8), name: 'pending.pdf' });
+		await waitFor(() => expect(getDocumentMock).toHaveBeenCalledTimes(1));
+		view.unmount();
+		expect(destroyMock).toHaveBeenCalledTimes(1);
+		load.reject(new Error('Loading aborted'));
+		await load.promise.catch(() => {});
+		expect(renderMock).not.toHaveBeenCalled();
+	});
+
+	it('cancels an active render and cleans up its page on unmount', async () => {
+		const pending = Promise.withResolvers<void>();
+		const cancel = vi.fn(() => pending.reject(new Error('Rendering cancelled')));
+		renderMock.mockReturnValueOnce({ promise: pending.promise, cancel });
+		const view = render(PdfPreview, { data: new ArrayBuffer(8), name: 'rendering.pdf' });
+		await waitFor(() => expect(renderMock).toHaveBeenCalledTimes(1));
+		view.unmount();
+		expect(cancel).toHaveBeenCalledTimes(1);
+		expect(destroyMock).toHaveBeenCalledTimes(1);
+		await waitFor(() => expect(cleanupMock).toHaveBeenCalledTimes(1));
 	});
 });

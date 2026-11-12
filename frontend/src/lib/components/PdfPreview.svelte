@@ -14,7 +14,6 @@
 	 * vendors for client-side thumbnails. Same library, same instance — see
 	 * `getPdfjsLib`.
 	 */
-	import { onDestroy } from 'svelte';
 	import { getPdfjsLib } from '$lib/utils/thumbnail';
 	import { t } from '$lib/i18n/index.svelte';
 
@@ -30,16 +29,27 @@
 	let loading = $state(true);
 	let failed = $state(false);
 
-	/**
-	 * Cancellation token. Rendering a document is a long async walk (load,
-	 * then a render task per page), and the viewer can close or switch files
-	 * part-way through. Each await checks this, so a stale walk stops instead
-	 * of drawing onto a canvas that belongs to the next document.
-	 */
-	let run = 0;
-
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	let doc: any = null;
+	interface PdfRenderTask {
+		promise: Promise<void>;
+		cancel(): void;
+	}
+	interface PdfViewport {
+		width: number;
+		height: number;
+	}
+	interface PdfPage {
+		getViewport(options: { scale: number }): PdfViewport;
+		render(options: {
+			canvasContext: CanvasRenderingContext2D;
+			viewport: PdfViewport;
+			transform: number[];
+		}): PdfRenderTask;
+		cleanup(): void;
+	}
+	interface PdfLoadingTask {
+		promise: Promise<{ numPages: number; getPage(n: number): Promise<PdfPage> }>;
+		destroy(): Promise<void>;
+	}
 
 	/**
 	 * Cap the device-pixel ratio at 2. A phone can report 3+, and at that
@@ -49,76 +59,102 @@
 	 */
 	const MAX_DPR = 2;
 
-	async function render(bytes: ArrayBuffer, token: number): Promise<void> {
-		const el = host;
-		if (!el) return;
-		loading = true;
-		failed = false;
-		el.replaceChildren();
+	function startRender(bytes: ArrayBuffer, el: HTMLDivElement): () => void {
+		let cancelled = false;
+		let task: PdfLoadingTask | undefined;
+		let rendering: PdfRenderTask | undefined;
 
-		try {
-			const pdfjs = await getPdfjsLib();
-			if (token !== run) return;
+		// A loading task owns its document and worker, including while its
+		// promise is pending. Effect cleanup runs on both replacement and unmount.
+		function dispose(): void {
+			if (cancelled) return;
+			cancelled = true;
+			rendering?.cancel();
+			void task?.destroy().catch(() => {});
+		}
 
-			// `isEvalSupported: false` keeps pdf.js off `eval()` for its font
-			// fast paths, so the app's CSP needs no `unsafe-eval`. A copy of
-			// the buffer because pdf.js transfers ownership of what it is
-			// given, and the caller keeps using `data` (a re-render after a
-			// resize, say).
-			doc = await pdfjs.getDocument({ data: bytes.slice(0), isEvalSupported: false }).promise;
-			if (token !== run) {
-				void doc.destroy();
-				return;
-			}
+		async function render(): Promise<void> {
+			loading = true;
+			failed = false;
+			el.replaceChildren();
 
-			const dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
+			try {
+				const pdfjs = await getPdfjsLib();
+				if (cancelled) return;
 
-			for (let n = 1; n <= doc.numPages; n++) {
-				const page = await doc.getPage(n);
-				if (token !== run) return;
+				// `isEvalSupported: false` keeps pdf.js off `eval()` for its font
+				// fast paths, so the app's CSP needs no `unsafe-eval`. A copy of
+				// the buffer because pdf.js transfers ownership of what it is
+				// given, and the caller keeps using `data` (a re-render after a
+				// resize, say).
+				task = pdfjs.getDocument({
+					data: bytes.slice(0),
+					isEvalSupported: false
+				}) as PdfLoadingTask;
+				const doc = await task.promise;
+				if (cancelled) return;
 
-				// Fit the page to the host's width; the viewer pane scrolls
-				// vertically. `clientWidth` is read per page so a rotation
-				// mid-render still lays the rest out correctly.
-				const unscaled = page.getViewport({ scale: 1 });
-				const width = el.clientWidth || unscaled.width;
-				const viewport = page.getViewport({ scale: width / unscaled.width });
+				const dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
 
-				const canvas = document.createElement('canvas');
-				canvas.className = 'pdfp__page';
-				canvas.width = Math.floor(viewport.width * dpr);
-				canvas.height = Math.floor(viewport.height * dpr);
-				// CSS size in layout pixels; the backing store is DPR-scaled.
-				canvas.style.width = '100%';
-				canvas.style.height = 'auto';
+				for (let n = 1; n <= doc.numPages; n++) {
+					const page = await doc.getPage(n);
+					try {
+						if (cancelled) return;
 
-				const ctx = canvas.getContext('2d');
-				if (!ctx) throw new Error('canvas 2d context unavailable');
+						// Fit the page to the host's width; the viewer pane scrolls
+						// vertically. `clientWidth` is read per page so a rotation
+						// mid-render still lays the rest out correctly.
+						const unscaled = page.getViewport({ scale: 1 });
+						const width = el.clientWidth || unscaled.width;
+						const viewport = page.getViewport({ scale: width / unscaled.width });
 
-				// Append before rendering so pages appear one by one on a long
-				// document rather than all at the end.
-				el.appendChild(canvas);
-				await page.render({ canvasContext: ctx, viewport, transform: [dpr, 0, 0, dpr, 0, 0] })
-					.promise;
-				if (token !== run) return;
+						const canvas = document.createElement('canvas');
+						canvas.className = 'pdfp__page';
+						canvas.width = Math.floor(viewport.width * dpr);
+						canvas.height = Math.floor(viewport.height * dpr);
+						// CSS size in layout pixels; the backing store is DPR-scaled.
+						canvas.style.width = '100%';
+						canvas.style.height = 'auto';
 
-				// pdf.js keeps per-page structures alive until released; on a
-				// 200-page document that is the difference between a preview
-				// and an out-of-memory tab.
-				page.cleanup();
+						const ctx = canvas.getContext('2d');
+						if (!ctx) throw new Error('canvas 2d context unavailable');
+
+						// Append before rendering so pages appear one by one on a long
+						// document rather than all at the end.
+						el.appendChild(canvas);
+						rendering = page.render({
+							canvasContext: ctx,
+							viewport,
+							transform: [dpr, 0, 0, dpr, 0, 0]
+						});
+						await rendering.promise;
+						if (cancelled) return;
+
+						// pdf.js keeps per-page structures alive until released; on a
+						// 200-page document that is the difference between a preview
+						// and an out-of-memory tab.
+						loading = false;
+					} finally {
+						rendering = undefined;
+						page.cleanup();
+					}
+				}
 				loading = false;
-			}
-			loading = false;
-		} catch {
-			// Covers a corrupt file, a pdf.js that failed to load (offline,
-			// blocked, a vendor file missing from the build) and a canvas we
-			// could not get a context for. The caller shows nothing else, so
-			// this component owns the message.
-			if (token === run) {
-				failed = true;
-				loading = false;
+			} catch {
+				// Covers a corrupt file, a pdf.js that failed to load (offline,
+				// blocked, a vendor file missing from the build) and a canvas we
+				// could not get a context for. The caller shows nothing else, so
+				// this component owns the message.
+				if (!cancelled) {
+					failed = true;
+					loading = false;
+					dispose();
+				}
 			}
 		}
+
+		void render();
+		return dispose;
 	}
 
 	$effect(() => {
@@ -127,16 +163,7 @@
 		const bytes = data;
 		const el = host;
 		if (!el) return;
-		const token = ++run;
-		void render(bytes, token);
-	});
-
-	onDestroy(() => {
-		run++;
-		if (doc) {
-			void doc.destroy();
-			doc = null;
-		}
+		return startRender(bytes, el);
 	});
 </script>
 
