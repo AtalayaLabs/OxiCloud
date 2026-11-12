@@ -554,6 +554,10 @@ HURL_FILES=( \
   # `/_app/immutable/` is NOT answered with the year-long immutable
   # cache. Anonymous and stateless, so its position is free.
   "$API_DIR/web_static_cache_headers.hurl" \
+  # Canonical-URL redirects (`/mails` → `/mail`, `/calendar` →
+  # `/calendars`, …). Anonymous, stateless, order-free like the
+  # web-static pin above it.
+  "$API_DIR/canonical_url_redirects.hurl" \
   "$API_DIR/transcode_import.hurl" \
   "$API_DIR/dedup_admin_gate.hurl" \
   "$API_DIR/admin_jobs.hurl" \
