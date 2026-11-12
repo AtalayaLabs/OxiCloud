@@ -2450,6 +2450,23 @@ pub struct FeaturesConfig {
     /// `enable_places` + `enable_faces` are moot even if left `true`.
     /// Env: `OXICLOUD_ENABLE_PHOTOS`. Default: true.
     pub enable_photos: bool,
+    /// Recent changes — "who changed what lately", gating
+    /// `GET /api/files/recent-changes`, the SPA's `/changes` route and its
+    /// sidebar entry. When off the prefix is not mounted at all, so a
+    /// non-SPA client sees a 404 rather than a surface the SPA merely hides.
+    ///
+    /// Content touches are recorded regardless (see
+    /// `file_touches_retention_days`): operators may want the record for
+    /// auditability, and a deployment enabling this later then has history
+    /// from day one. "Off" therefore means NOT EXPOSED, not not collected.
+    ///
+    /// The flag exists because the view aggregates colleagues' activity
+    /// across a shared drive. Every row is already accessible to the viewer,
+    /// so it leaks nothing — but aggregated activity is a soft surveillance
+    /// surface, and whether an organisation wants it is an operator's call.
+    ///
+    /// Env: `OXICLOUD_ENABLE_RECENT_CHANGES`. Default: true.
+    pub enable_recent_changes: bool,
     /// Lists the user's geotagged photos on a map (GET /api/photos/geo).
     pub enable_places: bool,
     /// Face detection + identity clustering for the photo library ("People").
@@ -3163,6 +3180,7 @@ impl Default for FeaturesConfig {
             enable_search: true,           // Enable search feature
             enable_music: true,            // Enable music feature
             enable_photos: true,           // Photo library (/api/photos, /photos SPA route)
+            enable_recent_changes: true,   // Recent changes feed (/api/files/recent-changes)
             enable_places: true,           // Photo map (GET /api/photos/geo + Places tab)
             enable_faces: false,           // People/faces (biometric) — opt-in, off by default
             expose_system_users: true,     // Expose OxiCloud users as address book by default
@@ -4491,6 +4509,13 @@ impl AppConfig {
             && let Ok(val) = enable_photos
         {
             config.features.enable_photos = val;
+        }
+
+        if let Ok(enable_recent_changes) =
+            env::var("OXICLOUD_ENABLE_RECENT_CHANGES").map(|v| v.parse::<bool>())
+            && let Ok(val) = enable_recent_changes
+        {
+            config.features.enable_recent_changes = val;
         }
 
         if let Ok(enable_places) = env::var("OXICLOUD_ENABLE_PLACES").map(|v| v.parse::<bool>())
