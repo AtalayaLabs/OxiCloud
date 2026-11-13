@@ -77,8 +77,10 @@ Authorization: Bearer {{token}}
 HTTP 200
 [Asserts]
 body startsWith "BEGIN:VCARD"
-# Plain type value ("mobile") stays bare, unquoted.
-body contains "TEL;TYPE=MOBILE:+1-555-0199"
+# Plain type value stays bare, unquoted. The served vCard is the one
+# the service generated and stored at create time, which maps
+# "mobile" to the RFC 6350 TEL type `CELL`.
+body contains "TEL;TYPE=CELL:+1-555-0199"
 # Comma + embedded DQUOTE forces quoting and RFC 6868 caret-encoding.
 body contains "EMAIL;TYPE=\"WORK, ^'PRIMARY^'\":special@example.com"
 

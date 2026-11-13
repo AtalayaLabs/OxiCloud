@@ -67,6 +67,7 @@ mod tests {
             created_at: Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap(),
             updated_at: Utc.with_ymd_and_hms(2025, 3, 10, 8, 30, 0).unwrap(),
             etag: "etag-abc123".to_string(),
+            vcard: None,
         }
     }
 
@@ -91,6 +92,7 @@ mod tests {
             created_at: Utc.with_ymd_and_hms(2025, 2, 1, 0, 0, 0).unwrap(),
             updated_at: Utc.with_ymd_and_hms(2025, 2, 1, 0, 0, 0).unwrap(),
             etag: "etag-def456".to_string(),
+            vcard: None,
         }
     }
 
@@ -603,5 +605,94 @@ mod tests {
         assert!(vcard.contains("123 Main St"), "Should have street");
         assert!(vcard.contains("Springfield"), "Should have city");
         assert!(vcard.contains("62701"), "Should have postal code");
+    }
+
+    // ========================
+    // Lossless round-trip (stored vCard is served verbatim)
+    // ========================
+
+    /// A vCard as Nextcloud / Apple Contacts / DAVx5 send it, with
+    /// properties the structured fields don't model.
+    const RICH_VCARD: &str = "BEGIN:VCARD\r\nVERSION:3.0\r\nPRODID:-//Sabre//Sabre VObject 4.5.6//EN\r\nUID:rich-contact-1\r\nFN:Erika Mustermann\r\nN:Mustermann;Erika;;;\r\nTEL;TYPE=cell:+49 170 0000000\r\nEMAIL;TYPE=home,PREF:erika@example.org\r\nitem1.EMAIL:erika.alt@example.org\r\nitem1.X-ABLABEL:Verein\r\nURL;TYPE=x-homepage;VALUE=URI:https://example.org/erika\r\nBDAY;X-APPLE-OMIT-YEAR=1604:1604-03-15\r\nCATEGORIES:Familie,Freunde\r\nPHOTO;ENCODING=b;TYPE=JPEG:/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/\r\n 2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIy\r\nREV:20261112T101500Z\r\nEND:VCARD\r\n";
+
+    fn contact_with_stored_vcard(vcard: Option<&str>) -> ContactDto {
+        let mut c = sample_contact_minimal();
+        c.uid = "rich-contact-1".to_string();
+        c.vcard = vcard.map(str::to_string);
+        c
+    }
+
+    #[test]
+    fn test_contact_to_vcard_serves_stored_vcard_verbatim() {
+        let contact = contact_with_stored_vcard(Some(RICH_VCARD));
+        let vcard = contact_to_vcard(&contact);
+        assert_eq!(
+            vcard, RICH_VCARD,
+            "stored vCard must round-trip byte-for-byte"
+        );
+        for needle in [
+            "PHOTO;ENCODING=b;TYPE=JPEG:",
+            "\r\n 2wBDAQkJ",
+            "BDAY;X-APPLE-OMIT-YEAR=1604:1604-03-15",
+            "URL;TYPE=x-homepage;VALUE=URI:https://example.org/erika",
+            "item1.X-ABLABEL:Verein",
+            "CATEGORIES:Familie,Freunde",
+            "EMAIL;TYPE=home,PREF:",
+            "TEL;TYPE=cell:",
+        ] {
+            assert!(vcard.contains(needle), "missing after round-trip: {needle}");
+        }
+    }
+
+    #[test]
+    fn test_contact_to_vcard_appends_missing_trailing_crlf() {
+        let without_crlf = RICH_VCARD.trim_end();
+        let contact = contact_with_stored_vcard(Some(without_crlf));
+        assert_eq!(contact_to_vcard(&contact), RICH_VCARD);
+    }
+
+    #[test]
+    fn test_contact_to_vcard_falls_back_when_stored_vcard_missing_or_incomplete() {
+        for stored in [
+            None,
+            Some(""),
+            Some("   "),
+            Some("BEGIN:VCARD\r\nFN:kaputt\r\n"),
+        ] {
+            let contact = contact_with_stored_vcard(stored);
+            let vcard = contact_to_vcard(&contact);
+            assert!(
+                vcard.starts_with("BEGIN:VCARD\r\nVERSION:3.0\r\n"),
+                "{stored:?}"
+            );
+            assert!(
+                vcard.contains("FN:Jane Smith"),
+                "fallback renders fields for {stored:?}"
+            );
+            assert!(vcard.trim_end().ends_with("END:VCARD"));
+        }
+    }
+
+    #[test]
+    fn test_report_address_data_uses_stored_vcard() {
+        let contacts = vec![contact_with_stored_vcard(Some(RICH_VCARD))];
+        let report = CardDavReportType::AddressbookQuery {
+            props: vec![QualifiedName {
+                namespace: "urn:ietf:params:xml:ns:carddav".to_string(),
+                name: "address-data".to_string(),
+            }],
+        };
+        let mut output = Vec::new();
+        CardDavAdapter::generate_contacts_response(
+            &mut output,
+            &contacts,
+            &report,
+            "/carddav/ab-001",
+        )
+        .expect("report");
+        let xml = String::from_utf8(output).expect("utf8");
+        assert!(xml.contains("PHOTO;ENCODING=b;TYPE=JPEG:"), "{xml}");
+        assert!(xml.contains("item1.X-ABLABEL:Verein"));
+        assert!(xml.contains("BDAY;X-APPLE-OMIT-YEAR=1604:1604-03-15"));
     }
 }

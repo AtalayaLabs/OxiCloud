@@ -86,42 +86,49 @@ status < 300
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 4 — GET the vCard back and assert the parser+emitter
-# preserved each property. The emitter regenerates the body
-# from DTO fields, so a value surfacing in the response body
-# is proof it made it through parser → DB → emitter intact.
-#
-# NOTE: emitter uses vCard 3.0 uppercase TYPE values
-# (`TEL;TYPE=MOBILE:`, `ADR;TYPE=HOME:`), so the response
-# body's casing is normalised regardless of what the client
-# sent.
+# Step 4 — Assert the parser extracted each property into the
+# structured fields. Read them through the REST API: CardDAV GET
+# serves the stored vCard verbatim (see step 4b), so the GET body
+# no longer goes through the field-based emitter and is not proof
+# of what the parser stored.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/address-books/{{default_book_id}}/contacts?search=Regression
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+[Asserts]
+# The bare number, with URI scheme stripped and unchanged
+# through the parser's first-colon split. Pre-fix the DB would
+# store `"tel"` instead.
+jsonpath "$[?(@.uid=='dav-err-vcard-props')].phone[0].number" contains "+15551234567"
+# Case-insensitive TYPE detection: lowercase `TYPE=cell` on
+# input → mapped to "mobile". Pre-fix (case-sensitive) this fell
+# through to "other".
+jsonpath "$[?(@.uid=='dav-err-vcard-props')].phone[0].type" contains "mobile"
+# Address components — proves the ADR parser branch runs.
+jsonpath "$[?(@.uid=='dav-err-vcard-props')].address[0].street" contains "42 Rue de Rivoli"
+jsonpath "$[?(@.uid=='dav-err-vcard-props')].address[0].city" contains "Paris"
+jsonpath "$[?(@.uid=='dav-err-vcard-props')].address[0].state" contains "Île-de-France"
+jsonpath "$[?(@.uid=='dav-err-vcard-props')].address[0].postal_code" contains "75001"
+jsonpath "$[?(@.uid=='dav-err-vcard-props')].address[0].country" contains "France"
+jsonpath "$[?(@.uid=='dav-err-vcard-props')].address[0].type" contains "home"
+# Sanity: pre-existing EMAIL path.
+jsonpath "$[?(@.uid=='dav-err-vcard-props')].email[0].email" contains "regression@example.com"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 4b — CardDAV GET returns the client's vCard unchanged
+# (RFC 6352 §6.3.2.3), including the original TEL URI form and
+# the client's TYPE casing.
 # ─────────────────────────────────────────────────────────────
 GET {{base_url}}/carddav/{{default_book_id}}/dav-err-vcard-props.vcf
 Authorization: Bearer {{admin_token}}
 
 HTTP 200
 [Asserts]
-# The bare number, with URI scheme stripped and unchanged
-# through the parser's first-colon split. Pre-fix this would
-# have been `+15551234567` in the input but the DB would
-# store `"tel"` and the emitter would output that instead.
-body contains "+15551234567"
-# Case-insensitive TYPE detection: lowercase `TYPE=cell` on
-# input → mapped to "mobile" internally → emitter writes
-# uppercase `TYPE=MOBILE`. Pre-fix (case-sensitive) this fell
-# through to "other" and emitted `TYPE=OTHER`.
-body contains "TYPE=MOBILE"
-# Address components — proves the ADR parser branch runs.
-body contains "42 Rue de Rivoli"
-body contains "Paris"
-body contains "Île-de-France"
-body contains "75001"
-body contains "France"
-# TYPE=HOME preserved from the input (uppercase in both
-# directions).
-body contains "TYPE=HOME"
-# Sanity: pre-existing EMAIL path still round-trips.
-body contains "regression@example.com"
+body contains "TEL;TYPE=cell;VALUE=uri:tel:+15551234567"
+body contains "ADR;TYPE=HOME:;;42 Rue de Rivoli;Paris;Île-de-France;75001;France"
+body contains "EMAIL;TYPE=work:regression@example.com"
 
 
 # ─────────────────────────────────────────────────────────────
