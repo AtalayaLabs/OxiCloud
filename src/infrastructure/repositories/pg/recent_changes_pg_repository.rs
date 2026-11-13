@@ -37,11 +37,14 @@ use uuid::Uuid;
 use crate::application::dtos::recent_changes_dto::{ChangeLane, FileChangeRow};
 use crate::common::errors::DomainError;
 
-/// Every file id the caller may see, as a CTE the two queries share.
+/// The caller's three access inputs, resolved once per query.
 ///
-/// `MATERIALIZED` on the drive arm for the same reason the photos listing
-/// does it: the planner otherwise inlines the STABLE function per row.
-const VISIBLE_FILES_CTE: &str = r#"
+/// `MATERIALIZED` for the reason the photos listing does it: the planner
+/// otherwise inlines the STABLE functions per row.
+///
+/// What used to follow these — a `visible_files` CTE unioning every file id
+/// the caller can see — is gone. See [`can_see`].
+const VISIBILITY_CTES: &str = r#"
     accessible_drives AS MATERIALIZED (
         SELECT drive_id FROM storage.caller_accessible_drives($1, NULL)
     ),
@@ -58,30 +61,62 @@ const VISIBLE_FILES_CTE: &str = r#"
            AND g.subject_type IN ('user', 'group')
            AND g.subject_id IN (SELECT id FROM caller_subjects)
            AND (g.expires_at IS NULL OR g.expires_at > NOW())
-    ),
-    visible_files AS (
-        SELECT f.id
-          FROM storage.files f
-         WHERE NOT f.is_trashed
-           AND f.drive_id IN (SELECT drive_id FROM accessible_drives)
-        UNION
-        SELECT f.id
-          FROM storage.files f
-          JOIN storage.role_grants g
-            ON g.resource_id = f.id
-           AND g.resource_type = 'file'
-           AND g.subject_type IN ('user', 'group')
-           AND g.subject_id IN (SELECT id FROM caller_subjects)
-           AND (g.expires_at IS NULL OR g.expires_at > NOW())
-         WHERE NOT f.is_trashed
-        UNION
-        SELECT f.id
-          FROM storage.files f
-          JOIN storage.folders fo ON fo.id = f.folder_id
-         WHERE NOT f.is_trashed
-           AND fo.lpath <@ ANY (SELECT lpath FROM granted_folders)
     )
 "#;
+
+/// "May the caller see the file this touch is about?", as a predicate on one
+/// touch row — `alias` is the touch table's alias in the surrounding query.
+///
+/// **This replaced a `visible_files` CTE, and the reason is the whole point.**
+/// That CTE unioned every file id the caller could see and the planner built
+/// it eagerly: on a sandbox with 4 927 files and 19 touches in the window, it
+/// materialised 4 927 ids to hash-join against 19 rows — 412 of 423 buffers
+/// spent on the side that was not the question. Cost scaled with FILES OWNED
+/// rather than with WHAT CHANGED, which at 10k scale is seconds per page.
+///
+/// Worse, the join sat between the index scan and the `LIMIT`, so the
+/// per-lane cap could not stop early: the plan showed
+/// `Bitmap Index Scan on idx_touches_touched` with the lane as a FILTER, then
+/// a sort, then the limit. The cap trimmed the result instead of the work.
+///
+/// Pinned by primary key per touch, both problems go: the row is found by
+/// `files_pkey`, the three access branches are evaluated against that ONE
+/// row, and nothing blocks `idx_touches_user_touched` from feeding the limit
+/// in order.
+///
+/// Note this is `A OR B OR C`, which the module header forbids — and the
+/// prohibition still holds where it was written. A bare `OR` across three
+/// tables collapses to a sequential scan when the planner must find every
+/// matching file; here `vf.id = {alias}.file_id` has already reduced the
+/// candidate set to one row, so there is nothing to scan. Set membership and
+/// a per-row test are different regimes.
+fn can_see(alias: &str) -> String {
+    format!(
+        r#"
+        EXISTS (
+            SELECT 1
+              FROM storage.files vf
+             WHERE vf.id = {alias}.file_id
+               AND NOT vf.is_trashed
+               AND (
+                    vf.drive_id IN (SELECT drive_id FROM accessible_drives)
+                 OR EXISTS (
+                        SELECT 1 FROM storage.role_grants g
+                         WHERE g.resource_id = vf.id
+                           AND g.resource_type = 'file'
+                           AND g.subject_type IN ('user', 'group')
+                           AND g.subject_id IN (SELECT id FROM caller_subjects)
+                           AND (g.expires_at IS NULL OR g.expires_at > NOW())
+                    )
+                 OR EXISTS (
+                        SELECT 1 FROM storage.folders fo2
+                          JOIN granted_folders gf ON fo2.lpath <@ gf.lpath
+                         WHERE fo2.id = vf.folder_id
+                    )
+               )
+        )"#
+    )
+}
 
 /// The row projection, shared by the capped and uncapped row queries so the
 /// two cannot drift in what a `FileChangeRow` is made of. Both bind `$1` as
@@ -116,7 +151,7 @@ const ROW_COLUMNS: &str = r#"
 "#;
 
 /// Reads for the recent-changes feed. Caller-scoped: every query takes
-/// `caller_id` as `$1` and filters through [`VISIBLE_FILES_CTE`], so there is
+/// `caller_id` as `$1` and filters through [`can_see`], so there is
 /// no shape in which this returns a row the caller could not already open.
 pub struct RecentChangesPgRepository {
     pool: Arc<PgPool>,
@@ -147,14 +182,15 @@ impl RecentChangesPgRepository {
         after: Option<(DateTime<Utc>, Uuid)>,
         limit: i64,
     ) -> Result<Vec<ChangeLane>, DomainError> {
+        let visible = can_see("t");
         let sql = format!(
-            "WITH {VISIBLE_FILES_CTE}
+            "WITH {VISIBILITY_CTES}
              SELECT t.user_id,
                     MAX(t.touched_at) AS lane_latest,
                     COUNT(*)::bigint  AS lane_total
                FROM storage.file_content_touches t
               WHERE t.touched_at > NOW() - ($2 || ' days')::interval
-                AND t.file_id IN (SELECT id FROM visible_files)
+                AND {visible}
                 AND ($3::uuid[] IS NULL OR t.user_id = ANY($3))
               GROUP BY t.user_id
              HAVING $4::timestamptz IS NULL
@@ -211,14 +247,15 @@ impl RecentChangesPgRepository {
         after_id: Option<Uuid>,
         limit: i64,
     ) -> Result<Vec<FileChangeRow>, DomainError> {
+        let visible = can_see("t");
         let sql = format!(
-            "WITH {VISIBLE_FILES_CTE}
+            "WITH {VISIBILITY_CTES}
              SELECT {ROW_COLUMNS}
                FROM storage.file_content_touches t
                JOIN storage.files f ON f.id = t.file_id
                LEFT JOIN storage.folders fo ON fo.id = f.folder_id
               WHERE t.touched_at > NOW() - ($2 || ' days')::interval
-                AND t.file_id IN (SELECT id FROM visible_files)
+                AND {visible}
                 AND ($3::uuid[] IS NULL OR t.user_id = ANY($3))
                 AND ($4::timestamptz IS NULL
                      OR t.touched_at < $4
@@ -282,8 +319,9 @@ impl RecentChangesPgRepository {
         if lane_ids.is_empty() {
             return Ok(Vec::new());
         }
+        let visible = can_see("tt");
         let sql = format!(
-            "WITH {VISIBLE_FILES_CTE}
+            "WITH {VISIBILITY_CTES}
              SELECT {ROW_COLUMNS}
                FROM unnest($3::uuid[]) WITH ORDINALITY AS l(lane_user, lane_rank)
                JOIN LATERAL (
@@ -291,7 +329,7 @@ impl RecentChangesPgRepository {
                       FROM storage.file_content_touches tt
                      WHERE tt.user_id = l.lane_user
                        AND tt.touched_at > NOW() - ($2 || ' days')::interval
-                       AND tt.file_id IN (SELECT id FROM visible_files)
+                       AND {visible}
                      ORDER BY tt.touched_at DESC, tt.file_id DESC
                      LIMIT $4
                ) t ON TRUE
