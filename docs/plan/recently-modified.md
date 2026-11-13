@@ -1,7 +1,9 @@
 # Plan — Recently modified: what changed lately, and who changed it
 
-**Status: IMPLEMENTED 2026-11-13** on `feat/recently-updated`, all six stages
-of §9. Design agreed 2026-11-09.
+**Status: DONE 2026-11-13** on `feat/recently-updated`. Every stage of §9 is
+shipped; what remains is listed at the end of this block, separated into "open
+on purpose" and "raised while building, tracked nowhere else". Design agreed
+2026-11-09.
 
 | stage | commit |
 | --- | --- |
@@ -11,13 +13,35 @@ of §9. Design agreed 2026-11-09.
 | §7 wire + repository pins | `e24a0e65` |
 | §6 page, nav entry, i18n ×16 | `70cf5622` |
 | §6 lane-header identity (avatar, name, email) | `8f1681aa` |
+| §2 **touch clock fix** + §1 migration-cost note | `35078898` |
+| §6 label: "Changes", not "Recent changes" | `8c08d8be` |
+| §6 row menu, favourite, Modified by column (list + grid) | `fb31279d` |
+| §8 **per-lane cap** + the filter menu that exposes it | `7c7a5341` |
+| §3 **access filter rewritten** after measuring it | `c4372c43` |
+
+The last three were not in the original plan. Two came from using the thing
+(an unbounded lane is unreadable; the filters were cluttering the toolbar) and
+one from measuring it (`EXPLAIN` showed the access filter costing files-owned
+rather than what-changed). §3 and §8 are annotated where they were superseded,
+rather than quietly rewritten — a reader arriving at the old reasoning needs
+to know which regime they are in.
 
 Verified: `just test`, `just test-integration`, `just fe-test`,
 `just check-migrations`, `./tests/api/run.sh recent_changes external_users`,
 and `clippy --all-features --all-targets` under `--cfg integration_tests`.
 
-**One bug reached a sandbox and is worth reading before trusting this
-document.** `touched_at` originally took `content_modified_at`, which is
+**Two things this plan got wrong were caught by using it and by measuring it,
+not by review** — the reason to read §3 and § Write before trusting anything
+else here.
+
+The second was the access filter's shape: specified as a union producing a set
+of visible file ids, which `EXPLAIN` showed materialising 4 927 ids to answer
+a question about 19 touches. Rewritten as a per-touch predicate (`c4372c43`,
+annotated in §3). The access RULES never changed, and the Hurl pins over them
+are the only reason that rewrite was safe to make.
+
+The first reached a sandbox. `touched_at` originally took
+`content_modified_at`, which is
 client-assertable via `X-OC-Mtime`; an uploaded photo carrying a 2019 camera
 date wrote a 2019 touch and never appeared in the feed. The fix is in § Write
 and § Seeding, pinned at both layers (`recent_changes.hurl` step 5d, and
@@ -25,10 +49,34 @@ and § Seeding, pinned at both layers (`recent_changes.hurl` step 5d, and
 of this plan specified the broken behaviour and argued for it, so the
 reasoning there is now the corrected one.
 
-Deliberately not done, with reasons in place: `flag off → 404` is unpinned
-(one Hurl run has one environment — §7), `?person=` is server-side only with
-no drill-in UI (§6), selection is off for v1 (§6), and the order-by axes are
-closed at two (§8).
+**Open on purpose**, each with its reason in the section named:
+
+- `flag off → 404` is unpinned — one Hurl run has one environment (§7). It
+  belongs in a router test or the operator docs.
+- `?person=` is server-side only, with no drill-in UI (§6). The per-lane cap
+  makes it worth building: a capped lane's header is where "show all" goes.
+- Selection is off for v1 (§6) — an id-keyed set cannot express a file that
+  sits in two lanes.
+- The order-by axes are closed at two (§8), decided 2026-11-12.
+
+**Not in this plan, raised while building it**, and tracked nowhere else:
+
+- A dotfile toggle for the feed. Worth it — sync clients write `.DS_Store` and
+  `.sync-conflict-*` constantly, and a write-driven feed surfaces exactly that
+  noise. The wrinkle is that `lane_total` is server-counted while the dotfile
+  filter is client-side, so a capped, filtered lane would read "14" above 3
+  rows; the cheap honest answer is to suppress the count while filtering.
+- `reverse` / sort direction. Every other listing has it; this one does not,
+  because the endpoint has no `reverse` parameter — so the control is hidden
+  rather than inert (`ResourceList.showSortDirection`). Adding it means the
+  cursor must record the direction, or a mid-scroll flip corrupts paging.
+- `showOwner` → `showPerson` on `ResourceList`. The prop has meant "the row's
+  person, whichever one this page means" for a while — `created_by` on
+  `/files`, `granted_by` on `/shared-with-me`, `content_modified_by` here —
+  and `ownerCell` (added in `fb31279d`) now ships under the same misleading
+  name.
+- Migrating the five other pages onto `lib/utils/listActions.ts`, which this
+  page introduced to avoid becoming the seventh copy of the favourite toggle.
 
 OxiCloud has `/recent`, which answers *what did I open*
 (`auth.user_recent_files`, recorded per viewer on access, private to the
@@ -477,16 +525,54 @@ every user's feed** — a leak, not a cosmetic bug, and it gets its own pin.
    engine does this per resource with `gf.lpath @> (SELECT lpath …)`
    (`pg_acl_engine.rs`).
 
-### Write it as a UNION, not an OR
+### Not a set of file ids — a predicate on one touch
+
+> **Superseded by measurement, 2026-11-13 (`c4372c43`).** This section
+> originally specified a `visible_files` CTE: three separately-indexable
+> selects over file ids, unioned and deduped. That shipped, and
+> `EXPLAIN (ANALYZE, BUFFERS)` on a real instance showed why it was the wrong
+> shape — **4 927 file ids materialised to hash-join against 19 touch rows**,
+> 412 of 423 buffers spent on the side that was not the question. Cost scaled
+> with FILES OWNED rather than WHAT CHANGED: 10ms on a sandbox, seconds at
+> 500k files, for a page of 50 rows. `Planning Time` was 11.5ms and exceeded
+> execution, on every request.
+>
+> It also silently defeated §4's per-lane cap: the join sat between the index
+> scan and the `LIMIT`, so the limit could not push down, and the plan read
+> `Bitmap Index Scan on idx_touches_touched` with the lane as a *filter*, a
+> sort, then the limit — trimming the result rather than the work, with
+> `idx_touches_user_touched` unused.
+>
+> Visibility is therefore a predicate on ONE touch row, pinned by primary key
+> (`can_see` in `recent_changes_pg_repository.rs`):
+>
+> ```sql
+> EXISTS (SELECT 1 FROM storage.files vf
+>          WHERE vf.id = t.file_id AND NOT vf.is_trashed
+>            AND (drive-accessible OR file-grant OR folder-cascade))
+> ```
+>
+> **And yes, that is `A OR B OR C`** — the thing the rest of this section
+> forbids. The prohibition holds where it was written: a bare OR across three
+> tables collapses to a sequential scan when the planner must find EVERY
+> matching file. Inside the `EXISTS` the candidate set is already one row, so
+> there is nothing to scan. Set membership and a per-row test are different
+> regimes, and conflating them is what cost a rewrite.
+>
+> The access RULES below are unchanged, and the Hurl pins that cover them are
+> the only reason rewriting this query was safe.
+
+The original reasoning, kept because the trade-off it describes is real and a
+future reader needs to know which regime they are in:
 
 `branch1 OR branch2 OR branch3` across three different tables is the classic
 planner killer: it typically collapses to a sequential scan on
 `storage.files`. Postgres can sometimes build a `BitmapOr` of index scans, but
 not with a join inside branch 3.
 
-So: **three separately-indexable selects over file ids, unioned and deduped,
-then joined to the payload.** Each branch gets its own index, and the dedupe is
-on `id` rather than on the wide row.
+So, **when you need the SET**: three separately-indexable selects over file
+ids, unioned and deduped, then joined to the payload. Each branch gets its own
+index, and the dedupe is on `id` rather than on the wide row.
 
 Branch 3 must also not be a correlated subquery per candidate row. Resolve the
 caller's granted folder subtree roots once into an `ltree[]`, then test with
@@ -812,6 +898,41 @@ touch table, where `user_id` is `NOT NULL` and cascades, so every lane has a
 person. (`content_modified_by` on the file DTO *is* nullable — but that is
 per-row display, not a lane header.)
 
+### What the page grew after first use
+
+None of this was specified above; each came from looking at the result.
+
+- **Identity, three ways.** The lane header carries `<UserAvatar>` + the
+  resolved name + the full email on hover (two colleagues can share a display
+  name, and "who exactly" is the question here). The list view has a **Modified
+  by** column — `ResourceList`'s own `.owner-cell`, the same `<UserVignette>`
+  `/shared-with-me` shows — and the grid card an `AvatarOverlayChip`.
+- **`ownerCell`, a new `ResourceList` snippet**, is what made that column
+  possible on the people axis: the default owner cell reads `ctx.ownerId` from
+  a map keyed by `item.id`, which cannot hold two modifiers for one file. The
+  person comes off the ROW, exactly as the date does. Before it, the column had
+  to hide itself on the page's default axis to avoid lying.
+- **A row menu of exactly two entries** — open parent, download. Rename, move,
+  share and delete act on the file and belong where it lives; on the people
+  axis a destructive action on a row the user sees twice has no good answer.
+  The favourite star is `ResourceList`'s, enabled by passing `onfavorite`.
+- **Both filters behind one button**, trailing `.view-toggle`: the per-lane cap
+  and the window. Rarely touched, and inline they cost permanent toolbar
+  width; `active` marks the trigger when either is off its default so a
+  collapsed filter cannot silently explain a short list. New shared
+  `FilterMenu` owns the popover mechanics only.
+- **No sort direction.** Every other listing has one; this endpoint has no
+  `reverse` parameter, so the control is suppressed
+  (`ResourceList.showSortDirection`) rather than left inert.
+- **A `type` axis**, bucketed client-side on `changed_at` order — the server
+  enum stays two values wide (§8). Its buckets therefore fill as you scroll
+  and are ordered by recency, not alphabetically.
+
+Two shared-code extractions came out of it, both because the alternative was a
+copy: `lib/utils/listActions.ts` (the favourite toggle existed in six
+identical copies, "open parent" in four) and `AvatarOverlayChip` (which also
+retired a `:global` grid selector in `/shared-with-me`).
+
 ---
 
 ## §7 — Pins
@@ -949,8 +1070,26 @@ instead.
   deliberately two values wide.
 - **Live updates.** The bus would need a topic scoped to "drives I can read",
   which is a new subscription shape. Polling on focus until someone misses it.
-- **Per-person cap.** Dropped in favour of the window; revisit if a lane with
-  thousands of rows proves awkward in the UI rather than in the query.
+- ~~**Per-person cap.**~~ **Shipped 2026-11-13 (`7c7a5341`)** — the revisit
+  condition in this bullet (a lane with thousands of rows being awkward in the
+  UI) arrived. `per_lane` caps each lane at its N most recent files, default 10
+  from the UI, `MAX_PER_LANE = 50`, `0`/absent meaning no cap, and a 400 on the
+  `changed_at` axis where there are no lanes to cap.
+
+  It made the design smaller rather than larger, which is worth recording:
+  with a cap, a lane's size is known before any row is read
+  (`min(lane_total, per_lane)`), so a capped page takes WHOLE LANES while they
+  fit and never splits one. The cursor is then a lane boundary, the mid-lane
+  keyset is unnecessary, and the dead `after_rank` parameter went with it.
+
+  Rounding `limit` up to a multiple of the cap — the obvious alternative —
+  does NOT achieve that: lanes vary in size, so 50 rows is five cap-sized
+  lanes only when every lane happens to be full. Packing by actual lane size
+  does it in every case.
+
+  `lane_total` stays UNCAPPED, which is what keeps the cap honest: a lane
+  header reads "Ann · 14" above 10 rows, and `?person=` is the drill-in to the
+  rest.
 - **`content_modified_by` on folders.** A folder's content change is a
   different event (a child moved) and needs its own semantics.
 - ~~A non-spoofable ordering.~~ **Resolved, not deferred** — see § Write.
