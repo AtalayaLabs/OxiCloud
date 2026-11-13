@@ -11440,6 +11440,48 @@
         }
       }
     },
+    "/api/links": {
+      "post": {
+        "tags": [
+          "links"
+        ],
+        "summary": "Restores the caller's link to a shared folder or drive, clearing a decline.",
+        "operationId": "create_link",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateLinkRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Link created or already present",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FolderDto"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No grant path to the target"
+          },
+          "409": {
+            "description": "No free name for the link"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
     "/api/notifications": {
       "get": {
         "tags": [
@@ -16325,6 +16367,19 @@
           }
         }
       },
+      "CreateLinkRequest": {
+        "type": "object",
+        "required": [
+          "target_id"
+        ],
+        "properties": {
+          "target_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Folder or drive-root folder the caller holds a grant path to."
+          }
+        }
+      },
       "CreatePlaylistDto": {
         "type": "object",
         "required": [
@@ -16756,6 +16811,17 @@
                   "type": "string",
                   "format": "uuid",
                   "description": "UUID of the user who created the (earliest) grant."
+                },
+                "link": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/components/schemas/LinkStateDto",
+                      "description": "The caller's link to this resource; absent when links are off and for files."
+                    }
+                  ]
                 },
                 "permissions": {
                   "type": "array",
@@ -17862,6 +17928,7 @@
           "calendars",
           "contacts",
           "nextcloud",
+          "links_mode",
           "markdown_collab",
           "shared_worker_bus"
         ],
@@ -17889,6 +17956,10 @@
           "faces": {
             "type": "boolean",
             "description": "Face detection + identity clustering (\"People\"). Biometric —\nOFF by default. See `FeaturesConfig::enable_faces`."
+          },
+          "links_mode": {
+            "type": "string",
+            "description": "`\"off\"` | `\"auto\"`: granted folders and shared drives appear as links in the\npersonal drive. See `FeaturesConfig::links_mode`."
           },
           "markdown_collab": {
             "type": "boolean",
@@ -18253,6 +18324,17 @@
             "type": "string",
             "format": "date-time",
             "description": "Last modification timestamp (RFC 3339 UTC).\n\nThe folder row's own `updated_at` — bumped by a rename or a move of\n*this* folder, not by anything happening inside it. For \"did anything\nin this subtree change\", use `tree_modified_at` below."
+          },
+          "mount": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/MountDto",
+                "description": "Present on mount rows only."
+              }
+            ]
           },
           "name": {
             "type": "string",
@@ -19158,6 +19240,68 @@
           }
         }
       },
+      "LinkStateDto": {
+        "type": "object",
+        "description": "The caller's link state for a shared folder or drive.",
+        "required": [
+          "declined"
+        ],
+        "properties": {
+          "declined": {
+            "type": "boolean"
+          },
+          "link_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "link_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "LinkTargetRenamedPayload": {
+        "type": "object",
+        "description": "Payload of a `link_target_renamed` notification. Kind = [`kind::LINK_TARGET_RENAMED`].",
+        "required": [
+          "link_id",
+          "target_id",
+          "old_name",
+          "new_name",
+          "link_name",
+          "renamed_by"
+        ],
+        "properties": {
+          "link_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The recipient's link row; the bell navigates to `/files/{link_id}`."
+          },
+          "link_name": {
+            "type": "string",
+            "description": "The link's own name, unchanged by the rename."
+          },
+          "new_name": {
+            "type": "string"
+          },
+          "old_name": {
+            "type": "string"
+          },
+          "renamed_by": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "target_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
       "LocaleDto": {
         "type": "object",
         "description": "DTO for locale information",
@@ -19311,6 +19455,35 @@
           "failed",
           "cancelled"
         ]
+      },
+      "MountDto": {
+        "type": "object",
+        "description": "Marks a folder as a mount (docs/plan/share-mounts.md § API).",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "`\"shared_folder\"`, `\"shared_drive\"` or `\"external\"`."
+          },
+          "target_drive_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Drive of the target; absent for external mounts."
+          },
+          "target_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Target folder the mount answers for; absent for external mounts."
+          }
+        }
       },
       "MoveFilePayload": {
         "type": "object",
@@ -21927,6 +22100,17 @@
             "format": "uuid",
             "description": "UUID of the user who created the (earliest) grant."
           },
+          "link": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/LinkStateDto",
+                "description": "The caller's link to this resource; absent when links are off and for files."
+              }
+            ]
+          },
           "permissions": {
             "type": "array",
             "items": {
@@ -23191,6 +23375,10 @@
     }
   },
   "tags": [
+    {
+      "name": "links",
+      "description": "Links to shared folders and drives"
+    },
     {
       "name": "auth",
       "description": "Authentication and session management endpoints"

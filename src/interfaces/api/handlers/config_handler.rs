@@ -309,6 +309,9 @@ pub struct FeaturesDto {
     /// default — opt-in per deployment. See
     /// `FeaturesConfig::enable_nextcloud`.
     pub nextcloud: bool,
+    /// `"off"` | `"auto"`: granted folders and shared drives appear as links in the
+    /// personal drive. See `FeaturesConfig::links_mode`.
+    pub links_mode: &'static str,
     /// Collaborative `.md` editing over the message-bus WebSocket
     /// (Yjs CRDT). When `false`, the FE hides the "New markdown"
     /// menu entry and falls back to the plain `.md` viewer when
@@ -445,6 +448,7 @@ pub async fn get_config(State(state): State<Arc<AppState>>) -> Json<ServerConfig
             calendars: f.enable_calendars,
             contacts: f.enable_contacts,
             nextcloud: f.enable_nextcloud,
+            links_mode: f.links_mode.as_str(),
             markdown_collab: f.enable_markdown_collab,
             shared_worker_bus: f.enable_shared_worker_bus,
         },

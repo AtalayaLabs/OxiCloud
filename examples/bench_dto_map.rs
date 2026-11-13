@@ -165,6 +165,7 @@ mod before {
             updated_by: folder.updated_by(),
             is_favorite: false,
             is_shared: false,
+            mount: None,
         }
     }
 }

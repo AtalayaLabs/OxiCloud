@@ -19,6 +19,7 @@ pub mod file_handler;
 pub mod folder_handler;
 pub mod grant_handler;
 pub mod i18n_handler;
+pub mod link_handler;
 pub mod magic_link_handler;
 pub mod music_handler;
 pub mod notifications_handler;

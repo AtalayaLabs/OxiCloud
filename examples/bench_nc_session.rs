@@ -120,6 +120,7 @@ fn fixture_folder() -> FolderDto {
         updated_by: None,
         is_favorite: false,
         is_shared: false,
+        mount: None,
     }
 }
 

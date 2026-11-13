@@ -294,6 +294,28 @@ pub async fn create_grant(
     // personal-drive guard and shared-drive last-owner protection apply
     // — the same guards that gate `/api/drives/{id}/members`. Defense in
     // depth: a caller can't bypass them by hitting `/api/grants` directly.
+    //
+    // A share mount is never shareable (docs/plan/share-mounts.md R2).
+    if let Resource::Folder(fid) = resource
+        && matches!(
+            state.share_mount_service.is_mount(&fid.to_string()).await,
+            Ok(true)
+        )
+    {
+        tracing::info!(
+            target: "audit",
+            event = "share_mount.rejected",
+            reason = "grant_on_mount",
+            caller_id = %caller_id,
+            resource_id = %fid,
+            "👮🏻‍♂️ grant on a share mount rejected",
+        );
+        return AppError::from(DomainError::conflict(
+            "Grant",
+            "a share mount cannot be shared",
+        ))
+        .into_response();
+    }
     let grant = if let Resource::Drive(drive_id) = resource {
         match state
             .drive_management_service
@@ -329,6 +351,7 @@ pub async fn create_grant(
         expires_at = ?expires_at,
         "🤝 grant created with role '{}'", role.as_str(),
     );
+    state.share_mount_service.poke();
 
     // Slice E — persistent in-app notification (bell) for every
     // recipient user. Separate channel from the email path below:
@@ -549,7 +572,9 @@ pub async fn revoke_grant(
         }
     } else {
         // Caller is authorized if they are the granter OR have Share on the resource.
+        // The granter, a Share holder, or the recipient themselves may remove it.
         if granter != caller_id
+            && subject != Subject::User(caller_id)
             && let Err(e) = authz
                 .require(Subject::User(caller_id), Permission::Share, resource)
                 .await
@@ -591,6 +616,7 @@ pub async fn revoke_grant(
         self_revoke = (granter == caller_id),
         "🗑️ grant revoked",
     );
+    state.share_mount_service.poke();
 
     // Message-bus eviction cascade — the revoke committed, so any WS
     // session that had the affected user auto-subscribed to
@@ -894,6 +920,7 @@ pub async fn set_role(
         expires_at = ?expires_at,
         "🔁 role set to '{}'", role.as_str(),
     );
+    state.share_mount_service.poke();
     (StatusCode::OK, Json(vec![GrantDto::from(grant)])).into_response()
 }
 
@@ -1051,6 +1078,23 @@ pub async fn list_shared_with_me(
         }
     };
 
+    let link_targets: Vec<Uuid> = summaries
+        .iter()
+        .filter_map(|s| match s.resource_type {
+            ResourceKind::File => None,
+            ResourceKind::Folder => Some(s.resource_id),
+            ResourceKind::Drive => drive_map.get(&s.resource_id).map(|d| d.root_folder_id),
+        })
+        .collect();
+    let link_states = match state
+        .share_mount_service
+        .link_states(caller_id, &link_targets)
+        .await
+    {
+        Ok(m) => m,
+        Err(e) => return AppError::from(e).into_response(),
+    };
+
     // Build the unified item list in original grant order (newest first),
     // looking each resolved resource up by id.
     let mut items: Vec<SharedWithMeItemDto> = Vec::with_capacity(summaries.len());
@@ -1079,6 +1123,7 @@ pub async fn list_shared_with_me(
                         granted_at: summary.granted_at,
                         granted_by: summary.granted_by,
                         resource: ResourceContentDto::File(dto),
+                        link: None,
                     });
                 }
                 None => warn!(
@@ -1101,6 +1146,7 @@ pub async fn list_shared_with_me(
                         granted_at: summary.granted_at,
                         granted_by: summary.granted_by,
                         resource: ResourceContentDto::Folder(dto),
+                        link: link_states.get(&summary.resource_id).cloned(),
                     });
                 }
                 None => warn!(
@@ -1116,6 +1162,7 @@ pub async fn list_shared_with_me(
                         granted_at: summary.granted_at,
                         granted_by: summary.granted_by,
                         resource: ResourceContentDto::Drive(drive_dto.clone()),
+                        link: link_states.get(&drive_dto.root_folder_id).cloned(),
                     });
                 }
                 None => warn!(
