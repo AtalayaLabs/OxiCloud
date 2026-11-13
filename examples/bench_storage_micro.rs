@@ -167,6 +167,8 @@ struct ManifestReplica {
     chunk_hashes: Vec<String>,
 }
 
+// Indexing is the access pattern under measurement.
+#[allow(clippy::needless_range_loop)]
 fn section_2(manifest_chunks: usize) {
     let manifest = Arc::new(ManifestReplica {
         chunk_hashes: (0..manifest_chunks).map(|i| format!("{i:064x}")).collect(),
