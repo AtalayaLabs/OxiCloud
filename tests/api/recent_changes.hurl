@@ -424,6 +424,64 @@ jsonpath "$.items[?(@.resource.id == '{{ann_file3}}')].changed_at" == "{{file3_c
 
 
 # ─────────────────────────────────────────────────────────────
+# 5d — A CLIENT-ASSERTED MTIME DOES NOT HIDE THE UPLOAD.
+#
+#      Found on a sandbox, not by this suite: an uploaded photo never
+#      appeared in the feed. `source_modified_at` (and `X-OC-Mtime`,
+#      and the chunked and WebDAV equivalents) sets the file's content
+#      clock, which is correct POSIX behaviour — and the touch used to
+#      take that same value. So a holiday photo carrying a 2019 camera
+#      date wrote a 2019 touch and fell outside the window the instant
+#      it was uploaded. Every sync client asserts an mtime, so this was
+#      the common path, not an edge case.
+#
+#      The two clocks must now DISAGREE, and that is the assertion:
+#      `resource.modified_at` is the client's 2019, while `changed_at`
+#      is when the server saw the upload. `days=7` is what makes it a
+#      real pin — a 2019 touch cannot be inside a 7-day window, so the
+#      row would simply be missing.
+#
+#      In Ann's home root, not `rc-ann-folder`, so Bo's visible-file
+#      count stays at the two rows step 10 pages over.
+# ─────────────────────────────────────────────────────────────
+#      A text fixture with content of its OWN, deliberately. The bug
+#      was found with a photo, but a JPEG would also kick off EXIF
+#      extraction, which has its own opinion about dates
+#      (`photos_sort_date_content_clock.hurl`) — and `hello-copy.txt`
+#      is byte-identical to the `hello.txt` 5b already uploaded, so it
+#      would ride the dedup path. Either way a regression elsewhere
+#      would surface here looking like an mtime bug. This step tests
+#      the mtime alone.
+POST {{base_url}}/api/files/upload
+Authorization: Bearer {{ann_token}}
+[MultipartFormData]
+folder_id: {{ann_home}}
+source_modified_at: 1546300800000
+file: file,fixtures/cache_header_unique.txt; text/plain
+
+HTTP 201
+[Captures]
+ann_file_old: jsonpath "$.id"
+[Asserts]
+# 1546300800000 ms = 2019-01-01T00:00:00Z. The content clock still
+# obeys the client; `rest_upload_source_mtime.hurl` pins that contract
+# in its own right, and this half is here so a regression that simply
+# stopped honouring the mtime cannot make the rest of this step pass.
+jsonpath "$.modified_at" == "2019-01-01T00:00:00Z"
+
+
+GET {{base_url}}/api/files/recent-changes?days=7
+Authorization: Bearer {{ann_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.items[?(@.resource.id == '{{ann_file_old}}')].modifier_id" == "{{ann_id}}"
+jsonpath "$.items[?(@.resource.id == '{{ann_file_old}}')].resource.modified_at" == "2019-01-01T00:00:00Z"
+# The touch is the server's clock, so it cannot be the camera's date.
+jsonpath "$.items[?(@.resource.id == '{{ann_file_old}}')].changed_at" != "2019-01-01T00:00:00Z"
+
+
+# ─────────────────────────────────────────────────────────────
 # 6 — The `person` filter is a view, not a permission.
 #
 #     Asking about a person you share nothing with returns an empty
@@ -627,6 +685,12 @@ HTTP 204
 
 
 DELETE {{base_url}}/api/files/{{ann_file3}}
+Authorization: Bearer {{ann_token}}
+
+HTTP 204
+
+
+DELETE {{base_url}}/api/files/{{ann_file_old}}
 Authorization: Bearer {{ann_token}}
 
 HTTP 204

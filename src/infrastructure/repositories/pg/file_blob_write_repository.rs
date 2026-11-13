@@ -253,12 +253,27 @@ impl FileBlobWriteRepository {
                     // Without it a losing racer would still claim the file in
                     // its lane on `/api/files/recent-changes` while having
                     // changed nothing.
+                    //
+                    // `touched_at` is `NOW()` — the moment the SERVER observed
+                    // this person change the file — and deliberately NOT the
+                    // row's `content_modified_at`. The two answer different
+                    // questions, and conflating them broke the feature on its
+                    // first real upload: `content_modified_at` is the POSIX
+                    // content clock and is client-assertable via `X-OC-Mtime`,
+                    // so a photo carrying a 2019 mtime landed a 2019 touch and
+                    // was invisible in a 90-day window the instant it arrived.
+                    // An event log needs event time: monotonic, server-owned,
+                    // and never spoofable by a sync client.
+                    //
+                    // `GREATEST` on conflict so a replay or a node with a
+                    // trailing clock can never move a lane backwards.
                     r#"
                 touch AS (
                     INSERT INTO storage.file_content_touches (file_id, user_id, touched_at)
-                    SELECT file_id, $5, content_modified_at FROM upd WHERE matched
+                    SELECT file_id, $5, NOW() FROM upd WHERE matched
                     ON CONFLICT (file_id, user_id)
-                        DO UPDATE SET touched_at = EXCLUDED.touched_at
+                        DO UPDATE SET touched_at = GREATEST(
+                            storage.file_content_touches.touched_at, EXCLUDED.touched_at)
                 )
                 SELECT old_hash,
                        EXTRACT(EPOCH FROM content_modified_at)::bigint,
@@ -419,14 +434,9 @@ impl FileBlobWriteRepository {
         // file, which is the whole reason the column exists separately.
         //
         // The `touch` arm records the same thing in
-        // `storage.file_content_touches` — in the SAME statement, because a
-        // content change that commits without its touch is a change
-        // `/api/files/recent-changes` can never recover; there is no second
-        // source to reconcile against. `touched_at` takes the row's own
-        // `content_modified_at` (including a client-asserted `X-OC-Mtime`) so
-        // the feed and the file's mtime never disagree about when a change
-        // happened. Its `ON CONFLICT` cannot fire for a brand-new file; it is
-        // there so every touch write in this file reads identically.
+        // `storage.file_content_touches`, in the SAME statement and stamped
+        // with the server's `NOW()` rather than the file's content clock —
+        // see the comment on that arm for why the two must not be conflated.
         let result = retry_on_deadlock("files.insert", || {
             sqlx::query_as::<_, (String, String, i64, i64, Option<Uuid>, Option<Uuid>)>(concat!(
                 r#"
@@ -477,18 +487,25 @@ impl FileBlobWriteRepository {
                 // In the SAME statement as the row it describes: a content
                 // change that commits without its touch is a change
                 // `/api/files/recent-changes` can never recover, because there
-                // is no second source to reconcile against. `touched_at` takes
-                // the row's own `content_modified_at` — including a
-                // client-asserted `X-OC-Mtime` — so the feed and the file's
-                // mtime never disagree about when a change happened. The
-                // `ON CONFLICT` cannot fire for a brand-new file; it is here so
-                // every touch write in this module reads identically.
+                // is no second source to reconcile against.
+                //
+                // `touched_at` is `NOW()`, the moment the SERVER observed the
+                // upload — NOT the row's `content_modified_at`, which is the
+                // POSIX content clock and is client-assertable via
+                // `X-OC-Mtime`. Every sync client and most photo uploads
+                // assert one, so taking it here meant a holiday photo with a
+                // 2019 mtime wrote a 2019 touch and never appeared in the feed
+                // at all: outside a 90-day window the moment it was uploaded.
+                // An event log needs event time. The `ON CONFLICT` cannot fire
+                // for a brand-new file; it is here so every touch write in
+                // this module reads identically.
                 r#"
                 touch AS (
                     INSERT INTO storage.file_content_touches (file_id, user_id, touched_at)
-                    SELECT id, $7, content_modified_at FROM new_file
+                    SELECT id, $7, NOW() FROM new_file
                     ON CONFLICT (file_id, user_id)
-                        DO UPDATE SET touched_at = EXCLUDED.touched_at
+                        DO UPDATE SET touched_at = GREATEST(
+                            storage.file_content_touches.touched_at, EXCLUDED.touched_at)
                 )
                 SELECT id::text,
                        (SELECT path FROM parent),
@@ -1453,7 +1470,7 @@ impl FileWritePort for FileBlobWriteRepository {
 mod content_provenance_tests {
     use super::*;
     use crate::integration_test_support::{ensure_clean_test_db, test_db_url};
-    use chrono::{DateTime, Utc};
+    use chrono::{DateTime, Duration, Utc};
     use sqlx::postgres::PgPoolOptions;
 
     const PREFIX: &str = "rust-test-prov-";
@@ -1861,6 +1878,64 @@ mod content_provenance_tests {
                 .map(|(u, _)| *u)
                 .collect::<Vec<_>>(),
             vec![alice]
+        );
+    }
+
+    /// A client-asserted mtime dates the CONTENT, never the touch.
+    ///
+    /// Found on a sandbox, not by this suite: an uploaded photo did not appear
+    /// in `/changes` at all. `content_modified_at` honours `X-OC-Mtime` — which
+    /// every sync client and most photo uploads set — so a holiday photo wrote
+    /// a 2019 touch and fell outside the feed's 90-day window the instant it
+    /// arrived. The window is the feature's cheapest safety rail, and it was
+    /// silently excluding the most common upload there is.
+    ///
+    /// Both halves matter here, which is why one test asserts both: the
+    /// content clock must still obey the client (POSIX behaviour other
+    /// surfaces depend on — see `rest_upload_source_mtime.hurl`), and the
+    /// touch must ignore it in favour of when the server saw the write.
+    #[tokio::test]
+    async fn a_client_asserted_mtime_dates_the_content_not_the_touch() {
+        let (pool, scope) = test_pool("mtime").await;
+        let (folder, _) = seeded_root(&pool).await;
+        let alice = user(&pool, &scope, "alice").await;
+
+        // 2019-01-01T00:00:00Z — a camera's idea of when the bytes were made.
+        const ANCIENT: i64 = 1_546_300_800;
+        let saved = repo(pool.clone())
+            .save_file_with_blob(
+                format!("{scope}photo.jpg"),
+                Some(folder.to_string()),
+                "image/jpeg".to_string(),
+                HASH_A,
+                3,
+                alice,
+                Some(ANCIENT),
+            )
+            .await
+            .expect("save");
+        let id: Uuid = saved.id().parse().expect("uuid");
+
+        let content_at: DateTime<Utc> =
+            sqlx::query_scalar("SELECT content_modified_at FROM storage.files WHERE id = $1")
+                .bind(id)
+                .fetch_one(pool.as_ref())
+                .await
+                .expect("read content_modified_at");
+        assert_eq!(
+            content_at.timestamp(),
+            ANCIENT,
+            "the content clock must still honour the client's mtime"
+        );
+
+        let lanes = lanes(&pool, id).await;
+        assert_eq!(lanes.len(), 1);
+        assert_eq!(lanes[0].0, alice);
+        assert!(
+            lanes[0].1 > Utc::now() - Duration::hours(1),
+            "the touch is when the SERVER saw the upload, not {content_at}: a feed \
+             window cannot be moved by a camera's clock (got {})",
+            lanes[0].1
         );
     }
 }

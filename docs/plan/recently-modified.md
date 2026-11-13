@@ -1,7 +1,34 @@
 # Plan — Recently modified: what changed lately, and who changed it
 
-**Status: DESIGN AGREED 2026-11-09, NOT STARTED.** Design settled in
-discussion; nothing in this document is built yet.
+**Status: IMPLEMENTED 2026-11-13** on `feat/recently-updated`, all six stages
+of §9. Design agreed 2026-11-09.
+
+| stage | commit |
+| --- | --- |
+| §1 column + §1b table and seed + §2 write path | `437c7248` |
+| §1b retention job, §3 access filter, §4 query, §5 flag | `f35f2ee0` |
+| §4 endpoint | `61790a0e` |
+| §7 wire + repository pins | `e24a0e65` |
+| §6 page, nav entry, i18n ×16 | `70cf5622` |
+| §6 lane-header identity (avatar, name, email) | `8f1681aa` |
+
+Verified: `just test`, `just test-integration`, `just fe-test`,
+`just check-migrations`, `./tests/api/run.sh recent_changes external_users`,
+and `clippy --all-features --all-targets` under `--cfg integration_tests`.
+
+**One bug reached a sandbox and is worth reading before trusting this
+document.** `touched_at` originally took `content_modified_at`, which is
+client-assertable via `X-OC-Mtime`; an uploaded photo carrying a 2019 camera
+date wrote a 2019 touch and never appeared in the feed. The fix is in § Write
+and § Seeding, pinned at both layers (`recent_changes.hurl` step 5d, and
+`a_client_asserted_mtime_dates_the_content_not_the_touch`). Earlier revisions
+of this plan specified the broken behaviour and argued for it, so the
+reasoning there is now the corrected one.
+
+Deliberately not done, with reasons in place: `flag off → 404` is unpinned
+(one Hurl run has one environment — §7), `?person=` is server-side only with
+no drill-in UI (§6), selection is off for v1 (§6), and the order-by axes are
+closed at two (§8).
 
 OxiCloud has `/recent`, which answers *what did I open*
 (`auth.user_recent_files`, recorded per viewer on access, private to the
@@ -35,7 +62,8 @@ Recorded so implementation does not re-open them.
 | External users | **Denied** — router-level, `require_internal_user_layer` (§3) |
 | Window | `days` default 30, **max 90**, and `days=91` is a **400, never clamped** |
 | Public-link grants | **Excluded** — `subject_type IN ('user','group')`, never `'token'` (§3) |
-| Copy | **The copier**, for both the column and the touch — because `dates.md` already sets a copy's clock to `NOW()` (§1b) |
+| Copy | **Preserve the source's principal and lanes** — copying bytes is not authoring them, so the copier is credited with nothing and the copy does not resurface as new work. (Reversed during design: an earlier row here said "the copier", on the grounds that `dates.md` set a copy's clock to `NOW()`. `dates.md § COPY` was rewritten instead, so both clocks are preserved and `copy_file_satellites` carries the touch rows across — §1b) |
+| Touch timestamp | **`NOW()` at the write**, never `content_modified_at` — the content clock is client-assertable, and taking it hid a fresh upload behind its camera's date (§ Write) |
 | Flag off | Touches are **still written** — ops keep the data for auditability, and the view has history the day it is enabled (§5) |
 | Drive policy flag | `caller_accessible_drives($1, NULL)` for v1 — no per-drive opt-out yet |
 | Other resources | **None for now.** Calendars/contacts have no provenance columns at all (§8) |
@@ -125,6 +153,38 @@ the table twice over, spilling to temp files, to conclude there is nothing to
 do. DDL is transactional, so a failure restores the triggers with everything
 else.
 
+### Migration cost, for an operator with a large instance
+
+Linear in the number of files, with one dominant statement. Nothing here is
+superlinear — the trigger suppression above is what guarantees that, and it is
+the part to preserve if this migration is ever edited.
+
+| statement | cost |
+| --- | --- |
+| `ADD COLUMN content_modified_by` | metadata-only (PG 11+): nullable, no default |
+| **the backfill `UPDATE`** | **O(N) row rewrites + WAL, one transaction** |
+| `CREATE INDEX` ×2 | on the new, empty touch table — instant |
+| the seed `INSERT … SELECT` | one O(N) scan, inserts only the 120-day subset |
+
+Two notes that matter above a few million files:
+
+- **No index covers `content_modified_by`**, so the UPDATE qualifies for
+  heap-only tuples and skips index maintenance entirely. Adding such an index
+  *before* the backfill would forfeit that; the touch-table indexes are
+  created after, and on an empty table.
+- **`statement_timeout` is the realistic failure, not complexity.** The
+  backfill is one statement; if the role or database sets a timeout, it aborts
+  and startup fails. That is the correct failure — loud, and the migration
+  rolls back whole — but an operator migrating a large instance should raise
+  or clear the timeout for the window. Expect ~N dead tuples of bloat until
+  autovacuum catches up, and brief `ACCESS EXCLUSIVE` moments for the two
+  `DISABLE`/`ENABLE TRIGGER` statements, which on a multi-node deploy queue
+  behind any long-running read on `storage.files`.
+
+If an instance ever outgrows one transaction, the shape to move to is a
+startup job (`OXICLOUD_STARTUP_JOBS`, as both thumbnail backfills do) rather
+than a longer migration: a job can resume from a cursor, a migration cannot.
+
 ### Indexes
 
 ```sql
@@ -211,13 +271,32 @@ One upsert, in the same transaction as the content mutation (§2):
 
 ```sql
 INSERT INTO storage.file_content_touches (file_id, user_id, touched_at)
-VALUES ($file, $caller, $content_modified_at)
-ON CONFLICT (file_id, user_id) DO UPDATE SET touched_at = EXCLUDED.touched_at
+VALUES ($file, $caller, NOW())
+ON CONFLICT (file_id, user_id) DO UPDATE
+    SET touched_at = GREATEST(file_content_touches.touched_at, EXCLUDED.touched_at)
 ```
 
-`touched_at` takes the same value as `content_modified_at` — including a
-client-asserted `X-OC-Mtime` — so the feed and the file's own mtime never
-disagree about when a change happened.
+**`touched_at` is `NOW()`, not `content_modified_at`.** The two answer
+different questions and an earlier draft of this plan conflated them, which
+broke the feature on its first real upload: `content_modified_at` is the POSIX
+content clock and is client-assertable via `X-OC-Mtime`, so a photo carrying a
+2019 camera date wrote a 2019 touch and sat outside the 90-day window the
+instant it was uploaded — invisible in the feed, for a file that had just
+arrived. Every sync client asserts an mtime (`rest_upload_source_mtime.hurl`,
+`nc_webdav_client_mtime.hurl`, `chunked_upload_source_mtime.hurl`), so this was
+the common path, not an edge case.
+
+An event log needs event time: when the SERVER observed this person change the
+file. That is monotonic, server-owned and unspoofable, which is what the
+window, the ordering and the keyset all actually depend on. The file's own
+mtime stays the content clock, where POSIX semantics belong. `GREATEST` on
+conflict so a replay or a node with a trailing clock cannot move a lane
+backwards.
+
+A **copy** is the one exception, and deliberately: `copy_file_satellites`
+inherits the source's touch rows with their original timestamps, because
+copying bytes is not authoring them (§ COPY in `dates.md`). A copy therefore
+does not resurface in the feed as new work.
 
 ### Which operations write a touch
 
@@ -278,13 +357,22 @@ retention window and to rows where the principal is known:
 
 ```sql
 INSERT INTO storage.file_content_touches (file_id, user_id, touched_at)
-SELECT id, content_modified_by, content_modified_at
+SELECT id, content_modified_by, GREATEST(content_modified_at, created_at)
   FROM storage.files
  WHERE content_modified_by IS NOT NULL
    AND NOT is_trashed
-   AND content_modified_at > now() - interval '120 days'
+   AND GREATEST(content_modified_at, created_at) > now() - interval '120 days'
 ON CONFLICT DO NOTHING;
 ```
+
+**This is the only place `content_modified_at` feeds the touch table** — live
+touches are `NOW()` (see § Write) — and even here it is FLOORED at
+`created_at`. Without the floor, a file uploaded last week carrying a 2019
+camera mtime seeds a 2019 touch and is then dropped by the window filter
+above: absent from the feed, for a file that arrived days ago. The floor also
+avoids `updated_at`, which would move on a rename and credit a renamer's
+timestamp to someone else's bytes. So a seeded touch can never predate the
+file, and is never later than the event it stands for.
 
 This inherits §1's backfill approximation — one seeded touch per file, crediting
 the last known principal. It is the floor, not the truth: the table becomes
@@ -724,6 +812,13 @@ Backend, `tests/api/recent_changes.hurl`:
 - a trashed file is absent, and **restoring it returns the row carrying its
   original timestamp and its original person** — a restore that re-touched
   would credit whoever emptied the trash and re-date the change
+- **an upload asserting an ancient `source_modified_at` is PRESENT in a
+  7-day window**, with `resource.modified_at` reading the client's date and
+  `changed_at` not — the sandbox regression. The two clocks must disagree:
+  the content clock obeys the client (POSIX), the touch is the server's. A
+  2019 touch cannot be inside a 7-day window, so the row would simply be
+  missing — which is exactly how this was found, by uploading a photo and
+  not seeing it
 - `lane_total` equals the number of visible rows for that lane, with a second
   user's invisible file present in the fixture
 - **a publicly-linked file does NOT appear** for a user with no user/group
@@ -843,16 +938,23 @@ instead.
   which is a new subscription shape. Polling on focus until someone misses it.
 - **Per-person cap.** Dropped in favour of the window; revisit if a lane with
   thousands of rows proves awkward in the UI rather than in the query.
-- **`content_modified_by` on folders**, and a non-spoofable ordering. Note
-  `content_modified_at` is client-assertable via `X-OC-Mtime` within trust
-  bounds, so feed position is partly client-controlled. That is correct POSIX
-  behaviour; `updated_at` is the clock a client cannot influence, but it
-  includes renames. If spoofing ever matters, clamp the display when the two
-  disagree wildly rather than changing the sort.
+- **`content_modified_by` on folders.** A folder's content change is a
+  different event (a child moved) and needs its own semantics.
+- ~~A non-spoofable ordering.~~ **Resolved, not deferred** — see § Write.
+  Feed position was briefly client-controlled, because `touched_at` took the
+  client-assertable `content_modified_at`. It takes `NOW()` instead, so the
+  ordering a client can influence is the file's mtime (where POSIX says it
+  belongs) and never the feed's. The display-clamp this bullet used to propose
+  is unnecessary: there is nothing left to clamp.
 
 ---
 
 ## §9 — Rollout order
+
+**All six shipped in this order; see the commit table at the top.** Kept as
+written because the ordering carries the reasoning, and because the retention
+job going in before the read path (step 2) is an invariant a later change
+could undo without noticing.
 
 1. §1 migration + §1b table and seed + §2 write path, with their pins. Both
    the column and the touch table are dense from the first deploy, before

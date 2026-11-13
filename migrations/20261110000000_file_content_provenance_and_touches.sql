@@ -161,13 +161,30 @@ CREATE INDEX IF NOT EXISTS idx_touches_touched
 -- invents a second editor, so a pre-deploy file shows a single lane until
 -- someone touches it again — the table becomes accurate as people work.
 --
+-- `touched_at` is `GREATEST(content_modified_at, created_at)` — the content
+-- clock, FLOORED at the moment the file appeared on this server.
+--
+-- Each half earns its place. `content_modified_at` is the precise value when
+-- it is informative, so a file genuinely edited last Tuesday is dated last
+-- Tuesday. But it is client-assertable via `X-OC-Mtime`, which every sync
+-- client and most photo uploads set, and on its own it dated a holiday photo
+-- to 2019 — then the window filter below dropped it entirely. A file uploaded
+-- last week, absent from the feed because of an mtime its camera wrote. The
+-- floor fixes that without reaching for `updated_at`, which would also move on
+-- a rename and credit a renamer's timestamp to someone else's bytes.
+--
+-- A touch can therefore never predate the file it describes, and the seeded
+-- date is never later than the real event. New touches come from `NOW()` at
+-- the write (`file_blob_write_repository`); this expression only has to be
+-- defensible for history that predates the table.
+--
 -- `ON CONFLICT DO NOTHING` for idempotence on a resumed migration. No trigger
 -- suppression needed: the target is a brand-new table with no triggers, and
 -- reading `storage.files` fires none.
 INSERT INTO storage.file_content_touches (file_id, user_id, touched_at)
-SELECT id, content_modified_by, content_modified_at
+SELECT id, content_modified_by, GREATEST(content_modified_at, created_at)
   FROM storage.files
  WHERE content_modified_by IS NOT NULL
    AND NOT is_trashed
-   AND content_modified_at > NOW() - INTERVAL '120 days'
+   AND GREATEST(content_modified_at, created_at) > NOW() - INTERVAL '120 days'
 ON CONFLICT DO NOTHING;
