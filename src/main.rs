@@ -1605,6 +1605,11 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
             .nest(&config.base_path, app)
     };
 
+    // Wrap the final router, including the base-path redirect and its outer
+    // fallback. Matched templates include the configured deployment prefix.
+    let app =
+        oxicloud::interfaces::metrics::instrument_requests(app, config.metrics_listen.is_some());
+
     // TCP_NODELAY is inherited from the listening socket on Linux,
     // so every accepted connection already has Nagle disabled.
     //
