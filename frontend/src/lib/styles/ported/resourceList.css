@@ -451,7 +451,15 @@
     display: none;
 }
 
-.files-list-view .file-item .file-icon {
+/* `.file-icon--row` is the same recipe addressable WITHOUT the list-view
+   ancestry, for surfaces that want a row's file glyph outside a
+   `ResourceList` — `/shared`'s swimlane headers name a resource and should
+   name it the way every list does. Pages pass
+   `file-icon file-icon--row file-icon--<kind>`; the kind class is what sets
+   `--fk`. Shared rule rather than a copy: a second definition would drift
+   the moment either is tuned. */
+.files-list-view .file-item .file-icon,
+.file-icon--row {
     width: 40px;
     height: 40px;
     display: flex;
