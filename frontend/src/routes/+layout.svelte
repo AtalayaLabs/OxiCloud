@@ -19,6 +19,7 @@
 	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import { hydrateFromAuthenticatedBoot } from '$lib/stores/serverStatus.svelte';
 	import { readAndClearInterrupted } from '$lib/upload/interruption';
+	import { onOsFileDragOver, onOsFileDrop } from '$lib/utils/osFileDropGuard';
 	import { t } from '$lib/i18n/index.svelte';
 
 	let { children } = $props();
@@ -281,6 +282,21 @@
 		void goto(resolve(`/profile?forcePasswordChange=1&next=${next}`), { replaceState: true });
 	});
 </script>
+
+<!--
+	OS-file drag guard, for EVERY route including the public ones.
+
+	A file dropped on a page the browser considers un-handled navigates to
+	that file, replacing the SPA and whatever unsaved state it held. Pages
+	used to opt into protection one at a time, so each new page arrived
+	unprotected; this is the application saying it owns the default.
+
+	A page that genuinely accepts drops needs to register nothing: calling
+	`preventDefault()` is already mandatory for `drop` to fire, and the guard
+	reads `defaultPrevented`. So `/files` and `ResourceList` keep their own
+	richer handling untouched, and this only ever sees what nobody wanted.
+-->
+<svelte:window ondragover={onOsFileDragOver} ondrop={onOsFileDrop} />
 
 {#if isPublic(appPath(page.url.pathname))}
 	{@render children()}

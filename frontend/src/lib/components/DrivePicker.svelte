@@ -199,16 +199,22 @@
 		font-weight: var(--weight-semibold);
 	}
 
-	/* Armed as a drop target. Same dashed-outline treatment as
+	/* Armed as a drop target. Same solid-outline treatment as
 	   `.nav-item--drop-target` in `sidebar.css`, so "you may drop here"
 	   looks identical whether the target is a nav link or a drive —
 	   the two sit inches apart in the same strip.
 
 	   On the row rather than the item, matching where the handlers live:
-	   the whole row is the target, including the settings cog. */
+	   the whole row is the target, including the settings cog.
+
+	   The radius is set here because the row has none of its own and an
+	   outline traces the element's `border-radius` — `.nav-item` carries
+	   `--radius-xl` already, so matching it is what makes the two look like
+	   the same affordance. */
 	.drive-picker__row--drop-target {
 		background-color: var(--color-warning-ring);
-		outline: 2px dashed var(--color-warning-border);
+		border-radius: var(--radius-xl);
+		outline: 2px solid var(--color-warning-border);
 		outline-offset: -2px;
 	}
 

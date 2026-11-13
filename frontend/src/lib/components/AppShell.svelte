@@ -20,6 +20,13 @@
 	import { copyFiles, copyFolders } from '$lib/api/endpoints/batch';
 	import { isCopyDrop, ITEM_DRAG_MIME } from '$lib/utils/dragModifiers';
 	import { dragAutoScroll } from '$lib/utils/dragAutoScroll';
+	// OS-file drops on a drive row: same "is this an OS drag?" test the rest of
+	// the app uses, read into the two shapes an uploader takes, then staged for
+	// `/files` to perform (see `pendingUpload` for why it is a handoff).
+	import { isOsFileDrag } from '$lib/utils/osFileDropGuard';
+	import { readDroppedUpload } from '$lib/utils/droppedEntries';
+	import { pendingUpload } from '$lib/stores/pendingUpload.svelte';
+	import { sidebarDrop } from '$lib/stores/sidebarDrop.svelte';
 	import type { Drive } from '$lib/api/types';
 	import type { FileItem, FolderItem, ItemType } from '$lib/api/types';
 	import { isAtLeastAdmin } from '$lib/utils/roles';
@@ -445,8 +452,6 @@
 		name: string;
 		kind: ItemType;
 	}
-	let sidebarDropHref = $state<string | null>(null);
-
 	function sidebarOnDragOver(e: DragEvent, href: string) {
 		if (!e.dataTransfer?.types.includes(SIDEBAR_DRAG_TYPE)) return;
 		e.preventDefault();
@@ -454,11 +459,11 @@
 		// "move" so the cursor doesn't imply a benign copy for something that
 		// actually removes the row from its source view.
 		e.dataTransfer.dropEffect = href === '/favorites' ? 'copy' : 'move';
-		sidebarDropHref = href;
+		sidebarDrop.arm(href);
 	}
 
 	function sidebarOnDragLeave(href: string) {
-		if (sidebarDropHref === href) sidebarDropHref = null;
+		sidebarDrop.release(href);
 	}
 
 	// ── Drop onto a drive in the picker ──────────────────────────────
@@ -467,10 +472,11 @@
 	// i.e. when the account has more than one drive — with a single drive
 	// there is nowhere else to drop.
 	//
-	// Shares `sidebarDropHref` with the nav-link targets so exactly one
-	// thing in the sidebar is ever armed; drives key on their id, which
-	// cannot collide with an href.
-	let driveDropId = $state<string | null>(null);
+	// Shares `sidebarDrop` with the nav-link targets so exactly one thing in
+	// the sidebar is ever armed; drives key on their id, which cannot
+	// collide with an href. The store, not a local, because `/files` reads
+	// it too — see its doc comment.
+	const driveDropId = $derived(sidebarDrop.key);
 
 	/**
 	 * Folder currently being browsed, from `/files/<…>/<leaf>` — the last
@@ -499,6 +505,19 @@
 	}
 
 	function driveOnDragOver(e: DragEvent, _d: Drive) {
+		// OS files uploading INTO the drive. Accepted on every drive, the one
+		// on screen included: `isCurrentFolderDrive` below rejects a MOVE into
+		// the folder the items already sit in, which says nothing about an
+		// upload — "put this file in the drive I'm browsing" is an ordinary
+		// thing to want. `preventDefault` is what accepts the drop, and it is
+		// also what makes the app-wide guard (which would otherwise toast
+		// "uploads only work in Files") stand down.
+		if (isOsFileDrag(e)) {
+			e.preventDefault();
+			if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+			sidebarDrop.arm(_d.id);
+			return;
+		}
 		if (!e.dataTransfer?.types.includes(SIDEBAR_DRAG_TYPE)) return;
 		// Not a valid target when it resolves to the folder on screen —
 		// no `preventDefault`, so the browser shows a no-drop cursor and
@@ -511,15 +530,37 @@
 		// (arrow-with-plus for copy, plain for move), which is what makes
 		// the copy gesture discoverable. The nav-link targets above DO set
 		// it, because favorites/trash are single-meaning drops.
-		driveDropId = _d.id;
+		sidebarDrop.arm(_d.id);
 	}
 
 	function driveOnDragLeave(d: Drive) {
-		if (driveDropId === d.id) driveDropId = null;
+		sidebarDrop.release(d.id);
 	}
 
 	async function driveOnDrop(e: DragEvent, d: Drive) {
-		driveDropId = null;
+		sidebarDrop.clear();
+		// OS files → upload into the drive's root. The uploader lives on
+		// `/files` (progress bar, abort, reload-guard, post-upload reload), so
+		// the drop is READ here — a DataTransfer is emptied the moment the
+		// handler returns, which is why the extraction cannot be deferred —
+		// staged, and performed there after the navigation lands.
+		if (isOsFileDrag(e)) {
+			e.preventDefault();
+			e.stopPropagation();
+			const dt = e.dataTransfer;
+			if (!dt) return;
+			const { tree, files } = await readDroppedUpload(dt);
+			if (!tree && files.length === 0) return;
+			pendingUpload.stage({ targetFolderId: d.root_folder_id, tree, files });
+			// A navigation that never arrives must not leave the drop staged:
+			// it would fire whenever that folder was next opened, long after
+			// the gesture. (`pendingUpload` also expires a stage it never got
+			// to perform — belt and braces, because this is file data.)
+			await goto(resolve(`/files/${d.root_folder_id}`)).catch(() => {
+				pendingUpload.discard();
+			});
+			return;
+		}
 		if (!e.dataTransfer?.types.includes(SIDEBAR_DRAG_TYPE)) return;
 		// Belt to the dragover brace: a drop can still arrive here if the
 		// URL changed mid-drag, and silently doing nothing beats claiming
@@ -636,7 +677,7 @@
 		// from the row template, which can't type-narrow the loop variable
 		// through the arrow-function closure without a local capture.
 		if (href !== '/favorites' && href !== '/trash') return;
-		sidebarDropHref = null;
+		sidebarDrop.clear();
 		if (!e.dataTransfer?.types.includes(SIDEBAR_DRAG_TYPE)) return;
 		e.preventDefault();
 		const items = parseDragItems(e);
@@ -1067,7 +1108,7 @@
 					<a
 						class="nav-item"
 						class:active={activeLink(link.href)}
-						class:nav-item--drop-target={isDropTarget && sidebarDropHref === link.href}
+						class:nav-item--drop-target={isDropTarget && sidebarDrop.key === link.href}
 						href={navHref(link.href)}
 						data-section={link.section}
 						data-testid={`appshell-nav-${link.section}-link`}

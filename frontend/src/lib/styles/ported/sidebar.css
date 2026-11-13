@@ -362,7 +362,7 @@
    as one consistent visual language. */
 .nav-item.nav-item--drop-target {
     background-color: var(--color-warning-ring);
-    outline: 2px dashed var(--color-warning-border);
+    outline: 2px solid var(--color-warning-border);
     outline-offset: -2px;
 }
 

@@ -410,7 +410,7 @@
 }
 
 .files-list-view .file-item.drop-target {
-    border: 1px dashed var(--color-warning-border);
+    border: 1px solid var(--color-warning-border);
 }
 
 .files-list-view .file-item .name-cell {
@@ -1031,7 +1031,7 @@
 
 .files-grid-view .file-item.drop-target {
     background-color: var(--color-warning-ring);
-    border: 2px dashed var(--color-warning-border);
+    border: 2px solid var(--color-warning-border);
 }
 
 /* Favorite star + shared button — resting/active state colors only.
