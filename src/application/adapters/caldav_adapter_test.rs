@@ -711,4 +711,89 @@ mod tests {
             other => panic!("Expected CalendarQuery, got {:?}", other),
         }
     }
+
+    // ========================
+    // calendar-color namespaces
+    // ========================
+
+    fn color_request(namespace: &str) -> PropFindRequest {
+        PropFindRequest {
+            prop_find_type: PropFindType::Prop(vec![
+                QualifiedName {
+                    namespace: "DAV:".to_string(),
+                    name: "displayname".to_string(),
+                },
+                QualifiedName {
+                    namespace: namespace.to_string(),
+                    name: "calendar-color".to_string(),
+                },
+            ]),
+        }
+    }
+
+    #[test]
+    fn test_calendar_color_served_in_apple_ical_namespace() {
+        // DAVx5, Apple Calendar and Thunderbird request (and PROPPATCH)
+        // calendar-color in the Apple iCal namespace. It used to be
+        // answered only in the CalendarServer namespace, so clients saw
+        // an empty color although the PROPPATCH had stored it.
+        let calendars = vec![sample_calendar()];
+        let mut output = Vec::new();
+        CalDavAdapter::generate_calendars_propfind_response(
+            &mut output,
+            &calendars,
+            &color_request("http://apple.com/ns/ical/"),
+            "/caldav/",
+        )
+        .expect("propfind");
+        let xml = String::from_utf8(output).expect("utf8");
+        assert!(
+            xml.contains(r#"xmlns:IC="http://apple.com/ns/ical/""#),
+            "{xml}"
+        );
+        assert!(
+            xml.contains("<IC:calendar-color>#FF0000</IC:calendar-color>"),
+            "{xml}"
+        );
+    }
+
+    #[test]
+    fn test_calendar_color_still_served_in_calendarserver_namespace() {
+        let calendar = sample_calendar();
+        let mut output = Vec::new();
+        CalDavAdapter::generate_calendar_collection_propfind(
+            &mut output,
+            &calendar,
+            &[],
+            &color_request("http://calendarserver.org/ns/"),
+            "/caldav/cal-001/",
+            "0",
+        )
+        .expect("propfind");
+        let xml = String::from_utf8(output).expect("utf8");
+        assert!(
+            xml.contains("<CS:calendar-color>#FF0000</CS:calendar-color>"),
+            "{xml}"
+        );
+    }
+
+    #[test]
+    fn test_calendar_color_apple_namespace_on_collection_propfind() {
+        let calendar = sample_calendar();
+        let mut output = Vec::new();
+        CalDavAdapter::generate_calendar_collection_propfind(
+            &mut output,
+            &calendar,
+            &[],
+            &color_request("http://apple.com/ns/ical/"),
+            "/caldav/cal-001/",
+            "0",
+        )
+        .expect("propfind");
+        let xml = String::from_utf8(output).expect("utf8");
+        assert!(
+            xml.contains("<IC:calendar-color>#FF0000</IC:calendar-color>"),
+            "{xml}"
+        );
+    }
 }
