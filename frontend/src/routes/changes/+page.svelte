@@ -15,16 +15,29 @@
 		FileChangeItemDto,
 		RecentChangesOrderBy
 	} from '$lib/api/generated/openapi/types.gen';
-	import ResourceList, { type GroupByDef } from '$lib/components/ResourceList.svelte';
+	import ResourceList, {
+		type ContextAction,
+		type GroupByDef
+	} from '$lib/components/ResourceList.svelte';
+	import AvatarOverlayChip from '$lib/components/AvatarOverlayChip.svelte';
+	import UserVignette from '$lib/components/UserVignette.svelte';
 	import type { FileItem, FolderItem } from '$lib/api/types';
 	import UserAvatar from '$lib/components/UserAvatar.svelte';
+	// Shared with every other listing — see `lib/utils/listActions.ts` for why
+	// these stopped being per-route copies.
+	import {
+		downloadContextAction,
+		openParentContextAction,
+		prepareParentAccess,
+		toggleFavorite
+	} from '$lib/utils/listActions';
 	// `resolveUser`, not `resolveOwnerName`: the lane header needs the photo
 	// and the email as well as the name, and this is the resolver
 	// `<UserAvatar>` itself calls. Its cache is keyed by id and holds the
 	// PROMISE, so the avatar and this page share one round trip per person
 	// instead of each hitting `/api/users/{id}`.
 	import { resolveUser, type ResolvedUser } from '$lib/api/endpoints/users';
-	import { dateBucket } from '$lib/utils/resourceBuckets';
+	import { dateBucket, typeLabelOf } from '$lib/utils/resourceBuckets';
 	import { formatDate } from '$lib/utils/display';
 	import { lazyComponent } from '$lib/composables/lazyComponent.svelte';
 	import { t } from '$lib/i18n/index.svelte';
@@ -58,7 +71,12 @@
 	let error = $state<string | null>(null);
 	/** People, per the plan's default. Matches `groupBys[0]`. */
 	let groupBy = $state('modifier');
-	let reversed = $state(false);
+	// No `reversed` state, and `showSortDirection={false}` below: a change
+	// feed is newest-first by nature, so `GET /api/files/recent-changes` has
+	// no `reverse` parameter — reversing lane order would mean nothing, and
+	// "oldest first inside the last 30 days" is not a question anyone asks.
+	// The toggle used to render anyway (it keys off `groupBys`) and flipped a
+	// variable `load()` could not send.
 	/** Server default is 30 and its ceiling is 90 — a larger value is a 400
 	 *  naming the bound, so the selector offers exactly what the API accepts. */
 	let days = $state(30);
@@ -135,7 +153,10 @@
 	const groupBys: GroupByDef<RecentChangesOrderBy>[] = [
 		{
 			key: 'modifier',
-			label: t('groupby.changedBy', 'Changed by'),
+			// One key for one concept: the same string labels this axis and
+			// the list-view column, and it lives with the other column
+			// labels (`files.col_modified`, `col_created_by`, …).
+			label: t('files.col_modified_by', 'Modified by'),
 			orderBy: 'modifier',
 			icon: 'pen',
 			bucketOf: (item) => row(item).changedBy,
@@ -148,6 +169,37 @@
 			label: t('groupby.changedAt', 'Changed date'),
 			orderBy: 'changed_at',
 			bucketOf: (item) => dateBucket(row(item).changedAt)
+		},
+		// Buckets client-side on `changed_at` order, where `/favorites` and
+		// `/recent` have a server-side `type` axis of their own. The server
+		// enum here is two values wide on purpose (§8), and a third would cost
+		// a keyset shape and a cursor that must be refused on the wrong axis —
+		// so this groups what the page has rather than asking the server to
+		// sort by it. Consequence to know: a type's files arrive spread across
+		// pages by date, so its bucket FILLS as you scroll instead of being
+		// complete on page one. Identical to how `changedAt` already behaves
+		// here, and the section builder merges an appended page into the open
+		// bucket, so no bucket is ever drawn twice.
+		//
+		// Bucket ORDER is first-appearance, which on `changed_at` order means
+		// types sorted by their most recent change — not alphabetical and not
+		// `category_order`. That is a consequence of grouping client-side, and
+		// the honest reading of this axis is "types, most recently touched
+		// first". True type ordering needs the server axis.
+		{
+			key: 'type',
+			label: t('groupby.type', 'Type'),
+			orderBy: 'changed_at',
+			// `?? null`, not a `'Unknown'` string literal: the bucket key is
+			// the `ResourceCategory` enum value the server sent, and the
+			// absence of one is the section builder's own null sentinel. The
+			// label for it comes from `typeLabelOf`, which narrows against
+			// `CATEGORIES` at runtime and falls back to the LOCALISED unknown
+			// label — so an unrecognised category cannot render as a raw
+			// English key, which is the i18n bug the typed union closed.
+			// (`/recent` still carries the older literal form here.)
+			bucketOf: (item) => item.category ?? null,
+			labelOf: (k) => typeLabelOf(k)
 		}
 	];
 
@@ -206,6 +258,19 @@
 		viewerOpen = true;
 	}
 
+	/**
+	 * Two entries only, deliberately.
+	 *
+	 * This is a provenance view, not a file manager: rename, move, share and
+	 * delete act on the file and belong where the file lives. Offering them
+	 * here would also be ambiguous on the people axis, where the same file is
+	 * listed in two lanes — "delete" on a row the user sees twice is a
+	 * question with no good answer. "Open parent folder" is the escape hatch
+	 * to the real home, and download is the one read-only action that makes
+	 * sense on a row you just spotted.
+	 */
+	const contextActions: ContextAction[] = [openParentContextAction(), downloadContextAction()];
+
 	onMount(() => {
 		void load(true);
 	});
@@ -233,14 +298,18 @@
 	hasMore={!!cursor}
 	onloadmore={() => load(false)}
 	onopen={open}
+	onfavorite={toggleFavorite}
+	{contextActions}
+	menuPrepare={prepareParentAccess}
+	showOwner
+	ownerLabel={t('files.col_modified_by', 'Modified by')}
 	showPath
 	dateLabel={t('changes.col_changed', 'Changed')}
 	{groupBys}
 	bind:groupBy
-	bind:reversed
-	onreload={(orderBy, rev) => {
+	showSortDirection={false}
+	onreload={(orderBy) => {
 		cursor = undefined;
-		reversed = rev;
 		load(true, orderBy);
 	}}
 >
@@ -308,20 +377,38 @@
 			{/if}
 		</span>
 	{/snippet}
+	{#snippet ownerCell(item)}
+		<!--
+			"Modified by", on EVERY axis including people.
+			`ResourceList`'s default owner cell reads `ctx.ownerId` from the
+			id-keyed context map, which cannot hold two values for one file —
+			and on the people axis a file legitimately sits in two lanes with
+			two different modifiers. So the person comes off the ROW, exactly
+			as the date does, and the column no longer has to disappear on the
+			page's default axis to stay truthful.
+		-->
+		{@const who = row(item).changedBy}
+		<UserVignette userId={who} fallbackLabel={people[who]?.name ?? who} />
+	{/snippet}
+	{#snippet cardOverlay(item)}
+		<!--
+			Grid view: the same chip `/shared-with-me` anchors to the preview
+			tile for "who shared this", now a shared component rather than a
+			`:global` selector copied per page. List view has the column
+			above; a card has no columns, so this is where the person goes.
+		-->
+		{@const who = row(item).changedBy}
+		<AvatarOverlayChip
+			userId={who}
+			fallbackLabel={people[who]?.name ?? who}
+			title={people[who]?.email || undefined}
+		/>
+	{/snippet}
 	{#snippet dateCell(item)}
 		<!-- This row's own touch, not the file's latest change by anyone: in
 		     Bob's lane the date is when BOB changed it. Read off the row for
 		     the id-collision reason on `ChangeRow`. -->
 		{formatDate(row(item).changedAt)}
-	{/snippet}
-	{#snippet rowBadge(item)}
-		{#if groupBy !== 'modifier'}
-			<!-- No lane header on the date axis, so the person goes on the row. -->
-			{@const who = row(item).changedBy}
-			<span class="changes-badge" title={people[who]?.email || undefined}>
-				{people[who]?.name ?? who}
-			</span>
-		{/if}
 	{/snippet}
 </ResourceList>
 
@@ -377,13 +464,5 @@
 	.changes-lane__count {
 		color: var(--color-text-secondary);
 		font-weight: 400;
-	}
-
-	.changes-badge {
-		background: var(--color-bg-subtle);
-		border-radius: var(--radius-sm);
-		color: var(--color-text-secondary);
-		font-size: 0.75rem;
-		padding: 0.1rem 0.4rem;
 	}
 </style>

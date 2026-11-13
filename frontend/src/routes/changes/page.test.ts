@@ -6,9 +6,15 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/svelte';
 vi.mock('$lib/api/generated/openapi/sdk.gen', () => ({
 	listRecentChanges: vi.fn()
 }));
+// `typeLabelOf` — the name the page actually imports. Mocking the module
+// replaces it wholesale, so an export the page calls but the mock omits is
+// `undefined` at runtime and throws the moment that axis is selected;
+// `npm run check` cannot see it, because it type-checks against the real
+// module. Identity, so bucket keys assert as themselves.
 vi.mock('$lib/utils/resourceBuckets', () => ({
 	dateBucket: () => 'Today',
 	sizeBucket: () => 'Small',
+	typeLabelOf: (k: string) => k,
 	typeLabel: () => 'File'
 }));
 // The page and `<UserAvatar>` share this resolver, so one mock covers both.
@@ -35,7 +41,10 @@ const m = (fn: unknown) => fn as ReturnType<typeof vi.fn>;
 
 function file(id: string, name: string) {
 	return {
-		category: 'Document',
+		// A real `ResourceCategory` member — the fixture these were copied
+		// from used "Document", which is not one, and the type axis buckets
+		// on this value.
+		category: 'Text',
 		created_at: 0,
 		id,
 		mime_type: 'text/plain',
@@ -180,6 +189,125 @@ it('shows a file once on the date axis', async () => {
 	expect(bucket.querySelector('.ua')).toBeNull();
 	expect(bucket.getAttribute('title')).toBeNull();
 	expect(resolveUser).not.toHaveBeenCalledWith('Today');
+});
+
+// The type axis buckets on the server's `ResourceCategory`, client-side, and
+// must NOT change what it asks the server for: the wire enum is two values
+// wide, so this axis rides `changed_at` order and groups what the page has.
+// Asserting the request too is what keeps a future "just add type to the
+// enum" from passing this test while silently needing a spec regen.
+//
+// Same dedupe as every non-people axis: one bucket, so a file two people
+// changed would otherwise be the same `#each` key twice.
+it('groups by type without changing the server order', async () => {
+	m(listRecentChanges).mockResolvedValue({
+		items: [
+			change('f1', 'notes.txt', 'carol', '2024-01-02T00:00:00Z'),
+			change('f1', 'notes.txt', 'bob', '2024-01-01T00:00:00Z')
+		],
+		next_cursor: null
+	});
+	render(ChangesPage);
+	await waitFor(() => expect(screen.getAllByTestId('notes.txt')).toHaveLength(2));
+
+	await fireEvent.click(screen.getByTestId('display-mode-groupby-btn'));
+	await fireEvent.click(await screen.findByTestId('display-mode-groupby-type-item'));
+
+	await waitFor(() => expect(screen.getByTestId('changes-lane-Text')).toBeTruthy());
+	expect(screen.getAllByTestId('notes.txt')).toHaveLength(1);
+	expect(listRecentChanges).toHaveBeenLastCalledWith(
+		expect.objectContaining({ query: expect.objectContaining({ order_by: 'changed_at' }) })
+	);
+	// No identity chrome on a category bucket, for the `/api/users/Text`
+	// reason the date axis pins.
+	expect(screen.getByTestId('changes-lane-Text').querySelector('.ua')).toBeNull();
+});
+
+// The row menu is deliberately TWO entries. This is a provenance view, not a
+// file manager: rename / move / share / delete act on the file and belong
+// where it lives — and on the people axis the same file is listed in two
+// lanes, so a destructive action on a row the user sees twice has no good
+// answer. Pinning the absences, because "we trimmed the menu" is exactly the
+// kind of intent a later copy-paste from `/recent` undoes.
+it('offers only open-parent and download in the row menu', async () => {
+	m(listRecentChanges).mockResolvedValue({
+		items: [change('f1', 'notes.txt', 'bob', '2024-01-01T00:00:00Z')],
+		next_cursor: null
+	});
+	render(ChangesPage);
+	await waitFor(() => expect(screen.getByTestId('notes.txt')).toBeTruthy());
+
+	await fireEvent.click(screen.getByTestId('resource-list-more-f1-btn'));
+
+	expect(await screen.findByText('Open parent folder')).toBeTruthy();
+	expect(screen.getByText('Download')).toBeTruthy();
+	for (const absent of ['Rename', 'Move', 'Delete', 'Share']) {
+		expect(screen.queryByText(absent)).toBeNull();
+	}
+});
+
+// The favourite star is `ResourceList`'s, enabled purely by passing
+// `onfavorite` — which is also what makes it clickable. Pinned because the
+// handler now comes from the shared `listActions` module rather than a local
+// copy, so a bad import would silently drop the affordance.
+it('renders a clickable favourite badge on each row', async () => {
+	m(listRecentChanges).mockResolvedValue({
+		items: [change('f1', 'notes.txt', 'bob', '2024-01-01T00:00:00Z')],
+		next_cursor: null
+	});
+	render(ChangesPage);
+	await waitFor(() => expect(screen.getByTestId('notes.txt')).toBeTruthy());
+
+	expect(screen.getByTestId('resource-list-favorite-f1-btn')).toBeTruthy();
+});
+
+// "Modified by" is `ResourceList`'s own owner column — the same
+// `<UserVignette>` in the same `.owner-cell` that `/shared-with-me` gets from
+// `showOwner`, not a badge beside the filename. It shows on EVERY axis,
+// people included.
+//
+// And the strong part: the cell is rendered from the ROW. One file in two
+// lanes must name Bob in his row and Carol in hers. The component's default
+// owner cell reads `ctx.ownerId` from a map keyed by `item.id`, which can
+// hold only one of the two — so this is the assertion the `ownerCell` snippet
+// exists for, and the reason the column no longer has to hide itself on the
+// page's default axis to stay truthful.
+it('shows Modified by per row, so one file in two lanes names both people', async () => {
+	m(listRecentChanges).mockResolvedValue({
+		items: [
+			change('f1', 'notes.txt', 'carol', '2024-01-02T00:00:00Z'),
+			change('f1', 'notes.txt', 'bob', '2024-01-01T00:00:00Z')
+		],
+		next_cursor: null
+	});
+	render(ChangesPage);
+	await waitFor(() => expect(screen.getAllByTestId('notes.txt')).toHaveLength(2));
+
+	// Asserting on the CELLS, not on the text: the group-by button displays
+	// the active axis label, so "Modified by" is on the page either way —
+	// which is what made an earlier version of this test fail.
+	await waitFor(() => {
+		const cells = [...document.querySelectorAll('.owner-cell')].map((e) => e.textContent ?? '');
+		expect(cells.some((c) => c.includes('Bob'))).toBe(true);
+		expect(cells.some((c) => c.includes('Carol'))).toBe(true);
+	});
+});
+
+// No sort-direction toggle, because the endpoint has no `reverse` parameter.
+// `DisplayModeControls` renders that button whenever `groups` is non-empty, so
+// passing `groupBys` was enough to make it appear — bound to a variable
+// `load()` could not send, re-fetching identical rows on every click. The
+// group-by menu must still be there; it is the control that works.
+it('offers no sort direction, since the feed has none', async () => {
+	m(listRecentChanges).mockResolvedValue({
+		items: [change('f1', 'notes.txt', 'bob', '2024-01-01T00:00:00Z')],
+		next_cursor: null
+	});
+	render(ChangesPage);
+	await waitFor(() => expect(screen.getByTestId('notes.txt')).toBeTruthy());
+
+	expect(screen.queryByTestId('display-mode-sort-direction-btn')).toBeNull();
+	expect(screen.queryByTestId('display-mode-groupby-btn')).toBeTruthy();
 });
 
 // Changing the window must start a fresh page. A cursor minted under the old

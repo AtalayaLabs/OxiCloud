@@ -203,6 +203,17 @@
 		/** Custom renderer for the date cell (e.g. trash expiry chip). */
 		dateCell?: Snippet<[FileItem | FolderItem, ItemContext | undefined]>;
 		/**
+		 * Custom renderer for the owner cell, for the same reason `dateCell`
+		 * exists: the default reads `ctx.ownerId` from the `contextMap`, which
+		 * is keyed by `item.id`, so a host whose rows are not one-per-file
+		 * cannot express a per-ROW person.
+		 *
+		 * `/changes` is that host — one file appears in two people's lanes,
+		 * and the id-keyed map can only hold one of them. Without this the
+		 * page had to hide the column on its default axis.
+		 */
+		ownerCell?: Snippet<[FileItem | FolderItem, ItemContext | undefined]>;
+		/**
 		 * Optional per-bucket action button rendered alongside the swimlane
 		 * header label. Receives the bucket key (the value `bucketOf`
 		 * returned for the active group-by). Used by the trash page to expose
@@ -233,6 +244,20 @@
 		ownerLabel?: string;
 		/** Allow grid/list toggle (shares the app-wide view mode). */
 		showViewToggle?: boolean;
+		/**
+		 * Show the sort-direction toggle. Defaults to true, which is what
+		 * every listing wants: the host page passes `reverse` to its endpoint
+		 * and the rows come back flipped.
+		 *
+		 * Set false when the host's endpoint has NO reverse parameter.
+		 * `/changes` is the case: a change feed is newest-first by nature, so
+		 * `GET /api/files/recent-changes` never grew the parameter — and
+		 * without this the toggle still rendered (it is gated on `groupBys`
+		 * being non-empty), flipping a bound variable that nothing could act
+		 * on. A control that re-fetches identical data is worse than no
+		 * control.
+		 */
+		showSortDirection?: boolean;
 		/** Show the dotfile-visibility eye toggle in the toolbar AND
 		 * apply the corresponding filter to `items` when
 		 * `preferences.hideDotfiles` is true. Opt-in per host page —
@@ -492,11 +517,13 @@
 		showDate = true,
 		dateLabel,
 		dateCell,
+		ownerCell,
 		bucketAction,
 		bucketLabel,
 		showOwner = false,
 		ownerLabel,
 		showViewToggle = true,
+		showSortDirection = true,
 		showDotfileToggle = false,
 		selectable = false,
 		contextActions,
@@ -1301,7 +1328,7 @@
 		</div>
 		{#if showOwner}
 			<div class="owner-cell">
-				{#if ownerId}
+				{#if ownerCell}{@render ownerCell(item, ctx)}{:else if ownerId}
 					<UserVignette userId={ownerId} fallbackLabel={resolveOwnerName?.(ownerId) ?? undefined} />
 				{:else}
 					<span class="owner-cell__placeholder">—</span>
@@ -1509,6 +1536,7 @@
 						ongroup={selectGroup}
 						ondirection={toggleDirection}
 						showViewMode={showViewToggle}
+						showSort={showSortDirection}
 						{showDotfileToggle}
 						afterDotfileToggle={displayActions}
 					/>

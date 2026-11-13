@@ -22,6 +22,7 @@
 		type ItemContext
 	} from '$lib/components/ResourceList.svelte';
 	import UserAvatar from '$lib/components/UserAvatar.svelte';
+	import AvatarOverlayChip from '$lib/components/AvatarOverlayChip.svelte';
 	import type { IncomingGrantOrderBy } from '$lib/api/generated/openapi/types.gen';
 	import { t } from '$lib/i18n/index.svelte';
 	import { session } from '$lib/stores/session.svelte';
@@ -353,9 +354,7 @@
 			truth for "who shared this."
 		-->
 		{#if ctx?.ownerId}
-			<span class="shared-with-me__sharer">
-				<UserAvatar userId={ctx.ownerId} size={24} />
-			</span>
+			<AvatarOverlayChip userId={ctx.ownerId} size={24} />
 		{/if}
 	{/snippet}
 	{#snippet bucketLabel(_key, label)}
@@ -381,35 +380,6 @@
 {/if}
 
 <style>
-	/*
-	 * Sharer avatar chip — anchored to the bottom-right of the preview
-	 * tile (grid view). Rendered inside `.file-icon` via ResourceList's
-	 * `cardOverlay` slot, so `position: absolute` climbs to
-	 * `.file-icon`'s own `position: relative`. Keeping it on the
-	 * thumbnail leaves the card footer's bottom-right to the kebab,
-	 * which the two used to contest.
-	 *
-	 * The ring uses `--color-bg-surface` so the chip stays legible over
-	 * any thumbnail (photo, type-tinted tile, dark mode).
-	 *
-	 * The wrapper is `:global` so the scoped-CSS renaming Svelte
-	 * applies to the `<span>` this snippet emits doesn't strip our
-	 * selector. Only fires inside the grid view — the parent
-	 * `{@render cardOverlay}` in ResourceList already gates on
-	 * `filesStore.viewMode === 'grid'`, so no need to gate here.
-	 */
-	:global(.files-grid-view .file-item .file-icon .shared-with-me__sharer) {
-		position: absolute;
-		right: 5px;
-		bottom: 5px;
-		z-index: 10;
-		display: inline-flex;
-		border-radius: var(--radius-full);
-		box-shadow:
-			0 0 0 2px var(--color-bg-surface),
-			0 1px 3px var(--color-shadow-sm);
-	}
-
 	.upgrade-banner {
 		display: flex;
 		align-items: center;
