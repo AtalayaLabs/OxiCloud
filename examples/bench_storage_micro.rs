@@ -194,6 +194,10 @@ fn section_2(manifest_chunks: usize) {
     let mut sum_after = 0usize;
     for _ in 0..reads {
         let m = manifest.clone();
+        #[allow(
+            clippy::needless_range_loop,
+            reason = "Mirrors BlobHandler::stream_chunks indexing through an owned Arc"
+        )]
         for i in 0..m.chunk_hashes.len() {
             sum_after += m.chunk_hashes[i].len();
         }
