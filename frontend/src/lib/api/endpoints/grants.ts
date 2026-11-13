@@ -1,7 +1,7 @@
 /** Sharing (ReBAC grants) endpoints — ported from model/grants.js. */
 import { apiErrorFromResponse, apiFetch, apiJson } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
-import type { ItemType } from '$lib/api/types';
+import type { Drive, FolderItem, ItemType } from '$lib/api/types';
 import type {
 	IncomingGrantOrderBy,
 	OutgoingGrantOrderBy
@@ -100,6 +100,21 @@ export async function createGrant(
 	return (await res.json()) as CreateGrantResponse;
 }
 
+/** Creates (or restores a declined) link to a folder or drive root; returns the link folder. */
+export async function createLink(targetId: string): Promise<FolderItem> {
+	const res = await apiFetch('/api/links', {
+		method: 'POST',
+		credentials: 'same-origin',
+		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
+		body: JSON.stringify({ target_id: targetId })
+	});
+	if (!res.ok) {
+		const e = (await res.json().catch(() => ({}))) as { error?: string };
+		throw new Error(e.error || `create link failed: ${res.status}`);
+	}
+	return (await res.json()) as FolderItem;
+}
+
 export async function updateGrantRole(
 	subject: GrantSubject,
 	resource: { type: GrantResourceType; id: string },
@@ -143,13 +158,28 @@ export async function notifyGrantRecipient(grantId: string): Promise<NotifyOutco
 	throw await apiErrorFromResponse(res);
 }
 
-export interface IncomingGrantItem {
-	resource_type: GrantResourceType;
-	resource: ResourceBody;
+/** Link state of an incoming grant; absent in links-off mode and for files. */
+export interface IncomingLink {
+	link_id: string | null;
+	link_name: string | null;
+	declined: boolean;
+}
+
+/** A declined or missing link can be (re)created with {@link createLink}. */
+export function linkRestorable(link: IncomingLink | undefined): boolean {
+	return !!link && (link.declined || link.link_id == null);
+}
+
+interface IncomingGrantBase {
 	granted_by?: string;
 	granted_at?: string;
 	role?: string;
+	link?: IncomingLink;
 }
+
+export type IncomingGrantItem =
+	| (IncomingGrantBase & { resource_type: 'drive'; resource: Drive })
+	| (IncomingGrantBase & { resource_type: ItemType; resource: ResourceBody });
 
 /** One (subject, permissions) entry within an outgoing resource item. */
 export interface OutgoingResourceGrant {
@@ -184,7 +214,7 @@ interface GrantsPageOpts<Axis extends string = string> {
 	orderBy?: Axis;
 	limit?: number;
 	reverse?: boolean;
-	resourceTypes?: ItemType[];
+	resourceTypes?: GrantResourceType[];
 }
 
 export type SharedWithMePageOpts = GrantsPageOpts<IncomingGrantOrderBy>;
@@ -208,7 +238,7 @@ export async function fetchSharedWithMe(
 	opts: SharedWithMePageOpts = {}
 ): Promise<ResourcePage<IncomingGrantItem>> {
 	const res = await apiFetch(
-		`/api/grants/incoming/resources?${params({ resourceTypes: ['file', 'folder'], ...opts })}`,
+		`/api/grants/incoming/resources?${params({ resourceTypes: ['file', 'folder', 'drive'], ...opts })}`,
 		{ credentials: 'same-origin' }
 	);
 	if (!res.ok) throw await apiErrorFromResponse(res);

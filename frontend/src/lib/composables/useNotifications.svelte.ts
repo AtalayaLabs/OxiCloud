@@ -49,7 +49,7 @@ import {
 	markAllNotificationsRead,
 	markNotificationRead
 } from '$lib/api/endpoints/notifications';
-import type { Notification, SharegrantedPayload } from '$lib/api/types';
+import type { LinkTargetRenamedPayload, Notification, SharegrantedPayload } from '$lib/api/types';
 import { NOTIFICATION_KIND } from '$lib/api/types';
 import log from 'loglevel';
 
@@ -90,6 +90,14 @@ export function summaryFor(row: Notification): string {
 				'notifications.persistent.quota_threshold',
 				'You are approaching your storage quota.'
 			);
+		case NOTIFICATION_KIND.LINK_TARGET_RENAMED: {
+			const p = row.payload as unknown as LinkTargetRenamedPayload;
+			return t(
+				'notifications.link_target_renamed',
+				{ old_name: p.old_name, new_name: p.new_name, link_name: p.link_name },
+				`"${p.old_name}" was renamed to "${p.new_name}" by its owner; your link is still "${p.link_name}".`
+			);
+		}
 		default:
 			return t(
 				'notifications.persistent.generic',

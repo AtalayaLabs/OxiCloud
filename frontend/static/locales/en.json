@@ -940,7 +940,8 @@
     "share_success": "Shared link created successfully",
     "upload_files_section_title": "Upload not available here",
     "upload_files_section_body": "Go to the Files section to upload files",
-    "clear": "Clear all"
+    "clear": "Clear all",
+    "link_target_renamed": "\"{{old_name}}\" was renamed to \"{{new_name}}\" by its owner; your link is still \"{{link_name}}\"."
   },
   "batch": {
     "one_selected": "1 item selected",
@@ -2074,7 +2075,9 @@
   },
   "shared_with_me": {
     "empty": "Nothing has been shared with you yet.",
-    "from": "Shared by {{who}}"
+    "from": "Shared by {{who}}",
+    "link": "Link",
+    "linked_as": "linked as \"{{name}}\""
   },
   "sizeBucket": {
     "empty": "Empty (0 B)",

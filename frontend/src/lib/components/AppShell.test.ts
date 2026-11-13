@@ -134,6 +134,7 @@ function resetFeatures() {
 		contacts: true,
 		calendars: true,
 		nextcloud: false,
+		links_mode: 'off',
 		markdown_collab: false,
 		shared_worker_bus: true
 	};

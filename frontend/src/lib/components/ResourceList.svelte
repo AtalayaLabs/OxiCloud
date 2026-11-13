@@ -271,6 +271,8 @@
 		onopen?: (item: FileItem | FolderItem) => void;
 		/** Per-item favorite star toggle. */
 		onfavorite?: (item: FileItem | FolderItem) => void;
+		/** Per-item gate for the favorite star; defaults to shown. */
+		favoriteVisible?: (item: FileItem | FolderItem) => boolean;
 		/**
 		 * Per-item share affordance — opens the page's ShareDialog for
 		 * this row. Wired symmetrically to `onfavorite`: the button lives
@@ -354,6 +356,8 @@
 		 * page decides. Empty return = no badge.
 		 */
 		rowBadge?: Snippet<[FileItem | FolderItem, ItemContext | undefined]>;
+		/** Muted text rendered after the name. */
+		nameHint?: Snippet<[FileItem | FolderItem]>;
 		/**
 		 * Rendered above the toolbar in the sticky header. Only
 		 * `/files` wires this today; every other section leaves the
@@ -506,6 +510,7 @@
 		onreload,
 		onopen,
 		onfavorite,
+		favoriteVisible,
 		onshared,
 		onselectionchange,
 		oncontextmenu: onContextMenuOverride,
@@ -516,6 +521,7 @@
 		displayActions,
 		batchActions,
 		rowBadge,
+		nameHint,
 		breadcrumb,
 		titleInToolbar = false,
 		enableSystemDrop = false,
@@ -1298,6 +1304,7 @@
 				{/if}
 			</span>
 			<span class="name-cell__text">{item.name}</span>
+			{#if nameHint}{@render nameHint(item)}{/if}
 		</div>
 		{#if showOwner}
 			<div class="owner-cell">
@@ -1389,7 +1396,7 @@
 						<Icon name="oxiexport" />
 					</button>
 				{/if}
-				{#if onfavorite}
+				{#if onfavorite && (favoriteVisible?.(item) ?? true)}
 					<button
 						class="favorite-star"
 						class:active={item.is_favorite}
