@@ -139,30 +139,6 @@ pub trait DriveRepository: Send + Sync + 'static {
         user_id: Uuid,
     ) -> Result<DriveWithRootName, DriveRepositoryError>;
 
-    /// Canonical "what is this user's home root folder id?" lookup.
-    ///
-    /// Returns `Some(uuid)` for any internal user with a default personal
-    /// drive (the lifecycle hook provisions one at registration), and
-    /// `None` for users who have no default drive (external users; users
-    /// created before the hook existed). The id identifies the user's
-    /// home **by drive ownership** (`default_for_user == user_id`),
-    /// never by folder name — users can rename their home, so any code
-    /// that wants to ask "is this folder the user's home?" must compare
-    /// folder ids, not names.
-    ///
-    /// Storage errors (DB unreachable, etc.) bubble up as `Err`; the
-    /// "user simply has no home" case is `Ok(None)`, not an error.
-    async fn home_root_folder_id_for(
-        &self,
-        user_id: Uuid,
-    ) -> Result<Option<Uuid>, DriveRepositoryError> {
-        match self.find_default_for_user(user_id).await {
-            Ok(d) => Ok(Some(d.drive.root_folder_id)),
-            Err(DriveRepositoryError::NotFound(_)) => Ok(None),
-            Err(e) => Err(e),
-        }
-    }
-
     /// List drives the caller can read, resolved via `role_grants` for
     /// `resource_type='drive'`. Group memberships (direct + transitive)
     /// are expanded inline by the `storage.caller_group_ids(caller)`
@@ -389,41 +365,4 @@ impl DriveKind {
     pub fn from_sql(s: &str) -> Result<Self, DriveRepositoryError> {
         DriveKind::parse(s).ok_or_else(|| DriveRepositoryError::InvalidKind(s.to_owned()))
     }
-}
-
-/// Locate the user's home root folder within a generic list of items,
-/// identifying it by **drive ownership** (never by folder name — users
-/// can rename their home).
-///
-/// `id_fn` extracts a candidate `Uuid` from each item. The callsite
-/// commonly works with `FolderDto` (whose `id` is a `String`); the
-/// closure is `|f| Uuid::parse_str(&f.id).ok()`. Items whose ids can't
-/// be parsed are simply skipped — `position` ignores them.
-///
-/// Defined as a free function (not a trait method) so the
-/// `DriveRepository` trait stays `dyn`-compatible. Generic over both
-/// the repo (`R`) and the item shape (`T`); accepts both concrete repo
-/// types and `&dyn DriveRepository`.
-///
-/// Returns `None` when:
-///   * The user has no default drive (external users, pre-hook accounts).
-///   * The user's home root folder id isn't present in `items`.
-///   * The repo lookup errored (storage error is swallowed to None —
-///     callers wanting fail-loud semantics should call
-///     `home_root_folder_id_for` directly).
-pub async fn position_of_user_home_root_folder<R, T>(
-    drive_repo: &R,
-    user_id: Uuid,
-    items: &[T],
-    id_fn: impl Fn(&T) -> Option<Uuid>,
-) -> Option<usize>
-where
-    R: DriveRepository + ?Sized,
-{
-    let home_id = drive_repo
-        .home_root_folder_id_for(user_id)
-        .await
-        .ok()
-        .flatten()?;
-    items.iter().position(|item| id_fn(item) == Some(home_id))
 }

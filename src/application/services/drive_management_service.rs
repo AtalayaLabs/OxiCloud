@@ -36,6 +36,8 @@ use crate::infrastructure::services::pg_acl_engine::PgAclEngine;
 pub struct DriveManagementService {
     drive_repo: Arc<DrivePgRepository>,
     authz: Arc<PgAclEngine>,
+    /// Share mounts follow membership changes (docs/plan/share-mounts.md § Lifecycle).
+    share_mounts: Option<Arc<crate::application::services::share_mount_service::ShareMountService>>,
     /// Needed to validate that a Group owner subject is non-empty at
     /// create-drive time — refusing creation with an empty group avoids
     /// constructing an orphan-owned drive (the "drive must always have
@@ -61,6 +63,7 @@ impl DriveManagementService {
         Self {
             drive_repo,
             authz,
+            share_mounts: None,
             group_repo,
             user_repo,
             default_shared_drive_quota: 0,
@@ -70,6 +73,14 @@ impl DriveManagementService {
     /// Sets the quota a shared drive gets when the create request omits one.
     pub fn with_default_shared_drive_quota(mut self, quota_bytes: i64) -> Self {
         self.default_shared_drive_quota = quota_bytes;
+        self
+    }
+
+    pub fn with_share_mounts(
+        mut self,
+        svc: Arc<crate::application::services::share_mount_service::ShareMountService>,
+    ) -> Self {
+        self.share_mounts = Some(svc);
         self
     }
 
@@ -177,6 +188,9 @@ impl DriveManagementService {
             "🆕 shared drive created '{}' owned by {} {}",
             trimmed, owner_subject.type_str(), owner_subject.id(),
         );
+        if let Some(svc) = &self.share_mounts {
+            svc.poke();
+        }
 
         Ok(drive)
     }
@@ -306,6 +320,9 @@ impl DriveManagementService {
             expires_at = ?expires_at,
             "🤝 drive member added",
         );
+        if let Some(svc) = &self.share_mounts {
+            svc.poke();
+        }
         Ok(grant)
     }
 
@@ -380,6 +397,9 @@ impl DriveManagementService {
             by = %caller_id,
             "👋 drive member removed",
         );
+        if let Some(svc) = &self.share_mounts {
+            svc.poke();
+        }
         Ok(())
     }
 

@@ -8,6 +8,7 @@
 //! database triggers, so reading a folder's full path is always O(1) — no
 //! recursive CTEs or N+1 queries.
 
+use crate::common::config::LinksMode;
 use crate::domain::services::authorization::Subject;
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
@@ -211,23 +212,74 @@ const CALLER_CAN_READ_DRIVE: &str = "EXISTS (\
                ) \
     )";
 
+/// R0 predicate on folder alias `f`: a plain folder, or a link row shown to `caller` (its recipient,
+/// who can read the untrashed target) when the `show` bool parameter holds.
+fn link_row_visible(f: &str, caller: &str, show: &str) -> String {
+    format!(
+        "({f}.mount_target_id IS NULL
+          OR (
+              {show}::bool
+              AND EXISTS (SELECT 1 FROM storage.drives d
+                           WHERE d.id = {f}.drive_id AND d.default_for_user = {caller}::uuid)
+              AND EXISTS (
+                  SELECT 1 FROM storage.folders t
+                   WHERE t.id = {f}.mount_target_id AND NOT t.is_trashed
+                     AND (
+                         EXISTS (SELECT 1 FROM storage.role_grants g
+                                   JOIN storage.folders a ON a.id = g.resource_id
+                                  WHERE g.resource_type = 'folder' AND a.lpath @> t.lpath
+                                    AND (g.expires_at IS NULL OR g.expires_at > NOW())
+                                    AND ((g.subject_type = 'user'  AND g.subject_id = {caller}::uuid)
+                                      OR (g.subject_type = 'group' AND g.subject_id IN (SELECT storage.caller_group_ids({caller}::uuid)))))
+                      OR EXISTS (SELECT 1 FROM storage.role_grants g
+                                  WHERE g.resource_type = 'drive' AND g.resource_id = t.drive_id
+                                    AND (g.expires_at IS NULL OR g.expires_at > NOW())
+                                    AND ((g.subject_type = 'user'  AND g.subject_id = {caller}::uuid)
+                                      OR (g.subject_type = 'group' AND g.subject_id IN (SELECT storage.caller_group_ids({caller}::uuid)))))
+                     )
+              )
+          ))"
+    )
+}
+
 /// PostgreSQL-backed folder repository.
 ///
 /// All folder metadata lives in the `storage.folders` table.  The physical
 /// filesystem is never touched for folder operations.
 pub struct FolderDbRepository {
     pool: Option<Arc<PgPool>>,
+    links_mode: LinksMode,
 }
 
 impl FolderDbRepository {
     pub fn new(pool: Arc<PgPool>) -> Self {
-        Self { pool: Some(pool) }
+        Self {
+            pool: Some(pool),
+            links_mode: LinksMode::Auto,
+        }
+    }
+
+    /// In `Off`, link rows (`mount_target_id` set) are absent from every children listing.
+    pub fn with_links_mode(mut self, mode: LinksMode) -> Self {
+        self.links_mode = mode;
+        self
+    }
+
+    /// SQL predicate hiding link rows when links are off; `prefix` qualifies the column.
+    fn links_visible(&self, prefix: &str) -> String {
+        match self.links_mode {
+            LinksMode::Auto => String::new(),
+            LinksMode::Off => format!(" AND {prefix}mount_target_id IS NULL"),
+        }
     }
 
     /// Creates a stub instance for `AppState::default()`.
     /// This is never called in production — only used for route scaffolding.
     pub fn new_stub() -> Self {
-        Self { pool: None }
+        Self {
+            pool: None,
+            links_mode: LinksMode::Auto,
+        }
     }
 
     /// Get the pool, panicking if stub.
@@ -487,7 +539,7 @@ impl FolderRepository for FolderDbRepository {
     #[allow(clippy::type_complexity)]
     async fn list_folders(&self, parent_id: Option<&str>) -> Result<Vec<Folder>, DomainError> {
         let rows: Vec<FolderRow> = if let Some(pid) = parent_id {
-            sqlx::query_as(
+            let sql = format!(
                 r#"
                 SELECT id, name, path, parent_id, drive_id,
                        EXTRACT(EPOCH FROM created_at)::bigint,
@@ -495,13 +547,12 @@ impl FolderRepository for FolderDbRepository {
                        EXTRACT(EPOCH FROM tree_modified_at)::bigint,
                          created_by, updated_by
                   FROM storage.folders
-                 WHERE parent_id = $1::uuid AND NOT is_trashed
+                 WHERE parent_id = $1::uuid AND NOT is_trashed{}
                  ORDER BY name
                 "#,
-            )
-            .bind(pid)
-            .fetch_all(self.pool())
-            .await
+                self.links_visible("")
+            );
+            sqlx::query_as(&sql).bind(pid).fetch_all(self.pool()).await
         } else {
             sqlx::query_as(
                 r#"
@@ -587,7 +638,7 @@ impl FolderRepository for FolderDbRepository {
         include_total: bool,
     ) -> Result<(Vec<Folder>, Option<usize>), DomainError> {
         let rows: Vec<FolderRowPaginated> = if let Some(pid) = parent_id {
-            sqlx::query_as(
+            let sql = format!(
                 r#"
                 SELECT id, name, path, parent_id, drive_id,
                        EXTRACT(EPOCH FROM created_at)::bigint,
@@ -596,16 +647,18 @@ impl FolderRepository for FolderDbRepository {
                        created_by, updated_by,
                        COUNT(*) OVER() AS total_count
                   FROM storage.folders
-                 WHERE parent_id = $1::uuid AND NOT is_trashed
+                 WHERE parent_id = $1::uuid AND NOT is_trashed{}
                  ORDER BY name
                  LIMIT $2 OFFSET $3
                 "#,
-            )
-            .bind(pid)
-            .bind(limit as i64)
-            .bind(offset as i64)
-            .fetch_all(self.pool())
-            .await
+                self.links_visible("")
+            );
+            sqlx::query_as(&sql)
+                .bind(pid)
+                .bind(limit as i64)
+                .bind(offset as i64)
+                .fetch_all(self.pool())
+                .await
         } else {
             sqlx::query_as(
                 r#"
@@ -654,6 +707,7 @@ impl FolderRepository for FolderDbRepository {
     async fn list_folders_batch(
         &self,
         parent_id: Option<&str>,
+        caller_id: Uuid,
         after_name: Option<&str>,
         limit: usize,
     ) -> Result<Vec<Folder>, DomainError> {
@@ -668,26 +722,29 @@ impl FolderRepository for FolderDbRepository {
         };
 
         let cursor_pred = if after_name.is_some() {
-            "AND name > $3"
+            "AND f.name > $3"
         } else {
             "AND $3::text IS NULL"
         };
         let sql = format!(
-            "SELECT id, name, path, parent_id, drive_id, \
-                    EXTRACT(EPOCH FROM created_at)::bigint, \
-                    EXTRACT(EPOCH FROM content_modified_at)::bigint, \
-                    EXTRACT(EPOCH FROM tree_modified_at)::bigint, \
-                    created_by, updated_by \
-               FROM storage.folders \
-              WHERE parent_id = $1::uuid AND NOT is_trashed \
+            "SELECT f.id, f.name, f.path, f.parent_id, f.drive_id, \
+                    EXTRACT(EPOCH FROM f.created_at)::bigint, \
+                    EXTRACT(EPOCH FROM f.content_modified_at)::bigint, \
+                    EXTRACT(EPOCH FROM f.tree_modified_at)::bigint, \
+                    f.created_by, f.updated_by \
+               FROM storage.folders f \
+              WHERE f.parent_id = $1::uuid AND NOT f.is_trashed AND {visible} \
                 {cursor_pred} \
-              ORDER BY name \
-              LIMIT $2"
+              ORDER BY f.name \
+              LIMIT $2",
+            visible = link_row_visible("f", "$4", "$5")
         );
         let rows: Vec<FolderRow> = sqlx::query_as(&sql)
             .bind(pid)
             .bind(limit as i64)
             .bind(after_name)
+            .bind(caller_id)
+            .bind(self.links_mode == LinksMode::Auto)
             .fetch_all(self.pool())
             .await
             .map_err(|e| DomainError::internal_error("FolderDb", format!("batch: {e}")))?;
@@ -1188,6 +1245,7 @@ impl FolderRepository for FolderDbRepository {
                         fo.created_by, fo.updated_by \
                      FROM storage.folders fo \
                     WHERE fo.is_trashed = false \
+                      AND fo.mount_target_id IS NULL \
                       AND fo.lpath <@ (SELECT lpath FROM storage.folders WHERE id = $1::uuid) \
                     ORDER BY fo.path";
 
@@ -1279,9 +1337,10 @@ impl FolderRepository for FolderDbRepository {
                       {FAV_SHR_COLUMNS} \
                    FROM storage.folders fo \
                   WHERE {CALLER_CAN_READ_DRIVE} \
-                    AND fo.is_trashed = false \
+                    AND fo.is_trashed = false{links} \
                     {name_clause} \
-                  ORDER BY fo.name"
+                  ORDER BY fo.name",
+                links = self.links_visible("fo.")
             );
 
             let rows: Vec<FolderRowWithFlags> = if let Some(ref pattern) = name_pattern {
@@ -1315,9 +1374,10 @@ impl FolderRepository for FolderDbRepository {
                    FROM storage.folders fo \
                   WHERE fo.parent_id = $2::uuid \
                     AND {CALLER_CAN_READ_DRIVE} \
-                    AND fo.is_trashed = false \
+                    AND fo.is_trashed = false{links} \
                     {name_clause} \
-                  ORDER BY fo.name"
+                  ORDER BY fo.name",
+                links = self.links_visible("fo.")
             )
         } else {
             // Root folders: parent_id IS NULL, params ($1=caller_id, $2=pattern)
@@ -1406,9 +1466,10 @@ impl FolderRepository for FolderDbRepository {
               WHERE {CALLER_CAN_READ_DRIVE} \
                 AND fo.is_trashed = false \
                 AND fo.lpath <@ (SELECT lpath FROM storage.folders WHERE id = $2::uuid) \
-                AND fo.id != $2::uuid \
+                AND fo.id != $2::uuid{links} \
                 {where_extra} \
-              ORDER BY fo.name"
+              ORDER BY fo.name",
+            links = self.links_visible("fo.")
         );
 
         let rows: Vec<FolderRow> = if let Some(ref pattern) = name_pattern {
@@ -1794,10 +1855,13 @@ impl FolderDbRepository {
         order_by: FolderOrderBy,
         kinds: Option<&[ResourceKind]>,
         reverse: bool,
+        show_mounts: bool,
     ) -> Result<Vec<FolderResourceRow>, DomainError> {
         // A token caller has no `auth.users` row; nil matches no favourite.
         let caller_id = caller.user_id().unwrap_or_else(Uuid::nil);
         let show_is_shared = caller.user_id().is_some();
+        // R0: mount rows render only for a signed-in recipient (docs/plan/share-mounts.md).
+        let show_mounts = show_mounts && caller.user_id().is_some();
         let include_folders = kinds.is_none_or(|k| k.contains(&ResourceKind::Folder));
         let include_files = kinds.is_none_or(|k| k.contains(&ResourceKind::File));
 
@@ -1806,7 +1870,8 @@ impl FolderDbRepository {
         }
 
         // ── CTE branches ────────────────────────────────────────────────────
-        let folder_branch = r#"
+        let folder_branch = format!(
+            r#"
             SELECT
                 'folder'::text            AS resource_type,
                 f.id,
@@ -1833,10 +1898,19 @@ impl FolderDbRepository {
                 ))                        AS is_shared,
                 LOWER(f.name)             AS sort_str,
                 0::bigint                 AS type_order,
-                0::int                    AS folder_first
+                0::int                    AS folder_first,
+                f.mount_target_id,
+                (SELECT t.drive_id FROM storage.folders t WHERE t.id = f.mount_target_id)
+                                          AS mount_target_drive_id,
+                (SELECT CASE WHEN t.parent_id IS NULL THEN 'shared_drive' ELSE 'shared_folder' END
+                   FROM storage.folders t WHERE t.id = f.mount_target_id)
+                                          AS mount_kind
             FROM storage.folders f
             WHERE f.parent_id = $1::uuid AND NOT f.is_trashed
-        "#;
+              AND {visible}
+        "#,
+            visible = link_row_visible("f", "$7", "$9")
+        );
 
         let file_branch = r#"
             SELECT
@@ -1865,7 +1939,10 @@ impl FolderDbRepository {
                 ))                        AS is_shared,
                 LOWER(fm.name)            AS sort_str,
                 fm.category_order::bigint AS type_order,
-                1::int                    AS folder_first
+                1::int                    AS folder_first,
+                NULL::uuid                AS mount_target_id,
+                NULL::uuid                AS mount_target_drive_id,
+                NULL::text                AS mount_kind
             FROM storage.files fm
             WHERE fm.folder_id = $1::uuid AND NOT fm.is_trashed
         "#;
@@ -2061,7 +2138,7 @@ impl FolderDbRepository {
             ))
         };
         let mut branches = Vec::with_capacity(2);
-        if include_folders && let Some(b) = wrap(folder_branch, &folder_cur) {
+        if include_folders && let Some(b) = wrap(&folder_branch, &folder_cur) {
             branches.push(b);
         }
         if include_files && let Some(b) = wrap(file_branch, &file_cur) {
@@ -2079,7 +2156,8 @@ impl FolderDbRepository {
                     created_at, content_modified_at, drive_id, blob_hash, \
                     created_by, updated_by, \
                     is_favorite, is_shared, \
-                    sort_str, type_order, folder_first \
+                    sort_str, type_order, folder_first, \
+                    mount_target_id, mount_target_drive_id, mount_kind \
              FROM ({inner}) r \
              {outer_order} \
              LIMIT $6"
@@ -2108,6 +2186,7 @@ impl FolderDbRepository {
             .bind(limit as i64)
             .bind(caller_id)
             .bind(show_is_shared)
+            .bind(show_mounts)
             .fetch_all(self.pool())
             .await
             .map_err(|e| {
@@ -2142,6 +2221,11 @@ impl FolderDbRepository {
                     sort_str: r.try_get_unchecked(14).map_err(|e| decode_err(14, e))?,
                     type_order: r.try_get_unchecked(15).map_err(|e| decode_err(15, e))?,
                     folder_first: r.try_get_unchecked(16).map_err(|e| decode_err(16, e))?,
+                    mount_target_id: r.try_get_unchecked(17).map_err(|e| decode_err(17, e))?,
+                    mount_target_drive_id: r
+                        .try_get_unchecked(18)
+                        .map_err(|e| decode_err(18, e))?,
+                    mount_kind: r.try_get_unchecked(19).map_err(|e| decode_err(19, e))?,
                 })
             })
             .collect()
@@ -2299,5 +2383,221 @@ mod tree_etag_immediate_bump_tests {
             .execute(&pool)
             .await
             .expect("cleanup");
+    }
+}
+
+#[cfg(all(test, integration_tests))]
+mod share_mount_listing_tests {
+    use super::*;
+    use crate::domain::services::authorization::Subject;
+    use crate::infrastructure::repositories::pg::ShareMountPgRepository;
+    use crate::infrastructure::repositories::pg::share_mount_pg_repository::trigger_tests::{
+        make_user_with_drive, personal_root,
+    };
+    use crate::mount_it_support::{fresh_db, provision_folder};
+
+    async fn grant(pool: &sqlx::PgPool, subject: Uuid, folder: Uuid, by: Uuid) {
+        sqlx::query(
+            "INSERT INTO storage.role_grants (subject_type, subject_id, resource_type, resource_id, role, granted_by) VALUES ('user', $1, 'folder', $2, 'viewer', $3)",
+        )
+        .bind(subject)
+        .bind(folder)
+        .bind(by)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn list_ids(
+        repo: &FolderDbRepository,
+        parent: Uuid,
+        caller: Subject,
+        show_mounts: bool,
+    ) -> Vec<Uuid> {
+        repo.list_resources_paged(
+            parent,
+            caller,
+            100,
+            None,
+            FolderOrderBy::Name,
+            None,
+            false,
+            show_mounts,
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id)
+        .collect()
+    }
+
+    #[tokio::test]
+    async fn r0_mount_visible_only_to_recipient_with_readable_target() {
+        let (_c, pool) = fresh_db().await;
+        let alice = provision_folder(&pool, "alice", "Docs").await;
+        let bob = make_user_with_drive(&pool, "bob").await;
+        let carol = make_user_with_drive(&pool, "carol").await;
+        let (bob_drive, bob_root) = personal_root(&pool, bob).await;
+        grant(&pool, bob, alice.mount_folder_id, alice.owner_id).await;
+        let mounts = ShareMountPgRepository::new(pool.clone());
+        let m = mounts
+            .create_mount(bob_drive, bob_root, alice.mount_folder_id, bob)
+            .await
+            .unwrap();
+        let repo = FolderDbRepository::new(pool.clone());
+        assert_eq!(
+            list_ids(&repo, bob_root, Subject::User(bob), true).await,
+            vec![m.mount_id]
+        );
+        assert!(
+            list_ids(&repo, bob_root, Subject::User(bob), false)
+                .await
+                .is_empty(),
+            "flag off hides mounts"
+        );
+        grant(&pool, carol, bob_root, bob).await;
+        assert!(
+            list_ids(&repo, bob_root, Subject::User(carol), true)
+                .await
+                .is_empty()
+        );
+        assert!(
+            list_ids(&repo, bob_root, Subject::Token(Uuid::new_v4()), true)
+                .await
+                .is_empty()
+        );
+        sqlx::query("UPDATE storage.folders SET is_trashed = TRUE WHERE id = $1")
+            .bind(alice.mount_folder_id)
+            .execute(&*pool)
+            .await
+            .unwrap();
+        assert!(
+            list_ids(&repo, bob_root, Subject::User(bob), true)
+                .await
+                .is_empty()
+        );
+        sqlx::query("UPDATE storage.folders SET is_trashed = FALSE WHERE id = $1")
+            .bind(alice.mount_folder_id)
+            .execute(&*pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            list_ids(&repo, bob_root, Subject::User(bob), true).await,
+            vec![m.mount_id]
+        );
+        sqlx::query("DELETE FROM storage.role_grants WHERE subject_id = $1 AND resource_id = $2")
+            .bind(bob)
+            .bind(alice.mount_folder_id)
+            .execute(&*pool)
+            .await
+            .unwrap();
+        assert!(
+            list_ids(&repo, bob_root, Subject::User(bob), true)
+                .await
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn off_mode_hides_link_rows_from_every_children_listing() {
+        use crate::common::config::LinksMode;
+        let (_c, pool) = fresh_db().await;
+        let alice = provision_folder(&pool, "alice", "Docs").await;
+        let bob = make_user_with_drive(&pool, "bob").await;
+        let (bob_drive, bob_root) = personal_root(&pool, bob).await;
+        grant(&pool, bob, alice.mount_folder_id, alice.owner_id).await;
+        let m = ShareMountPgRepository::new(pool.clone())
+            .create_mount(bob_drive, bob_root, alice.mount_folder_id, bob)
+            .await
+            .unwrap();
+        let name: String = sqlx::query_scalar("SELECT name FROM storage.folders WHERE id = $1")
+            .bind(m.mount_id)
+            .fetch_one(&*pool)
+            .await
+            .unwrap();
+        let root = bob_root.to_string();
+        let id = m.mount_id.to_string();
+        let auto = FolderDbRepository::new(pool.clone()).with_links_mode(LinksMode::Auto);
+        let off = FolderDbRepository::new(pool.clone()).with_links_mode(LinksMode::Off);
+
+        for (label, repo, expect) in [("auto", &auto, true), ("off", &off, false)] {
+            let has = |ids: Vec<String>| {
+                assert_eq!(ids.contains(&id), expect, "{label}");
+            };
+            let ids = |v: Vec<Folder>| v.iter().map(|f| f.id().to_string()).collect::<Vec<_>>();
+            has(ids(repo.list_folders(Some(&root)).await.unwrap()));
+            has(ids(repo
+                .list_folders_paginated(Some(&root), 0, 100, false)
+                .await
+                .unwrap()
+                .0));
+            has(ids(repo
+                .list_folders_batch(Some(&root), bob, None, 100)
+                .await
+                .unwrap()));
+            has(ids(repo
+                .search_folders(Some(&root), Some(&name), bob, false)
+                .await
+                .unwrap()
+                .0));
+            has(ids(repo
+                .search_folders(None, Some(&name), bob, true)
+                .await
+                .unwrap()
+                .0));
+            has(ids(repo
+                .search_folders(Some(&root), Some(&name), bob, true)
+                .await
+                .unwrap()
+                .0));
+            has(ids(repo
+                .list_descendant_folders(&root, None, bob)
+                .await
+                .unwrap()));
+        }
+    }
+
+    #[tokio::test]
+    async fn listing_row_carries_mount_columns() {
+        let (_c, pool) = fresh_db().await;
+        let alice = provision_folder(&pool, "alice", "Docs").await;
+        let bob = make_user_with_drive(&pool, "bob").await;
+        let (bob_drive, bob_root) = personal_root(&pool, bob).await;
+        grant(&pool, bob, alice.mount_folder_id, alice.owner_id).await;
+        ShareMountPgRepository::new(pool.clone())
+            .create_mount(bob_drive, bob_root, alice.mount_folder_id, bob)
+            .await
+            .unwrap();
+        let repo = FolderDbRepository::new(pool.clone());
+        let rows = repo
+            .list_resources_paged(
+                bob_root,
+                Subject::User(bob),
+                10,
+                None,
+                FolderOrderBy::Name,
+                None,
+                false,
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows[0].mount_target_id, Some(alice.mount_folder_id));
+        assert_eq!(rows[0].mount_target_drive_id, Some(alice.drive_id));
+        assert_eq!(rows[0].mount_kind.as_deref(), Some("shared_folder"));
+        let plain = repo
+            .list_resources_paged(
+                alice.mount_folder_id,
+                Subject::User(alice.owner_id),
+                10,
+                None,
+                FolderOrderBy::Name,
+                None,
+                false,
+                true,
+            )
+            .await
+            .unwrap();
+        assert!(plain.is_empty() || plain[0].mount_target_id.is_none());
     }
 }

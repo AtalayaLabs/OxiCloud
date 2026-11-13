@@ -40,6 +40,10 @@ pub mod kind {
     /// (e.g. 80 %, 95 %). Payload carries `used_bytes` / `quota_bytes`
     /// and the crossed percentage.
     pub const STORAGE_QUOTA_THRESHOLD: &str = "storage_quota_threshold";
+
+    /// The owner renamed a folder the recipient holds a link to; the link
+    /// keeps its own name. Payload: [`super::LinkTargetRenamedPayload`].
+    pub const LINK_TARGET_RENAMED: &str = "link_target_renamed";
 }
 
 /// One notification row.
@@ -129,4 +133,17 @@ pub struct SharegrantedPayload {
     /// Grant expiry, if bounded. `None` = never expires.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Payload of a `link_target_renamed` notification. Kind = [`kind::LINK_TARGET_RENAMED`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct LinkTargetRenamedPayload {
+    /// The recipient's link row; the bell navigates to `/files/{link_id}`.
+    pub link_id: Uuid,
+    pub target_id: Uuid,
+    pub old_name: String,
+    pub new_name: String,
+    /// The link's own name, unchanged by the rename.
+    pub link_name: String,
+    pub renamed_by: Uuid,
 }

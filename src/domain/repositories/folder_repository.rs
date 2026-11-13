@@ -112,6 +112,7 @@ pub trait FolderRepository: Send + Sync + 'static {
     async fn list_folders_batch(
         &self,
         parent_id: Option<&str>,
+        _caller_id: Uuid,
         after_name: Option<&str>,
         limit: usize,
     ) -> Result<Vec<Folder>, DomainError> {

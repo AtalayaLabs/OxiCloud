@@ -17,6 +17,9 @@ use crate::application::services::mount_dto::{
     audit_mount_write, mount_entry_folder_dto, mount_folder_dto, mount_parent_id,
 };
 use crate::application::services::mount_registry::MountConfig;
+use crate::application::services::share_mount_service::{
+    LinkEtags, ResolvedMount, ShareMountService,
+};
 use crate::common::errors::{DomainError, ErrorKind};
 use crate::domain::repositories::folder_repository::FolderRepository;
 use crate::domain::services::authorization::{
@@ -59,6 +62,8 @@ pub struct FolderService {
     /// build the service without a bus; a `None` bus is a silent no-op
     /// on the publish path (no fan-out, no audit).
     bus: Option<Arc<dyn crate::application::ports::message_bus_ports::MessageBus>>,
+    /// Share mount resolution (docs/plan/share-mounts.md). `None` = feature off.
+    share_mounts: Option<Arc<ShareMountService>>,
 }
 
 impl FolderService {
@@ -77,7 +82,72 @@ impl FolderService {
             drive_repo: None,
             storage_usage: None,
             bus: None,
+            share_mounts: None,
         }
+    }
+
+    pub fn with_share_mounts(mut self, svc: Arc<ShareMountService>) -> Self {
+        self.share_mounts = Some(svc);
+        self
+    }
+
+    /// R1: `Some(target)` when `id` is a share mount the caller may look through;
+    /// `NotFound` when it is a mount the caller may not see (R0).
+    pub async fn resolve_share_mount(
+        &self,
+        caller: Subject,
+        id: &str,
+    ) -> Result<Option<ResolvedMount>, DomainError> {
+        match &self.share_mounts {
+            Some(svc) => svc.resolve(caller, id).await,
+            None => Ok(None),
+        }
+    }
+
+    pub async fn link_etags<'a>(
+        &self,
+        caller_id: Uuid,
+        folder_ids: impl IntoIterator<Item = &'a str>,
+    ) -> Result<LinkEtags, DomainError> {
+        match &self.share_mounts {
+            Some(svc) => svc.link_etags(caller_id, folder_ids).await,
+            None => Ok(LinkEtags::default()),
+        }
+    }
+
+    pub async fn apply_link_etag(
+        &self,
+        caller_id: Uuid,
+        folder: &mut FolderDto,
+    ) -> Result<(), DomainError> {
+        self.link_etags(caller_id, [folder.id.as_str()])
+            .await?
+            .apply(folder);
+        Ok(())
+    }
+
+    /// A page of subfolders with link etags applied, plus the link etags of `also_id`, in one query.
+    pub async fn list_folders_batch_with_link_etags(
+        &self,
+        parent_id: Option<&str>,
+        caller_id: Uuid,
+        after_name: Option<&str>,
+        limit: usize,
+        also_id: Option<&str>,
+    ) -> Result<(Vec<FolderDto>, LinkEtags), DomainError> {
+        let mut page = self
+            .list_folders_batch_with_perms(parent_id, caller_id, after_name, limit)
+            .await?;
+        let etags = self
+            .link_etags(
+                caller_id,
+                also_id
+                    .into_iter()
+                    .chain(page.iter().map(|f| f.id.as_str())),
+            )
+            .await?;
+        page.iter_mut().for_each(|f| etags.apply(f));
+        Ok((page, etags))
     }
 
     /// Wire the message bus. Enables live folder-view updates:
@@ -346,7 +416,7 @@ impl FolderUseCase for FolderService {
     /// Creates a new folder
     async fn create_folder_with_perms(
         &self,
-        dto: CreateFolderDto,
+        mut dto: CreateFolderDto,
         caller_id: Uuid,
     ) -> Result<FolderDto, DomainError> {
         if let Err(reason) = validate_storage_name(&dto.name) {
@@ -361,6 +431,15 @@ impl FolderUseCase for FolderService {
                 "Root folder creation is reserved for registration",
             ));
         };
+
+        // R1: creating "into" a share mount creates under its target.
+        if let Some(m) = self
+            .resolve_share_mount(Subject::User(caller_id), parent_id)
+            .await?
+        {
+            dto.parent_id = Some(m.target_id.to_string());
+        }
+        let parent_id = dto.parent_id.as_deref().unwrap_or_default();
 
         // External mount: create the directory on the provider, not in PG.
         match self.mount_router.classify(parent_id) {
@@ -470,7 +549,20 @@ impl FolderUseCase for FolderService {
         self.authz
             .require(caller, Permission::Read, Self::folder_resource(id)?)
             .await?;
-        self.get_folder(id).await
+        let Some(m) = self.resolve_share_mount(caller, id).await? else {
+            return self.get_folder(id).await;
+        };
+        // Mount identity, target content fields (docs/plan/share-mounts.md R1).
+        let mut dto = self.get_folder(id).await?;
+        let target = self.get_folder(&m.target_id.to_string()).await?;
+        dto.etag = target.etag;
+        dto.modified_at = target.modified_at;
+        dto.mount = Some(crate::application::dtos::folder_dto::MountDto {
+            kind: m.kind.as_str().to_owned(),
+            target_id: Some(m.target_id),
+            target_drive_id: Some(m.target_drive_id),
+        });
+        Ok(dto)
     }
 
     /// Gets a folder by its path, scoped to a drive.
@@ -662,7 +754,7 @@ impl FolderUseCase for FolderService {
                     .await?;
                 let folders = self
                     .folder_storage
-                    .list_folders_batch(parent_id, after_name, limit)
+                    .list_folders_batch(parent_id, caller_id, after_name, limit)
                     .await
                     .map_err(|e| {
                         DomainError::internal_error(
@@ -859,6 +951,18 @@ impl FolderUseCase for FolderService {
                 )
             })?;
 
+        if let Some(svc) = &self.share_mounts
+            && let Ok(target_id) = Uuid::parse_str(renamed.id())
+            && folder.name() != renamed.name()
+        {
+            svc.notify_target_renamed_detached(
+                target_id,
+                folder.name().to_owned(),
+                renamed.name().to_owned(),
+                caller_id,
+            );
+        }
+
         // Root folders double as the drive's display name (see the
         // `required_perm` branch above and `drive_pg_repository.rs`
         // `readable_cache` + `default_drive_cache` docs).
@@ -939,6 +1043,39 @@ impl FolderUseCase for FolderService {
                 audit_mount_write("move", &cfg, caller_id, stat.node_id.as_str());
                 let parent = mount_parent_id(&cfg, stat.node_id.as_str());
                 return Ok(mount_folder_dto(&cfg, &parent, &stat));
+            }
+        }
+
+        // Share mounts (docs/plan/share-mounts.md R2): nothing moves into a mount,
+        // and a mount never leaves its personal drive.
+        if let Some(svc) = &self.share_mounts {
+            if let Some(parent_id) = &dto.parent_id
+                && svc.is_mount(parent_id).await?
+            {
+                return Err(DomainError::conflict(
+                    "Folder",
+                    "cannot move into a share mount",
+                ));
+            }
+            if svc.is_mount(id).await?
+                && let Some(parent_id) = &dto.parent_id
+            {
+                let (src, dst) = tokio::join!(
+                    self.folder_storage.get_folder(id),
+                    self.folder_storage.get_folder(parent_id)
+                );
+                let sd = src
+                    .map_err(|_| DomainError::not_found("Folder", id))?
+                    .drive_id();
+                let dd = dst
+                    .map_err(|_| DomainError::not_found("Folder", parent_id.as_str()))?
+                    .drive_id();
+                if sd != dd {
+                    return Err(DomainError::conflict(
+                        "Folder",
+                        "a share mount stays in its personal drive",
+                    ));
+                }
             }
         }
 
@@ -1136,6 +1273,14 @@ impl FolderUseCase for FolderService {
                 audit_mount_write("delete", &cfg, caller_id, node_id.as_str());
                 return Ok(());
             }
+        }
+
+        // Share mount: deleting the row is an unmount (docs/plan/share-mounts.md R2).
+        if let Some(svc) = &self.share_mounts
+            && svc.is_mount(id).await?
+        {
+            let mount_id = Uuid::parse_str(id).map_err(|_| DomainError::not_found("Folder", id))?;
+            return svc.unmount(caller_id, mount_id).await;
         }
 
         self.authz
@@ -1574,6 +1719,13 @@ impl FolderService {
         caller: Subject,
         opts: ListResourcesOptions<'_>,
     ) -> Result<(Vec<FolderResourceRow>, Option<String>), DomainError> {
+        // R1: a share mount lists its target (authorised against the caller below).
+        let redirected = self
+            .resolve_share_mount(caller, parent_id)
+            .await?
+            .map(|m| m.target_id.to_string());
+        let parent_id: &str = redirected.as_deref().unwrap_or(parent_id);
+
         // 1. AuthZ — same check as list_folders_with_perms
         self.authz
             .require(caller, Permission::Read, Self::folder_resource(parent_id)?)
@@ -1601,6 +1753,9 @@ impl FolderService {
                 order_by,
                 kinds,
                 reverse,
+                self.share_mounts
+                    .as_ref()
+                    .is_some_and(|m| m.links_enabled()),
             )
             .await?;
 
@@ -3087,5 +3242,425 @@ mod cascade_hook_integration_tests {
             captured.contains(&nested_file.to_string()),
             "expected on_file_deleted for nested file {nested_file}, got {captured:?}"
         );
+    }
+}
+
+#[cfg(all(test, integration_tests))]
+mod share_mount_redirect_it {
+    use super::*;
+    use crate::application::dtos::folder_dto::{CreateFolderDto, ListResourcesOptions};
+    use crate::application::services::external_mount_router::MountRouter;
+    use crate::application::services::mount_registry::MountRegistry;
+    use crate::application::services::share_mount_service::ShareMountService;
+    use crate::common::errors::ErrorKind;
+    use crate::domain::services::authorization::{Resource, Role, Subject};
+    use crate::infrastructure::repositories::pg::share_mount_pg_repository::trigger_tests::{
+        make_user_with_drive, personal_root,
+    };
+    use crate::infrastructure::repositories::pg::{
+        DrivePgRepository, FileBlobReadRepository, ShareMountPgRepository, SubjectGroupPgRepository,
+    };
+    use crate::mount_it_support::{fresh_db, provision_folder};
+
+    fn acl(pool: &Arc<sqlx::PgPool>) -> Arc<PgAclEngine> {
+        Arc::new(PgAclEngine::new(
+            pool.clone(),
+            Arc::new(FolderDbRepository::new(pool.clone())),
+            Arc::new(FileBlobReadRepository::new_stub()),
+            Arc::new(SubjectGroupPgRepository::new(pool.clone())),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        ))
+    }
+
+    fn wire(pool: &Arc<sqlx::PgPool>) -> (FolderService, Arc<ShareMountService>, Arc<PgAclEngine>) {
+        wire_mode(pool, crate::common::config::LinksMode::Auto)
+    }
+
+    fn wire_mode(
+        pool: &Arc<sqlx::PgPool>,
+        mode: crate::common::config::LinksMode,
+    ) -> (FolderService, Arc<ShareMountService>, Arc<PgAclEngine>) {
+        let authz = acl(pool);
+        let sm = Arc::new(ShareMountService::new(
+            Arc::new(ShareMountPgRepository::new(pool.clone())),
+            Arc::new(DrivePgRepository::new(pool.clone())),
+            authz.clone(),
+            Arc::new(FolderDbRepository::new(pool.clone())),
+            None,
+            mode,
+        ));
+        let fs = FolderService::new(
+            Arc::new(FolderDbRepository::new(pool.clone()).with_links_mode(mode)),
+            authz.clone(),
+            Arc::new(
+                crate::application::services::file_lifecycle_service::FileLifecycleService::new(),
+            ),
+            Arc::new(MountRouter::new(Arc::new(MountRegistry::empty()))),
+        )
+        .with_share_mounts(sm.clone());
+        (fs, sm, authz)
+    }
+
+    fn opts() -> ListResourcesOptions<'static> {
+        ListResourcesOptions {
+            limit: 50,
+            cursor: None,
+            order_by: FolderOrderBy::Name,
+            kinds: None,
+            reverse: false,
+        }
+    }
+
+    async fn renamed_rows(
+        n: &crate::application::services::notification_application_service::NotificationApplicationService,
+        user: Uuid,
+        want: usize,
+    ) -> usize {
+        use crate::domain::repositories::notification_repository::NotificationListFilter;
+        let mut got = 0;
+        for _ in 0..20 {
+            got = n
+                .list_for_user(user, NotificationListFilter::default())
+                .await
+                .unwrap()
+                .len();
+            if got >= want {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        got
+    }
+
+    #[tokio::test]
+    async fn rename_through_folder_service_notifies_link_recipients_only() {
+        use crate::application::dtos::folder_dto::RenameFolderDto;
+        use crate::application::ports::message_bus_ports::NoopReplicator;
+        use crate::application::services::notification_application_service::NotificationApplicationService;
+        use crate::infrastructure::repositories::pg::NotificationPgRepository;
+        use crate::infrastructure::services::in_process_message_bus::InProcessMessageBus;
+        let (_c, pool) = fresh_db().await;
+        let alice = provision_folder(&pool, "alice", "Docs").await;
+        let bob = make_user_with_drive(&pool, "bob").await;
+        let (fs, sm, authz) = wire(&pool);
+        let notifs = Arc::new(NotificationApplicationService::new(
+            Arc::new(NotificationPgRepository::new(pool.clone())),
+            InProcessMessageBus::with_replicator(Arc::new(NoopReplicator)),
+        ));
+        sm.set_notifications(notifs.clone());
+        authz
+            .set_role(
+                alice.owner_id,
+                Subject::User(bob),
+                Role::Editor,
+                Resource::Folder(alice.mount_folder_id),
+                None,
+            )
+            .await
+            .unwrap();
+        sm.settle(bob, alice.mount_folder_id).await.unwrap();
+        let (bob_drive, _) = personal_root(&pool, bob).await;
+        let link = sm.repo.existing_mounts(bob_drive).await.unwrap().remove(0);
+        let target = alice.mount_folder_id.to_string();
+        let rename = |name: &str| RenameFolderDto { name: name.into() };
+
+        // recipient renames own link row: no notification
+        fs.rename_folder_with_perms(&link.mount_id.to_string(), rename("Mine"), bob)
+            .await
+            .unwrap();
+        // same name: none
+        fs.rename_folder_with_perms(&target, rename("Docs"), alice.owner_id)
+            .await
+            .unwrap();
+        // editor renames the target they also link to: none for themselves
+        fs.rename_folder_with_perms(&target, rename("Docs B"), bob)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert_eq!(renamed_rows(&notifs, bob, 1).await, 0);
+        // owner renames: recipient notified
+        fs.rename_folder_with_perms(&target, rename("Docs C"), alice.owner_id)
+            .await
+            .unwrap();
+        assert_eq!(renamed_rows(&notifs, bob, 1).await, 1);
+        assert_eq!(renamed_rows(&notifs, alice.owner_id, 1).await, 0);
+    }
+
+    #[tokio::test]
+    async fn off_mode_link_id_is_not_found_for_get_list_and_create_parent() {
+        let (_c, pool) = fresh_db().await;
+        let alice = provision_folder(&pool, "alice", "Docs").await;
+        let bob = make_user_with_drive(&pool, "bob").await;
+        let (bob_drive, bob_root) = personal_root(&pool, bob).await;
+        let (fs, sm, authz) = wire_mode(&pool, crate::common::config::LinksMode::Off);
+        authz
+            .set_role(
+                alice.owner_id,
+                Subject::User(bob),
+                Role::Editor,
+                Resource::Folder(alice.mount_folder_id),
+                None,
+            )
+            .await
+            .unwrap();
+        let link = sm
+            .repo
+            .create_mount(bob_drive, bob_root, alice.mount_folder_id, bob)
+            .await
+            .unwrap()
+            .mount_id
+            .to_string();
+        let caller = Subject::User(bob);
+        let e = fs.get_folder_with_perms(&link, caller).await.unwrap_err();
+        assert_eq!(e.kind, ErrorKind::NotFound);
+        let e = fs
+            .list_resources_paged_with_perms(&link, caller, opts())
+            .await
+            .map(|_| ())
+            .unwrap_err();
+        assert_eq!(e.kind, ErrorKind::NotFound);
+        let e = fs
+            .create_folder_with_perms(
+                CreateFolderDto {
+                    name: "x".into(),
+                    parent_id: Some(link.clone()),
+                },
+                bob,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(e.kind, ErrorKind::NotFound);
+        let (rows, _) = fs
+            .list_resources_paged_with_perms(&bob_root.to_string(), caller, opts())
+            .await
+            .map_err(|e| e.to_string())
+            .unwrap();
+        assert!(rows.iter().all(|r| r.id.to_string() != link));
+    }
+
+    #[tokio::test]
+    async fn mount_lists_target_children_gets_mount_block_and_hides_from_others() {
+        let (_c, pool) = fresh_db().await;
+        let alice = provision_folder(&pool, "alice", "Docs").await;
+        let bob = make_user_with_drive(&pool, "bob").await;
+        let carol = make_user_with_drive(&pool, "carol").await;
+        let (fs, sm, authz) = wire(&pool);
+        // Docs/Q3 in alice's drive
+        let q3 = fs
+            .create_folder_with_perms(
+                CreateFolderDto {
+                    name: "Q3".into(),
+                    parent_id: Some(alice.mount_folder_id.to_string()),
+                },
+                alice.owner_id,
+            )
+            .await
+            .unwrap();
+        authz
+            .set_role(
+                alice.owner_id,
+                Subject::User(bob),
+                Role::Editor,
+                Resource::Folder(alice.mount_folder_id),
+                None,
+            )
+            .await
+            .unwrap();
+        sm.settle(bob, alice.mount_folder_id).await.unwrap();
+        let (bob_drive, bob_root) = personal_root(&pool, bob).await;
+        let mount = sm.repo.existing_mounts(bob_drive).await.unwrap().remove(0);
+        let mount_id = mount.mount_id.to_string();
+
+        // R1: listing the mount lists the target's children
+        let (rows, _) = fs
+            .list_resources_paged_with_perms(&mount_id, Subject::User(bob), opts())
+            .await
+            .map_err(|e| e.to_string())
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id.to_string(), q3.id);
+
+        // get: mount identity + mount block + target etag
+        let dto = fs
+            .get_folder_with_perms(&mount_id, Subject::User(bob))
+            .await
+            .unwrap();
+        assert_eq!(dto.id, mount_id);
+        assert_eq!(dto.name, "Docs");
+        let m = dto.mount.expect("mount block");
+        assert_eq!(m.kind, "shared_folder");
+        assert_eq!(m.target_id, Some(alice.mount_folder_id));
+        let target = fs
+            .get_folder_with_perms(
+                &alice.mount_folder_id.to_string(),
+                Subject::User(alice.owner_id),
+            )
+            .await
+            .unwrap();
+        assert_eq!(dto.etag, target.etag);
+
+        // create folder "into" the mount lands under the target
+        let created = fs
+            .create_folder_with_perms(
+                CreateFolderDto {
+                    name: "FromBob".into(),
+                    parent_id: Some(mount_id.clone()),
+                },
+                bob,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            created.parent_id.as_deref(),
+            Some(alice.mount_folder_id.to_string().as_str())
+        );
+
+        // R0: carol with Read on bob's root sees neither the row nor the mount
+        authz
+            .set_role(
+                bob,
+                Subject::User(carol),
+                Role::Viewer,
+                Resource::Folder(bob_root),
+                None,
+            )
+            .await
+            .unwrap();
+        let err = fs
+            .get_folder_with_perms(&mount_id, Subject::User(carol))
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind, ErrorKind::NotFound);
+        let kind = match fs
+            .list_resources_paged_with_perms(&mount_id, Subject::User(carol), opts())
+            .await
+        {
+            Ok(_) => panic!("carol must not list through bob's mount"),
+            Err(e) => e.kind,
+        };
+        assert_eq!(kind, ErrorKind::NotFound);
+    }
+
+    #[tokio::test]
+    async fn mount_row_guards_rename_move_delete() {
+        use crate::application::dtos::folder_dto::{MoveFolderDto, RenameFolderDto};
+        let (_c, pool) = fresh_db().await;
+        let alice = provision_folder(&pool, "alice", "Docs").await;
+        let bob = make_user_with_drive(&pool, "bob").await;
+        let (fs, sm, authz) = wire(&pool);
+        authz
+            .set_role(
+                alice.owner_id,
+                Subject::User(bob),
+                Role::Editor,
+                Resource::Folder(alice.mount_folder_id),
+                None,
+            )
+            .await
+            .unwrap();
+        sm.settle(bob, alice.mount_folder_id).await.unwrap();
+        let (bob_drive, bob_root) = personal_root(&pool, bob).await;
+        let mount = sm.repo.existing_mounts(bob_drive).await.unwrap().remove(0);
+        let mount_id = mount.mount_id.to_string();
+
+        // rename is recipient-local
+        fs.rename_folder_with_perms(
+            &mount_id,
+            RenameFolderDto {
+                name: "Alice docs".into(),
+            },
+            bob,
+        )
+        .await
+        .unwrap();
+        let target = fs
+            .get_folder_with_perms(
+                &alice.mount_folder_id.to_string(),
+                Subject::User(alice.owner_id),
+            )
+            .await
+            .unwrap();
+        assert_eq!(target.name, "Docs");
+
+        // moving a plain folder into the mount is refused
+        let own = fs
+            .create_folder_with_perms(
+                CreateFolderDto {
+                    name: "Own".into(),
+                    parent_id: Some(bob_root.to_string()),
+                },
+                bob,
+            )
+            .await
+            .unwrap();
+        let err = fs
+            .move_folder_with_perms(
+                &own.id,
+                MoveFolderDto {
+                    parent_id: Some(mount_id.clone()),
+                },
+                bob,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Conflict);
+
+        // moving the mount out of the personal drive is refused
+        let err = fs
+            .move_folder_with_perms(
+                &mount_id,
+                MoveFolderDto {
+                    parent_id: Some(alice.mount_folder_id.to_string()),
+                },
+                bob,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Conflict);
+
+        // moving the mount inside the personal drive works
+        fs.move_folder_with_perms(
+            &mount_id,
+            MoveFolderDto {
+                parent_id: Some(own.id.clone()),
+            },
+            bob,
+        )
+        .await
+        .unwrap();
+
+        // copying the mount (or into it) is refused before any repository access
+        let fm = crate::application::services::file_management_service::FileManagementService::with_trash(
+            Arc::new(crate::infrastructure::repositories::pg::FileBlobWriteRepository::new_stub()),
+            None,
+            Some(Arc::new(FileBlobReadRepository::new_stub())),
+            None,
+            None,
+            authz.clone(),
+        )
+        .with_share_mounts(sm.clone());
+        use crate::application::ports::file_ports::FileManagementUseCase as _;
+        let err = fm
+            .copy_folder_tree_with_perms(&mount_id, bob, Some(bob_root.to_string()), None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Conflict);
+
+        // delete = unmount + decline; target untouched
+        fs.delete_folder_with_perms(&mount_id, bob).await.unwrap();
+        assert!(sm.repo.mount_info(mount.mount_id).await.unwrap().is_none());
+        assert!(
+            sm.repo
+                .declined_targets(bob, &[alice.mount_folder_id])
+                .await
+                .unwrap()
+                .contains(&alice.mount_folder_id)
+        );
+        fs.get_folder_with_perms(
+            &alice.mount_folder_id.to_string(),
+            Subject::User(alice.owner_id),
+        )
+        .await
+        .unwrap();
     }
 }
