@@ -868,6 +868,7 @@
     "empty_hint": "您可访问的文件的更改将显示在此处",
     "col_changed": "已更改",
     "lane_files": "{{n}} 个文件",
+    "cap_lanes": "每人最近 {{n}} 个",
     "window": "时间范围",
     "window_7": "最近 7 天",
     "window_30": "最近 30 天",
@@ -1958,6 +1959,7 @@
     "retry": "再试一次",
     "select": "选择",
     "select_all": "选择全部",
+    "filter": "筛选",
     "dismiss": "解雇"
   },
   "device": {

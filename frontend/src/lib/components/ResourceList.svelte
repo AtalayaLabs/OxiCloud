@@ -360,9 +360,10 @@
 		actions?: Snippet;
 		/**
 		 * Action-bar right cluster — rendered inside the display
-		 * controls, immediately after the dotfile eye toggle. For page
-		 * actions that belong next to the view controls rather than in
-		 * the left cluster.
+		 * controls, at the END of `.view-toggle` (after the grid/list
+		 * toggle). For page controls that belong next to the view
+		 * controls rather than in the left cluster: `/changes` puts its
+		 * filter button here.
 		 */
 		displayActions?: Snippet;
 		/**
@@ -1538,7 +1539,7 @@
 						showViewMode={showViewToggle}
 						showSort={showSortDirection}
 						{showDotfileToggle}
-						afterDotfileToggle={displayActions}
+						trailing={displayActions}
 					/>
 				{/snippet}
 			</ActionBar>

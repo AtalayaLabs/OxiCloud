@@ -9031,6 +9031,20 @@
               ],
               "format": "uuid"
             }
+          },
+          {
+            "name": "per_lane",
+            "in": "query",
+            "description": "Cap each lane at its N most recent files. Omit — or send `0` — for no\ncap. Maximum [`MAX_PER_LANE`]; a larger value is a 400 naming the\nbound, like `days`.\n\nCapping changes how the page is CUT, not just how much it holds.\nUncapped, a page is `limit` rows and its boundary can fall anywhere,\nincluding inside a lane. Capped, a lane's size is known before any row\nis read (`min(lane_total, per_lane)`), so the page takes whole lanes\nwhile they fit and a lane is never split across pages. The cursor is\nthen a lane boundary, never a row inside one.\n\nConsequence worth knowing: a single lane bigger than `limit` still\ncomes back whole — one lane is always taken — so a capped page can\nreturn up to `limit + per_lane - 1` rows. Refusing `limit < per_lane`\ninstead would make two independent parameters interdependent.\n\nMeaningless without lanes, so pairing it with `order_by=changed_at` is\na 400 rather than a silent no-op.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int32",
+              "minimum": 0
+            }
           }
         ],
         "responses": {

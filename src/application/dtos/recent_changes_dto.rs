@@ -25,6 +25,15 @@ pub const DEFAULT_DAYS: u32 = 30;
 /// (`docs/plan/recently-modified.md` §4).
 pub const MAX_DAYS: u32 = 90;
 
+/// Hard ceiling on the per-lane cap.
+///
+/// The cap exists to bound a lane, so letting it grow to the page limit would
+/// defeat it. 50 is generous for "the N most recent files this person
+/// touched" — past that the honest answer is the `?person=` drill-in, which
+/// pages that one lane properly. A 400, never a clamp, for the `MAX_DAYS`
+/// reason.
+pub const MAX_PER_LANE: u32 = 50;
+
 /// Sort axis for `GET /api/files/recent-changes`.
 ///
 /// Typed rather than `Option<String>` so an unknown axis is refused at
@@ -74,6 +83,12 @@ pub struct RecentChangesCursor {
     /// The `person` filter the cursor was minted under, for the same reason.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub person: Option<Uuid>,
+    /// The per-lane cap the cursor was minted under. Changing it mid-scroll
+    /// changes how pages are CUT — capped pages break on lane boundaries,
+    /// uncapped ones anywhere — so continuing across the change would skip or
+    /// repeat. A 400, like `days`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub per_lane: Option<u32>,
 }
 
 fn default_days() -> u32 {
@@ -101,6 +116,25 @@ pub struct RecentChangesQuery {
     /// caller shares nothing with returns an empty page rather than a 403:
     /// same anti-enumeration shape the photos `drive_id` filter uses.
     pub person: Option<Uuid>,
+    /// Cap each lane at its N most recent files. Omit — or send `0` — for no
+    /// cap. Maximum [`MAX_PER_LANE`]; a larger value is a 400 naming the
+    /// bound, like `days`.
+    ///
+    /// Capping changes how the page is CUT, not just how much it holds.
+    /// Uncapped, a page is `limit` rows and its boundary can fall anywhere,
+    /// including inside a lane. Capped, a lane's size is known before any row
+    /// is read (`min(lane_total, per_lane)`), so the page takes whole lanes
+    /// while they fit and a lane is never split across pages. The cursor is
+    /// then a lane boundary, never a row inside one.
+    ///
+    /// Consequence worth knowing: a single lane bigger than `limit` still
+    /// comes back whole — one lane is always taken — so a capped page can
+    /// return up to `limit + per_lane - 1` rows. Refusing `limit < per_lane`
+    /// instead would make two independent parameters interdependent.
+    ///
+    /// Meaningless without lanes, so pairing it with `order_by=changed_at` is
+    /// a 400 rather than a silent no-op.
+    pub per_lane: Option<u32>,
 }
 
 /// One row: a file, and the one person-and-time this row is about.

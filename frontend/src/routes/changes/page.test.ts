@@ -293,6 +293,83 @@ it('shows Modified by per row, so one file in two lanes names both people', asyn
 	});
 });
 
+// `per_lane` caps PEOPLE lanes, which are the only lanes the server knows
+// about — the date and type axes both ride `order_by=changed_at`, where the
+// server answers 400 rather than ignoring it. So the toggle renders only on
+// the people axis, and the parameter is sent only from there. Both halves
+// pinned: sending it on the wrong axis is a broken page, not a cosmetic slip.
+it('caps people lanes, and sends no cap on the other axes', async () => {
+	m(listRecentChanges).mockResolvedValue({
+		items: [change('f1', 'notes.txt', 'bob', '2024-01-01T00:00:00Z')],
+		next_cursor: null
+	});
+	render(ChangesPage);
+	await waitFor(() => expect(listRecentChanges).toHaveBeenCalled());
+
+	expect(listRecentChanges).toHaveBeenLastCalledWith(
+		expect.objectContaining({ query: expect.objectContaining({ per_lane: 10 }) })
+	);
+	// Placement, not just presence — the same check `/recent` makes of its
+	// Clear button, for the mirror-image reason. This belongs in
+	// `.view-toggle` with the group-by and view controls, because it changes
+	// what you SEE; `.action-buttons` is for things that act on the page.
+	const filterBtn = screen.getByTestId('changes-filter-btn');
+	expect(filterBtn.closest('.view-toggle')).toBeTruthy();
+	expect(filterBtn.closest('.action-buttons')).toBeNull();
+	// LAST in the cluster, after the grid/list toggle — the trailing slot,
+	// so the page's own control adds to the row rather than splitting the
+	// built-in controls apart.
+	const cluster = filterBtn.closest('.view-toggle') as HTMLElement;
+	const controls = [...cluster.querySelectorAll('[data-testid]')].map((e) =>
+		e.getAttribute('data-testid')
+	);
+	expect(controls.at(-1)).toBe('changes-filter-btn');
+	expect(controls).toContain('display-mode-view-toggle-btn');
+
+	await fireEvent.click(filterBtn);
+	expect(await screen.findByTestId('changes-cap-toggle')).toBeTruthy();
+
+	await fireEvent.click(screen.getByTestId('display-mode-groupby-btn'));
+	await fireEvent.click(await screen.findByTestId('display-mode-groupby-type-item'));
+
+	await waitFor(() =>
+		expect(listRecentChanges).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				query: expect.objectContaining({ order_by: 'changed_at', per_lane: null })
+			})
+		)
+	);
+	// The panel is still open — jsdom's `fireEvent.click` dispatches no
+	// `pointerdown`, so the outside-click dismissal never fired. Clicking the
+	// trigger again would CLOSE it and make the next assertion pass because
+	// the whole panel vanished, which is what an earlier version of this test
+	// did. Assert the panel is open (the window radios are there) and the cap
+	// row specifically is not.
+	expect(screen.getByTestId('changes-days-30')).toBeTruthy();
+	expect(screen.queryByTestId('changes-cap-toggle')).toBeNull();
+});
+
+// Turning the cap off refetches from the first page: the two modes cut pages
+// differently — capped breaks on lane boundaries, uncapped anywhere — so the
+// server refuses a cursor minted under the other one.
+it('refetches from the first page when the cap is toggled', async () => {
+	m(listRecentChanges).mockResolvedValue({
+		items: [change('f1', 'notes.txt', 'bob', '2024-01-01T00:00:00Z')],
+		next_cursor: 'cursor-1'
+	});
+	render(ChangesPage);
+	await waitFor(() => expect(listRecentChanges).toHaveBeenCalled());
+
+	await fireEvent.click(screen.getByTestId('changes-filter-btn'));
+	await fireEvent.click(await screen.findByTestId('changes-cap-toggle'));
+
+	await waitFor(() =>
+		expect(listRecentChanges).toHaveBeenLastCalledWith(
+			expect.objectContaining({ query: expect.objectContaining({ per_lane: null, cursor: null }) })
+		)
+	);
+});
+
 // No sort-direction toggle, because the endpoint has no `reverse` parameter.
 // `DisplayModeControls` renders that button whenever `groups` is non-empty, so
 // passing `groupBys` was enough to make it appear — bound to a variable
@@ -325,7 +402,8 @@ it('refetches from the first page when the window changes', async () => {
 		expect.objectContaining({ query: expect.objectContaining({ days: 30 }) })
 	);
 
-	await fireEvent.change(screen.getByTestId('changes-days-select'), { target: { value: '7' } });
+	await fireEvent.click(screen.getByTestId('changes-filter-btn'));
+	await fireEvent.click(await screen.findByTestId('changes-days-7'));
 
 	await waitFor(() =>
 		expect(listRecentChanges).toHaveBeenLastCalledWith(

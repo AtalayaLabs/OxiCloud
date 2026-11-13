@@ -83,6 +83,38 @@ const VISIBLE_FILES_CTE: &str = r#"
     )
 "#;
 
+/// The row projection, shared by the capped and uncapped row queries so the
+/// two cannot drift in what a `FileChangeRow` is made of. Both bind `$1` as
+/// the caller and expect `f` (files), `fo` (folders) and `t` (touches) in
+/// scope.
+const ROW_COLUMNS: &str = r#"
+                    f.id                                           AS file_id,
+                    f.name                                         AS name,
+                    f.folder_id                                    AS folder_id,
+                    fo.path                                        AS folder_path,
+                    f.size                                         AS size,
+                    f.mime_type                                    AS mime_type,
+                    f.created_at                                   AS created_at,
+                    f.content_modified_at                          AS content_modified_at,
+                    f.drive_id                                     AS drive_id,
+                    f.blob_hash                                    AS blob_hash,
+                    f.created_by                                   AS created_by,
+                    f.updated_by                                   AS updated_by,
+                    EXISTS (
+                        SELECT 1 FROM auth.user_favorites uf
+                         WHERE uf.user_id = $1
+                           AND uf.item_id = f.id::text
+                           AND uf.item_type = 'file'
+                    )                                              AS is_favorite,
+                    EXISTS (
+                        SELECT 1 FROM storage.role_grants g
+                         WHERE g.resource_id = f.id
+                           AND g.resource_type = 'file'
+                    )                                              AS is_shared,
+                    t.touched_at                                   AS changed_at,
+                    t.user_id                                      AS changed_by
+"#;
+
 /// Reads for the recent-changes feed. Caller-scoped: every query takes
 /// `caller_id` as `$1` and filters through [`VISIBLE_FILES_CTE`], so there is
 /// no shape in which this returns a row the caller could not already open.
@@ -164,64 +196,37 @@ impl RecentChangesPgRepository {
     /// interleave people, and a client drawing a swimlane break whenever the
     /// person changes would open and close the same lane repeatedly down the
     /// page. The keyset therefore compares `(lane_rank, changed_at, file_id)`
-    /// in that precedence, which is why `after_rank` exists — the caller
-    /// resolves the cursor's lane to its position in the lane list it just
-    /// fetched.
-    #[allow(clippy::too_many_arguments)]
+    /// in that precedence.
+    ///
+    /// This is the UNCAPPED path, where a page is `limit` rows and its
+    /// boundary can land inside a lane. With a per-lane cap the caller uses
+    /// [`Self::capped_rows_for_lanes`] instead, which needs no keyset at all
+    /// because it always takes whole lanes from the top.
     pub async fn rows_for_lanes(
         &self,
         caller_id: Uuid,
         days: i32,
         lane_ids: &[Uuid],
-        after_rank: Option<i32>,
         after_ts: Option<DateTime<Utc>>,
         after_id: Option<Uuid>,
         limit: i64,
     ) -> Result<Vec<FileChangeRow>, DomainError> {
         let sql = format!(
             "WITH {VISIBLE_FILES_CTE}
-             SELECT f.id                                           AS file_id,
-                    f.name                                         AS name,
-                    f.folder_id                                    AS folder_id,
-                    fo.path                                        AS folder_path,
-                    f.size                                         AS size,
-                    f.mime_type                                    AS mime_type,
-                    f.created_at                                   AS created_at,
-                    f.content_modified_at                          AS content_modified_at,
-                    f.drive_id                                     AS drive_id,
-                    f.blob_hash                                    AS blob_hash,
-                    f.created_by                                   AS created_by,
-                    f.updated_by                                   AS updated_by,
-                    EXISTS (
-                        SELECT 1 FROM auth.user_favorites uf
-                         WHERE uf.user_id = $1
-                           AND uf.item_id = f.id::text
-                           AND uf.item_type = 'file'
-                    )                                              AS is_favorite,
-                    EXISTS (
-                        SELECT 1 FROM storage.role_grants g
-                         WHERE g.resource_id = f.id
-                           AND g.resource_type = 'file'
-                    )                                              AS is_shared,
-                    t.touched_at                                   AS changed_at,
-                    t.user_id                                      AS changed_by
+             SELECT {ROW_COLUMNS}
                FROM storage.file_content_touches t
                JOIN storage.files f ON f.id = t.file_id
                LEFT JOIN storage.folders fo ON fo.id = f.folder_id
               WHERE t.touched_at > NOW() - ($2 || ' days')::interval
                 AND t.file_id IN (SELECT id FROM visible_files)
                 AND ($3::uuid[] IS NULL OR t.user_id = ANY($3))
-                AND ($5::timestamptz IS NULL
-                     OR ($4::int IS NOT NULL
-                         AND array_position($3, t.user_id) > $4)
-                     OR (($4::int IS NULL
-                          OR array_position($3, t.user_id) = $4)
-                         AND (t.touched_at < $5
-                              OR (t.touched_at = $5 AND t.file_id < $6))))
+                AND ($4::timestamptz IS NULL
+                     OR t.touched_at < $4
+                     OR (t.touched_at = $4 AND t.file_id < $5))
               ORDER BY CASE WHEN $3::uuid[] IS NULL THEN 0
                             ELSE array_position($3, t.user_id) END,
                        t.touched_at DESC, t.file_id DESC
-              LIMIT $7"
+              LIMIT $6"
         );
         let lanes: Option<&[Uuid]> = if lane_ids.is_empty() {
             None
@@ -232,7 +237,6 @@ impl RecentChangesPgRepository {
             .bind(caller_id)
             .bind(days.to_string())
             .bind(lanes)
-            .bind(after_rank)
             .bind(after_ts)
             .bind(after_id)
             .bind(limit)
@@ -240,33 +244,97 @@ impl RecentChangesPgRepository {
             .await
             .map_err(|e| DomainError::internal_error("RecentChanges", format!("rows: {e}")))?;
 
-        rows.into_iter()
-            .map(|r| {
-                Ok(FileChangeRow {
-                    file_id: r.try_get("file_id").map_err(decode)?,
-                    name: r.try_get("name").map_err(decode)?,
-                    folder_id: r.try_get("folder_id").map_err(decode)?,
-                    folder_path: r.try_get("folder_path").map_err(decode)?,
-                    size: r.try_get("size").map_err(decode)?,
-                    mime_type: r.try_get("mime_type").map_err(decode)?,
-                    created_at: r.try_get("created_at").map_err(decode)?,
-                    content_modified_at: r.try_get("content_modified_at").map_err(decode)?,
-                    drive_id: r.try_get("drive_id").map_err(decode)?,
-                    blob_hash: r.try_get("blob_hash").map_err(decode)?,
-                    created_by: r.try_get("created_by").map_err(decode)?,
-                    updated_by: r.try_get("updated_by").map_err(decode)?,
-                    is_favorite: r.try_get("is_favorite").map_err(decode)?,
-                    is_shared: r.try_get("is_shared").map_err(decode)?,
-                    changed_at: r.try_get("changed_at").map_err(decode)?,
-                    changed_by: r.try_get("changed_by").map_err(decode)?,
-                })
-            })
-            .collect()
+        rows.into_iter().map(row_from).collect()
     }
 }
 
 fn decode(e: sqlx::Error) -> DomainError {
     DomainError::internal_error("RecentChanges", format!("decode: {e}"))
+}
+
+impl RecentChangesPgRepository {
+    /// Step 2, CAPPED: the `per_lane` most recent files in each of these
+    /// lanes, lane-major.
+    ///
+    /// No keyset, and that is the point. A capped page takes whole lanes, so
+    /// every row of every lane it names belongs to it — there is no "resume
+    /// inside a lane" to express, and a page boundary is always a lane
+    /// boundary.
+    ///
+    /// `LATERAL` rather than `ROW_NUMBER() OVER (PARTITION BY …)`, for the
+    /// reason this module's two-step design exists at all: a window function
+    /// ranks every row of a partition before the filter can discard any, so a
+    /// lane with 5 000 touches would pay for 5 000 to show 10. The lateral is
+    /// one index scan per lane over `idx_touches_user_touched`
+    /// `(user_id, touched_at DESC)` that STOPS at `LIMIT`, so a busy lane
+    /// costs the same as a quiet one.
+    ///
+    /// `WITH ORDINALITY` carries the lane's position in the caller's ordered
+    /// list, which is what `array_position` was doing in the uncapped query —
+    /// cheaper here, since it comes for free with the unnest.
+    pub async fn capped_rows_for_lanes(
+        &self,
+        caller_id: Uuid,
+        days: i32,
+        lane_ids: &[Uuid],
+        per_lane: i64,
+    ) -> Result<Vec<FileChangeRow>, DomainError> {
+        if lane_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let sql = format!(
+            "WITH {VISIBLE_FILES_CTE}
+             SELECT {ROW_COLUMNS}
+               FROM unnest($3::uuid[]) WITH ORDINALITY AS l(lane_user, lane_rank)
+               JOIN LATERAL (
+                    SELECT tt.file_id, tt.user_id, tt.touched_at
+                      FROM storage.file_content_touches tt
+                     WHERE tt.user_id = l.lane_user
+                       AND tt.touched_at > NOW() - ($2 || ' days')::interval
+                       AND tt.file_id IN (SELECT id FROM visible_files)
+                     ORDER BY tt.touched_at DESC, tt.file_id DESC
+                     LIMIT $4
+               ) t ON TRUE
+               JOIN storage.files f ON f.id = t.file_id
+               LEFT JOIN storage.folders fo ON fo.id = f.folder_id
+              ORDER BY l.lane_rank, t.touched_at DESC, t.file_id DESC"
+        );
+        let rows = sqlx::query(&sql)
+            .bind(caller_id)
+            .bind(days.to_string())
+            .bind(lane_ids)
+            .bind(per_lane)
+            .fetch_all(self.pool.as_ref())
+            .await
+            .map_err(|e| {
+                DomainError::internal_error("RecentChanges", format!("capped rows: {e}"))
+            })?;
+
+        rows.into_iter().map(row_from).collect()
+    }
+}
+
+/// Shared by both row queries — one place that knows how a `FileChangeRow` is
+/// decoded, so the capped and uncapped paths cannot drift.
+fn row_from(r: sqlx::postgres::PgRow) -> Result<FileChangeRow, DomainError> {
+    Ok(FileChangeRow {
+        file_id: r.try_get("file_id").map_err(decode)?,
+        name: r.try_get("name").map_err(decode)?,
+        folder_id: r.try_get("folder_id").map_err(decode)?,
+        folder_path: r.try_get("folder_path").map_err(decode)?,
+        size: r.try_get("size").map_err(decode)?,
+        mime_type: r.try_get("mime_type").map_err(decode)?,
+        created_at: r.try_get("created_at").map_err(decode)?,
+        content_modified_at: r.try_get("content_modified_at").map_err(decode)?,
+        drive_id: r.try_get("drive_id").map_err(decode)?,
+        blob_hash: r.try_get("blob_hash").map_err(decode)?,
+        created_by: r.try_get("created_by").map_err(decode)?,
+        updated_by: r.try_get("updated_by").map_err(decode)?,
+        is_favorite: r.try_get("is_favorite").map_err(decode)?,
+        is_shared: r.try_get("is_shared").map_err(decode)?,
+        changed_at: r.try_get("changed_at").map_err(decode)?,
+        changed_by: r.try_get("changed_by").map_err(decode)?,
+    })
 }
 
 // The read side's own invariants, against a real database — the two queries
@@ -486,7 +554,7 @@ mod recent_changes_read_tests {
         assert_eq!(lanes[1].lane_total, 1);
 
         let rows = repo
-            .rows_for_lanes(viewer, DAYS, &[carol, bob], None, None, None, 10)
+            .rows_for_lanes(viewer, DAYS, &[carol, bob], None, None, 10)
             .await
             .expect("rows");
         let mine: Vec<_> = rows.iter().filter(|r| r.file_id == file).collect();
@@ -542,7 +610,7 @@ mod recent_changes_read_tests {
         assert_eq!(lanes[0].lane_latest, second);
 
         let rows = repo
-            .rows_for_lanes(viewer, DAYS, &[bob], None, None, None, 10)
+            .rows_for_lanes(viewer, DAYS, &[bob], None, None, 10)
             .await
             .expect("rows");
         assert_eq!(rows.len(), 2);
@@ -595,7 +663,7 @@ mod recent_changes_read_tests {
 
         let ids: Vec<Uuid> = lanes.iter().map(|l| l.user_id).collect();
         let all = repo
-            .rows_for_lanes(viewer, DAYS, &ids, None, None, None, 10)
+            .rows_for_lanes(viewer, DAYS, &ids, None, None, 10)
             .await
             .expect("rows");
         let order: Vec<Uuid> = all.iter().map(|r| r.file_id).collect();
@@ -607,7 +675,7 @@ mod recent_changes_read_tests {
 
         // Page 1 of a limit-2 walk, then finish Bob's lane from the cursor.
         let page1 = repo
-            .rows_for_lanes(viewer, DAYS, &ids, None, None, None, 2)
+            .rows_for_lanes(viewer, DAYS, &ids, None, None, 2)
             .await
             .expect("page 1");
         assert_eq!(
@@ -615,7 +683,7 @@ mod recent_changes_read_tests {
             vec![bob_new, bob_old]
         );
         let rest_of_bob = repo
-            .rows_for_lanes(viewer, DAYS, &[bob], None, Some(t_old), Some(bob_old), 10)
+            .rows_for_lanes(viewer, DAYS, &[bob], Some(t_old), Some(bob_old), 10)
             .await
             .expect("rest of Bob's lane");
         assert!(
@@ -637,7 +705,7 @@ mod recent_changes_read_tests {
         assert_eq!(next_lanes.len(), 1, "only Carol's lane is left");
         assert_eq!(next_lanes[0].user_id, carol);
         let page2 = repo
-            .rows_for_lanes(viewer, DAYS, &[carol], None, None, None, 10)
+            .rows_for_lanes(viewer, DAYS, &[carol], None, None, 10)
             .await
             .expect("page 2");
         assert_eq!(
@@ -646,18 +714,31 @@ mod recent_changes_read_tests {
             "each file exactly once across the walk"
         );
 
-        // `after_rank` is 1-BASED, because `array_position` is. No caller
-        // passes it today — `collect_lane_page` finishes the open lane with a
-        // single-lane query instead — and this pin is what stops the first one
-        // that does from skipping a lane with an off-by-one.
-        let after_bob = repo
-            .rows_for_lanes(viewer, DAYS, &ids, Some(1), Some(t_old), Some(bob_old), 10)
+        // The CAPPED path returns the same lane-major order, trimmed per lane
+        // rather than keyset-resumed. `cap = 1` keeps only each lane's most
+        // recent file, so Bob's older one drops out and Carol's single one
+        // stays — which also proves the trim is per LANE and not a global
+        // `LIMIT` dressed up as one.
+        let capped = repo
+            .capped_rows_for_lanes(viewer, DAYS, &ids, 1)
             .await
-            .expect("rank-keyed page");
+            .expect("capped rows");
         assert_eq!(
-            after_bob.iter().map(|r| r.file_id).collect::<Vec<_>>(),
-            vec![carol_mid],
-            "rank 1 is Bob, so the page resumes in Carol's lane"
+            capped.iter().map(|r| r.file_id).collect::<Vec<_>>(),
+            vec![bob_new, carol_mid],
+            "one row per lane, newest first, still lane-major"
+        );
+
+        // And the cap is a ceiling, not a quota: a lane with fewer files than
+        // the cap contributes what it has rather than padding or vanishing.
+        let roomy = repo
+            .capped_rows_for_lanes(viewer, DAYS, &ids, 10)
+            .await
+            .expect("capped rows, roomy");
+        assert_eq!(
+            roomy.iter().map(|r| r.file_id).collect::<Vec<_>>(),
+            vec![bob_new, bob_old, carol_mid],
+            "under the cap, every row survives in lane-major order"
         );
     }
 }

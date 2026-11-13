@@ -868,6 +868,7 @@
     "empty_hint": "アクセスできるファイルの変更がここに表示されます",
     "col_changed": "変更日時",
     "lane_files": "{{n}} 件のファイル",
+    "cap_lanes": "1 人あたり最新 {{n}} 件",
     "window": "期間",
     "window_7": "過去 7 日間",
     "window_30": "過去 30 日間",
@@ -1958,6 +1959,7 @@
     "retry": "もう一度やり直してください",
     "select": "選択",
     "select_all": "すべて選択",
+    "filter": "絞り込み",
     "dismiss": "却下する"
   },
   "device": {

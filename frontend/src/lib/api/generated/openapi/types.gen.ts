@@ -11475,6 +11475,27 @@ export type ListRecentChangesData = {
          * same anti-enumeration shape the photos `drive_id` filter uses.
          */
         person?: string | null;
+        /**
+         * Cap each lane at its N most recent files. Omit — or send `0` — for no
+         * cap. Maximum [`MAX_PER_LANE`]; a larger value is a 400 naming the
+         * bound, like `days`.
+         *
+         * Capping changes how the page is CUT, not just how much it holds.
+         * Uncapped, a page is `limit` rows and its boundary can fall anywhere,
+         * including inside a lane. Capped, a lane's size is known before any row
+         * is read (`min(lane_total, per_lane)`), so the page takes whole lanes
+         * while they fit and a lane is never split across pages. The cursor is
+         * then a lane boundary, never a row inside one.
+         *
+         * Consequence worth knowing: a single lane bigger than `limit` still
+         * comes back whole — one lane is always taken — so a capped page can
+         * return up to `limit + per_lane - 1` rows. Refusing `limit < per_lane`
+         * instead would make two independent parameters interdependent.
+         *
+         * Meaningless without lanes, so pairing it with `order_by=changed_at` is
+         * a 400 rather than a silent no-op.
+         */
+        per_lane?: number | null;
     };
     url: '/api/files/recent-changes';
 };

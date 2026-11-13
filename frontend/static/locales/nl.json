@@ -868,6 +868,7 @@
     "empty_hint": "Wijzigingen in bestanden waartoe je toegang hebt verschijnen hier",
     "col_changed": "Gewijzigd",
     "lane_files": "{{n}} bestand(en)",
+    "cap_lanes": "Top {{n}} per persoon",
     "window": "Tijdsbereik",
     "window_7": "Afgelopen 7 dagen",
     "window_30": "Afgelopen 30 dagen",
@@ -1958,6 +1959,7 @@
     "retry": "Probeer het opnieuw",
     "select": "Selecteer",
     "select_all": "Selecteer alles",
+    "filter": "Filteren",
     "dismiss": "Afwijzen"
   },
   "device": {

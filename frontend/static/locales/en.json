@@ -917,6 +917,7 @@
     "empty_hint": "Changes to files you can reach will appear here",
     "col_changed": "Changed",
     "lane_files": "{{n}} file(s)",
+    "cap_lanes": "Top {{n}} per person",
     "window": "Time range",
     "window_7": "Last 7 days",
     "window_30": "Last 30 days",
@@ -1989,6 +1990,7 @@
     "yes": "Yes",
     "dismiss": "Dismiss",
     "saving": "Saving…",
+    "filter": "Filter",
     "deleting": "Deleting…"
   },
   "device": {

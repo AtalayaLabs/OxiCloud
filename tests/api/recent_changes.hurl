@@ -497,6 +497,73 @@ jsonpath "$.items" isEmpty
 
 
 # ─────────────────────────────────────────────────────────────
+# 6b — `per_lane` caps a LANE, and is bounded like `days`.
+#
+#      Ann has three files in this window (`ann_file` in her folder,
+#      plus the two in her home from 5b/5c — `ann_file2` arrives
+#      later). `per_lane=1` must return exactly one of them while
+#      `lane_total` still counts them all: the cap trims what is SHOWN
+#      and never what is COUNTED, which is what lets a lane header read
+#      "Ann · 3" above one row and point at the `?person=` drill-in.
+#
+#      The bound is a 400, not a clamp, for the `days` reason — and
+#      `per_lane` on the chronological axis is a 400 too, because there
+#      are no lanes there to cap. A silently ignored parameter is how a
+#      client ends up believing it is paging capped data.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/files/recent-changes?order_by=modifier&person={{ann_id}}&per_lane=1
+Authorization: Bearer {{ann_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.items" count == 1
+jsonpath "$.items[0].modifier_id" == "{{ann_id}}"
+# Counted before the cap: the cap is a display bound, not a filter on
+# what the lane contains.
+jsonpath "$.items[0].lane_total" > 1
+
+
+# 0 is "no cap", the same as omitting it — the UI sends one or the
+# other from a checkbox, so the two must behave identically.
+GET {{base_url}}/api/files/recent-changes?order_by=modifier&person={{ann_id}}&per_lane=0
+Authorization: Bearer {{ann_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.items" count > 1
+
+
+GET {{base_url}}/api/files/recent-changes?order_by=modifier&per_lane=51
+Authorization: Bearer {{ann_token}}
+
+HTTP 400
+
+
+GET {{base_url}}/api/files/recent-changes?order_by=changed_at&per_lane=10
+Authorization: Bearer {{ann_token}}
+
+HTTP 400
+
+
+# A cursor minted WITHOUT a cap cannot be continued WITH one: the two
+# modes cut pages differently — capped breaks on lane boundaries,
+# uncapped anywhere — so continuing across the change would skip or
+# repeat. Same guard as `days` and `person`.
+GET {{base_url}}/api/files/recent-changes?order_by=modifier&limit=1
+Authorization: Bearer {{ann_token}}
+
+HTTP 200
+[Captures]
+uncapped_cursor: jsonpath "$.next_cursor"
+
+
+GET {{base_url}}/api/files/recent-changes?order_by=modifier&limit=1&per_lane=10&cursor={{uncapped_cursor}}
+Authorization: Bearer {{ann_token}}
+
+HTTP 400
+
+
+# ─────────────────────────────────────────────────────────────
 # 7 — `days` is validated, never clamped.
 #
 #     A client asking for a year is told so. Clamping would quietly

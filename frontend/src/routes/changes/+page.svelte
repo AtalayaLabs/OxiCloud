@@ -20,6 +20,7 @@
 		type GroupByDef
 	} from '$lib/components/ResourceList.svelte';
 	import AvatarOverlayChip from '$lib/components/AvatarOverlayChip.svelte';
+	import FilterMenu from '$lib/components/FilterMenu.svelte';
 	import UserVignette from '$lib/components/UserVignette.svelte';
 	import type { FileItem, FolderItem } from '$lib/api/types';
 	import UserAvatar from '$lib/components/UserAvatar.svelte';
@@ -79,7 +80,23 @@
 	// variable `load()` could not send.
 	/** Server default is 30 and its ceiling is 90 — a larger value is a 400
 	 *  naming the bound, so the selector offers exactly what the API accepts. */
-	let days = $state(30);
+	/** Mirrors the server's own default, and `active` on the filter button
+	 *  keys off it — so "is a filter set?" is one definition, not two. */
+	const DEFAULT_DAYS = 30;
+	let days = $state(DEFAULT_DAYS);
+	/**
+	 * Cap each person's lane at its 10 most recent files, with the rest a
+	 * `?person=` drill-in away. On by default: an unbounded lane is the
+	 * failure mode this page has — one sync client can own the whole feed.
+	 *
+	 * Only meaningful on the PEOPLE axis, because people lanes are the only
+	 * lanes the server knows about. The date and type axes run on
+	 * `order_by=changed_at`, where `per_lane` is a 400 rather than a silent
+	 * no-op — so `load()` sends it only when the axis is `modifier`, and the
+	 * toggle only renders there.
+	 */
+	let capLanes = $state(true);
+	const PER_LANE = 10;
 	/** modifier id → profile, for the lane header's avatar, name and email.
 	 *  A record rather than a `Map` so nothing reactive is mutated inside a
 	 *  derivation; reassigned per resolution, and a page has a handful of
@@ -217,7 +234,10 @@
 					cursor: reset ? null : (cursor ?? null),
 					order_by: orderBy,
 					days,
-					limit: 50
+					limit: 50,
+					// Only on the people axis: elsewhere there are no lanes and
+					// the server answers 400 rather than ignoring it.
+					per_lane: orderBy === 'modifier' && capLanes ? PER_LANE : null
 				}
 			});
 			const fresh = page.items as FileChangeItemDto[];
@@ -233,6 +253,15 @@
 		} finally {
 			loading = false;
 		}
+	}
+
+	function toggleCap() {
+		capLanes = !capLanes;
+		cursor = undefined;
+		// A cursor minted under one cap cannot continue under the other — the
+		// two modes cut pages differently (lane boundaries vs anywhere), so
+		// the server refuses the mismatch. Always a fresh first page.
+		void load(true);
 	}
 
 	function setDays(next: number) {
@@ -313,31 +342,71 @@
 		load(true, orderBy);
 	}}
 >
-	{#snippet actions()}
-		<!-- The window, as a plain select: three values, and the server
-		     rejects anything outside them rather than clamping, so the
-		     control offers exactly the accepted set. -->
-		<label class="changes-window">
-			<span class="changes-window__label">{t('changes.window', 'Time range')}</span>
+	{#snippet displayActions()}
+		<!--
+			Both filters behind one button. Neither is reached often — the
+			defaults (30 days, capped) are right nearly always — and inline
+			they cost permanent toolbar width on every viewport. `active`
+			marks the trigger whenever they are off their defaults, so a
+			collapsed filter can never silently explain a short list.
+
+			`displayActions`, not `actions`: this sits in `.view-toggle`
+			beside the group-by and view controls, which is where a control
+			that changes WHAT YOU SEE belongs. `actions` is the toolbar's
+			left cluster for things that act on the page — /files' Add,
+			/trash's Empty trash — and a filter dressed as one of those
+			reads as an operation rather than a view setting.
+		-->
+		<FilterMenu
+			label={t('common.filter', 'Filter')}
+			active={!capLanes || days !== DEFAULT_DAYS}
+			testId="changes-filter-btn"
+		>
+			{#if groupBy === 'modifier'}
+				<!--
+					People lanes only: the other axes bucket client-side on
+					`changed_at`, where the server has no lanes to cap and
+					answers 400. Rendering it there would offer a control that
+					cannot work.
+				-->
+				<label class="changes-filter__row">
+					<input
+						type="checkbox"
+						data-testid="changes-cap-toggle"
+						checked={capLanes}
+						onchange={toggleCap}
+					/>
+					<span>{t('changes.cap_lanes', { n: PER_LANE }, 'Top {{n}} per person')}</span>
+				</label>
+				<hr class="changes-filter__rule" />
+			{/if}
 			<!--
-				`aria-label` as well as the visible `<span>`, because that span
-				is `display: none` under 600px — which takes it out of the
-				accessibility tree, not just out of the layout, leaving an
-				unnamed combobox on exactly the viewport where the label was
-				dropped for space. Same string, so no new translation.
+				Radios, not a select: three mutually exclusive values that the
+				server validates rather than clamps, so the control offers
+				exactly the accepted set and shows which one is live without
+				being opened a second time. `name` groups them for the
+				keyboard, which is what makes arrow keys move between them.
 			-->
-			<select
-				class="changes-window__select"
-				aria-label={t('changes.window', 'Time range')}
-				data-testid="changes-days-select"
-				value={String(days)}
-				onchange={(e) => setDays(Number(e.currentTarget.value))}
-			>
-				<option value="7">{t('changes.window_7', 'Last 7 days')}</option>
-				<option value="30">{t('changes.window_30', 'Last 30 days')}</option>
-				<option value="90">{t('changes.window_90', 'Last 90 days')}</option>
-			</select>
-		</label>
+			{#each [7, 30, 90] as d (d)}
+				<label class="changes-filter__row">
+					<input
+						type="radio"
+						name="changes-window"
+						value={d}
+						checked={days === d}
+						data-testid={`changes-days-${d}`}
+						onchange={() => setDays(d)}
+					/>
+					<span>
+						{d === 7
+							? t('changes.window_7', 'Last 7 days')
+							: d === 30
+								? t('changes.window_30', 'Last 30 days')
+								: t('changes.window_90', 'Last 90 days')}
+					</span>
+				</label>
+			{/each}
+		</FilterMenu>
 	{/snippet}
 	{#snippet bucketLabel(key, label)}
 		{@const total = laneTotals[key]}
@@ -423,36 +492,21 @@
 {/if}
 
 <style>
-	.changes-window {
-		display: inline-flex;
+	.changes-filter__row {
 		align-items: center;
-		gap: 0.5rem;
-	}
-
-	/* Mobile-first: the three options describe themselves, so the label is
-	   dead weight on a narrow toolbar and only earns its place once there is
-	   room. The query expands, it does not restrict. */
-	.changes-window__label {
-		color: var(--color-text-secondary);
-		display: none;
-		font-size: 0.85rem;
-	}
-
-	@media (width >= 600px) {
-		.changes-window__label {
-			display: inline;
-		}
-	}
-
-	/* Mirrors `LanguageSelect` — the one styled select in the app — rather
-	   than inventing a second look for the same control. */
-	.changes-window__select {
-		background: var(--color-bg-input);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
 		color: var(--color-text);
+		cursor: pointer;
+		display: flex;
 		font-size: 0.85rem;
-		padding: 0.35rem 0.5rem;
+		gap: 0.45rem;
+		white-space: nowrap;
+	}
+
+	.changes-filter__rule {
+		border: 0;
+		border-top: 1px solid var(--color-border);
+		margin: 0.15rem 0;
+		width: 100%;
 	}
 
 	.changes-lane {

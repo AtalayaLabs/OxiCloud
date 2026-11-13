@@ -868,6 +868,7 @@
     "empty_hint": "접근할 수 있는 파일의 변경 내역이 여기에 표시됩니다",
     "col_changed": "변경됨",
     "lane_files": "파일 {{n}}개",
+    "cap_lanes": "사람당 최근 {{n}}개",
     "window": "기간",
     "window_7": "최근 7일",
     "window_30": "최근 30일",
@@ -1958,6 +1959,7 @@
     "select": "선택",
     "select_all": "전체 선택",
     "dismiss": "닫기",
+    "filter": "필터",
     "deleting": "삭제 중…"
   },
   "device": {

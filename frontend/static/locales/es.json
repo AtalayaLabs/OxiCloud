@@ -868,6 +868,7 @@
     "empty_hint": "Los cambios en los archivos a los que tienes acceso aparecerán aquí",
     "col_changed": "Modificado",
     "lane_files": "{{n}} archivo(s)",
+    "cap_lanes": "Los {{n}} más recientes por persona",
     "window": "Intervalo de tiempo",
     "window_7": "Últimos 7 días",
     "window_30": "Últimos 30 días",
@@ -1958,6 +1959,7 @@
     "retry": "Intentar otra vez",
     "select": "Seleccionar",
     "select_all": "Seleccionar todo",
+    "filter": "Filtrar",
     "dismiss": "Despedir"
   },
   "device": {

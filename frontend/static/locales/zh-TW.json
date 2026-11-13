@@ -868,6 +868,7 @@
     "empty_hint": "您可存取的檔案變更將顯示在此",
     "col_changed": "已變更",
     "lane_files": "{{n}} 個檔案",
+    "cap_lanes": "每人最近 {{n}} 個",
     "window": "時間範圍",
     "window_7": "最近 7 天",
     "window_30": "最近 30 天",
@@ -1958,6 +1959,7 @@
     "retry": "再試一次",
     "select": "選擇",
     "select_all": "選擇全部",
+    "filter": "篩選",
     "dismiss": "解僱"
   },
   "device": {

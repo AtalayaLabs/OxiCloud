@@ -32,8 +32,8 @@ use crate::application::dtos::cursor::{CursorListResponse, PageCursor};
 use crate::application::dtos::display_helpers::{category_for, intern_mime};
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::recent_changes_dto::{
-    ChangeLane, DEFAULT_DAYS, FileChangeItemDto, FileChangeRow, MAX_DAYS, RecentChangesCursor,
-    RecentChangesOrderBy, RecentChangesQuery,
+    ChangeLane, DEFAULT_DAYS, FileChangeItemDto, FileChangeRow, MAX_DAYS, MAX_PER_LANE,
+    RecentChangesCursor, RecentChangesOrderBy, RecentChangesQuery,
 };
 use crate::common::di::AppState;
 use crate::domain::entities::file::File;
@@ -81,14 +81,45 @@ pub async fn list_recent_changes(
         .into_response();
     }
 
-    // A cursor minted under a different axis, window or person filter cannot
-    // be continued: each of those changes which rows exist and in what order,
-    // so carrying on would skip or repeat silently. 400, not a reset to page
-    // one — a mangled cursor must not look like a fresh listing.
+    // `per_lane` caps each lane at its N most recent files. `0` and absent
+    // both mean "no cap" — the client sends one or the other depending on a
+    // toggle, and treating them alike keeps that trivial.
+    let per_lane: Option<i64> = match params.per_lane {
+        None | Some(0) => None,
+        Some(n) if n <= MAX_PER_LANE => Some(n as i64),
+        Some(n) => {
+            return AppError::bad_request(format!(
+                "per_lane must be between 1 and {MAX_PER_LANE}, or 0 for no cap (got {n})"
+            ))
+            .into_response();
+        }
+    };
+    // Capping is a property of LANES, so it means nothing on the
+    // chronological axis. Refused rather than ignored: a silently dropped
+    // parameter is how a client ends up believing it is paging capped data.
+    if per_lane.is_some() && order_by == RecentChangesOrderBy::ChangedAt {
+        return AppError::bad_request(
+            "per_lane requires order_by=modifier; there are no lanes on changed_at",
+        )
+        .into_response();
+    }
+    let per_lane_echo = per_lane.map(|c| c as u32);
+
+    // A cursor minted under a different axis, window, person filter or cap
+    // cannot be continued: each of those changes which rows exist, in what
+    // order, or where the page boundaries fall, so carrying on would skip or
+    // repeat silently. A cap is the sharpest of the four — capped pages break
+    // on lane boundaries and uncapped ones anywhere. 400, not a reset to page
+    // one: a mangled cursor must not look like a fresh listing.
     let decoded = match params.cursor.as_deref() {
         None => None,
         Some(raw) => match RecentChangesCursor::decode(raw) {
-            Some(c) if c.order_by == order_by && c.days == days && c.person == params.person => {
+            Some(c)
+                if c.order_by == order_by
+                    && c.days == days
+                    && c.person == params.person
+                    && c.per_lane == per_lane_echo =>
+            {
                 Some(c)
             }
             Some(_) => {
@@ -118,7 +149,6 @@ pub async fn list_recent_changes(
                     caller_id,
                     days_i32,
                     person_filter.as_deref().unwrap_or(&[]),
-                    None,
                     decoded.as_ref().map(|c| c.item_ts),
                     decoded.as_ref().map(|c| c.resource_id),
                     limit + 1,
@@ -139,11 +169,14 @@ pub async fn list_recent_changes(
         RecentChangesOrderBy::Modifier => {
             match collect_lane_page(
                 repo,
-                caller_id,
-                days_i32,
-                days,
-                limit,
-                params.person,
+                LanePageRequest {
+                    caller_id,
+                    days_i32,
+                    days,
+                    limit,
+                    person: params.person,
+                    per_lane,
+                },
                 decoded.as_ref(),
             )
             .await
@@ -195,14 +228,29 @@ pub async fn list_recent_changes(
     with_cache_headers(Json(envelope), &etag).into_response()
 }
 
-/// Assemble one page of lane-major rows, plus the lanes it covers.
-async fn collect_lane_page(
-    repo: &crate::infrastructure::repositories::pg::RecentChangesPgRepository,
+/// Everything one lane page is shaped by, after validation.
+///
+/// A struct rather than six positional parameters: `days` and `days_i32` are
+/// the same number in two types, and `limit` / `per_lane` are both row counts
+/// — adjacent integers that a call site can silently transpose.
+struct LanePageRequest {
     caller_id: Uuid,
     days_i32: i32,
     days: u32,
     limit: i64,
     person: Option<Uuid>,
+    per_lane: Option<i64>,
+}
+
+/// The cap as the cursor records it — `u32` on the wire, `i64` in SQL.
+fn per_lane_echo(per_lane: Option<i64>) -> Option<u32> {
+    per_lane.map(|c| c as u32)
+}
+
+/// Assemble one page of lane-major rows, plus the lanes it covers.
+async fn collect_lane_page(
+    repo: &crate::infrastructure::repositories::pg::RecentChangesPgRepository,
+    req: LanePageRequest,
     cursor: Option<&RecentChangesCursor>,
 ) -> Result<
     (
@@ -212,10 +260,85 @@ async fn collect_lane_page(
     ),
     crate::common::errors::DomainError,
 > {
+    let LanePageRequest {
+        caller_id,
+        days_i32,
+        days,
+        limit,
+        person,
+        per_lane,
+    } = req;
     let only: Option<Vec<Uuid>> = person.map(|p| vec![p]);
     let mut rows: Vec<FileChangeRow> = Vec::new();
     let mut lanes: Vec<ChangeLane> = Vec::new();
 
+    // ── CAPPED: whole lanes only ────────────────────────────────────────
+    //
+    // With a cap, a lane's size is known before any row is read —
+    // `min(lane_total, per_lane)` — so the page can take lanes while they
+    // fit and never split one. That is the whole point of the mode: a page
+    // boundary is always a lane boundary, so the cursor is a lane keyset and
+    // there is no "resume inside a lane" to express.
+    //
+    // Rounding `limit` up to a multiple of the cap would NOT achieve this:
+    // lanes vary in size, so 50 rows is five cap-sized lanes only if every
+    // lane happens to be full. Packing by actual lane size does.
+    if let Some(cap) = per_lane {
+        let after = cursor.and_then(|c| c.lane_ts.zip(c.lane_id));
+        // `limit + 1` lanes is always enough to fill a page of `limit` rows,
+        // since a lane holds at least one row.
+        let batch = repo
+            .lanes(caller_id, days_i32, only.as_deref(), after, limit + 1)
+            .await?;
+
+        let fetched = batch.len();
+        let mut budget = 0i64;
+        let mut taken: Vec<ChangeLane> = Vec::new();
+        for lane in batch {
+            let size = lane.lane_total.min(cap);
+            // Always take the first lane, even when it alone exceeds the
+            // limit: refusing would stall the walk forever on a lane bigger
+            // than the page. The page then overshoots by less than `cap`,
+            // which the API documents.
+            if !taken.is_empty() && budget + size > limit {
+                break;
+            }
+            budget += size;
+            taken.push(lane);
+        }
+
+        // More to come if the budget stopped us short, or if the aggregate
+        // filled every slot it was asked for — the `+ 1` is the probe that
+        // tells "exactly enough" from "there is more".
+        let more = taken.len() < fetched || fetched as i64 == limit + 1;
+
+        if !taken.is_empty() {
+            let ids: Vec<Uuid> = taken.iter().map(|l| l.user_id).collect();
+            rows = repo
+                .capped_rows_for_lanes(caller_id, days_i32, &ids, cap)
+                .await?;
+            lanes = taken;
+        }
+        let next = match (more, lanes.last()) {
+            (true, Some(l)) => Some(RecentChangesCursor {
+                order_by: RecentChangesOrderBy::Modifier,
+                lane_ts: Some(l.lane_latest),
+                lane_id: Some(l.user_id),
+                // Carried but unread in this mode: the resume point is the
+                // lane boundary above. Kept so the cursor stays one type.
+                item_ts: l.lane_latest,
+                resource_id: l.user_id,
+                days,
+                person,
+                per_lane: per_lane_echo(per_lane),
+            }),
+            _ => None,
+        };
+        return Ok((rows, lanes, next));
+    }
+
+    // ── UNCAPPED: rows stream, a page may end inside a lane ─────────────
+    //
     // 1. The lane the previous page ended inside, if any. Its totals come
     //    from a one-lane aggregate so the header can still say "Bob · 14".
     if let Some(c) = cursor
@@ -230,7 +353,6 @@ async fn collect_lane_page(
                 caller_id,
                 days_i32,
                 &[lane_id],
-                None,
                 Some(c.item_ts),
                 Some(c.resource_id),
                 limit + 1,
@@ -261,7 +383,6 @@ async fn collect_lane_page(
                     caller_id,
                     days_i32,
                     &ids,
-                    None,
                     None,
                     None,
                     limit + 1 - rows.len() as i64,
@@ -319,6 +440,10 @@ fn split_page(
         resource_id: last.file_id,
         days,
         person,
+        // Always `None` here: this mints the cursor for the two UNCAPPED
+        // paths. A capped page mints its own, on the lane boundary, because
+        // it never ends mid-lane and has nothing to truncate.
+        per_lane: None,
     };
     (rows, Some(cursor))
 }
