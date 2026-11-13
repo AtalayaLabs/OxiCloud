@@ -102,10 +102,15 @@
 		// provenance across everyone who can reach the file. See
 		// `docs/plan/recently-modified.md` §6 for why they are not one page
 		// with two filters.
+		//
+		// "Changes", not "Recent changes": two adjacent entries both opening
+		// with "Recent" read as two filters over one dataset, which is the
+		// exact misreading the separate entry exists to avoid. The label now
+		// matches the route, and the icons differ (clock vs pen).
 		if (serverConfig.features.recent_changes) {
 			library.push({
 				href: '/changes',
-				label: t('nav.recent_changes', 'Recent changes'),
+				label: t('nav.changes', 'Changes'),
 				icon: 'pen',
 				section: 'changes'
 			});

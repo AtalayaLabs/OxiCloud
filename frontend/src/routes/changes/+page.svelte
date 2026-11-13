@@ -211,7 +211,7 @@
 	});
 </script>
 
-<svelte:head><title>{t('nav.recent_changes', 'Recent changes')} · OxiCloud</title></svelte:head>
+<svelte:head><title>{t('nav.changes', 'Changes')} · OxiCloud</title></svelte:head>
 
 <!--
 	Deliberately NOT `selectable` for v1. Selection is an id-keyed set, so
@@ -222,7 +222,7 @@
 	selection by `lane:file`, which is a `useSelection` change, not a page one.
 -->
 <ResourceList
-	title={t('nav.recent_changes', 'Recent changes')}
+	title={t('nav.changes', 'Changes')}
 	titleInToolbar
 	{items}
 	{loading}
@@ -250,8 +250,16 @@
 		     control offers exactly the accepted set. -->
 		<label class="changes-window">
 			<span class="changes-window__label">{t('changes.window', 'Time range')}</span>
+			<!--
+				`aria-label` as well as the visible `<span>`, because that span
+				is `display: none` under 600px — which takes it out of the
+				accessibility tree, not just out of the layout, leaving an
+				unnamed combobox on exactly the viewport where the label was
+				dropped for space. Same string, so no new translation.
+			-->
 			<select
 				class="changes-window__select"
+				aria-label={t('changes.window', 'Time range')}
 				data-testid="changes-days-select"
 				value={String(days)}
 				onchange={(e) => setDays(Number(e.currentTarget.value))}

@@ -751,13 +751,26 @@ consequences to be explicit about rather than discover:
 A **new Library entry**, not a tab on `/recent`:
 
 ```ts
-library.push({ href: '/changes', label: t('nav.recent_changes', 'Recent changes'),
+library.push({ href: '/changes', label: t('nav.changes', 'Changes'),
                icon: 'pen', section: 'changes' });
 ```
 
 gated on the flag, placed immediately after Recent. `pen` and `users` are the
 only fitting icons in the registry, and `users` collides with the People/faces
 sense.
+
+**"Changes", not "Recent changes"** (settled 2026-11-13, after the label read
+as confusing on a sandbox). Two adjacent entries both opening with "Recent"
+read as two filters over one dataset — the exact misreading this separate
+entry exists to prevent, so the prefix was the problem rather than the fix.
+The label now matches the route and the section key.
+
+Rejected: "Recent seen" (not idiomatic, and keeps the prefix); "Recently
+opened" for `/recent` (it is the established label in 16 locales and matches
+Drive, OneDrive and NextCloud — churning the familiar half to clarify the new
+one is the wrong trade); and "Activity", which NextCloud users would recognise
+but which promises shares, renames, comments and deletions, where this is
+content changes only.
 
 Why not a tab: `/recent` is the viewer's private access log and this is shared
 provenance — tabs would imply two filters over one dataset, the way
@@ -792,7 +805,7 @@ One detail the page owns: a lane can straddle a page boundary, so appending a
 page must merge into the open lane rather than draw a second header for the
 same person.
 
-i18n: `nav.recent_changes`, the page title, and the window selector labels —
+i18n: `nav.changes`, the page title, and the window selector labels —
 English in `en.json`, then all 15 locales (insert **before** an anchor key, per
 `project_i18n`). No Unknown-lane string is needed: `modifier_id` comes from the
 touch table, where `user_id` is `NOT NULL` and cascades, so every lane has a
