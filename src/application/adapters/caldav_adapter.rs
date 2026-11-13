@@ -1072,6 +1072,13 @@ impl CalDavAdapter {
         // Calendar timezone (empty for UTC)
         xml_writer.write_event(Event::Empty(BytesStart::new("C:calendar-timezone")))?;
 
+        // CalendarServer collection tag (see write_calendar_requested_props)
+        if let Some(ctag) = &calendar.ctag {
+            xml_writer.write_event(Event::Start(BytesStart::new("CS:getctag")))?;
+            xml_writer.write_event(Event::Text(BytesText::new(ctag)))?;
+            xml_writer.write_event(Event::End(BytesEnd::new("CS:getctag")))?;
+        }
+
         // Calendar color
         if let Some(color) = &calendar.color {
             xml_writer.write_event(Event::Start(BytesStart::new("CS:calendar-color")))?;
@@ -1181,6 +1188,17 @@ impl CalDavAdapter {
                     xml_writer.write_event(Event::Start(BytesStart::new("D:getetag")))?;
                     write_quoted_etag(xml_writer, &calendar.id)?;
                     xml_writer.write_event(Event::End(BytesEnd::new("D:getetag")))?;
+                }
+                // CalendarServer collection tag: lets clients skip an
+                // unchanged calendar instead of re-listing every ETag.
+                ("http://calendarserver.org/ns/", "getctag") => {
+                    if let Some(ctag) = &calendar.ctag {
+                        xml_writer.write_event(Event::Start(BytesStart::new("CS:getctag")))?;
+                        xml_writer.write_event(Event::Text(BytesText::new(ctag)))?;
+                        xml_writer.write_event(Event::End(BytesEnd::new("CS:getctag")))?;
+                    } else {
+                        xml_writer.write_event(Event::Empty(BytesStart::new("CS:getctag")))?;
+                    }
                 }
                 ("DAV:", "getcontenttype") => {
                     xml_writer.write_event(Event::Start(BytesStart::new("D:getcontenttype")))?;

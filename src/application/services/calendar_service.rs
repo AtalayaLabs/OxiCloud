@@ -36,6 +36,24 @@ pub struct CalendarService {
 }
 
 impl CalendarService {
+    /// Fills `CalendarDto::ctag` for calendars the caller already holds
+    /// (they come from an access-checked lookup). Best effort: on a
+    /// database error the ctag stays `None` and clients fall back to a
+    /// full ETag listing, exactly as before.
+    pub async fn attach_ctags(&self, calendars: &mut [AccessibleCalendar]) {
+        let ids: Vec<Uuid> = calendars
+            .iter()
+            .filter_map(|c| Uuid::parse_str(&c.calendar.id).ok())
+            .collect();
+        if let Ok(ctags) = self.calendar_storage.content_ctags(&ids).await {
+            for entry in calendars.iter_mut() {
+                if let Ok(id) = Uuid::parse_str(&entry.calendar.id) {
+                    entry.calendar.ctag = ctags.get(&id).cloned();
+                }
+            }
+        }
+    }
+
     pub fn new(calendar_storage: Arc<CalendarStorageAdapter>, authz: Arc<PgAclEngine>) -> Self {
         Self {
             calendar_storage,
