@@ -20,6 +20,7 @@ mod tests {
             color: Some("#00FF00".to_string()),
             created_at: Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap(),
             updated_at: Utc.with_ymd_and_hms(2025, 1, 15, 12, 0, 0).unwrap(),
+            ctag: Some("book-ctag-1".to_string()),
         }
     }
 
@@ -603,5 +604,70 @@ mod tests {
         assert!(vcard.contains("123 Main St"), "Should have street");
         assert!(vcard.contains("Springfield"), "Should have city");
         assert!(vcard.contains("62701"), "Should have postal code");
+    }
+
+    // ========================
+    // getctag on address books
+    // ========================
+
+    fn book_ctag_request() -> PropFindRequest {
+        PropFindRequest {
+            prop_find_type: PropFindType::Prop(vec![QualifiedName {
+                namespace: "http://calendarserver.org/ns/".to_string(),
+                name: "getctag".to_string(),
+            }]),
+        }
+    }
+
+    #[test]
+    fn test_address_book_getctag_on_collection_and_home_listing() {
+        let book = sample_address_book();
+        let mut output = Vec::new();
+        CardDavAdapter::generate_addressbook_collection_propfind(
+            &mut output,
+            &book,
+            &[],
+            &book_ctag_request(),
+            "/carddav/ab-001/",
+            "0",
+        )
+        .expect("propfind");
+        let xml = String::from_utf8(output).expect("utf8");
+        assert!(
+            xml.contains("<CS:getctag>book-ctag-1</CS:getctag>"),
+            "{xml}"
+        );
+
+        let mut output = Vec::new();
+        CardDavAdapter::generate_addressbooks_propfind_response(
+            &mut output,
+            &[sample_address_book()],
+            &book_ctag_request(),
+            "/carddav/",
+        )
+        .expect("propfind");
+        let xml = String::from_utf8(output).expect("utf8");
+        assert!(
+            xml.contains("<CS:getctag>book-ctag-1</CS:getctag>"),
+            "{xml}"
+        );
+    }
+
+    #[test]
+    fn test_address_book_getctag_empty_when_not_computed() {
+        let mut book = sample_address_book();
+        book.ctag = None;
+        let mut output = Vec::new();
+        CardDavAdapter::generate_addressbook_collection_propfind(
+            &mut output,
+            &book,
+            &[],
+            &book_ctag_request(),
+            "/carddav/ab-001/",
+            "0",
+        )
+        .expect("propfind");
+        let xml = String::from_utf8(output).expect("utf8");
+        assert!(xml.contains("<CS:getctag/>"), "{xml}");
     }
 }

@@ -467,10 +467,13 @@ async fn handle_propfind(
 
     if effective_path.is_empty() {
         // User address-book home `/carddav/{username}/` — list the user's books.
-        let address_books = addressbook_service
+        let mut address_books = addressbook_service
             .list_user_address_books(user.id)
             .await
             .map_err(AppError::from)?;
+        addressbook_service
+            .attach_address_book_ctags(&mut address_books)
+            .await;
 
         let user_part = path.split('/').next().unwrap_or(path);
         let base_href = format!(
@@ -498,10 +501,13 @@ async fn handle_propfind(
 
         if parts.len() == 1 {
             // Address book collection
-            let address_book = addressbook_service
+            let mut address_book = addressbook_service
                 .get_address_book(address_book_id, user.id)
                 .await
                 .map_err(|e| AppError::not_found(format!("Address book not found: {}", e)))?;
+            addressbook_service
+                .attach_address_book_ctags(std::slice::from_mut(&mut address_book))
+                .await;
 
             // Depth-1 streams the contact listing page by page; depth-0
             // has no contact section and keeps the tiny buffered path.

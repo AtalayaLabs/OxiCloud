@@ -409,6 +409,13 @@ impl CardDavAdapter {
         write_quoted_etag(xml_writer, &book.id)?;
         xml_writer.write_event(Event::End(BytesEnd::new("D:getetag")))?;
 
+        // CalendarServer collection tag (see write_addressbook_requested_props)
+        if let Some(ctag) = &book.ctag {
+            xml_writer.write_event(Event::Start(BytesStart::new("CS:getctag")))?;
+            xml_writer.write_event(Event::Text(BytesText::new(ctag)))?;
+            xml_writer.write_event(Event::End(BytesEnd::new("CS:getctag")))?;
+        }
+
         // getcontenttype
         xml_writer.write_event(Event::Start(BytesStart::new("D:getcontenttype")))?;
         xml_writer.write_event(Event::Text(BytesText::new("text/vcard")))?;
@@ -490,6 +497,17 @@ impl CardDavAdapter {
                     xml_writer.write_event(Event::Start(BytesStart::new("D:getetag")))?;
                     write_quoted_etag(xml_writer, &book.id)?;
                     xml_writer.write_event(Event::End(BytesEnd::new("D:getetag")))?;
+                }
+                // CalendarServer collection tag: lets clients skip an
+                // unchanged address book instead of re-listing every ETag.
+                ("http://calendarserver.org/ns/", "getctag") => {
+                    if let Some(ctag) = &book.ctag {
+                        xml_writer.write_event(Event::Start(BytesStart::new("CS:getctag")))?;
+                        xml_writer.write_event(Event::Text(BytesText::new(ctag)))?;
+                        xml_writer.write_event(Event::End(BytesEnd::new("CS:getctag")))?;
+                    } else {
+                        xml_writer.write_event(Event::Empty(BytesStart::new("CS:getctag")))?;
+                    }
                 }
                 ("DAV:", "getcontenttype") => {
                     xml_writer.write_event(Event::Start(BytesStart::new("D:getcontenttype")))?;
