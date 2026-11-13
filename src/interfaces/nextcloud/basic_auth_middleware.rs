@@ -12,25 +12,7 @@ use crate::application::dtos::folder_dto::FolderDto;
 use crate::common::di::AppState;
 use crate::interfaces::middleware::auth::CurrentUser;
 
-/// Markerless-chroot cache: default-drive root folder id → `FolderDto`.
-///
-/// This middleware wraps EVERY protected NextCloud route (DAV files,
-/// per-chunk uploads, trashbin, previews, avatars, OCS polls). With the
-/// app-password verification already cached, the chroot resolution was the
-/// last per-request DB work: `find_default_for_user` (now cached in
-/// `DrivePgRepository`) plus this folder-by-PK fetch. A desktop sync run
-/// issues hundreds of these per minute for a value that changes only on a
-/// root-folder rename — the 30 s TTL bounds that staleness (mirrors
-/// `drive_role_cache` / the default-drive cache; measured in
-/// `benches/CHROOT-CACHE.md`).
-///
-/// Only the MARKERLESS branch is cached: it targets the caller's own
-/// default drive root, so no per-request authorization decision is being
-/// skipped. The drive-marker branch keeps its `get_folder_with_perms`
-/// check on every request.
-// `Arc<FolderDto>` values: a hit hands back a refcount bump instead of a
-// deep clone of the DTO's ~5 owned Strings (moka's `get` clones `V`), and
-// the same `Arc` then rides inside `NcSession` for the whole request.
+/// Default-drive root folder id → `FolderDto`, 30 s TTL (benches/CHROOT-CACHE.md).
 static NC_CHROOT_CACHE: LazyLock<moka::sync::Cache<uuid::Uuid, Arc<FolderDto>>> =
     LazyLock::new(|| {
         moka::sync::Cache::builder()
@@ -100,51 +82,13 @@ pub async fn basic_auth_middleware(
     // (`docs/plan/username-lowercase.md`), and NC / DAVX5 clients that
     // cached URLs from before the migration keep sending `Alice:pass`
     // — the server continues to accept that indefinitely by
-    // lowercasing here. Safe for the multi-drive `user~drive_uuid`
-    // composite because UUID hex `[0-9a-f-]` lowercases to itself.
+    // lowercasing here.
     //
     // ASCII-only by `validate_username`'s charset check, so
     // `to_ascii_lowercase` is deterministic and locale-safe.
     let raw_username = raw_username.to_ascii_lowercase();
 
-    // ── Multi-drive composite-username parse ────────────────────────
-    // POC wire shape: `{username}~{drive_marker}` may appear in the
-    // Basic Auth header. `~` was chosen because it needs no URL
-    // encoding and doesn't collide with UUID hyphens. The marker
-    // after `~` is a chroot SELECTOR (handled by `NcSession` via the
-    // URL `{user}` segment), NOT an auth credential — the password
-    // is verified against the username PREFIX. The middleware just
-    // peels the prefix off so the app-password lookup uses the
-    // canonical name. When no `~` is present, the request is a
-    // plain single-drive ("home") NC sync.
-    //
-    // Reject `name~` (empty marker) and `~marker` (empty username)
-    // at the auth boundary rather than treating them as "missing
-    // marker" — they are unambiguous typos that would otherwise
-    // silently fall into a different code path.
-    // Borrow the prefix / marker out of the already-owned `raw_username`
-    // (`split_once` yields `&str` slices) instead of allocating a duplicate
-    // `String` per request — `username` is only ever passed by reference, and
-    // `raw_username` outlives every use before it moves into `NcSession`
-    // (benches/ROUND29.md §E).
-    let (username, drive_marker): (&str, Option<&str>) = match raw_username.split_once('~') {
-        Some(("", _)) => {
-            tracing::warn!(
-                "[NC] 401 malformed composite username (empty prefix): {}",
-                raw_username
-            );
-            return Err(NextcloudAuthError::Unauthorized);
-        }
-        Some((_, "")) => {
-            tracing::warn!(
-                "[NC] 401 malformed composite username (empty marker): {}",
-                raw_username
-            );
-            return Err(NextcloudAuthError::Unauthorized);
-        }
-        Some((u, m)) => (u, Some(m)),
-        None => (raw_username.as_str(), None),
-    };
+    let username: &str = raw_username.as_str();
 
     // Check account lockout before attempting password verification (saves CPU).
     // The lockout is per (account, IP), see #323 for rationale.
@@ -227,68 +171,42 @@ pub async fn basic_auth_middleware(
                 dpop_jkt: None,
             });
 
-            // ── Resolve chroot from the Basic Auth drive marker ─────
-            // No marker → caller's default personal drive's root folder
-            // (post-D0 every internal user has one — provisioned by the
-            // lifecycle hook via the atomic four-write transaction in
-            // §3 of docs/plan/drive.md). With a marker →
-            // `get_folder_with_perms` enforces per-folder access (404
-            // anti-enumeration on miss / no-read). Today this is the
-            // sole chroot source; tomorrow it'll come from the
-            // app-password row instead.
-            //
-            // Pre-D0 this lookup name-matched `"My Folder - <username>"`
-            // against the user's root folders; that broke after the
-            // wrapper was renamed to `"Personal"` and shared across all
-            // users — name-matching was the wrong axis. The drive lookup
-            // is the right one: name-independent, secondary-drive-safe.
+            // ── Resolve chroot: the caller's default personal drive root ──
             use crate::application::ports::folder_ports::FolderUseCase;
             use crate::domain::repositories::drive_repository::DriveRepository;
-            let chroot = match drive_marker {
-                None => {
-                    match state
-                        .drive_repo
-                        .find_default_for_user(current_user.id)
-                        .await
-                    {
-                        Ok(drive_with_name) => {
-                            let root_id = drive_with_name.drive.root_folder_id;
-                            match NC_CHROOT_CACHE.get(&root_id) {
-                                Some(cached) => Some(cached),
-                                None => {
-                                    let fetched = state
-                                        .applications
-                                        .folder_service
-                                        .get_folder(&root_id.to_string())
-                                        .await
-                                        .ok()
-                                        .map(Arc::new);
-                                    if let Some(f) = &fetched {
-                                        NC_CHROOT_CACHE.insert(root_id, Arc::clone(f));
-                                    }
-                                    fetched
-                                }
+            let chroot = match state
+                .drive_repo
+                .find_default_for_user(current_user.id)
+                .await
+            {
+                Ok(drive_with_name) => {
+                    let root_id = drive_with_name.drive.root_folder_id;
+                    match NC_CHROOT_CACHE.get(&root_id) {
+                        Some(cached) => Some(cached),
+                        None => {
+                            let fetched = state
+                                .applications
+                                .folder_service
+                                .get_folder(&root_id.to_string())
+                                .await
+                                .ok()
+                                .map(Arc::new);
+                            if let Some(f) = &fetched {
+                                NC_CHROOT_CACHE.insert(root_id, Arc::clone(f));
                             }
+                            fetched
                         }
-                        Err(_) => None,
                     }
                 }
-                Some(folder_id) => state
-                    .applications
-                    .folder_service
-                    .get_folder_with_perms(
-                        folder_id,
-                        crate::domain::services::authorization::Subject::User(current_user.id),
-                    )
-                    .await
-                    .ok()
-                    .map(Arc::new),
+                Err(_) => None,
             };
             if chroot.is_none() {
-                tracing::warn!(
-                    "[NC] 404 chroot not resolvable: user={} marker={:?}",
-                    current_user.username,
-                    drive_marker
+                tracing::info!(
+                    target: "audit",
+                    event = "auth.nc_basic_rejected",
+                    reason = "no_default_drive",
+                    user_id = %user_id,
+                    "👮🏻‍♂️ NC Basic auth rejected: default drive root not resolvable"
                 );
                 return Err(NextcloudAuthError::Unauthorized);
             }
@@ -310,6 +228,13 @@ pub async fn basic_auth_middleware(
             Ok(next.run(request).await)
         }
         Err(_) => {
+            tracing::info!(
+                target: "audit",
+                event = "auth.nc_basic_rejected",
+                reason = "bad_credentials",
+                username = %username,
+                "👮🏻‍♂️ NC Basic auth rejected: bad credentials"
+            );
             // Record failed attempt for lockout tracking
             if let Some(auth_svc) = state.auth_service.as_ref() {
                 auth_svc.login_lockout.record_failure(username, &client_ip);

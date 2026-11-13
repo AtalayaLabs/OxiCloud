@@ -507,7 +507,6 @@ HURL_FILES=( \
   "$API_DIR/error_shape_normalized.hurl" \
   "$API_DIR/nc_status_capabilities.hurl" \
   "$API_DIR/nc_login_flow_v2.hurl" \
-  "$API_DIR/nc_login_flow_v2_drive_picker.hurl" \
   "$API_DIR/nc_ocs_user_info.hurl" \
   "$API_DIR/nc_avatar_preview.hurl" \
   "$API_DIR/files-folders.hurl" \
@@ -595,6 +594,7 @@ HURL_FILES=( \
   "$API_DIR/share_download_attribution.hurl" \
   "$API_DIR/permissions.hurl" \
   "$API_DIR/grants.hurl" \
+  "$API_DIR/webdav_shared_prefix.hurl" \
   "$API_DIR/grant_cleanup.hurl" \
   "$API_DIR/role_grants.hurl" \
   "$API_DIR/subject_groups.hurl" \
@@ -636,7 +636,6 @@ HURL_FILES=( \
   "$API_DIR/drive_read_only.hurl" \
   "$API_DIR/cross_drive_move.hurl" \
   "$API_DIR/cross_drive_copy.hurl" \
-  "$API_DIR/nc_multidrive_move_regression.hurl" \
   "$API_DIR/nc_write_response_headers.hurl" \
   "$API_DIR/webdav_dead_properties.hurl" \
   "$API_DIR/nc_webdav_dead_properties.hurl" \

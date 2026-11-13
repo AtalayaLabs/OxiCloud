@@ -529,51 +529,19 @@ HTTP 403
 
 
 # ═════════════════════════════════════════════════════════════
-# Step 12 — Nextcloud Login Flow v2 via OIDC — MULTI-DRIVE PATH
+# Step 12 — Nextcloud Login Flow v2 via OIDC — user with two drives
 # ═════════════════════════════════════════════════════════════
-# Regression coverage for the customer-reported bug where OIDC
-# users were never shown the drive picker: the OIDC callback in
-# `auth_handler.rs::oidc_callback` used to mint the app password
-# inline and complete the flow with the bare username. Customers
-# with ≥ 2 drives had no way to pick a non-home drive under SSO,
-# and the deprecated `nc://` redirect broke NC clients that had
-# already picked up credentials via the poll backchannel
-# (`Impossible de valider la requête`).
+# The flow always completes on the success page and yields the
+# user's default personal drive, whatever other drives they hold.
 #
-# The fix routes the OIDC callback through the shared
-# `handle_oidc_login_completion` in `login_v2_handler.rs`, which
-# lists drives, renders the picker template on ≥ 2, and calls
-# `complete_flow(...)` only after the picker submit. Same
-# multi-drive fork the password path uses.
-#
-# What this section exercises (post-fix expected behaviour):
-#
-#   A. Local admin logs in with password to get a JWT for
-#      administrative operations (creating the shared drive
-#      below — the OIDC user has no local password).
-#   B. Admin creates a NEW shared drive owned by `oidc_user`. That
-#      makes the OIDC user's drive count = 2 (their JIT-provisioned
-#      personal + this shared), which is the multi-drive branch
-#      trigger.
-#   C. NC LFv2 initiate — anonymous, returns { poll_token, login_url }.
-#      login_url embeds the flow_token that identifies this flow.
-#   D. Pre-completion poll — MUST return 404. Baseline regression:
-#      if a future change ever accidentally auto-completes the flow
-#      before the picker submit, this catches it.
-#   E. Kick off the NC OIDC branch → GET /login/v2/flow/{token}/oidc.
-#      Server sets `nc_flow_token` on the OIDC state and 307s to
-#      the IdP.
-#   F. Follow the entire IdP → callback chain with `location: true`.
-#      Post-fix, the callback returns the PICKER HTML (200), NOT a
-#      `nc://` redirect. Pre-fix it would have 307'd to nc://.
-#   G. Poll AGAIN — still 404 (picker not yet submitted). Proves
-#      the callback did NOT call `login_flow.complete(...)` — the
-#      exact regression the fix prevents.
-#   H. Submit the picker with the shared-drive folder id.
-#   I. Post-picker poll — 200 with `loginName` matching
-#      `oidc_user~<uuid>` (composite marker → chroot-bound app
-#      password). This is the load-bearing assertion: pre-fix
-#      loginName was the bare `oidc_user`.
+#   A. Local admin logs in to get a JWT for administrative calls.
+#   B. Admin creates a shared drive owned by `oidc_user` (two drives).
+#   C. NC LFv2 initiate.
+#   D. Pre-completion poll is 404.
+#   E. GET /login/v2/flow/{token}/oidc 307s to the IdP.
+#   F. The IdP -> callback chain ends on the success page.
+#   G. The poll returns the bare username, no `~` marker.
+#   H. A second poll is 404.
 # ═════════════════════════════════════════════════════════════
 
 
@@ -596,13 +564,8 @@ admin_token: jsonpath "$.access_token"
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 12B — Admin creates a shared drive owned by `oidc_user`.
-#            After this, list_folders_with_perms(oidc_user) returns
-#            2 rows (JIT-provisioned personal + this shared). The
-#            picker template ties the composite `~<folder_id>`
-#            marker to the FOLDER id (root of the drive), not the
-#            drive id — that's the identifier the picker's radio
-#            buttons carry and what `handle_drive_pick` looks up.
+# Step 12B — Admin creates a shared drive owned by `oidc_user`,
+#            so the user holds two drives.
 # ─────────────────────────────────────────────────────────────
 POST {{base_url}}/api/drives
 Authorization: Bearer {{admin_token}}
@@ -677,19 +640,8 @@ header "Location" contains "code_challenge_method=S256"
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 12F — Follow the full IdP → callback chain. The fake IdP
-#            auto-approves (the earlier flow left a session cookie
-#            for `oidc-test-user` — this exercises the realistic
-#            "user already signed into their IdP" flow), the IdP
-#            302s back to /api/auth/oidc/callback?code=…&state=…,
-#            and the callback routes into the NextcloudLogin arm.
-#
-#            POST-FIX EXPECTED: the callback returns the drive
-#            picker template (HTTP 200, HTML body) because
-#            `handle_oidc_login_completion` saw ≥ 2 drives.
-#            PRE-FIX would have been a 307 to
-#            `nc://login/server:…&user:oidc_user&password:…` —
-#            the very redirect the fix drops.
+# Step 12F — Follow the full IdP -> callback chain. The flow
+#            completes without a picker and lands on the success page.
 # ─────────────────────────────────────────────────────────────
 GET {{nc_idp_url}}
 [Options]
@@ -697,81 +649,15 @@ location: true
 location-trusted: true
 
 HTTP 200
-[Captures]
-# The picker HTML has one radio input per drive. Two drives here,
-# so two `value=` attributes on `<input name="drive">`. Home is
-# first (loop.first in the template); the shared drive is second.
-# Local-name XPath so the DAV/HTML namespace doesn't matter.
-shared_folder_id: xpath "string((//input[@name='drive']/@value)[2])"
 [Asserts]
-# Picker markers — proves this is the picker template and not
-# some other 200 response. Uses `contains` on distinctive strings
-# from the template.
-body contains "Choose a drive"
-body contains "name=\"drive\""
-# The picker's form MUST post to /login/v2/flow/{nc_flow_token}/drive.
-# A regression that generated a wrong action would ship users
-# into an unrelated flow and this pins the wire target.
-body contains "action=\"/login/v2/flow/{{nc_flow_token}}/drive\""
-# Load-bearing regression guard for the exact bug this fix
-# closes: pre-fix, the OIDC callback body would have been empty
-# and the Location header would have carried the nc:// URL. Now
-# there's no nc:// anywhere in the response.
+url endsWith "/nextcloud/success"
+body not contains "Choose a drive"
 body not contains "nc://login"
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 12G — Poll AGAIN. Still 404 — the picker has not been
-#            submitted, so `complete_flow` hasn't run and the
-#            flow has no `completed` result.
-#
-#            Pre-fix regression this catches: the OIDC callback
-#            used to call `login_flow.complete(...)` inline before
-#            the picker step. If a future change ever reintroduces
-#            that shortcut, this 404 assertion flips to 200 and
-#            the CI red flag lights up.
-# ─────────────────────────────────────────────────────────────
-POST {{base_url}}/login/v2/poll
-Content-Type: application/x-www-form-urlencoded
-`token={{nc_poll_token}}`
-
-HTTP 404
-
-
-# ─────────────────────────────────────────────────────────────
-# Step 12H — Submit the picker choice. Payload is form-encoded
-#            (the picker's <form> is a POST HTML form). The
-#            `drive` field is the folder UUID captured from the
-#            picker's radio buttons.
-#
-#            handle_drive_pick reads `pending_user_id` from the
-#            flow (stashed by `resolve_drive_or_complete` when we
-#            rendered the picker), validates the folder is
-#            visible, resolves home vs non-home, and calls
-#            complete_flow(..., Some(folder_id)).
-# ─────────────────────────────────────────────────────────────
-POST {{base_url}}/login/v2/flow/{{nc_flow_token}}/drive
-Content-Type: application/x-www-form-urlencoded
-`drive={{shared_folder_id}}`
-
-# The completion path redirects the browser to the friendly
-# success page. NOT a nc:// URL — the poll below is what
-# delivers credentials.
-HTTP *
-[Asserts]
-status >= 300
-status <  400
-header "Location" == "/nextcloud/success"
-
-
-# ─────────────────────────────────────────────────────────────
-# Step 12I — Post-picker poll. NOW the credentials are ready.
-#
-#            The composite `oidc_user~<folder_id>` login name is
-#            the whole point of this test — it proves the OIDC
-#            path honoured the drive pick and produced a
-#            chroot-bound app-password credential. Pre-fix,
-#            loginName here was the bare `oidc_user`.
+# Step 12G — Poll. Credentials are ready and carry the bare
+#            username: the default personal drive, no `~` marker.
 # ─────────────────────────────────────────────────────────────
 POST {{base_url}}/login/v2/poll
 Content-Type: application/x-www-form-urlencoded
@@ -779,28 +665,14 @@ Content-Type: application/x-www-form-urlencoded
 
 HTTP 200
 [Asserts]
-# Loose host match — the server derives base_url from its bind
-# config (which lands on `127.0.0.1` when neither
-# OXICLOUD_BASE_URL nor the host env is set), while test.env
-# uses `localhost` for its own variable. Both resolve to the
-# same address for a client; pin the port, not the host.
 jsonpath "$.server"      matches "^https?://[^/]+:8087$"
 jsonpath "$.appPassword" isString
-# Composite marker present — this is the load-bearing regression
-# assertion. A pre-fix run would show `"oidc_user"` with no `~`.
-jsonpath "$.loginName" matches "^oidc_user~[0-9a-f-]{36}$"
-# Belt-and-braces: assert the folder id echoed back matches the
-# picker's radio value we submitted (no accidental drive/folder
-# swap in `handle_drive_pick`).
-jsonpath "$.loginName" contains "{{shared_folder_id}}"
+jsonpath "$.loginName" == "oidc_user"
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 12J — Poll again — MUST 404. The completed result is
-#            single-use (poll() removes it from the map). A
-#            regression that failed to remove would leak
-#            credentials to any subsequent poll with the same
-#            token.
+# Step 12H — Poll again — MUST 404. The completed result is
+#            single-use.
 # ─────────────────────────────────────────────────────────────
 POST {{base_url}}/login/v2/poll
 Content-Type: application/x-www-form-urlencoded
@@ -810,24 +682,8 @@ HTTP 404
 
 
 # ─────────────────────────────────────────────────────────────
-# No teardown for the fixture drive.
-#
-# The drive was created with `oidc_user` as SOLE owner (Step
-# 12B). Local `admin` created it via the admin-only
-# `POST /api/drives` but isn't a grant-holder — deleting the
-# drive requires `manage` on the drive resource, which admin's
-# Bearer token doesn't carry. Cleanup would have to happen as
-# `oidc_user`, but `oidc_user` has no local password and
-# running a second OIDC dance mid-file would pollute the
-# session cookies the earlier steps depend on.
-#
-# Safe to skip: `tests/oidc/run.sh` spawns a fresh DB per
-# invocation (`bash "$COMMON/spawn-db.sh"`), so nothing
-# downstream sees the leftover. The API-suite sibling
-# (`tests/api/nc_login_flow_v2_drive_picker.hurl`) DOES clean
-# up because that version creates the drive owned by admin —
-# and its runner IS multi-file. See
-# `feedback_hurl_teardown_shared_db` for the general rule.
+# No teardown for the fixture drive: `tests/oidc/run.sh` spawns a
+# fresh DB per invocation.
 # ─────────────────────────────────────────────────────────────
 
 

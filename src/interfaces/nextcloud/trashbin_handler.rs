@@ -102,14 +102,7 @@ async fn handle_propfind(
     let nc = state.nextcloud.as_ref();
     let file_id_svc = nc.map(|n| &n.file_ids);
 
-    // Emit hrefs with `session.raw_username` (composite `admin~<uuid>` on
-    // non-home drives), NOT `user.username` (bare `admin`). The
-    // `NcSession` extractor cross-checks the URL `{user}` segment
-    // against `raw_username` and 403s on mismatch (see
-    // `session.rs::from_request_parts`). Emitting the bare form here
-    // would make every follow-up MOVE/DELETE from a non-home client
-    // 403 before the handler runs — the composite-credential Hurl
-    // regression caught this (B5 in `nc_multidrive_move_regression`).
+    // Hrefs use `session.raw_username`.
     let mut buf = Vec::new();
     write_trashbin_multistatus(&mut buf, &items, &session.raw_username, chroot, file_id_svc)
         .await
@@ -147,14 +140,7 @@ async fn handle_restore(
     // with 412 — there is no `Overwrite: T` workflow for trash restore in
     // either Sabre/DAV or the NC desktop client (a live file being
     // silently replaced by an undeleted one would be a footgun).
-    // Use `session.raw_username` (composite `admin~<drive-uuid>` on
-    // non-home drives) to strip the destination prefix, NOT
-    // `user.username` (bare `admin`). NC clients send `Destination:
-    // /remote.php/dav/files/{raw_username}/…`; passing the bare
-    // username would leave the `~<uuid>/` marker glued to the leading
-    // subpath segment and turn the collision-check into a lookup at
-    // a fabricated path. See `uploads_handler::handle_assemble` for
-    // the same fix in the chunked-upload MOVE.
+    // The Destination prefix is the session's raw username.
     if let Some(dest_header) = dest_header
         && let Some(dest_subpath) =
             extract_nc_subpath_from_dest(&dest_header, &session.raw_username)

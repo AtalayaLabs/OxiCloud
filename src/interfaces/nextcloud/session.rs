@@ -11,23 +11,20 @@
 //!
 //! - `user`: authenticated identity (id, canonical username, role).
 //! - `raw_username`: the opaque wire identifier from the Basic Auth
-//!   header. Today: plain `user` (single-drive) or `user~{drive_uuid}`
-//!   (multi-drive POC). May look different again when future auth
-//!   schemes land. **Handlers MUST NOT parse it** — it's used verbatim
+//!   header, the plain canonical username. **Handlers MUST NOT parse it** — it's used verbatim
 //!   only for echoing back into DAV/OCS URLs the client expects to
 //!   see (notably OCS `cloud/user`'s `id` field, which NC desktop
 //!   splices into every subsequent DAV path it builds) and for
 //!   audit logs.
 //! - `chroot`: folder the request is jailed inside. `Some` for every
-//!   authenticated NC request today (the home folder when no drive
-//!   marker is present, or the resolved drive when one is). `None`
+//!   authenticated NC request today (the default personal drive root). `None`
 //!   is reserved for future routes that don't operate on a single
 //!   folder (admin / cross-drive queries).
 //!
 //! ## Why this lives in middleware, not routes.rs
 //!
 //! The auth step already has every input needed (raw username from
-//! header + drive marker after `~` + authenticated user). Resolving
+//! header + authenticated user). Resolving
 //! the chroot there means every NC handler — DAV, OCS, uploads,
 //! trashbin, sharees, … — gets a uniform `NcSession` regardless of
 //! whether its URL carries a `{user}` segment. The URL `{user}`
@@ -51,8 +48,7 @@ pub struct NcSession {
     /// build per request instead of a clone per consumer.
     pub user: Arc<CurrentUser>,
     pub raw_username: String,
-    /// Shared with `NC_CHROOT_CACHE` (markerless branch) — a cache hit is
-    /// an `Arc` bump, not a `FolderDto` deep-clone.
+    /// Shared with `NC_CHROOT_CACHE`; a hit is an `Arc` bump.
     pub chroot: Option<Arc<FolderDto>>,
 }
 
@@ -66,14 +62,6 @@ impl NcSession {
                 "NcSession: path-scoped handler reached without a chroot — route wiring bug",
             )
         })
-    }
-
-    /// True when the session is scoped to the user's home folder
-    /// (no drive marker in the Basic Auth username). Useful for
-    /// handlers that want to render a friendlier display when the
-    /// user is on their default drive.
-    pub fn is_home(&self) -> bool {
-        !self.raw_username.contains('~')
     }
 }
 

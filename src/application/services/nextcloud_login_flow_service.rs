@@ -3,7 +3,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rand_core::RngCore;
-use uuid::Uuid;
 
 /// Maximum number of concurrent pending login flows to prevent memory exhaustion.
 const MAX_PENDING_FLOWS: usize = 1000;
@@ -31,19 +30,6 @@ pub struct LoginResult {
 struct PendingFlow {
     created_at: Instant,
     poll_token: String,
-    /// Set after the user authenticates on the login page **and** has more
-    /// than one root drive — the flow is paused until the user picks a
-    /// drive on the picker page. Consumed by `take_pending_user` when the
-    /// picker submission arrives, so the second step is single-use even
-    /// if the flow token leaks. `None` for single-drive accounts (legacy
-    /// path goes straight to `completed`).
-    pending_user_id: Option<Uuid>,
-    /// App-password label to persist when this multi-drive flow finally
-    /// completes. Stashed by `resolve_drive_or_complete` (login_v2_handler)
-    /// alongside `pending_user_id` so `handle_drive_pick` can preserve
-    /// provenance (`"Nextcloud"` vs `"Nextcloud (OIDC)"`) across the
-    /// picker round-trip. Consumed by `take_pending_app_password_label`.
-    pending_app_password_label: Option<String>,
     completed: Option<LoginResult>,
 }
 
@@ -94,8 +80,6 @@ impl NextcloudLoginFlowService {
             PendingFlow {
                 created_at: Instant::now(),
                 poll_token: poll_token.clone(),
-                pending_user_id: None,
-                pending_app_password_label: None,
                 completed: None,
             },
         );
@@ -115,68 +99,6 @@ impl NextcloudLoginFlowService {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         prune_expired(&mut state, self.ttl);
         state.flows.contains_key(flow_token)
-    }
-
-    /// Stash a verified user_id on the flow so a follow-up drive-pick
-    /// request can prove "this browser just authenticated" without
-    /// asking for the password again. Returns `false` if the flow
-    /// token is unknown or expired.
-    ///
-    /// Only used on multi-drive accounts — single-drive logins go
-    /// straight to [`complete`](Self::complete).
-    pub fn mark_awaiting_drive(&self, flow_token: &str, user_id: Uuid) -> bool {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        prune_expired(&mut state, self.ttl);
-        match state.flows.get_mut(flow_token) {
-            Some(pending) => {
-                pending.pending_user_id = Some(user_id);
-                true
-            }
-            None => false,
-        }
-    }
-
-    /// Consume the stashed user_id (single-use). Returns the user_id
-    /// when the flow is in "awaiting drive choice" state, or `None`
-    /// when the flow is unknown, expired, or was never marked. Single-
-    /// use semantics make this safe even if the flow token leaks: the
-    /// second drive-pick attempt finds nothing to consume.
-    pub fn take_pending_user(&self, flow_token: &str) -> Option<Uuid> {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        prune_expired(&mut state, self.ttl);
-        state
-            .flows
-            .get_mut(flow_token)
-            .and_then(|pending| pending.pending_user_id.take())
-    }
-
-    /// Stash the app-password label to use when the flow eventually
-    /// completes via `handle_drive_pick`. Called alongside
-    /// `mark_awaiting_drive` so the multi-drive round-trip preserves
-    /// the provenance string passed in at the auth step
-    /// (`"Nextcloud"` for password login, `"Nextcloud (OIDC)"` for OIDC).
-    /// Silently no-ops when the flow token is unknown or expired —
-    /// the earlier `mark_awaiting_drive` on the same token is the
-    /// authoritative "exists?" signal so we don't need to log again.
-    pub fn set_pending_app_password_label(&self, flow_token: &str, label: &str) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        prune_expired(&mut state, self.ttl);
-        if let Some(pending) = state.flows.get_mut(flow_token) {
-            pending.pending_app_password_label = Some(label.to_string());
-        }
-    }
-
-    /// Consume the stashed app-password label (single-use). Returns
-    /// `None` when the flow was never marked, was password-shortcut
-    /// (single-drive), or the token is unknown / expired — the caller
-    /// falls back to a sensible default in that case.
-    pub fn take_pending_app_password_label(&self, flow_token: &str) -> Option<String> {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        prune_expired(&mut state, self.ttl);
-        state
-            .flows
-            .get_mut(flow_token)
-            .and_then(|pending| pending.pending_app_password_label.take())
     }
 
     pub fn complete(
@@ -333,35 +255,6 @@ mod tests {
 
         assert!(!svc.flow_exists(flow_token));
         assert!(svc.poll(&info.poll_token).is_none());
-    }
-
-    #[test]
-    fn test_mark_awaiting_drive_then_take_pending_user() {
-        let svc = service();
-        let info = svc.initiate("https://cloud.example.com").unwrap();
-        let flow_token = info.login_url.rsplit('/').next().unwrap();
-        let uid = Uuid::new_v4();
-
-        assert!(svc.mark_awaiting_drive(flow_token, uid));
-        // First take consumes the slot.
-        assert_eq!(svc.take_pending_user(flow_token), Some(uid));
-        // Second take must return None (single-use).
-        assert_eq!(svc.take_pending_user(flow_token), None);
-    }
-
-    #[test]
-    fn test_mark_awaiting_drive_unknown_flow_returns_false() {
-        let svc = service();
-        assert!(!svc.mark_awaiting_drive("nonexistent", Uuid::new_v4()));
-    }
-
-    #[test]
-    fn test_take_pending_user_without_mark_returns_none() {
-        let svc = service();
-        let info = svc.initiate("https://cloud.example.com").unwrap();
-        let flow_token = info.login_url.rsplit('/').next().unwrap();
-        // Flow exists but mark_awaiting_drive was never called.
-        assert_eq!(svc.take_pending_user(flow_token), None);
     }
 
     #[test]

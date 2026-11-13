@@ -130,6 +130,8 @@ xpath "string(//*[local-name()='getlastmodified'])" matches "^Wed, 15 Nov 2023 2
 # have been collapsed into one column again and Part B below would
 # silently stop testing anything.
 xpath "string(//*[local-name()='creationdate'])" not matches "^2023-11-15T22:13:20"
+# `creationdate` is RFC 3339 (RFC 4918 §15.1), unlike the HTTP-date above.
+xpath "string(//*[local-name()='creationdate'])" matches "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$"
 
 
 # ═════════════════════════════════════════════════════════════

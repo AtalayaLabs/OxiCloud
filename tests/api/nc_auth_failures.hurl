@@ -273,6 +273,28 @@ HTTP 207
 
 
 # ─────────────────────────────────────────────────────────────
+# P6 — A username carrying `~<home root folder id>` is an unknown
+#      user, so a valid app password under it is still 401.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/folders
+Authorization: Bearer {{jwt}}
+
+HTTP 200
+[Captures]
+home_root_id: jsonpath "$[0].id"
+
+PROPFIND {{base_url}}/remote.php/dav/files/{{tilde_user}}/
+X-Forwarded-For: 10.0.0.3
+Depth: 0
+[Options]
+variable: tilde_user={{nc_username}}~{{home_root_id}}
+[BasicAuth]
+{{tilde_user}}: {{nc_password}}
+
+HTTP 401
+
+
+# ─────────────────────────────────────────────────────────────
 # Teardown — Revoke the app password we minted. Keeps the
 #            app-passwords table clean across re-runs.
 # ─────────────────────────────────────────────────────────────

@@ -49,6 +49,7 @@ hurl --variables-file tests/api/test.env --test --report-html /tmp/hurl-report t
 | `trash.hurl` | Trash move/restore/purge scenario (16 steps); depends on `files-folders.hurl` state |
 | `recent.hurl` | Recent items record/list/clear scenario (6 steps); depends on `files-folders.hurl` state |
 | `contacts.hurl` | Full contacts CRUD scenario (14 steps, see below) |
+| `webdav_shared_prefix.hurl` | Native WebDAV `/webdav/@shared/<uuid>` address: listing, GET/PROPFIND below a granted folder, revoked or unknown UUID answers 404, MOVE/DELETE/PROPPATCH/MKCOL on the UUID segment answers 403 |
 | `test.env` | Variables: `base_url`, `username`, `email`, `password` — used by both Hurl and `run.sh` |
 
 ## Scenario: `files-folders.hurl`
@@ -150,6 +151,16 @@ Recent items are not auto-recorded on upload — step 3 explicitly registers the
 | 11 | Delete personal address book |
 | 12 | List address books – assert `book_id` no longer present |
 | 13 | List system address book – assert non-empty collection of OxiCloud users |
+
+## Links suite
+
+Link scenarios (shares in the recipient's tree, mode switch, settle, expiry,
+NextCloud and native DAV walks) live apart in `tests/links/`: it boots the
+server twice against one database, first with `OXICLOUD_LINKS_MODE=off` to
+seed grants, then in `auto` mode with short job intervals
+(`tests/common/server-links.env`). Run it with `./tests/links/run.sh`
+(`SKIP_BUILD=1` reuses the binary); `just test-api` runs it after the API and
+WebDAV suites. Needs docker, cargo, hurl and jq.
 
 ## Legacy bash tests
 

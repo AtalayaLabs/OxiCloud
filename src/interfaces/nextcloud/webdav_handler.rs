@@ -31,10 +31,10 @@ use crate::domain::services::path_service::normalize_storage_name;
 use crate::infrastructure::services::path_resolver_service::ResolvedResource;
 use crate::infrastructure::services::webdav_dead_property_store::ResourceRef;
 use crate::interfaces::api::handlers::webdav_handler::{
-    PROPFIND_BATCH_SIZE, cas_write_patch, dead_props_for, enforce_native_lock, file_dead_props,
-    files_dead_props_map, folder_dead_props, folders_dead_props_map, if_match_precondition_fails,
-    if_none_match_precondition_fails, mount_file_get_response, parse_update_range,
-    splice_patch_streams,
+    DavLocation, PROPFIND_BATCH_SIZE, cas_write_patch, dead_props_for, enforce_native_lock,
+    file_dead_props, files_dead_props_map, folder_dead_props, folders_dead_props_map,
+    if_match_precondition_fails, if_none_match_precondition_fails, locate_dav,
+    mount_file_get_response, parse_update_range, refuse_dav_overlap, splice_patch_streams,
 };
 use crate::interfaces::errors::AppError;
 use crate::interfaces::range_requests::{not_modified_response, range_response};
@@ -61,10 +61,7 @@ const HEADER_DAV: HeaderName = HeaderName::from_static("dav");
 /// `chroot` is the storage path the request is "jailed" inside —
 /// the route glue (`routes.rs::handle_dav_*`) computes it once per
 /// request:
-/// - Legacy `/files/{user}/…` or explicit `~{home_folder_uuid}` →
-///   `"My Folder - {username}"` (no DB lookup needed).
-/// - `~{some_other_folder_uuid}` → the folder's stored `path` after
-///   a `get_folder_with_perms` check (404 if missing / no access).
+/// - `/files/{user}/…` → the caller's default personal drive root.
 ///
 /// By the time we get here `chroot` is known to be a legitimate
 /// target — validation and permission live in the route layer, not
@@ -251,9 +248,7 @@ pub fn nc_collection_href_into(out: &mut String, encoded_user: &str, subpath: &s
 /// `subpath` is everything after `/remote.php/dav/files/{user}/`.
 /// `session.chroot` is the storage path the request is confined to
 /// — see [`nc_to_internal_path`] for what gets resolved upstream.
-/// `session.raw_username` is the literal wire identifier — bare
-/// `admin` for single-drive sync, composite `admin~{drive_uuid}` for
-/// multi-drive. **Hrefs in every response MUST be built from
+/// `session.raw_username` is the literal wire identifier. **Hrefs in every response MUST be built from
 /// `session.raw_username`, not from `session.user.username`** — the
 /// NC desktop client validates that PROPFIND/MOVE response hrefs
 /// share the requested URL's prefix and aborts the parse otherwise
@@ -355,18 +350,28 @@ async fn handle_propfind(
             .map_err(|e| AppError::bad_request(format!("Invalid PROPFIND XML: {}", e)))?
     };
 
-    let internal_path = nc_to_internal_path(chroot, subpath)?;
+    let loc = nc_locate(&state, user.id, chroot, subpath).await?;
+    let (drive_id, internal_path, link_name) = match loc.link_target {
+        Some((drive_id, target_path)) => {
+            let name = loc.db_path.rsplit('/').next().map(str::to_owned);
+            (drive_id, target_path, name)
+        }
+        None => (loc.drive_id, loc.db_path, None),
+    };
 
     // Single-query path resolution (drive-scoped) — same shared
     // resolver as native `/webdav/…`. Post-D7 the resolver is not
     // owner-scoped, so we `authz.require(Read, …)` on the returned
     // resource explicitly before emitting the multistatus.
-    let resolved = nc_resolve_or_fallback(&state, &internal_path, chroot.drive_id)
+    let resolved = nc_resolve_or_fallback(&state, &internal_path, drive_id)
         .await
         .ok_or_else(|| AppError::not_found("Resource not found"))?;
 
     match resolved {
-        ResolvedResource::Folder(folder) => {
+        ResolvedResource::Folder(mut folder) => {
+            if let Some(name) = link_name {
+                folder.name = name;
+            }
             // Mount ids (`ext:` children, mount-root UUID) authorise against
             // the mount-root folder — parsing them as UUIDs 404'd every path
             // below a mount root (#794).
@@ -383,16 +388,11 @@ async fn handle_propfind(
             // pages and serialized chunk by chunk, so memory stays O(batch)
             // regardless of how many entries the folder holds.
             //
-            // Multi-drive POC: the hrefs in the response must echo the
-            // wire form (`{user}~{drive}`) the client requested, so we
-            // pass `url_user` (not `user.username`) as the streaming
-            // function's username arg. Refining the owner-id usages
-            // back to the canonical username is deferred to the
-            // NcSession commit.
+            // Hrefs echo the wire username the client requested (`url_user`).
             // Explicit prop lists that never name a quota prop skip the
             // 2-query quota resolution (benches/QUOTA-PATH.md).
             let quota = if propfind.wants_quota() {
-                state.resolve_webdav_quota(user.id, chroot.drive_id).await
+                state.resolve_webdav_quota(user.id, drive_id).await
             } else {
                 None
             };
@@ -497,6 +497,17 @@ async fn nc_resolve_or_fallback(
     None
 }
 
+/// `subpath` under the chroot, walked through a link when it crosses one.
+pub(crate) async fn nc_locate(
+    state: &AppState,
+    user_id: Uuid,
+    chroot: &FolderDto,
+    subpath: &str,
+) -> Result<DavLocation, AppError> {
+    let path = nc_to_internal_path(chroot, subpath)?;
+    locate_dav(state, user_id, chroot.drive_id, path).await
+}
+
 // ──────────────────── GET ────────────────────
 
 async fn handle_get(
@@ -516,14 +527,18 @@ async fn handle_get(
     }
 
     let user = &session.user;
-    let internal_path = nc_to_internal_path(chroot, subpath)?;
+    let DavLocation {
+        drive_id,
+        db_path: internal_path,
+        ..
+    } = nc_locate(&state, session.user.id, chroot, subpath).await?;
     let file_service = &state.applications.file_retrieval_service;
 
     // Single-query path resolution. NC clients use GET on a folder as
     // an existence probe (returns 200 empty); file GETs serve content.
     // Post-D7 the resolver is drive-scoped, so both branches
     // `authz.require(Read, …)` before responding.
-    let resolved = nc_resolve_or_fallback(&state, &internal_path, chroot.drive_id)
+    let resolved = nc_resolve_or_fallback(&state, &internal_path, drive_id)
         .await
         .ok_or_else(|| AppError::not_found("File not found"))?;
 
@@ -634,11 +649,15 @@ async fn handle_head(
     }
 
     let user = &session.user;
-    let internal_path = nc_to_internal_path(chroot, subpath)?;
+    let DavLocation {
+        drive_id,
+        db_path: internal_path,
+        ..
+    } = nc_locate(&state, session.user.id, chroot, subpath).await?;
 
     // Single-query path resolution. Both branches `authz.require(Read, …)`
     // on the returned resource before responding.
-    let resolved = nc_resolve_or_fallback(&state, &internal_path, chroot.drive_id)
+    let resolved = nc_resolve_or_fallback(&state, &internal_path, drive_id)
         .await
         .ok_or_else(|| AppError::not_found("File not found"))?;
 
@@ -733,7 +752,11 @@ async fn handle_proppatch(
     // without doing anything), this handler performs real writes, so
     // silently no-opping on a nonexistent path would be a foot-gun —
     // matches the native `/webdav/` handler's contract.
-    let internal_path = nc_to_internal_path(chroot, subpath)?;
+    let DavLocation {
+        drive_id,
+        db_path: internal_path,
+        ..
+    } = nc_locate(&state, session.user.id, chroot, subpath).await?;
     // Single-query path resolution — PROPPATCH may target either a
     // folder or a file. Post-D7 the resolver is drive-scoped, so we
     // `authz.require(Read, …)` on the returned resource before
@@ -741,7 +764,7 @@ async fn handle_proppatch(
     // require additional authz (favorites are per-user; the caller can
     // favourite any resource they can see).
     let (resource_ref, item_id, item_type, is_collection) =
-        match nc_resolve_or_fallback(&state, &internal_path, chroot.drive_id).await {
+        match nc_resolve_or_fallback(&state, &internal_path, drive_id).await {
             Some(ResolvedResource::File(file)) => {
                 let id = Uuid::parse_str(&file.id)
                     .map_err(|_| AppError::not_found("Resource not found"))?;
@@ -867,7 +890,11 @@ async fn handle_put(
     subpath: &str,
 ) -> Result<Response<Body>, AppError> {
     let chroot = session.require_chroot()?;
-    let internal_path = nc_to_internal_path(chroot, subpath)?;
+    let DavLocation {
+        drive_id,
+        db_path: internal_path,
+        ..
+    } = nc_locate(&state, session.user.id, chroot, subpath).await?;
     let file_service = &state.applications.file_retrieval_service;
     let upload_service = &state.applications.file_upload_service;
 
@@ -898,7 +925,7 @@ async fn handle_put(
     // The lookup is reused for the create-vs-update distinction below,
     // so this is also free of an extra DB hit.
     let existing = file_service
-        .get_file_by_path(&internal_path, chroot.drive_id)
+        .get_file_by_path(&internal_path, drive_id)
         .await
         .ok();
     let current_etag = existing.as_ref().map(|f| f.etag.as_str());
@@ -928,7 +955,7 @@ async fn handle_put(
         if state
             .applications
             .folder_service
-            .get_folder_by_path(&internal_path, chroot.drive_id)
+            .get_folder_by_path(&internal_path, drive_id)
             .await
             .is_ok()
         {
@@ -942,7 +969,7 @@ async fn handle_put(
             state
                 .applications
                 .folder_service
-                .get_folder_by_path(parent_path, chroot.drive_id)
+                .get_folder_by_path(parent_path, drive_id)
                 .await
                 .map_err(|_| {
                     AppError::conflict(format!("Parent folder not found: {}", parent_path))
@@ -1027,7 +1054,7 @@ async fn handle_put(
     let stored = upload_service
         .update_file_streaming_with_perms(
             &internal_path,
-            chroot.drive_id,
+            drive_id,
             ingested.stored(),
             &content_type,
             oc_mtime,
@@ -1076,7 +1103,11 @@ async fn handle_patch(
     subpath: &str,
 ) -> Result<Response<Body>, AppError> {
     let chroot = session.require_chroot()?;
-    let internal_path = nc_to_internal_path(chroot, subpath)?;
+    let DavLocation {
+        drive_id,
+        db_path: internal_path,
+        ..
+    } = nc_locate(&state, session.user.id, chroot, subpath).await?;
     let file_service = &state.applications.file_retrieval_service;
     let upload_service = &state.applications.file_upload_service;
 
@@ -1135,7 +1166,7 @@ async fn handle_patch(
     // directory" (409, matching the plain WebDAV surface) from "it
     // doesn't exist at all" (404) instead of collapsing both to 404.
     let file = match file_service
-        .get_file_by_path(&internal_path, chroot.drive_id)
+        .get_file_by_path(&internal_path, drive_id)
         .await
     {
         Ok(file) => file,
@@ -1143,7 +1174,7 @@ async fn handle_patch(
             if state
                 .applications
                 .folder_service
-                .get_folder_by_path(&internal_path, chroot.drive_id)
+                .get_folder_by_path(&internal_path, drive_id)
                 .await
                 .is_ok()
             {
@@ -1248,7 +1279,7 @@ async fn handle_patch(
         &state,
         upload_service,
         &internal_path,
-        chroot.drive_id,
+        drive_id,
         &ingested,
         session.user.id,
         &file.content_hash,
@@ -1287,7 +1318,11 @@ async fn handle_mkcol(
     use crate::application::dtos::folder_dto::CreateFolderDto;
 
     let folder_service = &state.applications.folder_service;
-    let internal_path = nc_to_internal_path(chroot, subpath)?;
+    let DavLocation {
+        drive_id,
+        db_path: internal_path,
+        ..
+    } = nc_locate(&state, session.user.id, chroot, subpath).await?;
 
     // RFC 4918 §9.3.1:
     //   - target already exists                                → 405 Method Not Allowed
@@ -1302,7 +1337,7 @@ async fn handle_mkcol(
     // auto-create doesn't break real clients.
 
     if folder_service
-        .get_folder_by_path(&internal_path, chroot.drive_id)
+        .get_folder_by_path(&internal_path, drive_id)
         .await
         .is_ok()
     {
@@ -1327,19 +1362,9 @@ async fn handle_mkcol(
     // NC surface (macOS Finder / NC desktop client emit NFD on macOS).
     let normalized_target = normalize_storage_name(target_name);
 
-    // Take POC's `chroot`-based root resolution (drive-aware mount
-    // point) but keep HEAD's parent_path lookup pattern — the
-    // continuation below uses `get_folder_by_path(&parent_path,
-    // user.id)` (user-scoped lookup added in the D0 rewind).
-    let user_root = nc_to_internal_path(chroot, "")?;
-    let parent_path = if parent_segments.is_empty() {
-        user_root.clone()
-    } else {
-        format!("{}/{}", user_root, parent_segments.join("/"))
-    };
-
+    let parent_path = internal_path.rsplit_once('/').map_or("", |(p, _)| p);
     let parent_folder = match folder_service
-        .get_folder_by_path(&parent_path, chroot.drive_id)
+        .get_folder_by_path(parent_path, drive_id)
         .await
     {
         Ok(folder) => folder,
@@ -1394,7 +1419,11 @@ async fn handle_delete(
 ) -> Result<Response<Body>, AppError> {
     let user = &session.user;
     let chroot = session.require_chroot()?;
-    let internal_path = nc_to_internal_path(chroot, subpath)?;
+    let DavLocation {
+        drive_id,
+        db_path: internal_path,
+        ..
+    } = nc_locate(&state, session.user.id, chroot, subpath).await?;
     let folder_service = &state.applications.folder_service;
 
     // Single-query path resolution. Post-D7 the resolver is drive-scoped,
@@ -1403,7 +1432,7 @@ async fn handle_delete(
     // inside the downstream service (`trash_svc.move_to_trash` /
     // `delete_folder_with_perms` / `delete_file_with_perms` all take
     // `caller_id`).
-    let resolved = nc_resolve_or_fallback(&state, &internal_path, chroot.drive_id)
+    let resolved = nc_resolve_or_fallback(&state, &internal_path, drive_id)
         .await
         .ok_or_else(|| AppError::not_found("Resource not found"))?;
 
@@ -1502,14 +1531,18 @@ async fn handle_move(
         .unwrap_or(false);
 
     // Parse destination path: extract subpath after /remote.php/dav/files/{user}/
-    // — the URL user-segment carries the drive marker on multi-drive
-    // sessions, so we strip the *composite* prefix to find the real
-    // subpath. Using `user.username` here would fail to match for any
-    // request hitting a non-home drive.
+    // The URL user-segment is `url_user` (the raw wire username).
     let dest_subpath = extract_nc_subpath_from_dest(&destination, url_user)
         .ok_or_else(|| AppError::bad_request("Invalid Destination URL"))?;
 
-    let src_internal = nc_to_internal_path(chroot, subpath)?;
+    let src_loc = nc_locate(&state, user.id, chroot, subpath).await?;
+    let dest_loc = nc_locate(&state, user.id, chroot, &dest_subpath).await?;
+    refuse_dav_overlap(user.id, "MOVE", (&src_loc).into(), (&dest_loc).into())?;
+    let DavLocation {
+        drive_id: src_drive_id,
+        db_path: src_internal,
+        ..
+    } = src_loc;
     let folder_service = &state.applications.folder_service;
     let file_service = &state.applications.file_retrieval_service;
     let file_mgmt = &state.applications.file_management_service;
@@ -1521,9 +1554,13 @@ async fn handle_move(
     // resolver is drive-scoped; on the overwrite path we
     // `authz.require(Read, …)` explicitly and the downstream delete
     // enforces `Permission::Delete`.
-    let dest_internal_precheck = nc_to_internal_path(chroot, &dest_subpath)?;
-    let dest_existing =
-        nc_resolve_or_fallback(&state, &dest_internal_precheck, chroot.drive_id).await;
+    let DavLocation {
+        drive_id: dest_drive_id,
+        db_path: dest_internal,
+        ..
+    } = dest_loc;
+    let dest_parent_internal = dest_internal.rsplit_once('/').map_or("", |(p, _)| p);
+    let dest_existing = nc_resolve_or_fallback(&state, &dest_internal, dest_drive_id).await;
     let dest_existed_before = dest_existing.is_some();
 
     if let Some(existing) = dest_existing {
@@ -1589,14 +1626,13 @@ async fn handle_move(
 
     // Try as file first.
     if let Ok(file) = file_service
-        .get_file_by_path(&src_internal, chroot.drive_id)
+        .get_file_by_path(&src_internal, src_drive_id)
         .await
     {
         let (dest_parent_sub, dest_name) = match dest_subpath.rsplit_once('/') {
             Some((parent, name)) => (parent, name),
             None => ("", dest_subpath.as_str()),
         };
-        let dest_parent_internal = nc_to_internal_path(chroot, dest_parent_sub)?;
 
         // Rename if only the name changes (same parent).
         let src_parent_sub = match subpath.rsplit_once('/') {
@@ -1616,7 +1652,7 @@ async fn handle_move(
         } else {
             // Different parent → move.
             let dest_parent = folder_service
-                .get_folder_by_path(&dest_parent_internal, chroot.drive_id)
+                .get_folder_by_path(dest_parent_internal, dest_drive_id)
                 .await
                 .map_err(|_| AppError::not_found("Destination folder not found"))?;
 
@@ -1638,10 +1674,9 @@ async fn handle_move(
         // Take POC's chroot-based path resolution; keep HEAD's
         // final_status (201 vs 204 depending on whether the destination
         // existed — RFC 4918 §9.9.4 distinguishes create vs overwrite).
-        let dest_internal = nc_to_internal_path(chroot, &dest_subpath)?;
         let mut builder = Response::builder().status(final_status);
         if let Ok(moved) = file_service
-            .get_file_by_path(&dest_internal, chroot.drive_id)
+            .get_file_by_path(&dest_internal, dest_drive_id)
             .await
         {
             // Route through `FileDto::etag` so the MOVE response
@@ -1658,14 +1693,13 @@ async fn handle_move(
 
     // Try as folder.
     if let Ok(folder) = folder_service
-        .get_folder_by_path(&src_internal, chroot.drive_id)
+        .get_folder_by_path(&src_internal, src_drive_id)
         .await
     {
         let (dest_parent_sub, dest_name) = match dest_subpath.rsplit_once('/') {
             Some((parent, name)) => (parent, name),
             None => ("", dest_subpath.as_str()),
         };
-        let dest_parent_internal = nc_to_internal_path(chroot, dest_parent_sub)?;
 
         let src_parent_sub = match subpath.rsplit_once('/') {
             Some((parent, _)) => parent,
@@ -1691,7 +1725,7 @@ async fn handle_move(
         } else {
             // Different parent → move.
             let dest_parent = folder_service
-                .get_folder_by_path(&dest_parent_internal, chroot.drive_id)
+                .get_folder_by_path(dest_parent_internal, dest_drive_id)
                 .await
                 .map_err(|_| AppError::not_found("Destination parent not found"))?;
 
@@ -1811,8 +1845,7 @@ async fn write_nc_file_multistatus<W: std::io::Write>(
     write_nc_multistatus_open(&mut xml)?;
 
     // Single-file PROPFIND — subpath already points to the file.
-    // `url_user` is the wire identifier (may carry a `~{drive}`
-    // marker); the NC client validates that the returned `<d:href>`
+    // `url_user` is the wire identifier; the NC client validates that the returned `<d:href>`
     // shares the requested URL's prefix. `username` is the canonical
     // identity for the `oc:owner-id` field.
     let href = nc_href(url_user, subpath);
@@ -1845,7 +1878,7 @@ async fn write_nc_file_multistatus<W: std::io::Write>(
 /// plus its entire multistatus (~2 KB/entry) in RAM before the first byte.
 fn build_nc_streaming_propfind(
     state: Arc<AppState>,
-    folder: FolderDto,
+    mut folder: FolderDto,
     depth: String,
     user_id: Uuid,
     username: String,
@@ -1866,7 +1899,7 @@ fn build_nc_streaming_propfind(
         // overlapped with `join!` (ROUND10; the header trio was left serial
         // when ROUND9 converted the page loops).
         let folder_id_arr = [folder.id.as_str()];
-        let (folder_favs, (_, folder_id_map), folder_dead) = tokio::join!(
+        let (folder_favs, (_, folder_id_map), folder_dead, first) = tokio::join!(
             async {
                 if let Some(fav) = fav_svc {
                     fav.batch_check_favorites(user_id, &[(folder.id.as_str(), "folder")])
@@ -1878,7 +1911,20 @@ fn build_nc_streaming_propfind(
             },
             batch_resolve_ids(file_id_svc, &[], &folder_id_arr),
             folder_dead_props(&state.webdav_dead_props, &folder),
+            async {
+                if depth != "0" {
+                    folder_service
+                        .list_folders_batch_with_link_etags(Some(&folder.id), user_id, None, PROPFIND_BATCH_SIZE as usize, Some(&folder.id))
+                        .await
+                        .map(|(page, etags)| (Some(page), etags))
+                } else {
+                    folder_service.link_etags(user_id, [folder.id.as_str()]).await.map(|etags| (None, etags))
+                }
+            },
         );
+        let (mut first_folders, folder_etags) =
+            first.map_err(|e| std::io::Error::other(e.to_string()))?;
+        folder_etags.apply(&mut folder);
 
         let mut buf = Vec::with_capacity(4096);
         {
@@ -2011,15 +2057,22 @@ fn build_nc_streaming_propfind(
             // COUNT(*) OVER() + LIMIT/OFFSET walk (benches/FOLDER-KEYSET.md).
             let mut after_folder: Option<String> = None;
             loop {
-                let batch = folder_service
-                    .list_folders_batch_with_perms(
-                        Some(&folder.id),
-                        user_id,
-                        after_folder.as_deref(),
-                        PROPFIND_BATCH_SIZE as usize,
-                    )
-                    .await
-                    .map_err(|e| std::io::Error::other(e.to_string()))?;
+                let batch = match first_folders.take() {
+                    Some(batch) => batch,
+                    None => {
+                        folder_service
+                            .list_folders_batch_with_link_etags(
+                                Some(&folder.id),
+                                user_id,
+                                after_folder.as_deref(),
+                                PROPFIND_BATCH_SIZE as usize,
+                                None,
+                            )
+                            .await
+                            .map_err(|e| std::io::Error::other(e.to_string()))?
+                            .0
+                    }
+                };
                 if batch.is_empty() {
                     break;
                 }
@@ -2528,11 +2581,8 @@ mod tests {
 
     // ── nc_to_internal_path ──
     //
-    // The route glue resolves the `chroot` FolderDto once per request
-    // (legacy/home → user's home folder DTO; explicit `~{folder_uuid}` →
-    // folder's stored DTO after permission check). These tests cover only
-    // the path-mapping function itself; the resolver logic lives in
-    // `routes.rs::verify_url_user_and_resolve_chroot`.
+    // The `chroot` FolderDto is the caller's default drive root. These tests cover only
+    // the path-mapping function itself.
 
     /// Build a stub `FolderDto` carrying only the `path` field (all the
     /// path mapper looks at). Keeps the tests focused on path mapping
@@ -2557,6 +2607,7 @@ mod tests {
             // Nextcloud DAV surfaces don't render the SPA badges.
             is_favorite: false,
             is_shared: false,
+            mount: None,
         }
     }
 
@@ -2613,6 +2664,7 @@ mod tests {
         assert!(nc_to_internal_path(&home, "foo/./bar").is_err());
     }
 
+    /// Confines a subfolder chroot.
     /// Confines a subfolder chroot (the multi-drive form once
     /// resolved). Same path-mapping logic — only the chroot differs.
     #[test]
