@@ -434,6 +434,13 @@ impl JobRegistry {
         self.entries.read().await.is_empty()
     }
 
+    /// `true` while a run of `name` holds its in-flight permit.
+    pub async fn is_running(&self, name: &str) -> bool {
+        self.get(name)
+            .await
+            .is_some_and(|e| e.in_flight.available_permits() == 0)
+    }
+
     /// Manual dispatch — the single entry point for running a
     /// registered job outside the scheduler's tick loop. Called by:
     ///

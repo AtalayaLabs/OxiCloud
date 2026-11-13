@@ -2498,6 +2498,16 @@ pub struct FeaturesConfig {
     /// Mirrors `NextcloudConfig.enabled` for backward compat with
     /// call-sites that still read the nextcloud config block directly.
     pub enable_nextcloud: bool,
+    /// Whether granted folders and shared drives appear as links in the recipient's
+    /// personal drive (docs/plan/links.md). Env: `OXICLOUD_LINKS_MODE` (`off` | `auto`).
+    pub links_mode: LinksMode,
+    /// Folder under the personal root where new share mounts land; `None` = root.
+    /// Env: `OXICLOUD_SHARE_MOUNT_FOLDER` (default `Shares`, empty = root).
+    pub share_mount_folder: Option<String>,
+    /// Cadence of the `links_settle` job. Env: `OXICLOUD_LINKS_SETTLE_INTERVAL_MS` (default `2000`, min `200`).
+    pub links_settle_interval_ms: u64,
+    /// Cadence of the `links_expiry_sweep` job. Env: `OXICLOUD_LINKS_EXPIRY_SWEEP_SECS` (default `600`).
+    pub links_expiry_sweep_secs: u64,
     /// Native WebDAV path segment that lists the caller's drives.
     ///
     /// * Default `"@drive"` — bare `/webdav/` addresses the caller's
@@ -3123,6 +3133,10 @@ impl Default for FeaturesConfig {
             enable_calendars: true,        // Calendars browse UI (placeholder, see PR #853)
             enable_contacts: true,         // Contacts browse UI + /api/contacts
             enable_nextcloud: false,       // NextCloud compat — opt-in, off by default
+            links_mode: LinksMode::Off,
+            share_mount_folder: Some("Shares".to_string()),
+            links_settle_interval_ms: 2000,
+            links_expiry_sweep_secs: 600,
             // Back-compat with pre-multi-drive clients — bare `/webdav/`
             // maps to the caller's default drive; drive listing is
             // reachable at `/webdav/@drive/`.
@@ -4479,6 +4493,35 @@ impl AppConfig {
             config.features.enable_external_mounts = val;
         }
 
+        if env::var_os("OXICLOUD_ENABLE_SHARE_MOUNTS").is_some() {
+            tracing::warn!("OXICLOUD_ENABLE_SHARE_MOUNTS is retired; set OXICLOUD_LINKS_MODE=auto");
+        }
+        config.features.links_mode = links_mode_from_env_value(
+            env::var("OXICLOUD_LINKS_MODE").ok().as_deref(),
+            config.features.links_mode,
+        );
+        if let Ok(v) = env::var("OXICLOUD_SHARE_MOUNT_FOLDER") {
+            config.features.share_mount_folder = parse_share_mount_folder(&v);
+        }
+        if let Ok(v) = env::var("OXICLOUD_LINKS_SETTLE_INTERVAL_MS") {
+            match v.parse::<u64>() {
+                Ok(ms) => config.features.links_settle_interval_ms = ms.max(200),
+                Err(_) => tracing::warn!(
+                    "OXICLOUD_LINKS_SETTLE_INTERVAL_MS={v:?} is not a non-negative integer; keeping {}",
+                    config.features.links_settle_interval_ms
+                ),
+            }
+        }
+        if let Ok(v) = env::var("OXICLOUD_LINKS_EXPIRY_SWEEP_SECS") {
+            match v.parse::<u64>() {
+                Ok(secs) if secs > 0 => config.features.links_expiry_sweep_secs = secs,
+                _ => tracing::warn!(
+                    "OXICLOUD_LINKS_EXPIRY_SWEEP_SECS={v:?} is not a positive integer; keeping {}",
+                    config.features.links_expiry_sweep_secs
+                ),
+            }
+        }
+
         // Faces (People) ONNX runtime + models — operator-provided at runtime.
         if let Ok(v) = env::var("OXICLOUD_FACES_ORT_DYLIB").or_else(|_| env::var("ORT_DYLIB_PATH"))
             && !v.is_empty()
@@ -5248,7 +5291,46 @@ pub fn parse_base_path(raw: &str) -> String {
     stripped.to_string()
 }
 
+/// Parses `OXICLOUD_LINKS_MODE`; an unparsable value is logged and `current` is kept.
+pub fn links_mode_from_env_value(raw: Option<&str>, current: LinksMode) -> LinksMode {
+    let Some(v) = raw else { return current };
+    LinksMode::parse(v).unwrap_or_else(|| {
+        tracing::error!(value = %v, "OXICLOUD_LINKS_MODE must be `off` or `auto`; links stay off");
+        current
+    })
+}
+
+/// Whether share grants surface as links in the recipient's drive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinksMode {
+    Off,
+    Auto,
+}
+
+impl LinksMode {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "off" => Some(Self::Off),
+            "auto" => Some(Self::Auto),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Auto => "auto",
+        }
+    }
+}
+
 /// Gets a default global configuration
+/// `OXICLOUD_SHARE_MOUNT_FOLDER` value → folder name; blanks and bare slashes mean root.
+pub fn parse_share_mount_folder(raw: &str) -> Option<String> {
+    let v = raw.trim().trim_matches('/').to_owned();
+    (!v.is_empty()).then_some(v)
+}
+
 pub fn default_config() -> AppConfig {
     AppConfig::default()
 }
@@ -5256,6 +5338,49 @@ pub fn default_config() -> AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn links_mode_default_off_and_parses() {
+        assert_eq!(AppConfig::default().features.links_mode, LinksMode::Off);
+        assert_eq!(LinksMode::parse("auto"), Some(LinksMode::Auto));
+        assert_eq!(LinksMode::parse("AUTO"), Some(LinksMode::Auto));
+        assert_eq!(LinksMode::parse("off"), Some(LinksMode::Off));
+        assert_eq!(LinksMode::parse("manual"), None);
+        assert_eq!(LinksMode::Auto.as_str(), "auto");
+        assert_eq!(LinksMode::Off.as_str(), "off");
+    }
+
+    #[test]
+    fn invalid_links_mode_keeps_off() {
+        assert_eq!(
+            links_mode_from_env_value(Some("bogus"), LinksMode::Off),
+            LinksMode::Off
+        );
+        assert_eq!(
+            links_mode_from_env_value(None, LinksMode::Off),
+            LinksMode::Off
+        );
+        assert_eq!(
+            links_mode_from_env_value(Some("auto"), LinksMode::Off),
+            LinksMode::Auto
+        );
+    }
+
+    #[test]
+    fn share_mount_folder_defaults_to_shares() {
+        let c = AppConfig::default();
+        assert_eq!(c.features.share_mount_folder.as_deref(), Some("Shares"));
+    }
+
+    #[test]
+    fn share_mount_folder_trims_slashes_and_blanks() {
+        assert_eq!(
+            parse_share_mount_folder("/Shared/"),
+            Some("Shared".to_string())
+        );
+        assert_eq!(parse_share_mount_folder("  "), None);
+        assert_eq!(parse_share_mount_folder("/"), None);
+    }
 
     /// Optional URL knobs: unset and empty both mean "derive", a trailing
     /// slash is trimmed so callers can glue paths on directly.

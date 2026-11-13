@@ -93,6 +93,16 @@ pub trait JobHandler: Send + Sync {
         false
     }
 
+    /// `true` when a tick or trigger landing on an in-flight run is normal for this job; the skip then logs at debug, not warn.
+    fn overlapping_ticks_expected(&self) -> bool {
+        false
+    }
+
+    /// `true` when an `Ok` run with count 0 is routine for this job; it then logs at debug, not info.
+    fn quiet_when_idle(&self) -> bool {
+        false
+    }
+
     /// What this job does, in one or two sentences, for the admin UI.
     ///
     /// English, in the trait, beside the behaviour it describes — not in
