@@ -457,7 +457,22 @@ fn file_dto_from(row: FileChangeRow) -> FileDto {
     FileDto {
         id: row.file_id.to_string(),
         name: row.name,
-        path: row.folder_path.unwrap_or_default(),
+        // **Empty on purpose**, matching `/api/grants/incoming/resources`,
+        // whose query selects no path at all.
+        //
+        // This feed reaches files through a grant on the file or a cascading
+        // grant on one folder — so the caller is authorised for that FILE, and
+        // not for its ancestors. The path is a list of ancestor folder NAMES,
+        // which is a different question: "/HR/Salaries 2026/offer.pdf" tells
+        // the recipient of one shared file what the folders above it are
+        // called. Nothing on this surface needs it, so it is not sent.
+        //
+        // "Open parent folder" still works, and deliberately: it navigates by
+        // `folder_id`, and `/files/{id}` enforces its own read check — the
+        // menu entry greys out when the caller cannot read the parent
+        // (`folderAccessCached`). An id the caller cannot use leaks nothing;
+        // a name does.
+        path: String::new(),
         size: row.size.max(0) as u64,
         mime_type: intern_mime(&row.mime_type),
         folder_id: row.folder_id.map(|u| u.to_string()),

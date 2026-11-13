@@ -207,15 +207,20 @@
 			key: 'type',
 			label: t('groupby.type', 'Type'),
 			orderBy: 'changed_at',
-			// `?? null`, not a `'Unknown'` string literal: the bucket key is
-			// the `ResourceCategory` enum value the server sent, and the
-			// absence of one is the section builder's own null sentinel. The
-			// label for it comes from `typeLabelOf`, which narrows against
-			// `CATEGORIES` at runtime and falls back to the LOCALISED unknown
-			// label — so an unrecognised category cannot render as a raw
-			// English key, which is the i18n bug the typed union closed.
-			// (`/recent` still carries the older literal form here.)
-			bucketOf: (item) => item.category ?? null,
+			// The bucket key IS the `ResourceCategory` the server sent — no
+			// fallback, because the field is non-optional on both DTOs and
+			// the enum already carries the two cases a fallback would invent:
+			// `Unknown` for a file whose type is unrecognised, and `Folder`,
+			// which `FolderDto.category` is documented to always be. So a
+			// folder buckets as "Folders" rather than falling through to
+			// Unknown — which `?? null` here risked, and which a `'Unknown'`
+			// string literal would have guaranteed.
+			//
+			// `typeLabelOf` narrows against `CATEGORIES` at runtime and
+			// localises anything outside it, so an unrecognised value cannot
+			// render as a raw English key — the i18n bug the typed union
+			// closed. (`/recent` still carries the older literal form.)
+			bucketOf: (item) => item.category,
 			labelOf: (k) => typeLabelOf(k)
 		}
 	];
@@ -308,6 +313,15 @@
 <svelte:head><title>{t('nav.changes', 'Changes')} · OxiCloud</title></svelte:head>
 
 <!--
+	NO PATH COLUMN — and `showPath={false}` is EXPLICIT because the prop
+	defaults to TRUE: omitting it renders the column with empty cells, which
+	is what `/shared-with-me` does today. Matching it: the server sends an empty
+	path on this feed (`file_dto_from`), because a path is a list of ANCESTOR
+	FOLDER NAMES and this surface reaches files the caller is authorised for
+	without being authorised for the folders above them. "Open parent folder"
+	stays — it navigates by `folder_id` and greys out when the parent is
+	unreadable, so it offers an id the caller cannot use rather than a name.
+
 	Deliberately NOT `selectable` for v1. Selection is an id-keyed set, so
 	ticking a file in Bob's lane would tick the same file in Carol's — and a
 	batch action would then act once on something that looks doubly selected.
@@ -332,7 +346,7 @@
 	menuPrepare={prepareParentAccess}
 	showOwner
 	ownerLabel={t('files.col_modified_by', 'Modified by')}
-	showPath
+	showPath={false}
 	dateLabel={t('changes.col_changed', 'Changed')}
 	{groupBys}
 	bind:groupBy

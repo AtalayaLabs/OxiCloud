@@ -11,6 +11,15 @@ vi.mock('$lib/api/generated/openapi/sdk.gen', () => ({
 // `undefined` at runtime and throws the moment that axis is selected;
 // `npm run check` cannot see it, because it type-checks against the real
 // module. Identity, so bucket keys assert as themselves.
+// "Open parent folder" is gated on reachability: `prepareParentAccess` probes
+// it (cached), `folderAccessCached` answers true / false / undefined, and only
+// an explicit `false` greys the entry. Mocked `false` here so the greyed state
+// is testable — unprobed (undefined) must NOT grey, or every first
+// right-click would show a disabled entry.
+vi.mock('$lib/utils/folderAccess', () => ({
+	folderAccessCached: () => false,
+	probeFolderAccess: vi.fn(async () => false)
+}));
 vi.mock('$lib/utils/resourceBuckets', () => ({
 	dateBucket: () => 'Today',
 	sizeBucket: () => 'Small',
@@ -368,6 +377,46 @@ it('refetches from the first page when the cap is toggled', async () => {
 			expect.objectContaining({ query: expect.objectContaining({ per_lane: null, cursor: null }) })
 		)
 	);
+});
+
+// No path column, matching `/shared-with-me`. The server already sends an
+// empty path, so this is belt-and-braces — but the column would render an
+// empty cell and, more to the point, a future `showPath` here would start
+// displaying ancestor folder names the moment the server ever filled the
+// field in again.
+it('renders no path column', async () => {
+	m(listRecentChanges).mockResolvedValue({
+		items: [change('f1', 'notes.txt', 'bob', '2024-01-01T00:00:00Z')],
+		next_cursor: null
+	});
+	render(ChangesPage);
+	await waitFor(() => expect(screen.getByTestId('notes.txt')).toBeTruthy());
+
+	expect(document.querySelector('.path-cell')).toBeNull();
+	// The escape hatch to the file's real home is the row menu, not the path.
+	await fireEvent.click(screen.getByTestId('resource-list-more-f1-btn'));
+	expect(await screen.findByText('Open parent folder')).toBeTruthy();
+});
+
+// On a FILE the entry is always offered and greys out when the parent is
+// unreachable — never hidden. A greyed row with a reason reads as "you can't
+// do this here"; a missing row reads as "this feature doesn't exist", and on
+// a page with no path column it would leave no route to the file's home at
+// all. `folderAccessCached` is mocked to `false` above, so this is the
+// unreachable case.
+it('always offers open-parent on a file, greyed when unreachable', async () => {
+	m(listRecentChanges).mockResolvedValue({
+		items: [change('f1', 'notes.txt', 'bob', '2024-01-01T00:00:00Z')],
+		next_cursor: null
+	});
+	render(ChangesPage);
+	await waitFor(() => expect(screen.getByTestId('notes.txt')).toBeTruthy());
+
+	await fireEvent.click(screen.getByTestId('resource-list-more-f1-btn'));
+	const entry = await screen.findByText('Open parent folder');
+	const control = entry.closest('button') ?? entry.closest('a');
+	expect(control).toBeTruthy();
+	expect((control as HTMLButtonElement).disabled).toBe(true);
 });
 
 // No sort-direction toggle, because the endpoint has no `reverse` parameter.

@@ -172,7 +172,6 @@ pub struct FileChangeRow {
     pub file_id: Uuid,
     pub name: String,
     pub folder_id: Option<Uuid>,
-    pub folder_path: Option<String>,
     pub size: i64,
     pub mime_type: String,
     pub created_at: DateTime<Utc>,

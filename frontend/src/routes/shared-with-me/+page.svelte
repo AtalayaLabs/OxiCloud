@@ -23,6 +23,7 @@
 	} from '$lib/components/ResourceList.svelte';
 	import UserAvatar from '$lib/components/UserAvatar.svelte';
 	import AvatarOverlayChip from '$lib/components/AvatarOverlayChip.svelte';
+	import { openParentContextAction, prepareParentAccess } from '$lib/utils/listActions';
 	import type { IncomingGrantOrderBy } from '$lib/api/generated/openapi/types.gen';
 	import { t } from '$lib/i18n/index.svelte';
 	import { session } from '$lib/stores/session.svelte';
@@ -271,6 +272,17 @@
 	}
 
 	const contextActions: ContextAction[] = [
+		// "Open parent folder", from the shared factory — the same entry
+		// `/files`, `/recent`, `/favorites` and `/changes` carry, and the only
+		// way off this page to where a shared item actually lives.
+		//
+		// It is often DISABLED here, which is the designed behaviour rather
+		// than a wart: a file shared on its own sits in a folder the recipient
+		// cannot read, so the entry greys out. A greyed row with a reason
+		// reads as "you can't do this here"; a missing row reads as "this
+		// feature doesn't exist". `menuPrepare` below primes the reachability
+		// probe so the state is right on the first right-click.
+		openParentContextAction(),
 		{
 			key: 'download',
 			label: t('common.download', 'Download'),
@@ -320,6 +332,7 @@
 	{contextMap}
 	resolveOwnerName={(id) => sharers.name(id)}
 	{contextActions}
+	menuPrepare={prepareParentAccess}
 	{loading}
 	{error}
 	emptyText={t('shared_with_me.empty', 'Nothing has been shared with you yet.')}

@@ -146,6 +146,22 @@ Authorization: Bearer {{ann_token}}
 HTTP 200
 [Asserts]
 jsonpath "$.items[?(@.resource.id == '{{ann_file}}')].modifier_id" == "{{ann_id}}"
+# The PATH IS EMPTY, deliberately, exactly as
+# `/api/grants/incoming/resources` sends none at all.
+#
+# A path is a list of ANCESTOR FOLDER NAMES, and this feed reaches files
+# through a grant on the file or a cascading grant on one folder — so the
+# caller is authorised for the FILE and not for what sits above it.
+# "/HR/Salaries 2026/offer.pdf" would tell the recipient of one shared file
+# what the folders above it are called.
+#
+# Pinned on Ann's own file, where nothing is being withheld from her, because
+# the point is that the FIELD is empty on this surface for everyone — a
+# version that filled it in "when the caller owns it" would leak the moment
+# someone shared a file out of a sensitively-named folder.
+jsonpath "$.items[0].resource.path" == ""
+
+
 # `lane_total` is the number of FILES this person changed in the window,
 # counted inside the access filter. Present on the people axis only.
 jsonpath "$.items[?(@.resource.id == '{{ann_file}}')].lane_total" isInteger

@@ -191,7 +191,6 @@ const ROW_COLUMNS: &str = r#"
                     f.id                                           AS file_id,
                     f.name                                         AS name,
                     f.folder_id                                    AS folder_id,
-                    fo.path                                        AS folder_path,
                     f.size                                         AS size,
                     f.mime_type                                    AS mime_type,
                     f.created_at                                   AS created_at,
@@ -320,7 +319,6 @@ impl RecentChangesPgRepository {
              SELECT {ROW_COLUMNS}
                FROM storage.file_content_touches t
                JOIN storage.files f ON f.id = t.file_id
-               LEFT JOIN storage.folders fo ON fo.id = f.folder_id
               WHERE t.touched_at > NOW() - ($2 || ' days')::interval
                 AND {visible}
                 AND ($3::uuid[] IS NULL OR t.user_id = ANY($3))
@@ -401,7 +399,6 @@ impl RecentChangesPgRepository {
                      LIMIT $4
                ) t ON TRUE
                JOIN storage.files f ON f.id = t.file_id
-               LEFT JOIN storage.folders fo ON fo.id = f.folder_id
               ORDER BY l.lane_rank, t.touched_at DESC, t.file_id DESC"
         );
         let rows = sqlx::query(&sql)
@@ -426,7 +423,6 @@ fn row_from(r: sqlx::postgres::PgRow) -> Result<FileChangeRow, DomainError> {
         file_id: r.try_get("file_id").map_err(decode)?,
         name: r.try_get("name").map_err(decode)?,
         folder_id: r.try_get("folder_id").map_err(decode)?,
-        folder_path: r.try_get("folder_path").map_err(decode)?,
         size: r.try_get("size").map_err(decode)?,
         mime_type: r.try_get("mime_type").map_err(decode)?,
         created_at: r.try_get("created_at").map_err(decode)?,
