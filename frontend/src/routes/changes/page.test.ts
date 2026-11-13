@@ -11,14 +11,24 @@ vi.mock('$lib/utils/resourceBuckets', () => ({
 	sizeBucket: () => 'Small',
 	typeLabel: () => 'File'
 }));
-vi.mock('$lib/utils/ownerName', () => ({
-	// Resolves to a readable name so the lane header is asserted on the
-	// name, not on a raw id — and so a regression that stopped resolving
-	// modifiers shows up as a changed label rather than passing silently.
-	resolveOwnerName: vi.fn(async (id: string) => (id === 'bob' ? 'Bob' : 'Carol'))
+// The page and `<UserAvatar>` share this resolver, so one mock covers both.
+// It returns a readable name AND an email: the lane header asserts on the
+// name, so a regression that stopped resolving modifiers shows up as a
+// changed label rather than passing silently, and the email is what the
+// hover tooltip must carry.
+vi.mock('$lib/api/endpoints/users', () => ({
+	resolveUser: vi.fn(async (id: string) => ({
+		id,
+		name: id === 'bob' ? 'Bob' : 'Carol',
+		email: `${id}@example.test`,
+		image: null,
+		isExternal: false,
+		isOnline: false
+	}))
 }));
 
 import { listRecentChanges } from '$lib/api/generated/openapi/sdk.gen';
+import { resolveUser } from '$lib/api/endpoints/users';
 import ChangesPage from './+page.svelte';
 
 const m = (fn: unknown) => fn as ReturnType<typeof vi.fn>;
@@ -92,6 +102,28 @@ it('renders the server lane total in the lane header', async () => {
 	await waitFor(() => expect(screen.getByText(/14 file/)).toBeTruthy());
 });
 
+// The lane header identifies a person three ways, and each one can regress on
+// its own: the avatar (photo or coloured initials), the resolved NAME rather
+// than the raw uuid the DTO carries, and the full email on hover — the
+// disambiguator, since two colleagues can share a display name and "who
+// exactly" is the question a provenance view answers.
+//
+// The email is pinned on the wrapper, not the avatar: `<UserAvatar>` defaults
+// its own `title` to the display name, so leaving that in place would mean the
+// inner tooltip wins and the email never appears.
+it('shows avatar, resolved name and the email on hover in the lane header', async () => {
+	m(listRecentChanges).mockResolvedValue({
+		items: [change('f1', 'notes.txt', 'bob', '2024-01-01T00:00:00Z')],
+		next_cursor: null
+	});
+	render(ChangesPage);
+
+	const lane = await screen.findByTestId('changes-lane-bob');
+	await waitFor(() => expect(lane.textContent).toContain('Bob'));
+	await waitFor(() => expect(lane.getAttribute('title')).toBe('bob@example.test'));
+	expect(lane.querySelector('.ua')).toBeTruthy();
+});
+
 // A lane can straddle a page boundary: the cursor ends mid-lane and the next
 // page continues it. Appending must MERGE into the open lane rather than draw
 // a second header for the same person — which is what a per-page grouping
@@ -138,6 +170,16 @@ it('shows a file once on the date axis', async () => {
 	expect(listRecentChanges).toHaveBeenLastCalledWith(
 		expect.objectContaining({ query: expect.objectContaining({ order_by: 'changed_at' }) })
 	);
+
+	// The bucket key here is a DATE ("Today"), not a person. One snippet
+	// serves both axes, so an ungated avatar would fetch `/api/users/Today`
+	// and then draw a coloured "T" circle as though a person called Today
+	// existed. Both halves are pinned: no avatar in the header, and no
+	// resolve attempted for the bucket name.
+	const bucket = screen.getByTestId('changes-lane-Today');
+	expect(bucket.querySelector('.ua')).toBeNull();
+	expect(bucket.getAttribute('title')).toBeNull();
+	expect(resolveUser).not.toHaveBeenCalledWith('Today');
 });
 
 // Changing the window must start a fresh page. A cursor minted under the old

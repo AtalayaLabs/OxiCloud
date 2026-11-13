@@ -17,8 +17,13 @@
 	} from '$lib/api/generated/openapi/types.gen';
 	import ResourceList, { type GroupByDef } from '$lib/components/ResourceList.svelte';
 	import type { FileItem, FolderItem } from '$lib/api/types';
-	import { useOwnerCache } from '$lib/composables/useOwnerCache.svelte';
-	import { resolveOwnerName } from '$lib/utils/ownerName';
+	import UserAvatar from '$lib/components/UserAvatar.svelte';
+	// `resolveUser`, not `resolveOwnerName`: the lane header needs the photo
+	// and the email as well as the name, and this is the resolver
+	// `<UserAvatar>` itself calls. Its cache is keyed by id and holds the
+	// PROMISE, so the avatar and this page share one round trip per person
+	// instead of each hitting `/api/users/{id}`.
+	import { resolveUser, type ResolvedUser } from '$lib/api/endpoints/users';
 	import { dateBucket } from '$lib/utils/resourceBuckets';
 	import { formatDate } from '$lib/utils/display';
 	import { lazyComponent } from '$lib/composables/lazyComponent.svelte';
@@ -57,7 +62,24 @@
 	/** Server default is 30 and its ceiling is 90 — a larger value is a 400
 	 *  naming the bound, so the selector offers exactly what the API accepts. */
 	let days = $state(30);
-	const owners = useOwnerCache(resolveOwnerName);
+	/** modifier id → profile, for the lane header's avatar, name and email.
+	 *  A record rather than a `Map` so nothing reactive is mutated inside a
+	 *  derivation; reassigned per resolution, and a page has a handful of
+	 *  lanes, not thousands. */
+	let people = $state<Record<string, ResolvedUser>>({});
+
+	/** Resolve the people a page introduced. Already-known ids are skipped,
+	 *  and `resolveUser` de-duplicates whatever slips through. */
+	async function resolvePeople(ids: string[]) {
+		const wanted: Record<string, true> = {};
+		for (const id of ids) if (id && !people[id]) wanted[id] = true;
+		await Promise.all(
+			Object.keys(wanted).map(async (id) => {
+				const u = await resolveUser(id);
+				if (u) people = { ...people, [id]: u };
+			})
+		);
+	}
 
 	const rows = $derived<ChangeRow[]>(
 		raw.map((it) => ({
@@ -117,7 +139,9 @@
 			orderBy: 'modifier',
 			icon: 'pen',
 			bucketOf: (item) => row(item).changedBy,
-			labelOf: (id) => owners.label(id)
+			// Recomputed on every `sync`, so a name that resolves after the
+			// first paint replaces the id in the header rather than sticking.
+			labelOf: (id) => people[id]?.name ?? id
 		},
 		{
 			key: 'changedAt',
@@ -147,10 +171,10 @@
 			const fresh = page.items as FileChangeItemDto[];
 			raw = reset ? fresh : [...raw, ...fresh];
 			cursor = page.next_cursor ?? undefined;
-			// One resolve per page, cached across pages — the DTO carries
-			// `modifier_id` rather than an embedded user precisely so this
-			// stays one batched lookup instead of an N+1.
-			void owners.resolve(fresh.map((i) => i.modifier_id));
+			// One resolve per person per page, cached across pages — the DTO
+			// carries `modifier_id` rather than an embedded user precisely so
+			// this stays a handful of lookups instead of an N+1.
+			void resolvePeople(fresh.map((i) => i.modifier_id));
 		} catch (e) {
 			console.error('changes: load error', e);
 			error = t('errors_loadFailed', 'Failed to load items');
@@ -240,12 +264,41 @@
 	{/snippet}
 	{#snippet bucketLabel(key, label)}
 		{@const total = laneTotals[key]}
-		<span data-testid={`changes-lane-${key}`}>{label}</span>
-		{#if total != null}
-			<span class="changes-lane__count">
-				· {t('changes.lane_files', { n: total }, '{{n}} file(s)')}
-			</span>
-		{/if}
+		<!--
+			ONE snippet, TWO axes — so the identity chrome is gated on the
+			axis, not assumed. On the people axis the bucket key IS a user id;
+			on the date axis it is a bucket name like "Today", and rendering
+			`<UserAvatar userId="Today">` there would fetch `/api/users/Today`
+			and then draw a coloured "T" circle as though a person called
+			Today existed. The avatar and the email tooltip belong to the
+			people axis alone.
+
+			`<UserAvatar>` rather than a bespoke circle — its own docstring
+			names the swimlane header as a target, and it already handles
+			photo-or-coloured-initials and the lazy cached resolve. Its
+			`title=""` suppresses ITS tooltip so the only one that fires is
+			the email on the wrapper; with two nested `title`s the inner
+			element wins and the email never shows.
+
+			The email is the disambiguator: two colleagues can share a display
+			name, and on a provenance view "who exactly" is the question.
+		-->
+		{@const isPerson = groupBy === 'modifier'}
+		<span
+			class="changes-lane"
+			title={(isPerson && people[key]?.email) || undefined}
+			data-testid={`changes-lane-${key}`}
+		>
+			{#if isPerson}
+				<UserAvatar userId={key} fallbackLabel={label} size={20} title="" />
+			{/if}
+			<span>{label}</span>
+			{#if total != null}
+				<span class="changes-lane__count">
+					· {t('changes.lane_files', { n: total }, '{{n}} file(s)')}
+				</span>
+			{/if}
+		</span>
 	{/snippet}
 	{#snippet dateCell(item)}
 		<!-- This row's own touch, not the file's latest change by anyone: in
@@ -256,7 +309,10 @@
 	{#snippet rowBadge(item)}
 		{#if groupBy !== 'modifier'}
 			<!-- No lane header on the date axis, so the person goes on the row. -->
-			<span class="changes-badge">{owners.label(row(item).changedBy)}</span>
+			{@const who = row(item).changedBy}
+			<span class="changes-badge" title={people[who]?.email || undefined}>
+				{people[who]?.name ?? who}
+			</span>
 		{/if}
 	{/snippet}
 </ResourceList>
@@ -302,6 +358,12 @@
 		color: var(--color-text);
 		font-size: 0.85rem;
 		padding: 0.35rem 0.5rem;
+	}
+
+	.changes-lane {
+		align-items: center;
+		display: inline-flex;
+		gap: 0.4rem;
 	}
 
 	.changes-lane__count {
