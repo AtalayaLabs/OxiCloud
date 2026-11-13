@@ -527,40 +527,40 @@ every user's feed** — a leak, not a cosmetic bug, and it gets its own pin.
 
 ### Not a set of file ids — a predicate on one touch
 
-> **Superseded by measurement, 2026-11-13 (`c4372c43`).** This section
-> originally specified a `visible_files` CTE: three separately-indexable
-> selects over file ids, unioned and deduped. That shipped, and
-> `EXPLAIN (ANALYZE, BUFFERS)` on a real instance showed why it was the wrong
-> shape — **4 927 file ids materialised to hash-join against 19 touch rows**,
-> 412 of 423 buffers spent on the side that was not the question. Cost scaled
-> with FILES OWNED rather than WHAT CHANGED: 10ms on a sandbox, seconds at
-> 500k files, for a page of 50 rows. `Planning Time` was 11.5ms and exceeded
-> execution, on every request.
+> **Settled by measurement, 2026-11-13, after two wrong answers.** This
+> section specified one shape for the whole feature. There are two, and the
+> query picks — the numbers, on 200 000 touches over 20 000 files:
 >
-> It also silently defeated §4's per-lane cap: the join sat between the index
-> scan and the `LIMIT`, so the limit could not push down, and the plan read
-> `Bitmap Index Scan on idx_touches_touched` with the lane as a *filter*, a
-> sort, then the limit — trimming the result rather than the work, with
-> `idx_touches_user_touched` unused.
+> | | `lanes()` | capped rows |
+> | --- | --- | --- |
+> | set / UNION (as specified) | **115 ms** | 275 ms |
+> | per-row `EXISTS` (`can_see`) | 521 ms | **2.4 ms** |
 >
-> Visibility is therefore a predicate on ONE touch row, pinned by primary key
-> (`can_see` in `recent_changes_pg_repository.rs`):
+> The aggregate reads the whole window by definition, so it wants a filter
+> Postgres hashes ONCE — 20 000 ids built, 200 000 touches streamed past.
+> Evaluating visibility per row there is 200 000 probes.
 >
-> ```sql
-> EXISTS (SELECT 1 FROM storage.files vf
->          WHERE vf.id = t.file_id AND NOT vf.is_trashed
->            AND (drive-accessible OR file-grant OR folder-cascade))
-> ```
+> The row queries want the opposite: a set sits between the index scan and the
+> `LIMIT`, so the per-lane cap cannot push down. The set form read 5 000 rows
+> per lane (`idx_touches_user_touched rows=5000 loops=40`) and top-N sorted
+> them to show ten.
 >
-> **And yes, that is `A OR B OR C`** — the thing the rest of this section
-> forbids. The prohibition holds where it was written: a bare OR across three
-> tables collapses to a sequential scan when the planner must find EVERY
-> matching file. Inside the `EXISTS` the candidate set is already one row, so
-> there is nothing to scan. Set membership and a per-row test are different
-> regimes, and conflating them is what cost a rewrite.
+> Mixed: **138 ms** per page view. All-set: 390 ms. All-`EXISTS`: 523 ms.
 >
-> The access RULES below are unchanged, and the Hurl pins that cover them are
-> the only reason rewriting this query was safe.
+> Two commits each got this half-right, and the second was mine arguing from a
+> sandbox with 19 touches in the window — where `EXISTS` genuinely wins (11 ms
+> → 1.8 ms) because there are 260× more files than touches. **The ratio that
+> decides it is touches-in-window versus visible-files**, and a dev instance
+> sits at the opposite end of it from the 10k target. Measuring one and
+> shipping a conclusion about the other is the mistake to avoid here.
+>
+> `can_see` is `A OR B OR C`, which the rest of this section forbids — and
+> correctly, for the set: a bare OR across three tables collapses to a
+> sequential scan when every matching file must be found. Pinned by primary
+> key to one candidate row there is nothing to scan. Different regimes.
+>
+> The access RULES below are unchanged by any of this, and the Hurl pins over
+> them are the only reason reshaping these queries twice was safe.
 
 The original reasoning, kept because the trade-off it describes is real and a
 future reader needs to know which regime they are in:

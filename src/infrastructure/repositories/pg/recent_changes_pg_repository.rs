@@ -17,16 +17,30 @@
 //! ([`rows_for_lanes`]) by index scan. The `changed_at` axis needs none of
 //! this and walks `idx_touches_touched` directly.
 //!
-//! ## The access filter is a UNION, never an OR
+//! ## The access filter has TWO forms, and the query picks one
 //!
 //! Three doors lead to a file — the drive, a grant on the file, a cascading
 //! grant on an ancestor folder — and `PgAclEngine::check` honours all three.
-//! Written as `A OR B OR C` across three tables the planner collapses to a
-//! sequential scan on `storage.files`; as a union of three separately
-//! indexable selects over file ids it does not. Only `user` and `group`
-//! subjects count: a `token` grant is held by a public link, not by a person,
-//! and admitting it would put every publicly-linked file in every user's
-//! feed.
+//! Only `user` and `group` subjects count: a `token` grant is held by a public
+//! link, not by a person, and admitting it would put every publicly-linked
+//! file in every user's feed.
+//!
+//! The RULES are shared. The SHAPE is not, because the two queries here want
+//! opposite things, and both costs were measured on 200 000 touches over
+//! 20 000 files rather than argued:
+//!
+//! * [`VISIBLE_FILES_SET`] — a union of three indexable selects over file
+//!   ids, for [`Self::lanes`]. That query reads the whole window by
+//!   definition, so it wants a filter Postgres hashes once: **115 ms**,
+//!   against 521 ms evaluating visibility per row.
+//! * [`can_see`] — the same three doors as a predicate on ONE touch row,
+//!   pinned by primary key, for the row queries. A set sits between the index
+//!   scan and the `LIMIT` and stops the per-lane cap pushing down — the set
+//!   form read 5 000 rows per lane to show ten: **2.4 ms against 275 ms**.
+//!
+//! So neither form is "the right one". Using the wrong one in either place is
+//! the difference between 138 ms and 523 ms per page view, and the earlier
+//! history of this file is two commits each picking one form for both queries.
 
 use std::sync::Arc;
 
@@ -64,8 +78,59 @@ const VISIBILITY_CTES: &str = r#"
     )
 "#;
 
+/// Every file id the caller may see, appended to [`VISIBILITY_CTES`] as a
+/// fourth CTE — the SET form of the same three doors [`can_see`] tests per
+/// row.
+///
+/// **Both forms exist because each query wants a different one, measured on
+/// 200 000 touches / 20 000 files (2026-11-13):**
+///
+/// |                     | `lanes()` | `capped_rows_for_lanes()` |
+/// | ------------------- | --------- | ------------------------- |
+/// | set (this)          | **115 ms**| 275 ms                    |
+/// | per-row [`can_see`] | 521 ms    | **2.4 ms**                |
+///
+/// The aggregate reads every touch in the window by definition, so it wants
+/// the filter it can HASH: build 20 000 ids once, stream 200 000 touches past
+/// it. Evaluating visibility per row there costs 200 000 probes — 4.5× worse.
+///
+/// The row queries want the opposite. A set sits between the index scan and
+/// the `LIMIT`, so the per-lane cap cannot push down: the old plan read 5 000
+/// rows per lane (`idx_touches_user_touched rows=5000 loops=40`) and top-N
+/// sorted them to show ten — 114× worse than letting the index stop early.
+///
+/// Using the wrong one in either place is not a style choice; it is the
+/// difference between 118 ms and 523 ms per page view.
+const VISIBLE_FILES_SET: &str = r#"
+    , visible_files AS (
+        SELECT f.id
+          FROM storage.files f
+         WHERE NOT f.is_trashed
+           AND f.drive_id IN (SELECT drive_id FROM accessible_drives)
+        UNION
+        SELECT f.id
+          FROM storage.files f
+          JOIN storage.role_grants g
+            ON g.resource_id = f.id
+           AND g.resource_type = 'file'
+           AND g.subject_type IN ('user', 'group')
+           AND g.subject_id IN (SELECT id FROM caller_subjects)
+           AND (g.expires_at IS NULL OR g.expires_at > NOW())
+         WHERE NOT f.is_trashed
+        UNION
+        SELECT f.id
+          FROM storage.files f
+          JOIN storage.folders fo ON fo.id = f.folder_id
+         WHERE NOT f.is_trashed
+           AND fo.lpath <@ ANY (SELECT lpath FROM granted_folders)
+    )
+"#;
+
 /// "May the caller see the file this touch is about?", as a predicate on one
 /// touch row — `alias` is the touch table's alias in the surrounding query.
+///
+/// The SET counterpart is [`VISIBLE_FILES_SET`]; its doc has the measurements
+/// that decide which query uses which.
 ///
 /// **This replaced a `visible_files` CTE, and the reason is the whole point.**
 /// That CTE unioned every file id the caller could see and the planner built
@@ -182,15 +247,17 @@ impl RecentChangesPgRepository {
         after: Option<(DateTime<Utc>, Uuid)>,
         limit: i64,
     ) -> Result<Vec<ChangeLane>, DomainError> {
-        let visible = can_see("t");
+        // The SET form here, deliberately — see `VISIBLE_FILES_SET`. This
+        // query reads every touch in the window by definition, so it wants a
+        // filter Postgres can hash once rather than evaluate 200 000 times.
         let sql = format!(
-            "WITH {VISIBILITY_CTES}
+            "WITH {VISIBILITY_CTES}{VISIBLE_FILES_SET}
              SELECT t.user_id,
                     MAX(t.touched_at) AS lane_latest,
                     COUNT(*)::bigint  AS lane_total
                FROM storage.file_content_touches t
               WHERE t.touched_at > NOW() - ($2 || ' days')::interval
-                AND {visible}
+                AND t.file_id IN (SELECT id FROM visible_files)
                 AND ($3::uuid[] IS NULL OR t.user_id = ANY($3))
               GROUP BY t.user_id
              HAVING $4::timestamptz IS NULL
