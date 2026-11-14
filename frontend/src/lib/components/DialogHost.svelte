@@ -12,7 +12,27 @@
 	// NEW error (not on every re-render while the error stays set).
 	let lastErrorSeen: string | null = null;
 
-	$effect(() => {
+	// `$effect.pre`, NOT `$effect` — and the difference is a bug, not a
+	// preference. A plain `$effect` runs AFTER the DOM update, so a newly
+	// opened dialog painted its inputs bound to the PREVIOUS dialog's
+	// `values` object, and only then did this block replace `values`
+	// wholesale and write back over the fields. Anything that typed inside
+	// that window had its text overwritten or misplaced: the rename form's
+	// description text landed in the NAME field, which shipped as a playlist
+	// renamed to `<name><description>`.
+	//
+	// It is a wide window, not a rare interleaving — `music.spec.ts`'s
+	// "playlist lifecycle" test failed 16 times in 20 runs under
+	// `--repeat-each=20`, and once in a CI run of the full suite. A human
+	// hits it by typing within a frame of the dialog opening, which is
+	// unlikely but not impossible on a fast machine.
+	//
+	// `$effect.pre` runs BEFORE the DOM update, so the inputs' first paint
+	// already carries the right values and nothing clobbers them afterwards.
+	// That closes the window rather than narrowing it. The
+	// `requestAnimationFrame` block below still defers past paint on
+	// purpose: it needs `inputEl`, which does not exist until after.
+	$effect.pre(() => {
 		const c = dialogs.current;
 		if (c && c !== lastId) {
 			lastId = c;

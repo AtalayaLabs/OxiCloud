@@ -1,5 +1,6 @@
-import { it, expect, vi, beforeEach } from 'vitest';
+import { it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/svelte';
+vi.mock('$lib/utils/pdf', () => ({ hasNativePdfViewer: () => true }));
 vi.mock('$lib/api/client', () => ({ apiFetch: vi.fn(), withBase: (p: string) => p }));
 vi.mock('$lib/api/endpoints/files', () => ({
 	fileDownloadUrl: () => '/dl',
@@ -287,4 +288,94 @@ it('shows no stepping for a non-media file, or when the host does not handle it'
 	await screen.findByTestId('file-viewer-dialog');
 	expect(screen.queryByTestId('file-viewer-prev-btn')).toBeNull();
 	expect(screen.queryByTestId('file-viewer-next-btn')).toBeNull();
+});
+
+// These promises deliberately ignore AbortSignal: a late completion must be
+// harmless even if the request/body transport has already started settling.
+afterEach(() => vi.unstubAllGlobals());
+
+function nativePdfUrls() {
+	const createObjectURL = vi.fn(() => 'blob:new-pdf');
+	const revokeObjectURL = vi.fn();
+	vi.stubGlobal(
+		'URL',
+		class extends URL {
+			static createObjectURL = createObjectURL;
+			static revokeObjectURL = revokeObjectURL;
+		}
+	);
+	return { createObjectURL, revokeObjectURL };
+}
+
+it.each(['fetch', 'body', 'http'] as const)(
+	'ignores an old PDF %s failure after the next PDF has loaded',
+	async (failure) => {
+		nativePdfUrls();
+		const pending = Promise.withResolvers<Response>();
+		const oldBody = Promise.withResolvers<Blob>();
+		af.mockReturnValueOnce(pending.promise);
+		const old = file({
+			id: 'old',
+			name: 'old.pdf',
+			mime_type: 'application/pdf',
+			category: 'Document'
+		});
+		const next = file({
+			id: 'new',
+			name: 'new.pdf',
+			mime_type: 'application/pdf',
+			category: 'Document'
+		});
+		const view = render(FileViewer, { props: { open: true, file: old } });
+		await waitFor(() => expect(af).toHaveBeenCalledTimes(1));
+		if (failure === 'body') {
+			const blob = vi.fn(() => oldBody.promise);
+			pending.resolve({ ok: true, blob } as unknown as Response);
+			await waitFor(() => expect(blob).toHaveBeenCalledTimes(1));
+		}
+		af.mockResolvedValueOnce({ ok: true, blob: async () => new Blob(['new']) });
+		await view.rerender({ open: true, file: next });
+		await waitFor(() => expect(view.container.querySelector('iframe')?.title).toBe('new.pdf'));
+		if (failure === 'fetch') pending.reject(new Error('old request failed'));
+		else if (failure === 'body') oldBody.reject(new Error('old body failed'));
+		else pending.resolve({ ok: false, status: 500 } as Response);
+		await Promise.allSettled([failure === 'body' ? oldBody.promise : pending.promise]);
+		// Flush the old request's chained catch and Svelte's resulting update.
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(screen.queryByText('Could not load preview.')).toBeNull();
+		expect(view.container.querySelector('iframe')?.title).toBe('new.pdf');
+	}
+);
+
+it('invalidates a closed PDF request even when the same file object is reopened', async () => {
+	const { createObjectURL, revokeObjectURL } = nativePdfUrls();
+	const pending = Promise.withResolvers<Response>();
+	af.mockReturnValueOnce(pending.promise);
+	const pdf = file({ name: 'same.pdf', mime_type: 'application/pdf', category: 'Document' });
+	const view = render(FileViewer, { props: { open: true, file: pdf } });
+	await waitFor(() => expect(af).toHaveBeenCalledTimes(1));
+	const signal = af.mock.calls[0][1]?.signal as AbortSignal | undefined;
+	await view.rerender({ open: false, file: pdf });
+	af.mockResolvedValueOnce({ ok: true, blob: async () => new Blob(['new']) });
+	await view.rerender({ open: true, file: pdf });
+	await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1));
+	pending.resolve({ ok: true, blob: async () => new Blob(['old']) } as unknown as Response);
+	await pending.promise;
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	expect(createObjectURL).toHaveBeenCalledTimes(1);
+	expect(signal?.aborted).toBe(true);
+	view.unmount();
+	expect(revokeObjectURL).toHaveBeenCalledExactlyOnceWith('blob:new-pdf');
+});
+
+it.each([404, 500])('shows an active PDF HTTP %i failure', async (status) => {
+	nativePdfUrls();
+	af.mockResolvedValueOnce({ ok: false, status });
+	render(FileViewer, {
+		props: {
+			open: true,
+			file: file({ name: 'bad.pdf', mime_type: 'application/pdf', category: 'Document' })
+		}
+	});
+	await waitFor(() => expect(screen.getByText('Could not load preview.')).toBeTruthy());
 });
