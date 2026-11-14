@@ -1,0 +1,202 @@
+# Semantic lint for `resources/gen/openapi.json`, run by the
+# `check-openapi-lint` just recipe and the `openapi-spec-drift` CI job.
+#
+# This gate answers a question the two existing OpenAPI jobs do NOT:
+#
+#   * `openapi-spec-drift`     — is the committed spec reproducible from
+#                                the `#[utoipa::path]` attributes?
+#   * `openapi-breaking-check` — is it wire-compatible with the base branch?
+#   * THIS                     — is it *true*?
+#
+# The frontend SDK generator (`@hey-api/openapi-ts`) is not a substitute.
+# It is a tolerant consumer: it reads only what it needs to emit TypeScript
+# types, so it has no opinion on whether an authenticated endpoint declares
+# that it needs a token, and an orphaned schema just becomes an unused
+# exported type. Neither shows up as a failure.
+#
+# Note the spec is OpenAPI **3.1** (utoipa 5 emits 3.1, which aligns the
+# Schema Object with JSON Schema 2020-12). Redocly lints 3.1 natively. Most
+# other Swagger-branded tooling is 3.0-only and will object to perfectly
+# valid constructs here — chiefly `type: ["string", "null"]`, which IS the
+# 3.1 spelling of 3.0's `nullable: true`, and `$ref` alongside a sibling
+# `description`, which 3.1 permits and 3.0 silently drops. Those are not
+# defects; do not "fix" them by downgrading the spec.
+#
+# Deliberately slim, same spirit as `severity.conf` and
+# `breaking-allow.conf`: every rule here either encodes an invariant the
+# wire actually depends on, or is off with the reason stated. A gate that
+# cries wolf gets ignored, and then the one real finding goes with it.
+
+extends:
+  - minimal
+
+rules:
+  # ── Hard errors: a violation means the published reference is wrong ──
+
+  # Structural conformance to the OpenAPI 3.1 Specification itself.
+  # Catches a malformed Response Object, a `required` list naming a
+  # property that doesn't exist, a dangling $ref — the class of thing
+  # that makes a consumer's behaviour undefined rather than merely ugly.
+  struct: error
+
+  # THE reason this gate exists. An authenticated operation whose
+  # `#[utoipa::path]` omits `security(("bearerAuth" = []))` publishes a
+  # reference that says "no token needed", and Swagger UI's try-it-out
+  # then can't attach one, so every call 401s. It is not a security hole
+  # — the router enforces auth regardless (see `create_api_routes` vs
+  # `create_public_api_routes` in `src/interfaces/api/routes.rs`) — but
+  # the docs lie, which is its own kind of bug.
+  #
+  # This rule found 14 of them when it was introduced: all 7 `/api/people*`
+  # operations, the 3 `/api/auth/app-passwords*`, and 4 of the 6
+  # `/api/auth/device/*` (`verify` GET+POST, `devices` GET+DELETE —
+  # `authorize` and `token` are genuinely public, they are how a device
+  # with no user yet obtains a code and then polls for a token).
+  #
+  # When adding a handler to the protected router, add the `security(...)`
+  # line. When adding a genuinely public one, it belongs in
+  # `create_public_api_routes` and needs an exception below — there is no
+  # per-operation opt-out in this rule, so a new public endpoint that the
+  # gate rejects is a prompt to check it really is public.
+  security-defined: error
+
+  # Duplicate operationIds silently collide in generated SDKs — two
+  # handlers, one emitted function, and whichever lost is unreachable.
+  operation-operationId-unique: error
+
+  # Every `{placeholder}` in a path template must have a matching
+  # parameter declaration, and vice versa. utoipa generally gets this
+  # right from the function signature, but a hand-written `path = "..."`
+  # that drifts from the handler's extractors produces a spec whose URLs
+  # cannot be built.
+  path-parameters-defined: error
+  operation-parameters-unique: error
+  no-identical-paths: error
+
+  # ── Off, with reasons ──
+
+  # OFF, and the long note is here so nobody turns it back on without
+  # reading why.
+  #
+  # The rule reports schemas registered in `components(schemas(...))` in
+  # `src/interfaces/api/mod.rs` that no path references transitively — 22
+  # of them. It was audited schema by schema, and the result is that
+  # **17 of the 22 must never be acted on**, so the rule is actively
+  # misleading rather than merely noisy. Worse, class 1 below can never
+  # reach zero: it is structural to OpenAPI-without-generics, so the
+  # count is permanently nonzero and a genuinely new orphan — warning
+  # number 23 in a list of 22 — would be invisible. A gate nobody can
+  # read is a gate nobody reads, and that costs the rules above their
+  # credibility too.
+  #
+  # The six classes, five of which say "leave it alone":
+  #
+  #   1. Generic monomorphization artefacts — the big one. OpenAPI has
+  #      no generics, so `CursorListResponse<T>` is emitted as one
+  #      schema per instantiation: the `/resources` endpoints `$ref`
+  #      `CursorListResponse_FolderResourceItemDto` and friends, and
+  #      utoipa INLINES the item type into each wrapper instead of
+  #      `$ref`ing it. The standalone `FolderResourceItemDto`,
+  #      `PhotoResourceItemDto`, `RecentResourceItemDto`,
+  #      `FavoritesResourceItemDto`, `OutgoingResourceItemDto`,
+  #      `TrashResourceItemDto` and the bare `CursorListResponse` are
+  #      therefore reported as unreferenced while being load-bearing.
+  #      The `CursorListResponse` doc comment says so outright: "⚠ Every
+  #      instantiation must be registered in `components(schemas(..))`,
+  #      spelled out with its item type" — drop one and the paths fall
+  #      back to a single bare `CursorListResponse` whose `items` is
+  #      hard-wired to whichever instantiation resolved first. KEEP.
+  #   2. Consumed by TypeScript — `SessionSummaryDto`,
+  #      `SharegrantedPayload`, `TrashResourceItemDto` are imported by
+  #      `frontend/src/lib/api/types.ts`. KEEP; see the section below.
+  #   3. Published as a contract with nothing `$ref`ing it —
+  #      `SharegrantedPayload` is the documented case (`mod.rs` ~453-458):
+  #      `NotificationDto.payload` is `serde_json::Value` on the schema,
+  #      and each per-kind payload struct ships separately so consumers
+  #      can type-narrow on `kind`. KEEP.
+  #   4. Used but inlined — `RefreshTokenDto` reaches the spec via
+  #      `request_body(content = inline(RefreshTokenDto))`, so the
+  #      registered component is a duplicate of an inlined schema.
+  #      Harmless; the warning is noise.
+  #   5. Internal, never on the wire — service/domain DTOs:
+  #      `SearchCriteriaDto`, `SearchResultsDto`, `TrashedItemDto`,
+  #      `RecentItemDto`, `PaginationRequestDto`, `TranslationRequestDto`,
+  #      `PolicyDefaultsImpactDto`.
+  #   6. Vestigial — no reference in Rust, TS or asyncapi:
+  #      `DeletePermanentlyRequest`, `FolderListingDto`,
+  #      `MoveToTrashRequest`, `PaginationDto`, `RestoreFromTrashRequest`.
+  #      The only class where deletion is defensible, and it is 5 of 22.
+  #
+  # So the headline is the opposite of what the rule name suggests:
+  # MOST of these must not be touched. No severity makes that useful —
+  # `error` would block on work that must not be done, and `warn` just
+  # prints 22 lines that the correct response is to ignore.
+  #
+  # Separately, there IS unfinished utoipa wiring in this spec, but it is
+  # not these: 66 of the 2xx responses are documented as an untyped
+  # `object` — `/api/admin/sessions`, every `/api/admin/jobs/*`, all
+  # `/api/batch/*` (200 and 206), `register`, `logout`,
+  # `change-password`. `SessionSummaryDto` is the overlap: `mod.rs` calls
+  # it "the wire shape for `/api/admin/sessions`" and that response says
+  # `body = Object`. The fix there is to point the response at the DTO —
+  # which also makes the warning go away for the right reason. Worth its
+  # own pass; `no-unused-components` is a poor proxy for it.
+  #
+  # ── If you do run the cleanup pass ──
+  #
+  # Re-enable the rule ad hoc rather than editing this file:
+  #
+  #   npx @redocly/cli@2.78.0 lint resources/gen/openapi.json \
+  #       --extends=minimal --format=stylish --max-problems=400
+  #
+  # "No path `$ref`s it" is NOT the test for deletability. The test is
+  # whether a CONSUMER uses it, and there are two consumers downstream of
+  # this spec, neither visible to Redocly:
+  #
+  #   * TypeScript. `@hey-api/openapi-ts` emits a type for every
+  #     registered component, referenced or not, and the FE imports from
+  #     `generated/openapi/types.gen` in ~57 places. Three of the 22
+  #     orphans are imported directly by `frontend/src/lib/api/types.ts`
+  #     — `SessionSummaryDto`, `SharegrantedPayload` and
+  #     `TrashResourceItemDto` — so dropping them from
+  #     `components(schemas(...))` breaks `npm run check`. That is class 2
+  #     above, demonstrated rather than assumed.
+  #   * AsyncAPI. The WS surface has its own spec
+  #     (`resources/gen/asyncapi.json`, 37 schemas, built by
+  #     `generate-asyncapi`, projected to `generated/asyncapi/` by
+  #     Modelina). The two `components` sets are separate today — none of
+  #     the 22 appears there — but a DTO shared between the REST and WS
+  #     surfaces would be flagged here while still being load-bearing
+  #     there.
+  #
+  # So the check is: grep the name in `frontend/src` outside
+  # `generated/`, and in `resources/gen/asyncapi.json`. Unreferenced in
+  # the spec AND unimported by either consumer is the only safe signal —
+  # which holds for the 5 class-6 schemas above and not for the other 17.
+  # Note it is necessary but not sufficient: a class-1 generic artefact
+  # passes both greps and still must not be removed.
+  no-unused-components: off
+
+  # 67 operations have no `summary`. That's a docs-quality backlog, not
+  # a wire invariant, and gating on it would mean writing 67 summaries
+  # before any unrelated API change could merge.
+  operation-summary: off
+
+  # 6 hits, all of the shape `/api/people/faces/{file_id}` vs
+  # `/api/people/{id}/photos`. Ambiguous only to a consumer that matches
+  # paths naively; axum resolves static segments before dynamic ones
+  # deterministically, and `routes.rs` already orders literal routes
+  # first where it matters. A caveat for third-party client generators,
+  # not a defect in the server.
+  no-ambiguous-paths: off
+
+  # 2 hits, both correct: `/api/auth/oidc/authorize` and
+  # `/api/auth/oidc/callback` answer 302 by design — they are redirects
+  # in the OIDC dance, and a 2xx would be the bug.
+  operation-2xx-response: off
+
+  # The spec carries no `servers` block because the server has no fixed
+  # public origin: OxiCloud is self-hosted, so the base URL is whatever
+  # the operator put it behind. A hardcoded `servers` entry would be
+  # wrong for every deployment but one.
+  no-empty-servers: off
