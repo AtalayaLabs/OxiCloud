@@ -44,6 +44,7 @@ pub fn app_password_routes() -> Router<Arc<AppState>> {
         (status = 403, description = "External users cannot mint app passwords", body = crate::interfaces::errors::ApiErrorBody),
         (status = 409, description = "Caller has no claimed username — app password is unusable without one", body = crate::interfaces::errors::ApiErrorBody),
     ),
+    security(("bearerAuth" = [])),
     tag = "app-passwords"
 )]
 pub async fn create_app_password(
@@ -144,6 +145,7 @@ pub async fn create_app_password(
         (status = 200, description = "The caller's app passwords (metadata only, no plain text)", body = crate::application::dtos::app_password_dto::AppPasswordListResponseDto),
         (status = 401, description = "Caller is not signed in", body = crate::interfaces::errors::ApiErrorBody),
     ),
+    security(("bearerAuth" = [])),
     tag = "app-passwords"
 )]
 pub async fn list_app_passwords(
@@ -174,6 +176,7 @@ pub async fn list_app_passwords(
         (status = 401, description = "Caller is not signed in", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "No app password with this id for the caller", body = crate::interfaces::errors::ApiErrorBody),
     ),
+    security(("bearerAuth" = [])),
     tag = "app-passwords"
 )]
 pub async fn revoke_app_password(
