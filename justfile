@@ -102,7 +102,7 @@ test-integration filter='':
       PGDATABASE=oxicloud_test \
       bash tests/common/init-test-schema.sh
     DATABASE_URL='postgres://oxicloud_test:oxicloud_test@localhost:5433/oxicloud_test' \
-      RUSTFLAGS='--cfg integration_tests' \
+      RUSTFLAGS='-Dwarnings --cfg integration_tests' \
       cargo test --workspace --tests {{filter}}
     bash tests/common/stop-db.sh
 
@@ -120,7 +120,16 @@ lint:
 
 check:
     cargo fmt --all --check
-    cargo clippy --all-features --all-targets -- -D warnings
+    # `--cfg integration_tests` so the `#[cfg(integration_tests)]` modules are
+    # actually COMPILED here. Without it they do not exist for this command,
+    # and a warning inside one reaches nobody until CI — which builds them
+    # with `-Dwarnings` (`ci.yml`) and fails. That gap sent a red run on
+    # `feat/refresh-token-grace` (2026-11-14) after four green local recipes.
+    #
+    # Cost of the flag: it is part of the build fingerprint, so this clippy
+    # cache is separate from the one `cargo test` / `cargo run` use, and
+    # alternating between them rebuilds the crate.
+    RUSTFLAGS='--cfg integration_tests' cargo clippy --all-features --all-targets -- -D warnings
 
 
 # Verify every new sqlx migration this branch introduces has a
