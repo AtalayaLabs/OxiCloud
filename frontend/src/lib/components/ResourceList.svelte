@@ -1662,35 +1662,43 @@
 			     `windowClass`, exactly like the flat-grid arm. This was the last
 			     unwindowed path: a grouped-by-default grid (trash) mounted every card
 			     (benches/ROUND13.md §V1). -->
-				<div class="rl-grouped-grid">
+				<div class="rl-grouped-grid" style="--lane-sticky-h: {stickyHeaderH}px">
 					{#each sections as section (section.key)}
-						{#if section.label}
-							<div
-								class="rl-swimlane-header rl-swimlane-header--grid lane__header"
-								role="rowheader"
-							>
-								<span class="rl-swimlane-header__label">
-									{#if bucketLabel}
-										{@render bucketLabel(section.key, section.label)}
-									{:else}
-										{section.label}
-									{/if}
-								</span>
-								{#if bucketAction}
-									<span class="rl-swimlane-header__action">
-										{@render bucketAction(section.key)}
+						<!-- One element per lane, for the same reason the list view has
+						     one: a sticky header's containing block is its parent, so
+						     without this wrapper every header in the stack would share
+						     `.rl-grouped-grid` and they would pile up pinned on top of
+						     each other instead of each handing over to the next. No card
+						     skin here — grid cards are their own surfaces. -->
+						<div class="rl-grid-lane">
+							{#if section.label}
+								<div
+									class="rl-swimlane-header rl-swimlane-header--grid lane__header lane__header--sticky"
+									role="rowheader"
+								>
+									<span class="rl-swimlane-header__label">
+										{#if bucketLabel}
+											{@render bucketLabel(section.key, section.label)}
+										{:else}
+											{section.label}
+										{/if}
 									</span>
-								{/if}
-							</div>
-						{/if}
-						<VirtualList
-							items={section.rows}
-							columns={gridCols}
-							rowHeight={240}
-							windowClass="files-grid-view"
-							key={(e) => e.id}
-							{row}
-						/>
+									{#if bucketAction}
+										<span class="rl-swimlane-header__action">
+											{@render bucketAction(section.key)}
+										</span>
+									{/if}
+								</div>
+							{/if}
+							<VirtualList
+								items={section.rows}
+								columns={gridCols}
+								rowHeight={240}
+								windowClass="files-grid-view"
+								key={(e) => e.id}
+								{row}
+							/>
+						</div>
 					{/each}
 				</div>
 			{:else if filesStore.viewMode === 'list'}
@@ -2061,11 +2069,29 @@
 		gap: var(--space-2);
 	}
 
+	/* One lane of the grouped grid: its label plus that label's cards. Exists
+	   so the label's `position: sticky` resolves against its own lane and
+	   hands over to the next one, rather than every label sharing
+	   `.rl-grouped-grid` and stacking pinned on top of each other. Keeps the
+	   same `--space-2` between label and cards that the outer gap used to
+	   provide. */
+	.rl-grid-lane {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+	}
+
 	/* In the flex stack the `grid-column: 1 / -1` span (meant for the grid
 	   context) is inert; the header spans naturally as a block-level flex
 	   child. */
 	.rl-swimlane-header--grid {
 		grid-column: auto;
+		/* All four corners, not the top two `.lane > .lane__header` rounds:
+		   in grid view the strip tops no card — the cards below are their own
+		   surfaces — so it reads as a label chip spanning the row, and a
+		   square-bottomed strip floating above a gap looks like a clipped
+		   card. `--radius-xl` matches the lane cards in list view. */
+		border-radius: var(--radius-xl);
 	}
 
 	/* Grid view date meta line. */
