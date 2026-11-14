@@ -1197,6 +1197,7 @@ export const sendWebhookTest = <ThrowOnError extends boolean = false>(options?: 
  */
 export const listAppPasswords = <ThrowOnError extends boolean = false>(options?: Options<ListAppPasswordsData, ThrowOnError>): RequestResult<ListAppPasswordsResponses, ListAppPasswordsErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<ListAppPasswordsResponses, ListAppPasswordsErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
+    security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/auth/app-passwords',
     ...options
 });
@@ -1218,6 +1219,7 @@ export const listAppPasswords = <ThrowOnError extends boolean = false>(options?:
  */
 export const createAppPassword = <ThrowOnError extends boolean = false>(options: Options<CreateAppPasswordData, ThrowOnError>): RequestResult<CreateAppPasswordResponses, CreateAppPasswordErrors, ThrowOnError, 'data'> => (options.client ?? client).post<CreateAppPasswordResponses, CreateAppPasswordErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
+    security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/auth/app-passwords',
     ...options,
     headers: {
@@ -1231,6 +1233,7 @@ export const createAppPassword = <ThrowOnError extends boolean = false>(options:
  */
 export const revokeAppPassword = <ThrowOnError extends boolean = false>(options: Options<RevokeAppPasswordData, ThrowOnError>): RequestResult<RevokeAppPasswordResponses, RevokeAppPasswordErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<RevokeAppPasswordResponses, RevokeAppPasswordErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
+    security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/auth/app-passwords/{id}',
     ...options
 });
@@ -1265,12 +1268,14 @@ export const deviceAuthorize = <ThrowOnError extends boolean = false>(options: O
 
 export const listDevices = <ThrowOnError extends boolean = false>(options?: Options<ListDevicesData, ThrowOnError>): RequestResult<ListDevicesResponses, ListDevicesErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<ListDevicesResponses, ListDevicesErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
+    security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/auth/device/devices',
     ...options
 });
 
 export const revokeDevice = <ThrowOnError extends boolean = false>(options: Options<RevokeDeviceData, ThrowOnError>): RequestResult<RevokeDeviceResponses, RevokeDeviceErrors, ThrowOnError, 'data'> => (options.client ?? client).delete<RevokeDeviceResponses, RevokeDeviceErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
+    security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/auth/device/devices/{id}',
     ...options
 });
@@ -1291,12 +1296,14 @@ export const deviceToken = <ThrowOnError extends boolean = false>(options: Optio
 
 export const deviceVerifyInfo = <ThrowOnError extends boolean = false>(options: Options<DeviceVerifyInfoData, ThrowOnError>): RequestResult<DeviceVerifyInfoResponses, DeviceVerifyInfoErrors, ThrowOnError, 'data'> => (options.client ?? client).get<DeviceVerifyInfoResponses, DeviceVerifyInfoErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
+    security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/auth/device/verify',
     ...options
 });
 
 export const deviceVerifyAction = <ThrowOnError extends boolean = false>(options: Options<DeviceVerifyActionData, ThrowOnError>): RequestResult<DeviceVerifyActionResponses, DeviceVerifyActionErrors, ThrowOnError, 'data'> => (options.client ?? client).post<DeviceVerifyActionResponses, DeviceVerifyActionErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
+    security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/auth/device/verify',
     ...options,
     headers: {
@@ -2738,6 +2745,7 @@ export const markRead = <ThrowOnError extends boolean = false>(options: Options<
  */
 export const listPeople = <ThrowOnError extends boolean = false>(options?: Options<ListPeopleData, ThrowOnError>): RequestResult<ListPeopleResponses, ListPeopleErrors, ThrowOnError, 'data'> => (options?.client ?? client).get<ListPeopleResponses, ListPeopleErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
+    security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/people',
     ...options
 });
@@ -2747,6 +2755,7 @@ export const listPeople = <ThrowOnError extends boolean = false>(options?: Optio
  */
 export const deleteAll = <ThrowOnError extends boolean = false>(options?: Options<DeleteAllData, ThrowOnError>): RequestResult<DeleteAllResponses, DeleteAllErrors, ThrowOnError, 'data'> => (options?.client ?? client).delete<DeleteAllResponses, DeleteAllErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
+    security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/people/data',
     ...options
 });
@@ -2756,6 +2765,7 @@ export const deleteAll = <ThrowOnError extends boolean = false>(options?: Option
  */
 export const facesForFile = <ThrowOnError extends boolean = false>(options: Options<FacesForFileData, ThrowOnError>): RequestResult<FacesForFileResponses, FacesForFileErrors, ThrowOnError, 'data'> => (options.client ?? client).get<FacesForFileResponses, FacesForFileErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
+    security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/people/faces/{file_id}',
     ...options
 });
@@ -2765,6 +2775,7 @@ export const facesForFile = <ThrowOnError extends boolean = false>(options: Opti
  */
 export const mergePeople = <ThrowOnError extends boolean = false>(options: Options<MergePeopleData, ThrowOnError>): RequestResult<MergePeopleResponses, MergePeopleErrors, ThrowOnError, 'data'> => (options.client ?? client).post<MergePeopleResponses, MergePeopleErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
+    security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/people/merge',
     ...options,
     headers: {
@@ -2778,6 +2789,7 @@ export const mergePeople = <ThrowOnError extends boolean = false>(options: Optio
  */
 export const recluster = <ThrowOnError extends boolean = false>(options?: Options<ReclusterData, ThrowOnError>): RequestResult<ReclusterResponses, ReclusterErrors, ThrowOnError, 'data'> => (options?.client ?? client).post<ReclusterResponses, ReclusterErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
+    security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/people/recluster',
     ...options
 });
@@ -2787,6 +2799,7 @@ export const recluster = <ThrowOnError extends boolean = false>(options?: Option
  */
 export const renamePerson = <ThrowOnError extends boolean = false>(options: Options<RenamePersonData, ThrowOnError>): RequestResult<RenamePersonResponses, RenamePersonErrors, ThrowOnError, 'data'> => (options.client ?? client).patch<RenamePersonResponses, RenamePersonErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
+    security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/people/{id}',
     ...options,
     headers: {
@@ -2800,6 +2813,7 @@ export const renamePerson = <ThrowOnError extends boolean = false>(options: Opti
  */
 export const personPhotos = <ThrowOnError extends boolean = false>(options: Options<PersonPhotosData, ThrowOnError>): RequestResult<PersonPhotosResponses, PersonPhotosErrors, ThrowOnError, 'data'> => (options.client ?? client).get<PersonPhotosResponses, PersonPhotosErrors, ThrowOnError, 'data'>({
     responseStyle: 'data',
+    security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/people/{id}/photos',
     ...options
 });

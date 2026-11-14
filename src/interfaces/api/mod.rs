@@ -376,6 +376,53 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         handlers::app_password_handler::revoke_app_password,
     ),
     components(
+        // ── DO NOT delete a registration just because a linter calls it
+        //    "never used". ─────────────────────────────────────────────
+        //
+        // Redocly's `no-unused-components` flags every schema here that
+        // no `#[utoipa::path]` response or request body `$ref`s — 22 of
+        // them at the time of writing. `check-openapi-lint` keeps that
+        // rule OFF precisely because 17 of the 22 must never be acted
+        // on, so you will not see it from `just check-openapi`; you will
+        // see it from any other OpenAPI linter pointed at this spec.
+        // Either way, unreferenced is NOT the same as unused, and acting
+        // on it naively breaks three things a linter cannot see:
+        //
+        //   * Generics. OpenAPI has none, so `CursorListResponse<T>` is
+        //     emitted once per instantiation and utoipa INLINES the item
+        //     type into each wrapper instead of `$ref`ing it. Every
+        //     `*ResourceItemDto` and the bare `CursorListResponse` are
+        //     reported unreferenced while being load-bearing — delete one
+        //     and the paths collapse onto a single bare
+        //     `CursorListResponse`. See its own doc comment.
+        //   * TypeScript. `@hey-api/openapi-ts` emits a type for EVERY
+        //     entry below, `$ref`d or not, and the SPA imports from
+        //     `generated/openapi/types.gen` in ~57 places. Three of the
+        //     flagged schemas are imported by
+        //     `frontend/src/lib/api/types.ts` right now —
+        //     `SessionSummaryDto`, `SharegrantedPayload`,
+        //     `TrashResourceItemDto`. Removing them here fails
+        //     `npm run check`, not this file's build.
+        //   * AsyncAPI. The WS surface has its own spec and its own
+        //     generated tree; a DTO shared between REST and WS would look
+        //     orphaned here while carrying the WS contract.
+        //
+        // Some entries are also published deliberately with nothing
+        // `$ref`ing them, so consumers can type-narrow a payload the
+        // schema types as `serde_json::Value` — see the notifications
+        // block below for the worked example.
+        //
+        // Before removing any entry, confirm BOTH come back empty:
+        //
+        //   grep -rn '\bTheDto\b' frontend/src --include='*.ts' \
+        //        --include='*.svelte' | grep -v '/generated/'
+        //   grep -n '"TheDto"' resources/gen/asyncapi.json
+        //
+        // Unreferenced in the spec AND unimported by either consumer is
+        // the only safe signal — necessary but not sufficient, since a
+        // generic artefact above passes both greps and must still stay.
+        // The full six-class audit, and why the rule is off rather than
+        // merely downgraded, is in `checks/openapi/redocly.yaml`.
         schemas(
             // Shared error body — every 4xx / 5xx response conforms to
             // this shape. Registered so the generated SDK and third-
@@ -460,6 +507,9 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             handlers::notifications_handler::NotificationListResponseDto,
             handlers::notifications_handler::UnreadCountDto,
             handlers::notifications_handler::MarkAllReadResponseDto,
+            // Imported by `frontend/src/lib/api/types.ts` — keep. Reported
+            // as "never used" by the spec linter; see the guard at the top
+            // of `components(`.
             crate::domain::entities::notification::SharegrantedPayload,
             HeaderPayload,
             ProgressHeader,
@@ -468,6 +518,10 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             // `SessionOrigin` is the discriminated enum for the `origin`
             // field, so it must ship separately for consumers to type
             // the union.
+            // Imported by `frontend/src/lib/api/types.ts` — keep. Reported
+            // as "never used" because `/api/admin/sessions` documents
+            // `body = Object`; pointing that response at this DTO is the
+            // right fix, not deleting it.
             crate::application::dtos::session_dto::SessionSummaryDto,
             crate::domain::entities::session::SessionOrigin,
             // OPAQUE aPAKE — request/response shapes for every step in
@@ -498,6 +552,10 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             // Trash schemas
             TrashedItemDto,
             TrashOrderBy,
+            // Imported by `frontend/src/lib/api/types.ts` (re-exported as
+            // `TrashResourceItem`) — keep, despite the linter calling it
+            // unused. `CursorListResponse<TrashResourceItemDto>` below is
+            // what the wire actually carries.
             TrashResourceItemDto,
             TrashResourcesDto,
             MoveToTrashRequest,

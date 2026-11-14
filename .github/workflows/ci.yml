@@ -266,6 +266,44 @@ jobs:
             echo "::error::re-runs both stages (Rust spec + TS SDK) — and commit the result."
             exit 1
           fi
+      # Semantic lint — the only one of the three OpenAPI gates that asks
+      # whether the spec is TRUE, rather than merely fresh (the drift
+      # check above) or wire-compatible (`openapi-breaking-check` below).
+      #
+      # Runs AFTER the drift check: this step and the breaking job both
+      # read `resources/gen/openapi.json` off disk, so a verdict on a
+      # stale file would describe the wrong document. Freshness is
+      # established first.
+      #
+      # CI checks drift and a contributor's dev loop does not — the
+      # `just check-openapi` umbrella runs the lint and breaking legs
+      # only, because the drift assertion fails by construction while a
+      # regenerated spec is uncommitted. `just pre-pull-request` runs
+      # `check-openapi-gen`, so drift is still caught before a push; this
+      # step is the backstop for anyone who skips it.
+      #
+      # It lives in this job rather than a new one because it needs the
+      # same freshly-generated spec, the same `openapi_spec` path filter,
+      # and runs in well under a second — a separate job would spend more
+      # time on checkout than on the check.
+      #
+      # The TS SDK generator is NOT a substitute: `@hey-api/openapi-ts` is
+      # a tolerant consumer that reads only what it needs to emit types,
+      # so an authenticated endpoint that forgets to declare it needs a
+      # token produces a perfectly good SDK and a reference that lies.
+      #
+      # Every rule, on or off, carries its rationale in the config, and
+      # the set is tuned so a clean spec produces NO output at all —
+      # `no-unused-components` in particular is off because 17 of the 22
+      # schemas it flags must never be acted on (the config explains).
+      # A gate that always prints is a gate nobody reads.
+      - name: Lint spec semantics (Redocly)
+        run: |
+          npx --yes @redocly/cli@2.78.0 lint \
+            resources/gen/openapi.json \
+            --config checks/openapi/redocly.yaml \
+            --format=github-actions \
+            --max-problems=400
 
   # Fails the PR when the OpenAPI spec on this branch introduces a
   # BREAKING CHANGE vs. the PR's base branch — removed endpoints,

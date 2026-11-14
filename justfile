@@ -222,12 +222,60 @@ audit:
 gen-openapi-schema:
     cargo run --features dev_tools --bin generate-openapi
 
+# ─── The three OpenAPI gates ────────────────────────────────────────────
+#
+# `resources/gen/openapi.json` is a COMMITTED artefact generated from the
+# `#[utoipa::path(...)]` attributes. Three separate recipes guard it, and
+# they answer three different questions — none substitutes for another:
+#
+#   check-openapi-gen       Is the committed spec REPRODUCIBLE?
+#                           Regenerates it (plus the TS SDK) and fails on
+#                           any diff. Catches "edited a handler, forgot to
+#                           regenerate". Compares committed vs generated,
+#                           both on THIS branch. No network, no base ref.
+#                           PRE-PUSH ONLY — it fails by construction while
+#                           a regenerated spec is uncommitted, so it is
+#                           not part of `just check-openapi`.
+#                           CI job: `openapi-spec-drift`.
+#
+#   check-openapi-lint      Is it TRUE?
+#                           Semantic lint via Redocly. Reads the spec on
+#                           its own — no second copy to compare against —
+#                           and asks whether it describes the server that
+#                           actually exists: chiefly, does every operation
+#                           declare whether it needs a token.
+#                           CI: a step inside `openapi-spec-drift`.
+#
+#   check-openapi-breaking  Is it COMPATIBLE with what shipped?
+#                           Diffs this branch's spec against the base
+#                           branch's via `oasdiff` and fails on an
+#                           unlisted breaking change. Compares two
+#                           branches. Needs `oasdiff` + a fetched base.
+#                           CI job: `openapi-breaking-check`.
+#
+# Mnemonic: -gen is fresh, -lint is correct, -breaking is compatible.
+#
+# `just check-openapi` runs the last two — the pair that is meaningful on
+# uncommitted work. Freshness is a question about what you COMMITTED, so
+# it belongs to `just pre-pull-request` and CI, not to the dev loop.
+#
+# ────────────────────────────────────────────────────────────────────────
+
+# Gate 1 of 3 — REPRODUCIBILITY. See the block above for how this differs
+# from `check-openapi-breaking` and `check-openapi-lint`.
+#
 # Local mirror of the `openapi-spec-drift` CI job. Regenerates
 # `resources/gen/openapi.json` from the `#[utoipa::path(...)]`
 # attributes scattered across the handlers and fails if the
 # committed file differs from the fresh output. Included in
 # `pre-pull-request` so developers catch drift BEFORE pushing —
 # the CI job is belt-and-braces, not the only defence.
+#
+# Run this when you are ready to push, not while iterating: the git
+# assertion fails for as long as the regenerated spec is uncommitted,
+# which is why `just check-openapi` leaves it out.
+#
+# OpenAPI gate 1/3 — is the committed spec reproducible (pre-push)?
 check-openapi-gen: gen-openapi-schema
     #!/usr/bin/env bash
     set -euo pipefail
@@ -245,6 +293,13 @@ check-openapi-gen: gen-openapi-schema
     fi
     echo "✅ OpenAPI spec: committed file matches generator output"
 
+# Gate 3 of 3 — COMPATIBILITY. See the block above for how this differs
+# from `check-openapi-gen` and `check-openapi-lint`.
+#
+# Was named `check-openapi` until the third gate landed, which made the
+# bare name misleading: it reads as the umbrella but only ever ran the
+# breaking-change diff. `check-openapi` is now that umbrella.
+#
 # Local mirror of the `openapi-breaking-check` CI job. Diffs
 # `resources/gen/openapi.json` on this branch against `origin/main`
 # via `oasdiff breaking`, tuned by `checks/openapi/severity.conf` and
@@ -254,7 +309,11 @@ check-openapi-gen: gen-openapi-schema
 #
 # Requires `oasdiff` on PATH. Install via `brew install oasdiff` on
 # macOS or grab a release binary from https://github.com/oasdiff/oasdiff/releases.
-check-openapi: gen-openapi-schema
+# That dependency is why `pre-pull-request` runs the other two gates but
+# not this one.
+#
+# OpenAPI gate 3/3 — is the spec compatible with the base branch?
+check-openapi-breaking: gen-openapi-schema
     #!/usr/bin/env bash
     set -euo pipefail
     if ! command -v oasdiff >/dev/null; then
@@ -292,6 +351,69 @@ check-openapi: gen-openapi-schema
         --err-ignore checks/openapi/breaking-allow.conf \
         resources/gen/openapi.json
     echo "✅ OpenAPI: no breaking changes vs ${BASE_REF}"
+
+# Gate 2 of 3 — CORRECTNESS. See the block above `check-openapi-gen` for
+# how this differs from the other two.
+#
+# Local mirror of the lint step in the `openapi-spec-drift` CI job.
+# Semantic lint of `resources/gen/openapi.json` via Redocly, tuned by
+# `checks/openapi/redocly.yaml` — which carries the rationale for every
+# rule that is on AND every rule that is deliberately off.
+#
+# Unlike the other two gates this one needs nothing to compare against —
+# no regenerated copy, no base branch. It reads the spec alone and asks
+# whether it describes the server that exists.
+#
+# Chiefly it enforces `security-defined`: every operation must say whether
+# it needs a token. `security(("bearerAuth" = []))` for the protected
+# ones, `security()` — an empty requirement — for the genuinely public
+# ones. Omitting it entirely is what this catches, and it caught 14 on
+# introduction (all of `/api/people*`, the app-password endpoints, and
+# the authenticated half of `/api/auth/device/*`).
+#
+# Note the spec is OpenAPI 3.1, which Redocly lints natively. Most
+# Swagger-branded tooling is 3.0-only and will object to valid 3.1
+# constructs here (`type: ["string","null"]`, `$ref` with siblings) —
+# those are not defects. See the header of `checks/openapi/redocly.yaml`.
+#
+# Needs no install step: `npx` fetches Redocly on demand. Pinned so the
+# gate can't shift under us when upstream adds a rule.
+#
+# OpenAPI gate 2/3 — does the spec describe the server that exists?
+check-openapi-lint: gen-openapi-schema
+    #!/usr/bin/env bash
+    set -euo pipefail
+    npx --yes @redocly/cli@2.78.0 lint \
+        resources/gen/openapi.json \
+        --config checks/openapi/redocly.yaml \
+        --format=stylish \
+        --max-problems=400
+    echo "✅ OpenAPI: semantic lint clean"
+
+# The dev-loop OpenAPI check: gates 2 and 3, correct then compatible.
+#
+# This name used to mean only the breaking-change diff, which is now
+# `check-openapi-breaking`.
+#
+# Deliberately NOT including gate 1. `check-openapi-gen` asserts
+# `git diff --exit-code` over the generated files, so it necessarily
+# FAILS for as long as a regenerated spec sits uncommitted — which is
+# the entire time you are working on a handler. Running it here would
+# report drift on every invocation and train you to ignore the output.
+# It also adds nothing while iterating: `gen-openapi-schema` is already
+# a dependency of all three recipes, so the spec is regenerated either
+# way; only the git assertion differs. Drift is a pre-push question, and
+# `pre-pull-request` + the CI job ask it there.
+#
+# Both legs below are happy with uncommitted work: the lint reads the
+# file on disk, and `oasdiff` compares that file against the base ref
+# rather than against the index.
+#
+# Needs `oasdiff` on PATH for the breaking leg, which is why
+# `pre-pull-request` lists the individual recipes rather than this one.
+#
+# The OpenAPI gates that are meaningful on uncommitted work.
+check-openapi: check-openapi-lint check-openapi-breaking
 
 # Regenerate `resources/gen/asyncapi.json` — the WS surface's spec,
 # analogue of openapi.json. Built from the `Topic`, `MessageBusEvent`,
@@ -598,4 +720,4 @@ test-docker-tags:
 
 # Check and test everything
 # recommanded before pull request
-pre-pull-request: test-docker-tags check fe-check audit check-migrations check-asyncapi-gen check-openapi-gen test test-integration fe-test build test-bundle test-api fe-build-e2e  front-test
+pre-pull-request: test-docker-tags check fe-check audit check-migrations check-asyncapi-gen check-openapi-gen check-openapi-lint test test-integration fe-test build test-bundle test-api fe-build-e2e  front-test
