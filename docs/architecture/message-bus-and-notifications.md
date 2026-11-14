@@ -348,10 +348,11 @@ including Safari < 16.4, enterprise Chromium with
 A user with five tabs open holds five sockets. `admin.active_ws_sessions`
 on the dashboard reads roughly `users × tabs`.
 
-### Shared-worker mode (opt-in)
+### Shared-worker mode (opt-out)
 
-Enabled by setting `OXICLOUD_ENABLE_SHARED_WORKER_BUS=true` and
-restarting. On browsers that support `SharedWorker` + a CSP that
+Enabled by default; `OXICLOUD_ENABLE_SHARED_WORKER_BUS=false` plus a
+restart puts every tab back on its own WebSocket. On browsers that
+support `SharedWorker` + a CSP that
 allows it, the whole browser runs a single `SharedWorker` that
 owns ONE WebSocket; every tab holds a `MessagePort` into that
 worker and the worker fans events out to the matching tabs via

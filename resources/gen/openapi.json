@@ -16855,6 +16855,7 @@
           "users_over_quota",
           "registration_enabled",
           "storage_cache_recommended",
+          "opaque_migration_recommended",
           "notification_sink_missing",
           "content_cache",
           "thumbnail_cache"
@@ -16923,6 +16924,10 @@
             "type": "integer",
             "format": "int64",
             "description": "Distinct users behind non-revoked sessions active in the last\n5 min. Answers \"how many humans are here right now?\"."
+          },
+          "opaque_migration_recommended": {
+            "type": "boolean",
+            "description": "`true` when password login is in use and OPAQUE is `off` — i.e.\nthe server still receives and verifies raw passwords, where an\naPAKE would let it verify without ever seeing one. Signals the\nadmin UI to show the \"move to OPAQUE\" banner.\n\n`false` when OPAQUE is already `migrate` or `opaque_only`, and\nalso `false` when password login is disabled entirely\n(`OXICLOUD_AUTH_METHODS` without `password` — an OIDC-only or\nmagic-link-only deployment has no password path for OPAQUE to\nreplace, so the advice would be noise). That second condition is\nthe same cross-check `OpaqueConfig::effective_mode` applies, read\nhere directly because the flag needs to distinguish \"the operator\nturned OPAQUE off\" from \"OPAQUE is moot on this deployment\" —\n`effective_mode` collapses both to `Off`."
           },
           "registration_enabled": {
             "type": "boolean"

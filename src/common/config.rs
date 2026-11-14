@@ -277,10 +277,24 @@ pub struct StorageConfig {
     pub timeout: TimeoutPolicy,
 }
 
-/// Quota applied to a new user account when none is given explicitly.
-/// Kept at the historical values so leaving the knobs unset changes nothing.
-const DEFAULT_USER_QUOTA_BYTES: i64 = 1_073_741_824; // 1 GiB
-const DEFAULT_ADMIN_QUOTA_BYTES: i64 = 107_374_182_400; // 100 GiB
+/// Quotas applied when none is given explicitly. One number for all three,
+/// so an operator who never touches the knobs gets one figure to remember.
+///
+/// These are NOT the historical values — the comment here used to say they
+/// were, which was the justification for the old ones. User went 1 GiB →
+/// 10 GiB, admin 100 GiB → 10 GiB (the only one that shrank, and it was
+/// already clamped to free disk space at creation, so 100 GiB mostly meant
+/// "the disk"), and shared drives 0 → 10 GiB, which is a change of KIND:
+/// they were unlimited before. `OXICLOUD_DEFAULT_SHARED_DRIVE_QUOTA_BYTES=0`
+/// restores that.
+///
+/// Note what the user figure governs: a personal drive carries no quota of
+/// its own, so the account's number caps the SUM across all of that user's
+/// personal drives — 10 GiB total, not per drive. A shared drive carries its
+/// own and counts against no account. See `docs/plan/drive.md` §7.
+const DEFAULT_USER_QUOTA_BYTES: i64 = 10_737_418_240; // 10 GiB
+const DEFAULT_ADMIN_QUOTA_BYTES: i64 = 10_737_418_240; // 10 GiB
+const DEFAULT_SHARED_DRIVE_QUOTA_BYTES: i64 = 10_737_418_240; // 10 GiB
 
 /// Default storage quotas, in bytes, for things created from now on.
 ///
@@ -305,7 +319,7 @@ impl Default for DefaultQuotas {
         Self {
             user_bytes: DEFAULT_USER_QUOTA_BYTES,
             admin_bytes: DEFAULT_ADMIN_QUOTA_BYTES,
-            shared_drive_bytes: 0,
+            shared_drive_bytes: DEFAULT_SHARED_DRIVE_QUOTA_BYTES,
         }
     }
 }
@@ -376,9 +390,12 @@ pub struct AzureStorageConfig {
 /// LRU local disk cache configuration for remote blob backends.
 #[derive(Debug, Clone)]
 pub struct BlobCacheConfig {
-    /// Enable the LRU disk cache (only useful for remote backends).
+    /// Enable the LRU disk cache. Default `true`, and inert on a local
+    /// backend: `di.rs` only builds the decorator when the ACTIVE backend
+    /// is non-local, so a local deployment gets no wrapper, no
+    /// `.blob-cache` directory and no `backend_cache_cleanup` job.
     pub enabled: bool,
-    /// Maximum cache size in bytes (default: 50 GB).
+    /// Maximum cache size in bytes (default: 15 GiB).
     pub max_size_bytes: u64,
     /// Cache directory path (default: `{root_dir}/.blob-cache`).
     pub cache_path: Option<String>,
@@ -387,8 +404,20 @@ pub struct BlobCacheConfig {
 impl Default for BlobCacheConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
-            max_size_bytes: 50 * 1024 * 1024 * 1024, // 50 GB
+            // On by default. Safe to default because the decorator is
+            // gated on the active backend being remote — see the field
+            // doc — so this changes nothing for a local deployment and
+            // saves a remote round-trip per blob read for everyone else.
+            enabled: true,
+            // 15 GiB, not the 50 GB this used to default to. 50 GB was
+            // chosen while the cache was opt-in, where an operator
+            // enabling it was consenting to that footprint. As a DEFAULT
+            // it would claim up to 50 GB of local disk on exactly the
+            // deployments that chose remote storage to avoid needing
+            // local disk — and nothing here checks free space first.
+            // 15 GiB holds a substantial hot set; operators with room to
+            // spare raise it with `OXICLOUD_STORAGE_CACHE_MAX_SIZE`.
+            max_size_bytes: 15 * 1024 * 1024 * 1024, // 15 GiB
             cache_path: None,
         }
     }
@@ -2630,7 +2659,8 @@ pub struct FeaturesConfig {
     /// gates FE behaviour only; `/api/rt/ws` + `/api/rt/ticket` are
     /// still registered (gated by `enable_message_bus`).
     ///
-    /// Env: `OXICLOUD_ENABLE_SHARED_WORKER_BUS` (default `false`).
+    /// Env: `OXICLOUD_ENABLE_SHARED_WORKER_BUS` (default `true`).
+    /// Set it to `false` to put every tab back on its own WebSocket.
     /// See `docs/plan/message-bus-via-shared-worker.md`.
     pub enable_shared_worker_bus: bool,
 
@@ -3138,15 +3168,22 @@ impl Default for FeaturesConfig {
             // pair can only be inconsistent through an explicit
             // operator override.
             enable_markdown_collab: true,
-            // Shared-worker bus — OFF by default (opt-in). See the
-            // field docstring: the fan-out reduction win is real, but
-            // production behaviour across browsers, extensions and
-            // tab-lifecycle quirks is still being observed. Operators
-            // who want the win today set
-            // OXICLOUD_ENABLE_SHARED_WORKER_BUS=true and restart; the
-            // mandatory handshake-tested fallback bounds blast radius
-            // on any browser that can't run shared mode.
-            enable_shared_worker_bus: false,
+            // Shared-worker bus — ON by default (opt-out). It shipped off
+            // for an observation window, because shared-worker behaviour
+            // varies across browsers, extensions and tab-lifecycle events;
+            // that window has closed, so the default now matches what the
+            // feature was built for: `active_ws_sessions` of roughly `U`
+            // instead of `U × T`.
+            //
+            // Flipping the default is low-risk precisely because the
+            // fallback was mandatory from the start: a browser without
+            // `SharedWorker`, blocked by CSP, or failing the 1 s handshake
+            // lands on the per-tab client with nothing user-visible. The
+            // flag only decides whether to TRY shared mode.
+            //
+            // `OXICLOUD_ENABLE_SHARED_WORKER_BUS=false` restores per-tab
+            // for an operator who needs it.
+            enable_shared_worker_bus: true,
             grant_cleanup: GrantCleanupConfig::default(),
             notifications_retention_days: 30, // 30 days is the plan's default
         }
@@ -4760,8 +4797,18 @@ impl AppConfig {
         }
 
         // Blob cache configuration
-        if let Ok(v) = env::var("OXICLOUD_STORAGE_CACHE_ENABLED") {
-            config.storage.cache.enabled = v.parse::<bool>().unwrap_or(false);
+        // `unwrap_or(false)` used to live here, which was harmless while the
+        // default was `false` and is not now: a typo
+        // (`OXICLOUD_STORAGE_CACHE_ENABLED=yes`) would silently DISABLE a
+        // feature that is on by default, and the operator would see a
+        // remote round-trip per blob read with nothing in the log saying
+        // why. Match the let-chain the other boolean knobs use: an
+        // unparseable value leaves the default alone instead of inverting
+        // it.
+        if let Ok(parsed) = env::var("OXICLOUD_STORAGE_CACHE_ENABLED").map(|v| v.parse::<bool>())
+            && let Ok(val) = parsed
+        {
+            config.storage.cache.enabled = val;
         }
         if let Ok(v) = env::var("OXICLOUD_STORAGE_CACHE_MAX_SIZE")
             && let Ok(bytes) = v.parse::<u64>()

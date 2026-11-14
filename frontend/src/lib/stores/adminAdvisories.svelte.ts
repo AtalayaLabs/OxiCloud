@@ -36,11 +36,18 @@ interface AdminAdvisoryState {
 	 *  checking `/admin/jobs`. Drives the "configure a notification
 	 *  sink" advisory banner. */
 	notificationSinkMissing: boolean;
+	/** `opaque_migration_recommended` from the dashboard DTO. True when
+	 *  password login is allowed AND `OXICLOUD_AUTH_OPAQUE_MODE=off`, so
+	 *  the server still receives raw passwords. False on deployments
+	 *  with no password login at all, where OPAQUE has nothing to
+	 *  replace. Drives the "move password login to OPAQUE" banner. */
+	opaqueMigrationRecommended: boolean;
 }
 
 const state = $state<AdminAdvisoryState>({
 	cacheRecommended: false,
-	notificationSinkMissing: false
+	notificationSinkMissing: false,
+	opaqueMigrationRecommended: false
 });
 
 /** Reactive accessor — subscribe from a Svelte component via
@@ -60,4 +67,9 @@ export function setCacheRecommended(value: boolean): void {
 /** Mirror the `notification_sink_missing` flag — see field doc. */
 export function setNotificationSinkMissing(value: boolean): void {
 	if (state.notificationSinkMissing !== value) state.notificationSinkMissing = value;
+}
+
+/** Mirror the `opaque_migration_recommended` flag — see field doc. */
+export function setOpaqueMigrationRecommended(value: boolean): void {
+	if (state.opaqueMigrationRecommended !== value) state.opaqueMigrationRecommended = value;
 }

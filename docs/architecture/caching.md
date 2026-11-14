@@ -65,7 +65,7 @@ The cache is LRU on a disk-budget basis. A working set larger than the cache siz
 - **Small team / SMB** — 50-100 GB for a hot photo library or shared document store.
 - **Large deployment** — size against your top-decile access pattern; the cache doesn't need to cover the whole store.
 
-The default budget is 50 GB (only applied if the cache is enabled). Adjust to what your local SSD can spare.
+The default budget is 15 GiB, and it is only ever consumed on a remote backend — the decorator is not built at all when the active backend is local. Adjust to what your local SSD can spare: the cache is an LRU and fills only with what is actually read, but nothing checks free space before filling it.
 
 ### Interaction with the moka layer
 
@@ -89,8 +89,8 @@ Environment-tunable — off by default; enable per deployment when the backend i
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `OXICLOUD_STORAGE_CACHE_ENABLED` | `false` | Master switch. Set `true` to wrap the blob backend with the cache decorator. |
-| `OXICLOUD_STORAGE_CACHE_MAX_SIZE` | `53687091200` (50 GB) | Disk-budget in bytes. LRU eviction fires when the cache exceeds this size. |
+| `OXICLOUD_STORAGE_CACHE_ENABLED` | `true` | Master switch for the cache decorator. On by default; it wraps the blob backend only when the **active** backend is remote, so leaving it on costs a local deployment nothing. Set `false` to read every blob over the network on an S3/Azure instance. |
+| `OXICLOUD_STORAGE_CACHE_MAX_SIZE` | `16106127360` (15 GiB) | Disk-budget in bytes. LRU eviction fires when the cache exceeds this size. |
 | `OXICLOUD_STORAGE_CACHE_PATH` | `{root}/.blob-cache` | Where the cache files live. Point at a fast SSD; can be a separate volume from the primary storage root. |
 
 ## Observing cache behaviour: the `X-Oxicloud-Cache` response header

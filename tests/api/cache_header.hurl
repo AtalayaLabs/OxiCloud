@@ -10,10 +10,12 @@
 #   MISS         — moka missed; backend was reached (first view)
 #
 # Only the HIT ↔ MISS pair is covered here. `HIT-BACKEND` requires the
-# `CachedBlobBackend` wrapper to be in the request path, which the
-# default local-backend test harness does not spin up (see sandbox
-# `example.env`: `OXICLOUD_STORAGE_CACHE_ENABLED` defaults to false).
-# A follow-up scenario can exercise that tier under an S3 / Azurite
+# `CachedBlobBackend` wrapper to be in the request path, and the
+# local-backend test harness never builds it — note the reason, because
+# it changed: not because the cache is off (it is ENABLED by default
+# now), but because the decorator is gated on the active backend being
+# remote. On a local backend the flag is inert by construction. A
+# follow-up scenario can exercise that tier under an S3 / Azurite
 # profile.
 #
 # Two endpoints covered:

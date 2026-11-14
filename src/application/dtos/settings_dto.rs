@@ -316,6 +316,21 @@ pub struct DashboardStatsDto {
     /// local-filesystem deployments (nothing to cache) and when the
     /// cache is already on.
     pub storage_cache_recommended: bool,
+    /// `true` when password login is in use and OPAQUE is `off` — i.e.
+    /// the server still receives and verifies raw passwords, where an
+    /// aPAKE would let it verify without ever seeing one. Signals the
+    /// admin UI to show the "move to OPAQUE" banner.
+    ///
+    /// `false` when OPAQUE is already `migrate` or `opaque_only`, and
+    /// also `false` when password login is disabled entirely
+    /// (`OXICLOUD_AUTH_METHODS` without `password` — an OIDC-only or
+    /// magic-link-only deployment has no password path for OPAQUE to
+    /// replace, so the advice would be noise). That second condition is
+    /// the same cross-check `OpaqueConfig::effective_mode` applies, read
+    /// here directly because the flag needs to distinguish "the operator
+    /// turned OPAQUE off" from "OPAQUE is moot on this deployment" —
+    /// `effective_mode` collapses both to `Off`.
+    pub opaque_migration_recommended: bool,
     /// `true` when neither outbound alert path is usable:
     /// * **Email** — needs BOTH `OXICLOUD_JOBS_NOTIFY_EMAIL_TO`
     ///   (non-empty recipients) AND `OXICLOUD_SMTP_HOST`. Setting

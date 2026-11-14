@@ -217,6 +217,13 @@ jsonpath "$[?(@.id=='{{tight_drive_id}}')].used_bytes" == 64
 # ─────────────────────────────────────────────────────────────
 # Step 7 — Case 4: unlimited drive accepts the same 5 MiB upload.
 #          Confirms the `quota_bytes IS NULL` short-circuit.
+#
+# `quota_bytes: 0` is EXPLICIT, not decoration. This step used to omit the
+# field and rely on the server default being 0, which was true until
+# `OXICLOUD_DEFAULT_SHARED_DRIVE_QUOTA_BYTES` was raised to 10 GiB. The
+# step kept passing — 5 MiB fits in 10 GiB — while silently testing a
+# capped drive instead of an uncapped one, i.e. the one case this step
+# exists for. Stating it here makes the case independent of the default.
 # ─────────────────────────────────────────────────────────────
 POST {{base_url}}/api/drives
 Authorization: Bearer {{admin_token}}
@@ -224,6 +231,7 @@ Content-Type: application/json
 {
   "kind": "shared",
   "name": "dq-unlimited",
+  "quota_bytes": 0,
   "owner": { "type": "user", "id": "{{owner_user_id}}" }
 }
 

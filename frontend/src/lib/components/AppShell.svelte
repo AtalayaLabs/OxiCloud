@@ -1493,6 +1493,28 @@
 				ariaLabel={t('admin.storage_cache_recommended_title', 'Enable the local blob cache')}
 			/>
 		{/if}
+		<!-- OPAQUE still off while passwords are in use. Same admin-only
+		     gating and the same purely-advisory status as the cache banner
+		     above; `role="status"` rather than `alert` because nothing is
+		     broken — the deployment works, it just hands the server a
+		     password it would not otherwise need to see. -->
+		{#if isAdminSection && isAdmin && adminAdvisories().opaqueMigrationRecommended}
+			<Banner
+				severity="warning"
+				title={t('admin.opaque_migration_recommended_title', 'Enable OPAQUE in migrate mode')}
+				body={t(
+					'admin.opaque_migration_recommended_body',
+					'It is strongly recommended to enable OPAQUE in migrate mode, to prepare the transition to never sending passwords to the server. This is a key step towards end-to-end encryption.'
+				)}
+				progressLine={t(
+					'admin.opaque_migration_recommended_howto',
+					'Generate a key with `oxicloud opaque setup`, persist it in OXICLOUD_AUTH_OPAQUE_SERVER_SETUP, then set OXICLOUD_AUTH_OPAQUE_MODE=migrate. Existing users move across as they next log in — nothing changes for them.'
+				)}
+				role="status"
+				testid="admin-opaque-advisory"
+				ariaLabel={t('admin.opaque_migration_recommended_title', 'Enable OPAQUE in migrate mode')}
+			/>
+		{/if}
 		{#if isAdminSection && isAdmin && adminAdvisories().notificationSinkMissing}
 			<Banner
 				severity="warning"
