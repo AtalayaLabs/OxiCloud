@@ -21,12 +21,13 @@ vi.mock('$lib/api/endpoints/folders', () => ({ folderZipUrl: (id: string) => `/z
 
 import { addFavorite } from '$lib/api/endpoints/favorites';
 import {
-	emitFavoriteChanged,
-	onFavoriteChanged,
+	applyRowFlags,
+	emitRowFlags,
+	onRowFlags,
 	openParentContextAction,
 	parentFolderIdOf,
 	toggleFavorite,
-	type FavoriteChange
+	type RowFlagsChange
 } from './listActions';
 import type { FileItem, FolderItem } from '$lib/api/types';
 
@@ -106,8 +107,8 @@ it('leaves open-parent enabled when reachable or not yet probed', () => {
 // looked dead while the server had recorded the change. These pin the event
 // that carries the flip to whoever owns the data.
 it('announces the flip so a page with derived rows can follow it', async () => {
-	const seen: FavoriteChange[] = [];
-	const off = onFavoriteChanged((c) => seen.push(c));
+	const seen: RowFlagsChange[] = [];
+	const off = onRowFlags((c) => seen.push(c));
 
 	const it1 = file('p1');
 	it1.is_favorite = false;
@@ -125,8 +126,8 @@ it('announces the flip so a page with derived rows can follow it', async () => {
 // avoid.
 it('announces the revert when the write fails', async () => {
 	m(addFavorite).mockRejectedValueOnce(new Error('nope'));
-	const seen: FavoriteChange[] = [];
-	const off = onFavoriteChanged((c) => seen.push(c));
+	const seen: RowFlagsChange[] = [];
+	const off = onRowFlags((c) => seen.push(c));
 
 	const it1 = file('p1');
 	it1.is_favorite = false;
@@ -143,8 +144,53 @@ it('announces the revert when the write fails', async () => {
 // Unsubscribing has to actually detach: these listeners live in `$effect`s,
 // so a leak means every navigation adds another patcher of a dead page.
 it('stops delivering after the unsubscriber runs', () => {
-	const seen: FavoriteChange[] = [];
-	onFavoriteChanged((c) => seen.push(c))();
-	emitFavoriteChanged({ id: 'f1', is_favorite: true });
+	const seen: RowFlagsChange[] = [];
+	onRowFlags((c) => seen.push(c))();
+	emitRowFlags({ id: 'f1', is_favorite: true });
 	expect(seen).toEqual([]);
+});
+
+// ── The shared chip rides the same event ─────────────────────────────────
+//
+// THE bug: sharing or unsharing left the row's chip as it was until a page
+// refresh. The star had this broadcast; sharing had a `ShareDialog` callback
+// that only `/files` wired, and only for the create direction — so
+// `/favorites`, `/recent`, `/search`, `/shared-with-me` and `/changes` painted
+// a stale chip both ways. One event now carries both flags, which is why
+// these pins live beside the favourite ones rather than in a parallel file.
+it('carries is_shared on its own, without claiming anything about the star', () => {
+	const seen: RowFlagsChange[] = [];
+	const off = onRowFlags((c) => seen.push(c));
+
+	emitRowFlags({ id: 'f1', is_shared: true });
+
+	expect(seen).toEqual([{ id: 'f1', is_shared: true }]);
+	// The absent flag must stay absent: a listener that treated `undefined`
+	// as `false` would un-star every row the share dialog touched.
+	expect(seen[0].is_favorite).toBeUndefined();
+	off();
+});
+
+// `applyRowFlags` is the rule every listener shares. An absent flag leaves
+// the row alone — this is the half that stops a share announcement from
+// clearing a star.
+it('applies only the flags the change carries', () => {
+	const row = { is_favorite: true, is_shared: false };
+
+	applyRowFlags(row, { id: 'f1', is_shared: true });
+
+	expect(row).toEqual({ is_favorite: true, is_shared: true });
+});
+
+// And a row that does not model a flag must not grow one: a breadcrumb crumb
+// carries `is_shared` and has no star, so the favourite half is not its
+// business. Without the `in` guard it would gain an `is_favorite` property
+// that nothing renders and the next chain fetch silently drops.
+it('leaves a row without a flag alone rather than adding it', () => {
+	const crumb = { is_shared: false };
+
+	applyRowFlags(crumb, { id: 'd1', is_favorite: true, is_shared: true });
+
+	expect(crumb).toEqual({ is_shared: true });
+	expect('is_favorite' in crumb).toBe(false);
 });

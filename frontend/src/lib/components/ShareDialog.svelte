@@ -21,6 +21,7 @@
 		type ShareRole
 	} from '$lib/api/endpoints/grants';
 	import { displayRole } from '$lib/utils/grantFormat';
+	import { emitRowFlags } from '$lib/utils/listActions';
 	import { expiryToIso, todayIso } from '$lib/utils/dateInput';
 	import {
 		ensureResolvers,
@@ -51,14 +52,18 @@
 	interface Props {
 		open: boolean;
 		item: Target | null;
-		/** Fired with the item id when an outgoing share (grant or link) is created. */
-		onshared?: (id: string) => void;
 		/**
 		 * Fired with the item id on **any** membership mutation — create,
 		 * role change, expiry change, removal, or public-link creation.
-		 * Distinct from `onshared` because some callers (file/folder list
-		 * views that toggle a "shared" badge) only care about creation;
-		 * the drive-config view needs to refresh on every change.
+		 *
+		 * For the row's shared CHIP there is nothing to wire: every mutation
+		 * broadcasts the resource's new shared state through
+		 * `listActions.emitRowFlags`, and each listing patches its own row
+		 * (see `announceSharedState`). This prop is for callers that need to
+		 * reload something else — the drive-config view re-reads its member
+		 * table. A former `onshared` prop covered creation only and was
+		 * wired by one page, which is why the chip went stale everywhere
+		 * else.
 		 */
 		onchange?: (id: string) => void;
 		/**
@@ -88,14 +93,7 @@
 		onretarget?: (target: Target) => void;
 	}
 
-	let {
-		open = $bindable(false),
-		item,
-		onshared,
-		onchange,
-		allowLinks = true,
-		onretarget
-	}: Props = $props();
+	let { open = $bindable(false), item, onchange, allowLinks = true, onretarget }: Props = $props();
 
 	// When the public-link tab is hidden, force the People view — otherwise a
 	// caller toggling `allowLinks` between renders could land on the now-hidden
@@ -399,6 +397,36 @@
 		results = [];
 	}
 
+	/**
+	 * Tell every mounted listing whether this resource is still shared, so the
+	 * row's chip tracks what the dialog just did.
+	 *
+	 * The bug this closes: sharing or unsharing left the chip as it was until
+	 * a page refresh. `onshared` only ever covered CREATION and only `/files`
+	 * wired it, so `/favorites`, `/recent`, `/search`, `/shared-with-me` and
+	 * `/changes` painted a stale chip in both directions.
+	 *
+	 * The value mirrors the server's predicate exactly — `is_shared` is
+	 * `EXISTS (SELECT 1 FROM storage.role_grants WHERE resource_id = <this>)`,
+	 * so:
+	 *   - INHERITED members don't count: their grant is on an ancestor, and
+	 *     the server computes the flag per row, not per access path. Painting
+	 *     a chip for them would contradict the next reload.
+	 *   - Direct link shares DO count: a public link carries its own
+	 *     `subject_type = 'token'` grant row on this resource.
+	 *
+	 * Called after each mutation RELOADS its list, never from the open
+	 * effect's first pass — announcing from a half-loaded dialog would flash
+	 * the chip off (members empty, shares not fetched yet) and back on.
+	 */
+	function announceSharedState() {
+		if (!item) return;
+		emitRowFlags({
+			id: item.id,
+			is_shared: members.some((m) => !m.inherited) || shares.length > 0
+		});
+	}
+
 	async function addSelected() {
 		if (!item || !selected || addGrantAction.busy) return;
 		await addGrantAction.run(async () => {
@@ -413,9 +441,9 @@
 			// each, which is the common case.
 			selected = null;
 			summarizeNotifications(res.notification.outcomes);
-			onshared?.(item!.id);
 			onchange?.(item!.id);
 			await loadGrants();
+			announceSharedState();
 		});
 	}
 
@@ -456,6 +484,11 @@
 			for (const id of m.grantIds) await revokeGrant(id);
 			if (item) onchange?.(item.id);
 			await loadGrants();
+			// The direction that had no signal at all before: removing the
+			// last member must clear the row's chip, and removing one of
+			// several must leave it alone. `announceSharedState` reads the
+			// freshly reloaded list, so it answers both without counting here.
+			announceSharedState();
 		} catch (e) {
 			errorToast(e);
 		}
@@ -670,9 +703,9 @@
 			password = '';
 			expiresAt = null;
 			maxDownloads = null;
-			onshared?.(target.id);
 			onchange?.(target.id);
 			await loadShares();
+			announceSharedState();
 		});
 		if (ok) {
 			// Success toast — kept for the "something happened" breadcrumb;
@@ -712,6 +745,7 @@
 			await deleteShare(share.id);
 			if (item) onchange?.(item.id);
 			shares = shares.filter((s) => s.id !== share.id);
+			announceSharedState();
 		} catch (e) {
 			errorToast(e);
 		}

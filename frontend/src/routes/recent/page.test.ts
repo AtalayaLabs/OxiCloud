@@ -200,6 +200,47 @@ it('un-stars a recent row, and reverts when the write fails', async () => {
 	await waitFor(() => expect(star.getAttribute('aria-pressed')).toBe('true'));
 });
 
+// THE other half of the same bug: sharing a resource left the row's chip
+// alone until a refresh, because the only signal was a `ShareDialog` prop
+// that fired on creation and that `/files` alone wired. `ShareDialog` now
+// broadcasts the resource's shared state and `ResourceList` patches the row —
+// which means every page that paints the chip (`/files`, `/favorites`,
+// `/recent`, `/search`, `/shared-with-me`) is served by one listener. This
+// pins that listener through a real page, from the event inwards, so the
+// emitter's own pins in `ShareDialog.test.ts` meet it in the middle.
+it('tints the shared chip when another surface announces a share', async () => {
+	withOneFile();
+	render(RecentPage);
+	const chip = await screen.findByTestId('resource-list-shared-r1-btn');
+	expect(chip.getAttribute('aria-pressed')).toBe('false');
+
+	window.dispatchEvent(
+		new CustomEvent('oxicloud:row-flags-changed', { detail: { id: 'r1', is_shared: true } })
+	);
+
+	await waitFor(() => expect(chip.getAttribute('aria-pressed')).toBe('true'));
+});
+
+// And the un-share direction, which had no signal at all before — plus the
+// rule that makes one event safe for both flags: a share announcement must
+// not disturb the star. A listener that read a missing `is_favorite` as
+// `false` would silently un-star every row the share dialog touched.
+it('clears the chip on un-share without touching the star', async () => {
+	withOneFile();
+	render(RecentPage);
+	const star = await screen.findByTestId('resource-list-favorite-r1-btn');
+	await fireEvent.click(star);
+	await waitFor(() => expect(star.getAttribute('aria-pressed')).toBe('true'));
+
+	window.dispatchEvent(
+		new CustomEvent('oxicloud:row-flags-changed', { detail: { id: 'r1', is_shared: false } })
+	);
+
+	const chip = screen.getByTestId('resource-list-shared-r1-btn');
+	await waitFor(() => expect(chip.getAttribute('aria-pressed')).toBe('false'));
+	expect(star.getAttribute('aria-pressed')).toBe('true');
+});
+
 it('renders an empty state when there is no recent activity', async () => {
 	m(listRecentResources).mockResolvedValue({ items: [], next_cursor: null });
 	render(RecentPage);

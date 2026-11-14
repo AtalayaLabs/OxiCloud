@@ -23,7 +23,7 @@
 	// OS-file drops on a drive row: same "is this an OS drag?" test the rest of
 	// the app uses, read into the two shapes an uploader takes, then staged for
 	// `/files` to perform (see `pendingUpload` for why it is a handoff).
-	import { emitFavoriteChanged } from '$lib/utils/listActions';
+	import { emitRowFlags } from '$lib/utils/listActions';
 	import { isOsFileDrag } from '$lib/utils/osFileDropGuard';
 	import { readDroppedUpload } from '$lib/utils/droppedEntries';
 	import { pendingUpload } from '$lib/stores/pendingUpload.svelte';
@@ -693,7 +693,7 @@
 				// a page whose rows are derived copies (`/changes`) patches its
 				// own source. Same helper the row star uses, so this path and
 				// that one cannot drift on the event name or its payload.
-				emitFavoriteChanged({ id: it.id, is_favorite: true });
+				emitRowFlags({ id: it.id, is_favorite: true });
 			});
 			ui.notify(
 				t('favorites.added_n', { n: items.length }, 'Added {{n}} item(s) to favorites'),

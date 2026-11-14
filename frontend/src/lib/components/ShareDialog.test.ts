@@ -237,6 +237,110 @@ it('does not load when closed', () => {
 	expect(fetchGrantsForResource).not.toHaveBeenCalled();
 });
 
+// ── The shared chip on every list ──────────────────────────────────────
+//
+// THE bug: sharing a resource and unsharing it both left the row's chip
+// unchanged until the page was refreshed. The only signal was an
+// `onshared` prop that fired on CREATION and was wired by `/files` alone,
+// so `/favorites` (where Ed hit it), `/recent`, `/search`,
+// `/shared-with-me` and `/changes` painted a stale chip in both
+// directions. Every mutation now broadcasts the resource's new shared
+// state and each listing patches its own row.
+//
+// These pin the EMITTER, which is where the bug was. The listener half is
+// pinned in `listActions.test.ts` (`applyRowFlags`) and on the pages.
+//
+// The asserted value is the server's own predicate — `is_shared` is
+// `EXISTS (SELECT 1 FROM storage.role_grants WHERE resource_id = <this>)` —
+// so these also pin the two readings that would contradict the next
+// reload: an inherited grant must NOT count, and a public link MUST.
+
+/** Collect every `is_shared` announcement made during one act. */
+function watchSharedFlags(): { seen: (boolean | undefined)[]; stop: () => void } {
+	const seen: (boolean | undefined)[] = [];
+	const handler = (e: Event) => {
+		const d = (e as CustomEvent<{ id: string; is_shared?: boolean }>).detail;
+		if (d?.id === 'f1' || d?.id === 'fold1') seen.push(d.is_shared);
+	};
+	window.addEventListener('oxicloud:row-flags-changed', handler);
+	return { seen, stop: () => window.removeEventListener('oxicloud:row-flags-changed', handler) };
+}
+
+it('announces the resource as shared once a public link exists', async () => {
+	m(createShare).mockResolvedValue({ id: 's1', token: 'abc', has_password: false });
+	// The reload after the write is what the announcement reads, so the
+	// second answer is the one that matters.
+	m(listSharesForItem)
+		.mockResolvedValueOnce([])
+		.mockResolvedValueOnce([{ id: 's1' }]);
+	const w = watchSharedFlags();
+	render(ShareDialog, { props: { open: true, item } });
+	await fireEvent.click(await screen.findByTestId('share-dialog-link-tab'));
+
+	await fireEvent.click(screen.getByTestId('share-dialog-create-btn'));
+
+	await waitFor(() => expect(w.seen).toContain(true));
+	w.stop();
+});
+
+it('announces the resource as unshared when its last link goes', async () => {
+	m(listSharesForItem).mockResolvedValue([{ id: 's1', token: 'abc', has_password: false }]);
+	const w = watchSharedFlags();
+	render(ShareDialog, { props: { open: true, item } });
+	await fireEvent.click(await screen.findByTestId('share-dialog-link-tab'));
+
+	await fireEvent.click(await screen.findByTestId('share-dialog-link-delete-btn-s1'));
+
+	await waitFor(() => expect(w.seen).toContain(false));
+	w.stop();
+});
+
+// Removing a DIRECT member while a link survives must keep the chip lit —
+// the flag is "is anything granted on this row", not "did I just revoke
+// something". Counting the revocation instead of re-reading the lists
+// would clear a chip the server still paints.
+it('keeps the resource shared when a member goes but a link remains', async () => {
+	m(fetchGrantsForResource)
+		.mockResolvedValueOnce([{ id: 'g1', subject: { type: 'group', id: 'team-a' }, role: 'editor' }])
+		.mockResolvedValueOnce([]);
+	m(listSharesForItem).mockResolvedValue([{ id: 's1', token: 'abc', has_password: false }]);
+	const w = watchSharedFlags();
+	render(ShareDialog, { props: { open: true, item } });
+
+	await fireEvent.click(await screen.findByTestId('share-dialog-member-remove-group-team-a'));
+
+	await waitFor(() => expect(w.seen.length).toBeGreaterThan(0));
+	expect(w.seen).not.toContain(false);
+	w.stop();
+});
+
+// An INHERITED grant is on an ancestor, so the server computes `is_shared`
+// as false for this row. Announcing true here would light a chip that the
+// next listing fetch puts out — a flicker that reads as a lost share.
+it('calls a resource unshared once only inherited access is left', async () => {
+	// `fold1` has one DIRECT member plus the inherited group from `p1`.
+	// Revoking the direct one leaves an inherited row still on screen —
+	// and the chip must go out anyway, because the surviving grant sits on
+	// the ancestor and the server's `is_shared` is per row.
+	m(getFolderAncestorsWithGrants).mockResolvedValue(chainWithInherited);
+	m(fetchGrantsForResource)
+		.mockResolvedValueOnce([
+			{ id: 'g-direct', subject: { type: 'group', id: 'direct-team' }, role: 'editor' }
+		])
+		.mockResolvedValueOnce([]);
+	m(listSharesForItem).mockResolvedValue([]);
+	const w = watchSharedFlags();
+	render(ShareDialog, { props: { open: true, item: folderItem } });
+
+	await fireEvent.click(await screen.findByTestId('share-dialog-member-remove-group-direct-team'));
+
+	await waitFor(() => expect(w.seen).toContain(false));
+	// The inherited row is still listed — this is the state that must not
+	// be read as "shared".
+	expect(screen.getByTestId('share-dialog-member-source-group-team-a')).toBeTruthy();
+	w.stop();
+});
+
 // ── Inherited access ───────────────────────────────────────────────────
 //
 // Access mostly arrives by cascade, so a dialog that lists only direct

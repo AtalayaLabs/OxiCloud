@@ -37,7 +37,7 @@
 		markUploadStarted,
 		releaseUploadGuard
 	} from '$lib/upload/interruption';
-	import { emitFavoriteChanged, toggleFavorite } from '$lib/utils/listActions';
+	import { emitRowFlags, toggleFavorite } from '$lib/utils/listActions';
 	import {
 		advertisedExtensions,
 		canEditWithWopi,
@@ -1336,7 +1336,7 @@
 				if (row) row.is_favorite = true;
 				// Same announcement the single-row toggle makes, so a page
 				// holding derived rows (`/changes`) follows a batch star too.
-				emitFavoriteChanged({ id: it.id, is_favorite: true });
+				emitRowFlags({ id: it.id, is_favorite: true });
 			}
 			ui.notify(t('files.added_favorites', 'Added to favorites'), 'success');
 			clearSelection();
@@ -2898,12 +2898,6 @@
 	<ShareDialog
 		bind:open={shareOpen}
 		item={actionTarget}
-		onshared={(id) => {
-			// Optimistic in-place flip so the shared chip appears on
-			// the row without waiting for the next listing refetch.
-			const row = orderedItems.find((it) => it.id === id);
-			if (row) row.is_shared = true;
-		}}
 		onretarget={(target) => {
 			// Clicking an inherited grant's source chip. Its href already
 			// navigates this page to that folder, but /files → /files is

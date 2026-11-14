@@ -134,7 +134,7 @@
 	import { ResourceSectionsBuilder } from '$lib/utils/resourceSections';
 	import { ItemIndexBuilder } from '$lib/utils/itemIndex';
 	import { fileThumbnailUrl } from '$lib/api/endpoints/files';
-	import { onFavoriteChanged } from '$lib/utils/listActions';
+	import { applyRowFlags, onRowFlags } from '$lib/utils/listActions';
 	import { thumbSizeForView } from '$lib/utils/thumbnails';
 	import {
 		canThumbnailClientSide,
@@ -1035,15 +1035,18 @@
 
 	const mergeTitleIntoBar = $derived(titleInToolbar && !!title);
 
-	// Out-of-band `is_favorite` changes from other surfaces: the sidebar's
-	// drop-on-Favorites, and `toggleFavorite` itself (so a page whose rows are
-	// derived copies still sees the flip). Every mounted resource list patches
-	// its row without the source page re-fetching. The event name and payload
-	// live in `listActions` so emitter and listener cannot drift apart.
+	// Out-of-band flag changes from other surfaces: the sidebar's
+	// drop-on-Favorites, `toggleFavorite` itself (so a page whose rows are
+	// derived copies still sees the flip), and `ShareDialog`, which can be
+	// opened over any view and whose chip used to need a per-page callback
+	// only `/files` ever wired. Every mounted resource list patches its row
+	// without the source page re-fetching. The event name, payload and the
+	// "only the flags present are applied" rule live in `listActions` so
+	// emitter and listener cannot drift apart.
 	$effect(() =>
-		onFavoriteChanged(({ id, is_favorite }) => {
-			const item = items.find((i) => i.id === id);
-			if (item) item.is_favorite = is_favorite;
+		onRowFlags((change) => {
+			const item = items.find((i) => i.id === change.id);
+			if (item) applyRowFlags(item, change);
 		})
 	);
 

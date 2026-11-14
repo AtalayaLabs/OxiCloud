@@ -456,6 +456,20 @@
 	}
 
 	/** Remove a grant locally, pruning now-empty resources. */
+	/**
+	 * Drop one revoked grant from the local list.
+	 *
+	 * Deliberately does NOT announce the resource's shared state through
+	 * `listActions.emitRowFlags`, unlike `ShareDialog`: `raw` here is one
+	 * filtered, paginated page of the caller's outgoing grants, so "no grants
+	 * left for this resource" is only true of what happens to be loaded. A
+	 * resource with three grants, two of them on the next page, would be
+	 * announced as unshared — a chip put out while the server still paints
+	 * it, which is worse than the staleness the broadcast exists to fix.
+	 * `ShareDialog` can announce because it reloads the whole per-resource
+	 * list first. Nothing paints that chip while this page is mounted anyway,
+	 * and navigating away refetches.
+	 */
 	function dropGrant(grantId: string) {
 		raw = raw
 			.map((item) => ({ ...item, grants: item.grants.filter((g) => g.grant_id !== grantId) }))

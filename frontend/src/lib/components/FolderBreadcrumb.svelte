@@ -6,6 +6,7 @@
 	import UserAvatar from '$lib/components/UserAvatar.svelte';
 	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import { ITEM_DRAG_MIME } from '$lib/utils/dragModifiers';
+	import { applyRowFlags, onRowFlags } from '$lib/utils/listActions';
 	import { t } from '$lib/i18n/index.svelte';
 
 	/**
@@ -166,6 +167,18 @@
 				if (folderId === id) chain = null;
 			});
 	});
+
+	// The crumbs paint the same shared chip the rows do, from their own
+	// endpoint — so sharing the current folder from the breadcrumb's own
+	// button used to leave that button untinted until a reload. Same
+	// broadcast, same patch: only `is_shared` is meaningful here (a crumb
+	// has no star), and `applyRowFlags` ignores whichever flag is absent.
+	$effect(() =>
+		onRowFlags((change) => {
+			const crumb = chain?.ancestors.find((a) => a.id === change.id);
+			if (crumb) applyRowFlags(crumb, change);
+		})
+	);
 
 	/**
 	 * Ancestors to render as crumbs, with the drive-root deduplicated
