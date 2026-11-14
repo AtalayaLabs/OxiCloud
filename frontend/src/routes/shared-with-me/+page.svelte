@@ -21,7 +21,7 @@
 		type GroupByDef,
 		type ItemContext
 	} from '$lib/components/ResourceList.svelte';
-	import UserAvatar from '$lib/components/UserAvatar.svelte';
+	import PersonBucketLabel from '$lib/components/PersonBucketLabel.svelte';
 	import AvatarOverlayChip from '$lib/components/AvatarOverlayChip.svelte';
 	import { openParentContextAction, prepareParentAccess } from '$lib/utils/listActions';
 	import type { IncomingGrantOrderBy } from '$lib/api/generated/openapi/types.gen';
@@ -372,18 +372,16 @@
 	{/snippet}
 	{#snippet bucketLabel(_key, label)}
 		<!--
-			"Shared by" swimlane header — prefix the label with the
-			sharer's avatar so the group is visually anchored to a
-			person, not just a UUID-ish name. Other group-by dimensions
-			(`type`, `sharedAt`, or the flat `Name` sort) don't have
-			an ownerId as the key, so render only the plain label —
-			`_key` for those is a category / date-bucket / empty string
-			that has no avatar equivalent.
+			"Shared by" swimlane header — prefix the label with the sharer's
+			avatar so the group is anchored to a person rather than a
+			UUID-ish name. Other axes (`type`, `sharedAt`, the flat `Name`
+			sort) key on a category / date-bucket / empty string that has no
+			avatar equivalent, hence the gate on the axis.
+
+			Shared with `/recent` and `/favorites` via `PersonBucketLabel`,
+			which is where this pattern started.
 		-->
-		{#if groupBy === 'sharedBy' && _key}
-			<UserAvatar userId={_key} size={30} />
-		{/if}
-		<span class="rl-swimlane-header__text">{label}</span>
+		<PersonBucketLabel userId={groupBy === 'sharedBy' ? _key : null} {label} />
 	{/snippet}
 </ResourceList>
 

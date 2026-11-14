@@ -23,7 +23,7 @@
 	import FilterMenu from '$lib/components/FilterMenu.svelte';
 	import UserVignette from '$lib/components/UserVignette.svelte';
 	import type { FileItem, FolderItem } from '$lib/api/types';
-	import UserAvatar from '$lib/components/UserAvatar.svelte';
+	import PersonBucketLabel from '$lib/components/PersonBucketLabel.svelte';
 	// Shared with every other listing — see `lib/utils/listActions.ts` for why
 	// these stopped being per-route copies.
 	import {
@@ -427,20 +427,15 @@
 		<!--
 			ONE snippet, TWO axes — so the identity chrome is gated on the
 			axis, not assumed. On the people axis the bucket key IS a user id;
-			on the date axis it is a bucket name like "Today", and rendering
-			`<UserAvatar userId="Today">` there would fetch `/api/users/Today`
-			and then draw a coloured "T" circle as though a person called
-			Today existed. The avatar and the email tooltip belong to the
-			people axis alone.
+			on the date axis it is a bucket name like "Today", and an avatar
+			there would fetch `/api/users/Today` and then draw a coloured "T"
+			circle as though a person called Today existed. Hence the `isPerson`
+			gate below, which `PersonBucketLabel` pins in its own tests.
 
-			`<UserAvatar>` rather than a bespoke circle — its own docstring
-			names the swimlane header as a target, and it already handles
-			photo-or-coloured-initials and the lazy cached resolve. Its
-			`title=""` suppresses ITS tooltip so the only one that fires is
-			the email on the wrapper; with two nested `title`s the inner
-			element wins and the email never shows.
-
-			The email is the disambiguator: two colleagues can share a display
+			The email tooltip stays on the wrapper, and is why
+			`PersonBucketLabel` suppresses the avatar's own tooltip: with two
+			nested `title`s the inner element wins and the email never shows.
+			The email is the disambiguator — two colleagues can share a display
 			name, and on a provenance view "who exactly" is the question.
 		-->
 		{@const isPerson = groupBy === 'modifier'}
@@ -449,10 +444,11 @@
 			title={(isPerson && people[key]?.email) || undefined}
 			data-testid={`changes-lane-${key}`}
 		>
-			{#if isPerson}
-				<UserAvatar userId={key} fallbackLabel={label} size={20} title="" />
-			{/if}
-			<span>{label}</span>
+			<!-- Avatar-and-name comes from `PersonBucketLabel`, shared with
+			     `/recent`, `/favorites` and `/shared-with-me`. What stays here is
+			     what is genuinely this page's: the email tooltip on the wrapper,
+			     the lane testid, and the file count below. -->
+			<PersonBucketLabel userId={isPerson ? key : null} {label} />
 			{#if total != null}
 				<span class="changes-lane__count">
 					· {t('changes.lane_files', { n: total }, '{{n}} file(s)')}
