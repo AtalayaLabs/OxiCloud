@@ -152,6 +152,14 @@ pub fn create_web_routes(
         StaticSource::Embedded => web_routes_embedded(shell),
     };
 
+    // Canonical-URL redirects (`/mails` → `/mail`, `/calendar` →
+    // `/calendars`, …). Merged before the outer layers so a 301 pays
+    // the compression/robots/cache headers like any other short
+    // response, but AFTER `inner`'s SPA fallback was wired — Axum
+    // routes always beat `fallback_service`, so alias paths intercept
+    // the request even though the shell catches everything else.
+    let inner = inner.merge(canonical_redirects_router(&app_state));
+
     inner
         // Fallback compression for assets without a precompressed sibling
         // (filesystem) or for embedded assets that were compressed at
@@ -226,6 +234,90 @@ pub fn create_web_routes(
             app_state,
             service_worker_allowed_header,
         ))
+}
+
+/// Canonical-URL redirect map. Each entry is a GET-only path-exact
+/// 301 Moved Permanently to the canonical form, preserving the query
+/// string. The browser caches the redirect per RFC 7231 §6.4.2, so a
+/// bookmarked typo pays the redirect once.
+///
+/// Covers both canonical shapes — plural for countable collections
+/// (`/files`, `/photos`, `/contacts`, `/calendars`, `/groups`) and
+/// singular for the mass-noun apps (`/mail`). The single-form and
+/// plural-form guesses go to whichever is canonical for that app;
+/// nothing else is matched, and nothing fuzzy / case-insensitive is
+/// done — URL paths are case-sensitive by RFC 3986.
+///
+/// `/mails` and `/calendar` currently redirect to pages that do not
+/// yet exist (the `/mail` and `/calendars` SPA shell pages are shipped
+/// on `feat/shell-tabbed`). Shipping the aliases ahead is still
+/// correct: a 301 to a 404 is the same user-visible outcome as a 404,
+/// and the moment the destination lands the aliases Just Work.
+const CANONICAL_REDIRECTS: &[(&str, &str)] = &[
+    // Singular ↔ plural guesses.
+    ("/mails", "/mail"),
+    ("/mailbox", "/mail"),
+    ("/calendar", "/calendars"),
+    ("/contact", "/contacts"),
+    ("/file", "/files"),
+    ("/photo", "/photos"),
+    ("/group", "/groups"),
+    ("/favorite", "/favorites"),
+    // Common synonyms from other products.
+    ("/inbox", "/mail"),  // Gmail / NC mental model — "inbox" means mail
+    ("/me", "/profile"),  // Google / Twitter "my account" shortcut
+    ("/drive", "/files"), // Google Drive mental model
+];
+
+/// Build a sub-router that registers each alias in [`CANONICAL_REDIRECTS`]
+/// as its own GET route emitting a 301 to the canonical form.
+/// Trailing-slash tolerance is handled by registering BOTH `/mails` and
+/// `/mails/` for every alias — Axum treats them as distinct routes by
+/// default, and we want a browser that auto-slashed an empty-last-segment
+/// URL to hit the same redirect.
+///
+/// Merged into the web router BEFORE the SPA fallback so these alias
+/// paths intercept the request instead of being swallowed by the shell.
+///
+/// Prefixing on the `Location` header is deliberate: `req.uri().path()`
+/// arrives nest-stripped at the handler, but the browser-facing URL has
+/// to carry the deployment base path. `prefixed_path` is the same helper
+/// `oidc_standalone_login_redirect` uses for the same reason.
+fn canonical_redirects_router(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
+    use axum::extract::RawQuery;
+    use axum::http::StatusCode;
+    use axum::http::header::LOCATION;
+    use axum::routing::get;
+
+    let mut router: Router<Arc<AppState>> = Router::new();
+    for (alias, canonical) in CANONICAL_REDIRECTS {
+        let state = app_state.clone();
+        let canonical = *canonical;
+        let handler = move |RawQuery(q): RawQuery| {
+            let state = state.clone();
+            async move {
+                let base = state.core.config.prefixed_path(canonical);
+                let target = match q {
+                    Some(q) if !q.is_empty() => format!("{base}?{q}"),
+                    _ => base,
+                };
+                // 301 (Moved Permanently), not 308. We only register GET
+                // on these aliases, so 308's method-preservation isn't
+                // needed; 301 is the long-established "this URL moved"
+                // signal every CDN, proxy and crawler recognizes. Built
+                // by hand because `axum::response::Redirect::permanent`
+                // emits 308.
+                (StatusCode::MOVED_PERMANENTLY, [(LOCATION, target)]).into_response()
+            }
+        };
+        // Both forms registered so `/mails/` lands on the same handler
+        // as `/mails`. The handler captures state + canonical by clone,
+        // so the two closures are independent.
+        router = router
+            .route(alias, get(handler.clone()))
+            .route(&format!("{alias}/"), get(handler));
+    }
+    router
 }
 
 /// Stamp `Service-Worker-Allowed: {base_path}` on the service-worker
