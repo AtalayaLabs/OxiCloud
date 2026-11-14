@@ -134,6 +134,7 @@
 	import { ResourceSectionsBuilder } from '$lib/utils/resourceSections';
 	import { ItemIndexBuilder } from '$lib/utils/itemIndex';
 	import { fileThumbnailUrl } from '$lib/api/endpoints/files';
+	import { onFavoriteChanged } from '$lib/utils/listActions';
 	import { thumbSizeForView } from '$lib/utils/thumbnails';
 	import {
 		canThumbnailClientSide,
@@ -1034,23 +1035,17 @@
 
 	const mergeTitleIntoBar = $derived(titleInToolbar && !!title);
 
-	// Listen for out-of-band `is_favorite` changes broadcast by other
-	// surfaces — the sidebar drop-on-Favorites target in `AppShell` is
-	// today's only emitter, but any future "toggle from elsewhere"
-	// (bulk import, notification action, …) can dispatch the same
-	// event and every mounted resource list will patch its row without
-	// needing the source page to re-fetch. Matches the existing
-	// `oxicloud:upload-files` window-event pattern.
-	$effect(() => {
-		function onFavoriteChanged(e: Event) {
-			const detail = (e as CustomEvent<{ id: string; is_favorite: boolean }>).detail;
-			if (!detail) return;
-			const item = items.find((i) => i.id === detail.id);
-			if (item) item.is_favorite = detail.is_favorite;
-		}
-		window.addEventListener('oxicloud:favorite-changed', onFavoriteChanged);
-		return () => window.removeEventListener('oxicloud:favorite-changed', onFavoriteChanged);
-	});
+	// Out-of-band `is_favorite` changes from other surfaces: the sidebar's
+	// drop-on-Favorites, and `toggleFavorite` itself (so a page whose rows are
+	// derived copies still sees the flip). Every mounted resource list patches
+	// its row without the source page re-fetching. The event name and payload
+	// live in `listActions` so emitter and listener cannot drift apart.
+	$effect(() =>
+		onFavoriteChanged(({ id, is_favorite }) => {
+			const item = items.find((i) => i.id === id);
+			if (item) item.is_favorite = is_favorite;
+		})
+	);
 
 	// Drop selection ids that are no longer present after a reload.
 	$effect(() => {

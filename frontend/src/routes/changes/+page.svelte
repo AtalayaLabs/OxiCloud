@@ -28,6 +28,7 @@
 	// these stopped being per-route copies.
 	import {
 		downloadContextAction,
+		onFavoriteChanged,
 		openParentContextAction,
 		prepareParentAccess,
 		toggleFavorite
@@ -123,6 +124,31 @@
 			changedBy: it.modifier_id,
 			laneTotal: it.lane_total ?? null
 		}))
+	);
+
+	/**
+	 * A star flipped anywhere — this page's own rows included — lands back in
+	 * `raw`.
+	 *
+	 * Needed because `rows` above is a PROJECTION: `toggleFavorite` flips the
+	 * row object it is handed, and the next recomputation of this derivation
+	 * throws that away, so the star visibly snapped back (it looked like the
+	 * click did nothing, while the server had in fact recorded it). `raw` is
+	 * the page's source of truth, so the patch has to land there.
+	 *
+	 * ALL ids that carry this file are updated, not the first: on the people
+	 * axis one file legitimately appears in several lanes, and starring it in
+	 * Bob's lane must light it up in Carol's too.
+	 */
+	$effect(() =>
+		onFavoriteChanged(({ id, is_favorite }) => {
+			if (!raw.some((it) => it.resource.id === id && it.resource.is_favorite !== is_favorite)) {
+				return;
+			}
+			raw = raw.map((it) =>
+				it.resource.id === id ? { ...it, resource: { ...it.resource, is_favorite } } : it
+			);
+		})
 	);
 
 	/**

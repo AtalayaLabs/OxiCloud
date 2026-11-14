@@ -18,7 +18,9 @@ use crate::application::dtos::photos_dto::{
     PhotoKind, PhotoOrderBy, PhotoResourceItemDto, PhotosCursor, PhotosFilter,
 };
 use crate::common::di::AppState;
-use crate::interfaces::api::etag::{if_none_match_matches, not_modified, with_cache_headers};
+use crate::interfaces::api::etag::{
+    if_none_match_matches, mix_row_state, not_modified, with_cache_headers,
+};
 use crate::interfaces::middleware::auth::AuthUser;
 use uuid::Uuid;
 
@@ -252,9 +254,15 @@ pub async fn list_photos_resources(
     let envelope = CursorListResponse::<PhotoResourceItemDto>::with_cursor(items, next_cursor);
 
     // Compute the ETag from (cursor-input, limit, max media_sort_date,
-    // row count, next_cursor) and short-circuit a repeated page fetch
-    // with an empty 304 — §2 of the plan. The browser's HTTP cache
-    // then re-serves the kept body without reshipping any tile.
+    // per-row favourite / shared flags, row count, next_cursor) and
+    // short-circuit a repeated page fetch with an empty 304 — §2 of the
+    // plan. The browser's HTTP cache then re-serves the kept body without
+    // reshipping any tile. The flags are in the identity because the grid
+    // paints them and neither one moves `media_sort_date`.
+    let fresh_signal = mix_row_state(
+        fresh_signal,
+        envelope.items.iter().map(|i| i.resource.favorite_shared()),
+    );
     let etag = envelope.weak_etag(params.cursor.as_deref(), limit as usize, fresh_signal);
     if if_none_match_matches(&headers, &etag) {
         return not_modified(&etag).into_response();

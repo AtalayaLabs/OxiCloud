@@ -17,7 +17,9 @@ use crate::application::dtos::recent_dto::{
 use crate::application::ports::recent_ports::RecentItemsUseCase;
 use crate::application::services::recent_service::RecentService;
 use crate::domain::entities::file::File;
-use crate::interfaces::api::etag::{if_none_match_matches, not_modified, with_cache_headers};
+use crate::interfaces::api::etag::{
+    if_none_match_matches, mix_row_state, not_modified, with_cache_headers,
+};
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::AuthUser;
 use uuid::Uuid;
@@ -286,13 +288,20 @@ pub async fn list_recent_resources(
                 .collect();
 
             let envelope = RecentResourcesDto::with_cursor(items, next_cursor);
-            // Fresh signal: newest `accessed_at` on the page.
+            // Fresh signal: newest `accessed_at` on the page, mixed with the
+            // per-row favourite / shared flags — favouriting moves no
+            // timestamp here, so without them a star landed in the DB and the
+            // next load got a 304 with the pre-star body.
             let fresh_signal: u64 = envelope
                 .items
                 .iter()
                 .map(|i| i.accessed_at.timestamp().max(0) as u64)
                 .max()
                 .unwrap_or(0);
+            let fresh_signal = mix_row_state(
+                fresh_signal,
+                envelope.items.iter().map(|i| i.resource.favorite_shared()),
+            );
             let etag = envelope.weak_etag(cursor_input.as_deref(), limit, fresh_signal);
             if if_none_match_matches(&headers, &etag) {
                 return not_modified(&etag).into_response();

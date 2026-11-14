@@ -37,7 +37,7 @@
 		markUploadStarted,
 		releaseUploadGuard
 	} from '$lib/upload/interruption';
-	import { addFavorite, removeFavorite } from '$lib/api/endpoints/favorites';
+	import { emitFavoriteChanged, toggleFavorite } from '$lib/utils/listActions';
 	import {
 		advertisedExtensions,
 		canEditWithWopi,
@@ -244,23 +244,12 @@
 		shareOpen = true;
 	}
 
-	async function toggleFavorite(kind: ItemType, id: string) {
-		// Server-authoritative `is_favorite` lives on every
-		// `FileItem`/`FolderItem` DTO. Read → optimistic flip → server
-		// call → revert on failure. All state changes happen in-place
-		// on the item inside `orderedItems`; there is no shadow set.
-		const item = orderedItems.find((it) => it.id === id);
-		if (!item) return; // row scrolled off / navigated away mid-click
-		const wasFav = item.is_favorite;
-		item.is_favorite = !wasFav;
-		try {
-			if (wasFav) await removeFavorite(kind, id);
-			else await addFavorite(kind, id);
-		} catch (e) {
-			errorToast(e);
-			item.is_favorite = wasFav;
-		}
-	}
+	// Server-authoritative `is_favorite` lives on every `FileItem` /
+	// `FolderItem` DTO. The flip, the server call, the revert on failure and
+	// the cross-page broadcast all live in `listActions.toggleFavorite`,
+	// called from `rlOnFavorite` with the row object itself — the item in
+	// `orderedItems` IS the reactive state, so the helper's in-place mutation
+	// is what repaints the star. There is no shadow set.
 
 	// Bumped on every load; a stale in-flight response checks this before it
 	// writes state, so a fast navigation can't be clobbered by an older fetch.
@@ -1345,6 +1334,9 @@
 			for (const it of items) {
 				const row = byId.get(it.id);
 				if (row) row.is_favorite = true;
+				// Same announcement the single-row toggle makes, so a page
+				// holding derived rows (`/changes`) follows a batch star too.
+				emitFavoriteChanged({ id: it.id, is_favorite: true });
 			}
 			ui.notify(t('files.added_favorites', 'Added to favorites'), 'success');
 			clearSelection();
@@ -2265,7 +2257,7 @@
 		else openFolder(item);
 	}
 	function rlOnFavorite(item: FileItem | FolderItem) {
-		void toggleFavorite(isFile(item) ? 'file' : 'folder', item.id);
+		void toggleFavorite(item);
 	}
 	function rlOnContextMenu(e: MouseEvent, item: FileItem | FolderItem) {
 		openContext(e, isFile(item) ? 'file' : 'folder', item.id, item.name);

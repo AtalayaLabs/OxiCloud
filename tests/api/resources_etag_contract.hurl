@@ -30,6 +30,16 @@
 #      `items.len()` and is immune to that race.
 #   d. GETs again with the OLD etag → expects 200 with a fresh ETag.
 #
+# Scenarios E and F are the exception, and they exist because of a bug this file's
+# own "count-changing on purpose" rule walked straight past: favouriting a
+# row changes NEITHER the row count NOR any `*_at` column, so the listing
+# body changed while every ETag input stayed put. The next load got a 304
+# and the browser re-served the pre-star body — the star vanished on
+# refresh while the row sat in `auth.user_favorites`. So E and F mutate a
+# FLAG only — exactly the shape the other scenarios avoid. E does it with
+# a favourite, F with a grant (`is_shared`): two unrelated write paths
+# that both have to reach the page identity.
+#
 # Run:
 #   hurl --variables-file tests/api/test.env --file-root tests \
 #        --test tests/api/resources_etag_contract.hurl
@@ -295,11 +305,283 @@ header "ETag" != "{{home_etag_1}}"
 
 
 # =============================================================
-# Teardown — delete the two folders this test created, then purge
-# both from trash. The suite shares its DB with every other hurl
-# file; leftover rows break the home-listing name-order assertions
-# in favorites.hurl / recent.hurl.
+# Scenario E — a flag-only mutation must still flip the ETag
 # =============================================================
+# THE regression. Starring a row rewrites `is_favorite` in the body and
+# touches nothing else: no new row, no deleted row, no `modified_at`, no
+# `accessed_at`. Every input to `cursor.rs::weak_etag` was therefore
+# unchanged, the server answered the next load with `304 Not Modified`,
+# and the browser (`Cache-Control: private, no-cache` → revalidate, keep
+# the body) re-served the page as it was before the star. The POST had
+# succeeded; the refresh showed it undone, which read as "the server
+# never recorded it".
+#
+# Fixed by folding the per-row `is_favorite` / `is_shared` pair into the
+# freshness signal — `etag::mix_row_state`. These steps pin BOTH halves:
+# the identity must move (200, new ETag) AND the body must carry the new
+# flag. Asserting only the 200 would pass on a server that flipped the
+# ETag per request; asserting only the flag would pass on the stale-304
+# server the moment a cache is not in play.
+
+# E1 — A fresh file in the work folder. Scenario C trashed and purged the
+#      first one, so this folder is empty again and the listing below has
+#      exactly one row — positional asserts are safe.
+POST {{base_url}}/api/files/upload
+Authorization: Bearer {{token}}
+[MultipartFormData]
+folder_id: {{work_folder_id}}
+file: file,fixtures/dedup-test.jpg; image/jpeg
+
+HTTP 201
+[Captures]
+flag_file_id: jsonpath "$.id"
+
+
+# E2 — Baseline folder listing: one row, not favourited.
+GET {{base_url}}/api/folders/{{work_folder_id}}/resources
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Captures]
+flag_etag_1: header "ETag"
+[Asserts]
+header "ETag" exists
+jsonpath "$.items[0].resource.id" == "{{flag_file_id}}"
+jsonpath "$.items[0].resource.is_favorite" == false
+
+
+# E3 — Nothing changed yet, so the identity must hold. This is the step
+#      that makes E4/E5 meaningful: it proves the 304 path is live on
+#      this listing, so a 200 in E5 can only come from the mutation.
+GET {{base_url}}/api/folders/{{work_folder_id}}/resources
+Authorization: Bearer {{token}}
+If-None-Match: {{flag_etag_1}}
+
+HTTP 304
+
+
+# E4 — Favourite it. No row added, no row removed, no timestamp moved.
+POST {{base_url}}/api/favorites/file/{{flag_file_id}}
+Authorization: Bearer {{token}}
+Content-Type: application/json
+{}
+
+HTTP 201
+
+
+# E5 — The pre-star ETag must MISS, and the fresh body must show the star.
+#      Before the fix this returned 304 with an empty body and `/files`
+#      kept painting an unstarred row.
+GET {{base_url}}/api/folders/{{work_folder_id}}/resources
+Authorization: Bearer {{token}}
+If-None-Match: {{flag_etag_1}}
+
+HTTP 200
+[Asserts]
+header "ETag" exists
+header "ETag" != "{{flag_etag_1}}"
+jsonpath "$.items[0].resource.id" == "{{flag_file_id}}"
+jsonpath "$.items[0].resource.is_favorite" == true
+
+
+# E6 — Same property on `/recent`, which is where this was reported. The
+#      ledger holds other scenarios' rows too, so this one filters by id
+#      instead of indexing. A one-element filter result collapses to a
+#      bare scalar in Hurl's JSONPath, which is why these are equality
+#      asserts and not `count` guards — and a filter that matches nothing
+#      yields "no value", which fails every predicate, so a vanished row
+#      goes red rather than passing vacuously.
+POST {{base_url}}/api/recent/file/{{flag_file_id}}
+Authorization: Bearer {{token}}
+
+HTTP 200
+
+
+GET {{base_url}}/api/recent/resources
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Captures]
+flag_rec_etag_1: header "ETag"
+[Asserts]
+header "ETag" exists
+jsonpath "$.items[?(@.resource.id == '{{flag_file_id}}')].resource.is_favorite" == true
+
+
+GET {{base_url}}/api/recent/resources
+Authorization: Bearer {{token}}
+If-None-Match: {{flag_rec_etag_1}}
+
+HTTP 304
+
+
+# E7 — Un-favourite: the row stays in the ledger (un-starring is not a
+#      removal here, unlike on `/favorites`), so again nothing but the
+#      flag moves. The old ETag must miss and the body must show it.
+DELETE {{base_url}}/api/favorites/file/{{flag_file_id}}
+Authorization: Bearer {{token}}
+
+HTTP 200
+
+
+GET {{base_url}}/api/recent/resources
+Authorization: Bearer {{token}}
+If-None-Match: {{flag_rec_etag_1}}
+
+HTTP 200
+[Captures]
+flag_rec_etag_2: header "ETag"
+[Asserts]
+header "ETag" exists
+header "ETag" != "{{flag_rec_etag_1}}"
+jsonpath "$.items[?(@.resource.id == '{{flag_file_id}}')].resource.is_favorite" == false
+
+
+# E8 — …and back. This is the exact flow that was reported broken: star a
+#      row on `/recent`, reload, find it unstarred. It needs its own leg
+#      because the two directions are different code on both sides — a
+#      different endpoint (`POST` vs `DELETE`), and a different outcome of
+#      the SQL `EXISTS` that computes `is_favorite`. E7 proved the
+#      true→false direction; without this step the false→true one — the
+#      reported one — would be pinned on `/files` only.
+#
+#      Each of these 200s carries a FRESH body (the `If-None-Match` missed),
+#      so the asserted flag is the whole chain end to end: the favourites
+#      write → `auth.user_favorites` → the recent query's `EXISTS` →
+#      `RecentResourceItemDto` → the JSON the SPA reads.
+POST {{base_url}}/api/favorites/file/{{flag_file_id}}
+Authorization: Bearer {{token}}
+Content-Type: application/json
+{}
+
+HTTP 201
+
+
+GET {{base_url}}/api/recent/resources
+Authorization: Bearer {{token}}
+If-None-Match: {{flag_rec_etag_2}}
+
+HTTP 200
+[Asserts]
+header "ETag" exists
+header "ETag" != "{{flag_rec_etag_2}}"
+jsonpath "$.items[?(@.resource.id == '{{flag_file_id}}')].resource.is_favorite" == true
+
+
+# =============================================================
+# Scenario F — the other flag: is_shared
+# =============================================================
+# `is_shared` is `EXISTS (SELECT 1 FROM storage.role_grants WHERE
+# resource_id = … )`, so granting someone a role flips it with no row
+# added to the listing and no timestamp moved — the same hole as the
+# star, reached through a completely different write path. It needs its
+# own pin because nothing about the favourites fix proves the share half:
+# one `mix_row_state` argument could be dropped and every other scenario
+# in this file would stay green.
+#
+# A grant needs a subject, so this creates one user and removes it in
+# teardown.
+
+# F1 — The grantee.
+POST {{base_url}}/api/admin/users
+Authorization: Bearer {{token}}
+Content-Type: application/json
+{ "username": "etagmate", "password": "EtagMatePassword1!", "email": "etagmate@example.com", "role": "user" }
+
+HTTP 201
+[Captures]
+mate_user_id: jsonpath "$.user.id"
+
+
+# F2 — Baseline: the file is not shared with anyone.
+GET {{base_url}}/api/folders/{{work_folder_id}}/resources
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Captures]
+share_etag_1: header "ETag"
+[Asserts]
+jsonpath "$.items[0].resource.id" == "{{flag_file_id}}"
+jsonpath "$.items[0].resource.is_shared" == false
+
+
+# F3 — Identity holds while nothing changes.
+GET {{base_url}}/api/folders/{{work_folder_id}}/resources
+Authorization: Bearer {{token}}
+If-None-Match: {{share_etag_1}}
+
+HTTP 304
+
+
+# F4 — Grant Viewer on the file itself (not the folder): one
+#      `storage.role_grants` row, nothing else in the listing moves.
+POST {{base_url}}/api/grants
+Authorization: Bearer {{token}}
+Content-Type: application/json
+{
+  "subject":  { "type": "user", "id": "{{mate_user_id}}" },
+  "resource": { "type": "file", "id": "{{flag_file_id}}" },
+  "role": "viewer"
+}
+
+HTTP 201
+[Captures]
+mate_grant_id: jsonpath "$.grants[0].id"
+
+
+# F5 — Old ETag must miss, and the fresh body must show the share.
+GET {{base_url}}/api/folders/{{work_folder_id}}/resources
+Authorization: Bearer {{token}}
+If-None-Match: {{share_etag_1}}
+
+HTTP 200
+[Captures]
+share_etag_2: header "ETag"
+[Asserts]
+header "ETag" != "{{share_etag_1}}"
+jsonpath "$.items[0].resource.is_shared" == true
+
+
+# F6 — And back: revoking has to be visible on the same terms.
+DELETE {{base_url}}/api/grants/{{mate_grant_id}}
+Authorization: Bearer {{token}}
+
+HTTP 204
+
+
+GET {{base_url}}/api/folders/{{work_folder_id}}/resources
+Authorization: Bearer {{token}}
+If-None-Match: {{share_etag_2}}
+
+HTTP 200
+[Asserts]
+header "ETag" != "{{share_etag_2}}"
+jsonpath "$.items[0].resource.is_shared" == false
+
+
+# =============================================================
+# Teardown — drop the favourite E8 left behind, delete the two folders
+# this test created, then purge both from trash. The suite shares its DB
+# with every other hurl file; leftover rows break the home-listing
+# name-order assertions in favorites.hurl / recent.hurl.
+#
+# The favourite goes first and explicitly: `auth.user_favorites.item_id`
+# is TEXT with no foreign key, so purging the file does NOT remove its
+# favourite row — it would survive as a dangling row and inflate every
+# later `/favorites` count in the run.
+# =============================================================
+DELETE {{base_url}}/api/favorites/file/{{flag_file_id}}
+Authorization: Bearer {{token}}
+
+HTTP 200
+
+
+DELETE {{base_url}}/api/admin/users/{{mate_user_id}}
+Authorization: Bearer {{token}}
+
+HTTP 200
+
+
 DELETE {{base_url}}/api/folders/{{work_folder_id}}
 Authorization: Bearer {{token}}
 

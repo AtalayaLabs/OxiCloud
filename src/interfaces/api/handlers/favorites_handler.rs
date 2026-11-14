@@ -19,7 +19,9 @@ use crate::application::dtos::grant_dto::{ResourceContentDto, ResourceTypeDto};
 use crate::application::ports::favorites_ports::FavoritesUseCase;
 use crate::application::services::favorites_service::FavoritesService;
 use crate::domain::entities::file::File;
-use crate::interfaces::api::etag::{if_none_match_matches, not_modified, with_cache_headers};
+use crate::interfaces::api::etag::{
+    if_none_match_matches, mix_row_state, not_modified, with_cache_headers,
+};
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::AuthUser;
 
@@ -283,6 +285,15 @@ pub async fn list_favorites_resources(
                 .map(|i| i.favorited_at.timestamp().max(0) as u64)
                 .max()
                 .unwrap_or(0);
+            // …mixed with the per-row flags. `max(favorited_at)` alone is not
+            // enough even here: un-starring a row that is not the newest, on
+            // a page that has a successor, pulls an older row up — same count,
+            // same max, different body. And `is_shared` moves without
+            // touching `favorited_at` at all.
+            let fresh_signal = mix_row_state(
+                fresh_signal,
+                envelope.items.iter().map(|i| i.resource.favorite_shared()),
+            );
             let etag = envelope.weak_etag(cursor_input.as_deref(), limit, fresh_signal);
             if if_none_match_matches(&headers, &etag) {
                 return not_modified(&etag).into_response();

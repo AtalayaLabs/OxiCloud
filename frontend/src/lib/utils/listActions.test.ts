@@ -19,8 +19,18 @@ vi.mock('$lib/api/endpoints/favorites', () => ({
 vi.mock('$lib/api/endpoints/files', () => ({ fileDownloadUrl: (id: string) => `/dl/${id}` }));
 vi.mock('$lib/api/endpoints/folders', () => ({ folderZipUrl: (id: string) => `/zip/${id}` }));
 
-import { openParentContextAction, parentFolderIdOf } from './listActions';
+import { addFavorite } from '$lib/api/endpoints/favorites';
+import {
+	emitFavoriteChanged,
+	onFavoriteChanged,
+	openParentContextAction,
+	parentFolderIdOf,
+	toggleFavorite,
+	type FavoriteChange
+} from './listActions';
 import type { FileItem, FolderItem } from '$lib/api/types';
+
+const m = (fn: unknown) => fn as ReturnType<typeof vi.fn>;
 
 // `isFile` discriminates on `'mime_type' in item` — NOT on a `type` field.
 // A fixture without one is treated as a folder, which is how the first
@@ -85,4 +95,56 @@ it('leaves open-parent enabled when reachable or not yet probed', () => {
 	access.answer = undefined;
 	expect(a.disabled?.(file('p1'))).toBe(false);
 	expect(a.disabled?.(folder('p2'))).toBe(false);
+});
+
+// ── The broadcast ────────────────────────────────────────────────────────
+//
+// THE bug this exists for: `toggleFavorite` used to only mutate the item it
+// was handed, which works where that object IS the page's reactive state and
+// silently does nothing where rows are a projection of it. `/changes` maps
+// `raw` into `ChangeRow`s, so the star flipped a throwaway copy — the click
+// looked dead while the server had recorded the change. These pin the event
+// that carries the flip to whoever owns the data.
+it('announces the flip so a page with derived rows can follow it', async () => {
+	const seen: FavoriteChange[] = [];
+	const off = onFavoriteChanged((c) => seen.push(c));
+
+	const it1 = file('p1');
+	it1.is_favorite = false;
+	await toggleFavorite(it1);
+
+	expect(seen).toEqual([{ id: 'f1', is_favorite: true }]);
+	// Still mutated in place too, for the pages where that is the source of
+	// truth — the event is additive, not a replacement.
+	expect(it1.is_favorite).toBe(true);
+	off();
+});
+
+// A failed write must un-announce, or every other surface keeps a star the
+// server rejected — the exact split-brain the optimistic flip is meant to
+// avoid.
+it('announces the revert when the write fails', async () => {
+	m(addFavorite).mockRejectedValueOnce(new Error('nope'));
+	const seen: FavoriteChange[] = [];
+	const off = onFavoriteChanged((c) => seen.push(c));
+
+	const it1 = file('p1');
+	it1.is_favorite = false;
+	await toggleFavorite(it1);
+
+	expect(seen).toEqual([
+		{ id: 'f1', is_favorite: true },
+		{ id: 'f1', is_favorite: false }
+	]);
+	expect(it1.is_favorite).toBe(false);
+	off();
+});
+
+// Unsubscribing has to actually detach: these listeners live in `$effect`s,
+// so a leak means every navigation adds another patcher of a dead page.
+it('stops delivering after the unsubscriber runs', () => {
+	const seen: FavoriteChange[] = [];
+	onFavoriteChanged((c) => seen.push(c))();
+	emitFavoriteChanged({ id: 'f1', is_favorite: true });
+	expect(seen).toEqual([]);
 });

@@ -37,7 +37,9 @@ use crate::application::dtos::recent_changes_dto::{
 };
 use crate::common::di::AppState;
 use crate::domain::entities::file::File;
-use crate::interfaces::api::etag::{if_none_match_matches, not_modified, with_cache_headers};
+use crate::interfaces::api::etag::{
+    if_none_match_matches, mix_row_state, not_modified, with_cache_headers,
+};
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::AuthUser;
 
@@ -214,13 +216,22 @@ pub async fn list_recent_changes(
     );
 
     // Fresh signal: the newest change on the page, so a repeat fetch after
-    // someone else's edit misses the ETag and refetches.
+    // someone else's edit misses the ETag and refetches. The per-row
+    // favourite / shared flags go in too — this page paints the star, and
+    // starring bumps no `changed_at`.
     let fresh_signal: u64 = envelope
         .items
         .iter()
         .map(|i| i.changed_at.timestamp().max(0) as u64)
         .max()
         .unwrap_or(0);
+    let fresh_signal = mix_row_state(
+        fresh_signal,
+        envelope
+            .items
+            .iter()
+            .map(|i| (i.resource.is_favorite, i.resource.is_shared)),
+    );
     let etag = envelope.weak_etag(params.cursor.as_deref(), limit as usize, fresh_signal);
     if if_none_match_matches(&headers, &etag) {
         return not_modified(&etag).into_response();

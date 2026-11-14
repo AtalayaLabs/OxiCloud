@@ -13,7 +13,7 @@
 	import { searchResources } from '$lib/api/endpoints/search';
 	import { fileDownloadUrl, renameFile, deleteFile } from '$lib/api/endpoints/files';
 	import { renameFolder, deleteFolder } from '$lib/api/endpoints/folders';
-	import { addFavorite, removeFavorite } from '$lib/api/endpoints/favorites';
+	import { toggleFavorite } from '$lib/utils/listActions';
 	import { dateBucket, sizeBucket } from '$lib/utils/resourceBuckets';
 	import type { FileItem, FolderItem } from '$lib/api/types';
 	import type {
@@ -429,30 +429,6 @@
 		// collapse to `null` so downstream callers keep one "no parent"
 		// signal. See /favorites mirror.
 		return isFile(item) ? item.folder_id : (item.parent_id ?? null);
-	}
-
-	async function toggleFavorite(item: FileItem | FolderItem) {
-		const kind = kindOf(item);
-		try {
-			if (item.is_favorite) {
-				await removeFavorite(kind, item.id);
-			} else {
-				await addFavorite(kind, item.id);
-			}
-			// Optimistic in-place update — a full reload would jump the
-			// user out of their scroll position on an infinite-scroll
-			// page. Mutating the raw envelope entry updates the derived
-			// `items` array and ResourceList's star widget flips.
-			const idx = raw.findIndex((it) => it.resource.id === item.id);
-			if (idx !== -1) {
-				raw[idx] = {
-					...raw[idx],
-					resource: { ...raw[idx].resource, is_favorite: !item.is_favorite }
-				};
-			}
-		} catch (e) {
-			errorToast(e);
-		}
 	}
 
 	function openShareDialog(item: FileItem | FolderItem) {
