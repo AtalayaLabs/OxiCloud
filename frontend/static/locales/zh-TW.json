@@ -78,6 +78,7 @@
     "files": "檔案",
     "shared": "共享",
     "recent": "最近",
+    "changes": "變更",
     "favorites": "收藏",
     "photos": "媒體",
     "music": "音樂",
@@ -118,9 +119,43 @@
     "tab_people": "人們",
     "map_loading": "正在加載地圖...",
     "map_error": "無法載入地圖",
-    "confirm_delete_one_permanent": "永久刪除「{{name}}」？此操作無法復原。"
+    "confirm_delete_one_permanent": "永久刪除「{{name}}」？此操作無法復原。",
+    "filter_kind": "媒體類型",
+    "filter_drive": "雲端硬碟",
+    "all_drives": "所有雲端硬碟",
+    "sort": {
+      "title": "排序方式",
+      "direction": "排序方向",
+      "captured_at": "拍攝日期",
+      "created_at": "上傳日期",
+      "updated_at": "最後修改"
+    },
+    "filter_favorite": "僅收藏",
+    "filter_favorite_on": "僅顯示收藏 — 點擊顯示全部",
+    "filter_favorite_off": "僅顯示收藏",
+    "kind": {
+      "all": "全部",
+      "photo": "照片",
+      "video": "影片"
+    },
+    "dedup_dialog": {
+      "title": "此內容存在副本",
+      "intro": "你的雲端硬碟中有 {{n}} 個檔案參照相同的內容。將一個副本移入回收站不會釋放內容——請勾選所有想移入回收站的副本。",
+      "trashed_note": "另有 {{n}} 個副本已在回收站中，仍占用該內容。請在回收站中徹底刪除，才能真正釋放空間。",
+      "truncated": "伺服器限制了此清單。還存在未在此顯示的副本。",
+      "select_all": "勾選所有可刪除項",
+      "select_none": "取消選擇",
+      "picked": "已選擇 {{n}} / {{total}}",
+      "origin_badge": "你點擊的那個",
+      "readonly_badge": "唯讀",
+      "drive_root": "雲端硬碟根目錄",
+      "readonly_note": "{{n}} 個副本位於你只有讀取權限的位置——無法從這裡移入回收站。",
+      "confirm": "將 {{n}} 個檔案移入回收站"
+    }
   },
   "music": {
+    "description": "說明",
+    "edit_playlist": "編輯播放列表",
     "create_playlist": "建立播放列表",
     "playlists": "播放列表",
     "no_playlists": "還沒有播放列表",
@@ -514,6 +549,7 @@
     "new_folder_dotfile_hidden": "已建立資料夾「{{name}}」——根據您的偏好隱藏。",
     "dotfiles_hidden_toast": "已隱藏隱藏檔案",
     "dotfiles_shown_toast": "已顯示隱藏檔案",
+    "col_modified_by": "變更者",
     "col_modified": "修改日期",
     "col_added": "新增日期",
     "col_created_by": "建立者",
@@ -761,7 +797,6 @@
     "invalid_credentials": "使用者名稱或密碼不正確。請檢查後再試一次。",
     "email_taken": "此電子郵件已有帳號。請改為登入。",
     "username_taken": "此使用者名稱已被使用。請選擇另一個。",
-    "registration_disabled": "此伺服器已關閉註冊。請聯絡管理員為你建立帳號。",
     "registration_password_required": "此伺服器不傳送登入電子郵件。請輸入密碼來建立帳號。",
     "session_expired": "您的會話已過期。請重新登入。",
     "signing_in": "正在登入...",
@@ -827,6 +862,17 @@
     "added_msg": "已新增到收藏",
     "removed_title": "已從收藏移除",
     "removed_msg": "已從收藏移除"
+  },
+  "changes": {
+    "empty_state": "沒有最近的變更",
+    "empty_hint": "您可存取的檔案變更將顯示在此",
+    "col_changed": "已變更",
+    "lane_files": "{{n}} 個檔案",
+    "cap_lanes": "每人最近 {{n}} 個",
+    "window": "時間範圍",
+    "window_7": "最近 7 天",
+    "window_30": "最近 30 天",
+    "window_90": "最近 90 天"
   },
   "recent": {
     "title": "最近",
@@ -961,7 +1007,7 @@
     "confirm_action": "確認操作",
     "confirm_yes": "確認",
     "confirm_no": "取消",
-    "error_username_short": "使用者名稱至少需要3個字元",
+    "error_username_length": "使用者名稱長度必須為2到64個字元",
     "error_password_short": "密碼至少需要8個字元",
     "error_generic": "失敗",
     "error_network": "網路錯誤：{{message}}",
@@ -1289,6 +1335,10 @@
       "delete_title": "刪除掛載"
     },
     "jobs": {
+      "params_title": "執行 {{name}}",
+      "params_default": "預設值：{{value}}",
+      "params_no_default": "無預設值",
+      "params_none": "此工作不接受參數。",
       "run_all_consistency": "執行所有一致性檢查",
       "run_deep": "深度掃描",
       "run_deep_hint": "也運行緩慢的變體（blob 重新哈希、bitrot 檢測）。",
@@ -1500,6 +1550,9 @@
     "oxicloud_version": "OxiCloud 版本",
     "storage_cache_recommended_title": "啟用本機 blob 快取",
     "storage_cache_recommended_howto": "設定 OXICLOUD_STORAGE_CACHE_ENABLED=true 以啟用。",
+    "opaque_migration_recommended_title": "啟用 migrate 模式的 OPAQUE",
+    "opaque_migration_recommended_body": "強烈建議啟用 migrate 模式的 OPAQUE，為密碼永不傳送到伺服器的方式做準備。這是邁向端對端加密的關鍵一步。",
+    "opaque_migration_recommended_howto": "用 `oxicloud opaque setup` 產生金鑰，儲存到 OXICLOUD_AUTH_OPAQUE_SERVER_SETUP，然後設定 OXICLOUD_AUTH_OPAQUE_MODE=migrate。現有使用者會在下次登入時自動移轉，對他們沒有任何影響。",
     "section_cache": "儲存快取",
     "cache_memory": "記憶體 (moka)",
     "cache_memory_files": "記憶體 (moka) · 檔案快取",
@@ -1701,6 +1754,7 @@
     "type": "類型",
     "type.folders": "資料夾",
     "accessedAt": "存取日期",
+    "changedAt": "變更日期",
     "modifiedAt": "修改日期",
     "createdAt": "建立日期",
     "size": "大小",
@@ -1858,7 +1912,13 @@
     "archives": "檔案",
     "documents": "文件",
     "images": "圖片",
-    "installers": "安裝人員",
+    "config": "設定",
+    "disk_images": "磁碟映像",
+    "ebooks": "電子書",
+    "executables": "應用程式",
+    "fonts": "字型",
+    "packages": "套件",
+    "unknown": "未知",
     "markdown": "降價",
     "presentations": "演講",
     "spreadsheets": "試算表",
@@ -1899,6 +1959,7 @@
     "retry": "再試一次",
     "select": "選擇",
     "select_all": "選擇全部",
+    "filter": "篩選",
     "dismiss": "解僱"
   },
   "device": {
@@ -1947,6 +2008,8 @@
     "size_label": "大小",
     "title": "搜尋",
     "type": {
+      "code": "程式碼",
+      "folder": "資料夾",
       "audio": "音訊",
       "all": "所有類型",
       "image": "圖片",
@@ -2030,6 +2093,8 @@
     "banner_cta": "升級"
   },
   "drive": {
+    "copied_n": "已將 {{n}} 個項目複製到 {{drive}}",
+    "moved_n": "已將 {{n}} 個項目移動到 {{drive}}",
     "read_only_banner": {
       "title": "此雲端硬碟為唯讀",
       "title_named": "雲端硬碟「{{name}}」為唯讀",
@@ -2124,5 +2189,17 @@
   },
   "sidebar": {
     "oxicloud_version": "OxiCloud"
+  },
+  "error": {
+    "not_found": {
+      "title": "雲朵飄遠了",
+      "body": "這朵小雲飄得有點太遠了。找不到你要的頁面。",
+      "art_alt": "一朵飄得太遠的小雲"
+    },
+    "generic": {
+      "title": "發生錯誤",
+      "body": "請稍後再試。"
+    },
+    "go_home": "返回首頁"
   }
 }

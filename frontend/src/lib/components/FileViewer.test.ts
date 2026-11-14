@@ -1,5 +1,6 @@
-import { it, expect, vi, beforeEach } from 'vitest';
+import { it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/svelte';
+vi.mock('$lib/utils/pdf', () => ({ hasNativePdfViewer: () => true }));
 vi.mock('$lib/api/client', () => ({ apiFetch: vi.fn(), withBase: (p: string) => p }));
 vi.mock('$lib/api/endpoints/files', () => ({
 	fileDownloadUrl: () => '/dl',
@@ -210,4 +211,171 @@ it('remembers the editor fullscreen choice', async () => {
 	expect(again.getAttribute('aria-pressed')).toBe('false');
 	localStorage.removeItem('oxi-collab-fullscreen');
 	cfg.features.markdown_collab = false;
+});
+
+// Previous / next step through the images and videos of the list the viewer
+// was opened from. Looking through a folder of photos used to mean closing
+// the viewer and opening each one by hand.
+const folder = () => [
+	file({ id: 'a', name: 'a.jpg', mime_type: 'image/jpeg' }),
+	file({ id: 'doc', name: 'report.docx', mime_type: 'application/octet-stream' }),
+	file({ id: 'b', name: 'b.mp4', mime_type: 'video/mp4', category: 'Video' }),
+	file({ id: 'c', name: 'c.png' })
+];
+
+it('steps to the neighbouring media with the previous / next buttons', async () => {
+	const files = folder();
+	const onnavigate = vi.fn();
+	render(FileViewer, { props: { open: true, file: files[2], files, onnavigate } });
+	await screen.findByTestId('file-viewer-dialog');
+
+	// The .docx between a.jpg and b.mp4 is skipped.
+	await fireEvent.click(screen.getByTestId('file-viewer-prev-btn'));
+	expect(onnavigate).toHaveBeenLastCalledWith(files[0]);
+	await fireEvent.click(screen.getByTestId('file-viewer-next-btn'));
+	expect(onnavigate).toHaveBeenLastCalledWith(files[3]);
+});
+
+it('offers no step past either end', async () => {
+	const files = folder();
+	const first = render(FileViewer, {
+		props: { open: true, file: files[0], files, onnavigate: vi.fn() }
+	});
+	await screen.findByTestId('file-viewer-dialog');
+	expect(screen.queryByTestId('file-viewer-prev-btn')).toBeNull();
+	expect(screen.getByTestId('file-viewer-next-btn')).toBeTruthy();
+	first.unmount();
+
+	render(FileViewer, { props: { open: true, file: files[3], files, onnavigate: vi.fn() } });
+	await screen.findByTestId('file-viewer-dialog');
+	expect(screen.getByTestId('file-viewer-prev-btn')).toBeTruthy();
+	expect(screen.queryByTestId('file-viewer-next-btn')).toBeNull();
+});
+
+it('steps with the arrow keys, unless a focused player wants them', async () => {
+	const files = folder();
+	const onnavigate = vi.fn();
+	render(FileViewer, { props: { open: true, file: files[2], files, onnavigate } });
+	await screen.findByTestId('file-viewer-dialog');
+
+	await fireEvent.keyDown(window, { key: 'ArrowRight' });
+	expect(onnavigate).toHaveBeenLastCalledWith(files[3]);
+	await fireEvent.keyDown(window, { key: 'ArrowLeft' });
+	expect(onnavigate).toHaveBeenLastCalledWith(files[0]);
+	// Alt+← is the browser's Back.
+	await fireEvent.keyDown(window, { key: 'ArrowLeft', altKey: true });
+	expect(onnavigate).toHaveBeenCalledTimes(2);
+
+	// A focused <video> seeks with the arrows.
+	const video = document.querySelector('video');
+	expect(video).toBeTruthy();
+	await fireEvent.keyDown(video!, { key: 'ArrowRight' });
+	expect(onnavigate).toHaveBeenCalledTimes(2);
+});
+
+it('shows no stepping for a non-media file, or when the host does not handle it', async () => {
+	const files = folder();
+	cw.mockResolvedValue(false);
+	const doc = render(FileViewer, {
+		props: { open: true, file: files[1], files, onnavigate: vi.fn() }
+	});
+	await screen.findByTestId('file-viewer-dialog');
+	expect(screen.queryByTestId('file-viewer-prev-btn')).toBeNull();
+	expect(screen.queryByTestId('file-viewer-next-btn')).toBeNull();
+	doc.unmount();
+
+	render(FileViewer, { props: { open: true, file: files[2], files } });
+	await screen.findByTestId('file-viewer-dialog');
+	expect(screen.queryByTestId('file-viewer-prev-btn')).toBeNull();
+	expect(screen.queryByTestId('file-viewer-next-btn')).toBeNull();
+});
+
+// These promises deliberately ignore AbortSignal: a late completion must be
+// harmless even if the request/body transport has already started settling.
+afterEach(() => vi.unstubAllGlobals());
+
+function nativePdfUrls() {
+	const createObjectURL = vi.fn(() => 'blob:new-pdf');
+	const revokeObjectURL = vi.fn();
+	vi.stubGlobal(
+		'URL',
+		class extends URL {
+			static createObjectURL = createObjectURL;
+			static revokeObjectURL = revokeObjectURL;
+		}
+	);
+	return { createObjectURL, revokeObjectURL };
+}
+
+it.each(['fetch', 'body', 'http'] as const)(
+	'ignores an old PDF %s failure after the next PDF has loaded',
+	async (failure) => {
+		nativePdfUrls();
+		const pending = Promise.withResolvers<Response>();
+		const oldBody = Promise.withResolvers<Blob>();
+		af.mockReturnValueOnce(pending.promise);
+		const old = file({
+			id: 'old',
+			name: 'old.pdf',
+			mime_type: 'application/pdf',
+			category: 'Document'
+		});
+		const next = file({
+			id: 'new',
+			name: 'new.pdf',
+			mime_type: 'application/pdf',
+			category: 'Document'
+		});
+		const view = render(FileViewer, { props: { open: true, file: old } });
+		await waitFor(() => expect(af).toHaveBeenCalledTimes(1));
+		if (failure === 'body') {
+			const blob = vi.fn(() => oldBody.promise);
+			pending.resolve({ ok: true, blob } as unknown as Response);
+			await waitFor(() => expect(blob).toHaveBeenCalledTimes(1));
+		}
+		af.mockResolvedValueOnce({ ok: true, blob: async () => new Blob(['new']) });
+		await view.rerender({ open: true, file: next });
+		await waitFor(() => expect(view.container.querySelector('iframe')?.title).toBe('new.pdf'));
+		if (failure === 'fetch') pending.reject(new Error('old request failed'));
+		else if (failure === 'body') oldBody.reject(new Error('old body failed'));
+		else pending.resolve({ ok: false, status: 500 } as Response);
+		await Promise.allSettled([failure === 'body' ? oldBody.promise : pending.promise]);
+		// Flush the old request's chained catch and Svelte's resulting update.
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(screen.queryByText('Could not load preview.')).toBeNull();
+		expect(view.container.querySelector('iframe')?.title).toBe('new.pdf');
+	}
+);
+
+it('invalidates a closed PDF request even when the same file object is reopened', async () => {
+	const { createObjectURL, revokeObjectURL } = nativePdfUrls();
+	const pending = Promise.withResolvers<Response>();
+	af.mockReturnValueOnce(pending.promise);
+	const pdf = file({ name: 'same.pdf', mime_type: 'application/pdf', category: 'Document' });
+	const view = render(FileViewer, { props: { open: true, file: pdf } });
+	await waitFor(() => expect(af).toHaveBeenCalledTimes(1));
+	const signal = af.mock.calls[0][1]?.signal as AbortSignal | undefined;
+	await view.rerender({ open: false, file: pdf });
+	af.mockResolvedValueOnce({ ok: true, blob: async () => new Blob(['new']) });
+	await view.rerender({ open: true, file: pdf });
+	await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1));
+	pending.resolve({ ok: true, blob: async () => new Blob(['old']) } as unknown as Response);
+	await pending.promise;
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	expect(createObjectURL).toHaveBeenCalledTimes(1);
+	expect(signal?.aborted).toBe(true);
+	view.unmount();
+	expect(revokeObjectURL).toHaveBeenCalledExactlyOnceWith('blob:new-pdf');
+});
+
+it.each([404, 500])('shows an active PDF HTTP %i failure', async (status) => {
+	nativePdfUrls();
+	af.mockResolvedValueOnce({ ok: false, status });
+	render(FileViewer, {
+		props: {
+			open: true,
+			file: file({ name: 'bad.pdf', mime_type: 'application/pdf', category: 'Document' })
+		}
+	});
+	await waitFor(() => expect(screen.getByText('Could not load preview.')).toBeTruthy());
 });

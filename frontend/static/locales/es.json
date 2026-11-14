@@ -78,6 +78,7 @@
     "files": "Archivos",
     "shared": "Compartidos",
     "recent": "Recientes",
+    "changes": "Cambios",
     "favorites": "Favoritos",
     "photos": "Medios",
     "music": "Música",
@@ -118,9 +119,43 @@
     "tab_people": "Gente",
     "map_loading": "Cargando mapa…",
     "map_error": "No se pudo cargar el mapa",
-    "confirm_delete_one_permanent": "¿Eliminar permanentemente «{{name}}»? Esta acción no se puede deshacer."
+    "confirm_delete_one_permanent": "¿Eliminar permanentemente «{{name}}»? Esta acción no se puede deshacer.",
+    "filter_kind": "Tipo de medio",
+    "filter_drive": "Unidad",
+    "all_drives": "Todas las unidades",
+    "sort": {
+      "title": "Ordenar por",
+      "direction": "Dirección del orden",
+      "captured_at": "Fecha de captura",
+      "created_at": "Fecha de subida",
+      "updated_at": "Última modificación"
+    },
+    "filter_favorite": "Solo favoritos",
+    "filter_favorite_on": "Mostrando solo favoritos — haz clic para mostrar todo",
+    "filter_favorite_off": "Mostrar solo favoritos",
+    "kind": {
+      "all": "Todo",
+      "photo": "Fotos",
+      "video": "Vídeos"
+    },
+    "dedup_dialog": {
+      "title": "Este contenido tiene copias",
+      "intro": "{{n}} archivo(s) de tu unidad referencian los mismos bytes. Enviar una copia a la papelera no libera el contenido — elige cada copia que quieras enviar a la papelera.",
+      "trashed_note": "{{n}} copia(s) más ya están en tu papelera y siguen reteniendo el contenido. Vacíalas desde la Papelera para liberar los bytes de verdad.",
+      "truncated": "El servidor ha limitado esta lista. Existen más copias que no se muestran aquí.",
+      "select_all": "Seleccionar todas las eliminables",
+      "select_none": "No seleccionar ninguna",
+      "picked": "{{n}} de {{total}} seleccionadas",
+      "origin_badge": "la que has pulsado",
+      "readonly_badge": "solo lectura",
+      "drive_root": "Raíz de la unidad",
+      "readonly_note": "{{n}} copia(s) están donde solo tienes acceso de lectura — no se pueden enviar a la papelera desde aquí.",
+      "confirm": "Enviar {{n}} archivo(s) a la papelera"
+    }
   },
   "music": {
+    "description": "Descripción",
+    "edit_playlist": "Editar lista de reproducción",
     "create_playlist": "Crear Lista",
     "playlists": "Listas",
     "no_playlists": "Sin listas aún",
@@ -519,6 +554,7 @@
     "new_folder_dotfile_hidden": "Carpeta \"{{name}}\" creada — oculta por tu preferencia.",
     "dotfiles_hidden_toast": "Archivos ocultos ocultados",
     "dotfiles_shown_toast": "Archivos ocultos mostrados",
+    "col_modified_by": "Modificado por",
     "col_modified": "Modificado",
     "col_added": "Añadido",
     "col_created_by": "Creado por",
@@ -761,7 +797,6 @@
     "invalid_credentials": "El nombre de usuario o la contraseña no son correctos. Compruébalos e inténtalo de nuevo.",
     "email_taken": "Ya existe una cuenta con este correo electrónico. Inicia sesión en su lugar.",
     "username_taken": "Ese nombre de usuario ya está en uso. Elige otro.",
-    "registration_disabled": "El registro está desactivado en este servidor. Pide a un administrador que cree tu cuenta.",
     "registration_password_required": "Este servidor no envía correos de inicio de sesión. Introduce una contraseña para crear tu cuenta.",
     "session_expired": "Tu sesión expiró. Por favor inicia sesión nuevamente.",
     "signing_in": "Iniciando sesión…",
@@ -827,6 +862,17 @@
     "added_msg": "añadido a favoritos",
     "removed_title": "Quitado de favoritos",
     "removed_msg": "quitado de favoritos"
+  },
+  "changes": {
+    "empty_state": "No hay cambios recientes",
+    "empty_hint": "Los cambios en los archivos a los que tienes acceso aparecerán aquí",
+    "col_changed": "Modificado",
+    "lane_files": "{{n}} archivo(s)",
+    "cap_lanes": "Los {{n}} más recientes por persona",
+    "window": "Intervalo de tiempo",
+    "window_7": "Últimos 7 días",
+    "window_30": "Últimos 30 días",
+    "window_90": "Últimos 90 días"
   },
   "recent": {
     "title": "Recientes",
@@ -981,7 +1027,7 @@
     "confirm_action": "Confirmar Acción",
     "confirm_yes": "Confirmar",
     "confirm_no": "Cancelar",
-    "error_username_short": "El nombre de usuario debe tener al menos 3 caracteres",
+    "error_username_length": "El nombre de usuario debe tener entre 2 y 64 caracteres",
     "error_password_short": "La contraseña debe tener al menos 8 caracteres",
     "error_generic": "Error",
     "error_network": "Error de red: {{message}}",
@@ -1309,6 +1355,10 @@
       "delete_title": "Eliminar montaje"
     },
     "jobs": {
+      "params_title": "Ejecutar {{name}}",
+      "params_default": "predeterminado: {{value}}",
+      "params_no_default": "sin valor predeterminado",
+      "params_none": "Esta tarea no acepta parámetros.",
       "run_all_consistency": "Ejecutar todas las comprobaciones de coherencia",
       "run_deep": "Análisis en profundidad",
       "run_deep_hint": "También ejecuta variantes lentas (repetición de blobs, detección de bitrot).",
@@ -1520,6 +1570,9 @@
     "oxicloud_version": "Versión OxiCloud",
     "storage_cache_recommended_title": "Activar la caché local de blobs",
     "storage_cache_recommended_howto": "Define OXICLOUD_STORAGE_CACHE_ENABLED=true para activarlo.",
+    "opaque_migration_recommended_title": "Activar OPAQUE en modo migrate",
+    "opaque_migration_recommended_body": "Se recomienda encarecidamente activar OPAQUE en modo migrate, para preparar la transición a no enviar nunca las contraseñas al servidor. Es un paso clave hacia el cifrado de extremo a extremo.",
+    "opaque_migration_recommended_howto": "Genera una clave con `oxicloud opaque setup`, guárdala en OXICLOUD_AUTH_OPAQUE_SERVER_SETUP y luego establece OXICLOUD_AUTH_OPAQUE_MODE=migrate. Las cuentas existentes migran en su próximo inicio de sesión: nada cambia para ellas.",
     "section_cache": "Caché de almacenamiento",
     "cache_memory": "Memoria (moka)",
     "cache_memory_files": "Memoria (moka) · Caché de archivos",
@@ -1701,6 +1754,7 @@
     "type": "Tipo",
     "type.folders": "Carpetas",
     "accessedAt": "Fecha de acceso",
+    "changedAt": "Fecha de modificación",
     "modifiedAt": "Fecha de modificación",
     "createdAt": "Fecha de creación",
     "size": "Tamaño",
@@ -1858,7 +1912,13 @@
     "archives": "Archivo",
     "documents": "Documentos",
     "images": "Imágenes",
-    "installers": "Instaladores",
+    "config": "Configuración",
+    "disk_images": "Imágenes de disco",
+    "ebooks": "Libros electrónicos",
+    "executables": "Aplicaciones",
+    "fonts": "Fuentes",
+    "packages": "Paquetes",
+    "unknown": "Desconocido",
     "markdown": "Reducción",
     "presentations": "Presentaciones",
     "spreadsheets": "Hojas de cálculo",
@@ -1899,6 +1959,7 @@
     "retry": "Intentar otra vez",
     "select": "Seleccionar",
     "select_all": "Seleccionar todo",
+    "filter": "Filtrar",
     "dismiss": "Despedir"
   },
   "device": {
@@ -1947,6 +2008,8 @@
     "size_label": "Tamaño",
     "title": "Buscar",
     "type": {
+      "code": "Código",
+      "folder": "Carpetas",
       "audio": "Audio",
       "all": "Todos los tipos",
       "image": "Imágenes",
@@ -2030,6 +2093,8 @@
     "banner_cta": "Actualizar"
   },
   "drive": {
+    "copied_n": "{{n}} elemento(s) copiado(s) a {{drive}}",
+    "moved_n": "{{n}} elemento(s) movido(s) a {{drive}}",
     "read_only_banner": {
       "title": "Esta unidad es de solo lectura",
       "title_named": "La unidad «{{name}}» es de solo lectura",
@@ -2124,5 +2189,17 @@
   },
   "sidebar": {
     "oxicloud_version": "OxiCloud"
+  },
+  "error": {
+    "not_found": {
+      "title": "La cabeza en las nubes",
+      "body": "Esta nubecita se ha alejado demasiado. La página que buscas no aparece por ninguna parte.",
+      "art_alt": "Una nubecita que se ha alejado demasiado"
+    },
+    "generic": {
+      "title": "Algo ha ido mal",
+      "body": "Vuelve a intentarlo en un momento."
+    },
+    "go_home": "Ir al inicio"
   }
 }

@@ -21,7 +21,9 @@
 		type GroupByDef,
 		type ItemContext
 	} from '$lib/components/ResourceList.svelte';
-	import UserAvatar from '$lib/components/UserAvatar.svelte';
+	import PersonBucketLabel from '$lib/components/PersonBucketLabel.svelte';
+	import AvatarOverlayChip from '$lib/components/AvatarOverlayChip.svelte';
+	import { openParentContextAction, prepareParentAccess } from '$lib/utils/listActions';
 	import type { IncomingGrantOrderBy } from '$lib/api/generated/openapi/types.gen';
 	import { t } from '$lib/i18n/index.svelte';
 	import { session } from '$lib/stores/session.svelte';
@@ -132,6 +134,8 @@
 
 	let viewerOpen = $state(false);
 	let viewerFile = $state<FileItem | null>(null);
+	/** What the viewer's previous / next step through, in list order. */
+	const viewerFiles = $derived(items.filter(isFile));
 
 	// The file preview is loaded the first time a file is opened, keeping its
 	// module out of this route's initial chunk.
@@ -219,6 +223,19 @@
 	}
 
 	/**
+	 * The viewer's previous / next. Same URL mirror as `open`, but
+	 * `replaceState`: stepping through photos swaps the entry instead of
+	 * pushing one per photo, so Back still closes the viewer.
+	 */
+	function step(item: FileItem) {
+		viewerFile = item;
+		const url = new URL(page.url);
+		url.searchParams.set('file', item.id);
+		// eslint-disable-next-line svelte/no-navigation-without-resolve
+		void goto(url, { keepFocus: true, noScroll: true, replaceState: true });
+	}
+
+	/**
 	 * Kick off a download using an ephemeral `<a download>` so the file
 	 * saves to disk instead of navigating away. Files stream directly
 	 * from `/api/files/{id}/content`; folders come back as a server-
@@ -255,6 +272,17 @@
 	}
 
 	const contextActions: ContextAction[] = [
+		// "Open parent folder", from the shared factory — the same entry
+		// `/files`, `/recent`, `/favorites` and `/changes` carry, and the only
+		// way off this page to where a shared item actually lives.
+		//
+		// It is often DISABLED here, which is the designed behaviour rather
+		// than a wart: a file shared on its own sits in a folder the recipient
+		// cannot read, so the entry greys out. A greyed row with a reason
+		// reads as "you can't do this here"; a missing row reads as "this
+		// feature doesn't exist". `menuPrepare` below primes the reachability
+		// probe so the state is right on the first right-click.
+		openParentContextAction(),
 		{
 			key: 'download',
 			label: t('common.download', 'Download'),
@@ -304,6 +332,7 @@
 	{contextMap}
 	resolveOwnerName={(id) => sharers.name(id)}
 	{contextActions}
+	menuPrepare={prepareParentAccess}
 	{loading}
 	{error}
 	emptyText={t('shared_with_me.empty', 'Nothing has been shared with you yet.')}
@@ -338,63 +367,30 @@
 			truth for "who shared this."
 		-->
 		{#if ctx?.ownerId}
-			<span class="shared-with-me__sharer">
-				<UserAvatar userId={ctx.ownerId} size={24} />
-			</span>
+			<AvatarOverlayChip userId={ctx.ownerId} size={24} />
 		{/if}
 	{/snippet}
 	{#snippet bucketLabel(_key, label)}
 		<!--
-			"Shared by" swimlane header — prefix the label with the
-			sharer's avatar so the group is visually anchored to a
-			person, not just a UUID-ish name. Other group-by dimensions
-			(`type`, `sharedAt`, or the flat `Name` sort) don't have
-			an ownerId as the key, so render only the plain label —
-			`_key` for those is a category / date-bucket / empty string
-			that has no avatar equivalent.
+			"Shared by" swimlane header — prefix the label with the sharer's
+			avatar so the group is anchored to a person rather than a
+			UUID-ish name. Other axes (`type`, `sharedAt`, the flat `Name`
+			sort) key on a category / date-bucket / empty string that has no
+			avatar equivalent, hence the gate on the axis.
+
+			Shared with `/recent` and `/favorites` via `PersonBucketLabel`,
+			which is where this pattern started.
 		-->
-		{#if groupBy === 'sharedBy' && _key}
-			<UserAvatar userId={_key} size={30} />
-		{/if}
-		<span class="rl-swimlane-header__text">{label}</span>
+		<PersonBucketLabel userId={groupBy === 'sharedBy' ? _key : null} {label} />
 	{/snippet}
 </ResourceList>
 
 {#if fileViewer.component}
 	{@const FileViewer = fileViewer.component}
-	<FileViewer bind:open={viewerOpen} file={viewerFile} />
+	<FileViewer bind:open={viewerOpen} file={viewerFile} files={viewerFiles} onnavigate={step} />
 {/if}
 
 <style>
-	/*
-	 * Sharer avatar chip — anchored to the bottom-right of the preview
-	 * tile (grid view). Rendered inside `.file-icon` via ResourceList's
-	 * `cardOverlay` slot, so `position: absolute` climbs to
-	 * `.file-icon`'s own `position: relative`. Keeping it on the
-	 * thumbnail leaves the card footer's bottom-right to the kebab,
-	 * which the two used to contest.
-	 *
-	 * The ring uses `--color-bg-surface` so the chip stays legible over
-	 * any thumbnail (photo, type-tinted tile, dark mode).
-	 *
-	 * The wrapper is `:global` so the scoped-CSS renaming Svelte
-	 * applies to the `<span>` this snippet emits doesn't strip our
-	 * selector. Only fires inside the grid view — the parent
-	 * `{@render cardOverlay}` in ResourceList already gates on
-	 * `filesStore.viewMode === 'grid'`, so no need to gate here.
-	 */
-	:global(.files-grid-view .file-item .file-icon .shared-with-me__sharer) {
-		position: absolute;
-		right: 5px;
-		bottom: 5px;
-		z-index: 10;
-		display: inline-flex;
-		border-radius: var(--radius-full);
-		box-shadow:
-			0 0 0 2px var(--color-bg-surface),
-			0 1px 3px var(--color-shadow-sm);
-	}
-
 	.upgrade-banner {
 		display: flex;
 		align-items: center;

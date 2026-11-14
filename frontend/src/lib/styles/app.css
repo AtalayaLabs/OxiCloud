@@ -8,3 +8,6 @@
 @import url('./base/animations.css');
 @import url('./base/a11y.css');
 @import url('./ported.css');
+/* Cross-page patterns that are NOT ports. After `ported.css` so a pattern can
+ * refine a ported rule rather than fight it. */
+@import url('./lanes.css');

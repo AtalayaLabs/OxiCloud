@@ -1,3 +1,12 @@
+# Regression pin: merging the theme router with canonical aliases must keep
+# both routes and their shared response headers, rather than choosing one side.
+GET {{base_url}}/file?from=theme-test
+HTTP 301
+[Asserts]
+header "Location" == "/files?from=theme-test"
+header "X-Robots-Tag" == "noindex, nofollow"
+header "Cache-Control" == "no-cache"
+
 # Global CSS is available before authentication; unknown theme URLs never become HTML.
 GET {{base_url}}/themes/active.css
 HTTP 200
@@ -8,6 +17,7 @@ header "Content-Type" == "text/css; charset=utf-8"
 header "Cache-Control" == "no-cache"
 header "Vary" contains "Accept-Encoding"
 header "X-Content-Type-Options" == "nosniff"
+header "X-Robots-Tag" == "noindex, nofollow"
 
 # Regression pin: HEAD must negotiate like GET without advertising the raw
 # CSS length for a compressed response (Axum's empty-body hint hid it).

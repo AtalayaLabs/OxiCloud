@@ -1312,15 +1312,19 @@ async function makeMessageBus(): Promise<MessageBusClient> {
 		// Non-URL-parseable location; proceed to detection.
 	}
 
-	// Operator opt-in via `OXICLOUD_ENABLE_SHARED_WORKER_BUS=true` —
-	// read directly from `/api/config` because this factory runs at
-	// module load, before `serverConfig.load()` is called by
-	// hooks.client.ts. Two same-origin fetches of /api/config (one
-	// here, one from serverConfig) are tolerable for a boot-time
-	// decision; the browser's HTTP cache usually elides the second.
-	// A fetch failure falls through to the default (off): server
-	// unreachable means the browser can't be told the opt-in flag is
-	// on, so the conservative choice is per-tab mode.
+	// The server's resolved flag (`OXICLOUD_ENABLE_SHARED_WORKER_BUS`,
+	// enabled by default, `false` to opt out) — read directly from
+	// `/api/config` because this factory runs at module load, before
+	// `serverConfig.load()` is called by hooks.client.ts. Two
+	// same-origin fetches of /api/config (one here, one from
+	// serverConfig) are tolerable for a boot-time decision; the
+	// browser's HTTP cache usually elides the second.
+	//
+	// A fetch failure falls through to per-tab mode, and that stays the
+	// conservative choice even though the server default is now ON:
+	// per-tab works everywhere, so an unreachable or unparseable
+	// `/api/config` must never be the reason a browser attempts a
+	// SharedWorker handshake it was never told to try.
 	try {
 		const { getConfig } = await import('$lib/api/generated/openapi/sdk.gen');
 		const cfg = await getConfig({ throwOnError: true });

@@ -7,6 +7,8 @@
 	import Icon from '$lib/icons/Icon.svelte';
 	import WopiEditor from '$lib/components/WopiEditor.svelte';
 	import CollabEditor from '$lib/components/CollabEditor.svelte';
+	import PdfPreview from '$lib/components/PdfPreview.svelte';
+	import { hasNativePdfViewer } from '$lib/utils/pdf';
 	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import { session } from '$lib/stores/session.svelte';
 	import { t } from '$lib/i18n/index.svelte';
@@ -32,6 +34,22 @@
 		/** Share row id, when opened from a public link — attaches `?share=` to
 		 *  every content request so the cap charges that link. */
 		shareId?: string | null;
+		/**
+		 * The files the viewer was opened from, in the order the host shows
+		 * them. Together with `onnavigate`, an image or video gets previous /
+		 * next controls (buttons and ←/→) that step through the other images
+		 * and videos in this list. Without them, looking through a folder of
+		 * photos meant closing the viewer and opening the next file by hand.
+		 *
+		 * Only media is stepped through, the same split the public-share page
+		 * makes between `PhotoLightbox` and this viewer: stepping onto an
+		 * office document would auto-open the WOPI editor, and a text file
+		 * mounts the collab editor, which needs the arrow keys itself.
+		 */
+		files?: FileItem[];
+		/** Asked to show `file` instead. The host owns `file` — `/files` drives
+		 *  it from `?file=` — so the viewer asks rather than swapping it. */
+		onnavigate?: (file: FileItem) => void;
 	}
 
 	let {
@@ -39,7 +57,9 @@
 		file,
 		onrefresh,
 		readOnly = false,
-		shareId = null
+		shareId = null,
+		files = [],
+		onnavigate
 	}: Props = $props();
 
 	type Kind = 'image' | 'video' | 'audio' | 'pdf' | 'text' | 'other';
@@ -70,9 +90,21 @@
 	 *  API URL directly — that response carries the global `X-Frame-Options: DENY`
 	 *  + `frame-ancestors 'none'`, which the browser's framed PDF viewer honours,
 	 *  so an embedded API URL renders as a broken-document icon. A blob has no
-	 *  response headers, so it sidesteps the framing block. */
+	 *  response headers, so it sidesteps the framing block.
+	 *
+	 *  Only set on browsers that HAVE an embedded PDF viewer. Where they don't
+	 *  (`pdfData` below), framing is pointless no matter what we serve. */
 	let pdfUrl = $state<string | null>(null);
+	/** The PDF's bytes, for `PdfPreview` to render with pdf.js. Set instead of
+	 *  `pdfUrl` when the browser has no embedded viewer — Chrome on Android,
+	 *  measurably (issue #780). Only one of the two is ever populated, so the
+	 *  bytes are fetched once either way and the ~1 MB pdf.js worker is never
+	 *  pulled on a browser that doesn't need it. */
+	let pdfData = $state<ArrayBuffer | null>(null);
 	let pdfError = $state(false);
+	/** Resolved once, not per render: a browser does not grow a PDF viewer
+	 *  mid-session. */
+	const nativePdf = hasNativePdfViewer();
 
 	function isImage(f: FileItem): boolean {
 		const m = (f.mime_type ?? '').toLowerCase();
@@ -97,6 +129,17 @@
 	}
 
 	const kind = $derived(file ? kindOf(file) : 'other');
+
+	function isMedia(f: FileItem): boolean {
+		const k = kindOf(f);
+		return k === 'image' || k === 'video';
+	}
+
+	/** The media the previous / next controls step through — see `files`. */
+	const gallery = $derived(onnavigate && file && isMedia(file) ? files.filter(isMedia) : []);
+	const galleryIndex = $derived(file ? gallery.findIndex((f) => f.id === file.id) : -1);
+	const prevFile = $derived(galleryIndex > 0 ? gallery[galleryIndex - 1] : null);
+	const nextFile = $derived(galleryIndex >= 0 ? (gallery[galleryIndex + 1] ?? null) : null);
 
 	/** `true` when this file should open in the collab editor.
 	 *  Two-branch acceptance to catch both well-typed and MIME-hostile
@@ -171,8 +214,23 @@
 		onrefresh?.();
 	}
 
+	/** Arrow keys stay with whatever has focus when it uses them itself: a
+	 *  focused <video> seeks, a text field moves the caret. Alt+← is the
+	 *  browser's Back. */
+	function arrowsTaken(e: KeyboardEvent): boolean {
+		if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return true;
+		const el = e.target;
+		return (
+			el instanceof HTMLElement &&
+			(el.isContentEditable || el.closest('input, textarea, select, video, audio') !== null)
+		);
+	}
+
 	function onKeydown(e: KeyboardEvent) {
-		if (open && !wopiOpen && e.key === 'Escape') close();
+		if (!open || wopiOpen) return;
+		if (e.key === 'Escape') close();
+		else if (e.key === 'ArrowLeft' && prevFile && !arrowsTaken(e)) onnavigate?.(prevFile);
+		else if (e.key === 'ArrowRight' && nextFile && !arrowsTaken(e)) onnavigate?.(nextFile);
 	}
 
 	function zoomBy(factor: number) {
@@ -230,24 +288,48 @@
 				.finally(() => (textLoading = false));
 		}
 
-		// Fetch the PDF as a same-origin blob and view it via an object URL (see
-		// `pdfUrl`). The cleanup revokes the URL when the file changes or the
-		// viewer closes; a stale response (newer file opened mid-fetch) is dropped.
+		// One fetch, two destinations. Where the browser has an embedded PDF
+		// viewer we hand it a same-origin blob to frame (see `pdfUrl`);
+		// where it doesn't we keep the bytes and render them with pdf.js
+		// (see `pdfData`). The cleanup revokes the URL when the file changes
+		// or the viewer closes; a stale response (newer file opened
+		// mid-fetch) is dropped.
 		if (k === 'pdf') {
 			pdfError = false;
 			pdfUrl = null;
+			pdfData = null;
 			let objectUrl: string | null = null;
-			apiFetch(fileInlineUrl(f.id, shareId), { credentials: 'same-origin' })
-				.then((r) => (r.ok ? r.blob() : Promise.reject(new Error(`HTTP ${r.status}`))))
-				.then((blob) => {
-					if (file !== f || !open) return;
-					objectUrl = URL.createObjectURL(blob);
-					pdfUrl = objectUrl;
+			let cancelled = false;
+			const controller = new AbortController();
+			apiFetch(fileInlineUrl(f.id, shareId), {
+				credentials: 'same-origin',
+				signal: controller.signal
+			})
+				// Annotated: without it TS infers `Promise<ArrayBuffer> | Promise<Blob>`
+				// for the branch and refuses to chain it as one promise.
+				.then((r): Promise<ArrayBuffer | Blob> => {
+					if (cancelled) throw new DOMException('PDF preview cancelled', 'AbortError');
+					if (!r.ok) return Promise.reject(new Error(`HTTP ${r.status}`));
+					return nativePdf ? r.blob() : r.arrayBuffer();
 				})
-				.catch(() => (pdfError = true));
+				.then((body) => {
+					if (cancelled) return;
+					if (body instanceof ArrayBuffer) {
+						pdfData = body;
+					} else {
+						objectUrl = URL.createObjectURL(body);
+						pdfUrl = objectUrl;
+					}
+				})
+				.catch(() => {
+					if (!cancelled) pdfError = true;
+				});
 			return () => {
+				cancelled = true;
+				controller.abort();
 				if (objectUrl) URL.revokeObjectURL(objectUrl);
 				pdfUrl = null;
+				pdfData = null;
 			};
 		}
 	});
@@ -431,6 +513,8 @@
 						</div>
 					{:else if pdfUrl}
 						<iframe class="fv__pdf" src={pdfUrl} title={file.name}></iframe>
+					{:else if pdfData}
+						<PdfPreview data={pdfData} name={file.name} />
 					{:else}
 						<p class="fv__status">{t('common.loading', 'Loading…')}</p>
 					{/if}
@@ -447,6 +531,33 @@
 					</div>
 				{/if}
 			</div>
+
+			<!-- On the panel, not in `.fv__body`: the body scrolls when an image
+			     is zoomed, and the controls must not scroll away with it. -->
+			{#if prevFile}
+				{@const target = prevFile}
+				<button
+					class="fv__nav fv__nav--prev"
+					data-testid="file-viewer-prev-btn"
+					title={t('common.previous', 'Previous')}
+					aria-label={t('common.previous', 'Previous')}
+					onclick={() => onnavigate?.(target)}
+				>
+					<Icon name="chevron-left" />
+				</button>
+			{/if}
+			{#if nextFile}
+				{@const target = nextFile}
+				<button
+					class="fv__nav fv__nav--next"
+					data-testid="file-viewer-next-btn"
+					title={t('common.next', 'Next')}
+					aria-label={t('common.next', 'Next')}
+					onclick={() => onnavigate?.(target)}
+				>
+					<Icon name="chevron-right" />
+				</button>
+			{/if}
 		</div>
 	</div>
 
@@ -509,6 +620,7 @@
 	}
 
 	.fv__panel {
+		position: relative;
 		display: flex;
 		flex-direction: column;
 		width: min(1100px, 100%);
@@ -516,6 +628,33 @@
 		background: var(--color-bg-surface);
 		border-radius: var(--radius-lg, var(--radius-md));
 		overflow: hidden;
+	}
+
+	/* The scrim + shadow of the controls over ResourceList thumbnails: its
+	   background follows the theme, so the arrow takes the theme's text
+	   colour and stays legible over a light image as well as a dark one. */
+	.fv__nav {
+		position: absolute;
+		top: 50%;
+		transform: translateY(-50%);
+		display: grid;
+		place-items: center;
+		width: 40px;
+		height: 40px;
+		border: none;
+		border-radius: 50%;
+		background: var(--color-scrim-control);
+		box-shadow: 0 1px 3px var(--color-shadow-sm);
+		color: var(--color-text);
+		cursor: pointer;
+	}
+
+	.fv__nav--prev {
+		left: 0.75rem;
+	}
+
+	.fv__nav--next {
+		right: 0.75rem;
 	}
 
 	.fv__bar {
@@ -645,6 +784,7 @@
 
 		.fv__zoom-btn,
 		.fv__tool,
+		.fv__nav,
 		.fv__close {
 			min-width: 44px;
 			min-height: 44px;

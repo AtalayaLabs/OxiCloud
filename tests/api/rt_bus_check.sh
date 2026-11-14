@@ -1707,21 +1707,57 @@ if ! "$HELPER_BIN" collab-flush \
   die "S23: rt.collab_flush failed pre-GC"
 fi
 
-# Wait past the TTL (server.env IDLE_TTL_SECONDS=1).
-sleep 2
+# Wait out BOTH timers, in this order, because the row is not idle until
+# the last write to it has landed:
+#
+#   1. DEBOUNCE_IDLE_MS (2 s) — the ambient debouncer still fires ~2 s
+#      after the last edit, EVEN THOUGH `rt.collab_flush` already ran, and
+#      that flush bumps `last_activity_at` to NOW().
+#   2. IDLE_TTL_SECONDS (3 s) — only then does the row start ageing.
+#
+# This used to `sleep 2` against a 1 s TTL, which put step 1's bump inside
+# the sleep: the sweep then correctly found nothing idle and S23 failed on
+# CI with `expected swept >= 1, got 0` while passing locally, purely on
+# which of the two landed first. See the constraint note in
+# `tests/common/server.env`.
+sleep 5
 
-# Trigger the job via admin. Response carries the outcome JSON.
-gc_resp=$(curl -sS -X POST \
-  -H "Authorization: Bearer $admin_token" \
-  "$base_url/api/admin/jobs/collab_idle_gc/trigger")
+# Poll the trigger rather than asserting on one shot. The job is
+# idempotent — a sweep that reaps nothing is a no-op — so re-triggering
+# costs nothing and absorbs a slow runner, a late debounce write, or clock
+# skew between the app and the DB (`last_activity_at` is `NOW()` from
+# Postgres; see `bug_job_run_timestamps_two_clocks` territory). The
+# assertion is NOT weakened: it still requires a real reap, just not on
+# the first attempt within a fixed instant.
+#
 # JobOutcome wire shape: {ok, outcome:{count, extra:{...}, outcome:"ok"}}.
 # The reap count lands on `.outcome.count` (from JobOutcome::ok_with's
 # first arg); the same integer is echoed under `.outcome.extra.swept`
 # for redundancy. Either path works; use `.outcome.count` — it's the
 # universal shape across all scheduled jobs.
-swept=$(printf '%s' "$gc_resp" | jq -r '.outcome.count // 0')
-[[ "$swept" -ge 1 ]] \
-  || { printf '%s\n' "$gc_resp" >&2; die "S23: expected swept >= 1, got $swept"; }
+swept=0
+gc_resp=""
+for _ in $(seq 1 20); do
+  gc_resp=$(curl -sS -X POST \
+    -H "Authorization: Bearer $admin_token" \
+    "$base_url/api/admin/jobs/collab_idle_gc/trigger")
+  swept=$(printf '%s' "$gc_resp" | jq -r '.outcome.count // 0')
+  [[ "$swept" -ge 1 ]] && break
+  sleep 0.5
+done
+# On failure, print the row's actual idle age alongside the response. A
+# FRESH age with swept=0 means something bumped `last_activity_at` (the
+# timing story above); an OLD age with swept=0 means the GC itself
+# regressed. Without this, the two are indistinguishable from the log and
+# the next person re-derives the whole investigation.
+if [[ "$swept" -lt 1 ]]; then
+  printf '%s\n' "$gc_resp" >&2
+  PGPASSWORD=oxicloud_test psql -h 127.0.0.1 -p 5433 -U oxicloud_test -d oxicloud_test \
+    -c "SELECT file_id, last_activity_at, NOW() - last_activity_at AS idle_age
+          FROM collab.doc_sessions WHERE file_id = '$s23_file_id'::uuid;" >&2 2>/dev/null \
+    || echo "S23: (could not query doc_sessions for idle age)" >&2
+  die "S23: expected swept >= 1, got $swept"
+fi
 log "S23a OK (reaped $swept session(s) via admin trigger)"
 
 # The row must actually be gone. A subsequent sync-step probe on

@@ -78,6 +78,7 @@
     "files": "الملفات",
     "shared": "مشاركاتي",
     "recent": "الأخيرة",
+    "changes": "التغييرات",
     "favorites": "المفضلة",
     "photos": "الوسائط",
     "music": "الموسيقى",
@@ -118,9 +119,43 @@
     "tab_people": "الناس",
     "map_loading": "جارٍ تحميل الخريطة…",
     "map_error": "تعذر تحميل الخريطة",
-    "confirm_delete_one_permanent": "حذف «{{name}}» نهائيًا؟ لا يمكن التراجع عن هذا الإجراء."
+    "confirm_delete_one_permanent": "حذف «{{name}}» نهائيًا؟ لا يمكن التراجع عن هذا الإجراء.",
+    "filter_kind": "نوع الوسائط",
+    "filter_drive": "القرص",
+    "all_drives": "كل الأقراص",
+    "sort": {
+      "title": "الترتيب حسب",
+      "direction": "اتجاه الترتيب",
+      "captured_at": "تاريخ التصوير",
+      "created_at": "تاريخ الرفع",
+      "updated_at": "آخر تعديل"
+    },
+    "filter_favorite": "المفضلة فقط",
+    "filter_favorite_on": "يتم عرض المفضلة فقط — انقر لعرض الكل",
+    "filter_favorite_off": "عرض المفضلة فقط",
+    "kind": {
+      "all": "الكل",
+      "photo": "صور",
+      "video": "فيديوهات"
+    },
+    "dedup_dialog": {
+      "title": "هذا المحتوى له نسخ",
+      "intro": "{{n}} ملف في قرصك تشير إلى نفس البايتات. نقل نسخة واحدة إلى سلة المهملات لا يحرّر المحتوى — حدّد كل نسخة تريد نقلها إلى سلة المهملات.",
+      "trashed_note": "توجد {{n}} نسخة أخرى في سلة المهملات ولا تزال تحتفظ بالمحتوى. احذفها نهائيًا من سلة المهملات لتحرير المساحة فعليًا.",
+      "truncated": "حدّ الخادم هذه القائمة. توجد نسخ أخرى غير معروضة هنا.",
+      "select_all": "تحديد كل ما يمكن حذفه",
+      "select_none": "إلغاء التحديد",
+      "picked": "تم تحديد {{n}} من {{total}}",
+      "origin_badge": "التي نقرت عليها",
+      "readonly_badge": "للقراءة فقط",
+      "drive_root": "جذر القرص",
+      "readonly_note": "{{n}} نسخة موجودة في مكان لديك فيه صلاحية القراءة فقط — لا يمكن نقلها إلى سلة المهملات من هنا.",
+      "confirm": "نقل {{n}} ملف إلى سلة المهملات"
+    }
   },
   "music": {
+    "description": "الوصف",
+    "edit_playlist": "تعديل قائمة التشغيل",
     "create_playlist": "إنشاء قائمة تشغيل",
     "playlists": "قوائم التشغيل",
     "no_playlists": "لا توجد قوائم تشغيل بعد",
@@ -514,6 +549,7 @@
     "new_folder_dotfile_hidden": "تم إنشاء المجلد \"{{name}}\" — مخفي وفقاً لتفضيلاتك.",
     "dotfiles_hidden_toast": "تم إخفاء الملفات المخفية",
     "dotfiles_shown_toast": "تم إظهار الملفات المخفية",
+    "col_modified_by": "عُدّل بواسطة",
     "col_modified": "معدل",
     "col_added": "أضيف",
     "col_created_by": "أنشئ بواسطة",
@@ -761,7 +797,6 @@
     "invalid_credentials": "اسم المستخدم أو كلمة المرور غير صحيحة. تحقّق منهما وحاول مرة أخرى.",
     "email_taken": "يوجد حساب بهذا البريد الإلكتروني بالفعل. سجّل الدخول بدلاً من ذلك.",
     "username_taken": "اسم المستخدم هذا مستخدم بالفعل. اختر اسمًا آخر.",
-    "registration_disabled": "التسجيل معطّل على هذا الخادم. اطلب من المسؤول إنشاء حسابك.",
     "registration_password_required": "هذا الخادم لا يرسل رسائل تسجيل الدخول. أدخل كلمة مرور لإنشاء حسابك.",
     "session_expired": "انتهت جلستك. الرجاء تسجيل الدخول مرة أخرى.",
     "signing_in": "تسجيل الدخول...",
@@ -827,6 +862,17 @@
     "added_msg": "أُضيف للمفضلة",
     "removed_title": "أُزيل من المفضلة",
     "removed_msg": "أُزيل من المفضلة"
+  },
+  "changes": {
+    "empty_state": "لا توجد تغييرات حديثة",
+    "empty_hint": "ستظهر هنا التغييرات على الملفات التي يمكنك الوصول إليها",
+    "col_changed": "عُدّل",
+    "lane_files": "{{n}} ملف",
+    "cap_lanes": "أحدث {{n}} لكل شخص",
+    "window": "النطاق الزمني",
+    "window_7": "آخر 7 أيام",
+    "window_30": "آخر 30 يومًا",
+    "window_90": "آخر 90 يومًا"
   },
   "recent": {
     "title": "الأخيرة",
@@ -981,7 +1027,7 @@
     "confirm_action": "تأكيد الإجراء",
     "confirm_yes": "تأكيد",
     "confirm_no": "إلغاء",
-    "error_username_short": "الاسم 3 أحرف على الأقل",
+    "error_username_length": "يجب أن يتراوح طول اسم المستخدم بين حرفين و64 حرفًا",
     "error_password_short": "كلمة المرور 8 أحرف على الأقل",
     "error_generic": "فشل",
     "error_network": "خطأ في الشبكة: {{message}}",
@@ -1309,6 +1355,10 @@
       "delete_title": "حذف التركيب"
     },
     "jobs": {
+      "params_title": "تشغيل {{name}}",
+      "params_default": "الافتراضي: {{value}}",
+      "params_no_default": "لا قيمة افتراضية",
+      "params_none": "هذه المهمة لا تأخذ أي معاملات.",
       "run_all_consistency": "قم بتشغيل كافة اختبارات الاتساق",
       "run_deep": "تشغيل عميق",
       "run_deep_hint": "يعمل أيضًا على تشغيل متغيرات بطيئة (إعادة تجزئة النقطة، واكتشاف bitrot).",
@@ -1520,6 +1570,9 @@
     "oxicloud_version": "إصدار OxiCloud",
     "storage_cache_recommended_title": "تفعيل الذاكرة المحلية للـ blobs",
     "storage_cache_recommended_howto": "عيّن OXICLOUD_STORAGE_CACHE_ENABLED=true لتفعيله.",
+    "opaque_migration_recommended_title": "تمكين OPAQUE في وضع migrate",
+    "opaque_migration_recommended_body": "يُنصح بشدة بتمكين OPAQUE في وضع migrate، للتحضير للانتقال إلى عدم إرسال كلمات المرور إلى الخادم إطلاقًا. هذه خطوة أساسية نحو التشفير من طرف إلى طرف.",
+    "opaque_migration_recommended_howto": "أنشئ مفتاحًا باستخدام `oxicloud opaque setup`، واحفظه في OXICLOUD_AUTH_OPAQUE_SERVER_SETUP، ثم اضبط OXICLOUD_AUTH_OPAQUE_MODE=migrate. تنتقل الحسابات الحالية عند تسجيل الدخول التالي — دون أي تغيير بالنسبة لها.",
     "section_cache": "ذاكرة التخزين",
     "cache_memory": "الذاكرة (moka)",
     "cache_memory_files": "الذاكرة (moka) · ذاكرة الملفات",
@@ -1701,6 +1754,7 @@
     "type": "النوع",
     "type.folders": "المجلدات",
     "accessedAt": "تاريخ الوصول",
+    "changedAt": "تاريخ التعديل",
     "modifiedAt": "تاريخ التعديل",
     "createdAt": "تاريخ الإنشاء",
     "size": "الحجم",
@@ -1858,7 +1912,13 @@
     "archives": "أرشيف",
     "documents": "وثائق",
     "images": "الصور",
-    "installers": "المثبتون",
+    "config": "إعدادات",
+    "disk_images": "صور أقراص",
+    "ebooks": "كتب إلكترونية",
+    "executables": "تطبيقات",
+    "fonts": "خطوط",
+    "packages": "حِزم",
+    "unknown": "غير معروف",
     "markdown": "تخفيض السعر",
     "presentations": "العروض التقديمية",
     "spreadsheets": "جداول البيانات",
@@ -1899,6 +1959,7 @@
     "retry": "حاول ثانية",
     "select": "يختار",
     "select_all": "حدد الكل",
+    "filter": "تصفية",
     "dismiss": "رفض"
   },
   "device": {
@@ -1947,6 +2008,8 @@
     "size_label": "الحجم",
     "title": "بحث",
     "type": {
+      "code": "كود",
+      "folder": "مجلدات",
       "audio": "صوت",
       "all": "جميع الأنواع",
       "image": "الصور",
@@ -2030,6 +2093,8 @@
     "banner_cta": "ترقية"
   },
   "drive": {
+    "copied_n": "تم نسخ {{n}} عنصر إلى {{drive}}",
+    "moved_n": "تم نقل {{n}} عنصر إلى {{drive}}",
     "read_only_banner": {
       "title": "هذا القرص للقراءة فقط",
       "title_named": "القرص «{{name}}» للقراءة فقط",
@@ -2124,5 +2189,17 @@
   },
   "sidebar": {
     "oxicloud_version": "OxiCloud"
+  },
+  "error": {
+    "not_found": {
+      "title": "سحابة تائهة",
+      "body": "ابتعدت هذه السحابة الصغيرة أكثر من اللازم. الصفحة المطلوبة غير موجودة في أي مكان.",
+      "art_alt": "سحابة صغيرة ابتعدت أكثر من اللازم"
+    },
+    "generic": {
+      "title": "حدث خطأ ما",
+      "body": "يرجى المحاولة مرة أخرى بعد قليل."
+    },
+    "go_home": "العودة إلى الصفحة الرئيسية"
   }
 }

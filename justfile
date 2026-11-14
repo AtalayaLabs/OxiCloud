@@ -542,17 +542,23 @@ docs-install:
 # Regenerate the two API-reference specs then start the VitePress dev
 # server. The npm `predocs:dev` hook (see docs/package.json) also
 # regenerates `docs/public/api/` from the JSON on `resources/gen/`.
-docs-dev: gen-openapi gen-asyncapi
+docs-dev: gen-openapi gen-asyncapi docs-install
     cd docs && npm run docs:dev
 
 # Full static build. Emits to `docs/.vitepress/dist/`.
-docs-build: gen-openapi gen-asyncapi
+#
+# `docs-install` is a dependency because `docs/` has its own node_modules,
+# and without it `prepare-specs.mjs` fails on
+# `copyfile .../swagger-ui-dist/swagger-ui.css` — an ENOENT that names
+# neither the cause nor the recipe that fixes it. A fresh clone, or anyone
+# who cleans `docs/node_modules`, hits that instead of a build.
+docs-build: gen-openapi gen-asyncapi docs-install
     cd docs && npm run docs:build
 
 # Just regenerate the JSON specs and the derived `docs/public/api/`
 # artifacts, without running VitePress. Handy when iterating on the
 # `#[utoipa::path]` annotations and wanting to re-check the diff.
-docs-specs: gen-openapi gen-asyncapi
+docs-specs: gen-openapi gen-asyncapi docs-install
     cd docs && npm run docs:specs
 
 # Run backend (API) and the Vite dev server together; one Ctrl-C stops both.

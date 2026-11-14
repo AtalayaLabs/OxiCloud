@@ -1,8 +1,10 @@
 # Message bus via SharedWorker — one WebSocket per browser
 
 **Status**: **✅ SHIPPED (2026-10-24).** All Gates 0–5 landed on
-`feat/message-bus-via-shared-worker`. Default `OXICLOUD_ENABLE_SHARED_WORKER_BUS=false`
-(opt-in while in observation phase). Each gate carries a 🚦 status
+`feat/message-bus-via-shared-worker`. Default
+`OXICLOUD_ENABLE_SHARED_WORKER_BUS=true` (opt-out) since the
+observation phase closed without new cross-browser edge cases; set it
+to `false` to put every tab back on its own WebSocket. Each gate carries a 🚦 status
 marker inline below naming what shipped and where reality diverged
 from this plan; a **🔧 Delta from plan** section at the end collects
 beyond-plan work (AbortController deadline, zombie-port heartbeat,
@@ -520,16 +522,17 @@ local — they don't cross the port.
 > 🚦 **✅ SHIPPED** · commit `925bb994` (initial as opt-OUT) +
 > `4070e599` (flipped to opt-IN per observation-phase decision) +
 > `0c6e0312` (operator docs: env.md + example.env). The flag
-> direction evolved: originally shipped as `true` by default
-> (opt-out), then re-decided to default `false` (opt-in) while
-> cross-browser behaviour is still being observed. The gate text
-> below reflects the final shipped direction.
+> direction went round the houses: shipped `true` (opt-out), then
+> re-decided to `false` (opt-in) for an observation window, and now
+> back to `true` (opt-out) because that window closed without new
+> cross-browser edge cases. Final direction: **enabled by default**,
+> `OXICLOUD_ENABLE_SHARED_WORKER_BUS=false` to opt out.
 
 - New field on `FeaturesConfig`: `shared_worker_bus: bool`
-  (**default `false`**). Env `OXICLOUD_ENABLE_SHARED_WORKER_BUS`.
+  (**default `true`**). Env `OXICLOUD_ENABLE_SHARED_WORKER_BUS`.
   Emitted on `/api/config.features.shared_worker_bus`.
 - FE factory (Gate 2) reads it before `trySharedWorker`. When `true`
-  + handshake passes, shared mode is live; when `false` (default)
+  (the default) + handshake passes, shared mode is live; when `false`
   or when `/api/config` is unreachable, the factory returns
   `PerTabMessageBusClient` without touching detection. The mandatory
   fallback engages the same way for every browser that can't run
@@ -710,15 +713,17 @@ close every browser tab before resuming.
 
 ## Migration path from an operator's perspective
 
-1. Upgrade OxiCloud. Feature ships **off by default** (opt-in) while
-   production behaviour across browsers, extensions and tab
-   lifecycle is being observed. Users stay on the per-tab client,
-   same as the pre-release behaviour — no visible change.
-2. Opt in by setting `OXICLOUD_ENABLE_SHARED_WORKER_BUS=true` and
-   restarting. On browsers that support SharedWorker + CSP that
-   allows it, users drop from N WS per tab to 1 WS per browser.
-   Browsers that can't run shared mode fall back silently to the
-   per-tab client — no user-visible breakage.
+1. Upgrade OxiCloud. The feature ships **on by default** (opt-out)
+   now that the observation window has closed. On browsers that
+   support SharedWorker + a CSP that allows it, users drop from N WS
+   per tab to 1 WS per browser on their next load; browsers that
+   can't run shared mode fall back silently to the per-tab client,
+   with no user-visible breakage either way.
+2. Opt out by setting `OXICLOUD_ENABLE_SHARED_WORKER_BUS=false` and
+   restarting — note that *unsetting* the variable no longer does
+   that, since absence now resolves to the enabled default. Watch
+   `active_ws_sessions` in the admin dashboard to see the effect of
+   either direction.
 3. `admin.active_ws_sessions` drops proportionally to the
    tab-per-user ratio once opt-in. The FE emits an
    `oxi:message-bus` `info` line on every fallback engagement with a

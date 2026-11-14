@@ -287,7 +287,36 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/{id}/rename", put(rename_file));
 
     // Merge the routers
-    let files_router = basic_file_router.merge(file_operations_router);
+    let mut files_router = basic_file_router.merge(file_operations_router);
+
+    // `GET /api/files/recent-changes` — who changed what lately
+    // (`docs/plan/recently-modified.md`).
+    //
+    // Mounted only when `enable_recent_changes` is on, so an operator who
+    // declined the feature gets a 404 on the path rather than a surface the
+    // SPA merely hides.
+    //
+    // `require_internal_user_layer` is a SCOPE question, not a grant: "may
+    // this KIND of caller reach this surface at all", with no resource to
+    // name, so it belongs here and not in a service. An external is a guest
+    // invited to specific resources; a feed of colleagues' activity
+    // aggregates more than that invitation implied, and they are already 403
+    // on the system contacts listing and on every DAV surface.
+    if app_state.core.config.features.enable_recent_changes {
+        use crate::interfaces::api::handlers::recent_changes_handler;
+        files_router = files_router.merge(
+            Router::new()
+                .route(
+                    "/recent-changes",
+                    get(recent_changes_handler::list_recent_changes),
+                )
+                .with_state(app_state.clone())
+                .layer(axum::middleware::from_fn_with_state(
+                    app_state.clone(),
+                    require_internal_user_layer,
+                )),
+        );
+    }
 
     // Create routes for batch operations
     let batch_router = Router::new()

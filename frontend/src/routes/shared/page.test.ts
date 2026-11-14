@@ -103,6 +103,32 @@ it('revokes access from the kebab menu', async () => {
 	await waitFor(() => expect(revokeGrant).toHaveBeenCalledWith('g1'));
 });
 
+// The lane header lost its "Edit sharing" text when it became an icon
+// (2026-11-14), and an icon-only control with no accessible name is the
+// classic way that goes wrong — invisible to a screen reader, unfindable by
+// role. Queried BY NAME on purpose: a testid-only assertion would still pass
+// with the aria-label dropped.
+it('names the share control even though it shows only an icon', async () => {
+	m(fetchMyShares).mockResolvedValue({ items: [grantItem()], next_cursor: null });
+	render(SharedPage);
+	const share = await screen.findByRole('button', { name: 'Edit sharing' });
+	expect(share.getAttribute('data-testid')).toBe('shared-edit-sharing-r1');
+});
+
+// The swimlane names its resource the way a list row does, which means the
+// glyph carries the type tint — `file-icon--row` supplies the chip geometry
+// and `file-icon--folder` the `--fk` colour. Dropping either leaves a bare
+// 100×70 `.file-icon` box in the header, which is what this pins against.
+it('renders the resource glyph with the list-row icon classes', async () => {
+	m(fetchMyShares).mockResolvedValue({ items: [grantItem()], next_cursor: null });
+	render(SharedPage);
+	const lane = await screen.findByTestId('shared-lane-open-r1');
+	const glyph = lane.querySelector('.file-icon');
+	expect(glyph).not.toBeNull();
+	expect(glyph?.classList.contains('file-icon--row')).toBe(true);
+	expect(glyph?.classList.contains('file-icon--folder')).toBe(true);
+});
+
 it('surfaces a load error without crashing', async () => {
 	m(fetchMyShares).mockRejectedValue(new Error('boom'));
 	render(SharedPage);

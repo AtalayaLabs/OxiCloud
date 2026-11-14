@@ -121,7 +121,9 @@ jsonpath "$.items" count == 0
 #           without the client POSTing /api/recent/file/{id}.
 #           This is the SvelteKit-era contract: the legacy
 #           vanilla-JS frontend did the POST itself; the new shell
-#           relies on the service-layer hook instead.
+#           relies on the service-layer hook instead. The hook spawns
+#           its DB write, so poll the read until that write is visible.
+#           Retry at most ten times, 200 ms apart; keep both assertions.
 # ─────────────────────────────────────────────────────────────
 POST {{base_url}}/api/files/upload
 Authorization: Bearer {{token}}
@@ -136,6 +138,9 @@ auto_uploaded_id: jsonpath "$.id"
 
 GET {{base_url}}/api/recent/resources
 Authorization: Bearer {{token}}
+[Options]
+retry: 10
+retry-interval: 200ms
 
 HTTP 200
 [Asserts]
@@ -146,12 +151,9 @@ jsonpath "$.items[0].resource.id" == "{{auto_uploaded_id}}"
 # ─────────────────────────────────────────────────────────────
 # Step 8 – Auto-recording on GET (file download)
 #           Clear first, then download the file content and
-#           assert it reappears in Recent. The per-(user, file)
-#           60 s throttle inside the recording hook means the
-#           cleared row may re-record on the very next GET only
-#           because we just emptied the table — moka stores the
-#           throttle entry independently of the DB row, but the
-#           upsert is idempotent and harmless either way.
+#           assert it reappears in Recent. Clearing also invalidates
+#           the per-user throttle; the download's new recording is
+#           asynchronous, so poll only the read, as in step 7.
 # ─────────────────────────────────────────────────────────────
 DELETE {{base_url}}/api/recent/clear
 Authorization: Bearer {{token}}
@@ -167,6 +169,9 @@ HTTP 200
 
 GET {{base_url}}/api/recent/resources
 Authorization: Bearer {{token}}
+[Options]
+retry: 10
+retry-interval: 200ms
 
 HTTP 200
 [Asserts]

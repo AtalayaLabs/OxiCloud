@@ -19,6 +19,7 @@ mod nextcloud_object_id_repository;
 mod notification_pg_repository;
 mod opaque_pg_repository;
 pub mod playlist_pg_repository;
+mod recent_changes_pg_repository;
 mod recent_items_pg_repository;
 mod session_pg_repository;
 mod settings_pg_repository;
@@ -58,6 +59,7 @@ pub use opaque_pg_repository::OpaquePgRepository;
 pub use playlist_pg_repository::{
     AudioMetadataPgRepository, PlaylistItemPgRepository, PlaylistPgRepository,
 };
+pub use recent_changes_pg_repository::RecentChangesPgRepository;
 pub use recent_items_pg_repository::RecentItemsPgRepository;
 pub use session_pg_repository::SessionPgRepository;
 pub use settings_pg_repository::SettingsPgRepository;

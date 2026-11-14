@@ -78,6 +78,7 @@
     "files": "پرونده‌ها",
     "shared": "هم‌رسانی‌های من",
     "recent": "اخیر",
+    "changes": "تغییرات",
     "favorites": "موردعلاقه‌ها",
     "photos": "رسانه",
     "music": "موسیقی",
@@ -118,9 +119,43 @@
     "tab_people": "مردم",
     "map_loading": "در حال بارگیری نقشه…",
     "map_error": "نقشه بارگیری نشد",
-    "confirm_delete_one_permanent": "حذف «{{name}}» برای همیشه؟ این عمل قابل بازگشت نیست."
+    "confirm_delete_one_permanent": "حذف «{{name}}» برای همیشه؟ این عمل قابل بازگشت نیست.",
+    "filter_kind": "نوع رسانه",
+    "filter_drive": "دیسک",
+    "all_drives": "همه دیسک‌ها",
+    "sort": {
+      "title": "مرتب‌سازی بر اساس",
+      "direction": "جهت مرتب‌سازی",
+      "captured_at": "تاریخ عکس‌برداری",
+      "created_at": "تاریخ بارگذاری",
+      "updated_at": "آخرین تغییر"
+    },
+    "filter_favorite": "فقط موردعلاقه‌ها",
+    "filter_favorite_on": "تنها موردعلاقه‌ها نشان داده می‌شوند — برای نمایش همه کلیک کنید",
+    "filter_favorite_off": "نمایش فقط موردعلاقه‌ها",
+    "kind": {
+      "all": "همه",
+      "photo": "عکس‌ها",
+      "video": "ویدیوها"
+    },
+    "dedup_dialog": {
+      "title": "این محتوا نسخه‌های دیگری دارد",
+      "intro": "{{n}} پرونده در دیسک شما به همان داده‌ها اشاره می‌کنند. انتقال یک نسخه به سطل زباله محتوا را آزاد نمی‌کند — هر نسخه‌ای را که می‌خواهید به سطل زباله بفرستید انتخاب کنید.",
+      "trashed_note": "{{n}} نسخه دیگر از قبل در سطل زباله شما هستند و همچنان محتوا را نگه داشته‌اند. برای آزاد شدن واقعی فضا، آن‌ها را از سطل زباله پاک کنید.",
+      "truncated": "سرور این فهرست را محدود کرد. نسخه‌های بیشتری وجود دارد که اینجا نشان داده نشده‌اند.",
+      "select_all": "انتخاب همه موارد قابل حذف",
+      "select_none": "لغو انتخاب",
+      "picked": "{{n}} از {{total}} انتخاب شد",
+      "origin_badge": "همانی که کلیک کردید",
+      "readonly_badge": "فقط خواندنی",
+      "drive_root": "ریشه دیسک",
+      "readonly_note": "{{n}} نسخه در جایی قرار دارند که تنها دسترسی خواندن دارید — از اینجا نمی‌توان آن‌ها را به سطل زباله فرستاد.",
+      "confirm": "انتقال {{n}} پرونده به سطل زباله"
+    }
   },
   "music": {
+    "description": "توضیح",
+    "edit_playlist": "ویرایش لیست پخش",
     "create_playlist": "ایجاد فهرست پخش",
     "playlists": "فهرست‌های پخش",
     "no_playlists": "هنوز فهرست پخشی نیست",
@@ -514,6 +549,7 @@
     "new_folder_dotfile_hidden": "پوشه \"{{name}}\" ایجاد شد — طبق تنظیمات شما پنهان است.",
     "dotfiles_hidden_toast": "پرونده‌های پنهان مخفی شد",
     "dotfiles_shown_toast": "پرونده‌های پنهان نمایش داده شد",
+    "col_modified_by": "تغییر داده توسط",
     "col_modified": "تغییر یافته",
     "col_added": "افزوده شده",
     "col_created_by": "ایجاد شده توسط",
@@ -761,7 +797,6 @@
     "invalid_credentials": "نام کاربری یا رمز عبور نادرست است. آن‌ها را بررسی کنید و دوباره تلاش کنید.",
     "email_taken": "حسابی با این ایمیل از قبل وجود دارد. به‌جای آن وارد شوید.",
     "username_taken": "این نام کاربری قبلاً گرفته شده است. نام دیگری انتخاب کنید.",
-    "registration_disabled": "ثبت‌نام در این سرور غیرفعال است. از مدیر بخواهید حساب شما را بسازد.",
     "registration_password_required": "این سرور ایمیل ورود ارسال نمی‌کند. برای ساختن حساب خود یک رمز عبور وارد کنید.",
     "session_expired": "جلسه شما منقضی شد لطفاً دوباره وارد شوید.",
     "signing_in": "ورود به سیستم…",
@@ -827,6 +862,17 @@
     "added_msg": "به موارد علاقه‌مند افزوده شد",
     "removed_title": "از موارد علاقه‌مند حذف شد",
     "removed_msg": "از موارد علاقه‌مند حذف شد"
+  },
+  "changes": {
+    "empty_state": "تغییر اخیری وجود ندارد",
+    "empty_hint": "تغییرات فایل‌هایی که به آن‌ها دسترسی دارید اینجا نمایش داده می‌شود",
+    "col_changed": "تغییر یافته",
+    "lane_files": "{{n}} فایل",
+    "cap_lanes": "{{n}} مورد اخیر برای هر نفر",
+    "window": "محدوده زمانی",
+    "window_7": "۷ روز گذشته",
+    "window_30": "۳۰ روز گذشته",
+    "window_90": "۹۰ روز گذشته"
   },
   "recent": {
     "title": "اخیر",
@@ -961,7 +1007,7 @@
     "confirm_action": "تأیید عملیات",
     "confirm_yes": "تأیید",
     "confirm_no": "انصراف",
-    "error_username_short": "نام کاربری حداقل ۳ کاراکتر",
+    "error_username_length": "نام کاربری باید بین ۲ تا ۶۴ کاراکتر باشد",
     "error_password_short": "رمز عبور حداقل ۸ کاراکتر",
     "error_generic": "خطا",
     "error_network": "خطای شبکه: {{message}}",
@@ -1289,6 +1335,10 @@
       "delete_title": "حذف اتصال"
     },
     "jobs": {
+      "params_title": "اجرای {{name}}",
+      "params_default": "پیش‌فرض: {{value}}",
+      "params_no_default": "بدون پیش‌فرض",
+      "params_none": "این کار پارامتری نمی‌گیرد.",
       "run_all_consistency": "تمام بررسی های سازگاری را اجرا کنید",
       "run_deep": "بررسی عمیق",
       "run_deep_hint": "همچنین انواع آهسته را اجرا می کند (هش مجدد حباب، تشخیص بیتوت).",
@@ -1500,6 +1550,9 @@
     "oxicloud_version": "نسخهٔ OxiCloud",
     "storage_cache_recommended_title": "فعال‌سازی کش محلی blobها",
     "storage_cache_recommended_howto": "برای فعال‌سازی OXICLOUD_STORAGE_CACHE_ENABLED=true را تنظیم کنید.",
+    "opaque_migration_recommended_title": "فعال‌سازی OPAQUE در حالت migrate",
+    "opaque_migration_recommended_body": "به‌شدت توصیه می‌شود OPAQUE را در حالت migrate فعال کنید تا زمینه گذار به حالتی فراهم شود که گذرواژه‌ها هرگز به سرور فرستاده نشوند. این گامی کلیدی به سوی رمزگذاری سرتاسری است.",
+    "opaque_migration_recommended_howto": "با `oxicloud opaque setup` یک کلید بسازید، آن را در OXICLOUD_AUTH_OPAQUE_SERVER_SETUP نگه دارید و سپس OXICLOUD_AUTH_OPAQUE_MODE=migrate را تنظیم کنید. حساب‌های موجود در ورود بعدی منتقل می‌شوند و چیزی برای آن‌ها تغییر نمی‌کند.",
     "section_cache": "کش ذخیره‌سازی",
     "cache_memory": "حافظه (moka)",
     "cache_memory_files": "حافظه (moka) · کش فایل‌ها",
@@ -1701,6 +1754,7 @@
     "type": "نوع",
     "type.folders": "پوشه‌ها",
     "accessedAt": "تاریخ دسترسی",
+    "changedAt": "تاریخ تغییر",
     "modifiedAt": "تاریخ تغییر",
     "createdAt": "تاریخ ایجاد",
     "size": "اندازه",
@@ -1858,7 +1912,13 @@
     "archives": "آرشیوها",
     "documents": "اسناد",
     "images": "تصاویر",
-    "installers": "نصب کننده ها",
+    "config": "تنظیمات",
+    "disk_images": "تصاویر دیسک",
+    "ebooks": "کتاب‌های الکترونیکی",
+    "executables": "برنامه‌ها",
+    "fonts": "قلم‌ها",
+    "packages": "بسته‌ها",
+    "unknown": "ناشناخته",
     "markdown": "مارک داون",
     "presentations": "ارائه ها",
     "spreadsheets": "صفحات گسترده",
@@ -1899,6 +1959,7 @@
     "retry": "دوباره امتحان کنید",
     "select": "انتخاب کنید",
     "select_all": "همه را انتخاب کنید",
+    "filter": "فیلتر",
     "dismiss": "رد کردن"
   },
   "device": {
@@ -1947,6 +2008,8 @@
     "size_label": "اندازه",
     "title": "جست‌و‌جو",
     "type": {
+      "code": "کد",
+      "folder": "پوشه‌ها",
       "audio": "صوتی",
       "all": "همه انواع",
       "image": "تصاویر",
@@ -2030,6 +2093,8 @@
     "banner_cta": "ارتقا"
   },
   "drive": {
+    "copied_n": "{{n}} مورد به {{drive}} کپی شد",
+    "moved_n": "{{n}} مورد به {{drive}} منتقل شد",
     "read_only_banner": {
       "title": "این دیسک فقط‌خواندنی است",
       "title_named": "دیسک «{{name}}» فقط‌خواندنی است",
@@ -2124,5 +2189,17 @@
   },
   "sidebar": {
     "oxicloud_version": "OxiCloud"
+  },
+  "error": {
+    "not_found": {
+      "title": "ابری سرگردان",
+      "body": "این ابر کوچک کمی زیاد دور شده است. صفحه‌ای که خواستید هیچ‌جا پیدا نشد.",
+      "art_alt": "ابر کوچکی که بیش از حد دور شده است"
+    },
+    "generic": {
+      "title": "خطایی رخ داد",
+      "body": "لطفاً چند لحظه بعد دوباره تلاش کنید."
+    },
+    "go_home": "رفتن به خانه"
   }
 }

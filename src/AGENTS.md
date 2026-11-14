@@ -48,6 +48,19 @@ Non-obvious rules that trip up new code. Terse on purpose.
 - **Inbound TLS is NOT our concern.** OxiCloud serves plain HTTP(S)/WS; TLS termination for the SPA / API / WebDAV / CalDAV / CardDAV / WOPI / `/api/rt/ws` is the operator's reverse proxy (nginx / traefik / caddy / cloud LB). Do not add a cert-reading knob to OxiCloud itself.
 - **If a new upstream crate exposes NO native-roots feature**, raise it to Ed before merging — do NOT silently ship bundled-roots behavior to buy a dep. Precedent: the aws-sdk-s3 → aws-smithy-http-client chain already uses native by SDK default; a crate that cannot be configured to native is a scope-exit discussion, not a merge decision.
 
+## Migrations — cost review before merge
+
+Every migration that touches an existing table is reviewed for cost at 10k-user
+scale, not just for correctness on a dev instance. State the answer in the
+migration's own comment so a reviewer need not re-derive it.
+
+- **Name the complexity of any `UPDATE` / `INSERT … SELECT` over a whole table, and read the table's triggers before claiming O(N).** Two shapes cost more than the rewrite itself: a `FOR EACH ROW` trigger that walks a tree (O(N · depth), and it serialises on shared ancestors), and a `FOR EACH STATEMENT` trigger with `REFERENCING OLD TABLE / NEW TABLE` — Postgres materialises both transition tables for the entire statement *before* the function can decide it has nothing to do, so one bulk UPDATE builds two full copies of the table and spills to temp files. `storage.files` carries the second kind.
+- **A bulk backfill disables the triggers that are not part of its meaning, and re-enables them in the same migration.** `ALTER TABLE … DISABLE TRIGGER files_bump_tree_etag_upd; … ENABLE TRIGGER …` — precedent: `20261103000006_files_content_modified_at.sql` and `20261110000000_file_content_provenance_and_touches.sql`. Both halves, always, and rely on DDL being transactional so a failure restores them with everything else — an instance left with triggers off is silent data divergence. `files_enqueue_search_upd` is the other one on that table: backfilling provenance is not a content change and must not enqueue a full reindex.
+- **Check what the written column is indexed by.** Updating an unindexed column lets Postgres use heap-only tuples and skip index maintenance entirely; adding an index on it *before* the backfill forfeits that. Create such indexes after.
+- **`statement_timeout` is the realistic failure, not complexity.** One long `UPDATE` inside the migration aborts and boot fails if the role or database sets a timeout. That is the right failure (loud, not silent), but say so in the migration comment so the operator knows to raise it for the window.
+- **Too big for one transaction → make it a startup job, not a longer migration.** `OXICLOUD_STARTUP_JOBS` runs chunked, resumable backfills (both thumbnail migrations do this); a migration cannot resume from a cursor.
+- **`ADD COLUMN` nullable with no default is metadata-only** (PG 11+) — cheap even on a huge table. A `NOT NULL` default or a type change rewrites the table; those need the job route above.
+
 ## OpenAPI
 
 - **Every new `#[utoipa::path(...)]` handler MUST also be added to the `paths(...)` list in `src/interfaces/api/mod.rs`.** utoipa emits ONLY registered paths; the annotation alone is invisible to `resources/gen/openapi.json`. Historical drift found 21 annotated handlers that never reached the spec (admin drives, admin jobs pause/findings/purge, admin SMTP, admin storage rotate, admin promote-to-internal, admin sessions list/revoke, all OPAQUE endpoints, DPoP bind, magic-link send, profile PATCH, upgrade-to-internal, drive delete/members/policies/quota, grant notify, trash per-drive, user profile, dedup check-batch) — they all had valid `#[utoipa::path]` blocks but nobody registered them.

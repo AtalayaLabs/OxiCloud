@@ -1,0 +1,81 @@
+/* Swimlane skin — shared by `ResourceList`'s grouped views and `/shared`'s
+ * grant lanes, which arrived at the same object by different routes and had
+ * drifted: different radius, one with a border and one with a shadow, one
+ * with a tinted header strip and one without, and sticky on only one of them.
+ *
+ * SKIN ONLY: geometry, surface, divider, sticky behaviour. What a lane
+ * CONTAINS and how that content is typeset stays with the caller — a bucket
+ * label is a small muted caption, a `/shared` lane header is a resource name
+ * with a share control, and forcing those into one rule would be a worse
+ * abstraction than the duplication it removed.
+ *
+ * Global classes rather than a Svelte component: the two call sites render
+ * entirely different children and own their own interaction wiring, so the
+ * skin is the honest overlap. A wrapper component would have to re-expose
+ * every slot and event to earn its keep.
+ *
+ * Not in `ported/` on purpose: that directory is byte-faithful legacy CSS
+ * ("restyle via tokens, not here"), and this is a new cross-page pattern.
+ */
+
+.lane {
+	--lane-radius: var(--radius-xl);
+	display: flex;
+	flex-direction: column;
+	border-radius: var(--lane-radius);
+	background-color: var(--color-item);
+	box-shadow: 0 1px 3px var(--color-shadow-xs);
+	/* Clips the rows to the radius. `clip`, NOT `hidden`: `hidden` makes the
+       lane a scroll container, and a sticky header then resolves against a
+       box that never scrolls — it would not stick at all. */
+	overflow: clip;
+}
+
+/* For a lane whose children must escape the card: a row kebab that opens
+   downward past the last row (`/shared`). Gives up the radius clipping,
+   which is why the header below rounds its own top corners. */
+.lane--open {
+	overflow: visible;
+}
+
+.lane__header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--space-2);
+	/* top 12 · right 4 · bottom 12 · left 12 — the left inset lines the
+       label up inside the card rather than against its edge. */
+	padding: var(--space-3) var(--space-1) var(--space-3) var(--space-3);
+	background-color: var(--color-bg-muted);
+	border-bottom: 1px solid var(--color-border-faint);
+}
+
+/* Only inside a lane: keeps the tint within the card's corners for
+   `.lane--open` (a no-op where the lane clips), and leaves a header rendered
+   outside a card — the grouped GRID view, where the strip labels a grid
+   rather than topping a card — square. `-1px` for a lane that adds a
+   border. */
+.lane > .lane__header {
+	border-radius: calc(var(--lane-radius) - 1px) calc(var(--lane-radius) - 1px) 0 0;
+}
+
+/* The label rides the top of the viewport while its lane is on screen, and
+   the next lane's label pushes it out as that lane arrives. That comes free
+   from sticky's containing block being the lane, so a header can never
+   outlive its own rows.
+ *
+ * The page publishes `--lane-sticky-h`: the measured height of its
+ * `.page-sticky-header`. Measured, because that strip holds whatever the
+ * page put in it — a toolbar, a toolbar plus a breadcrumb, a merged title,
+ * two rows once controls wrap on a phone. `--space-5` backs out
+ * `.content-area`'s top padding, since that strip pins at
+ * `top: calc(-1 * var(--space-5))` and both offsets resolve against the same
+ * scrollport edge.
+ *
+ * The header's opaque background is load-bearing here: rows scroll under it.
+ */
+.lane__header--sticky {
+	position: sticky;
+	top: calc(var(--lane-sticky-h, 0px) - var(--space-5));
+	z-index: 1;
+}

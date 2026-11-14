@@ -156,6 +156,14 @@ pub fn create_web_routes(
         StaticSource::Embedded => web_routes_embedded(shell),
     };
 
+    // Canonical-URL redirects (`/mails` → `/mail`, `/calendar` →
+    // `/calendars`, …). Merged before the outer layers so a 301 pays
+    // the compression/robots/cache headers like any other short
+    // response, but AFTER `inner`'s SPA fallback was wired — Axum
+    // routes always beat `fallback_service`, so alias paths intercept
+    // the request even though the shell catches everything else.
+    let inner = inner.merge(canonical_redirects_router(&app_state));
+
     theme::mount(inner, app_state.theme_service.clone())
         // Fallback compression for assets without a precompressed sibling
         // (filesystem) or for embedded assets that were compressed at
@@ -181,6 +189,37 @@ pub fn create_web_routes(
             CACHE_CONTROL,
             HeaderValue::from_static("no-cache"),
         ))
+        // Keep every web response out of search indexes. A private file store
+        // has nothing it wants indexed, so this is a blanket default rather
+        // than a per-route opt-in.
+        //
+        // This is the STRONGER half of the pair with `static/robots.txt`, not
+        // a duplicate of it. `Disallow` asks a polite crawler not to fetch;
+        // `noindex` stops a page being indexed even when it IS fetched, which
+        // is the case that matters here: a public share link
+        // (`/s/<token>` — unauthenticated by design) that leaks into a
+        // crawlable page can otherwise be listed from that inbound link
+        // alone, without the crawler ever reading robots.txt for this host.
+        // `nofollow` additionally stops a crawler walking onward from a share
+        // page into whatever else that token can reach.
+        //
+        // Why it belongs on the shell layer specifically: `/s/<token>` is an
+        // unmatched client route, so it is served the SPA shell and resolved
+        // in the browser. A crawler that executes JS therefore sees real
+        // content from a 200 shell response, and the header is the only thing
+        // on that response that says "don't index this".
+        //
+        // `if_not_present`, consistent with the cache header above, so a
+        // handler that deliberately sets its own value keeps it.
+        //
+        // NOT access control, and nothing here should be mistaken for it: a
+        // share token's protection is that it is unguessable and expirable.
+        // An operator fronting OxiCloud with a public landing page overrides
+        // this at their reverse proxy.
+        .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("x-robots-tag"),
+            HeaderValue::from_static("noindex, nofollow"),
+        ))
         // Short-circuit `GET /login` to the OIDC authorize endpoint when
         // the AutoRedirectIfStandaloneOidc policy resolves. Runs BEFORE
         // the SPA shell is served, so there's no form-then-redirect flash.
@@ -203,6 +242,90 @@ pub fn create_web_routes(
             app_state,
             service_worker_allowed_header,
         ))
+}
+
+/// Canonical-URL redirect map. Each entry is a GET-only path-exact
+/// 301 Moved Permanently to the canonical form, preserving the query
+/// string. The browser caches the redirect per RFC 7231 §6.4.2, so a
+/// bookmarked typo pays the redirect once.
+///
+/// Covers both canonical shapes — plural for countable collections
+/// (`/files`, `/photos`, `/contacts`, `/calendars`, `/groups`) and
+/// singular for the mass-noun apps (`/mail`). The single-form and
+/// plural-form guesses go to whichever is canonical for that app;
+/// nothing else is matched, and nothing fuzzy / case-insensitive is
+/// done — URL paths are case-sensitive by RFC 3986.
+///
+/// `/mails` and `/calendar` currently redirect to pages that do not
+/// yet exist (the `/mail` and `/calendars` SPA shell pages are shipped
+/// on `feat/shell-tabbed`). Shipping the aliases ahead is still
+/// correct: a 301 to a 404 is the same user-visible outcome as a 404,
+/// and the moment the destination lands the aliases Just Work.
+const CANONICAL_REDIRECTS: &[(&str, &str)] = &[
+    // Singular ↔ plural guesses.
+    ("/mails", "/mail"),
+    ("/mailbox", "/mail"),
+    ("/calendar", "/calendars"),
+    ("/contact", "/contacts"),
+    ("/file", "/files"),
+    ("/photo", "/photos"),
+    ("/group", "/groups"),
+    ("/favorite", "/favorites"),
+    // Common synonyms from other products.
+    ("/inbox", "/mail"),  // Gmail / NC mental model — "inbox" means mail
+    ("/me", "/profile"),  // Google / Twitter "my account" shortcut
+    ("/drive", "/files"), // Google Drive mental model
+];
+
+/// Build a sub-router that registers each alias in [`CANONICAL_REDIRECTS`]
+/// as its own GET route emitting a 301 to the canonical form.
+/// Trailing-slash tolerance is handled by registering BOTH `/mails` and
+/// `/mails/` for every alias — Axum treats them as distinct routes by
+/// default, and we want a browser that auto-slashed an empty-last-segment
+/// URL to hit the same redirect.
+///
+/// Merged into the web router BEFORE the SPA fallback so these alias
+/// paths intercept the request instead of being swallowed by the shell.
+///
+/// Prefixing on the `Location` header is deliberate: `req.uri().path()`
+/// arrives nest-stripped at the handler, but the browser-facing URL has
+/// to carry the deployment base path. `prefixed_path` is the same helper
+/// `oidc_standalone_login_redirect` uses for the same reason.
+fn canonical_redirects_router(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
+    use axum::extract::RawQuery;
+    use axum::http::StatusCode;
+    use axum::http::header::LOCATION;
+    use axum::routing::get;
+
+    let mut router: Router<Arc<AppState>> = Router::new();
+    for (alias, canonical) in CANONICAL_REDIRECTS {
+        let state = app_state.clone();
+        let canonical = *canonical;
+        let handler = move |RawQuery(q): RawQuery| {
+            let state = state.clone();
+            async move {
+                let base = state.core.config.prefixed_path(canonical);
+                let target = match q {
+                    Some(q) if !q.is_empty() => format!("{base}?{q}"),
+                    _ => base,
+                };
+                // 301 (Moved Permanently), not 308. We only register GET
+                // on these aliases, so 308's method-preservation isn't
+                // needed; 301 is the long-established "this URL moved"
+                // signal every CDN, proxy and crawler recognizes. Built
+                // by hand because `axum::response::Redirect::permanent`
+                // emits 308.
+                (StatusCode::MOVED_PERMANENTLY, [(LOCATION, target)]).into_response()
+            }
+        };
+        // Both forms registered so `/mails/` lands on the same handler
+        // as `/mails`. The handler captures state + canonical by clone,
+        // so the two closures are independent.
+        router = router
+            .route(alias, get(handler.clone()))
+            .route(&format!("{alias}/"), get(handler));
+    }
+    router
 }
 
 /// Stamp `Service-Worker-Allowed: {base_path}` on the service-worker
@@ -252,10 +375,7 @@ fn web_routes_filesystem(
 
     let mut router = Router::new().nest_service(
         "/_app/immutable",
-        get_service(app_immutable).layer(SetResponseHeaderLayer::overriding(
-            CACHE_CONTROL,
-            HeaderValue::from_static("public, max-age=31536000, immutable"),
-        )),
+        get_service(app_immutable).layer(axum::middleware::map_response(immutable_cache_headers)),
     );
     if let Some(shell) = shell {
         router = router.route_service("/index.html", shell_service(shell));
@@ -291,6 +411,35 @@ fn shell_service(shell: Arc<AppShell>) -> axum::routing::MethodRouter<()> {
     })
 }
 
+/// `Cache-Control` for `/_app/immutable/*`, chosen by response status.
+///
+/// A HIT earns the year-long immutable cache: SvelteKit content-hashes
+/// these filenames, so the bytes behind a given URL can never change.
+///
+/// A MISS must not, and this is why the fn exists. It replaced a
+/// `SetResponseHeaderLayer::overriding`, which is status-blind — so a 404
+/// under this prefix was answered `public, max-age=31536000, immutable`,
+/// i.e. "cache this absence for a year". A browser that requested an
+/// asset during a deploy window, before the file existed on disk, pinned
+/// that 404 with no way to revalidate: the app stayed broken in that one
+/// profile until the user cleared their cache by hand, and nothing on the
+/// server could reach in and fix it. A hashed URL that 404s is exactly
+/// the case where you want the client to ask again.
+///
+/// Both halves of the negative value on purpose: `no-store` keeps it out
+/// of the HTTP cache, `no-cache` covers an intermediary that honours only
+/// the older directive.
+async fn immutable_cache_headers(mut res: Response) -> Response {
+    let value = if res.status().is_success() {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache, no-store"
+    };
+    res.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static(value));
+    res
+}
+
 /// Embedded-assets SPA — mirror of `web_routes_filesystem` using the
 /// [`embedded`] module's handlers instead of `ServeDir`. Same URL shape,
 /// same cache-header layers, same SPA-shell fallback semantics.
@@ -301,10 +450,8 @@ fn web_routes_embedded(shell: Option<Arc<AppShell>>) -> Router<Arc<AppState>> {
         return Router::new()
             .route(
                 "/_app/immutable/{*path}",
-                get(embedded::serve_immutable).layer(SetResponseHeaderLayer::overriding(
-                    CACHE_CONTROL,
-                    HeaderValue::from_static("public, max-age=31536000, immutable"),
-                )),
+                get(embedded::serve_immutable)
+                    .layer(axum::middleware::map_response(immutable_cache_headers)),
             )
             .route("/", get(embedded::serve_root_index))
             .fallback(get(embedded::serve_root));
@@ -312,10 +459,8 @@ fn web_routes_embedded(shell: Option<Arc<AppShell>>) -> Router<Arc<AppState>> {
     Router::new()
         .route(
             "/_app/immutable/{*path}",
-            get(embedded::serve_immutable).layer(SetResponseHeaderLayer::overriding(
-                CACHE_CONTROL,
-                HeaderValue::from_static("public, max-age=31536000, immutable"),
-            )),
+            get(embedded::serve_immutable)
+                .layer(axum::middleware::map_response(immutable_cache_headers)),
         )
         .route_service("/", shell_service(shell.clone()))
         .fallback_service({
@@ -587,6 +732,59 @@ fn find_ci(haystack: &str, needle: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression pin. `/_app/immutable/*` used to wear a status-blind
+    /// `SetResponseHeaderLayer::overriding`, so a MISS under that prefix
+    /// was answered `public, max-age=31536000, immutable` — a browser
+    /// that asked for an asset mid-deploy, before the file was on disk,
+    /// cached that 404 for a year and could not revalidate out of it.
+    /// Caught by inspecting a 404's headers, not by any test; a regression
+    /// here is silent at every other layer, because the response is
+    /// correct in every respect except one header value. Lives in this
+    /// module rather than Hurl because the fn is pure — it needs neither a
+    /// server nor an `AppState` to answer.
+    #[tokio::test]
+    async fn immutable_cache_is_negative_on_a_miss_and_long_on_a_hit() {
+        let header = |res: Response| {
+            res.headers()
+                .get(CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned)
+        };
+
+        let hit = Response::builder()
+            .status(axum::http::StatusCode::OK)
+            .body(axum::body::Body::empty())
+            .expect("valid response");
+        assert_eq!(
+            header(immutable_cache_headers(hit).await).as_deref(),
+            Some("public, max-age=31536000, immutable"),
+        );
+
+        let miss = Response::builder()
+            .status(axum::http::StatusCode::NOT_FOUND)
+            .body(axum::body::Body::empty())
+            .expect("valid response");
+        assert_eq!(
+            header(immutable_cache_headers(miss).await).as_deref(),
+            Some("no-cache, no-store"),
+        );
+
+        // A pre-set value is overwritten, not merged — the fn is the sole
+        // authority for this prefix, which is what `overriding` gave us
+        // and what the replacement has to keep.
+        let mut preset = Response::builder()
+            .status(axum::http::StatusCode::NOT_FOUND)
+            .body(axum::body::Body::empty())
+            .expect("valid response");
+        preset
+            .headers_mut()
+            .insert(CACHE_CONTROL, HeaderValue::from_static("max-age=99"));
+        assert_eq!(
+            header(immutable_cache_headers(preset).await).as_deref(),
+            Some("no-cache, no-store"),
+        );
+    }
 
     #[test]
     fn extracts_inline_script_content_verbatim() {

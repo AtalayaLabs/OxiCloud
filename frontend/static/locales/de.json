@@ -78,6 +78,7 @@
     "files": "Dateien",
     "shared": "Freigaben",
     "recent": "Zuletzt verwendet",
+    "changes": "Änderungen",
     "favorites": "Favoriten",
     "photos": "Medien",
     "music": "Musik",
@@ -118,9 +119,43 @@
     "tab_people": "Menschen",
     "map_loading": "Karte wird geladen…",
     "map_error": "Die Karte konnte nicht geladen werden",
-    "confirm_delete_one_permanent": "„{{name}}\" dauerhaft löschen? Diese Aktion kann nicht rückgängig gemacht werden."
+    "confirm_delete_one_permanent": "„{{name}}\" dauerhaft löschen? Diese Aktion kann nicht rückgängig gemacht werden.",
+    "filter_kind": "Medientyp",
+    "filter_drive": "Laufwerk",
+    "all_drives": "Alle Laufwerke",
+    "sort": {
+      "title": "Sortieren nach",
+      "direction": "Sortierrichtung",
+      "captured_at": "Aufnahmedatum",
+      "created_at": "Upload-Datum",
+      "updated_at": "Zuletzt geändert"
+    },
+    "filter_favorite": "Nur Favoriten",
+    "filter_favorite_on": "Es werden nur Favoriten angezeigt — klicken, um alle anzuzeigen",
+    "filter_favorite_off": "Nur Favoriten anzeigen",
+    "kind": {
+      "all": "Alle",
+      "photo": "Fotos",
+      "video": "Videos"
+    },
+    "dedup_dialog": {
+      "title": "Von diesem Inhalt gibt es Kopien",
+      "intro": "{{n}} Datei(en) auf Ihrem Laufwerk verweisen auf dieselben Bytes. Eine Kopie in den Papierkorb zu verschieben gibt den Inhalt nicht frei — wählen Sie jede Kopie aus, die in den Papierkorb soll.",
+      "trashed_note": "{{n}} weitere Kopie(n) liegen bereits in Ihrem Papierkorb und halten den Inhalt weiterhin. Löschen Sie sie im Papierkorb endgültig, um die Bytes wirklich freizugeben.",
+      "truncated": "Der Server hat diese Liste begrenzt. Es gibt weitere Kopien, die hier nicht angezeigt werden.",
+      "select_all": "Alle löschbaren auswählen",
+      "select_none": "Keine auswählen",
+      "picked": "{{n}} von {{total}} ausgewählt",
+      "origin_badge": "die angeklickte",
+      "readonly_badge": "nur lesen",
+      "drive_root": "Laufwerk-Wurzel",
+      "readonly_note": "{{n}} Kopie(n) liegen dort, wo Sie nur Lesezugriff haben — sie können von hier nicht in den Papierkorb verschoben werden.",
+      "confirm": "{{n}} Datei(en) in den Papierkorb"
+    }
   },
   "music": {
+    "description": "Beschreibung",
+    "edit_playlist": "Playlist bearbeiten",
     "create_playlist": "Playlist erstellen",
     "playlists": "Playlists",
     "no_playlists": "Noch keine Playlists",
@@ -514,6 +549,7 @@
     "new_folder_dotfile_hidden": "Ordner \"{{name}}\" erstellt — durch Ihre Einstellung ausgeblendet.",
     "dotfiles_hidden_toast": "Verborgene Dateien ausgeblendet",
     "dotfiles_shown_toast": "Verborgene Dateien angezeigt",
+    "col_modified_by": "Geändert von",
     "col_modified": "Geändert",
     "col_added": "Hinzugefügt",
     "col_created_by": "Erstellt von",
@@ -761,7 +797,6 @@
     "invalid_credentials": "Benutzername oder Passwort ist falsch. Prüfen Sie Ihre Eingaben und versuchen Sie es erneut.",
     "email_taken": "Für diese E-Mail-Adresse existiert bereits ein Konto. Melden Sie sich stattdessen an.",
     "username_taken": "Dieser Benutzername ist bereits vergeben. Wählen Sie einen anderen.",
-    "registration_disabled": "Registrierungen sind auf diesem Server deaktiviert. Bitten Sie einen Administrator, Ihr Konto zu erstellen.",
     "registration_password_required": "Dieser Server versendet keine Anmelde-E-Mails. Geben Sie ein Passwort ein, um Ihr Konto zu erstellen.",
     "session_expired": "Ihre Sitzung ist abgelaufen. Bitte melden Sie sich erneut an.",
     "signing_in": "Anmelden…",
@@ -827,6 +862,17 @@
     "added_msg": "zu Favoriten hinzugefügt",
     "removed_title": "Aus Favoriten entfernt",
     "removed_msg": "aus Favoriten entfernt"
+  },
+  "changes": {
+    "empty_state": "Keine letzten Änderungen",
+    "empty_hint": "Änderungen an Dateien, auf die Sie zugreifen können, erscheinen hier",
+    "col_changed": "Geändert",
+    "lane_files": "{{n}} Datei(en)",
+    "cap_lanes": "Top {{n}} pro Person",
+    "window": "Zeitraum",
+    "window_7": "Letzte 7 Tage",
+    "window_30": "Letzte 30 Tage",
+    "window_90": "Letzte 90 Tage"
   },
   "recent": {
     "title": "Zuletzt verwendet",
@@ -981,7 +1027,7 @@
     "confirm_action": "Aktion bestätigen",
     "confirm_yes": "Bestätigen",
     "confirm_no": "Abbrechen",
-    "error_username_short": "Benutzername muss mindestens 3 Zeichen haben",
+    "error_username_length": "Der Benutzername muss zwischen 2 und 64 Zeichen lang sein",
     "error_password_short": "Passwort muss mindestens 8 Zeichen haben",
     "error_generic": "Fehlgeschlagen",
     "error_network": "Netzwerkfehler: {{message}}",
@@ -1309,6 +1355,10 @@
       "delete_title": "Einbindung löschen"
     },
     "jobs": {
+      "params_title": "{{name}} ausführen",
+      "params_default": "Standard: {{value}}",
+      "params_no_default": "kein Standard",
+      "params_none": "Dieser Job nimmt keine Parameter.",
       "run_all_consistency": "Alle Konsistenzprüfungen ausführen",
       "run_deep": "Tiefenprüfung",
       "run_deep_hint": "Läuft auch langsame Varianten (Blob-Re-Hash, Bitrot-Erkennung).",
@@ -1520,6 +1570,9 @@
     "oxicloud_version": "OxiCloud-Version",
     "storage_cache_recommended_title": "Lokalen Blob-Cache aktivieren",
     "storage_cache_recommended_howto": "OXICLOUD_STORAGE_CACHE_ENABLED=true setzen, um zu aktivieren.",
+    "opaque_migration_recommended_title": "OPAQUE im Migrate-Modus aktivieren",
+    "opaque_migration_recommended_body": "Es wird dringend empfohlen, OPAQUE im Migrate-Modus zu aktivieren, um den Übergang dahin vorzubereiten, dass Passwörter nie mehr an den Server gesendet werden. Das ist ein wichtiger Schritt zur Ende-zu-Ende-Verschlüsselung.",
+    "opaque_migration_recommended_howto": "Erzeugen Sie einen Schlüssel mit `oxicloud opaque setup`, hinterlegen Sie ihn in OXICLOUD_AUTH_OPAQUE_SERVER_SETUP und setzen Sie dann OXICLOUD_AUTH_OPAQUE_MODE=migrate. Bestehende Konten wechseln bei der nächsten Anmeldung — für sie ändert sich nichts.",
     "section_cache": "Speicher-Cache",
     "cache_memory": "Speicher (moka)",
     "cache_memory_files": "Speicher (moka) · Datei-Cache",
@@ -1701,6 +1754,7 @@
     "type": "Typ",
     "type.folders": "Ordner",
     "accessedAt": "Zugriffsdatum",
+    "changedAt": "Änderungsdatum",
     "modifiedAt": "Änderungsdatum",
     "createdAt": "Erstellungsdatum",
     "size": "Größe",
@@ -1858,7 +1912,13 @@
     "archives": "Archiv",
     "documents": "Unterlagen",
     "images": "Bilder",
-    "installers": "Installateure",
+    "config": "Konfiguration",
+    "disk_images": "Datenträgerabbilder",
+    "ebooks": "E-Books",
+    "executables": "Anwendungen",
+    "fonts": "Schriftarten",
+    "packages": "Pakete",
+    "unknown": "Unbekannt",
     "markdown": "Abschlag",
     "presentations": "Präsentationen",
     "spreadsheets": "Tabellenkalkulationen",
@@ -1899,6 +1959,7 @@
     "retry": "Versuchen Sie es erneut",
     "select": "Wählen",
     "select_all": "Alles auswählen",
+    "filter": "Filtern",
     "dismiss": "Zurückweisen"
   },
   "device": {
@@ -1947,6 +2008,8 @@
     "size_label": "Größe",
     "title": "Suchen",
     "type": {
+      "code": "Code",
+      "folder": "Ordner",
       "audio": "Audio",
       "all": "Alle Typen",
       "image": "Bilder",
@@ -2030,6 +2093,8 @@
     "banner_cta": "Upgraden"
   },
   "drive": {
+    "copied_n": "{{n}} Element(e) nach {{drive}} kopiert",
+    "moved_n": "{{n}} Element(e) nach {{drive}} verschoben",
     "read_only_banner": {
       "title": "Dieses Laufwerk ist schreibgeschützt",
       "title_named": "Das Laufwerk „{{name}}\" ist schreibgeschützt",
@@ -2124,5 +2189,17 @@
   },
   "sidebar": {
     "oxicloud_version": "OxiCloud"
+  },
+  "error": {
+    "not_found": {
+      "title": "Kopf in den Wolken",
+      "body": "Dieses Wölkchen ist etwas zu weit abgedriftet. Die angeforderte Seite ist nirgends zu finden.",
+      "art_alt": "Ein kleines Wölkchen, das zu weit abgedriftet ist"
+    },
+    "generic": {
+      "title": "Etwas ist schiefgelaufen",
+      "body": "Bitte versuchen Sie es in einem Moment erneut."
+    },
+    "go_home": "Zur Startseite"
   }
 }

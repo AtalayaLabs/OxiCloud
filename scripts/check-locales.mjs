@@ -46,11 +46,11 @@ for (const file of readdirSync(localesDir).filter((f) => f.endsWith('.json') && 
         console.error(`\n${file}:`);
         if (missing.length)
             console.error(
-                `  missing ${missing.length}: ${missing.slice(0, 8).join(', ')}${missing.length > 8 ? ' …' : ''}`
+                `  missing ${missing.length}: ${missing.slice(0, 42).join(', ')}${missing.length > 42 ? ' …' : ''}`
             );
-        if (extra.length) console.error(`  extra ${extra.length}: ${extra.slice(0, 8).join(', ')}`);
+        if (extra.length) console.error(`  extra ${extra.length}: ${extra.slice(0, 42).join(', ')}`);
         if (badPh.length)
-            console.error(`  placeholder mismatch ${badPh.length}: ${badPh.slice(0, 8).join(', ')}`);
+            console.error(`  placeholder mismatch ${badPh.length}: ${badPh.slice(0, 42).join(', ')}`);
     }
 }
 

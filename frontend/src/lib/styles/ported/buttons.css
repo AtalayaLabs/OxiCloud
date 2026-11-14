@@ -3,6 +3,12 @@
     border-radius: var(--radius-2xl);
     border: none;
     cursor: pointer;
+    /* A button is never underlined. Belongs here rather than at the one
+       callsite that noticed: `.btn` on an <a> (the 404 page's "Go home")
+       otherwise keeps the UA's default underline, since nothing in the
+       base layer resets anchors. Harmless on <button>, which has no
+       underline to remove. */
+    text-decoration: none;
     display: flex;
     align-items: center;
     justify-content: center;

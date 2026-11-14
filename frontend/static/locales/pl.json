@@ -78,6 +78,7 @@
     "files": "Pliki",
     "shared": "Udostępnione",
     "recent": "Ostatnie",
+    "changes": "Zmiany",
     "favorites": "Ulubione",
     "photos": "Media",
     "music": "Muzyka",
@@ -118,9 +119,43 @@
     "tab_people": "Ludzie",
     "map_loading": "Ładowanie mapy…",
     "map_error": "Nie udało się załadować mapy",
-    "confirm_delete_one_permanent": "Trwale usunąć „{{name}}\"? Tej operacji nie można cofnąć."
+    "confirm_delete_one_permanent": "Trwale usunąć „{{name}}\"? Tej operacji nie można cofnąć.",
+    "filter_kind": "Typ multimediów",
+    "filter_drive": "Dysk",
+    "all_drives": "Wszystkie dyski",
+    "sort": {
+      "title": "Sortuj według",
+      "direction": "Kierunek sortowania",
+      "captured_at": "Data wykonania",
+      "created_at": "Data przesłania",
+      "updated_at": "Ostatnia modyfikacja"
+    },
+    "filter_favorite": "Tylko ulubione",
+    "filter_favorite_on": "Wyświetlane są tylko ulubione — kliknij, aby pokazać wszystkie",
+    "filter_favorite_off": "Pokaż tylko ulubione",
+    "kind": {
+      "all": "Wszystko",
+      "photo": "Zdjęcia",
+      "video": "Filmy"
+    },
+    "dedup_dialog": {
+      "title": "Ta treść ma kopie",
+      "intro": "{{n}} plik(ów) na Twoim dysku wskazuje te same bajty. Przeniesienie jednej kopii do kosza nie zwalnia treści — zaznacz każdą kopię, którą chcesz wysłać do kosza.",
+      "trashed_note": "{{n}} inna kopia / inne kopie są już w Twoim koszu i nadal przechowują treść. Usuń je trwale z widoku Kosza, aby naprawdę zwolnić bajty.",
+      "truncated": "Serwer ograniczył tę listę. Istnieje więcej kopii, które nie są tu pokazane.",
+      "select_all": "Zaznacz wszystkie usuwalne",
+      "select_none": "Odznacz wszystko",
+      "picked": "Zaznaczono {{n}} z {{total}}",
+      "origin_badge": "ta, którą kliknięto",
+      "readonly_badge": "tylko do odczytu",
+      "drive_root": "Katalog główny dysku",
+      "readonly_note": "{{n}} kopia / kopie znajdują się tam, gdzie masz tylko prawo odczytu — nie można ich przenieść do kosza z tego miejsca.",
+      "confirm": "Przenieś {{n}} plik(ów) do kosza"
+    }
   },
   "music": {
+    "description": "Opis",
+    "edit_playlist": "Edytuj playlistę",
     "create_playlist": "Utwórz playlistę",
     "playlists": "Playlisty",
     "no_playlists": "Brak playlist",
@@ -514,6 +549,7 @@
     "new_folder_dotfile_hidden": "Utworzono folder \"{{name}}\" — ukryty zgodnie z Twoją preferencją.",
     "dotfiles_hidden_toast": "Ukryte pliki ukryte",
     "dotfiles_shown_toast": "Ukryte pliki wyświetlone",
+    "col_modified_by": "Zmienione przez",
     "col_modified": "Zmodyfikowano",
     "col_added": "Dodano",
     "col_created_by": "Utworzone przez",
@@ -761,7 +797,6 @@
     "invalid_credentials": "Nieprawidłowa nazwa użytkownika lub hasło. Sprawdź je i spróbuj ponownie.",
     "email_taken": "Konto z tym adresem e-mail już istnieje. Zamiast tego zaloguj się.",
     "username_taken": "Ta nazwa użytkownika jest już zajęta. Wybierz inną.",
-    "registration_disabled": "Rejestracja jest wyłączona na tym serwerze. Poproś administratora o utworzenie konta.",
     "registration_password_required": "Ten serwer nie wysyła e-maili logowania. Wprowadź hasło, aby utworzyć konto.",
     "session_expired": "Twoja sesja wygasła. Zaloguj się ponownie.",
     "signing_in": "Logowanie…",
@@ -827,6 +862,17 @@
     "added_msg": "dodano do ulubionych",
     "removed_title": "Usunięto z ulubionych",
     "removed_msg": "usunięto z ulubionych"
+  },
+  "changes": {
+    "empty_state": "Brak ostatnich zmian",
+    "empty_hint": "Zmiany w plikach, do których masz dostęp, pojawią się tutaj",
+    "col_changed": "Zmieniono",
+    "lane_files": "Pliki: {{n}}",
+    "cap_lanes": "Najnowsze {{n}} na osobę",
+    "window": "Zakres czasu",
+    "window_7": "Ostatnie 7 dni",
+    "window_30": "Ostatnie 30 dni",
+    "window_90": "Ostatnie 90 dni"
   },
   "recent": {
     "title": "Ostatnie",
@@ -981,7 +1027,7 @@
     "confirm_action": "Potwierdź akcję",
     "confirm_yes": "Potwierdź",
     "confirm_no": "Anuluj",
-    "error_username_short": "Nazwa użytkownika musi mieć co najmniej 3 znaki",
+    "error_username_length": "Nazwa użytkownika musi mieć od 2 do 64 znaków",
     "error_password_short": "Hasło musi mieć co najmniej 8 znaków",
     "error_generic": "Niepowodzenie",
     "error_network": "Błąd sieci: {{message}}",
@@ -1309,6 +1355,10 @@
       "delete_title": "Usuń montowanie"
     },
     "jobs": {
+      "params_title": "Uruchom {{name}}",
+      "params_default": "domyślnie: {{value}}",
+      "params_no_default": "brak domyślnej wartości",
+      "params_none": "To zadanie nie przyjmuje parametrów.",
       "run_all_consistency": "Uruchom wszystkie kontrole spójności",
       "run_deep": "Głęboka analiza",
       "run_deep_hint": "Uruchamia również powolne warianty (ponowne mieszanie obiektów blob, wykrywanie bitrot).",
@@ -1520,6 +1570,9 @@
     "oxicloud_version": "Wersja OxiCloud",
     "storage_cache_recommended_title": "Włącz lokalną pamięć podręczną blobów",
     "storage_cache_recommended_howto": "Ustaw OXICLOUD_STORAGE_CACHE_ENABLED=true, aby włączyć.",
+    "opaque_migration_recommended_title": "Włącz OPAQUE w trybie migrate",
+    "opaque_migration_recommended_body": "Zdecydowanie zalecamy włączenie OPAQUE w trybie migrate, aby przygotować przejście do sytuacji, w której hasła nigdy nie są wysyłane na serwer. To kluczowy krok w stronę szyfrowania end-to-end.",
+    "opaque_migration_recommended_howto": "Wygeneruj klucz poleceniem `oxicloud opaque setup`, zapisz go w OXICLOUD_AUTH_OPAQUE_SERVER_SETUP, a następnie ustaw OXICLOUD_AUTH_OPAQUE_MODE=migrate. Istniejące konta przejdą przy następnym logowaniu — nic się dla nich nie zmieni.",
     "section_cache": "Pamięć podręczna pamięci masowej",
     "cache_memory": "Pamięć (moka)",
     "cache_memory_files": "Pamięć (moka) · Pamięć podręczna plików",
@@ -1701,6 +1754,7 @@
     "type": "Typ",
     "type.folders": "Foldery",
     "accessedAt": "Data dostępu",
+    "changedAt": "Data zmiany",
     "modifiedAt": "Data modyfikacji",
     "createdAt": "Data utworzenia",
     "size": "Rozmiar",
@@ -1858,7 +1912,13 @@
     "archives": "Archiwa",
     "documents": "Dokumenty",
     "images": "Obrazy",
-    "installers": "Instalatorzy",
+    "config": "Konfiguracja",
+    "disk_images": "Obrazy dysków",
+    "ebooks": "E-booki",
+    "executables": "Aplikacje",
+    "fonts": "Czcionki",
+    "packages": "Pakiety",
+    "unknown": "Nieznane",
     "markdown": "Obniżka cen",
     "presentations": "Prezentacje",
     "spreadsheets": "Arkusze kalkulacyjne",
@@ -1899,6 +1959,7 @@
     "retry": "Spróbuj ponownie",
     "select": "Wybierać",
     "select_all": "Zaznacz wszystko",
+    "filter": "Filtruj",
     "dismiss": "Odrzucać"
   },
   "device": {
@@ -1947,6 +2008,8 @@
     "size_label": "Rozmiar",
     "title": "Szukaj",
     "type": {
+      "code": "Kod",
+      "folder": "Foldery",
       "audio": "Audio",
       "all": "Wszystkie typy",
       "image": "Obrazy",
@@ -2030,6 +2093,8 @@
     "banner_cta": "Rozszerz"
   },
   "drive": {
+    "copied_n": "Skopiowano {{n}} element(y) do {{drive}}",
+    "moved_n": "Przeniesiono {{n}} element(y) do {{drive}}",
     "read_only_banner": {
       "title": "Ten Dysk jest tylko do odczytu",
       "title_named": "Dysk \"{{name}}\" jest tylko do odczytu",
@@ -2124,5 +2189,17 @@
   },
   "sidebar": {
     "oxicloud_version": "OxiCloud"
+  },
+  "error": {
+    "not_found": {
+      "title": "Głowa w chmurach",
+      "body": "Ta mała chmurka odpłynęła trochę za daleko. Żądanej strony nie można nigdzie znaleźć.",
+      "art_alt": "Mała chmurka, która odpłynęła za daleko"
+    },
+    "generic": {
+      "title": "Coś poszło nie tak",
+      "body": "Spróbuj ponownie za chwilę."
+    },
+    "go_home": "Wróć na stronę główną"
   }
 }

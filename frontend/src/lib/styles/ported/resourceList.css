@@ -188,15 +188,19 @@
 
 /* ── Per-item checkboxes (list + grid) ───────────────────── */
 
+/* Both cells, header and row: the list header's select-all used to match
+   neither rule (they were scoped to `.file-item`), so it rendered as a
+   browser-default ~13px box aligned to the start of its 36px track while
+   every row below centred a 20px one. */
 .list-header-checkbox,
-.file-item .checkbox-cell {
+.checkbox-cell {
     display: flex;
     align-items: center;
     justify-content: center;
 }
 
 .list-header-checkbox input[type="checkbox"],
-.file-item .checkbox-cell input[type="checkbox"] {
+.checkbox-cell input[type="checkbox"] {
     /* Bumped from 17px to 20px so the row-selection checkbox reads at
        a similar visual weight to the 28x28 action buttons that sit at
        the other end of the row (Ed's 2026-07-26 UX note). 20px is the
@@ -219,7 +223,7 @@
    block and beats this via specificity. Matches the "everything
    hovers to accent" convention shared with row-action buttons. */
 .list-header-checkbox input[type="checkbox"]:hover,
-.file-item .checkbox-cell input[type="checkbox"]:hover {
+.checkbox-cell input[type="checkbox"]:hover {
     outline: 2px solid var(--color-accent);
     outline-offset: 1px;
 }
@@ -384,7 +388,13 @@
     flex-direction: column;
     width: 100%;
     border-radius: var(--radius-xl);
-    overflow: hidden;
+    /* `clip`, NOT `hidden`: both clip the rows to this card's radius, but
+       `hidden` makes the card a scroll container, and the sticky
+       `.list-header` inside then resolves against a box that never scrolls —
+       so it does not stick at all. `clip` is not scrollable, so the header
+       keeps resolving against `.content-area`. Same reason `.lane` uses it
+       (`$lib/styles/lanes.css`). */
+    overflow: clip;
     background-color: var(--color-item);
     box-shadow: 0 1px 3px var(--color-shadow-xs);
 }
@@ -410,7 +420,7 @@
 }
 
 .files-list-view .file-item.drop-target {
-    border: 1px dashed var(--color-warning-border);
+    border: 1px solid var(--color-warning-border);
 }
 
 .files-list-view .file-item .name-cell {
@@ -426,6 +436,33 @@
    the name text span, not every descendant span, so `.file-icon__badge`
    overlay contents (avatars, chips) aren't sized as text. */
 .files-list-view .file-item .name-cell__text {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Name over path, stacked beside the icon (which stays centred against
+   both lines). `min-width: 0` is what lets the two lines ellipse instead
+   of forcing the cell wider than its track. */
+.files-list-view .file-item .name-cell__body {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-width: 0;
+}
+
+/* Where the item lives, subordinate to what it is called: a step down in
+   size and into the secondary colour, so the eye reads the name first and
+   the path only when it is looking for it. */
+.files-list-view .file-item .name-cell__path {
+    /* 11px — the smallest step in the scale, and the floor for this: below
+       `--text-2xs` the line stops being quietly legible and just becomes
+       hard to read. */
+    font-size: var(--text-2xs);
+    color: var(--color-text-secondary);
+    /* A touch further back than the secondary colour alone puts it, without
+       reaching for a dimmer token that would read as "disabled". */
+    opacity: 0.8;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -451,7 +488,15 @@
     display: none;
 }
 
-.files-list-view .file-item .file-icon {
+/* `.file-icon--row` is the same recipe addressable WITHOUT the list-view
+   ancestry, for surfaces that want a row's file glyph outside a
+   `ResourceList` — `/shared`'s swimlane headers name a resource and should
+   name it the way every list does. Pages pass
+   `file-icon file-icon--row file-icon--<kind>`; the kind class is what sets
+   `--fk`. Shared rule rather than a copy: a second definition would drift
+   the moment either is tuned. */
+.files-list-view .file-item .file-icon,
+.file-icon--row {
     width: 40px;
     height: 40px;
     display: flex;
@@ -714,13 +759,28 @@
     border-color: var(--color-accent);
 }
 
-/* The thumbnail subtly zooms inside its clipped tile on hover — the "alive"
-   feel of a premium gallery. */
-.files-grid-view .file-item .file-icon .file-thumb {
+/* The tile's CONTENT subtly zooms inside its clipped tile on hover — the
+   "alive" feel of a premium gallery.
+
+   On the children, never on `.file-icon` itself: that element is the clip
+   (`overflow: hidden`) and the positioning context for the overlay chip and
+   the row badge. Scaling it would grow the tile past its box, drag those
+   overlays with it, and leave nothing to crop the zoom against.
+
+   Both children, so a file WITHOUT a thumbnail behaves like one with: the
+   type icon is always rendered and the `<img>` merely covers it, so an
+   icon-only tile was the one card in the grid that did not respond. `> svg`
+   / `> i` are direct children on purpose — the overlay chip's own avatar is
+   nested deeper and must not scale with the tile. */
+.files-grid-view .file-item .file-icon .file-thumb,
+.files-grid-view .file-item .file-icon > svg,
+.files-grid-view .file-item .file-icon > i {
     transition: transform var(--motion-moderate) var(--ease-standard);
 }
 
-.files-grid-view .file-item:hover .file-icon .file-thumb {
+.files-grid-view .file-item:hover .file-icon .file-thumb,
+.files-grid-view .file-item:hover .file-icon > svg,
+.files-grid-view .file-item:hover .file-icon > i {
     transform: scale(1.04);
 }
 
@@ -1016,7 +1076,7 @@
 
 .files-grid-view .file-item.drop-target {
     background-color: var(--color-warning-ring);
-    border: 2px dashed var(--color-warning-border);
+    border: 2px solid var(--color-warning-border);
 }
 
 /* Favorite star + shared button — resting/active state colors only.

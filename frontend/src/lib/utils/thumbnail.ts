@@ -45,8 +45,18 @@ const PDFJS_WORKER_URL = `${base}/vendors/pdf.worker.min.mjs`;
 let pdfjsLibPromise: Promise<any> | null = null;
 let pdfWorkerWarmed = false;
 
+/**
+ * The one pdf.js instance in the app.
+ *
+ * Exported because `PdfPreview.svelte` renders PDFs with pdf.js on browsers
+ * that have no embedded PDF viewer, and it must share this promise rather
+ * than importing the module again: the worker alone is ~1 MB, and two
+ * instances would mean two of them. Thumbnail generation gets there first in
+ * the usual flow (`ResourceList` calls `preloadPdf()` when it lists a PDF),
+ * so the viewer typically resolves an already-settled promise.
+ */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function getPdfjsLib(): Promise<any> {
+export function getPdfjsLib(): Promise<any> {
 	if (!pdfjsLibPromise) {
 		pdfjsLibPromise = import(/* @vite-ignore */ PDFJS_LIB_URL)
 			.then((lib) => {

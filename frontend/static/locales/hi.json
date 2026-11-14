@@ -78,6 +78,7 @@
     "files": "फ़ाइलें",
     "shared": "साझा",
     "recent": "हाल ही में",
+    "changes": "बदलाव",
     "favorites": "पसंदीदा",
     "photos": "मीडिया",
     "music": "संगीत",
@@ -118,9 +119,43 @@
     "tab_people": "लोग",
     "map_loading": "मानचित्र लोड हो रहा है...",
     "map_error": "मानचित्र लोड नहीं हो सका",
-    "confirm_delete_one_permanent": "«{{name}}» को स्थायी रूप से हटाएँ? यह क्रिया पूर्ववत नहीं की जा सकती।"
+    "confirm_delete_one_permanent": "«{{name}}» को स्थायी रूप से हटाएँ? यह क्रिया पूर्ववत नहीं की जा सकती।",
+    "filter_kind": "मीडिया प्रकार",
+    "filter_drive": "ड्राइव",
+    "all_drives": "सभी ड्राइव",
+    "sort": {
+      "title": "क्रमबद्ध करें",
+      "direction": "क्रम की दिशा",
+      "captured_at": "खींचने की तारीख",
+      "created_at": "अपलोड की तारीख",
+      "updated_at": "अंतिम बदलाव"
+    },
+    "filter_favorite": "केवल पसंदीदा",
+    "filter_favorite_on": "केवल पसंदीदा दिखाए जा रहे हैं — सभी देखने के लिए क्लिक करें",
+    "filter_favorite_off": "केवल पसंदीदा दिखाएँ",
+    "kind": {
+      "all": "सभी",
+      "photo": "फ़ोटो",
+      "video": "वीडियो"
+    },
+    "dedup_dialog": {
+      "title": "इस सामग्री की प्रतियाँ हैं",
+      "intro": "आपकी ड्राइव में {{n}} फ़ाइलें एक ही सामग्री की ओर इशारा करती हैं। एक प्रति को रद्दी में भेजने से सामग्री मुक्त नहीं होती — जिन सभी प्रतियों को रद्दी में भेजना है उन्हें चुनें।",
+      "trashed_note": "{{n}} अन्य प्रतियाँ पहले से आपकी रद्दी में हैं और अभी भी सामग्री रोके हुए हैं। जगह वास्तव में खाली करने के लिए उन्हें रद्दी से स्थायी रूप से हटाएँ।",
+      "truncated": "सर्वर ने यह सूची सीमित कर दी। और प्रतियाँ मौजूद हैं जो यहाँ नहीं दिखाई गई हैं।",
+      "select_all": "सभी हटाने योग्य चुनें",
+      "select_none": "कोई नहीं चुनें",
+      "picked": "{{total}} में से {{n}} चुनी गईं",
+      "origin_badge": "जिस पर आपने क्लिक किया",
+      "readonly_badge": "केवल पढ़ें",
+      "drive_root": "ड्राइव की जड़",
+      "readonly_note": "{{n}} प्रतियाँ ऐसी जगह हैं जहाँ आपके पास केवल पढ़ने की पहुँच है — उन्हें यहाँ से रद्दी में नहीं भेजा जा सकता।",
+      "confirm": "{{n}} फ़ाइलें रद्दी में भेजें"
+    }
   },
   "music": {
+    "description": "विवरण",
+    "edit_playlist": "प्लेलिस्ट संपादित करें",
     "create_playlist": "प्लेलिस्ट बनाएँ",
     "playlists": "प्लेलिस्ट",
     "no_playlists": "अभी कोई प्लेलिस्ट नहीं",
@@ -514,6 +549,7 @@
     "new_folder_dotfile_hidden": "फ़ोल्डर \"{{name}}\" बनाया गया — आपकी वरीयता के अनुसार छिपा हुआ है।",
     "dotfiles_hidden_toast": "छिपी फ़ाइलें छिपाई गईं",
     "dotfiles_shown_toast": "छिपी फ़ाइलें दिखाई गईं",
+    "col_modified_by": "किसने बदला",
     "col_modified": "संशोधित",
     "col_added": "जोड़ा गया",
     "col_created_by": "द्वारा बनाया गया",
@@ -761,7 +797,6 @@
     "invalid_credentials": "उपयोगकर्ता नाम या पासवर्ड गलत है। उन्हें जाँचें और फिर से कोशिश करें।",
     "email_taken": "इस ईमेल से पहले से एक खाता मौजूद है। इसके बजाय साइन इन करें।",
     "username_taken": "यह उपयोगकर्ता नाम पहले से लिया जा चुका है। कोई दूसरा चुनें।",
-    "registration_disabled": "इस सर्वर पर साइन-अप बंद हैं। किसी व्यवस्थापक से अपना खाता बनाने के लिए कहें।",
     "registration_password_required": "यह सर्वर साइन-इन ईमेल नहीं भेजता। अपना खाता बनाने के लिए पासवर्ड दर्ज करें।",
     "session_expired": "आपका सत्र समाप्त हो गया. कृपया पुनः साइन इन करें.",
     "signing_in": "इन कर रहे हैं…",
@@ -827,6 +862,17 @@
     "added_msg": "पसंदीदा में जोड़ा गया",
     "removed_title": "पसंदीदा से हटाया गया",
     "removed_msg": "पसंदीदा से हटाया गया"
+  },
+  "changes": {
+    "empty_state": "कोई हाल का बदलाव नहीं",
+    "empty_hint": "आपकी पहुँच वाली फ़ाइलों में हुए बदलाव यहाँ दिखेंगे",
+    "col_changed": "बदला गया",
+    "lane_files": "{{n}} फ़ाइलें",
+    "cap_lanes": "प्रति व्यक्ति नवीनतम {{n}}",
+    "window": "समय सीमा",
+    "window_7": "पिछले 7 दिन",
+    "window_30": "पिछले 30 दिन",
+    "window_90": "पिछले 90 दिन"
   },
   "recent": {
     "title": "हाल ही में",
@@ -981,7 +1027,7 @@
     "confirm_action": "कार्रवाई की पुष्टि",
     "confirm_yes": "पुष्टि",
     "confirm_no": "रद्द",
-    "error_username_short": "नाम कम से कम 3 अक्षर",
+    "error_username_length": "उपयोगकर्ता नाम 2 से 64 अक्षरों के बीच होना चाहिए",
     "error_password_short": "पासवर्ड कम से कम 8 अक्षर",
     "error_generic": "विफल",
     "error_network": "नेटवर्क त्रुटि: {{message}}",
@@ -1309,6 +1355,10 @@
       "delete_title": "माउंट हटाएँ"
     },
     "jobs": {
+      "params_title": "{{name}} चलाएँ",
+      "params_default": "डिफ़ॉल्ट: {{value}}",
+      "params_no_default": "कोई डिफ़ॉल्ट नहीं",
+      "params_none": "यह कार्य कोई पैरामीटर नहीं लेता।",
       "run_all_consistency": "सभी संगतता जांचें चलाएँ",
       "run_deep": "गहन जाँच",
       "run_deep_hint": "धीमे वेरिएंट (ब्लॉब री-हैश, बिट्रोट डिटेक्शन) भी चलाता है।",
@@ -1520,6 +1570,9 @@
     "oxicloud_version": "OxiCloud संस्करण",
     "storage_cache_recommended_title": "स्थानीय blob कैश सक्षम करें",
     "storage_cache_recommended_howto": "सक्षम करने के लिए OXICLOUD_STORAGE_CACHE_ENABLED=true सेट करें।",
+    "opaque_migration_recommended_title": "OPAQUE को migrate मोड में चालू करें",
+    "opaque_migration_recommended_body": "OPAQUE को migrate मोड में चालू करने की पुरज़ोर सलाह है, जिससे पासवर्ड कभी सर्वर पर न भेजे जाने की दिशा में बदलाव की तैयारी हो सके। यह एंड-टू-एंड एन्क्रिप्शन की दिशा में एक अहम कदम है।",
+    "opaque_migration_recommended_howto": "`oxicloud opaque setup` से कुंजी बनाएँ, उसे OXICLOUD_AUTH_OPAQUE_SERVER_SETUP में सुरक्षित रखें, फिर OXICLOUD_AUTH_OPAQUE_MODE=migrate सेट करें। मौजूदा खाते अगली लॉगिन पर स्वयं बदल जाएँगे — उनके लिए कुछ नहीं बदलेगा।",
     "section_cache": "स्टोरेज कैश",
     "cache_memory": "मेमोरी (moka)",
     "cache_memory_files": "मेमोरी (moka) · फ़ाइल कैश",
@@ -1701,6 +1754,7 @@
     "type": "प्रकार",
     "type.folders": "फ़ोल्डर",
     "accessedAt": "पहुँच की तारीख",
+    "changedAt": "बदलाव की तारीख",
     "modifiedAt": "संशोधन की तारीख",
     "createdAt": "बनाने की तारीख",
     "size": "आकार",
@@ -1858,7 +1912,13 @@
     "archives": "अभिलेखागार",
     "documents": "दस्तावेज़",
     "images": "इमेजिस",
-    "installers": "इंस्टॉलर",
+    "config": "कॉन्फ़िगरेशन",
+    "disk_images": "डिस्क इमेज",
+    "ebooks": "ई-पुस्तकें",
+    "executables": "एप्लिकेशन",
+    "fonts": "फ़ॉन्ट",
+    "packages": "पैकेज",
+    "unknown": "अज्ञात",
     "markdown": "markdown",
     "presentations": "प्रस्तुतियों",
     "spreadsheets": "स्प्रेडशीट्स",
@@ -1899,6 +1959,7 @@
     "retry": "पुनः प्रयास करें",
     "select": "चुनना",
     "select_all": "सबका चयन करें",
+    "filter": "फ़िल्टर",
     "dismiss": "नकार देना"
   },
   "device": {
@@ -1947,6 +2008,8 @@
     "size_label": "आकार",
     "title": "खोजें",
     "type": {
+      "code": "कोड",
+      "folder": "फ़ोल्डर",
       "audio": "ऑडियो",
       "all": "सभी प्रकार",
       "image": "छवियाँ",
@@ -2030,6 +2093,8 @@
     "banner_cta": "अपग्रेड"
   },
   "drive": {
+    "copied_n": "{{n}} आइटम {{drive}} में कॉपी किए गए",
+    "moved_n": "{{n}} आइटम {{drive}} में ले जाए गए",
     "read_only_banner": {
       "title": "यह ड्राइव केवल पढ़ने योग्य है",
       "title_named": "ड्राइव \"{{name}}\" केवल पढ़ने योग्य है",
@@ -2124,5 +2189,17 @@
   },
   "sidebar": {
     "oxicloud_version": "OxiCloud"
+  },
+  "error": {
+    "not_found": {
+      "title": "बादलों में खो गए",
+      "body": "यह छोटा बादल कुछ ज़्यादा ही दूर बह गया। आपने जो पेज मांगा वह कहीं नहीं मिला।",
+      "art_alt": "एक छोटा बादल जो बहुत दूर बह गया है"
+    },
+    "generic": {
+      "title": "कुछ गलत हो गया",
+      "body": "कृपया थोड़ी देर में फिर कोशिश करें।"
+    },
+    "go_home": "होम पर जाएँ"
   }
 }

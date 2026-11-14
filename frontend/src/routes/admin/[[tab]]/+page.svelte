@@ -104,7 +104,8 @@
 	import Icon from '$lib/icons/Icon.svelte';
 	import {
 		setCacheRecommended,
-		setNotificationSinkMissing
+		setNotificationSinkMissing,
+		setOpaqueMigrationRecommended
 	} from '$lib/stores/adminAdvisories.svelte';
 	import ActionMenu, { type ActionMenuItem } from '$lib/components/ActionMenu.svelte';
 	import ConfirmButton from '$lib/components/ConfirmButton.svelte';
@@ -476,6 +477,7 @@
 			// the flags only have visible effect on admin routes.
 			setCacheRecommended(dashboard.storage_cache_recommended === true);
 			setNotificationSinkMissing(dashboard.notification_sink_missing === true);
+			setOpaqueMigrationRecommended(dashboard.opaque_migration_recommended === true);
 		} catch (e) {
 			dashboardError = errorMessage(e);
 		}
@@ -1717,8 +1719,13 @@
 		e.preventDefault();
 		const username = newUser.username.trim();
 		const email = newUser.email.trim();
-		if (username.length < 3) {
-			createError = t('admin.error_username_short', 'Username must be at least 3 characters.');
+		// Check the normalized length here: an input maxlength would truncate a
+		// valid 64-character username pasted with surrounding whitespace.
+		if (username.length < 2 || username.length > 64) {
+			createError = t(
+				'admin.error_username_length',
+				'Username must be between 2 and 64 characters'
+			);
 			return;
 		}
 		// Length gate against the server's advertised
@@ -4956,7 +4963,7 @@
 				<input
 					bind:value={newUser.username}
 					data-testid="admin-create-user-username-input"
-					minlength="3"
+					minlength="2"
 					required
 				/></label
 			>

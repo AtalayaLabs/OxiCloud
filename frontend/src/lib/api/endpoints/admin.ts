@@ -396,6 +396,14 @@ export interface AdminDashboard {
 	 *  `false` on local-filesystem deployments (nothing to cache) and
 	 *  when the cache is already on. */
 	storage_cache_recommended: boolean;
+	/** `true` when password login is allowed AND
+	 *  `OXICLOUD_AUTH_OPAQUE_MODE=off`, so the server still receives
+	 *  and verifies raw passwords. `false` once OPAQUE is `migrate` or
+	 *  `opaque_only`, and also `false` when password login is disabled
+	 *  entirely — an OIDC-only deployment has no password path for an
+	 *  aPAKE to replace. Drives the "stop storing passwords
+	 *  server-side" advisory banner. */
+	opaque_migration_recommended: boolean;
 	/** `true` when NEITHER `OXICLOUD_JOBS_NOTIFY_EMAIL_TO` nor
 	 *  `OXICLOUD_WEBHOOK_URL` is configured — job-failure findings
 	 *  would be invisible to anyone not actively watching

@@ -2,6 +2,7 @@
 	import { SvelteMap } from 'svelte/reactivity';
 	import { primeContextPage } from '$lib/utils/listContext';
 	import Button from '$lib/components/Button.svelte';
+	import PersonBucketLabel from '$lib/components/PersonBucketLabel.svelte';
 	import { useOwnerCache } from '$lib/composables/useOwnerCache.svelte';
 	import { errorToast } from '$lib/utils/errors';
 	import { goto } from '$app/navigation';
@@ -128,6 +129,8 @@
 
 	let viewerOpen = $state(false);
 	let viewerFile = $state<FileItem | null>(null);
+	/** What the viewer's previous / next step through, in list order. */
+	const viewerFiles = $derived(items.filter(isFile));
 
 	// The file preview is loaded the first time a file is opened, keeping its
 	// module out of this route's initial chunk.
@@ -369,11 +372,23 @@
 			onclick={() => sel.forEach(unfavorite)}
 		></Button>
 	{/snippet}
+	{#snippet bucketLabel(key, label)}
+		<!-- Grouped by Owner, each lane IS a person, so the header carries their
+		     avatar. `key` is only a user id on that axis — on type / size / date
+		     it is a bucket name, which is why the id is passed conditionally
+		     rather than blindly. -->
+		<PersonBucketLabel userId={groupBy === 'owner' ? key : null} {label} />
+	{/snippet}
 </ResourceList>
 
 {#if fileViewer.component}
 	{@const FileViewer = fileViewer.component}
-	<FileViewer bind:open={viewerOpen} file={viewerFile} />
+	<FileViewer
+		bind:open={viewerOpen}
+		file={viewerFile}
+		files={viewerFiles}
+		onnavigate={(f) => (viewerFile = f)}
+	/>
 {/if}
 {#if moveDialog.component}
 	{@const MoveDialog = moveDialog.component}

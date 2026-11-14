@@ -135,7 +135,8 @@ function resetFeatures() {
 		calendars: true,
 		nextcloud: false,
 		markdown_collab: false,
-		shared_worker_bus: true
+		shared_worker_bus: true,
+		recent_changes: true
 	};
 }
 
@@ -282,6 +283,21 @@ it('hides /music when features.music is false', () => {
 	serverConfig.features = { ...serverConfig.features, music: false };
 	render(AppShell, { props: { children } });
 	expect(screen.queryByTestId('appshell-nav-music-link')).toBeNull();
+});
+
+// Both halves, because a gate that renders nothing satisfies the first one
+// on its own: hidden when off, PRESENT when on. The flag gates the server
+// route too, so a link left behind when ops disables the feature lands on a
+// 404 (`docs/plan/recently-modified.md` §5).
+it('hides /changes when features.recent_changes is false', () => {
+	serverConfig.features = { ...serverConfig.features, recent_changes: false };
+	render(AppShell, { props: { children } });
+	expect(screen.queryByTestId('appshell-nav-changes-link')).toBeNull();
+});
+
+it('shows /changes when features.recent_changes is true', () => {
+	render(AppShell, { props: { children } });
+	expect(screen.queryByTestId('appshell-nav-changes-link')).toBeTruthy();
 });
 
 it('hides /contacts when features.contacts is false', () => {
