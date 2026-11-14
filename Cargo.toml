@@ -195,7 +195,6 @@ azure_core = { version = "0.21", default-features = false, features = ["enable_r
 azure_storage = { version = "0.21", default-features = false, features = ["enable_reqwest_rustls", "hmac_rust"] }
 azure_storage_blobs = { version = "0.21", default-features = false, features = ["enable_reqwest_rustls", "hmac_rust"] }
 aes-gcm = "0.10.3"
-lru = "0.16.4"
 fastcdc = { version = "4.0.0", features = ["tokio"] }
 lettre = { version = "0.11.18", default-features = false, features = ["smtp-transport", "tokio1-rustls-tls", "rustls-native-certs", "builder"] }
 idna = "1.1"
@@ -281,6 +280,15 @@ bundled-assets = ["dep:rust-embed"]
 
 [dev-dependencies]
 criterion = "0.5"
+# `examples/bench_blob_cache_index.rs` ONLY — the benchmark that compares the
+# old `Mutex<LruCache>` blob-cache index against the moka byte-weigher that
+# replaced it. Nothing under `src/` has used `lru` since that swap (the
+# remaining mentions in `file_content_cache.rs` and `cached_blob_backend.rs`
+# are comments describing what moka replaced), which is why cargo 1.100's new
+# `cargo::unused_dependencies` manifest lint flagged it. Here rather than
+# deleted so the comparison the benchmark documents stays runnable; here
+# rather than in `[dependencies]` so the shipped binary stops carrying it.
+lru = "0.16.4"
 # Ephemeral service containers for integration tests (gated by
 # `--cfg integration_tests`). `testcontainers-modules` re-exports the
 # `testcontainers` runner, so the postgres image + runner come from one dep.

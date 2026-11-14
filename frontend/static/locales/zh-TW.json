@@ -78,6 +78,7 @@
     "files": "檔案",
     "shared": "共享",
     "recent": "最近",
+    "changes": "變更",
     "favorites": "收藏",
     "photos": "媒體",
     "music": "音樂",
@@ -548,6 +549,7 @@
     "new_folder_dotfile_hidden": "已建立資料夾「{{name}}」——根據您的偏好隱藏。",
     "dotfiles_hidden_toast": "已隱藏隱藏檔案",
     "dotfiles_shown_toast": "已顯示隱藏檔案",
+    "col_modified_by": "變更者",
     "col_modified": "修改日期",
     "col_added": "新增日期",
     "col_created_by": "建立者",
@@ -861,6 +863,17 @@
     "removed_title": "已從收藏移除",
     "removed_msg": "已從收藏移除"
   },
+  "changes": {
+    "empty_state": "沒有最近的變更",
+    "empty_hint": "您可存取的檔案變更將顯示在此",
+    "col_changed": "已變更",
+    "lane_files": "{{n}} 個檔案",
+    "cap_lanes": "每人最近 {{n}} 個",
+    "window": "時間範圍",
+    "window_7": "最近 7 天",
+    "window_30": "最近 30 天",
+    "window_90": "最近 90 天"
+  },
   "recent": {
     "title": "最近",
     "clear": "清除最近",
@@ -994,7 +1007,7 @@
     "confirm_action": "確認操作",
     "confirm_yes": "確認",
     "confirm_no": "取消",
-    "error_username_short": "使用者名稱至少需要3個字元",
+    "error_username_length": "使用者名稱長度必須為2到64個字元",
     "error_password_short": "密碼至少需要8個字元",
     "error_generic": "失敗",
     "error_network": "網路錯誤：{{message}}",
@@ -1537,6 +1550,9 @@
     "oxicloud_version": "OxiCloud 版本",
     "storage_cache_recommended_title": "啟用本機 blob 快取",
     "storage_cache_recommended_howto": "設定 OXICLOUD_STORAGE_CACHE_ENABLED=true 以啟用。",
+    "opaque_migration_recommended_title": "啟用 migrate 模式的 OPAQUE",
+    "opaque_migration_recommended_body": "強烈建議啟用 migrate 模式的 OPAQUE，為密碼永不傳送到伺服器的方式做準備。這是邁向端對端加密的關鍵一步。",
+    "opaque_migration_recommended_howto": "用 `oxicloud opaque setup` 產生金鑰，儲存到 OXICLOUD_AUTH_OPAQUE_SERVER_SETUP，然後設定 OXICLOUD_AUTH_OPAQUE_MODE=migrate。現有使用者會在下次登入時自動移轉，對他們沒有任何影響。",
     "section_cache": "儲存快取",
     "cache_memory": "記憶體 (moka)",
     "cache_memory_files": "記憶體 (moka) · 檔案快取",
@@ -1738,6 +1754,7 @@
     "type": "類型",
     "type.folders": "資料夾",
     "accessedAt": "存取日期",
+    "changedAt": "變更日期",
     "modifiedAt": "修改日期",
     "createdAt": "建立日期",
     "size": "大小",
@@ -1942,6 +1959,7 @@
     "retry": "再試一次",
     "select": "選擇",
     "select_all": "選擇全部",
+    "filter": "篩選",
     "dismiss": "解僱"
   },
   "device": {

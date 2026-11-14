@@ -66,11 +66,13 @@
 		 *  built-ins land here. */
 		beforeGroupBy?: Snippet;
 
-		/** Rendered right after the dotfile eye toggle, inside
-		 *  `.view-toggle`. Page actions that belong with the view
-		 *  controls rather than the action bar's left cluster land
-		 *  here. */
-		afterDotfileToggle?: Snippet;
+		/** Rendered LAST inside `.view-toggle`, after the grid/list
+		 *  toggle. Page controls that belong with the view controls
+		 *  rather than the action bar's left cluster land here — the
+		 *  trailing slot, so a page's own control reads as an addition
+		 *  to the cluster rather than an interruption of it.
+		 *  `/changes` puts its filter button here. */
+		trailing?: Snippet;
 	}
 
 	let {
@@ -83,7 +85,7 @@
 		showViewMode = false,
 		showDotfileToggle = false,
 		beforeGroupBy,
-		afterDotfileToggle
+		trailing
 	}: Props = $props();
 
 	// Sort toggle defaults ON when a group-by list is provided —
@@ -111,11 +113,7 @@
 	// then collapses to its start-only layout without an empty
 	// right block occupying space.
 	const anyVisible = $derived(
-		(groups?.length ?? 0) > 0 ||
-			showViewMode ||
-			showDotfileToggle ||
-			!!beforeGroupBy ||
-			!!afterDotfileToggle
+		(groups?.length ?? 0) > 0 || showViewMode || showDotfileToggle || !!beforeGroupBy || !!trailing
 	);
 </script>
 
@@ -179,7 +177,6 @@
 				<Icon name={preferences.hideDotfiles ? 'eye-slash' : 'eye'} />
 			</button>
 		{/if}
-		{#if afterDotfileToggle}{@render afterDotfileToggle()}{/if}
 		{#if showViewMode && showDotfileToggle}
 			<span class="view-toggle-separator"></span>
 		{/if}
@@ -198,5 +195,6 @@
 				<Icon name={filesStore.viewMode === 'grid' ? 'list' : 'th'} />
 			</button>
 		{/if}
+		{#if trailing}{@render trailing()}{/if}
 	</div>
 {/if}

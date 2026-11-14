@@ -78,6 +78,7 @@
     "files": "फ़ाइलें",
     "shared": "साझा",
     "recent": "हाल ही में",
+    "changes": "बदलाव",
     "favorites": "पसंदीदा",
     "photos": "मीडिया",
     "music": "संगीत",
@@ -548,6 +549,7 @@
     "new_folder_dotfile_hidden": "फ़ोल्डर \"{{name}}\" बनाया गया — आपकी वरीयता के अनुसार छिपा हुआ है।",
     "dotfiles_hidden_toast": "छिपी फ़ाइलें छिपाई गईं",
     "dotfiles_shown_toast": "छिपी फ़ाइलें दिखाई गईं",
+    "col_modified_by": "किसने बदला",
     "col_modified": "संशोधित",
     "col_added": "जोड़ा गया",
     "col_created_by": "द्वारा बनाया गया",
@@ -861,6 +863,17 @@
     "removed_title": "पसंदीदा से हटाया गया",
     "removed_msg": "पसंदीदा से हटाया गया"
   },
+  "changes": {
+    "empty_state": "कोई हाल का बदलाव नहीं",
+    "empty_hint": "आपकी पहुँच वाली फ़ाइलों में हुए बदलाव यहाँ दिखेंगे",
+    "col_changed": "बदला गया",
+    "lane_files": "{{n}} फ़ाइलें",
+    "cap_lanes": "प्रति व्यक्ति नवीनतम {{n}}",
+    "window": "समय सीमा",
+    "window_7": "पिछले 7 दिन",
+    "window_30": "पिछले 30 दिन",
+    "window_90": "पिछले 90 दिन"
+  },
   "recent": {
     "title": "हाल ही में",
     "clear": "हाल ही का साफ़ करें",
@@ -1014,7 +1027,7 @@
     "confirm_action": "कार्रवाई की पुष्टि",
     "confirm_yes": "पुष्टि",
     "confirm_no": "रद्द",
-    "error_username_short": "नाम कम से कम 3 अक्षर",
+    "error_username_length": "उपयोगकर्ता नाम 2 से 64 अक्षरों के बीच होना चाहिए",
     "error_password_short": "पासवर्ड कम से कम 8 अक्षर",
     "error_generic": "विफल",
     "error_network": "नेटवर्क त्रुटि: {{message}}",
@@ -1557,6 +1570,9 @@
     "oxicloud_version": "OxiCloud संस्करण",
     "storage_cache_recommended_title": "स्थानीय blob कैश सक्षम करें",
     "storage_cache_recommended_howto": "सक्षम करने के लिए OXICLOUD_STORAGE_CACHE_ENABLED=true सेट करें।",
+    "opaque_migration_recommended_title": "OPAQUE को migrate मोड में चालू करें",
+    "opaque_migration_recommended_body": "OPAQUE को migrate मोड में चालू करने की पुरज़ोर सलाह है, जिससे पासवर्ड कभी सर्वर पर न भेजे जाने की दिशा में बदलाव की तैयारी हो सके। यह एंड-टू-एंड एन्क्रिप्शन की दिशा में एक अहम कदम है।",
+    "opaque_migration_recommended_howto": "`oxicloud opaque setup` से कुंजी बनाएँ, उसे OXICLOUD_AUTH_OPAQUE_SERVER_SETUP में सुरक्षित रखें, फिर OXICLOUD_AUTH_OPAQUE_MODE=migrate सेट करें। मौजूदा खाते अगली लॉगिन पर स्वयं बदल जाएँगे — उनके लिए कुछ नहीं बदलेगा।",
     "section_cache": "स्टोरेज कैश",
     "cache_memory": "मेमोरी (moka)",
     "cache_memory_files": "मेमोरी (moka) · फ़ाइल कैश",
@@ -1738,6 +1754,7 @@
     "type": "प्रकार",
     "type.folders": "फ़ोल्डर",
     "accessedAt": "पहुँच की तारीख",
+    "changedAt": "बदलाव की तारीख",
     "modifiedAt": "संशोधन की तारीख",
     "createdAt": "बनाने की तारीख",
     "size": "आकार",
@@ -1942,6 +1959,7 @@
     "retry": "पुनः प्रयास करें",
     "select": "चुनना",
     "select_all": "सबका चयन करें",
+    "filter": "फ़िल्टर",
     "dismiss": "नकार देना"
   },
   "device": {

@@ -11,15 +11,16 @@ import { loadEnv } from './load-env';
  * Two run modes, controlled by the `OXICLOUD_SHARED_WORKER_MODE` env var,
  * executed SEQUENTIALLY (same port, same storage, one backend at a time):
  *
- *   * **default (`OXICLOUD_SHARED_WORKER_MODE` unset)** —
- *     production-shape (opt-in OFF → per-tab mode). Backend boots with
- *     `OXICLOUD_ENABLE_SHARED_WORKER_BUS` unset; the suite runs every
- *     spec EXCEPT the `message-bus-*.spec.ts` ones. `networkidle`
+ *   * **default (`OXICLOUD_SHARED_WORKER_MODE` unset)** — per-tab mode.
+ *     Backend boots with `OXICLOUD_ENABLE_SHARED_WORKER_BUS=false`, set
+ *     explicitly: this is no longer the server's default, so leaving it
+ *     unset would silently run this pass in shared mode. The suite runs
+ *     every spec EXCEPT the `message-bus-*.spec.ts` ones. `networkidle`
  *     works here because nothing opens a WS until a consumer
  *     subscribes, and no subscribes fire on /login.
  *
- *   * **shared-worker (`OXICLOUD_SHARED_WORKER_MODE=1`)** — opt-in
- *     flag ON. Backend boots with `OXICLOUD_ENABLE_SHARED_WORKER_BUS=true`;
+ *   * **shared-worker (`OXICLOUD_SHARED_WORKER_MODE=1`)** — the server
+ *     default. Backend boots with `OXICLOUD_ENABLE_SHARED_WORKER_BUS=true`;
  *     the suite runs ONLY the `message-bus-*.spec.ts` specs (including
  *     the fallback test, which needs the server flag on for the factory
  *     to try shared mode in the first place before `addInitScript({
@@ -215,7 +216,21 @@ export default defineConfig({
 
   use: {
     baseURL: 'http://127.0.0.1:8088',
-    trace: 'on-first-retry',
+    // `retain-on-failure`, NOT `on-first-retry`: `retries: 0` above means
+    // there is never a first retry, so `on-first-retry` captured a trace
+    // exactly never. Every flake we have chased in this suite — the dialog
+    // fill race, the session-expiry reload abort — arrived as a screenshot
+    // and a stack, which is why each took a reproduction loop to diagnose
+    // instead of being readable from the run that failed.
+    //
+    // Costs nothing on a green run (traces are discarded on success) and
+    // writes one zip per failing test under `test-results/`. Inspect with
+    // `npx playwright show-trace test-results/<dir>/trace.zip`.
+    //
+    // Deliberately not paired with `retries: 1`: a retry would hide the
+    // flake rate we keep needing to measure, which is the number that tells
+    // us whether a fix closed a window or merely narrowed it.
+    trace: 'retain-on-failure',
     headless: true,
     screenshot: 'only-on-failure',
     testIdAttribute: 'data-testid',
@@ -277,11 +292,15 @@ export default defineConfig({
       // instance on that port and main.rs would hard-fail. Empty
       // string is the config-parser's "disabled" sentinel.
       OXICLOUD_METRICS_LISTEN: '',
-      // Shared-worker-bus toggle. Spread so the key is absent (not
-      // present-with-false) when disabled — the server's env parser
-      // treats absence as "use the default (opt-in off)", which is
-      // what we want for the per-tab run.
-      ...(SHARED_WORKER_MODE ? { OXICLOUD_ENABLE_SHARED_WORKER_BUS: 'true' } : {}),
+      // Shared-worker-bus toggle, set EXPLICITLY in both directions.
+      //
+      // This used to spread the key in only for the shared run and rely on
+      // absence meaning "per-tab", which held while the server default was
+      // off. The default is now ON, so absence would put the per-tab pass
+      // into shared mode: both passes would exercise the same code and
+      // per-tab coverage would vanish with every test still green — the
+      // worst shape for a matrix to fail in.
+      OXICLOUD_ENABLE_SHARED_WORKER_BUS: SHARED_WORKER_MODE ? 'true' : 'false',
     },
   },
 });

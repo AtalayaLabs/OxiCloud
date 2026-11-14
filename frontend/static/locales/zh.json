@@ -78,6 +78,7 @@
     "files": "文件",
     "shared": "共享",
     "recent": "最近",
+    "changes": "更改",
     "favorites": "收藏",
     "photos": "媒体",
     "music": "音乐",
@@ -548,6 +549,7 @@
     "new_folder_dotfile_hidden": "已创建文件夹「{{name}}」——根据您的偏好隐藏。",
     "dotfiles_hidden_toast": "已隐藏隐藏文件",
     "dotfiles_shown_toast": "已显示隐藏文件",
+    "col_modified_by": "更改者",
     "col_modified": "修改日期",
     "col_added": "添加日期",
     "col_created_by": "创建者",
@@ -861,6 +863,17 @@
     "removed_title": "已从收藏移除",
     "removed_msg": "已从收藏移除"
   },
+  "changes": {
+    "empty_state": "暂无最近更改",
+    "empty_hint": "您可访问的文件的更改将显示在此处",
+    "col_changed": "已更改",
+    "lane_files": "{{n}} 个文件",
+    "cap_lanes": "每人最近 {{n}} 个",
+    "window": "时间范围",
+    "window_7": "最近 7 天",
+    "window_30": "最近 30 天",
+    "window_90": "最近 90 天"
+  },
   "recent": {
     "title": "最近",
     "clear": "清除最近",
@@ -994,7 +1007,7 @@
     "confirm_action": "确认操作",
     "confirm_yes": "确认",
     "confirm_no": "取消",
-    "error_username_short": "用户名至少需要3个字符",
+    "error_username_length": "用户名长度必须为2到64个字符",
     "error_password_short": "密码至少需要8个字符",
     "error_generic": "失败",
     "error_network": "网络错误：{{message}}",
@@ -1537,6 +1550,9 @@
     "oxicloud_version": "OxiCloud 版本",
     "storage_cache_recommended_title": "启用本地 blob 缓存",
     "storage_cache_recommended_howto": "设置 OXICLOUD_STORAGE_CACHE_ENABLED=true 以启用。",
+    "opaque_migration_recommended_title": "启用 migrate 模式的 OPAQUE",
+    "opaque_migration_recommended_body": "强烈建议启用 migrate 模式的 OPAQUE，为密码永不发送到服务器的方式做准备。这是迈向端到端加密的关键一步。",
+    "opaque_migration_recommended_howto": "用 `oxicloud opaque setup` 生成密钥，保存到 OXICLOUD_AUTH_OPAQUE_SERVER_SETUP，然后设置 OXICLOUD_AUTH_OPAQUE_MODE=migrate。现有用户会在下次登录时自动迁移，对他们没有任何影响。",
     "section_cache": "存储缓存",
     "cache_memory": "内存 (moka)",
     "cache_memory_files": "内存 (moka) · 文件缓存",
@@ -1738,6 +1754,7 @@
     "type": "类型",
     "type.folders": "文件夹",
     "accessedAt": "访问日期",
+    "changedAt": "更改日期",
     "modifiedAt": "修改日期",
     "createdAt": "创建日期",
     "size": "大小",
@@ -1942,6 +1959,7 @@
     "retry": "再试一次",
     "select": "选择",
     "select_all": "选择全部",
+    "filter": "筛选",
     "dismiss": "解雇"
   },
   "device": {

@@ -25,6 +25,7 @@ pub mod notifications_handler;
 pub mod opaque_auth_handler;
 pub mod people_handler;
 pub mod photos_handler;
+pub mod recent_changes_handler;
 pub mod recent_handler;
 pub mod rt_ticket_handler;
 pub mod rt_ws;

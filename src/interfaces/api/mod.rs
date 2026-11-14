@@ -40,6 +40,7 @@ use crate::application::dtos::i18n_dto::{
 };
 use crate::application::dtos::pagination::{PaginationDto, PaginationRequestDto};
 use crate::application::dtos::photos_dto::{PhotoKind, PhotoOrderBy, PhotoResourceItemDto};
+use crate::application::dtos::recent_changes_dto::{FileChangeItemDto, RecentChangesOrderBy};
 use crate::application::dtos::recent_dto::{RecentItemDto, RecentOrderBy, RecentResourceItemDto};
 use crate::application::dtos::search_dto::{
     SearchCriteriaDto, SearchFileResultDto, SearchFolderResultDto, SearchMeta, SearchOrderBy,
@@ -171,6 +172,7 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         handlers::favorites_handler::remove_favorite,
         handlers::favorites_handler::batch_add_favorites,
         // Recent handlers (free functions)
+        handlers::recent_changes_handler::list_recent_changes,
         handlers::recent_handler::list_recent_resources,
         handlers::recent_handler::record_item_access,
         handlers::recent_handler::remove_from_recent,
@@ -531,6 +533,11 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             RecentItemDto,
             RecentOrderBy,
             RecentResourceItemDto,
+            // Recent-changes schemas — an unregistered enum silently drops
+            // from the spec, which is how a typed axis becomes an untyped
+            // string for every SDK consumer.
+            FileChangeItemDto,
+            RecentChangesOrderBy,
             // i18n schemas
             LocaleDto,
             TranslationRequestDto,
@@ -579,6 +586,7 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             CursorListResponse<FolderResourceItemDto>,
             CursorListResponse<FavoritesResourceItemDto>,
             CursorListResponse<RecentResourceItemDto>,
+            CursorListResponse<FileChangeItemDto>,
             CursorListResponse<TrashResourceItemDto>,
             CursorListResponse<SharedWithMeItemDto>,
             CursorListResponse<OutgoingResourceItemDto>,

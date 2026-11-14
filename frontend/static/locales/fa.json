@@ -78,6 +78,7 @@
     "files": "پرونده‌ها",
     "shared": "هم‌رسانی‌های من",
     "recent": "اخیر",
+    "changes": "تغییرات",
     "favorites": "موردعلاقه‌ها",
     "photos": "رسانه",
     "music": "موسیقی",
@@ -548,6 +549,7 @@
     "new_folder_dotfile_hidden": "پوشه \"{{name}}\" ایجاد شد — طبق تنظیمات شما پنهان است.",
     "dotfiles_hidden_toast": "پرونده‌های پنهان مخفی شد",
     "dotfiles_shown_toast": "پرونده‌های پنهان نمایش داده شد",
+    "col_modified_by": "تغییر داده توسط",
     "col_modified": "تغییر یافته",
     "col_added": "افزوده شده",
     "col_created_by": "ایجاد شده توسط",
@@ -861,6 +863,17 @@
     "removed_title": "از موارد علاقه‌مند حذف شد",
     "removed_msg": "از موارد علاقه‌مند حذف شد"
   },
+  "changes": {
+    "empty_state": "تغییر اخیری وجود ندارد",
+    "empty_hint": "تغییرات فایل‌هایی که به آن‌ها دسترسی دارید اینجا نمایش داده می‌شود",
+    "col_changed": "تغییر یافته",
+    "lane_files": "{{n}} فایل",
+    "cap_lanes": "{{n}} مورد اخیر برای هر نفر",
+    "window": "محدوده زمانی",
+    "window_7": "۷ روز گذشته",
+    "window_30": "۳۰ روز گذشته",
+    "window_90": "۹۰ روز گذشته"
+  },
   "recent": {
     "title": "اخیر",
     "clear": "پاک کردن اخیر",
@@ -994,7 +1007,7 @@
     "confirm_action": "تأیید عملیات",
     "confirm_yes": "تأیید",
     "confirm_no": "انصراف",
-    "error_username_short": "نام کاربری حداقل ۳ کاراکتر",
+    "error_username_length": "نام کاربری باید بین ۲ تا ۶۴ کاراکتر باشد",
     "error_password_short": "رمز عبور حداقل ۸ کاراکتر",
     "error_generic": "خطا",
     "error_network": "خطای شبکه: {{message}}",
@@ -1537,6 +1550,9 @@
     "oxicloud_version": "نسخهٔ OxiCloud",
     "storage_cache_recommended_title": "فعال‌سازی کش محلی blobها",
     "storage_cache_recommended_howto": "برای فعال‌سازی OXICLOUD_STORAGE_CACHE_ENABLED=true را تنظیم کنید.",
+    "opaque_migration_recommended_title": "فعال‌سازی OPAQUE در حالت migrate",
+    "opaque_migration_recommended_body": "به‌شدت توصیه می‌شود OPAQUE را در حالت migrate فعال کنید تا زمینه گذار به حالتی فراهم شود که گذرواژه‌ها هرگز به سرور فرستاده نشوند. این گامی کلیدی به سوی رمزگذاری سرتاسری است.",
+    "opaque_migration_recommended_howto": "با `oxicloud opaque setup` یک کلید بسازید، آن را در OXICLOUD_AUTH_OPAQUE_SERVER_SETUP نگه دارید و سپس OXICLOUD_AUTH_OPAQUE_MODE=migrate را تنظیم کنید. حساب‌های موجود در ورود بعدی منتقل می‌شوند و چیزی برای آن‌ها تغییر نمی‌کند.",
     "section_cache": "کش ذخیره‌سازی",
     "cache_memory": "حافظه (moka)",
     "cache_memory_files": "حافظه (moka) · کش فایل‌ها",
@@ -1738,6 +1754,7 @@
     "type": "نوع",
     "type.folders": "پوشه‌ها",
     "accessedAt": "تاریخ دسترسی",
+    "changedAt": "تاریخ تغییر",
     "modifiedAt": "تاریخ تغییر",
     "createdAt": "تاریخ ایجاد",
     "size": "اندازه",
@@ -1942,6 +1959,7 @@
     "retry": "دوباره امتحان کنید",
     "select": "انتخاب کنید",
     "select_all": "همه را انتخاب کنید",
+    "filter": "فیلتر",
     "dismiss": "رد کردن"
   },
   "device": {

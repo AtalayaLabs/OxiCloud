@@ -78,6 +78,7 @@
     "files": "الملفات",
     "shared": "مشاركاتي",
     "recent": "الأخيرة",
+    "changes": "التغييرات",
     "favorites": "المفضلة",
     "photos": "الوسائط",
     "music": "الموسيقى",
@@ -548,6 +549,7 @@
     "new_folder_dotfile_hidden": "تم إنشاء المجلد \"{{name}}\" — مخفي وفقاً لتفضيلاتك.",
     "dotfiles_hidden_toast": "تم إخفاء الملفات المخفية",
     "dotfiles_shown_toast": "تم إظهار الملفات المخفية",
+    "col_modified_by": "عُدّل بواسطة",
     "col_modified": "معدل",
     "col_added": "أضيف",
     "col_created_by": "أنشئ بواسطة",
@@ -861,6 +863,17 @@
     "removed_title": "أُزيل من المفضلة",
     "removed_msg": "أُزيل من المفضلة"
   },
+  "changes": {
+    "empty_state": "لا توجد تغييرات حديثة",
+    "empty_hint": "ستظهر هنا التغييرات على الملفات التي يمكنك الوصول إليها",
+    "col_changed": "عُدّل",
+    "lane_files": "{{n}} ملف",
+    "cap_lanes": "أحدث {{n}} لكل شخص",
+    "window": "النطاق الزمني",
+    "window_7": "آخر 7 أيام",
+    "window_30": "آخر 30 يومًا",
+    "window_90": "آخر 90 يومًا"
+  },
   "recent": {
     "title": "الأخيرة",
     "clear": "مسح الأخيرة",
@@ -1014,7 +1027,7 @@
     "confirm_action": "تأكيد الإجراء",
     "confirm_yes": "تأكيد",
     "confirm_no": "إلغاء",
-    "error_username_short": "الاسم 3 أحرف على الأقل",
+    "error_username_length": "يجب أن يتراوح طول اسم المستخدم بين حرفين و64 حرفًا",
     "error_password_short": "كلمة المرور 8 أحرف على الأقل",
     "error_generic": "فشل",
     "error_network": "خطأ في الشبكة: {{message}}",
@@ -1557,6 +1570,9 @@
     "oxicloud_version": "إصدار OxiCloud",
     "storage_cache_recommended_title": "تفعيل الذاكرة المحلية للـ blobs",
     "storage_cache_recommended_howto": "عيّن OXICLOUD_STORAGE_CACHE_ENABLED=true لتفعيله.",
+    "opaque_migration_recommended_title": "تمكين OPAQUE في وضع migrate",
+    "opaque_migration_recommended_body": "يُنصح بشدة بتمكين OPAQUE في وضع migrate، للتحضير للانتقال إلى عدم إرسال كلمات المرور إلى الخادم إطلاقًا. هذه خطوة أساسية نحو التشفير من طرف إلى طرف.",
+    "opaque_migration_recommended_howto": "أنشئ مفتاحًا باستخدام `oxicloud opaque setup`، واحفظه في OXICLOUD_AUTH_OPAQUE_SERVER_SETUP، ثم اضبط OXICLOUD_AUTH_OPAQUE_MODE=migrate. تنتقل الحسابات الحالية عند تسجيل الدخول التالي — دون أي تغيير بالنسبة لها.",
     "section_cache": "ذاكرة التخزين",
     "cache_memory": "الذاكرة (moka)",
     "cache_memory_files": "الذاكرة (moka) · ذاكرة الملفات",
@@ -1738,6 +1754,7 @@
     "type": "النوع",
     "type.folders": "المجلدات",
     "accessedAt": "تاريخ الوصول",
+    "changedAt": "تاريخ التعديل",
     "modifiedAt": "تاريخ التعديل",
     "createdAt": "تاريخ الإنشاء",
     "size": "الحجم",
@@ -1942,6 +1959,7 @@
     "retry": "حاول ثانية",
     "select": "يختار",
     "select_all": "حدد الكل",
+    "filter": "تصفية",
     "dismiss": "رفض"
   },
   "device": {

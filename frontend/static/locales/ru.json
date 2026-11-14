@@ -78,6 +78,7 @@
     "files": "Файлы",
     "shared": "Общие",
     "recent": "Недавние",
+    "changes": "Изменения",
     "favorites": "Избранное",
     "photos": "Медиа",
     "music": "Музыка",
@@ -548,6 +549,7 @@
     "new_folder_dotfile_hidden": "Папка \"{{name}}\" создана — скрыта в соответствии с вашими настройками.",
     "dotfiles_hidden_toast": "Скрытые файлы скрыты",
     "dotfiles_shown_toast": "Скрытые файлы показаны",
+    "col_modified_by": "Кем изменено",
     "col_modified": "Изменен",
     "col_added": "Добавлено",
     "col_created_by": "Создано",
@@ -861,6 +863,17 @@
     "removed_title": "Удалено из избранного",
     "removed_msg": "удалено из избранного"
   },
+  "changes": {
+    "empty_state": "Нет последних изменений",
+    "empty_hint": "Здесь появятся изменения файлов, к которым у вас есть доступ",
+    "col_changed": "Изменено",
+    "lane_files": "Файлов: {{n}}",
+    "cap_lanes": "По {{n}} последних на человека",
+    "window": "Период",
+    "window_7": "Последние 7 дней",
+    "window_30": "Последние 30 дней",
+    "window_90": "Последние 90 дней"
+  },
   "recent": {
     "title": "Недавние",
     "clear": "Очистить недавние",
@@ -1014,7 +1027,7 @@
     "confirm_action": "Подтвердить",
     "confirm_yes": "Подтвердить",
     "confirm_no": "Отмена",
-    "error_username_short": "Имя минимум 3 символа",
+    "error_username_length": "Имя пользователя должно содержать от 2 до 64 символов",
     "error_password_short": "Пароль минимум 8 символов",
     "error_generic": "Ошибка",
     "error_network": "Ошибка сети: {{message}}",
@@ -1557,6 +1570,9 @@
     "oxicloud_version": "Версия OxiCloud",
     "storage_cache_recommended_title": "Включить локальный кэш блобов",
     "storage_cache_recommended_howto": "Задайте OXICLOUD_STORAGE_CACHE_ENABLED=true для включения.",
+    "opaque_migration_recommended_title": "Включите OPAQUE в режиме migrate",
+    "opaque_migration_recommended_body": "Настоятельно рекомендуется включить OPAQUE в режиме migrate, чтобы подготовить переход к тому, что пароли вообще не отправляются на сервер. Это ключевой шаг к сквозному шифрованию.",
+    "opaque_migration_recommended_howto": "Создайте ключ командой `oxicloud opaque setup`, сохраните его в OXICLOUD_AUTH_OPAQUE_SERVER_SETUP, затем задайте OXICLOUD_AUTH_OPAQUE_MODE=migrate. Существующие учётные записи перейдут при следующем входе — для них ничего не изменится.",
     "section_cache": "Кэш хранилища",
     "cache_memory": "Память (moka)",
     "cache_memory_files": "Память (moka) · Кэш файлов",
@@ -1738,6 +1754,7 @@
     "type": "Тип",
     "type.folders": "Папки",
     "accessedAt": "Дата доступа",
+    "changedAt": "Дата изменения",
     "modifiedAt": "Дата изменения",
     "createdAt": "Дата создания",
     "size": "Размер",
@@ -1942,6 +1959,7 @@
     "retry": "Попробуйте еще раз",
     "select": "Выбирать",
     "select_all": "Выбрать все",
+    "filter": "Фильтр",
     "dismiss": "Увольнять"
   },
   "device": {

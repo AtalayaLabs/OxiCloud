@@ -322,6 +322,56 @@ export async function apiCreateFolder(
   return res.json();
 }
 
+/** The caller's own account id, from `GET /api/auth/me` (`full.user.id`). */
+export async function apiMe(page: Page): Promise<{ id: string; username: string }> {
+  const res = await browserFetch(page, { url: '/api/auth/me', method: 'GET' });
+  if (!res.ok) throw new Error(`apiMe failed: ${res.status} ${res.body}`);
+  const me = JSON.parse(res.body) as {
+    full: { user: { id: string; username?: string | null } };
+  };
+  return { id: me.full.user.id, username: me.full.user.username ?? '' };
+}
+
+/** A drive as returned by the API (subset we use). */
+export type ApiDrive = { id: string; name: string; root_folder_id: string };
+
+/**
+ * Create a SHARED drive owned by the caller (`POST /api/drives`, admin-only).
+ *
+ * Why a real drive and not a stubbed `/api/drives` response: a test that
+ * fulfils the listing with a made-up `root_folder_id` can exercise the
+ * sidebar's rendering, but any drop that actually uploads into it 404s.
+ * Anything asserting where the bytes LANDED needs a drive whose root folder
+ * exists server-side.
+ *
+ * `kind: 'personal'` is refused by the handler (reserved wire shape), so
+ * shared is the only creatable kind.
+ */
+export async function apiCreateSharedDrive(page: Page, name: string): Promise<ApiDrive> {
+  const me = await apiMe(page);
+  const res = await browserFetchJson<ApiDrive>(page, 'POST', '/api/drives', {
+    kind: 'shared',
+    name,
+    // `SubjectDto` keys the discriminator `type`, not `kind` — a `kind` here
+    // is a 422 ("owner: missing field `type`").
+    owner: { type: 'user', id: me.id },
+  });
+  if (!res.ok) throw new Error(`apiCreateSharedDrive(${name}) failed: ${res.status} ${res.body}`);
+  return res.json();
+}
+
+/**
+ * Delete a drive (`DELETE /api/drives/{id}`).
+ *
+ * The server refuses a non-empty drive (409) and the default personal drive
+ * outright, so teardown has to empty it first — trash the contents, then
+ * `apiEmptyTrash`, then this.
+ */
+export async function apiDeleteDrive(page: Page, driveId: string): Promise<void> {
+  const res = await browserFetch(page, { url: `/api/drives/${driveId}`, method: 'DELETE' });
+  if (!res.ok) throw new Error(`apiDeleteDrive(${driveId}) failed: ${res.status} ${res.body}`);
+}
+
 export type ApiShare = { id: string; token: string };
 
 /**
@@ -373,6 +423,15 @@ export async function apiCreateGroup(page: Page, name: string): Promise<string> 
   const res = await browserFetchJson(page, 'POST', '/api/groups', { name, description: null });
   if (!res.ok) throw new Error(`apiCreateGroup(${name}) failed: ${res.status} ${res.body}`);
   return name;
+}
+
+/** Move a file to trash via the API (DELETE /api/files/{id}). */
+export async function apiTrashFile(page: Page, fileId: string): Promise<void> {
+  const res = await browserFetch(page, {
+    url: `/api/files/${fileId}`,
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error(`apiTrashFile(${fileId}) failed: ${res.status} ${res.body}`);
 }
 
 /** Move a folder to trash via the API (DELETE /api/folders/{id}). */

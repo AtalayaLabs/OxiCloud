@@ -72,6 +72,26 @@
     background-color: var(--color-bg-page);
     z-index: var(--z-sticky); /* ensure header is above image preview */
     padding-top: var(--space-2);
+    /* 1px, and it has to be a padding (or a border): the last child in here
+       is the actions bar or the breadcrumb, both of which carry a bottom
+       margin. With no bottom padding that margin COLLAPSES OUT of this box,
+       so the opaque background stopped at the breadcrumb and rows scrolled
+       up through the gap below it. One pixel of padding keeps the margin
+       inside, which costs no layout — the gap is the same gap, now covered. */
+    padding-bottom: 1px;
+    /* Fades the rows out as they pass underneath, instead of them meeting
+       the toolbar at a hard edge.
+
+       Hand-rolled rather than `var(--shadow-xs)`: that recipe is built on
+       `--color-shadow-xs`, a flat `rgba(0, 0, 0, 0.05)` with no dark
+       variant, so it vanishes against a dark page. `--color-shadow` is
+       `light-dark(0.1, 0.3)` — the same shadow reads in both themes.
+
+       Kept deliberately small (2px down, 3px blur, -1px spread): this runs
+       the full width of every page, and anything heavier reads as a divider
+       rule rather than depth. The sliver thrown upward is clipped by
+       `.content-area`'s scrollport. */
+    box-shadow: 0 2px 3px -1px var(--color-shadow);
 }
 
 .actions-bar {

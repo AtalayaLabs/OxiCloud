@@ -78,6 +78,7 @@
     "files": "Fichiers",
     "shared": "Partages",
     "recent": "Récents",
+    "changes": "Modifications",
     "favorites": "Favoris",
     "photos": "Médias",
     "music": "Musique",
@@ -549,6 +550,7 @@
     "new_folder_dotfile_hidden": "Dossier \"{{name}}\" créé — masqué par votre préférence.",
     "dotfiles_hidden_toast": "Fichiers masqués",
     "dotfiles_shown_toast": "Fichiers affichés",
+    "col_modified_by": "Modifié par",
     "col_modified": "Modifié",
     "col_added": "Ajouté",
     "col_created_by": "Créé par",
@@ -861,6 +863,17 @@
     "removed_title": "Retiré des favoris",
     "removed_msg": "retiré des favoris"
   },
+  "changes": {
+    "empty_state": "Aucune modification récente",
+    "empty_hint": "Les modifications des fichiers auxquels vous avez accès apparaîtront ici",
+    "col_changed": "Modifié",
+    "lane_files": "{{n}} fichier(s)",
+    "cap_lanes": "Les {{n}} plus récents par personne",
+    "window": "Période",
+    "window_7": "7 derniers jours",
+    "window_30": "30 derniers jours",
+    "window_90": "90 derniers jours"
+  },
   "recent": {
     "title": "Récents",
     "clear": "Effacer les récents",
@@ -1025,7 +1038,7 @@
     "confirm_action": "Confirmer l'action",
     "confirm_yes": "Confirmer",
     "confirm_no": "Annuler",
-    "error_username_short": "Le nom d'utilisateur doit contenir au moins 3 caractères",
+    "error_username_length": "Le nom d’utilisateur doit contenir entre 2 et 64 caractères",
     "error_password_short": "Le mot de passe doit contenir au moins 8 caractères",
     "error_generic": "Échec",
     "error_network": "Erreur réseau : {{message}}",
@@ -1576,6 +1589,9 @@
     "oxicloud_version": "Version OxiCloud",
     "storage_cache_recommended_title": "Activer le cache local des blobs",
     "storage_cache_recommended_howto": "Définissez OXICLOUD_STORAGE_CACHE_ENABLED=true pour activer.",
+    "opaque_migration_recommended_title": "Activer OPAQUE en mode migrate",
+    "opaque_migration_recommended_body": "Il est fortement recommandé d'activer OPAQUE en mode migrate, afin de préparer la transition vers un serveur qui ne reçoit plus jamais les mots de passe. C'est une étape clé vers le chiffrement de bout en bout.",
+    "opaque_migration_recommended_howto": "Générez une clé avec `oxicloud opaque setup`, conservez-la dans OXICLOUD_AUTH_OPAQUE_SERVER_SETUP, puis définissez OXICLOUD_AUTH_OPAQUE_MODE=migrate. Les comptes existants migrent à leur prochaine connexion — rien ne change pour eux.",
     "section_cache": "Cache de stockage",
     "cache_memory": "Mémoire (moka)",
     "cache_memory_files": "Mémoire (moka) · Cache de fichiers",
@@ -1739,6 +1755,7 @@
     "shareDate": "Date de partage",
     "favoriteDate": "Date d'ajout aux favoris",
     "accessedAt": "Date d'accès",
+    "changedAt": "Date de modification",
     "modifiedAt": "Date de modification",
     "createdAt": "Date de création",
     "size": "Taille",
@@ -1942,6 +1959,7 @@
     "retry": "Essayer à nouveau",
     "select": "Sélectionner",
     "select_all": "Tout sélectionner",
+    "filter": "Filtrer",
     "dismiss": "Rejeter"
   },
   "device": {

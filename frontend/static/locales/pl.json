@@ -78,6 +78,7 @@
     "files": "Pliki",
     "shared": "Udostępnione",
     "recent": "Ostatnie",
+    "changes": "Zmiany",
     "favorites": "Ulubione",
     "photos": "Media",
     "music": "Muzyka",
@@ -548,6 +549,7 @@
     "new_folder_dotfile_hidden": "Utworzono folder \"{{name}}\" — ukryty zgodnie z Twoją preferencją.",
     "dotfiles_hidden_toast": "Ukryte pliki ukryte",
     "dotfiles_shown_toast": "Ukryte pliki wyświetlone",
+    "col_modified_by": "Zmienione przez",
     "col_modified": "Zmodyfikowano",
     "col_added": "Dodano",
     "col_created_by": "Utworzone przez",
@@ -861,6 +863,17 @@
     "removed_title": "Usunięto z ulubionych",
     "removed_msg": "usunięto z ulubionych"
   },
+  "changes": {
+    "empty_state": "Brak ostatnich zmian",
+    "empty_hint": "Zmiany w plikach, do których masz dostęp, pojawią się tutaj",
+    "col_changed": "Zmieniono",
+    "lane_files": "Pliki: {{n}}",
+    "cap_lanes": "Najnowsze {{n}} na osobę",
+    "window": "Zakres czasu",
+    "window_7": "Ostatnie 7 dni",
+    "window_30": "Ostatnie 30 dni",
+    "window_90": "Ostatnie 90 dni"
+  },
   "recent": {
     "title": "Ostatnie",
     "clear": "Wyczyść ostatnie",
@@ -1014,7 +1027,7 @@
     "confirm_action": "Potwierdź akcję",
     "confirm_yes": "Potwierdź",
     "confirm_no": "Anuluj",
-    "error_username_short": "Nazwa użytkownika musi mieć co najmniej 3 znaki",
+    "error_username_length": "Nazwa użytkownika musi mieć od 2 do 64 znaków",
     "error_password_short": "Hasło musi mieć co najmniej 8 znaków",
     "error_generic": "Niepowodzenie",
     "error_network": "Błąd sieci: {{message}}",
@@ -1557,6 +1570,9 @@
     "oxicloud_version": "Wersja OxiCloud",
     "storage_cache_recommended_title": "Włącz lokalną pamięć podręczną blobów",
     "storage_cache_recommended_howto": "Ustaw OXICLOUD_STORAGE_CACHE_ENABLED=true, aby włączyć.",
+    "opaque_migration_recommended_title": "Włącz OPAQUE w trybie migrate",
+    "opaque_migration_recommended_body": "Zdecydowanie zalecamy włączenie OPAQUE w trybie migrate, aby przygotować przejście do sytuacji, w której hasła nigdy nie są wysyłane na serwer. To kluczowy krok w stronę szyfrowania end-to-end.",
+    "opaque_migration_recommended_howto": "Wygeneruj klucz poleceniem `oxicloud opaque setup`, zapisz go w OXICLOUD_AUTH_OPAQUE_SERVER_SETUP, a następnie ustaw OXICLOUD_AUTH_OPAQUE_MODE=migrate. Istniejące konta przejdą przy następnym logowaniu — nic się dla nich nie zmieni.",
     "section_cache": "Pamięć podręczna pamięci masowej",
     "cache_memory": "Pamięć (moka)",
     "cache_memory_files": "Pamięć (moka) · Pamięć podręczna plików",
@@ -1738,6 +1754,7 @@
     "type": "Typ",
     "type.folders": "Foldery",
     "accessedAt": "Data dostępu",
+    "changedAt": "Data zmiany",
     "modifiedAt": "Data modyfikacji",
     "createdAt": "Data utworzenia",
     "size": "Rozmiar",
@@ -1942,6 +1959,7 @@
     "retry": "Spróbuj ponownie",
     "select": "Wybierać",
     "select_all": "Zaznacz wszystko",
+    "filter": "Filtruj",
     "dismiss": "Odrzucać"
   },
   "device": {

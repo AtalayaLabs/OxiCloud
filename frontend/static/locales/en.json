@@ -117,6 +117,7 @@
     "shared": "My shares",
     "sharedwithme": "Shared with me",
     "recent": "Recent",
+    "changes": "Changes",
     "favorites": "Favorites",
     "photos": "Media",
     "music": "Music",
@@ -579,6 +580,7 @@
     "batch_delete": "Delete selected",
     "breadcrumb": "Breadcrumb",
     "cancel_selection": "Cancel selection",
+    "col_modified_by": "Modified by",
     "col_modified": "Modified",
     "col_added": "Added",
     "col_created_by": "Created by",
@@ -910,6 +912,17 @@
     "removed_title": "Removed from favorites",
     "removed_msg": "removed from favorites"
   },
+  "changes": {
+    "empty_state": "No recent changes",
+    "empty_hint": "Changes to files you can reach will appear here",
+    "col_changed": "Changed",
+    "lane_files": "{{n}} file(s)",
+    "cap_lanes": "Top {{n}} per person",
+    "window": "Time range",
+    "window_7": "Last 7 days",
+    "window_30": "Last 30 days",
+    "window_90": "Last 90 days"
+  },
   "recent": {
     "title": "Recent",
     "clear": "Clear recent",
@@ -956,6 +969,9 @@
     "storage_cache_recommended_title": "Enable the local blob cache",
     "storage_cache_recommended_body": "It is highly recommended to enable the local cache when using a remote backend (cache to SSD / NVMe preferred).",
     "storage_cache_recommended_howto": "Set OXICLOUD_STORAGE_CACHE_ENABLED=true to enable it.",
+    "opaque_migration_recommended_title": "Enable OPAQUE in migrate mode",
+    "opaque_migration_recommended_body": "It is strongly recommended to enable OPAQUE in migrate mode, to prepare the transition to never sending passwords to the server. This is a key step towards end-to-end encryption.",
+    "opaque_migration_recommended_howto": "Generate a key with `oxicloud opaque setup`, persist it in OXICLOUD_AUTH_OPAQUE_SERVER_SETUP, then set OXICLOUD_AUTH_OPAQUE_MODE=migrate. Existing users move across as they next log in — nothing changes for them.",
     "section_cache": "Storage cache",
     "cache_memory": "Memory (moka)",
     "cache_memory_files": "Memory (moka) · File cache",
@@ -1104,7 +1120,7 @@
     "confirm_action": "Confirm Action",
     "confirm_yes": "Confirm",
     "confirm_no": "Cancel",
-    "error_username_short": "Username must be at least 3 characters",
+    "error_username_length": "Username must be between 2 and 64 characters",
     "error_password_short": "Password must be at least 8 characters",
     "error_generic": "Failed",
     "error_network": "Network error: {{message}}",
@@ -1790,6 +1806,7 @@
     "shareDate": "Share date",
     "favoriteDate": "Favorite date",
     "accessedAt": "Accessed date",
+    "changedAt": "Changed date",
     "modifiedAt": "Modified date",
     "createdAt": "Added date",
     "size": "Size",
@@ -1973,6 +1990,7 @@
     "yes": "Yes",
     "dismiss": "Dismiss",
     "saving": "Saving…",
+    "filter": "Filter",
     "deleting": "Deleting…"
   },
   "device": {

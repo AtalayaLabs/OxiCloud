@@ -27,7 +27,6 @@
 	import { t } from '$lib/i18n/index.svelte';
 	import { promptDialog } from '$lib/stores/dialogs.svelte';
 	import { files as filesStore } from '$lib/stores/files.svelte';
-	import { ui } from '$lib/stores/ui.svelte';
 
 	const query = $derived(page.url.searchParams.get('q') ?? '');
 
@@ -577,58 +576,15 @@
 		void run(query);
 	});
 
-	/**
-	 * Page-wide OS drag/drop guard.
-	 *
-	 * `/search` has no upload path, but without capturing the drop the
-	 * browser's default handler navigates to the dropped file — the tab
-	 * REPLACES the app with the file itself, which is data-loss-esque
-	 * (user loses their in-progress search + any unsaved UI state).
-	 * ResourceList already fires a "wrong drop zone" toast via its
-	 * `.rl-root` wrapper when `enableSystemDrop` is false, but that
-	 * covers only the list area — this handler covers the whole
-	 * viewport (sticky header, empty-state screen, gaps around the
-	 * list). Same toast copy + "Go to Files" action as ResourceList
-	 * for a consistent recovery UX.
-	 */
-	function onWindowDragOver(e: DragEvent) {
-		if (!e.dataTransfer?.types?.includes('Files')) return;
-		if (e.defaultPrevented) return;
-		e.preventDefault();
-		// `dropEffect = 'none'` would tell the browser to REJECT the
-		// drop before `drop` fires — the toast path below never runs.
-		// Accept at the pointer level and let `onWindowDrop` decide.
-		if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
-	}
-	function onWindowDrop(e: DragEvent) {
-		if (!e.dataTransfer?.types?.includes('Files')) return;
-		if (e.defaultPrevented) return;
-		e.preventDefault();
-		ui.notify(
-			t(
-				'resource_list.wrong_drop_zone_msg',
-				'Uploads only work in Files — open the Files section and drop there.'
-			),
-			'warning',
-			6000,
-			true,
-			{
-				action: {
-					label: t('resource_list.wrong_drop_zone_action', 'Go to Files'),
-					// Best-effort recovery — the drop's `DataTransfer` is
-					// discarded once this handler returns (browsers don't
-					// persist it across a navigation), so we land the
-					// user in `/files` where they can re-drag from the OS.
-					onClick: () => goto(resolve('/files'))
-				}
-			}
-		);
-	}
+	// The page-wide OS drag/drop guard that used to live here is now the
+	// application's, in `+layout.svelte` via `$lib/utils/osFileDropGuard` —
+	// this page had the right solution and the wrong scope, so every new page
+	// arrived unprotected. Nothing replaces it here: the guard covers the
+	// whole viewport on every route, and `ResourceList`'s in-tile overlay
+	// still owns the list area because it prevents the default first.
 </script>
 
 <svelte:head><title>{t('search.title', 'Search')} · OxiCloud</title></svelte:head>
-
-<svelte:window ondragover={onWindowDragOver} ondrop={onWindowDrop} />
 
 {#if !query}
 	<EmptyState title={t('search.prompt', 'Type a query in the search bar above.')} />

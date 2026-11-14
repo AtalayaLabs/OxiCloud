@@ -35,7 +35,7 @@ use crate::common::locale::LocaleRegistry;
 use crate::infrastructure::repositories::pg::SharePgRepository;
 use crate::infrastructure::repositories::pg::{
     FileBlobReadRepository, FileBlobWriteRepository, FileMetadataRepository, FolderDbRepository,
-    TrashDbRepository,
+    RecentChangesPgRepository, TrashDbRepository,
 };
 use crate::infrastructure::scheduler::{JobRegistry, SchedulerEngine};
 use crate::infrastructure::services::file_content_cache::{
@@ -708,6 +708,15 @@ impl AppServiceFactory {
         // File metadata repository — EXIF/media metadata for images
         let file_metadata_repository = Arc::new(FileMetadataRepository::new(db_pool.clone()));
 
+        // Recent-changes reads. Built only when the feature is on; the route
+        // is gated on the same flag, so an off deployment has neither.
+        let recent_changes_repository = if core.config.features.enable_recent_changes {
+            Some(Arc::new(RecentChangesPgRepository::new(db_pool.clone())))
+        } else {
+            tracing::info!("Recent changes feed is disabled (enable_recent_changes = false)");
+            None
+        };
+
         tracing::info!(
             "Repository services initialized with 100% blob storage model (PG metadata + BlobHandler blobs)"
         );
@@ -720,6 +729,7 @@ impl AppServiceFactory {
             file_metadata_repository,
             i18n_repository,
             trash_repository,
+            recent_changes_repository,
         }
     }
 
@@ -2994,6 +3004,36 @@ impl AppServiceFactory {
         .register(&app_state.core.job_registry)
         .await;
 
+        // Content-touch retention sweep (`docs/plan/recently-modified.md`
+        // §1b). Deletes `storage.file_content_touches` rows older than
+        // `OXICLOUD_FILE_TOUCHES_RETENTION_DAYS` (default 120, deliberately
+        // wider than the 90-day maximum the query accepts).
+        //
+        // Registered OUTSIDE the `enable_recent_changes` gate, on purpose:
+        // touches are written whether or not the view is exposed — operators
+        // may want the record for auditability, and enabling the view later
+        // then has history from day one — so gating the sweep would leave a
+        // deployment that never enables the feature growing the table
+        // forever. Runs on the maintenance pool so a sweep never competes
+        // with user requests.
+        // The local `maintenance_pool` has already moved into `AppState` by
+        // this point, so take the handle back from there. Falling back to the
+        // primary pool rather than skipping: a sweep that silently does not
+        // run is how an unbounded table goes unnoticed, and sharing the user
+        // pool once a day is the lesser cost.
+        let touches_pool = app_state
+            .maintenance_pool
+            .clone()
+            .unwrap_or_else(|| pool.clone());
+        let _ = Arc::new(
+            crate::infrastructure::services::file_touches_cleanup_service::FileTouchesCleanupService::new(
+                touches_pool,
+                app_state.core.config.features.file_touches_retention_days,
+            ),
+        )
+        .register(&app_state.core.job_registry)
+        .await;
+
         // 9a-collab. Collab-doc session pool (Yjs over the bus).
         // Feature-gated by `OXICLOUD_ENABLE_MARKDOWN_COLLAB` AND
         // `OXICLOUD_MESSAGEBUS_ENABLE` — collab bytes ride the bus WS
@@ -3126,6 +3166,42 @@ impl AppServiceFactory {
                         .map(|m| std::time::Duration::from_secs(m.saturating_mul(60)))
                 })
                 .unwrap_or_else(|| std::time::Duration::from_secs(30 * 60));
+
+            // The TTL must exceed the debounce window, and this is FATAL
+            // rather than a warning because the two values contradict each
+            // other rather than merely being badly tuned.
+            //
+            // Idle is measured from `collab.doc_sessions.last_activity_at`,
+            // which every debounced flush bumps to `NOW()`. So a TTL at or
+            // below the debounce window asks the GC to reap sessions sooner
+            // than they are persisted: a row becomes eligible at the very
+            // moment something writes to it, and whether the sweep catches
+            // it depends on which landed first. The visible symptom is a GC
+            // that works intermittently — the hardest kind of bug to chase,
+            // which is exactly why this refuses to start instead of warning.
+            //
+            // Same posture as the `markdown_collab` + `message_bus`
+            // cross-check in `config.rs`: a self-contradictory collab
+            // configuration stops the boot.
+            //
+            // The production defaults sit 120× apart (15 s debounce vs
+            // 30 min TTL), so only a shrunken TTL can trip this — typically
+            // a test suite's, and `tests/common/server.env` is held to the
+            // same rule.
+            if default_idle_ttl <= limits.debounce_idle {
+                panic!(
+                    "FATAL: OXICLOUD_COLLAB_IDLE_TTL ({} ms) must be GREATER than \
+                     OXICLOUD_COLLAB_DEBOUNCE_IDLE_MS ({} ms). Every debounced flush \
+                     bumps the session's last_activity_at, so this configuration reaps \
+                     idle sessions sooner than it persists them and the idle-GC sweep \
+                     becomes a race. Raise OXICLOUD_COLLAB_IDLE_TTL_MINUTES / \
+                     _SECONDS, or lower OXICLOUD_COLLAB_DEBOUNCE_IDLE_MS. Refusing to \
+                     start.",
+                    default_idle_ttl.as_millis(),
+                    limits.debounce_idle.as_millis(),
+                );
+            }
+
             let default_batch_limit = std::env::var("OXICLOUD_COLLAB_IDLE_BATCH_LIMIT")
                 .ok()
                 .and_then(|s| s.parse::<u32>().ok())
@@ -3960,6 +4036,11 @@ pub struct RepositoryServices {
     pub file_metadata_repository: Arc<FileMetadataRepository>,
     pub i18n_repository: Arc<FileSystemI18nService>,
     pub trash_repository: Option<Arc<TrashDbRepository>>,
+    /// Reads for `GET /api/files/recent-changes`. `None` when
+    /// `enable_recent_changes` is off — the route is then not mounted either,
+    /// so the handler's `None` arm is unreachable belt-and-braces rather than
+    /// the gate itself.
+    pub recent_changes_repository: Option<Arc<RecentChangesPgRepository>>,
 }
 
 /// Container for application services

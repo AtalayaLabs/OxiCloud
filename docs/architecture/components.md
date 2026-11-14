@@ -86,6 +86,7 @@ Paths are relative to `frontend/src/lib/`. Components with inline
 | `components/PeopleView.svelte` | Face clusters from `GET /api/people`, drilling into the lightbox. |
 | `components/PlacesMap.svelte` | Geotagged photos on a self-hosted MapLibre map, with server-side clusters. |
 | `components/FileViewer.svelte` | Inline preview for a file by type. |
+| `components/PdfPreview.svelte` | PDF.js canvas fallback used by `FileViewer` when native PDF viewing is unavailable. Owns cancellation and cleanup of its loading task, page renders and worker. |
 | `components/CollabEditor.svelte` | CodeMirror 6 + Yjs collaborative markdown editing. |
 | `components/WopiEditor.svelte` | The WOPI iframe host for Office documents. |
 

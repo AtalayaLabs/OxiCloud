@@ -531,6 +531,11 @@ HURL_FILES=( \
   "$API_DIR/trash.hurl" \
   "$API_DIR/trash_resources.hurl" \
   "$API_DIR/recent.hurl" \
+  # Order-independent: creates its own fixture users and folder and
+  # deletes both at the end, which it has to — the access pins need two
+  # principals, and a leaked user would show up in another file's
+  # people-grouped listing.
+  "$API_DIR/recent_changes.hurl" \
   "$API_DIR/batch_folder_copy.hurl" \
   # derived_blob_copy and dedup_blob_cleanup share the dedup-test.jpg
   # fixture, whose hash governs their absolute `ref_count` assertions.
@@ -554,6 +559,10 @@ HURL_FILES=( \
   # `/_app/immutable/` is NOT answered with the year-long immutable
   # cache. Anonymous and stateless, so its position is free.
   "$API_DIR/web_static_cache_headers.hurl" \
+  # Canonical-URL redirects (`/mails` → `/mail`, `/calendar` →
+  # `/calendars`, …). Anonymous, stateless, order-free like the
+  # web-static pin above it.
+  "$API_DIR/canonical_url_redirects.hurl" \
   "$API_DIR/transcode_import.hurl" \
   "$API_DIR/dedup_admin_gate.hurl" \
   "$API_DIR/admin_jobs.hurl" \
