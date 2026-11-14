@@ -232,6 +232,16 @@
 	// back to a full rebuild (deep-equal to the pure `buildLanes` reference) on a
 	// group-by switch, grant edit or kind-filter toggle. Mirrors ResourceList's
 	// `sectionsBuilder` (benches/ROUND16.md §F1).
+	/**
+	 * Measured height of this page's `.page-sticky-header`, published to CSS
+	 * as `--lane-sticky-h` so a lane header sticks just under the page chrome
+	 * rather than under the viewport top where that chrome already is. Same
+	 * contract `ResourceList` uses for its grouped lists — see
+	 * `$lib/styles/lanes.css`. Measured because the strip's height depends on
+	 * what is in it (title, filter menu, and two rows once it wraps).
+	 */
+	let stickyHeaderH = $state(0);
+
 	const lanesBuilder = new SharedLanesBuilder<OutgoingGrantItem, Lane['header'], LaneRow>();
 	const lanes = $derived.by(() => lanesBuilder.sync(filteredRaw, laneGrouping));
 
@@ -486,7 +496,7 @@
 	}}
 />
 
-<div class="page-sticky-header">
+<div class="page-sticky-header" bind:clientHeight={stickyHeaderH}>
 	<ListToolbar
 		groups={GROUP_BYS}
 		{groupBy}
@@ -569,17 +579,19 @@
 		</button>
 	</EmptyState>
 {:else}
-	<div class="ms-lanes">
+	<!-- `--lane-sticky-h` is what `.lane__header--sticky` builds its offset
+	     from: the measured height of this page's own sticky chrome. -->
+	<div class="ms-lanes" style="--lane-sticky-h: {stickyHeaderH}px">
 		{#each lanes as lane (lane.key)}
 			<!-- The lane's kind decides how far its rows are indented, so the
 			     grantees line up under the header's NAME rather than under its
 			     glyph — see `.ms-lane--resource` / `.ms-lane--subject`. -->
 			<section
-				class="ms-lane"
+				class="lane lane--open"
 				class:ms-lane--resource={lane.header.kind === 'resource'}
 				class:ms-lane--subject={lane.header.kind !== 'resource'}
 			>
-				<header class="ms-lane__header">
+				<header class="ms-lane__header lane__header lane__header--sticky">
 					{#if lane.header.kind === 'resource'}
 						{@const laneItem = lane.header.item}
 						{@const laneIcon = resourceIcon(laneItem)}
@@ -879,15 +891,13 @@
 		padding-top: var(--space-3);
 	}
 
-	.ms-lane {
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
-		overflow: visible;
-		/* The surface every other view's cards and rows sit on
-		   (`.file-item` in both grid and list), so a lane here reads as the
-		   same kind of object instead of a bordered hole in the page. */
-		background-color: var(--color-item);
-	}
+	/* Card, radius, surface, shadow and header strip all come from `.lane` /
+	   `.lane__header` in `$lib/styles/lanes.css`, shared with every grouped
+	   `ResourceList`. `.lane--open` is this page's one deviation, and it is
+	   load-bearing: a row kebab opens downward past the last row, so the
+	   lane cannot clip. Nothing lane-shaped is declared here any more — the
+	   `.ms-lane*` classes that remain are hooks for what the lane CONTAINS
+	   (the per-kind row indent, the mobile wrap). */
 
 	/* Rows are indented past the header's glyph so a grantee's avatar starts
 	   where the header's NAME starts:
@@ -907,21 +917,6 @@
 
 	.ms-lane--subject .ms-row {
 		padding-left: calc(var(--space-3) + var(--uv-avatar-size, 32px) + var(--space-2));
-	}
-
-	.ms-lane__header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--space-2);
-		padding: var(--space-2) var(--space-3);
-		border-bottom: 1px solid var(--color-border-faint, var(--color-border));
-		background: var(--color-bg-muted);
-		/* Rounded to the card's own corners, less its 1px border — a square
-		   tint strip on a surfaced card pokes out of the radius at the top
-		   two corners, which is the only reason this tint was dropped when
-		   the lane gained `--color-item`. */
-		border-radius: calc(var(--radius-md) - 1px) calc(var(--radius-md) - 1px) 0 0;
 	}
 
 	.ms-lane__resource,

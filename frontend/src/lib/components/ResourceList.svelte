@@ -600,7 +600,7 @@
 
 	/**
 	 * Measured height of this list's `.page-sticky-header`, published to CSS as
-	 * `--rl-sticky-h` so a swimlane header knows where to stick: just under the
+	 * `--lane-sticky-h` so a swimlane header knows where to stick: just under the
 	 * page chrome, not under the viewport top where the chrome already is.
 	 *
 	 * Measured rather than guessed because the strip's height is whatever the
@@ -1566,15 +1566,15 @@
 				     see the CSS. Ungrouped lists keep the one-card look. -->
 				<div
 					class="files-list-view files-list-view--grouped"
-					style="--files-list-columns: {columns}; --rl-sticky-h: {stickyHeaderH}px"
+					style="--files-list-columns: {columns}; --lane-sticky-h: {stickyHeaderH}px"
 				>
 					{#if listHeaderOverride}{@render listHeaderOverride()}{:else}{@render listHeader()}{/if}
 					{#each sections as section (section.key)}
 						<!-- One element per lane so the flex `gap` falls BETWEEN lanes and
 						     not between a lane's header and its own rows. -->
-						<div class="rl-lane">
+						<div class="lane">
 							{#if section.label}
-								<div class="rl-swimlane-header" role="rowheader">
+								<div class="rl-swimlane-header lane__header lane__header--sticky" role="rowheader">
 									<span class="rl-swimlane-header__label">
 										{#if bucketLabel}
 											{@render bucketLabel(section.key, section.label)}
@@ -1606,7 +1606,10 @@
 				<div class="rl-grouped-grid">
 					{#each sections as section (section.key)}
 						{#if section.label}
-							<div class="rl-swimlane-header rl-swimlane-header--grid" role="rowheader">
+							<div
+								class="rl-swimlane-header rl-swimlane-header--grid lane__header"
+								role="rowheader"
+							>
 								<span class="rl-swimlane-header__label">
 									{#if bucketLabel}
 										{@render bucketLabel(section.key, section.label)}
@@ -1931,67 +1934,22 @@
 		border-radius: 0;
 	}
 
-	.rl-lane {
-		display: flex;
-		flex-direction: column;
-		border-radius: var(--radius-xl);
-		/* `clip`, NOT `hidden`: both clip the rows to the card's radius, but
-		   `hidden` makes this a scroll container, and a `position: sticky`
-		   child then resolves against THIS box — which never scrolls — so the
-		   lane header below would sit still and never stick. `clip` is not
-		   scrollable, so the header keeps resolving against `.content-area`.
-		   This is the whole reason the lane header works at all. */
-		overflow: clip;
-		background-color: var(--color-item);
-		box-shadow: 0 1px 3px var(--color-shadow-xs);
-	}
-
-	/* Sticky lane headers: the current lane's label rides the top of the
-	   viewport, and the next lane's label pushes it out as that lane arrives
-	   — the behaviour comes free from sticky's containing block, which is
-	   `.rl-lane`, so a header can never outlive its own rows.
-	   `--rl-sticky-h` is the measured height of this list's
-	   `.page-sticky-header` (see `stickyHeaderH`); `--space-5` backs out
-	   `.content-area`'s top padding, because that strip pins at
-	   `top: calc(-1 * var(--space-5))` and both offsets are resolved against
-	   the same scrollport padding edge.
-	   `z-index: 1` clears the rows it scrolls over while staying far below
-	   `--z-sticky` (100) so the page chrome still wins.
-
-	   `--color-bg-muted`, the same tint `/shared`'s lane headers carry, so a
-	   lane label reads the same wherever lanes appear. It also has to be an
-	   OPAQUE colour whatever the choice: the rows scroll underneath, and a
-	   translucent strip would show them through. The card's `overflow: clip`
-	   rounds the strip's top corners for free — `/shared` has to do that
-	   itself, because its lanes keep `overflow: visible` for escaping
-	   menus. */
-	.files-list-view--grouped .rl-swimlane-header {
-		position: sticky;
-		top: calc(var(--rl-sticky-h, 0px) - var(--space-5));
-		z-index: 1;
-		background-color: var(--color-bg-muted);
-	}
-
 	/* The last row in a lane would otherwise draw a border against the gap. */
-	.rl-lane :global(.file-item:last-child) {
+	.lane :global(.file-item:last-child) {
 		border-bottom: none;
 	}
 
-	/* ── Swimlane section header ── */
+	/* ── Swimlane section header ──
+	   The card, the tint, the padding, the divider and the sticky behaviour
+	   all come from `.lane` / `.lane__header` / `.lane__header--sticky` in
+	   `$lib/styles/lanes.css`, shared with `/shared`. What stays here is what
+	   only a bucket label needs: it is a small muted caption, and in the
+	   grouped-grid context it has to span the grid's columns. */
 	.rl-swimlane-header {
 		grid-column: 1 / -1;
-		/* top 12 · right 4 · bottom 12 · left 12 — the left inset lines the
-		   label up inside the lane card rather than against its edge, and the
-		   even vertical air keeps the label off its own underline. */
-		padding: var(--space-3) var(--space-1) var(--space-3) var(--space-3);
 		font-size: var(--text-sm);
 		font-weight: var(--weight-semibold);
 		color: var(--color-text-secondary);
-		border-bottom: 1px solid var(--color-border-faint);
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--space-2);
 	}
 
 	/* Optional per-bucket action (e.g. trash page's per-drive Empty). */
