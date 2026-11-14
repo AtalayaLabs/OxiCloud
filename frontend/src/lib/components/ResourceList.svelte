@@ -598,6 +598,19 @@
 	let gridWidth = $state(0);
 	const gridCols = $derived(gridColumns(gridWidth));
 
+	/**
+	 * Measured height of this list's `.page-sticky-header`, published to CSS as
+	 * `--rl-sticky-h` so a swimlane header knows where to stick: just under the
+	 * page chrome, not under the viewport top where the chrome already is.
+	 *
+	 * Measured rather than guessed because the strip's height is whatever the
+	 * host page put in it — toolbar alone, toolbar plus breadcrumb, a merged
+	 * title, two rows once the controls wrap on a phone. The one hardcoded
+	 * guess in this area (`scroll-margin-top: 100px`, for just-added rows) is
+	 * the reason that number has a comment apologising for itself.
+	 */
+	let stickyHeaderH = $state(0);
+
 	// Whether an action-cell renders per row — matches the row-template
 	// gate below. Feeds both the list-view column track and the header
 	// row's trailing placeholder so the layout stays in sync.
@@ -1456,7 +1469,7 @@
 	{:else if title && !mergeTitleIntoBar}
 		<h1 class="page-title">{title}</h1>
 	{/if}
-	<div class="page-sticky-header">
+	<div class="page-sticky-header" bind:clientHeight={stickyHeaderH}>
 		<div class="rl-toolbar" class:rl-toolbar--with-title={mergeTitleIntoBar}>
 			{#if mergeTitleIntoBar}
 				<h1 class="page-title rl-toolbar-title">{title}</h1>
@@ -1549,28 +1562,37 @@
 	{:else}
 		<div class="files-container" bind:clientWidth={gridWidth}>
 			{#if grouped && filesStore.viewMode === 'list'}
-				<div class="files-list-view" style="--files-list-columns: {columns}">
+				<!-- `--grouped` turns the single list card into one card PER LANE —
+				     see the CSS. Ungrouped lists keep the one-card look. -->
+				<div
+					class="files-list-view files-list-view--grouped"
+					style="--files-list-columns: {columns}; --rl-sticky-h: {stickyHeaderH}px"
+				>
 					{#if listHeaderOverride}{@render listHeaderOverride()}{:else}{@render listHeader()}{/if}
 					{#each sections as section (section.key)}
-						{#if section.label}
-							<div class="rl-swimlane-header" role="rowheader">
-								<span class="rl-swimlane-header__label">
-									{#if bucketLabel}
-										{@render bucketLabel(section.key, section.label)}
-									{:else}
-										{section.label}
-									{/if}
-								</span>
-								{#if bucketAction}
-									<span class="rl-swimlane-header__action">
-										{@render bucketAction(section.key)}
+						<!-- One element per lane so the flex `gap` falls BETWEEN lanes and
+						     not between a lane's header and its own rows. -->
+						<div class="rl-lane">
+							{#if section.label}
+								<div class="rl-swimlane-header" role="rowheader">
+									<span class="rl-swimlane-header__label">
+										{#if bucketLabel}
+											{@render bucketLabel(section.key, section.label)}
+										{:else}
+											{section.label}
+										{/if}
 									</span>
-								{/if}
-							</div>
-						{/if}
-						<!-- Window each section's rows so a large grouped list (e.g. a big
-					     trash, grouped by remaining days) doesn't mount every row. -->
-						<VirtualList items={section.rows} rowHeight={56} key={(e) => e.id} {row} />
+									{#if bucketAction}
+										<span class="rl-swimlane-header__action">
+											{@render bucketAction(section.key)}
+										</span>
+									{/if}
+								</div>
+							{/if}
+							<!-- Window each section's rows so a large grouped list (e.g. a big
+						     trash, grouped by remaining days) doesn't mount every row. -->
+							<VirtualList items={section.rows} rowHeight={56} key={(e) => e.id} {row} />
+						</div>
 					{/each}
 				</div>
 			{:else if grouped}
@@ -1888,10 +1910,73 @@
 		white-space: nowrap;
 	}
 
+	/* ── Swimlanes in LIST view ──────────────────────────────────────
+	   Grouped, the list stops being one long card and becomes one card per
+	   lane, with `--space-2` between them. Ed, 2026-11-14: "make a small
+	   separation between each lane".
+
+	   The gap has to be visible, which is why the container gives up its own
+	   surface: with the card background still on `.files-list-view`, a gap
+	   between lanes just shows the same `--color-item` and reads as nothing.
+	   `overflow: visible` so each lane's own radius does the clipping (and
+	   its shadow isn't cut off); the column-title strip stays above the
+	   cards, where it reads as a legend for all of them.
+
+	   Ungrouped lists are untouched — no `--grouped`, no `.rl-lane`. */
+	.files-list-view--grouped {
+		gap: var(--space-2);
+		background: none;
+		box-shadow: none;
+		overflow: visible;
+		border-radius: 0;
+	}
+
+	.rl-lane {
+		display: flex;
+		flex-direction: column;
+		border-radius: var(--radius-xl);
+		/* `clip`, NOT `hidden`: both clip the rows to the card's radius, but
+		   `hidden` makes this a scroll container, and a `position: sticky`
+		   child then resolves against THIS box — which never scrolls — so the
+		   lane header below would sit still and never stick. `clip` is not
+		   scrollable, so the header keeps resolving against `.content-area`.
+		   This is the whole reason the lane header works at all. */
+		overflow: clip;
+		background-color: var(--color-item);
+		box-shadow: 0 1px 3px var(--color-shadow-xs);
+	}
+
+	/* Sticky lane headers: the current lane's label rides the top of the
+	   viewport, and the next lane's label pushes it out as that lane arrives
+	   — the behaviour comes free from sticky's containing block, which is
+	   `.rl-lane`, so a header can never outlive its own rows.
+	   `--rl-sticky-h` is the measured height of this list's
+	   `.page-sticky-header` (see `stickyHeaderH`); `--space-5` backs out
+	   `.content-area`'s top padding, because that strip pins at
+	   `top: calc(-1 * var(--space-5))` and both offsets are resolved against
+	   the same scrollport padding edge.
+	   `z-index: 1` clears the rows it scrolls over while staying far below
+	   `--z-sticky` (100) so the page chrome still wins. The background is
+	   the lane's own surface — without it the rows show through. */
+	.files-list-view--grouped .rl-swimlane-header {
+		position: sticky;
+		top: calc(var(--rl-sticky-h, 0px) - var(--space-5));
+		z-index: 1;
+		background-color: var(--color-item);
+	}
+
+	/* The last row in a lane would otherwise draw a border against the gap. */
+	.rl-lane :global(.file-item:last-child) {
+		border-bottom: none;
+	}
+
 	/* ── Swimlane section header ── */
 	.rl-swimlane-header {
 		grid-column: 1 / -1;
-		padding: var(--space-3) var(--space-1) var(--space-1);
+		/* top 12 · right 4 · bottom 12 · left 12 — the left inset lines the
+		   label up inside the lane card rather than against its edge, and the
+		   even vertical air keeps the label off its own underline. */
+		padding: var(--space-3) var(--space-1) var(--space-3) var(--space-3);
 		font-size: var(--text-sm);
 		font-weight: var(--weight-semibold);
 		color: var(--color-text-secondary);
