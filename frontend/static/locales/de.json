@@ -1617,7 +1617,19 @@
     "backend_stored": "Gespeichert",
     "backend_dedup_ratio": "Deduplizierungsverhältnis",
     "backend_referenced": "Referenziert",
-    "backend_referenced_hint": "Summe der Blob-Referenzen (Größe × ref_count). Kann die Gesamtkapazität des Datenträgers übersteigen, weil Vorschauen, abgeleitete Assets und auf Müllsammlung wartende Blobs noch Referenzen halten."
+    "backend_referenced_hint": "Summe der Blob-Referenzen (Größe × ref_count). Kann die Gesamtkapazität des Datenträgers übersteigen, weil Vorschauen, abgeleitete Assets und auf Müllsammlung wartende Blobs noch Referenzen halten.",
+    "appearance": {
+      "title": "Darstellung",
+      "description": "Wählen Sie die Darstellung für alle Benutzer dieser Instanz. Hell-, Dunkel- und Systemmodus bleiben individuelle Einstellungen.",
+      "active": "Aktives Theme: {{theme}}",
+      "unavailable": "Das gespeicherte Theme „{{theme}}“ ist nicht verfügbar. Das integrierte Standardtheme wird verwendet.",
+      "theme": "Globales Theme",
+      "saved": "Gespeichert. Das Theme wird beim nächsten vollständigen Laden der Seite angewendet.",
+      "invalid": "Einige installierte Themes wurden ausgeschlossen. Einzelheiten finden Sie in den Serverprotokollen.",
+      "refresh": "Aktualisieren",
+      "refreshed": "Theme-Dateien neu geladen. Laden Sie die Seite neu, um die CSS-Änderungen anzuwenden.",
+      "recovery": "Der Betreiber hat zur Wiederherstellung das integrierte Theme erzwungen. Die gespeicherte Auswahl bleibt erhalten."
+    }
   },
   "profile": {
     "page_title": "Profil",

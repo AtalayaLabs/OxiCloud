@@ -1,6 +1,7 @@
 import { test, expect } from './coverage-helpers';
 import type { Page } from '@playwright/test';
 import { themes, colorModes, applyTheme, expectThemeLoaded, expectReadable } from './theme-helpers';
+import { apiLogin } from './helpers';
 
 const rootId = '00000000-0000-4000-8000-000000000002';
 const userId = '00000000-0000-4000-8000-000000000001';
@@ -273,6 +274,10 @@ for (const mode of ['light', 'dark'] as const) {
       return color;
     });
     await expect.poll(background).toBe(mode === 'light' ? 'rgb(18, 52, 86)' : 'rgb(171, 205, 239)');
+    // Browser chrome needs a resolved color, not an unevaluated light-dark().
+    await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute(
+      'content', mode === 'light' ? 'rgb(18, 52, 86)' : 'rgb(171, 205, 239)',
+    );
     await page.emulateMedia({ contrast: 'more' });
     const border = await page.evaluate(() => {
       const probe = document.createElement('div');
@@ -354,4 +359,47 @@ test('operator component rules remain applied after the bundle loads', async ({ 
   }));
   await page.goto('/login');
   await expect(page.locator('body')).toHaveCSS('background-color', 'rgb(18, 52, 86)');
+});
+
+// The layout tests intercept CSS. This integration pin must cross the real
+// admin UI, persistence service and public stylesheet route without interception.
+test('saved appearance reaches an anonymous browser without changing its color mode', async ({
+  page,
+  browser,
+}) => {
+  await apiLogin(page);
+  await page.goto('/admin/appearance');
+  const picker = page.getByLabel('Global theme');
+  await expect(picker).toBeVisible();
+  const previous = await picker.inputValue();
+  const installed = themes.find((theme) => theme.name === 'slate')!;
+  const anonymous = await browser.newContext({ baseURL: new URL(page.url()).origin });
+  const saveTheme = async (id: string) => {
+    await picker.selectOption(id);
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(page.getByRole('status')).toContainText('next full page load');
+  };
+  try {
+    await saveTheme(installed.name);
+    await page.reload();
+    await expect(page.getByText(`Active theme: ${installed.name}`, { exact: true })).toBeVisible();
+
+    const visitor = await anonymous.newPage();
+    await visitor.addInitScript(() => localStorage.setItem('oxi-theme', 'dark'));
+    await visitor.goto('/login');
+    await expectThemeLoaded(visitor, installed);
+    await expect(visitor.locator('html')).toHaveAttribute('data-color-scheme', 'dark');
+    const css = await visitor.evaluate(async () => {
+      const link = document.querySelector<HTMLLinkElement>('#active-theme')!;
+      const response = await fetch(link.href);
+      return { status: response.status, body: await response.text() };
+    });
+    expect(css.status).toBe(200);
+    expect(css.body).toBe(installed.css);
+  } finally {
+    // Other specs share this server: always restore its original selection.
+    await anonymous.close();
+    await page.goto('/admin/appearance');
+    await saveTheme(previous);
+  }
 });

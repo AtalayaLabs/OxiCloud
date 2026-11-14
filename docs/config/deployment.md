@@ -566,7 +566,7 @@ If one surface works and another fails against the same internal CA, the gap is 
 
 ## Persistent themes
 
-Slate is shipped as editable CSS files under `/app/resources/themes` in the Docker
+Slate and Basalt are shipped as editable CSS files under `/app/resources/themes` in the Docker
 image. To manage themes over SSH/SFTP and retain edits across container updates,
 mount a persistent host catalogue read-only for the application and set
 `OXICLOUD_THEMES_PATH` to its container path. The mount replaces the image's

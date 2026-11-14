@@ -80,7 +80,7 @@ The archive contains:
 - `README-install.md` — a shorter version of this page for offline
   reference.
 
-- `resources/themes/` — editable theme folders, including Slate. Only the
+- `resources/themes/` — editable theme folders, including Slate and Basalt. Only the
   recovery theme `default` is embedded. Copy these folders to a persistent
   catalogue and set `OXICLOUD_THEMES_PATH` when installing outside this directory.
 - `README-themes.md` — offline instructions for installing, modifying and removing

@@ -70,9 +70,8 @@
 			size, and `AppSplash.test.ts` fails if those drift, the same guard
 			`theme.test.ts` applies to `oxi-theme` above.
 
-			The rules here stay inline regardless: this screen paints before the
-			CSS bundle exists, so it cannot read a custom property — hence the
-			literals.
+			The rules stay inline for early paint. Theme properties are available
+			from active.css; literal fallbacks keep the splash usable if it fails.
 		-->
 		<style>
 			html[data-color-scheme='dark'] {

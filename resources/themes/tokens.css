@@ -1,4 +1,5 @@
-/* Public theme tokens. Add defaults here; backend types are inferred from CSS. */
+/* Built-in visual defaults shared by the server, SPA and Askama pages.
+ * The server embeds these bytes without parsing CSS or inferring types. */
 :root {
     --radius-none: 0;
     --radius-xs: 2px;

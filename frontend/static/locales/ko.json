@@ -1617,7 +1617,19 @@
     "backend_stored": "저장됨",
     "backend_dedup_ratio": "중복 제거 비율",
     "backend_referenced": "참조됨",
-    "backend_referenced_hint": "blob 참조의 합계(크기 × ref_count). 썸네일, 파생 자산, GC 대기 중인 blob이 여전히 참조를 유지하므로 디스크 총용량을 초과할 수 있습니다."
+    "backend_referenced_hint": "blob 참조의 합계(크기 × ref_count). 썸네일, 파생 자산, GC 대기 중인 blob이 여전히 참조를 유지하므로 디스크 총용량을 초과할 수 있습니다.",
+    "appearance": {
+      "title": "모양",
+      "description": "이 인스턴스의 모든 사용자에게 적용할 모양을 선택하세요. 라이트, 다크 및 시스템 모드는 개인 설정으로 유지됩니다.",
+      "active": "활성 테마: {{theme}}",
+      "unavailable": "저장된 테마 “{{theme}}”을 사용할 수 없습니다. 기본 내장 테마를 사용합니다.",
+      "theme": "전체 테마",
+      "saved": "저장되었습니다. 다음에 페이지를 완전히 로드할 때 테마가 적용됩니다.",
+      "invalid": "설치된 테마 중 일부가 제외되었습니다. 자세한 내용은 서버 로그를 확인하세요.",
+      "refresh": "새로고침",
+      "refreshed": "테마 파일을 다시 로드했습니다. CSS 변경 사항을 적용하려면 페이지를 새로고침하세요.",
+      "recovery": "복구를 위해 운영자가 내장 테마를 강제로 활성화했습니다. 저장된 선택은 유지됩니다."
+    }
   },
   "profile": {
     "page_title": "프로필",

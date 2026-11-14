@@ -1597,7 +1597,19 @@
     "backend_stored": "已儲存",
     "backend_dedup_ratio": "去重比率",
     "backend_referenced": "已參照",
-    "backend_referenced_hint": "blob 參照之和 (大小 × ref_count)。可能超過磁碟總量,因為縮圖、衍生資源以及等待垃圾回收的 blob 仍持有參照。"
+    "backend_referenced_hint": "blob 參照之和 (大小 × ref_count)。可能超過磁碟總量,因為縮圖、衍生資源以及等待垃圾回收的 blob 仍持有參照。",
+    "appearance": {
+      "title": "外觀",
+      "description": "選擇此執行個體所有使用者的外觀。淺色、深色和跟隨系統模式仍為個人偏好設定。",
+      "active": "目前主題：{{theme}}",
+      "unavailable": "已儲存的主題「{{theme}}」無法使用。目前使用內建預設主題。",
+      "theme": "全域主題",
+      "saved": "已儲存。主題將於下次完整載入頁面時套用。",
+      "invalid": "部分已安裝的主題已被排除。請查看伺服器記錄以瞭解詳情。",
+      "refresh": "重新整理",
+      "refreshed": "主題檔案已重新載入。請重新整理頁面以套用 CSS 變更。",
+      "recovery": "管理員已強制啟用內建主題以復原介面。已儲存的選擇會保留。"
+    }
   },
   "profile": {
     "page_title": "個人資料",

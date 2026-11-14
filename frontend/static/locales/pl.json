@@ -1617,7 +1617,19 @@
     "backend_stored": "Zapisane",
     "backend_dedup_ratio": "Współczynnik deduplikacji",
     "backend_referenced": "Odwołane",
-    "backend_referenced_hint": "Suma odwołań do blobów (rozmiar × ref_count). Może przekroczyć sumaryczną pojemność dysku, ponieważ miniatury, pochodne zasoby i bloby czekające na odśmiecanie wciąż utrzymują odwołania."
+    "backend_referenced_hint": "Suma odwołań do blobów (rozmiar × ref_count). Może przekroczyć sumaryczną pojemność dysku, ponieważ miniatury, pochodne zasoby i bloby czekające na odśmiecanie wciąż utrzymują odwołania.",
+    "appearance": {
+      "title": "Wygląd",
+      "description": "Wybierz wygląd dla wszystkich użytkowników tej instancji. Tryby jasny, ciemny i systemowy pozostają indywidualnymi preferencjami.",
+      "active": "Aktywny motyw: {{theme}}",
+      "unavailable": "Zapisany motyw „{{theme}}” jest niedostępny. Używany jest wbudowany motyw domyślny.",
+      "theme": "Motyw globalny",
+      "saved": "Zapisano. Motyw zostanie zastosowany przy następnym pełnym załadowaniu strony.",
+      "invalid": "Niektóre zainstalowane motywy zostały wykluczone. Szczegóły znajdziesz w dziennikach serwera.",
+      "refresh": "Odśwież",
+      "refreshed": "Pliki motywów zostały ponownie wczytane. Załaduj stronę ponownie, aby zastosować zmiany CSS.",
+      "recovery": "Operator wymusił wbudowany motyw w celu przywrócenia interfejsu. Zapisany wybór został zachowany."
+    }
   },
   "profile": {
     "page_title": "Profil",

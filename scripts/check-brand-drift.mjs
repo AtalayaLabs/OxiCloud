@@ -24,7 +24,9 @@ const LOCK = {
 };
 
 const logo = readFileSync(join(repo, 'frontend/static/logo/logo-plain.svg'), 'utf8');
-const vars = readFileSync(join(repo, 'frontend/src/lib/styles/base/variables.css'), 'utf8');
+// Regression pin: extracting themes moved the gradient out of variables.css.
+// Read the canonical defaults so the existing lock still checks the same brand.
+const vars = readFileSync(join(repo, 'resources/themes/tokens.css'), 'utf8');
 const gradMatch = vars.match(/--color-logo-gradient:\s*([^;]+);/);
 const gradient = gradMatch ? gradMatch[1].trim().replace(/\s+/g, ' ') : '(token missing!)';
 

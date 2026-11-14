@@ -1617,7 +1617,19 @@
     "backend_stored": "Opgeslagen",
     "backend_dedup_ratio": "Deduplicatieverhouding",
     "backend_referenced": "Gerefereerd",
-    "backend_referenced_hint": "Som van blob-referenties (grootte × ref_count). Kan het schijftotaal overschrijden omdat miniaturen, afgeleide assets en nog-op-GC-wachtende blobs nog referenties houden."
+    "backend_referenced_hint": "Som van blob-referenties (grootte × ref_count). Kan het schijftotaal overschrijden omdat miniaturen, afgeleide assets en nog-op-GC-wachtende blobs nog referenties houden.",
+    "appearance": {
+      "title": "Vormgeving",
+      "description": "Kies de vormgeving voor iedereen op deze instantie. De lichte, donkere en systeemmodus blijven individuele voorkeuren.",
+      "active": "Actief thema: {{theme}}",
+      "unavailable": "Het opgeslagen thema ‘{{theme}}’ is niet beschikbaar. Het ingebouwde standaardthema wordt gebruikt.",
+      "theme": "Globaal thema",
+      "saved": "Opgeslagen. Het thema wordt toegepast wanneer de pagina opnieuw volledig wordt geladen.",
+      "invalid": "Sommige geïnstalleerde thema’s zijn uitgesloten. Raadpleeg de serverlogboeken voor meer informatie.",
+      "refresh": "Vernieuwen",
+      "refreshed": "Themabestanden opnieuw geladen. Herlaad de pagina om de CSS-wijzigingen toe te passen.",
+      "recovery": "De beheerder heeft het ingebouwde thema afgedwongen voor herstel. De opgeslagen selectie blijft behouden."
+    }
   },
   "profile": {
     "page_title": "Profiel",
