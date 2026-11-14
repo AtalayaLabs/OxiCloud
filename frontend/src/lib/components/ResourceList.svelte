@@ -637,10 +637,13 @@
 		return filesStore.viewMode !== 'list' || gridWidth === 0 || gridWidth >= minWidth;
 	}
 
-	/* Drop order as the table narrows, widest threshold first: the owner (an
-	   avatar and a name) goes before size and date, which are short, aligned
+	/* Drop order as the table narrows, widest threshold first. Type goes
+	   first: at a glance the icon already says what kind of thing a row is,
+	   so the word is the most redundant column on the table. Then the owner
+	   (an avatar and a name), then size and date, which are short, aligned
 	   and scannable. The name and its path line keep what they give up, and
 	   the row tooltip still carries owner and path when the column is gone. */
+	const typeColumn = $derived(showType && fitsList(1200));
 	const ownerColumn = $derived(showOwner && fitsList(920));
 	const sizeColumn = $derived(showSize && fitsList(790));
 	const dateColumn = $derived(showDate && fitsList(790));
@@ -661,7 +664,10 @@
 			// has a use for. The 120px floor is what an avatar plus a short
 			// name needs before it ellipses.
 			ownerColumn ? 'minmax(120px, 0.6fr)' : '',
-			showType ? '120px' : '',
+			// 80px: a type label is one short word ("Image", "Folder", "PDF"),
+			// so 120px was a third of a column of air. Narrowed 1.5x, the
+			// difference going to the name.
+			typeColumn ? '80px' : '',
 			sizeColumn ? '110px' : '',
 			dateColumn ? '160px' : '',
 			hasActionCell ? '120px' : ''
@@ -1375,7 +1381,7 @@
 				{/if}
 			</div>
 		{/if}
-		{#if showType}<div class="type-cell" data-testid="type-cell">
+		{#if typeColumn}<div class="type-cell" data-testid="type-cell">
 				{item.category ? typeLabel(item.category) : ''}
 			</div>{/if}
 		{#if sizeColumn}
@@ -1766,7 +1772,7 @@
 		     column title would have nothing to sit over. `pathLabel` survives
 		     as the name cell's tooltip wording (`/trash` calls it "Original
 		     location"). -->
-		{#if showType}<div class="type-cell">{t('files.col_type', 'Type')}</div>{/if}
+		{#if typeColumn}<div class="type-cell">{t('files.col_type', 'Type')}</div>{/if}
 		{#if sizeColumn}<div class="size-cell">{t('files.col_size', 'Size')}</div>{/if}
 		{#if dateColumn}
 			<div class="date-cell">{dateLabel ?? t('files.col_modified', 'Date')}</div>
