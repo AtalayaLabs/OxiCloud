@@ -805,6 +805,66 @@
 			shortcutLabel = '⌘K';
 		}
 	});
+	/**
+	 * Scroll-away top bar on SHORT viewports.
+	 *
+	 * The bar costs a fixed 70px of height and never moves, which is fine at
+	 * 900px tall and ruinous at 500 — a laptop with devtools open, a phone in
+	 * landscape — where it eats an eighth of the window to show a search box
+	 * and an avatar the user is not currently reaching for. Below 600px of
+	 * viewport height it slides out of the way as you scroll down the content
+	 * and comes straight back on any upward scroll. Above 600px nothing
+	 * changes: the bar is always on screen, which is stronger than sticky.
+	 *
+	 * Driven from `.content-area`'s scroll rather than the window's, because
+	 * that element is the scrollport — a window scroll listener never fires
+	 * here. The class only collapses a margin, so nothing is hidden from
+	 * assistive tech and the bar keeps its place in the tab order.
+	 */
+	let contentEl = $state<HTMLElement | null>(null);
+	let topBarHidden = $state(false);
+
+	onMount(() => {
+		// Optional-chained like `theme.svelte.ts` does: jsdom has no
+		// `matchMedia`, and without it the right answer is the tall-viewport
+		// behaviour — the bar simply stays put.
+		const short = window.matchMedia?.('(max-height: 600px)');
+		if (!short) return;
+		let lastY = 0;
+
+		const onScroll = () => {
+			const el = contentEl;
+			if (!el) return;
+			const y = el.scrollTop;
+			// Past the bar's own height before hiding, so a short list that
+			// barely scrolls can't flap the bar in and out; any upward move
+			// reveals it immediately, which is what a user scrolling back for
+			// the search box expects.
+			if (y > lastY && y > 70) topBarHidden = true;
+			else if (y < lastY) topBarHidden = false;
+			lastY = y;
+		};
+
+		const sync = () => {
+			if (short.matches) {
+				lastY = contentEl?.scrollTop ?? 0;
+				contentEl?.addEventListener('scroll', onScroll, { passive: true });
+			} else {
+				contentEl?.removeEventListener('scroll', onScroll);
+				// Leaving the short-viewport case mid-scroll must not strand the
+				// bar off screen.
+				topBarHidden = false;
+			}
+		};
+
+		sync();
+		short.addEventListener('change', sync);
+		return () => {
+			short.removeEventListener('change', sync);
+			contentEl?.removeEventListener('scroll', onScroll);
+		};
+	});
+
 	let online = $state(true);
 	onMount(() => {
 		online = navigator.onLine;
@@ -1171,7 +1231,11 @@
 </aside>
 
 <div class="main-content">
-	<div class="top-bar" class:top-bar--search-active={searchActive}>
+	<div
+		class="top-bar"
+		class:top-bar--search-active={searchActive}
+		class:top-bar--hidden={topBarHidden}
+	>
 		<button
 			class="sidebar-toggle"
 			aria-label={t('nav.toggle', 'Toggle navigation menu')}
@@ -1445,7 +1509,13 @@
 		of this element — well before the window edge, so the browser's own
 		edge scrolling never engaged and only downward drags worked.
 	-->
-	<main class="content-area" id="main-content" tabindex="-1" use:dragAutoScroll>
+	<main
+		class="content-area"
+		id="main-content"
+		tabindex="-1"
+		bind:this={contentEl}
+		use:dragAutoScroll
+	>
 		{#if !online}
 			<Banner
 				severity="warning"

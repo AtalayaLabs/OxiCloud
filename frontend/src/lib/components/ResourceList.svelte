@@ -622,16 +622,48 @@
 			!!contextActions?.length
 	);
 
+	/**
+	 * Is the TABLE wide enough to spend a column on something secondary?
+	 *
+	 * Keyed on the measured container width, not the viewport: a list inside
+	 * a narrow pane is narrow whatever the window is doing. Grid view always
+	 * passes — it has no column track to spend, and its cards carry this
+	 * information in their own footer.
+	 *
+	 * `gridWidth === 0` is the pre-measurement frame, treated as "wide", so a
+	 * wide list doesn't render one frame without its columns and then jump.
+	 */
+	function fitsList(minWidth: number): boolean {
+		return filesStore.viewMode !== 'list' || gridWidth === 0 || gridWidth >= minWidth;
+	}
+
+	/* Drop order as the table narrows, widest threshold first: the owner (an
+	   avatar and a name) goes before size and date, which are short, aligned
+	   and scannable. The name and its path line keep what they give up, and
+	   the row tooltip still carries owner and path when the column is gone. */
+	const ownerColumn = $derived(showOwner && fitsList(920));
+	const sizeColumn = $derived(showSize && fitsList(790));
+	const dateColumn = $derived(showDate && fitsList(790));
+
 	// Build the list-view column track from the enabled cells.
 	const columns = $derived(
 		[
 			selectable ? '36px' : '',
-			'minmax(200px, 2fr)',
-			showOwner ? 'minmax(120px, 1fr)' : '',
-			showPath ? 'minmax(140px, 1.5fr)' : '',
+			// Name, and now the path under it — so this track absorbs the
+			// width the Path column used to claim rather than splitting it.
+			// 3fr against the owner's 1fr (was 2fr): two lines of text need
+			// the room more than a single avatar-and-name chip does, and it
+			// pushes the owner column clear of the name instead of crowding
+			// it.
+			'minmax(220px, 3fr)',
+			// 0.6fr against the name's 3fr: an owner cell holds one avatar and
+			// one name, so extra width there is dead space the name column
+			// has a use for. The 120px floor is what an avatar plus a short
+			// name needs before it ellipses.
+			ownerColumn ? 'minmax(120px, 0.6fr)' : '',
 			showType ? '120px' : '',
-			showSize ? '110px' : '',
-			showDate ? '160px' : '',
+			sizeColumn ? '110px' : '',
+			dateColumn ? '160px' : '',
 			hasActionCell ? '120px' : ''
 		]
 			.filter(Boolean)
@@ -1313,9 +1345,28 @@
 					{@render cardOverlay(item, ctx)}
 				{/if}
 			</span>
-			<span class="name-cell__text">{item.name}</span>
+			<!--
+				Name over path, both to the right of the icon — the path used to
+				be a column of its own, competing for width with the name it
+				qualifies and pushing owner/size/date to the right. As a second
+				line it reads as what it is: where this item lives, subordinate
+				to what it is called.
+
+				LIST VIEW ONLY: a grid card has no room for it and never showed
+				the path column either (`itemTooltip` still surfaces it on
+				hover). The line renders whenever `showPath` is on, even for an
+				item at the root with nothing to show, because the windowed list
+				assumes one row pitch — a mix of one- and two-line rows would
+				drift the scroll maths.
+			-->
+			<span class="name-cell__body">
+				<span class="name-cell__text">{item.name}</span>
+				{#if showPath && filesStore.viewMode === 'list'}
+					<span class="name-cell__path">{item.path ?? ''}</span>
+				{/if}
+			</span>
 		</div>
-		{#if showOwner}
+		{#if ownerColumn}
 			<div class="owner-cell">
 				{#if ownerCell}{@render ownerCell(item, ctx)}{:else if ownerId}
 					<UserVignette userId={ownerId} fallbackLabel={resolveOwnerName?.(ownerId) ?? undefined} />
@@ -1324,14 +1375,13 @@
 				{/if}
 			</div>
 		{/if}
-		{#if showPath}<div class="path-cell">{item.path ?? ''}</div>{/if}
 		{#if showType}<div class="type-cell" data-testid="type-cell">
 				{item.category ? typeLabel(item.category) : ''}
 			</div>{/if}
-		{#if showSize}
+		{#if sizeColumn}
 			<div class="size-cell">{sizeVal != null ? formatBytes(sizeVal) : '—'}</div>
 		{/if}
-		{#if showDate}
+		{#if dateColumn}
 			<div class="date-cell">
 				{#if dateCell}{@render dateCell(item, ctx)}{:else}{formatDate(dateVal)}{/if}
 			</div>
@@ -1637,7 +1687,10 @@
 			{:else if filesStore.viewMode === 'list'}
 				<!-- Flat list view: only the visible rows are mounted. The spacer keeps the
 			     full scroll height so the end-of-list sentinel still fires. -->
-				<div class="files-list-view" style="--files-list-columns: {columns}">
+				<div
+					class="files-list-view"
+					style="--files-list-columns: {columns}; --lane-sticky-h: {stickyHeaderH}px"
+				>
 					{#if listHeaderOverride}{@render listHeaderOverride()}{:else}{@render listHeader()}{/if}
 					<VirtualList items={visibleItems} rowHeight={56} key={(e) => e.id} {row} />
 				</div>
@@ -1706,13 +1759,18 @@
 			</div>
 		{/if}
 		<div class="name-cell">{t('files.col_name', 'Name')}</div>
-		{#if showOwner}<div class="owner-cell">
+		{#if ownerColumn}<div class="owner-cell">
 				{ownerLabel ?? t('files.col_created_by', 'Created by')}
 			</div>{/if}
-		{#if showPath}<div class="path-cell">{pathLabel ?? t('files.col_path', 'Location')}</div>{/if}
+		<!-- No Path column header: the path rides under the name now, where a
+		     column title would have nothing to sit over. `pathLabel` survives
+		     as the name cell's tooltip wording (`/trash` calls it "Original
+		     location"). -->
 		{#if showType}<div class="type-cell">{t('files.col_type', 'Type')}</div>{/if}
-		{#if showSize}<div class="size-cell">{t('files.col_size', 'Size')}</div>{/if}
-		{#if showDate}<div class="date-cell">{dateLabel ?? t('files.col_modified', 'Date')}</div>{/if}
+		{#if sizeColumn}<div class="size-cell">{t('files.col_size', 'Size')}</div>{/if}
+		{#if dateColumn}
+			<div class="date-cell">{dateLabel ?? t('files.col_modified', 'Date')}</div>
+		{/if}
 		{#if hasActionCell}<div class="action-cell"></div>{/if}
 	</div>
 {/snippet}
@@ -1937,6 +1995,22 @@
 	/* The last row in a lane would otherwise draw a border against the gap. */
 	.lane :global(.file-item:last-child) {
 		border-bottom: none;
+	}
+
+	/* Column titles stick — but ONLY on an ungrouped list. In lane mode the
+	   lane headers hold that slot (`.lane__header--sticky`), and two strips
+	   competing for it would either stack into a double header or, worse,
+	   have the column titles pin OVER the lane label that says which group
+	   those columns are describing.
+	   Same offset contract as a lane header: `--lane-sticky-h` is the
+	   measured page chrome, less `.content-area`'s top padding. `.list-header`
+	   already carries an opaque `--color-bg-subtle`, which a sticky strip
+	   needs since rows pass underneath. `:global` so a page's
+	   `listHeaderOverride` markup (e.g. `/trash`) is covered too. */
+	.files-list-view:not(.files-list-view--grouped) :global(.list-header) {
+		position: sticky;
+		top: calc(var(--lane-sticky-h, 0px) - var(--space-5));
+		z-index: 1;
 	}
 
 	/* ── Swimlane section header ──

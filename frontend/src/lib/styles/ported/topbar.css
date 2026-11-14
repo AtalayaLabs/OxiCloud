@@ -8,9 +8,13 @@
 
 /* Top bar */
 .top-bar {
-    height: 70px;
-    min-height: 70px;
-    max-height: 70px;
+    /* One source for the bar's height: the scroll-away rule below and the
+       safe-area override on mobile both read it, so they cannot drift. */
+    --top-bar-h: 70px;
+
+    height: var(--top-bar-h);
+    min-height: var(--top-bar-h);
+    max-height: var(--top-bar-h);
     background-color: var(--color-bg-surface);
     border-bottom: 1px solid var(--color-border);
     display: flex;
@@ -18,6 +22,24 @@
     padding: 0 var(--gutter);
     justify-content: space-between;
     flex-shrink: 0;
+    transition:
+        margin-top var(--motion-base) var(--ease-standard),
+        transform var(--motion-base) var(--ease-standard);
+}
+
+/* Scroll-away on SHORT viewports — the class is only ever set below 600px of
+   height (see `AppShell`), where 70px of permanent chrome is an eighth of the
+   window.
+
+   A negative margin rather than `display: none`: the bar is a flex item above
+   the scroll container, so collapsing its margin pulls the content up into
+   the space and animates, while the element itself stays in the DOM, in the
+   tab order and readable by assistive tech. The transform rides along so the
+   bar slides out rather than squashing. `+ 1px` for the bottom border, which
+   the height does not include. */
+.top-bar--hidden {
+    margin-top: calc(-1 * (var(--top-bar-h) + 1px));
+    transform: translateY(calc(-1 * (var(--top-bar-h) + 1px)));
 }
 
 /* Sidebar toggle button (hidden on desktop) */
@@ -180,9 +202,9 @@
 /* Mobile responsive styles for top bar */
 @media (max-width: 768px) {
     .top-bar {
-        height: calc(70px + env(safe-area-inset-top, 0px));
-        min-height: calc(70px + env(safe-area-inset-top, 0px));
-        max-height: calc(70px + env(safe-area-inset-top, 0px));
+        /* Height and the scroll-away offset both follow from this. */
+        --top-bar-h: calc(70px + env(safe-area-inset-top, 0px));
+
         padding: env(safe-area-inset-top, 0px) var(--space-4) 0;
     }
 

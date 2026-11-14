@@ -379,12 +379,15 @@ it('refetches from the first page when the cap is toggled', async () => {
 	);
 });
 
-// No path column, matching `/shared-with-me`. The server already sends an
-// empty path, so this is belt-and-braces — but the column would render an
-// empty cell and, more to the point, a future `showPath` here would start
+// No path, matching `/shared-with-me`. The server already sends an empty
+// path, so this is belt-and-braces — but a future `showPath` here would start
 // displaying ancestor folder names the moment the server ever filled the
 // field in again.
-it('renders no path column', async () => {
+//
+// Queried as `.name-cell__path` since 2026-11-14: the path stopped being a
+// column and became a second line under the name, so the old `.path-cell`
+// query would now pass for the wrong reason — that class exists nowhere.
+it('renders no path under the name', async () => {
 	m(listRecentChanges).mockResolvedValue({
 		items: [change('f1', 'notes.txt', 'bob', '2024-01-01T00:00:00Z')],
 		next_cursor: null
@@ -392,7 +395,7 @@ it('renders no path column', async () => {
 	render(ChangesPage);
 	await waitFor(() => expect(screen.getByTestId('notes.txt')).toBeTruthy());
 
-	expect(document.querySelector('.path-cell')).toBeNull();
+	expect(document.querySelector('.name-cell__path')).toBeNull();
 	// The escape hatch to the file's real home is the row menu, not the path.
 	await fireEvent.click(screen.getByTestId('resource-list-more-f1-btn'));
 	expect(await screen.findByText('Open parent folder')).toBeTruthy();
