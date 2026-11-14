@@ -9,10 +9,6 @@
 	import { t } from '$lib/i18n/index.svelte';
 	import { errorMessage } from '$lib/utils/errors';
 
-	function themeName(id: string): string {
-		return id === 'modern-pro' ? 'Modern Pro' : id;
-	}
-
 	let appearance = $state<AppearanceDto | null>(null);
 	let selected = $state('');
 	let loadError = $state<string | null>(null);
@@ -76,7 +72,7 @@
 			<p>
 				{t(
 					'admin.appearance.active',
-					{ theme: themeName(appearance.active_theme_id) },
+					{ theme: appearance.active_theme_id },
 					'Active theme: {{theme}}'
 				)}
 			</p>
@@ -111,8 +107,7 @@
 						aria-invalid={action.error ? 'true' : undefined}
 						aria-describedby={action.error ? 'appearance-error' : undefined}
 					>
-						{#each appearance.available_themes as id (id)}<option value={id}>{themeName(id)}</option
-							>{/each}
+						{#each appearance.available_themes as id (id)}<option value={id}>{id}</option>{/each}
 					</select>
 					<span class="appearance__chevron" aria-hidden="true"><Icon name="chevron-down" /></span>
 				</div>

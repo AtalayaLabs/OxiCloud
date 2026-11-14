@@ -9,8 +9,13 @@ vi.mock('$lib/api/endpoints/admin', () => ({
 	reloadThemes: vi.fn()
 }));
 vi.mock('$lib/i18n/index.svelte', () => ({
-	t: (_key: string, paramsOrFallback: string | Record<string, string>, fallback?: string) =>
-		typeof paramsOrFallback === 'string' ? paramsOrFallback : (fallback ?? _key)
+	t: (_key: string, paramsOrFallback: string | Record<string, string>, fallback?: string) => {
+		if (typeof paramsOrFallback === 'string') return paramsOrFallback;
+		return Object.entries(paramsOrFallback).reduce(
+			(text, [key, value]) => text.replaceAll(`{{${key}}}`, value),
+			fallback ?? _key
+		);
+	}
 }));
 const appearance = {
 	available_themes: ['default', 'sober'],
@@ -55,16 +60,16 @@ it('refreshes the catalogue and retains unsaved selection on failure', async () 
 	await fireEvent.change(input, { target: { value: 'sober' } });
 	vi.mocked(reloadThemes).mockResolvedValueOnce({
 		...appearance,
-		available_themes: ['default', 'sober', 'modern-pro']
+		available_themes: ['default', 'sober', 'slate']
 	});
 	await fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
-	await screen.findByRole('option', { name: 'Modern Pro' });
+	await screen.findByRole('option', { name: 'slate' });
 	expect(input.value).toBe('sober');
 	vi.mocked(reloadThemes).mockRejectedValueOnce(new Error('Unreadable directory'));
 	await fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
 	await screen.findByRole('alert');
 	expect(input.value).toBe('sober');
-	expect(screen.getByRole('option', { name: 'Modern Pro' })).toBeTruthy();
+	expect(screen.getByRole('option', { name: 'slate' })).toBeTruthy();
 });
 
 it('shows recovery mode and disables theme selection', async () => {
@@ -78,4 +83,20 @@ it('shows recovery mode and disables theme selection', async () => {
 	expect(select.disabled).toBe(true);
 	expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true);
 	expect(screen.getByRole('status').textContent).toContain('recovery');
+});
+
+it('displays directory identifiers unchanged for every theme', async () => {
+	// Regression pin: Slate had a frontend-only display-name override. Theme
+	// options and the active label must use the server's identifiers verbatim.
+	vi.mocked(getAppearance).mockResolvedValueOnce({
+		...appearance,
+		available_themes: ['default', 'slate', 'custom-theme-2'],
+		active_theme_id: 'slate'
+	});
+	render(Page);
+	await screen.findByRole('option', { name: 'slate' });
+	expect(screen.getByRole('option', { name: 'custom-theme-2' })).toBeTruthy();
+	expect(screen.queryByRole('option', { name: 'Slate' })).toBeNull();
+	// The test i18n mock exposes the raw parameter to pin the active label too.
+	expect(screen.getByText('Active theme: slate')).toBeTruthy();
 });

@@ -198,7 +198,7 @@ jobs:
 
       # Assemble the tarball layout documented in
       # docs/plan/bundled-binary.md § 4: oxicloud + example.env +
-      # LICENSE + README-install.md, rooted under a per-version-per-
+      # LICENSE + install/theme guides + resources/themes, under a per-version-per-
       # triple directory so `tar xzf` lands cleanly.
       - name: Package tarball
         run: |
@@ -213,6 +213,9 @@ jobs:
           cp "target/${{ matrix.triple }}/release/oxicloud" "dist/${DIST}/oxicloud"
           cp example.env  "dist/${DIST}/example.env"
           cp LICENSE      "dist/${DIST}/LICENSE"
+          mkdir -p "dist/${DIST}/resources"
+          cp -R resources/themes "dist/${DIST}/resources/themes"
+          cp docs/config/themes.md "dist/${DIST}/README-themes.md"
           # README-install.md may not exist yet in early releases —
           # ship a stub that points at the docs site so users have
           # something in the tarball. Deliverable 6 replaces it with

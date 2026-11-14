@@ -1,18 +1,12 @@
-//! Shipped themes work without a source checkout or writable installation path.
+//! The recovery default works without a source checkout or installation path.
 use crate::application::ports::theme_ports::PreparedTheme;
 use std::{collections::BTreeMap, sync::Arc};
 
 pub fn built_in_themes() -> BTreeMap<String, Arc<PreparedTheme>> {
-    [
-        (
-            "default",
-            include_str!("../../../resources/themes/tokens.css"),
-        ),
-        (
-            "modern-pro",
-            include_str!("../../../resources/themes/installed/modern-pro/theme.css"),
-        ),
-    ]
+    [(
+        "default",
+        include_str!("../../../resources/themes/tokens.css"),
+    )]
     .into_iter()
     .map(|(id, css)| (id.into(), Arc::new(prepare_theme(id.into(), css.into()))))
     .collect()
@@ -31,11 +25,11 @@ pub fn prepare_theme(id: String, css: String) -> PreparedTheme {
 mod tests {
     use super::*;
     #[test]
-    fn shipped_catalogue_contains_default_and_modern_pro_without_disk_access() {
-        // Distribution regression pin: bundled-assets alone did not include
-        // the operator theme directory; Modern Pro disappeared outside git.
+    fn only_default_is_embedded() {
+        // Regression pin: an embedded alternative theme cannot be uninstalled
+        // by removing its folder. Only the recovery default belongs here.
         let catalogue = built_in_themes();
-        assert!(catalogue.contains_key("default"));
-        assert!(!catalogue["modern-pro"].css.is_empty());
+        assert_eq!(catalogue.len(), 1);
+        assert!(!catalogue["default"].css.is_empty());
     }
 }

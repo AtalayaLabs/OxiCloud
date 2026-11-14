@@ -55,6 +55,10 @@ body == ""
 GET {{base_url}}/themes/unknown.css
 HTTP 404
 
+# Theme sources are never exposed separately.
+GET {{base_url}}/themes/hurl-sober/index.css
+HTTP 404
+
 GET {{base_url}}/themes
 HTTP 404
 
@@ -144,7 +148,8 @@ HTTP 200
 [Asserts]
 header "ETag" != "{{initial_etag}}"
 body contains "#123456"
-# Operator CSS is no longer restricted to token declarations.
+# Regression pin: index.css is the single CSS source, served unchanged
+# including component rules rather than only token declarations.
 body contains ".theme-smoke { border-radius: 2rem !important; }"
 
 PUT {{base_url}}/api/admin/settings/appearance

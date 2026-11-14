@@ -211,6 +211,8 @@ RUN sed -i 's/\r//' /usr/local/bin/entrypoint.sh && \
 
 # Copy the built SPA (produced by the Vite frontend stage)
 COPY --from=app --chown=oxicloud:oxicloud /app/static-dist /app/static
+# Themes remain operator-editable files, independent of the binary.
+COPY --from=app --chown=oxicloud:oxicloud /app/resources/themes /app/resources/themes
 # Create storage directory with proper permissions
 RUN mkdir -p /app/storage && chown -R oxicloud:oxicloud /app/storage
 

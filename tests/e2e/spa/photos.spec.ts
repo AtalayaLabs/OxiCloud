@@ -44,11 +44,8 @@ test('photo grid opens the lightbox and navigates', async ({ page }) => {
 });
 
 for (const mode of ['light', 'dark'] as const) {
-  test(`Modern Pro keeps lightbox controls readable in ${mode} mode`, async ({ page }) => {
-    const theme = readFileSync(
-      join(__dirname, '../../../resources/themes/installed/modern-pro/theme.css'),
-      'utf8',
-    );
+  test(`Slate keeps lightbox controls readable in ${mode} mode`, async ({ page }) => {
+    const theme = readFileSync(join(__dirname, '../../../resources/themes/slate/index.css'), 'utf8');
     await page.route('**/themes/active.css', route => route.fulfill({
       contentType: 'text/css',
       body: theme,
@@ -82,7 +79,7 @@ for (const mode of ['light', 'dark'] as const) {
     await expect(favorite).toHaveCSS('background-color', 'rgba(255, 255, 255, 0.12)');
     await favorite.click();
     await expect(favorite).toHaveClass(/active/);
-    // Regression pin: Modern Pro's accent fill has insufficient contrast on
+    // Regression pin: Slate's accent fill has insufficient contrast on
     // the overlay; keep a white glyph and indicate the active state by its fill.
     await expect(favorite).toHaveCSS('color', 'rgb(255, 255, 255)');
     await expect(favorite).toHaveCSS('background-color', 'rgba(255, 255, 255, 0.25)');

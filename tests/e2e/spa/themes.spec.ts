@@ -4,10 +4,10 @@ import { join } from 'node:path';
 import { apiLogin, apiCreateFolder, apiUploadFile, SAMPLE_FILES } from './helpers';
 
 for (const mode of ['light', 'dark'] as const) {
-  test(`Modern Pro preserves readable text and unified file icons in ${mode} mode`, async ({ page }) => {
+  test(`Slate preserves readable text and unified file icons in ${mode} mode`, async ({ page }) => {
     await page.route('**/themes/active.css', route => route.fulfill({
       contentType: 'text/css',
-      body: readFileSync(join(__dirname, '../../../resources/themes/installed/modern-pro/theme.css'), 'utf8'),
+      body: readFileSync(join(__dirname, '../../../resources/themes/slate/index.css'), 'utf8'),
     }));
     await page.addInitScript(scheme => localStorage.setItem('oxi-theme', scheme), mode);
     await page.goto('/login');
@@ -61,7 +61,7 @@ for (const mode of ['light', 'dark'] as const) {
     expect(palette.folderContrast).toBeGreaterThanOrEqual(3);
 
     await apiLogin(page);
-    const folder = await apiCreateFolder(page, `Modern Pro ${mode} ${Date.now()}`);
+    const folder = await apiCreateFolder(page, `Slate ${mode} ${Date.now()}`);
     await apiCreateFolder(page, 'Reports', folder.id);
     for (const file of [SAMPLE_FILES.text(), SAMPLE_FILES.pdf(), SAMPLE_FILES.csv(), SAMPLE_FILES.json()]) {
       await apiUploadFile(page, file, folder.id);

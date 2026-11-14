@@ -563,3 +563,12 @@ If one surface works and another fails against the same internal CA, the gap is 
 | Deduplication | No | No | Always on |
 | Thumbnails | No | No | Always on |
 | Chunked uploads | No | No | Always on |
+
+## Persistent themes
+
+Slate is shipped as editable CSS files under `/app/resources/themes` in the Docker
+image. To manage themes over SSH/SFTP and retain edits across container updates,
+mount a persistent host catalogue read-only for the application and set
+`OXICLOUD_THEMES_PATH` to its container path. The mount replaces the image's
+catalogue, so copy Slate into it if desired. See [theme installation and
+management](themes.md) for the folder format, volume example and recovery steps.

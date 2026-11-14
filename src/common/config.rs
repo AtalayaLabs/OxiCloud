@@ -6657,7 +6657,7 @@ impl Default for ThemesConfig {
     fn default() -> Self {
         Self {
             force_default: false,
-            path: PathBuf::from("./resources/themes/installed"),
+            path: PathBuf::from("./resources/themes"),
             path_explicit: false,
             default_theme: "default".into(),
         }
@@ -6696,6 +6696,8 @@ mod themes_config_tests {
     fn explicit_path_survives_parsing() {
         let default = ThemesConfig::parse(None, None).unwrap();
         assert!(!default.path_explicit);
+        // Regression pin: themes live directly under resources/themes.
+        assert_eq!(default.path, PathBuf::from("./resources/themes"));
         assert!(
             default
                 .clone()
@@ -6710,7 +6712,7 @@ mod themes_config_tests {
                 .is_err()
         );
         assert_eq!(default.default_theme, "default");
-        for path in ["./resources/themes/installed", "/srv/themes"] {
+        for path in ["./resources/themes", "/srv/themes"] {
             assert!(
                 ThemesConfig::parse(Some(path.into()), None)
                     .unwrap()

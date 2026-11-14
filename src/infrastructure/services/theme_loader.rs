@@ -1,4 +1,4 @@
-//! Read operator-installed CSS without interpreting or rewriting it.
+//! Read each theme directory’s index.css verbatim, without parsing CSS.
 //! Only the operator can install files. Request handlers receive prepared bytes,
 //! never paths; every read is bounded and anchored to directory descriptors.
 use crate::{
@@ -23,23 +23,23 @@ fn invalid(message: impl Into<String>) -> DomainError {
 }
 
 fn read_theme(directory: &File, id: &str) -> Result<PreparedTheme, DomainError> {
-    let file = open_child(directory, "theme.css", false)
-        .map_err(|e| invalid(format!("Theme file unavailable: {e}")))?;
+    let file = open_child(directory, "index.css", false)
+        .map_err(|e| invalid(format!("{id}/index.css: {e}")))?;
     if !file
         .metadata()
         .map_err(|e| invalid(e.to_string()))?
         .is_file()
     {
-        return Err(invalid("Theme must be a regular file"));
+        return Err(invalid("Theme CSS must be a regular file"));
     }
     let mut bytes = Vec::new();
     file.take(MAX_FILE + 1)
         .read_to_end(&mut bytes)
-        .map_err(|e| invalid(e.to_string()))?;
+        .map_err(|e| invalid(format!("{id}/index.css: {e}")))?;
     if bytes.len() as u64 > MAX_FILE {
-        return Err(invalid("Theme exceeds 256 KiB"));
+        return Err(invalid("Theme CSS exceeds 256 KiB"));
     }
-    let css = String::from_utf8(bytes).map_err(|_| invalid("Theme must be UTF-8"))?;
+    let css = String::from_utf8(bytes).map_err(|_| invalid("Theme CSS must be UTF-8"))?;
     Ok(super::theme_assets::prepare_theme(id.into(), css))
 }
 
@@ -80,6 +80,9 @@ impl ThemeCatalogueLoader for ThemeLoader {
             let entry = entry.map_err(|e| DomainError::internal_error("Theme", e.to_string()))?;
             let raw = entry.file_name().to_bytes();
             if raw == b"." || raw == b".." {
+                continue;
+            }
+            if entry.file_type() == rustix::fs::FileType::RegularFile {
                 continue;
             }
             count += 1;
@@ -168,7 +171,7 @@ mod tests {
     fn fixture(css: &str) -> (tempfile::TempDir, ThemeCatalogue) {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("sober")).unwrap();
-        std::fs::write(dir.path().join("sober/theme.css"), css).unwrap();
+        std::fs::write(dir.path().join("sober/index.css"), css).unwrap();
         let catalogue = loader(dir.path()).load().unwrap();
         (dir, catalogue)
     }
@@ -176,19 +179,19 @@ mod tests {
     fn operator_css_is_served_verbatim_including_component_rules() {
         // Regression pin: the old token validator rejected component CSS and
         // rewrote values. Operator files now remain byte-for-byte unchanged.
-        let css = "@import url('/existing.css');\n:root { --custom: color-mix(in srgb, red, blue); }\n.button { border-radius: 2rem !important; }\n";
+        let css = ":root { --custom: color-mix(in srgb, red, blue); }\n.button { border-radius: 2rem !important; }\n";
         let (_dir, catalogue) = fixture(css);
         assert_eq!(catalogue.themes["sober"].css.as_ref(), css.as_bytes());
-        assert_eq!(catalogue.themes.len(), 3);
+        assert_eq!(catalogue.themes.len(), 2);
     }
     #[test]
     fn symlinks_special_files_and_oversized_files_are_excluded() {
         use std::os::unix::fs::symlink;
         let (dir, _) = fixture(":root {}");
-        let css = dir.path().join("sober/theme.css");
+        let css = dir.path().join("sober/index.css");
         std::fs::remove_file(&css).unwrap();
         symlink("/etc/passwd", &css).unwrap();
-        assert_eq!(loader(dir.path()).load().unwrap().themes.len(), 2);
+        assert_eq!(loader(dir.path()).load().unwrap().themes.len(), 1);
         std::fs::remove_file(&css).unwrap();
         rustix::fs::mknodat(
             rustix::fs::CWD,
@@ -198,10 +201,10 @@ mod tests {
             0,
         )
         .unwrap();
-        assert_eq!(loader(dir.path()).load().unwrap().themes.len(), 2);
+        assert_eq!(loader(dir.path()).load().unwrap().themes.len(), 1);
         std::fs::remove_file(&css).unwrap();
         std::fs::write(css, vec![b' '; MAX_FILE as usize + 1]).unwrap();
-        assert_eq!(loader(dir.path()).load().unwrap().themes.len(), 2);
+        assert_eq!(loader(dir.path()).load().unwrap().themes.len(), 1);
     }
     #[test]
     fn catalogue_limits_utf8_and_root_symlinks_fail_loudly() {
@@ -212,12 +215,53 @@ mod tests {
         }
         assert!(loader(dir.path()).load().is_err());
         let (other, _) = fixture(":root {}");
-        std::fs::write(other.path().join("sober/theme.css"), [0xff]).unwrap();
+        std::fs::write(other.path().join("sober/index.css"), [0xff]).unwrap();
         assert_eq!(loader(other.path()).load().unwrap().diagnostics.len(), 1);
         let root_link = other.path().join("link");
         symlink(dir.path(), &root_link).unwrap();
         assert!(loader(&root_link).load().is_err());
     }
+    #[test]
+    fn only_index_css_is_loaded_without_parsing_or_reading_siblings() {
+        // Regression pin: the loader must serve index.css unchanged, even when
+        // it mentions a missing import; sibling files are never read or merged.
+        let css = "@import './missing.css';\n/* arbitrary CSS */\n.x { --custom: value; }\n";
+        let (root, catalogue) = fixture(css);
+        assert_eq!(catalogue.themes["sober"].css.as_ref(), css.as_bytes());
+        std::fs::write(root.path().join("sober/extra.css"), [0xff]).unwrap();
+        assert_eq!(
+            loader(root.path()).load().unwrap().themes["sober"]
+                .css
+                .as_ref(),
+            css.as_bytes()
+        );
+        std::fs::remove_file(root.path().join("sober/index.css")).unwrap();
+        std::fs::write(root.path().join("sober/theme.css"), ":root {}").unwrap();
+        let missing = loader(root.path()).load().unwrap();
+        assert!(!missing.themes.contains_key("sober"));
+        assert_eq!(missing.diagnostics[0].theme_id.as_deref(), Some("sober"));
+    }
+
+    #[test]
+    fn root_files_are_ignored_and_slate_can_be_uninstalled() {
+        // Regression pin: root metadata is not a theme, and deleting Slate's
+        // folder must remove it instead of restoring an embedded alternative.
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("tokens.css"), ":root {}").unwrap();
+        std::fs::write(root.path().join("NOTICE.md"), "Not a theme").unwrap();
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/themes/slate/index.css");
+        std::fs::create_dir(root.path().join("slate")).unwrap();
+        std::fs::copy(&source, root.path().join("slate/index.css")).unwrap();
+        let catalogue = loader(root.path()).load().unwrap();
+        assert!(catalogue.diagnostics.is_empty());
+        assert_eq!(
+            catalogue.themes["slate"].css.as_ref(),
+            std::fs::read(source).unwrap()
+        );
+        std::fs::remove_dir_all(root.path().join("slate")).unwrap();
+        assert_eq!(loader(root.path()).load().unwrap().themes.len(), 1);
+    }
+
     #[test]
     fn recovery_ignores_an_unavailable_operator_directory() {
         let root = tempfile::tempdir().unwrap();
@@ -226,12 +270,13 @@ mod tests {
         assert!(loader.load().unwrap().themes.contains_key("default"));
     }
     #[test]
-    fn shipped_modern_pro_can_be_selected_without_the_source_tree() {
+    fn only_default_is_available_without_the_source_tree() {
         let root = tempfile::tempdir().unwrap();
         let mut loader = loader(&root.path().join("absent"));
         loader.config.path_explicit = false;
-        loader.config.default_theme = "modern-pro".into();
-        assert!(loader.load().unwrap().themes.contains_key("modern-pro"));
+        let catalogue = loader.load().unwrap();
+        assert_eq!(catalogue.themes.len(), 1);
+        assert!(catalogue.themes.contains_key("default"));
     }
     #[test]
     fn distinguishes_missing_explicit_root_and_reserved_default() {
@@ -240,8 +285,7 @@ mod tests {
         assert!(loader(&missing).load().is_err());
         let mut implicit = loader(&missing);
         implicit.config.path_explicit = false;
-        assert_eq!(implicit.load().unwrap().themes.len(), 2);
-        assert_eq!(implicit.load().unwrap().themes.len(), 2);
+        assert_eq!(implicit.load().unwrap().themes.len(), 1);
         std::fs::create_dir(dir.path().join("default")).unwrap();
         assert_eq!(loader(dir.path()).load().unwrap().diagnostics.len(), 1);
     }

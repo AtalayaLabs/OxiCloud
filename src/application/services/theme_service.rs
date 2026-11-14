@@ -423,7 +423,7 @@ mod tests {
         let authz = PgAclEngine::new_stub();
         let caller = Uuid::new_v4();
         std::fs::create_dir(root.path().join("new")).unwrap();
-        let file = root.path().join("new/theme.css");
+        let file = root.path().join("new/index.css");
         std::fs::write(&file, ":root { --color-accent: #123456; }").unwrap();
         let denied = Caller(UserFlags {
             role: UserRole::User,
@@ -469,6 +469,46 @@ mod tests {
         );
         assert!(Arc::ptr_eq(&prior, &svc.active()));
         assert_eq!(svc.appearance().selected_theme_id.as_deref(), Some("new"));
+    }
+
+    #[tokio::test]
+    async fn removing_selected_theme_falls_back_without_erasing_selection() {
+        // Regression pin: deleting a theme on disk must uninstall it instead
+        // of restoring an embedded copy, and preserve the operator's saved ID.
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("slate")).unwrap();
+        std::fs::write(root.path().join("slate/index.css"), ":root {}").unwrap();
+        let loader = Arc::new(crate::infrastructure::services::theme_loader::ThemeLoader {
+            config: crate::common::config::ThemesConfig {
+                path: root.path().to_owned(),
+                path_explicit: true,
+                ..Default::default()
+            },
+        });
+        let repo = Arc::new(Repository::default());
+        let svc = Arc::new(
+            ThemeService::new(repo.clone(), loader.load().unwrap(), "default".into())
+                .await
+                .unwrap()
+                .with_loader(loader),
+        );
+        let caller = Uuid::new_v4();
+        let authz = PgAclEngine::new_stub();
+        svc.select_theme_with_perms(caller, "slate".into(), &admin(), &authz)
+            .await
+            .unwrap();
+        std::fs::remove_dir_all(root.path().join("slate")).unwrap();
+        let appearance = svc
+            .reload_with_perms(caller, &admin(), &authz)
+            .await
+            .unwrap();
+        assert_eq!(appearance.active_theme_id, "default");
+        assert_eq!(appearance.selected_theme_id.as_deref(), Some("slate"));
+        assert_eq!(
+            appearance.warning.as_deref(),
+            Some("selected_theme_unavailable")
+        );
+        assert!(!appearance.available_themes.contains(&"slate".into()));
     }
     #[tokio::test]
     async fn database_read_errors_are_not_missing_settings() {
