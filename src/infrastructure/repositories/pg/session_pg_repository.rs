@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use futures::future::BoxFuture;
 use sqlx::{PgPool, Row};
 use std::sync::Arc;
@@ -37,6 +37,35 @@ impl SessionPgRepository {
             _ => SessionRepositoryError::DatabaseError(format!("Database error: {}", err)),
         }
     }
+
+    /// Decode one `auth.sessions` row.
+    ///
+    /// Extracted while adding [`find_family_successor`]: the same
+    /// fourteen-field `Session::from_raw` call was already written out at
+    /// four callsites in this file, and a fifth copy is how a newly added
+    /// column ends up read in three places and forgotten in two. The
+    /// existing callsites are left alone in this change (a security fix is
+    /// the wrong diff to bury a sweep in) but should migrate here.
+    ///
+    /// The SELECT list must name every column below, in any order.
+    fn session_from_row(row: &sqlx::postgres::PgRow) -> Session {
+        Session::from_raw(
+            row.get("id"),
+            row.get("user_id"),
+            row.get("refresh_token"),
+            row.get("expires_at"),
+            row.get("ip_address"),
+            row.get("user_agent"),
+            row.get("created_at"),
+            row.get("revoked"),
+            row.get("family_id"),
+            row.get("oidc_id_token"),
+            row.get("oidc_sid"),
+            row.get("dpop_jkt"),
+            crate::domain::entities::session::SessionOrigin::from_wire(row.get("origin")),
+            row.get("last_seen_at"),
+        )
+    }
 }
 
 impl SessionRepository for SessionPgRepository {
@@ -53,9 +82,9 @@ impl SessionRepository for SessionPgRepository {
                         INSERT INTO auth.sessions (
                             id, user_id, refresh_token, expires_at,
                             ip_address, user_agent, created_at, revoked, family_id,
-                            oidc_id_token, oidc_sid, dpop_jkt, origin
+                            oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at
                         ) VALUES (
-                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
                         )
                         "#,
                 )
@@ -72,6 +101,15 @@ impl SessionRepository for SessionPgRepository {
                 .bind(session_clone.oidc_sid())
                 .bind(session_clone.dpop_jkt())
                 .bind(session_clone.origin().as_str())
+                // Bound explicitly, NOT left to the column's `DEFAULT NOW()`:
+                // that default is the DB clock while `created_at` above is the
+                // app clock, so a fresh row always came back with
+                // `last_seen_at > created_at` and anything comparing the two
+                // read every brand-new session as already active. The entity
+                // sets both from one `Utc::now()`, so equality now means
+                // "never served a request" — which is what the refresh grace
+                // tests (`docs/plan/refresh-token-grace.md`).
+                .bind(session_clone.last_seen_at())
                 .execute(&mut **tx)
                 .await
                 .map_err(Self::map_sqlx_error)?;
@@ -228,6 +266,36 @@ impl SessionRepository for SessionPgRepository {
             .collect();
 
         Ok(sessions)
+    }
+
+    async fn find_family_successor(
+        &self,
+        family_id: Uuid,
+        after: DateTime<Utc>,
+    ) -> SessionRepositoryResult<Option<Session>> {
+        // `created_at > $2` ordered ASC LIMIT 1 is the child of the rotation
+        // that revoked the row created at `$2`. Safe to read as "the child"
+        // because `rotate_session` is the only INSERT into an existing family
+        // and it inserts exactly one row — see the trait docs.
+        let row = sqlx::query(
+            r#"
+            SELECT
+                id, user_id, refresh_token, expires_at,
+                ip_address, user_agent, created_at, revoked, family_id,
+                oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at
+            FROM auth.sessions
+            WHERE family_id = $1 AND created_at > $2
+            ORDER BY created_at ASC
+            LIMIT 1
+            "#,
+        )
+        .bind(family_id)
+        .bind(after)
+        .fetch_optional(&*self.pool)
+        .await
+        .map_err(Self::map_sqlx_error)?;
+
+        Ok(row.as_ref().map(Self::session_from_row))
     }
 
     async fn list_sessions_paginated(
@@ -629,9 +697,9 @@ impl SessionStoragePort for SessionPgRepository {
                         INSERT INTO auth.sessions (
                             id, user_id, refresh_token, expires_at,
                             ip_address, user_agent, created_at, revoked, family_id,
-                            oidc_id_token, oidc_sid, dpop_jkt, origin
+                            oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at
                         ) VALUES (
-                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
                         )
                         "#,
                 )
@@ -648,6 +716,15 @@ impl SessionStoragePort for SessionPgRepository {
                 .bind(session_clone.oidc_sid())
                 .bind(session_clone.dpop_jkt())
                 .bind(session_clone.origin().as_str())
+                // Bound explicitly, NOT left to the column's `DEFAULT NOW()`:
+                // that default is the DB clock while `created_at` above is the
+                // app clock, so a fresh row always came back with
+                // `last_seen_at > created_at` and anything comparing the two
+                // read every brand-new session as already active. The entity
+                // sets both from one `Utc::now()`, so equality now means
+                // "never served a request" — which is what the refresh grace
+                // tests (`docs/plan/refresh-token-grace.md`).
+                .bind(session_clone.last_seen_at())
                 .execute(&mut **tx)
                 .await
                 .map_err(Self::map_sqlx_error)?;
@@ -688,6 +765,16 @@ impl SessionStoragePort for SessionPgRepository {
         refresh_token: &str,
     ) -> Result<Session, DomainError> {
         SessionRepository::get_session_by_refresh_token(self, refresh_token)
+            .await
+            .map_err(DomainError::from)
+    }
+
+    async fn find_family_successor(
+        &self,
+        family_id: Uuid,
+        after: DateTime<Utc>,
+    ) -> Result<Option<Session>, DomainError> {
+        SessionRepository::find_family_successor(self, family_id, after)
             .await
             .map_err(DomainError::from)
     }
@@ -764,5 +851,151 @@ impl SessionStoragePort for SessionPgRepository {
         )
         .await
         .map_err(DomainError::from)
+    }
+}
+
+#[cfg(integration_tests)]
+mod integration_tests {
+    //! Coverage for [`SessionPgRepository::find_family_successor`], the read
+    //! the refresh grace decides on (`docs/plan/refresh-token-grace.md`).
+    //!
+    //! Fixtures are scoped PER TEST — own user id, own family id, own cleanup
+    //! — because these modules all run concurrently against one Postgres
+    //! (AGENTS.md § DB integration tests share one database). Nothing here
+    //! queries "all sessions" or counts rows it does not own.
+    use super::*;
+    use crate::domain::entities::session::SessionOrigin;
+    use crate::integration_test_support::test_db_url;
+    use sqlx::postgres::PgPoolOptions;
+
+    async fn repo() -> SessionPgRepository {
+        let pool = PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&test_db_url())
+            .await
+            .expect("connect to integration-test PostgreSQL");
+        SessionPgRepository::new(Arc::new(pool))
+    }
+
+    async fn seed_user(repo: &SessionPgRepository, id: Uuid) {
+        sqlx::query(
+            r#"
+            INSERT INTO auth.users (
+                id, username, email, password_hash, role,
+                storage_quota_bytes, storage_used_bytes,
+                created_at, updated_at, last_login_at, active,
+                federation_issuer, is_external
+            ) VALUES (
+                $1, $2, $3, NULL, 'user'::auth.userrole,
+                10737418240, 0,
+                now(), now(), NULL, TRUE,
+                NULL, FALSE
+            )
+            "#,
+        )
+        .bind(id)
+        .bind(format!("grace-{id}"))
+        .bind(format!("grace-{id}@example.test"))
+        .execute(repo.pool.as_ref())
+        .await
+        .expect("seed user");
+    }
+
+    async fn insert_session(repo: &SessionPgRepository, user_id: Uuid, family_id: Uuid) -> Session {
+        let session = Session::new(
+            user_id,
+            format!("rt-{}", Uuid::new_v4()),
+            None,
+            None,
+            7,
+            family_id,
+            SessionOrigin::Password,
+        );
+        SessionRepository::create_session(repo, session)
+            .await
+            .expect("insert session")
+    }
+
+    async fn cleanup(repo: &SessionPgRepository, user_id: Uuid) {
+        // Sessions cascade from the user row.
+        let _ = sqlx::query("DELETE FROM auth.users WHERE id = $1")
+            .bind(user_id)
+            .execute(repo.pool.as_ref())
+            .await;
+    }
+
+    /// The IMMEDIATE child, not the newest row in the family. That difference
+    /// IS the successor-bound semantic: once a client has rotated again, the
+    /// first parent must stay dead, and it does precisely because its
+    /// immediate child is revoked — a query returning the family tip would
+    /// hand back a live grandchild and resurrect it.
+    #[tokio::test]
+    async fn returns_the_immediate_child_not_the_family_tip() {
+        let repo = repo().await;
+        let user_id = Uuid::new_v4();
+        let family_id = Uuid::new_v4();
+        seed_user(&repo, user_id).await;
+
+        let parent = insert_session(&repo, user_id, family_id).await;
+        let child = insert_session(&repo, user_id, family_id).await;
+        let grandchild = insert_session(&repo, user_id, family_id).await;
+
+        let found = SessionRepository::find_family_successor(&repo, family_id, parent.created_at())
+            .await
+            .expect("query")
+            .expect("a successor exists");
+
+        assert_eq!(found.id(), child.id());
+        assert_ne!(found.id(), grandchild.id());
+
+        cleanup(&repo, user_id).await;
+    }
+
+    /// Nothing newer → `None`, which is what a logout-revoked session looks
+    /// like (revoked WITHOUT a rotation inserting anything) and therefore
+    /// what denies it the grace.
+    #[tokio::test]
+    async fn returns_none_for_the_newest_session_in_a_family() {
+        let repo = repo().await;
+        let user_id = Uuid::new_v4();
+        let family_id = Uuid::new_v4();
+        seed_user(&repo, user_id).await;
+
+        let only = insert_session(&repo, user_id, family_id).await;
+
+        let found = SessionRepository::find_family_successor(&repo, family_id, only.created_at())
+            .await
+            .expect("query");
+
+        assert!(found.is_none(), "a family tip has no successor");
+
+        cleanup(&repo, user_id).await;
+    }
+
+    /// Families are the blast-radius boundary, so the read must not look
+    /// across them: another login's rows are never this parent's child, even
+    /// for the same user and even when newer.
+    #[tokio::test]
+    async fn ignores_rows_from_another_family() {
+        let repo = repo().await;
+        let user_id = Uuid::new_v4();
+        let mine = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        seed_user(&repo, user_id).await;
+
+        let parent = insert_session(&repo, user_id, mine).await;
+        // Newer, same user, different login chain.
+        let _unrelated = insert_session(&repo, user_id, other).await;
+
+        let found = SessionRepository::find_family_successor(&repo, mine, parent.created_at())
+            .await
+            .expect("query");
+
+        assert!(
+            found.is_none(),
+            "another family's session is not a successor"
+        );
+
+        cleanup(&repo, user_id).await;
     }
 }

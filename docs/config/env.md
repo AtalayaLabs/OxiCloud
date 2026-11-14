@@ -69,6 +69,7 @@ Two quotas, not one per drive. A **personal** drive carries no quota of its own 
 | `OXICLOUD_JWT_SECRET` | (auto-generated) | JWT signing secret; auto-persisted to `<STORAGE_PATH>/.jwt_secret` if unset |
 | `OXICLOUD_ACCESS_TOKEN_EXPIRY_SECS` | `3600` | Access token lifetime (1 hour) |
 | `OXICLOUD_REFRESH_TOKEN_EXPIRY_SECS` | `604800` | Refresh token lifetime (7 days); active sessions auto-renew on use |
+| `OXICLOUD_REFRESH_TOKEN_GRACE_SECS` | `60` | How long a rotated-away refresh token stays usable **while its replacement has never been used**. Covers the rotation whose response never reached the client — a navigation, a closed tab, a dropped connection — which would otherwise log the user out and revoke the whole token family. The window also closes the instant the replacement serves a request, so this is a cap, not a fixed hole. `0` restores strict replay-detection-on-first-replay. See `docs/plan/refresh-token-grace.md`. |
 | `OXICLOUD_HASH_MEMORY_COST` | `65536` | Argon2id memory cost in KiB (64 MiB). **Server-side** — used by the legacy password path (`POST /api/auth/login`) and the app-password Basic-Auth verifier. Distinct from `OXICLOUD_AUTH_OPAQUE_KSF_*` (client-side). |
 | `OXICLOUD_HASH_TIME_COST` | `3` | Argon2id iteration count for the server-side legacy path. |
 | `OXICLOUD_HASH_PARALLELISM` | `2` | Argon2id parallelism lanes for the server-side legacy path. |

@@ -1440,6 +1440,16 @@ pub struct AuthConfig {
     pub jwt_secret: String,
     pub access_token_expiry_secs: i64,
     pub refresh_token_expiry_secs: i64,
+    /// How long a rotated-away refresh token stays acceptable when its
+    /// replacement was never used — the window in which "my rotation's
+    /// response never reached me" is treated as what it is instead of as
+    /// token theft. `0` disables the grace and restores strict
+    /// replay-detection-on-first-replay.
+    ///
+    /// The window ALSO closes early, the moment the replacement session is
+    /// observed serving a request, so this is a cap rather than the whole
+    /// mechanism. See `docs/plan/refresh-token-grace.md`.
+    pub refresh_token_grace_secs: i64,
     /// Lifetime of a public-share (anonymous) session token.
     ///
     /// Separate from `access_token_expiry_secs` because an anonymous
@@ -1809,6 +1819,12 @@ impl Default for AuthConfig {
             jwt_secret: String::new(),
             access_token_expiry_secs: 3600,    // 1 hour
             refresh_token_expiry_secs: 604800, // 7 days — with rotation, active sessions auto-renew
+            // 60s. On by default: the grace closes as soon as the new token
+            // is used, so replay detection survives, while off-by-default
+            // would ship a known spurious logout (a refresh response lost to
+            // a navigation or a dropped connection) that only operators who
+            // read release notes would fix.
+            refresh_token_grace_secs: 60,
             // 4 hours. No refresh, so this is the whole visit; long enough
             // to browse and download a large shared folder without dying
             // mid-way, short enough to bound the password-change window.
@@ -4101,6 +4117,15 @@ impl AppConfig {
             && let Ok(val) = refresh_token_expiry
         {
             config.auth.refresh_token_expiry_secs = val;
+        }
+
+        // Clamped at 0 rather than rejected: a negative grace is the same
+        // intent as none, and a boot panic over a stray minus sign would be
+        // a worse outcome than the strict behaviour it asks for.
+        if let Ok(grace) = env::var("OXICLOUD_REFRESH_TOKEN_GRACE_SECS").map(|v| v.parse::<i64>())
+            && let Ok(val) = grace
+        {
+            config.auth.refresh_token_grace_secs = val.max(0);
         }
 
         // Argon2 hashing parameters

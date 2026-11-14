@@ -101,6 +101,22 @@ impl LastSeenTracker {
         self.seen.insert(session_id, Utc::now());
     }
 
+    /// Has `session_id` served a request since the last flush?
+    ///
+    /// The refresh grace (`docs/plan/refresh-token-grace.md`) asks "did the
+    /// client ever USE the session this rotation minted?", and asking the
+    /// `last_seen_at` COLUMN alone answers it wrong for up to a flush
+    /// interval: a session used a second ago still reads as untouched, so the
+    /// grace would degrade from "closes on client progress" to "closes on a
+    /// 60s timer" in nearly every real case. This exposes the unflushed
+    /// half of that answer.
+    ///
+    /// O(1) read, no I/O. A `false` is not proof of never-used — the stamp
+    /// may already have been flushed to the column — so callers check both.
+    pub fn seen_since_flush(&self, session_id: Uuid) -> bool {
+        self.seen.contains_key(&session_id)
+    }
+
     /// Drain the accumulated stamps and write them in one batched
     /// UPDATE. Idempotent — the `greatest(...)` guard means
     /// replaying the same batch (or overlapping batches from a

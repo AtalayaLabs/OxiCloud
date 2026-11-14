@@ -1,8 +1,64 @@
 # Refresh-token grace — a lost response should not look like theft
 
-**Status**: **DRAFT (2026-11-14) — Gate 0 open, awaiting a decision.** No code
-yet. This document exists because a CI flake turned out to be a real property
-of the refresh path, and the fix is a security-posture call, not a bug fix.
+**Status**: **SHIPPED (2026-11-14) — all gates closed.** This document exists
+because a CI flake turned out to be a real property of the refresh path, and
+the fix was a security-posture call, not a bug fix.
+
+In one line: **an expired access token now survives a lost refresh response —
+for 60 seconds, or until the newly-minted token is actually used, whichever
+comes first.**
+
+## Decisions (Ed, 2026-11-14)
+
+| Question | Decision |
+|---|---|
+| What a graced replay returns | **Re-deliver the child**: mint a fresh access token for the child session and return the child's existing refresh token. Literally re-sending the lost response. No new row per lost response, and a thief who replays receives the same token the real client holds — so the next rotation by either still trips reuse detection. |
+| How the window closes | **Successor use + clock cap.** Grace ends when the child is first observed serving a request, or after `OXICLOUD_REFRESH_TOKEN_GRACE_SECS`, whichever comes first. The cap bounds the client that receives a child and never uses it — otherwise a user who walks away leaves a replayable parent for the whole 7-day refresh TTL. |
+| Knob and default | `OXICLOUD_REFRESH_TOKEN_GRACE_SECS`, **default 60**; `0` restores today's strict behaviour exactly. On by default because successor-binding keeps the detection, and off by default would ship a known user-facing logout that only operators who read release notes would fix. |
+| DPoP proof on `/api/auth/refresh` (Gate 4) | **Same PR.** The graced window is then sender-constrained from the first commit: a stolen cookie replayed inside it also needs the browser's private key. |
+
+### Two things that made this cheaper than the draft assumed
+
+- **The access token already carries the session id.** `claims.sid` is what
+  `middleware/auth.rs:413` stamps into `LastSeenTracker` (a DashMap upsert,
+  flushed to `last_seen_at` by one batched UNNEST every 30s). "The real client
+  actually used the child" is therefore observable with no new claim and no
+  per-request write — the draft treated this as the expensive part of option 3.
+- **The client can satisfy a DPoP nonce challenge on refresh.** `/api/auth/refresh`
+  is in `AUTH_PRIMITIVES`, but that exemption only skips the refresh-and-retry
+  dance; nonce attach and nonce retry live in the transport's `withProof`
+  wrapper and apply there too (`endpoints/auth.ts::tryRefresh`). So Gate 4
+  cannot brick refresh into a logout loop, which was the reason to defer it.
+
+### What the implementation found
+
+**`last_seen_at` was being written by the DATABASE, not the app.** The column
+is `NOT NULL DEFAULT NOW()` and both session INSERTs omitted it while binding
+`created_at` from `Utc::now()` — two different clocks, with PG's default
+evaluated at transaction time and therefore always LATER. So every freshly
+inserted session read as `last_seen_at > created_at`, the "has the child ever
+served a request?" test answered yes for a child nobody had touched, and the
+grace never fired once. `auth_refresh_grace.hurl` caught it on its first run
+(step 3, expected 200, got 403).
+
+Fixed at the cause: `create_session` and `rotate_session` now bind
+`last_seen_at` from the entity, which sets it from the same `Utc::now()` as
+`created_at`. That also makes the `Session` field's documented invariant
+("set to `created_at` at construction") true of the row rather than only of
+the struct — it was previously written and silently discarded. Same class as
+`bug_job_run_timestamps_two_clocks`: never compare a column with a DB default
+against one bound from the app clock.
+
+Sessions created before the fix keep a DB-clock stamp and are simply never
+graced — conservative, and self-correcting after one rotation.
+
+### Accepted imprecision
+
+`last_seen_at` lands in ≤30s batches, so a child used 10s ago can still read as
+unused. In that window the grace behaves like a plain clock grace — which is
+the risk the clock cap already accepts, so it is taken rather than plumbing a
+port from the application layer down to the in-memory tracker. The check says so
+at the callsite.
 
 **Companion**: `docs/plan/dpop.md` (session binding; Gate 7 there is what makes
 option 3 below cheap) and `docs/plan/auth-simplification.md`.
@@ -149,37 +205,43 @@ same browser key, which removes most of the value of a stolen cookie in the
 grace window. It is worth doing on its own merits regardless of which option
 wins, and it may be what `docs/plan/dpop.md` Gate 7 intended.
 
-## Recommendation
+## Recommendation — ACCEPTED, with the clock cap from option 2
 
-**Option 1 now, then 3 + 4.** 1 is a test fix and should not wait for the
-decision. 3 is the smallest change that keeps replay detection intact while
-removing the false positives; 4 narrows what the remaining window is worth.
-Option 2 is the one I would not ship alone: it buys the same false-positive
-relief as 3 while leaving a window that exists even when the legitimate client
-is active.
+**1 + 3 + 4, and 3 takes a bounded window from 2.** Option 1 is a test fix and
+did not wait for the decision. Option 3 keeps replay detection intact while
+removing the false positives; 2's clock, used as a *cap* rather than as the
+whole mechanism, closes the one hole in 3 (a child received and never used); 4
+narrows what the remaining window is worth to an attacker. Option 2 alone was
+the one to avoid: same false-positive relief, but its window stays open even
+while the legitimate client is demonstrably active.
 
 ## Gates
 
+All of 1–5 landed in ONE PR (Gate 4 included, per the decision above).
+
 | Gate | Deliverable | Depends on |
 |---|---|---|
-| 0 | This document — decision on option 2 / 3 / 4 | — |
-| 1 | Test hardening (option 1) **plus** a deterministic pin for the lost response: `page.route('**/api/auth/refresh', r => r.fetch().then(() => r.abort()))`, which rotates server-side and drops the response. Asserts the CHOSEN behaviour, so it is red until the gate that implements it | 0 |
-| 2 | Successor-used state on `auth.sessions` + repository read/write | 0 |
-| 3 | `refresh_token()` grace branch, with an `audit` line for the graced path (`event = "auth.refresh_graced"`, `reason = "successor_unused"`) — a graced replay stays visible to operators even though it is benign | 2 |
-| 4 | DPoP proof verification on `/api/auth/refresh`, including the app-password / legacy `dpop_jkt IS NULL` exemption | — |
-| 5 | Config knob + `docs/config/env.md`, and a note in `docs/plan/dpop.md` if Gate 4 lands | 3 |
+| 0 | ✅ This document — decisions recorded above | — |
+| 1 | ✅ `networkidle` before `clearCookies` in `session-refresh.spec.ts`, plus `"survives a refresh whose response never arrives"` — `route.fetch()` then `route.abort()`, so the server rotates and the page never sees the reply. Wire-level contract in `tests/api/auth_refresh_grace.hurl` | 0 |
+| 2 | ✅ `find_family_successor(family_id, after)` — port, domain trait, PG impl, 3 integration tests. **No migration**: rotation is the only INSERT into an existing family, so "the next row" IS the child | 0 |
+| 3 | ✅ `try_grace_replay()` ahead of the theft branch, re-delivering the child's token; `audit` line `event = "auth.refresh_graced"`, `reason = "successor_unused"` | 2 |
+| 4 | ✅ `require_dpop_on_refresh_layer`, mounted inside the rate limiter. Shares `enforce_proof()` with `require_dpop_layer` rather than copying the required-vs-opportunistic policy; unbound sessions pass through | — |
+| 5 | ✅ `OXICLOUD_REFRESH_TOKEN_GRACE_SECS` in `config.rs`, `config_file.rs`'s KNOWN table, `example.env`, `docs/config/env.md` | 3 |
 
-## Open questions
+## Still open — deliberately out of this PR
 
-- **Knob and default.** `OXICLOUD_REFRESH_GRACE` as a boolean, or a seconds
-  value that also covers option 2? Default on or off? Per the fail-loud
-  convention the safer default is the stricter one, which argues for off-by-
-  default — at the cost of leaving the flake in place for anyone who does not
-  read release notes.
 - **Alarm threshold.** Should N graced replays in one family raise an operator
-  alert? A legitimate client produces at most one per rotation; a pattern of
-  them is either a broken client or an attacker probing.
+  alert? A legitimate client produces at most one per rotation, so a pattern of
+  them is either a broken client or an attacker probing. This PR emits the
+  `audit` line that such an alert would key off
+  (`event = "auth.refresh_graced"`); wiring it to the job-notification sinks
+  (`docs/plan/job-registry.md`) is a follow-up.
 - **Two-tab coordination.** A `BroadcastChannel` or `localStorage` lock would
-  make tabs share one in-flight refresh, which removes that trigger entirely
-  and is a frontend change independent of all of the above. Worth its own
-  gate if option 3 is rejected.
+  make tabs share one in-flight refresh and remove that trigger at the source.
+  Independent of everything here, and no longer urgent now that the second tab's
+  replay is graced instead of fatal — but it would still save a pointless
+  round-trip per tab per rotation.
+- **`last_seen_at` precision.** If the ≤30s flush window ever proves too coarse
+  (an operator wanting a 5s cap, say), the fix is a read-through port to
+  `LastSeenTracker`'s DashMap rather than a shorter flush interval — the batch
+  exists to keep auth off the write path.

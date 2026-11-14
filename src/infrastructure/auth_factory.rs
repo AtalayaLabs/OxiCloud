@@ -73,6 +73,12 @@ pub async fn create_auth_services(
         config.auth.min_password_length,
     );
 
+    // Refresh grace window. Without this line the service defaults to 0 —
+    // strict replay detection — so forgetting it costs the grace rather
+    // than loosening anything (`docs/plan/refresh-token-grace.md`).
+    auth_app_service =
+        auth_app_service.with_refresh_token_grace_secs(config.auth.refresh_token_grace_secs);
+
     // Self-registration policy, for the same reason: one snapshot the
     // service can consult instead of every caller reaching into
     // `AppConfig`. Drives `SelfUserDto::is_upgradable`, which is what

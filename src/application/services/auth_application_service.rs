@@ -19,6 +19,7 @@ use crate::domain::services::authorization::Subject;
 use crate::infrastructure::repositories::pg::SessionPgRepository;
 use crate::infrastructure::repositories::pg::UserPgRepository;
 use crate::infrastructure::services::jwt_service::JwtTokenService;
+use crate::infrastructure::services::last_seen_tracker::LastSeenTracker;
 use crate::infrastructure::services::oidc_service::OidcService;
 use crate::infrastructure::services::password_hasher::Argon2PasswordHasher;
 use moka::sync::Cache;
@@ -698,6 +699,31 @@ pub struct AuthApplicationService {
     /// `GET /api/config` so the SPA gates submit on the same value.
     /// Default 8 when the DI builder isn't called (test builds).
     min_password_length: u8,
+    /// Seconds a rotated-away refresh token stays acceptable while its
+    /// replacement is unused — mirrors `AuthConfig::refresh_token_grace_secs`.
+    /// See [`Self::with_refresh_token_grace_secs`] and
+    /// `docs/plan/refresh-token-grace.md`.
+    ///
+    /// **0 when the DI builder isn't called**, i.e. strict
+    /// replay-detection-on-first-replay. A forgotten wiring therefore loses
+    /// the grace rather than loosening detection, and the API pin in
+    /// `tests/api/auth_refresh_grace.hurl` is what catches that it was
+    /// forgotten.
+    refresh_token_grace_secs: i64,
+    /// The in-memory half of "has this session served a request?" — see
+    /// [`LastSeenTracker::seen_since_flush`]. The grace needs it because the
+    /// `last_seen_at` column trails real activity by up to one flush
+    /// interval, and a child used one second ago must not read as untouched.
+    ///
+    /// Unset in test builds and when auth is disabled; the grace then falls
+    /// back to the column alone, which is conservative in the wrong
+    /// direction (more grace, not less) and is why the clock cap is not
+    /// optional.
+    ///
+    /// A `OnceLock` rather than a constructor argument because DI builds the
+    /// tracker AFTER this service (it only exists when auth does), the same
+    /// ordering problem `reload_oidc` solves with interior mutability.
+    last_seen_tracker: OnceLock<Arc<LastSeenTracker>>,
     /// Additive auth-policy switches (mirrors `AuthConfig::auth_policies`).
     /// Consulted by handlers / providers-info endpoint to compose the
     /// login-page UX hints (e.g. `AutoRedirectIfStandaloneOidc`) without
@@ -809,6 +835,8 @@ impl AuthApplicationService {
                 .build(),
             allowed_auth_methods: vec![AuthMethod::Password, AuthMethod::MagicLink],
             min_password_length: 8,
+            refresh_token_grace_secs: 0,
+            last_seen_tracker: OnceLock::new(),
             auth_policies: Vec::new(),
             require_verified_email: false,
             registration_allowed_domains: Vec::new(),
@@ -855,6 +883,26 @@ impl AuthApplicationService {
     /// Called by the DI factory. If left uncalled (test builds),
     /// defaults are permissive: both self-service methods enabled,
     /// no policies, verified-email not required.
+    /// Wire the refresh grace window (`OXICLOUD_REFRESH_TOKEN_GRACE_SECS`).
+    ///
+    /// Uncalled leaves it at 0 — strict, today's behaviour — so a DI wiring
+    /// mistake costs the grace rather than loosening replay detection.
+    pub fn with_refresh_token_grace_secs(mut self, secs: i64) -> Self {
+        self.refresh_token_grace_secs = secs.max(0);
+        self
+    }
+
+    /// Share the `last_seen_at` write-behind buffer, so the grace can tell a
+    /// child that was used one second ago from one that was never used at
+    /// all. Without it the grace reads only the column, which trails by up
+    /// to a flush interval — see the field docs.
+    ///
+    /// `&self` because DI constructs the tracker after this service; the
+    /// second call is ignored (the tracker is process-wide and built once).
+    pub fn attach_last_seen_tracker(&self, tracker: Arc<LastSeenTracker>) {
+        let _ = self.last_seen_tracker.set(tracker);
+    }
+
     pub fn with_auth_policy(
         mut self,
         allowed_methods: Vec<AuthMethod>,
@@ -2294,6 +2342,156 @@ impl AuthApplicationService {
         })
     }
 
+    /// The DPoP binding of the session this refresh token belongs to, for
+    /// the gate on `POST /api/auth/refresh`
+    /// (`middleware::dpop::require_dpop_on_refresh_layer`).
+    ///
+    /// `Ok(None)` for an unknown token as well as for an unbound session:
+    /// the gate only ever ADDS a proof-of-possession requirement, and what
+    /// an unknown refresh token means is the handler's call, not the
+    /// middleware's. Reading the row twice (here and again in
+    /// [`Self::refresh_token`]) is deliberate — both hit the unique index on
+    /// `refresh_token`, and refresh runs about once an hour per session, so
+    /// the second lookup buys a clean layer boundary very cheaply.
+    pub async fn refresh_session_binding(
+        &self,
+        refresh_token: &str,
+    ) -> Result<Option<String>, DomainError> {
+        match self
+            .session_storage
+            .get_session_by_refresh_token(refresh_token)
+            .await
+        {
+            Ok(session) => Ok(session.dpop_jkt().map(str::to_owned)),
+            Err(_) => Ok(None),
+        }
+    }
+
+    /// Is this replay of a revoked refresh token a LOST ROTATION RESPONSE
+    /// rather than a stolen token? If so, re-deliver the response that was
+    /// lost; otherwise `None` and the caller treats it as theft.
+    ///
+    /// The shape being recognised: `rotate_session` revoked `parent` and
+    /// inserted a child in one transaction, the child's tokens went out in a
+    /// response the client never applied (navigation, tab close, dropped
+    /// connection, or a second tab racing the same rotation), and the client
+    /// retried with the only token it has — the parent.
+    ///
+    /// Four conditions, and every other way a session gets revoked fails at
+    /// least one of them:
+    ///
+    /// * **a successor exists** — logout, admin revoke and
+    ///   `revoke_all_user_sessions` revoke WITHOUT inserting, so there is no
+    ///   child and no grace;
+    /// * **the successor is alive** — a real theft already ran
+    ///   `revoke_session_family`, which revoked the child too;
+    /// * **the successor has never served a request** (`last_seen_at` still
+    ///   at `created_at`) — if the client used the child, it demonstrably
+    ///   received it, so a replay of the parent is not a lost response. This
+    ///   is what makes the window close on client PROGRESS rather than on a
+    ///   clock. Note `last_seen_at` lands in ≤30s batches
+    ///   (`LastSeenTracker`), so a child used seconds ago can still read as
+    ///   unused — in that window this degrades to the clock cap below, which
+    ///   is why the cap exists;
+    /// * **within the cap** — `refresh_token_grace_secs` since the child was
+    ///   created. Bounds the client that receives a child and then goes
+    ///   quiet: without it a user who walked away would leave a replayable
+    ///   parent for the remaining week of the refresh TTL.
+    ///
+    /// A rotation that is itself superseded (the client rotated again) fails
+    /// the second condition, because that later rotation revoked the child.
+    ///
+    /// No row is written: the child's existing refresh token is re-sent with
+    /// a freshly minted access token for the child session. A thief who
+    /// replays the parent inside the window therefore receives exactly the
+    /// token the legitimate client holds — so the next rotation by either
+    /// side revokes it, and the other's replay trips detection as before.
+    async fn try_grace_replay(
+        &self,
+        parent: &Session,
+    ) -> Result<Option<AuthResponseDto>, DomainError> {
+        let grace_secs = self.refresh_token_grace_secs;
+        if grace_secs == 0 {
+            return Ok(None);
+        }
+
+        let Some(child) = self
+            .session_storage
+            .find_family_successor(parent.family_id(), parent.created_at())
+            .await?
+        else {
+            return Ok(None);
+        };
+
+        if child.is_revoked() || child.is_expired() {
+            return Ok(None);
+        }
+        // "Never used" has two halves. The COLUMN trails real activity by up
+        // to one `LastSeenTracker` flush, so a child used a second ago still
+        // reads as untouched there; the tracker's unflushed set is the other
+        // half. Strictly greater on the column because `last_seen_at` starts
+        // AT `created_at` for a fresh row, so equality is "never seen".
+        //
+        // That invariant only holds because `create_session` / `rotate_session`
+        // BIND `last_seen_at` — the column's `DEFAULT NOW()` is the DB clock
+        // while `created_at` is the app clock, and the first version of this
+        // check compared the two: every fresh row read as already-used and the
+        // grace never fired once (caught by `auth_refresh_grace.hurl`).
+        // Sessions created before that fix carry a DB-clock stamp and are
+        // simply never graced — conservative, and self-correcting after one
+        // rotation.
+        let used = child.last_seen_at() > child.created_at()
+            || self
+                .last_seen_tracker
+                .get()
+                .is_some_and(|t| t.seen_since_flush(child.id()));
+        if used {
+            return Ok(None);
+        }
+        if chrono::Utc::now() - child.created_at() > chrono::Duration::seconds(grace_secs) {
+            return Ok(None);
+        }
+
+        // The user has to pass the same gates a normal refresh applies —
+        // a deactivated account must not be re-admitted by a graced replay.
+        let user = self.user_storage.get_user_by_id(parent.user_id()).await?;
+        if !user.is_active() {
+            return Err(DomainError::new(
+                ErrorKind::AccessDenied,
+                "Auth",
+                "Account is deactivated",
+            ));
+        }
+
+        let access_token =
+            self.token_service
+                .generate_access_token(&user, Some(child.id()), child.dpop_jkt())?;
+        let user_dto = self.build_self_user_dto(user.id(), &child).await?;
+        let force_password_change = self.read_force_password_change(user.id()).await;
+
+        tracing::info!(
+            target: "audit",
+            event = "auth.refresh_graced",
+            reason = "successor_unused",
+            user_id = %user.id(),
+            family_id = %parent.family_id(),
+            parent_session_id = %parent.id(),
+            session_id = %child.id(),
+            grace_secs,
+            "👮🏻‍♂️ re-delivered a rotation whose response was lost instead of \
+             treating the replay as theft",
+        );
+
+        Ok(Some(AuthResponseDto {
+            user: user_dto,
+            access_token,
+            refresh_token: child.refresh_token().to_string(),
+            token_type: "Bearer".to_string(),
+            expires_in: self.token_service.refresh_token_expiry_secs(),
+            force_password_change,
+        }))
+    }
+
     pub async fn refresh_token(
         &self,
         dto: RefreshTokenDto,
@@ -2308,7 +2506,15 @@ impl AuthApplicationService {
 
         // Reuse detection: a revoked token being replayed indicates the token was
         // stolen after rotation. Invalidate the entire family to protect all devices.
+        //
+        // …unless the replay is the one benign shape that produces it: a
+        // rotation whose RESPONSE never reached the client, so the client
+        // still holds the parent and has never seen the child. See
+        // `try_grace_replay` and `docs/plan/refresh-token-grace.md`.
         if session.is_revoked() {
+            if let Some(graced) = self.try_grace_replay(&session).await? {
+                return Ok(graced);
+            }
             tracing::warn!(
                 user_id = %session.user_id(),
                 family_id = %session.family_id(),

@@ -489,6 +489,7 @@ HURL_FILES=( \
   "$API_DIR/opaque_substrate.hurl" \
   "$API_DIR/user_ui_preferences.hurl" \
   "$API_DIR/auth_session_lifecycle.hurl" \
+  "$API_DIR/auth_refresh_grace.hurl" \
   "$API_DIR/auth_magic_link_login.hurl" \
   "$API_DIR/auth_upgrade_to_internal.hurl" \
   "$API_DIR/app_passwords.hurl" \

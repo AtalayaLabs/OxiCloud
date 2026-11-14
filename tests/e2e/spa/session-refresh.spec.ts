@@ -35,6 +35,18 @@ test.describe('SPA · session refresh survives a deleted access cookie', () => {
 		// 2. Simulate "access token expired or deleted" by clearing
 		//    ONLY the access cookie — the refresh cookie stays, which
 		//    is what the real-world expired-JWT case looks like.
+		//
+		//    `networkidle` FIRST, and it is not cosmetic. `uiLogin` and the
+		//    assertion above are DOM waits, so drives / notifications / the
+		//    folder listing can still be in flight. Clearing the cookie under
+		//    a live page makes one of them 401, the interceptor fires a
+		//    refresh, and step 3's reload aborts it mid-flight — leaving the
+		//    server rotated and the client holding a parent token it will
+		//    then replay. That used to be a flaky 403 (a CI failure on
+		//    2026-11-14, traced in `docs/plan/refresh-token-grace.md`); with
+		//    the grace it is a silent extra rotation. Either way this test is
+		//    about the EXPIRED-ACCESS path, so the race does not belong in it.
+		await page.waitForLoadState('networkidle');
 		await context.clearCookies({ name: 'oxicloud_access' });
 
 		// 3. Reload. session.load() in the layout fires:
@@ -142,5 +154,54 @@ test.describe('SPA · session refresh survives a deleted access cookie', () => {
 		// in session.load keeps the probe-and-refresh chain unfired at
 		// the layer this test owns.
 		expect(meRequests).toEqual([]);
+	});
+
+	// A refresh whose RESPONSE is lost must not log the user out.
+	//
+	// The server rotates inside one transaction — parent revoked, child
+	// minted — so a response that never arrives leaves the client holding a
+	// token the server considers dead. Strict replay detection read the
+	// retry as theft and revoked the whole family: the user got bounced to
+	// /login for a dropped packet. `docs/plan/refresh-token-grace.md`.
+	//
+	// `route.fetch()` then `route.abort()` is what makes this deterministic
+	// rather than a race: the request really reaches the server (so the
+	// rotation really happens) and the page really never sees the reply.
+	// Nothing else reproduces it on demand — the CI flake that found this
+	// needed a background 401 to land inside a ~100ms window.
+	//
+	// Asserting on the SHELL, not on a status code: what matters is that the
+	// user is still working, not how the recovery was spelled. The
+	// server-side contract (same token re-delivered, and strictness once the
+	// child is used) is pinned at the wire layer in
+	// `tests/api/auth_refresh_grace.hurl`, which is far cheaper to run.
+	test('survives a refresh whose response never arrives', async ({ page, context }) => {
+		await uiLogin(page);
+		await expect(page).toHaveURL(/\/files/);
+		await expect(page.getByTestId('appshell-user-menu-btn')).toBeVisible();
+		await page.waitForLoadState('networkidle');
+
+		// Swallow exactly one refresh response, then get out of the way so
+		// the retry can succeed. Without the unroute the client would never
+		// see a reply at all, which is a different scenario (offline).
+		let swallowed = false;
+		await page.route('**/api/auth/refresh', async (route) => {
+			if (swallowed) {
+				await route.fallback();
+				return;
+			}
+			swallowed = true;
+			await route.fetch(); // server rotates…
+			await route.abort(); // …and the page never learns the new token
+		});
+
+		await context.clearCookies({ name: 'oxicloud_access' });
+		await page.reload();
+
+		// Still signed in: the app shell is up and no login form appeared.
+		await expect(page).toHaveURL(/\/files/);
+		await expect(page.getByTestId('appshell-user-menu-btn')).toBeVisible({ timeout: 15_000 });
+		await expect(page.getByTestId('login-form')).toHaveCount(0);
+		expect(swallowed).toBe(true);
 	});
 });
