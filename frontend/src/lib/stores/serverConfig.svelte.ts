@@ -58,7 +58,13 @@ const DEFAULT_FEATURES: ServerFeatures = {
 	// Browsers that can't actually run shared mode still fall back to
 	// per-tab via `trySharedWorker` detection — the flag never bypasses
 	// capability checks.
-	shared_worker_bus: true
+	shared_worker_bus: true,
+	// `/changes` and `/api/files/recent-changes`. Defaults true to match
+	// the server default, so the nav entry shows without waiting for the
+	// boot snapshot. Note the flag gates the READ surface only — content
+	// touches are recorded whether or not it is on
+	// (`docs/plan/recently-modified.md` §5).
+	recent_changes: true
 };
 
 /** Pre-load default for the auth tunables. `8` matches the server's

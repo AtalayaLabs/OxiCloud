@@ -23,6 +23,7 @@ jobs:
     outputs:
       frontend: ${{ steps.filter.outputs.frontend }}
       backend: ${{ steps.filter.outputs.backend }}
+      rust_audit: ${{ steps.filter.outputs.rust_audit }}
       wasm: ${{ steps.filter.outputs.wasm }}
       plugins: ${{ steps.filter.outputs.plugins }}
       migrations: ${{ steps.filter.outputs.migrations }}
@@ -42,6 +43,11 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'tests/**'
+            rust_audit:
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.cargo/audit.toml'
+              - '.github/workflows/ci.yml'
             wasm:
               - 'wasm/**'
               - 'scripts/build-wasm.sh'
@@ -636,13 +642,18 @@ jobs:
   rust-audit:
     name: Security Audit
     needs: changes
-    if: needs.changes.outputs.backend == 'true'
+    if: needs.changes.outputs.backend == 'true' || needs.changes.outputs.rust_audit == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v2.0.0
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version 0.23.0 --locked
+      - name: Audit locked dependencies
+        run: cargo audit --file Cargo.lock
 
   build:
     name: Build

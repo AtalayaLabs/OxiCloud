@@ -36,6 +36,19 @@
 		/** MIME type of the row-drag payload — defaults to the shipped one. */
 		dragMime?: string;
 		/**
+		 * Crumb to highlight as the drop destination even though the
+		 * pointer is NOT over it.
+		 *
+		 * `/files` passes the open folder's id while OS files are dragged
+		 * anywhere over the view and no folder row has claimed them: the
+		 * drop will land in the current folder, and the highlighted crumb
+		 * is what says so BY NAME. Same `.drop-target` styling the pointer
+		 * produces, so the app has one rule — the highlighted thing is
+		 * where the files go — whether that is a row, an ancestor crumb,
+		 * or the folder you are standing in.
+		 */
+		systemDropTargetId?: string | null;
+		/**
 		 * Optional share handler — renders a share button next to the
 		 * LEAF crumb, giving "share the folder I'm looking at" the same
 		 * one-click affordance rows already have in their action cell.
@@ -86,10 +99,43 @@
 		folderId,
 		onDrop,
 		dragMime = ITEM_DRAG_MIME,
+		systemDropTargetId = null,
 		onShare,
 		oncontextmenu: onCrumbContextMenu,
 		reloadToken
 	}: Props = $props();
+
+	/**
+	 * Does this drag have anything a crumb can accept?
+	 *
+	 * Two kinds, and the component stays ignorant of the difference: the
+	 * in-app item drag (`dragMime`, a row being moved) and OS FILES, which
+	 * `/files` uploads INTO the crumb's folder. Both are "a thing aimed at an
+	 * ancestor folder"; what to do with it is the host's `onDrop` decision.
+	 *
+	 * Without accepting `Files` here the crumb never highlights and `drop`
+	 * never fires on it — `preventDefault` on `dragover` is what makes an
+	 * element a drop target at all — so the drop would fall through to the
+	 * page zone and land in the current folder instead of the one aimed at.
+	 */
+	function acceptsDrag(e: DragEvent): boolean {
+		const types = e.dataTransfer?.types;
+		return !!types && (types.includes(dragMime) || types.includes('Files'));
+	}
+
+	/**
+	 * Is this crumb the destination of the drag in flight?
+	 *
+	 * Two ways to become one, and the highlight must not distinguish them:
+	 * the pointer is over the crumb (`dropTargetId`, set by its own
+	 * dragenter), or the host declared it the fallback destination
+	 * (`systemDropTargetId` — see the prop). Gated on `onDrop` so the
+	 * read-only surfaces that render this trail can never light up.
+	 */
+	function isDropHighlighted(id: string | null | undefined): boolean {
+		if (onDrop == null || id == null) return false;
+		return dropTargetId === id || systemDropTargetId === id;
+	}
 
 	// Fetch chain when folderId changes. `$state` + `$effect` primer
 	// avoids blocking the initial render — the breadcrumb slot appears
@@ -350,18 +396,16 @@
 				href={resolve(rootHrefPath)}
 				class="breadcrumb-item breadcrumb-home breadcrumb-link"
 				class:breadcrumb-current={isRootTheLeaf}
-				class:drop-target={onDrop != null &&
-					rootDropTarget != null &&
-					dropTargetId === rootDropTarget}
+				class:drop-target={isDropHighlighted(rootDropTarget)}
 				title={rootTooltip(chain.access_source)}
 				data-testid="folder-breadcrumb-root-link"
 				data-access-kind={chain.access_source.kind}
 				ondragover={onDrop && rootDropTarget
-					? (e) => e.dataTransfer?.types.includes(dragMime) && e.preventDefault()
+					? (e) => acceptsDrag(e) && e.preventDefault()
 					: undefined}
 				ondragenter={onDrop && rootDropTarget
 					? (e) => {
-							if (e.dataTransfer?.types.includes(dragMime)) dropTargetId = rootDropTarget;
+							if (acceptsDrag(e)) dropTargetId = rootDropTarget;
 						}
 					: undefined}
 				ondragleave={onDrop && rootDropTarget
@@ -398,18 +442,16 @@
 			<span
 				class="breadcrumb-item breadcrumb-home"
 				class:breadcrumb-current={isRootTheLeaf}
-				class:drop-target={onDrop != null &&
-					rootDropTarget != null &&
-					dropTargetId === rootDropTarget}
+				class:drop-target={isDropHighlighted(rootDropTarget)}
 				title={rootTooltip(chain.access_source)}
 				data-testid="folder-breadcrumb-root-icon"
 				data-access-kind={chain.access_source.kind}
 				ondragover={onDrop && rootDropTarget
-					? (e) => e.dataTransfer?.types.includes(dragMime) && e.preventDefault()
+					? (e) => acceptsDrag(e) && e.preventDefault()
 					: undefined}
 				ondragenter={onDrop && rootDropTarget
 					? (e) => {
-							if (e.dataTransfer?.types.includes(dragMime)) dropTargetId = rootDropTarget;
+							if (acceptsDrag(e)) dropTargetId = rootDropTarget;
 						}
 					: undefined}
 				ondragleave={onDrop && rootDropTarget
@@ -451,15 +493,13 @@
 				class="breadcrumb-item breadcrumb-link"
 				class:breadcrumb-current={isLeaf}
 				class:breadcrumb-boundary={isBoundary}
-				class:drop-target={onDrop != null && dropTargetId === c.id}
+				class:drop-target={isDropHighlighted(c.id)}
 				data-testid={isLeaf ? `folder-breadcrumb-current-${c.id}` : `folder-breadcrumb-${c.id}`}
 				oncontextmenu={onCrumbContextMenu ? (e) => onCrumbContextMenu(e, c) : undefined}
-				ondragover={onDrop
-					? (e) => e.dataTransfer?.types.includes(dragMime) && e.preventDefault()
-					: undefined}
+				ondragover={onDrop ? (e) => acceptsDrag(e) && e.preventDefault() : undefined}
 				ondragenter={onDrop
 					? (e) => {
-							if (e.dataTransfer?.types.includes(dragMime)) dropTargetId = c.id;
+							if (acceptsDrag(e)) dropTargetId = c.id;
 						}
 					: undefined}
 				ondragleave={onDrop

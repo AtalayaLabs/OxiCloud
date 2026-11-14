@@ -410,7 +410,7 @@
 }
 
 .files-list-view .file-item.drop-target {
-    border: 1px dashed var(--color-warning-border);
+    border: 1px solid var(--color-warning-border);
 }
 
 .files-list-view .file-item .name-cell {
@@ -714,13 +714,28 @@
     border-color: var(--color-accent);
 }
 
-/* The thumbnail subtly zooms inside its clipped tile on hover — the "alive"
-   feel of a premium gallery. */
-.files-grid-view .file-item .file-icon .file-thumb {
+/* The tile's CONTENT subtly zooms inside its clipped tile on hover — the
+   "alive" feel of a premium gallery.
+
+   On the children, never on `.file-icon` itself: that element is the clip
+   (`overflow: hidden`) and the positioning context for the overlay chip and
+   the row badge. Scaling it would grow the tile past its box, drag those
+   overlays with it, and leave nothing to crop the zoom against.
+
+   Both children, so a file WITHOUT a thumbnail behaves like one with: the
+   type icon is always rendered and the `<img>` merely covers it, so an
+   icon-only tile was the one card in the grid that did not respond. `> svg`
+   / `> i` are direct children on purpose — the overlay chip's own avatar is
+   nested deeper and must not scale with the tile. */
+.files-grid-view .file-item .file-icon .file-thumb,
+.files-grid-view .file-item .file-icon > svg,
+.files-grid-view .file-item .file-icon > i {
     transition: transform var(--motion-moderate) var(--ease-standard);
 }
 
-.files-grid-view .file-item:hover .file-icon .file-thumb {
+.files-grid-view .file-item:hover .file-icon .file-thumb,
+.files-grid-view .file-item:hover .file-icon > svg,
+.files-grid-view .file-item:hover .file-icon > i {
     transform: scale(1.04);
 }
 
@@ -1016,7 +1031,7 @@
 
 .files-grid-view .file-item.drop-target {
     background-color: var(--color-warning-ring);
-    border: 2px dashed var(--color-warning-border);
+    border: 2px solid var(--color-warning-border);
 }
 
 /* Favorite star + shared button — resting/active state colors only.

@@ -78,6 +78,7 @@
     "files": "Bestanden",
     "shared": "Gedeeld",
     "recent": "Recente",
+    "changes": "Wijzigingen",
     "favorites": "Favorieten",
     "photos": "Media",
     "music": "Muziek",
@@ -548,6 +549,7 @@
     "new_folder_dotfile_hidden": "Map \"{{name}}\" aangemaakt — verborgen door je voorkeur.",
     "dotfiles_hidden_toast": "Verborgen bestanden verborgen",
     "dotfiles_shown_toast": "Verborgen bestanden weergegeven",
+    "col_modified_by": "Gewijzigd door",
     "col_modified": "Gewijzigd",
     "col_added": "Toegevoegd",
     "col_created_by": "Gemaakt door",
@@ -860,6 +862,17 @@
     "added_msg": "toegevoegd aan favorieten",
     "removed_title": "Verwijderd uit favorieten",
     "removed_msg": "verwijderd uit favorieten"
+  },
+  "changes": {
+    "empty_state": "Geen recente wijzigingen",
+    "empty_hint": "Wijzigingen in bestanden waartoe je toegang hebt verschijnen hier",
+    "col_changed": "Gewijzigd",
+    "lane_files": "{{n}} bestand(en)",
+    "cap_lanes": "Top {{n}} per persoon",
+    "window": "Tijdsbereik",
+    "window_7": "Afgelopen 7 dagen",
+    "window_30": "Afgelopen 30 dagen",
+    "window_90": "Afgelopen 90 dagen"
   },
   "recent": {
     "title": "Recent",
@@ -1741,6 +1754,7 @@
     "type": "Type",
     "type.folders": "Mappen",
     "accessedAt": "Toegangsdatum",
+    "changedAt": "Wijzigingsdatum",
     "modifiedAt": "Wijzigingsdatum",
     "createdAt": "Aanmaakdatum",
     "size": "Grootte",
@@ -1945,6 +1959,7 @@
     "retry": "Probeer het opnieuw",
     "select": "Selecteer",
     "select_all": "Selecteer alles",
+    "filter": "Filteren",
     "dismiss": "Afwijzen"
   },
   "device": {

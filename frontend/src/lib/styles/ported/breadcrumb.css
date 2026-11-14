@@ -31,9 +31,19 @@
     text-decoration: none;
 }
 
+/* Armed as a drop destination — same orange, same solid 2px, same rounding
+   as the sidebar rows and the `/files` view frame, so one look means "the
+   files land here" wherever it appears.
+
+   `--radius-md` rather than the `--radius-xl` those two use: a crumb is a
+   ~26px chip, and a 10px radius on it reads as a pill rather than as the
+   same frame scaled down. The 2px transparent border on `.breadcrumb-item`
+   above is what keeps this from shifting the trail's layout when it
+   appears. */
 .breadcrumb-link.drop-target {
     background-color: var(--color-warning-ring);
-    border: 2px dashed var(--color-warning-border);
+    border: 2px solid var(--color-warning-border);
+    border-radius: var(--radius-md);
 }
 
 .breadcrumb-link:hover {

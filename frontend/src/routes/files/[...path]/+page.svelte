@@ -71,6 +71,21 @@
 	import { files as filesStore } from '$lib/stores/files.svelte';
 	import { session } from '$lib/stores/session.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
+	// Shared with the app-wide guard so "is this an OS file drag?" has one
+	// definition — the check that keeps internal item drags out of the upload
+	// path lives in exactly one place.
+	import { isOsFileDrag } from '$lib/utils/osFileDropGuard';
+	// Tells the app-wide guard that this page owns OS file drops — see the
+	// `$effect` that claims it, and the store's doc for why `defaultPrevented`
+	// is not enough on its own.
+	import { osFileDrop } from '$lib/stores/osFileDrop.svelte';
+	import { readDroppedUpload } from '$lib/utils/droppedEntries';
+	// A drop the SIDEBAR took (a drive row) and this page performs — the
+	// uploader with its progress bar, abort handle and reload lives here.
+	import { pendingUpload } from '$lib/stores/pendingUpload.svelte';
+	// Which sidebar row (nav link / drive) is armed as the destination, so this
+	// page's own "it lands here" cues stand down when one is.
+	import { sidebarDrop } from '$lib/stores/sidebarDrop.svelte';
 	import { dateBucket, sizeBucket, typeLabel } from '$lib/stores/files.svelte';
 	import { replaceSet } from '$lib/utils/sets';
 	import ContextMenu, { type ContextMenuEntry } from '$lib/components/ContextMenu.svelte';
@@ -903,8 +918,8 @@
 	 * Returns `true` when it's safe to proceed; `false` + a user-visible
 	 * toast when the folder isn't ready.
 	 */
-	function guardUploadFolderReady(): boolean {
-		if (currentId !== null) return true;
+	function guardUploadFolderReady(folderId: string | null): boolean {
+		if (folderId !== null) return true;
 		ui.notify(
 			t('files.upload_folder_not_ready', 'Folder is still loading — please try again in a moment.'),
 			'warning'
@@ -912,9 +927,16 @@
 		return false;
 	}
 
-	async function uploadBatch(files: File[]) {
+	/**
+	 * `targetId` is the folder the user aimed at — a folder row, a breadcrumb
+	 * crumb — and `null` means "wherever we are", the dropzone case. Threaded
+	 * rather than read from `currentId` inside, because the destination is now
+	 * a property of the DROP, not of the page.
+	 */
+	async function uploadBatch(files: File[], targetId: string | null = null) {
 		if (files.length === 0) return;
-		if (!guardUploadFolderReady()) return;
+		const destination = targetId ?? currentId;
+		if (!guardUploadFolderReady(destination)) return;
 		uploading = true;
 		// Arm the reload-guard + persist a "batch in flight" marker so a
 		// page refresh mid-upload (a) prompts the browser's "Leave site?"
@@ -926,7 +948,7 @@
 			files.length === 1
 				? files[0].name
 				: t('files.n_files_batch', { n: files.length }, `${files.length} files`);
-		const batchHandle = markUploadStarted(batchDescription, currentId);
+		const batchHandle = markUploadStarted(batchDescription, destination);
 		const ctl = new AbortController();
 		uploadAbort = ctl;
 		const nid = ui.startProgress(
@@ -950,7 +972,7 @@
 					: t('files.uploading_n', { done, total }, `Uploading ${done}/${total} files…`);
 			if (total > 0) {
 				const { savedBytes, failures, firstError, completed } = await uploadAll(
-					readable.map((file) => ({ file, folderId: currentId })),
+					readable.map((file) => ({ file, folderId: destination })),
 					nid,
 					label,
 					ctl.signal
@@ -1008,16 +1030,24 @@
 		input.value = '';
 	}
 
-	async function onDrop(e: DragEvent) {
+	/**
+	 * OS files dropped somewhere in `/files`.
+	 *
+	 * `targetId` is the folder the user AIMED at — a folder row or a
+	 * breadcrumb crumb — and `null` means they dropped on the view at large,
+	 * which lands in the current folder. That is the file-manager convention:
+	 * a hovered folder is the destination, everything else is "here".
+	 */
+	async function onDrop(e: DragEvent, targetId: string | null = null) {
 		e.preventDefault();
 		const dt = e.dataTransfer;
 		if (!dt) return;
-		// A dropped folder isn't expanded into `.files`, so walk the dropped entry
-		// tree (webkitGetAsEntry) when one is present and recreate it server-side;
-		// otherwise fall back to the flat file list.
-		const tree = await collectDroppedEntries(dt);
-		if (tree) await uploadTree(tree);
-		else if (dt.files?.length) await uploadBatch(Array.from(dt.files));
+		// A dropped folder isn't expanded into `.files`, so the shared reader
+		// walks the dropped entry tree (webkitGetAsEntry) when one is present
+		// and we recreate it server-side; otherwise it hands back the flat list.
+		const { tree, files } = await readDroppedUpload(dt);
+		if (tree) await uploadTree(tree, targetId);
+		else if (files.length) await uploadBatch(files, targetId);
 	}
 
 	/**
@@ -1058,15 +1088,14 @@
 	}
 
 	/**
-	 * Page-wide drop-overlay trigger. The overlay itself lives in
-	 * `ResourceList` (`position: fixed`, already viewport-sized), but its
-	 * default trigger is a counter on `.rl-root` — so dragging OS files
-	 * over the page's title strip or the outer margins wouldn't light
-	 * up the overlay even though the drop WOULD be accepted (see
-	 * `onWindowDragOver`/`onWindowDrop` above). This counter tracks
-	 * the drag at window level and drives ResourceList via the
-	 * `systemDropOverlayActive` prop so the visual matches the
-	 * accepts-drop area exactly.
+	 * Page-wide drop-state trigger: is an OS-file drag in flight anywhere
+	 * over this page?
+	 *
+	 * Window-level and not a counter on the list, because the area that
+	 * ACCEPTS a drop is the whole page — the title strip and the outer
+	 * margins upload too (see `onWindowDragOver`/`onWindowDrop` above), so
+	 * a trigger scoped to `.rl-root` would leave the cue off while the
+	 * drop would still work.
 	 *
 	 * Same enter/leave-counter shape ResourceList uses internally —
 	 * dragenter/leave chatter as the pointer moves between child
@@ -1086,51 +1115,6 @@
 	}
 	function onWindowDragEnd() {
 		pageSystemDragDepth = 0;
-	}
-
-	/**
-	 * Expand dropped OS entries into `{file, relativePath}` rows, walking any
-	 * directory tree via the (non-standard but ubiquitous) `webkitGetAsEntry` /
-	 * `createReader` API. Returns `null` when nothing dropped was a directory, so
-	 * the caller takes the simpler flat-`FileList` path.
-	 */
-	async function collectDroppedEntries(
-		dt: DataTransfer
-	): Promise<{ file: File; relativePath: string }[] | null> {
-		// `webkitGetAsEntry()` must be read synchronously while the event is live.
-		const roots: FileSystemEntry[] = [];
-		let sawDir = false;
-		for (const item of Array.from(dt.items)) {
-			const entry = item.webkitGetAsEntry();
-			if (entry) {
-				roots.push(entry);
-				if (entry.isDirectory) sawDir = true;
-			}
-		}
-		if (!sawDir) return null;
-
-		const out: { file: File; relativePath: string }[] = [];
-		async function walk(entry: FileSystemEntry, prefix: string): Promise<void> {
-			if (entry.isFile) {
-				const file = await new Promise<File>((resolve, reject) =>
-					(entry as FileSystemFileEntry).file(resolve, reject)
-				);
-				out.push({ file, relativePath: prefix + entry.name });
-			} else if (entry.isDirectory) {
-				const reader = (entry as FileSystemDirectoryEntry).createReader();
-				const dirPrefix = `${prefix}${entry.name}/`;
-				// readEntries yields in batches; loop until it returns an empty one.
-				for (;;) {
-					const batch = await new Promise<FileSystemEntry[]>((resolve, reject) =>
-						reader.readEntries(resolve, reject)
-					);
-					if (batch.length === 0) break;
-					for (const child of batch) await walk(child, dirPrefix);
-				}
-			}
-		}
-		for (const root of roots) await walk(root, '');
-		return out;
 	}
 
 	async function renameItem(kind: 'file' | 'folder', id: string, current: string) {
@@ -1461,6 +1445,28 @@
 	// ── Drag-to-move ─────────────────────────────────────────────────────────
 	const DRAG_TYPE = ITEM_DRAG_MIME;
 	let dropFolderId = $state<string | null>(null);
+	/**
+	 * "These files will land in the folder you are looking at."
+	 *
+	 * True while an OS-file drag is over the page (`pageSystemDropOver`,
+	 * declared above) and nothing more specific has claimed it — a folder
+	 * row or crumb (`dropFolderId`), or a sidebar drive (`sidebarDrop`).
+	 * Each of those draws its own highlight, and lighting the view at the
+	 * same time would claim two destinations at once — exactly the
+	 * ambiguity that aiming at a folder is meant to remove.
+	 *
+	 * The sidebar term is not optional: the drag counter is fed by
+	 * WINDOW-level events, and the sidebar is in the same document, so
+	 * without it the frame and the crumb highlight stay lit while the
+	 * pointer is over a drive that is about to receive the files.
+	 *
+	 * Two things render it, both in place rather than on top of the page:
+	 * the dropzone element itself takes a frame
+	 * (`.files-dropzone--drop-here`), and the current folder's breadcrumb
+	 * crumb takes the same `.drop-target` highlight a hovered crumb gets —
+	 * that crumb is what names the destination.
+	 */
+	const osDropHere = $derived(pageSystemDropOver && dropFolderId === null && !sidebarDrop.armed);
 	// Per-crumb drop highlight state lived here until the breadcrumb
 	// migrated to the shared `<FolderBreadcrumb>` component (2026-07-26),
 	// which owns its own hover state. The `CRUMB_HOME_ID` sentinel is
@@ -1646,7 +1652,20 @@
 	}
 
 	function onFolderDrop(e: DragEvent, folder: FolderItem) {
-		if (!e.dataTransfer?.types.includes(DRAG_TYPE)) return; // external file drop → page dropzone
+		// OS files aimed at a FOLDER upload into it. Until now they fell
+		// through to the page dropzone and landed in the current folder, so
+		// aiming at a folder did nothing — the convention every file manager
+		// follows. `stopPropagation` keeps `.rl-root`'s view-wide handler out
+		// of it; `preventDefault` alone would also be enough, since both that
+		// handler and the app-wide guard check `defaultPrevented`.
+		if (isOsFileDrag(e)) {
+			e.preventDefault();
+			e.stopPropagation();
+			dropFolderId = null;
+			void onDrop(e, folder.id);
+			return;
+		}
+		if (!e.dataTransfer?.types.includes(DRAG_TYPE)) return;
 		e.preventDefault();
 		e.stopPropagation();
 		dropFolderId = null;
@@ -1655,6 +1674,15 @@
 	}
 
 	function onCrumbDrop(e: DragEvent, folderId: string) {
+		// Same rule one level up the tree: a crumb is a folder, so OS files
+		// dropped on an ancestor upload there. This is the only way to upload
+		// OUTSIDE the current folder without navigating first.
+		if (isOsFileDrag(e)) {
+			e.preventDefault();
+			e.stopPropagation();
+			void onDrop(e, folderId);
+			return;
+		}
 		if (!e.dataTransfer?.types.includes(DRAG_TYPE)) return;
 		e.preventDefault();
 		if (isCopyDrop(e)) void copyInto(folderId, e);
@@ -1990,9 +2018,16 @@
 	 * Upload files that carry a relative directory path, recreating the folder
 	 * tree under the current folder. Shared by the folder picker and folder drops.
 	 */
-	async function uploadTree(entries: { file: File; relativePath: string }[]) {
+	async function uploadTree(
+		entries: { file: File; relativePath: string }[],
+		targetId: string | null = null
+	) {
 		if (entries.length === 0) return;
-		if (!guardUploadFolderReady()) return;
+		// The dropped tree is recreated UNDER this folder — `destination` is the
+		// root the relative paths hang off, so aiming at a folder row puts the
+		// whole tree inside it rather than beside it.
+		const destination = targetId ?? currentId;
+		if (!guardUploadFolderReady(destination)) return;
 		uploading = true;
 		// Same reload-guard + interrupted-uploads breadcrumb as uploadBatch —
 		// the browser prompts on refresh, and if the user reloads anyway
@@ -2000,7 +2035,7 @@
 		acquireUploadGuard();
 		const treeHandle = markUploadStarted(
 			t('files.n_files_batch', { n: entries.length }, `${entries.length} files`),
-			currentId
+			destination
 		);
 		// Same bell progress notification as uploadBatch, so folder uploads show
 		// live progress + a final result instead of staying silent until the end.
@@ -2032,7 +2067,7 @@
 			// Map each relative directory path to its created folder id; '' = current.
 			// Local computation scratch map (discarded after upload) — not reactive state.
 			// eslint-disable-next-line svelte/prefer-svelte-reactivity
-			const dirIds = new Map<string, string | null>([['', currentId]]);
+			const dirIds = new Map<string, string | null>([['', destination]]);
 
 			async function ensureDir(relDir: string): Promise<string | null> {
 				if (dirIds.has(relDir)) return dirIds.get(relDir) ?? null;
@@ -2247,6 +2282,16 @@
 	}
 	function rlOnItemDragOver(e: DragEvent, item: FileItem | FolderItem) {
 		if (isFile(item)) return;
+		// OS files: accept at the pointer level and claim the highlight, so the
+		// row reads as the destination and `drop` actually fires here instead
+		// of bubbling to the view-wide zone. `preventDefault` is also what
+		// tells `.rl-root` and the app-wide guard to stand down.
+		if (isOsFileDrag(e)) {
+			e.preventDefault();
+			if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+			dropFolderId = item.id;
+			return;
+		}
 		if (e.dataTransfer?.types.includes(DRAG_TYPE)) {
 			// preventDefault is what accepts the drop. Leaving
 			// `dropEffect` untouched lets the browser negotiate it
@@ -2510,12 +2555,42 @@
 		});
 	});
 
+	// This page handles OS file drops ANYWHERE on itself, via the window
+	// handlers above — so it has to tell the app-wide guard to keep out.
+	// `defaultPrevented` cannot carry that: both listeners are on `window`,
+	// the layout's is registered first, and a drop on the page's margins
+	// touches no element with a handler of its own. Without the claim the
+	// guard swallows the drop and toasts "uploads only work in Files" while
+	// standing in Files.
+	$effect(() => osFileDrop.claim());
+
 	// The command palette's "Upload files" action navigates here then dispatches
 	// this event so the hidden file picker opens (the input lives on this page).
 	$effect(() => {
 		const open = () => fileInput?.click();
 		window.addEventListener('oxicloud:upload-files', open);
 		return () => window.removeEventListener('oxicloud:upload-files', open);
+	});
+
+	// Perform a drop the SIDEBAR took: dropping OS files on a drive row stages
+	// them (`pendingUpload`) and navigates here, because the uploader — progress
+	// notification, abort handle, reload-guard, post-upload reload — is all on
+	// this page and there is no second copy of it.
+	//
+	// Gated on `currentId` matching the staged target, which is what makes this
+	// safe: it fires only once `load()` has resolved THAT folder, so the files
+	// cannot land somewhere else, and `claim()` clears the stage so a re-run of
+	// this effect can't upload them twice.
+	$effect(() => {
+		const target = pendingUpload.targetFolderId;
+		const here = currentId;
+		if (target === null || here === null || target !== here) return;
+		untrack(() => {
+			const claimed = pendingUpload.claim(here);
+			if (!claimed) return;
+			if (claimed.tree) void uploadTree(claimed.tree, here);
+			else if (claimed.files.length) void uploadBatch(claimed.files, here);
+		});
 	});
 </script>
 
@@ -2530,7 +2605,24 @@
 	ondrop={onWindowDrop}
 />
 
-<div class="files-page" data-testid="files-dropzone">
+<!-- Two classes, two jobs: `.files-page` is the layout (it fills the content
+     area), `.files-dropzone` is the ROLE — this element is the one that
+     accepts OS files, matching `data-testid`. `--drop-here` is the state
+     flag the drop cue keys off — a viewport-pinned 2px frame drawn as this
+     element's `::after` (see the `<style>` block for why it cannot be an
+     outline on a box). -->
+<div
+	class="files-page files-dropzone"
+	class:files-dropzone--drop-here={osDropHere}
+	data-testid="files-dropzone"
+>
+	<!-- The drop cue for screen readers. The overlay this replaced was
+	     `aria-hidden`, so a non-sighted user got no cue at all; a tint and a
+	     highlighted crumb are no better. `aria-live` on a region that is
+	     empty until the drag starts announces it once, when it starts. -->
+	<div class="sr-only" aria-live="polite">
+		{osDropHere ? t('files.drop_to_upload', 'Drop files here to upload') : ''}
+	</div>
 	<!-- Read-only freeze banner, placed inside the listing container so it
 	     lives in the same visual/scroll flow as the file list (previously
 	     rendered above the page container, which visually detached it from
@@ -2610,7 +2702,6 @@
 		showDotfileToggle
 		enableSystemDrop
 		onsystemdrop={onDrop}
-		systemDropOverlayActive={pageSystemDropOver}
 		groupBys={rlGroupBys}
 		bind:groupBy
 		bind:reversed
@@ -2675,6 +2766,7 @@
 				folderId={currentId}
 				onDrop={(target, e) => onCrumbDrop(e, target)}
 				dragMime={DRAG_TYPE}
+				systemDropTargetId={osDropHere ? currentId : null}
 				onShare={(id, name) => openShare('folder', id, name)}
 				oncontextmenu={(e, c) => openContext(e, 'folder', c.id, c.name)}
 				reloadToken={breadcrumbToken}
@@ -2877,6 +2969,63 @@
 <style>
 	.files-page {
 		min-height: 100%;
+	}
+
+	/* "Dropping anywhere here uploads into the folder you're looking at."
+	   A frame round the view, the counterpart of the highlight a folder row
+	   or a crumb takes when IT is the destination — one rule for every
+	   case: the highlighted thing is where the files go.
+
+	   Hence `--color-warning-border` and a plain solid line: a drop
+	   destination is ONE state in this app, so it gets one colour and one
+	   border style whatever the size of the thing wearing it (Ed,
+	   2026-11-13). The four siblings that share it —
+	   `.file-item.drop-target` (list + grid),
+	   `.breadcrumb-link.drop-target`, `.nav-item--drop-target` and
+	   `.drive-picker__row--drop-target` — were all dashed and all went
+	   solid in the same change; a dash reads as an edge round one small
+	   item and as a busy seam at window length, so nothing is gained by
+	   splitting the style by size.
+
+	   Pinned to the VIEWPORT as a pseudo-element — the third attempt, and
+	   the only one where all four sides survive. The two before it died on
+	   the same rule: a box's border and outline paint UNDER its children,
+	   and the children here have opaque backgrounds.
+
+	     1. `outline` on `.files-dropzone`, offset inwards — covered
+	        outright by the rows and cards.
+	     2. `outline` on `.content-area`, sitting in its `--space-5
+	        --gutter` padding, the one band no child paints in — three
+	        sides visible, but `.page-sticky-header` cancels that top
+	        padding to stick flush, so its opaque `--color-bg-page` ate the
+	        top run as soon as the list was scrolled. Having the header
+	        paint that run itself was tried too: at rest the header sits
+	        BELOW the frame's top edge, so it read as a stray second line
+	        across `.rl-toolbar`.
+
+	   So the frame has to be painted ABOVE the content, which is what
+	   `--z-overlay` (2000, over `--z-sticky`'s 100) is for. "Above" costs
+	   nothing here, and that is the whole point: this is a 2px line and
+	   NOTHING else — no background wash, no card, no label — which is how
+	   it differs from the full-page overlay this started as and which Ed
+	   had removed. `pointer-events: none` so every drag event still reaches
+	   the page underneath.
+
+	   Framing the whole window rather than just the listing is honest
+	   rather than lazy: `onWindowDrop` accepts a drop anywhere on this
+	   page, sidebar and chrome included, and routes it to the current
+	   folder.
+
+	   `inset: 2px` keeps the line clear of the viewport edge, where the
+	   outer pixel would be clipped. */
+	.files-dropzone--drop-here::after {
+		position: fixed;
+		inset: 2px;
+		border: 2px solid var(--color-warning-border);
+		border-radius: var(--radius-xl);
+		pointer-events: none;
+		content: '';
+		z-index: var(--z-overlay);
 	}
 
 	/* The context menu's scrim and panel styles live in

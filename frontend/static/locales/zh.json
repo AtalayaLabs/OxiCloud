@@ -78,6 +78,7 @@
     "files": "文件",
     "shared": "共享",
     "recent": "最近",
+    "changes": "更改",
     "favorites": "收藏",
     "photos": "媒体",
     "music": "音乐",
@@ -548,6 +549,7 @@
     "new_folder_dotfile_hidden": "已创建文件夹「{{name}}」——根据您的偏好隐藏。",
     "dotfiles_hidden_toast": "已隐藏隐藏文件",
     "dotfiles_shown_toast": "已显示隐藏文件",
+    "col_modified_by": "更改者",
     "col_modified": "修改日期",
     "col_added": "添加日期",
     "col_created_by": "创建者",
@@ -860,6 +862,17 @@
     "added_msg": "已添加到收藏",
     "removed_title": "已从收藏移除",
     "removed_msg": "已从收藏移除"
+  },
+  "changes": {
+    "empty_state": "暂无最近更改",
+    "empty_hint": "您可访问的文件的更改将显示在此处",
+    "col_changed": "已更改",
+    "lane_files": "{{n}} 个文件",
+    "cap_lanes": "每人最近 {{n}} 个",
+    "window": "时间范围",
+    "window_7": "最近 7 天",
+    "window_30": "最近 30 天",
+    "window_90": "最近 90 天"
   },
   "recent": {
     "title": "最近",
@@ -1741,6 +1754,7 @@
     "type": "类型",
     "type.folders": "文件夹",
     "accessedAt": "访问日期",
+    "changedAt": "更改日期",
     "modifiedAt": "修改日期",
     "createdAt": "创建日期",
     "size": "大小",
@@ -1945,6 +1959,7 @@
     "retry": "再试一次",
     "select": "选择",
     "select_all": "选择全部",
+    "filter": "筛选",
     "dismiss": "解雇"
   },
   "device": {
