@@ -1014,7 +1014,7 @@
     "confirm_action": "Actie bevestigen",
     "confirm_yes": "Bevestigen",
     "confirm_no": "Annuleren",
-    "error_username_short": "Gebruikersnaam moet minimaal 3 tekens bevatten",
+    "error_username_length": "De gebruikersnaam moet tussen 2 en 64 tekens bevatten",
     "error_password_short": "Wachtwoord moet minimaal 8 tekens bevatten",
     "error_generic": "Mislukt",
     "error_network": "Netwerkfout: {{message}}",

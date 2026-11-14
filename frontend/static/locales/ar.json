@@ -1014,7 +1014,7 @@
     "confirm_action": "تأكيد الإجراء",
     "confirm_yes": "تأكيد",
     "confirm_no": "إلغاء",
-    "error_username_short": "الاسم 3 أحرف على الأقل",
+    "error_username_length": "يجب أن يتراوح طول اسم المستخدم بين حرفين و64 حرفًا",
     "error_password_short": "كلمة المرور 8 أحرف على الأقل",
     "error_generic": "فشل",
     "error_network": "خطأ في الشبكة: {{message}}",

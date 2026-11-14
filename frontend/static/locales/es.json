@@ -1014,7 +1014,7 @@
     "confirm_action": "Confirmar Acción",
     "confirm_yes": "Confirmar",
     "confirm_no": "Cancelar",
-    "error_username_short": "El nombre de usuario debe tener al menos 3 caracteres",
+    "error_username_length": "El nombre de usuario debe tener entre 2 y 64 caracteres",
     "error_password_short": "La contraseña debe tener al menos 8 caracteres",
     "error_generic": "Error",
     "error_network": "Error de red: {{message}}",
