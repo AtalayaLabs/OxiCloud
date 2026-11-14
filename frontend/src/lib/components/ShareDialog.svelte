@@ -1994,9 +1994,23 @@
 		gap: var(--space-3);
 	}
 
+	/*
+	 * `justify-content: end` so the INPUTS line up across a row, not the
+	 * labels above them.
+	 *
+	 * These cells stretch to the tallest in their grid row, and the label
+	 * text is what varies: "Download limit (optional)" wraps to two lines at
+	 * dialog width while "Expires (required)" does not. With the content
+	 * packed to the top, each input sat directly under its own caption, so
+	 * two fields side by side had their boxes at different heights and the
+	 * row read as misaligned. Pushing each stack to the bottom of its cell
+	 * puts every input on one line and lets the caption take whatever room
+	 * it needs above.
+	 */
 	.sh-fields label {
 		display: flex;
 		flex-direction: column;
+		justify-content: end;
 		gap: 0.25rem;
 		font-size: var(--text-sm);
 	}
