@@ -9,7 +9,7 @@
 //!
 //! Byte-identity with chrono (for whole-second in-range UTC datetimes)
 //! is asserted by the unit tests below and by the equivalence gate in
-//! `examples/bench_propfind_xml.rs`. Out-of-range seconds (negative or
+//! `benches/bench_propfind_xml.rs`. Out-of-range seconds (negative or
 //! year > 9999, where the fixed-width layout no longer applies) return
 //! `None` — callers keep the old chrono path as fallback, so exotic
 //! values change nothing observable.

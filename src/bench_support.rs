@@ -1,7 +1,7 @@
 //! Phase 0 perf-benchmark support — deterministic image corpus.
 //!
 //! Shared by `benches/thumbnails.rs` (Task 0.2, criterion latency + output
-//! size) and `examples/bench_thumbnails_mem.rs` (Task 0.3, peak RAM +
+//! size) and `benches/bench_thumbnails_mem.rs` (Task 0.3, peak RAM +
 //! throughput). Gated behind the `bench` feature so it never touches normal
 //! builds.
 //!
@@ -352,4 +352,58 @@ fn inject_exif_orientation(jpeg: &[u8], orientation: u16) -> Result<Vec<u8>, Str
     out.extend_from_slice(&payload);
     out.extend_from_slice(&jpeg[2..]); // rest of the original JPEG
     Ok(out)
+}
+
+/// Cross-platform process-level metrics the benches print alongside their
+/// own measurements — CPU time, peak RSS. Previously each bench shelled
+/// into `/proc/self/{stat,status,io}`, which pinned the whole suite to
+/// Linux. This module reads the same numbers through `getrusage` so the
+/// benches run on Darwin too (CI is Linux; developer laptops are not).
+///
+/// Not every /proc field has a portable equivalent — `/proc/self/io`'s
+/// `read_bytes`/`write_bytes` syscall counters have no `getrusage` or
+/// `libproc` analogue. The one bench that depends on them
+/// (`bench_upload_spool`) stays gated on `cfg(target_os = "linux")`
+/// rather than carrying a half-accurate Darwin port.
+pub mod process_metrics {
+    /// Process CPU time (user + system) in seconds since start.
+    ///
+    /// Reads both halves of `rusage(RUSAGE_SELF)` and sums them — same
+    /// number the Linux `/proc/self/stat` fields 14 + 15 produce, but
+    /// portable to Darwin.
+    pub fn cpu_seconds() -> f64 {
+        // SAFETY: `getrusage` writes into a caller-owned `rusage`; we hand
+        // it a zero-initialised one and read the result after a `== 0`
+        // check. No aliasing, no lifetime concerns.
+        unsafe {
+            let mut usage: libc::rusage = std::mem::zeroed();
+            let rc = libc::getrusage(libc::RUSAGE_SELF, &mut usage);
+            assert_eq!(rc, 0, "getrusage(RUSAGE_SELF) failed");
+            let secs = |tv: libc::timeval| tv.tv_sec as f64 + tv.tv_usec as f64 / 1_000_000.0;
+            secs(usage.ru_utime) + secs(usage.ru_stime)
+        }
+    }
+
+    /// Peak resident set size in kilobytes.
+    ///
+    /// Reads `rusage.ru_maxrss`. The UNIT is OS-specific and has bitten
+    /// every tool that ever shipped this metric cross-platform:
+    ///   * Linux — kilobytes (as POSIX recommends).
+    ///   * Darwin — bytes.
+    ///
+    /// This helper hides the difference; callers get KB on both.
+    pub fn peak_rss_kb() -> u64 {
+        // SAFETY: same as above; getrusage is the only syscall.
+        let raw = unsafe {
+            let mut usage: libc::rusage = std::mem::zeroed();
+            let rc = libc::getrusage(libc::RUSAGE_SELF, &mut usage);
+            assert_eq!(rc, 0, "getrusage(RUSAGE_SELF) failed");
+            usage.ru_maxrss as u64
+        };
+        if cfg!(target_os = "macos") || cfg!(target_os = "ios") {
+            raw / 1024
+        } else {
+            raw
+        }
+    }
 }

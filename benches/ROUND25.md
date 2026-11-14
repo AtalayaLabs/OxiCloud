@@ -263,7 +263,7 @@ its own validated pass. Grouped by area for the next rounds.
 ## Environment / methodology
 
 - **M1–M3:** counting global allocator tracking BOTH alloc **count** and **bytes**
-  (`examples/bench_round25_micro.rs`), no Postgres. Each section is BEFORE
+  (`benches/bench_round25_micro.rs`), no Postgres. Each section is BEFORE
   (verbatim replica of the shipped-before shape) vs AFTER (replica of the
   shipped-after shape, which the source now matches), with a value-equivalence
   assertion and a `GATE FAIL … rollback` `exit(1)` if the AFTER arm fails to beat

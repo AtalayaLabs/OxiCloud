@@ -1,7 +1,7 @@
 # Round 2 — read path, upload path, archives (before/after gates)
 
 Five backend changes + one frontend change, each gated by a before/after
-benchmark (`examples/bench_round2.rs`; frontend gate in
+benchmark (`benches/bench_round2.rs`; frontend gate in
 `frontend/src/lib/api/endpoints/deltaUpload.hash.test.ts`). Rule of the
 round: an AFTER that doesn't beat its BEFORE gets rolled back — none did.
 

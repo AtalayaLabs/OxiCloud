@@ -18,10 +18,10 @@ Measures the two things `build_runtime` (`src/main.rs`) changes versus the bare
 ```bash
 cargo build --release --features bench --example bench_tokio_runtime
 # Pin to 2 cores to model a 2-core CPU quota on a bigger host:
-taskset -c 0,1 ./target/release/examples/bench_tokio_runtime
+taskset -c 0,1 ./target/release/benches/bench_tokio_runtime
 # Part B uses a fixed glibc mmap threshold for a clean RSS read:
 MALLOC_MMAP_THRESHOLD_=131072 MALLOC_TRIM_THRESHOLD_=131072 \
-  taskset -c 0,1 ./target/release/examples/bench_tokio_runtime
+  taskset -c 0,1 ./target/release/benches/bench_tokio_runtime
 # tunables: BENCH_CONCURRENCY=96 BENCH_SECONDS=4 BENCH_BURN_KB=256
 #   BENCH_WORKERS_BEFORE=32  BENCH_BLOCKING_TASKS=96 BENCH_ALLOC_MB=16 BENCH_MAX_BLOCKING_AFTER=16
 ```

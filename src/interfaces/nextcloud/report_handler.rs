@@ -483,7 +483,7 @@ fn file_dto_from_search(fr: &crate::application::dtos::search_dto::SearchFileRes
 }
 
 /// Bench-only public wrapper (feature = "bench") over the private
-/// search→FileDto conversion so `examples/bench_search_enrich.rs` can
+/// search→FileDto conversion so `benches/bench_search_enrich.rs` can
 /// measure and equivalence-gate it.
 #[cfg(feature = "bench")]
 pub fn file_dto_from_search_for_bench(

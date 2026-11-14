@@ -14,7 +14,7 @@ RSS for K concurrent decodes.
 
 ```bash
 cargo build --release --features bench --example bench_pool_concurrency
-taskset -c 0,1 ./target/release/examples/bench_pool_concurrency   # model a 2-core quota
+taskset -c 0,1 ./target/release/benches/bench_pool_concurrency   # model a 2-core quota
 # tunables: BENCH_K_LIST=1,2,4,8,16 BENCH_GALLERY=48 BENCH_SECONDS=4
 ```
 

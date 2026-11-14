@@ -217,6 +217,11 @@ toml = "1.1.2"
 file-rotate = { version = "0.7.6", optional = true }
 ort = { version = "2.0.0-rc.12", default-features = false, features = ["load-dynamic", "ndarray", "tracing", "api-24"], optional = true }
 ndarray = { version = "0.17.2", optional = true }
+# `bench_support::process_metrics` uses `getrusage(RUSAGE_SELF)` for
+# portable CPU/RSS measurement across Linux + Darwin (replaces the
+# former `/proc/self/*` parse). Optional + gated on the `bench` feature
+# so prod builds never link it.
+libc = { version = "0.2", optional = true }
 # Prometheus /metrics exporter (opt-in via OXICLOUD_METRICS_LISTEN).
 # `metrics` is the abstract counter API — `counter!(name, "k" => v).increment(1)`
 # — and is a no-op when no recorder is installed (unset env var). The
@@ -267,7 +272,7 @@ faces-onnx = ["dep:ort", "dep:ndarray"]
 # wrappers over the private thumbnail render functions so `benches/` and
 # `examples/` can measure them. Off by default — adds nothing to prod builds.
 # Run with: `cargo bench --features bench` / `cargo run --release --features bench --example bench_thumbnails_mem`.
-bench = []
+bench = ["dep:libc"]
 # Empty marker feature that gates the `generate-openapi` binary out of the
 # default release build set. `just openapi` flips it when the SPA needs a
 # regenerated openapi.json; end-user release builds never do. Kept separate
@@ -300,7 +305,7 @@ criterion = "0.5"
 # `#[cfg_attr(test, mockall::automock)]` on the port traits. A dev-dependency
 # so mocks exist only in `cargo test` builds of the lib, never in a binary.
 mockall = "0.14.0"
-# `examples/bench_blob_cache_index.rs` ONLY — the benchmark that compares the
+# `benches/bench_blob_cache_index.rs` ONLY — the benchmark that compares the
 # old `Mutex<LruCache>` blob-cache index against the moka byte-weigher that
 # replaced it. Nothing under `src/` has used `lru` since that swap (the
 # remaining mentions in `file_content_cache.rs` and `cached_blob_backend.rs`
@@ -407,184 +412,209 @@ harness = false
 required-features = ["bench"]
 
 # Phase 0 perf harness — Task 0.3 (peak-RAM + saturated-throughput baseline).
-[[example]]
+[[bench]]
 name = "bench_thumbnails_mem"
-path = "examples/bench_thumbnails_mem.rs"
+path = "benches/bench_thumbnails_mem.rs"
+harness = false
 required-features = ["bench"]
 
 # ZIP entry-compression benchmark — Deflate-always vs MIME-aware Stored for
 # already-compressed media on the folder/batch ZIP download path. No Postgres.
-[[example]]
+[[bench]]
 name = "bench_zip_media"
-path = "examples/bench_zip_media.rs"
+path = "benches/bench_zip_media.rs"
+harness = false
 required-features = ["bench"]
 
 # WebDAV dead-properties fetch benchmark — PROPFIND's per-child N+1 (with a
 # non-indexable IS NOT DISTINCT FROM predicate) vs batched = ANY($1) per page
 # (needs the dev Postgres up).
-[[example]]
+[[bench]]
 name = "bench_dead_props"
-path = "examples/bench_dead_props.rs"
+path = "benches/bench_dead_props.rs"
+harness = false
 required-features = ["bench"]
 
 # NC chroot / default-drive resolution benchmark — the middleware's 2 uncached
 # queries per request vs the moka caches (needs the dev Postgres up).
-[[example]]
+[[bench]]
 name = "bench_chroot_cache"
-path = "examples/bench_chroot_cache.rs"
+path = "benches/bench_chroot_cache.rs"
+harness = false
 required-features = ["bench"]
 
 # Quota-path benchmark — full auth.users row (incl. 512 KiB avatar) vs the
 # narrow 2-column read, on every upload check / quota PROPFIND (needs Postgres).
-[[example]]
+[[bench]]
 name = "bench_quota_path"
-path = "examples/bench_quota_path.rs"
+path = "benches/bench_quota_path.rs"
+harness = false
 required-features = ["bench"]
 
 # People-tab benchmark — full faces scan (2 KiB embedding per row) vs grouped
 # COUNT + batched cover lookup (needs Postgres).
-[[example]]
+[[bench]]
 name = "bench_people_list"
-path = "examples/bench_people_list.rs"
+path = "benches/bench_people_list.rs"
+harness = false
 required-features = ["bench"]
 
 # PROPFIND folder-paging benchmark — LIMIT/OFFSET full-folder rescan per page
 # vs keyset + (folder_id, name) index (needs Postgres).
-[[example]]
+[[bench]]
 name = "bench_propfind_paging"
-path = "examples/bench_propfind_paging.rs"
+path = "benches/bench_propfind_paging.rs"
+harness = false
 required-features = ["bench"]
 
 # Static-asset compression benchmark — per-request Brotli vs precompressed
 # sibling read. No Postgres.
-[[example]]
+[[bench]]
 name = "bench_static_precompress"
-path = "examples/bench_static_precompress.rs"
+path = "benches/bench_static_precompress.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-2 battery: range-from-cache, NC chunk gate, delta prefetch, ingest
 # overlap (real store_from_stream; run with OXICLOUD_INGEST_OVERLAP=0/1),
 # ZIP streaming TTFB. Sections 1 and 4 need Postgres.
-[[example]]
+[[bench]]
 name = "bench_round2"
-path = "examples/bench_round2.rs"
+path = "benches/bench_round2.rs"
+harness = false
 required-features = ["bench"]
 
 # Video thumbnail benchmark — Option B (server-side ffmpeg frame → WebP). Needs
 # `ffmpeg` on PATH (libx264/libx265/libvpx-vp9 to synthesize the test corpus).
-[[example]]
+[[bench]]
 name = "bench_video_thumbnails"
-path = "examples/bench_video_thumbnails.rs"
+path = "benches/bench_video_thumbnails.rs"
+harness = false
 required-features = ["bench"]
 
 # DB connection-pool tail-latency benchmark (needs the dev Postgres up).
-[[example]]
+[[bench]]
 name = "bench_db_pool"
-path = "examples/bench_db_pool.rs"
+path = "benches/bench_db_pool.rs"
+harness = false
 required-features = ["bench"]
 
 # Blob-manifest read round-trip benchmark: OLD 2 queries vs NEW 1 (needs dev Postgres).
-[[example]]
+[[bench]]
 name = "bench_blob_manifest"
-path = "examples/bench_blob_manifest.rs"
+path = "benches/bench_blob_manifest.rs"
+harness = false
 required-features = ["bench"]
 
 # Blob download read-ahead benchmark — sweeps the local backend's chunk prefetch
 # depth (read_prefetch / buffered(N)) under disk-bound vs network-bound consumers
 # and warm vs cold page cache. No Postgres needed.
-[[example]]
+[[bench]]
 name = "bench_blob_prefetch"
-path = "examples/bench_blob_prefetch.rs"
+path = "benches/bench_blob_prefetch.rs"
+harness = false
 required-features = ["bench"]
 
 # Tokio runtime tuning benchmark — worker over-subscription (throughput + p99
 # under CPU contention) and blocking-pool RSS blast radius, default vs tuned.
 # No Postgres needed; run under `taskset -c 0,1` to model a 2-core quota.
-[[example]]
+[[bench]]
 name = "bench_tokio_runtime"
-path = "examples/bench_tokio_runtime.rs"
+path = "benches/bench_tokio_runtime.rs"
+harness = false
 required-features = ["bench"]
 
 # CPU pool concurrency benchmark — thumbnail decode throughput + p99 as the
 # decode-permit count is swept, showing the effect of sizing the image pools to
 # the CFS quota (effective_parallelism) vs the host core count. No Postgres;
 # run under `taskset -c 0,1` to model a 2-core quota.
-[[example]]
+[[bench]]
 name = "bench_pool_concurrency"
-path = "examples/bench_pool_concurrency.rs"
+path = "benches/bench_pool_concurrency.rs"
+harness = false
 required-features = ["bench"]
 
 # ACL owner-cache benchmark — owner query vs moka hit (needs the dev Postgres up).
-[[example]]
+[[bench]]
 name = "bench_owner_cache"
-path = "examples/bench_owner_cache.rs"
+path = "benches/bench_owner_cache.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-4 battery ─────────────────────────────────────────────────────────────
 
 # PG row → entity path materialization — the per-listing-row make_file_path
 # split→rejoin + NFC copy chain vs the one-pass builders. No Postgres.
-[[example]]
+[[bench]]
 name = "bench_row_path"
-path = "examples/bench_row_path.rs"
+path = "benches/bench_row_path.rs"
+harness = false
 required-features = ["bench"]
 
 # WebDAV drive-selector resolution — the per-request list_readable_by grants
 # join vs the per-user readable_cache (needs the dev Postgres up).
-[[example]]
+[[bench]]
 name = "bench_drive_selector"
-path = "examples/bench_drive_selector.rs"
+path = "benches/bench_drive_selector.rs"
+harness = false
 required-features = ["bench"]
 
 # CalDAV parse path — from_ical's 8×-reparse vs single parse, per-event
 # uppercase copies on REPORT/GET, UID clone churn. No Postgres.
-[[example]]
+[[bench]]
 name = "bench_caldav_parse"
-path = "examples/bench_caldav_parse.rs"
+path = "benches/bench_caldav_parse.rs"
+harness = false
 required-features = ["bench"]
 
 # PROPFIND per-row XML emit — partition Vec churn + chrono format-interpreter
 # dates vs single-pass + stack-rendered fields. No Postgres.
-[[example]]
+[[bench]]
 name = "bench_propfind_xml"
-path = "examples/bench_propfind_xml.rs"
+path = "benches/bench_propfind_xml.rs"
+harness = false
 required-features = ["bench"]
 
 # Grant-listing hydration N+1 (calendars / address books / playlists) +
 # user-flags cold-cache herd (needs the dev Postgres up).
-[[example]]
+[[bench]]
 name = "bench_n1_hydration"
-path = "examples/bench_n1_hydration.rs"
+path = "benches/bench_n1_hydration.rs"
+harness = false
 required-features = ["bench"]
 
 # Face-indexing fan-out — unbounded per-image spawn vs core-count semaphore;
 # peak-live-heap + wall on the bench_support photo corpus. No Postgres.
-[[example]]
+[[bench]]
 name = "bench_faces_bound"
-path = "examples/bench_faces_bound.rs"
+path = "benches/bench_faces_bound.rs"
+harness = false
 required-features = ["bench"]
 
 # Azure download path — whole-blob collect vs streamed pages, TTFB + peak
 # live heap against a local Azure-GET stub (endpoint_url hook). No Postgres.
-[[example]]
+[[bench]]
 name = "bench_azure_stream"
-path = "examples/bench_azure_stream.rs"
+path = "benches/bench_azure_stream.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-5 battery ─────────────────────────────────────────────────────────────
 
 # CalDAV whole-calendar REPORT/GET — buffered double-residency vs uid-keyset
 # streaming; TTFB + peak live heap (needs the dev Postgres up).
-[[example]]
+[[bench]]
 name = "bench_caldav_stream"
-path = "examples/bench_caldav_stream.rs"
+path = "benches/bench_caldav_stream.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-5 micro-allocation pack — suggest clones, readable-cache Arc hit,
 # SPA-listing interning, NC href prefix, CardDAV REPORT churn. No Postgres.
-[[example]]
+[[bench]]
 name = "bench_micro_allocs"
-path = "examples/bench_micro_allocs.rs"
+path = "benches/bench_micro_allocs.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-29 battery ────────────────────────────────────────────────────────────
@@ -593,9 +623,10 @@ required-features = ["bench"]
 # → reused buffer via nc_href_into with a once-encoded user (A); cache-serve fast
 # path eager get_or_load args (etag/key/id) built before the borrow-probe hit (B);
 # read_full single-frame BytesMut concat → zero-copy passthrough (C).
-[[example]]
+[[bench]]
 name = "bench_round29_micro"
-path = "examples/bench_round29_micro.rs"
+path = "benches/bench_round29_micro.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-27 battery ────────────────────────────────────────────────────────────
@@ -604,9 +635,10 @@ required-features = ["bench"]
 # → reused buffer via format_oc_id_into (H1); contact create/update JSONB write
 # through a throwaway serde_json::Value DOM → sqlx::types::Json(&dtos) direct
 # serialize (P2, the write-side twin of §J1).
-[[example]]
+[[bench]]
 name = "bench_round27_micro"
-path = "examples/bench_round27_micro.rs"
+path = "benches/bench_round27_micro.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-26 battery ────────────────────────────────────────────────────────────
@@ -614,25 +646,28 @@ required-features = ["bench"]
 # Round-26 CPU/alloc micro-pack (no Postgres) — drive-policy JSONB decode through
 # a throwaway serde_json::Value DOM → from_slice::<DrivePolicies> (P1, the §J1
 # pattern applied to the drive-policy path §J2 left behind).
-[[example]]
+[[bench]]
 name = "bench_round26_micro"
-path = "examples/bench_round26_micro.rs"
+path = "benches/bench_round26_micro.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-26 disk-I/O pack — CachedBlobBackend redundant per-write create_dir_all
 # on warm shards → pre-create the 256 shard dirs at init (D1). (D2, moving the
 # eviction unlink off the reactor via spawn_blocking, was tested and REVERTED —
 # spawn_blocking dispatch costs more than the fast local unlink; see ROUND26.md.)
-[[example]]
+[[bench]]
 name = "bench_round26_diskio"
-path = "examples/bench_round26_diskio.rs"
+path = "benches/bench_round26_diskio.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-26 hasher pack — delta-upload have/need hash sets: SipHash → foldhash
 # (per-instance random-seeded, DoS-safe for the attacker-controlled hashes) (G1).
-[[example]]
+[[bench]]
 name = "bench_round26_hasher"
-path = "examples/bench_round26_hasher.rs"
+path = "benches/bench_round26_hasher.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-25 battery ────────────────────────────────────────────────────────────
@@ -642,18 +677,20 @@ required-features = ["bench"]
 # detached decrypt + zero-copy slice (M1, the RAM headline); delta-commit
 # chunk-hash list third clone → move-unzip (M2); folder download dead
 # Query<HashMap> extractor removal (M3).
-[[example]]
+[[bench]]
 name = "bench_round25_micro"
-path = "examples/bench_round25_micro.rs"
+path = "benches/bench_round25_micro.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-25 PG query-shape pack — public-playlist listing 1+N COUNT round-trips
 # → one LEFT JOIN GROUP BY (Q1); contact REST listings dropping the over-fetched
 # multi-KB vcard TEXT the ContactDto discards (Q2). Needs the dev Postgres up
 # (reads DATABASE_URL from .env).
-[[example]]
+[[bench]]
 name = "bench_round25_queries"
-path = "examples/bench_round25_queries.rs"
+path = "benches/bench_round25_queries.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-24 battery ────────────────────────────────────────────────────────────
@@ -666,9 +703,10 @@ required-features = ["bench"]
 # as the shipped-before require loop, over owned + denied + missing ids, and
 # never include a denied/missing file. Drives the real PgAclEngine. Needs the
 # dev Postgres up (reads DATABASE_URL from .env).
-[[example]]
+[[bench]]
 name = "bench_round24_zip_authz"
-path = "examples/bench_round24_zip_authz.rs"
+path = "benches/bench_round24_zip_authz.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-23 battery ────────────────────────────────────────────────────────────
@@ -678,18 +716,20 @@ required-features = ["bench"]
 # `sqlx::types::Json<T>` decode (J1); `DrivePolicies::from_value` DOM clone →
 # borrow-deserialize (J2); dedup hash reshape clone-collect → `into_iter().unzip()`
 # (U1). The PG latency/round-trip/equivalence evidence is bench_round23_queries.
-[[example]]
+[[bench]]
 name = "bench_round23_micro"
-path = "examples/bench_round23_micro.rs"
+path = "benches/bench_round23_micro.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-23 PG query-shape pack — end-to-end latency + equivalence on the live
 # dev Postgres: contact JSONB typed decode on real rows (Q1); get_user_profile
 # 2 serial reads → tokio::join! (Q4); subject_group remove_member 2 recursive
 # CTEs → 1 reused (Q6). Needs the dev Postgres up (reads DATABASE_URL from .env).
-[[example]]
+[[bench]]
 name = "bench_round23_queries"
-path = "examples/bench_round23_queries.rs"
+path = "benches/bench_round23_queries.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-22 battery ────────────────────────────────────────────────────────────
@@ -703,9 +743,10 @@ required-features = ["bench"]
 # `blob_hash` instead of the getter clone the move-not-clone sweep missed (D1);
 # `CalendarEvent` timed DTSTART/DTEND via `fmt::compact_ical_utc` (E1);
 # `ShareItemType::try_from` `eq_ignore_ascii_case` (S1). No Postgres.
-[[example]]
+[[bench]]
 name = "bench_round22_micro"
-path = "examples/bench_round22_micro.rs"
+path = "benches/bench_round22_micro.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-21 battery ────────────────────────────────────────────────────────────
@@ -718,9 +759,10 @@ required-features = ["bench"]
 # borrowed pre-escaped quotes (the ROUND20 §C1 NextCloud pattern); `BDAY`
 # stamp via fmt::compact_date stack render; NC trashbin folder content-type
 # Cow::Borrowed. No Postgres.
-[[example]]
+[[bench]]
 name = "bench_round21_micro"
-path = "examples/bench_round21_micro.rs"
+path = "benches/bench_round21_micro.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-20 battery ────────────────────────────────────────────────────────────
@@ -734,9 +776,10 @@ required-features = ["bench"]
 # NC `write_etag_element` 3→0 allocs/row (borrowed pre-escaped quote events);
 # NC `oc:id` per-row String → reused buffer; favorites REPORT DTO clone → map move.
 # No Postgres.
-[[example]]
+[[bench]]
 name = "bench_round20_micro"
-path = "examples/bench_round20_micro.rs"
+path = "benches/bench_round20_micro.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-19 battery ────────────────────────────────────────────────────────────
@@ -748,9 +791,10 @@ required-features = ["bench"]
 # new `common::fmt::compact_ical_utc` stack renderer), trash row→DTO move-not-clone,
 # search cache-key Uuid stack hyphenated-encode, streaming PROPFIND per-child href
 # reused buffer, NC `extract_url_user` Cow (drop `into_owned`). No Postgres.
-[[example]]
+[[bench]]
 name = "bench_round19_micro"
-path = "examples/bench_round19_micro.rs"
+path = "benches/bench_round19_micro.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-18 battery ────────────────────────────────────────────────────────────
@@ -761,9 +805,10 @@ required-features = ["bench"]
 # build the single `\nNAME:` search needle on the stack (dropping the redundant
 # `\r\nNAME:` needle). A multi-field REST edit went from one full-body (up to
 # ~11 KB) allocation per property to none. No Postgres.
-[[example]]
+[[bench]]
 name = "bench_round18_micro"
-path = "examples/bench_round18_micro.rs"
+path = "benches/bench_round18_micro.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-17 battery ────────────────────────────────────────────────────────────
@@ -774,9 +819,10 @@ required-features = ["bench"]
 # push (3 → 2/1 hash-String allocs per ingested chunk), `contact_to_vcard` TYPE
 # tokens pushed upper-cased into the buffer (drop the per-token `to_uppercase`
 # String). No Postgres.
-[[example]]
+[[bench]]
 name = "bench_round17_micro"
-path = "examples/bench_round17_micro.rs"
+path = "benches/bench_round17_micro.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-16 battery ────────────────────────────────────────────────────────────
@@ -785,9 +831,10 @@ required-features = ["bench"]
 # clone (3 sites), `build_content_disposition` 3→1 alloc (every download + Range
 # seek), `nc_href` Vec+join → single pre-sized buffer (every NC PROPFIND/REPORT
 # href), NC preview `fileId` collect-then-parse → borrowed-slice parse. No Postgres.
-[[example]]
+[[bench]]
 name = "bench_round16_micro"
-path = "examples/bench_round16_micro.rs"
+path = "benches/bench_round16_micro.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-15 battery ────────────────────────────────────────────────────────────
@@ -795,17 +842,19 @@ required-features = ["bench"]
 # Round-15 CPU/alloc micro-pack — exif Make/Model in-place trim (drop the
 # throwaway display String), content-index worker single supports() classify
 # per file (was called twice per drain batch). No Postgres.
-[[example]]
+[[bench]]
 name = "bench_round15_micro"
-path = "examples/bench_round15_micro.rs"
+path = "benches/bench_round15_micro.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-15 tantivy zero-hit snippet skip — the SnippetGenerator::create the
 # search path builds even when the query matched no documents (pure waste on a
 # no-hit content search). Builds a RAM index; no Postgres.
-[[example]]
+[[bench]]
 name = "bench_round15_tantivy"
-path = "examples/bench_round15_tantivy.rs"
+path = "benches/bench_round15_tantivy.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-14 battery ────────────────────────────────────────────────────────────
@@ -813,33 +862,37 @@ required-features = ["bench"]
 # Round-14 query-shape pack — lightbox face-box narrow projection (drop the
 # 2 KiB embedding BYTEA + 6 unused columns; push the caller filter into SQL),
 # music public-playlist N+1 fold, contact-listing vcard over-fetch (needs Postgres).
-[[example]]
+[[bench]]
 name = "bench_round14_queries"
-path = "examples/bench_round14_queries.rs"
+path = "benches/bench_round14_queries.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-14 CPU/alloc micro-pack — cookie borrow-only extract, auth HeaderMap
 # clone removal, sub→Uuid pre-parse, CalDAV per-event emit (rfc2822 stack
 # render + reused href/etag buffers), search ASCII case-fold. No Postgres.
-[[example]]
+[[bench]]
 name = "bench_round14_micro"
-path = "examples/bench_round14_micro.rs"
+path = "benches/bench_round14_micro.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-13 battery ────────────────────────────────────────────────────────────
 
 # Round-13 HTTP micro-pack — duplicate /api TraceLayer removal, borrow-only
 # client_ip span render, precomputed locale supported-codes. No Postgres.
-[[example]]
+[[bench]]
 name = "bench_round13_micro"
-path = "examples/bench_round13_micro.rs"
+path = "benches/bench_round13_micro.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-13 query-shape pack — notification recipient narrowing, login-hook
 # EXISTS probes, recent prune-on-insert (needs the dev Postgres up).
-[[example]]
+[[bench]]
 name = "bench_round13_queries"
-path = "examples/bench_round13_queries.rs"
+path = "benches/bench_round13_queries.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-12 battery ────────────────────────────────────────────────────────────
@@ -847,24 +900,27 @@ required-features = ["bench"]
 # Round-12 query-shape pack — sharee narrow read + trgm, login/email stamp
 # narrowing, session-rotation fused txn, WOPI triple join!, fused quota pair
 # (needs the dev Postgres up).
-[[example]]
+[[bench]]
 name = "bench_round12_queries"
-path = "examples/bench_round12_queries.rs"
+path = "benches/bench_round12_queries.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-12 CPU/alloc micro-pack — sized listing JSON, single-pass compression
 # predicate, fused security-header middleware, media single-read extraction,
 # chunked-session fused lookups. No Postgres.
-[[example]]
+[[bench]]
 name = "bench_round12_micro"
-path = "examples/bench_round12_micro.rs"
+path = "benches/bench_round12_micro.rs"
+harness = false
 required-features = ["bench"]
 
 # Blob-cache index — Mutex<LruCache> vs moka byte-weigher (index scaling,
 # warm-hit reads, eviction-unlink + single-flight safety gates). No Postgres.
-[[example]]
+[[bench]]
 name = "bench_blob_cache_index"
-path = "examples/bench_blob_cache_index.rs"
+path = "benches/bench_blob_cache_index.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-11 battery ────────────────────────────────────────────────────────────
@@ -874,25 +930,28 @@ required-features = ["bench"]
 # rate-limiter single-op, CSRF/ETag/recent-id micro-allocs, 4xx body, vCard
 # emit, search page move, cosine norms, encrypted write in-place, StoragePath
 # joined-only materialization. No Postgres.
-[[example]]
+[[bench]]
 name = "bench_round11_micro"
-path = "examples/bench_round11_micro.rs"
+path = "benches/bench_round11_micro.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-11 query-shape pack — deferred-upload 3→1 CTE, Calendar/AddressBook/
 # Playlist direct-grant cache, expand_user join!, geo min-cast, recluster
 # UNNEST batch (needs the dev Postgres up).
-[[example]]
+[[bench]]
 name = "bench_round11_queries"
-path = "examples/bench_round11_queries.rs"
+path = "benches/bench_round11_queries.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-11 log-writer benchmark — sync stdout fmt layer vs tracing-appender
 # non_blocking(lossy=false) under 4-worker emit contention, fast + slow
 # writer profiles. Run once per arm via BENCH_LOG_ARM. No Postgres.
-[[example]]
+[[bench]]
 name = "bench_log_writer"
-path = "examples/bench_log_writer.rs"
+path = "benches/bench_log_writer.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-10 battery ────────────────────────────────────────────────────────────
@@ -900,69 +959,78 @@ required-features = ["bench"]
 # Round-10 CPU/alloc micro-pack — auth identity build, basic-auth hit,
 # PROPFIND/trashbin int+date emits, webdav scope probe, base_url snapshot,
 # JWT verify-miss keys, cipher Arc, request-id. No Postgres.
-[[example]]
+[[bench]]
 name = "bench_round10_micro"
-path = "examples/bench_round10_micro.rs"
+path = "benches/bench_round10_micro.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-10 query-shape pack — share download double-fetch, calendar-id narrow
 # read, contact-group COUNT, trash partial indexes, favorites/recents binary
 # UUID decode, save_faces UNNEST, playlist reorder UNNEST, search 3-query
 # join!, move drive-lookup join! (needs the dev Postgres up).
-[[example]]
+[[bench]]
 name = "bench_round10_queries"
-path = "examples/bench_round10_queries.rs"
+path = "benches/bench_round10_queries.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-9 battery ─────────────────────────────────────────────────────────────
 
 # Search enrichment — borrow+clone+reclassify vs consume+carry (file/folder
 # enrich + the NC REPORT search→FileDto conversion). No Postgres.
-[[example]]
+[[bench]]
 name = "bench_search_enrich"
-path = "examples/bench_search_enrich.rs"
+path = "benches/bench_search_enrich.rs"
+harness = false
 required-features = ["bench"]
 
 # Storage micro-pack — local chunk write create_new, manifest Vec-clone vs
 # Arc-index, manifest miss single-flight, Content-MD5 hex. No Postgres.
-[[example]]
+[[bench]]
 name = "bench_storage_micro"
-path = "examples/bench_storage_micro.rs"
+path = "benches/bench_storage_micro.rs"
+harness = false
 required-features = ["bench"]
 
 # NC per-request session — extractor deep-clone vs Arc handle, chroot-cache
 # value vs Arc, session build double-clone vs shared Arc. No Postgres.
-[[example]]
+[[bench]]
 name = "bench_nc_session"
-path = "examples/bench_nc_session.rs"
+path = "benches/bench_nc_session.rs"
+harness = false
 required-features = ["bench"]
 
 # OCS capabilities poll — rebuild+serialize per request vs OnceLock<Bytes>
 # memoization. No Postgres.
-[[example]]
+[[bench]]
 name = "bench_capabilities_static"
-path = "examples/bench_capabilities_static.rs"
+path = "benches/bench_capabilities_static.rs"
+harness = false
 required-features = ["bench"]
 
 # Drive::is_empty — full-drive COUNT(*) sum vs short-circuit EXISTS
 # (needs the dev Postgres up).
-[[example]]
+[[bench]]
 name = "bench_drive_is_empty"
-path = "examples/bench_drive_is_empty.rs"
+path = "benches/bench_drive_is_empty.rs"
+harness = false
 required-features = ["bench"]
 
 # Folder-listing rows — `id::text`/`parent_id::text` casts vs binary UUID
 # decode + app-side render, the round-6 file-side port (needs Postgres).
-[[example]]
+[[bench]]
 name = "bench_folder_uuid_decode"
-path = "examples/bench_folder_uuid_decode.rs"
+path = "benches/bench_folder_uuid_decode.rs"
+harness = false
 required-features = ["bench"]
 
 # NC PROPFIND per-page enrichment triple — serial 3×RTT vs tokio::join!,
 # with injected-latency arms at 0/0.25/1/5 ms (needs Postgres).
-[[example]]
+[[bench]]
 name = "bench_nc_enrich_join"
-path = "examples/bench_nc_enrich_join.rs"
+path = "benches/bench_nc_enrich_join.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-8 battery ─────────────────────────────────────────────────────────────
@@ -970,9 +1038,10 @@ required-features = ["bench"]
 # Shared-album thumbnail authz — folder-grant cascade query per thumbnail vs
 # the cascade_grant_cache; includes a revocation safety gate (needs the dev
 # Postgres up).
-[[example]]
+[[bench]]
 name = "bench_thumbnail_cascade_cache"
-path = "examples/bench_thumbnail_cascade_cache.rs"
+path = "benches/bench_thumbnail_cascade_cache.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-7 battery ─────────────────────────────────────────────────────────────
@@ -980,45 +1049,51 @@ required-features = ["bench"]
 # Range-seek per-request authz duplication — the per-seek require the range
 # branch used to run (warm CPU + cold drive-resolve query) vs 0 after routing
 # through the non-perms range read (needs the dev Postgres up).
-[[example]]
+[[bench]]
 name = "bench_range_seek_authz"
-path = "examples/bench_range_seek_authz.rs"
+path = "benches/bench_range_seek_authz.rs"
+harness = false
 required-features = ["bench"]
 
 # `/api/folders/{id}/resources` row→DTO mapping — per-row name clone vs move
 # (pure CPU; counting allocator).
-[[example]]
+[[bench]]
 name = "bench_resource_row_map"
-path = "examples/bench_resource_row_map.rs"
+path = "benches/bench_resource_row_map.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-6 battery ─────────────────────────────────────────────────────────────
 
 # CardDAV whole-book REPORT/PROPFIND — buffered double-residency vs cursor
 # streaming; TTFB + peak live heap (needs the dev Postgres up).
-[[example]]
+[[bench]]
 name = "bench_carddav_stream"
-path = "examples/bench_carddav_stream.rs"
+path = "benches/bench_carddav_stream.rs"
+harness = false
 required-features = ["bench"]
 
 # Batch-favorites authz pre-check — serial require loop vs try_join_all
 # against the real PgAclEngine (needs the dev Postgres up).
-[[example]]
+[[bench]]
 name = "bench_favorites_authz"
-path = "examples/bench_favorites_authz.rs"
+path = "benches/bench_favorites_authz.rs"
+harness = false
 required-features = ["bench"]
 
 # Digest-hex rendering + NC id-batch marshalling micro-allocs (pure CPU).
-[[example]]
+[[bench]]
 name = "bench_hex_ids"
-path = "examples/bench_hex_ids.rs"
+path = "benches/bench_hex_ids.rs"
+harness = false
 required-features = ["bench"]
 
 # `id::text` server cast vs binary UUID decode + app-side formatting A/B
 # (needs the dev Postgres up).
-[[example]]
+[[bench]]
 name = "bench_uuid_text_cast"
-path = "examples/bench_uuid_text_cast.rs"
+path = "benches/bench_uuid_text_cast.rs"
+harness = false
 required-features = ["bench"]
 
 # Round-3 battery ─────────────────────────────────────────────────────────────
@@ -1026,71 +1101,81 @@ required-features = ["bench"]
 # Web-UI folder listing — whole-folder rescan + top-N sort per page vs keyset
 # pushdown into the UNION-ALL branches + (folder_id, LOWER(name), id) indexes
 # (needs the dev Postgres up).
-[[example]]
+[[bench]]
 name = "bench_listing_keyset"
-path = "examples/bench_listing_keyset.rs"
+path = "benches/bench_listing_keyset.rs"
+harness = false
 required-features = ["bench"]
 
 # Photos timeline — full-library scan + top-N above the grants join vs
 # per-drive LATERAL top-N on the media-timeline index (needs Postgres).
-[[example]]
+[[bench]]
 name = "bench_photos_timeline"
-path = "examples/bench_photos_timeline.rs"
+path = "benches/bench_photos_timeline.rs"
+harness = false
 required-features = ["bench"]
 
 # PROPFIND subfolder paging — LIMIT/OFFSET + COUNT(*) OVER() per page vs
 # keyset batch, mirroring the files-side PROPFIND-PAGING fix (needs Postgres).
-[[example]]
+[[bench]]
 name = "bench_folder_keyset"
-path = "examples/bench_folder_keyset.rs"
+path = "benches/bench_folder_keyset.rs"
+harness = false
 required-features = ["bench"]
 
 # Basic-auth thundering herd — K concurrent cache misses each paying Argon2id
 # vs single-flight try_get_with (needs Postgres).
-[[example]]
+[[bench]]
 name = "bench_auth_herd"
-path = "examples/bench_auth_herd.rs"
+path = "benches/bench_auth_herd.rs"
+harness = false
 required-features = ["bench"]
 
 # CachedBlobBackend — miss stampede (N duplicate remote fetches racing on one
 # .tmp) vs per-hash single-flight; warm-hit index throughput. No Postgres.
-[[example]]
+[[bench]]
 name = "bench_blob_cache"
-path = "examples/bench_blob_cache.rs"
+path = "benches/bench_blob_cache.rs"
+harness = false
 required-features = ["bench"]
 
 # Upload spool/assembly I/O — ReaderStream capacity sweep on part-file reads
 # and BufWriter vs bare-File frame writes on the chunk spool path. No Postgres.
-[[example]]
+[[bench]]
 name = "bench_upload_spool"
-path = "examples/bench_upload_spool.rs"
+path = "benches/bench_upload_spool.rs"
+harness = false
 required-features = ["bench"]
 
 # S3 chunk PUT — HEAD-before-PUT vs unconditional PUT against a local axum
 # stub with injected latency; Azure Bytes-vs-to_vec copy micro. No Postgres.
-[[example]]
+[[bench]]
 name = "bench_s3_put"
-path = "examples/bench_s3_put.rs"
+path = "benches/bench_s3_put.rs"
+harness = false
 required-features = ["bench"]
 
 # File/Folder -> DTO mapping allocations — Arc<str> interning of closed-set
 # display fields, 1-alloc etag/size formatting. No Postgres.
-[[example]]
+[[bench]]
 name = "bench_dto_map"
-path = "examples/bench_dto_map.rs"
+path = "benches/bench_dto_map.rs"
+harness = false
 required-features = ["bench"]
 
 # CardDAV REPORT — dead per-contact vCard pre-generation + O(N^2) uid scan vs
 # single on-demand generation. No Postgres.
-[[example]]
+[[bench]]
 name = "bench_carddav_report"
-path = "examples/bench_carddav_report.rs"
+path = "benches/bench_carddav_report.rs"
+harness = false
 required-features = ["bench"]
 
 # Search-results cache RSS — entry-count capacity vs byte weigher. No Postgres.
-[[example]]
+[[bench]]
 name = "bench_search_cache_mem"
-path = "examples/bench_search_cache_mem.rs"
+path = "benches/bench_search_cache_mem.rs"
+harness = false
 required-features = ["bench"]
 
 [profile.release]

@@ -108,6 +108,89 @@ test: require-warnings-deny
 # Mocks are generated under `cfg(test)`, so `test` already runs them.
 test-mocks: test
 
+# Run one benchmark by name, or every registered bench when no name
+# is passed. `name` is the `bench_*` basename under `benches/` (omit
+# the `.rs`); `args` are forwarded verbatim to the bench binary,
+# which may define its own CLI flags.
+#
+# Examples:
+#   just benchmark                              # every bench — ~80, long
+#   just benchmark bench_db_pool
+#   just benchmark bench_blob_manifest --iterations 100
+#
+# The recipe owns the Postgres lifecycle: it spawns the shared test
+# container on port 5433 via `tests/common/spawn-db.sh` (which does a
+# `docker compose down -v` first, so every run starts on a blank
+# schema — leftover fixtures from a prior run cannot skew the numbers)
+# and tears it down with `tests/common/stop-db.sh` on exit, pass or
+# fail. `DATABASE_URL` points at that container; DB-free benches
+# ignore the variable.
+#
+# Sharing the test DB (5433) with the Hurl / integration-tests harness
+# rather than carrying a dedicated bench container means there is only
+# one piece of docker plumbing to maintain and the azurite/backend
+# setup already wired for tests comes along for free. The cost is
+# mutual exclusion: do NOT run `just benchmark` while `just api-test`
+# or `just test-integration` is in flight — the spawn-side `down -v`
+# would wipe that run's DB. The dev sandbox (5432) is untouched.
+#
+# Benchmarks are compiled with the bench profile (release-like) and
+# gated on the `bench` feature, matching the one-off invocation each
+# `[[bench]]` entry in `Cargo.toml` expects.
+benchmark name='' *args='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # `trap` on EXIT so a bench panic or `cargo bench` non-zero exit
+    # still returns the container to a stopped state. `|| true` on the
+    # stop so a teardown that races a concurrent teardown doesn't
+    # overwrite the real exit code with its own.
+    trap './tests/common/stop-db.sh || true' EXIT
+    ./tests/common/spawn-db.sh
+    # spawn-db only starts the container; migrations are a separate
+    # step. Mirror `test-integration`'s sequence so DB-touching benches
+    # see `auth.users`, `storage.*`, etc. instead of "relation does not
+    # exist".
+    PGHOST=localhost PGPORT=5433 PGUSER=oxicloud_test PGPASSWORD=oxicloud_test \
+        PGDATABASE=oxicloud_test \
+        bash tests/common/init-test-schema.sh
+    # `OXICLOUD_BASE_URL` points at a dedicated bench port (8088) rather
+    # than the sandbox default of 8086. Mirrors the `api-test` discipline
+    # (which uses 8087 via `tests/api/test.env`) so a bench that hits a
+    # live oxicloud (today only `bench_capabilities_static`) cannot
+    # accidentally touch the dev sandbox. Nothing listens on 8088 by
+    # default — the HTTP calls fail fast with a connection-refused
+    # rather than exfiltrating to the sandbox. Operators who want
+    # meaningful end-to-end numbers spawn an oxicloud server on 8088
+    # themselves before invoking the bench.
+    #
+    # Empty `name` = sweep everything (`cargo bench` with no `--bench`
+    # filter builds and runs every registered bench). A named bench
+    # scopes the build to its single binary, which is the fast path
+    # for iterating on one regression anchor.
+    export DATABASE_URL=postgres://oxicloud_test:oxicloud_test@localhost:5433/oxicloud_test
+    export OXICLOUD_BASE_URL=http://127.0.0.1:8088
+    # Just `bench` — NOT `dev,bench`. AGENTS.md § "Keep one feature
+    # set locally" advises folding into `dev` to share fingerprints
+    # across recipes, but `dev` pulls in `plugins` → `extism` →
+    # `wasmtime` + `cranelift-*` (~40 crates, ~10 min the first
+    # time). None of the benchmarks exercise wasmtime, so paying
+    # that cost to share incremental cache with other recipes is a
+    # net loss if the operator's day-to-day isn't `--features dev`.
+    # The cache divergence is acceptable: benchmarks are run rarely
+    # and target the release profile anyway, which already has its
+    # own `target/release/` cache separate from `target/debug/`.
+    if [[ -z "{{name}}" ]]; then
+        cargo bench --features=bench -- {{args}}
+    else
+        cargo bench --features=bench --bench {{name}} -- {{args}}
+    fi
+
+# List every bench target so `just benchmark <TAB>` has something to
+# complete against. Reads the `[[bench]]` names out of Cargo.toml
+# without invoking cargo — cheap, independent of the build state.
+benchmark-list:
+    @grep -A1 '^\[\[bench\]\]' Cargo.toml | grep '^name =' | sed 's/name = "\(.*\)"/\1/'
+
 # Source-based line coverage (HTML + summary) via cargo-llvm-cov.
 # Requires `cargo install cargo-llvm-cov` and llvm-tools (rustup component
 # llvm-tools-preview, or set LLVM_COV / LLVM_PROFDATA to an llvm-binutils).

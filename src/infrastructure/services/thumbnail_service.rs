@@ -151,7 +151,7 @@ const JPEG_QUALITY: u8 = 80;
 /// ~60% on the smooth photo-realistic bench corpus, and a more modest but still
 /// substantial win (~25-40%) expected on real photos with edges/text/foliage.
 /// Raise for more fidelity, lower for more bandwidth savings — see the E1 sweep
-/// in `examples/bench_thumbnails_mem`.
+/// in `benches/bench_thumbnails_mem`.
 const WEBP_QUALITY: f32 = 82.0;
 
 /// Environment override for the decode-concurrency cap (ops tuning).

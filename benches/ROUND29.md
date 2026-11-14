@@ -230,7 +230,7 @@ allocation cut, or a live-DB validation harness:
 
 ## Environment / methodology
 
-- Counting global allocator (`examples/bench_round29_micro.rs`), no Postgres for the
+- Counting global allocator (`benches/bench_round29_micro.rs`), no Postgres for the
   gate. Each section is BEFORE (replica of the shipped-before shape) vs AFTER (replica
   of the shipped-after shape, which the source now matches) with a value-equivalence
   assertion and a `GATE FAIL … rollback` `exit(1)` if AFTER doesn't allocate fewer

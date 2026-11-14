@@ -702,7 +702,7 @@ fn capabilities_payload(
 }
 
 /// Bench-only public wrapper (feature = "bench") over the private payload
-/// builder so `examples/bench_capabilities_static.rs` can A/B the
+/// builder so `benches/bench_capabilities_static.rs` can A/B the
 /// rebuild-per-poll flow against the memoized bytes.
 #[cfg(feature = "bench")]
 pub fn capabilities_payload_for_bench(

@@ -670,9 +670,10 @@ jobs:
       # docker images by the action's defaults). `cargo test
       # --all-features --workspace` on this repo blew past the
       # ubuntu-latest ~14 GB free budget (PR #520 died on the
-      # `bench_owner_cache` example link step with ENOSPC). The test steps
-      # below no longer link the ~80 examples (`--lib --bins --tests`;
-      # clippy's `--all-targets` still checks them), but keep the headroom.
+      # `bench_owner_cache` bench link step with ENOSPC). The test
+      # steps below no longer link the ~80 benches (`--lib --bins
+      # --tests`; clippy's `--all-targets` still checks them), but
+      # keep the headroom.
       # `tool-cache: false` is load-bearing — wiping it breaks
       # `setup-rust`/`setup-node`/etc.
       - uses: jlumbroso/free-disk-space@main

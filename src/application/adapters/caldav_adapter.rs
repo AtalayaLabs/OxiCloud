@@ -1732,7 +1732,7 @@ impl CalDavAdapter {
 // ─────────────────────────────────────────────────────────────
 
 /// Thin public wrappers over the `pub(crate)` read-side helpers so
-/// `examples/bench_caldav_parse.rs` can measure them. Gated behind the
+/// `benches/bench_caldav_parse.rs` can measure them. Gated behind the
 /// `bench` feature — adds nothing to prod builds.
 #[cfg(feature = "bench")]
 pub mod bench {
