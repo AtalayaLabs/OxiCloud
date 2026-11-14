@@ -26,6 +26,7 @@ use quick_xml::Writer;
 use std::fmt::Write;
 use std::sync::Arc;
 
+use super::dav_preconditions::{DavPreconditions, ical_object_uid};
 use crate::application::adapters::caldav_adapter::{
     CalDavAdapter, CalDavReportType, CalendarObjectRow, bundle_to_calendar_body,
     extract_object_chunk, extract_vtimezone_chunks, group_objects_by_uid, vtimezone_tzid,
@@ -1085,6 +1086,7 @@ async fn handle_put(
     }
 
     let calendar_id = parts[0];
+    let preconditions = DavPreconditions::from_headers(req.headers());
 
     let body_bytes = body::to_bytes(req.into_body(), MAX_CALDAV_BODY)
         .await
@@ -1092,6 +1094,22 @@ async fn handle_put(
 
     let ical_data = String::from_utf8(body_bytes.to_vec())
         .map_err(|e| AppError::bad_request(format!("Invalid UTF-8 in iCalendar data: {}", e)))?;
+
+    // RFC 4791 §5.3.2 / RFC 7232: honour If-Match / If-None-Match before
+    // writing. The precondition is evaluated against the object this PUT
+    // actually replaces: storage keys objects on the body's iCalendar UID
+    // (and serves them back as `<UID>.ics`), regardless of the request
+    // path's file name, so the body UID is authoritative. Only a body
+    // without a UID (storage then mints a fresh one) falls back to the
+    // UID taken from the request path. The ETag is resolved exactly as
+    // GET / PROPFIND / REPORT emit it (`current_object_etag`).
+    if !preconditions.is_empty() {
+        let target_uid = ical_object_uid(&ical_data)
+            .unwrap_or_else(|| parts[1].trim_end_matches(".ics").to_string());
+        let current =
+            current_object_etag(calendar_service, calendar_id, &target_uid, user.id).await?;
+        preconditions.check(current.as_deref())?;
+    }
 
     // Route the PUT through `upsert_ical_objects` so a body carrying a
     // master + N per-instance overrides (RFC 5545 §3.8.4.4 — the
@@ -1148,6 +1166,43 @@ async fn handle_put(
         .header(header::ETAG, format!("\"{}\"", etag_source))
         .body(Body::empty())
         .unwrap())
+}
+
+/// ETag of a calendar object resource given all its stored rows (master +
+/// exception overrides): the id of the first row after
+/// `group_objects_by_uid` ordering — the master when present, otherwise
+/// the first exception. This is the same anchor the PROPFIND / REPORT
+/// emitters (`getetag`) and GET use; every replace deletes and reinserts
+/// the rows, so the id changes on each write.
+fn object_etag<T: CalendarObjectRow>(rows: &[T]) -> Option<String> {
+    group_objects_by_uid(rows)
+        .into_iter()
+        .flatten()
+        .next()
+        .map(|row| row.row_id().to_string())
+}
+
+/// Current ETag of the object `ical_uid` in `calendar_id` (`None` when no
+/// such object exists), resolved like GET: events first, then tasks.
+async fn current_object_etag(
+    calendar_service: &CalendarService,
+    calendar_id: &str,
+    ical_uid: &str,
+    user_id: uuid::Uuid,
+) -> Result<Option<String>, AppError> {
+    let uids = [ical_uid.to_string()];
+    let events = calendar_service
+        .get_events_by_ical_uids(calendar_id, &uids, user_id)
+        .await
+        .map_err(AppError::from)?;
+    if let Some(etag) = object_etag(&events) {
+        return Ok(Some(etag));
+    }
+    let todos = calendar_service
+        .get_todos_by_ical_uids(calendar_id, &uids, user_id)
+        .await
+        .map_err(AppError::from)?;
+    Ok(object_etag(&todos))
 }
 
 // ─── GET (.ics) ──────────────────────────────────────────────────────
@@ -1229,18 +1284,14 @@ async fn handle_get(
             let grouped = group_objects_by_uid(&bundle);
             let flat: Vec<&_> = grouped.into_iter().flatten().collect();
             (
-                flat.first()
-                    .map(|e| e.row_id().to_string())
-                    .unwrap_or_default(),
+                object_etag(&bundle).unwrap_or_default(),
                 bundle_to_calendar_body(&flat),
             )
         } else {
             let grouped = group_objects_by_uid(&todos);
             let flat: Vec<&_> = grouped.into_iter().flatten().collect();
             (
-                flat.first()
-                    .map(|t| t.row_id().to_string())
-                    .unwrap_or_default(),
+                object_etag(&todos).unwrap_or_default(),
                 bundle_to_calendar_body(&flat),
             )
         };
@@ -1272,6 +1323,7 @@ async fn handle_delete(
     let user = extract_user(&req)?;
     let calendar_service = get_calendar_service(&state)?;
 
+    let preconditions = DavPreconditions::from_headers(req.headers());
     let effective_path = strip_username_prefix(path);
     let parts: Vec<&str> = effective_path.splitn(2, '/').collect();
     let calendar_id = parts[0];
@@ -1288,6 +1340,15 @@ async fn handle_delete(
     } else {
         let event_file = parts[1];
         let ical_uid = event_file.trim_end_matches(".ics");
+
+        // RFC 7232 on DELETE: the target is the object addressed by the
+        // path (`<UID>.ics`). A missing object with If-Match is 412 rather
+        // than the 404 below, as the precondition is evaluated first.
+        if !preconditions.is_empty() {
+            let current =
+                current_object_etag(calendar_service, calendar_id, ical_uid, user.id).await?;
+            preconditions.check(current.as_deref())?;
+        }
 
         // Indexed lookup by iCalendar UID instead of listing the calendar.
         // The service resolves which component kind the .ics holds, so

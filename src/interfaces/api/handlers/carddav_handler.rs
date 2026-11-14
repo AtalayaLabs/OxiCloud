@@ -26,6 +26,7 @@ use bytes::{Buf, Bytes};
 use quick_xml::Writer;
 use std::sync::Arc;
 
+use super::dav_preconditions::DavPreconditions;
 use crate::application::adapters::carddav_adapter::{
     CardDavAdapter, CardDavReportType, contact_to_vcard,
 };
@@ -718,6 +719,7 @@ async fn handle_put(
     }
 
     let address_book_id = parts[0];
+    let preconditions = DavPreconditions::from_headers(req.headers());
 
     let body_bytes = body::to_bytes(req.into_body(), MAX_CARDDAV_BODY)
         .await
@@ -739,6 +741,25 @@ async fn handle_put(
     } else {
         None
     };
+
+    // RFC 6352 §6.3.2 / RFC 7232: honour If-Match / If-None-Match before
+    // writing. The precondition is evaluated against the contact this PUT
+    // actually replaces — the one keyed by the vCard's UID (looked up
+    // above), regardless of the request path's file name; contacts are
+    // served back as `<UID>.vcf`. Only a vCard without a UID falls back to
+    // the UID taken from the request path. The ETag compared is the stored
+    // `contact.etag`, the same value GET / PUT / REPORT emit.
+    if !preconditions.is_empty() {
+        let current_etag = match (&vcard_uid, &existing) {
+            (Some(_), existing) => existing.as_ref().map(|c| c.etag.clone()),
+            (None, _) => contact_svc
+                .get_contact_by_uid(address_book_id, parts[1].trim_end_matches(".vcf"), user.id)
+                .await
+                .map_err(AppError::from)?
+                .map(|c| c.etag),
+        };
+        preconditions.check(current_etag.as_deref())?;
+    }
 
     if let Some(existing_contact) = existing {
         // Update: delete + recreate from vCard. `AppError::from` maps
@@ -864,6 +885,7 @@ async fn handle_delete(
     let user = extract_user(&req)?;
     let addressbook_service = get_addressbook_service(&state)?;
     let contact_svc = get_contact_service(&state)?;
+    let preconditions = DavPreconditions::from_headers(req.headers());
 
     let effective_path = strip_username_prefix(path);
     let parts: Vec<&str> = effective_path.splitn(2, '/').collect();
@@ -887,7 +909,16 @@ async fn handle_delete(
         let contact = contact_svc
             .get_contact_by_uid(address_book_id, contact_uid, user.id)
             .await
-            .map_err(AppError::from)?
+            .map_err(AppError::from)?;
+
+        // RFC 7232 on DELETE: the target is the contact addressed by the
+        // path (`<UID>.vcf`). A missing contact with If-Match is 412 rather
+        // than 404, as the precondition is evaluated first.
+        if !preconditions.is_empty() {
+            preconditions.check(contact.as_ref().map(|c| c.etag.as_str()))?;
+        }
+
+        let contact = contact
             .ok_or_else(|| AppError::not_found(format!("Contact not found: {}", contact_uid)))?;
 
         contact_svc

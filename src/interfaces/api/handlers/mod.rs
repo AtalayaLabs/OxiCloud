@@ -11,6 +11,7 @@ pub mod chunked_upload_handler;
 pub mod config_handler;
 pub mod contacts_handler;
 pub(crate) mod dav_paths;
+mod dav_preconditions;
 pub mod dedup_handler;
 pub mod delta_upload_handler;
 pub mod device_auth_handler;
