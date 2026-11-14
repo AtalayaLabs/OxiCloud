@@ -11,8 +11,13 @@
 	import { resolveOwnerName } from '$lib/utils/ownerName';
 	import { fileDownloadUrl } from '$lib/api/endpoints/files';
 	import { folderZipUrl } from '$lib/api/endpoints/folders';
-	import { fetchSharedWithMe, type IncomingGrantItem } from '$lib/api/endpoints/grants';
-	import type { FileItem, FolderItem } from '$lib/api/types';
+	import {
+		createLink,
+		fetchSharedWithMe,
+		linkRestorable,
+		type IncomingGrantItem
+	} from '$lib/api/endpoints/grants';
+	import type { Drive, FileItem, FolderItem } from '$lib/api/types';
 	import { lazyComponent } from '$lib/composables/lazyComponent.svelte';
 	import { useOwnerCache } from '$lib/composables/useOwnerCache.svelte';
 	import ResourceList, {
@@ -21,9 +26,11 @@
 		type GroupByDef,
 		type ItemContext
 	} from '$lib/components/ResourceList.svelte';
+	import Icon from '$lib/icons/Icon.svelte';
 	import UserAvatar from '$lib/components/UserAvatar.svelte';
 	import type { IncomingGrantOrderBy } from '$lib/api/generated/openapi/types.gen';
 	import { t } from '$lib/i18n/index.svelte';
+	import { serverConfig } from '$lib/stores/serverConfig.svelte';
 	import { session } from '$lib/stores/session.svelte';
 
 	// External users landing here are the natural audience for the
@@ -49,21 +56,42 @@
 
 	const sharers = useOwnerCache(resolveOwnerName);
 
-	// Drive resources also surface in `/api/grants/incoming/resources`
-	// since the role_grants rewrite, but they don't belong in the
-	// file/folder ResourceList — they're reached through the drive
-	// picker / breadcrumb. Filter them out so the row UI keeps its
-	// file|folder type contract.
-	const fileFolderGrants = $derived(raw.filter((it) => it.resource_type !== 'drive'));
+	// A drive grant renders as a folder row for its root folder.
+	function driveRow(d: Drive): FolderItem {
+		return {
+			category: 'Folder',
+			created_at: d.created_at,
+			id: d.root_folder_id,
+			modified_at: d.updated_at,
+			tree_modified_at: d.updated_at,
+			name: d.name,
+			created_by: null,
+			updated_by: null,
+			parent_id: null,
+			path: '',
+			etag: '',
+			drive_id: d.id,
+			is_favorite: false,
+			is_shared: true
+		};
+	}
+
+	const rows = $derived(
+		raw.map((grant) => ({
+			grant,
+			row: grant.resource_type === 'drive' ? driveRow(grant.resource) : grant.resource
+		}))
+	);
+	const grantByRowId = $derived(new Map(rows.map((r) => [r.row.id, r.grant])));
+	const linksOn = $derived(serverConfig.features.links_mode === 'auto');
 
 	// `granted_at` → `ctx.date`; `granted_by` overrides the owner column
 	// so the sharer shows up in the vignette (rather than the resource's
 	// intrinsic `created_by`, which is a stranger for grantees).
-	const items = $derived(fileFolderGrants.map((it) => it.resource as FileItem | FolderItem));
+	const items = $derived(rows.map((r) => r.row));
 	// Persistent reactive map, primed per page in `load()` (benches/ROUND16.md §F2)
 	// instead of rebuilding a fresh Map that re-hashes the whole accumulated list
-	// on every infinite-scroll page. Drives are skipped (they never reach the
-	// row UI), so the map covers exactly the displayed `fileFolderGrants`.
+	// on every infinite-scroll page.
 	const contextMap = new SvelteMap<string, ItemContext>();
 
 	// Server-supported `order_by` values — the typed `IncomingGrantOrderBy`
@@ -114,11 +142,10 @@
 				reverse: rev
 			});
 			raw = reset ? page.items : [...raw, ...page.items];
-			primeContextPage(contextMap, reset, page.items, (it) =>
-				it.resource_type === 'drive'
-					? null
-					: [it.resource.id, { date: it.granted_at, ownerId: it.granted_by ?? null }]
-			);
+			primeContextPage(contextMap, reset, page.items, (it) => [
+				it.resource_type === 'drive' ? it.resource.root_folder_id : it.resource.id,
+				{ date: it.granted_at, ownerId: it.granted_by ?? null }
+			]);
 			cursor = page.next_cursor;
 			// Warm the sharer-name cache so the "Shared by" group headers
 			// show real names instead of UUIDs.
@@ -199,9 +226,28 @@
 		});
 	});
 
+	function linkOf(item: FileItem | FolderItem) {
+		return linksOn ? grantByRowId.get(item.id)?.link : undefined;
+	}
+
+	const isDriveRow = (item: FileItem | FolderItem) =>
+		grantByRowId.get(item.id)?.resource_type === 'drive';
+
+	async function restoreLink(item: FileItem | FolderItem) {
+		try {
+			await createLink(item.id);
+			cursor = undefined;
+			await load(true, orderByForGroup());
+		} catch (e) {
+			errorToast(e);
+		}
+	}
+
 	function open(item: FileItem | FolderItem) {
 		if (!isFile(item)) {
-			goto(resolve(`/files/${item.id}`));
+			const link = linkOf(item);
+			const target = link?.link_id && !link.declined ? link.link_id : item.id;
+			goto(resolve(`/files/${target}`));
 			return;
 		}
 		viewerFile = item;
@@ -281,7 +327,7 @@
 			key: 'download_zip',
 			label: t('files.download_zip', 'Download as ZIP'),
 			icon: 'download',
-			visible: (item) => !isFile(item),
+			visible: (item) => !isFile(item) && !isDriveRow(item),
 			run: downloadItem
 		}
 	];
@@ -333,11 +379,36 @@
 	onloadmore={() => load(false, orderByForGroup())}
 	onopen={open}
 	onfavorite={toggleFavorite}
+	favoriteVisible={(item) => !isDriveRow(item)}
 	onreload={(orderBy, rev) => {
 		cursor = undefined;
 		load(true, orderBy, rev);
 	}}
 >
+	{#snippet nameHint(item)}
+		{@const link = linkOf(item)}
+		{#if link?.link_name && link.link_name !== item.name}
+			<span class="shared-with-me__link-name" data-testid={`shared-with-me-link-name-${item.id}`}
+				>{t('shared_with_me.linked_as', { name: link.link_name }, 'linked as "{{name}}"')}</span
+			>
+		{/if}
+	{/snippet}
+	{#snippet itemActions(item)}
+		{#if linkRestorable(linkOf(item))}
+			<button
+				class="btn-action btn-action--hover"
+				data-testid={`shared-with-me-link-btn-${item.id}`}
+				title={t('shared_with_me.link', 'Link')}
+				aria-label={t('shared_with_me.link', 'Link')}
+				onclick={(e) => {
+					e.stopPropagation();
+					void restoreLink(item);
+				}}
+			>
+				<Icon name="link" />
+			</button>
+		{/if}
+	{/snippet}
 	{#snippet cardOverlay(_item, ctx)}
 		<!--
 			Sharer avatar anchored to the bottom-right of the PREVIEW
@@ -408,6 +479,20 @@
 		box-shadow:
 			0 0 0 2px var(--color-bg-surface),
 			0 1px 3px var(--color-shadow-sm);
+	}
+
+	.shared-with-me__link-name {
+		margin-inline-start: var(--space-2);
+		color: var(--color-text-muted);
+		font-size: var(--text-sm);
+		white-space: nowrap;
+	}
+
+	:global(.files-grid-view .file-item .shared-with-me__link-name) {
+		display: block;
+		margin-inline-start: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
 
 	.upgrade-banner {

@@ -337,6 +337,7 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         handlers::opaque_auth_handler::login_ke1,
         handlers::opaque_auth_handler::login_ke3,
         // Grant / ReBAC handlers (free functions)
+        handlers::link_handler::create_link,
         handlers::grant_handler::create_grant,
         handlers::grant_handler::revoke_grant,
         handlers::grant_handler::set_role,
@@ -461,6 +462,7 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             handlers::notifications_handler::UnreadCountDto,
             handlers::notifications_handler::MarkAllReadResponseDto,
             crate::domain::entities::notification::SharegrantedPayload,
+            crate::domain::entities::notification::LinkTargetRenamedPayload,
             HeaderPayload,
             ProgressHeader,
             OidcExchangeDto,
@@ -640,6 +642,8 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
             OutgoingGrantOrderBy,
             SharedWithMeDto,
             SharedWithMeItemDto,
+            crate::application::dtos::grant_dto::LinkStateDto,
+            handlers::link_handler::CreateLinkRequest,
             OutgoingResourceItemDto,
             // Drive schemas
             DriveDto,
@@ -658,6 +662,7 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         )
     ),
     tags(
+        (name = "links", description = "Links to shared folders and drives"),
         (name = "auth", description = "Authentication and session management endpoints"),
         (name = "files", description = "File management endpoints"),
         (name = "folders", description = "Folder management endpoints"),

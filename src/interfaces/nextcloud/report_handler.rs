@@ -179,10 +179,7 @@ async fn handle_filter_files(
         )
         .await;
 
-        // Keep main's batched-resolution structure (one batch query
-        // per type, not 2N round-trips). Hrefs use `url_user` so the
-        // multi-drive `~{drive}` form is echoed back to the client;
-        // owner-id stays canonical via `&user.username`.
+        // Batched resolution; hrefs use `url_user`, owner-id stays `&user.username`.
         // One oc:id buffer reused across both emit loops (benches/ROUND27.md §H1).
         let mut oc_buf = String::new();
         // One href buffer reused across both emit loops, with the URL-encoded
@@ -542,6 +539,7 @@ fn folder_dto_from_search(
         // these; safe default.
         is_favorite: false,
         is_shared: false,
+        mount: None,
     }
 }
 
@@ -661,8 +659,7 @@ fn xml_extract_text(body: &str, local_name: &[u8]) -> Option<String> {
 /// `get_folder_by_path` can be user-scoped — post-D0 paths like
 /// `Personal/Docs` are not globally unique), the chroot (provides the
 /// path prefix that `nc_to_internal_path` prepends), and the raw wire
-/// `{user}` segment (bare or `admin~{uuid}`) so we strip the prefix the
-/// NC client actually sent.
+/// `{user}` segment, so we strip the prefix the NC client actually sent.
 async fn resolve_scope_folder(
     state: &AppState,
     body: &str,
@@ -673,10 +670,7 @@ async fn resolve_scope_folder(
     let href = parse_scope_href(body)?;
 
     // The href is typically `/files/{url_user}/subpath` or
-    // `/remote.php/dav/files/{url_user}/subpath`. On a multi-drive
-    // session the `{url_user}` segment carries the `~{uuid}` marker,
-    // so we strip with the composite to find the real subpath. Using
-    // `user.username` here would fail to match for non-home drives.
+    // `/remote.php/dav/files/{url_user}/subpath`.
     let subpath = extract_subpath_from_scope(&href, url_user)?;
     if subpath.is_empty() {
         // Root scope -- no folder_id filter needed.
@@ -698,9 +692,7 @@ async fn resolve_scope_folder(
 ///
 /// Handles both short form `/files/{user}/sub` and full
 /// `/remote.php/dav/files/{user}/sub`. `url_user` is the literal URL
-/// `{user}` segment — bare for legacy single-drive sync, composite
-/// `admin~{uuid}` for multi-drive — so this matches whichever shape
-/// the NC client actually sent.
+/// `{user}` segment, as the NC client sent it.
 fn extract_subpath_from_scope(href: &str, url_user: &str) -> Option<String> {
     // Clients echo hrefs from our responses, which carry the deployment
     // base path — strip it before matching (no-op at the root).

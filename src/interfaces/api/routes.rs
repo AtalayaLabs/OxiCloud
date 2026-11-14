@@ -349,6 +349,16 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         Router::new()
     };
 
+    let links_router =
+        if app_state.core.config.features.links_mode == crate::common::config::LinksMode::Auto {
+            use crate::interfaces::api::handlers::link_handler;
+            Router::new()
+                .route("/links", post(link_handler::create_link))
+                .with_state(app_state.clone())
+        } else {
+            Router::new()
+        };
+
     // Create routes for ReBAC grants (/api/grants).
     // State is Arc<AppState> so that the new list_shared_with_me handler can
     // access file/folder services. Existing handlers still extract
@@ -479,6 +489,7 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         .nest("/search", search_router)
         .nest("/shares", share_router)
         .nest("/grants", grants_router)
+        .merge(links_router)
         .nest("/favorites", favorites_router)
         .nest("/recent", recent_router)
         .nest("/notifications", notifications_router);

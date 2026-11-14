@@ -414,6 +414,7 @@ test-api:
     ./tests/api/run.sh
     ./tests/webdav/run.sh
     ./tests/webdav-drive-root/run.sh
+    ./tests/links/run.sh
     ./tests/oidc/run.sh
     if which litmus >/dev/null 2>/dev/null
     then

@@ -668,7 +668,10 @@ impl AppServiceFactory {
         db_pool: &Arc<PgPool>,
     ) -> RepositoryServices {
         // Folder repository — PostgreSQL-backed virtual folders
-        let folder_repo_concrete = Arc::new(FolderDbRepository::new(db_pool.clone()));
+        let folder_repo_concrete = Arc::new(
+            FolderDbRepository::new(db_pool.clone())
+                .with_links_mode(self.config.features.links_mode),
+        );
         let folder_repository: Arc<FolderDbRepository> = folder_repo_concrete.clone();
 
         // File repositories — PostgreSQL metadata + blob content via BlobHandler
@@ -742,6 +745,9 @@ impl AppServiceFactory {
             Arc<dyn crate::application::ports::resource_access_hook::ResourceAccessHook>,
         >,
         bus: &Arc<crate::infrastructure::services::in_process_message_bus::InProcessMessageBus>,
+        share_mount_service: Arc<
+            crate::application::services::share_mount_service::ShareMountService,
+        >,
     ) -> ApplicationServices {
         // Upcast the concrete bus once — service builders take the
         // trait object so the wire remains stable across future bus
@@ -750,8 +756,8 @@ impl AppServiceFactory {
             bus.clone();
 
         // Main services
-        let folder_service = Arc::new(
-            FolderService::new(
+        let folder_service = {
+            let svc = FolderService::new(
                 repos.folder_repository.clone(),
                 authz.clone(),
                 // Same dispatcher TrashService uses, so the cascade hook in
@@ -772,8 +778,9 @@ impl AppServiceFactory {
             .with_storage_usage(storage_usage.clone())
             // Bus fan-out on `create_folder_with_perms` — the
             // parent-folder subscribers see new sub-folders live.
-            .with_message_bus(bus_trait.clone()),
-        );
+            .with_message_bus(bus_trait.clone());
+            Arc::new(svc.with_share_mounts(share_mount_service.clone()))
+        };
 
         // Built before the upload/management services so the plugin lifecycle
         // bridge (which looks file metadata up by id) can be wired into the
@@ -872,6 +879,7 @@ impl AppServiceFactory {
             if let Some(hook) = resource_access_hook.clone() {
                 svc = svc.with_resource_access_hook(hook);
             }
+            svc = svc.with_share_mounts(share_mount_service.clone());
             svc
         });
 
@@ -1088,6 +1096,7 @@ impl AppServiceFactory {
     }
 
     /// Creates the trash service
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_trash_service(
         &self,
         repos: &RepositoryServices,
@@ -1096,6 +1105,9 @@ impl AppServiceFactory {
         drive_repo: &Arc<crate::infrastructure::repositories::pg::DrivePgRepository>,
         bus: &Arc<crate::infrastructure::services::in_process_message_bus::InProcessMessageBus>,
         storage_usage: &Arc<StorageUsageService>,
+        share_mount_service: Arc<
+            crate::application::services::share_mount_service::ShareMountService,
+        >,
     ) -> Option<Arc<TrashService>> {
         if !self.config.features.enable_trash {
             tracing::info!("Trash service is disabled in configuration");
@@ -1110,20 +1122,19 @@ impl AppServiceFactory {
         // `create_application_services`.
         let bus_trait: Arc<dyn crate::application::ports::message_bus_ports::MessageBus> =
             bus.clone();
-        let service = Arc::new(
-            TrashService::new(
-                trash_repo.clone(),
-                repos.file_write_repository.clone(),
-                repos.folder_repository.clone(),
-                core.blob_handler.clone(),
-                Some(core.file_content_cache.clone()),
-                authz.clone(),
-                drive_repo.clone(),
-            )
-            .with_file_deleted_hook(core.file_lifecycle.clone())
-            .with_message_bus(bus_trait)
-            .with_storage_usage_service(storage_usage.clone()),
-        );
+        let service = TrashService::new(
+            trash_repo.clone(),
+            repos.file_write_repository.clone(),
+            repos.folder_repository.clone(),
+            core.blob_handler.clone(),
+            Some(core.file_content_cache.clone()),
+            authz.clone(),
+            drive_repo.clone(),
+        )
+        .with_file_deleted_hook(core.file_lifecycle.clone())
+        .with_message_bus(bus_trait)
+        .with_storage_usage_service(storage_usage.clone());
+        let service = Arc::new(service.with_share_mounts(share_mount_service));
 
         // Initialize cleanup service (bulk-deletes expired items in 2 SQL
         // queries, then GCs zero-reference blobs — including chunks orphaned
@@ -1160,6 +1171,9 @@ impl AppServiceFactory {
         authorization: &Arc<crate::infrastructure::services::pg_acl_engine::PgAclEngine>,
         drive_repo: &Arc<crate::infrastructure::repositories::pg::DrivePgRepository>,
         search_service: Option<Arc<SearchService>>,
+        share_mount_service: Arc<
+            crate::application::services::share_mount_service::ShareMountService,
+        >,
     ) -> Option<Arc<ShareService>> {
         if !self.config.features.enable_file_sharing {
             tracing::info!("File sharing service is disabled in configuration");
@@ -1177,7 +1191,7 @@ impl AppServiceFactory {
             ),
         );
 
-        let service = Arc::new(ShareService::new(
+        let service = ShareService::new(
             Arc::new(self.config.clone()),
             share_repository,
             repos.file_read_repository.clone(),
@@ -1189,7 +1203,8 @@ impl AppServiceFactory {
             // create/delete of a share drops the sharer's cached search
             // pages (2026-07-26). `None` when search is disabled.
             search_service.clone(),
-        ));
+        );
+        let service = Arc::new(service.with_share_mounts(share_mount_service));
 
         tracing::info!("File sharing service initialized");
         Some(service)
@@ -2079,6 +2094,25 @@ impl AppServiceFactory {
             crate::infrastructure::services::rt_ticket_store::RtTicketStore::new();
         let _reaper = Arc::clone(&rt_ticket_store).spawn_reaper();
 
+        // Share mounts (docs/plan/share-mounts.md). Group expansion is
+        // attached once the group service exists (OnceLock setter below).
+        let share_mount_service: Arc<
+            crate::application::services::share_mount_service::ShareMountService,
+        > = Arc::new(
+            crate::application::services::share_mount_service::ShareMountService::new(
+                Arc::new(
+                    crate::infrastructure::repositories::pg::ShareMountPgRepository::new(
+                        pool.clone(),
+                    ),
+                ),
+                drive_repo.clone(),
+                authorization.clone(),
+                repos.folder_repository.clone(),
+                self.config.features.share_mount_folder.clone(),
+                self.config.features.links_mode,
+            ),
+        );
+
         // 3b. Storage usage / quota service (needed by the instant-upload
         // path inside the application services, re-exposed on AppState for
         // the handler-side quota checks of the byte-upload paths, AND
@@ -2104,6 +2138,7 @@ impl AppServiceFactory {
                 &drive_repo,
                 &bus,
                 &storage_usage,
+                share_mount_service.clone(),
             )
             .await;
 
@@ -2153,6 +2188,7 @@ impl AppServiceFactory {
             mount_router.clone(),
             Some(resource_access_hook.clone()),
             &bus,
+            share_mount_service.clone(),
         );
 
         // 5. Share service
@@ -2162,6 +2198,7 @@ impl AppServiceFactory {
             &authorization,
             &drive_repo,
             apps.search_service.clone(),
+            share_mount_service.clone(),
         );
         apps.share_service = share_service.clone();
 
@@ -2258,6 +2295,129 @@ impl AppServiceFactory {
                 );
                 None
             };
+
+            let links_job = Arc::new(
+                crate::infrastructure::services::links_settle_job::LinksSettleJob::new(
+                    share_mount_service.clone(),
+                    Arc::new(
+                        crate::infrastructure::repositories::pg::ShareMountPgRepository::new(
+                            maintenance_pool.clone(),
+                        ),
+                    ),
+                    Arc::new(
+                        crate::infrastructure::repositories::pg::LinkEventsPgRepository::new(
+                            maintenance_pool.clone(),
+                        ),
+                    ),
+                ),
+            );
+            core.job_registry
+                .register(
+                    links_job,
+                    Some(std::time::Duration::from_millis(
+                        core.config.features.links_settle_interval_ms,
+                    )),
+                    None,
+                )
+                .await;
+            share_mount_service.set_job_registry(core.job_registry.clone());
+
+            core.job_registry
+                .register(
+                    Arc::new(
+                        crate::infrastructure::services::links_expiry_sweep_job::LinksExpirySweepJob::new(
+                            Arc::new(
+                                crate::infrastructure::repositories::pg::LinkEventsPgRepository::new(
+                                    maintenance_pool.clone(),
+                                ),
+                            ),
+                            Arc::new(
+                                crate::infrastructure::repositories::pg::SettingsPgRepository::new(
+                                    maintenance_pool.clone(),
+                                ),
+                            ),
+                            Some(share_mount_service.clone()),
+                        ),
+                    ),
+                    Some(std::time::Duration::from_secs(
+                        core.config.features.links_expiry_sweep_secs,
+                    )),
+                    None,
+                )
+                .await;
+
+            {
+                use crate::domain::repositories::settings_repository::SettingsRepository as _;
+                use crate::infrastructure::services::links_backfill_job as lb;
+                let links_mode = core.config.features.links_mode;
+                let settings = Arc::new(
+                    crate::infrastructure::repositories::pg::SettingsPgRepository::new(
+                        maintenance_pool.clone(),
+                    ),
+                );
+                core.job_registry
+                    .register(
+                        Arc::new(lb::LinksBackfillJob::new(
+                            Arc::new(
+                                crate::infrastructure::repositories::pg::LinkEventsPgRepository::new(
+                                    maintenance_pool.clone(),
+                                ),
+                            ),
+                            settings.clone(),
+                            links_mode,
+                            Some(share_mount_service.clone()),
+                        )),
+                        None,
+                        None,
+                    )
+                    .await;
+                core.job_registry
+                    .register(
+                        Arc::new(lb::LinksDropJob::new(
+                            Arc::new(
+                                crate::infrastructure::repositories::pg::ShareMountPgRepository::new(
+                                    maintenance_pool.clone(),
+                                ),
+                            ),
+                            links_mode,
+                        )),
+                        None,
+                        None,
+                    )
+                    .await;
+
+                let applied = match settings.get(lb::MODE_APPLIED_KEY).await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::error!(target: "oxicloud::links", error = %e, "cannot read links.mode_applied");
+                        None
+                    }
+                };
+                let want = links_mode.as_str();
+                if applied.as_deref() != Some(want) {
+                    match links_mode {
+                        crate::common::config::LinksMode::Auto => {
+                            let registry = core.job_registry.clone();
+                            tokio::spawn(async move {
+                                registry
+                                    .trigger(
+                                        lb::LINKS_BACKFILL_JOB_NAME,
+                                        &crate::infrastructure::scheduler::JobRunArgs::default(),
+                                    )
+                                    .await;
+                            });
+                        }
+                        crate::common::config::LinksMode::Off => {
+                            if let Err(e) = settings
+                                .set(lb::MODE_APPLIED_KEY, want, "links", false, None)
+                                .await
+                            {
+                                tracing::error!(target: "oxicloud::links", error = %e, "cannot record links.mode_applied");
+                            }
+                        }
+                    }
+                }
+            }
 
             // User-lifecycle dispatcher. Hook order is registration order;
             // document dependencies inline if/when any arise. Today:
@@ -2403,7 +2563,6 @@ impl AppServiceFactory {
                     ),
                 ));
             }
-
             let user_lifecycle = Arc::new(user_lifecycle_builder);
 
             // Auth services. Always constructed — authentication is
@@ -2653,6 +2812,7 @@ impl AppServiceFactory {
             db_pool: Some(pool.clone()),
             maintenance_pool: Some(maintenance_pool),
             mount_router,
+            share_mount_service: share_mount_service.clone(),
             bus,
             rt_ticket_store,
             active_ws_sessions: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -2690,6 +2850,7 @@ impl AppServiceFactory {
             device_auth_service: None,
             app_password_service: None,
             path_resolver: None,
+            shared_roots_repo: None,
             webdav_lock_store:
                 crate::infrastructure::services::webdav_lock_service::create_webdav_lock_store(),
             webdav_dead_props:
@@ -2707,38 +2868,42 @@ impl AppServiceFactory {
             migration_progress: Arc::new(std::sync::RwLock::new(None)),
             rotation_progress: Arc::new(std::sync::RwLock::new(None)),
             drive_repo: drive_repo.clone(),
-            drive_management_service: Arc::new(
-                crate::application::services::drive_management_service::DriveManagementService::new(
-                    drive_repo.clone(),
-                    authorization.clone(),
-                    subject_group_repo.clone(),
-                    Arc::new(
-                        crate::infrastructure::repositories::pg::UserPgRepository::new(
-                            pool.clone(),
+            drive_management_service: {
+                let svc =
+                    crate::application::services::drive_management_service::DriveManagementService::new(
+                        drive_repo.clone(),
+                        authorization.clone(),
+                        subject_group_repo.clone(),
+                        Arc::new(
+                            crate::infrastructure::repositories::pg::UserPgRepository::new(
+                                pool.clone(),
+                            ),
                         ),
-                    ),
-                )
-                .with_default_shared_drive_quota(self.config.storage.default_quotas.shared_drive_bytes),
-            ),
+                    )
+                    .with_default_shared_drive_quota(self.config.storage.default_quotas.shared_drive_bytes);
+                Arc::new(svc.with_share_mounts(share_mount_service.clone()))
+            },
             drive_policy_defaults_service: Arc::new(
                 crate::application::services::drive_policy_defaults_service::DrivePolicyDefaultsService::new(
                     drive_repo.clone(),
                     authorization.clone(),
                 ),
             ),
-            subject_group_service: Some(Arc::new(
-                crate::application::services::subject_group_service::SubjectGroupService::new(
-                    subject_group_repo.clone(),
-                    pool.clone(),
-                    Arc::new(
-                        crate::infrastructure::repositories::pg::UserPgRepository::new(
-                            pool.clone(),
+            subject_group_service: {
+                let svc =
+                    crate::application::services::subject_group_service::SubjectGroupService::new(
+                        subject_group_repo.clone(),
+                        pool.clone(),
+                        Arc::new(
+                            crate::infrastructure::repositories::pg::UserPgRepository::new(
+                                pool.clone(),
+                            ),
                         ),
-                    ),
-                    authorization.clone(),
-                    drive_repo.clone(),
-                ),
-            )),
+                        authorization.clone(),
+                        drive_repo.clone(),
+                    );
+                Some(Arc::new(svc.with_share_mounts(share_mount_service.clone())))
+            },
             email_sender: None,                   // populated below
             mock_email_sender: None,              // populated below
             webhook_sink: None,                   // populated below
@@ -2815,6 +2980,9 @@ impl AppServiceFactory {
             // late-registered jobs.
             scheduler_engine: None,
         };
+        if let Some(sgs) = app_state.subject_group_service.as_ref() {
+            app_state.share_mount_service.set_group_service(sgs.clone());
+        }
         let email_bundle = build_email_sender(&self.config.smtp);
         app_state.email_sender = email_bundle.sender;
         app_state.mock_email_sender = email_bundle.mock;
@@ -2966,6 +3134,9 @@ impl AppServiceFactory {
             ),
         );
             app_state.notification_service = Some(notification_service.clone());
+            app_state
+                .share_mount_service
+                .set_notifications(notification_service.clone());
 
             // Retention sweep — daily; deletes read notifications
             // older than OXICLOUD_NOTIFICATIONS_RETENTION_DAYS. Same
@@ -3327,8 +3498,14 @@ impl AppServiceFactory {
 
         // 9e. Wire PathResolver for single-query WebDAV path resolution
         {
-            app_state.path_resolver = Some(Arc::new(PathResolverService::new(pool.clone())));
+            app_state.path_resolver = Some(Arc::new(
+                PathResolverService::new(pool.clone())
+                    .with_links(app_state.share_mount_service.clone()),
+            ));
             tracing::info!("PathResolver service initialized");
+            app_state.shared_roots_repo = Some(Arc::new(
+                crate::infrastructure::repositories::pg::ShareMountPgRepository::new(pool.clone()),
+            ));
         }
 
         // 10. Wire CalDAV/CardDAV services. Note: the `*_for_hook`
@@ -4025,6 +4202,9 @@ pub struct AppState {
     /// that routes every id to native handling. Handlers consult this before
     /// parsing an id as a UUID, then call the matching service-layer mount
     /// method (which still owns the authorization check).
+    /// Share-mount links (docs/plan/links.md); `links_enabled()` gates visibility and creation.
+    pub share_mount_service:
+        Arc<crate::application::services::share_mount_service::ShareMountService>,
     pub mount_router:
         Arc<crate::application::services::external_mount_router::MountRouter>,
     /// Message bus. Always present — an empty bus (no
@@ -4148,6 +4328,9 @@ pub struct AppState {
         Option<Arc<crate::application::services::app_password_service::AppPasswordService>>,
     pub path_resolver:
         Option<Arc<crate::infrastructure::services::path_resolver_service::PathResolverService>>,
+    /// Backs the `/webdav/@shared/` listing.
+    pub shared_roots_repo:
+        Option<Arc<crate::infrastructure::repositories::pg::ShareMountPgRepository>>,
     pub webdav_lock_store:
         Arc<crate::infrastructure::services::webdav_lock_service::WebDavLockStore>,
     pub webdav_dead_props:

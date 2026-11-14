@@ -917,6 +917,13 @@ export type CreateGroupRequest = {
     name: string;
 };
 
+export type CreateLinkRequest = {
+    /**
+     * Folder or drive-root folder the caller holds a grant path to.
+     */
+    target_id: string;
+};
+
 export type CreatePlaylistDto = {
     description?: string | null;
     name: string;
@@ -1329,6 +1336,7 @@ export type CursorListResponseSharedWithMeItemDto = {
          * UUID of the user who created the (earliest) grant.
          */
         granted_by: string;
+        link?: null | LinkStateDto;
         /**
          * All permissions the caller holds on this resource (aggregated).
          */
@@ -2222,6 +2230,11 @@ export type FeaturesDto = {
      */
     faces: boolean;
     /**
+     * `"off"` | `"auto"`: granted folders and shared drives appear as links in the
+     * personal drive. See `FeaturesConfig::links_mode`.
+     */
+    links_mode: string;
+    /**
      * Collaborative `.md` editing over the message-bus WebSocket
      * (Yjs CRDT). When `false`, the FE hides the "New markdown"
      * menu entry and falls back to the plain `.md` viewer when
@@ -2635,6 +2648,7 @@ export type FolderDto = {
      * in this subtree change", use `tree_modified_at` below.
      */
     modified_at: string;
+    mount?: null | MountDto;
     /**
      * Folder name
      */
@@ -3335,6 +3349,33 @@ export type JobSummary = {
 };
 
 /**
+ * The caller's link state for a shared folder or drive.
+ */
+export type LinkStateDto = {
+    declined: boolean;
+    link_id?: string | null;
+    link_name?: string | null;
+};
+
+/**
+ * Payload of a `link_target_renamed` notification. Kind = [`kind::LINK_TARGET_RENAMED`].
+ */
+export type LinkTargetRenamedPayload = {
+    /**
+     * The recipient's link row; the bell navigates to `/files/{link_id}`.
+     */
+    link_id: string;
+    /**
+     * The link's own name, unchanged by the rename.
+     */
+    link_name: string;
+    new_name: string;
+    old_name: string;
+    renamed_by: string;
+    target_id: string;
+};
+
+/**
  * DTO for locale information
  */
 export type LocaleDto = {
@@ -3430,6 +3471,24 @@ export type MigrationStateDto = {
  * into `paused` for display, so it doesn't surface here.
  */
 export type MigrationStatus = 'idle' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
+
+/**
+ * Marks a folder as a mount (docs/plan/share-mounts.md § API).
+ */
+export type MountDto = {
+    /**
+     * `"shared_folder"`, `"shared_drive"` or `"external"`.
+     */
+    kind: string;
+    /**
+     * Drive of the target; absent for external mounts.
+     */
+    target_drive_id?: string | null;
+    /**
+     * Target folder the mount answers for; absent for external mounts.
+     */
+    target_id?: string | null;
+};
 
 /**
  * Payload for moving a file
@@ -5433,6 +5492,7 @@ export type SharedWithMeItemDto = {
      * UUID of the user who created the (earliest) grant.
      */
     granted_by: string;
+    link?: null | LinkStateDto;
     /**
      * All permissions the caller holds on this resource (aggregated).
      */
@@ -12735,6 +12795,33 @@ export type TranslateResponses = {
 };
 
 export type TranslateResponse = TranslateResponses[keyof TranslateResponses];
+
+export type CreateLinkData = {
+    body: CreateLinkRequest;
+    path?: never;
+    query?: never;
+    url: '/api/links';
+};
+
+export type CreateLinkErrors = {
+    /**
+     * No grant path to the target
+     */
+    404: unknown;
+    /**
+     * No free name for the link
+     */
+    409: unknown;
+};
+
+export type CreateLinkResponses = {
+    /**
+     * Link created or already present
+     */
+    201: FolderDto;
+};
+
+export type CreateLinkResponse = CreateLinkResponses[keyof CreateLinkResponses];
 
 export type ListNotificationsData = {
     body?: never;

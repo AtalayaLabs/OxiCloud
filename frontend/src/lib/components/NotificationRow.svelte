@@ -20,7 +20,7 @@
 	import UserVignette from '$lib/components/UserVignette.svelte';
 	import Icon from '$lib/icons/Icon.svelte';
 	import { t } from '$lib/i18n/index.svelte';
-	import type { Notification, SharegrantedPayload } from '$lib/api/types';
+	import type { LinkTargetRenamedPayload, Notification, SharegrantedPayload } from '$lib/api/types';
 	import { NOTIFICATION_KIND } from '$lib/api/types';
 	import { notifications } from '$lib/composables/useNotifications.svelte';
 
@@ -68,6 +68,8 @@
 				return 'check-circle';
 			case NOTIFICATION_KIND.STORAGE_QUOTA_THRESHOLD:
 				return 'database';
+			case NOTIFICATION_KIND.LINK_TARGET_RENAMED:
+				return 'folder';
 			default:
 				return 'bell';
 		}
@@ -106,6 +108,9 @@
 	function resourceHref(payload: unknown): string | null {
 		if (typeof payload !== 'object' || payload === null) return null;
 		const p = payload as Record<string, unknown>;
+		if (row.kind === NOTIFICATION_KIND.LINK_TARGET_RENAMED) {
+			return typeof p.link_id === 'string' ? `/files/${p.link_id}` : null;
+		}
 		const type = p.resource_type;
 		const id = p.resource_id;
 		if (typeof id !== 'string' || id.length === 0) return null;
@@ -204,6 +209,15 @@
 				{/if}
 				<!-- eslint-disable-next-line svelte/no-useless-mustaches -->
 				{' '}({p.role})
+			{:else if row.kind === NOTIFICATION_KIND.LINK_TARGET_RENAMED}
+				{@const p = row.payload as unknown as LinkTargetRenamedPayload}
+				<span>
+					{t(
+						'notifications.link_target_renamed',
+						{ old_name: p.old_name, new_name: p.new_name, link_name: p.link_name },
+						`"${p.old_name}" was renamed to "${p.new_name}" by its owner; your link is still "${p.link_name}".`
+					)}
+				</span>
 			{:else}
 				<!-- Generic fallback for kinds without their own template
 				     yet (new_login_from_new_device, job_completed_for_you,

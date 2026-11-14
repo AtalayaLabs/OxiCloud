@@ -22,9 +22,10 @@ use uuid::Uuid;
 use crate::application::adapters::webdav_adapter::{
     LockInfo, PropFindRequest, PropPatchOp, QualifiedName, WebDavAdapter, is_protected_property,
 };
-use crate::application::dtos::display_helpers::ResourceCategory;
+use crate::application::dtos::display_helpers::{ResourceCategory, category_for, intern_mime};
 use crate::application::dtos::file_dto::FileDto;
 use crate::application::dtos::folder_dto::FolderDto;
+use crate::application::dtos::timestamp_helpers::epoch_to_datetime;
 use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::application::ports::file_ports::FileRetrievalUseCase;
 use crate::application::ports::file_ports::{FileManagementUseCase, FileUploadUseCase};
@@ -34,10 +35,14 @@ use crate::application::services::file_retrieval_service::FileRetrievalService;
 use crate::application::services::file_upload_service::FileUploadService;
 use crate::application::services::folder_service::FolderService;
 use crate::common::di::AppState;
+use crate::common::errors::ErrorKind;
+use crate::domain::entities::file::File;
+use crate::domain::entities::folder::Folder;
 use crate::domain::repositories::drive_repository::DriveRepository;
 use crate::domain::services::authorization::{Permission, Resource, Subject};
 use crate::domain::services::path_service::normalize_storage_name;
-use crate::infrastructure::services::path_resolver_service::ResolvedResource;
+use crate::infrastructure::repositories::pg::SharedRoot;
+use crate::infrastructure::services::path_resolver_service::{IdKind, ResolvedResource};
 use crate::infrastructure::services::webdav_dead_property_store::{DeadPropertyStore, ResourceRef};
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::AuthUser;
@@ -262,15 +267,259 @@ enum WebdavTarget {
     /// Render the synthetic drive-listing pseudo-root. Only PROPFIND
     /// treats this as a real target; other verbs 405.
     ListDrives,
+    /// Pseudo-root `/webdav/@shared/`.
+    ListShared,
     /// Descend into a concrete drive.
     Scope(DriveScope),
 }
+
+const SHARED_PREFIX: &str = "@shared";
 
 struct DriveScope {
     drive_id: Uuid,
     /// Path in `storage.folders.path` format (drive-root name is the
     /// leading segment; that prefix is stored per D7).
     db_path: String,
+    /// The `@shared/<uuid>` segment itself, not something below it.
+    shared_root: bool,
+    /// Target `(drive_id, db_path)` when `db_path` names a link row itself.
+    link_target: Option<(Uuid, String)>,
+}
+
+/// A DAV path after link hops: below a link it is the target's; a link row itself stays put.
+pub(crate) struct DavLocation {
+    pub drive_id: Uuid,
+    pub db_path: String,
+    pub link_target: Option<(Uuid, String)>,
+}
+
+/// One side of a MOVE/COPY: the addressed row and, for a link row, its target.
+#[derive(Clone, Copy)]
+pub(crate) struct DavSide<'a> {
+    drive_id: Uuid,
+    db_path: &'a str,
+    link_target: Option<&'a (Uuid, String)>,
+}
+
+impl<'a> From<&'a DavLocation> for DavSide<'a> {
+    fn from(loc: &'a DavLocation) -> Self {
+        Self {
+            drive_id: loc.drive_id,
+            db_path: &loc.db_path,
+            link_target: loc.link_target.as_ref(),
+        }
+    }
+}
+
+impl<'a> From<&'a DriveScope> for DavSide<'a> {
+    fn from(scope: &'a DriveScope) -> Self {
+        Self {
+            drive_id: scope.drive_id,
+            db_path: &scope.db_path,
+            link_target: scope.link_target.as_ref(),
+        }
+    }
+}
+
+impl DavSide<'_> {
+    fn spans(&self) -> impl Iterator<Item = (Uuid, &str, bool)> {
+        std::iter::once((self.drive_id, self.db_path, false)).chain(
+            self.link_target
+                .map(|(drive_id, path)| (*drive_id, path.as_str(), true)),
+        )
+    }
+}
+
+fn path_within(child: &str, parent: &str) -> bool {
+    child
+        .strip_prefix(parent)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
+
+fn dav_overlap_reason(src: DavSide<'_>, dst: DavSide<'_>) -> Option<&'static str> {
+    src.spans().find_map(|(sd, sp, s_link)| {
+        let sp = sp.trim_matches('/');
+        dst.spans().find_map(|(dd, dp, d_link)| {
+            let dp = dp.trim_matches('/');
+            (sd == dd && !sd.is_nil() && (path_within(sp, dp) || path_within(dp, sp))).then_some(
+                if s_link || d_link {
+                    "link_target_overlap"
+                } else {
+                    "source_destination_overlap"
+                },
+            )
+        })
+    })
+}
+
+/// 403 for a MOVE/COPY whose source and destination are the same resource or nest, directly or through a link.
+pub(crate) fn refuse_dav_overlap(
+    caller_id: Uuid,
+    verb: &'static str,
+    src: DavSide<'_>,
+    dst: DavSide<'_>,
+) -> Result<(), AppError> {
+    let Some(reason) = dav_overlap_reason(src, dst) else {
+        return Ok(());
+    };
+    tracing::info!(
+        target: "audit",
+        event = "webdav.rejected",
+        reason,
+        verb,
+        caller_id = %caller_id,
+        source_drive_id = %src.drive_id,
+        source_path = %src.db_path,
+        destination_drive_id = %dst.drive_id,
+        destination_path = %dst.db_path,
+        "👮🏻‍♂️ WebDAV {verb} refused: source and destination overlap",
+    );
+    Err(AppError::forbidden(format!(
+        "Cannot {verb} a resource onto itself or into its own subtree"
+    )))
+}
+
+fn canonical_db_path(path: &str) -> String {
+    path.split('/')
+        .filter(|seg| !seg.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+pub(crate) async fn locate_dav(
+    state: &AppState,
+    user_id: Uuid,
+    drive_id: Uuid,
+    db_path: String,
+) -> Result<DavLocation, AppError> {
+    let db_path = canonical_db_path(&db_path);
+    let Some(resolver) = &state.path_resolver else {
+        return Ok(DavLocation {
+            drive_id,
+            db_path,
+            link_target: None,
+        });
+    };
+    let loc = match resolver.locate(user_id, &db_path, drive_id).await {
+        Ok(loc) => loc,
+        // A link the caller may not see addresses no drive, so every verb answers its ordinary miss.
+        Err(e) if e.kind == ErrorKind::NotFound => {
+            return Ok(DavLocation {
+                drive_id: Uuid::nil(),
+                db_path,
+                link_target: None,
+            });
+        }
+        Err(e) => return Err(e.into()),
+    };
+    Ok(if loc.at_link {
+        DavLocation {
+            drive_id,
+            db_path,
+            link_target: Some((loc.drive_id, loc.db_path)),
+        }
+    } else {
+        DavLocation {
+            drive_id: loc.drive_id,
+            db_path: loc.db_path,
+            link_target: None,
+        }
+    })
+}
+
+enum SharedSegment<'a> {
+    Listing,
+    Entry { uuid: Uuid, rest: &'a str },
+}
+
+/// `None`: not under `@shared`; `Some(Err(()))`: under it, segment is not a UUID.
+fn parse_shared_segment(normalized: &str) -> Option<Result<SharedSegment<'_>, ()>> {
+    if normalized == SHARED_PREFIX {
+        return Some(Ok(SharedSegment::Listing));
+    }
+    let after = strip_prefix_slash(normalized, SHARED_PREFIX)?;
+    if after.is_empty() {
+        return Some(Ok(SharedSegment::Listing));
+    }
+    let (seg, rest) = after.split_once('/').unwrap_or((after, ""));
+    let rest = rest.trim_matches('/');
+    Some(match Uuid::parse_str(seg) {
+        Ok(uuid) => Ok(SharedSegment::Entry { uuid, rest }),
+        Err(_) => Err(()),
+    })
+}
+
+fn reject_shared_root(scope: &DriveScope) -> Result<(), AppError> {
+    if scope.shared_root {
+        tracing::info!(
+            target: "audit",
+            event = "webdav.rejected",
+            reason = "shared_root_is_an_address",
+            drive_id = %scope.drive_id,
+            "👮🏻‍♂️ WebDAV verb on a @shared/<uuid> address refused",
+        );
+        return Err(AppError::forbidden("shared_root_is_an_address"));
+    }
+    Ok(())
+}
+
+async fn resolve_shared_entry(
+    state: &Arc<AppState>,
+    user_id: Uuid,
+    uuid: Uuid,
+    rest: &str,
+) -> Result<DriveScope, AppError> {
+    let reject = |reason: &'static str| {
+        tracing::info!(
+            target: "audit",
+            event = "webdav.rejected",
+            reason,
+            caller_id = %user_id,
+            target_id = %uuid,
+            "👮🏻‍♂️ @shared/<uuid> not resolved",
+        );
+        AppError::not_found("Resource not found")
+    };
+    if rest.split('/').any(|seg| seg == "." || seg == "..") {
+        return Err(reject("dot_segment"));
+    }
+    let resolver = state
+        .path_resolver
+        .as_ref()
+        .ok_or_else(|| AppError::internal_error("Path resolver not available"))?;
+    let row = resolver
+        .resolve_id(uuid)
+        .await
+        .map_err(AppError::from)?
+        .ok_or_else(|| reject("not_found"))?;
+    let is_file = row.kind == IdKind::File;
+    if row.is_link {
+        return Err(reject("link_row_is_not_an_address"));
+    }
+    if is_file && !rest.is_empty() {
+        return Err(reject("file_has_no_children"));
+    }
+    let resource = if is_file {
+        Resource::File(uuid)
+    } else {
+        Resource::Folder(uuid)
+    };
+    state
+        .authorization
+        .require(Subject::User(user_id), Permission::Read, resource)
+        .await
+        .map_err(|e| match e.kind {
+            ErrorKind::NotFound | ErrorKind::AccessDenied => {
+                AppError::not_found("Resource not found")
+            }
+            _ => AppError::from(e),
+        })?;
+    Ok(DriveScope {
+        drive_id: row.drive_id,
+        db_path: join_drive_path(&row.path, rest),
+        shared_root: rest.is_empty(),
+        link_target: None,
+    })
 }
 
 /// Borrow-only `s.strip_prefix(&format!("{prefix}/"))` — the prefix tests
@@ -285,6 +534,24 @@ async fn resolve_webdav_scope(
     user_id: Uuid,
     url_path: &str,
 ) -> Result<WebdavTarget, AppError> {
+    let scope = match resolve_webdav_target(state, user_id, url_path).await? {
+        WebdavTarget::Scope(scope) => scope,
+        other => return Ok(other),
+    };
+    let loc = locate_dav(state, user_id, scope.drive_id, scope.db_path).await?;
+    Ok(WebdavTarget::Scope(DriveScope {
+        drive_id: loc.drive_id,
+        db_path: loc.db_path,
+        shared_root: scope.shared_root,
+        link_target: loc.link_target,
+    }))
+}
+
+async fn resolve_webdav_target(
+    state: &Arc<AppState>,
+    user_id: Uuid,
+    url_path: &str,
+) -> Result<WebdavTarget, AppError> {
     let drive_prefix = state
         .core
         .config
@@ -292,6 +559,17 @@ async fn resolve_webdav_scope(
         .webdav_drive_listing_prefix
         .as_str();
     let normalized = url_path.trim_matches('/');
+
+    match parse_shared_segment(normalized) {
+        Some(Ok(SharedSegment::Listing)) => return Ok(WebdavTarget::ListShared),
+        Some(Ok(SharedSegment::Entry { uuid, rest })) => {
+            return resolve_shared_entry(state, user_id, uuid, rest)
+                .await
+                .map(WebdavTarget::Scope);
+        }
+        Some(Err(())) => return Err(AppError::not_found("Resource not found")),
+        None => {}
+    }
 
     // Mode A: empty prefix. `/webdav/` IS the drive listing.
     if drive_prefix.is_empty() {
@@ -303,6 +581,8 @@ async fn resolve_webdav_scope(
         return Ok(WebdavTarget::Scope(DriveScope {
             drive_id: drive.drive.id,
             db_path: join_drive_path(&drive.root_folder_name, subpath),
+            shared_root: false,
+            link_target: None,
         }));
     }
 
@@ -322,6 +602,8 @@ async fn resolve_webdav_scope(
         return Ok(WebdavTarget::Scope(DriveScope {
             drive_id: drive.drive.id,
             db_path: join_drive_path(&drive.root_folder_name, subpath),
+            shared_root: false,
+            link_target: None,
         }));
     }
 
@@ -345,6 +627,8 @@ async fn resolve_webdav_scope(
     Ok(WebdavTarget::Scope(DriveScope {
         drive_id: default.drive.id,
         db_path,
+        shared_root: false,
+        link_target: None,
     }))
 }
 
@@ -358,7 +642,7 @@ async fn resolve_webdav_scope_or_405(
 ) -> Result<DriveScope, AppError> {
     match resolve_webdav_scope(state, user_id, url_path).await? {
         WebdavTarget::Scope(s) => Ok(s),
-        WebdavTarget::ListDrives => Err(AppError::method_not_allowed(
+        WebdavTarget::ListDrives | WebdavTarget::ListShared => Err(AppError::method_not_allowed(
             "Method not supported on the drive-listing pseudo-root",
         )),
     }
@@ -557,6 +841,7 @@ async fn handle_propfind(
     // drive scope or the synthetic drive-listing pseudo-root. Only
     // PROPFIND treats `ListDrives` as a valid target — other verbs use
     // `resolve_webdav_scope_or_405` which errors on that branch.
+    let mut link_name = None;
     let (drive_id, path) = match resolve_webdav_scope(&state, user.id, &path).await? {
         WebdavTarget::ListDrives => {
             let root_folder = FolderDto {
@@ -579,6 +864,7 @@ async fn handle_propfind(
                 // Synthetic root, not on the SPA path — safe default.
                 is_favorite: false,
                 is_shared: false,
+                mount: None,
             };
             // Skip the 2-query quota resolution when the request's prop list
             // never mentions quota (benches/QUOTA-PATH.md).
@@ -601,7 +887,32 @@ async fn handle_propfind(
             )
             .await;
         }
-        WebdavTarget::Scope(scope) => (scope.drive_id, scope.db_path),
+        WebdavTarget::ListShared => {
+            let repo = state
+                .shared_roots_repo
+                .as_ref()
+                .ok_or_else(|| AppError::internal_error("Shared roots repository not available"))?;
+            let roots = repo.shared_roots(user.id).await.map_err(AppError::from)?;
+            let store = &state.webdav_dead_props;
+            let (folders, files) = shared_root_dtos(&roots);
+            let folder_deads = folders_dead_props_map(store, &folders).await;
+            let file_deads = files_dead_props_map(store, &files).await;
+            return build_shared_listing_response(
+                &roots,
+                &depth_owned,
+                &base_href,
+                &propfind_request,
+                &folder_deads,
+                &file_deads,
+            );
+        }
+        WebdavTarget::Scope(scope) => match scope.link_target {
+            Some((drive_id, target_path)) => {
+                link_name = scope.db_path.rsplit('/').next().map(str::to_owned);
+                (drive_id, target_path)
+            }
+            None => (scope.drive_id, scope.db_path),
+        },
     };
 
     // Path resolution: the single-query PathResolver first, then the
@@ -620,7 +931,10 @@ async fn handle_propfind(
         return Err(AppError::not_found(format!("Resource not found: {}", path)));
     };
     match resolved {
-        ResolvedResource::Folder(folder) => {
+        ResolvedResource::Folder(mut folder) => {
+            if let Some(name) = link_name {
+                folder.name = name;
+            }
             let resource = state
                 .mount_router
                 .folder_authz_resource(&folder.id)
@@ -685,6 +999,153 @@ async fn handle_propfind(
     }
 }
 
+/// Folder and file DTOs for the `@shared` roots, in `roots` order within each kind.
+fn shared_root_dtos(roots: &[SharedRoot]) -> (Vec<FolderDto>, Vec<FileDto>) {
+    let mut folders = Vec::new();
+    let mut files = Vec::new();
+    for r in roots {
+        let id = r.id.to_string();
+        let modified = r.modified_at.max(0) as u64;
+        if r.is_folder {
+            let tree = r.tree_modified_at.unwrap_or(r.modified_at).max(0) as u64;
+            folders.push(FolderDto {
+                etag: Folder::compute_etag(&id, tree),
+                id,
+                name: r.name.clone(),
+                path: String::new(),
+                parent_id: None,
+                drive_id: Uuid::nil(),
+                created_at: epoch_to_datetime(modified),
+                modified_at: epoch_to_datetime(modified),
+                tree_modified_at: epoch_to_datetime(tree),
+                category: ResourceCategory::Folder,
+                created_by: None,
+                updated_by: None,
+                is_favorite: false,
+                is_shared: true,
+                mount: None,
+            });
+        } else {
+            let mime = r.mime_type.as_deref().unwrap_or("application/octet-stream");
+            let hash = r.blob_hash.clone().unwrap_or_default();
+            let size = r.size.unwrap_or(0).max(0) as u64;
+            files.push(FileDto {
+                etag: File::compute_etag(&hash, modified),
+                id,
+                name: r.name.clone(),
+                path: String::new(),
+                size,
+                mime_type: intern_mime(mime),
+                folder_id: None,
+                created_at: epoch_to_datetime(modified),
+                modified_at: epoch_to_datetime(modified),
+                category: category_for(&r.name, mime),
+                content_hash: hash,
+                created_by: None,
+                updated_by: None,
+                is_favorite: false,
+                is_shared: true,
+            });
+        }
+    }
+    (folders, files)
+}
+
+/// Pseudo-root ETag: the set of root ids plus the newest change among them.
+fn shared_listing_etag(roots: &[SharedRoot]) -> String {
+    let mut ids: Vec<String> = roots.iter().map(|r| r.id.to_string()).collect();
+    ids.sort_unstable();
+    let joined = ids.join(",");
+    let newest = roots
+        .iter()
+        .map(|r| r.tree_modified_at.unwrap_or(0).max(r.modified_at))
+        .max()
+        .unwrap_or(0)
+        .max(0) as u64;
+    Folder::compute_etag(
+        &format!("@shared:{}", blake3::hash(joined.as_bytes()).to_hex()),
+        newest,
+    )
+}
+
+/// 207 for `/webdav/@shared/`: the pseudo-root, then (Depth 1) one entry per share root.
+fn build_shared_listing_response(
+    roots: &[SharedRoot],
+    depth: &str,
+    base_href: &str,
+    req: &PropFindRequest,
+    folder_deads: &HashMap<Uuid, Vec<(QualifiedName, Option<String>)>>,
+    file_deads: &HashMap<Uuid, Vec<(QualifiedName, Option<String>)>>,
+) -> Result<Response<Body>, AppError> {
+    let xml_err = |e: crate::application::adapters::webdav_adapter::WebDavError| {
+        AppError::internal_error(format!("XML write error: {}", e))
+    };
+    let now = Utc::now();
+    let pseudo_root = FolderDto {
+        id: "root".to_string(),
+        etag: shared_listing_etag(roots),
+        name: String::new(),
+        path: String::new(),
+        parent_id: None,
+        drive_id: Uuid::nil(),
+        created_at: now,
+        modified_at: now,
+        tree_modified_at: now,
+        category: ResourceCategory::Folder,
+        created_by: None,
+        updated_by: None,
+        is_favorite: false,
+        is_shared: false,
+        mount: None,
+    };
+    let mut buf = Vec::with_capacity(1024 + roots.len() * 800);
+    {
+        let mut w = Writer::new(&mut buf);
+        WebDavAdapter::write_multistatus_start(&mut w).map_err(xml_err)?;
+        WebDavAdapter::write_folder_entry_with_dead_props(
+            &mut w,
+            &pseudo_root,
+            req,
+            base_href,
+            &[],
+            None,
+        )
+        .map_err(xml_err)?;
+        if depth == "1" {
+            let (folders, files) = shared_root_dtos(roots);
+            for folder in &folders {
+                let href = format!("{base_href}{}/", folder.id);
+                WebDavAdapter::write_folder_entry_with_dead_props(
+                    &mut w,
+                    folder,
+                    req,
+                    &href,
+                    dead_props_for(&folder.id, folder_deads),
+                    None,
+                )
+                .map_err(xml_err)?;
+            }
+            for file in &files {
+                let href = format!("{base_href}{}", file.id);
+                WebDavAdapter::write_file_entry_with_dead_props(
+                    &mut w,
+                    file,
+                    req,
+                    &href,
+                    dead_props_for(&file.id, file_deads),
+                )
+                .map_err(xml_err)?;
+            }
+        }
+        WebDavAdapter::write_multistatus_end(&mut w).map_err(xml_err)?;
+    }
+    Ok(Response::builder()
+        .status(StatusCode::MULTI_STATUS)
+        .header(header::CONTENT_TYPE, "application/xml; charset=utf-8")
+        .body(Body::from(buf))
+        .unwrap())
+}
+
 /// Builds a streaming 207 Multi-Status PROPFIND response.
 ///
 /// The XML is written incrementally: first the folder itself, then children
@@ -693,7 +1154,7 @@ async fn handle_propfind(
 /// constant at O(batch_size) regardless of the total number of children.
 #[allow(clippy::too_many_arguments)]
 async fn build_streaming_propfind_response(
-    folder: FolderDto,
+    mut folder: FolderDto,
     folder_id: Option<String>,
     depth: &str,
     base_href: &str,
@@ -717,7 +1178,24 @@ async fn build_streaming_propfind_response(
         // The synthetic root folder (id = "root") fails to parse and
         // the helper returns an empty list — correct, since the root
         // has no DB row to anchor properties on.
-        let folder_dead = folder_dead_props(&dead_props_store, &folder).await;
+        let fid_ref = folder_id.as_deref();
+        let (first, folder_dead) = tokio::join!(
+            async {
+                if depth == "1" {
+                    folder_service
+                        .list_folders_batch_with_link_etags(fid_ref, user_id, None, PROPFIND_BATCH_SIZE as usize, Some(&folder.id))
+                        .await
+                        .map(|(page, etags)| (Some(page), etags))
+                } else {
+                    folder_service.link_etags(user_id, [folder.id.as_str()]).await.map(|etags| (None, etags))
+                }
+            },
+            folder_dead_props(&dead_props_store, &folder),
+        );
+        let (mut first_folders, folder_etags) =
+            first.map_err(|e| std::io::Error::other(e.to_string()))?;
+        folder_etags.apply(&mut folder);
+
         let mut buf = Vec::with_capacity(4096);
         {
             let mut w = Writer::new(&mut buf);
@@ -730,23 +1208,28 @@ async fn build_streaming_propfind_response(
 
         // ── Children (only if Depth == 1) ────────────────────────
         if depth == "1" {
-            let fid_ref = folder_id.as_deref();
-
             // Stream sub-folders in pages (user-scoped, keyset cursor —
             // O(page) per page off idx_folders_unique_name instead of the
             // quadratic COUNT(*) OVER() + LIMIT/OFFSET walk; 4.5x on a
             // 5k-dir parent, benches/FOLDER-KEYSET.md).
             let mut after_folder: Option<String> = None;
             loop {
-                let batch = folder_service
-                    .list_folders_batch_with_perms(
-                        fid_ref,
-                        user_id,
-                        after_folder.as_deref(),
-                        PROPFIND_BATCH_SIZE as usize,
-                    )
-                    .await
-                    .map_err(|e| std::io::Error::other(e.to_string()))?;
+                let batch = match first_folders.take() {
+                    Some(batch) => batch,
+                    None => {
+                        folder_service
+                            .list_folders_batch_with_link_etags(
+                                fid_ref,
+                                user_id,
+                                after_folder.as_deref(),
+                                PROPFIND_BATCH_SIZE as usize,
+                                None,
+                            )
+                            .await
+                            .map_err(|e| std::io::Error::other(e.to_string()))?
+                            .0
+                    }
+                };
 
                 if batch.is_empty() {
                     break;
@@ -875,7 +1358,15 @@ async fn handle_proppatch(
     // it as an empty target and reject the PROPPATCH itself below.
     let (drive_id, path) = match resolve_webdav_scope(&state, user.id, &path).await? {
         WebdavTarget::ListDrives => (Uuid::nil(), String::new()),
-        WebdavTarget::Scope(scope) => (scope.drive_id, scope.db_path),
+        WebdavTarget::ListShared => {
+            return Err(AppError::method_not_allowed(
+                "Method not supported on the @shared pseudo-root",
+            ));
+        }
+        WebdavTarget::Scope(scope) => {
+            reject_shared_root(&scope)?;
+            (scope.drive_id, scope.db_path)
+        }
     };
 
     // Active-lock guard (RFC 4918 §9.10.4): PROPPATCH writes properties,
@@ -1164,7 +1655,7 @@ async fn handle_head(
         return Err(AppError::not_found(format!("Resource not found: {}", path)));
     };
     let file = match resolved {
-        ResolvedResource::Folder(folder) => {
+        ResolvedResource::Folder(mut folder) => {
             let resource = state
                 .mount_router
                 .folder_authz_resource(&folder.id)
@@ -1172,6 +1663,11 @@ async fn handle_head(
             state
                 .authorization
                 .require(Subject::User(user.id), Permission::Read, resource)
+                .await?;
+            state
+                .applications
+                .folder_service
+                .apply_link_etag(user.id, &mut folder)
                 .await?;
             return Ok(Response::builder()
                 .status(StatusCode::OK)
@@ -2446,6 +2942,7 @@ async fn handle_mkcol(
     // It does NOT auto-create intermediate ancestors ("mkdir -p" semantics
     // violate the RFC and were causing the test failures).
     let scope = resolve_webdav_scope_or_405(&state, user.id, &path).await?;
+    reject_shared_root(&scope)?;
     let drive_id = scope.drive_id;
     let path = scope.db_path;
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
@@ -2644,6 +3141,7 @@ async fn handle_delete(
     // the drive-scope refactor) silently defeated every LOCK because
     // the lock-store key mismatch made every DELETE look unlocked.
     let scope = resolve_webdav_scope_or_405(&state, user.id, &path).await?;
+    reject_shared_root(&scope)?;
     let drive_id = scope.drive_id;
     let path = scope.db_path;
 
@@ -2774,17 +3272,15 @@ async fn handle_move(
     // for each side; we thread `src_drive_id` for source probes and
     // `dst_drive_id` for destination probes.
     let src_scope = resolve_webdav_scope_or_405(&state, user.id, &source_path).await?;
+    reject_shared_root(&src_scope)?;
     let dst_scope = resolve_webdav_scope_or_405(&state, user.id, &destination_path).await?;
+    reject_shared_root(&dst_scope)?;
+    // RFC 4918 §9.9.3: MOVE to self MUST return 403 Forbidden.
+    refuse_dav_overlap(user.id, "MOVE", (&src_scope).into(), (&dst_scope).into())?;
     let src_drive_id = src_scope.drive_id;
     let dst_drive_id = dst_scope.drive_id;
     let source_path = src_scope.db_path;
-    let path = source_path.clone();
     let destination_path = dst_scope.db_path;
-
-    // RFC 4918 §9.9.3: MOVE to self MUST return 403 Forbidden.
-    if destination_path == path {
-        return Err(AppError::forbidden("Cannot MOVE a resource to itself"));
-    }
 
     // Active-lock guard on the SOURCE (RFC 4918 §9.10.4): the move
     // removes the source resource, which counts as modifying it. The
@@ -3072,16 +3568,15 @@ async fn handle_copy(
     // `src_drive_id` for source probes and `dst_drive_id` for
     // destination probes.
     let src_scope = resolve_webdav_scope_or_405(&state, user.id, &source_path).await?;
+    reject_shared_root(&src_scope)?;
     let dst_scope = resolve_webdav_scope_or_405(&state, user.id, &destination_path).await?;
+    reject_shared_root(&dst_scope)?;
+    // RFC 4918 §9.8.5: COPY to self MUST return 403 Forbidden.
+    refuse_dav_overlap(user.id, "COPY", (&src_scope).into(), (&dst_scope).into())?;
     let src_drive_id = src_scope.drive_id;
     let dst_drive_id = dst_scope.drive_id;
     let source_path = src_scope.db_path;
     let destination_path = dst_scope.db_path;
-
-    // RFC 4918 §9.8.5: COPY to self MUST return 403 Forbidden.
-    if destination_path == source_path {
-        return Err(AppError::forbidden("Cannot COPY a resource to itself"));
-    }
 
     // Active-lock guard on the destination (RFC 4918 §9.10.4).
     if let Some(resp) = enforce_native_lock(
@@ -3595,6 +4090,147 @@ async fn handle_unlock(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn side<'a>(drive_id: Uuid, db_path: &'a str, link: Option<&'a (Uuid, String)>) -> DavSide<'a> {
+        DavSide {
+            drive_id,
+            db_path,
+            link_target: link,
+        }
+    }
+
+    #[test]
+    fn dav_overlap_reason_catches_aliases_and_nesting() {
+        let (home, team) = (Uuid::new_v4(), Uuid::new_v4());
+        let docs_link = (team, "Alice/Team/Docs".to_string());
+        let file = side(team, "Alice/Team/Docs/a.txt", None);
+
+        assert_eq!(
+            dav_overlap_reason(file, side(team, "Alice/Team/Docs/a.txt", None)),
+            Some("source_destination_overlap")
+        );
+        assert_eq!(
+            dav_overlap_reason(
+                side(team, "Alice/Team", None),
+                side(team, "Alice/Team/Docs/x", None)
+            ),
+            Some("source_destination_overlap")
+        );
+        assert_eq!(
+            dav_overlap_reason(
+                side(home, "Bob/Shares/Docs", Some(&docs_link)),
+                side(team, "Alice/Team/Docs", None)
+            ),
+            Some("link_target_overlap")
+        );
+        assert_eq!(
+            dav_overlap_reason(file, side(home, "Bob/Shares/Docs", Some(&docs_link))),
+            Some("link_target_overlap")
+        );
+
+        assert_eq!(
+            dav_overlap_reason(file, side(home, "Alice/Team/Docs/a.txt", None)),
+            None
+        );
+        assert_eq!(
+            dav_overlap_reason(
+                side(Uuid::nil(), "Bob/Shares/X", None),
+                side(Uuid::nil(), "Bob/Shares/X/y", None)
+            ),
+            None
+        );
+        assert_eq!(canonical_db_path("/Bob//Mine///b.txt/"), "Bob/Mine/b.txt");
+        assert_eq!(
+            dav_overlap_reason(file, side(team, "Alice/Team/Docs/a.txt2", None)),
+            None
+        );
+        assert_eq!(
+            dav_overlap_reason(
+                side(home, "Bob/Shares/Docs", Some(&docs_link)),
+                side(home, "Bob/Shares/Docs2", None)
+            ),
+            None
+        );
+    }
+
+    fn shared_root(id: Uuid, modified_at: i64, tree: Option<i64>) -> SharedRoot {
+        SharedRoot {
+            id,
+            name: "n".into(),
+            is_folder: true,
+            modified_at,
+            tree_modified_at: tree,
+            size: None,
+            mime_type: None,
+            blob_hash: None,
+        }
+    }
+
+    #[test]
+    fn shared_listing_etag_tracks_set_newest_change_and_ignores_order() {
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let ra = shared_root(a, 10, Some(20));
+        let rb = shared_root(b, 30, None);
+        let both = shared_listing_etag(&[ra.clone(), rb.clone()]);
+        assert_eq!(both, shared_listing_etag(&[rb.clone(), ra.clone()]));
+        assert_ne!(both, shared_listing_etag(std::slice::from_ref(&ra)));
+        assert_ne!(
+            shared_listing_etag(std::slice::from_ref(&ra)),
+            shared_listing_etag(std::slice::from_ref(&rb))
+        );
+        assert!(both.ends_with("-30"));
+        let bumped = shared_root(a, 10, Some(99));
+        assert!(shared_listing_etag(&[bumped, rb]).ends_with("-99"));
+        let empty = shared_listing_etag(&[]);
+        assert!(empty.ends_with("-0"));
+    }
+
+    #[test]
+    fn shared_root_dtos_split_folders_and_files_with_etags() {
+        let f = shared_root(Uuid::new_v4(), 5, Some(7));
+        let mut x = shared_root(Uuid::new_v4(), 9, None);
+        x.is_folder = false;
+        x.size = Some(3);
+        x.mime_type = Some("text/plain".into());
+        x.blob_hash = Some("ab".repeat(32));
+        let (folders, files) = shared_root_dtos(&[f.clone(), x.clone()]);
+        assert_eq!(folders.len(), 1);
+        assert_eq!(files.len(), 1);
+        assert_eq!(folders[0].etag, Folder::compute_etag(&f.id.to_string(), 7));
+        assert_eq!(files[0].etag, File::compute_etag(&"ab".repeat(32), 9));
+        assert_eq!(files[0].size, 3);
+    }
+
+    #[test]
+    fn shared_segment_listing_entry_and_garbage() {
+        assert!(matches!(
+            parse_shared_segment("@shared"),
+            Some(Ok(SharedSegment::Listing))
+        ));
+        let u = Uuid::new_v4();
+        let s = format!("@shared/{u}/a/b.txt");
+        assert!(
+            matches!(parse_shared_segment(&s), Some(Ok(SharedSegment::Entry { uuid, rest })) if uuid == u && rest == "a/b.txt")
+        );
+        assert!(matches!(
+            parse_shared_segment("@shared/not-a-uuid"),
+            Some(Err(()))
+        ));
+        assert!(parse_shared_segment("@drive/x").is_none());
+        assert!(parse_shared_segment("@sharedfolder/x").is_none());
+    }
+
+    #[test]
+    fn reject_shared_root_only_on_the_address() {
+        let mk = |shared_root| DriveScope {
+            drive_id: Uuid::nil(),
+            db_path: String::new(),
+            shared_root,
+            link_target: None,
+        };
+        assert!(reject_shared_root(&mk(false)).is_ok());
+        assert!(reject_shared_root(&mk(true)).is_err());
+    }
 
     // ── RFC 4918 §10.4 If: header parser + evaluator ────────────────
 

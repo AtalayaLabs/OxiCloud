@@ -95,6 +95,8 @@ pub struct TrashService {
     /// case the precheck is skipped and restore behaves as it did
     /// pre-feat/restore-and-overquota (no quota enforcement).
     storage_usage_service: Option<Arc<StorageUsageService>>,
+    /// Share mount handling on trash (docs/plan/share-mounts.md R2).
+    share_mounts: Option<Arc<crate::application::services::share_mount_service::ShareMountService>>,
 }
 
 impl TrashService {
@@ -119,7 +121,16 @@ impl TrashService {
             drive_repo,
             bus: None,
             storage_usage_service: None,
+            share_mounts: None,
         }
+    }
+
+    pub fn with_share_mounts(
+        mut self,
+        svc: Arc<crate::application::services::share_mount_service::ShareMountService>,
+    ) -> Self {
+        self.share_mounts = Some(svc);
+        self
     }
 
     /// Sets the lifecycle hook dispatcher (thumbnails, audio metadata, …).
@@ -266,6 +277,15 @@ impl TrashUseCase for TrashService {
                         Resource::Folder(folder_id),
                     )
                     .await?;
+
+                // Share mounts (docs/plan/share-mounts.md R2): trashing a mount is an
+                // unmount; mounts under a trashed ancestor move to the root first.
+                if let Some(svc) = &self.share_mounts {
+                    if svc.is_mount(item_id).await? {
+                        return svc.unmount(user_id, folder_id).await;
+                    }
+                    svc.relocate_mounts_under(user_id, folder_id).await?;
+                }
 
                 // Snapshot the parent BEFORE the trash UPDATE — the row
                 // still exists at this point (soft-delete flips
@@ -1080,6 +1100,7 @@ fn row_to_item_dto(row: TrashResourceRow) -> TrashResourceItemDto {
             updated_by: row.updated_by,
             is_favorite: row.is_favorite,
             is_shared: row.is_shared,
+            mount: None,
         };
         TrashResourceItemDto {
             resource_type: ResourceTypeDto::Folder,

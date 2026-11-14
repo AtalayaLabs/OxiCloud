@@ -781,6 +781,11 @@ jobs:
         env:
           BUILD_TARGET: release
 
+      - name: Run links tests
+        run: bash tests/links/run.sh
+        env:
+          BUILD_TARGET: release
+
       # OIDC integration: drives the SPA's SSO flow end-to-end against
       # the fake IdP (auto-approve login + consent, real PKCE/JWT
       # round-trip) and asserts the d1bbe8ba contract — OIDC callback

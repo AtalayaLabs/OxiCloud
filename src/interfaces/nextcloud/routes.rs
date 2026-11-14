@@ -59,14 +59,6 @@ pub fn nextcloud_routes_with_state(state: Arc<AppState>) -> Router<Arc<AppState>
                     rate_limit_login,
                 )),
         )
-        // Drive picker submission — finalises a multi-drive flow that
-        // paused after password verification. Public route by design:
-        // the flow token + single-use `pending_user_id` slot is the
-        // proof of authentication. See `login_v2_handler::handle_drive_pick`.
-        .route(
-            "/login/v2/flow/{token}/drive",
-            post(login_v2_handler::handle_drive_pick),
-        )
         // OIDC initiation from Nextcloud login page
         .route(
             "/login/v2/flow/{token}/oidc",

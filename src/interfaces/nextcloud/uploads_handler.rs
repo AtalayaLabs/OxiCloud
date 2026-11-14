@@ -167,16 +167,7 @@ async fn handle_propfind_session(
         .map_err(|e| AppError::internal_error(format!("Failed to list chunks: {}", e)))?
         .ok_or_else(|| AppError::not_found("Upload session not found"))?;
 
-    // Href MUST use `session.raw_username` (composite `admin~<uuid>` on
-    // non-home drives), NOT `user.username` (bare `admin`). The
-    // `NcSession` extractor cross-checks the URL `{user}` segment
-    // against `raw_username` and 403s on mismatch — a composite-cred
-    // client that PROPFINDs, then MOVEs a chunk href back to us, would
-    // otherwise 403 at the extractor before any handler runs. Same
-    // fix shape as `trashbin_handler::handle_propfind` and
-    // `handle_assemble`'s destination-URL parsing. Storage-side keying
-    // stays on `user.username` — upload sessions are per-user, not
-    // per-drive.
+    // Hrefs use `session.raw_username`; storage keying stays on `user.username`.
     // `write!` formats every element straight into a pre-sized `body`; the
     // old `push_str(&format!(…))` chain allocated a throwaway String per
     // element per chunk plus growth reallocations from `String::new()`, and
@@ -394,17 +385,7 @@ async fn handle_assemble(
     // span already carries it.
     let oc_mtime = super::parse_client_mtime(req.headers(), "upload")?;
 
-    // Strip the destination URL prefix using the SESSION's raw username
-    // (`admin~<drive-uuid>` on non-home drives), NOT `user.username`
-    // (bare `admin`). NC clients send `Destination: /remote.php/dav/files/
-    // {raw_username}/…` — the URL user-segment mirrors the credential
-    // they authenticated with. Passing bare `admin` here strips only
-    // `admin/` from a `admin~<uuid>/…` destination, leaving the tilde
-    // marker glued to the leading path segment; the write then targets
-    // `<drive-root>/~<uuid>/…` and fails with a parent-folder lookup
-    // error. Matches `webdav_handler::handle_move`'s call to
-    // `extract_nc_subpath_from_dest(&destination, url_user)` where
-    // `url_user = &session.raw_username` (webdav_handler.rs:1177).
+    // The Destination prefix is the session's raw username.
     let dest_subpath = extract_files_subpath(&destination, &session.raw_username)
         .ok_or_else(|| AppError::bad_request("Invalid Destination URL"))?;
 
@@ -421,21 +402,18 @@ async fn handle_assemble(
 
     let upload_service = &state.applications.file_upload_service;
 
-    // Path-based lookups below scope by `drive_id`. The NC session's
-    // chroot is always populated for path-scoped handlers (see
-    // `NcSession::require_chroot`); the FolderDto carries `drive_id`
-    // post-D0.
     let chroot = session.require_chroot()?;
-    let drive_id = chroot.drive_id;
-
-    // Route through `nc_to_internal_path(chroot, …)` so the write
-    // lands under the caller's actual default-drive root (not the
-    // literal "Personal" folder). Post-D3 chroot resolution puts the
-    // correct FolderDto — including the drive's real root name — on
-    // the NcSession; secondary drives with SQL-provisioned sibling
-    // root names now work.
-    let internal_path =
-        crate::interfaces::nextcloud::webdav_handler::nc_to_internal_path(chroot, &dest_subpath)?;
+    let crate::interfaces::api::handlers::webdav_handler::DavLocation {
+        drive_id,
+        db_path: internal_path,
+        ..
+    } = crate::interfaces::nextcloud::webdav_handler::nc_locate(
+        &state,
+        user.id,
+        chroot,
+        &dest_subpath,
+    )
+    .await?;
 
     let filename = filename_from_path(&dest_subpath).to_string();
     let ingested = ingest_stream_to_cas(

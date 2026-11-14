@@ -596,6 +596,17 @@ pub struct SharedWithMeItemDto {
     pub granted_by: Uuid,
     /// Full resource details. Shape is determined by `resource_type`.
     pub resource: ResourceContentDto,
+    /// The caller's link to this resource; absent when links are off and for files.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<LinkStateDto>,
+}
+
+/// The caller's link state for a shared folder or drive.
+#[derive(Clone, Debug, Serialize, ToSchema)]
+pub struct LinkStateDto {
+    pub link_id: Option<Uuid>,
+    pub link_name: Option<String>,
+    pub declined: bool,
 }
 
 /// Derive the closest-matching role label from a set of permissions.

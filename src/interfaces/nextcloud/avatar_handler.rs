@@ -138,11 +138,6 @@ pub async fn handle_avatar(
 ) -> Response {
     let size = size.clamp(16, 1024);
 
-    let username = match username.split_once("~") {
-        None => username,
-        Some((u, _)) => u.to_string(),
-    };
-
     // ── Stored profile image — preferred when present ───────────
     if let Some(auth_svc) = state.auth_service.as_ref()
         && let Ok(user) = auth_svc

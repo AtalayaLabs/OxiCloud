@@ -744,8 +744,11 @@ export const NOTIFICATION_KIND = {
 	SHARE_GRANTED: 'share_granted',
 	NEW_LOGIN_FROM_NEW_DEVICE: 'new_login_from_new_device',
 	JOB_COMPLETED_FOR_YOU: 'job_completed_for_you',
-	STORAGE_QUOTA_THRESHOLD: 'storage_quota_threshold'
+	STORAGE_QUOTA_THRESHOLD: 'storage_quota_threshold',
+	LINK_TARGET_RENAMED: 'link_target_renamed'
 } as const;
+
+export type { LinkTargetRenamedPayload } from './generated/openapi/types.gen';
 
 // `share_granted` notification payload. Authoritative on the
 // generated SDK; the hand-written mirror this replaced carried

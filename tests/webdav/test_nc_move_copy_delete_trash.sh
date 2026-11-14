@@ -382,6 +382,26 @@ DEST_STATUS=$(nc_status_propfind_depth0 "$NC_FILES_BASE/restored-g8.txt")
     || fail "K2: Destination header is now honoured (status $DEST_STATUS at requested dest) — behaviour changed; flip K2/K3 to RFC 4918 MOVE semantics."
 
 # ─────────────────────────────────────────────────────────────
+# K2b — restoring onto an occupied path is refused with 412
+# ─────────────────────────────────────────────────────────────
+echo "  K2b: trash MOVE onto an occupied Destination → 412"
+put_nc_file "k2b-collision.txt" "first version"
+nc_curl -o /dev/null -X DELETE "$NC_FILES_BASE/k2b-collision.txt"
+put_nc_file "k2b-collision.txt" "second version"
+BODY=$(nc_curl -X PROPFIND -H "Depth: 1" "$NC_TRASH_BASE/")
+K2B_HREF=$(extract_response_href_containing "$BODY" "k2b-collision")
+K2B_ID=$(basename "$K2B_HREF")
+[[ -n "$K2B_ID" ]] || fail "K2b: trashed k2b-collision.txt not found"
+STATUS=$(nc_curl -o /dev/null -w "%{http_code}" -X MOVE \
+    -H "Destination: $NC_FILES_BASE/k2b-collision.txt" \
+    "$NC_TRASH_BASE/$K2B_ID")
+[[ "$STATUS" == "412" ]] \
+    || fail "K2b: expected 412 for restore onto an occupied path, got $STATUS"
+nc_curl -o /dev/null -X DELETE "$NC_TRASH_BASE/$K2B_ID"
+nc_curl -o /dev/null -X DELETE "$NC_FILES_BASE/k2b-collision.txt"
+pass "K2b: restore onto an occupied Destination → 412"
+
+# ─────────────────────────────────────────────────────────────
 # K3 — Delete then permanently delete via trashbin DELETE
 #
 # K2 restored the file to its original path `/g8-doomed.txt`

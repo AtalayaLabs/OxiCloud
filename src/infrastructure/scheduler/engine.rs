@@ -169,15 +169,27 @@ pub(super) async fn dispatch(
                 .interval
                 .map(|d| d.as_millis())
                 .unwrap_or(0);
-            tracing::warn!(
-                target: "oxicloud::scheduler",
-                event = "job.tick_skipped",
-                job = %name,
-                interval_ms = interval_ms,
-                running_for_ms = running_for_ms,
-                "{} still running past its interval — tick skipped",
-                name,
-            );
+            if entry.handler.overlapping_ticks_expected() {
+                tracing::debug!(
+                    target: "oxicloud::scheduler",
+                    event = "job.tick_skipped",
+                    job = %name,
+                    interval_ms = interval_ms,
+                    running_for_ms = running_for_ms,
+                    "{} still running — tick skipped",
+                    name,
+                );
+            } else {
+                tracing::warn!(
+                    target: "oxicloud::scheduler",
+                    event = "job.tick_skipped",
+                    job = %name,
+                    interval_ms = interval_ms,
+                    running_for_ms = running_for_ms,
+                    "{} still running past its interval — tick skipped",
+                    name,
+                );
+            }
             advance_next_run(&entry);
             return JobOutcome::ok_with(0, serde_json::json!({ "skipped": "already_running" }));
         }
@@ -310,7 +322,13 @@ pub(super) async fn dispatch(
 
     // Log line. `outcome=ok` runs are informational; `outcome=err` include
     // the diagnostic `cause` field.
-    log_outcome(name, &outcome, cause, elapsed_ms);
+    log_outcome(
+        name,
+        &outcome,
+        cause,
+        elapsed_ms,
+        entry.handler.quiet_when_idle(),
+    );
 
     // Publish `JobRunEnded` on `Topic::Job(name)`. This is the
     // signal the FE watches for to terminate its subscription
@@ -394,7 +412,13 @@ fn translate_join(
 /// Emit the uniform `oxicloud::scheduler` log line for a completed run.
 /// Distinct Ok/Err branches so the tracing macros pick up the fields at
 /// compile time — `tracing` doesn't expand conditional field lists.
-fn log_outcome(name: &str, outcome: &JobOutcome, cause: Option<ErrCause>, elapsed_ms: u128) {
+fn log_outcome(
+    name: &str,
+    outcome: &JobOutcome,
+    cause: Option<ErrCause>,
+    elapsed_ms: u128,
+    quiet_when_idle: bool,
+) {
     // Also render elapsed inline in the human-readable message so
     // `tail -f` operators see the duration without waiting on a
     // structured log renderer to project the `elapsed_ms` field.
@@ -422,6 +446,20 @@ fn log_outcome(name: &str, outcome: &JobOutcome, cause: Option<ErrCause>, elapse
                 name,
                 elapsed,
                 count,
+            );
+        }
+        JobOutcome::Ok { count: 0, extra } if quiet_when_idle => {
+            tracing::debug!(
+                target: "oxicloud::scheduler",
+                event = "job.run",
+                job = %name,
+                outcome = "ok",
+                count = 0,
+                elapsed_ms = elapsed_ms,
+                extra = %extra,
+                "job {} ran in {} — idle",
+                name,
+                elapsed,
             );
         }
         JobOutcome::Ok { count, extra } => {
@@ -524,6 +562,30 @@ mod tests {
         if let JobOutcome::Err { message: msg } = outcome {
             assert!(msg.contains("panicked"), "expected panic marker in: {msg}");
         }
+    }
+
+    #[tokio::test]
+    async fn is_running_tracks_the_in_flight_permit() {
+        let registry = Arc::new(JobRegistry::new());
+        registry
+            .register(
+                Arc::new(CountingHandler {
+                    name: "slow".to_string(),
+                    calls: Arc::new(AtomicU64::new(0)),
+                    sleep: Duration::from_millis(200),
+                }),
+                None,
+                None,
+            )
+            .await;
+        assert!(!registry.is_running("slow").await);
+        assert!(!registry.is_running("missing").await);
+        let reg = registry.clone();
+        let bg = tokio::spawn(async move { reg.trigger("slow", &JobRunArgs::default()).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(registry.is_running("slow").await);
+        bg.await.unwrap();
+        assert!(!registry.is_running("slow").await);
     }
 
     #[tokio::test]

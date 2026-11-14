@@ -51,6 +51,7 @@ const DEFAULT_FEATURES: ServerFeatures = {
 	// shows the moment it exists.
 	calendars: true,
 	nextcloud: false,
+	links_mode: 'off',
 	markdown_collab: false,
 	// Shared-worker bus — on by default (opt-out). The flag gates FE
 	// behaviour only; a client that can't reach the server to read it

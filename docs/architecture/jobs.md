@@ -45,6 +45,10 @@ operator benefit.
 | `dedup_gc`         | on-demand only (trash cleanup runs it inline as its tail step) | `force=true` → `garbage_collect_force()` (skip orphan grace) | [`blob_handler.rs`](../../src/infrastructure/services/blob_handler.rs) |
 | `grant_cleanup`    | `OXICLOUD_GRANT_CLEANUP_INTERVAL_HOURS` (default 24h) — feature-gated by `OXICLOUD_GRANT_CLEANUP_ENABLED` | `force=true` → `purge(Some(0))` (grace_days=0) | [`grant_cleanup_service.rs`](../../src/infrastructure/services/grant_cleanup_service.rs) |
 | `collab_idle_gc`   | `OXICLOUD_COLLAB_IDLE_SCAN_INTERVAL_SECS` (default 300s = 5 min) — registered only when `OXICLOUD_ENABLE_MARKDOWN_COLLAB=true` | ignored — the sweep is unconditional; per-tick work is bounded by `batch_limit`, not by a force flag | [`collab_idle_gc_service.rs`](../../src/infrastructure/services/collab_idle_gc_service.rs) |
+| `links_settle`     | `OXICLOUD_LINKS_SETTLE_INTERVAL_MS` (default 2000 ms, min 200) | ignored | [`links_settle_job.rs`](../../src/infrastructure/services/links_settle_job.rs) |
+| `links_expiry_sweep` | `OXICLOUD_LINKS_EXPIRY_SWEEP_SECS` (default 600 s) | ignored | [`links_expiry_sweep_job.rs`](../../src/infrastructure/services/links_expiry_sweep_job.rs) |
+| `links_backfill`   | on-demand; also queued at boot when `OXICLOUD_LINKS_MODE` switches to `auto` (requires `auto`) | ignored | [`links_backfill_job.rs`](../../src/infrastructure/services/links_backfill_job.rs) |
+| `links_drop`       | on-demand only (requires `OXICLOUD_LINKS_MODE=off`); deletes all links and declines | ignored | [`links_backfill_job.rs`](../../src/infrastructure/services/links_backfill_job.rs) |
 
 > ⚠ **This table lists only the plain `JobHandler` tenants, and that is
 > now the minority.** Every long-running job — `backend_migration`,

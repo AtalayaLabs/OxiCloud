@@ -8,7 +8,7 @@ use crate::application::ports::file_ports::{FileUploadUseCase, StoredBlob};
 use crate::application::ports::resource_access_hook::ResourceAccessHook;
 use crate::application::ports::storage_ports::{FileReadPort, FileWritePort, StorageUsagePort};
 use crate::application::services::storage_usage_service::StorageUsageService;
-use crate::common::errors::DomainError;
+use crate::common::errors::{DomainError, ErrorKind};
 use crate::domain::services::authorization::{Permission, Resource, Subject};
 use crate::infrastructure::repositories::pg::FileBlobReadRepository;
 use crate::infrastructure::repositories::pg::FileBlobWriteRepository;
@@ -712,17 +712,23 @@ impl FileUploadUseCase for FileUploadService {
         // `drive_id` scopes the parent lookup to the same drive as the
         // incoming write (post-D0 `storage.folders.path` repeats across
         // drives).
-        let parent_id = if path_normalized.contains('/') {
-            if let Some(file_read) = &self.file_read {
-                file_read
+        let parent_id = match &self.file_read {
+            Some(file_read) if path_normalized.contains('/') => {
+                match file_read
                     .get_parent_folder_id(path_normalized, drive_id)
                     .await
-                    .ok()
-            } else {
-                None
+                {
+                    Ok(id) => Some(id),
+                    Err(e) if e.kind == ErrorKind::NotFound => {
+                        return Err(DomainError::conflict(
+                            "FileUpload",
+                            format!("parent folder of {path_normalized} does not exist"),
+                        ));
+                    }
+                    Err(e) => return Err(e),
+                }
             }
-        } else {
-            None
+            _ => None,
         };
 
         // Create branch — caller must have `Create` on the parent
@@ -730,8 +736,7 @@ impl FileUploadUseCase for FileUploadService {
         //   * `parent_id.is_some()` → caller needs Create on the
         //     parent Folder resource.
         //   * `parent_id.is_none()` → the write lands at the drive
-        //     root (either the path was single-segment, or the
-        //     parent-folder lookup failed). We require Create on
+        //     root (the path was single-segment). We require Create on
         //     the Drive itself — bundled with owner/editor/contributor
         //     role_grants, refused for viewer/commenter.
         let create_resource = match &parent_id {
