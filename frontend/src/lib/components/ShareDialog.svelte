@@ -110,6 +110,16 @@
 		{ v: 'viewer', l: t('share.role.canView', 'Can view'), icon: 'eye' }
 	];
 	const ROLE_ORDER: ShareRole[] = ['owner', 'editor', 'viewer'];
+	/**
+	 * `ROLES` reversed: view → edit → manage.
+	 *
+	 * The member list sorts most-privileged first, which is the right order
+	 * for reading who can do what. A picker is the opposite job — the safest
+	 * option should be the one you land on first — so the add form walks up
+	 * instead of down. Derived from `ROLES` rather than written out again, so
+	 * a new role cannot appear in one and not the other.
+	 */
+	const roleChoices = [...ROLES].reverse();
 	function roleLabel(r: ShareRole): string {
 		return ROLES.find((x) => x.v === r)?.l ?? r;
 	}
@@ -185,15 +195,38 @@
 	let newRole = $state<ShareRole>('viewer');
 	let newExpiry = $state<string | null>(null);
 	/**
-	 * The recipient chosen from the search results, not yet granted.
+	 * Recipients chosen from the search results, not yet granted.
 	 *
 	 * Picking a result used to create the grant outright, which meant the
 	 * role and expiry beside the search box only had any effect if the user
 	 * had set them BEFORE typing a name — so in practice everyone was added
-	 * as the default role and corrected afterwards. Holding the choice here
+	 * as the default role and corrected afterwards. Holding the choices here
 	 * lets the role be decided first, and makes [Add] the moment of commit.
+	 *
+	 * A LIST, because sharing with a handful of people at one access level is
+	 * the normal case: picking a name used to swap the search box out for the
+	 * chosen chip, so the second name could not be typed until the first had
+	 * been granted — one round trip, one role press and one [Add] per person.
+	 * Now the field stays, the picks queue up as chips, and [Add] grants them
+	 * all at the role above.
 	 */
-	let selected = $state<Recipient | null>(null);
+	let picks = $state<Recipient[]>([]);
+	/**
+	 * The search field itself, so a pick or a grant can hand focus back to
+	 * it. Adding several people is a typing job; losing the caret after each
+	 * one turns it into a mouse job.
+	 */
+	let searchInput = $state<HTMLInputElement | null>(null);
+	/**
+	 * Stable identity for a recipient, in the SUBJECT vocabulary the member
+	 * list uses — an `email` result becomes a `user` subject once granted, so
+	 * it has to key as one here. Keying it as `email:` instead meant an
+	 * invitee already queued, or already a member, was still offered by the
+	 * search: two keys for one person, in one filter.
+	 */
+	function recipientKey(r: Recipient): string {
+		return `${r.type === 'email' ? 'user' : r.type}:${r.id}`;
+	}
 	// Add-grant inline-error UX via the shared composable — a failed
 	// `createGrant` (duplicate grant, policy-forbidden, authz denial)
 	// renders inline below the add row instead of as a corner toast.
@@ -378,10 +411,42 @@
 	function onQueryInput() {
 		if (searchTimer) clearTimeout(searchTimer);
 		searchTimer = setTimeout(async () => {
-			const existing = new Set(members.map((m) => `${m.subject.type}:${m.subject.id}`));
-			results = (await searchRecipients(query)).filter(
-				(r) => !existing.has(`${r.type === 'email' ? 'user' : r.type}:${r.id}`)
+			// Only DIRECT members are filtered out. Hiding everyone already
+			// listed looked right and was wrong: someone whose access comes
+			// from a parent folder appears in this dialog as a read-only
+			// inherited row, so they were unsearchable — there was no way to
+			// give them a grant HERE, which is exactly what you want when a
+			// file moves out from under that parent, or when they need a
+			// different role on this one resource. An inherited row is a
+			// statement about an ancestor; it says nothing about this
+			// resource's own grants.
+			// Direct members AND anyone already queued: `selectRecipient`
+			// dedupes, but offering a name that is sitting in a chip right
+			// above the field invites a second press that looks like it did
+			// nothing. Built in one expression rather than mutated — a plain
+			// `Set` that is written to trips `svelte/prefer-svelte-reactivity`,
+			// and this one is ephemeral, not state.
+			const direct = new Set([
+				...members.filter((m) => !m.inherited).map((m) => `${m.subject.type}:${m.subject.id}`),
+				...picks.map(recipientKey)
+			]);
+			// Where the inherited access comes from, keyed the same way, so a
+			// result can say so instead of looking like a duplicate.
+			const inheritedFrom = new Map(
+				members
+					.filter((m) => m.inherited)
+					.map((m) => [`${m.subject.type}:${m.subject.id}`, m.inherited!.label])
 			);
+			results = (await searchRecipients(query))
+				.filter((r) => !direct.has(recipientKey(r)))
+				.map((r) => {
+					const source = inheritedFrom.get(recipientKey(r));
+					if (!source) return r;
+					// Appended, not replacing: the existing sublabel is usually
+					// the email, which is how you tell two people apart.
+					const note = t('share.already_via', { source }, 'already has access via {{source}}');
+					return { ...r, sublabel: r.sublabel ? `${r.sublabel} · ${note}` : note };
+				});
 		}, 200);
 	}
 
@@ -390,11 +455,22 @@
 		return { type: r.type, id: r.id };
 	}
 
-	/** Choose a recipient; nothing is granted until [Add]. */
+	/** Queue a recipient; nothing is granted until [Add]. */
 	function selectRecipient(r: Recipient) {
-		selected = r;
+		if (!picks.some((p) => recipientKey(p) === recipientKey(r))) picks.push(r);
+		// The query goes, the field stays: the next name is typed straight
+		// into it. Results are dropped so the list does not linger over a
+		// name already queued.
 		query = '';
 		results = [];
+		// Picking happens by clicking a result, which takes focus — and that
+		// result is then removed, leaving focus nowhere. Hand it back to the
+		// field so a second name is just typing, no mouse trip.
+		searchInput?.focus();
+	}
+
+	function unpick(r: Recipient) {
+		picks = picks.filter((p) => recipientKey(p) !== recipientKey(r));
 	}
 
 	/**
@@ -428,22 +504,48 @@
 	}
 
 	async function addSelected() {
-		if (!item || !selected || addGrantAction.busy) return;
+		if (!item || picks.length === 0 || addGrantAction.busy) return;
 		await addGrantAction.run(async () => {
-			const res = await createGrant(
-				subjectInput(selected!),
-				{ type: item!.kind, id: item!.id },
-				newRole,
-				expiryToIso(newExpiry)
-			);
-			// Only the selection is cleared: role and expiry are kept so
-			// adding several people at the same access level is one click
-			// each, which is the common case.
-			selected = null;
-			summarizeNotifications(res.notification.outcomes);
+			// Sequential, not `Promise.all`: these are grant writes on one
+			// resource and the server rejects some of them for policy reasons
+			// (`drive_policies`), which is far easier to attribute to a person
+			// when the calls are ordered. A handful of recipients is the
+			// realistic size here, so the round trips are not worth racing.
+			const outcomes: NotifyOutcome[] = [];
+			const failed: Recipient[] = [];
+			let firstError: unknown = null;
+			for (const r of picks) {
+				try {
+					const res = await createGrant(
+						subjectInput(r),
+						{ type: item!.kind, id: item!.id },
+						newRole,
+						expiryToIso(newExpiry)
+					);
+					outcomes.push(...res.notification.outcomes);
+				} catch (e) {
+					failed.push(r);
+					firstError ??= e;
+				}
+			}
+			// The granted ones leave the queue and the refused ones stay, so a
+			// retry is one press and nobody is granted twice. Role and expiry
+			// are kept either way — adding several people at one access level
+			// is the common case, and re-choosing the role each time was the
+			// friction that made this a list in the first place.
+			picks = failed;
+			summarizeNotifications(outcomes);
 			onchange?.(item!.id);
 			await loadGrants();
 			announceSharedState();
+			// Same reason as after a pick: [Add] took the focus, and the next
+			// thing anyone does in this dialog is usually type another name.
+			searchInput?.focus();
+			// A partial success must not look like a success: rethrowing the
+			// first refusal puts the SERVER's reason inline (duplicate grant,
+			// policy, authz) under a queue that still shows exactly who did
+			// not make it.
+			if (firstError !== null) throw firstError;
 		});
 	}
 
@@ -884,95 +986,156 @@
 					{t('share.directoryUnavailable', 'User directory unavailable')}
 				</p>
 			{:else}
+				<!--
+					Reveal-on-pick: at rest this is ONE full-width field, the only
+					one that holds free text. Role, expiry and [Add] appear once a
+					recipient is chosen, which is the first moment any of them
+					means anything — before that [Add] was merely greyed and the
+					role was a choice about nobody. It also keeps the form short
+					while you are still typing a name, so the member list below
+					stays in view.
+				-->
 				<div class="add-row">
-					<div class="search">
-						<!--
-							Either the search box or the chosen recipient, never both:
-							once someone is picked the search has done its job, and
-							leaving the input there invited a second name to be typed
-							over a selection that was about to be granted.
+					<div class="add-row__line">
+						<div class="search">
+							<!--
+							The picks and the search box, TOGETHER. Picking used to
+							swap the field out for the chosen chip, which meant the
+							second name could not be typed until the first had been
+							granted: one round trip, one role press and one [Add] per
+							person. They now queue here and the field stays, so a
+							handful of people at one access level is one [Add].
+
+							`share-dialog-selected` stays on the queue container —
+							three e2e specs assert it appears after picking a result.
 						-->
-						{#if selected}
-							<div class="sh-picked" data-testid="share-dialog-selected">
-								<Icon
-									name={selected.type === 'group'
-										? 'user-group'
-										: selected.type === 'email'
-											? 'envelope'
-											: 'user'}
-								/>
-								<span class="sh-picked__label">{selected.label}</span>
-								<button
-									class="btn-action"
-									data-testid="share-dialog-clear-selection"
-									title={t('share.clear_selection', 'Choose someone else')}
-									onclick={() => (selected = null)}><Icon name="times" /></button
-								>
-							</div>
-						{:else}
+							{#if picks.length > 0}
+								<div class="sh-picks" data-testid="share-dialog-selected">
+									{#each picks as p (p.type + p.id)}
+										<span class="sh-picked" data-testid={`share-dialog-pick-${p.type}-${p.id}`}>
+											<Icon
+												name={p.type === 'group'
+													? 'user-group'
+													: p.type === 'email'
+														? 'envelope'
+														: 'user'}
+											/>
+											<span class="sh-picked__label">{p.label}</span>
+											<button
+												class="btn-action"
+												data-testid={`share-dialog-unpick-${p.type}-${p.id}`}
+												title={t('share.remove_pick', 'Remove from the list')}
+												onclick={() => unpick(p)}><Icon name="times" /></button
+											>
+										</span>
+									{/each}
+								</div>
+							{/if}
 							<input
+								bind:this={searchInput}
 								data-testid="share-dialog-search-input"
-								placeholder={t('share.add_people', 'Add people, groups, or email…')}
+								placeholder={picks.length > 0
+									? t('share.add_someone_else', 'Add someone else…')
+									: t('share.add_people', 'Add people, groups, or email…')}
 								bind:value={query}
 								oninput={onQueryInput}
 								autocomplete="off"
 							/>
-						{/if}
-						{#if results.length > 0}
-							<ul class="results">
-								{#each results as r (r.type + r.id)}
-									<li>
-										<button
-											class="result"
-											data-testid={`share-dialog-result-${r.type}-${r.id}`}
-											onclick={() => selectRecipient(r)}
-										>
-											<Icon
-												name={r.type === 'group'
-													? 'user-group'
-													: r.type === 'email'
-														? 'envelope'
-														: 'user'}
-											/>
-											<span class="result__label">{r.label}</span>
-											{#if r.type === 'email'}
-												<span class="result__sub"
-													>{t('share.inviteByEmail', 'Invite by email')}</span
-												>
-											{:else if r.sublabel}
-												<span class="result__sub">{r.sublabel}</span>
-											{/if}
-										</button>
-									</li>
-								{/each}
-							</ul>
-						{/if}
+							{#if results.length > 0}
+								<ul class="results">
+									{#each results as r (r.type + r.id)}
+										<li>
+											<button
+												class="result"
+												data-testid={`share-dialog-result-${r.type}-${r.id}`}
+												onclick={() => selectRecipient(r)}
+											>
+												<Icon
+													name={r.type === 'group'
+														? 'user-group'
+														: r.type === 'email'
+															? 'envelope'
+															: 'user'}
+												/>
+												<span class="result__label">{r.label}</span>
+												{#if r.type === 'email'}
+													<span class="result__sub"
+														>{t('share.inviteByEmail', 'Invite by email')}</span
+													>
+												{:else if r.sublabel}
+													<span class="result__sub">{r.sublabel}</span>
+												{/if}
+											</button>
+										</li>
+									{/each}
+								</ul>
+							{/if}
+						</div>
 					</div>
-					<select
-						class="role-select"
-						data-testid="share-dialog-new-role-select"
-						bind:value={newRole}
-						aria-label={t('share.role_label', 'Role')}
-					>
-						{#each ROLES as r (r.v)}<option value={r.v}>{r.l}</option>{/each}
-					</select>
-					{@render expiryChip(newExpiry, (v) => (newExpiry = v))}
-					<!--
-						The commit. Role and expiry above are only meaningful because
-						this exists: while picking a result granted access outright,
-						they had to be set before the name was typed, so nobody did.
+					{#if picks.length > 0}
+						<!--
+							Three visible choices rather than a dropdown: the role is
+							the consequential decision here, and a `<select>` hid all
+							three behind the one it happened to default to. Same
+							radiogroup shape as the appearance switcher in the user
+							menu, worded rather than icon-only — an icon alone cannot
+							distinguish "can edit" from "can manage" to someone who
+							has not learned the glyphs.
 
-						Still immediate — the dialog gains no Save. Its own single
-						button stays [Close], and this adds one recipient per press.
-					-->
-					<button
-						class="btn btn-primary add-row__submit"
-						data-testid="share-dialog-add-btn"
-						disabled={!selected || addGrantAction.busy}
-						onclick={addSelected}
-					>
-						{addGrantAction.busy ? t('share.adding', 'Adding…') : t('share.add', 'Add')}
-					</button>
+							Ascending order (view → edit → manage) so the safest
+							choice is first and reads left to right; `ROLES` itself is
+							ordered the other way for the member list's sort.
+						-->
+						<div class="role-choice" role="radiogroup" aria-label={t('share.role_label', 'Role')}>
+							{#each roleChoices as r (r.v)}
+								<button
+									type="button"
+									class="role-choice__opt"
+									class:role-choice__opt--active={newRole === r.v}
+									role="radio"
+									aria-checked={newRole === r.v}
+									data-testid={`share-dialog-role-${r.v}-btn`}
+									onclick={() => (newRole = r.v)}
+								>
+									<Icon name={r.icon} />
+									<span>{r.l}</span>
+								</button>
+							{/each}
+						</div>
+						<div class="add-row__line add-row__line--commit">
+							{@render expiryChip(newExpiry, (v) => (newExpiry = v))}
+							<!--
+								The commit. Role and expiry are only meaningful
+								because this exists: while picking a result granted
+								access outright, they had to be set before the name
+								was typed, so nobody did.
+
+								Still immediate — the dialog gains no Save. Its own
+								single button stays [Close], and this grants the whole
+								queue at the role above. `disabled` keeps the busy
+								guard; the empty-queue half is now also structural,
+								since this button only exists once someone is picked.
+
+								The count is in the label once there is more than one
+								to grant: [Add] alone, over a queue of five chips,
+								reads as "add the one I just typed".
+							-->
+							<button
+								class="btn btn-primary add-row__submit"
+								data-testid="share-dialog-add-btn"
+								disabled={picks.length === 0 || addGrantAction.busy}
+								onclick={addSelected}
+							>
+								{#if addGrantAction.busy}
+									{t('share.adding', 'Adding…')}
+								{:else if picks.length > 1}
+									{t('share.add_n', { n: picks.length }, 'Add {{n}}')}
+								{:else}
+									{t('share.add', 'Add')}
+								{/if}
+							</button>
+						</div>
+					{/if}
 				</div>
 				{#if addGrantAction.error}
 					<p class="form-error" role="alert">{addGrantAction.error}</p>
@@ -1421,19 +1584,77 @@
 	 */
 	.add-row {
 		display: flex;
+		flex-direction: column;
 		gap: var(--space-2);
 		padding-bottom: var(--space-4);
 		border-bottom: 1px solid var(--color-border);
 		margin-bottom: var(--space-4);
-		align-items: center;
-		flex-wrap: wrap;
 	}
 
-	/* Stays on the row's right edge. The row wraps only when the fixed
-	   members (role, expiry, button) alone are wider than the dialog —
-	   the search box gives up its width first. */
+	/* Two fixed lines rather than one wrapping row: the name field keeps the
+	   first line (minus the role select) whatever the dialog's width, instead
+	   of being the flex item that gives up its width to three controls that
+	   each have an intrinsic one. */
+	.add-row__line {
+		display: flex;
+		gap: var(--space-2);
+		align-items: center;
+	}
+
+	/* Expiry at the left, [Add] at the right edge — the commit sits where a
+	   dialog's primary action is looked for. */
+	.add-row__line--commit {
+		justify-content: space-between;
+	}
+
+	/*
+	 * Role picker, same pill-on-a-muted-track shape as the appearance
+	 * switcher in the user menu (`ported/userMenu.css::.theme-segmented`),
+	 * but worded and full width: three equal segments that divide the row,
+	 * so the control does not jump when the chosen label is longer than the
+	 * others.
+	 */
+	.role-choice {
+		display: flex;
+		gap: var(--space-0-5);
+		padding: var(--space-0-5);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-full);
+		background: var(--color-bg-muted);
+	}
+
+	.role-choice__opt {
+		display: inline-flex;
+		flex: 1;
+		gap: var(--space-2);
+		align-items: center;
+		justify-content: center;
+		padding: var(--space-2) var(--space-3);
+		border: none;
+		border-radius: var(--radius-full);
+		background: transparent;
+		color: var(--color-text-subtle);
+		font-size: var(--text-sm);
+		cursor: pointer;
+		transition:
+			background 0.15s ease,
+			color 0.15s ease;
+	}
+
+	.role-choice__opt:hover {
+		color: var(--color-text);
+	}
+
+	.role-choice__opt--active {
+		background: var(--color-accent);
+		color: var(--color-on-accent);
+	}
+
+	.role-choice__opt--active:hover {
+		color: var(--color-on-accent);
+	}
+
 	.add-row__submit {
-		margin-left: auto;
 		flex: none;
 	}
 
@@ -1459,19 +1680,32 @@
 
 	/* The chosen recipient, occupying the search box's place. Bordered like
 	   an input so the row keeps its shape when the field is swapped out. */
-	.sh-picked {
+	/* The queue, above the field it was typed into. Wraps rather than
+	   scrolls: five names is a plausible share and a hidden chip is a person
+	   about to be granted access unnoticed. */
+	.sh-picks {
 		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-1);
+		margin-bottom: var(--space-1);
+	}
+
+	/* One queued recipient. Pill-shaped and compact, so a row of them does
+	   not read as a row of inputs — they are a selection, not fields. */
+	.sh-picked {
+		display: inline-flex;
 		align-items: center;
-		gap: var(--space-2);
+		gap: var(--space-1);
+		max-width: 100%;
 		min-width: 0;
-		padding: var(--space-2);
+		padding: var(--space-0-5) var(--space-1) var(--space-0-5) var(--space-2);
 		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
+		border-radius: var(--radius-full);
 		background: var(--color-bg-surface);
+		font-size: var(--text-sm);
 	}
 
 	.sh-picked__label {
-		flex: 1 1 auto;
 		min-width: 0;
 		overflow: hidden;
 		text-overflow: ellipsis;

@@ -207,7 +207,12 @@ fn user_to_contact(user: PublicUserDto) -> ContactDto {
         full_name: Some(full_name),
         first_name: user.given_name.clone(),
         last_name: user.family_name.clone(),
-        nickname: None,
+        // The username, in the vCard slot for it. It used to be dropped here,
+        // which is why a lookup by username found nobody in the share dialog:
+        // the system book is that dialog's directory, and the one field most
+        // people know their colleagues by was not in the projection. CardDAV
+        // clients get it too — NICKNAME is where they look for a handle.
+        nickname: user.username.clone(),
         email: vec![EmailDto {
             email: user.email,
             r#type: "work".to_string(),
