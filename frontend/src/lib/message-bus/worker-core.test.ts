@@ -50,6 +50,8 @@ function makeFakeTransport(initialState: ConnectionState = 'connected'): {
 	fireBinary: (fileId: string, bytes: ArrayBuffer) => void;
 	fireWriteDenied: (fileId: string, params: RtWriteDeniedParams) => void;
 	fireNeedTicket: (nonce: number) => void;
+	/** Play the transport re-acking a topic after a reconnect replay. */
+	fireSubscribeRefresh: (topic: string, ack: RtSubscribeAck) => void;
 	setState: (s: ConnectionState) => void;
 	subscribeMock: ReturnType<typeof vi.fn>;
 	unsubscribeMock: ReturnType<typeof vi.fn>;
@@ -78,6 +80,7 @@ function makeFakeTransport(initialState: ConnectionState = 'connected'): {
 	const sendBinaryMock = vi.fn<(bytes: ArrayBuffer) => boolean>(() => true);
 	const reconnectMock = vi.fn<() => void>();
 
+	const subscribeRefreshListeners = new Set<(topic: string, ack: RtSubscribeAck) => void>();
 	const needTicketListeners = new Set<(n: number) => void>();
 	const provideTicketMock = vi.fn<(subprotocol: string, nonce: number) => void>();
 	const ticketFetchFailedMock = vi.fn<(nonce: number) => void>();
@@ -121,6 +124,10 @@ function makeFakeTransport(initialState: ConnectionState = 'connected'): {
 			needTicketListeners.add(cb);
 			return () => needTicketListeners.delete(cb);
 		},
+		onSubscribeRefresh: (cb) => {
+			subscribeRefreshListeners.add(cb);
+			return () => subscribeRefreshListeners.delete(cb);
+		},
 		provideTicket: (sp, n) => provideTicketMock(sp, n),
 		ticketFetchFailed: (n) => ticketFetchFailedMock(n),
 		sessionRefreshed: () => sessionRefreshedMock()
@@ -146,6 +153,9 @@ function makeFakeTransport(initialState: ConnectionState = 'connected'): {
 		},
 		fireNeedTicket: (n) => {
 			for (const l of needTicketListeners) l(n);
+		},
+		fireSubscribeRefresh: (topic, ack) => {
+			for (const l of subscribeRefreshListeners) l(topic, ack);
 		},
 		subscribeMock,
 		unsubscribeMock,
@@ -282,6 +292,217 @@ describe('WorkerCore — topic subscribe fan-out across two ports', () => {
 		const eventsB = receivedB.filter((m) => m.kind === 'event');
 		expect(eventsA).toHaveLength(1);
 		expect(eventsB).toHaveLength(1);
+	});
+});
+
+describe('WorkerCore — capabilities are never served from the cache', () => {
+	// THE bug (Ed, 2026-11-14): a collab editor opened read-only and stayed
+	// that way until the SharedWorker was killed — a reload did not help, and
+	// nothing was logged anywhere. Bob held Owner on the drive, could rename
+	// the file and could edit a DIFFERENT file; one specific file was
+	// permanently read-only for him and writable for everyone else.
+	//
+	// Cause: the upstream subscribe happens once per topic and its ack is
+	// cached, so every later port was told what the FIRST subscriber was
+	// allowed to do. Since nothing re-asks while a port still holds the
+	// topic — and a closed tab's port lingers up to ~75 s before the liveness
+	// sweep reaps it — a stale `can_write` outlived reloads.
+	//
+	// The fix is to stop caching the field at all: a capability is a
+	// per-caller fact and has no place in a per-topic cache. Consumers ask
+	// `rt.collab_capabilities` for themselves.
+	let fixture: ReturnType<typeof makeFakeTransport>;
+	let core: WorkerCore;
+
+	beforeEach(() => {
+		fixture = makeFakeTransport('connected');
+		core = new WorkerCore(fixture.transport, 'test-worker-v1');
+	});
+
+	it('does not replay one port’s capabilities to another', async () => {
+		fixture.subscribeMock.mockImplementation(async (topic: string) => ({
+			subscribed: topic,
+			capabilities: { can_write: true }
+		}));
+		const { in: tabA_in, out: tabA_out } = newChannel();
+		const { in: tabB_in, out: tabB_out } = newChannel();
+		const receivedA = collect(tabA_in);
+		const receivedB = collect(tabB_in);
+
+		core.registerPort(tabA_out);
+		core.registerPort(tabB_out);
+		await core.handlePortMessage(tabA_out, { kind: 'subscribe', reqId: 1, topic: 'collab:f1' });
+		await flushAsync();
+		// Second port on a topic that is already live — the late-joiner path.
+		await core.handlePortMessage(tabB_out, { kind: 'subscribe', reqId: 2, topic: 'collab:f1' });
+		await flushAsync();
+
+		// One upstream subscribe, as before — the dedupe is not what changed.
+		expect(fixture.subscribeMock).toHaveBeenCalledTimes(1);
+
+		// The port that MADE the call gets its own capabilities…
+		const ackA = receivedA.find((m) => m.kind === 'ack') as { result: RtSubscribeAck };
+		expect(ackA.result.capabilities).toEqual({ can_write: true });
+
+		// …and the late joiner gets the ack WITHOUT them, because they were
+		// not computed for it. Fail-closed on the consumer side turns an
+		// absent capability into read-only, which is recoverable; inheriting
+		// somebody else's `true` is not.
+		const ackB = receivedB.find((m) => m.kind === 'ack') as { result: RtSubscribeAck };
+		expect(ackB.result.subscribed).toBe('collab:f1');
+		expect(ackB.result.capabilities).toBeUndefined();
+	});
+
+	it('keeps replaying everything else about the topic', async () => {
+		// The cache still exists and still does its job — a late joiner must
+		// not hang waiting for an upstream call that already happened. Only
+		// the per-caller field is withheld.
+		fixture.subscribeMock.mockImplementation(async (topic: string) => ({
+			subscribed: topic,
+			capabilities: { can_write: false }
+		}));
+		const { in: tabB_in, out: tabB_out } = newChannel();
+		const { out: tabA_out } = newChannel();
+		const receivedB = collect(tabB_in);
+
+		core.registerPort(tabA_out);
+		core.registerPort(tabB_out);
+		await core.handlePortMessage(tabA_out, { kind: 'subscribe', reqId: 1, topic: 'folder:X' });
+		await flushAsync();
+		await core.handlePortMessage(tabB_out, { kind: 'subscribe', reqId: 9, topic: 'folder:X' });
+		await flushAsync();
+
+		const ackB = receivedB.find((m) => m.kind === 'ack') as {
+			reqId: number;
+			result: RtSubscribeAck;
+		};
+		expect(ackB.reqId).toBe(9);
+		expect(ackB.result.subscribed).toBe('folder:X');
+	});
+});
+
+describe('WorkerCore — reconnect replay acks reach the ports', () => {
+	// The other half of the same bug. After a reconnect the transport replays
+	// its active topics and the server re-acks each one — and that ack had
+	// nowhere to go: no caller was waiting on it, so `ws-bus-transport` wrote
+	// one debug line and dropped it. `CollabDoc`'s own comment claimed a
+	// reconnect would pick up a changed grant; in shared-worker mode nothing
+	// ever did.
+	let fixture: ReturnType<typeof makeFakeTransport>;
+	let core: WorkerCore;
+
+	beforeEach(() => {
+		fixture = makeFakeTransport('connected');
+		core = new WorkerCore(fixture.transport, 'test-worker-v1');
+	});
+
+	it('forwards a replay ack to every port holding the topic', async () => {
+		const { in: tabA_in, out: tabA_out } = newChannel();
+		const { in: tabB_in, out: tabB_out } = newChannel();
+		const receivedA = collect(tabA_in);
+		const receivedB = collect(tabB_in);
+
+		core.registerPort(tabA_out);
+		core.registerPort(tabB_out);
+		await core.handlePortMessage(tabA_out, { kind: 'subscribe', reqId: 1, topic: 'collab:f1' });
+		await core.handlePortMessage(tabB_out, { kind: 'subscribe', reqId: 2, topic: 'collab:f1' });
+		await flushAsync();
+
+		fixture.fireSubscribeRefresh('collab:f1', {
+			subscribed: 'collab:f1',
+			capabilities: { can_write: true }
+		});
+		await flushAsync();
+
+		// Both holders hear about it, with the capabilities intact: the replay
+		// was made on the shared socket on their behalf, so this IS each of
+		// their own freshly-computed answers.
+		for (const received of [receivedA, receivedB]) {
+			const refresh = received.find((m) => m.kind === 'subscribe-refresh') as {
+				topic: string;
+				ack: RtSubscribeAck;
+			};
+			expect(refresh.topic).toBe('collab:f1');
+			expect(refresh.ack.capabilities).toEqual({ can_write: true });
+		}
+	});
+
+	it('ignores a replay ack for a topic nobody holds', async () => {
+		const { in: tabA_in, out: tabA_out } = newChannel();
+		const received = collect(tabA_in);
+		core.registerPort(tabA_out);
+		await flushAsync();
+
+		fixture.fireSubscribeRefresh('collab:ghost', { subscribed: 'collab:ghost' });
+		await flushAsync();
+
+		expect(received.filter((m) => m.kind === 'subscribe-refresh')).toHaveLength(0);
+	});
+});
+
+describe('WorkerCore — session-changed clears everything', () => {
+	// The privilege half. The worker is keyed by script URL and outlives a
+	// logout: same socket, same routing table, same cached acks. Without this
+	// envelope, a window that signs in as somebody else reuses the previous
+	// user's subscriptions, and (before the fix above) their capabilities too.
+	let fixture: ReturnType<typeof makeFakeTransport>;
+	let core: WorkerCore;
+
+	beforeEach(() => {
+		fixture = makeFakeTransport('connected');
+		core = new WorkerCore(fixture.transport, 'test-worker-v1');
+	});
+
+	it('drops topics, unsubscribes upstream, and re-subscribes fresh afterwards', async () => {
+		const { out: tabA_out } = newChannel();
+		core.registerPort(tabA_out);
+		await core.handlePortMessage(tabA_out, { kind: 'subscribe', reqId: 1, topic: 'collab:f1' });
+		await flushAsync();
+		expect(fixture.subscribeMock).toHaveBeenCalledTimes(1);
+
+		await core.handlePortMessage(tabA_out, { kind: 'session-changed' });
+		await flushAsync();
+
+		// Told the server to stop publishing to a socket that is about to
+		// re-authenticate as someone else.
+		expect(fixture.unsubscribeMock).toHaveBeenCalledWith('collab:f1');
+
+		// And the next subscribe is a REAL one: the topic is gone from the
+		// routing table, so nothing can be answered from the old identity's
+		// cache.
+		await core.handlePortMessage(tabA_out, { kind: 'subscribe', reqId: 2, topic: 'collab:f1' });
+		await flushAsync();
+		expect(fixture.subscribeMock).toHaveBeenCalledTimes(2);
+	});
+
+	it('stops routing binary frames for the old session', async () => {
+		const { in: tabA_in, out: tabA_out } = newChannel();
+		const received = collect(tabA_in);
+		core.registerPort(tabA_out);
+		await core.handlePortMessage(tabA_out, {
+			kind: 'register-binary-handler',
+			fileId: 'f1'
+		});
+		await flushAsync();
+
+		await core.handlePortMessage(tabA_out, { kind: 'session-changed' });
+		fixture.fireBinary('f1', new ArrayBuffer(4));
+		await flushAsync();
+
+		// A CRDT frame for the previous user's document must not land in a
+		// window that now belongs to someone else.
+		expect(received.filter((m) => m.kind === 'binary')).toHaveLength(0);
+	});
+
+	it('is idempotent on an empty worker', async () => {
+		const { out: tabA_out } = newChannel();
+		core.registerPort(tabA_out);
+
+		await core.handlePortMessage(tabA_out, { kind: 'session-changed' });
+		await core.handlePortMessage(tabA_out, { kind: 'session-changed' });
+		await flushAsync();
+
+		expect(fixture.unsubscribeMock).not.toHaveBeenCalled();
 	});
 });
 

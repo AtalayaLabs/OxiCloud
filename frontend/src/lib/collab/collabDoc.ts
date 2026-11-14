@@ -254,19 +254,20 @@ export class CollabDoc {
 					this.#onCapabilities?.({ canWrite: false });
 				}
 			},
-			(ack) => {
-				// The subscribe ack carries per-file capabilities for
-				// collab topics — see `RtSubscribeAck.capabilities`.
-				// Missing / malformed capabilities fall back to
-				// `canWrite: false` (fail-closed): if the server didn't
-				// advertise a write capability, we don't offer edit UX.
-				// Fires once per subscribe cycle including reconnect
-				// replays, so an admin that toggles the caller's Update
-				// grant between socket drops sees the new capability
-				// take effect on the next reconnect.
-				const canWrite = ack.capabilities?.can_write === true;
-				this.#canWrite = canWrite;
-				this.#onCapabilities?.({ canWrite });
+			() => {
+				// The ack is NOT where write permission comes from any
+				// more, and the previous version of this comment was
+				// wrong about it: it claimed a reconnect would pick up a
+				// changed grant. In shared-worker mode the ack is
+				// computed once per topic, cached, and replayed to every
+				// later subscriber — so a second tab, or the same tab
+				// after a grant changed, was told what the FIRST
+				// subscriber was allowed to do, with no way to recover
+				// short of killing the worker. Reconnect replays were
+				// discarded entirely.
+				//
+				// `#refreshCapabilities` asks on this caller's own
+				// behalf, below. Nothing to do here.
 			}
 		);
 
@@ -318,8 +319,42 @@ export class CollabDoc {
 		// its own, but not binary frames, so without this a socket that
 		// dropped mid-session comes back with a doc nobody re-synced.
 		this.#offReconnect = messageBus.onReconnect(() => {
-			if (!this.#destroyed) this.#sendSyncStep1();
+			if (this.#destroyed) return;
+			this.#sendSyncStep1();
+			// Re-ask what we may do, too. A reconnect is the one moment we
+			// know the server has re-authorized everything — and a grant
+			// toggled while the socket was down is precisely the case the
+			// old ack-derived path claimed to handle and did not.
+			void this.#refreshCapabilities();
 		});
+
+		// First read of our own permission. Deliberately after the
+		// subscribe (which is the Read gate) and independent of its ack:
+		// this asks `rt.collab_capabilities` for THIS caller, so no cache
+		// between us and the server can answer for somebody else.
+		void this.#refreshCapabilities();
+	}
+
+	/**
+	 * Ask the server whether this caller may write, and publish the answer.
+	 *
+	 * Fail-closed on every unhappy path — a transport failure returns `null`
+	 * and we treat "could not ask" as "may not write". The editor's own gate
+	 * requires `canWrite` AND a synced doc, so a false negative costs a
+	 * read-only moment and a false positive costs a refused write with
+	 * `rt.write_denied`; the asymmetry is the whole reason to fail closed.
+	 *
+	 * Only announces on a CHANGE: this runs on mount and on every reconnect,
+	 * and firing `onCapabilities` with an unchanged value would churn the
+	 * editor's compartment reconfiguration for nothing.
+	 */
+	async #refreshCapabilities(): Promise<void> {
+		const caps = await messageBus.collabCapabilities(this.fileId);
+		if (this.#destroyed) return;
+		const canWrite = caps?.canWrite === true;
+		if (canWrite === this.#canWrite) return;
+		this.#canWrite = canWrite;
+		this.#onCapabilities?.({ canWrite });
 	}
 
 	/** Ask the server for everything this doc is missing. */

@@ -2274,4 +2274,110 @@ for out in "${s29_output_files[@]}"; do rm -f "$out"; done
 rm -f "$s29_start"
 log "S29 OK (5 clients converged: $c0_len chars, text=$c0_text)"
 
-log "All twenty-nine message-bus scenarios passed."
+# ── Scenario 30 — rt.collab_capabilities, asked not inherited ─────────────
+# The method the FE's editor gate reads instead of the subscribe ack.
+#
+# Why it exists: an ack is computed ONCE per topic and cached by the
+# shared worker, then replayed to every later subscriber. A second tab —
+# or the same tab after a grant changed — was handed the permissions of
+# whoever opened the file first, and nothing re-asked while any port
+# still held the topic. Observed as an editor stuck read-only in a
+# private window that only a worker restart cleared.
+#
+# A method the caller invokes for itself cannot be answered from
+# somebody else's cache, which is the whole point. Same two callers as
+# S25, same file, so a divergence between the ack and this method shows
+# up as one of the two scenarios failing:
+#
+#   * user1 owns folder E and file s19 → can_write: true
+#   * user2 holds Viewer on folder E   → can_write: false
+log "S30: rt.collab_capabilities answers per caller (Owner=true, Viewer=false)."
+
+out_s30_owner="$(mktemp -t rtbus_s30_owner.XXXXXX)"
+"$HELPER_BIN" collab-capabilities \
+  --url "$ws_url" \
+  --token "$user1_token" \
+  --file "$s19_file_id" \
+  --timeout 5s \
+  --output "$out_s30_owner"
+s30_owner_can_write=$(jq -r '.can_write' "$out_s30_owner")
+[[ "$s30_owner_can_write" == "true" ]] \
+  || { cat "$out_s30_owner"; die "S30: owner expected can_write=true, got $s30_owner_can_write"; }
+rm -f "$out_s30_owner"
+log "S30a OK (owner: can_write=true)"
+
+out_s30_viewer="$(mktemp -t rtbus_s30_viewer.XXXXXX)"
+"$HELPER_BIN" collab-capabilities \
+  --url "$ws_url" \
+  --token "$user2_token" \
+  --file "$s19_file_id" \
+  --timeout 5s \
+  --output "$out_s30_viewer"
+s30_viewer_can_write=$(jq -r '.can_write' "$out_s30_viewer")
+[[ "$s30_viewer_can_write" == "false" ]] \
+  || { cat "$out_s30_viewer"; die "S30: viewer expected can_write=false, got $s30_viewer_can_write"; }
+rm -f "$out_s30_viewer"
+log "S30b OK (viewer: can_write=false)"
+
+# And Read gates the question itself: the capability of a file you
+# cannot see is not information to hand out, and the refusal reuses the
+# subscribe path's `no_read` so the method cannot be used to probe
+# existence either.
+#
+# Its own folder and its own file, granted to nobody — a scenario that
+# borrowed an earlier folder would quietly stop testing anything the day
+# that folder gained a grant. The helper exits non-zero on a JSON-RPC
+# error reply, which IS the assertion here.
+log "S30c: capabilities on an unreadable file must be refused."
+folder_s30=$(c_post "$base_url/api/folders" "$user1_token" \
+  "$(printf '{"name":"rt_bus_S30_%s","parent_id":"%s"}' "$suffix" "$root_id")" | jq -r '.id')
+[[ -n "$folder_s30" && "$folder_s30" != "null" ]] || die "S30c: folder creation failed"
+
+tmp_s30="$(mktemp -t rtbus_s30_body.XXXXXX)"
+printf '# S30 private\n' > "$tmp_s30"
+upload_resp_s30="$(mktemp -t rtbus_s30_resp.XXXXXX)"
+status=$(curl -sS -o "$upload_resp_s30" -w "%{http_code}" -X POST \
+  -H "Authorization: Bearer $user1_token" \
+  -F "folder_id=$folder_s30" \
+  -F "file=@$tmp_s30;filename=s30.md" \
+  "$base_url/api/files/upload")
+rm -f "$tmp_s30"
+if [[ "$status" -lt 200 || "$status" -ge 300 ]]; then
+  cat "$upload_resp_s30" >&2
+  rm -f "$upload_resp_s30"
+  die "S30c: .md upload failed with HTTP $status"
+fi
+s30_private_file_id=$(jq -r '.id' "$upload_resp_s30")
+rm -f "$upload_resp_s30"
+[[ -n "$s30_private_file_id" && "$s30_private_file_id" != "null" ]] \
+  || die "S30c: could not extract file id"
+
+out_s30_denied="$(mktemp -t rtbus_s30_denied.XXXXXX)"
+if "$HELPER_BIN" collab-capabilities \
+     --url "$ws_url" \
+     --token "$user2_token" \
+     --file "$s30_private_file_id" \
+     --timeout 5s \
+     --output "$out_s30_denied" 2>/dev/null; then
+  cat "$out_s30_denied"
+  die "S30c: capabilities on an unreadable file was ANSWERED, expected a denial"
+fi
+rm -f "$out_s30_denied"
+# Sanity: the owner CAN ask about that same file. Without this, a
+# scenario where every capability call failed (wrong method name, say)
+# would still report S30c as passing.
+out_s30_own="$(mktemp -t rtbus_s30_own.XXXXXX)"
+"$HELPER_BIN" collab-capabilities \
+  --url "$ws_url" \
+  --token "$user1_token" \
+  --file "$s30_private_file_id" \
+  --timeout 5s \
+  --output "$out_s30_own"
+s30_own_can_write=$(jq -r '.can_write' "$out_s30_own")
+[[ "$s30_own_can_write" == "true" ]] \
+  || { cat "$out_s30_own"; die "S30c: owner expected can_write=true on own file, got $s30_own_can_write"; }
+rm -f "$out_s30_own"
+log "S30c OK (unreadable file refused; owner still answered)"
+log "S30 OK"
+
+log "All thirty message-bus scenarios passed."

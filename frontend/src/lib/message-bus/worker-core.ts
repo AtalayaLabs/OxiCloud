@@ -104,6 +104,10 @@ export interface BusTransport {
 	/** Register a listener for `state` changes. Fires immediately
 	 *  with the current value then on every change. Returns a disposer. */
 	onStateChange(cb: (state: ConnectionState) => void): () => void;
+	/** Register a listener for a subscribe ack that answers a reconnect
+	 *  REPLAY rather than a caller's `subscribe()`. Optional: a transport
+	 *  that never replays (or a test fake) may omit it. */
+	onSubscribeRefresh?(cb: (topic: string, ack: RtSubscribeAck) => void): () => void;
 	/** Register a listener for ticket requests. The callback's nonce
 	 *  MUST be echoed back in `provideTicket(subprotocol, nonce)`. */
 	onNeedTicket(cb: (nonce: number) => void): () => void;
@@ -135,12 +139,40 @@ export interface WorkerCoreOptions {
 }
 
 /** Internal routing entry for one topic subscription. */
+/**
+ * The part of a subscribe ack that is safe to cache and replay.
+ *
+ * `capabilities` is the caller's permission on the topic's resource —
+ * computed by the server for whoever subscribed FIRST. Replaying it told
+ * every later subscriber what that first caller was allowed to do. Two ways
+ * that goes wrong, both observed:
+ *
+ *   - a second tab (or the same tab after a grant changed) opens a collab
+ *     file and inherits a `can_write` that is no longer true. It showed up as
+ *     a permanently read-only editor that only a worker restart cleared,
+ *     because nothing re-asks while the topic has a holder;
+ *   - the cache has no notion of WHO subscribed, so a window that logs out
+ *     and back in as someone else inherits the previous user's answer.
+ *
+ * Dropping the field is deliberate rather than defensive: a capability is a
+ * per-caller fact and has no business in a per-topic cache. Consumers that
+ * need one ask `rt.collab_capabilities` for themselves.
+ */
+function cacheableAck(ack: RtSubscribeAck): RtSubscribeAck {
+	if (ack.capabilities === undefined) return ack;
+	const { capabilities: _dropped, ...rest } = ack;
+	return rest;
+}
+
 interface TopicEntry {
 	/** Ports fanning out this topic's events + revoked. */
 	ports: Set<MessagePort>;
 	/** `rt.subscribe` reply cached so a port joining AFTER the ack
 	 *  gets the same response the first port saw. `undefined` while
-	 *  the upstream subscribe is still in flight. */
+	 *  the upstream subscribe is still in flight.
+	 *
+	 *  Stored WITHOUT `capabilities` — see `cacheableAck`. The topic
+	 *  identity is shared; the caller's permissions on it are not. */
 	cachedAck: RtSubscribeAck | undefined;
 	/** Error cached if the upstream subscribe failed. Replayed to any
 	 *  late joiner so a Tab B that opens the same folder after a
@@ -243,6 +275,9 @@ export class WorkerCore {
 		this.#transport.onWriteDenied((fileId, params) => this.#fanoutWriteDenied(fileId, params));
 		this.#transport.onStateChange((state) => this.#broadcastState(state));
 		this.#transport.onNeedTicket((nonce) => this.#askPortForTicket(nonce));
+		// Reconnect replays land here. Optional on the interface so the
+		// per-tab transport fake in the tests doesn't have to implement it.
+		this.#transport.onSubscribeRefresh?.((topic, ack) => this.#fanoutSubscribeRefresh(topic, ack));
 
 		// Periodic zombie-port reaper. See constant docstrings.
 		this.#livenessInterval = setInterval(() => this.#probeAllPorts(), this.#livenessIntervalMs);
@@ -526,6 +561,9 @@ export class WorkerCore {
 			case 'session-refreshed':
 				this.#transport.sessionRefreshed();
 				return;
+			case 'session-changed':
+				this.#handleSessionChanged();
+				return;
 		}
 	}
 
@@ -615,10 +653,12 @@ export class WorkerCore {
 			try {
 				const ack = await this.#transport.subscribe(topic);
 				// Second port may have joined while we awaited; serve
-				// `cachedAck` to late joiners.
-				entry.cachedAck = ack;
+				// `cachedAck` to late joiners — minus `capabilities`, which
+				// belong to this caller alone.
+				entry.cachedAck = cacheableAck(ack);
 				entry.cachedError = undefined;
-				// Reply to THIS port that initiated the upstream call.
+				// Reply to THIS port with the FULL ack: it made the upstream
+				// call, so the capabilities in it are its own.
 				this.#send(port, { kind: 'ack', reqId, result: ack });
 			} catch (err) {
 				const error = toMessageBusError(err);
@@ -665,6 +705,45 @@ export class WorkerCore {
 		} else if (resolved.cachedError !== undefined) {
 			this.#send(port, { kind: 'nack', reqId, error: resolved.cachedError });
 		}
+	}
+
+	/**
+	 * The identity behind this worker changed — drop everything derived from
+	 * the old one.
+	 *
+	 * The worker is keyed by script URL and outlives a logout: it keeps its
+	 * socket, its topic routing table and its cached subscribe acks across a
+	 * sign-out and a sign-in as somebody else. Without this, user B inherits
+	 * A's cached acks for any topic still held, and A's subscriptions keep
+	 * delivering events to a window that is now B's.
+	 *
+	 * Everything goes, not just the acks: topics (with an upstream
+	 * unsubscribe each, so the server stops publishing to a socket that is
+	 * about to re-authenticate), the per-port topic sets, and the binary /
+	 * write-denied routes keyed by file id. Ports stay connected — the tabs
+	 * are still there and will re-subscribe as the new user, which is the
+	 * point.
+	 *
+	 * Idempotent, and safe to receive from several tabs at once: the second
+	 * call finds the tables already empty.
+	 */
+	#handleSessionChanged(): void {
+		const topics = [...this.#topics.keys()];
+		this.#topics.clear();
+		for (const topic of topics) {
+			void this.#transport.unsubscribe(topic);
+		}
+		// Per-port indexes via `#ports`: `#perPort` is a WeakMap (ports are
+		// GC roots we must not pin), so the iterable set is the way in.
+		for (const port of this.#ports) {
+			const index = this.#perPort.get(port);
+			if (!index) continue;
+			index.topics.clear();
+			index.binaryFileIds.clear();
+			index.writeDeniedFileIds.clear();
+		}
+		this.#binaryByFile.clear();
+		this.#writeDeniedByFile.clear();
 	}
 
 	#handleUnsubscribe(port: MessagePort, topic: string): void {
@@ -772,6 +851,25 @@ export class WorkerCore {
 		}
 	}
 
+	/** A reconnect replay was acked upstream: refresh the cache and tell
+	 *  every port holding the topic.
+	 *
+	 *  The cached copy loses `capabilities` like any other (see
+	 *  `cacheableAck`), but the fan-out carries the ack WHOLE. Every port on
+	 *  this worker is the same browser session, and the replay was made on
+	 *  their behalf by the one socket they share — so this ack is each of
+	 *  their own answers, freshly computed, which is exactly what makes a
+	 *  mid-session grant change visible without reopening anything. */
+	#fanoutSubscribeRefresh(topic: string, ack: RtSubscribeAck): void {
+		const entry = this.#topics.get(topic);
+		if (!entry) return;
+		entry.cachedAck = cacheableAck(ack);
+		entry.cachedError = undefined;
+		for (const port of entry.ports) {
+			this.#send(port, { kind: 'subscribe-refresh', topic, ack });
+		}
+	}
+
 	#fanoutBinary(fileId: string, bytes: ArrayBuffer): void {
 		const set = this.#binaryByFile.get(fileId);
 		if (!set || set.size === 0) return;
@@ -854,6 +952,7 @@ export class WorkerCore {
 			case 'ticket-fetch-failed':
 			case 'port-pong':
 			case 'session-refreshed':
+			case 'session-changed':
 				return true;
 			default:
 				return false;

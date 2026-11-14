@@ -27,7 +27,7 @@ import { MessageChannel as NodeMessageChannel } from 'node:worker_threads';
 // a specific-shape implementation (e.g. the hanging-fetch stub in
 // the AbortController test) without TypeScript narrowing fighting
 // each `mockImplementationOnce`.
-const { apiJsonMock, csrfMock, onSessionRefreshedMock } = vi.hoisted(() => ({
+const { apiJsonMock, csrfMock, onSessionRefreshedMock, sessionCleared } = vi.hoisted(() => ({
 	apiJsonMock: vi.fn<(url: string, init?: RequestInit) => Promise<unknown>>(async () => ({
 		ticket: 'uuid-1',
 		expires_in_seconds: 30,
@@ -36,7 +36,10 @@ const { apiJsonMock, csrfMock, onSessionRefreshedMock } = vi.hoisted(() => ({
 	csrfMock: vi.fn(() => ({ 'X-CSRF-Token': 'test-csrf' })),
 	// The bridge subscribes at construction so the mock must hand back
 	// a no-op unsubscribe. Returning `undefined` would throw in close().
-	onSessionRefreshedMock: vi.fn<(fn: () => void) => () => void>(() => () => {})
+	onSessionRefreshedMock: vi.fn<(fn: () => void) => () => void>(() => () => {}),
+	// Same contract for the identity-changed hook, but the callback is
+	// captured so a test can play "the user logged out".
+	sessionCleared: { fire: null as null | (() => void) }
 }));
 
 vi.mock('$lib/api/client', () => ({
@@ -45,6 +48,14 @@ vi.mock('$lib/api/client', () => ({
 }));
 vi.mock('$lib/api/csrf', () => ({ getCsrfHeaders: csrfMock }));
 vi.mock('$app/paths', () => ({ base: '' }));
+vi.mock('$lib/auth/session-broadcast', () => ({
+	onSessionCleared: (fn: () => void) => {
+		sessionCleared.fire = fn;
+		return () => {
+			sessionCleared.fire = null;
+		};
+	}
+}));
 
 import { SharedWorkerBridge } from './shared-worker-bridge.svelte';
 
@@ -216,5 +227,89 @@ describe('SharedWorkerBridge — on-demand ticket flow (post-regression wiring)'
 
 		bridge.close();
 		vi.useRealTimers();
+	});
+});
+
+describe('SharedWorkerBridge — subscribe refresh + session change', () => {
+	/** Worker side of a channel, with inbound envelopes collected. */
+	function wire(): {
+		bridge: SharedWorkerBridge;
+		post: (m: unknown) => void;
+		received: Array<{ kind: string; [k: string]: unknown }>;
+	} {
+		const { in: workerSide, out: tabSide } = newChannel();
+		const received: Array<{ kind: string; [k: string]: unknown }> = [];
+		const nodeWorker = workerSide as unknown as {
+			on: (ev: 'message', cb: (msg: unknown) => void) => void;
+			start?: () => void;
+			postMessage: (m: unknown) => void;
+		};
+		nodeWorker.on('message', (m) => received.push(m as { kind: string }));
+		nodeWorker.start?.();
+		return {
+			bridge: new SharedWorkerBridge(tabSide),
+			post: (m) => nodeWorker.postMessage(m),
+			received
+		};
+	}
+
+	const settle = () => new Promise((r) => setTimeout(r, 10));
+
+	// The tab-side half of the dropped-replay fix: the worker forwards a
+	// reconnect ack as `subscribe-refresh`, and the bridge must treat it like
+	// any other ack — cache it and fan it out — or the consumer still never
+	// hears that its permissions changed.
+	it('fans a subscribe-refresh out to the topic’s ack handlers', async () => {
+		const { bridge, post, received } = wire();
+		const acks: unknown[] = [];
+		bridge.subscribe(
+			'collab:f1',
+			() => {},
+			undefined,
+			(ack) => acks.push(ack)
+		);
+		await settle();
+		// Answer the bridge's own subscribe first, so the entry exists.
+		const sub = received.find((m) => m.kind === 'subscribe') as unknown as { reqId: number };
+		post({ kind: 'ack', reqId: sub.reqId, result: { subscribed: 'collab:f1' } });
+		await settle();
+		expect(acks).toHaveLength(1);
+
+		post({
+			kind: 'subscribe-refresh',
+			topic: 'collab:f1',
+			ack: { subscribed: 'collab:f1', capabilities: { can_write: true } }
+		});
+		await settle();
+
+		expect(acks).toHaveLength(2);
+		expect(acks[1]).toEqual({ subscribed: 'collab:f1', capabilities: { can_write: true } });
+		bridge.close();
+	});
+
+	// Logging out has to reach the worker: it outlives the session, and its
+	// caches were all computed for the person who just left. Without this the
+	// next user in that window inherits the previous one's subscriptions.
+	it('tells the worker when the identity changes, and forgets its own topics', async () => {
+		const { bridge, post, received } = wire();
+		bridge.subscribe('collab:f1', () => {});
+		await settle();
+		const first = received.find((m) => m.kind === 'subscribe') as unknown as { reqId: number };
+		post({ kind: 'ack', reqId: first.reqId, result: { subscribed: 'collab:f1' } });
+		await settle();
+
+		expect(sessionCleared.fire).toBeTypeOf('function');
+		sessionCleared.fire?.();
+		await settle();
+
+		expect(received.some((m) => m.kind === 'session-changed')).toBe(true);
+
+		// Local state went too: subscribing again must hit the worker rather
+		// than being answered from the bridge's own `#subs` cache.
+		received.length = 0;
+		bridge.subscribe('collab:f1', () => {});
+		await settle();
+		expect(received.some((m) => m.kind === 'subscribe')).toBe(true);
+		bridge.close();
 	});
 });
