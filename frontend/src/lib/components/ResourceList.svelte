@@ -1141,7 +1141,10 @@
 		const path = item.path ?? '';
 		return [
 			owner && `${ownerLabel ?? t('files.col_created_by', 'Created by')}: ${owner}`,
-			path && `${t('files.col_path', 'Location')}: ${path}`
+			// `pathLabel` is where the host's own wording lands now that the
+			// Path column is gone — `/trash` calls this "Original location",
+			// and the tooltip is the one place left to say so.
+			path && `${pathLabel ?? t('files.col_path', 'Location')}: ${path}`
 		]
 			.filter(Boolean)
 			.join('\n');
@@ -1266,7 +1269,7 @@
 		aria-label={onopen ? item.name : undefined}
 		data-testid={item.name}
 		data-item-id={item.id}
-		title={showOwner ? ownerTitle(item) : undefined}
+		title={showOwner || showPath ? ownerTitle(item) : undefined}
 		{draggable}
 		ondragstart={draggable && onitemdragstart ? (e) => onitemdragstart(e, item) : undefined}
 		ondragover={dropTarget && onitemdragover ? (e) => onitemdragover(e, item) : undefined}
