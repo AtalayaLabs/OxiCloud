@@ -1,138 +1,256 @@
 import { test, expect } from './coverage-helpers';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { apiLogin, apiCreateFolder, apiUploadFile, SAMPLE_FILES } from './helpers';
+import type { Page } from '@playwright/test';
+import { themes, colorModes, applyTheme, expectThemeLoaded, expectReadable } from './theme-helpers';
 
-for (const mode of ['light', 'dark'] as const) {
-  test(`Slate preserves readable text and unified file icons in ${mode} mode`, async ({ page }) => {
-    await page.route('**/themes/active.css', route => route.fulfill({
-      contentType: 'text/css',
-      body: readFileSync(join(__dirname, '../../../resources/themes/slate/index.css'), 'utf8'),
-    }));
-    await page.addInitScript(scheme => localStorage.setItem('oxi-theme', scheme), mode);
-    await page.goto('/login');
-    await expect(page.locator('html')).toHaveAttribute('data-color-scheme', mode);
+const rootId = '00000000-0000-4000-8000-000000000002';
+const userId = '00000000-0000-4000-8000-000000000001';
+const stamp = '2026-11-01T12:00:00Z';
+const fileName = (i: number) => `Review ${String(i + 1).padStart(3, '0')}.pdf`;
 
-    const palette = await page.evaluate(() => {
-      const probe = document.createElement('span');
-      document.body.append(probe);
-      const color = (token: string) => {
-        probe.style.color = `var(${token})`;
-        return getComputedStyle(probe).color;
-      };
-      const luminance = (rgb: string) => rgb.match(/[\d.]+/g)!.slice(0, 3)
-        .map(Number)
-        .map(channel => channel / 255)
-        .map(channel => channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4)
-        .reduce((sum, channel, index) => sum + channel * [0.2126, 0.7152, 0.0722][index], 0);
-      const contrast = (foreground: string, background: string) => {
-        const a = luminance(color(foreground));
-        const b = luminance(color(background));
-        return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
-      };
-      const text = ['text', 'text-heading', 'text-secondary', 'text-muted', 'text-subtle', 'text-faint'];
-      const surfaces = ['bg-page', 'bg-surface', 'bg-input', 'bg-hover', 'bg-muted', 'item-selected'];
-      const textPairs = text.flatMap(fg => surfaces.map(bg => ({
-        fg, bg, ratio: contrast(`--color-${fg}`, `--color-${bg}`),
-      })));
-      const primary = ['accent', 'accent-hover'].map(bg => contrast('--color-on-accent', `--color-${bg}`));
-      const sidebar = contrast('--color-sidebar-text', '--color-sidebar-bg-from');
-      const activeSidebar = contrast('--color-sidebar-text-active', '--color-sidebar-active-bg');
-      const iconKinds = ['folder', 'doc', 'pdf', 'sheet', 'slides', 'archive', 'code', 'image', 'video', 'audio', 'text', 'generic'];
-      const icons = iconKinds.map(kind => color(`--file-kind-${kind}`));
-      const iconContrast = contrast('--file-kind-generic', '--color-bg-surface');
-      const folderContrast = contrast('--file-kind-folder', '--color-bg-surface');
-      const accentText = color('--color-accent-text');
-      const sidebarInk = color('--color-sidebar-text');
-      probe.remove();
-      return { textPairs, primary, sidebar, activeSidebar, icons, iconContrast, folderContrast, accentText, sidebarInk };
-    });
-
-    // Regression pin: faint text and file glyphs must stay readable in both
-    // modes; use resolved colors so invalid CSS values cannot pass as tokens.
-    for (const { fg, bg, ratio } of palette.textPairs) {
-      expect(ratio, `${fg} on ${bg}`).toBeGreaterThanOrEqual(4.5);
-    }
-    for (const ratio of [...palette.primary, palette.sidebar, palette.activeSidebar]) {
-      expect(ratio).toBeGreaterThanOrEqual(4.5);
-    }
-    expect(new Set(palette.icons).size).toBe(1);
-    expect(palette.iconContrast).toBeGreaterThanOrEqual(3);
-    expect(palette.folderContrast).toBeGreaterThanOrEqual(3);
-
-    await apiLogin(page);
-    const folder = await apiCreateFolder(page, `Slate ${mode} ${Date.now()}`);
-    await apiCreateFolder(page, 'Reports', folder.id);
-    for (const file of [SAMPLE_FILES.text(), SAMPLE_FILES.pdf(), SAMPLE_FILES.csv(), SAMPLE_FILES.json()]) {
-      await apiUploadFile(page, file, folder.id);
-    }
-    await page.goto(`/files/${folder.id}`);
-    await expect(page.getByText('notes.txt', { exact: true })).toBeVisible();
-    // Regression pin: equal-specificity section colors won when styles were
-    // inserted after the theme (e.g. HMR). Replay the real navigation rules
-    // last, including the active state; every glyph must keep one neutral ink.
-    const sidebarCss = readFileSync(join(__dirname, '../../../frontend/src/lib/styles/ported/sidebar.css'), 'utf8');
-    const sectionRules = sidebarCss.match(/\.nav-item(?:\[data-section="[a-z-]+"\]|\.active)[\s\S]*?\}/g);
-    expect(sectionRules?.length).toBeGreaterThan(1);
-    // Regression pin: the sidebar's base rule also reintroduced its shadow
-    // when loaded after the theme. Replay that actual rule in the same order.
-    const sidebarBase = sidebarCss.match(/\.sidebar \{[\s\S]*?\n\}/)?.[0];
-    expect(sidebarBase).toBeTruthy();
-    await page.addStyleTag({ content: [sidebarBase!, ...sectionRules!].join('\n') });
-    for (const link of await page.locator('.sidebar .nav-item').all()) {
-      await expect(link.locator('.oxi-icon').first()).toHaveCSS('color', palette.sidebarInk);
-      await link.hover();
-      await expect(link.locator('.oxi-icon').first()).toHaveCSS('color', palette.sidebarInk);
-    }
-    await expect(page.locator('.sidebar .logo svg')).toHaveCSS('fill', 'rgb(255, 255, 255)');
-    await expect(page.locator('.toggle-btn.group-by-btn.active')).toHaveCSS('color', palette.accentText);
-
-    // Regression pin: clearing the logo's shadow token did not remove the
-    // sidebar's own shadow, and the preview's inset ring left nested boxes.
-    const sidebar = page.locator('.sidebar');
-    await expect(sidebar).toHaveCSS('box-shadow', 'none');
-    await expect(sidebar).toHaveCSS('background-image', 'none');
-    await expect(page.locator('.top-bar')).toHaveCSS('background-color', await sidebar.evaluate(el => getComputedStyle(el).backgroundColor));
-    await expect(page.locator('.top-bar')).toHaveCSS('border-bottom-width', '0px');
-    for (const name of ['Reports', 'notes.txt']) {
-      const card = page.getByTestId(name);
-      await expect(card).toHaveCSS('box-shadow', 'none');
-      await expect(card.locator('.file-icon')).toHaveCSS('box-shadow', 'none');
-      await expect(card.locator('.file-icon')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
-      await card.hover();
-      await expect(card).toHaveCSS('box-shadow', 'none');
-      const checkbox = card.getByRole('checkbox');
-      await checkbox.check();
-      await expect(card).toHaveClass(/selected/);
-      await expect(card).toHaveCSS('box-shadow', 'none');
-      // Flat styling must retain a visible selection after the pointer leaves.
-      await page.locator('.top-bar').hover();
-      await expect(card).toHaveCSS('border-top-style', 'solid');
-      await expect(card).not.toHaveCSS('border-top-color', 'rgba(0, 0, 0, 0)');
-      await checkbox.uncheck();
-      await expect(card).not.toHaveClass(/selected/);
-    }
-    // Regression pin: enlarging file glyphs left hover chips overlapping them.
-    // Check real geometry at desktop and phone widths, for files and folders.
-    for (const width of [1280, 390]) {
-      await page.setViewportSize({ width, height: 844 });
-      for (const name of ['Reports', 'notes.txt']) {
-        const card = page.getByTestId(name);
-        await card.hover();
-        const overlapping = await card.evaluate(el => {
-          const glyph = el.querySelector('.file-icon > svg')!.getBoundingClientRect();
-          return [...el.querySelectorAll('.checkbox-cell, .action-cell button, .grid-meta .file-actions')]
-            .filter(control => {
-              const box = control.getBoundingClientRect();
-              return box.left < glyph.right && box.right > glyph.left && box.top < glyph.bottom && box.bottom > glyph.top;
-            }).map(control => control.className);
-        });
-        expect(overlapping).toEqual([]);
+/** CSS checks use the real SPA with browser-only API fixtures. No instance
+ * appearance setting, account or stored document is changed by these tests. */
+async function library(page: Page) {
+  await page.addInitScript((id) => localStorage.setItem('oxi-active-user-id', id), userId);
+  const origin = new URL(
+    page.url() === 'about:blank' ? test.info().project.use.baseURL! : page.url(),
+  ).origin;
+  await page.context().addCookies([{ name: 'oxicloud_csrf', value: 'theme-fixture', url: origin }]);
+  const user = {
+    full: {
+      user: {
+        id: userId,
+        username: 'camille',
+        email: 'camille@example.test',
+        role: 'admin',
+        is_external: false,
+      },
+      active: true,
+      has_password: true,
+      opaque_registered: false,
+      opaque_migrated: false,
+      storage_used_bytes: 0,
+      storage_quota_bytes: 10737418240,
+      created_at: stamp,
+      updated_at: stamp,
+    },
+    can_edit_image: true,
+    force_password_change: false,
+    is_dpop_bound: true,
+    is_upgradable: false,
+    notify_on_share: false,
+    ui_preferences: {},
+  };
+  const drive = {
+    id: 'library-drive',
+    name: 'Library',
+    kind: 'personal',
+    root_folder_id: rootId,
+    default_for_user: userId,
+    policies: {},
+    used_bytes: 0,
+    quota_bytes: null,
+    created_at: stamp,
+    updated_at: stamp,
+  };
+  await page.route(
+    (url) => url.pathname.startsWith('/api/'),
+    async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === '/api/config') {
+        const response = await route.fetch();
+        const config = (await response.json()) as {
+          features: Record<string, boolean>;
+        };
+        config.features.message_bus = false;
+        return route.fulfill({ json: config });
       }
-    }
-    await page.setViewportSize({ width: 1280, height: 720 });
-    await page.locator('.top-bar').hover();
-  });
+      if (path === '/api/auth/me') return route.fulfill({ json: user });
+      if (path === '/api/drives') return route.fulfill({ json: [drive] });
+      if (path === `/api/folders/${rootId}/ancestors`)
+        return route.fulfill({
+          json: {
+            ancestors: [{ id: rootId, name: 'Library', drive_id: drive.id }],
+            access_source: { kind: 'drive', drive },
+          },
+        });
+      if (path === `/api/folders/${rootId}/resources`)
+        return route.fulfill({
+          json: {
+            items: Array.from({ length: 120 }, (_, i) => ({
+              resource_type: 'file',
+              resource: {
+                id: `10000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
+                name: fileName(i),
+                path: `/${fileName(i)}`,
+                folder_id: rootId,
+                created_by: userId,
+                updated_by: userId,
+                size: 283100 + i,
+                mime_type: 'application/pdf',
+                category: 'Document',
+                created_at: stamp,
+                modified_at: stamp,
+                content_hash: '',
+                etag: '',
+                is_favorite: false,
+                is_shared: false,
+              },
+            })),
+          },
+        });
+      // Preference writes stay inside the fixture, like the document reads.
+      if (route.request().method() !== 'GET') return route.fulfill({ json: {} });
+      if (path === '/api/notifications')
+        return route.fulfill({ json: { items: [], unread_count: 0 } });
+      if (path === '/api/status') return route.fallback();
+      return route.fulfill({
+        status: 404,
+        json: { error: 'NotFound', message: 'Layout fixture' },
+      });
+    },
+  );
+  await page.goto(`/files/${rootId}`);
+  await expect(page.getByTestId(fileName(0))).toBeVisible();
+}
+
+for (const theme of themes) {
+  for (const mode of colorModes) {
+    test.describe(`${theme.name} / ${mode}`, () => {
+      test.beforeEach(async ({ page }) => {
+        await applyTheme(page, theme, mode);
+      });
+
+      test('library keeps selection, controls and virtual scrolling usable', async ({ page }) => {
+        await page.setViewportSize({ width: 1440, height: 1000 });
+        await library(page);
+        await expectThemeLoaded(page, theme);
+        await expectReadable(page.getByTestId(fileName(0)).locator('.name-cell__text'));
+
+        for (const width of [1440, 768, 390]) {
+          await page.setViewportSize({ width, height: 844 });
+          const first = page.getByTestId(fileName(0));
+          await expect(first).toBeVisible();
+          await first.hover();
+          const checkbox = first.getByRole('checkbox');
+          // Regression pin: flat card styling hid selection after hover ended.
+          // Compare rendered styles instead of requiring a theme-specific border.
+          const appearance = () =>
+            first.evaluate((el) => {
+              const s = getComputedStyle(el);
+              return [s.backgroundColor, s.borderColor, s.boxShadow, s.outline].join('|');
+            });
+          await page.locator('.top-bar').hover();
+          const unselected = await appearance();
+          await first.hover();
+          await checkbox.check();
+          await page.locator('.top-bar').hover();
+          await expect(first).toHaveClass(/selected/);
+          await expect.poll(appearance).not.toBe(unselected);
+          await first.hover();
+          await checkbox.uncheck();
+          await expect(first).not.toHaveClass(/selected/);
+
+          // Regression pin: card restyling obscured hover commands. Check
+          // hit targets rather than forbidding overlays on decorative glyphs.
+          for (const control of await first.locator('button, input[type="checkbox"]').all()) {
+            if (!(await control.isVisible())) continue;
+            await control.click({ trial: true });
+            expect(
+              await control.evaluate((el) => {
+                const box = el.getBoundingClientRect();
+                const card = el.closest('.file-item')!.getBoundingClientRect();
+                return (
+                  box.left >= card.left - 1 &&
+                  box.right <= card.right + 1 &&
+                  box.top >= card.top - 1 &&
+                  box.bottom <= card.bottom + 1
+                );
+              }),
+            ).toBe(true);
+          }
+
+          const share = page.getByTestId(`folder-breadcrumb-share-${rootId}`);
+          await share.focus();
+          await page.keyboard.press('Tab');
+          await page.keyboard.press('Shift+Tab');
+          await expect(share).toBeFocused();
+          await expect(share).toBeInViewport();
+          await expect(share).not.toHaveCSS('outline-style', 'none');
+
+          // Regression pin: mismatched CSS grid sizing silently skipped files
+          // in virtual windows. Exercise both ends of the rendered collection.
+          await page.locator('.content-area').evaluate((el) => {
+            el.scrollTop = el.scrollHeight;
+          });
+          await expect(page.getByTestId(fileName(119))).toBeVisible();
+          await page.locator('.content-area').evaluate((el) => {
+            el.scrollTop = 0;
+          });
+          await expect(first).toBeVisible();
+          expect(
+            await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+          ).toBe(true);
+        }
+
+        await page.setViewportSize({ width: 1440, height: 1000 });
+        await page.getByTestId('appshell-sidebar-collapse-btn').click();
+        await expect(page.locator('.sidebar')).toHaveClass(/sidebar--collapsed/);
+        await expect(page.locator('.drive-picker')).toBeHidden();
+        // Regression pin: a collapsed sidebar must not cover the content panel.
+        expect(
+          await page
+            .locator('.main-content')
+            .evaluate(
+              (el) =>
+                el.getBoundingClientRect().left >=
+                document.querySelector('.sidebar')!.getBoundingClientRect().right - 1,
+            ),
+        ).toBe(true);
+
+        await page.getByTestId('display-mode-view-toggle-btn').click();
+        await expect(page.locator('.files-list-view')).toBeVisible();
+        await page.locator('.content-area').evaluate((el) => {
+          el.scrollTop = el.scrollHeight;
+        });
+        await expect(page.getByTestId(fileName(119))).toBeVisible();
+        await page.locator('.content-area').evaluate((el) => {
+          el.scrollTop = 0;
+        });
+        await page.getByTestId('display-mode-groupby-btn').click();
+        await page.getByTestId('display-mode-groupby-type-item').click();
+        await expect(page.locator('.lane__header--sticky').first()).toBeVisible();
+
+        await page.evaluate(() => (document.documentElement.dir = 'rtl'));
+        await page.setViewportSize({ width: 390, height: 400 });
+        await page.getByTestId('appshell-sidebar-toggle-btn').click();
+        await expect(page.locator('.sidebar')).toHaveClass(/open/);
+        await expect
+          .poll(() =>
+            page.locator('.sidebar').evaluate((el) => {
+              const box = el.getBoundingClientRect();
+              return box.left >= -1 && box.right <= innerWidth + 1;
+            }),
+          )
+          .toBe(true);
+      });
+
+      test('sign-in controls stay reachable in short viewports', async ({ page }) => {
+        await page.setViewportSize({ width: 390, height: 400 });
+        await page.goto('/login');
+        await expectThemeLoaded(page, theme);
+        await expect(page.locator('html')).toHaveAttribute('data-color-scheme', mode);
+        await expectReadable(page.locator('.auth-title'));
+        // Regression pin: vertically centred login panels lost their controls
+        // in short windows. Test reachability without prescribing a scroll owner.
+        for (const id of ['login-submit-btn', 'login-username-input']) {
+          const control = page.getByTestId(id);
+          await control.scrollIntoViewIfNeeded();
+          await expect(control).toBeInViewport();
+          await expect(control).toBeEnabled();
+        }
+      });
+    });
+  }
 }
 
 // Browser regression pins: custom properties accept invalid text until consumed.
