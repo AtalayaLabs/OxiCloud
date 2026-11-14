@@ -115,10 +115,12 @@ seen sending it the column does not exist, and nothing is lost by its absence
 
 That column is `storage.content_metadata.created_at`. It is keyed by content
 (`source_hash`), not by file, because the same bytes always claim the same
-creation date whoever copied them — unlike `files.content_modified_at`, which
-is per-row because a copy legitimately gets `NOW()`. The two are therefore not
-the symmetric pair a `content_created_at` / `content_modified_at` naming would
-advertise.
+creation date whoever copied them. `files.content_modified_at` is per-row, but
+a copy *preserves* it (see § COPY below), so the two now agree about copies
+and differ only in their key: one is content-addressed and shared across every
+file with those bytes, the other belongs to a row and moves when that row's
+content is overwritten. They are still not the symmetric pair a
+`content_created_at` / `content_modified_at` naming would advertise.
 
 `extracted_at` on the same table is the row's own bookkeeping — when extraction
 last ran. It is deliberately not called `created_at`, which is what the old
@@ -652,9 +654,30 @@ Content-mutation paths only, taking `X-OC-Mtime` when the client sent it and
 
 **Not** rename, move, trash, grant or favourite. Those bump `updated_at` alone.
 
-**COPY sets it to `NOW()`.** A copy is a new file whose content came into
-existence here, at this moment — the same answer `cp` without `-p` gives, and it
-needs no preservation plumbing on the copy path. The source is untouched.
+**COPY PRESERVES it**, along with `content_modified_by` — `cp -p`, not bare
+`cp`. Reversed 2026-11-11 (`docs/plan/recently-modified.md` §1b); this
+previously said `NOW()` on the grounds that a copy's content came into
+existence at the moment of copying and that preserving needed no plumbing.
+
+Two things changed the answer. The clock gained a principal, and the pair must
+agree: `NOW()` beside a preserved `content_modified_by` reads "the bytes last
+changed just now, by Alice" while Alice did nothing just now, and `NOW()`
+beside the copier claims authorship of bytes the copier never wrote — which is
+exactly what `storage.copy_file_satellites` already refuses to do for
+`file_attached_blobs.uploaded_by`: *"the person who supplied the bytes did not
+change because someone copied the file, and rewriting it to the copier would
+forge provenance."* `media_sort_date` is preserved on copy for the same
+reason, so a copied photo keeps its place in the timeline.
+
+The plumbing lives in `storage.copy_file_satellites` — the single home both
+copy paths already call — so neither `copy_file` nor the 170-line
+`copy_folder_tree` has to remember separately. The source is untouched either
+way.
+
+A consequence worth knowing: a copy's ETag suffix therefore matches the
+source's, since the ETag is derived from the content hash and this clock. Two
+identical copies of one file are indistinguishable to a client by ETag, which
+is correct — they *are* identical content.
 
 **Trash restore leaves it alone**, which needs no code: restore flips a
 soft-delete flag rather than re-inserting a row, so the value survives while

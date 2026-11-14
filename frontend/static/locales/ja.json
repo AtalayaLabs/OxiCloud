@@ -78,6 +78,7 @@
     "files": "ファイル",
     "shared": "共有",
     "recent": "最近",
+    "changes": "変更",
     "favorites": "お気に入り",
     "photos": "メディア",
     "music": "音楽",
@@ -548,6 +549,7 @@
     "new_folder_dotfile_hidden": "フォルダ「{{name}}」を作成しました — 設定により非表示になっています。",
     "dotfiles_hidden_toast": "非表示ファイルを隠しました",
     "dotfiles_shown_toast": "非表示ファイルを表示しました",
+    "col_modified_by": "変更者",
     "col_modified": "更新日時",
     "col_added": "追加日",
     "col_created_by": "作成者",
@@ -860,6 +862,17 @@
     "added_msg": "お気に入りに追加しました",
     "removed_title": "お気に入りから削除しました",
     "removed_msg": "お気に入りから削除しました"
+  },
+  "changes": {
+    "empty_state": "最近の変更はありません",
+    "empty_hint": "アクセスできるファイルの変更がここに表示されます",
+    "col_changed": "変更日時",
+    "lane_files": "{{n}} 件のファイル",
+    "cap_lanes": "1 人あたり最新 {{n}} 件",
+    "window": "期間",
+    "window_7": "過去 7 日間",
+    "window_30": "過去 30 日間",
+    "window_90": "過去 90 日間"
   },
   "recent": {
     "title": "最近",
@@ -1741,6 +1754,7 @@
     "type": "種類",
     "type.folders": "フォルダー",
     "accessedAt": "アクセス日",
+    "changedAt": "変更日",
     "modifiedAt": "更新日",
     "createdAt": "作成日",
     "size": "サイズ",
@@ -1945,6 +1959,7 @@
     "retry": "もう一度やり直してください",
     "select": "選択",
     "select_all": "すべて選択",
+    "filter": "絞り込み",
     "dismiss": "却下する"
   },
   "device": {

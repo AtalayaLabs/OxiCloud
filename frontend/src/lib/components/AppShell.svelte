@@ -95,14 +95,32 @@
 	// `src/common/di.rs` for the server-side side of each gate.
 	const NAV_GROUPS = $derived.by<NavGroup[]>(() => {
 		const library: NavLink[] = [
-			{ href: '/recent', label: t('nav.recent', 'Recent'), icon: 'clock', section: 'recent' },
-			{
-				href: '/favorites',
-				label: t('nav.favorites', 'Favorites'),
-				icon: 'star',
-				section: 'favorites'
-			}
+			{ href: '/recent', label: t('nav.recent', 'Recent'), icon: 'clock', section: 'recent' }
 		];
+		// Immediately after Recent, and a sibling of it rather than a tab on
+		// it: `/recent` is the viewer's own access log, this is shared
+		// provenance across everyone who can reach the file. See
+		// `docs/plan/recently-modified.md` §6 for why they are not one page
+		// with two filters.
+		//
+		// "Changes", not "Recent changes": two adjacent entries both opening
+		// with "Recent" read as two filters over one dataset, which is the
+		// exact misreading the separate entry exists to avoid. The label now
+		// matches the route, and the icons differ (clock vs pen).
+		if (serverConfig.features.recent_changes) {
+			library.push({
+				href: '/changes',
+				label: t('nav.changes', 'Changes'),
+				icon: 'pen',
+				section: 'changes'
+			});
+		}
+		library.push({
+			href: '/favorites',
+			label: t('nav.favorites', 'Favorites'),
+			icon: 'star',
+			section: 'favorites'
+		});
 		if (serverConfig.features.photos) {
 			library.push({
 				href: '/photos',

@@ -117,6 +117,7 @@
     "shared": "My shares",
     "sharedwithme": "Shared with me",
     "recent": "Recent",
+    "changes": "Changes",
     "favorites": "Favorites",
     "photos": "Media",
     "music": "Music",
@@ -579,6 +580,7 @@
     "batch_delete": "Delete selected",
     "breadcrumb": "Breadcrumb",
     "cancel_selection": "Cancel selection",
+    "col_modified_by": "Modified by",
     "col_modified": "Modified",
     "col_added": "Added",
     "col_created_by": "Created by",
@@ -909,6 +911,17 @@
     "added_msg": "added to favorites",
     "removed_title": "Removed from favorites",
     "removed_msg": "removed from favorites"
+  },
+  "changes": {
+    "empty_state": "No recent changes",
+    "empty_hint": "Changes to files you can reach will appear here",
+    "col_changed": "Changed",
+    "lane_files": "{{n}} file(s)",
+    "cap_lanes": "Top {{n}} per person",
+    "window": "Time range",
+    "window_7": "Last 7 days",
+    "window_30": "Last 30 days",
+    "window_90": "Last 90 days"
   },
   "recent": {
     "title": "Recent",
@@ -1793,6 +1806,7 @@
     "shareDate": "Share date",
     "favoriteDate": "Favorite date",
     "accessedAt": "Accessed date",
+    "changedAt": "Changed date",
     "modifiedAt": "Modified date",
     "createdAt": "Added date",
     "size": "Size",
@@ -1976,6 +1990,7 @@
     "yes": "Yes",
     "dismiss": "Dismiss",
     "saving": "Saving…",
+    "filter": "Filter",
     "deleting": "Deleting…"
   },
   "device": {

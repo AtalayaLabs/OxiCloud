@@ -8957,6 +8957,155 @@
         ]
       }
     },
+    "/api/files/recent-changes": {
+      "get": {
+        "tags": [
+          "files"
+        ],
+        "summary": "`GET /api/files/recent-changes`",
+        "description": "Returns the standard `CursorListResponse` envelope. A file may appear more\nthan once in a page — once per lane that touched it — which is why\n`changed_at` and `modifier` are per-row rather than per-file.",
+        "operationId": "list_recent_changes",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum items per page (1–200, default 50).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque cursor from a previous response. Omit to start from the first\npage.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "days",
+            "in": "query",
+            "description": "How far back to look, in days. Default 30, maximum 90 — a larger value\nis a 400 naming the bound rather than a silent clamp.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "order_by",
+            "in": "query",
+            "description": "Sort / group-by axis — see [`RecentChangesOrderBy`]. Omit for\n`changed_at`.",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/RecentChangesOrderBy"
+                }
+              ]
+            }
+          },
+          {
+            "name": "person",
+            "in": "query",
+            "description": "Restrict to one person's changes — the lane drill-in. A person the\ncaller shares nothing with returns an empty page rather than a 403:\nsame anti-enumeration shape the photos `drive_id` filter uses.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "per_lane",
+            "in": "query",
+            "description": "Cap each lane at its N most recent files. Omit — or send `0` — for no\ncap. Maximum [`MAX_PER_LANE`]; a larger value is a 400 naming the\nbound, like `days`.\n\nCapping changes how the page is CUT, not just how much it holds.\nUncapped, a page is `limit` rows and its boundary can fall anywhere,\nincluding inside a lane. Capped, a lane's size is known before any row\nis read (`min(lane_total, per_lane)`), so the page takes whole lanes\nwhile they fit and a lane is never split across pages. The cursor is\nthen a lane boundary, never a row inside one.\n\nConsequence worth knowing: a single lane bigger than `limit` still\ncomes back whole — one lane is always taken — so a capped page can\nreturn up to `limit + per_lane - 1` rows. Refusing `limit < per_lane`\ninstead would make two independent parameters interdependent.\n\nMeaningless without lanes, so pairing it with `order_by=changed_at` is\na 400 rather than a silent no-op.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Page of content changes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorListResponse_FileChangeItemDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid cursor, unsupported order_by, or days out of range",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "External users cannot reach this surface",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
     "/api/files/upload": {
       "post": {
         "tags": [
@@ -16515,6 +16664,58 @@
           }
         }
       },
+      "CursorListResponse_FileChangeItemDto": {
+        "type": "object",
+        "description": "Standard response envelope for cursor-paginated listing endpoints.\n\n`next_cursor` is omitted from the JSON when `None` (i.e. last page).\nCallers must treat a missing `next_cursor` as end-of-results — never\ninclude a `total` count (that would require an expensive `COUNT(*)`).\n⚠ **Every instantiation must be registered in `components(schemas(..))`,\nspelled out with its item type.** OpenAPI has no generics, so utoipa emits\none schema per concrete instantiation — and if none is registered, the\npaths fall back to a single bare `CursorListResponse` whose `items` is\nhard-wired to whichever instantiation it resolved. Every endpoint then\n`$ref`s that one, so all but one is documented as returning the WRONG item\ntype while its real container sits in `components.schemas` referenced by\nnothing.\n\nThat is not cosmetic. A generated client gets the wrong item type, and a\nhand-written replacement has nothing checking it against the server —\nwhich is how `frontend/.../photos.ts` came to maintain `PhotoItem` by\nhand, and how `FileMetadata` went on declaring `captured_at` for weeks\nafter the column became `created_at`.\n\nSo adding a listing endpoint means registering\n`CursorListResponse<YourItemDto>` alongside `YourItemDto` itself.\n(`#[aliases(..)]` would be tidier, but it was removed in utoipa 5.)\n\nSee `docs/architecture/resource-listing.md § Three layers`.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One row: a file, and the one person-and-time this row is about.\n\nA file legitimately appears MORE THAN ONCE in a page — once per lane that\ntouched it — so everything per-row travels here rather than in a\ncontext map keyed by file id (`docs/plan/recently-modified.md` §4).",
+              "required": [
+                "resource",
+                "changed_at",
+                "modifier_id"
+              ],
+              "properties": {
+                "changed_at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "**This row's** touch: when *this* person changed it. NOT the file's\nlatest change by anyone — in Bob's lane the row says when Bob changed\nit, or every lane reads as the most recent editor."
+                },
+                "lane_total": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64",
+                  "description": "How many files this person changed inside the window, counted AFTER\nthe access filter — so a lane header can read \"Bob · 14 files\" without\na second round trip and without hinting at a file the caller cannot\nsee. Present on the `modifier` axis only."
+                },
+                "modifier_id": {
+                  "type": "string",
+                  "format": "uuid",
+                  "description": "Who made that change — an id, resolved by the client the same way it\nresolves `created_by` on every other listing (`useOwnerCache` →\n`/api/users/{id}`, cached across pages). Embedding a user object here\nwould be an N+1 per page and the only listing in the API that does it.\n\nNever null: `storage.file_content_touches.user_id` is NOT NULL and\ncascades on user delete, so a lane's person always exists."
+                },
+                "resource": {
+                  "$ref": "#/components/schemas/FileDto",
+                  "description": "The file itself, shape-identical to every other file listing."
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Opaque cursor for the next page.  Absent when this is the last page."
+          }
+        }
+      },
       "CursorListResponse_FolderResourceItemDto": {
         "type": "object",
         "description": "Standard response envelope for cursor-paginated listing endpoints.\n\n`next_cursor` is omitted from the JSON when `None` (i.e. last page).\nCallers must treat a missing `next_cursor` as end-of-results — never\ninclude a `total` count (that would require an expensive `COUNT(*)`).\n⚠ **Every instantiation must be registered in `components(schemas(..))`,\nspelled out with its item type.** OpenAPI has no generics, so utoipa emits\none schema per concrete instantiation — and if none is registered, the\npaths fall back to a single bare `CursorListResponse` whose `items` is\nhard-wired to whichever instantiation it resolved. Every endpoint then\n`$ref`s that one, so all but one is documented as returning the WRONG item\ntype while its real container sits in `components.schemas` referenced by\nnothing.\n\nThat is not cosmetic. A generated client gets the wrong item type, and a\nhand-written replacement has nothing checking it against the server —\nwhich is how `frontend/.../photos.ts` came to maintain `PhotoItem` by\nhand, and how `FileMetadata` went on declaring `captured_at` for weeks\nafter the column became `created_at`.\n\nSo adding a listing endpoint means registering\n`CursorListResponse<YourItemDto>` alongside `YourItemDto` itself.\n(`#[aliases(..)]` would be tidier, but it was removed in utoipa 5.)\n\nSee `docs/architecture/resource-listing.md § Three layers`.",
@@ -17857,6 +18058,7 @@
           "sharing",
           "music",
           "photos",
+          "recent_changes",
           "places",
           "faces",
           "video_thumbnails",
@@ -17919,6 +18121,10 @@
             "type": "boolean",
             "description": "Photo-map (\"Places\") tab. See `FeaturesConfig::enable_places`."
           },
+          "recent_changes": {
+            "type": "boolean",
+            "description": "Recent changes — \"who changed what lately\"\n(`GET /api/files/recent-changes`, the SPA's `/changes` route). The SPA\nhides the sidebar entry when this is false, and the API prefix is not\nmounted at all, so a non-SPA client gets a 404 rather than a surface\nthe SPA merely hides. Note that content touches are RECORDED either\nway — \"off\" means not exposed, not not collected. See\n`FeaturesConfig::enable_recent_changes`."
+          },
           "search": {
             "type": "boolean",
             "description": "Full-text and metadata search (`/api/search/*`). See\n`FeaturesConfig::enable_search`."
@@ -17953,6 +18159,39 @@
           "ocm",
           "oidc"
         ]
+      },
+      "FileChangeItemDto": {
+        "type": "object",
+        "description": "One row: a file, and the one person-and-time this row is about.\n\nA file legitimately appears MORE THAN ONCE in a page — once per lane that\ntouched it — so everything per-row travels here rather than in a\ncontext map keyed by file id (`docs/plan/recently-modified.md` §4).",
+        "required": [
+          "resource",
+          "changed_at",
+          "modifier_id"
+        ],
+        "properties": {
+          "changed_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "**This row's** touch: when *this* person changed it. NOT the file's\nlatest change by anyone — in Bob's lane the row says when Bob changed\nit, or every lane reads as the most recent editor."
+          },
+          "lane_total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many files this person changed inside the window, counted AFTER\nthe access filter — so a lane header can read \"Bob · 14 files\" without\na second round trip and without hinting at a file the caller cannot\nsee. Present on the `modifier` axis only."
+          },
+          "modifier_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Who made that change — an id, resolved by the client the same way it\nresolves `created_by` on every other listing (`useOwnerCache` →\n`/api/users/{id}`, cached across pages). Embedding a user object here\nwould be an N+1 per page and the only listing in the API that does it.\n\nNever null: `storage.file_content_touches.user_id` is NOT NULL and\ncascades on user delete, so a lane's person always exists."
+          },
+          "resource": {
+            "$ref": "#/components/schemas/FileDto",
+            "description": "The file itself, shape-identical to every other file listing."
+          }
+        }
       },
       "FileContentMetadataDto": {
         "type": "object",
@@ -20643,6 +20882,14 @@
             ]
           }
         }
+      },
+      "RecentChangesOrderBy": {
+        "type": "string",
+        "description": "Sort axis for `GET /api/files/recent-changes`.\n\nTyped rather than `Option<String>` so an unknown axis is refused at\nwire-decode time instead of silently falling back to the default — same\ndiscipline as [`super::recent_dto::RecentOrderBy`] and\n[`super::trash_dto::TrashOrderBy`]. Per-endpoint on purpose: `modifier`\nmeans nothing on a listing with no modifier.",
+        "enum": [
+          "changed_at",
+          "modifier"
+        ]
       },
       "RecentItemDto": {
         "type": "object",

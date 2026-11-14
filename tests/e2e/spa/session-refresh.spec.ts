@@ -115,10 +115,25 @@ test.describe('SPA · session refresh survives a deleted access cookie', () => {
 		// URL-assertion timeout. The assertions below do the real waiting.
 		//
 		// Note the reload above (access cookie deleted, refresh cookie kept)
-		// deliberately does NOT do this: that case must stay on /files, so
-		// awaiting a plain `load` is exactly what it should assert.
+		// deliberately does NOT use this: that case must stay on /files, so
+		// a plain `load` is exactly what it should be asserting.
+		// `commit` was not early enough either: the hard navigation can abort
+		// the reload BEFORE it commits, and then even that await throws the
+		// same `ERR_ABORTED`.
+		//
+		// This is PLAYWRIGHT's navigation semantics, not an app or
+		// test-design fault: `page.reload()` / `page.goto()` reject on
+		// `net::ERR_ABORTED` even when the abort is caused by the page
+		// legitimately navigating elsewhere, and there is no "tolerate being
+		// superseded" option — no `waitUntil: 'none'`. So no value of
+		// `waitUntil` fixes this; the previous attempt moved `load` → `commit`
+		// and only narrowed the window. Catching that one error is the
+		// accepted workaround.
+		//
+		// Swallowed only when it IS that abort; anything else still fails,
+		// and the assertions below do the waiting.
 		await page.reload({ waitUntil: 'commit' }).catch((e: unknown) => {
-			if (!String(e).includes('ERR_ABORTED')) throw e;
+			if (!/ERR_ABORTED|frame was detached/.test(String(e))) throw e;
 		});
 
 		await expect(page).toHaveURL(/\/login/);

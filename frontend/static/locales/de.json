@@ -78,6 +78,7 @@
     "files": "Dateien",
     "shared": "Freigaben",
     "recent": "Zuletzt verwendet",
+    "changes": "Änderungen",
     "favorites": "Favoriten",
     "photos": "Medien",
     "music": "Musik",
@@ -548,6 +549,7 @@
     "new_folder_dotfile_hidden": "Ordner \"{{name}}\" erstellt — durch Ihre Einstellung ausgeblendet.",
     "dotfiles_hidden_toast": "Verborgene Dateien ausgeblendet",
     "dotfiles_shown_toast": "Verborgene Dateien angezeigt",
+    "col_modified_by": "Geändert von",
     "col_modified": "Geändert",
     "col_added": "Hinzugefügt",
     "col_created_by": "Erstellt von",
@@ -860,6 +862,17 @@
     "added_msg": "zu Favoriten hinzugefügt",
     "removed_title": "Aus Favoriten entfernt",
     "removed_msg": "aus Favoriten entfernt"
+  },
+  "changes": {
+    "empty_state": "Keine letzten Änderungen",
+    "empty_hint": "Änderungen an Dateien, auf die Sie zugreifen können, erscheinen hier",
+    "col_changed": "Geändert",
+    "lane_files": "{{n}} Datei(en)",
+    "cap_lanes": "Top {{n}} pro Person",
+    "window": "Zeitraum",
+    "window_7": "Letzte 7 Tage",
+    "window_30": "Letzte 30 Tage",
+    "window_90": "Letzte 90 Tage"
   },
   "recent": {
     "title": "Zuletzt verwendet",
@@ -1741,6 +1754,7 @@
     "type": "Typ",
     "type.folders": "Ordner",
     "accessedAt": "Zugriffsdatum",
+    "changedAt": "Änderungsdatum",
     "modifiedAt": "Änderungsdatum",
     "createdAt": "Erstellungsdatum",
     "size": "Größe",
@@ -1945,6 +1959,7 @@
     "retry": "Versuchen Sie es erneut",
     "select": "Wählen",
     "select_all": "Alles auswählen",
+    "filter": "Filtern",
     "dismiss": "Zurückweisen"
   },
   "device": {
