@@ -2455,25 +2455,11 @@ pub struct FeaturesConfig {
     /// SPA's `/calendars` page. Default: true.
     /// Env: `OXICLOUD_ENABLE_CALENDARS`.
     ///
-    /// **PLACEHOLDER.** Nothing reads this yet: the REST surface and the
-    /// SPA page arrive with
-    /// <https://github.com/AtalayaLabs/OxiCloud/pull/853>. It ships ahead
-    /// of them so the flag, its `/api/config.features.calendars` wire
-    /// field and the generated SDK type are already in place when that
-    /// PR lands — the implementer adds the route gate in `routes.rs` and
-    /// the nav gate in `AppShell.svelte`.
-    ///
-    /// One thing DOES move, though: a `POST /api/calendars` needs the
-    /// per-route `require_internal_user_layer` that the address-book
-    /// and playlist creates carry in `routes.rs`, because
-    /// `CalendarService::create_calendar` has no gate of its own (see
-    /// the TODO(#853) on that method). Externals own no resources —
-    /// today the only caller is CalDAV `MKCALENDAR`, already behind
-    /// that layer, so REST would be the first ungated door.
-    ///
-    /// Same split as [`Self::enable_contacts`] vs
-    /// [`Self::enable_carddav`]: this is the browse UI, `enable_caldav`
-    /// is the sync protocol.
+    /// Distinct from [`Self::enable_caldav`] the same way
+    /// [`Self::enable_contacts`] is distinct from [`Self::enable_carddav`]:
+    /// that flag governs the CalDAV sync protocol a desktop client talks
+    /// to, this one governs the browse UI and its REST backing. An
+    /// operator can turn this off while keeping CalDAV on, or the reverse.
     pub enable_calendars: bool,
     /// Contacts browse surface — the `/api/contacts` REST API and the
     /// SPA's `/contacts` page. Default: true.
@@ -3120,7 +3106,7 @@ impl Default for FeaturesConfig {
             enable_webdav: true,           // WebDAV protocol surface
             enable_caldav: true,           // CalDAV protocol surface
             enable_carddav: true,          // CardDAV protocol surface
-            enable_calendars: true,        // Calendars browse UI (placeholder, see PR #853)
+            enable_calendars: true,        // Calendars browse UI + /api/calendars
             enable_contacts: true,         // Contacts browse UI + /api/contacts
             enable_nextcloud: false,       // NextCloud compat — opt-in, off by default
             // Back-compat with pre-multi-drive clients — bare `/webdav/`

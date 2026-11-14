@@ -412,6 +412,10 @@
 .nav-item[data-section="favorites"] .oxi-icon {
     color: var(--color-cal-3);
 } /* Favorites - gold */
+.nav-item[data-section="calendar"] i,
+.nav-item[data-section="calendar"] .oxi-icon {
+    color: var(--color-cal-5);
+} /* Calendar - green */
 .nav-item[data-section="photos"] i,
 .nav-item[data-section="photos"] .oxi-icon {
     color: var(--color-cal-10);
