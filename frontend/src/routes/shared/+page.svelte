@@ -883,6 +883,10 @@
 		border: 1px solid var(--color-border);
 		border-radius: var(--radius-md);
 		overflow: visible;
+		/* The surface every other view's cards and rows sit on
+		   (`.file-item` in both grid and list), so a lane here reads as the
+		   same kind of object instead of a bordered hole in the page. */
+		background-color: var(--color-item);
 	}
 
 	/* Rows are indented past the header's glyph so a grantee's avatar starts
@@ -913,6 +917,11 @@
 		padding: var(--space-2) var(--space-3);
 		border-bottom: 1px solid var(--color-border-faint, var(--color-border));
 		background: var(--color-bg-muted);
+		/* Rounded to the card's own corners, less its 1px border — a square
+		   tint strip on a surfaced card pokes out of the radius at the top
+		   two corners, which is the only reason this tint was dropped when
+		   the lane gained `--color-item`. */
+		border-radius: calc(var(--radius-md) - 1px) calc(var(--radius-md) - 1px) 0 0;
 	}
 
 	.ms-lane__resource,

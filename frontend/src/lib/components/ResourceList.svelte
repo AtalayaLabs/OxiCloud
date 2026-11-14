@@ -1956,13 +1956,20 @@
 	   `top: calc(-1 * var(--space-5))` and both offsets are resolved against
 	   the same scrollport padding edge.
 	   `z-index: 1` clears the rows it scrolls over while staying far below
-	   `--z-sticky` (100) so the page chrome still wins. The background is
-	   the lane's own surface — without it the rows show through. */
+	   `--z-sticky` (100) so the page chrome still wins.
+
+	   `--color-bg-muted`, the same tint `/shared`'s lane headers carry, so a
+	   lane label reads the same wherever lanes appear. It also has to be an
+	   OPAQUE colour whatever the choice: the rows scroll underneath, and a
+	   translucent strip would show them through. The card's `overflow: clip`
+	   rounds the strip's top corners for free — `/shared` has to do that
+	   itself, because its lanes keep `overflow: visible` for escaping
+	   menus. */
 	.files-list-view--grouped .rl-swimlane-header {
 		position: sticky;
 		top: calc(var(--rl-sticky-h, 0px) - var(--space-5));
 		z-index: 1;
-		background-color: var(--color-item);
+		background-color: var(--color-bg-muted);
 	}
 
 	/* The last row in a lane would otherwise draw a border against the gap. */
