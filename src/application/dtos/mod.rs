@@ -20,6 +20,7 @@ pub mod people_dto;
 pub mod photos_dto;
 pub mod playlist_dto;
 pub mod plugin_dto;
+pub mod recent_changes_dto;
 pub mod recent_dto;
 pub mod search_dto;
 pub mod session_dto;

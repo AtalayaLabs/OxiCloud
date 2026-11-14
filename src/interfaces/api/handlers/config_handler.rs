@@ -267,6 +267,14 @@ pub struct FeaturesDto {
     /// `places` + `faces` are then moot. See
     /// `FeaturesConfig::enable_photos`.
     pub photos: bool,
+    /// Recent changes — "who changed what lately"
+    /// (`GET /api/files/recent-changes`, the SPA's `/changes` route). The SPA
+    /// hides the sidebar entry when this is false, and the API prefix is not
+    /// mounted at all, so a non-SPA client gets a 404 rather than a surface
+    /// the SPA merely hides. Note that content touches are RECORDED either
+    /// way — "off" means not exposed, not not collected. See
+    /// `FeaturesConfig::enable_recent_changes`.
+    pub recent_changes: bool,
     /// Photo-map ("Places") tab. See `FeaturesConfig::enable_places`.
     pub places: bool,
     /// Face detection + identity clustering ("People"). Biometric —
@@ -435,6 +443,7 @@ pub async fn get_config(State(state): State<Arc<AppState>>) -> Json<ServerConfig
             sharing: f.enable_file_sharing,
             music: f.enable_music,
             photos: f.enable_photos,
+            recent_changes: f.enable_recent_changes,
             places: f.enable_places,
             faces: f.enable_faces,
             video_thumbnails: f.enable_video_thumbnails,

@@ -78,6 +78,7 @@
     "files": "Fichiers",
     "shared": "Partages",
     "recent": "Récents",
+    "changes": "Modifications",
     "favorites": "Favoris",
     "photos": "Médias",
     "music": "Musique",
@@ -549,6 +550,7 @@
     "new_folder_dotfile_hidden": "Dossier \"{{name}}\" créé — masqué par votre préférence.",
     "dotfiles_hidden_toast": "Fichiers masqués",
     "dotfiles_shown_toast": "Fichiers affichés",
+    "col_modified_by": "Modifié par",
     "col_modified": "Modifié",
     "col_added": "Ajouté",
     "col_created_by": "Créé par",
@@ -860,6 +862,17 @@
     "added_msg": "ajouté aux favoris",
     "removed_title": "Retiré des favoris",
     "removed_msg": "retiré des favoris"
+  },
+  "changes": {
+    "empty_state": "Aucune modification récente",
+    "empty_hint": "Les modifications des fichiers auxquels vous avez accès apparaîtront ici",
+    "col_changed": "Modifié",
+    "lane_files": "{{n}} fichier(s)",
+    "cap_lanes": "Les {{n}} plus récents par personne",
+    "window": "Période",
+    "window_7": "7 derniers jours",
+    "window_30": "30 derniers jours",
+    "window_90": "90 derniers jours"
   },
   "recent": {
     "title": "Récents",
@@ -1742,6 +1755,7 @@
     "shareDate": "Date de partage",
     "favoriteDate": "Date d'ajout aux favoris",
     "accessedAt": "Date d'accès",
+    "changedAt": "Date de modification",
     "modifiedAt": "Date de modification",
     "createdAt": "Date de création",
     "size": "Taille",
@@ -1945,6 +1959,7 @@
     "retry": "Essayer à nouveau",
     "select": "Sélectionner",
     "select_all": "Tout sélectionner",
+    "filter": "Filtrer",
     "dismiss": "Rejeter"
   },
   "device": {

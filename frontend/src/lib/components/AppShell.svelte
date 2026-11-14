@@ -20,6 +20,13 @@
 	import { copyFiles, copyFolders } from '$lib/api/endpoints/batch';
 	import { isCopyDrop, ITEM_DRAG_MIME } from '$lib/utils/dragModifiers';
 	import { dragAutoScroll } from '$lib/utils/dragAutoScroll';
+	// OS-file drops on a drive row: same "is this an OS drag?" test the rest of
+	// the app uses, read into the two shapes an uploader takes, then staged for
+	// `/files` to perform (see `pendingUpload` for why it is a handoff).
+	import { isOsFileDrag } from '$lib/utils/osFileDropGuard';
+	import { readDroppedUpload } from '$lib/utils/droppedEntries';
+	import { pendingUpload } from '$lib/stores/pendingUpload.svelte';
+	import { sidebarDrop } from '$lib/stores/sidebarDrop.svelte';
 	import type { Drive } from '$lib/api/types';
 	import type { FileItem, FolderItem, ItemType } from '$lib/api/types';
 	import { isAtLeastAdmin } from '$lib/utils/roles';
@@ -95,14 +102,32 @@
 	// `src/common/di.rs` for the server-side side of each gate.
 	const NAV_GROUPS = $derived.by<NavGroup[]>(() => {
 		const library: NavLink[] = [
-			{ href: '/recent', label: t('nav.recent', 'Recent'), icon: 'clock', section: 'recent' },
-			{
-				href: '/favorites',
-				label: t('nav.favorites', 'Favorites'),
-				icon: 'star',
-				section: 'favorites'
-			}
+			{ href: '/recent', label: t('nav.recent', 'Recent'), icon: 'clock', section: 'recent' }
 		];
+		// Immediately after Recent, and a sibling of it rather than a tab on
+		// it: `/recent` is the viewer's own access log, this is shared
+		// provenance across everyone who can reach the file. See
+		// `docs/plan/recently-modified.md` §6 for why they are not one page
+		// with two filters.
+		//
+		// "Changes", not "Recent changes": two adjacent entries both opening
+		// with "Recent" read as two filters over one dataset, which is the
+		// exact misreading the separate entry exists to avoid. The label now
+		// matches the route, and the icons differ (clock vs pen).
+		if (serverConfig.features.recent_changes) {
+			library.push({
+				href: '/changes',
+				label: t('nav.changes', 'Changes'),
+				icon: 'pen',
+				section: 'changes'
+			});
+		}
+		library.push({
+			href: '/favorites',
+			label: t('nav.favorites', 'Favorites'),
+			icon: 'star',
+			section: 'favorites'
+		});
 		if (serverConfig.features.photos) {
 			library.push({
 				href: '/photos',
@@ -427,8 +452,6 @@
 		name: string;
 		kind: ItemType;
 	}
-	let sidebarDropHref = $state<string | null>(null);
-
 	function sidebarOnDragOver(e: DragEvent, href: string) {
 		if (!e.dataTransfer?.types.includes(SIDEBAR_DRAG_TYPE)) return;
 		e.preventDefault();
@@ -436,11 +459,11 @@
 		// "move" so the cursor doesn't imply a benign copy for something that
 		// actually removes the row from its source view.
 		e.dataTransfer.dropEffect = href === '/favorites' ? 'copy' : 'move';
-		sidebarDropHref = href;
+		sidebarDrop.arm(href);
 	}
 
 	function sidebarOnDragLeave(href: string) {
-		if (sidebarDropHref === href) sidebarDropHref = null;
+		sidebarDrop.release(href);
 	}
 
 	// ── Drop onto a drive in the picker ──────────────────────────────
@@ -449,10 +472,11 @@
 	// i.e. when the account has more than one drive — with a single drive
 	// there is nowhere else to drop.
 	//
-	// Shares `sidebarDropHref` with the nav-link targets so exactly one
-	// thing in the sidebar is ever armed; drives key on their id, which
-	// cannot collide with an href.
-	let driveDropId = $state<string | null>(null);
+	// Shares `sidebarDrop` with the nav-link targets so exactly one thing in
+	// the sidebar is ever armed; drives key on their id, which cannot
+	// collide with an href. The store, not a local, because `/files` reads
+	// it too — see its doc comment.
+	const driveDropId = $derived(sidebarDrop.key);
 
 	/**
 	 * Folder currently being browsed, from `/files/<…>/<leaf>` — the last
@@ -481,6 +505,19 @@
 	}
 
 	function driveOnDragOver(e: DragEvent, _d: Drive) {
+		// OS files uploading INTO the drive. Accepted on every drive, the one
+		// on screen included: `isCurrentFolderDrive` below rejects a MOVE into
+		// the folder the items already sit in, which says nothing about an
+		// upload — "put this file in the drive I'm browsing" is an ordinary
+		// thing to want. `preventDefault` is what accepts the drop, and it is
+		// also what makes the app-wide guard (which would otherwise toast
+		// "uploads only work in Files") stand down.
+		if (isOsFileDrag(e)) {
+			e.preventDefault();
+			if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+			sidebarDrop.arm(_d.id);
+			return;
+		}
 		if (!e.dataTransfer?.types.includes(SIDEBAR_DRAG_TYPE)) return;
 		// Not a valid target when it resolves to the folder on screen —
 		// no `preventDefault`, so the browser shows a no-drop cursor and
@@ -493,15 +530,37 @@
 		// (arrow-with-plus for copy, plain for move), which is what makes
 		// the copy gesture discoverable. The nav-link targets above DO set
 		// it, because favorites/trash are single-meaning drops.
-		driveDropId = _d.id;
+		sidebarDrop.arm(_d.id);
 	}
 
 	function driveOnDragLeave(d: Drive) {
-		if (driveDropId === d.id) driveDropId = null;
+		sidebarDrop.release(d.id);
 	}
 
 	async function driveOnDrop(e: DragEvent, d: Drive) {
-		driveDropId = null;
+		sidebarDrop.clear();
+		// OS files → upload into the drive's root. The uploader lives on
+		// `/files` (progress bar, abort, reload-guard, post-upload reload), so
+		// the drop is READ here — a DataTransfer is emptied the moment the
+		// handler returns, which is why the extraction cannot be deferred —
+		// staged, and performed there after the navigation lands.
+		if (isOsFileDrag(e)) {
+			e.preventDefault();
+			e.stopPropagation();
+			const dt = e.dataTransfer;
+			if (!dt) return;
+			const { tree, files } = await readDroppedUpload(dt);
+			if (!tree && files.length === 0) return;
+			pendingUpload.stage({ targetFolderId: d.root_folder_id, tree, files });
+			// A navigation that never arrives must not leave the drop staged:
+			// it would fire whenever that folder was next opened, long after
+			// the gesture. (`pendingUpload` also expires a stage it never got
+			// to perform — belt and braces, because this is file data.)
+			await goto(resolve(`/files/${d.root_folder_id}`)).catch(() => {
+				pendingUpload.discard();
+			});
+			return;
+		}
 		if (!e.dataTransfer?.types.includes(SIDEBAR_DRAG_TYPE)) return;
 		// Belt to the dragover brace: a drop can still arrive here if the
 		// URL changed mid-drag, and silently doing nothing beats claiming
@@ -618,7 +677,7 @@
 		// from the row template, which can't type-narrow the loop variable
 		// through the arrow-function closure without a local capture.
 		if (href !== '/favorites' && href !== '/trash') return;
-		sidebarDropHref = null;
+		sidebarDrop.clear();
 		if (!e.dataTransfer?.types.includes(SIDEBAR_DRAG_TYPE)) return;
 		e.preventDefault();
 		const items = parseDragItems(e);
@@ -746,6 +805,66 @@
 			shortcutLabel = '⌘K';
 		}
 	});
+	/**
+	 * Scroll-away top bar on SHORT viewports.
+	 *
+	 * The bar costs a fixed 70px of height and never moves, which is fine at
+	 * 900px tall and ruinous at 500 — a laptop with devtools open, a phone in
+	 * landscape — where it eats an eighth of the window to show a search box
+	 * and an avatar the user is not currently reaching for. Below 600px of
+	 * viewport height it slides out of the way as you scroll down the content
+	 * and comes straight back on any upward scroll. Above 600px nothing
+	 * changes: the bar is always on screen, which is stronger than sticky.
+	 *
+	 * Driven from `.content-area`'s scroll rather than the window's, because
+	 * that element is the scrollport — a window scroll listener never fires
+	 * here. The class only collapses a margin, so nothing is hidden from
+	 * assistive tech and the bar keeps its place in the tab order.
+	 */
+	let contentEl = $state<HTMLElement | null>(null);
+	let topBarHidden = $state(false);
+
+	onMount(() => {
+		// Optional-chained like `theme.svelte.ts` does: jsdom has no
+		// `matchMedia`, and without it the right answer is the tall-viewport
+		// behaviour — the bar simply stays put.
+		const short = window.matchMedia?.('(max-height: 600px)');
+		if (!short) return;
+		let lastY = 0;
+
+		const onScroll = () => {
+			const el = contentEl;
+			if (!el) return;
+			const y = el.scrollTop;
+			// Past the bar's own height before hiding, so a short list that
+			// barely scrolls can't flap the bar in and out; any upward move
+			// reveals it immediately, which is what a user scrolling back for
+			// the search box expects.
+			if (y > lastY && y > 70) topBarHidden = true;
+			else if (y < lastY) topBarHidden = false;
+			lastY = y;
+		};
+
+		const sync = () => {
+			if (short.matches) {
+				lastY = contentEl?.scrollTop ?? 0;
+				contentEl?.addEventListener('scroll', onScroll, { passive: true });
+			} else {
+				contentEl?.removeEventListener('scroll', onScroll);
+				// Leaving the short-viewport case mid-scroll must not strand the
+				// bar off screen.
+				topBarHidden = false;
+			}
+		};
+
+		sync();
+		short.addEventListener('change', sync);
+		return () => {
+			short.removeEventListener('change', sync);
+			contentEl?.removeEventListener('scroll', onScroll);
+		};
+	});
+
 	let online = $state(true);
 	onMount(() => {
 		online = navigator.onLine;
@@ -1049,7 +1168,7 @@
 					<a
 						class="nav-item"
 						class:active={activeLink(link.href)}
-						class:nav-item--drop-target={isDropTarget && sidebarDropHref === link.href}
+						class:nav-item--drop-target={isDropTarget && sidebarDrop.key === link.href}
 						href={navHref(link.href)}
 						data-section={link.section}
 						data-testid={`appshell-nav-${link.section}-link`}
@@ -1112,7 +1231,11 @@
 </aside>
 
 <div class="main-content">
-	<div class="top-bar" class:top-bar--search-active={searchActive}>
+	<div
+		class="top-bar"
+		class:top-bar--search-active={searchActive}
+		class:top-bar--hidden={topBarHidden}
+	>
 		<button
 			class="sidebar-toggle"
 			aria-label={t('nav.toggle', 'Toggle navigation menu')}
@@ -1386,7 +1509,13 @@
 		of this element — well before the window edge, so the browser's own
 		edge scrolling never engaged and only downward drags worked.
 	-->
-	<main class="content-area" id="main-content" tabindex="-1" use:dragAutoScroll>
+	<main
+		class="content-area"
+		id="main-content"
+		tabindex="-1"
+		bind:this={contentEl}
+		use:dragAutoScroll
+	>
 		{#if !online}
 			<Banner
 				severity="warning"

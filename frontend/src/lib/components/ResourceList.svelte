@@ -203,6 +203,17 @@
 		/** Custom renderer for the date cell (e.g. trash expiry chip). */
 		dateCell?: Snippet<[FileItem | FolderItem, ItemContext | undefined]>;
 		/**
+		 * Custom renderer for the owner cell, for the same reason `dateCell`
+		 * exists: the default reads `ctx.ownerId` from the `contextMap`, which
+		 * is keyed by `item.id`, so a host whose rows are not one-per-file
+		 * cannot express a per-ROW person.
+		 *
+		 * `/changes` is that host — one file appears in two people's lanes,
+		 * and the id-keyed map can only hold one of them. Without this the
+		 * page had to hide the column on its default axis.
+		 */
+		ownerCell?: Snippet<[FileItem | FolderItem, ItemContext | undefined]>;
+		/**
 		 * Optional per-bucket action button rendered alongside the swimlane
 		 * header label. Receives the bucket key (the value `bucketOf`
 		 * returned for the active group-by). Used by the trash page to expose
@@ -233,6 +244,20 @@
 		ownerLabel?: string;
 		/** Allow grid/list toggle (shares the app-wide view mode). */
 		showViewToggle?: boolean;
+		/**
+		 * Show the sort-direction toggle. Defaults to true, which is what
+		 * every listing wants: the host page passes `reverse` to its endpoint
+		 * and the rows come back flipped.
+		 *
+		 * Set false when the host's endpoint has NO reverse parameter.
+		 * `/changes` is the case: a change feed is newest-first by nature, so
+		 * `GET /api/files/recent-changes` never grew the parameter — and
+		 * without this the toggle still rendered (it is gated on `groupBys`
+		 * being non-empty), flipping a bound variable that nothing could act
+		 * on. A control that re-fetches identical data is worse than no
+		 * control.
+		 */
+		showSortDirection?: boolean;
 		/** Show the dotfile-visibility eye toggle in the toolbar AND
 		 * apply the corresponding filter to `items` when
 		 * `preferences.hideDotfiles` is true. Opt-in per host page —
@@ -335,9 +360,10 @@
 		actions?: Snippet;
 		/**
 		 * Action-bar right cluster — rendered inside the display
-		 * controls, immediately after the dotfile eye toggle. For page
-		 * actions that belong next to the view controls rather than in
-		 * the left cluster.
+		 * controls, at the END of `.view-toggle` (after the grid/list
+		 * toggle). For page controls that belong next to the view
+		 * controls rather than in the left cluster: `/changes` puts its
+		 * filter button here.
 		 */
 		displayActions?: Snippet;
 		/**
@@ -388,20 +414,6 @@
 		 * `enableSystemDrop` is false.
 		 */
 		onsystemdrop?: (e: DragEvent) => void;
-		/**
-		 * Forces the OS-file drop overlay on regardless of whether the
-		 * pointer is currently over `.rl-root`. Only takes effect when
-		 * `enableSystemDrop` is true (otherwise there's no drop route
-		 * behind the overlay). Meant for pages that track drag state
-		 * at window level and want the overlay to react anywhere on
-		 * the viewport — not just over the list — so drops on the
-		 * page's title strip / margins get the same "drop to upload"
-		 * cue. `/files/[...path]/+page.svelte` uses this. The overlay
-		 * itself is already `position: fixed`, so activating it from a
-		 * broader trigger costs no visual change — it OR's with the
-		 * internal `systemDropOver` counter.
-		 */
-		systemDropOverlayActive?: boolean;
 		/**
 		 * Render `<img>` thumbnails on file rows and fall back to
 		 * client-side generation when the server doesn't have one
@@ -492,11 +504,13 @@
 		showDate = true,
 		dateLabel,
 		dateCell,
+		ownerCell,
 		bucketAction,
 		bucketLabel,
 		showOwner = false,
 		ownerLabel,
 		showViewToggle = true,
+		showSortDirection = true,
 		showDotfileToggle = false,
 		selectable = false,
 		contextActions,
@@ -520,7 +534,6 @@
 		titleInToolbar = false,
 		enableSystemDrop = false,
 		onsystemdrop,
-		systemDropOverlayActive = false,
 		enableThumbnails = true,
 		allowThumbnailGenerate = true,
 		isDraggable,
@@ -585,6 +598,19 @@
 	let gridWidth = $state(0);
 	const gridCols = $derived(gridColumns(gridWidth));
 
+	/**
+	 * Measured height of this list's `.page-sticky-header`, published to CSS as
+	 * `--lane-sticky-h` so a swimlane header knows where to stick: just under the
+	 * page chrome, not under the viewport top where the chrome already is.
+	 *
+	 * Measured rather than guessed because the strip's height is whatever the
+	 * host page put in it — toolbar alone, toolbar plus breadcrumb, a merged
+	 * title, two rows once the controls wrap on a phone. The one hardcoded
+	 * guess in this area (`scroll-margin-top: 100px`, for just-added rows) is
+	 * the reason that number has a comment apologising for itself.
+	 */
+	let stickyHeaderH = $state(0);
+
 	// Whether an action-cell renders per row — matches the row-template
 	// gate below. Feeds both the list-view column track and the header
 	// row's trailing placeholder so the layout stays in sync.
@@ -596,16 +622,54 @@
 			!!contextActions?.length
 	);
 
+	/**
+	 * Is the TABLE wide enough to spend a column on something secondary?
+	 *
+	 * Keyed on the measured container width, not the viewport: a list inside
+	 * a narrow pane is narrow whatever the window is doing. Grid view always
+	 * passes — it has no column track to spend, and its cards carry this
+	 * information in their own footer.
+	 *
+	 * `gridWidth === 0` is the pre-measurement frame, treated as "wide", so a
+	 * wide list doesn't render one frame without its columns and then jump.
+	 */
+	function fitsList(minWidth: number): boolean {
+		return filesStore.viewMode !== 'list' || gridWidth === 0 || gridWidth >= minWidth;
+	}
+
+	/* Drop order as the table narrows, widest threshold first. Type goes
+	   first: at a glance the icon already says what kind of thing a row is,
+	   so the word is the most redundant column on the table. Then the owner
+	   (an avatar and a name), then size and date, which are short, aligned
+	   and scannable. The name and its path line keep what they give up, and
+	   the row tooltip still carries owner and path when the column is gone. */
+	const typeColumn = $derived(showType && fitsList(1200));
+	const ownerColumn = $derived(showOwner && fitsList(920));
+	const sizeColumn = $derived(showSize && fitsList(790));
+	const dateColumn = $derived(showDate && fitsList(790));
+
 	// Build the list-view column track from the enabled cells.
 	const columns = $derived(
 		[
 			selectable ? '36px' : '',
-			'minmax(200px, 2fr)',
-			showOwner ? 'minmax(120px, 1fr)' : '',
-			showPath ? 'minmax(140px, 1.5fr)' : '',
-			showType ? '120px' : '',
-			showSize ? '110px' : '',
-			showDate ? '160px' : '',
+			// Name, and now the path under it — so this track absorbs the
+			// width the Path column used to claim rather than splitting it.
+			// 3fr against the owner's 1fr (was 2fr): two lines of text need
+			// the room more than a single avatar-and-name chip does, and it
+			// pushes the owner column clear of the name instead of crowding
+			// it.
+			'minmax(220px, 3fr)',
+			// 0.6fr against the name's 3fr: an owner cell holds one avatar and
+			// one name, so extra width there is dead space the name column
+			// has a use for. The 120px floor is what an avatar plus a short
+			// name needs before it ellipses.
+			ownerColumn ? 'minmax(120px, 0.6fr)' : '',
+			// 80px: a type label is one short word ("Image", "Folder", "PDF"),
+			// so 120px was a third of a column of air. Narrowed 1.5x, the
+			// difference going to the name.
+			typeColumn ? '80px' : '',
+			sizeColumn ? '110px' : '',
+			dateColumn ? '160px' : '',
 			hasActionCell ? '120px' : ''
 		]
 			.filter(Boolean)
@@ -1077,7 +1141,10 @@
 		const path = item.path ?? '';
 		return [
 			owner && `${ownerLabel ?? t('files.col_created_by', 'Created by')}: ${owner}`,
-			path && `${t('files.col_path', 'Location')}: ${path}`
+			// `pathLabel` is where the host's own wording lands now that the
+			// Path column is gone — `/trash` calls this "Original location",
+			// and the tooltip is the one place left to say so.
+			path && `${pathLabel ?? t('files.col_path', 'Location')}: ${path}`
 		]
 			.filter(Boolean)
 			.join('\n');
@@ -1104,27 +1171,21 @@
 	// breadcrumb) are handled by the existing `onitemdrop` hooks and use
 	// a private `application/x-oxi-item` MIME so the `Files` type check
 	// below never matches them.
-	// Drag-enter/leave chatter is unavoidable when the drag pointer moves
-	// between the wrapper and its descendants — the browser fires
-	// `dragleave` on the parent BEFORE firing `dragenter` on the child,
-	// so a naive `systemDropOver = false` in the leave handler produces
-	// a false→true flash on every row hover during the drag. Counter
-	// approach: increment on every dragenter, decrement on every
-	// dragleave; the overlay is visible when the count is positive. The
-	// count zeroes only when the drag has truly left the wrapper (or
-	// hit `drop`/`dragend`), so the overlay stays stable throughout.
-	let systemDragDepth = $state(0);
-	const systemDropOver = $derived(systemDragDepth > 0);
+	// No drag-state counter here any more: this component no longer DRAWS
+	// anything for a system drag (the overlay it used to own is gone — see
+	// the note at the foot of `.rl-root`). The host page tracks the drag at
+	// window level, because the area that accepts a drop is the whole page,
+	// not just the list.
 	function isSystemDrag(e: DragEvent): boolean {
 		return !!e.dataTransfer?.types?.includes('Files');
 	}
-	function onSystemDragEnter(e: DragEvent) {
-		if (!isSystemDrag(e)) return;
-		e.preventDefault();
-		systemDragDepth++;
-	}
 	function onSystemDragOver(e: DragEvent) {
 		if (!isSystemDrag(e)) return;
+		// A folder row under the pointer has already claimed this drag (its
+		// own `dragover` prevented the default as it bubbled through). Leave
+		// it alone: the row is the destination, and re-asserting here would
+		// only fight over `dropEffect`.
+		if (e.defaultPrevented) return;
 		// preventDefault on `dragover` is what tells the browser this
 		// element accepts drops — without it, `drop` never fires and
 		// the pointer shows the OS "no-drop" cursor.
@@ -1137,17 +1198,13 @@
 		// "go to Files" toast.
 		if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
 	}
-	function onSystemDragLeave(e: DragEvent) {
-		if (!isSystemDrag(e)) return;
-		if (systemDragDepth > 0) systemDragDepth--;
-	}
 	function onSystemDrop(e: DragEvent) {
 		if (!isSystemDrag(e)) return;
+		// Aimed at a folder row, which uploaded into it and stopped there. Not
+		// our drop — and firing the "wrong section" toast here would warn
+		// about an upload that just succeeded.
+		if (e.defaultPrevented) return;
 		e.preventDefault();
-		// Drop ends the drag; force-clear regardless of counter state
-		// (a stray unbalanced dragenter would otherwise leave the
-		// overlay stuck on).
-		systemDragDepth = 0;
 		if (enableSystemDrop && onsystemdrop) {
 			onsystemdrop(e);
 		} else if (!enableSystemDrop) {
@@ -1212,7 +1269,7 @@
 		aria-label={onopen ? item.name : undefined}
 		data-testid={item.name}
 		data-item-id={item.id}
-		title={showOwner ? ownerTitle(item) : undefined}
+		title={showOwner || showPath ? ownerTitle(item) : undefined}
 		{draggable}
 		ondragstart={draggable && onitemdragstart ? (e) => onitemdragstart(e, item) : undefined}
 		ondragover={dropTarget && onitemdragover ? (e) => onitemdragover(e, item) : undefined}
@@ -1297,25 +1354,43 @@
 					{@render cardOverlay(item, ctx)}
 				{/if}
 			</span>
-			<span class="name-cell__text">{item.name}</span>
+			<!--
+				Name over path, both to the right of the icon — the path used to
+				be a column of its own, competing for width with the name it
+				qualifies and pushing owner/size/date to the right. As a second
+				line it reads as what it is: where this item lives, subordinate
+				to what it is called.
+
+				LIST VIEW ONLY: a grid card has no room for it and never showed
+				the path column either (`itemTooltip` still surfaces it on
+				hover). The line renders whenever `showPath` is on, even for an
+				item at the root with nothing to show, because the windowed list
+				assumes one row pitch — a mix of one- and two-line rows would
+				drift the scroll maths.
+			-->
+			<span class="name-cell__body">
+				<span class="name-cell__text">{item.name}</span>
+				{#if showPath && filesStore.viewMode === 'list'}
+					<span class="name-cell__path">{item.path ?? ''}</span>
+				{/if}
+			</span>
 		</div>
-		{#if showOwner}
+		{#if ownerColumn}
 			<div class="owner-cell">
-				{#if ownerId}
+				{#if ownerCell}{@render ownerCell(item, ctx)}{:else if ownerId}
 					<UserVignette userId={ownerId} fallbackLabel={resolveOwnerName?.(ownerId) ?? undefined} />
 				{:else}
 					<span class="owner-cell__placeholder">—</span>
 				{/if}
 			</div>
 		{/if}
-		{#if showPath}<div class="path-cell">{item.path ?? ''}</div>{/if}
-		{#if showType}<div class="type-cell" data-testid="type-cell">
+		{#if typeColumn}<div class="type-cell" data-testid="type-cell">
 				{item.category ? typeLabel(item.category) : ''}
 			</div>{/if}
-		{#if showSize}
+		{#if sizeColumn}
 			<div class="size-cell">{sizeVal != null ? formatBytes(sizeVal) : '—'}</div>
 		{/if}
-		{#if showDate}
+		{#if dateColumn}
 			<div class="date-cell">
 				{#if dateCell}{@render dateCell(item, ctx)}{:else}{formatDate(dateVal)}{/if}
 			</div>
@@ -1437,9 +1512,7 @@
 	class:rl-root--rubberbanding={rubberband !== null}
 	bind:this={rlRoot}
 	onpointerdown={onRootPointerDown}
-	ondragenter={onSystemDragEnter}
 	ondragover={onSystemDragOver}
-	ondragleave={onSystemDragLeave}
 	ondrop={onSystemDrop}
 >
 	<!--
@@ -1455,7 +1528,7 @@
 	{:else if title && !mergeTitleIntoBar}
 		<h1 class="page-title">{title}</h1>
 	{/if}
-	<div class="page-sticky-header">
+	<div class="page-sticky-header" bind:clientHeight={stickyHeaderH}>
 		<div class="rl-toolbar" class:rl-toolbar--with-title={mergeTitleIntoBar}>
 			{#if mergeTitleIntoBar}
 				<h1 class="page-title rl-toolbar-title">{title}</h1>
@@ -1509,8 +1582,9 @@
 						ongroup={selectGroup}
 						ondirection={toggleDirection}
 						showViewMode={showViewToggle}
+						showSort={showSortDirection}
 						{showDotfileToggle}
-						afterDotfileToggle={displayActions}
+						trailing={displayActions}
 					/>
 				{/snippet}
 			</ActionBar>
@@ -1547,28 +1621,37 @@
 	{:else}
 		<div class="files-container" bind:clientWidth={gridWidth}>
 			{#if grouped && filesStore.viewMode === 'list'}
-				<div class="files-list-view" style="--files-list-columns: {columns}">
+				<!-- `--grouped` turns the single list card into one card PER LANE —
+				     see the CSS. Ungrouped lists keep the one-card look. -->
+				<div
+					class="files-list-view files-list-view--grouped"
+					style="--files-list-columns: {columns}; --lane-sticky-h: {stickyHeaderH}px"
+				>
 					{#if listHeaderOverride}{@render listHeaderOverride()}{:else}{@render listHeader()}{/if}
 					{#each sections as section (section.key)}
-						{#if section.label}
-							<div class="rl-swimlane-header" role="rowheader">
-								<span class="rl-swimlane-header__label">
-									{#if bucketLabel}
-										{@render bucketLabel(section.key, section.label)}
-									{:else}
-										{section.label}
-									{/if}
-								</span>
-								{#if bucketAction}
-									<span class="rl-swimlane-header__action">
-										{@render bucketAction(section.key)}
+						<!-- One element per lane so the flex `gap` falls BETWEEN lanes and
+						     not between a lane's header and its own rows. -->
+						<div class="lane">
+							{#if section.label}
+								<div class="rl-swimlane-header lane__header lane__header--sticky" role="rowheader">
+									<span class="rl-swimlane-header__label">
+										{#if bucketLabel}
+											{@render bucketLabel(section.key, section.label)}
+										{:else}
+											{section.label}
+										{/if}
 									</span>
-								{/if}
-							</div>
-						{/if}
-						<!-- Window each section's rows so a large grouped list (e.g. a big
-					     trash, grouped by remaining days) doesn't mount every row. -->
-						<VirtualList items={section.rows} rowHeight={56} key={(e) => e.id} {row} />
+									{#if bucketAction}
+										<span class="rl-swimlane-header__action">
+											{@render bucketAction(section.key)}
+										</span>
+									{/if}
+								</div>
+							{/if}
+							<!-- Window each section's rows so a large grouped list (e.g. a big
+						     trash, grouped by remaining days) doesn't mount every row. -->
+							<VirtualList items={section.rows} rowHeight={56} key={(e) => e.id} {row} />
+						</div>
 					{/each}
 				</div>
 			{:else if grouped}
@@ -1579,38 +1662,52 @@
 			     `windowClass`, exactly like the flat-grid arm. This was the last
 			     unwindowed path: a grouped-by-default grid (trash) mounted every card
 			     (benches/ROUND13.md §V1). -->
-				<div class="rl-grouped-grid">
+				<div class="rl-grouped-grid" style="--lane-sticky-h: {stickyHeaderH}px">
 					{#each sections as section (section.key)}
-						{#if section.label}
-							<div class="rl-swimlane-header rl-swimlane-header--grid" role="rowheader">
-								<span class="rl-swimlane-header__label">
-									{#if bucketLabel}
-										{@render bucketLabel(section.key, section.label)}
-									{:else}
-										{section.label}
-									{/if}
-								</span>
-								{#if bucketAction}
-									<span class="rl-swimlane-header__action">
-										{@render bucketAction(section.key)}
+						<!-- One element per lane, for the same reason the list view has
+						     one: a sticky header's containing block is its parent, so
+						     without this wrapper every header in the stack would share
+						     `.rl-grouped-grid` and they would pile up pinned on top of
+						     each other instead of each handing over to the next. No card
+						     skin here — grid cards are their own surfaces. -->
+						<div class="rl-grid-lane">
+							{#if section.label}
+								<div
+									class="rl-swimlane-header rl-swimlane-header--grid lane__header lane__header--sticky"
+									role="rowheader"
+								>
+									<span class="rl-swimlane-header__label">
+										{#if bucketLabel}
+											{@render bucketLabel(section.key, section.label)}
+										{:else}
+											{section.label}
+										{/if}
 									</span>
-								{/if}
-							</div>
-						{/if}
-						<VirtualList
-							items={section.rows}
-							columns={gridCols}
-							rowHeight={240}
-							windowClass="files-grid-view"
-							key={(e) => e.id}
-							{row}
-						/>
+									{#if bucketAction}
+										<span class="rl-swimlane-header__action">
+											{@render bucketAction(section.key)}
+										</span>
+									{/if}
+								</div>
+							{/if}
+							<VirtualList
+								items={section.rows}
+								columns={gridCols}
+								rowHeight={240}
+								windowClass="files-grid-view"
+								key={(e) => e.id}
+								{row}
+							/>
+						</div>
 					{/each}
 				</div>
 			{:else if filesStore.viewMode === 'list'}
 				<!-- Flat list view: only the visible rows are mounted. The spacer keeps the
 			     full scroll height so the end-of-list sentinel still fires. -->
-				<div class="files-list-view" style="--files-list-columns: {columns}">
+				<div
+					class="files-list-view"
+					style="--files-list-columns: {columns}; --lane-sticky-h: {stickyHeaderH}px"
+				>
 					{#if listHeaderOverride}{@render listHeaderOverride()}{:else}{@render listHeader()}{/if}
 					<VirtualList items={visibleItems} rowHeight={56} key={(e) => e.id} {row} />
 				</div>
@@ -1654,23 +1751,14 @@
 		></div>
 	{/if}
 
-	<!-- System-drop overlay. Renders on top of the list ONLY while the
-	     user is dragging OS files over the wrapper AND this surface
-	     accepts them (`enableSystemDrop`). Filled tint + centred
-	     icon+message so the drop target is unmistakable — the dashed
-	     border alone read as decoration on busy folders. `pointer-events:
-	     none` on the container keeps it inert (drag events still hit
-	     `.rl-root` underneath so `dragleave`/`drop` fire correctly). -->
-	{#if enableSystemDrop && (systemDropOver || systemDropOverlayActive)}
-		<div class="rl-drop-overlay" aria-hidden="true">
-			<div class="rl-drop-overlay__inner">
-				<Icon name="cloud-arrow-up" class="rl-drop-overlay__icon" />
-				<span class="rl-drop-overlay__label">
-					{t('files.drop_to_upload', 'Drop files here to upload')}
-				</span>
-			</div>
-		</div>
-	{/if}
+	<!-- No system-drop overlay here on purpose (removed 2026-11-13). It was
+	     a viewport-fixed card that covered the whole page — including the
+	     listing it was describing — and it had to out-z-index the page
+	     chrome to do it. The destination is now shown WHERE the files will
+	     land: the hovered folder row highlights itself, and the host page
+	     highlights the current folder's breadcrumb crumb plus tints the
+	     view for the "lands in the folder you're looking at" case. Nothing
+	     is drawn on top of anything. -->
 </div>
 <!-- /.rl-root -->
 
@@ -1688,13 +1776,18 @@
 			</div>
 		{/if}
 		<div class="name-cell">{t('files.col_name', 'Name')}</div>
-		{#if showOwner}<div class="owner-cell">
+		{#if ownerColumn}<div class="owner-cell">
 				{ownerLabel ?? t('files.col_created_by', 'Created by')}
 			</div>{/if}
-		{#if showPath}<div class="path-cell">{pathLabel ?? t('files.col_path', 'Location')}</div>{/if}
-		{#if showType}<div class="type-cell">{t('files.col_type', 'Type')}</div>{/if}
-		{#if showSize}<div class="size-cell">{t('files.col_size', 'Size')}</div>{/if}
-		{#if showDate}<div class="date-cell">{dateLabel ?? t('files.col_modified', 'Date')}</div>{/if}
+		<!-- No Path column header: the path rides under the name now, where a
+		     column title would have nothing to sit over. `pathLabel` survives
+		     as the name cell's tooltip wording (`/trash` calls it "Original
+		     location"). -->
+		{#if typeColumn}<div class="type-cell">{t('files.col_type', 'Type')}</div>{/if}
+		{#if sizeColumn}<div class="size-cell">{t('files.col_size', 'Size')}</div>{/if}
+		{#if dateColumn}
+			<div class="date-cell">{dateLabel ?? t('files.col_modified', 'Date')}</div>
+		{/if}
 		{#if hasActionCell}<div class="action-cell"></div>{/if}
 	</div>
 {/snippet}
@@ -1750,52 +1843,6 @@
 		position: relative;
 	}
 
-	/* Viewport-fixed drop overlay. `position: fixed` (not absolute) so
-	   it covers the whole visible browser window regardless of the
-	   user's scroll position — an absolute-inset-0 inside `.rl-root`
-	   would center the card at the middle of the FULL list height,
-	   which sits above the fold on a scrolled folder. The dashed border
-	   also gets painted at the true viewport edge, so the sticky
-	   action-bar + breadcrumb are covered rather than clipping the
-	   border. `pointer-events: none` so drag events still fall through
-	   to `.rl-root`'s handlers underneath.
-	   `--z-overlay` beats `--z-sticky` (page chrome) + `--z-dropdown`
-	   (search suggestions); stays below `--z-modal` so a modal opened
-	   concurrently still wins. */
-	.rl-drop-overlay {
-		position: fixed;
-		inset: 0;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		background: color-mix(in srgb, var(--color-accent) 12%, transparent);
-		border: 2px dashed var(--color-accent);
-		border-radius: var(--radius-md);
-		pointer-events: none;
-		z-index: var(--z-overlay);
-	}
-
-	.rl-drop-overlay__inner {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		gap: var(--space-3);
-		padding: var(--space-6) var(--space-8);
-		color: var(--color-accent);
-		background: var(--color-bg-surface);
-		border-radius: var(--radius-lg);
-		box-shadow: var(--shadow-lg);
-	}
-
-	.rl-drop-overlay :global(.rl-drop-overlay__icon) {
-		font-size: 3rem;
-	}
-
-	.rl-drop-overlay__label {
-		font-weight: var(--weight-semibold);
-		font-size: var(--text-lg);
-	}
-
 	/* ── Rubberband (marquee) selection ────────────────────────────
 	   Absolute overlay drawn while the user drags. Positioned inside
 	   `.rl-root`; the pointer events go to the window listener, so
@@ -1820,7 +1867,12 @@
 		display: flex;
 		align-items: center;
 		gap: var(--space-4);
-		margin-bottom: var(--space-4);
+		/* 4px, down from 16px: the sticky header now carries a shadow at its
+		   bottom edge, which separates the toolbar from the rows far better
+		   than whitespace did — and the whitespace it replaces was inside
+		   the sticky band, so every pixel of it was permanently parked over
+		   the listing. */
+		margin-bottom: var(--space-1);
 	}
 
 	.rl-toolbar--with-title :global(.actions-bar) {
@@ -1899,8 +1951,21 @@
 		display: flex;
 		align-items: center;
 		gap: var(--space-2);
-		margin-bottom: var(--space-2);
+		/* 4px — same reasoning as `.rl-toolbar--with-title`: this strip is the
+		   sticky band's last row, so its bottom margin is parked over the
+		   listing for the whole scroll, and the header's shadow does the
+		   separating now. The `.breadcrumb` class the trail itself carries
+		   (15px, shared CSS) is overridden below for the same reason. */
+		margin-bottom: var(--space-1);
 		min-height: 28px;
+	}
+
+	/* The shared `.breadcrumb` block sets `margin-bottom: 15px` for pages
+	   that render a trail in normal flow. Inside the sticky header that
+	   margin stacks under `.rl-breadcrumb`'s own, pushing the first row ~19px
+	   down and keeping it there while scrolling. */
+	.rl-breadcrumb :global(.breadcrumb) {
+		margin-bottom: 0;
 	}
 
 	/* ── Owner vignette ── */
@@ -1923,18 +1988,59 @@
 		white-space: nowrap;
 	}
 
-	/* ── Swimlane section header ── */
+	/* ── Swimlanes in LIST view ──────────────────────────────────────
+	   Grouped, the list stops being one long card and becomes one card per
+	   lane, with `--space-2` between them. Ed, 2026-11-14: "make a small
+	   separation between each lane".
+
+	   The gap has to be visible, which is why the container gives up its own
+	   surface: with the card background still on `.files-list-view`, a gap
+	   between lanes just shows the same `--color-item` and reads as nothing.
+	   `overflow: visible` so each lane's own radius does the clipping (and
+	   its shadow isn't cut off); the column-title strip stays above the
+	   cards, where it reads as a legend for all of them.
+
+	   Ungrouped lists are untouched — no `--grouped`, no `.rl-lane`. */
+	.files-list-view--grouped {
+		gap: var(--space-2);
+		background: none;
+		box-shadow: none;
+		overflow: visible;
+		border-radius: 0;
+	}
+
+	/* The last row in a lane would otherwise draw a border against the gap. */
+	.lane :global(.file-item:last-child) {
+		border-bottom: none;
+	}
+
+	/* Column titles stick — but ONLY on an ungrouped list. In lane mode the
+	   lane headers hold that slot (`.lane__header--sticky`), and two strips
+	   competing for it would either stack into a double header or, worse,
+	   have the column titles pin OVER the lane label that says which group
+	   those columns are describing.
+	   Same offset contract as a lane header: `--lane-sticky-h` is the
+	   measured page chrome, less `.content-area`'s top padding. `.list-header`
+	   already carries an opaque `--color-bg-subtle`, which a sticky strip
+	   needs since rows pass underneath. `:global` so a page's
+	   `listHeaderOverride` markup (e.g. `/trash`) is covered too. */
+	.files-list-view:not(.files-list-view--grouped) :global(.list-header) {
+		position: sticky;
+		top: calc(var(--lane-sticky-h, 0px) - var(--space-5));
+		z-index: 1;
+	}
+
+	/* ── Swimlane section header ──
+	   The card, the tint, the padding, the divider and the sticky behaviour
+	   all come from `.lane` / `.lane__header` / `.lane__header--sticky` in
+	   `$lib/styles/lanes.css`, shared with `/shared`. What stays here is what
+	   only a bucket label needs: it is a small muted caption, and in the
+	   grouped-grid context it has to span the grid's columns. */
 	.rl-swimlane-header {
 		grid-column: 1 / -1;
-		padding: var(--space-3) var(--space-1) var(--space-1);
 		font-size: var(--text-sm);
 		font-weight: var(--weight-semibold);
 		color: var(--color-text-secondary);
-		border-bottom: 1px solid var(--color-border-faint);
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--space-2);
 	}
 
 	/* Optional per-bucket action (e.g. trash page's per-drive Empty). */
@@ -1963,11 +2069,29 @@
 		gap: var(--space-2);
 	}
 
+	/* One lane of the grouped grid: its label plus that label's cards. Exists
+	   so the label's `position: sticky` resolves against its own lane and
+	   hands over to the next one, rather than every label sharing
+	   `.rl-grouped-grid` and stacking pinned on top of each other. Keeps the
+	   same `--space-2` between label and cards that the outer gap used to
+	   provide. */
+	.rl-grid-lane {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+	}
+
 	/* In the flex stack the `grid-column: 1 / -1` span (meant for the grid
 	   context) is inert; the header spans naturally as a block-level flex
 	   child. */
 	.rl-swimlane-header--grid {
 		grid-column: auto;
+		/* All four corners, not the top two `.lane > .lane__header` rounds:
+		   in grid view the strip tops no card — the cards below are their own
+		   surfaces — so it reads as a label chip spanning the row, and a
+		   square-bottomed strip floating above a gap looks like a clipped
+		   card. `--radius-xl` matches the lane cards in list view. */
+		border-radius: var(--radius-xl);
 	}
 
 	/* Grid view date meta line. */

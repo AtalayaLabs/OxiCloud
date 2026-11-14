@@ -2,6 +2,7 @@
 	import { SvelteMap } from 'svelte/reactivity';
 	import { primeContextPage } from '$lib/utils/listContext';
 	import Button from '$lib/components/Button.svelte';
+	import PersonBucketLabel from '$lib/components/PersonBucketLabel.svelte';
 	import { useOwnerCache } from '$lib/composables/useOwnerCache.svelte';
 	import { errorToast } from '$lib/utils/errors';
 	import { goto } from '$app/navigation';
@@ -370,6 +371,13 @@
 			data-testid="favorites-batch-remove-btn"
 			onclick={() => sel.forEach(unfavorite)}
 		></Button>
+	{/snippet}
+	{#snippet bucketLabel(key, label)}
+		<!-- Grouped by Owner, each lane IS a person, so the header carries their
+		     avatar. `key` is only a user id on that axis — on type / size / date
+		     it is a bucket name, which is why the id is passed conditionally
+		     rather than blindly. -->
+		<PersonBucketLabel userId={groupBy === 'owner' ? key : null} {label} />
 	{/snippet}
 </ResourceList>
 

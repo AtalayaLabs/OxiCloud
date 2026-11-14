@@ -107,17 +107,25 @@
 		position: relative;
 		flex-shrink: 0;
 	}
-	/* Colour buckets mirror AppShell's .avatar--c* (shared userVignette palette). */
+	/* Colour buckets mirror AppShell's .avatar--c* (shared userVignette palette).
+
+	   `--uv-avatar-size` lets a host shrink the chip without forking the
+	   component: a custom property inherits straight through Svelte's style
+	   scoping, so a page sets it on any ancestor (`/shared`'s grant rows use
+	   24px — dozens of them stack under one header, where 32px dominated the
+	   row). 32px stays the default, and the badge and type scale with it so a
+	   smaller chip stays proportionate rather than growing a relatively
+	   bigger badge. */
 	.uv__photo,
 	.uv__initials {
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-		width: 32px;
-		height: 32px;
+		width: var(--uv-avatar-size, 32px);
+		height: var(--uv-avatar-size, 32px);
 		border-radius: 50%;
 		overflow: hidden;
-		font-size: var(--text-xs);
+		font-size: calc(var(--uv-avatar-size, 32px) * 0.34);
 		font-weight: var(--weight-bold);
 	}
 
@@ -157,12 +165,12 @@
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-		width: 16px;
-		height: 16px;
+		width: calc(var(--uv-avatar-size, 32px) * 0.5);
+		height: calc(var(--uv-avatar-size, 32px) * 0.5);
 		border-radius: 50%;
 		background: var(--color-bg-surface);
 		color: var(--color-text-muted);
-		font-size: 9px;
+		font-size: calc(var(--uv-avatar-size, 32px) * 0.28);
 	}
 
 	/* Presence dot — top-right, symmetric with `.uv__badge` at
@@ -178,8 +186,10 @@
 		position: absolute;
 		right: -2px;
 		top: -2px;
-		width: 10px;
-		height: 10px;
+		/* Scales with `--uv-avatar-size` (10px at the 32px default) but never
+		   below 8px, where the 2px ring would eat the dot. */
+		width: max(8px, calc(var(--uv-avatar-size, 32px) * 0.31));
+		height: max(8px, calc(var(--uv-avatar-size, 32px) * 0.31));
 		border-radius: 50%;
 		background: var(--color-success-alt);
 		border: 2px solid var(--color-bg-surface);

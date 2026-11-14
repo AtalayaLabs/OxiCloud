@@ -28,7 +28,7 @@
 	import type { OutgoingGrantOrderBy } from '$lib/api/generated/openapi/types.gen';
 	import { t } from '$lib/i18n/index.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
-	import { formatDate, iconNameFor } from '$lib/utils/display';
+	import { fileIconKindClass, formatDate, iconNameFor } from '$lib/utils/display';
 	import { SharedLanesBuilder, type LaneGrouping } from '$lib/utils/sharedLanes';
 
 	type GroupBy = 'items' | 'sharedWith';
@@ -232,6 +232,16 @@
 	// back to a full rebuild (deep-equal to the pure `buildLanes` reference) on a
 	// group-by switch, grant edit or kind-filter toggle. Mirrors ResourceList's
 	// `sectionsBuilder` (benches/ROUND16.md §F1).
+	/**
+	 * Measured height of this page's `.page-sticky-header`, published to CSS
+	 * as `--lane-sticky-h` so a lane header sticks just under the page chrome
+	 * rather than under the viewport top where that chrome already is. Same
+	 * contract `ResourceList` uses for its grouped lists — see
+	 * `$lib/styles/lanes.css`. Measured because the strip's height depends on
+	 * what is in it (title, filter menu, and two rows once it wraps).
+	 */
+	let stickyHeaderH = $state(0);
+
 	const lanesBuilder = new SharedLanesBuilder<OutgoingGrantItem, Lane['header'], LaneRow>();
 	const lanes = $derived.by(() => lanesBuilder.sync(filteredRaw, laneGrouping));
 
@@ -486,7 +496,7 @@
 	}}
 />
 
-<div class="page-sticky-header">
+<div class="page-sticky-header" bind:clientHeight={stickyHeaderH}>
 	<ListToolbar
 		groups={GROUP_BYS}
 		{groupBy}
@@ -569,27 +579,51 @@
 		</button>
 	</EmptyState>
 {:else}
-	<div class="ms-lanes">
+	<!-- `--lane-sticky-h` is what `.lane__header--sticky` builds its offset
+	     from: the measured height of this page's own sticky chrome. -->
+	<div class="ms-lanes" style="--lane-sticky-h: {stickyHeaderH}px">
 		{#each lanes as lane (lane.key)}
-			<section class="ms-lane">
-				<header class="ms-lane__header">
+			<!-- The lane's kind decides how far its rows are indented, so the
+			     grantees line up under the header's NAME rather than under its
+			     glyph — see `.ms-lane--resource` / `.ms-lane--subject`. -->
+			<section
+				class="lane lane--open"
+				class:ms-lane--resource={lane.header.kind === 'resource'}
+				class:ms-lane--subject={lane.header.kind !== 'resource'}
+			>
+				<header class="ms-lane__header lane__header lane__header--sticky">
 					{#if lane.header.kind === 'resource'}
 						{@const laneItem = lane.header.item}
+						{@const laneIcon = resourceIcon(laneItem)}
+						<!-- Named the way every list names a resource: the row's
+						     tinted type glyph (`file-icon--row`, the same recipe
+						     `.files-list-view` uses) plus the plain name. The lane
+						     header used to render a bare glyph in semibold text
+						     beside a full-width secondary button, which read as
+						     chrome competing with the grants underneath. -->
 						<button
 							class="ms-lane__resource"
 							data-testid={`shared-lane-open-${laneItem.resource.id}`}
 							onclick={() => openResource(laneItem)}
 						>
-							<Icon name={resourceIcon(laneItem)} />
+							<span class="file-icon file-icon--row {fileIconKindClass(laneIcon)}">
+								<Icon name={laneIcon} />
+							</span>
 							<span class="ms-lane__name">{laneItem.resource.name}</span>
 						</button>
+						<!-- Icon-only, and the SHARE glyph rather than a pencil:
+						     this opens the share dialog, which is what the same
+						     icon does on every resource row (`ResourceList`'s
+						     `.shared-button`). The label survives as the tooltip
+						     and the accessible name. -->
 						<button
-							class="btn btn-secondary ms-lane__edit"
+							class="btn-icon ms-lane__share"
 							data-testid={`shared-edit-sharing-${laneItem.resource.id}`}
+							title={t('myshares.editSharing', 'Edit sharing')}
+							aria-label={t('myshares.editSharing', 'Edit sharing')}
 							onclick={() => editSharing(laneItem)}
 						>
-							<Icon name="pencil-alt" />
-							{t('myshares.editSharing', 'Edit sharing')}
+							<Icon name="oxiexport" />
 						</button>
 					{:else if lane.header.kind === 'user'}
 						<span class="ms-lane__subject">
@@ -600,13 +634,19 @@
 						</span>
 					{:else}
 						<span class="ms-lane__subject">
-							<Icon
-								name={lane.header.kind === 'group'
-									? 'user-group'
-									: lane.header.kind === 'linkPassword'
-										? 'lock'
-										: 'link'}
-							/>
+							<!-- Group / link lanes get the avatar-sized slot too: the lane
+							     above may be a USER lane, whose header is a vignette, and a
+							     column of headers that start at different x reads as an
+							     accident. -->
+							<span class="ms-row__avatar">
+								<Icon
+									name={lane.header.kind === 'group'
+										? 'user-group'
+										: lane.header.kind === 'linkPassword'
+											? 'lock'
+											: 'link'}
+								/>
+							</span>
 							<span class="ms-lane__name">{laneTitle(lane.header)}</span>
 						</span>
 					{/if}
@@ -633,7 +673,11 @@
 										fallbackLabel={resolveLabel('user', grant.subject_id)}
 									/>
 								{:else if grant.subject_type === 'group'}
-									<Icon name="user-group" />
+									<!-- Same circular slot a `UserVignette` avatar occupies, so a
+									     group row's name starts on the same x as a person's
+									     instead of ~8px left of it (a bare glyph is ~1em wide,
+									     the avatar is `--uv-avatar-size`). -->
+									<span class="ms-row__avatar"><Icon name="user-group" /></span>
 									<span class="ms-row__name">{resolveLabel('group', grant.subject_id)}</span>
 								{:else}
 									<button
@@ -847,20 +891,32 @@
 		padding-top: var(--space-3);
 	}
 
-	.ms-lane {
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-md);
-		overflow: visible;
+	/* Card, radius, surface, shadow and header strip all come from `.lane` /
+	   `.lane__header` in `$lib/styles/lanes.css`, shared with every grouped
+	   `ResourceList`. `.lane--open` is this page's one deviation, and it is
+	   load-bearing: a row kebab opens downward past the last row, so the
+	   lane cannot clip. Nothing lane-shaped is declared here any more — the
+	   `.ms-lane*` classes that remain are hooks for what the lane CONTAINS
+	   (the per-kind row indent, the mobile wrap). */
+
+	/* Rows are indented past the header's glyph so a grantee's avatar starts
+	   where the header's NAME starts:
+
+	     [ icon ] Quarterly report
+	              (avatar) Bob
+	              (avatar) Marketing
+
+	   The offset is the header glyph's width plus the gap after it, which
+	   differs by lane kind — a resource header carries the 40px
+	   `.file-icon--row` chip at `--space-3`, a subject header a
+	   `--uv-avatar-size` avatar at `--space-2`. Both are expressed from the
+	   same tokens the headers use, so they stay in step if either is tuned. */
+	.ms-lane--resource .ms-row {
+		padding-left: calc(var(--space-3) + 40px + var(--space-3));
 	}
 
-	.ms-lane__header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--space-2);
-		padding: var(--space-2) var(--space-3);
-		border-bottom: 1px solid var(--color-border-faint, var(--color-border));
-		background: var(--color-bg-muted);
+	.ms-lane--subject .ms-row {
+		padding-left: calc(var(--space-3) + var(--uv-avatar-size, 32px) + var(--space-2));
 	}
 
 	.ms-lane__resource,
@@ -868,7 +924,6 @@
 		display: inline-flex;
 		align-items: center;
 		gap: var(--space-2);
-		font-weight: var(--weight-semibold, 600);
 		color: var(--color-text);
 		background: none;
 		border: none;
@@ -876,8 +931,18 @@
 		min-width: 0;
 	}
 
+	/* Subject lanes (a person, a group, a link) stay semibold — the lane IS
+	   that subject's name, with nothing else to carry it. A resource lane
+	   instead reads like a list row: tinted glyph, plain text, `--space-3`
+	   between them, same as `.files-list-view .file-item .name-cell`. */
 	.ms-lane__subject {
+		font-weight: var(--weight-semibold, 600);
 		cursor: default;
+	}
+
+	.ms-lane__resource {
+		gap: var(--space-3);
+		padding: 0;
 	}
 
 	.ms-lane__name {
@@ -886,10 +951,7 @@
 		white-space: nowrap;
 	}
 
-	.ms-lane__edit {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--space-1);
+	.ms-lane__share {
 		flex: none;
 	}
 
@@ -917,6 +979,15 @@
 			flex-wrap: wrap;
 		}
 
+		/* No indent on a phone: the rows wrap here (identity takes a full
+		   line of its own), so 52px of leading whitespace would buy
+		   alignment with a header that is no longer beside it and cost the
+		   names the width they need. */
+		.ms-lane--resource .ms-row,
+		.ms-lane--subject .ms-row {
+			padding-left: var(--space-3);
+		}
+
 		.ms-row__identity {
 			flex: 1 1 100%;
 		}
@@ -938,12 +1009,34 @@
 		opacity: 0.6;
 	}
 
+	/* Stand-in for a `UserVignette` avatar where the subject has no photo to
+	   show — a group, a link. Mirrors the vignette's geometry (same
+	   `--uv-avatar-size`, same circle) so every identity in a lane, header or
+	   row, starts its text at the same x. */
+	.ms-row__avatar {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		flex: none;
+		width: var(--uv-avatar-size, 32px);
+		height: var(--uv-avatar-size, 32px);
+		border-radius: 50%;
+		background: var(--color-bg-muted);
+		color: var(--color-text-secondary);
+		font-size: calc(var(--uv-avatar-size, 32px) * 0.45);
+	}
+
 	.ms-row__identity {
 		display: flex;
 		align-items: center;
 		gap: var(--space-2);
 		flex: 1;
 		min-width: 0;
+		/* Grantee avatars at 24px instead of the vignette's 32px default: a
+		   lane stacks one row per grant, and at 32px the column of circles
+		   outweighed the names and roles beside them. The lane HEADER keeps
+		   the full size — there it is the lane's own identity. */
+		--uv-avatar-size: 24px;
 	}
 
 	.ms-row__name {
