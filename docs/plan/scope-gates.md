@@ -6,7 +6,8 @@ scope half (§ Credential scopes) has its own trigger: the device flow
 already collects and displays scopes it does not enforce.
 
 Status: **DRAFT** — amended 2026-11-15 to split Gate from Scope and to
-make credential scopes resource-based rather than protocol-based. The
+make credential scopes resource-based rather than protocol-based, and to
+split `account` from `security` the way Google separates those tabs. The
 design questions raised in review are all resolved: no row in the
 scope→route table is unassigned, and the two judgement calls
 (`/remote.php/dav/avatars` under `account`, `/api/drives/{id}/members`
@@ -53,7 +54,13 @@ pub enum Gate {
 /// so the scope axis keeps the `Scope` name and the grant axis keeps
 /// `Resource`.
 pub enum Scope {
-    Files, Calendar, Contacts, Photos, Music, Account, Sharing,
+    Files, Calendar, Contacts, Photos, Music, Sharing,
+    /// Profile and preferences — Google's "Account" tab.
+    Account,
+    /// Password, linked identities, credentials — Google's "Security"
+    /// tab. In the vocabulary, but absent from every non-interactive
+    /// credential's ceiling. § `security`.
+    Security,
     // Reserved — parser REJECTS it until a mailbox exists. § `mail` is reserved.
     // Mail,
 }
@@ -257,7 +264,8 @@ door maps to exactly one area:
 | `contacts` | `/carddav`, `/.well-known/carddav`, `/api/address-books`, `/api/contacts` |
 | `photos` | `/api/photos`, `/api/people` |
 | `music` | `/api/playlists` |
-| `account` | `/api/auth/me`, `/api/auth/me/profile`, `/api/auth/me/image` — **enumerated, never the `/api/auth/*` prefix** (§ Never in a client-requestable scope), `/api/notifications`, `/remote.php/dav/avatars` |
+| `account` | `/api/auth/me`, `/api/auth/me/profile`, `/api/auth/me/image`, `/api/notifications`, `/remote.php/dav/avatars` — profile and preferences |
+| `security` | `/api/auth/change-password`, `/api/auth/oidc/link/start`, `/api/auth/oidc/unlink`, `/api/auth/dpop/bind`, `/api/auth/upgrade-to-internal`, `/api/auth/app-passwords`, `/api/auth/device/devices`, `/api/auth/device/verify` — and 2FA when it lands. **Never in a non-interactive ceiling; mutations also need `Gate::Elevated`** |
 | `sharing` | `/api/grants`, `/api/shares`, `/api/s`, OCS sharing, and recipient lookup: `/api/users/{id}`, `/api/groups/search` |
 | `mail` | **reserved — see below** |
 
@@ -496,11 +504,15 @@ effective = (requested ?? type_default) ∩ type_maximum
 Both halves bounded, so neither an omitted scope nor a greedy request
 can escalate.
 
-| credential | default when omitted | maximum |
+The ceiling is an **allowlist**, not a denylist — a credential type gets
+only what its row names. A new type added without thought about
+`security` therefore gets it withheld.
+
+| credential | default when omitted | maximum (allowlist) |
 |---|---|---|
-| App password | `files,calendar,contacts,account` (`:rw`) | same |
-| Device flow | `files,calendar,contacts` (`:rw`) — today's `webdav,caldav,carddav`, namespaced | `files,calendar,contacts,account` |
-| Interactive web session | n/a — never requests scopes | all resources `:rw` |
+| App password | `files,calendar,contacts,account` (`:rw`) | same — **no `security`** |
+| Device flow | `files,calendar,contacts` (`:rw`) — today's `webdav,caldav,carddav`, namespaced | `files,calendar,contacts,account` — **no `security`** |
+| Interactive web session | n/a — never requests scopes | every scope `:rw`, `security` included |
 
 App password is not `files` alone: `app_password_handler` describes
 these as credentials for "DAV / NC-Basic clients (DAVx⁵, Thunderbird,
@@ -515,47 +527,65 @@ device credential that reads avatars today starts failing.
 "use the default". Silently defaulting hides a client bug, and a
 zero-scope credential would be useless anyway.
 
-### Never in a client-requestable scope
+### `security`: named, but out of reach
 
-Credential management — `/api/auth/app-passwords`,
-`/api/auth/device/devices`, session revocation — must be reachable only
-from an interactive session, never from a scoped credential.
+`account` and `security` split the way Google's settings do — one tab for
+"your account" (profile, preferences), another for "security" (password,
+2FA, connected apps, linked identities). The split is not cosmetic: the
+two carry completely different blast radius while sitting under the same
+`/api/auth/*` prefix, which is exactly how a prefix-mapping mistake
+would hand the dangerous half to an rclone credential.
 
-This is the line the whole feature rests on. A credential that can mint
-another credential can mint an unscoped one, and every restriction above
-evaporates in one request. It is not a resource to be scoped `:ro`; it
-is excluded from the vocabulary entirely, like `Admin`.
-
-**Account-security mutations are excluded on the same grounds**, and
-they are the trap, because they look like settings:
+`security` covers, today:
 
 | route | what it really does |
 |---|---|
 | `/api/auth/change-password` | replaces the credential everyone else authenticates with |
 | `/api/auth/oidc/link/start`, `/oidc/unlink` | adds or removes an identity provider that can log in as this user |
-| `/api/auth/upgrade-to-internal` | changes what the principal IS (external → internal) |
 | `/api/auth/dpop/bind` | binds a key to the session |
+| `/api/auth/upgrade-to-internal` | changes what the principal IS (external → internal) |
+| `/api/auth/app-passwords` | **mints credentials** |
+| `/api/auth/device/devices`, `/device/verify` | lists, revokes and *approves* device credentials |
 
-Each of these sits under `/api/auth/*` alongside `/me` and `/me/profile`,
-so **anyone mapping that prefix to a scope lands them in `account:rw`** —
-and "change my own password" reads like a profile setting. It is not.
-Linking an IdP is the worst of them: an attacker who links their own
-Google account keeps access after the stolen credential is revoked, which
-defeats revocation itself.
+Plus 2FA/TOTP when it lands — none exists yet — and self-service session
+revocation, which also does not exist: `/api/admin/sessions` is
+`Gate::Admin`, not `security`.
 
-So `account` covers `/api/auth/me`, `/me/profile` and `/me/image` by
-enumeration, never by prefix. The rest of `/api/auth/*` splits three
-ways: login flows are public (no credential exists yet), the four rows
-above are interactive-session-only, and `/api/auth/logout` is harmless —
-any credential may end its own session.
+**Why a named scope rather than an exception list.** An earlier draft
+excluded these from the vocabulary entirely. Naming them is better on
+three counts:
 
-Remaining unassigned routes, all deliberately scopeless rather than
-overlooked: `/api/rt/ticket` (DPoP-gated ticket issuance for the message
-bus, filtered like `/api/rt/ws`), `/ocs/v1.php|v2.php/cloud/user` (NC
-user-metadata probe — `account:ro` in effect, reached by NC clients that
-already hold `account`), `/index.php/204` (NC connectivity probe), and
-the ops surface `/health`, `/ready`, `/metrics`, `/version`,
-`/openapi.json`. None takes a credential-scoped decision.
+1. Every route now maps to a scope, so "is anything orphaned?" is
+   answerable by reading the table instead of cross-checking an
+   exception list — the question that found four of these in the first
+   place.
+2. Enforcement reuses the ceiling already defined in § Defaults
+   (`effective = (requested ?? type_default) ∩ type_maximum`) rather
+   than a special case. The ceiling is an **allowlist**, so a credential
+   type whose author forgets to think about `security` gets it withheld,
+   not granted. Forgetting is safe, which is the opposite of an
+   exception list's failure mode.
+3. It appears on consent screens if ever requested, instead of failing
+   with an unexplained rejection.
+
+**`Gate::Elevated` is the second factor, and this is its first real
+consumer.** Holding `security:rw` is necessary and not sufficient: a
+mutation also needs a recently re-authenticated session, the admin
+sudo-mode state designed in `docs/plan/admin-elevation.md`. Scope answers
+"was this key issued for security changes"; elevation answers "did a
+human prove themselves in the last few minutes". The commented-out
+`Elevated` variant in the enum above stops being hypothetical here.
+
+Until elevation lands, `security` is interactive-session-only by ceiling
+alone — correct but weaker, since an XSS-driven request from a live
+browser session would pass. That ordering is a deliberate choice, not an
+oversight: the ceiling is what keeps a *stolen app password* away from
+the password-change endpoint, which is the threat this plan exists for.
+
+**The worst of them is IdP linking**, and it deserves naming: an attacker
+who links their own Google account keeps access *after* the credential
+they used is revoked. It defeats revocation itself, which is the one
+control every other mitigation here falls back on.
 
 ## Why
 
@@ -781,15 +811,15 @@ field into an enforced one:
   `files:ro` passes `PROPFIND` and is refused `PUT`. Each pin asserts
   the refusal AND an allowed caller succeeding, per AGENTS.md, so a
   gate that refuses everyone cannot pass.
-- Hurl: the escalation pin — a scoped credential is refused on
-- Hurl: the account-security pins — a scoped credential is refused on
+- Hurl: the `security` pins — an app-password or device-flow credential
+  requesting `oxicloud:security:rw` is **clamped by the ceiling**, not
+  merely refused at the route, and is then refused on
   `POST /api/auth/change-password`, `/api/auth/oidc/link/start`,
-  `/api/auth/oidc/unlink` and `/api/auth/upgrade-to-internal`. These
-  live next to `/me` under the same prefix, so a prefix-mapping mistake
-  would silently grant them to every `account:rw` credential, and the
-  IdP-link one survives revocation of the credential that used it.
-  `POST /api/auth/app-passwords`. This is the one that matters most; if
-  it ever goes green-by-passing, the whole feature is decorative.
+  `/api/auth/oidc/unlink`, `/api/auth/upgrade-to-internal` and
+  `POST /api/auth/app-passwords`. Pinning the clamp AND the route
+  matters: if only the route is pinned, a later ceiling bug passes the
+  suite while handing a stolen app password the password-change
+  endpoint. The IdP-link pin is the one that outlives revocation.
 - Migration: existing `device_codes` rows keep working. Pin the legacy
   default string explicitly, since enforcement is what turns a
   previously-inert column into a lockout risk.
