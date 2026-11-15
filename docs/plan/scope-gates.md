@@ -1027,15 +1027,15 @@ the two forms are easy to confuse:
 Read as OR, the declaration above admits an **elevated non-admin
 session to admin mutations** — a plain user who re-authenticated at
 `POST /api/auth/elevate` would satisfy `elevated` and pass. That is a
-privilege escalation produced entirely by notation, so the Rust API must
-not be spellable that way:
+privilege escalation produced entirely by notation. The fix is to put
+the semantics somewhere a reader cannot misinterpret:
 
 ```rust
-// NO — invites the bitwise-or reading, and a flags type makes
-// "any of these" the natural implementation.
+// Avoided — not because bitflags are wrong, but because `|` reads as
+// boolean "or" to the next reader while meaning "and".
 policy.require(Gate::Admin | Gate::Elevated, caller).await?;
 
-// YES — conjunction is the only reading.
+// Chosen — conjunction is the only available reading.
 policy.require_all(&[Gate::Admin, Gate::Elevated], caller).await?;
 
 // Equally fine, and what a layer composes to anyway:
@@ -1043,11 +1043,20 @@ policy.require(Gate::Admin, caller).await?;
 policy.require(Gate::Elevated, caller).await?;
 ```
 
-Keep `Gate` a plain enum rather than a bitflags set. There is no gate
-combination in this design that means "either", so the type should not
-be able to express one — and if a genuine OR ever appears, it gets two
-requirement objects in the spec and an explicit `require_any`, named so
-a reviewer sees which it is.
+To be fair to the bitflags reading: as a *representation* it is fine —
+`a | b` builds a set, and `require` can perfectly well mean "every bit
+in this set must be satisfied". The hazard is not the bits, it is that
+the operator reads as boolean "or" to the next person, while the
+semantics are "and". A slice removes the ambiguity at no real cost:
+there are six gates, never more than two or three at a call site, and
+§ Lookup cost already puts these checks on cold paths, so a loop with
+`?` is not a performance question.
+
+So `Gate` stays a plain enum. No combination in this design means
+"either", and if a genuine OR ever appears it gets two requirement
+objects in the spec plus an explicit `require_any` — the semantics in
+the method name, where a reviewer cannot misread it, rather than in an
+operator.
 
 Note the asymmetry with real scopes, which is why they live in the same
 array without confusion: `oxicloud:files:rw` and `oxicloud:calendar:ro`
