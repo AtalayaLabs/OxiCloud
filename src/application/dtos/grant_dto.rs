@@ -579,6 +579,22 @@ pub enum ResourceContentDto {
     Drive(DriveDto),
 }
 
+impl ResourceContentDto {
+    /// The two flags a listing row renders that no `*_at` column tracks.
+    ///
+    /// Feeds [`crate::interfaces::api::etag::mix_row_state`] so that starring
+    /// or sharing a row changes the page's ETag — otherwise the next load is
+    /// answered with a 304 and the body the caller already had.
+    pub fn favorite_shared(&self) -> (bool, bool) {
+        match self {
+            Self::File(f) => (f.is_favorite, f.is_shared),
+            Self::Folder(f) => (f.is_favorite, f.is_shared),
+            // A drive row carries neither flag on the wire.
+            Self::Drive(_) => (false, false),
+        }
+    }
+}
+
 /// One item in the shared-with-me list.
 ///
 /// `resource_type` indicates whether `resource` contains a file or a folder.

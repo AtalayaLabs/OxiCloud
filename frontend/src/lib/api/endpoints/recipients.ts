@@ -22,6 +22,8 @@ interface Contact {
 	first_name?: string;
 	last_name?: string;
 	full_name?: string;
+	/** The user's username, which the system book puts in the vCard NICKNAME. */
+	nickname?: string;
 	email?: Array<{ email: string; is_primary?: boolean }>;
 }
 
@@ -97,6 +99,38 @@ function contactLabel(c: Contact): { label: string; email: string } {
 	const name = [c.first_name, c.last_name].filter(Boolean).join(' ') || c.full_name || '';
 	const email = c.email?.find((e) => e.is_primary)?.email ?? c.email?.[0]?.email ?? '';
 	return { label: name || email || c.id, email };
+}
+
+/**
+ * Ask the system address book for the users matching `q`.
+ *
+ * Separate from {@link systemContacts}, which caches the whole book for
+ * id → label resolution on already-granted rows: that is a fixed, repeated
+ * lookup, while this is a live query whose answer changes with every
+ * keystroke and must not be capped at the first page of the directory.
+ *
+ * A failure yields an empty list rather than throwing — the groups half of
+ * the search has already been fired in parallel and an unreachable directory
+ * should degrade the suggestions, not empty the dialog. `directoryAvailable`
+ * carries the fact to the UI's "User directory unavailable" note.
+ */
+async function searchContacts(q: string, includeSelf: boolean): Promise<Contact[]> {
+	const params = new URLSearchParams({ search: q, limit: '8' });
+	if (includeSelf) params.set('include_self', 'true');
+	try {
+		const res = await apiFetch(`/api/address-books/system/contacts?${params}`, {
+			credentials: 'same-origin'
+		});
+		if (!res.ok) {
+			directoryAvailable = false;
+			return [];
+		}
+		directoryAvailable = true;
+		return (await res.json()) as Contact[];
+	} catch {
+		directoryAvailable = false;
+		return [];
+	}
 }
 
 async function searchGroups(q: string): Promise<Recipient[]> {
@@ -199,23 +233,24 @@ export async function searchRecipients(
 	const q = query.toLowerCase().trim();
 	if (!q) return [];
 	const currentUserId = session.user?.id ?? null;
-	const [contacts, groups] = await Promise.all([systemContacts(includeSelf), searchGroups(q)]);
-	const matched = contacts
-		.filter((c) => includeSelf || c.id !== currentUserId)
-		.map((c) => ({ c, ...contactLabel(c) }))
-		.filter(
-			({ label, email }) => label.toLowerCase().includes(q) || email.toLowerCase().includes(q)
-		);
-	const users: Recipient[] = matched.map(({ c, label, email }) => ({
-		type: 'user' as const,
-		id: c.id,
-		label,
-		sublabel: email
-	}));
+	// The SERVER does the matching now. This used to pull the system book and
+	// filter it here, which failed twice over: the book arrives with the
+	// endpoint's default `limit=100`, so only the first hundred users were
+	// ever searchable — fatal at the 10k-user target — and the local predicate
+	// read the display name and primary e-mail only, never the username.
+	// `?search=` is the trigram-backed query and spans username, e-mail, both
+	// name parts and the two joined.
+	const [contacts, groups] = await Promise.all([searchContacts(q, includeSelf), searchGroups(q)]);
+	// Labels resolved once: the rows need them, and so does the
+	// invite-by-email check below.
+	const labelled = contacts.map((c) => ({ c, ...contactLabel(c) }));
+	const users: Recipient[] = labelled
+		.filter(({ c }) => includeSelf || c.id !== currentUserId)
+		.map(({ c, label, email }) => ({ type: 'user' as const, id: c.id, label, sublabel: email }));
 
 	const emailItems: Recipient[] = [];
 	if (looksLikeEmail(q)) {
-		const exists = matched.some(({ email }) => email.toLowerCase() === q);
+		const exists = labelled.some(({ email }) => email.toLowerCase() === q);
 		if (!exists) emailItems.push({ type: 'email', id: q, label: q });
 	}
 

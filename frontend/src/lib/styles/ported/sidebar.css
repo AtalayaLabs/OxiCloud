@@ -408,6 +408,19 @@
 .nav-item[data-section="recent"] .oxi-icon {
     color: var(--color-cal-6);
 } /* Recent - teal */
+/* Changes - green. The last section without a hue, so it read as the one grey
+   glyph in a coloured column.
+   Only two slots in the family were unassigned: cal-4 and cal-11. cal-11
+   (#d368a2) was tried first and rejected on sight — it reads as the same
+   colour as Media's magenta cal-10 (#c968d3) at glyph size, both being
+   pink-purples one step apart on the wheel. cal-4 (#8fd368) is a clear green
+   whose nearest assigned neighbours are Recent's teal above it (#68d3b6,
+   blue-green) and Favorites' gold below (#c9d368, yellow-olive) — the three
+   are distinguishable stacked, which the pink pair was not. */
+.nav-item[data-section="changes"] i,
+.nav-item[data-section="changes"] .oxi-icon {
+    color: var(--color-cal-4);
+} /* Changes - green */
 .nav-item[data-section="favorites"] i,
 .nav-item[data-section="favorites"] .oxi-icon {
     color: var(--color-cal-3);

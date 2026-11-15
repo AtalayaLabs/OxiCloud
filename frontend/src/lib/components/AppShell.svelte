@@ -23,6 +23,7 @@
 	// OS-file drops on a drive row: same "is this an OS drag?" test the rest of
 	// the app uses, read into the two shapes an uploader takes, then staged for
 	// `/files` to perform (see `pendingUpload` for why it is a handoff).
+	import { emitRowFlags } from '$lib/utils/listActions';
 	import { isOsFileDrag } from '$lib/utils/osFileDropGuard';
 	import { readDroppedUpload } from '$lib/utils/droppedEntries';
 	import { pendingUpload } from '$lib/stores/pendingUpload.svelte';
@@ -688,14 +689,11 @@
 				await addFavorite(it.kind, it.id);
 				// Broadcast so a mounted resource-list source page (e.g. /files,
 				// /recent, /shared-with-me) can flip the row's `is_favorite` in
-				// place without a re-fetch. ResourceList listens for the same
-				// event and patches its `items` prop. Uses the existing
-				// window-event pattern (see `oxicloud:upload-files`).
-				window.dispatchEvent(
-					new CustomEvent('oxicloud:favorite-changed', {
-						detail: { id: it.id, is_favorite: true }
-					})
-				);
+				// place without a re-fetch. `ResourceList` patches its `items`;
+				// a page whose rows are derived copies (`/changes`) patches its
+				// own source. Same helper the row star uses, so this path and
+				// that one cannot drift on the event name or its payload.
+				emitRowFlags({ id: it.id, is_favorite: true });
 			});
 			ui.notify(
 				t('favorites.added_n', { n: items.length }, 'Added {{n}} item(s) to favorites'),

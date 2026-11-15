@@ -1,12 +1,11 @@
 <script lang="ts">
-	import { errorMessage, errorToast } from '$lib/utils/errors';
+	import { errorMessage } from '$lib/utils/errors';
 	import { SvelteMap } from 'svelte/reactivity';
 	import { primeContextPage } from '$lib/utils/listContext';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { onMount, untrack } from 'svelte';
-	import { addFavorite, removeFavorite } from '$lib/api/endpoints/favorites';
 	import { dateBucket, typeLabelOf } from '$lib/utils/resourceBuckets';
 	import { resolveOwnerName } from '$lib/utils/ownerName';
 	import { fileDownloadUrl } from '$lib/api/endpoints/files';
@@ -23,7 +22,11 @@
 	} from '$lib/components/ResourceList.svelte';
 	import PersonBucketLabel from '$lib/components/PersonBucketLabel.svelte';
 	import AvatarOverlayChip from '$lib/components/AvatarOverlayChip.svelte';
-	import { openParentContextAction, prepareParentAccess } from '$lib/utils/listActions';
+	import {
+		openParentContextAction,
+		prepareParentAccess,
+		toggleFavorite
+	} from '$lib/utils/listActions';
 	import type { IncomingGrantOrderBy } from '$lib/api/generated/openapi/types.gen';
 	import { t } from '$lib/i18n/index.svelte';
 	import { session } from '$lib/stores/session.svelte';
@@ -258,19 +261,6 @@
 	// folders show "Download as ZIP" (server-side archive). Two entries
 	// with `visible?` predicates rather than one label that changes,
 	// so the `.icon` reads correctly per kind too.
-	async function toggleFavorite(item: FileItem | FolderItem) {
-		const kind = isFile(item) ? 'file' : 'folder';
-		const wasFav = item.is_favorite;
-		item.is_favorite = !wasFav;
-		try {
-			if (wasFav) await removeFavorite(kind, item.id);
-			else await addFavorite(kind, item.id);
-		} catch (e) {
-			errorToast(e);
-			item.is_favorite = wasFav;
-		}
-	}
-
 	const contextActions: ContextAction[] = [
 		// "Open parent folder", from the shared factory — the same entry
 		// `/files`, `/recent`, `/favorites` and `/changes` carry, and the only

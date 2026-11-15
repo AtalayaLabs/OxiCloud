@@ -37,19 +37,102 @@ export function parentFolderIdOf(item: Item): string | null {
 }
 
 /**
+ * A row flag changed somewhere. See {@link emitRowFlags}.
+ *
+ * Both flags are optional and only the ones PRESENT are applied, so an
+ * emitter says what it knows and stays silent about the rest: the star toggle
+ * knows nothing about sharing, and the share dialog knows nothing about the
+ * star.
+ */
+export type RowFlagsChange = { id: string; is_favorite?: boolean; is_shared?: boolean };
+
+const ROW_FLAGS_CHANGED = 'oxicloud:row-flags-changed';
+
+/**
+ * Announce that an item's `is_favorite` / `is_shared` changed, for every other
+ * surface showing that item.
+ *
+ * Both flags are per-row state that no server event carries, and both change
+ * from places that are nowhere near the list painting them — the star toggle,
+ * `AppShell`'s drop-on-Favorites, and `ShareDialog`, which can be opened over
+ * any view. This window event is how those tell the lists. Consumed by
+ * `ResourceList` and `FolderBreadcrumb` (which patch their own rows) and by
+ * any page whose rows are DERIVED rather than owned — see {@link onRowFlags}.
+ *
+ * ONE event for both flags on purpose: a second event name would be a second
+ * thing to remember to emit, and the share chip went stale for exactly that
+ * reason — the star had a broadcast and sharing had a per-page callback that
+ * only `/files` ever wired, only for the create direction.
+ *
+ * The name and the payload shape live here, once, so a new emitter and a new
+ * listener cannot disagree about either.
+ */
+export function emitRowFlags(change: RowFlagsChange): void {
+	window.dispatchEvent(new CustomEvent(ROW_FLAGS_CHANGED, { detail: change }));
+}
+
+/**
+ * Subscribe to {@link emitRowFlags}; returns the unsubscriber, so the whole
+ * thing is one line in an `$effect`.
+ *
+ * A page needs this directly when its rows are a PROJECTION of its source
+ * data — `/changes` maps `raw` into `ChangeRow`s, so a flag flipped on the row
+ * object is discarded the next time that derivation runs, and the page has to
+ * patch `raw` itself. Pages whose `items` array IS the source of truth get the
+ * same effect for free from `ResourceList`.
+ */
+export function onRowFlags(cb: (change: RowFlagsChange) => void): () => void {
+	function handler(e: Event) {
+		const detail = (e as CustomEvent<RowFlagsChange>).detail;
+		if (detail) cb(detail);
+	}
+	window.addEventListener(ROW_FLAGS_CHANGED, handler);
+	return () => window.removeEventListener(ROW_FLAGS_CHANGED, handler);
+}
+
+/**
+ * Apply a {@link RowFlagsChange} to one row, in place.
+ *
+ * Shared by every listener so they cannot disagree about the two rules an
+ * optional-flag payload implies: an absent flag must leave the row's value
+ * alone rather than overwrite it with `undefined`, and a row that does not
+ * MODEL a flag must not sprout it — a breadcrumb crumb carries `is_shared`
+ * and has no star, so a favourite announcement is simply not its business.
+ */
+export function applyRowFlags(
+	row: { is_favorite?: boolean; is_shared?: boolean },
+	change: RowFlagsChange
+): void {
+	if (change.is_favorite !== undefined && 'is_favorite' in row) {
+		row.is_favorite = change.is_favorite;
+	}
+	if (change.is_shared !== undefined && 'is_shared' in row) {
+		row.is_shared = change.is_shared;
+	}
+}
+
+/**
  * Optimistic favourite toggle: flips the row immediately, reverts and toasts
  * if the write fails, so the star never shows a state the server rejected.
+ *
+ * Both the flip and any revert are also BROADCAST. Mutating `item` alone
+ * only works where the caller handed us the reactive source of truth; on a
+ * page whose rows are derived copies the mutation lands on a throwaway object
+ * and the star never moves, which is exactly what `/changes` did before this
+ * event was added here.
  */
 export async function toggleFavorite(item: Item): Promise<void> {
 	const kind = isFile(item) ? 'file' : 'folder';
 	const wasFav = item.is_favorite;
 	item.is_favorite = !wasFav;
+	emitRowFlags({ id: item.id, is_favorite: !wasFav });
 	try {
 		if (wasFav) await removeFavorite(kind, item.id);
 		else await addFavorite(kind, item.id);
 	} catch (e) {
 		errorToast(e);
 		item.is_favorite = wasFav;
+		emitRowFlags({ id: item.id, is_favorite: wasFav });
 	}
 }
 

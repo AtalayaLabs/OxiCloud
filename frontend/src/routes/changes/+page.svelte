@@ -27,7 +27,9 @@
 	// Shared with every other listing — see `lib/utils/listActions.ts` for why
 	// these stopped being per-route copies.
 	import {
+		applyRowFlags,
 		downloadContextAction,
+		onRowFlags,
 		openParentContextAction,
 		prepareParentAccess,
 		toggleFavorite
@@ -123,6 +125,46 @@
 			changedBy: it.modifier_id,
 			laneTotal: it.lane_total ?? null
 		}))
+	);
+
+	/**
+	 * A star flipped anywhere — this page's own rows included — lands back in
+	 * `raw`.
+	 *
+	 * Needed because `rows` above is a PROJECTION: `toggleFavorite` flips the
+	 * row object it is handed, and the next recomputation of this derivation
+	 * throws that away, so the star visibly snapped back (it looked like the
+	 * click did nothing, while the server had in fact recorded it). `raw` is
+	 * the page's source of truth, so the patch has to land there.
+	 *
+	 * ALL ids that carry this file are updated, not the first: on the people
+	 * axis one file legitimately appears in several lanes, and starring it in
+	 * Bob's lane must light it up in Carol's too.
+	 */
+	$effect(() =>
+		onRowFlags((change) => {
+			// Nothing to do when no listed row carries that id, or when every
+			// copy of it already shows the announced value — re-assigning
+			// `raw` would re-run the derivation and the lane grouping for a
+			// no-op, on a page that can hold hundreds of rows.
+			const stale = raw.some(
+				(it) =>
+					it.resource.id === change.id &&
+					((change.is_favorite !== undefined && it.resource.is_favorite !== change.is_favorite) ||
+						(change.is_shared !== undefined && it.resource.is_shared !== change.is_shared))
+			);
+			if (!stale) return;
+			raw = raw.map((it) => {
+				if (it.resource.id !== change.id) return it;
+				// A fresh `resource` object, because `rows` derives copies of
+				// it — mutating the one in `raw` in place would be discarded
+				// by the next derivation, which is the bug this whole event
+				// exists for.
+				const resource = { ...it.resource };
+				applyRowFlags(resource, change);
+				return { ...it, resource };
+			});
+		})
 	);
 
 	/**

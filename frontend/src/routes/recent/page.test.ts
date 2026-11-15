@@ -31,12 +31,19 @@ vi.mock('$lib/api/endpoints/files', () => ({
 }));
 vi.mock('$lib/api/endpoints/folders', () => ({ renameFolder: vi.fn(), deleteFolder: vi.fn() }));
 vi.mock('$lib/stores/dialogs.svelte', () => ({ confirmDialog, promptDialog }));
+// The page no longer owns a copy of the favourite toggle — it calls the
+// shared `listActions.toggleFavorite`, which calls these two.
+vi.mock('$lib/api/endpoints/favorites', () => ({
+	addFavorite: vi.fn(),
+	removeFavorite: vi.fn()
+}));
 
 import {
 	listRecentResources,
 	clearRecentItems,
 	removeFromRecent
 } from '$lib/api/generated/openapi/sdk.gen';
+import { addFavorite, removeFavorite } from '$lib/api/endpoints/favorites';
 import RecentPage from './+page.svelte';
 
 const m = (fn: unknown) => fn as ReturnType<typeof vi.fn>;
@@ -65,7 +72,12 @@ function withOneFile() {
 					size: 4,
 					sort_date: 0,
 					etag: 'e',
-					content_hash: 'h'
+					content_hash: 'h',
+					// Both flags are on every listing DTO the server emits, and
+					// the star's `aria-pressed` reads `is_favorite` directly —
+					// omit it and the attribute is absent rather than "false".
+					is_favorite: false,
+					is_shared: false
 				}
 			}
 		],
@@ -143,6 +155,90 @@ it('batch-removes-from-recent the selection', async () => {
 			expect.objectContaining({ path: { item_type: 'file', item_id: 'r1' } })
 		)
 	);
+});
+
+// ── The star ─────────────────────────────────────────────────────────────
+//
+// `/recent` is where the favourite round-trip was reported broken: the star
+// lit, `POST /api/favorites/file/{id}` returned 201, and a refresh showed the
+// row unstarred again. The server half of that (a listing ETag that ignored
+// `is_favorite`, so the reload was answered with a 304 and the pre-star body)
+// is pinned in `tests/api/resources_etag_contract.hurl` Scenario E — it could
+// not be caught here, because jsdom never revalidates.
+//
+// What belongs at THIS layer is the other half: the page must actually reach
+// the endpoint, and the row must show the result. It is worth pinning because
+// the page used to carry its own copy of the toggle and now delegates to
+// `listActions.toggleFavorite` — a wiring the next refactor could drop in
+// silence, exactly as `/changes` did.
+it('stars a recent row: calls the API and the row shows it', async () => {
+	withOneFile();
+	render(RecentPage);
+	const star = await screen.findByTestId('resource-list-favorite-r1-btn');
+	expect(star.getAttribute('aria-pressed')).toBe('false');
+
+	await fireEvent.click(star);
+
+	expect(addFavorite).toHaveBeenCalledWith('file', 'r1');
+	await waitFor(() => expect(star.getAttribute('aria-pressed')).toBe('true'));
+});
+
+// The reverse direction goes through a different endpoint, so it can break on
+// its own. A failed write must also put the row back — otherwise the star
+// shows a state the server refused.
+it('un-stars a recent row, and reverts when the write fails', async () => {
+	withOneFile();
+	render(RecentPage);
+	const star = await screen.findByTestId('resource-list-favorite-r1-btn');
+	await fireEvent.click(star);
+	await waitFor(() => expect(star.getAttribute('aria-pressed')).toBe('true'));
+
+	m(removeFavorite).mockRejectedValueOnce(new Error('nope'));
+	await fireEvent.click(star);
+
+	expect(removeFavorite).toHaveBeenCalledWith('file', 'r1');
+	await waitFor(() => expect(star.getAttribute('aria-pressed')).toBe('true'));
+});
+
+// THE other half of the same bug: sharing a resource left the row's chip
+// alone until a refresh, because the only signal was a `ShareDialog` prop
+// that fired on creation and that `/files` alone wired. `ShareDialog` now
+// broadcasts the resource's shared state and `ResourceList` patches the row —
+// which means every page that paints the chip (`/files`, `/favorites`,
+// `/recent`, `/search`, `/shared-with-me`) is served by one listener. This
+// pins that listener through a real page, from the event inwards, so the
+// emitter's own pins in `ShareDialog.test.ts` meet it in the middle.
+it('tints the shared chip when another surface announces a share', async () => {
+	withOneFile();
+	render(RecentPage);
+	const chip = await screen.findByTestId('resource-list-shared-r1-btn');
+	expect(chip.getAttribute('aria-pressed')).toBe('false');
+
+	window.dispatchEvent(
+		new CustomEvent('oxicloud:row-flags-changed', { detail: { id: 'r1', is_shared: true } })
+	);
+
+	await waitFor(() => expect(chip.getAttribute('aria-pressed')).toBe('true'));
+});
+
+// And the un-share direction, which had no signal at all before — plus the
+// rule that makes one event safe for both flags: a share announcement must
+// not disturb the star. A listener that read a missing `is_favorite` as
+// `false` would silently un-star every row the share dialog touched.
+it('clears the chip on un-share without touching the star', async () => {
+	withOneFile();
+	render(RecentPage);
+	const star = await screen.findByTestId('resource-list-favorite-r1-btn');
+	await fireEvent.click(star);
+	await waitFor(() => expect(star.getAttribute('aria-pressed')).toBe('true'));
+
+	window.dispatchEvent(
+		new CustomEvent('oxicloud:row-flags-changed', { detail: { id: 'r1', is_shared: false } })
+	);
+
+	const chip = screen.getByTestId('resource-list-shared-r1-btn');
+	await waitFor(() => expect(chip.getAttribute('aria-pressed')).toBe('false'));
+	expect(star.getAttribute('aria-pressed')).toBe('true');
 });
 
 it('renders an empty state when there is no recent activity', async () => {

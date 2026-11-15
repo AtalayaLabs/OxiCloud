@@ -301,6 +301,119 @@ HTTP 200
 jsonpath "$" isCollection
 
 
+# ─────────────────────────────────────────────────────────────
+# Step 14b – Looking a person up by every name they have.
+# ─────────────────────────────────────────────────────────────
+# The system book IS the share dialog's directory, and a lookup there
+# has to work on whichever of a colleague's names you happen to know.
+# Two defects made that false, in opposite layers:
+#
+#   - `search_users` matched username and e-mail only, so a first or
+#     last name found nobody;
+#   - `user_to_contact` dropped the username (`nickname: None`), so even
+#     a client that filtered locally could not match a handle.
+#
+# A lookup by username ALSO has to survive the display chain: Jane here
+# has both names set, so her label is "Jane Quartz" and her username
+# appears nowhere in the rendered row — which is precisely how the
+# missing `nickname` went unnoticed.
+POST {{base_url}}/api/admin/users
+Authorization: Bearer {{token}}
+Content-Type: application/json
+{ "username": "lookupjane", "password": "LookupJanePassword1!", "email": "jane.quartz@example.test", "role": "user" }
+
+HTTP 201
+[Captures]
+jane_id: jsonpath "$.user.id"
+
+
+POST {{base_url}}/api/auth/login
+Content-Type: application/json
+{ "username": "lookupjane", "password": "LookupJanePassword1!" }
+
+HTTP 200
+[Captures]
+jane_token: jsonpath "$.access_token"
+
+
+# Names are the user's own to set — `PATCH /api/auth/me/profile`, not an
+# admin field (see `registration.hurl` step 6b).
+PATCH {{base_url}}/api/auth/me/profile
+Authorization: Bearer {{jane_token}}
+Content-Type: application/json
+{ "given_name": "Jane", "family_name": "Quartz" }
+
+HTTP 200
+[Asserts]
+jsonpath "$.full.user.given_name" == "Jane"
+
+
+# By USERNAME. The one that found nobody: it is not in her label, so it
+# only matches if the projection carries it and the SQL looks at it.
+GET {{base_url}}/api/address-books/system/contacts?search=lookupjane
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$[?(@.id == '{{jane_id}}')].full_name" == "Jane Quartz"
+jsonpath "$[?(@.id == '{{jane_id}}')].nickname" == "lookupjane"
+
+
+# By FIRST NAME.
+GET {{base_url}}/api/address-books/system/contacts?search=Jane
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$[?(@.id == '{{jane_id}}')].first_name" == "Jane"
+
+
+# By LAST NAME.
+GET {{base_url}}/api/address-books/system/contacts?search=Quartz
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$[?(@.id == '{{jane_id}}')].last_name" == "Quartz"
+
+
+# By E-MAIL.
+GET {{base_url}}/api/address-books/system/contacts?search=jane.quartz@example.test
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$[?(@.id == '{{jane_id}}')].id" == "{{jane_id}}"
+
+
+# By BOTH NAMES, which live in separate columns — this one needs the
+# concatenated branch of the predicate and fails on a naive per-column
+# OR, the form most likely to be written by someone extending it.
+GET {{base_url}}/api/address-books/system/contacts?search=Jane%20Quartz
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$[?(@.id == '{{jane_id}}')].id" == "{{jane_id}}"
+
+
+# And a miss is still a miss: `$..id` (not a filter) because a filter
+# matching nothing yields "no value", which fails every predicate rather
+# than reading as an empty list.
+GET {{base_url}}/api/address-books/system/contacts?search=zzz-nobody-by-that-name
+Authorization: Bearer {{token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$..id" not contains "{{jane_id}}"
+
+
+DELETE {{base_url}}/api/admin/users/{{jane_id}}
+Authorization: Bearer {{token}}
+
+HTTP 200
+
+
 # ═════════════════════════════════════════════════════════════
 # Round 3 — CardDAV/AddressBook AuthZ regression
 # ═════════════════════════════════════════════════════════════

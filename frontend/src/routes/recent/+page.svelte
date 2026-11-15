@@ -34,7 +34,7 @@
 	type RecentFileOrFolderItem = RecentResourceItemDto & {
 		resource: FileDto | FolderDto;
 	};
-	import { addFavorite, removeFavorite } from '$lib/api/endpoints/favorites';
+	import { toggleFavorite } from '$lib/utils/listActions';
 	import { dateBucket, sizeBucket, typeLabelOf } from '$lib/utils/resourceBuckets';
 	import { resolveOwnerName } from '$lib/utils/ownerName';
 	import { fileDownloadUrl, renameFile, deleteFile } from '$lib/api/endpoints/files';
@@ -352,19 +352,6 @@
 			run: remove
 		}
 	];
-
-	async function toggleFavorite(item: FileItem | FolderItem) {
-		const kind = kindOf(item);
-		const wasFav = item.is_favorite;
-		item.is_favorite = !wasFav;
-		try {
-			if (wasFav) await removeFavorite(kind, item.id);
-			else await addFavorite(kind, item.id);
-		} catch (e) {
-			errorToast(e);
-			item.is_favorite = wasFav;
-		}
-	}
 
 	// ── Selection + batch ─────────────────────────────────────────────────────
 	// Selected items arrive via the batchActions snippet param —

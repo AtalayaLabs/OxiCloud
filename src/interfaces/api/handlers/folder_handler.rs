@@ -26,7 +26,9 @@ use crate::domain::services::authorization::{Permission, Resource, Subject};
 use crate::domain::services::external_mount_id::{
     NodeId, encode_child_id, virtual_file_etag, virtual_folder_etag,
 };
-use crate::interfaces::api::etag::{if_none_match_matches, not_modified, with_cache_headers};
+use crate::interfaces::api::etag::{
+    if_none_match_matches, mix_row_state, not_modified, with_cache_headers,
+};
 use crate::interfaces::errors::AppError;
 use crate::interfaces::middleware::auth::{AuthUser, CallerSubjects};
 
@@ -775,6 +777,15 @@ pub async fn list_folder_resources(
             // thread headers through and keep returning 200 without
             // an ETag — follow-up to extend the engine over external
             // mounts.
+            //
+            // The per-row favourite / shared flags join the freshness
+            // signal: both are painted on the row and neither moves
+            // `modified_at`, so a timestamp-only identity answers the load
+            // after a star with a 304 and the pre-star body.
+            let fresh_signal = mix_row_state(
+                fresh_signal,
+                body.items.iter().map(|i| i.resource.favorite_shared()),
+            );
             let etag = body.weak_etag(cursor_input.as_deref(), limit, fresh_signal);
             if if_none_match_matches(&headers, &etag) {
                 return not_modified(&etag).into_response();

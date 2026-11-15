@@ -42,14 +42,24 @@ vi.mock('$lib/api/endpoints/users', () => ({
 	}))
 }));
 
+// The star's writes. Mocked rather than stubbed at the transport, because the
+// assertion that matters is "the page asked for the right thing AND reflected
+// it" — see the favourite tests at the foot of this file.
+vi.mock('$lib/api/endpoints/favorites', () => ({
+	addFavorite: vi.fn(async () => undefined),
+	removeFavorite: vi.fn(async () => undefined)
+}));
+
 import { listRecentChanges } from '$lib/api/generated/openapi/sdk.gen';
+import { addFavorite, removeFavorite } from '$lib/api/endpoints/favorites';
 import { resolveUser } from '$lib/api/endpoints/users';
 import ChangesPage from './+page.svelte';
 
 const m = (fn: unknown) => fn as ReturnType<typeof vi.fn>;
 
-function file(id: string, name: string) {
+function file(id: string, name: string, isFavorite = false) {
 	return {
+		is_favorite: isFavorite,
 		// A real `ResourceCategory` member — the fixture these were copied
 		// from used "Document", which is not one, and the type axis buckets
 		// on this value.
@@ -70,12 +80,19 @@ function file(id: string, name: string) {
 	};
 }
 
-function change(fileId: string, name: string, modifier: string, changedAt: string, laneTotal = 1) {
+function change(
+	fileId: string,
+	name: string,
+	modifier: string,
+	changedAt: string,
+	laneTotal = 1,
+	isFavorite = false
+) {
 	return {
 		changed_at: changedAt,
 		lane_total: laneTotal,
 		modifier_id: modifier,
-		resource: file(fileId, name)
+		resource: file(fileId, name, isFavorite)
 	};
 }
 
@@ -475,4 +492,92 @@ it('defaults to the people axis', async () => {
 			expect.objectContaining({ query: expect.objectContaining({ order_by: 'modifier' }) })
 		)
 	);
+});
+
+// ── The star ─────────────────────────────────────────────────────────────
+//
+// THE bug: the star did nothing visible. `onfavorite` was wired, the server
+// call went out and was recorded, but `rows` is a PROJECTION of `raw`, so the
+// optimistic flip landed on a throwaway object and the derivation replaced it
+// on the next run. Clicking appeared to be a no-op — the worst shape of bug,
+// since the state the user asked for was real and only the feedback was
+// missing.
+//
+// So each pin below asserts BOTH halves: the write happened AND the row now
+// shows it. `aria-pressed` is the assertion target rather than the icon name,
+// because that attribute is also what a screen reader announces.
+it('stars a row: calls the API and the row shows it', async () => {
+	m(listRecentChanges).mockResolvedValue({
+		items: [change('f1', 'notes.txt', 'bob', '2024-01-01T00:00:00Z')],
+		next_cursor: null
+	});
+	render(ChangesPage);
+	const star = await screen.findByTestId('resource-list-favorite-f1-btn');
+	expect(star.getAttribute('aria-pressed')).toBe('false');
+
+	await fireEvent.click(star);
+
+	expect(addFavorite).toHaveBeenCalledWith('file', 'f1');
+	await waitFor(() => expect(star.getAttribute('aria-pressed')).toBe('true'));
+});
+
+// The other direction, which goes through a different endpoint and so can
+// break on its own.
+it('un-stars a row that arrived favourited', async () => {
+	m(listRecentChanges).mockResolvedValue({
+		items: [change('f1', 'notes.txt', 'bob', '2024-01-01T00:00:00Z', 1, true)],
+		next_cursor: null
+	});
+	render(ChangesPage);
+	const star = await screen.findByTestId('resource-list-favorite-f1-btn');
+	expect(star.getAttribute('aria-pressed')).toBe('true');
+
+	await fireEvent.click(star);
+
+	expect(removeFavorite).toHaveBeenCalledWith('file', 'f1');
+	await waitFor(() => expect(star.getAttribute('aria-pressed')).toBe('false'));
+});
+
+// One file, two lanes — this page's defining case. A star is a property of the
+// FILE, so lighting it in Bob's lane must light it in Carol's: the patch walks
+// every `raw` entry carrying that id, not the first match. Both rows render
+// the same testid (same file id), which is why this reads them as a list.
+it('stars every lane the file appears in, not just the clicked one', async () => {
+	m(listRecentChanges).mockResolvedValue({
+		items: [
+			change('f1', 'notes.txt', 'carol', '2024-01-02T00:00:00Z'),
+			change('f1', 'notes.txt', 'bob', '2024-01-01T00:00:00Z')
+		],
+		next_cursor: null
+	});
+	render(ChangesPage);
+	await waitFor(() =>
+		expect(screen.getAllByTestId('resource-list-favorite-f1-btn')).toHaveLength(2)
+	);
+	const stars = screen.getAllByTestId('resource-list-favorite-f1-btn');
+
+	await fireEvent.click(stars[0]);
+
+	await waitFor(() => {
+		for (const s of screen.getAllByTestId('resource-list-favorite-f1-btn')) {
+			expect(s.getAttribute('aria-pressed')).toBe('true');
+		}
+	});
+});
+
+// A rejected write must put the row back, or the star shows a state the
+// server refused — and on this page the revert travels the same broadcast the
+// flip did, so it is worth pinning that it arrives.
+it('reverts the star when the write fails', async () => {
+	m(listRecentChanges).mockResolvedValue({
+		items: [change('f1', 'notes.txt', 'bob', '2024-01-01T00:00:00Z')],
+		next_cursor: null
+	});
+	m(addFavorite).mockRejectedValueOnce(new Error('nope'));
+	render(ChangesPage);
+	const star = await screen.findByTestId('resource-list-favorite-f1-btn');
+
+	await fireEvent.click(star);
+
+	await waitFor(() => expect(star.getAttribute('aria-pressed')).toBe('false'));
 });

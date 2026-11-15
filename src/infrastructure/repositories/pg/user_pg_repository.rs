@@ -18,6 +18,34 @@ impl From<sqlx::Error> for UserRepositoryError {
     }
 }
 
+/// WHERE clause shared by `search_users` and `search_usernames` — the two
+/// halves of the sharee autocomplete, one returning rows and one just the
+/// usernames.
+///
+/// It matches on everything a person is known by: username, e-mail, given
+/// name, family name, and the two names joined, so "ada lovelace" finds a row
+/// that stores them in separate columns. `$1` is the caller's `%pattern%` and
+/// `$3` is the include-externals flag.
+///
+/// Extracted because the predicate used to be written out twice, with the
+/// second copy carrying a comment promising it was "the same predicate" —
+/// the arrangement that let the username-only path drift. It was also the
+/// reason a lookup by first name found nobody: the old predicate read
+/// username and e-mail alone, and the share dialog's own client-side filter
+/// matched names but never the username, so neither surface covered all four.
+///
+/// `coalesce` because `username`, `given_name` and `family_name` are all
+/// nullable; a NULL would make the comparison NULL rather than false, which
+/// is harmless inside this OR but obscures what the clause is asserting.
+const USER_SEARCH_PREDICATE: &str = "(
+                      coalesce(username, '')    ILIKE $1
+                   OR email                     ILIKE $1
+                   OR coalesce(given_name, '')  ILIKE $1
+                   OR coalesce(family_name, '') ILIKE $1
+                   OR trim(coalesce(given_name, '') || ' ' || coalesce(family_name, '')) ILIKE $1
+                  )
+              AND ($3 OR is_external = FALSE)";
+
 pub struct UserPgRepository {
     pool: Arc<PgPool>,
 }
@@ -1025,7 +1053,7 @@ impl UserRepository for UserPgRepository {
         include_external: bool,
     ) -> UserRepositoryResult<Vec<User>> {
         let pattern = format!("%{}%", query);
-        let rows = sqlx::query(
+        let rows = sqlx::query(&format!(
             r#"
             SELECT
                 id, username, email, password_hash, role::text as role_text,
@@ -1035,12 +1063,11 @@ impl UserRepository for UserPgRepository {
                 given_name, family_name, email_verified_at, preferred_locale, notify_on_share,
                 ui_preferences
             FROM auth.users
-            WHERE (username ILIKE $1 OR email ILIKE $1)
-              AND ($3 OR is_external = FALSE)
+            WHERE {USER_SEARCH_PREDICATE}
             ORDER BY username
             LIMIT $2
-            "#,
-        )
+            "#
+        ))
         .bind(&pattern)
         .bind(limit)
         .bind(include_external)
@@ -1541,20 +1568,20 @@ impl UserStoragePort for UserPgRepository {
         limit: i64,
         include_external: bool,
     ) -> Result<Vec<Option<String>>, DomainError> {
-        // Same predicate / order / limit as `search_users`, username-only
-        // projection — the sharee autocomplete path reads nothing else, and
-        // the wide row drags the avatar `image` per matched user.
+        // Same predicate / order / limit as `search_users` — literally, via
+        // `USER_SEARCH_PREDICATE` — with a username-only projection: the
+        // sharee autocomplete path reads nothing else, and the wide row drags
+        // the avatar `image` per matched user.
         let pattern = format!("%{}%", query);
-        let rows = sqlx::query(
+        let rows = sqlx::query(&format!(
             r#"
             SELECT username
             FROM auth.users
-            WHERE (username ILIKE $1 OR email ILIKE $1)
-              AND ($3 OR is_external = FALSE)
+            WHERE {USER_SEARCH_PREDICATE}
             ORDER BY username
             LIMIT $2
-            "#,
-        )
+            "#
+        ))
         .bind(&pattern)
         .bind(limit)
         .bind(include_external)

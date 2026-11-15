@@ -19,8 +19,19 @@ vi.mock('$lib/api/endpoints/favorites', () => ({
 vi.mock('$lib/api/endpoints/files', () => ({ fileDownloadUrl: (id: string) => `/dl/${id}` }));
 vi.mock('$lib/api/endpoints/folders', () => ({ folderZipUrl: (id: string) => `/zip/${id}` }));
 
-import { openParentContextAction, parentFolderIdOf } from './listActions';
+import { addFavorite } from '$lib/api/endpoints/favorites';
+import {
+	applyRowFlags,
+	emitRowFlags,
+	onRowFlags,
+	openParentContextAction,
+	parentFolderIdOf,
+	toggleFavorite,
+	type RowFlagsChange
+} from './listActions';
 import type { FileItem, FolderItem } from '$lib/api/types';
+
+const m = (fn: unknown) => fn as ReturnType<typeof vi.fn>;
 
 // `isFile` discriminates on `'mime_type' in item` — NOT on a `type` field.
 // A fixture without one is treated as a folder, which is how the first
@@ -85,4 +96,101 @@ it('leaves open-parent enabled when reachable or not yet probed', () => {
 	access.answer = undefined;
 	expect(a.disabled?.(file('p1'))).toBe(false);
 	expect(a.disabled?.(folder('p2'))).toBe(false);
+});
+
+// ── The broadcast ────────────────────────────────────────────────────────
+//
+// THE bug this exists for: `toggleFavorite` used to only mutate the item it
+// was handed, which works where that object IS the page's reactive state and
+// silently does nothing where rows are a projection of it. `/changes` maps
+// `raw` into `ChangeRow`s, so the star flipped a throwaway copy — the click
+// looked dead while the server had recorded the change. These pin the event
+// that carries the flip to whoever owns the data.
+it('announces the flip so a page with derived rows can follow it', async () => {
+	const seen: RowFlagsChange[] = [];
+	const off = onRowFlags((c) => seen.push(c));
+
+	const it1 = file('p1');
+	it1.is_favorite = false;
+	await toggleFavorite(it1);
+
+	expect(seen).toEqual([{ id: 'f1', is_favorite: true }]);
+	// Still mutated in place too, for the pages where that is the source of
+	// truth — the event is additive, not a replacement.
+	expect(it1.is_favorite).toBe(true);
+	off();
+});
+
+// A failed write must un-announce, or every other surface keeps a star the
+// server rejected — the exact split-brain the optimistic flip is meant to
+// avoid.
+it('announces the revert when the write fails', async () => {
+	m(addFavorite).mockRejectedValueOnce(new Error('nope'));
+	const seen: RowFlagsChange[] = [];
+	const off = onRowFlags((c) => seen.push(c));
+
+	const it1 = file('p1');
+	it1.is_favorite = false;
+	await toggleFavorite(it1);
+
+	expect(seen).toEqual([
+		{ id: 'f1', is_favorite: true },
+		{ id: 'f1', is_favorite: false }
+	]);
+	expect(it1.is_favorite).toBe(false);
+	off();
+});
+
+// Unsubscribing has to actually detach: these listeners live in `$effect`s,
+// so a leak means every navigation adds another patcher of a dead page.
+it('stops delivering after the unsubscriber runs', () => {
+	const seen: RowFlagsChange[] = [];
+	onRowFlags((c) => seen.push(c))();
+	emitRowFlags({ id: 'f1', is_favorite: true });
+	expect(seen).toEqual([]);
+});
+
+// ── The shared chip rides the same event ─────────────────────────────────
+//
+// THE bug: sharing or unsharing left the row's chip as it was until a page
+// refresh. The star had this broadcast; sharing had a `ShareDialog` callback
+// that only `/files` wired, and only for the create direction — so
+// `/favorites`, `/recent`, `/search`, `/shared-with-me` and `/changes` painted
+// a stale chip both ways. One event now carries both flags, which is why
+// these pins live beside the favourite ones rather than in a parallel file.
+it('carries is_shared on its own, without claiming anything about the star', () => {
+	const seen: RowFlagsChange[] = [];
+	const off = onRowFlags((c) => seen.push(c));
+
+	emitRowFlags({ id: 'f1', is_shared: true });
+
+	expect(seen).toEqual([{ id: 'f1', is_shared: true }]);
+	// The absent flag must stay absent: a listener that treated `undefined`
+	// as `false` would un-star every row the share dialog touched.
+	expect(seen[0].is_favorite).toBeUndefined();
+	off();
+});
+
+// `applyRowFlags` is the rule every listener shares. An absent flag leaves
+// the row alone — this is the half that stops a share announcement from
+// clearing a star.
+it('applies only the flags the change carries', () => {
+	const row = { is_favorite: true, is_shared: false };
+
+	applyRowFlags(row, { id: 'f1', is_shared: true });
+
+	expect(row).toEqual({ is_favorite: true, is_shared: true });
+});
+
+// And a row that does not model a flag must not grow one: a breadcrumb crumb
+// carries `is_shared` and has no star, so the favourite half is not its
+// business. Without the `in` guard it would gain an `is_favorite` property
+// that nothing renders and the next chain fetch silently drops.
+it('leaves a row without a flag alone rather than adding it', () => {
+	const crumb = { is_shared: false };
+
+	applyRowFlags(crumb, { id: 'd1', is_favorite: true, is_shared: true });
+
+	expect(crumb).toEqual({ is_shared: true });
+	expect('is_favorite' in crumb).toBe(false);
 });

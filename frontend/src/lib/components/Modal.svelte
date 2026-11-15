@@ -151,7 +151,10 @@
 		>
 			{#if title}
 				<header class="modal__header">
-					<h2 class="modal__title">{title}</h2>
+					<!-- `title` attribute as well as the text: the heading
+					     ellipsises a long name (see `.modal__title`), and the
+					     tooltip is what still answers "which file?". -->
+					<h2 class="modal__title" {title}>{title}</h2>
 					<button
 						type="button"
 						class="modal__close"
@@ -223,12 +226,27 @@
 		padding: var(--space-6) var(--space-6) var(--space-2);
 	}
 
+	/*
+	 * Truncates rather than wraps or overflows, for EVERY modal.
+	 *
+	 * Titles carry user-supplied names — `Share “<filename>”`, rename, move,
+	 * delete — and a long one used to push the header apart: the heading grew
+	 * past the dialog and shoved the close button out of reach, because a
+	 * flex child refuses to shrink below its content without `min-width: 0`.
+	 * One rule here covers every caller, so no dialog has to pre-cut the
+	 * string it passes (and lose it). The full text stays reachable via the
+	 * native tooltip on the heading.
+	 */
 	.modal__title {
 		margin: 0;
+		min-width: 0;
+		overflow: hidden;
 		color: var(--color-text-heading);
 		font-size: var(--text-xl);
 		font-weight: var(--weight-semibold);
 		line-height: var(--leading-tight);
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.modal__close {
