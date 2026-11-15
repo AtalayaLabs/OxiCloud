@@ -39,6 +39,8 @@ pub enum Gate {
 /// mint, and a SEPARATE type from `Gate` on purpose — § Three axes.
 pub enum Resource {
     Files, Calendar, Contacts, Photos, Music, Profile, Sharing,
+    // Reserved — parser REJECTS it until a mailbox exists. § `mail` is reserved.
+    // Mail,
 }
 pub enum Access { ReadOnly, ReadWrite }
 pub struct Scope(BTreeMap<Resource, Access>);
@@ -173,15 +175,40 @@ The tempting vocabulary is the protocol list: `webdav`, `caldav`,
 `carddav`, `api`, `nextcloud`. Rejected, because in this codebase every
 door maps to exactly one resource:
 
-| door | resource |
+| scope | routes it opens (non-exhaustive) |
 |---|---|
-| `/webdav`, `/remote.php/dav/files`, `/wopi`, `/api/files`, `/folders`, `/uploads`, `/batch`, `/trash`, `/dedup` | `Files` |
-| `/caldav`, `/api/calendars` (#853) | `Calendar` |
-| `/carddav`, `/api/address-books`, `/api/contacts` | `Contacts` |
-| `/api/photos`, `/api/people` | `Photos` |
-| `/api/playlists` | `Music` |
-| `/api/users` (self), `/remote.php/dav/avatars` | `Profile` |
-| `/api/grants`, `/api/shares`, `/api/s`, OCS sharing | `Sharing` |
+| `files` | `/webdav`, `/remote.php/dav/files`, `/wopi`, `/api/files`, `/api/folders`, `/api/uploads`, `/api/batch`, `/api/trash`, `/api/favorites`, `/api/recent`, `/api/dedup` |
+| `calendar` | `/caldav`, `/.well-known/caldav`, `/api/calendars` (#853) |
+| `contacts` | `/carddav`, `/.well-known/carddav`, `/api/address-books`, `/api/contacts` |
+| `photos` | `/api/photos`, `/api/people` |
+| `music` | `/api/playlists` |
+| `profile` | `/api/users` (self only), `/remote.php/dav/avatars` |
+| `sharing` | `/api/grants`, `/api/shares`, `/api/s`, OCS sharing |
+| `mail` | **reserved — see below** |
+
+Non-exhaustive on purpose: the mapping is "which resource does this
+door touch", so a new route under an existing area inherits its scope
+without editing this table. A new route that fits *no* row is the
+signal that a scope is missing — and that is a design decision, not a
+lookup.
+
+Deliberately absent, and each for its own reason:
+
+- `/api/admin/*`, `/api/admin/dedup/*` — `Gate::Admin`, never a scope.
+- `/api/auth/app-passwords`, `/api/auth/device/devices` — credential
+  management, excluded from the vocabulary entirely (see below).
+- `/api/config`, `/api/i18n`, `/status.php`, `/api/auth/*` login flows —
+  public or pre-authentication; no credential exists yet to scope.
+- `/api/search` — reads across areas, so it is filtered by the scopes
+  the caller already holds rather than carrying one of its own. A
+  `files:ro`-only credential searching must not see calendar hits.
+- `/api/rt/ws` — the message bus delivers events for whatever the
+  caller can already see; same filtering argument as search.
+- `/api/groups`, `/api/drives`, `/api/notifications` — unresolved. Group
+  and drive *membership* management has real blast radius and may want
+  `sharing`, or its own scope; notifications are probably `profile`.
+  Resolve before implementation rather than defaulting them into
+  `files`.
 
 Note `/remote.php/dav` here serves `files/` and `avatars/` only — unlike
 real NextCloud it does not carry calendars or contacts, so even the
@@ -204,6 +231,26 @@ What this gives up is "calendars via CalDAV but not via REST". That
 buys nothing: same data, same rights, and whoever holds the credential
 can curl either door. A protocol restriction would be a speed bump, not
 a boundary.
+
+### `mail` is reserved, not implemented
+
+There is no mailbox in OxiCloud today. SMTP is outbound only — the
+`email_sender` port, magic-link delivery, job notification sinks — so
+nothing a `mail` scope could gate currently exists.
+
+It is reserved anyway, for the same reason the `Vault` drive kind is:
+the name is the cheap part, and claiming it now costs nothing while
+letting someone else claim it later costs a migration. Scope strings
+are persisted on credentials and displayed on consent screens, so the
+vocabulary is a wire format — renaming an entry means re-issuing every
+credential that carries it.
+
+Reserved means: the parser **rejects** `mail` as an unknown resource
+until the feature lands, exactly as it rejects a typo. It does not mean
+the parser accepts it and the gate ignores it — that is precisely the
+shape of the device-flow bug this plan exists to fix, where a scope was
+collected, consented to, and silently unenforced. A name that parses
+but gates nothing is worse than a name that does not parse.
 
 ### Read-only is multiplied, not orthogonal
 
