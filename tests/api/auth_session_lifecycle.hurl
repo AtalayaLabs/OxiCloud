@@ -105,6 +105,14 @@ jsonpath "$.full.updated_at" matches "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]
 #     is 403: the refresh service raises `ErrorKind::AccessDenied`
 #     which maps to HTTP 403 in this codebase. Pinning the
 #     observed-and-correct behavior here.
+#
+#     Step 4 above is load-bearing for this assertion since the
+#     refresh grace landed (`docs/plan/refresh-token-grace.md`): a
+#     replay is forgiven while the token the rotation minted has
+#     never been used, and step 4 is what uses it. Delete step 4
+#     and this 403 becomes a graced 200 — not a regression, just
+#     a different case, which `auth_refresh_grace.hurl` pins from
+#     the other side.
 # ─────────────────────────────────────────────────────────────
 POST {{base_url}}/api/auth/refresh
 Content-Type: application/json

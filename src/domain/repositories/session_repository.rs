@@ -1,5 +1,6 @@
 use crate::common::errors::DomainError;
 use crate::domain::entities::session::Session;
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 #[derive(Debug, thiserror::Error)]
@@ -57,6 +58,23 @@ pub trait SessionRepository: Send + Sync + 'static {
     /// Gets all sessions for a user
     async fn get_sessions_by_user_id(&self, user_id: Uuid)
     -> SessionRepositoryResult<Vec<Session>>;
+
+    /// The row a rotation inserted immediately after `after` within
+    /// `family_id` — the session that superseded the one created at `after`.
+    /// `None` when nothing in the family is newer.
+    ///
+    /// Answers "was this revoked parent token superseded by a rotation whose
+    /// response the client may never have received?" for the refresh grace
+    /// (`docs/plan/refresh-token-grace.md`). It needs no supersession columns
+    /// because [`SessionRepository::create_session`] only ever mints a fresh
+    /// family (`Uuid::new_v4()` at every `Session::new` callsite but the
+    /// rotation's), so the next row in a family is by construction the child
+    /// of that rotation — and there can be at most one.
+    async fn find_family_successor(
+        &self,
+        family_id: Uuid,
+        after: DateTime<Utc>,
+    ) -> SessionRepositoryResult<Option<Session>>;
 
     /// Paginated listing for the admin sessions panel. Cross-user by
     /// default; `user_id_filter = Some(uuid)` narrows to one user.

@@ -114,14 +114,18 @@ cargo clippy --all-features --all-targets -- -D warnings     # Lint (must pass w
 
 CI enforces both — commits that fail either check will not merge.
 
-**`--all-targets` does NOT cover the integration tests.** They live in
-`#[cfg(integration_tests)]` modules, which that command never compiles — so a
-warning in one passes clippy and shows up only when someone runs the suite.
-When the change touches such a module, lint it too:
+`just check` now passes `--cfg integration_tests`, so the
+`#[cfg(integration_tests)]` modules are compiled and linted here rather than
+only in CI. Use the recipe — a bare
+`cargo clippy --all-features --all-targets -- -D warnings` leaves those
+modules out of the build entirely, and a warning in one then reaches nobody
+until CI fails.
 
-```bash
-RUSTFLAGS='--cfg integration_tests' cargo clippy --all-features --all-targets -- -D warnings
-```
+Every new `#[cfg(integration_tests)]` module needs `#[allow(dead_code)]` on
+it, and all the existing ones have it: CI's `cargo test --tests` builds the
+lib as a plain DEPENDENCY of the `tests/` binaries, where no harness collects
+the `#[tokio::test]` functions, so their fixture helpers look unused and
+`-Dwarnings` makes that a failed build.
 
 ## Backend Pre-push checks
 

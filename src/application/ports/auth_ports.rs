@@ -3,6 +3,7 @@ use crate::domain::entities::app_password::AppPassword;
 use crate::domain::entities::device_code::DeviceCode;
 use crate::domain::entities::session::Session;
 use crate::domain::entities::user::User;
+use chrono::{DateTime, Utc};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -495,6 +496,24 @@ pub trait SessionStoragePort: Send + Sync + 'static {
         &self,
         refresh_token: &str,
     ) -> Result<Session, DomainError>;
+
+    /// The row a rotation inserted immediately after `after` within
+    /// `family_id` — i.e. the session that SUPERSEDED the one created at
+    /// `after`. `None` when nothing in the family is newer.
+    ///
+    /// Exists for the refresh grace (`docs/plan/refresh-token-grace.md`):
+    /// when a revoked parent token is replayed, this is what distinguishes
+    /// "my rotation's response never reached me" from "someone is replaying a
+    /// stolen token". No supersession columns are needed to answer it because
+    /// `rotate_session` is the only path that inserts into an EXISTING family
+    /// — every other `Session::new` callsite mints a fresh `Uuid::new_v4()`
+    /// family — so "the next row in this family" IS "the child of this
+    /// rotation", and at most one such row can exist per parent.
+    async fn find_family_successor(
+        &self,
+        family_id: Uuid,
+        after: DateTime<Utc>,
+    ) -> Result<Option<Session>, DomainError>;
 
     /// Revokes a specific session
     async fn revoke_session(&self, session_id: Uuid) -> Result<(), DomainError>;

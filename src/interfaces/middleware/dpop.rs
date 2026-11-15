@@ -90,8 +90,6 @@ pub async fn require_dpop_layer(
     if mode == DpopMode::Off {
         return next.run(request).await;
     }
-    let nonce_service = state.dpop_nonce_service.clone();
-    let replay_cache = state.dpop_replay_cache.clone();
 
     // No authenticated user → pass through (upstream auth layer
     // already handled or will handle the 401). We only concern
@@ -99,6 +97,105 @@ pub async fn require_dpop_layer(
     let Some(current_user) = request.extensions().get::<Arc<CurrentUser>>().cloned() else {
         return next.run(request).await;
     };
+
+    let expected_jkt = current_user.dpop_jkt.clone();
+    enforce_proof(
+        state,
+        request,
+        next,
+        expected_jkt.as_deref(),
+        Some(current_user.id),
+    )
+    .await
+}
+
+/// Mounted on `POST /api/auth/refresh`, where there IS no authenticated
+/// caller — the access token is expired, which is the whole reason the
+/// request exists — so the binding to enforce comes from the SESSION the
+/// presented refresh token belongs to.
+///
+/// Why refresh needs its own gate: a refresh token is a bearer secret in a
+/// cookie, and until this layer existed nothing checked that the holder also
+/// possessed the browser key its session was bound to. The SPA has always
+/// SENT a proof here (`withProof` wraps every call, auth primitives
+/// included); nothing read it. Enforcing it means a stolen cookie cannot be
+/// rotated into a fresh access token from another machine — which is the
+/// property `docs/plan/dpop.md` set out to buy, and the one that makes the
+/// refresh grace (`docs/plan/refresh-token-grace.md`) safe to widen.
+///
+/// Ordering matters: this runs BEFORE the handler, so a caller who fails
+/// proof-of-possession never reaches the replay decision — it cannot trip
+/// reuse detection and revoke the legitimate user's whole token family. An
+/// attacker with a stolen cookie but no key is therefore inert here, rather
+/// than a denial-of-service against the real session.
+pub async fn require_dpop_on_refresh_layer(
+    State(state): State<Arc<AppState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let mode = state.core.config.auth.dpop_mode;
+    if mode == DpopMode::Off {
+        return next.run(request).await;
+    }
+
+    // The session's binding, found from the refresh token on the wire.
+    // `None` covers every "nothing to enforce" case — no cookie, unknown
+    // token, an unbound session (app password / NC client / pre-DPoP) — and
+    // leaves the verdict to the handler, which owns what an invalid refresh
+    // token means. This layer only ever ADDS a possession requirement.
+    let Some(auth) = state.auth_service.as_ref() else {
+        return next.run(request).await;
+    };
+    let presented = refresh_token_from_request(&request);
+    let expected_jkt = match presented {
+        Some(token) => auth
+            .auth_application_service
+            .refresh_session_binding(&token)
+            .await
+            .unwrap_or(None),
+        None => None,
+    };
+    if expected_jkt.is_none() {
+        return next.run(request).await;
+    }
+
+    enforce_proof(state, request, next, expected_jkt.as_deref(), None).await
+}
+
+/// The refresh token as the handler will read it: cookie first, matching
+/// `auth_handler::refresh_token`'s own precedence. The JSON body is NOT
+/// consulted here — reading it would consume the stream the handler needs,
+/// and a body-only refresh (the API-test and NC-client shape) carries no
+/// browser key to bind to anyway.
+fn refresh_token_from_request(request: &Request) -> Option<String> {
+    let cookies = request.headers().get("cookie")?.to_str().ok()?;
+    cookies.split(';').find_map(|c| {
+        let (name, value) = c.split_once('=')?;
+        (name.trim() == "oxicloud_refresh").then(|| value.trim().to_owned())
+    })
+}
+
+/// Shared DPoP policy for both entry points: verify the proof against
+/// `expected_jkt`, validate the nonce, guard against replay, and stamp a
+/// fresh nonce on the way out. Extracted when the refresh gate landed —
+/// duplicating it would have meant two copies of the required-vs-
+/// opportunistic decision, the challenge shapes and the audit events.
+///
+/// `caller_id` is `None` on the refresh path, where no authenticated user
+/// exists yet; the audit lines then carry `-` rather than a fabricated id.
+async fn enforce_proof(
+    state: Arc<AppState>,
+    request: Request,
+    next: Next,
+    expected_jkt: Option<&str>,
+    caller_id: Option<uuid::Uuid>,
+) -> Response {
+    let mode = state.core.config.auth.dpop_mode;
+    let nonce_service = state.dpop_nonce_service.clone();
+    let replay_cache = state.dpop_replay_cache.clone();
+    let caller = caller_id
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "-".to_owned());
 
     let dpop_header = request
         .headers()
@@ -115,7 +212,9 @@ pub async fn require_dpop_layer(
     //   * bound session — proof MANDATORY in required mode; a
     //     warning-only signal in opportunistic mode so operators
     //     can spot stale SPA versions before flipping enforcement.
-    let expected_jkt = current_user.dpop_jkt.as_deref();
+    //
+    // Supplied by the caller: the JWT's `cnf.jkt` on an authenticated
+    // path, the refresh token's session row on `/api/auth/refresh`.
     // Diagnostic fields shared by both branches — `referer` is
     // usually the smoking gun for "which SPA page sent this?";
     // `user_agent` helps distinguish SPA (`Mozilla/…`), Node-side
@@ -147,7 +246,7 @@ pub async fn require_dpop_layer(
                     target: "audit",
                     event = "dpop.proof_missing",
                     reason = "proof_missing_on_bound_session",
-                    caller_id = %current_user.id,
+                    caller_id = %caller,
                     method = %req_method,
                     path = %req_path,
                     referer = %req_referer,
@@ -165,7 +264,7 @@ pub async fn require_dpop_layer(
                 tracing::info!(
                     target: "audit",
                     event = "dpop.header_missing_but_session_bound",
-                    caller_id = %current_user.id,
+                    caller_id = %caller,
                     method = %req_method,
                     path = %req_path,
                     referer = %req_referer,

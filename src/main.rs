@@ -991,7 +991,20 @@ async fn run(config: common::config::AppConfig) -> Result<(), Box<dyn std::error
                 rate_limit_register,
             ))
             .with_state(app_state.clone());
+        // DPoP possession gate on refresh. A refresh token is a bearer
+        // secret in a cookie; until this layer existed nothing checked that
+        // whoever presents it also holds the browser key its session was
+        // bound to, even though the SPA has always sent a proof here. Layers
+        // run outermost-last, so this sits INSIDE the rate limiter (a flood
+        // is still throttled first) and before the handler — which means a
+        // caller who fails proof-of-possession never reaches the replay
+        // decision and so cannot revoke the real user's token family.
+        // `docs/plan/refresh-token-grace.md` Gate 4.
         let auth_refresh = refresh_route()
+            .layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
+                oxicloud::interfaces::middleware::dpop::require_dpop_on_refresh_layer,
+            ))
             .layer(axum::middleware::from_fn_with_state(
                 refresh_limiter.clone(),
                 rate_limit_refresh,

@@ -2639,6 +2639,19 @@ impl AppServiceFactory {
             None
         };
 
+        // Hand the tracker to the auth service too. The refresh grace asks
+        // "did the client ever USE the session this rotation minted?", and
+        // the `last_seen_at` COLUMN trails activity by up to one flush —
+        // without the in-memory half, a child used a second ago reads as
+        // never-used and the grace degrades from "closes on client progress"
+        // to "closes on a 60s timer" (`docs/plan/refresh-token-grace.md`).
+        // Attached here rather than passed to the factory because the
+        // tracker only exists once auth does, which is after that call.
+        if let (Some(tracker), Some(auth)) = (last_seen_tracker.as_ref(), auth_services.as_ref()) {
+            auth.auth_application_service
+                .attach_last_seen_tracker(tracker.clone());
+        }
+
         // Session-liveness Prometheus poller — three COUNT(*) reads
         // every 30 s, publishing `oxicloud_sessions_active`,
         // `_active_users`, `_total_non_revoked`. Only spawned when
