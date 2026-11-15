@@ -112,11 +112,15 @@
 	$effect(() => {
 		if (open) {
 			prevFocus = (document.activeElement as HTMLElement | null) ?? null;
-			requestAnimationFrame(() => {
+			const frame = requestAnimationFrame(() => {
+				// Input may already have moved focus before this frame (e.g. to
+				// a second field). Initial focus must not override that choice.
+				if (!open || !dialogEl || dialogEl.contains(document.activeElement)) return;
 				const items = focusables();
 				const textEntry = items.find(isTextEntry);
 				(textEntry ?? items[0] ?? dialogEl)?.focus();
 			});
+			return () => cancelAnimationFrame(frame);
 		} else if (prevFocus) {
 			prevFocus.focus();
 			prevFocus = null;

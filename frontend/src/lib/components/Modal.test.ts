@@ -1,6 +1,6 @@
-import { it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { it, expect, vi, beforeEach, afterEach, describe } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/svelte';
-import { createRawSnippet } from 'svelte';
+import { createRawSnippet, flushSync } from 'svelte';
 import Modal from './Modal.svelte';
 
 const children = createRawSnippet(() => ({
@@ -119,4 +119,92 @@ it('does not prefer non-text input types (e.g. type=checkbox)', async () => {
 	await nextRaf();
 	const closeBtn = screen.getByTestId('modal-close-btn');
 	expect(document.activeElement).toBe(closeBtn);
+});
+
+describe('deferred initial focus', () => {
+	let frames: Map<number, FrameRequestCallback>;
+	let nextFrameId: number;
+	const fields = createRawSnippet(() => ({
+		render: () =>
+			'<div><input data-testid="name" value="renamed" /><textarea data-testid="description"></textarea></div>'
+	}));
+
+	beforeEach(() => {
+		frames = new Map();
+		nextFrameId = 0;
+		vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((callback) => {
+			frames.set(++nextFrameId, callback);
+			return nextFrameId;
+		});
+		vi.spyOn(globalThis, 'cancelAnimationFrame').mockImplementation((id) => {
+			frames.delete(id);
+		});
+	});
+
+	afterEach(() => vi.restoreAllMocks());
+
+	function advanceFrame() {
+		const pending = [...frames.values()];
+		frames.clear();
+		for (const callback of pending) callback(performance.now());
+	}
+
+	it.each(['description', 'modal-close-btn'])(
+		'keeps focus already placed on %s before the first animation frame',
+		(testId) => {
+			render(Modal, { props: { open: true, title: 'Rename', children: fields } });
+			flushSync();
+			expect(frames.size).toBe(1);
+			const chosen = screen.getByTestId(testId);
+			chosen.focus();
+			expect(document.activeElement).toBe(chosen);
+
+			// The playlist rename flake appended description text to the name:
+			// a delayed initial-focus callback must not steal an existing choice.
+			advanceFrame();
+			expect(document.activeElement).toBe(chosen);
+		}
+	);
+
+	it('cancels a closed dialog frame and focuses normally when reopened', async () => {
+		const { rerender } = render(Modal, {
+			props: { open: true, title: 'Rename', children: fields }
+		});
+		flushSync();
+		expect(frames.size).toBe(1);
+		await rerender({ open: false });
+		// A frame from a previous opening must not reach a later dialog.
+		expect(frames.size).toBe(0);
+		await rerender({ open: true });
+		expect(frames.size).toBe(1);
+		advanceFrame();
+		expect(document.activeElement).toBe(screen.getByTestId('name'));
+	});
+
+	it('cancels pending initial focus when unmounted', () => {
+		const { unmount } = render(Modal, {
+			props: { open: true, title: 'Rename', children: fields }
+		});
+		flushSync();
+		expect(frames.size).toBe(1);
+		unmount();
+		// Removed dialogs must not leave focus callbacks for the next frame.
+		expect(frames.size).toBe(0);
+	});
+
+	it('restores the opener after initial focus and close', async () => {
+		const { container, rerender } = render(Modal, {
+			props: { open: false, title: 'Rename', children: fields }
+		});
+		const opener = document.createElement('button');
+		container.append(opener);
+		opener.focus();
+		await rerender({ open: true });
+		expect(frames.size).toBe(1);
+		advanceFrame();
+		expect(document.activeElement).toBe(screen.getByTestId('name'));
+		await rerender({ open: false });
+		// Deferring focus must not lose the element captured when opening.
+		expect(document.activeElement).toBe(opener);
+	});
 });
