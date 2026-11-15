@@ -132,27 +132,46 @@ fn open_child(parent: &File, name: &str, directory: bool) -> std::io::Result<Fil
     Ok(File::from(openat(parent, name, flags, Mode::empty())?))
 }
 fn open_directory(path: &Path) -> std::io::Result<File> {
-    // Walk every component so symlinks in the root's ancestors are refused too.
-    let mut current = File::open(if path.is_absolute() { "/" } else { "." })?;
-    for part in path.components() {
-        match part {
-            Component::RootDir | Component::CurDir => {}
-            Component::Normal(name) => {
-                current = open_child(
-                    &current,
-                    name.to_str()
-                        .ok_or_else(|| std::io::Error::other("Theme path must be UTF-8"))?,
-                    true,
-                )?;
-            }
-            _ => {
-                return Err(std::io::Error::other(
-                    "Parent traversal in theme root is forbidden",
-                ));
-            }
-        }
+    use rustix::fs::{Mode, OFlags, open};
+
+    // `..` stays forbidden. An operator-configured root should NAME a
+    // place, not navigate to one, and a value containing `..` is harder
+    // to audit than the path it resolves to.
+    if path
+        .components()
+        .any(|part| matches!(part, Component::ParentDir))
+    {
+        return Err(std::io::Error::other(
+            "Parent traversal in theme root is forbidden",
+        ));
     }
-    Ok(current)
+
+    // Open the configured root directly instead of walking its
+    // components with `NOFOLLOW`.
+    //
+    // The walk refused a symlink in ANY ancestor, which is not portable:
+    // on macOS `/var` is itself a symlink (`/var -> private/var`) and
+    // `TMPDIR` lives under it, so every path below `/var` — including
+    // every `tempfile::tempdir()` — failed with ENOTDIR before the root
+    // was ever reached. Linux `/tmp` is a real directory, so CI never saw
+    // it. Nor is there a portable primitive for the strict policy:
+    // `openat2(RESOLVE_NO_SYMLINKS)` is Linux 5.6+, `O_RESOLVE_BENEATH`
+    // is FreeBSD, macOS has neither. `O_DIRECTORY` is POSIX-2008 and
+    // works everywhere we run, still yielding ENOTDIR when the path is
+    // genuinely not a directory.
+    //
+    // The guard that matters is untouched. The root is operator
+    // configuration — deliberately chosen, trusted input — whereas the
+    // theme directories and `index.css` files UNDER it are whatever
+    // happened to land in a shared folder, and those still go through
+    // `open_child` with `NOFOLLOW`. A symlinked theme or a symlinked CSS
+    // file is refused exactly as before; a symlinked ancestor of the
+    // operator's own root no longer takes the whole feature down.
+    Ok(File::from(open(
+        path,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::DIRECTORY,
+        Mode::empty(),
+    )?))
 }
 
 #[cfg(test)]
