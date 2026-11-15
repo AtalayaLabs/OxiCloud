@@ -925,6 +925,99 @@ artifact — plus it fails constantly in the annoying direction (guests
 Deny-by-default is right; the unit it applies to is the **ownerless
 create**, not the HTTP surface. Hence the token.
 
+## Maximise deny-by-default
+
+The governing principle, and the tie-breaker whenever a choice in this
+plan is otherwise balanced. Ranked, because not all denial is equal:
+
+| strength | shape | example in this plan |
+|---|---|---|
+| 1. **Won't compile** | the omission is a type error | `InternalCaller` token — `auth_user.id` stops type-checking on an ownerless create |
+| 2. **Won't start** | boot panics on a misconfiguration | an unknown job name in `OXICLOUD_JOBS_SCHEDULED` already does this; the scope parser rejecting an unknown resource is the same posture |
+| 3. **Won't pass CI** | the omission fails a test | exhaustiveness test — a route in neither the scope map nor `SCOPELESS` |
+| 4. **Fails closed at runtime** | the default answer is refusal | `Gate::NotAppPassword` applied by the root layer; ceilings as allowlists; `CurrentUser::role` resolving an unknown value to `Anonymous`, "the *least* privileged answer" |
+| 5. **Merely visible** | a reviewer must notice | an extractor on a handler — forget it and the route is open. Use only where 1-4 do not fit |
+
+Prefer the lowest number available. Where this plan chose 4 over 1 it
+was because no type can express the question (a router-level gate has no
+callsite to constrain), not because 4 is good enough.
+
+### Where to push it further than drafted
+
+- **Scope parse rejects, never ignores.** An unrecognised resource name
+  is an error, not a dropped token. A typo must not silently widen a
+  credential, and `mail` must not parse until it exists (§ `mail` is
+  reserved).
+- **Ceilings are allowlists** (§ Defaults). A credential type added
+  without a row gets nothing, so forgetting withholds.
+- **Absent scope claim is the one deliberate exception**, and it earns
+  it: absent means FULL (§ Rollout). Deny-by-default here would lock out
+  every live session on upgrade — which is availability damage inflicted
+  by a security reflex. The exception is bounded by being a
+  *grandfathering* rule with a defined end: once no pre-enforcement
+  token can still be valid, absent becomes empty.
+
+### The conflict worth deciding, not smuggling
+
+PR 1's acceptance criterion is that it be **behaviour-preserving**. Taken
+literally, the fold preserves two documented fail-open gates and gives
+them an authoritative single home — which legitimises them. `src/AGENTS.md`
+is unambiguous that it should not:
+
+> **An auth helper's `_ =>` arm must DENY.** Two fail-open gates exist
+> and are bugs, not patterns to copy: `require_internal_user`
+> (`middleware/user.rs:64-71`) admits the caller on *any*
+> `get_user_flags` error, and `decide_live_role` (`:169-176`) resurrects
+> the claim role on a transient DB error. **The first is the only
+> middleware guarding all three DAV surfaces.**
+
+And § Why 1 of this plan cites exactly that arm as the policy deserving
+"one reviewable home" — so the fold either fixes it or enshrines it.
+
+The tradeoff is real and the original author documented it: denying on a
+transient DB error means a Postgres hiccup locks every DAV user out, so
+fail-open was a resilience choice. But AGENTS.md § Design axes puts
+security and resilience *both* in the absolute bucket and this is the
+only gate on three protocol surfaces, which is why the file already
+calls it a bug rather than a trade.
+
+So: **the fold fixes it**, as an explicit behaviour change in PR 1 with
+its own pin, never as a silent consequence of refactoring. Blunt the
+availability cost the way § Lookup and checking cost already allows — a
+short-TTL cache in the policy, which absorbs a blip without resurrecting
+a stale answer indefinitely. If that is judged too risky to pair with
+the refactor, it becomes PR 1b, but it does not get preserved by
+default.
+
+## Direction: app passwords are terminal
+
+Recorded so the next reader does not treat the permit set as permanent
+architecture. The intent is that **app passwords disappear in favour of
+OIDC for interactive login and the device flow for everything else**,
+with OxiCloud's own client replacing the NextCloud one.
+
+That makes `PermitAppPassword` a **deprecation instrument** rather than a
+permanent gate: five mounts today, three once NC support goes, zero at
+the end. Each removal is a reviewable step instead of a flag day.
+
+Two notes for whoever picks that up:
+
+- **The successor is RFC 8628, not OIDC alone.** OIDC covers interactive
+  login, but generic DAV clients cannot use it — DAVx⁵, Thunderbird and
+  rclone authenticate with Basic, and their OAuth support is
+  provider-specific where it exists. The device flow is already
+  implemented (`/api/auth/device/authorize`, `/device/token`) and already
+  mints a JWT: a scoped, revocable, per-device credential with no static
+  secret a user can paste anywhere. It is what app passwords should die
+  into, which also makes the device-flow half of this plan the
+  strategically important one.
+- **AGENTS.md § Purpose currently says the opposite** and will need
+  amending in the same change: "Customer target: NextCloud users. Hence
+  the NextCloud-compatible API surface (`/remote.php`, `/ocs`,
+  `/status.php`) — compatibility is a feature, and breaking it costs
+  adopters." Until that line changes, every contributor is being told to
+  preserve what this direction intends to drop.
+
 ## Non-goals
 
 - Not a general policy engine. Target is ~10k users and five variants;
@@ -971,6 +1064,30 @@ The rule to add, under § AuthZ enforcement points:
 > A route that cannot answer all three does not merge. If the answer to
 > any is "I don't know", that is the review, not a blocker to route
 > around.
+
+And the deny-by-default ranking, which is guidance for every contributor
+rather than only for this change — so it belongs in `src/AGENTS.md`
+beside the existing "an auth helper's `_ =>` arm must DENY" bullet, not
+only in a plan file:
+
+> **Prefer the strongest available form of denial**, in this order:
+>
+> 1. **Won't compile** — the omission is a type error (a capability
+>    token the policy alone can mint).
+> 2. **Won't start** — boot panics on a misconfiguration, as an unknown
+>    job name in `OXICLOUD_JOBS_SCHEDULED` already does.
+> 3. **Won't pass CI** — the omission fails a test, as a route absent
+>    from both the scope map and `SCOPELESS` does.
+> 4. **Fails closed at runtime** — the default answer is refusal
+>    (`Gate::NotAppPassword` on the root layer; ceilings as allowlists;
+>    `CurrentUser::role` resolving an unknown value to `Anonymous`).
+> 5. **Merely visible** — a reviewer must notice. An extractor on a
+>    handler is this: forget it and the route is open. Use only where
+>    1-4 cannot express the question.
+>
+> Choosing a weaker form is a decision to record, not a default. The
+> existing `OptionalUserId` is the cautionary tale this file already
+> names: it exists, it is dead code, and nothing ever used it.
 
 Which layer owns which axis, since the three are enforced in three
 different places and conflating them is how the original hole happened:
@@ -1264,6 +1381,10 @@ Contents, no more:
 - links out: ReBAC for Grant detail, `auth-model.md` for how a
   credential is obtained, `session-elevation.md` for the elevation
   mechanism.
+- the deny-by-default ranking (§ Maximise deny-by-default). It belongs
+  in the architecture doc as well as `src/AGENTS.md`: the latter tells a
+  contributor what to do, the former explains to a reader why a refusal
+  is the default answer rather than a bug.
 
 ### Edits to existing docs — links, not copies
 
