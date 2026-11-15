@@ -6,7 +6,12 @@ scope half (§ Credential scopes) has its own trigger: the device flow
 already collects and displays scopes it does not enforce.
 
 Status: **DRAFT** — amended 2026-11-15 to split Gate from Scope and to
-make credential scopes resource-based rather than protocol-based.
+make credential scopes resource-based rather than protocol-based. The
+design questions raised in review are all resolved: no row in the
+scope→route table is unassigned, and the two judgement calls
+(`/remote.php/dav/avatars` under `account`, `/api/drives/{id}/members`
+reachable with `files:rw`) are ratified with their reasoning recorded
+rather than left open. Awaiting approval to implement.
 
 ## Goal
 
@@ -269,6 +274,16 @@ needed two unrelated scopes to populate one recipient picker:
   `/api/auth/me`, `/me/profile`, `/me/image`. Note there is no
   self-profile route under `/api/users` at all; that nest holds exactly
   one route and it looks up *other* people.
+
+  `/remote.php/dav/avatars` sits here too, and it is the one row that
+  does not fit the "own data" rule cleanly: the NC endpoint serves ANY
+  user's avatar by username, so it is directory data by the argument
+  that puts `/api/users/{id}` under `sharing`. Kept under `account`
+  deliberately (ratified 2026-11-15): the NC desktop client fetches its
+  own avatar through the same path, an avatar is the least sensitive
+  thing the directory exposes, and splitting one route across two scopes
+  costs more explanation than it buys. Revisit only if avatars ever
+  carry something beyond an image.
 - **`sharing`** — grants and shares, **plus recipient lookup**.
   `GET /api/users/{id}` returns a `PublicUserDto` for a target user
   "iff the authenticated caller has a legitimate relationship with
@@ -314,7 +329,7 @@ it is not obvious from the table: the nest includes
 shared drive** — i.e. grant another subject access to data. That is a
 sharing-shaped action reached through a files-shaped scope.
 
-Accepted deliberately: a drive *is* a file container, splitting one nest
+Accepted deliberately (ratified 2026-11-15): a drive *is* a file container, splitting one nest
 across two scopes costs more in explanation than it buys, and the
 member change is still bounded by `authz.require` on the drive itself —
 so the caller must already hold rights there. Revisit if drive
