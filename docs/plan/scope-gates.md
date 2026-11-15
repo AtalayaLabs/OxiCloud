@@ -14,7 +14,6 @@ ratified with their reasoning recorded rather than left open.
 Deliverables now include a `src/AGENTS.md` rule and a new architecture
 document — see the two § Required sections. Awaiting approval to
 implement.
-rather than left open. Awaiting approval to implement.
 
 ## Goal
 
