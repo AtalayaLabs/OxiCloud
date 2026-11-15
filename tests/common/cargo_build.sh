@@ -44,9 +44,9 @@
 # every one of those against the lib.
 #
 # Release builds stay on `plugins` because that is what CI's `build` job
-# ships (`cargo build --release --features plugins`) as the artifact the
-# `api-test` job consumes — so a local `--release` run exercises the
-# binary shape CI actually tests.
+# ships (`cargo build --profile ci --features plugins` — `release` minus
+# LTO, see Cargo.toml) as the artifact the `api-test` job consumes — so a
+# local `--release` run exercises the binary shape CI actually tests.
 #
 # THIS IS A WHOLE-FAMILY INVARIANT, not a local choice. The harnesses
 # that don't source this file spell the same flag out at their own

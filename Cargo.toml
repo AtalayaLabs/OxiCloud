@@ -1099,6 +1099,18 @@ codegen-units = 1
 opt-level = 3
 strip = true
 
+# CI's `build` job: the binary the API / WebDAV / OIDC / litmus / CalDAV /
+# e2e jobs run on every PR. Same code and optimisation level as `release`
+# (no debug assertions, opt-level 3), minus the two settings that make
+# `release` slow to build: LTO and a single codegen unit. Those change how
+# well the binary is optimised, not what it does — the behavioural shape
+# those suites test is unchanged. Shipped binaries (release-binaries.yml,
+# Docker) keep using `release`.
+[profile.ci]
+inherits = "release"
+lto = false
+codegen-units = 16
+
 [profile.dev]
 # This crate at opt-level 0, every dependency at 2. Dependencies compile once
 # and stay cached, so paying for optimisation there is nearly free — and it is
