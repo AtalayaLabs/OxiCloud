@@ -75,6 +75,11 @@ pub trait ScopePolicy {
     /// is bound to. `CurrentUser` (request extension) carries both the
     /// user id and the session attributes.
     async fn require(&self, gate: Gate, caller: &CurrentUser) -> Result<(), AppError>;
+    /// Conjunction. Deliberately NOT `Gate` as a bitflags set — see
+    /// § The array is AND: a `|` reading admits an elevated non-admin
+    /// to admin mutations.
+    async fn require_all(&self, gates: &[Gate], caller: &CurrentUser)
+        -> Result<(), AppError>;
     /// Credential half. `Access::ReadWrite` implies `ReadOnly`.
     async fn require_scope(&self, need: Scope, access: Access, caller: &CurrentUser)
         -> Result<(), AppError>;
@@ -1008,6 +1013,48 @@ silently: it declares `elevated`, the method rule does not cover it, the
 test fails, and the fix is an explicit per-route entry. "Never gate on
 verb alone" is satisfied without giving up automatic coverage.
 
+### The array is AND, and getting that backwards is an escalation
+
+`security(("bearerAuth" = ["role:admin", "elevated"]))` means
+`Gate::Admin` **AND** `Gate::Elevated`. Not or. OpenAPI fixes this and
+the two forms are easy to confuse:
+
+| form | meaning |
+|---|---|
+| `("bearerAuth" = ["role:admin", "elevated"])` — one requirement, two scopes | **both** required (AND) |
+| `("bearerAuth" = ["role:admin"]), ("bearerAuth" = ["elevated"])` — two requirements | **either** suffices (OR) |
+
+Read as OR, the declaration above admits an **elevated non-admin
+session to admin mutations** — a plain user who re-authenticated at
+`POST /api/auth/elevate` would satisfy `elevated` and pass. That is a
+privilege escalation produced entirely by notation, so the Rust API must
+not be spellable that way:
+
+```rust
+// NO — invites the bitwise-or reading, and a flags type makes
+// "any of these" the natural implementation.
+policy.require(Gate::Admin | Gate::Elevated, caller).await?;
+
+// YES — conjunction is the only reading.
+policy.require_all(&[Gate::Admin, Gate::Elevated], caller).await?;
+
+// Equally fine, and what a layer composes to anyway:
+policy.require(Gate::Admin, caller).await?;
+policy.require(Gate::Elevated, caller).await?;
+```
+
+Keep `Gate` a plain enum rather than a bitflags set. There is no gate
+combination in this design that means "either", so the type should not
+be able to express one — and if a genuine OR ever appears, it gets two
+requirement objects in the spec and an explicit `require_any`, named so
+a reviewer sees which it is.
+
+Note the asymmetry with real scopes, which is why they live in the same
+array without confusion: `oxicloud:files:rw` and `oxicloud:calendar:ro`
+in one requirement are also AND — a credential carrying both — and that
+is exactly what a `ScopeSet` is. Conjunction is the right default for
+every entry in the array; it is only the `|` operator that suggests
+otherwise.
 **Two consumers today**, so `Gate::Elevated` is not speculative:
 
 | needs elevation | because |
@@ -1091,6 +1138,12 @@ field into an enforced one:
   that nothing enforces, which is precisely what `src/AGENTS.md` means
   by "declaring is not enforcing". A mutating GET under `/api/admin`
   must fail this test rather than pass quietly.
+- Unit: `require_all` is **conjunction** — a caller holding `elevated`
+  but not `Admin` is REFUSED on `[Admin, Elevated]`, and so is one
+  holding `Admin` but not `elevated`. Pin both halves: an OR
+  implementation passes the first case silently and hands admin
+  mutations to any user who re-authenticated. This is the cheapest test
+  in the plan and guards the most expensive mistake.
 
 ## When
 
