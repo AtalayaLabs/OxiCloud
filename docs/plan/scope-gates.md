@@ -110,6 +110,11 @@ pub trait ScopePolicy {
     /// user id and the session attributes.
     async fn require(&self, gate: Gate, caller: &CurrentUser) -> Result<(), AppError>;
     /// Conjunction — all gates must hold. § The array is AND.
+    ///
+    /// Normalised before evaluation: subsumption collapses implied gates
+    /// (`[Internal, Admin, Owner]` → `[Owner]`), opt-in markers cancel
+    /// their defaults, and a contradictory pair fails at startup.
+    /// § Normalising `require_all`.
     async fn require_all(&self, gates: &[Gate], caller: &CurrentUser)
         -> Result<(), AppError>;
     /// Credential half. `Access::ReadWrite` implies `ReadOnly`.
@@ -962,6 +967,72 @@ callsite to constrain), not because 4 is good enough.
   token can still be valid, absent becomes empty.
 
 
+
+### Normalising `require_all`
+
+Worth doing, and it is two different mechanics that should not be
+conflated in one `match`.
+
+**1. Subsumption — a gate that implies another.**
+`require_all(&[Internal, Admin, Owner])` reduces to `[Owner]`:
+
+- `Owner ⇒ Admin` by the role hierarchy. `UserRole::Owner` "outranks
+  `Admin`, so it satisfies every admin gate without those gates naming
+  it", and `at_least` is the existing inclusive comparison.
+- `Owner ⇒ Internal` and `Admin ⇒ Internal` by a **database
+  constraint**, not a convention:
+
+  ```sql
+  CONSTRAINT users_external_not_privileged
+      CHECK (NOT (is_external AND role <> 'user'))
+  ```
+
+  Phrased against `'user'` rather than `'admin'` deliberately, so it
+  covers roles added later — the migration notes that the old
+  `role = 'admin'` spelling would let a new higher role "walk straight
+  through… The failure is silent".
+
+That second one is why the reduction is safe to make rather than merely
+plausible: no row can exist that satisfies `Admin` and fails `Internal`.
+
+**It also saves a query where queries are the cost.** § Lookup and
+checking cost establishes that gate checks are DB-bound while scope
+checks are CPU-bound. `Internal` costs a `get_user_flags` call and the
+live role costs another read, so flattening three gates to one removes a
+round trip per request on exactly the admin and DAV subtrees where the
+gates cluster.
+
+**The hazard, and the pin it requires.** A reduction derived from an
+invariant is valid only while the invariant holds. If someone ever
+relaxes that CHECK to permit an external admin, `[Internal, Admin]`
+reducing to `[Admin]` silently drops the internal requirement — a
+privilege widening produced by an optimisation. So the lattice is
+pinned by a test asserting both the ordering and the constraint it rests
+on, and the constraint's own comment already points at
+`UserRole::is_privileged()` as the code-side expression of it.
+
+**2. Override — a positive marker cancelling a default.**
+`require_all(&[PermitAppPassword])` *removes* the root-applied
+`NotAppPassword`; `[AnonymousAllowed]` removes `NotAnonymous`. Not
+subsumption — neither gate implies the other, one annuls the other — so
+it is a separate table of default/opt-in pairs rather than a partial
+order.
+
+**3. Contradiction is a bug, not an input to resolve.**
+`[NotAppPassword, PermitAppPassword]` is never intentional. Taking
+deny-by-default literally would keep the deny and move on silently,
+which hides the mistake; instead it fails at startup, matching the
+posture already used for an unknown job name in
+`OXICLOUD_JOBS_SCHEDULED`. Rank 2 of § Maximise deny-by-default —
+won't start, rather than fails closed.
+
+**What normalisation must not do** is change what the spec declares.
+`security(("bearerAuth" = ["role:owner"]))` is the truthful rendering of
+a reduced `[Internal, Admin, Owner]`, and the exhaustiveness test
+compares the declaration against the **normalised** gate set — otherwise
+a route declaring `role:admin` while enforcing `[Owner]` would read as
+drift when it is in fact the same requirement stated twice.
+
 ### Authentication by default
 
 The same inversion, applied consistently: **`NotAnonymous` is the
@@ -1663,6 +1734,17 @@ field into an enforced one:
   holding `Admin` but not `elevated`. Pin both halves: a disjunctive
   implementation passes the first silently and hands admin mutations to
   any user who re-authenticated.
+- Unit: normalisation — `[Internal, Admin, Owner]` reduces to `[Owner]`
+  and still refuses a plain user; `[PermitAppPassword]` cancels the
+  default `NotAppPassword`; `[NotAppPassword, PermitAppPassword]` fails
+  at startup rather than resolving silently.
+- Unit: **the subsumption lattice and the invariant under it.** Assert
+  `Owner.at_least(Admin)` AND that `users_external_not_privileged` still
+  reads `NOT (is_external AND role <> 'user')`. The reduction
+  `Admin ⇒ Internal` is only sound while that CHECK holds — relax it to
+  permit an external admin and the flattening silently drops the
+  internal requirement, which is a privilege widening produced by an
+  optimisation.
 - Unit: the `ScopeSet` mask invariant — `grant(s, ReadWrite)` sets BOTH
   bits, so `allows(s, ReadOnly)` is true afterwards; `grant(s,
   ReadOnly)` sets only `readable`. Pin it at the type, not per
