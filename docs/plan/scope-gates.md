@@ -165,6 +165,43 @@ Consequences, both agreed:
   and `/recalculate` moved to `/api/admin/dedup/*`. So `/api/dedup` sits
   under the `Files` resource like the rest of the upload flow.
 
+### Worked example: sharing a file
+
+All three axes, on one request:
+
+| axis | check | where |
+|---|---|---|
+| Gate | none today — `/api/grants` is not internal-only, because acting on resources shared with you is the point (§ Rejected: default-deny) | — |
+| Scope | `oxicloud:sharing:rw` | router layer / extractor |
+| Grant | `authz.require(Subject::User(caller), Permission::Share, resource)` — owners short-circuit | `grant_handler.rs` |
+
+Neither of the last two substitutes for the other, and that is the
+design working rather than redundancy:
+
+- `sharing:rw` on a file the caller cannot `Share` → denied by the
+  grant. The credential is allowed to share *in principle*; this file
+  is not theirs to share.
+- `Permission::Share` held on the file, but presented by a credential
+  without `sharing` in its set → denied by the scope. The person may
+  share; this *key* was not issued for it. An rclone app password
+  scoped `files:rw` cannot hand your documents to a stranger even
+  though the human behind it could do so from the browser.
+
+Revocation is the same shape with a wider grant arm: the caller passes
+if they are the original granter OR hold `Permission::Share`
+(`grant_handler.rs` ~551), still gated by `sharing:rw`.
+
+Reading who a resource is shared with needs only `sharing:ro`, which is
+why recipient lookup sits in this scope too — see § Three scopes sound
+alike.
+
+**Note for the implementor:** that grant check lives in the *handler*,
+not a service, which deviates from AGENTS.md § Authorization. It is
+pre-existing and § Non-goals keeps grant checks out of this change — but
+it means `/api/grants` will carry a scope check and a grant check side
+by side in the same handler. Do not "tidy" that into one call; they are
+different axes answering different questions.
+
 ## Credential scopes name data areas, not protocols
 
 ### The feature is half-built and the missing half is the enforcement
