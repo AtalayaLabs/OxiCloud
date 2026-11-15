@@ -40,8 +40,12 @@ pub enum Gate {
     /// at a callsite — so `grep PermitAppPassword` prints the complete
     /// app-password attack surface. § Credential-kind gating.
     PermitAppPassword,
+    /// Also applied by DEFAULT — see § Authentication by default. The
+    /// positive marker is `AnonymousAllowed`, declared by the handful of
+    /// genuinely public routes.
+    NotAnonymous,
+    AnonymousAllowed,
     // ── derived from the SESSION / credential ──
-    NotAnonymous,            // this credential maps to an auth.users row
     DpopBound,               // session carries a DPoP thumbprint
     // NOT a v1 variant — no session-elevation state exists in the
     // schema yet. Designed in `docs/plan/session-elevation.md` (admin
@@ -827,7 +831,7 @@ you must remember to write does. So the value is two narrower things:
 | `require_no_password_change_pending_layer` | `gate_layer(Gate::PasswordChangeSettled)` |
 | `require_dpop_layer` | `gate_layer(Gate::DpopBound)` |
 | hand-rolled owner check in `transfer_ownership` | `Gate::Owner` |
-| `anonymous_allowlist_layer` | `gate_layer(Gate::NotAnonymous)` + keeps its allowlist |
+| `anonymous_allowlist_layer` | `gate_layer(Gate::NotAnonymous)` + keeps its allowlist — and is the mechanism § Authentication by default would promote to the root |
 
 `anonymous_allowlist_layer` is the loose fit — it carries a route
 allowlist and must stay `route_layer` (it needs `MatchedPath`). Fold the
@@ -956,6 +960,53 @@ callsite to constrain), not because 4 is good enough.
   by a security reflex. The exception is bounded by being a
   *grandfathering* rule with a defined end: once no pre-enforcement
   token can still be valid, absent becomes empty.
+
+
+### Authentication by default
+
+The same inversion, applied consistently: **`NotAnonymous` is the
+default and `AnonymousAllowed` is declared**, rather than routes being
+public by omission. Arguing the positive-marker pattern for app
+passwords commits us to it here too.
+
+Today the server is the other way round, and more loosely than
+"unsupported by the framework" suggests:
+
+- `auth_middleware` is applied **nine separate times**, once per
+  protected nest. There is no root choke point, which is the structural
+  version of what `src/AGENTS.md` already warns about: "The extractors
+  are NOT a choke point… A rule added to an extractor does not hold
+  until it is added to these too."
+- Public routes are public **by mount location**: `main.rs` ~1271 nests
+  `public_api_routes` at `/api` without the layer, beside
+  `protected_api` which has it. Nothing declares publicness; it is
+  inferred from which router a handler was added to.
+
+So the tenth nest added without `auth_middleware` is silently
+unauthenticated and no test fails. That is the `create_address_book`
+failure mode one level up — a gate available and unused, because nobody
+was required to think about it.
+
+**The mechanism already exists in-house.**
+`anonymous_allowlist_layer` (mounted `main.rs` ~1110) consults
+`MatchedPath` against a route list and refuses anything absent from it.
+That is exactly the shape needed; it governs one nest where it should
+govern the root. Inverting means: one layer over the merged router,
+consulting a declared public set, with absence meaning deny.
+
+**The failure mode is loud, and that is the point.** Get a declaration
+wrong and `POST /api/auth/login` stops working — a total outage, not a
+quiet hole. Preferable to the current failure mode, which is an open
+route nobody notices, but only because § Deliberately scopeless's
+exhaustiveness test catches a missing declaration in CI rather than in
+production. Without that test this inversion would be reckless; with it,
+the worst case is a red build.
+
+**Sequencing.** This restructures how authentication is mounted, so it
+does not belong inside the gate fold — PR 1's whole claim is to change
+no behaviour. It is PR 3, or its own RFC, and the `Gate` enum carries
+the pair from the start so the later change is a wiring exercise rather
+than a redesign.
 
 ### The conflict worth deciding, not smuggling
 
@@ -1597,6 +1648,12 @@ field into an enforced one:
   remote.php, ocs}` and **no `/api` operation carries
   `PermitAppPassword`**. A new mount that opts in without review fails
   here, which is the point of the positive marker.
+- Unit: the public set — once § Authentication by default lands, every
+  route reachable without a session carries `AnonymousAllowed`, and the
+  set is exactly the login flows, the share-link surface, `/status.php`,
+  `/.well-known` and the ops probes. A missing declaration must fail
+  here rather than in production, because the failure mode is `POST
+  /api/auth/login` returning 401.
 - Migration: grandfathering, all three populations — a JWT with no scope
   claim, an app-password row backfilled from NULL, and a `device_codes`
   row still holding the legacy `webdav,caldav,carddav`. Each keeps
