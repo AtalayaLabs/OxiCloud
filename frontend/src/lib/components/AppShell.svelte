@@ -308,7 +308,7 @@
 			{
 				href: '/admin/appearance',
 				label: t('admin.appearance.title', 'Appearance'),
-				icon: 'sliders-h',
+				icon: 'palette',
 				section: 'admin-appearance'
 			},
 			{
@@ -340,7 +340,7 @@
 				// home.
 				href: '/admin/maintenance',
 				label: t('admin.maintenance_tab', 'Maintenance'),
-				icon: 'cog',
+				icon: 'person-digging',
 				section: 'admin-maintenance'
 			},
 			{
