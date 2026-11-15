@@ -1026,6 +1026,82 @@ posture already used for an unknown job name in
 `OXICLOUD_JOBS_SCHEDULED`. Rank 2 of § Maximise deny-by-default —
 won't start, rather than fails closed.
 
+#### Reduction is per axis
+
+The structure is per-axis, which is why `[Internal, Admin, Owner]`
+does not reduce to `[Owner]` but to **`[Owner, NotAppPassword]`**,
+because normalisation is *inject the defaults, then reduce within each
+axis* — and `NotAppPassword` is on a different axis, so no role
+requirement can touch it.
+
+Gates are not one flat set. They are one requirement per independent
+axis:
+
+| axis | shape | values | default |
+|---|---|---|---|
+| **role** | total order | `Internal` < `Admin` < `Owner` | none |
+| **credential kind** | default + opt-in | `NotAppPassword` / `PermitAppPassword` | `NotAppPassword` |
+| **anonymity** | default + opt-in | `NotAnonymous` / `AnonymousAllowed` | `NotAnonymous` |
+| **session state** | independent flags | `DpopBound`, `Elevated`, `PasswordChangeSettled` | none |
+
+So the reduction rules are:
+
+- **within the role axis** — keep the strongest, by `UserRole::at_least`;
+- **across axes** — nothing reduces, keep one requirement each;
+- **unspecified axes** — filled by their default, which is how
+  `NotAppPassword` appears in a set nobody wrote it into;
+- **session state** does not reduce at all: `DpopBound` and `Elevated`
+  are orthogonal, and neither implies the other.
+
+Worked, for `require_all(&[Internal, Admin, Owner])`:
+
+```
+declared           [Internal, Admin, Owner]
++ defaults         [Internal, Admin, Owner, NotAppPassword, NotAnonymous]
+reduce role axis   Owner subsumes Admin (at_least) and Internal (DB CHECK)
+reduce anonymity   Owner ⇒ NotAnonymous — `UserRole::Anonymous` is "never
+                   stored in `auth.users`", so a stored role cannot be it
+= effective        [Owner, NotAppPassword]
+```
+
+`NotAppPassword` survives precisely because it answers a different
+question — *how* the caller authenticated, not *who* they are. A role
+can never imply it: an Owner holding an app password is a perfectly
+coherent caller, and one this plan intends to refuse.
+
+#### Which suggests the type, not just the algorithm
+
+If there is one requirement per axis, that is a struct rather than a
+slice:
+
+```rust
+struct GateSet {
+    role: Option<RoleGate>,          // max() within a total order
+    credential: CredentialGate,      // defaults to NotAppPassword
+    anonymity: AnonymityGate,        // defaults to NotAnonymous
+    session: SessionGates,           // independent flags
+}
+```
+
+Two properties fall out that the slice cannot offer:
+
+- **contradiction becomes unrepresentable.** There is no way to write
+  `[NotAppPassword, PermitAppPassword]` when the axis holds one value —
+  so § Normalising's "fails at startup" case stops needing a runtime
+  check at all. Rank 1 of § Maximise deny-by-default rather than rank 2.
+- **reduction is `max()` on an ordered enum**, not a lattice walk over a
+  heterogeneous set.
+
+`require_all(&[Gate])` can stay as the callsite ergonomics — a short
+slice reads better than a struct literal at 40 mount points — folding
+into `GateSet` on the way in, where the fold is the only place a
+conflict could appear and therefore the only place to reject one.
+
+On naming: **`Policy`** was considered for this family and reads well,
+but `ScopePolicy` is already the trait that evaluates all three axes, so
+a `Policy` type inside it invites confusion about which is which.
+`Gate` stays, and the axes get names of their own.
+
 **What normalisation must not do** is change what the spec declares.
 `security(("bearerAuth" = ["role:owner"]))` is the truthful rendering of
 a reduced `[Internal, Admin, Owner]`, and the exhaustiveness test
@@ -1738,6 +1814,13 @@ field into an enforced one:
   and still refuses a plain user; `[PermitAppPassword]` cancels the
   default `NotAppPassword`; `[NotAppPassword, PermitAppPassword]` fails
   at startup rather than resolving silently.
+- Unit: per-axis reduction. `[Internal, Admin, Owner]` yields exactly
+  `[Owner, NotAppPassword]` — the role axis collapses to its strongest,
+  the anonymity axis collapses because `Owner ⇒ NotAnonymous`, and the
+  credential axis keeps its default because no role can imply it. Pin
+  the last part especially: an Owner presenting an app password is a
+  coherent caller this plan intends to refuse, so a reduction that drops
+  `NotAppPassword` is a privilege widening.
 - Unit: **the subsumption lattice and the invariant under it.** Assert
   `Owner.at_least(Admin)` AND that `users_external_not_privileged` still
   reads `NOT (is_external AND role <> 'user')`. The reduction
