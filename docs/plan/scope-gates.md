@@ -75,9 +75,7 @@ pub trait ScopePolicy {
     /// is bound to. `CurrentUser` (request extension) carries both the
     /// user id and the session attributes.
     async fn require(&self, gate: Gate, caller: &CurrentUser) -> Result<(), AppError>;
-    /// Conjunction. Deliberately NOT `Gate` as a bitflags set — see
-    /// § The array is AND: a `|` reading admits an elevated non-admin
-    /// to admin mutations.
+    /// Conjunction — all gates must hold. § The array is AND.
     async fn require_all(&self, gates: &[Gate], caller: &CurrentUser)
         -> Result<(), AppError>;
     /// Credential half. `Access::ReadWrite` implies `ReadOnly`.
@@ -1013,57 +1011,40 @@ silently: it declares `elevated`, the method rule does not cover it, the
 test fails, and the fix is an explicit per-route entry. "Never gate on
 verb alone" is satisfied without giving up automatic coverage.
 
-### The array is AND, and getting that backwards is an escalation
+### The array is AND
 
-`security(("bearerAuth" = ["role:admin", "elevated"]))` means
-`Gate::Admin` **AND** `Gate::Elevated`. Not or. OpenAPI fixes this and
-the two forms are easy to confuse:
+`security(("bearerAuth" = ["role:admin", "elevated"]))` requires
+`Gate::Admin` **and** `Gate::Elevated`. OpenAPI puts conjunction inside
+one requirement object and disjunction between objects, and the two
+forms look nearly identical:
 
 | form | meaning |
 |---|---|
-| `("bearerAuth" = ["role:admin", "elevated"])` — one requirement, two scopes | **both** required (AND) |
-| `("bearerAuth" = ["role:admin"]), ("bearerAuth" = ["elevated"])` — two requirements | **either** suffices (OR) |
+| `("bearerAuth" = ["role:admin", "elevated"])` — one requirement, two entries | **both** required |
+| `("bearerAuth" = ["role:admin"]), ("bearerAuth" = ["elevated"])` — two requirements | **either** suffices |
 
-Read as OR, the declaration above admits an **elevated non-admin
-session to admin mutations** — a plain user who re-authenticated at
-`POST /api/auth/elevate` would satisfy `elevated` and pass. That is a
-privilege escalation produced entirely by notation. The fix is to put
-the semantics somewhere a reader cannot misinterpret:
+Taking the first form as "either" would admit an **elevated non-admin
+session to admin mutations**: any user who re-authenticated at
+`POST /api/auth/elevate` satisfies `elevated` and passes. So the
+conjunction belongs in a method name, where it cannot be misread:
 
 ```rust
-// Avoided — not because bitflags are wrong, but because `|` reads as
-// boolean "or" to the next reader while meaning "and".
-policy.require(Gate::Admin | Gate::Elevated, caller).await?;
-
-// Chosen — conjunction is the only available reading.
 policy.require_all(&[Gate::Admin, Gate::Elevated], caller).await?;
 
-// Equally fine, and what a layer composes to anyway:
+// Equivalent, and what a pair of layers composes to anyway:
 policy.require(Gate::Admin, caller).await?;
 policy.require(Gate::Elevated, caller).await?;
 ```
 
-To be fair to the bitflags reading: as a *representation* it is fine —
-`a | b` builds a set, and `require` can perfectly well mean "every bit
-in this set must be satisfied". The hazard is not the bits, it is that
-the operator reads as boolean "or" to the next person, while the
-semantics are "and". A slice removes the ambiguity at no real cost:
-there are six gates, never more than two or three at a call site, and
-§ Lookup cost already puts these checks on cold paths, so a loop with
-`?` is not a performance question.
+No gate combination in this design means "either". If one ever appears
+it gets two requirement objects in the spec and an explicit
+`require_any`, named so the reviewer sees which it is.
 
-So `Gate` stays a plain enum. No combination in this design means
-"either", and if a genuine OR ever appears it gets two requirement
-objects in the spec plus an explicit `require_any` — the semantics in
-the method name, where a reviewer cannot misread it, rather than in an
-operator.
+Real scopes behave the same way, which is why they share the array
+without confusion: `oxicloud:files:rw` and `oxicloud:calendar:ro` in one
+requirement means a credential carrying both — exactly what a `ScopeSet`
+is. Conjunction is the right default for every entry.
 
-Note the asymmetry with real scopes, which is why they live in the same
-array without confusion: `oxicloud:files:rw` and `oxicloud:calendar:ro`
-in one requirement are also AND — a credential carrying both — and that
-is exactly what a `ScopeSet` is. Conjunction is the right default for
-every entry in the array; it is only the `|` operator that suggests
-otherwise.
 **Two consumers today**, so `Gate::Elevated` is not speculative:
 
 | needs elevation | because |
@@ -1149,10 +1130,9 @@ field into an enforced one:
   must fail this test rather than pass quietly.
 - Unit: `require_all` is **conjunction** — a caller holding `elevated`
   but not `Admin` is REFUSED on `[Admin, Elevated]`, and so is one
-  holding `Admin` but not `elevated`. Pin both halves: an OR
-  implementation passes the first case silently and hands admin
-  mutations to any user who re-authenticated. This is the cheapest test
-  in the plan and guards the most expensive mistake.
+  holding `Admin` but not `elevated`. Pin both halves: a disjunctive
+  implementation passes the first silently and hands admin mutations to
+  any user who re-authenticated.
 
 ## When
 
