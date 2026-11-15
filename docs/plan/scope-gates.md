@@ -32,6 +32,14 @@ pub enum Gate {
     Owner,                   // role.at_least(Owner): the instance owner
                              // (UserRole::Owner, NOT storage.grant_role)
     PasswordChangeSettled,   // no force_password_change_at_next_login
+    // ── derived from HOW the caller authenticated ──
+    /// Applied by DEFAULT to every route. A static Basic-auth app
+    /// password is refused unless the mount declares the opt-in below.
+    NotAppPassword,
+    /// The explicit opt-in, and the ONLY one of this pair that appears
+    /// at a callsite — so `grep PermitAppPassword` prints the complete
+    /// app-password attack surface. § Credential-kind gating.
+    PermitAppPassword,
     // ── derived from the SESSION / credential ──
     NotAnonymous,            // this credential maps to an auth.users row
     DpopBound,               // session carries a DPoP thumbprint
@@ -544,7 +552,7 @@ only what its row names. A new type added without thought about
 
 | credential | default when omitted | maximum (allowlist) |
 |---|---|---|
-| App password | `files,calendar,contacts,account` (`:rw`) | same — **no `security`** |
+| App password | `files,calendar,contacts` (`:rw`) | same — **no `security`**, **no `account`** (§ Credential-kind gating) |
 | Device flow | `files,calendar,contacts` (`:rw`) — today's `webdav,caldav,carddav`, namespaced | `files,calendar,contacts,account` — **no `security`** |
 | Interactive web session | n/a — never requests scopes | every scope `:rw`, `security` included |
 
@@ -1145,6 +1153,83 @@ Three consequences worth settling before implementation:
    discards a convenience index, not content. The line is "can the user
    get the bytes back", not "does the word delete appear".
 
+## Credential-kind gating — app passwords are deny-by-default
+
+### The hole this closes
+
+`auth_middleware` accepts three credential kinds for the **whole** `/api`
+surface, and the second is the problem (`middleware/auth.rs` ~305-313):
+
+> 1. **Bearer JWT** … 2. **Basic Auth with App Passwords** — for DAV
+> clients (DAVx⁵, Thunderbird, rclone) … 3. **HttpOnly Cookie**
+
+So today an app password is a full-power REST credential. It can do
+everything the SPA can — including `POST /api/auth/app-passwords` to mint
+another one. Every ceiling in § Defaults is bypassable in one request by
+the credential type most likely to be pasted into a config file, mailed
+to oneself, or committed by accident.
+
+Scopes cannot fix this. The vocabulary is resource-shaped on purpose
+(§ Why an area and not a protocol), and `/api/files` and `/webdav` both
+need `files` — so no scope distinguishes the browser API from the sync
+door. This is a question about the KIND of caller, which is the
+definition of a gate.
+
+### Deny by default, permit explicitly
+
+`Gate::NotAppPassword` is applied by the root layer, so **every** route
+refuses a Basic-auth app password until something says otherwise. Mounts
+that legitimately accept one declare `Gate::PermitAppPassword`.
+
+Positive opt-in rather than `remove(Gate::NotAppPassword)`, for a reason
+beyond taste: `grep PermitAppPassword` then prints the **complete**
+app-password attack surface in one command. A subtractive form cannot be
+audited that way — you would be grepping for an absence, and a route
+that silently inherits the default looks identical to one someone
+deliberately opened. Only the positive marker ever appears at a
+callsite, so the double negative never shows up in route code.
+
+The permit set is exactly the sync surfaces, and nothing else:
+
+| mount | why it needs the opt-in |
+|---|---|
+| `/webdav`, `/caldav`, `/carddav` | these handlers do **not** verify app passwords themselves — they rely on `auth_middleware`'s Basic branch, so removing the branch would break DAVx⁵, Thunderbird and rclone |
+| `/remote.php`, `/ocs` | verify independently (`nextcloud/basic_auth_middleware.rs` ~171), but are still app-password surfaces by design |
+
+`/api` is not on that list, which is the whole point. The Basic branch
+stays — DAV needs it — and the gate rejects the resulting principal at
+the `/api` door.
+
+### What it requires
+
+The principal must carry **how it authenticated**, not just who it is.
+`CurrentUser` today cannot answer "was this a Basic app password or a
+Bearer JWT", so the credential kind is threaded alongside `dpop_jkt` —
+which is the precedent: that field exists precisely to answer a
+session-shaped question without a DB round trip.
+
+### Not in the spec's security array
+
+The other gates declare as pseudo-scopes (`role:admin`, `elevated`)
+because they are *requirements*. `PermitAppPassword` is a
+**relaxation**, and an array of required scopes is the wrong place for
+one — it would read as "this route requires an app password".
+
+It also does not need to be there. The permit set is five mounts, none
+of which appears in `resources/gen/openapi.json` (§ Deliberately
+scopeless records that the spec holds no non-`/api` paths). So the
+assertion is mount-level, not per-operation:
+
+> No `/api` operation carries `PermitAppPassword`, and the permit set is
+> exactly `{webdav, caldav, carddav, remote.php, ocs}`.
+
+### Ceiling tightening that follows
+
+With `/api` closed to app passwords, their scope ceiling drops `account`
+— `/api/auth/me*` is unreachable by them anyway, and the NC avatar path
+sits under `/remote.php/dav/avatars`, which is permitted. New ceiling:
+`files,calendar,contacts`.
+
 ## Required: documentation
 
 Not optional follow-up. Two of the three axes have no architecture doc
@@ -1232,6 +1317,79 @@ request refused?" reaches the three axes in one hop, and from there the
 specific axis in two. If answering that needs a plan file, the
 documentation is not done.
 
+## Rollout
+
+### Two PRs, not one
+
+The halves have opposite risk profiles and must not share a green suite:
+
+| PR | change | acceptance |
+|---|---|---|
+| 1 — gates | folds five layers plus the `transfer_ownership` check into `Gate`; adds `NotAppPassword` | **behaviour-preserving** — `external_users.hurl` stays green *unchanged*, which is the whole criterion |
+| 2 — scopes | turns `device_codes.scopes` from an inert column into enforcement | **not** behaviour-preserving; carries every lockout risk below |
+
+Landing them together means PR 2's risk rides in on PR 1's green suite.
+
+### Absent means FULL, everywhere
+
+Enforcement day finds three populations with no scope information, and
+each must grandfather to the complete set rather than the empty one:
+
+| population | why it has none | rule |
+|---|---|---|
+| JWTs in flight | minted before the claim existed | absent claim ⇒ every scope `:rw`. Precedent: `JwtClaims.sid` is `Option<String>`, "None on tokens minted by pre-`sid` builds" |
+| `auth.app_passwords` rows | no scope column exists today | migration backfills the full app-password ceiling, never NULL-as-empty |
+| `auth.device_codes` rows | default is `webdav,caldav,carddav` | maps to files+calendar+contacts and **omits `account`** — widen existing rows, or a device credential that reads an avatar starts 401ing |
+
+The third is the one that bites: the column is already populated, so it
+looks like data to respect rather than data to migrate.
+
+### Observation belongs on the dashboard, not in a log
+
+A log-only phase was the obvious first answer and it is the wrong one:
+"the operator is not an SRE team" (AGENTS.md § Purpose) means nobody
+tails logs waiting for a line that may never come. An observation nobody
+reads is not a safety mechanism.
+
+So the pre-enforcement signal surfaces where the operator already looks
+— the admin dashboard, in the shape the OPAQUE advisory banner already
+uses:
+
+> *N requests in the last 7 days would have been refused by scope
+> enforcement*, broken down by credential and scope.
+
+Zero is then a positive, visible signal that flipping is safe, rather
+than an absence of evidence. Anything severe can also reach the existing
+alert sinks, which are already wired for job findings.
+
+### Wire contracts — fixed before the first line
+
+Both are observable by clients, so changing them later is a breaking
+change:
+
+- **Status.** `403` + `WWW-Authenticate: Bearer error="insufficient_scope"`
+  (RFC 6750 §3.1). Mirrors `middleware/dpop.rs`, which already answers
+  `401` + `WWW-Authenticate: DPoP error="use_dpop_nonce"` — so the
+  header convention exists in-house and this follows it rather than
+  inventing one.
+- **Audit.** Stay inside the `authz.*` domain aggregators already filter
+  (`authz.denied`, `authz.admin_denied`, `authz.external_user_blocked`
+  exist) rather than opening a `scope.*` one:
+  `authz.scope_denied` with `reason = "scope_not_granted" |
+  "access_insufficient"`, `authz.app_password_blocked`, and
+  `authz.elevation_required`. Per AGENTS.md every denial emits one
+  before returning.
+
+### `sid` is no longer deferrable
+
+§ What a scope is bound to leaves `sid` off `CurrentUser` "to keep the
+two changes separable". That held while `Elevated` was hypothetical; it
+now has three consumers, one of which (`security` mutations) is in this
+plan. So either PR 2 threads `sid` through, or `security` ships
+ceiling-only — which § `security` already admits is weaker, since an XSS
+riding a live browser session would pass. Decide deliberately rather
+than discovering it mid-implementation.
+
 ## Test plan
 
 - Unit: the decision half (`decide_scope`) per variant, including the
@@ -1309,6 +1467,19 @@ field into an enforced one:
   TTL lapses. Without this the whole feature can ship admin-only while
   every admin pin stays green — which is how it is framed in
   `session-elevation.md` today.
+- Hurl: app-password **deny-by-default**. The same app password is
+  accepted on `/webdav` and `/remote.php/dav/files` and refused on
+  `/api/files`, `/api/grants` and `POST /api/auth/app-passwords`. The
+  last is the escalation that matters — a leaked app password must not
+  be able to mint another.
+- Unit: the permit set is exactly `{webdav, caldav, carddav,
+  remote.php, ocs}` and **no `/api` operation carries
+  `PermitAppPassword`**. A new mount that opts in without review fails
+  here, which is the point of the positive marker.
+- Migration: grandfathering, all three populations — a JWT with no scope
+  claim, an app-password row backfilled from NULL, and a `device_codes`
+  row still holding the legacy `webdav,caldav,carddav`. Each keeps
+  working. This is the pin that prevents a silent lockout on upgrade.
 - Unit: `require_all` is **conjunction** — a caller holding `elevated`
   but not `Admin` is REFUSED on `[Admin, Elevated]`, and so is one
   holding `Admin` but not `elevated`. Pin both halves: a disjunctive
