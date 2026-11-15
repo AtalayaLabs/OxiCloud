@@ -147,15 +147,15 @@ html:root .top-bar {
     border-bottom: 0;
 }
 
-/* Round the content surface against the shared header/sidebar frame.
- * The logical corner also follows the layout in right-to-left languages. */
+/* Keep the shared header/sidebar frame behind the content surface. */
 html:root .main-content {
     background-color: var(--color-sidebar-bg-from);
 }
 
 html:root .content-area {
     background-color: var(--color-bg-page);
-    border-start-start-radius: var(--radius-4xl);
+    /* No asymmetric rounded clip on this scroller: macOS compositors can
+     * lose virtualized content and menu layers behind it (issue #894). */
 }
 
 /* One surface per card: the glyph/preview no longer has its own tinted box.

@@ -39,8 +39,15 @@ ignored. Files must be readable by the service; symlinks are refused.
 The catalogue path and its parent directories must also be free of symlinks and
 `..` components.
 
-Slate and Basalt are supplied in Docker images and release archives. The reserved `default`
-theme is built into the server and always available as a fallback.
+Slate and Basalt are supplied in Docker images and release archives, which already
+include `resources/themes`. The standalone executable does not embed their CSS
+files, even when built with bundled frontend assets. If you copy only the binary,
+also install `resources/themes/slate/index.css` and
+`resources/themes/basalt/index.css` alongside it, and run the server from that
+directory so the default `./resources/themes` path resolves correctly. Alternatively,
+set `OXICLOUD_THEMES_PATH` to the installed catalogue directory.
+The reserved `default` theme is built into the server and always available as a
+fallback.
 
 ## Install, modify or remove
 
