@@ -16,6 +16,7 @@
 import log from 'loglevel';
 
 import { apiJson, onSessionRefreshed } from '$lib/api/client';
+import { onSessionCleared } from '$lib/auth/session-broadcast';
 import { getCsrfHeaders } from '$lib/api/csrf';
 import type {
 	ConnectionState,
@@ -157,6 +158,9 @@ export class SharedWorkerBridge implements MessageBusClient {
 	// up in the constructor — cleared on `close()` so a disposed bridge
 	// doesn't keep posting to a closed port.
 	#unsubscribeSessionRefreshed: () => void = () => {};
+	// Same, for the `onSessionCleared` subscription — the identity-changed
+	// signal that clears the worker's caches.
+	#unsubscribeSessionCleared: () => void = () => {};
 
 	// Bound `visibilitychange` listener kept so `close()` can remove it.
 	// Fires `session-refreshed` to the worker on every hidden→visible
@@ -218,6 +222,33 @@ export class SharedWorkerBridge implements MessageBusClient {
 		// refresh (not just the recovery-from-failure case) is cheap.
 		this.#unsubscribeSessionRefreshed = onSessionRefreshed(() => {
 			this.#post({ kind: 'session-refreshed' });
+		});
+
+		// And the OTHER session signal, which is not the same thing: the
+		// identity went away. `session-refreshed` keeps everything alive on
+		// purpose (same user, new token); this throws the worker's caches
+		// out, because every one of them was computed for the person who
+		// just left.
+		//
+		// `onSessionCleared` fires on logout in ANY tab of this origin
+		// (BroadcastChannel — see `auth/session-broadcast.ts`), which is the
+		// right granularity: the worker is shared by all of them.
+		//
+		// This closes the inheritance case. The worker is keyed by script
+		// URL and survives a logout, so without it a window that signs in as
+		// someone else reuses the previous user's cached subscribe acks for
+		// any topic still held — including a collab topic's `can_write`.
+		// Dropping `capabilities` from the cache (see `cacheableAck`) means
+		// no permission can leak that way any more; this clears the
+		// subscriptions themselves, so events for the old identity's topics
+		// stop arriving too. The server is the backstop either way: on the
+		// next reconnect it re-authorizes every replayed subscribe and
+		// revokes what the new caller may not see.
+		this.#unsubscribeSessionCleared = onSessionCleared(() => {
+			this.#subs.clear();
+			this.#binaryHandlers.clear();
+			this.#writeDeniedHandlers.clear();
+			this.#post({ kind: 'session-changed' });
 		});
 
 		// Also reset-on-visible: when the tab comes back to the
@@ -467,6 +498,7 @@ export class SharedWorkerBridge implements MessageBusClient {
 
 	close(): void {
 		this.#unsubscribeSessionRefreshed();
+		this.#unsubscribeSessionCleared();
 		if (typeof document !== 'undefined') {
 			document.removeEventListener('visibilitychange', this.#onVisibilityChange);
 		}
@@ -555,6 +587,37 @@ export class SharedWorkerBridge implements MessageBusClient {
 				}
 			});
 			this.#post({ kind: 'call', reqId, method: 'rt.collab_flush', params: { file_id: fileId } });
+		});
+	}
+
+	/** `rt.collab_capabilities` over the port. Same `not_connected` → `null`
+	 *  contract as `collabFlush`; the caller fails closed on null.
+	 *
+	 *  Routed as a plain `call`, which the worker proxies without caching —
+	 *  deliberately, because the cached-ack path is exactly what this method
+	 *  exists to bypass. */
+	async collabCapabilities(fileId: string): Promise<{ canWrite: boolean } | null> {
+		const reqId = this.#allocReqId();
+		return new Promise<{ canWrite: boolean } | null>((resolve, reject) => {
+			this.#pending.set(reqId, {
+				resolve: (r) => {
+					const res = r as { can_write?: boolean } | undefined;
+					resolve({ canWrite: res?.can_write === true });
+				},
+				reject: (e) => {
+					if (e.message === 'not_connected' || e.message === 'ws_closed') {
+						resolve(null);
+					} else {
+						reject(e);
+					}
+				}
+			});
+			this.#post({
+				kind: 'call',
+				reqId,
+				method: 'rt.collab_capabilities',
+				params: { file_id: fileId }
+			});
 		});
 	}
 
@@ -672,6 +735,9 @@ export class SharedWorkerBridge implements MessageBusClient {
 			case 'revoked':
 				this.#onRevoked(msg.topic, msg.params);
 				return;
+			case 'subscribe-refresh':
+				this.#onSubscribeRefresh(msg.topic, msg.ack);
+				return;
 			case 'binary':
 				this.#onBinary(msg.fileId, msg.bytes);
 				return;
@@ -770,6 +836,25 @@ export class SharedWorkerBridge implements MessageBusClient {
 		}
 	}
 
+	/** The worker re-acked a topic after a reconnect replay.
+	 *
+	 *  Treated exactly like the original ack — cache it and fan it out to the
+	 *  topic's ack handlers — which is what makes `collabDoc`'s comment true
+	 *  at last: a grant toggled between socket drops now reaches the editor
+	 *  on the next reconnect instead of never. */
+	#onSubscribeRefresh(topic: string, ack: RtSubscribeAck): void {
+		const entry = this.#subs.get(topic);
+		if (!entry) return;
+		entry.cachedAck = ack;
+		for (const h of entry.ackedHandlers) {
+			try {
+				h(ack);
+			} catch (err) {
+				busLog.warn('onAcked handler threw', { topic, error: err });
+			}
+		}
+	}
+
 	#onBinary(fileId: string, bytes: ArrayBuffer): void {
 		const handler = this.#binaryHandlers.get(fileId);
 		if (!handler) return;
@@ -830,6 +915,7 @@ export class SharedWorkerBridge implements MessageBusClient {
 			case 'log':
 			case 'need-ticket':
 			case 'port-ping':
+			case 'subscribe-refresh':
 				return true;
 			default:
 				return false;

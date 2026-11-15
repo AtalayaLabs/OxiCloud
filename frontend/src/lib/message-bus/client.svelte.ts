@@ -1146,6 +1146,23 @@ export class PerTabMessageBusClient implements MessageBusClient {
 		}
 	}
 
+	/** `rt.collab_capabilities` — see `MessageBusClient.collabCapabilities`.
+	 *  `null` on transport failure; the caller fails closed. */
+	async collabCapabilities(fileId: string): Promise<{ canWrite: boolean } | null> {
+		try {
+			const result = (await this.#call((id) => ({
+				jsonrpc: '2.0',
+				id,
+				method: 'rt.collab_capabilities',
+				params: { file_id: fileId }
+			}))) as { can_write?: boolean } | undefined;
+			return { canWrite: result?.can_write === true };
+		} catch (err) {
+			busLog.debug('collabCapabilities failed', { fileId, error: err });
+			return null;
+		}
+	}
+
 	#call(makeFrame: (id: number) => object): Promise<unknown> {
 		if (this.state !== 'connected' || !this.#ws) {
 			const err: MessageBusError = {

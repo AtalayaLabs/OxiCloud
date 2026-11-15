@@ -306,6 +306,80 @@ describe('WsBusTransport — subscribe + event dispatch', () => {
 	});
 });
 
+describe('WsBusTransport — replay acks are delivered, not dropped', () => {
+	// THE bug: after a reconnect the transport replays `#activeTopics` and the
+	// server re-acks each one with freshly computed contents. Nobody is
+	// awaiting those — the original `subscribe()` promise resolved long ago —
+	// so the success branch found no waiter, logged `subscribe replay acked`
+	// and discarded the frame.
+	//
+	// Anything a consumer had derived from the FIRST ack was therefore frozen
+	// for the life of the worker. For a collab topic that is
+	// `capabilities.can_write`: a grant toggled while the socket was down
+	// never reached the editor, which read-only'd a file its owner could
+	// write and only a worker restart cleared.
+	it('hands a reconnect replay ack to onSubscribeRefresh', async () => {
+		const { t, needs } = makeTransport();
+		const refreshed: Array<[string, unknown]> = [];
+		t.onSubscribeRefresh((topic, ack) => refreshed.push([topic, ack]));
+
+		// First connection: a real subscribe with a real waiter.
+		void t.subscribe('collab:f1').catch(() => {});
+		await flushN();
+		t.provideTicket('sp-1', needs[0]!);
+		await flushN();
+		const ws = FakeSocket.instances[0]!;
+		ws.fireOpen();
+		await flushN();
+		const firstId = ws.sent
+			.filter((s): s is string => typeof s === 'string')
+			.map((s) => JSON.parse(s) as { id: number; method: string })
+			.find((f) => f.method === 'rt.subscribe')!.id;
+		ws.fireMessage(
+			JSON.stringify({
+				jsonrpc: '2.0',
+				id: firstId,
+				result: { subscribed: 'collab:f1', capabilities: { can_write: false } }
+			})
+		);
+		await flushN();
+		// That one answered a caller, so it is NOT a refresh.
+		expect(refreshed).toHaveLength(0);
+
+		// Drop the socket; the transport reconnects and replays the topic.
+		ws.fireClose(1006);
+		vi.advanceTimersByTime(1_000);
+		await flushN();
+		t.provideTicket('sp-2', needs[needs.length - 1]!);
+		await flushN();
+		const ws2 = FakeSocket.instances.at(-1)!;
+		ws2.fireOpen();
+		await flushN();
+		const replayId = ws2.sent
+			.filter((s): s is string => typeof s === 'string')
+			.map((s) => JSON.parse(s) as { id: number; method: string; params?: { topic?: string } })
+			.find((f) => f.method === 'rt.subscribe' && f.params?.topic === 'collab:f1')!.id;
+
+		// The server's answer to the replay — note the CHANGED capability,
+		// which is the whole point: someone was granted Update meanwhile.
+		ws2.fireMessage(
+			JSON.stringify({
+				jsonrpc: '2.0',
+				id: replayId,
+				result: { subscribed: 'collab:f1', capabilities: { can_write: true } }
+			})
+		);
+		await flushN();
+
+		expect(refreshed).toHaveLength(1);
+		expect(refreshed[0][0]).toBe('collab:f1');
+		expect(refreshed[0][1]).toEqual({
+			subscribed: 'collab:f1',
+			capabilities: { can_write: true }
+		});
+	});
+});
+
 describe('WsBusTransport — binary dispatch', () => {
 	it('extracts fileId from bytes [1..17] and fans to onBinary listeners', async () => {
 		const { t, needs } = makeTransport();

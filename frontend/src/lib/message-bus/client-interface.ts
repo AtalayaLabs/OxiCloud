@@ -36,7 +36,8 @@ export type EventHandler = (params: RtEventParams) => void;
  *  `subscribed` echoes the topic wire form; `capabilities` is present
  *  today only on `collab:{fileId}` topics and carries the caller's
  *  per-file editing capabilities (see `RtCollabCapabilities`). Absent
- *  on every other topic. */
+ *  on every other topic — AND absent on an ack replayed from a cache,
+ *  which is most of them in shared-worker mode. */
 export interface RtSubscribeAck {
 	subscribed: string;
 	capabilities?: RtCollabCapabilities;
@@ -44,8 +45,20 @@ export interface RtSubscribeAck {
 
 /** Per-file editing capabilities the server surfaces on a
  *  `collab:{fileId}` subscribe ack. `can_write` reflects the caller's
- *  `Permission::Update` on the file at subscribe time — the FE gates
- *  CodeMirror between edit and read-only modes on this flag. */
+ *  `Permission::Update` on the file at subscribe time.
+ *
+ *  **Do not gate an editor on this.** Ask
+ *  {@link MessageBusClient.collabCapabilities} instead.
+ *
+ *  The reason is the shared worker: the upstream subscribe happens once
+ *  per topic and its ack is cached, so a second subscriber was handed the
+ *  FIRST caller's permissions — and nothing re-asked while any port still
+ *  held the topic. In practice that was an editor stuck read-only across
+ *  reloads for a user who owned the file, clearing only when the worker
+ *  died. The field survives for the wire contract (and `rt_bus_check.sh`
+ *  S25 pins it there), with the per-caller field stripped from every
+ *  cached copy — so in shared-worker mode only the port that made the
+ *  call, or one receiving a post-reconnect refresh, ever sees it. */
 export interface RtCollabCapabilities {
 	can_write: boolean;
 }
@@ -170,4 +183,16 @@ export interface MessageBusClient {
 	 *  the server to drain its coalescing buffer immediately. Returns
 	 *  `null` if the WS is not connected (caller should refetch). */
 	collabFlush(fileId: string): Promise<{ flushed: boolean } | null>;
+
+	/** Ask the server what THIS caller may do with `fileId`.
+	 *
+	 *  The authoritative answer, as opposed to `RtSubscribeAck.capabilities`,
+	 *  which is computed once per topic and — in shared-worker mode — replayed
+	 *  from a cache to every later subscriber. An editor that trusted the ack
+	 *  could be handed the permissions of whoever opened the file first, and
+	 *  stayed that way until the worker died.
+	 *
+	 *  `null` on any transport failure, which callers must treat as "assume
+	 *  no write": fail-closed is the only safe reading of "I could not ask". */
+	collabCapabilities(fileId: string): Promise<{ canWrite: boolean } | null>;
 }

@@ -196,6 +196,15 @@ enum Mode {
     /// unchanged content. Used by S22 to prove the WS-level flush
     /// trigger works without waiting on the debouncer.
     CollabFlush,
+    /// Send one `rt.collab_capabilities { file_id }` request and mirror the
+    /// `{ can_write }` reply to `--output`.
+    ///
+    /// Asks the server directly, with no subscribe involved — which is the
+    /// property under test: the FE stopped reading write permission off the
+    /// subscribe ack because that ack is computed once per topic and replayed
+    /// from a cache to every later subscriber, so a second tab inherited the
+    /// first caller's permissions.
+    CollabCapabilities,
     /// Multi-client CRDT convergence probe: subscribe to
     /// `collab:<file_id>`, insert `--my-content` at position 0 of a
     /// local Y.Doc, broadcast the resulting delta, then keep applying
@@ -260,6 +269,7 @@ fn parse_args() -> Result<Args, String> {
         Some("collab-fanout-listen") => Mode::CollabFanoutListen,
         Some("collab-fanout-write") => Mode::CollabFanoutWrite,
         Some("collab-flush") => Mode::CollabFlush,
+        Some("collab-capabilities") => Mode::CollabCapabilities,
         Some("collab-converge") => Mode::CollabConverge,
         Some(other) => return Err(format!("unknown mode: {other}")),
         None => return Err("mode is required".into()),
@@ -379,6 +389,7 @@ async fn main() -> ExitCode {
         Mode::CollabFanoutListen => collab_fanout_listen(args).await,
         Mode::CollabFanoutWrite => collab_fanout_write(args).await,
         Mode::CollabFlush => collab_flush(args).await,
+        Mode::CollabCapabilities => collab_capabilities(args).await,
         Mode::CollabConverge => collab_converge(args).await,
     };
 
@@ -1213,6 +1224,96 @@ fn uuid_bytes_to_dashed(b: &[u8; 16]) -> String {
 // reply. Success reply carries `{ flushed: bool }`; error reply
 // carries a JSON-RPC `error` object.
 
+/// The socket `connect_ws` hands back. Named so the shared request/reply
+/// helper below can take one by reference without restating the nesting.
+type HelperWs =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// Send one JSON-RPC request, drain until its id-correlated reply, and mirror
+/// the `result` to `--output` for shell assertions.
+///
+/// Shared by `collab-flush` and `collab-capabilities` — both are a single
+/// correlated call over an already-open socket, and the drain loop is the
+/// fiddly part: text NOTIFICATIONS are legal on the same connection (the
+/// auto-subscribed identity topics push events), so anything whose `id`
+/// doesn't match ours has to be skipped rather than treated as the answer.
+/// Writing that twice is how the second copy ends up subtly less careful.
+async fn call_and_capture(
+    ws: &mut HelperWs,
+    method: &str,
+    params: Value,
+    output: Option<&String>,
+    deadline: tokio::time::Instant,
+) -> Result<(), HelperError> {
+    let req_id: u64 = 1;
+    let frame = json!({
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "method": method,
+        "params": params,
+    });
+    ws.send(Message::Text(frame.to_string().into())).await?;
+
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(HelperError::Expectation(format!(
+                "timeout waiting for {method} ack"
+            )));
+        }
+        let msg = match timeout(remaining, ws.next()).await {
+            Ok(Some(Ok(m))) => m,
+            Ok(Some(Err(e))) => return Err(HelperError::Protocol(format!("ws error: {e}"))),
+            Ok(None) => return Err(HelperError::Protocol("connection closed by peer".into())),
+            Err(_) => {
+                return Err(HelperError::Expectation(format!(
+                    "timeout waiting for {method} ack"
+                )));
+            }
+        };
+        let Message::Text(text) = msg else { continue };
+        let value: Value = serde_json::from_str(&text)
+            .map_err(|e| HelperError::Protocol(format!("bad frame: {e}: {text}")))?;
+        let Some(id_num) = value.get("id").and_then(|v| v.as_u64()) else {
+            continue;
+        };
+        if id_num != req_id {
+            continue;
+        }
+        if let Some(err) = value.get("error") {
+            return Err(HelperError::Expectation(format!("{method} denied: {err}")));
+        }
+        if let Some(path) = output {
+            let result = value.get("result").cloned().unwrap_or(Value::Null);
+            std::fs::write(path, serde_json::to_vec_pretty(&result).unwrap())
+                .map_err(|e| HelperError::Protocol(format!("write output: {e}")))?;
+        }
+        return Ok(());
+    }
+}
+
+/// `rt.collab_capabilities` for one file, as one caller.
+///
+/// The point of the scenario it serves: ask the SERVER, on this connection,
+/// what this token may do — the answer no cache can stand in for. The FE's
+/// editor gate reads this method rather than the subscribe ack, because an
+/// ack is computed once per topic and replayed to later subscribers.
+async fn collab_capabilities(args: Args) -> Result<(), HelperError> {
+    let file_id = args.file_id.ok_or_else(|| {
+        HelperError::Protocol("--file <uuid> required for collab-capabilities".into())
+    })?;
+    let mut ws = connect_ws(&args.url, &args.auth).await?;
+    let deadline = tokio::time::Instant::now() + args.timeout;
+    call_and_capture(
+        &mut ws,
+        "rt.collab_capabilities",
+        json!({ "file_id": uuid_bytes_to_dashed(&file_id) }),
+        args.output.as_ref(),
+        deadline,
+    )
+    .await
+}
+
 async fn collab_flush(args: Args) -> Result<(), HelperError> {
     let file_id = args
         .file_id
@@ -1259,58 +1360,14 @@ async fn collab_flush(args: Args) -> Result<(), HelperError> {
         ws.send(Message::Binary(frame.into())).await?;
     }
 
-    let req_id: u64 = 1;
-    let file_id_str = uuid_bytes_to_dashed(&file_id);
-    let frame = json!({
-        "jsonrpc": "2.0",
-        "id": req_id,
-        "method": "rt.collab_flush",
-        "params": { "file_id": file_id_str },
-    });
-    ws.send(Message::Text(frame.to_string().into())).await?;
-
-    // Drain until the id-matched ack. Text notifications are legal
-    // on the same socket (auto-sub identity topics push events);
-    // ignore anything that isn't our correlated reply.
-    loop {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return Err(HelperError::Expectation(
-                "timeout waiting for rt.collab_flush ack".into(),
-            ));
-        }
-        let msg = match timeout(remaining, ws.next()).await {
-            Ok(Some(Ok(m))) => m,
-            Ok(Some(Err(e))) => return Err(HelperError::Protocol(format!("ws error: {e}"))),
-            Ok(None) => return Err(HelperError::Protocol("connection closed by peer".into())),
-            Err(_) => {
-                return Err(HelperError::Expectation(
-                    "timeout waiting for rt.collab_flush ack".into(),
-                ));
-            }
-        };
-        let Message::Text(text) = msg else { continue };
-        let value: Value = serde_json::from_str(&text)
-            .map_err(|e| HelperError::Protocol(format!("bad frame: {e}: {text}")))?;
-        let Some(id_num) = value.get("id").and_then(|v| v.as_u64()) else {
-            continue;
-        };
-        if id_num != req_id {
-            continue;
-        }
-        if let Some(err) = value.get("error") {
-            return Err(HelperError::Expectation(format!(
-                "rt.collab_flush denied: {err}"
-            )));
-        }
-        // Success path — reply mirrors on --output for shell assertions.
-        if let Some(path) = args.output.as_ref() {
-            let result = value.get("result").cloned().unwrap_or(Value::Null);
-            std::fs::write(path, serde_json::to_vec_pretty(&result).unwrap())
-                .map_err(|e| HelperError::Protocol(format!("write output: {e}")))?;
-        }
-        return Ok(());
-    }
+    call_and_capture(
+        &mut ws,
+        "rt.collab_flush",
+        json!({ "file_id": uuid_bytes_to_dashed(&file_id) }),
+        args.output.as_ref(),
+        deadline,
+    )
+    .await
 }
 
 // ════════════════════════════════════════════════════════════════════════════

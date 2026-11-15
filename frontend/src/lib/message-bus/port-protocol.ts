@@ -184,6 +184,22 @@ export interface SessionRefreshedMessage {
 	kind: 'session-refreshed';
 }
 
+/** Tab → worker: the IDENTITY behind this session changed (logout, or a
+ *  login that may be a different user). Every cached answer in the worker
+ *  was computed for the previous caller and must go.
+ *
+ *  Distinct from `session-refreshed`, which is the SAME user's token being
+ *  renewed and deliberately keeps subscriptions alive. Conflating the two
+ *  would either tear down a live session on every refresh, or — the bug this
+ *  exists for — let a second user inherit the first's cached subscribe acks,
+ *  including `capabilities.can_write` on a collab topic. The worker outlives
+ *  a logout: it is keyed by script URL, not by session.
+ *
+ *  Idempotent: clearing an already-empty worker is a no-op. */
+export interface SessionChangedMessage {
+	kind: 'session-changed';
+}
+
 export type PortTabToWorkerMessage =
 	| HelloMessage
 	| SubscribeMessage
@@ -200,7 +216,8 @@ export type PortTabToWorkerMessage =
 	| RequestReconnectMessage
 	| TicketFetchFailedMessage
 	| PortPongMessage
-	| SessionRefreshedMessage;
+	| SessionRefreshedMessage
+	| SessionChangedMessage;
 
 // ============================================================
 // Worker → Tab envelopes
@@ -335,6 +352,25 @@ export interface LogMessage {
 	ts: number;
 }
 
+/** A subscribe ack that arrived OUTSIDE a request/response pair, so it
+ *  has no `reqId` to answer: the transport replays its active topics after
+ *  every reconnect, and the server acks each one afresh.
+ *
+ *  Those acks used to be dropped on the floor (`ws-bus-transport.ts`: no
+ *  waiter → one `debug` line → gone). Anything a tab had learned from the
+ *  original ack therefore survived every reconnect unchanged, which is a
+ *  stale-forever shape rather than a merely-delayed one. The collab editor's
+ *  own comment claimed a reconnect would pick up a changed grant; in shared-
+ *  worker mode nothing did.
+ *
+ *  Carries no `reqId` on purpose — a bridge fans this out to the topic's ack
+ *  handlers instead of resolving a pending call. */
+export interface SubscribeRefreshMessage {
+	kind: 'subscribe-refresh';
+	topic: string;
+	ack: RtSubscribeAck;
+}
+
 export type PortWorkerToTabMessage =
 	| HelloAckMessage
 	| StateMessage
@@ -347,7 +383,8 @@ export type PortWorkerToTabMessage =
 	| PingPongMessage
 	| LogMessage
 	| NeedTicketMessage
-	| PortPingMessage;
+	| PortPingMessage
+	| SubscribeRefreshMessage;
 
 /** Full union of every port envelope — tab-to-worker and
  *  worker-to-tab. The runtime typeguard `parsePortMessage` returns
@@ -379,7 +416,8 @@ const TAB_TO_WORKER_KINDS = new Set<string>([
 	'request-reconnect',
 	'ticket-fetch-failed',
 	'port-pong',
-	'session-refreshed'
+	'session-refreshed',
+	'session-changed'
 ]);
 
 const WORKER_TO_TAB_KINDS = new Set<string>([
@@ -394,7 +432,8 @@ const WORKER_TO_TAB_KINDS = new Set<string>([
 	'ping-pong',
 	'log',
 	'need-ticket',
-	'port-ping'
+	'port-ping',
+	'subscribe-refresh'
 ]);
 
 const LOG_LEVELS = new Set<string>(['trace', 'debug', 'info', 'warn', 'error']);
@@ -495,6 +534,10 @@ export function parsePortMessage(raw: unknown): PortMessage | null {
 			// Body-less envelope; the kind IS the signal.
 			return raw as SessionRefreshedMessage;
 		}
+		case 'session-changed': {
+			// Body-less envelope; the kind IS the signal.
+			return raw as SessionChangedMessage;
+		}
 		case 'hello-ack': {
 			if (typeof obj.reqId !== 'number') return null;
 			if (typeof obj.state !== 'string') return null;
@@ -558,6 +601,14 @@ export function parsePortMessage(raw: unknown): PortMessage | null {
 		case 'port-ping': {
 			if (typeof obj.nonce !== 'number') return null;
 			return raw as PortPingMessage;
+		}
+		case 'subscribe-refresh': {
+			if (typeof obj.topic !== 'string') return null;
+			// `ack` is the server's own object. Validate that it IS one and
+			// leave its shape to the consumer, exactly as `ack.result` does
+			// — a server that adds a field must not fail the typeguard.
+			if (typeof obj.ack !== 'object' || obj.ack === null) return null;
+			return raw as SubscribeRefreshMessage;
 		}
 	}
 	// The `TAB_TO_WORKER_KINDS.has(kind) || WORKER_TO_TAB_KINDS.has(kind)` fast-reject above

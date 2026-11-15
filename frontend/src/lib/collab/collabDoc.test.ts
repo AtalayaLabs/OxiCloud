@@ -23,6 +23,15 @@ const { bus } = vi.hoisted(() => {
 			registerBinaryHandler: vi.fn(() => () => {}),
 			registerWriteDeniedHandler: vi.fn(() => () => {}),
 			collabFlush: vi.fn(async () => {}),
+			/** Write permission comes from HERE now, not from the subscribe
+			 *  ack — `CollabDoc` asks on its own behalf because an ack is
+			 *  cached per topic and replayed to later subscribers. Defaults
+			 *  to writable; the permission tests below override it,
+			 *  including with `null` for the transport-failed case, hence
+			 *  the explicit return type. */
+			collabCapabilities: vi.fn<(fileId: string) => Promise<{ canWrite: boolean } | null>>(
+				async () => ({ canWrite: true })
+			),
 			sendBinary: vi.fn((bytes: Uint8Array) => {
 				bus.sent.push(bytes);
 				return true;
@@ -58,7 +67,19 @@ beforeEach(() => {
 	bus.sent.length = 0;
 	bus.revokes.length = 0;
 	vi.clearAllMocks();
+	bus.collabCapabilities.mockResolvedValue({ canWrite: true });
 });
+
+/** Let an `await`-chain inside the doc settle.
+ *
+ *  `#refreshCapabilities` awaits a promise and then publishes, so a single
+ *  `await Promise.resolve()` lands between the two and the assertion reads
+ *  the pre-answer state. Several ticks is the cheap, honest way to wait for
+ *  "whatever that chain was".
+ */
+async function flushMicrotasks(n = 4): Promise<void> {
+	for (let i = 0; i < n; i++) await Promise.resolve();
+}
 
 describe('sync-step-1 handshake', () => {
 	// The frame carries the state vector the server diffs against, and nobody
@@ -147,6 +168,87 @@ describe('departure announcement', () => {
 // baseline can never match again. The server says so with a reason
 // distinct from a plain external write, and the editor uses it to
 // rescue the buffer into a conflict copy.
+describe('write permission', () => {
+	const FILE = '11111111-2222-3333-4444-555555555555';
+
+	// THE bug (Ed, 2026-11-14): an editor opened read-only and stayed that
+	// way through reloads until the SharedWorker was killed. Permission used
+	// to come off the subscribe ack — which the worker computes ONCE per
+	// topic, caches, and replays to every later subscriber. So a second tab,
+	// or the same tab after the grant changed, was told what the FIRST
+	// subscriber was allowed to do, and nothing ever re-asked.
+	//
+	// `CollabDoc` now asks `rt.collab_capabilities` on its own behalf, which
+	// no cache can answer for.
+	it('asks the server for its own permission rather than reading the ack', async () => {
+		const onCapabilities = vi.fn();
+		bus.collabCapabilities.mockResolvedValue({ canWrite: true });
+		const doc = new CollabDoc({ fileId: FILE, onCapabilities });
+		doc.connect();
+		await bus.open();
+		await flushMicrotasks();
+
+		expect(bus.collabCapabilities).toHaveBeenCalledWith(FILE);
+		expect(onCapabilities).toHaveBeenCalledWith({ canWrite: true });
+		expect(doc.canWrite).toBe(true);
+		doc.destroy();
+	});
+
+	// A Viewer. The editor gate reads `canWrite`, so a wrong answer here is
+	// either an editable-looking editor whose every keystroke is refused, or
+	// a read-only one for someone who owns the file.
+	it('stays read-only when the server says so', async () => {
+		const onCapabilities = vi.fn();
+		bus.collabCapabilities.mockResolvedValue({ canWrite: false });
+		const doc = new CollabDoc({ fileId: FILE, onCapabilities });
+		doc.connect();
+		await bus.open();
+		await flushMicrotasks();
+
+		expect(doc.canWrite).toBe(false);
+		// Nothing announced: `false` is already the fail-closed default, and
+		// firing on an unchanged value churns the editor's compartment.
+		expect(onCapabilities).not.toHaveBeenCalled();
+		doc.destroy();
+	});
+
+	// "Could not ask" must read as "may not write". The opposite default
+	// would let a transport blip hand someone an editor they cannot save.
+	it('fails closed when the capability call fails', async () => {
+		bus.collabCapabilities.mockResolvedValue(null);
+		const doc = new CollabDoc({ fileId: FILE });
+		doc.connect();
+		await bus.open();
+		await flushMicrotasks();
+
+		expect(doc.canWrite).toBe(false);
+		doc.destroy();
+	});
+
+	// And the self-heal: a reconnect is the one moment we know the server
+	// re-authorized everything, so a grant that changed while the socket was
+	// down takes effect without reopening the file. This is what the old
+	// ack-derived path CLAIMED to do in its own comment and never did.
+	it('re-asks after a reconnect, so a new grant takes effect', async () => {
+		const onCapabilities = vi.fn();
+		bus.collabCapabilities.mockResolvedValue({ canWrite: false });
+		const doc = new CollabDoc({ fileId: FILE, onCapabilities });
+		doc.connect();
+		await bus.open();
+		await flushMicrotasks();
+		expect(doc.canWrite).toBe(false);
+
+		// Someone grants Update while we are connected; the socket blips.
+		bus.collabCapabilities.mockResolvedValue({ canWrite: true });
+		bus.reopen();
+		await flushMicrotasks();
+
+		expect(doc.canWrite).toBe(true);
+		expect(onCapabilities).toHaveBeenLastCalledWith({ canWrite: true });
+		doc.destroy();
+	});
+});
+
 describe('external-write conflict', () => {
 	const FILE = '11111111-2222-3333-4444-555555555555';
 

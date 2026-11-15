@@ -15,6 +15,10 @@ const { bus } = vi.hoisted(() => {
 			}),
 			registerWriteDeniedHandler: vi.fn(() => () => {}),
 			collabFlush: vi.fn(async () => {}),
+			// `CollabDoc` asks this on mount and after every reconnect — write
+			// permission no longer comes off the subscribe ack, because that
+			// ack is cached per topic and replayed to later subscribers.
+			collabCapabilities: vi.fn(async () => ({ canWrite: true })),
 			sendBinary: vi.fn(() => true),
 			whenConnected: vi.fn(async () => {}),
 			onReconnect: vi.fn(() => () => {}),

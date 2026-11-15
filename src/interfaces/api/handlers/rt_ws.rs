@@ -822,6 +822,9 @@ async fn handle_text_frame(
         "rt.unsubscribe" => Some(handle_unsubscribe(id, req.params, subs)),
         "rt.ping" => Some(success_response(id, serde_json::json!({ "pong": true }))),
         "rt.collab_flush" => Some(handle_collab_flush(id, req.params, caller_id, state).await),
+        "rt.collab_capabilities" => {
+            Some(handle_collab_capabilities(id, req.params, caller_id, state).await)
+        }
         _ => Some(error_response(
             id,
             error_code::METHOD_NOT_FOUND,
@@ -859,6 +862,90 @@ async fn handle_text_frame(
 /// `0x03`/`0x01` frame), we still honour it — the actor seeds from
 /// the blob, sees no writes, and short-circuits with `flushed:
 /// false`. Cheap; keeps the API's contract simple.
+/// `rt.collab_capabilities { file_id }` → `{ can_write }`.
+///
+/// The authoritative answer to "may I edit this file", asked per editor
+/// mount instead of inferred from a subscribe ack.
+///
+/// The ack route could not stay the only source. A subscribe ack is produced
+/// ONCE per topic per shared worker and replayed verbatim to every later
+/// subscriber (`worker-core.ts`), so a second tab — or the same tab after a
+/// grant changed — was told what the FIRST subscriber was allowed to do.
+/// Opening a file in a private window and being told "read-only" with no
+/// error anywhere is what that looked like in practice. A method the caller
+/// invokes for itself cannot be cached by anyone, so the answer is always
+/// about the caller asking.
+///
+/// Read is required to ask at all: the capability of a file you cannot see
+/// is not information to hand out. The denial collapses to `NO_READ` — the
+/// same code `rt.subscribe` returns for "no Read" and "no such file", so
+/// this method cannot be used to probe existence either.
+async fn handle_collab_capabilities(
+    id: Value,
+    params: Value,
+    caller_id: Uuid,
+    state: &Arc<AppState>,
+) -> String {
+    let file_id_str = match params.get("file_id").and_then(Value::as_str) {
+        Some(s) => s,
+        None => {
+            return error_response(
+                id,
+                error_code::INVALID_PARAMS,
+                "invalid_params",
+                Some(serde_json::json!({ "missing": "file_id" })),
+            );
+        }
+    };
+    let file_id = match Uuid::parse_str(file_id_str) {
+        Ok(u) => u,
+        Err(_) => {
+            return error_response(
+                id,
+                error_code::INVALID_PARAMS,
+                "invalid_params",
+                Some(serde_json::json!({ "invalid": "file_id" })),
+            );
+        }
+    };
+
+    // `require` for the Read gate — this one IS enforcement, so a denial
+    // belongs in the audit stream.
+    if state
+        .authorization
+        .require(
+            Subject::User(caller_id),
+            Permission::Read,
+            Resource::File(file_id),
+        )
+        .await
+        .is_err()
+    {
+        return error_response(
+            id,
+            error_code::NO_READ,
+            "no_read",
+            Some(serde_json::json!({ "file_id": file_id_str })),
+        );
+    }
+
+    // `check` for the capability itself, exactly as the subscribe ack does:
+    // a Viewer answering `false` is a normal outcome, not a denial, and
+    // auditing it per editor mount would bury real denials. Infra failure
+    // collapses to `false` — fail-closed, matching the FE's own default.
+    let can_write = state
+        .authorization
+        .check(
+            Subject::User(caller_id),
+            Permission::Update,
+            Resource::File(file_id),
+        )
+        .await
+        .unwrap_or(false);
+
+    success_response(id, serde_json::json!({ "can_write": can_write }))
+}
+
 async fn handle_collab_flush(
     id: Value,
     params: Value,

@@ -130,6 +130,9 @@ export class WsBusTransport implements BusTransport {
 
 	readonly #eventListeners = new Set<(topic: string, params: RtEventParams) => void>();
 	readonly #revokedListeners = new Set<(topic: string, params: RtRevokedParams) => void>();
+	/** Listeners for a subscribe ack that answers a REPLAY rather than a
+	 *  caller's `subscribe()` — see `onSubscribeRefresh`. */
+	readonly #subscribeRefreshListeners = new Set<(topic: string, ack: RtSubscribeAck) => void>();
 	readonly #binaryListeners = new Set<(fileId: string, bytes: ArrayBuffer) => void>();
 	readonly #writeDeniedListeners = new Set<(fileId: string, params: RtWriteDeniedParams) => void>();
 	readonly #stateListeners = new Set<(s: ConnectionState) => void>();
@@ -281,6 +284,23 @@ export class WsBusTransport implements BusTransport {
 	onRevoked(cb: (topic: string, params: RtRevokedParams) => void): () => void {
 		this.#revokedListeners.add(cb);
 		return () => this.#revokedListeners.delete(cb);
+	}
+
+	/** A subscribe ack with no caller waiting on it.
+	 *
+	 *  After every reconnect the transport replays `#activeTopics` upstream
+	 *  and the server acks each one with FRESH contents. Nobody called
+	 *  `subscribe()` for those, so there is no waiter to resolve — and until
+	 *  this hook existed the ack was logged and discarded, which meant
+	 *  anything derived from the first ack (notably a collab topic's
+	 *  `capabilities`) could never change for the life of the connection.
+	 *
+	 *  Separate from `onEvent`: this is a response, not a notification, and
+	 *  the consumer updates cached state with it rather than dispatching it
+	 *  to topic subscribers. */
+	onSubscribeRefresh(cb: (topic: string, ack: RtSubscribeAck) => void): () => void {
+		this.#subscribeRefreshListeners.add(cb);
+		return () => this.#subscribeRefreshListeners.delete(cb);
 	}
 
 	onBinary(cb: (fileId: string, bytes: ArrayBuffer) => void): () => void {
@@ -606,7 +626,20 @@ export class WsBusTransport implements BusTransport {
 						this.#topicWaiters.delete(topic);
 						w.resolve(frame.result as RtSubscribeAck);
 					} else {
+						// No waiter → this answers a reconnect REPLAY. Hand it
+						// to the refresh listeners instead of dropping it: the
+						// server has just recomputed everything on the ack,
+						// including per-file capabilities, and whoever cached
+						// the previous one needs to hear about it.
 						busLog.debug('subscribe replay acked', { topic });
+						const ack = frame.result as RtSubscribeAck;
+						for (const cb of this.#subscribeRefreshListeners) {
+							try {
+								cb(topic, ack);
+							} catch (err) {
+								busLog.warn('subscribe-refresh listener threw', { topic, error: err });
+							}
+						}
 					}
 					return;
 				}
