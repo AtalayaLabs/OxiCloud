@@ -195,10 +195,36 @@ door maps to exactly one area:
 | `contacts` | `/carddav`, `/.well-known/carddav`, `/api/address-books`, `/api/contacts` |
 | `photos` | `/api/photos`, `/api/people` |
 | `music` | `/api/playlists` |
-| `account` | `/api/users` (self only), `/remote.php/dav/avatars`, `/api/notifications` |
-| `sharing` | `/api/grants`, `/api/shares`, `/api/s`, OCS sharing, `/api/groups/search` |
+| `account` | `/api/auth/me`, `/api/auth/me/profile`, `/api/auth/me/image`, `/api/notifications`, `/remote.php/dav/avatars` |
+| `sharing` | `/api/grants`, `/api/shares`, `/api/s`, OCS sharing, and recipient lookup: `/api/users/{id}`, `/api/groups/search` |
 | `mail` | **reserved — see below** |
 
+**Three scopes sound alike and are not.** Getting this wrong is what
+made an earlier draft of the table incoherent — user lookup sat under
+`account`, group lookup under `sharing`, and the share dialog therefore
+needed two unrelated scopes to populate one recipient picker:
+
+- **`contacts`** — the caller's OWN address books: CardDAV collections
+  and the vCards in them. Nothing to do with the instance's user
+  roster. A `contacts:rw` credential must not be able to enumerate who
+  else has an account here.
+- **`account`** — the caller's OWN profile and settings:
+  `/api/auth/me`, `/me/profile`, `/me/image`. Note there is no
+  self-profile route under `/api/users` at all; that nest holds exactly
+  one route and it looks up *other* people.
+- **`sharing`** — grants and shares, **plus recipient lookup**.
+  `GET /api/users/{id}` returns a `PublicUserDto` for a target user
+  "iff the authenticated caller has a legitimate relationship with
+  them", rate-limited 60/min specifically so a stale JWT cannot iterate
+  UUIDs; `/api/groups/search` exists "so the share dialog can offer
+  groups as recipients". Both are the same capability — finding someone
+  to share with — so both live here.
+
+That last grouping is the load-bearing one: a credential that may create
+a grant must be able to find recipients, and a credential that may not
+share has no business enumerating the directory. Splitting users from
+groups across two scopes would have broken the picker while protecting
+nothing, since either half alone still reveals the roster.
 Non-exhaustive on purpose: the mapping is "which resource does this
 door touch", so a new route under an existing area inherits its scope
 without editing this table. A new route that fits *no* row is the
