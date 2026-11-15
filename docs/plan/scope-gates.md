@@ -39,13 +39,24 @@ pub enum Gate {
 
 /// What the CREDENTIAL was issued for. Client-requestable, frozen at
 /// mint, and a SEPARATE type from `Gate` on purpose — § Three axes.
-pub enum Resource {
+///
+/// NOT named `Resource`: `domain::services::authorization::Resource`
+/// already owns that name for the GRANT axis, and its variants carry an
+/// id — `Resource::Calendar(Uuid)` is *one* calendar, whereas
+/// `Scope::Calendar` is the calendar *area*. Same word at two
+/// granularities is exactly the ambiguity this plan exists to remove,
+/// so the scope axis keeps the `Scope` name and the grant axis keeps
+/// `Resource`.
+pub enum Scope {
     Files, Calendar, Contacts, Photos, Music, Account, Sharing,
     // Reserved — parser REJECTS it until a mailbox exists. § `mail` is reserved.
     // Mail,
 }
 pub enum Access { ReadOnly, ReadWrite }
-pub struct Scope(BTreeMap<Resource, Access>);
+
+/// The set a credential carries. `Scope` is one entry, `ScopeSet` is the
+/// whole grant — keeping them distinct avoids "scope" meaning both.
+pub struct ScopeSet(BTreeMap<Scope, Access>);
 
 pub trait ScopePolicy {
     /// Takes the CALLER CONTEXT, not a bare user id — see § What a scope
@@ -53,7 +64,7 @@ pub trait ScopePolicy {
     /// user id and the session attributes.
     async fn require(&self, gate: Gate, caller: &CurrentUser) -> Result<(), AppError>;
     /// Credential half. `Access::ReadWrite` implies `ReadOnly`.
-    async fn require_scope(&self, need: Resource, access: Access, caller: &CurrentUser)
+    async fn require_scope(&self, need: Scope, access: Access, caller: &CurrentUser)
         -> Result<(), AppError>;
 }
 ```
@@ -154,7 +165,7 @@ Consequences, both agreed:
   and `/recalculate` moved to `/api/admin/dedup/*`. So `/api/dedup` sits
   under the `Files` resource like the rest of the upload flow.
 
-## Credential scopes are resources, not protocols
+## Credential scopes name data areas, not protocols
 
 ### The feature is half-built and the missing half is the enforcement
 
@@ -171,11 +182,11 @@ consent screen making a promise the code does not keep, and it is the
 real motivation for this work — stronger than the five-duplicated-layers
 argument above.
 
-### Why resource and not protocol
+### Why an area and not a protocol
 
 The tempting vocabulary is the protocol list: `webdav`, `caldav`,
 `carddav`, `api`, `nextcloud`. Rejected, because in this codebase every
-door maps to exactly one resource:
+door maps to exactly one area:
 
 | scope (shown without the `oxicloud:` prefix) | routes it opens (non-exhaustive) |
 |---|---|
@@ -267,7 +278,7 @@ Multiply on the wire, not in the type:
 files:rw,calendar:ro,contacts:ro
 ```
 
-parsed into `BTreeMap<Resource, Access>`. Unqualified means `:rw`, so
+parsed into a `ScopeSet` (`BTreeMap<Scope, Access>`). Unqualified means `:rw`, so
 the existing `device_codes.scopes = 'webdav,caldav,carddav'` rows keep
 their present meaning and need no data migration — only a protocol→
 resource rename.
