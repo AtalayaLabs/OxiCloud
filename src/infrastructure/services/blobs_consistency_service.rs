@@ -240,6 +240,129 @@ impl StallGrace {
     }
 }
 
+/// Orphans found still INSIDE the grace window, accumulated across the
+/// sweep and reported as one finding at the end.
+///
+/// Aggregated deliberately. A busy install can orphan thousands of blobs
+/// inside a 49h window, and a finding per row would bury the `anomaly`
+/// rows that actually need attention — the same "a gate that always
+/// prints is a gate nobody reads" problem. The sample is capped so the
+/// payload stays bounded whatever the count.
+#[derive(Default)]
+struct PendingGc {
+    count: u64,
+    oldest_secs: i64,
+    /// Hashes carried in the finding. Enough to start investigating,
+    /// bounded enough that a million-orphan install still writes a small
+    /// row.
+    sample: Vec<String>,
+}
+
+impl PendingGc {
+    const SAMPLE_MAX: usize = 10;
+
+    fn record(&mut self, hash: &str, waited_secs: i64) {
+        self.count += 1;
+        self.oldest_secs = self.oldest_secs.max(waited_secs);
+        if self.sample.len() < Self::SAMPLE_MAX {
+            self.sample.push(hash.to_string());
+        }
+    }
+
+    fn sample_truncated(&self) -> bool {
+        self.count as usize > self.sample.len()
+    }
+}
+
+/// The sweep's single completion path: emit the pending-GC aggregate,
+/// log, and build the outcome.
+///
+/// It exists because the scan can finish in TWO places — an empty page
+/// (total rows an exact multiple of [`BATCH_SIZE`]) and a short final
+/// page (every other time) — and they must report identically. They did
+/// not. The short-page path omitted `stalled_count` from both its log
+/// line and its outcome, and never emitted the pending-GC aggregate at
+/// all, so on a 3452-row instance (17 × 200 + 52) the orphan summary
+/// silently never appeared and only a 1-in-200 row count would have
+/// revealed it. One function with two call sites makes that class of
+/// divergence impossible rather than merely unlikely.
+async fn finish(
+    store: &dyn JobStore,
+    repair: bool,
+    finding_count: u64,
+    repaired_count: u64,
+    stalled_count: u64,
+    pending: &PendingGc,
+    grace: &StallGrace,
+) -> RunOutcome {
+    // Only when there is something to say — a healthy idle instance
+    // stays silent.
+    if pending.count > 0 {
+        record_or_log(
+            store,
+            BLOBS_CONSISTENCY_JOB_NAME,
+            // Distinct kind from `blob_orphan_stalled`: same subject,
+            // opposite verdict. A dashboard filtering for problems must
+            // not pick this up, and an operator reading history should be
+            // able to tell "queue is draining normally" from "queue is
+            // stuck" without parsing numbers.
+            "blob_orphan_pending_gc",
+            // "info", not "anomaly" — `Severity::Anomaly` is the lowest
+            // NOTIFYING tier, and a blob waiting its turn is not worth
+            // waking anyone. Visible in the panel, never alerts.
+            "info",
+            None,
+            serde_json::json!({
+                "pending_count":           pending.count,
+                "oldest_wait_secs":        pending.oldest_secs,
+                "stall_grace_secs":        grace.secs,
+                "gc_driver":               grace.driver,
+                "gc_driver_interval_secs": grace.driver_secs,
+                "sample_hashes":           pending.sample,
+                "sample_truncated":        pending.sample_truncated(),
+                "remediation_hint":        "No action needed — these blobs are unreferenced \
+                 and waiting for the next garbage-collection sweep, still inside the \
+                 expected window. They become `blob_orphan_stalled` findings only if \
+                 they outlive it. To reclaim the space sooner, \
+                 POST /api/admin/jobs/dedup_gc/trigger?force=true.",
+            }),
+        )
+        .await;
+    }
+
+    tracing::info!(
+        target: "oxicloud::consistency",
+        event = "blobs_consistency.completed",
+        run_id = %store.run_id(),
+        finding_count = finding_count,
+        repaired_count = repaired_count,
+        stalled_count = stalled_count,
+        pending_gc_count = pending.count,
+        stall_grace_secs = grace.secs,
+        gc_driver = grace.driver.unwrap_or("none"),
+        repair_requested = repair,
+        "blobs_consistency completed with {} refcount finding(s), \
+         {} repaired, {} stalled, {} awaiting GC (grace {}s)",
+        finding_count,
+        repaired_count,
+        stalled_count,
+        pending.count,
+        grace.secs,
+    );
+
+    RunOutcome::completed_with(serde_json::json!({
+        "repair_requested": repair,
+        "repaired_count":   repaired_count,
+        "stalled_count":    stalled_count,
+        // Separated from `stalled_count` on purpose: "N orphans exist"
+        // and "N orphans are overdue" are different operational facts,
+        // and collapsing them is what made the old 24h constant look fine.
+        "pending_gc_count": pending.count,
+        "stall_grace_secs": grace.secs,
+        "gc_driver":        grace.driver,
+    }))
+}
+
 pub struct BlobsConsistencyCheck {
     pool: Arc<PgPool>,
     /// The chunk-level page query, assembled once from the blob-reference
@@ -505,21 +628,8 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
         // transient state — the reap pipeline simply hasn't come round
         // yet. Reported, because an operator watching disk usage wants to
         // know bytes are queued for reclamation, but as one aggregated
-        // `info` finding rather than one per row.
-        //
-        // Aggregated deliberately. A busy install can orphan thousands of
-        // blobs inside a 49h window, and a per-row finding for each would
-        // bury the `anomaly` rows that actually need attention — the same
-        // "a gate that always prints is a gate nobody reads" problem. The
-        // sample is capped so the payload stays bounded whatever the
-        // count.
-        let mut pending_gc_count = 0u64;
-        let mut pending_gc_oldest_secs = 0i64;
-        let mut pending_gc_sample: Vec<String> = Vec::new();
-        /// Hashes carried in the aggregated finding. Enough to start
-        /// investigating, bounded enough that a million-orphan install
-        /// still writes a small row.
-        const PENDING_GC_SAMPLE_MAX: usize = 10;
+        // `info` finding rather than one per row. See [`PendingGc`].
+        let mut pending = PendingGc::default();
 
         // Threshold for this run, read from the live schedule once here
         // rather than per row — the cadence cannot change mid-run, and
@@ -596,75 +706,19 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
             };
 
             if rows.is_empty() {
-                // One aggregated finding for everything still inside the
-                // window. Emitted at completion rather than per row (see
-                // `pending_gc_count`), and only when there is something to
-                // say — a healthy idle instance stays silent.
-                if pending_gc_count > 0 {
-                    record_or_log(
-                        store,
-                        BLOBS_CONSISTENCY_JOB_NAME,
-                        // Distinct kind from `blob_orphan_stalled`: same
-                        // subject, opposite verdict. A dashboard filtering
-                        // for problems must not pick this up, and an
-                        // operator reading history should be able to tell
-                        // "queue is draining normally" from "queue is
-                        // stuck" without parsing numbers.
-                        "blob_orphan_pending_gc",
-                        // "info", not "anomaly" — `Severity::Anomaly` is
-                        // the lowest NOTIFYING tier, and a blob waiting
-                        // its turn is not worth waking anyone. Visible in
-                        // the panel, never alerts.
-                        "info",
-                        None,
-                        serde_json::json!({
-                            "pending_count":      pending_gc_count,
-                            "oldest_wait_secs":   pending_gc_oldest_secs,
-                            "stall_grace_secs":   grace.secs,
-                            "gc_driver":          grace.driver,
-                            "gc_driver_interval_secs": grace.driver_secs,
-                            "sample_hashes":      pending_gc_sample,
-                            "sample_truncated":   pending_gc_count as usize > pending_gc_sample.len(),
-                            "remediation_hint":   "No action needed — these blobs are unreferenced \
-                             and waiting for the next garbage-collection sweep, still inside the \
-                             expected window. They become `blob_orphan_stalled` findings only if \
-                             they outlive it. To reclaim the space sooner, \
-                             POST /api/admin/jobs/dedup_gc/trigger?force=true.",
-                        }),
-                    )
-                    .await;
-                }
-                tracing::info!(
-                    target: "oxicloud::consistency",
-                    event = "blobs_consistency.completed",
-                    run_id = %store.run_id(),
-                    finding_count = finding_count,
-                    repaired_count = repaired_count,
-                    stalled_count = stalled_count,
-                    pending_gc_count = pending_gc_count,
-                    stall_grace_secs = grace.secs,
-                    gc_driver = grace.driver.unwrap_or("none"),
-                    repair_requested = repair,
-                    "blobs_consistency completed with {} refcount finding(s), \
-                     {} repaired, {} stalled, {} awaiting GC (grace {}s)",
+                // Single completion path — see `finish`. The other one is
+                // the short-final-page return below; both must report
+                // identically, which is why neither builds its own.
+                return finish(
+                    store,
+                    repair,
                     finding_count,
                     repaired_count,
                     stalled_count,
-                    pending_gc_count,
-                    grace.secs,
-                );
-                return RunOutcome::completed_with(serde_json::json!({
-                    "repair_requested": repair,
-                    "repaired_count":   repaired_count,
-                    "stalled_count":    stalled_count,
-                    // Separated from `stalled_count` on purpose: "N
-                    // orphans exist" and "N orphans are overdue" are
-                    // different operational facts, and collapsing them is
-                    // what made the old 24h constant look fine.
-                    "pending_gc_count": pending_gc_count,
-                    "stall_grace_secs": grace.secs,
-                    "gc_driver":        grace.driver,
-                }));
+                    &pending,
+                    &grace,
+                )
+                .await;
             }
 
             // No grace window here any more. It existed to keep the
@@ -692,11 +746,7 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
                         if stalled_secs <= grace.secs {
                             // Inside the window: nothing is wrong. Record
                             // it for the aggregate and move on.
-                            pending_gc_count += 1;
-                            pending_gc_oldest_secs = pending_gc_oldest_secs.max(stalled_secs);
-                            if pending_gc_sample.len() < PENDING_GC_SAMPLE_MAX {
-                                pending_gc_sample.push(row.hash.clone());
-                            }
+                            pending.record(&row.hash, stalled_secs);
                         } else {
                             stalled_count += 1;
                             let affected = affected_files(self.pool.as_ref(), &row.hash).await;
@@ -852,21 +902,23 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
             }
 
             if (rows.len() as i64) < BATCH_SIZE {
-                tracing::info!(
-                    target: "oxicloud::consistency",
-                    event = "blobs_consistency.completed",
-                    run_id = %store.run_id(),
-                    finding_count = finding_count,
-                    repaired_count = repaired_count,
-                    repair_requested = repair,
-                    "blobs_consistency completed with {} finding(s), {} repaired",
+                // Normal end of the scan: the last page was short. This
+                // is the path that fires on almost every run (any row
+                // count that is not an exact multiple of BATCH_SIZE), so
+                // it MUST report what the empty-page path above reports —
+                // hence the shared `finish`. It previously built its own
+                // outcome, omitted `stalled_count`, and never emitted the
+                // pending-GC aggregate at all.
+                return finish(
+                    store,
+                    repair,
                     finding_count,
-                    repaired_count
-                );
-                return RunOutcome::completed_with(serde_json::json!({
-                    "repair_requested": repair,
-                    "repaired_count":   repaired_count,
-                }));
+                    repaired_count,
+                    stalled_count,
+                    &pending,
+                    &grace,
+                )
+                .await;
             }
         }
     }
@@ -926,8 +978,12 @@ mod tests {
     const TRASH_CLEANUP: &str =
         crate::infrastructure::services::trash_cleanup_service::TrashCleanupService::JOB_NAME;
     const DEDUP_GC: &str = crate::infrastructure::services::blob_handler::DEDUP_GC_JOB_NAME;
-    const ELIGIBILITY: i64 =
-        crate::infrastructure::services::blob_handler::BlobHandler::GC_ORPHAN_GRACE_SECS;
+    /// Alias the constant UNDER TEST rather than recomputing it from
+    /// `GC_ORPHAN_GRACE_SECS`. These tests pin the relationship between
+    /// the eligibility delay and the driver cadence, not a hardcoded
+    /// multiple of an hour — so temporarily scaling `ELIGIBILITY_SECS`
+    /// to experiment on a sandbox must not turn them red.
+    const ELIGIBILITY: i64 = StallGrace::ELIGIBILITY_SECS;
 
     /// THE regression. A blob cannot be reaped sooner than one full driver
     /// interval plus the eligibility delay, so the threshold must exceed
