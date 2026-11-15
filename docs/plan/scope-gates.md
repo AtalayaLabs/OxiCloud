@@ -21,7 +21,9 @@ with their own fail-open policy.
 pub enum Gate {
     // ── derived from the USER row, re-read live per request ──
     Internal,                // not is_external
-    Admin,                   // privileged role
+    Admin,                   // role.at_least(Admin) — Owner satisfies it too
+    Owner,                   // role.at_least(Owner): the instance owner
+                             // (UserRole::Owner, NOT storage.grant_role)
     PasswordChangeSettled,   // no force_password_change_at_next_login
     // ── derived from the SESSION / credential ──
     NotAnonymous,            // this credential maps to an auth.users row
@@ -409,13 +411,37 @@ cannot answer the scope question — there is no resource to name. The two
 are separate axes and the enum above must stay closed over **properties
 of the caller alone**.
 
-**`Owner` must NOT be a `Scope` variant.** It is a `Role::Owner` row in
-`storage.role_grants` against a specific resource, i.e. a grant.
-`scope.require(Owner)` has nowhere to put the resource id: either the
-signature grows one and it is `authz.require` under a new name, or it
-silently means "owner of *something*", which is not a check. Same for
-`Editor` / `Viewer` and every `DriveRole`. If a proposed variant needs a
-resource id, it belongs in `AuthorizationEngine`, not here.
+**Two different things are called "owner", and only one is a `Gate`.**
+
+`storage.grant_role = 'owner'` is a row against a specific resource, i.e.
+a grant. `scope.require(Owner)` on *that* has nowhere to put the
+resource id: either the signature grows one and it is `authz.require`
+under a new name, or it silently means "owner of *something*", which is
+not a check. Same for `Editor` / `Viewer` and every `DriveRole`. If a
+proposed variant needs a resource id, it belongs in
+`AuthorizationEngine`, not here.
+
+`UserRole::Owner` is the opposite case and **is** a `Gate`. It is a
+column on `auth.users` (widened by
+`20261028000000_userrole_add_owner.sql`, "ranked above 'admin'"), a
+property of the caller with no resource to name — exactly parallel to
+`Admin`. Its live callsite already exists:
+`POST /api/admin/transfer-ownership` answers 403 "Only the current owner
+may transfer ownership", which becomes `Gate::Owner` instead of a
+hand-rolled check.
+
+Two implementation notes, because both are traps:
+
+- **`Gate::Admin` is `role.at_least(Admin)`, not `role == Admin`.** The
+  entity doc is explicit that Owner "outranks `Admin`, so it satisfies
+  every admin gate without those gates naming it". An implementer who
+  writes equality locks the instance owner out of the admin panel.
+  `UserRole::at_least` already exists; the gate delegates to it rather
+  than re-deriving a comparison.
+- **`UserRole::outranks` is NOT a `Gate`.** It is the strict companion,
+  used for "may this admin act upon *that* admin" — it takes a target,
+  so by the rule above it is a grant question. Do not try to express
+  "may demote this user" as a gate.
 
 ### What this actually fixes
 
@@ -479,7 +505,7 @@ you must remember to write does. So the value is two narrower things:
 
 ## Scope of the change
 
-### Fold in (the five existing layers)
+### Fold in (the five existing layers, plus one hand-rolled check)
 
 | Today | Becomes |
 |---|---|
@@ -487,6 +513,7 @@ you must remember to write does. So the value is two narrower things:
 | admin middleware on `/api/admin/*` | `gate_layer(Gate::Admin)` |
 | `require_no_password_change_pending_layer` | `gate_layer(Gate::PasswordChangeSettled)` |
 | `require_dpop_layer` | `gate_layer(Gate::DpopBound)` |
+| hand-rolled owner check in `transfer_ownership` | `Gate::Owner` |
 | `anonymous_allowlist_layer` | `gate_layer(Gate::NotAnonymous)` + keeps its allowlist |
 
 `anonymous_allowlist_layer` is the loose fit — it carries a route
