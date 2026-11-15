@@ -190,13 +190,13 @@ door maps to exactly one area:
 
 | scope (shown without the `oxicloud:` prefix) | routes it opens (non-exhaustive) |
 |---|---|
-| `files` | `/webdav`, `/remote.php/dav/files`, `/wopi`, `/api/files`, `/api/folders`, `/api/uploads`, `/api/batch`, `/api/trash`, `/api/favorites`, `/api/recent`, `/api/dedup` |
+| `files` | `/webdav`, `/remote.php/dav/files`, `/wopi`, `/api/files`, `/api/folders`, `/api/uploads`, `/api/batch`, `/api/trash`, `/api/favorites`, `/api/recent`, `/api/dedup`, `/api/drives` |
 | `calendar` | `/caldav`, `/.well-known/caldav`, `/api/calendars` (#853) |
 | `contacts` | `/carddav`, `/.well-known/carddav`, `/api/address-books`, `/api/contacts` |
 | `photos` | `/api/photos`, `/api/people` |
 | `music` | `/api/playlists` |
-| `account` | `/api/users` (self only), `/remote.php/dav/avatars` |
-| `sharing` | `/api/grants`, `/api/shares`, `/api/s`, OCS sharing |
+| `account` | `/api/users` (self only), `/remote.php/dav/avatars`, `/api/notifications` |
+| `sharing` | `/api/grants`, `/api/shares`, `/api/s`, OCS sharing, `/api/groups/search` |
 | `mail` | **reserved — see below** |
 
 Non-exhaustive on purpose: the mapping is "which resource does this
@@ -217,11 +217,26 @@ Deliberately absent, and each for its own reason:
   `files:ro`-only credential searching must not see calendar hits.
 - `/api/rt/ws` — the message bus delivers events for whatever the
   caller can already see; same filtering argument as search.
-- `/api/groups`, `/api/drives`, `/api/notifications` — unresolved. Group
-  and drive *membership* management has real blast radius and may want
-  `sharing`, or its own scope; notifications are probably `account`.
-  Resolve before implementation rather than defaulting them into
-  `files`.
+- `/api/groups` mutations — **admin, not a scope.** The handler doc is
+  explicit: "All mutating endpoints require admin role". Only
+  `/api/groups/search` is scope-reachable, and it exists "so the share
+  dialog can offer groups as recipients" — which is why it sits under
+  `sharing` rather than `contacts`. These are ReBAC subject groups used
+  as grant recipients, not address-book contact groups; the name is the
+  only thing they share.
+
+One consequence of `/api/drives` sitting under `files`, recorded because
+it is not obvious from the table: the nest includes
+`/{id}/members`, so a `files:rw` credential can **add a member to a
+shared drive** — i.e. grant another subject access to data. That is a
+sharing-shaped action reached through a files-shaped scope.
+
+Accepted deliberately: a drive *is* a file container, splitting one nest
+across two scopes costs more in explanation than it buys, and the
+member change is still bounded by `authz.require` on the drive itself —
+so the caller must already hold rights there. Revisit if drive
+membership ever becomes reachable by a credential that could not already
+share the same content through `/api/grants`.
 
 Note `/remote.php/dav` here serves `files/` and `avatars/` only — unlike
 real NextCloud it does not carry calendars or contacts, so even the
