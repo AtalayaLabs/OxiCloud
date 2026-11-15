@@ -265,7 +265,7 @@ door maps to exactly one area:
 | `photos` | `/api/photos`, `/api/photos/geo` (Places), `/api/people` (faces) — and `/api/places` if that view is ever promoted to its own nest |
 | `music` | `/api/playlists` |
 | `account` | `/api/auth/me`, `/api/auth/me/profile`, `/api/auth/me/image`, `/api/notifications`, `/remote.php/dav/avatars` — profile and preferences |
-| `security` | `/api/auth/change-password`, `/api/auth/oidc/link/start`, `/api/auth/oidc/unlink`, `/api/auth/upgrade-to-internal`, `/api/auth/app-passwords`, `/api/auth/device/devices`, `/api/auth/device/verify` — and 2FA when it lands. **Never in a non-interactive ceiling; mutations also need `Gate::Elevated`** |
+| `security` | `/api/auth/change-password`, `/api/auth/oidc/link/start`, `/api/auth/oidc/unlink`, `/api/auth/upgrade-to-internal`, `/api/auth/opaque/register/start`, `/api/auth/opaque/register/finish`, `/api/auth/app-passwords`, `/api/auth/device/devices`, `/api/auth/device/verify` — and 2FA when it lands. **Never in a non-interactive ceiling; mutations also need `Gate::Elevated`** |
 | `sharing` | `/api/grants`, `/api/shares`, `/api/s`, OCS sharing, and recipient lookup: `/api/users/{id}`, `/api/groups/search` |
 | `mail` | **reserved — see below** |
 
@@ -552,6 +552,7 @@ would hand the dangerous half to an rclone credential.
 | `/api/auth/change-password` | replaces the credential everyone else authenticates with |
 | `/api/auth/oidc/link/start`, `/oidc/unlink` | adds or removes an identity provider that can log in as this user |
 | `/api/auth/upgrade-to-internal` | changes what the principal IS (external → internal) |
+| `/api/auth/opaque/register/start`, `/register/finish` | **enrols a new OPAQUE credential for the authenticated account** — session-authenticated because an envelope binds to a user_id |
 | `/api/auth/app-passwords` | **mints credentials** |
 | `/api/auth/device/devices`, `/device/verify` | lists, revokes and *approves* device credentials |
 
@@ -667,11 +668,20 @@ The current `SCOPELESS` list, each entry with its reason:
 - **`/ocs/v1.php|v2.php/cloud/user`** — NC user-metadata probe, reached
   by clients that already hold `account`.
 - **`/index.php/204`** — NC connectivity probe.
-- **Login and pre-auth flows** — `/api/auth/login`, `/register`,
-  `/refresh`, `/setup`, `/magic-link/send`, the OIDC callback pair. No
-  credential exists yet to carry a scope.
+- **Login and pre-auth flows** — no credential exists yet to carry a
+  scope: `/api/auth/login`, `/register`, `/refresh`, `/setup`,
+  `/magic-link/send`, the OIDC quartet (`authorize`, `callback`,
+  `exchange`, `backchannel-logout`), the OPAQUE **login** handshake
+  (`login/lookup`, `login/ke1`, `login/ke3`, `params`) and the RFC 8628
+  device pair (`device/authorize`, `device/token`).
+
+  Note the asymmetry inside OPAQUE: *login* is pre-auth and scopeless,
+  *registration* is session-authenticated and `security`. Same prefix,
+  opposite classification — see the `security` table.
+- **`/api/status`** — server status probe.
 - **Ops surface** — `/health`, `/ready`, `/metrics`, `/version`,
   `/openapi.json`.
+
 ## Why
 
 ### Grant vs scope (AGENTS.md § Authorization)
