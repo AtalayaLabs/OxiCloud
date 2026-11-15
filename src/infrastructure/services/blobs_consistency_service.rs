@@ -20,8 +20,9 @@
 //! * `blob_orphan_stalled` (severity `anomaly`, discovery-only) —
 //!   the row satisfies every reap predicate `dedup_gc` uses
 //!   (`ref_count <= 0`, no chunk-level referrer) AND has been sitting
-//!   past a comfortable margin (default `STALL_GRACE_SECS` = 24 h,
-//!   comfortably exceeding the GC's own 1 h grace). Signal that the
+//!   past a margin derived from how often GC actually runs — see
+//!   [`StallGrace`], which reads the live schedule rather than trusting
+//!   a constant. Signal that the
 //!   GC pipeline itself is stuck — the job stopped running, is
 //!   failing on the same hash every tick, or a ghost row keeps
 //!   pinning the same set. No `?repair=true` path: per
@@ -63,7 +64,7 @@
 //! * **The OTHER refcount** (`chunk_manifests.ref_count`, which every
 //!   whole-Blob reference lands on) — `manifests_consistency`.
 
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -84,17 +85,160 @@ pub const BLOBS_CONSISTENCY_JOB_NAME: &str = "blobs_consistency";
 /// against round-trip amortisation.
 const BATCH_SIZE: i64 = 200;
 
-/// Grace window for the `blob_orphan_stalled` check. Derived from
-/// `dedup_gc`'s own grace so the two stay coupled at the source: if an
-/// operator ever tunes GC's grace (e.g. long-network-upload profile),
-/// the stall threshold auto-scales — no second knob to keep in sync.
+/// The `blob_orphan_stalled` threshold, derived per run from the cadence
+/// of whatever actually drives garbage collection on this instance.
 ///
-/// The `× 24` multiplier says "we tolerate up to 24 missed sweep ticks
-/// before crying stall". Discovery-only, so a false positive after a
-/// long maintenance pause costs nothing (operator glances at the
-/// finding, sees it clear on the next run, moves on).
-const STALL_GRACE_SECS: i64 =
-    crate::infrastructure::services::blob_handler::BlobHandler::GC_ORPHAN_GRACE_SECS * 24;
+/// This used to be a constant, `GC_ORPHAN_GRACE_SECS × 24` (= 24h), and
+/// it was coupled to the wrong quantity. `GC_ORPHAN_GRACE_SECS` is how
+/// long a blob must sit before GC will *consider* it; it says nothing
+/// about how often GC *runs*. The two numbers happened to multiply out
+/// near a day, which hid the mistake.
+///
+/// The arithmetic that matters:
+///
+/// * a blob becomes GC-eligible `GC_ORPHAN_GRACE_SECS` after it is
+///   orphaned (1h), and
+/// * the next GC-bearing sweep lands up to one full driver interval
+///   later (24h by default),
+///
+/// so the worst-case legitimate latency is ~25h — *above* the old 24h
+/// threshold. A blob orphaned shortly after a sweep was therefore
+/// guaranteed to be reported as stalled before it could possibly have
+/// been collected. Structural false positives, not bad luck.
+///
+/// Which job is the driver is not obvious. `dedup_gc` registers itself
+/// with `interval = None` **on purpose** — the periodic role belongs to
+/// `trash_cleanup`, which ends each sweep with an inline
+/// `garbage_collect()` (and `clear_trash_in` does the same on the
+/// interactive path). So reading `dedup_gc`'s own schedule and concluding
+/// "never scheduled, nothing will reap this" would be wrong on a
+/// perfectly healthy instance. We take the soonest of the two: whichever
+/// reaps first bounds the wait.
+///
+/// `backend_reclaim` is deliberately NOT in this sum, though it is the
+/// other half of the deletion pipeline. `dedup_gc` enqueues each reaped
+/// hash into `storage.pending_actions` **in the same transaction as the
+/// row delete** (`blob_handler.rs`, "Division of labour"), and this check
+/// fires on a surviving *row*. Reclaim latency governs stranded backend
+/// *objects* — a different finding with a different owner. Adding it here
+/// would inflate the threshold for a stage that cannot hold the row.
+struct StallGrace {
+    /// The threshold itself.
+    secs: i64,
+    /// Soonest driver interval found, for the finding payload. `None` =
+    /// nothing scheduled drives GC on this instance.
+    driver_secs: Option<i64>,
+    /// Which job supplied `driver_secs`, for the remediation hint.
+    driver: Option<&'static str>,
+}
+
+impl StallGrace {
+    /// Jobs that end up invoking `garbage_collect()`. Order is
+    /// irrelevant — the soonest wins.
+    const GC_DRIVERS: [&'static str; 2] = [
+        crate::infrastructure::services::trash_cleanup_service::TrashCleanupService::JOB_NAME,
+        crate::infrastructure::services::blob_handler::DEDUP_GC_JOB_NAME,
+    ];
+
+    /// Eligibility delay before GC will even look at an orphan. The
+    /// other half of the threshold, and already a constant maintained
+    /// next to the sweep that honours it — not restated here.
+    const ELIGIBILITY_SECS: i64 =
+        crate::infrastructure::services::blob_handler::BlobHandler::GC_ORPHAN_GRACE_SECS;
+
+    /// Read the live schedule and derive the threshold. Called once per
+    /// run, not per row.
+    ///
+    /// With a driver: `eligibility + 2 x interval`. The first interval is
+    /// the wait for the next sweep; the second is a sampling bound, not a
+    /// comfort margin. This check observes a periodic process, so by
+    /// Nyquist–Shannon it cannot distinguish "the sweep has not come round
+    /// yet" from "the sweep is not happening" over anything less than two
+    /// periods. At `1 x` the threshold sits exactly on the worst case and
+    /// trips on sweep duration or a single deferred tick — reporting a
+    /// phase difference as a fault.
+    ///
+    /// Without one (nothing scheduled drives GC, or the registry is gone
+    /// because we are shutting down): just the eligibility delay. Nothing
+    /// is going to reap the row, so the finding is correct however long
+    /// we wait, and there is no cadence to derive a margin from.
+    ///
+    /// Both arms are built from values that already exist — the live
+    /// interval and `GC_ORPHAN_GRACE_SECS` — so this adds no tunable of
+    /// its own, and no second knob for an operator to keep in sync.
+    async fn resolve(registry: &Weak<JobRegistry>) -> Self {
+        let Some(registry) = registry.upgrade() else {
+            return Self {
+                secs: Self::ELIGIBILITY_SECS,
+                driver_secs: None,
+                driver: None,
+            };
+        };
+
+        let mut soonest: Option<(&'static str, i64)> = None;
+        for name in Self::GC_DRIVERS {
+            // `Some(None)` = registered, on-demand only → contributes no
+            // cadence. `None` = not registered on this build.
+            if let Some(Some(interval)) = registry.schedule_of(name).await {
+                let secs = interval.as_secs() as i64;
+                if soonest.is_none_or(|(_, best)| secs < best) {
+                    soonest = Some((name, secs));
+                }
+            }
+        }
+
+        match soonest {
+            // One interval to reach the next sweep, one more because two
+            // periods is the minimum needed to tell a missed sweep from
+            // an unlucky phase (see the doc above).
+            Some((driver, driver_secs)) => Self {
+                secs: Self::ELIGIBILITY_SECS + driver_secs * 2,
+                driver_secs: Some(driver_secs),
+                driver: Some(driver),
+            },
+            None => Self {
+                secs: Self::ELIGIBILITY_SECS,
+                driver_secs: None,
+                driver: None,
+            },
+        }
+    }
+
+    /// Remediation text for a row that is past the threshold. Names the
+    /// cause we can actually infer, rather than sending the operator to
+    /// audit dedup_gc's worker health in every case.
+    fn remediation_hint(&self) -> String {
+        match (self.driver, self.driver_secs) {
+            // A driver is scheduled, yet the row outlived two of its
+            // cycles. Either the driver is not firing (the common cause
+            // on an instance that restarts or suspends — `next_run_at` is
+            // computed as `now + interval` at registration, so a 24h
+            // timer never completes on a host that reboots or sleeps more
+            // often than daily) or the reap itself is wedged.
+            (Some(driver), Some(secs)) => format!(
+                "`{driver}` drives GC every {secs}s and this row outlived \
+                 two of its cycles. Check GET /api/admin/jobs: if \
+                 `{driver}` shows no recent run, the schedule is not firing — its \
+                 next_run_at is set to now+interval at startup, so a long interval \
+                 never elapses on a host that restarts or suspends more often than \
+                 that. If it IS running, look for a wedged reap (advisory-lock \
+                 contention, ghost chunk_manifests/storage.files row). Either way, \
+                 POST /api/admin/jobs/dedup_gc/trigger?force=true drains the backlog now."
+            ),
+            // Nothing scheduled drives GC: orphans accumulate until
+            // someone deletes from trash or triggers by hand. This is a
+            // configuration state, not a stalled pipeline.
+            _ => format!(
+                "No scheduled job drives garbage collection on this instance, so this \
+                 row will not be reaped automatically. Add a GC driver to \
+                 OXICLOUD_JOBS_SCHEDULED (e.g. `dedup_gc=1h`, or ensure \
+                 `{}` is scheduled), then \
+                 POST /api/admin/jobs/dedup_gc/trigger?force=true to drain the backlog.",
+                crate::infrastructure::services::trash_cleanup_service::TrashCleanupService::JOB_NAME,
+            ),
+        }
+    }
+}
 
 pub struct BlobsConsistencyCheck {
     pool: Arc<PgPool>,
@@ -116,6 +260,15 @@ pub struct BlobsConsistencyCheck {
     /// `manifests_consistency` service hit 2026-09-02. Preemptively
     /// pulled from the registry here to keep the pair symmetric.
     chunk_repair_sql: String,
+    /// Job registry, consulted once per run to derive the
+    /// `blob_orphan_stalled` threshold from the live GC cadence — see
+    /// [`StallGrace`].
+    ///
+    /// `Weak`, for the reason `ConsistencyBatch` is: the registry owns
+    /// this handler as an `Arc<dyn RecoverableJobHandler>`, so a strong
+    /// handle back would close an `Arc` cycle and leak both for the
+    /// process lifetime.
+    job_registry: Weak<JobRegistry>,
 }
 
 /// The chunk-level page query, with `actual_ref_count` summed from the
@@ -192,11 +345,16 @@ fn chunk_repair_sql(registry: &BlobReferenceRegistry) -> String {
 }
 
 impl BlobsConsistencyCheck {
-    pub fn new(pool: Arc<PgPool>, reference_registry: Arc<BlobReferenceRegistry>) -> Self {
+    pub fn new(
+        pool: Arc<PgPool>,
+        reference_registry: Arc<BlobReferenceRegistry>,
+        job_registry: &Arc<JobRegistry>,
+    ) -> Self {
         Self {
             pool,
             chunk_page_sql: chunk_page_sql(&reference_registry),
             chunk_repair_sql: chunk_repair_sql(&reference_registry),
+            job_registry: Arc::downgrade(job_registry),
         }
     }
 
@@ -343,6 +501,31 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
         // completion line separates the two invariant classes.
         let mut stalled_count = 0u64;
 
+        // Orphans still INSIDE the grace window: correct, expected,
+        // transient state — the reap pipeline simply hasn't come round
+        // yet. Reported, because an operator watching disk usage wants to
+        // know bytes are queued for reclamation, but as one aggregated
+        // `info` finding rather than one per row.
+        //
+        // Aggregated deliberately. A busy install can orphan thousands of
+        // blobs inside a 49h window, and a per-row finding for each would
+        // bury the `anomaly` rows that actually need attention — the same
+        // "a gate that always prints is a gate nobody reads" problem. The
+        // sample is capped so the payload stays bounded whatever the
+        // count.
+        let mut pending_gc_count = 0u64;
+        let mut pending_gc_oldest_secs = 0i64;
+        let mut pending_gc_sample: Vec<String> = Vec::new();
+        /// Hashes carried in the aggregated finding. Enough to start
+        /// investigating, bounded enough that a million-orphan install
+        /// still writes a small row.
+        const PENDING_GC_SAMPLE_MAX: usize = 10;
+
+        // Threshold for this run, read from the live schedule once here
+        // rather than per row — the cadence cannot change mid-run, and
+        // `schedule_of` takes a lock per call.
+        let grace = StallGrace::resolve(&self.job_registry).await;
+
         // `?deep=true` is not handled here. Re-reading and re-hashing
         // bytes is backend work end to end, so it moved to
         // `backend_consistency`, where the merge-join already holds the
@@ -413,6 +596,44 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
             };
 
             if rows.is_empty() {
+                // One aggregated finding for everything still inside the
+                // window. Emitted at completion rather than per row (see
+                // `pending_gc_count`), and only when there is something to
+                // say — a healthy idle instance stays silent.
+                if pending_gc_count > 0 {
+                    record_or_log(
+                        store,
+                        BLOBS_CONSISTENCY_JOB_NAME,
+                        // Distinct kind from `blob_orphan_stalled`: same
+                        // subject, opposite verdict. A dashboard filtering
+                        // for problems must not pick this up, and an
+                        // operator reading history should be able to tell
+                        // "queue is draining normally" from "queue is
+                        // stuck" without parsing numbers.
+                        "blob_orphan_pending_gc",
+                        // "info", not "anomaly" — `Severity::Anomaly` is
+                        // the lowest NOTIFYING tier, and a blob waiting
+                        // its turn is not worth waking anyone. Visible in
+                        // the panel, never alerts.
+                        "info",
+                        None,
+                        serde_json::json!({
+                            "pending_count":      pending_gc_count,
+                            "oldest_wait_secs":   pending_gc_oldest_secs,
+                            "stall_grace_secs":   grace.secs,
+                            "gc_driver":          grace.driver,
+                            "gc_driver_interval_secs": grace.driver_secs,
+                            "sample_hashes":      pending_gc_sample,
+                            "sample_truncated":   pending_gc_count as usize > pending_gc_sample.len(),
+                            "remediation_hint":   "No action needed — these blobs are unreferenced \
+                             and waiting for the next garbage-collection sweep, still inside the \
+                             expected window. They become `blob_orphan_stalled` findings only if \
+                             they outlive it. To reclaim the space sooner, \
+                             POST /api/admin/jobs/dedup_gc/trigger?force=true.",
+                        }),
+                    )
+                    .await;
+                }
                 tracing::info!(
                     target: "oxicloud::consistency",
                     event = "blobs_consistency.completed",
@@ -420,17 +641,29 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
                     finding_count = finding_count,
                     repaired_count = repaired_count,
                     stalled_count = stalled_count,
+                    pending_gc_count = pending_gc_count,
+                    stall_grace_secs = grace.secs,
+                    gc_driver = grace.driver.unwrap_or("none"),
                     repair_requested = repair,
                     "blobs_consistency completed with {} refcount finding(s), \
-                     {} repaired, {} stalled",
+                     {} repaired, {} stalled, {} awaiting GC (grace {}s)",
                     finding_count,
                     repaired_count,
                     stalled_count,
+                    pending_gc_count,
+                    grace.secs,
                 );
                 return RunOutcome::completed_with(serde_json::json!({
                     "repair_requested": repair,
                     "repaired_count":   repaired_count,
                     "stalled_count":    stalled_count,
+                    // Separated from `stalled_count` on purpose: "N
+                    // orphans exist" and "N orphans are overdue" are
+                    // different operational facts, and collapsing them is
+                    // what made the old 24h constant look fine.
+                    "pending_gc_count": pending_gc_count,
+                    "stall_grace_secs": grace.secs,
+                    "gc_driver":        grace.driver,
                 }));
             }
 
@@ -449,14 +682,22 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
                     // GC-pipeline issue that isn't there. Fix the
                     // counter → the row becomes eligible on the next
                     // sweep. Only when counter == actual == 0 AND the
-                    // row has been sitting past `STALL_GRACE_SECS` is
-                    // this a genuine "the GC should have taken this
-                    // and hasn't" signal.
+                    // row has been sitting past the resolved grace (see
+                    // `StallGrace`) is this a genuine "the GC should
+                    // have taken this and hasn't" signal.
                     if row.actual_ref_count == 0
                         && let Some(orphaned_at) = row.orphaned_at
                     {
                         let stalled_secs = (Utc::now() - orphaned_at).num_seconds();
-                        if stalled_secs > STALL_GRACE_SECS {
+                        if stalled_secs <= grace.secs {
+                            // Inside the window: nothing is wrong. Record
+                            // it for the aggregate and move on.
+                            pending_gc_count += 1;
+                            pending_gc_oldest_secs = pending_gc_oldest_secs.max(stalled_secs);
+                            if pending_gc_sample.len() < PENDING_GC_SAMPLE_MAX {
+                                pending_gc_sample.push(row.hash.clone());
+                            }
+                        } else {
                             stalled_count += 1;
                             let affected = affected_files(self.pool.as_ref(), &row.hash).await;
                             let detail = serde_json::json!({
@@ -465,19 +706,26 @@ impl RecoverableJobHandler for BlobsConsistencyCheck {
                                 "ref_count":         row.ref_count,
                                 "orphaned_at":       orphaned_at,
                                 "stalled_for_secs":  stalled_secs,
-                                "stall_grace_secs":  STALL_GRACE_SECS,
+                                "stall_grace_secs":  grace.secs,
+                                // The arithmetic behind the threshold, so
+                                // the operator can see WHY this row
+                                // qualified instead of trusting a bare
+                                // constant. Derived from the live
+                                // schedule — see `StallGrace`.
+                                "gc_driver":         grace.driver,
+                                "gc_driver_interval_secs": grace.driver_secs,
+                                "gc_eligibility_grace_secs": StallGrace::ELIGIBILITY_SECS,
                                 "affected_files":    affected,
-                                // Inline hint the admin UI can render
-                                // on click. Not repaired here (see
-                                // module doc) — after operator has
-                                // diagnosed the root cause (worker
-                                // wedged, backend hang, ghost row),
-                                // this is the one-shot to drain the
-                                // backlog.
-                                "remediation_hint":  "Investigate why dedup_gc has not reaped this row \
-                            (worker running? advisory-lock contention? backend delete hanging? \
-                            ghost chunk_manifests/storage.files row?), then \
-                            POST /api/admin/jobs/dedup_gc/trigger?force=true to drain the backlog.",
+                                // Inline hint the admin UI can render on
+                                // click. Not repaired here (see module
+                                // doc). Built from the resolved schedule
+                                // so it names the cause we can infer —
+                                // the old text sent the operator to audit
+                                // dedup_gc's worker health even when the
+                                // real answer was "no GC driver is
+                                // scheduled" or "the 24h timer never
+                                // fires on this host".
+                                "remediation_hint":  grace.remediation_hint(),
                             });
                             record_or_log(
                                 store,
@@ -635,6 +883,148 @@ mod tests {
                 .expect("lazy pool never connects"),
         );
         crate::infrastructure::repositories::pg::blob_reference_sources::built_in_registry(pool)
+    }
+
+    // ── `blob_orphan_stalled` grace derivation ──────────────────────────
+    //
+    // These pin the bug that prompted the change. The threshold used to be
+    // the constant `GC_ORPHAN_GRACE_SECS * 24` (= 24h), coupled to GC's
+    // ELIGIBILITY delay rather than to how often GC RUNS. With the default
+    // 24h `trash_cleanup` cadence the worst-case legitimate wait is
+    // 24h + 1h = 25h, so any blob orphaned shortly after a sweep was
+    // reported as stalled before it could possibly have been collected.
+    // `grace_exceeds_worst_case_reap_latency` is the one that would have
+    // failed; the others pin the parts a refactor could quietly collapse.
+
+    struct NoopHandler(&'static str);
+
+    #[async_trait]
+    impl crate::infrastructure::scheduler::JobHandler for NoopHandler {
+        fn name(&self) -> &str {
+            self.0
+        }
+        async fn run(&self, _args: &JobRunArgs) -> crate::infrastructure::scheduler::JobOutcome {
+            crate::infrastructure::scheduler::JobOutcome::ok(0)
+        }
+    }
+
+    /// Registry with the named jobs registered at the given cadences.
+    async fn registry_with(jobs: &[(&'static str, Option<u64>)]) -> Arc<JobRegistry> {
+        let reg = Arc::new(JobRegistry::new());
+        for (name, secs) in jobs {
+            reg.register(
+                Arc::new(NoopHandler(name))
+                    as Arc<dyn crate::infrastructure::scheduler::JobHandler>,
+                secs.map(std::time::Duration::from_secs),
+                None,
+            )
+            .await;
+        }
+        reg
+    }
+
+    const TRASH_CLEANUP: &str =
+        crate::infrastructure::services::trash_cleanup_service::TrashCleanupService::JOB_NAME;
+    const DEDUP_GC: &str = crate::infrastructure::services::blob_handler::DEDUP_GC_JOB_NAME;
+    const ELIGIBILITY: i64 =
+        crate::infrastructure::services::blob_handler::BlobHandler::GC_ORPHAN_GRACE_SECS;
+
+    /// THE regression. A blob cannot be reaped sooner than one full driver
+    /// interval plus the eligibility delay, so the threshold must exceed
+    /// that sum or it fires on healthy instances. The old constant did not:
+    /// 24h grace vs a 25h floor.
+    #[tokio::test]
+    async fn grace_exceeds_worst_case_reap_latency() {
+        let day = 24 * 3600;
+        let reg = registry_with(&[(TRASH_CLEANUP, Some(day as u64))]).await;
+        let grace = StallGrace::resolve(&Arc::downgrade(&reg)).await;
+
+        let worst_case = day + ELIGIBILITY;
+        assert!(
+            grace.secs > worst_case,
+            "grace {} must exceed worst-case reap latency {} (driver {}s + eligibility {}s); \
+             the old GC_ORPHAN_GRACE_SECS*24 constant gave {} and flagged healthy instances",
+            grace.secs,
+            worst_case,
+            day,
+            ELIGIBILITY,
+            ELIGIBILITY * 24,
+        );
+    }
+
+    /// `dedup_gc` is registered on-demand (`interval = None`) by design,
+    /// because `trash_cleanup` drives GC inline. Reading dedup_gc's own
+    /// schedule and concluding "nothing reaps this" would slander a healthy
+    /// instance, so an on-demand registration must contribute no cadence
+    /// while still letting the other driver supply one.
+    #[tokio::test]
+    async fn on_demand_dedup_gc_does_not_suppress_the_real_driver() {
+        let reg = registry_with(&[(DEDUP_GC, None), (TRASH_CLEANUP, Some(24 * 3600))]).await;
+        let grace = StallGrace::resolve(&Arc::downgrade(&reg)).await;
+
+        assert_eq!(grace.driver, Some(TRASH_CLEANUP));
+        assert_eq!(grace.driver_secs, Some(24 * 3600));
+    }
+
+    /// Whichever driver reaps soonest bounds the wait, so an operator who
+    /// schedules `dedup_gc=1h` gets a tight threshold — fast honest signal
+    /// instead of a two-day silence.
+    #[tokio::test]
+    async fn soonest_driver_wins() {
+        let reg = registry_with(&[(DEDUP_GC, Some(3600)), (TRASH_CLEANUP, Some(24 * 3600))]).await;
+        let grace = StallGrace::resolve(&Arc::downgrade(&reg)).await;
+
+        assert_eq!(grace.driver, Some(DEDUP_GC));
+        assert_eq!(grace.secs, ELIGIBILITY + 3600 * 2);
+    }
+
+    /// Nothing scheduled drives GC: fall back to the eligibility delay
+    /// alone and report no driver, which switches the remediation hint to
+    /// "configure one" rather than "audit the worker".
+    #[tokio::test]
+    async fn no_driver_falls_back_to_eligibility_and_says_so() {
+        let reg = registry_with(&[(DEDUP_GC, None)]).await;
+        let grace = StallGrace::resolve(&Arc::downgrade(&reg)).await;
+
+        assert_eq!(grace.secs, ELIGIBILITY);
+        assert_eq!(grace.driver, None);
+        assert!(
+            grace.remediation_hint().contains("No scheduled job drives"),
+            "hint should name the configuration cause, got: {}",
+            grace.remediation_hint()
+        );
+    }
+
+    /// A dropped registry (shutdown) must not panic the sweep.
+    #[tokio::test]
+    async fn dropped_registry_falls_back_to_eligibility() {
+        let weak = {
+            let reg = registry_with(&[(TRASH_CLEANUP, Some(24 * 3600))]).await;
+            Arc::downgrade(&reg)
+        };
+        let grace = StallGrace::resolve(&weak).await;
+        assert_eq!(grace.secs, ELIGIBILITY);
+        assert_eq!(grace.driver, None);
+    }
+
+    /// With a driver present the hint must point at the schedule, naming
+    /// the restart/suspend failure mode — that is the actual cause on a
+    /// host that reboots or hibernates more often than the interval, and
+    /// the old text sent operators hunting advisory locks instead.
+    #[tokio::test]
+    async fn hint_with_driver_names_the_schedule_not_the_worker() {
+        let reg = registry_with(&[(TRASH_CLEANUP, Some(24 * 3600))]).await;
+        let grace = StallGrace::resolve(&Arc::downgrade(&reg)).await;
+        let hint = grace.remediation_hint();
+
+        assert!(
+            hint.contains(TRASH_CLEANUP),
+            "hint should name the driver: {hint}"
+        );
+        assert!(
+            hint.contains("restarts or suspends"),
+            "hint should explain why a long interval never elapses: {hint}"
+        );
     }
 
     /// Golden test for the chunk-level recompute. Pins the statement
