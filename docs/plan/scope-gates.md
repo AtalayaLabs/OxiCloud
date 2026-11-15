@@ -1,9 +1,12 @@
 # Scope gates — one home for principal-kind checks
 
-Branch: not started. **Trigger: PR #853** (calendars REST surface). Do
-not start before it — see § When.
+Branch: `feat/scope-and-session-elevation`. **Trigger: PR #853**
+(calendars REST surface) for the gate half — see § When. The credential-
+scope half (§ Credential scopes) has its own trigger: the device flow
+already collects and displays scopes it does not enforce.
 
-Status: **DRAFT**
+Status: **DRAFT** — amended 2026-11-15 to split Gate from Scope and to
+make credential scopes resource-based rather than protocol-based.
 
 ## Goal
 
@@ -14,7 +17,8 @@ with their own fail-open policy.
 
 ```rust
 // application/ports/scope_ports.rs
-pub enum Scope {
+/// Properties of the CALLER. Never client-requestable — § Three axes.
+pub enum Gate {
     // ── derived from the USER row, re-read live per request ──
     Internal,                // not is_external
     Admin,                   // privileged role
@@ -31,11 +35,22 @@ pub enum Scope {
     // Elevated,
 }
 
+/// What the CREDENTIAL was issued for. Client-requestable, frozen at
+/// mint, and a SEPARATE type from `Gate` on purpose — § Three axes.
+pub enum Resource {
+    Files, Calendar, Contacts, Photos, Music, Profile, Sharing,
+}
+pub enum Access { ReadOnly, ReadWrite }
+pub struct Scope(BTreeMap<Resource, Access>);
+
 pub trait ScopePolicy {
     /// Takes the CALLER CONTEXT, not a bare user id — see § What a scope
     /// is bound to. `CurrentUser` (request extension) carries both the
     /// user id and the session attributes.
-    async fn require(&self, scope: Scope, caller: &CurrentUser) -> Result<(), AppError>;
+    async fn require(&self, gate: Gate, caller: &CurrentUser) -> Result<(), AppError>;
+    /// Credential half. `Access::ReadWrite` implies `ReadOnly`.
+    async fn require_scope(&self, need: Resource, access: Access, caller: &CurrentUser)
+        -> Result<(), AppError>;
 }
 ```
 
@@ -43,7 +58,7 @@ Three consumers of the one predicate, picked by what the gate protects:
 
 - **`InternalCaller` capability token** — for a top-level create. The
   only deny-by-default form: forgetting it does not compile. See § Why 2.
-- **`scope_layer(state, Scope::Internal)`** — for a whole protocol
+- **`gate_layer(state, Gate::Internal)`** — for a whole protocol
   subtree (`/webdav`, `/caldav`, `/carddav`, `/api/admin/*`), where the
   denial is the surface, not one method.
 - **`InternalUser` / `AdminUser` extractors** — convenience on a REST
@@ -92,7 +107,7 @@ The session id is **not on `CurrentUser`**, but it does exist one layer
 down: `JwtClaims.sid` (RFC 8417 §4.1) carries `auth.sessions.id`
 precisely so the auth middleware can act per-session without a DB round
 trip. So surfacing it onto `CurrentUser` is a thread-through, not a new
-concept — and `Scope::Elevated` needs it anyway
+concept — and `Gate::Elevated` needs it anyway
 (`docs/plan/admin-elevation.md`). Left out of v1 only to keep the two
 changes separable.
 
@@ -104,6 +119,159 @@ privileged answer". Same posture here; an undetermined scope denies.
 it. Fine, because it is created and consumed inside one request — but it
 must never be cached across requests or stored on a service, or it
 becomes the stale-claims bug with a type wrapper.
+
+## Three axes
+
+Added 2026-11-15. This file originally had one `Scope` enum holding both
+a caller property (`Internal`, `Admin`) and, implicitly, the idea of a
+credential restriction. Separating them is not tidiness — merging them
+is a privilege-escalation bug waiting for an author who parses a
+client-supplied scope string into the enum and finds `Admin` in it.
+
+| axis | question | source | client may request? |
+|---|---|---|---|
+| **Gate** | who is this caller? | `auth.users` + session, read live | **never** |
+| **Scope** | what was this credential issued for? | frozen on the credential | yes |
+| **Grant** | may they touch this object? | `storage.role_grants` | n/a |
+
+Effective permission is the **intersection**. A scope never grants
+beyond what the user already has; it only narrows. An admin's app
+password scoped `files:ro` administers nothing — not because the scope
+says "not admin", but because `/api/admin` requires the `Admin` gate and
+no scope string can supply it.
+
+Consequences, both agreed:
+
+- **`/api/admin/*` is a role check, not a scope.** `Gate::Admin`, read
+  live. It never appears in the scope vocabulary, so `scope=admin` has
+  nothing to parse into.
+- **`/api/dedup` is no longer admin.** `check_hash`,
+  `check_hashes_batch` and `get_blob` are upload-path helpers; `/stats`
+  and `/recalculate` moved to `/api/admin/dedup/*`. So `/api/dedup` sits
+  under the `Files` resource like the rest of the upload flow.
+
+## Credential scopes are resources, not protocols
+
+### The feature is half-built and the missing half is the enforcement
+
+`auth.device_codes.scopes` has existed since the initial schema
+(`VARCHAR(512) NOT NULL DEFAULT 'webdav,caldav,carddav'`). The device
+flow collects it, persists it, and the verify screen shows it to the
+user for consent. **Nothing reads it.** The only Rust references to
+`scopes` are OIDC provider config, and `auth.sessions` has no scope
+column at all.
+
+So today a client requests `scope=webdav`, the user approves "webdav",
+and the issued token reaches every surface on the server. That is a
+consent screen making a promise the code does not keep, and it is the
+real motivation for this work — stronger than the five-duplicated-layers
+argument above.
+
+### Why resource and not protocol
+
+The tempting vocabulary is the protocol list: `webdav`, `caldav`,
+`carddav`, `api`, `nextcloud`. Rejected, because in this codebase every
+door maps to exactly one resource:
+
+| door | resource |
+|---|---|
+| `/webdav`, `/remote.php/dav/files`, `/wopi`, `/api/files`, `/folders`, `/uploads`, `/batch`, `/trash`, `/dedup` | `Files` |
+| `/caldav`, `/api/calendars` (#853) | `Calendar` |
+| `/carddav`, `/api/address-books`, `/api/contacts` | `Contacts` |
+| `/api/photos`, `/api/people` | `Photos` |
+| `/api/playlists` | `Music` |
+| `/api/users` (self), `/remote.php/dav/avatars` | `Profile` |
+| `/api/grants`, `/api/shares`, `/api/s`, OCS sharing | `Sharing` |
+
+Note `/remote.php/dav` here serves `files/` and `avatars/` only — unlike
+real NextCloud it does not carry calendars or contacts, so even the
+compat surface stays 1:1.
+
+Four reasons:
+
+1. **PR #853 settles it.** Once calendars are reachable over REST, a
+   `caldav` scope guards one of two doors to the same data. `Calendar`
+   guards both, including doors nobody has built yet.
+2. **Consent screens name data, not plumbing.** "DAVx⁵ wants access to
+   your calendars and contacts" is a sentence a user can judge; "wants
+   caldav" is not.
+3. **No cross-product.** 7 protocols × 2 access levels as distinct
+   variants is 14 and grows; 7 resources plus an access level is 7 + 2.
+4. It is what Google (`calendar.readonly`) and Microsoft
+   (`Calendars.Read`) do. Neither ships a protocol scope.
+
+What this gives up is "calendars via CalDAV but not via REST". That
+buys nothing: same data, same rights, and whoever holds the credential
+can curl either door. A protocol restriction would be a speed bump, not
+a boundary.
+
+### Read-only is multiplied, not orthogonal
+
+A global `readonly` flag cannot express asymmetry — "sync my files
+read-write but my calendars read-only" is an ordinary ask and
+`files,calendar,readonly` has no way to say it. Every major provider
+multiplies instead (`drive.readonly`, `Files.ReadWrite`).
+
+Multiply on the wire, not in the type:
+
+```
+files:rw,calendar:ro,contacts:ro
+```
+
+parsed into `BTreeMap<Resource, Access>`. Unqualified means `:rw`, so
+the existing `device_codes.scopes = 'webdav,caldav,carddav'` rows keep
+their present meaning and need no data migration — only a protocol→
+resource rename.
+
+**`Access::ReadOnly` is defined per surface, not by HTTP verb.** For DAV
+it is clean: allow `GET/HEAD/OPTIONS/PROPFIND/REPORT`, deny
+`PUT/DELETE/MKCOL/MKCALENDAR/MOVE/COPY/PROPPATCH/LOCK`. For REST the verb
+is *not* a proxy for the effect — `POST /api/search` and
+`POST /api/batch/files/get` are reads. A verb heuristic there would
+silently permit writes, so v1 either classifies REST routes explicitly
+or rejects `:ro` on REST-only resources as unsupported. Shipping the
+heuristic is the one outcome to avoid.
+
+### Freezing at mint is correct here
+
+§ What a scope is bound to argues user-derived attributes must be
+re-read live, never cached on the token. That rule does **not** extend
+to credential scopes, and the distinction matters or someone will later
+"fix" this into a per-request query on every WebDAV call:
+
+- `is_external` must be live because a guest who upgrades would
+  otherwise stay locked out until re-login — the attribute changes under
+  a credential that keeps living.
+- A scope cannot change under its credential. Narrowing is the entire
+  point and there is no scope-upgrade path, so there is nothing to go
+  stale against. Revocation is already handled by killing the session.
+
+So scopes ride in the JWT claim, and the DAV doors stay free of a
+lookup.
+
+### Defaults
+
+- **App password**: `files,calendar,contacts,profile` (all `:rw`).
+  Not `files` alone — `app_password_handler` describes these as
+  credentials for "DAV / NC-Basic clients (DAVx⁵, Thunderbird, rclone,
+  NC desktop)", and the NC desktop client needs `/remote.php/dav/files`
+  plus avatars, while DAVx⁵ needs calendars and contacts.
+- **Device flow**: whatever the client asks for, intersected with the
+  above. Existing rows default to `webdav,caldav,carddav`, which maps to
+  `files,calendar,contacts` — note it omits `profile`, so enabling
+  enforcement must widen existing rows rather than only adding a check.
+- **Interactive web session**: all resources, `:rw`.
+
+### Never in a client-requestable scope
+
+Credential management — `/api/auth/app-passwords`,
+`/api/auth/device/devices`, session revocation — must be reachable only
+from an interactive session, never from a scoped credential.
+
+This is the line the whole feature rests on. A credential that can mint
+another credential can mint an unscoped one, and every restriction above
+evaporates in one request. It is not a resource to be scoped `:ro`; it
+is excluded from the vocabulary entirely, like `Admin`.
 
 ## Why
 
@@ -188,11 +356,11 @@ you must remember to write does. So the value is two narrower things:
 
 | Today | Becomes |
 |---|---|
-| `require_internal_user_layer` | `scope_layer(Scope::Internal)` |
-| admin middleware on `/api/admin/*` | `scope_layer(Scope::Admin)` |
-| `require_no_password_change_pending_layer` | `scope_layer(Scope::PasswordChangeSettled)` |
-| `require_dpop_layer` | `scope_layer(Scope::DpopBound)` |
-| `anonymous_allowlist_layer` | `scope_layer(Scope::NotAnonymous)` + keeps its allowlist |
+| `require_internal_user_layer` | `gate_layer(Gate::Internal)` |
+| admin middleware on `/api/admin/*` | `gate_layer(Gate::Admin)` |
+| `require_no_password_change_pending_layer` | `gate_layer(Gate::PasswordChangeSettled)` |
+| `require_dpop_layer` | `gate_layer(Gate::DpopBound)` |
+| `anonymous_allowlist_layer` | `gate_layer(Gate::NotAnonymous)` + keeps its allowlist |
 
 `anonymous_allowlist_layer` is the loose fit — it carries a route
 allowlist and must stay `route_layer` (it needs `MatchedPath`). Fold the
@@ -238,7 +406,7 @@ cannot.
 ## Rejected: default-deny across all of `/api`
 
 The tempting reading of "secure by default" is
-`scope_layer(Scope::Internal)` on the whole protected `/api` router plus
+`gate_layer(Gate::Internal)` on the whole protected `/api` router plus
 an allowlist of what externals may reach. Rejected, for a reason worth
 recording so it isn't re-proposed:
 
@@ -278,6 +446,28 @@ create**, not the HTTP surface. Hence the token.
   caller succeeding, so a gate that refuses everyone cannot pass.
 - No new Hurl file: if the refactor is behaviour-preserving, the
   existing pins are the regression suite.
+
+The credential-scope half needs its own pins, because unlike the gate
+refactor it is **not** behaviour-preserving — it turns an unenforced
+field into an enforced one:
+
+- Unit: the `protocol:access` parser. Unqualified → `ReadWrite`; the
+  legacy `webdav,caldav,carddav` string → `{Files, Calendar, Contacts}`
+  all `:rw`; an unknown resource name is **rejected**, not ignored
+  (a typo'd scope must not silently widen).
+- Unit: `Access::ReadWrite` implies `ReadOnly`, and the DAV safe-method
+  split — `PROPFIND` passes `:ro`, `PROPPATCH` does not.
+- Hurl, new file: a credential scoped `files:rw` is refused on
+  `/caldav` and `/carddav` and accepted on `/webdav`; one scoped
+  `files:ro` passes `PROPFIND` and is refused `PUT`. Each pin asserts
+  the refusal AND an allowed caller succeeding, per AGENTS.md, so a
+  gate that refuses everyone cannot pass.
+- Hurl: the escalation pin — a scoped credential is refused on
+  `POST /api/auth/app-passwords`. This is the one that matters most; if
+  it ever goes green-by-passing, the whole feature is decorative.
+- Migration: existing `device_codes` rows keep working. Pin the legacy
+  default string explicitly, since enforcement is what turns a
+  previously-inert column into a lockout risk.
 
 ## When
 
