@@ -385,7 +385,6 @@ THEME_FIXTURE_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/oxicloud-themes.XXXXXX")
 mkdir -p "$THEME_FIXTURE_ROOT/hurl-sober"
 printf ':root { --color-accent: \043123456; }\n.theme-smoke { border-radius: 2rem !important; }\n' > "$THEME_FIXTURE_ROOT/hurl-sober/index.css"
 export OXICLOUD_THEMES_PATH="$THEME_FIXTURE_ROOT"
-export OXICLOUD_DEFAULT_THEME=default
 log "Starting OxiCloud server ($BUILD_TARGET) on port $SERVER_PORT..."
 # `--config` pins the env file the binary reads AND suppresses the default
 # `.env` probe in main.rs, so a developer's repo-root `.env` can never leak

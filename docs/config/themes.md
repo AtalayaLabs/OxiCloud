@@ -57,8 +57,7 @@ refresh, the previous working version is retained; check server logs for details
 
 For a persistent external catalogue, set `OXICLOUD_THEMES_PATH` to an existing
 directory and restart once. Keep customized folders across upgrades. See
-[environment configuration](https://AtalayaLabs.github.io/OxiCloud/config/env.html#global-appearance) for theme settings, including
-`OXICLOUD_DEFAULT_THEME`; update that setting before removing its configured theme.
+[environment configuration](https://AtalayaLabs.github.io/OxiCloud/config/env.html#global-appearance) for theme settings. The built-in `default` theme is always the initial theme and fallback.
 
 ## Docker
 

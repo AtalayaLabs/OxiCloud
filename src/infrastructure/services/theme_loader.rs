@@ -163,7 +163,6 @@ mod tests {
             config: ThemesConfig {
                 path: path.to_owned(),
                 path_explicit: true,
-                default_theme: "default".into(),
                 force_default: false,
             },
         }

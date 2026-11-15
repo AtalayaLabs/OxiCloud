@@ -26,25 +26,15 @@ struct Snapshot {
 pub struct ThemeService<S: SettingsRepository> {
     repository: Arc<S>,
     loader: Option<Arc<dyn ThemeCatalogueLoader + Send + Sync>>,
-    default_id: String,
     force_default: bool,
     snapshot: ArcSwap<Snapshot>,
     mutation: Mutex<()>,
 }
 impl<S: SettingsRepository> ThemeService<S> {
-    pub async fn new(
-        repository: Arc<S>,
-        catalogue: ThemeCatalogue,
-        default_id: String,
-    ) -> Result<Self, DomainError> {
+    pub async fn new(repository: Arc<S>, catalogue: ThemeCatalogue) -> Result<Self, DomainError> {
         let catalogue = Arc::new(catalogue);
-        if !catalogue.themes.contains_key(&default_id) {
-            return Err(DomainError::validation_error(
-                "Configured default theme is unavailable",
-            ));
-        }
         let selected = repository.get(KEY).await?;
-        let snapshot = Self::resolve(catalogue, &default_id, selected)?;
+        let snapshot = Self::resolve(catalogue, selected)?;
         if snapshot.warning.is_some() {
             tracing::warn!(
                 event = "appearance.fallback",
@@ -55,17 +45,21 @@ impl<S: SettingsRepository> ThemeService<S> {
             repository,
             loader: None,
             force_default: false,
-            default_id,
             snapshot: ArcSwap::from_pointee(snapshot),
             mutation: Mutex::new(()),
         })
     }
     fn resolve(
         catalogue: Arc<ThemeCatalogue>,
-        default_id: &str,
         selected: Option<String>,
     ) -> Result<Snapshot, DomainError> {
-        let requested = selected.as_deref().unwrap_or(default_id);
+        if !catalogue.themes.contains_key("default") {
+            return Err(DomainError::internal_error(
+                "Theme",
+                "Built-in default theme is missing",
+            ));
+        }
+        let requested = selected.as_deref().unwrap_or("default");
         let (active, warning) = if catalogue.themes.contains_key(requested) {
             (requested, None)
         } else {
@@ -85,7 +79,6 @@ impl<S: SettingsRepository> ThemeService<S> {
     pub fn with_forced_default(mut self, enabled: bool) -> Self {
         self.force_default = enabled;
         if enabled {
-            self.default_id = "default".into();
             let current = self.snapshot.load_full();
             let forced = self
                 .resolve_snapshot(current.catalogue.clone(), current.selected.clone())
@@ -104,12 +97,12 @@ impl<S: SettingsRepository> ThemeService<S> {
         selected: Option<String>,
     ) -> Result<Snapshot, DomainError> {
         if self.force_default {
-            let mut snapshot = Self::resolve(catalogue, "default", None)?;
+            let mut snapshot = Self::resolve(catalogue, None)?;
             snapshot.selected = selected;
             snapshot.warning = Some("forced_default".into());
             Ok(snapshot)
         } else {
-            Self::resolve(catalogue, &self.default_id, selected)
+            Self::resolve(catalogue, selected)
         }
     }
     pub fn with_loader(mut self, loader: Arc<dyn ThemeCatalogueLoader + Send + Sync>) -> Self {
@@ -139,11 +132,6 @@ impl<S: SettingsRepository> ThemeService<S> {
         let catalogue = tokio::task::spawn_blocking(move || loader.load())
             .await
             .map_err(|e| DomainError::internal_error("Theme", e.to_string()))??;
-        if !catalogue.themes.contains_key(&self.default_id) {
-            return Err(DomainError::validation_error(
-                "Configured default theme is unavailable",
-            ));
-        }
         let previous = self.active();
         if catalogue
             .diagnostics
@@ -167,7 +155,7 @@ impl<S: SettingsRepository> ThemeService<S> {
         let snapshot = self.snapshot.load();
         AppearanceDto {
             available_themes: snapshot.catalogue.themes.keys().cloned().collect(),
-            default_theme_id: self.default_id.clone(),
+            default_theme_id: "default".into(),
             selected_theme_id: snapshot.selected.clone(),
             active_theme_id: snapshot.theme.id.clone(),
             warning: snapshot.warning.clone(),
@@ -344,12 +332,8 @@ mod tests {
             diagnostics: Vec::new(),
         }
     }
-    async fn service(repo: Arc<Repository>, default: &str) -> Arc<ThemeService<Repository>> {
-        Arc::new(
-            ThemeService::new(repo, catalogue(), default.into())
-                .await
-                .unwrap(),
-        )
+    async fn service(repo: Arc<Repository>) -> Arc<ThemeService<Repository>> {
+        Arc::new(ThemeService::new(repo, catalogue()).await.unwrap())
     }
     #[tokio::test]
     async fn public_routes_are_cached_and_respect_subpath_and_missing_assets() {
@@ -361,7 +345,7 @@ mod tests {
         };
         use tower::ServiceExt;
         let repo = Arc::new(Repository::default());
-        let svc = service(repo.clone(), "default").await;
+        let svc = service(repo.clone()).await;
         let reads = repo.reads.load(Ordering::Relaxed);
         // Regression pin: registering /themes separately from the nested /
         // route panicked at boot. Exercise the production mount, including
@@ -409,13 +393,12 @@ mod tests {
             config: crate::common::config::ThemesConfig {
                 path: root.path().to_owned(),
                 path_explicit: true,
-                default_theme: "default".into(),
                 force_default: false,
             },
         });
         let repo = Arc::new(Repository::default());
         let svc = Arc::new(
-            ThemeService::new(repo.clone(), loader.load().unwrap(), "default".into())
+            ThemeService::new(repo.clone(), loader.load().unwrap())
                 .await
                 .unwrap()
                 .with_loader(loader),
@@ -487,7 +470,7 @@ mod tests {
         });
         let repo = Arc::new(Repository::default());
         let svc = Arc::new(
-            ThemeService::new(repo.clone(), loader.load().unwrap(), "default".into())
+            ThemeService::new(repo.clone(), loader.load().unwrap())
                 .await
                 .unwrap()
                 .with_loader(loader),
@@ -509,23 +492,31 @@ mod tests {
             Some("selected_theme_unavailable")
         );
         assert!(!appearance.available_themes.contains(&"slate".into()));
+        // Regression pin: a temporarily removed theme resumes without another selection write.
+        assert_eq!(repo.saved.lock().unwrap().as_deref(), Some("slate"));
+        std::fs::create_dir(root.path().join("slate")).unwrap();
+        std::fs::write(root.path().join("slate/index.css"), ":root {}").unwrap();
+        let restored = svc
+            .reload_with_perms(caller, &admin(), &authz)
+            .await
+            .unwrap();
+        assert_eq!(restored.active_theme_id, "slate");
+        assert_eq!(restored.selected_theme_id.as_deref(), Some("slate"));
+        assert_eq!(restored.default_theme_id, "default");
+        assert!(restored.warning.is_none());
     }
     #[tokio::test]
     async fn database_read_errors_are_not_missing_settings() {
         let repo = Arc::new(Repository::default());
         repo.fail_read.store(true, Ordering::Relaxed);
-        assert!(
-            ThemeService::new(repo, catalogue(), "default".into())
-                .await
-                .is_err()
-        );
+        assert!(ThemeService::new(repo, catalogue()).await.is_err());
     }
     #[tokio::test]
     async fn uncertain_commit_and_retry_do_not_publish_a_failed_selection() {
         // Regression pin: PostgreSQL can commit even when its acknowledgement
         // is lost. Keep serving the previous snapshot until a confirmed retry.
         let repo = Arc::new(Repository::default());
-        let svc = service(repo.clone(), "default").await;
+        let svc = service(repo.clone()).await;
         repo.commit_then_fail.store(true, Ordering::Relaxed);
         let previous = svc.active();
         let caller = Uuid::new_v4();
@@ -549,7 +540,7 @@ mod tests {
         // Regression pin: the old pre-write reconciliation published a different
         // saved choice even when the requested mutation subsequently failed.
         let repo = Arc::new(Repository::default());
-        let svc = service(repo.clone(), "default").await;
+        let svc = service(repo.clone()).await;
         *repo.saved.lock().unwrap() = Some("blue".into());
         repo.fail.store(true, Ordering::Relaxed);
         let previous = svc.active();
@@ -570,7 +561,7 @@ mod tests {
         let repo = Arc::new(Repository::default());
         *repo.saved.lock().unwrap() = Some("sober".into());
         let svc = Arc::new(
-            ThemeService::new(repo.clone(), catalogue(), "default".into())
+            ThemeService::new(repo.clone(), catalogue())
                 .await
                 .unwrap()
                 .with_forced_default(true),
@@ -593,33 +584,30 @@ mod tests {
     #[tokio::test]
     async fn priority_fallback_and_restart_preserve_saved_choice() {
         let repo = Arc::new(Repository::default());
-        let svc = service(repo.clone(), "sober").await;
-        assert_eq!(svc.active().id, "sober");
+        let svc = service(repo.clone()).await;
+        // Regression pin: initial selection and the API default always name the built-in theme.
+        assert_eq!(svc.active().id, "default");
+        assert_eq!(svc.appearance().default_theme_id, "default");
         let caller = Uuid::new_v4();
         let authz = PgAclEngine::new_stub();
         svc.select_theme_with_perms(caller, "blue".into(), &admin(), &authz)
             .await
             .unwrap();
         assert_eq!(*repo.by.lock().unwrap(), Some(caller));
-        assert_eq!(service(repo.clone(), "sober").await.active().id, "blue");
+        assert_eq!(service(repo.clone()).await.active().id, "blue");
         *repo.saved.lock().unwrap() = Some("removed".into());
-        let fallback = service(repo.clone(), "sober").await;
+        let fallback = service(repo.clone()).await;
         assert_eq!(fallback.active().id, "default");
         assert_eq!(
             fallback.appearance().warning.as_deref(),
             Some("selected_theme_unavailable")
         );
         assert_eq!(repo.saved.lock().unwrap().as_deref(), Some("removed"));
-        assert!(
-            ThemeService::new(repo, catalogue(), "missing".into())
-                .await
-                .is_err()
-        );
     }
     #[tokio::test]
     async fn permissions_and_failed_changes_preserve_public_bytes() {
         let repo = Arc::new(Repository::default());
-        let svc = service(repo.clone(), "default").await;
+        let svc = service(repo.clone()).await;
         let authz = PgAclEngine::new_stub();
         let caller = Uuid::new_v4();
         for flags in [
@@ -670,7 +658,7 @@ mod tests {
     #[tokio::test]
     async fn concurrent_changes_and_repetition_agree_with_storage() {
         let repo = Arc::new(Repository::default());
-        let svc = service(repo.clone(), "default").await;
+        let svc = service(repo.clone()).await;
         let authz = PgAclEngine::new_stub();
         let user = admin();
         let caller = Uuid::new_v4();
@@ -694,7 +682,7 @@ mod tests {
         // on one theme and the in-memory public stylesheet on another.
         let repo = Arc::new(Repository::default());
         repo.pause.store(true, Ordering::Relaxed);
-        let svc = service(repo.clone(), "default").await;
+        let svc = service(repo.clone()).await;
         let task_svc = svc.clone();
         let request = tokio::spawn(async move {
             task_svc
@@ -793,13 +781,9 @@ mod integration_tests {
                 .collect(),
             diagnostics: Vec::new(),
         };
-        let service = ThemeService::new(repo.clone(), catalogue(), "default".into())
-            .await
-            .unwrap();
+        let service = ThemeService::new(repo.clone(), catalogue()).await.unwrap();
         service.select(user, "sober".into()).await.unwrap();
-        let rebuilt = ThemeService::new(repo.clone(), catalogue(), "default".into())
-            .await
-            .unwrap();
+        let rebuilt = ThemeService::new(repo.clone(), catalogue()).await.unwrap();
         assert_eq!(rebuilt.active().id, "sober");
         let updated_by: Option<Uuid> =
             sqlx::query_scalar("SELECT updated_by FROM auth.admin_settings WHERE key = $1")

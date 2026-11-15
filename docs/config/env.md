@@ -39,7 +39,6 @@ Every variable below can also be written in a TOML config file — the key is th
 | Variable | Default | Description |
 | --- | --- | --- |
 | `OXICLOUD_THEMES_PATH` | `./resources/themes` | Read-only theme catalogue, relative to the process working directory. Explicit paths must exist. |
-| `OXICLOUD_DEFAULT_THEME` | `default` | Initial selection when no administrative selection has been saved. Must be available at startup and catalogue refresh, except in forced recovery mode. |
 | `OXICLOUD_FORCE_DEFAULT_THEME` | `false` | Recovery override: bypass operator CSS and preserve the saved selection. |
 
 See [Themes](themes.md) for the file contract, security boundaries and deployment.

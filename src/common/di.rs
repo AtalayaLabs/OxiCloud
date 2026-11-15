@@ -2672,11 +2672,6 @@ impl AppServiceFactory {
                     ),
                 ),
                 catalogue,
-                if self.config.themes.force_default {
-                    "default".into()
-                } else {
-                    self.config.themes.default_theme.clone()
-                },
             )
             .await?
             .with_loader(theme_loader)

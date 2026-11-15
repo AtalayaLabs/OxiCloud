@@ -3736,14 +3736,11 @@ impl AppConfig {
 
     pub fn from_env() -> Self {
         let mut config = Self {
-            themes: ThemesConfig::parse(
-                env::var("OXICLOUD_THEMES_PATH").ok(),
-                env::var("OXICLOUD_DEFAULT_THEME").ok(),
-            )
-            .and_then(|config| {
-                config.with_force_default(env::var("OXICLOUD_FORCE_DEFAULT_THEME").ok())
-            })
-            .unwrap_or_else(|error| panic!("Invalid themes configuration: {error}")),
+            themes: ThemesConfig::parse(env::var("OXICLOUD_THEMES_PATH").ok())
+                .and_then(|config| {
+                    config.with_force_default(env::var("OXICLOUD_FORCE_DEFAULT_THEME").ok())
+                })
+                .unwrap_or_else(|error| panic!("Invalid themes configuration: {error}")),
             ..Self::default()
         };
 
@@ -6651,7 +6648,6 @@ pub struct ThemesConfig {
     pub force_default: bool,
     pub path: PathBuf,
     pub path_explicit: bool,
-    pub default_theme: String,
 }
 impl Default for ThemesConfig {
     fn default() -> Self {
@@ -6659,7 +6655,6 @@ impl Default for ThemesConfig {
             force_default: false,
             path: PathBuf::from("./resources/themes"),
             path_explicit: false,
-            default_theme: "default".into(),
         }
     }
 }
@@ -6673,7 +6668,7 @@ impl ThemesConfig {
         Ok(self)
     }
 
-    pub fn parse(path: Option<String>, default_theme: Option<String>) -> Result<Self, String> {
+    pub fn parse(path: Option<String>) -> Result<Self, String> {
         let mut config = Self::default();
         if let Some(path) = path {
             if path.trim().is_empty() {
@@ -6681,10 +6676,6 @@ impl ThemesConfig {
             }
             config.path = PathBuf::from(path);
             config.path_explicit = true;
-        }
-        if let Some(id) = default_theme {
-            crate::domain::entities::theme::ThemeId::parse(&id).map_err(|e| e.to_string())?;
-            config.default_theme = id;
         }
         Ok(config)
     }
@@ -6694,7 +6685,7 @@ mod themes_config_tests {
     use super::*;
     #[test]
     fn explicit_path_survives_parsing() {
-        let default = ThemesConfig::parse(None, None).unwrap();
+        let default = ThemesConfig::parse(None).unwrap();
         assert!(!default.path_explicit);
         // Regression pin: themes live directly under resources/themes.
         assert_eq!(default.path, PathBuf::from("./resources/themes"));
@@ -6711,15 +6702,13 @@ mod themes_config_tests {
                 .with_force_default(Some("maybe".into()))
                 .is_err()
         );
-        assert_eq!(default.default_theme, "default");
         for path in ["./resources/themes", "/srv/themes"] {
             assert!(
-                ThemesConfig::parse(Some(path.into()), None)
+                ThemesConfig::parse(Some(path.into()))
                     .unwrap()
                     .path_explicit
             );
         }
-        assert!(ThemesConfig::parse(Some("".into()), None).is_err());
-        assert!(ThemesConfig::parse(None, Some("../bad".into())).is_err());
+        assert!(ThemesConfig::parse(Some("".into())).is_err());
     }
 }
