@@ -262,7 +262,7 @@ door maps to exactly one area:
 | `files` | `/webdav`, `/remote.php/dav/files`, `/wopi`, `/api/files`, `/api/folders`, `/api/uploads`, `/api/batch`, `/api/trash`, `/api/favorites`, `/api/recent`, `/api/dedup`, `/api/drives` |
 | `calendar` | `/caldav`, `/.well-known/caldav`, `/api/calendars` (#853) |
 | `contacts` | `/carddav`, `/.well-known/carddav`, `/api/address-books`, `/api/contacts` |
-| `photos` | `/api/photos`, `/api/people` |
+| `photos` | `/api/photos`, `/api/photos/geo` (Places), `/api/people` (faces) — and `/api/places` if that view is ever promoted to its own nest |
 | `music` | `/api/playlists` |
 | `account` | `/api/auth/me`, `/api/auth/me/profile`, `/api/auth/me/image`, `/api/notifications`, `/remote.php/dav/avatars` — profile and preferences |
 | `security` | `/api/auth/change-password`, `/api/auth/oidc/link/start`, `/api/auth/oidc/unlink`, `/api/auth/upgrade-to-internal`, `/api/auth/app-passwords`, `/api/auth/device/devices`, `/api/auth/device/verify` — and 2FA when it lands. **Never in a non-interactive ceiling; mutations also need `Gate::Elevated`** |
@@ -305,6 +305,15 @@ a grant must be able to find recipients, and a credential that may not
 share has no business enumerating the directory. Splitting users from
 groups across two scopes would have broken the picker while protecting
 nothing, since either half alone still reveals the roster.
+
+`photos` covers Places and People because both are **derived from the
+photos themselves** — place data from EXIF coordinates, faces from
+pixel analysis. A credential that can read a photo can already recover
+where it was taken and who is in it, so a separate scope would protect
+nothing while implying it did. That is the same test applied to
+`/api/search` and `/api/rt/ws`: a scope earns its place only when
+withholding it actually withholds something.
+
 Non-exhaustive on purpose: the mapping is "which resource does this
 door touch", so a new route under an existing area inherits its scope
 without editing this table. A new route that fits *no* row is the
