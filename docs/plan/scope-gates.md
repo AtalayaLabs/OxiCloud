@@ -867,6 +867,90 @@ create**, not the HTTP surface. Hence the token.
   `authz.denied`). A refactor that renames them is a breaking change to
   log aggregators, so the audit lines move verbatim.
 
+## Required: amend `src/AGENTS.md`
+
+This plan does not land without a rule in `src/AGENTS.md`, because the
+thing it fixes is not a missing mechanism — it is that nobody was
+required to think about the question. `create_address_book` was reachable
+by externals with a gate available and unused.
+
+The rule to add, under § AuthZ enforcement points:
+
+> **Every route declares all three axes explicitly. There is no default.**
+>
+> - **Gate** — which KIND of caller may reach this surface
+>   (`Gate::Internal`, `Admin`, `Owner`, `NotAnonymous`, `DpopBound`,
+>   `PasswordChangeSettled`). Declared even when the answer is "any
+>   authenticated caller".
+> - **Scope** — what the CREDENTIAL was issued for
+>   (`oxicloud:<area>:<ro|rw>`), or an explicit `SCOPELESS` entry with
+>   the reason. "No scope" is a decision that gets written down, never an
+>   omission: an ungated route and a declared-scopeless route behave
+>   identically at runtime and mean opposite things in review.
+> - **Grant** — **delegated to the service, never checked at the route.**
+>   Where the route touches a specific resource, it passes `caller_id`
+>   into a service method that calls
+>   `authz.require(subject, permission, resource)` — the `_with_perms`
+>   convention. The route's obligation is to name which service method
+>   owns the check, not to perform it: that is the existing rule in
+>   AGENTS.md § Authorization, and the reason it exists is that REST and
+>   DAV reach the same service methods, so a check at one door is a hole
+>   at the other.
+>
+>   A route with no resource id has no grant to delegate, and inventing
+>   one is how `Owner` ends up in a scope enum (§ Grant vs scope).
+>
+> A route that cannot answer all three does not merge. If the answer to
+> any is "I don't know", that is the review, not a blocker to route
+> around.
+
+Which layer owns which axis, since the three are enforced in three
+different places and conflating them is how the original hole happened:
+
+| axis | enforced in | why there |
+|---|---|---|
+| Gate | router layer (or extractor) | no resource to name, and the DAV surfaces dispatch through one `any` handler |
+| Scope | router layer / extractor, declared in the utoipa `security` array | property of the credential, resource-blind |
+| Grant | **application service** (`_with_perms`) | REST and DAV reach the same service methods, so a check at one door is a hole at the other |
+
+The pre-existing deviation stays flagged rather than fixed:
+`grant_handler.rs` performs its `Permission::Share` check in the handler.
+§ Non-goals keeps grant checks out of this change, so `/api/grants` will
+carry a scope check and a handler-level grant check side by side. Do not
+collapse them — and do not take that handler as the pattern for new
+routes, which delegate.
+
+Three existing bullets in that file already point here and should be
+cross-referenced rather than duplicated:
+
+- **"`security(("bearerAuth" = []))` — the empty array is the SCOPES
+  list, not decoration."** That is the declaration site. Scopes land
+  there as `security(("bearerAuth" = ["oxicloud:files:rw"]))`, so the
+  declaration rides in the spec rather than a side table, and
+  `openapi-spec-drift` keeps it fresh by construction.
+- **"OpenAPI has no field for a minimum role… use a pseudo-scope
+  (`["role:admin"]`)."** Gates therefore declare as `role:` pseudo-scopes
+  alongside the real `oxicloud:` ones. The `oxicloud:` prefix (§ Wire
+  format) is what keeps the two unambiguous in one array — a
+  client-requestable scope and a non-requestable gate can share the
+  field without sharing a namespace.
+- **"Declaring is not enforcing. utoipa's `security` wires nothing, so it
+  drifts from the real gate silently. Any scope worth declaring is worth
+  a test cross-checking it against the actual mount."** That is
+  precisely § Deliberately scopeless's exhaustiveness test. The file
+  already asked for it; this plan discharges the request.
+
+Two mechanisms, and the division matters:
+
+| mechanism | enforces | status |
+|---|---|---|
+| Redocly `security-defined: error` | every operation declares *something* | **shipped** (`checks/openapi/redocly.yaml`, 2026-11-14) — it found 14 operations declaring no auth at all |
+| exhaustiveness test | the declaration *matches* the mount | this plan |
+
+The lint catches silence; the test catches lies. Neither substitutes for
+the rule in `src/AGENTS.md`, which is what makes a contributor consider
+the axes before writing either.
+
 ## Test plan
 
 - Unit: the decision half (`decide_scope`) per variant, including the
