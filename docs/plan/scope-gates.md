@@ -265,7 +265,7 @@ door maps to exactly one area:
 | `photos` | `/api/photos`, `/api/people` |
 | `music` | `/api/playlists` |
 | `account` | `/api/auth/me`, `/api/auth/me/profile`, `/api/auth/me/image`, `/api/notifications`, `/remote.php/dav/avatars` — profile and preferences |
-| `security` | `/api/auth/change-password`, `/api/auth/oidc/link/start`, `/api/auth/oidc/unlink`, `/api/auth/dpop/bind`, `/api/auth/upgrade-to-internal`, `/api/auth/app-passwords`, `/api/auth/device/devices`, `/api/auth/device/verify` — and 2FA when it lands. **Never in a non-interactive ceiling; mutations also need `Gate::Elevated`** |
+| `security` | `/api/auth/change-password`, `/api/auth/oidc/link/start`, `/api/auth/oidc/unlink`, `/api/auth/upgrade-to-internal`, `/api/auth/app-passwords`, `/api/auth/device/devices`, `/api/auth/device/verify` — and 2FA when it lands. **Never in a non-interactive ceiling; mutations also need `Gate::Elevated`** |
 | `sharing` | `/api/grants`, `/api/shares`, `/api/s`, OCS sharing, and recipient lookup: `/api/users/{id}`, `/api/groups/search` |
 | `mail` | **reserved — see below** |
 
@@ -542,7 +542,6 @@ would hand the dangerous half to an rclone credential.
 |---|---|
 | `/api/auth/change-password` | replaces the credential everyone else authenticates with |
 | `/api/auth/oidc/link/start`, `/oidc/unlink` | adds or removes an identity provider that can log in as this user |
-| `/api/auth/dpop/bind` | binds a key to the session |
 | `/api/auth/upgrade-to-internal` | changes what the principal IS (external → internal) |
 | `/api/auth/app-passwords` | **mints credentials** |
 | `/api/auth/device/devices`, `/device/verify` | lists, revokes and *approves* device credentials |
@@ -587,6 +586,42 @@ who links their own Google account keeps access *after* the credential
 they used is revoked. It defeats revocation itself, which is the one
 control every other mitigation here falls back on.
 
+
+### Deliberately scopeless
+
+Not every route takes a credential-scoped decision, and saying so beats
+leaving blanks that read as oversights.
+
+- **`/api/auth/dpop/bind`** — binds a proof-of-possession key to the
+  CALLING session. It belongs here rather than in `security`, which is
+  where an earlier draft put it, and the correction matters twice over:
+  - It would have broken the feature. Non-interactive ceilings exclude
+    `security`, so requiring it would make a DPoP-bound app password
+    **impossible** — denying proof-of-possession to exactly the
+    long-lived credentials that most need it.
+  - It is safe to leave open. The operation is self-affecting (it cannot
+    touch another session or the account), strictly *narrowing* (a bound
+    token is harder to replay, not more capable), and **one-shot** —
+    rebinding answers `409 "Session already bound"`, so it cannot be
+    used to seize a session from a client that already bound.
+
+  A session may therefore be required to carry DPoP while holding no
+  right whatever to change the password. Those are different questions:
+  `Gate::DpopBound` asks how strongly this credential is held,
+  `Scope::Security` asks what it was issued to do.
+- **`/api/auth/logout`** — ends the caller's own session. Any credential
+  may do that; refusing would leave no way to put a key beyond use.
+- **`/api/rt/ticket`** — message-bus ticket issuance, DPoP-gated and
+  filtered like `/api/rt/ws`: it delivers events for whatever the caller
+  can already see.
+- **`/ocs/v1.php|v2.php/cloud/user`** — NC user-metadata probe, reached
+  by clients that already hold `account`.
+- **`/index.php/204`** — NC connectivity probe.
+- **Login and pre-auth flows** — `/api/auth/login`, `/register`,
+  `/refresh`, `/setup`, `/magic-link/send`, the OIDC callback pair. No
+  credential exists yet to carry a scope.
+- **Ops surface** — `/health`, `/ready`, `/metrics`, `/version`,
+  `/openapi.json`.
 ## Why
 
 ### Grant vs scope (AGENTS.md § Authorization)
@@ -823,6 +858,11 @@ field into an enforced one:
 - Migration: existing `device_codes` rows keep working. Pin the legacy
   default string explicitly, since enforcement is what turns a
   previously-inert column into a lockout risk.
+- Hurl: the counter-pin — a credential WITHOUT `security` can still
+  `POST /api/auth/dpop/bind` and `POST /api/auth/logout`. Without this,
+  a later tightening that folds session self-management into `security`
+  would silently make DPoP-bound app passwords impossible, and every
+  refusal pin above would still pass.
 
 ## When
 
