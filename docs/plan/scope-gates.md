@@ -592,6 +592,47 @@ control every other mitigation here falls back on.
 Not every route takes a credential-scoped decision, and saying so beats
 leaving blanks that read as oversights.
 
+**Scopeless is DECLARED, never absent.** This is the distinction the
+whole plan turns on: an ungated route and an explicitly-scopeless route
+behave identically at runtime and mean opposite things in review.
+`/api/auth/logout` is scopeless because someone decided any credential
+may put itself beyond use; `create_address_book` was reachable by
+externals because nobody decided anything. The second is the bug this
+file exists to fix, and it is invisible unless "no scope" has to be
+written down.
+
+So the mapping is **exhaustive by construction**, enforced by a test
+rather than by review attention:
+
+> Every operation in `resources/gen/openapi.json` must appear either in
+> the scope map or in an explicit `SCOPELESS` list. A route in neither
+> fails the test, naming the path.
+
+That works because the spec is already machinery we trust: 190 paths and
+235 operations today, **all of them `/api`**, regenerated from the
+`#[utoipa::path]` attributes and drift-checked by the
+`openapi-spec-drift` CI job. A contributor therefore cannot add a REST
+route without the spec changing, so the test cannot be bypassed by
+forgetting — the same reasoning as the `InternalCaller` token in § Why 2,
+applied to the scope axis: make the omission fail, not merely be
+visible.
+
+It also converts the orphan question from something a reviewer has to
+think to ask into a CI failure. Nine routes were unassigned in an
+earlier draft of this file — four of them escalation paths — and they
+stayed unassigned until someone asked "are there routes still scope
+orphan?". That question should not depend on someone having the idea.
+
+Coverage boundary, stated rather than assumed: the spec contains no
+non-`/api` paths, because `/webdav`, `/caldav`, `/carddav`,
+`/remote.php` and `/wopi` dispatch through `any` handlers and carry no
+utoipa annotations. Those are mapped wholesale per § scope table, so a
+second assertion covers them — each mount prefix maps to exactly one
+scope, and a new mount in `main.rs` without a mapping fails the same
+test.
+
+The current `SCOPELESS` list, each entry with its reason:
+
 - **`/api/auth/dpop/bind`** — binds a proof-of-possession key to the
   CALLING session. It belongs here rather than in `security`, which is
   where an earlier draft put it, and the correction matters twice over:
@@ -863,6 +904,14 @@ field into an enforced one:
   a later tightening that folds session self-management into `security`
   would silently make DPoP-bound app passwords impossible, and every
   refusal pin above would still pass.
+- Unit: **the exhaustiveness test** — every operation in
+  `resources/gen/openapi.json` appears in the scope map or the
+  `SCOPELESS` list, and every non-`/api` mount prefix in `main.rs` maps
+  to exactly one scope. This is the pin that makes the other scope pins
+  maintainable: without it, a route added later is silently ungated and
+  nothing fails. Nine routes sat unassigned in an earlier draft of this
+  plan — four of them escalation paths — and stayed that way until a
+  reviewer thought to ask.
 
 ## When
 
