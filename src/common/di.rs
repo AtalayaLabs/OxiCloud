@@ -2667,8 +2667,33 @@ impl AppServiceFactory {
             );
         }
 
+        let theme_loader = Arc::new(crate::infrastructure::services::theme_loader::ThemeLoader {
+            config: self.config.themes.clone(),
+        });
+        let startup_loader = theme_loader.clone();
+        let catalogue = tokio::task::spawn_blocking(move || {
+            use crate::application::ports::theme_ports::ThemeCatalogueLoader;
+            startup_loader.load()
+        })
+        .await
+        .map_err(|e| DomainError::internal_error("Theme", e.to_string()))??;
+        let theme_service = Arc::new(
+            crate::application::services::theme_service::ThemeService::new(
+                Arc::new(
+                    crate::infrastructure::repositories::pg::SettingsPgRepository::new(
+                        pool.clone(),
+                    ),
+                ),
+                catalogue,
+            )
+            .await?
+            .with_loader(theme_loader)
+            .with_forced_default(self.config.themes.force_default),
+        );
+
         // 9. Assemble final AppState
         let mut app_state = AppState {
+            theme_service,
             core,
             repositories: repos,
             applications: apps,
@@ -4103,6 +4128,7 @@ pub struct NextcloudServices {
 /// Global application state for dependency injection
 #[derive(Clone)]
 pub struct AppState {
+    pub theme_service: Arc<crate::application::services::theme_service::ThemeService<crate::infrastructure::repositories::pg::SettingsPgRepository>>,
     pub core: CoreServices,
     pub repositories: RepositoryServices,
     pub applications: ApplicationServices,

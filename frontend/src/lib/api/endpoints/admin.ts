@@ -1182,3 +1182,25 @@ export function subscribePluginLogs(
 	});
 	return { close: () => controller.abort() };
 }
+
+/** Global appearance is admin-only; CSS itself remains public for login. */
+export function getAppearance(): Promise<import('$lib/api/types').AppearanceDto> {
+	return apiJson('/api/admin/settings/appearance', { credentials: 'same-origin' });
+}
+export function selectTheme(themeId: string): Promise<import('$lib/api/types').AppearanceDto> {
+	return apiJson('/api/admin/settings/appearance', {
+		method: 'PUT',
+		credentials: 'same-origin',
+		headers: { ...JSON_HEADERS, ...getCsrfHeaders() },
+		body: JSON.stringify({ theme_id: themeId })
+	});
+}
+
+/** Rescan operator theme files; the server publishes a validated snapshot. */
+export function reloadThemes(): Promise<import('$lib/api/types').AppearanceDto> {
+	return apiJson('/api/admin/settings/appearance/reload', {
+		method: 'POST',
+		credentials: 'same-origin',
+		headers: getCsrfHeaders()
+	});
+}

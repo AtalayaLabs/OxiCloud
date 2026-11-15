@@ -1,0 +1,761 @@
+/* Basalt — an editorial library for a shared document workspace.
+ * Install this folder, refresh Admin > Appearance, then select basalt.
+ * Self-contained CSS: no assets, imports or changes to application markup.
+ * light-dark() follows each user's light / dark / system preference.
+ * Design process informed by unslop, Damir Sokolovsky (@heydamir), CC BY 4.0:
+ * https://heydamir.design/unslop (guidance, not vendored code).
+ */
+:root {
+    /* Neutral surfaces. Keep the content, rather than the chrome, colourful. */
+    --color-bg-page: light-dark(#f3f4f5, #111315);
+    --color-bg-surface: light-dark(#fff, #1b1e22);
+    --color-bg-input: light-dark(#f8f9fa, #15181b);
+    --color-bg-input-alt: light-dark(#e8eaed, #292d32);
+    --color-bg-hover: var(--color-bg-input-alt);
+    --color-bg-muted: light-dark(#eceef0, #23272c);
+    --color-bg-subtle: light-dark(#f8f9fa, #171a1e);
+    --color-bg-alt: var(--color-bg-page);
+    --color-bg-empty: var(--color-bg-muted);
+    --color-bg-off-white: var(--color-bg-subtle);
+    --color-neutral-bg: var(--color-bg-muted);
+    --color-neutral-warm-bg: var(--color-bg-muted);
+    --color-neutral-warm-text: var(--color-text-secondary);
+    --color-notification-bg: var(--color-bg-surface);
+
+    /* Three ink roles. Alias legacy tiers so small metadata stays readable. */
+    --color-text: light-dark(#202429, #edf0f2);
+    --color-text-heading: var(--color-text);
+    --color-text-secondary: light-dark(#454c56, #c1c7cf);
+    --color-text-muted: light-dark(#59616c, #a8b0ba);
+    --color-text-subtle: var(--color-text-muted);
+    --color-text-faint: var(--color-text-muted);
+    --color-text-navy: var(--color-text);
+    --color-content-muted: var(--color-text-muted);
+    --color-recent-muted: var(--color-text-muted);
+    --color-recent-border: var(--color-text-muted);
+    --color-share-owner-text: var(--color-text-muted);
+
+    --color-border: light-dark(#d8dce1, #363b42);
+    --color-border-light: light-dark(#e6e8eb, #2c3036);
+    --color-border-medium: light-dark(#858e9a, #78838f);
+    --color-border-faint: var(--color-border-light);
+    --color-border-subtle: var(--color-border);
+    --color-border-xfaint: var(--color-border-light);
+    --color-border-ddd: var(--color-border);
+    --color-dark-footer: var(--color-bg-subtle);
+    --color-scrim-control: light-dark(#ffffffeb, #1b1e22eb);
+
+    /* OxiCloud orange: dark ink on fills, separate accessible ink for links.
+     * Gradient consumers require an image, not a bare colour value. */
+    --color-accent: #ff5e3a;
+    --color-accent-hover: #f4512d;
+    --color-on-accent: #17191d;
+    --color-accent-text: light-dark(#b63517, #ff916f);
+    --color-accent-mid: var(--color-accent-text);
+    --color-accent-second: var(--color-accent);
+    --color-focus-ring: var(--color-accent-text);
+    --color-accent-gradient: linear-gradient(var(--color-accent), var(--color-accent));
+    --color-logo-gradient: var(--color-accent-gradient);
+    --color-accent-tint: light-dark(#fceee8, #35251f);
+    --color-accent-bg: light-dark(#fbf2ed, #2d221e);
+    --color-accent-bg-sm: var(--color-accent-bg);
+    --color-accent-ring: light-dark(#b635171a, #ff916f24);
+    --color-accent-ring-dark: var(--color-accent-ring);
+    --color-accent-ring-strong: light-dark(#b635172e, #ff916f38);
+    --color-accent-ring-xl: light-dark(#b635174d, #ff916f52);
+    --color-accent-ring-xs: light-dark(#b635170d, #ff916f14);
+    --color-accent-shadow: transparent;
+    --color-accent-shadow-sm: transparent;
+    --color-accent-shadow-lg: transparent;
+    --color-accent-glow: transparent;
+    --color-accent-glow-soft: transparent;
+    --brand-ambient: var(--color-bg-page);
+    --brand-grain: none;
+
+    /* Selection survives pointer exit; a deposit target uses a dashed frame. */
+    --color-item-active: light-dark(#f6e2d8, #483026);
+    --color-item-selected: var(--color-accent-tint);
+    --color-item-hover-accent: var(--color-item-active);
+    --color-item-hover-blue: var(--color-bg-hover);
+    --color-item-hover-sky: var(--color-accent-bg);
+    --color-card-drop-tint: var(--color-accent-bg);
+    --color-card-drop-border: var(--color-accent-text);
+
+    /* A graphite rail in both modes. Independent ink avoids light-mode
+     * content colours leaking into the permanently dark navigation. */
+    --color-sidebar-bg-from: #1b1e22;
+    --color-sidebar-bg-to: var(--color-sidebar-bg-from);
+    --color-sidebar-text: #c1c7cf;
+    --color-sidebar-text-hover: #edf0f2;
+    --color-sidebar-text-active: #edf0f2;
+    --color-sidebar-active-bg: #30353c;
+    --color-sidebar-hover-bg: #262b31;
+    --color-sidebar-separator: #363b42;
+    --color-sidebar-storage-bg: #23272c;
+    --color-sidebar-storage-border: var(--color-sidebar-separator);
+    --color-sidebar-storage-text: var(--color-sidebar-text);
+    --color-sidebar-storage-faint: #a8b0ba;
+    --color-sidebar-storage-bar: #454d57;
+    --color-sidebar-progress: var(--color-accent-gradient);
+    --color-sidebar-logo-gradient: var(--color-accent-gradient);
+    --color-sidebar-shadow: transparent;
+    --color-sidebar-shadow-lg: transparent;
+    --color-user-menu-header-bg: linear-gradient(var(--color-bg-subtle), var(--color-bg-subtle));
+    --color-user-menu-header-border: var(--color-border);
+    --color-avatar-gradient: linear-gradient(#454c56, #454c56);
+    --color-music-gradient: linear-gradient(#23272c, #23272c);
+    --color-oidc-bg: var(--color-accent);
+
+    /* File colours identify content, never navigation destinations.
+     * Calendars, syntax, user avatars and semantic feedback retain meaning. */
+    --file-kind-generic: var(--color-text-muted);
+    --file-kind-folder: var(--color-text-secondary);
+    --file-kind-text: var(--color-text-muted);
+    --file-kind-doc: light-dark(#45658a, #9bb9dc);
+    --file-kind-pdf: light-dark(#a64e4e, #e3a0a0);
+    --file-kind-sheet: light-dark(#46745b, #99c6ac);
+    --file-kind-slides: light-dark(#9c5a35, #dcb493);
+    --file-kind-archive: light-dark(#88683f, #d3bc94);
+    --file-kind-code: light-dark(#76618c, #c0abd6);
+    --file-kind-image: light-dark(#3e737c, #98c6cb);
+    --file-kind-video: light-dark(#896185, #cba7c7);
+    --file-kind-audio: light-dark(#956278, #d5a9bb);
+
+    /* Flat destructive actions; restrained elevation only for floating UI. */
+    --color-danger-gradient: linear-gradient(var(--color-danger-bg), var(--color-danger-bg));
+    --color-shadow-xs: light-dark(#17191d05, #0000);
+    --color-shadow-sm: light-dark(#17191d0a, #00000014);
+    --color-shadow-md: light-dark(#17191d14, #00000029);
+    --color-shadow: var(--color-shadow-sm);
+    --color-shadow-lg: var(--color-shadow-md);
+    --color-shadow-xl: var(--color-shadow-md);
+    --color-oidc-shadow: transparent;
+    --color-oidc-shadow-lg: transparent;
+
+    --radius-lg: 8px;
+    --radius-xl: 8px;
+    --radius-2xl: 12px;
+    --radius-3xl: 16px;
+    --radius-4xl: 16px;
+    --weight-bold: 600;
+    --weight-extrabold: 600;
+    --tracking-tight: 0;
+    --tracking-tighter: 0;
+    --basalt-reading-pad: var(--space-4);
+    --basalt-caption-height: var(--space-10);
+}
+
+/* Keep selectors stronger than late-loaded component / HMR rules, without
+ * overriding geometry, drawer transforms or user-controlled rail widths. */
+html:root .sidebar {
+    background: var(--color-sidebar-bg-from);
+    box-shadow: none;
+    border-inline-end: 1px solid var(--color-sidebar-separator);
+}
+
+html:root .sidebar .nav-item {
+    min-height: var(--space-11);
+    padding-block: var(--space-2);
+    padding-inline: var(--space-3);
+    font-size: var(--text-base);
+    line-height: var(--leading-snug);
+    transition:
+        color var(--motion-fast) var(--ease-standard),
+        background-color var(--motion-fast) var(--ease-standard);
+}
+
+/* An inset line leaves the row and its text in exactly the same position.
+ * Logical placement follows RTL and remains legible in the collapsed rail. */
+html:root .sidebar .nav-item.active::before {
+    content: "";
+    position: absolute;
+    inset-inline-start: 0;
+    inset-block: var(--space-2);
+    width: var(--space-0-5);
+    border-radius: var(--radius-xs);
+    background: var(--color-accent);
+}
+
+html:root .sidebar .nav-item :is(.oxi-icon, i, .nav-icon) {
+    color: inherit;
+    width: var(--icon-lg);
+    height: var(--icon-lg);
+    margin-inline: 0 var(--space-2);
+}
+
+html:root :is(.nav-group__label, .heading-eyebrow, .rl-swimlane-header, .admin-chip) {
+    text-transform: none;
+    letter-spacing: 0;
+}
+
+html:root .nav-group__label {
+    padding: var(--space-6) var(--space-3) var(--space-2);
+}
+
+html:root .app-name {
+    font-weight: var(--weight-semibold);
+    letter-spacing: 0;
+}
+
+html:root .logo {
+    border-radius: var(--radius-lg);
+}
+
+html:root .logo:hover {
+    transform: none;
+}
+
+html:root :is(.logo svg, .auth-logo-icon svg) {
+    fill: var(--color-on-accent);
+}
+
+html:root .top-bar {
+    background: var(--color-bg-page);
+    border-bottom: 0;
+}
+
+html:root .search-container input {
+    height: var(--space-12);
+    border-radius: var(--radius-lg);
+    transition:
+        background-color var(--motion-fast) var(--ease-standard),
+        border-color var(--motion-fast) var(--ease-standard);
+}
+
+html:root .search-button {
+    inset-inline-end: var(--space-1);
+    width: var(--space-10);
+    height: var(--space-10);
+    background: var(--color-bg-input-alt);
+    color: var(--color-text-secondary);
+    border-radius: var(--radius-sm);
+}
+
+/* Do not override colour here: loading buttons intentionally hide their text.
+ * Leave disabled and busy states, spinners and input focus outlines intact. */
+html:root .btn {
+    border-radius: var(--radius-lg);
+    transition:
+        color var(--motion-fast) var(--ease-standard),
+        background-color var(--motion-fast) var(--ease-standard),
+        border-color var(--motion-fast) var(--ease-standard),
+        filter var(--motion-fast) var(--ease-standard),
+        transform var(--motion-fast) var(--ease-standard);
+}
+
+html:root :is(.auth-button, .auth-button-sso) {
+    border-radius: var(--radius-lg);
+    box-shadow: none;
+    transition:
+        background-color var(--motion-base) var(--ease-standard),
+        border-color var(--motion-base) var(--ease-standard),
+        filter var(--motion-base) var(--ease-standard);
+}
+
+html:root :is(.auth-button, .auth-button-sso):hover {
+    transform: none;
+}
+
+html:root .auth-logo-icon {
+    border-radius: var(--radius-lg);
+    box-shadow: none;
+}
+
+/* Document cards keep the original preview and overlay-control geometry. */
+html:root .files-grid-view .file-item {
+    align-items: stretch;
+    border-radius: var(--radius-lg);
+    padding-bottom: 0;
+    background: var(--color-bg-surface);
+    box-shadow: none;
+    transition:
+        background-color var(--motion-fast) var(--ease-standard),
+        border-color var(--motion-fast) var(--ease-standard);
+}
+
+html:root .files-grid-view .file-item:hover {
+    border-color: var(--color-border-medium);
+}
+
+html:root .files-grid-view .file-item:is(:hover, .selected) {
+    box-shadow: none;
+}
+
+html:root .files-grid-view .file-item.selected {
+    background-color: var(--color-item-selected);
+    border-color: var(--color-focus-ring);
+}
+
+html:root .files-grid-view .file-item.selected:hover {
+    background-color: var(--color-item-active);
+}
+
+html:root .files-grid-view .file-item .file-icon {
+    background: var(--color-bg-subtle);
+    box-shadow: none;
+    border-radius: var(--radius-sm);
+    border-bottom: 1px solid var(--color-border-light);
+    margin-bottom: 0;
+}
+
+html:root .files-grid-view .file-item:hover .file-icon .file-thumb,
+html:root .files-grid-view .file-item:hover .file-icon > :is(svg, i) {
+    transform: none;
+}
+
+html:root .files-grid-view .file-item .checkbox-cell input:checked::after {
+    border-color: var(--color-on-accent);
+}
+
+html:root .files-grid-view .file-item.drop-target {
+    background-color: var(--color-card-drop-tint);
+    border-color: var(--color-card-drop-border);
+    border-style: dashed;
+}
+
+html:root :is(.size-cell, .date-cell, .grid-meta, .storage-info, .storage-version-value) {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+}
+
+/* Reading room. Keep the application's scrollport and its measured sticky
+ * header: the inset is padding on that port, never a second scroll container.
+ * Do not change grid minimums / gaps: gridColumns() mirrors them in JS. */
+html:root .main-content {
+    min-width: 0;
+}
+
+html:root .content-area {
+    padding-top: var(--basalt-reading-pad);
+}
+
+html:root .page-title {
+    font-size: var(--text-2xl);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-tight);
+    letter-spacing: 0;
+    margin-bottom: var(--space-6);
+}
+
+html:root .page-sticky-header {
+    top: calc(-1 * var(--basalt-reading-pad));
+    padding-block: var(--space-2) var(--space-4);
+    background: var(--color-bg-page);
+    border-bottom: 1px solid var(--color-border-light);
+    box-shadow: none;
+    margin-bottom: var(--space-5);
+}
+
+html:root .page-sticky-header .actions-bar {
+    align-items: center;
+    gap: var(--space-3);
+    margin-bottom: 0;
+}
+
+html:root .rl-toolbar-title {
+    margin-bottom: 0;
+}
+
+html:root .rl-breadcrumb {
+    margin-block: var(--space-1) 0;
+    padding-top: 0;
+    border-top: 0;
+}
+
+/* Title, actions and path read as one page heading. A single divider below
+ * it separates navigation from documents; spacing does the grouping above. */
+html:root .rl-toolbar--with-title {
+    margin-bottom: 0;
+}
+
+/* Navigation targets need room around the label, not just a larger glyph.
+ * Keep each share button separate from its crumb, with non-overlapping hit
+ * areas and full-contrast ink even before hover. The trail may still wrap. */
+html:root .breadcrumb {
+    gap: var(--space-1);
+    font-size: var(--text-md);
+}
+
+html:root .breadcrumb-item {
+    display: inline-flex;
+    align-items: center;
+    min-height: var(--space-11);
+    min-width: var(--space-11);
+    max-width: 100%;
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-lg);
+}
+
+html:root .breadcrumb-crumb-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+html:root .breadcrumb-share {
+    flex-shrink: 0;
+    min-width: var(--space-11);
+    min-height: var(--space-11);
+    margin: 0;
+    padding: var(--space-3);
+    border-radius: var(--radius-lg);
+    opacity: 1;
+}
+
+html:root .breadcrumb-share:is(:hover, :focus-visible) {
+    color: var(--color-accent-text);
+    background: var(--color-accent-bg);
+}
+
+html:root .breadcrumb :is(.breadcrumb-home, .breadcrumb-share) > .oxi-icon {
+    width: var(--icon-lg);
+    height: var(--icon-lg);
+}
+
+html:root .rl-swimlane-header {
+    font-weight: var(--weight-medium);
+    color: var(--color-text-secondary);
+}
+
+html:root .lane__header--sticky {
+    top: calc(var(--lane-sticky-h, 0px) - var(--basalt-reading-pad));
+}
+
+/* A document's preview and caption form one library plate. Keep the 8px
+ * card padding: checkbox/action overlays are positioned against that inset.
+ * Reserve identical caption heights even for folders without metadata, so
+ * virtualised rows have a single pitch. No nth-child decoration/reordering. */
+html:root .files-grid-view .file-item .name-cell {
+    text-align: start;
+    font-size: var(--text-base);
+    margin: 0;
+}
+
+html:root .files-grid-view .file-item .name-cell__body {
+    display: flex;
+    align-items: center;
+    height: var(--basalt-caption-height);
+    padding-inline: var(--space-2);
+    min-width: 0;
+}
+
+html:root .files-grid-view .file-item .grid-meta {
+    justify-content: flex-start;
+    height: var(--space-8);
+    margin-top: 0;
+    padding: 0 var(--space-2);
+    border-top: 1px solid var(--color-border-light);
+    font-size: var(--text-xs);
+}
+
+html:root .files-grid-view .file-item .grid-meta--with-actions {
+    padding-inline-end: var(--space-9);
+}
+
+html:root .files-grid-view .grid-meta__line {
+    min-width: 0;
+}
+
+html:root :is(.grid-meta__size, .grid-meta__date) {
+    font-family: var(--font-mono);
+}
+
+html:root .files-grid-view .grid-meta__size::before {
+    content: none;
+}
+
+/* Reserve the preview's top strip for selection/share controls. A smaller
+ * glyph on phones fits beneath that strip even at the 140px card minimum. */
+html:root .files-grid-view .file-icon > :is(svg, i) {
+    inset-block-start: var(--space-12);
+    width: var(--space-10);
+    height: var(--space-10);
+}
+
+@media (width >= 641px) {
+    html:root .files-grid-view .file-icon > :is(svg, i) {
+        inset-block-start: var(--space-8);
+        width: var(--space-12);
+        height: var(--space-12);
+    }
+}
+
+html:root .files-grid-view .file-item.selected::before {
+    content: "";
+    position: absolute;
+    inset-inline-start: -1px;
+    inset-block: var(--space-3);
+    width: var(--space-0-5);
+    background: var(--color-focus-ring);
+    pointer-events: none;
+}
+
+html:root .files-list-view {
+    box-shadow: none;
+    border-radius: var(--radius-lg);
+}
+
+html:root .files-list-view .list-header {
+    background: var(--color-bg-muted);
+    color: var(--color-text-secondary);
+    font-weight: var(--weight-medium);
+}
+
+html:root .files-list-view .file-item {
+    border-bottom-color: var(--color-border-light);
+}
+
+html:root .files-list-view .file-item.selected {
+    background: var(--color-item-selected);
+    box-shadow: inset 2px 0 var(--color-focus-ring);
+}
+
+html:root[dir="rtl"] .files-list-view .file-item.selected {
+    box-shadow: inset -2px 0 var(--color-focus-ring);
+}
+
+html:root .files-list-view .file-item.selected:hover {
+    background: var(--color-item-active);
+}
+
+/* Quiet furniture around the collection. Never override text/opacity on
+ * entire buttons: loading states intentionally make their label transparent. */
+html:root .search-button:hover {
+    background: var(--color-bg-hover);
+    color: var(--color-accent-text);
+}
+
+html:root .search-kbd {
+    font-family: var(--font-mono);
+    border-radius: var(--radius-xs);
+    box-shadow: none;
+}
+
+html:root .storage-container {
+    border-radius: var(--radius-lg);
+    box-shadow: none;
+    padding: var(--space-4);
+}
+
+html:root .storage-bar {
+    height: var(--space-1);
+    border-radius: var(--radius-xs);
+}
+
+html:root .modal {
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-3xl);
+}
+
+html:root .modal__header {
+    padding: var(--space-6);
+    border-bottom: 1px solid var(--color-border-light);
+}
+
+html:root .modal__title {
+    font-size: var(--text-2xl);
+    font-weight: var(--weight-medium);
+}
+
+html:root .modal__close {
+    border-radius: var(--radius-lg);
+}
+
+html:root .modal__footer {
+    justify-content: flex-end;
+}
+
+html:root :is(.ctx-menu, .group-by-menu) {
+    border-radius: var(--radius-lg);
+    padding: var(--space-2);
+}
+
+html:root .ctx-menu .menu-item {
+    border-radius: var(--radius-sm);
+}
+
+html:root .user-menu {
+    border: 1px solid var(--color-border);
+    box-shadow: var(--shadow-md);
+}
+
+html:root .admin-page {
+    gap: var(--space-6);
+}
+
+html:root .admin-page .admin-card {
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-6);
+    box-shadow: none;
+}
+
+html:root .admin-page .admin-card > h2 {
+    font-size: var(--text-lg);
+    font-weight: var(--weight-medium);
+    margin-bottom: var(--space-4);
+}
+
+html:root .admin-page .admin-table {
+    box-shadow: none;
+}
+
+/* Sign-in is the library's title page, using only existing content. The
+ * page, rather than an oversized fixed card, scrolls on short viewports. */
+html:root .auth-container {
+    justify-content: flex-start;
+    overflow-y: auto;
+    padding: var(--space-6) var(--space-4);
+}
+
+html:root .auth-panel {
+    flex-shrink: 0;
+    width: min(100%, 28rem);
+    max-width: 100%;
+    margin-block: auto;
+    padding: var(--space-6);
+    border-radius: var(--radius-lg);
+    box-shadow: none;
+    text-align: start;
+}
+
+html:root .auth-logo {
+    justify-content: flex-start;
+    margin-bottom: var(--space-8);
+}
+
+html:root .auth-title {
+    font-size: var(--text-2xl);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-tight);
+    margin-bottom: var(--space-8);
+}
+
+html:root .auth-input-group {
+    margin-bottom: var(--space-6);
+}
+
+/* Components sometimes reuse the fill token as text. Separate that ink from
+ * orange fills, particularly on light surfaces; never recolour entire buttons. */
+html:root :is(
+    .toggle-btn.active,
+    .group-by-option.active,
+    .subnav__tab.active,
+    .list-header-sort.is-active,
+    .list-header-sort:hover,
+    .list-header-sort__arrow,
+    .photos-group__count,
+    .breadcrumb-link:hover,
+    .notif-bell-btn.active,
+    .notif-bell-btn:hover,
+    .notif-clear-btn:hover,
+    .user-menu-admin,
+    .mobile-nav__item--active
+) {
+    color: var(--color-accent-text);
+}
+
+html:root .theme-segmented__opt--active,
+html:root .theme-segmented__opt--active:hover {
+    color: var(--color-on-accent);
+}
+
+/* Desktop density is independent from touch targets. Do not fix the rail's
+ * width: its resize, collapsed state and mobile drawer remain application-owned. */
+@media (width >= 769px) {
+    html:root {
+        --gutter: var(--space-8);
+    }
+
+    /* Navigation and the space around the reading surface share one graphite
+     * backdrop. Only the reading surface owns an outline: a sidebar divider
+     * touching its rounded corner made the two surfaces look welded together.
+     * Keep the full inset when the rail is collapsed, resized or RTL. */
+    html:root body:has(.sidebar) {
+        background: var(--color-sidebar-bg-from);
+    }
+
+    html:root .sidebar {
+        border-inline-end: 0;
+    }
+
+    html:root .main-content {
+        margin: var(--space-3);
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-3xl);
+        background: var(--color-bg-page);
+    }
+
+    html:root .top-bar {
+        --top-bar-h: var(--space-16);
+    }
+
+    html:root .search-container input {
+        height: var(--space-10);
+    }
+
+    html:root .search-button {
+        width: var(--space-8);
+        height: var(--space-8);
+    }
+
+    html:root .page-title {
+        font-size: var(--text-4xl);
+        margin-bottom: var(--space-8);
+    }
+
+    html:root .rl-toolbar-title {
+        margin-bottom: 0;
+    }
+
+    html:root .auth-panel {
+        padding: var(--space-12);
+        border-radius: var(--radius-3xl);
+    }
+
+    html:root .auth-title {
+        font-size: var(--text-4xl);
+    }
+
+    html:root .sidebar .nav-item {
+        min-height: var(--space-10);
+        padding-block: var(--space-2);
+    }
+
+    html:root[data-density="compact"] .sidebar .nav-item {
+        min-height: var(--space-9);
+        padding-block: var(--space-1-5);
+    }
+
+    html:root .sidebar--collapsed .nav-item {
+        padding-inline: 0;
+    }
+
+    html:root .sidebar--collapsed .nav-item :is(.oxi-icon, i, .nav-icon) {
+        margin-inline: 0;
+    }
+}
+
+/* Stronger selectors above must not defeat the application's accessibility
+ * overrides. Use local ink for borders, letting OS colours win in forced mode. */
+@media (prefers-contrast: more) {
+    /* Repeat :root to beat the late-loaded html:root base ramp during HMR,
+     * including automatic mode, which has no data-color-scheme attribute. */
+    html:root:root {
+        --color-border: var(--color-text-secondary);
+        --color-border-light: var(--color-text-secondary);
+        --color-border-medium: var(--color-text-secondary);
+        --color-text-muted: var(--color-text-secondary);
+        --color-text-subtle: var(--color-text-secondary);
+        --color-text-faint: var(--color-text-secondary);
+        --color-sidebar-separator: var(--color-sidebar-text);
+    }
+}
+
+@media (forced-colors: active) {
+    html:root .sidebar .nav-item.active::before,
+    html:root .files-grid-view .file-item.selected::before {
+        background: Highlight;
+    }
+}

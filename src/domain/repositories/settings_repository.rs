@@ -4,23 +4,28 @@ use uuid::Uuid;
 
 /// Repository for platform settings stored in the database.
 /// Settings are key-value pairs organized by category (e.g., "oidc", "general").
+/// Point reads/writes return Send futures so serialized settings mutations can
+/// finish independently of an HTTP request being cancelled.
 pub trait SettingsRepository: Send + Sync + 'static {
     /// Get a single setting value by key
-    async fn get(&self, key: &str) -> Result<Option<String>, DomainError>;
+    fn get(
+        &self,
+        key: &str,
+    ) -> impl std::future::Future<Output = Result<Option<String>, DomainError>> + Send;
 
     /// Get all settings for a given category
     async fn get_by_category(&self, category: &str)
     -> Result<HashMap<String, String>, DomainError>;
 
     /// Set a setting value (upsert)
-    async fn set(
+    fn set(
         &self,
         key: &str,
         value: &str,
         category: &str,
         is_secret: bool,
         updated_by: Option<Uuid>,
-    ) -> Result<(), DomainError>;
+    ) -> impl std::future::Future<Output = Result<(), DomainError>> + Send;
 
     /// Delete a setting by key
     async fn delete(&self, key: &str) -> Result<(), DomainError>;

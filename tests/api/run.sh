@@ -276,6 +276,7 @@ seed_mount_fixtures() {
 }
 
 cleanup() {
+  if [[ -n "${THEME_FIXTURE_ROOT:-}" ]]; then rm -rf "$THEME_FIXTURE_ROOT"; fi
   # Before the server goes down, so a wedged provider handle can't keep the
   # tree alive on platforms that refuse to unlink open files.
   rm -rf "$MOUNT_FIXTURE_ROOT"
@@ -379,6 +380,11 @@ if [[ ! -x "$OXICLOUD_BIN" ]]; then
   die "Build completed but $OXICLOUD_BIN is missing — wrong BUILD_TARGET?"
 fi
 
+# Themes are discovered at boot; fixtures must exist before starting the server.
+THEME_FIXTURE_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/oxicloud-themes.XXXXXX")
+mkdir -p "$THEME_FIXTURE_ROOT/hurl-sober"
+printf ':root { --color-accent: \043123456; }\n.theme-smoke { border-radius: 2rem !important; }\n' > "$THEME_FIXTURE_ROOT/hurl-sober/index.css"
+export OXICLOUD_THEMES_PATH="$THEME_FIXTURE_ROOT"
 log "Starting OxiCloud server ($BUILD_TARGET) on port $SERVER_PORT..."
 # `--config` pins the env file the binary reads AND suppresses the default
 # `.env` probe in main.rs, so a developer's repo-root `.env` can never leak
@@ -572,6 +578,7 @@ HURL_FILES=( \
   # dashboard flags derived from the ACTIVE BACKEND, so it must stay above the
   # backend_* group at the bottom of this array.
   "$API_DIR/admin_advisories.hurl" \
+  "$API_DIR/themes.hurl" \
   "$API_DIR/ops_banners.hurl" \
   "$API_DIR/recoverable_jobs.hurl" \
   # Adjacent to recoverable_jobs.hurl, which pins the INLINE trigger

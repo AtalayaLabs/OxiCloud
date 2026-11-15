@@ -1,0 +1,227 @@
+/* Slate — neutral surfaces, muted blue actions and a flat file browser.
+ * light-dark() follows OxiCloud's data-color-scheme / system preference.
+ * Feedback, calendar categories and syntax highlighting retain their semantics.
+ * Existing tokens carry the palette; the final rules adapt navigation and
+ * accent text where the application shares fill and foreground colors.
+ */
+:root {
+    /* Layered surfaces: a quiet canvas, crisp panels and distinct hover states. */
+    --color-bg-page: light-dark(#f1f3f7, #0c0e11);
+    --color-bg-surface: light-dark(#ffffff, #14171b);
+    --color-bg-input: light-dark(#f8fafd, #101216);
+    --color-bg-input-alt: light-dark(#eaf0f7, #262a30);
+    --color-bg-hover: light-dark(#eaf0f7, #24282e);
+    --color-bg-muted: light-dark(#e9edf3, #1c1f24);
+    --color-bg-subtle: light-dark(#f7f9fc, #101215);
+    --color-bg-alt: var(--color-bg-page);
+    --color-bg-empty: var(--color-bg-muted);
+    --color-bg-off-white: var(--color-bg-subtle);
+    --color-neutral-bg: var(--color-bg-muted);
+    --color-neutral-warm-bg: var(--color-bg-muted);
+    --color-neutral-warm-text: var(--color-text-secondary);
+    --color-notification-bg: var(--color-bg-surface);
+
+    /* Text tiers remain readable on surfaces, hover fills and selections. */
+    --color-text-heading: light-dark(#142238, #f1f2f4);
+    --color-text: light-dark(#25344a, #e0e2e6);
+    --color-text-secondary: light-dark(#40516a, #c4c8cf);
+    --color-text-muted: light-dark(#4b5c73, #b7bdc6);
+    --color-text-subtle: light-dark(#526279, #adb4bf);
+    --color-text-faint: light-dark(#58677d, #a5adb9);
+    --color-text-navy: var(--color-text-heading);
+    --color-content-muted: var(--color-text-muted);
+    --color-recent-muted: var(--color-text-muted);
+    --color-recent-border: var(--color-text-faint);
+    --color-share-owner-text: var(--color-text-muted);
+
+    /* Fine separators stay quiet; interactive borders have a stronger tier. */
+    --color-border: light-dark(#d5deea, #30353d);
+    --color-border-light: light-dark(#e5ebf3, #24282f);
+    --color-border-medium: light-dark(#91a1b8, #697380);
+    --color-border-faint: var(--color-border-light);
+    --color-border-subtle: var(--color-border);
+    --color-border-xfaint: var(--color-border-light);
+    --color-border-ddd: var(--color-border);
+
+    /* White on a blue fill in both modes; a separate lighter link color at night. */
+    --color-accent: light-dark(#365b96, #45618b);
+    --color-accent-hover: light-dark(#2d4d80, #3b5379);
+    --color-accent-text: light-dark(#365b96, #bdc9dc);
+    --color-accent-mid: var(--color-accent-text);
+    --color-accent-second: var(--color-accent);
+    --color-on-accent: #ffffff;
+    --color-focus-ring: light-dark(#365b96, #bdc9dc);
+    --color-accent-gradient: linear-gradient(135deg, var(--color-accent), var(--color-accent));
+    --color-logo-gradient: var(--color-accent-gradient);
+    --color-accent-tint: light-dark(#edf0f5, #272c35);
+    --color-accent-bg: light-dark(#f0f3f7, #1c2129);
+    --color-accent-bg-sm: var(--color-accent-bg);
+    --color-accent-ring: light-dark(rgba(54, 91, 150, 0.1), rgba(189, 201, 220, 0.14));
+    --color-accent-ring-dark: var(--color-accent-ring);
+    --color-accent-ring-strong: light-dark(rgba(54, 91, 150, 0.18), rgba(189, 201, 220, 0.22));
+    --color-accent-ring-xl: light-dark(rgba(54, 91, 150, 0.3), rgba(189, 201, 220, 0.32));
+    --color-accent-ring-xs: light-dark(rgba(54, 91, 150, 0.05), rgba(189, 201, 220, 0.08));
+    --color-accent-shadow: light-dark(rgba(54, 91, 150, 0.12), rgba(0, 0, 0, 0.2));
+    --color-accent-shadow-sm: var(--color-accent-shadow);
+    --color-accent-shadow-lg: var(--color-accent-shadow);
+    --color-accent-glow: var(--color-accent-ring);
+    --color-accent-glow-soft: var(--color-accent-ring-xs);
+    --brand-ambient: radial-gradient(ellipse at 50% 0%, var(--color-accent-bg), transparent 65%), var(--color-bg-page);
+
+    /* Selection is distinct from hover, without introducing another hue. */
+    --color-item-active: light-dark(#e3e8f0, #30363f);
+    --color-item-selected: light-dark(#edf0f5, #272c35);
+    --color-item-hover-accent: var(--color-accent-bg);
+    --color-item-hover-blue: var(--color-accent-bg);
+    --color-item-hover-sky: var(--color-accent-tint);
+    --color-card-drop-tint: var(--color-accent-bg);
+    --color-card-drop-border: var(--color-accent-text);
+
+    /* Navigation shares the canvas palette; the active destination has a neutral highlight. */
+    --color-sidebar-bg-from: light-dark(#e5e9f0, #14171b);
+    --color-sidebar-bg-to: var(--color-sidebar-bg-from);
+    --color-sidebar-text: var(--color-text-secondary);
+    --color-sidebar-text-hover: var(--color-text-heading);
+    --color-sidebar-text-active: var(--color-text-heading);
+    --color-sidebar-active-bg: light-dark(#d4dce8, #272c34);
+    --color-sidebar-hover-bg: light-dark(#e8ecf2, #20242a);
+    --color-sidebar-separator: var(--color-border);
+    --color-sidebar-storage-bg: light-dark(#f7f9fc, #181b20);
+    --color-sidebar-storage-border: var(--color-border);
+    --color-sidebar-storage-text: var(--color-text-secondary);
+    --color-sidebar-storage-faint: var(--color-text-muted);
+    --color-sidebar-storage-bar: light-dark(#dce1e8, #343a44);
+    --color-sidebar-progress: var(--color-accent-gradient);
+    --color-sidebar-logo-gradient: var(--color-accent-gradient);
+    --color-sidebar-shadow: transparent;
+    --color-sidebar-shadow-lg: transparent;
+    --color-user-menu-header-bg: var(--color-bg-subtle);
+    --color-user-menu-header-border: var(--color-border);
+
+    /* One neutral ink for all file and folder glyphs.
+     * Shapes and extensions still distinguish types, without a rainbow of tiles. */
+    --file-kind-generic: light-dark(#626975, #b7bdc7);
+    --file-kind-folder: var(--file-kind-generic);
+    --file-kind-doc: var(--file-kind-generic);
+    --file-kind-pdf: var(--file-kind-generic);
+    --file-kind-sheet: var(--file-kind-generic);
+    --file-kind-slides: var(--file-kind-generic);
+    --file-kind-archive: var(--file-kind-generic);
+    --file-kind-code: var(--file-kind-generic);
+    --file-kind-image: var(--file-kind-generic);
+    --file-kind-video: var(--file-kind-generic);
+    --file-kind-audio: var(--file-kind-generic);
+    --file-kind-text: var(--file-kind-generic);
+
+    /* Small elevations, consistent corners; retain the application's spacing. */
+    --color-shadow-xs: light-dark(rgba(20, 34, 56, 0.03), rgba(0, 0, 0, 0.12));
+    --color-shadow-sm: light-dark(rgba(20, 34, 56, 0.06), rgba(0, 0, 0, 0.18));
+    --color-shadow-md: light-dark(rgba(20, 34, 56, 0.1), rgba(0, 0, 0, 0.28));
+    --color-shadow: var(--color-shadow-sm);
+    --color-shadow-lg: var(--color-shadow-md);
+    --color-shadow-xl: var(--color-shadow-md);
+    --radius-lg: 8px;
+    --radius-xl: 10px;
+    --radius-2xl: 12px;
+}
+
+/* All navigation glyphs share one neutral ink, even on the active link.
+ * Outrank section colors regardless of stylesheet/HMR insertion order.
+ * Do not recolor --color-cal-* here: those also identify real calendars. */
+html:root .sidebar .nav-item :is(.oxi-icon, i) {
+    color: var(--color-sidebar-text);
+}
+
+.sidebar .logo svg {
+    fill: var(--color-on-accent);
+}
+
+/* A single quiet frame, rather than a raised sidebar beside a separate header. */
+html:root .sidebar {
+    background: var(--color-sidebar-bg-from);
+    box-shadow: none;
+}
+
+html:root .top-bar {
+    background-color: var(--color-sidebar-bg-from);
+    border-bottom: 0;
+}
+
+/* Round the content surface against the shared header/sidebar frame.
+ * The logical corner also follows the layout in right-to-left languages. */
+html:root .main-content {
+    background-color: var(--color-sidebar-bg-from);
+}
+
+html:root .content-area {
+    background-color: var(--color-bg-page);
+    border-start-start-radius: var(--radius-4xl);
+}
+
+/* One surface per card: the glyph/preview no longer has its own tinted box.
+ * Keep the thumbnail clipping and all selection/keyboard/drop affordances. */
+html:root .files-grid-view .file-item {
+    background-color: var(--color-bg-surface);
+    border-color: transparent;
+    box-shadow: none;
+    /* Reserve the top action row above the enlarged glyph. */
+    padding-top: var(--space-8);
+}
+
+html:root .files-grid-view .file-item:hover {
+    background-color: var(--color-bg-hover);
+}
+
+html:root .files-grid-view .file-item:is(:hover, .selected) {
+    box-shadow: none;
+}
+
+html:root .files-grid-view .file-item.selected {
+    background-color: var(--color-item-selected);
+    border-color: var(--color-focus-ring);
+}
+
+html:root .files-grid-view .file-item.drop-target {
+    background-color: var(--color-card-drop-tint);
+    border-color: var(--color-card-drop-border);
+}
+
+html:root .files-grid-view .file-item .file-icon {
+    background: none;
+    box-shadow: none;
+    height: calc(var(--space-24) + var(--space-4));
+    aspect-ratio: auto;
+    margin-bottom: var(--space-1);
+}
+
+/* Give the file glyph more presence while keeping compact cards on phones. */
+html:root .files-grid-view .file-item .file-icon > :is(svg, i) {
+    width: clamp(var(--space-16), 6vw, var(--space-20));
+    height: clamp(var(--space-16), 6vw, var(--space-20));
+}
+
+html:root .files-grid-view .file-item .name-cell {
+    margin-bottom: 0;
+}
+
+html:root .files-grid-view .file-item:hover .file-icon .file-thumb {
+    transform: none;
+}
+
+/* Accent ink must be lighter than button fills at night. html:root keeps
+ * these theme rules ahead of scoped styles loaded on later SPA navigation. */
+html:root :is(
+    .toggle-btn.active,
+    .group-by-option.active,
+    .subnav__tab.active,
+    .list-header-sort.is-active,
+    .list-header-sort:hover,
+    .list-header-sort__arrow,
+    .photos-group__count,
+    .breadcrumb-link:hover,
+    .notif-bell-btn.active,
+    .notif-bell-btn:hover,
+    .mobile-nav__item--active
+) {
+    color: var(--color-accent-text);
+}

@@ -392,7 +392,7 @@
 		position: absolute;
 		top: 1rem;
 		left: 1rem;
-		color: var(--color-on-accent);
+		color: var(--color-lightbox-btn-text);
 		max-width: 60vw;
 	}
 
@@ -416,7 +416,7 @@
 		line-height: 1;
 		background: none;
 		border: none;
-		color: var(--color-on-accent);
+		color: var(--color-lightbox-btn-text);
 		cursor: pointer;
 	}
 
@@ -427,7 +427,7 @@
 		font-size: 2rem;
 		background: none;
 		border: none;
-		color: var(--color-on-accent);
+		color: var(--color-lightbox-btn-text);
 		cursor: pointer;
 		padding: 1rem;
 	}
@@ -459,8 +459,8 @@
 		height: 40px;
 		border-radius: 50%;
 		border: none;
-		background: var(--color-scrim-control);
-		color: var(--color-on-accent);
+		background: var(--color-lightbox-btn-bg);
+		color: var(--color-lightbox-btn-text);
 		cursor: pointer;
 		display: grid;
 		place-items: center;
@@ -472,14 +472,14 @@
 	}
 
 	.lb__tool.active {
-		color: var(--color-accent);
+		background: var(--color-lightbox-btn-hover);
 	}
 
 	.lb__counter {
 		position: absolute;
 		bottom: 1rem;
 		right: 1rem;
-		color: var(--color-on-accent);
+		color: var(--color-lightbox-btn-text);
 		font-size: var(--text-sm);
 		opacity: 0.8;
 	}

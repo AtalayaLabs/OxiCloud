@@ -44,6 +44,7 @@ const p = (target: string) => ({ target, changeOrigin: true, headers: DEV_ORIGIN
 const pWs = (target: string) => ({ ...p(target), ws: true });
 
 const proxy = {
+	'/themes': p(BACKEND),
 	'/api': pWs(BACKEND),
 	'/locales': p(BACKEND),
 	'/.well-known': p(BACKEND),

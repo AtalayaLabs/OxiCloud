@@ -227,6 +227,7 @@ ndarray = { version = "0.17.2", optional = true }
 # bumping either side.
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
+rustix = { version = "1", features = ["fs"] }
 
 [features]
 default = []

@@ -27,6 +27,7 @@ COPY frontend/package.json frontend/package-lock.json ./
 # them. Persists in the local BuildKit cache; ignored harmlessly when absent.
 RUN --mount=type=cache,target=/root/.npm npm ci
 COPY frontend/ ./
+COPY resources/themes/ /resources/themes/
 # VITE_E2E=1 keeps the test-only `data-testid` attributes in the build (set by
 # the e2e image build); unset for release images, which strip them entirely.
 ARG VITE_E2E
@@ -60,6 +61,7 @@ COPY migrations migrations
 # they must be present in the build stage even though they're embedded
 # into the final binary and never read from disk at runtime.
 COPY templates templates
+COPY resources/themes resources/themes
 # Build with all optimizations (DATABASE_URL only needed at compile-time for sqlx)
 ARG DATABASE_URL="postgres://postgres:postgres@localhost/oxicloud"
 # Git metadata pipe-through. build.rs reads these env vars to stamp
@@ -115,6 +117,7 @@ COPY Cargo.toml Cargo.lock build.rs ./
 COPY src src
 COPY migrations migrations
 COPY templates templates
+COPY resources/themes resources/themes
 COPY --from=frontend /static-dist ./static-dist
 ARG DATABASE_URL="postgres://postgres:postgres@localhost/oxicloud"
 ARG TARGETARCH
@@ -208,6 +211,8 @@ RUN sed -i 's/\r//' /usr/local/bin/entrypoint.sh && \
 
 # Copy the built SPA (produced by the Vite frontend stage)
 COPY --from=app --chown=oxicloud:oxicloud /app/static-dist /app/static
+# Themes remain operator-editable files, independent of the binary.
+COPY --from=app --chown=oxicloud:oxicloud /app/resources/themes /app/resources/themes
 # Create storage directory with proper permissions
 RUN mkdir -p /app/storage && chown -R oxicloud:oxicloud /app/storage
 

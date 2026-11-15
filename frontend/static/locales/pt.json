@@ -1621,7 +1621,19 @@
     "backend_stored": "Armazenado",
     "backend_dedup_ratio": "Rácio de deduplicação",
     "backend_referenced": "Referenciado",
-    "backend_referenced_hint": "Soma das referências a blobs (tamanho × ref_count). Pode exceder o total do disco porque miniaturas, ativos derivados e blobs à espera de garbage collection ainda mantêm referências."
+    "backend_referenced_hint": "Soma das referências a blobs (tamanho × ref_count). Pode exceder o total do disco porque miniaturas, ativos derivados e blobs à espera de garbage collection ainda mantêm referências.",
+    "appearance": {
+      "title": "Aparência",
+      "description": "Escolha a aparência para todos os utilizadores desta instância. Os modos claro, escuro e do sistema continuam a ser preferências individuais.",
+      "active": "Tema ativo: {{theme}}",
+      "unavailable": "O tema guardado «{{theme}}» não está disponível. Está a ser utilizado o tema predefinido integrado.",
+      "theme": "Tema global",
+      "saved": "Guardado. O tema será aplicado no próximo carregamento completo da página.",
+      "invalid": "Alguns temas instalados foram excluídos. Consulte os registos do servidor para obter detalhes.",
+      "refresh": "Atualizar",
+      "refreshed": "Ficheiros de temas recarregados. Recarregue a página para aplicar as alterações CSS.",
+      "recovery": "O operador forçou o tema integrado para recuperação. A seleção guardada é preservada."
+    }
   },
   "profile": {
     "page_title": "Perfil",

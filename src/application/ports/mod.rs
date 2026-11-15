@@ -35,3 +35,5 @@ pub mod trash_ports;
 pub mod user_lifecycle;
 pub mod video_frame_ports;
 pub mod zip_ports;
+
+pub mod theme_ports;

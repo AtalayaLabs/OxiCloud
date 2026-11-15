@@ -1601,7 +1601,19 @@
     "backend_stored": "已存储",
     "backend_dedup_ratio": "去重比率",
     "backend_referenced": "已引用",
-    "backend_referenced_hint": "blob 引用之和 (大小 × ref_count)。可能超过磁盘总量,因为缩略图、派生资源以及等待垃圾回收的 blob 仍持有引用。"
+    "backend_referenced_hint": "blob 引用之和 (大小 × ref_count)。可能超过磁盘总量,因为缩略图、派生资源以及等待垃圾回收的 blob 仍持有引用。",
+    "appearance": {
+      "title": "外观",
+      "description": "选择此实例所有用户的外观。浅色、深色和跟随系统模式仍为个人偏好设置。",
+      "active": "当前主题：{{theme}}",
+      "unavailable": "已保存的主题“{{theme}}”不可用。正在使用内置默认主题。",
+      "theme": "全局主题",
+      "saved": "已保存。主题将在下次完整加载页面时应用。",
+      "invalid": "部分已安装的主题被排除。请查看服务器日志了解详情。",
+      "refresh": "刷新",
+      "refreshed": "主题文件已重新加载。请刷新页面以应用 CSS 更改。",
+      "recovery": "管理员已强制启用内置主题以恢复界面。已保存的选择会保留。"
+    }
   },
   "profile": {
     "page_title": "个人资料",

@@ -29,19 +29,19 @@ function readInitial(): Theme {
 
 const store = $state<{ theme: Theme }>({ theme: readInitial() });
 
-const CHROME_COLORS = { light: '#f5f7fa', dark: '#0f172a' } as const;
-
-function prefersDark(): boolean {
-	return (
-		typeof window !== 'undefined' && !!window.matchMedia?.('(prefers-color-scheme: dark)').matches
-	);
-}
-
-function applyChrome(theme: Theme): void {
+function applyChrome(): void {
 	if (typeof document === 'undefined') return;
 	const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
 	if (!meta) return;
-	meta.content = CHROME_COLORS[theme === 'auto' ? (prefersDark() ? 'dark' : 'light') : theme];
+	// A custom property's text may still contain light-dark(). Resolve it as
+	// an actual color so browser chrome follows the active theme and mode.
+	const probe = document.createElement('span');
+	probe.style.color = 'var(--color-bg-page)';
+	probe.hidden = true;
+	document.documentElement.append(probe);
+	const color = getComputedStyle(probe).color;
+	probe.remove();
+	if (color) meta.content = color;
 }
 
 function apply(theme: Theme): void {
@@ -49,14 +49,15 @@ function apply(theme: Theme): void {
 	const html = document.documentElement;
 	if (theme === 'light' || theme === 'dark') html.setAttribute('data-color-scheme', theme);
 	else html.removeAttribute('data-color-scheme');
-	applyChrome(theme);
+	applyChrome();
 }
 
 if (typeof window !== 'undefined') {
 	window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', () => {
-		if (store.theme === 'auto') applyChrome('auto');
+		if (store.theme === 'auto') applyChrome();
 	});
-	applyChrome(store.theme);
+	document.getElementById('active-theme')?.addEventListener('load', applyChrome);
+	applyChrome();
 }
 
 export function setTheme(theme: Theme): void {

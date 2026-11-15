@@ -306,6 +306,12 @@
 		}
 		links.push(
 			{
+				href: '/admin/appearance',
+				label: t('admin.appearance.title', 'Appearance'),
+				icon: 'sliders-h',
+				section: 'admin-appearance'
+			},
+			{
 				href: '/admin/oidc',
 				label: t('admin.oidc', 'OIDC / SSO'),
 				icon: 'building-shield',

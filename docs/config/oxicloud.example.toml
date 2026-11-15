@@ -12,6 +12,9 @@
 # Every one of them has a default — delete what you do not need.
 
 [server]
+# Optional operator-managed theme folders (read-only).
+# themes_path = "/srv/oxicloud/themes"
+# force_default_theme = false
 server_host = "0.0.0.0"
 server_port = 8086
 # Serve the whole app under a URL prefix (reverse-proxy subpath deployments).

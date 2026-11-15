@@ -3445,6 +3445,7 @@ impl Default for PluginConfig {
 /// Global application configuration
 #[derive(Debug, Clone)]
 pub struct AppConfig {
+    pub themes: ThemesConfig,
     /// Storage directory path
     pub storage_path: PathBuf,
     /// Static files directory path
@@ -3697,6 +3698,7 @@ fn non_empty_url(var: Result<String, env::VarError>) -> Option<String> {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            themes: ThemesConfig::default(),
             storage_path: PathBuf::from("./storage"),
             static_path: PathBuf::from("./static"),
             temp_dir: env::temp_dir(),
@@ -3749,7 +3751,14 @@ impl AppConfig {
     }
 
     pub fn from_env() -> Self {
-        let mut config = Self::default();
+        let mut config = Self {
+            themes: ThemesConfig::parse(env::var("OXICLOUD_THEMES_PATH").ok())
+                .and_then(|config| {
+                    config.with_force_default(env::var("OXICLOUD_FORCE_DEFAULT_THEME").ok())
+                })
+                .unwrap_or_else(|error| panic!("Invalid themes configuration: {error}")),
+            ..Self::default()
+        };
 
         // Use environment variables to override default values
         if let Ok(storage_path) = env::var("OXICLOUD_STORAGE_PATH") {
@@ -6655,5 +6664,76 @@ mod db_connection_string_env_fallback_tests {
         let cfg = AppConfig::from_env();
         assert_eq!(cfg.database.connection_string, default_cs);
         wipe();
+    }
+}
+
+/// Operator-managed theme files. Presence is retained after TOML-to-env loading.
+#[derive(Debug, Clone)]
+pub struct ThemesConfig {
+    pub force_default: bool,
+    pub path: PathBuf,
+    pub path_explicit: bool,
+}
+impl Default for ThemesConfig {
+    fn default() -> Self {
+        Self {
+            force_default: false,
+            path: PathBuf::from("./resources/themes"),
+            path_explicit: false,
+        }
+    }
+}
+impl ThemesConfig {
+    pub fn with_force_default(mut self, value: Option<String>) -> Result<Self, String> {
+        self.force_default = match value.as_deref() {
+            None | Some("false" | "0") => false,
+            Some("true" | "1") => true,
+            _ => return Err("OXICLOUD_FORCE_DEFAULT_THEME must be true or false".into()),
+        };
+        Ok(self)
+    }
+
+    pub fn parse(path: Option<String>) -> Result<Self, String> {
+        let mut config = Self::default();
+        if let Some(path) = path {
+            if path.trim().is_empty() {
+                return Err("OXICLOUD_THEMES_PATH must not be empty".into());
+            }
+            config.path = PathBuf::from(path);
+            config.path_explicit = true;
+        }
+        Ok(config)
+    }
+}
+#[cfg(test)]
+mod themes_config_tests {
+    use super::*;
+    #[test]
+    fn explicit_path_survives_parsing() {
+        let default = ThemesConfig::parse(None).unwrap();
+        assert!(!default.path_explicit);
+        // Regression pin: themes live directly under resources/themes.
+        assert_eq!(default.path, PathBuf::from("./resources/themes"));
+        assert!(
+            default
+                .clone()
+                .with_force_default(Some("true".into()))
+                .unwrap()
+                .force_default
+        );
+        assert!(
+            default
+                .clone()
+                .with_force_default(Some("maybe".into()))
+                .is_err()
+        );
+        for path in ["./resources/themes", "/srv/themes"] {
+            assert!(
+                ThemesConfig::parse(Some(path.into()))
+                    .unwrap()
+                    .path_explicit
+            );
+        }
+        assert!(ThemesConfig::parse(Some("".into())).is_err());
     }
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Dead-token report (informational, exit 0): design tokens defined in
-// variables.css but never referenced via var() anywhere in frontend/src.
+// the built-in token sources but never referenced via var() in the app or themes.
 //
 // NOTE: a cleanup AID, not a hard gate — some tokens (file-type / calendar
 // colours) are referenced by JS string construction, so excluded prefixes are
@@ -14,8 +14,12 @@ import { fileURLToPath } from 'node:url';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', 'frontend', 'src');
 const EXCLUDE_PREFIX = ['--color-ft-', '--color-cal-']; // referenced dynamically from JS
 
-const varsSrc = readFileSync(join(root, 'lib', 'styles', 'base', 'variables.css'), 'utf8');
-const defined = [...varsSrc.matchAll(/(--[a-z0-9-]+)\s*:/gi)].map((m) => m[1]);
+const themes = join(root, '..', '..', 'resources', 'themes');
+// Theme extraction must not hide visual defaults or their alias references
+// from this report. Structural tokens still live in variables.css.
+const varsSrc = [join(root, 'lib', 'styles', 'base', 'variables.css'), join(themes, 'tokens.css')]
+    .map((file) => readFileSync(file, 'utf8')).join('\n');
+const defined = [...new Set([...varsSrc.matchAll(/(--[a-z0-9-]+)\s*:/gi)].map((m) => m[1]))];
 
 function walk(dir, files = []) {
     for (const name of readdirSync(dir)) {
@@ -26,7 +30,7 @@ function walk(dir, files = []) {
     return files;
 }
 let corpus = '';
-for (const f of walk(root)) corpus += readFileSync(f, 'utf8');
+for (const f of [...walk(root), ...walk(themes)]) corpus += readFileSync(f, 'utf8');
 const used = new Set([...corpus.matchAll(/var\(\s*(--[a-z0-9-]+)/gi)].map((m) => m[1]));
 
 const dead = defined

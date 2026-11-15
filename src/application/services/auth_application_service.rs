@@ -15,7 +15,6 @@ use crate::domain::entities::magic_link_token::{MagicLinkResourceKind, MagicLink
 use crate::domain::entities::session::Session;
 use crate::domain::entities::user::{User, UserFlags, UserRole};
 use crate::domain::repositories::magic_link_token_repository::MagicLinkTokenRepository;
-use crate::domain::services::authorization::Subject;
 use crate::infrastructure::repositories::pg::SessionPgRepository;
 use crate::infrastructure::repositories::pg::UserPgRepository;
 use crate::infrastructure::services::jwt_service::JwtTokenService;
@@ -787,6 +786,12 @@ pub struct AuthApplicationService {
 /// long a role / external / active change can take to be observed by the
 /// per-request guards when it bypasses the eager invalidation paths.
 const USER_FLAGS_CACHE_TTL: Duration = Duration::from_secs(30);
+
+impl crate::application::ports::authorization_ports::AdminCallerPort for AuthApplicationService {
+    async fn admin_caller_flags(&self, id: Uuid) -> Result<UserFlags, DomainError> {
+        self.get_user_flags(id).await
+    }
+}
 
 impl AuthApplicationService {
     pub fn new(
@@ -4218,13 +4223,12 @@ impl AuthApplicationService {
         authorization: &A,
         caller_id: Uuid,
     ) -> Result<(), DomainError> {
-        let flags = self.get_user_flags(caller_id).await?;
-        authorization.require_system_admin(
-            Subject::User(caller_id),
-            flags.role,
-            flags.is_external,
-            flags.active,
+        crate::application::ports::authorization_ports::AdminCallerPort::require_admin_caller(
+            self,
+            authorization,
+            caller_id,
         )
+        .await
     }
 
     /// Searches internal users only. See [`list_users`] for the rationale.

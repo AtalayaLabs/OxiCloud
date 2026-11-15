@@ -6,7 +6,7 @@
 			"customSyntax": "postcss-html"
 		},
 		{
-			"files": ["src/lib/styles/base/variables.css"],
+			"files": ["src/lib/styles/base/variables.css", "../resources/themes/tokens.css"],
 			"rules": {
 				"color-no-hex": null,
 				"color-named": null,

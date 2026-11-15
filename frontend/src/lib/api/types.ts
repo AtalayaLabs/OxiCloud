@@ -754,3 +754,9 @@ export const NOTIFICATION_KIND = {
 // dropped keys). See `docs/plan/templated-messages.md § Making
 // payloads a real Rust struct` for the original rationale.
 export type { SharegrantedPayload } from './generated/openapi/types.gen';
+
+export type {
+	AppearanceDto,
+	SelectThemeDto,
+	ThemeDiagnosticDto
+} from './generated/openapi/types.gen';

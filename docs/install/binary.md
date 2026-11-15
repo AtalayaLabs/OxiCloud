@@ -65,10 +65,10 @@ The archive lands as a per-version-per-triple directory next to it:
 tar xzf oxicloud-<version>-<triple>.tar.gz
 cd oxicloud-<version>-<triple>/
 ls
-# oxicloud  example.env  LICENSE  README-install.md
+# oxicloud  example.env  LICENSE  README-install.md  README-themes.md  resources/
 ```
 
-The four files:
+The archive contains:
 
 - `oxicloud` — the single self-contained binary. The server, all
   operator subcommands (`oxicloud opaque setup`, `oxicloud migrate
@@ -79,6 +79,16 @@ The four files:
 - `LICENSE` — the project license.
 - `README-install.md` — a shorter version of this page for offline
   reference.
+
+- `resources/themes/` — editable theme folders, including Slate and Basalt. Only the
+  recovery theme `default` is embedded. Copy these folders to a persistent
+  catalogue and set `OXICLOUD_THEMES_PATH` when installing outside this directory.
+- `README-themes.md` — offline instructions for installing, modifying and removing
+  themes. See also [theme management](../config/themes.md).
+
+Keep customized themes across upgrades; do not replace them with the archive's
+copy. `cargo binstall` installs only the executable; theme folders are installed
+separately.
 
 ## Prerequisites
 

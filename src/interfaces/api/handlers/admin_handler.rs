@@ -64,7 +64,7 @@ struct AdminUsersPageResponse {
 /// CRUD would let admins configure mounts that silently don't work).
 pub fn admin_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     use super::admin_external_mounts as ext_mounts;
-    let mut router = Router::new();
+    let mut router = Router::new().merge(super::admin_appearance_handler::routes());
 
     // External file mounts — CRUD registered only when the feature
     // is enabled server-side. Matches the pattern used for the

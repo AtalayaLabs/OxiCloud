@@ -504,6 +504,7 @@ front-test: fe-build-e2e
 # brand-mark drift. For the full svelte-check/eslint/stylelint/prettier gate use
 # `just fe-check` (needs the frontend devDependencies installed).
 front-design:
+    node --test scripts/theme-tools.test.mjs
     node scripts/check-locales.mjs
     node scripts/check-dead-tokens.mjs
     node scripts/check-brand-drift.mjs

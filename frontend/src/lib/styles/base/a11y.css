@@ -93,7 +93,7 @@ input[type="radio"]:focus-visible {
    thicken the focus ring. The high-contrast border ramp (raw colour) lives
    in base/variables.css — the token layer — so this file stays hex-free. */
 @media (prefers-contrast: more) {
-    :root {
+    html:root {
         --color-text-muted: var(--color-text-secondary);
         --color-text-subtle: var(--color-text-secondary);
         --color-text-faint: var(--color-text-secondary);

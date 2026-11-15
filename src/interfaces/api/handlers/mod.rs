@@ -40,3 +40,5 @@ pub mod wopi_handler;
 
 /// Tipo de resultado para controladores de API
 pub type ApiResult<T> = Result<T, (axum::http::StatusCode, String)>;
+
+pub mod admin_appearance_handler;

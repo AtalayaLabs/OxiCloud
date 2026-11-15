@@ -1621,7 +1621,19 @@
     "transfer_ownership_title": "Transférer la propriété",
     "confirm_transfer_ownership": "Transférer la propriété du serveur à {{name}} ? Vous serez rétrogradé administrateur, et seule cette personne pourra la retransférer.",
     "owner_protected_title": "Le propriétaire du serveur ne peut pas être désactivé",
-    "owner_protected_delete_title": "Le propriétaire du serveur ne peut pas être supprimé"
+    "owner_protected_delete_title": "Le propriétaire du serveur ne peut pas être supprimé",
+    "appearance": {
+      "title": "Apparence",
+      "description": "Choisissez l’apparence pour tous les utilisateurs de cette instance. Le mode clair, sombre ou système reste un choix individuel.",
+      "active": "Thème actif : {{theme}}",
+      "unavailable": "Le thème enregistré « {{theme}} » est indisponible. Le thème intégré est utilisé.",
+      "theme": "Thème global",
+      "saved": "Enregistré. Le thème s’appliquera au prochain chargement complet de la page.",
+      "invalid": "Certains thèmes installés ont été exclus. Consultez les journaux du serveur.",
+      "refresh": "Actualiser",
+      "refreshed": "Fichiers des thèmes rechargés. Rechargez la page pour appliquer les modifications CSS.",
+      "recovery": "L’opérateur a forcé le thème intégré pour récupérer l’interface. La sélection enregistrée est conservée."
+    }
   },
   "profile": {
     "page_title": "Profil",
