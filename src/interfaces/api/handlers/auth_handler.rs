@@ -169,6 +169,8 @@ fn require_registration_domain_allowed(
         (status = 409, description = "Username or email already taken (SMTP not configured)", body = crate::interfaces::errors::ApiErrorBody),
         (status = 503, description = "Email-only signup requires SMTP to be configured", body = crate::interfaces::errors::ApiErrorBody),
     ),
+    // Public — account creation precedes any credential to present.
+    security(),
     tag = "auth"
 )]
 pub async fn register(
@@ -348,6 +350,8 @@ pub async fn register(
         (status = 403, description = "Account disabled", body = crate::interfaces::errors::ApiErrorBody),
         (status = 429, description = "Account temporarily locked (too many failed attempts)", body = crate::interfaces::errors::ApiErrorBody),
     ),
+    // Public — this endpoint is what issues the bearer token.
+    security(),
     tag = "auth"
 )]
 pub async fn login(
@@ -600,6 +604,12 @@ pub async fn login(
         (status = 200, description = "New tokens issued", body = AuthResponseDto),
         (status = 401, description = "Refresh token missing, expired, or revoked", body = crate::interfaces::errors::ApiErrorBody),
     ),
+    // No `bearerAuth` — the caller authenticates with the refresh token
+    // (HttpOnly cookie or request body), which is a different credential
+    // from the access token and deliberately usable once the access token
+    // has expired. Empty rather than a scheme, because the spec declares
+    // only `bearerAuth`.
+    security(),
     tag = "auth"
 )]
 pub async fn refresh_token(
@@ -1237,6 +1247,9 @@ pub async fn dpop_bind(
         (status = 400, description = "logout_token missing, malformed, or failed validation — RFC 6749 §5.2 OAuth error body", body = crate::interfaces::errors::OAuthErrorResponse),
         (status = 503, description = "OIDC not configured on this deployment — RFC 6749 §5.2 OAuth error body", body = crate::interfaces::errors::OAuthErrorResponse),
     ),
+    // Public — called by the IdP, not a user. Trust comes from the signed
+    // `logout_token` JWT in the body, not from a session.
+    security(),
     tag = "auth"
 )]
 pub async fn oidc_backchannel_logout(
@@ -1317,6 +1330,9 @@ pub struct BackchannelLogoutForm {
         (status = 403, description = "System already initialized", body = crate::interfaces::errors::ApiErrorBody),
         (status = 503, description = "Auth service not configured", body = crate::interfaces::errors::ApiErrorBody),
     ),
+    // Public — first-run bootstrap. There is no admin yet to authenticate
+    // as; the 403 arm is what closes it once one exists.
+    security(),
     tag = "auth"
 )]
 pub async fn setup_admin(
@@ -1446,6 +1462,9 @@ pub async fn setup_admin(
         (status = 404, description = "OIDC not enabled", body = crate::interfaces::errors::ApiErrorBody),
         (status = 503, description = "Auth service not configured", body = crate::interfaces::errors::ApiErrorBody),
     ),
+    // Public — the entry point of the OIDC redirect dance, reached by a
+    // browser that has no token yet.
+    security(),
     tag = "auth"
 )]
 pub async fn oidc_authorize(
@@ -1576,6 +1595,9 @@ pub async fn oidc_unlink(
         (status = 401, description = "OIDC validation failed (bad state, nonce, or code)", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "OIDC not enabled", body = crate::interfaces::errors::ApiErrorBody),
     ),
+    // Public — the IdP redirects the browser here. Trust comes from the
+    // `state` / `nonce` validation, not from a bearer token.
+    security(),
     tag = "auth"
 )]
 pub async fn oidc_callback(
@@ -1773,6 +1795,9 @@ pub async fn oidc_callback(
         (status = 200, description = "Tokens issued, auth cookies set", body = AuthResponseDto),
         (status = 401, description = "Exchange code invalid or expired", body = crate::interfaces::errors::ApiErrorBody),
     ),
+    // Public — trades the one-time code minted by the OIDC callback for
+    // tokens, so it necessarily runs before the caller holds one.
+    security(),
     tag = "auth"
 )]
 pub async fn oidc_exchange(
@@ -1861,6 +1886,9 @@ pub struct SendMagicLinkDto {
         (status = 200, body = Object, description = "Uniform 'if an account exists, a link will be sent' response"),
         (status = 503, description = "Magic-link / SMTP is not configured on this server", body = crate::interfaces::errors::ApiErrorBody),
     ),
+    // Public — the caller is by definition not signed in; the whole point
+    // is to mail them a way in.
+    security(),
     tag = "auth",
 )]
 pub async fn send_magic_link(

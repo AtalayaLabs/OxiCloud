@@ -264,6 +264,10 @@ pub async fn delete_shared_link(
         (status = 401, description = "Password required", body = crate::interfaces::errors::ApiErrorBody),
         (status = 410, description = "Share expired", body = crate::interfaces::errors::ApiErrorBody)
     ),
+    // Public — a public-link recipient has no account. The bearer of the
+    // token in the path IS the credential; the 401 arm covers the
+    // password-protected case.
+    security(),
     tag = "shares"
 )]
 pub async fn access_shared_item(
@@ -327,6 +331,8 @@ pub async fn access_shared_item(
         (status = 401, description = "Invalid password", body = crate::interfaces::errors::ApiErrorBody),
         (status = 410, description = "Share expired", body = crate::interfaces::errors::ApiErrorBody)
     ),
+    // Public — redeems the share password for an anonymous recipient.
+    security(),
     tag = "shares"
 )]
 pub async fn verify_shared_item_password(

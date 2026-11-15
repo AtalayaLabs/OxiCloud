@@ -453,6 +453,8 @@ pub struct OpaqueLookupResponse {
         (status = 400, description = "Malformed request body", body = crate::interfaces::errors::ApiErrorBody),
         (status = 503, description = "OPAQUE service not configured", body = crate::interfaces::errors::ApiErrorBody),
     ),
+    // Public — step 0 of the OPAQUE login handshake, before any credential.
+    security(),
     tag = "auth"
 )]
 pub async fn login_lookup(
@@ -571,6 +573,9 @@ pub struct OpaqueLoginKe3Dto {
         (status = 400, description = "Malformed request payload", body = crate::interfaces::errors::ApiErrorBody),
         (status = 503, description = "OPAQUE service not configured", body = crate::interfaces::errors::ApiErrorBody),
     ),
+    // Public — KE1 of the OPAQUE handshake; the session it leads to does
+    // not exist yet.
+    security(),
     tag = "auth"
 )]
 pub async fn login_ke1(
@@ -678,6 +683,9 @@ pub async fn login_ke1(
         (status = 401, description = "Invalid credentials", body = crate::interfaces::errors::ApiErrorBody),
         (status = 503, description = "OPAQUE service not configured", body = crate::interfaces::errors::ApiErrorBody),
     ),
+    // Public — KE3 is what issues the session; requiring one would be
+    // circular.
+    security(),
     tag = "auth"
 )]
 pub async fn login_ke3(
@@ -895,6 +903,9 @@ pub struct OpaqueParamsResponse {
     responses(
         (status = 200, description = "OPAQUE client config", body = OpaqueParamsResponse),
     ),
+    // Public — the client needs these parameters to build its very first
+    // handshake message.
+    security(),
     tag = "auth"
 )]
 pub async fn opaque_params(State(state): State<Arc<AppState>>) -> impl IntoResponse {

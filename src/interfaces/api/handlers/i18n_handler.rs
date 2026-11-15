@@ -141,6 +141,8 @@ impl I18nHandler {
     responses(
         (status = 200, description = "Available locales", body = Vec<LocaleDto>),
     ),
+    // Public — the login screen is localised before anyone signs in.
+    security(),
     tag = "i18n"
 )]
 pub async fn get_locales(state: State<AppState>) -> impl IntoResponse {
@@ -159,6 +161,8 @@ pub async fn get_locales(state: State<AppState>) -> impl IntoResponse {
         (status = 400, description = "Unsupported locale", body = TranslationErrorDto),
         (status = 404, description = "Key not found", body = crate::interfaces::errors::ApiErrorBody),
     ),
+    // Public — the login screen is localised before anyone signs in.
+    security(),
     tag = "i18n"
 )]
 pub async fn translate(
@@ -176,6 +180,8 @@ pub async fn translate(
         (status = 200, body = Object, description = "All translations for this locale"),
         (status = 400, description = "Unsupported locale", body = crate::interfaces::errors::ApiErrorBody),
     ),
+    // Public — the login screen is localised before anyone signs in.
+    security(),
     tag = "i18n"
 )]
 pub async fn get_translations_by_locale(

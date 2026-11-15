@@ -59,6 +59,13 @@ pub fn device_auth_protected_routes() -> Router<Arc<AppState>> {
     responses(
         (status = 200, description = "Device flow initiated — hand `user_code` to the end user", body = DeviceAuthorizeResponseDto),
     ),
+    // Public by design — RFC 8628 step 1. The device has no user and no
+    // token yet; it asks for a code here, then polls `/token` until someone
+    // approves it in a browser. An EMPTY `security` publishes that fact
+    // instead of leaving it unspecified: the `security-defined` rule in
+    // `checks/openapi/redocly.yaml` requires every operation to state one
+    // way or the other, so a new endpoint can't silently omit auth.
+    security(),
     tag = "device-auth"
 )]
 pub async fn device_authorize(
@@ -89,6 +96,9 @@ pub async fn device_authorize(
         (status = 200, description = "Authorization granted — tokens issued", body = DeviceTokenSuccessDto),
         (status = 400, description = "RFC 8628 error — `authorization_pending`, `slow_down`, `access_denied`, `expired_token`, …", body = DeviceTokenPendingDto),
     ),
+    // Public by design — RFC 8628 step 2, the poll loop. Authenticating
+    // this would defeat the flow: the token it returns IS the credential.
+    security(),
     tag = "device-auth"
 )]
 pub async fn device_token(
@@ -145,6 +155,7 @@ pub struct VerifyQuery {
         (status = 200, description = "Info about the pending authorization — `valid: false` means the code is unknown or expired", body = DeviceVerifyInfoDto),
         (status = 401, description = "Caller is not signed in — the user must authenticate before approving a device", body = crate::interfaces::errors::ApiErrorBody),
     ),
+    security(("bearerAuth" = [])),
     tag = "device-auth"
 )]
 pub async fn device_verify_info(
@@ -178,6 +189,7 @@ pub async fn device_verify_info(
         (status = 400, description = "`action` was not one of `approve`/`deny`", body = crate::interfaces::errors::ApiErrorBody),
         (status = 401, description = "Caller is not signed in", body = crate::interfaces::errors::ApiErrorBody),
     ),
+    security(("bearerAuth" = [])),
     tag = "device-auth"
 )]
 pub async fn device_verify_action(
@@ -238,6 +250,7 @@ pub async fn device_verify_action(
         (status = 200, description = "The caller's authorized devices", body = Vec<DeviceInfoDto>),
         (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
     ),
+    security(("bearerAuth" = [])),
     tag = "device-auth"
 )]
 pub async fn list_devices(
@@ -272,6 +285,7 @@ pub async fn list_devices(
         (status = 400, description = "Invalid device id", body = crate::interfaces::errors::ApiErrorBody),
         (status = 401, description = "Not authenticated", body = crate::interfaces::errors::ApiErrorBody),
     ),
+    security(("bearerAuth" = [])),
     tag = "device-auth"
 )]
 pub async fn revoke_device(

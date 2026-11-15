@@ -37,6 +37,7 @@ fn bad_id() -> Response {
         (status = 200, description = "Identity clusters", body = [PersonDto]),
         (status = 404, description = "People feature disabled", body = crate::interfaces::errors::ApiErrorBody),
     ),
+    security(("bearerAuth" = [])),
     tag = "people"
 )]
 pub async fn list_people(State(state): State<Arc<AppState>>, auth_user: AuthUser) -> Response {
@@ -59,6 +60,7 @@ pub async fn list_people(State(state): State<Arc<AppState>>, auth_user: AuthUser
         (status = 400, description = "Malformed person id", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "People feature disabled", body = crate::interfaces::errors::ApiErrorBody),
     ),
+    security(("bearerAuth" = [])),
     tag = "people"
 )]
 pub async fn person_photos(
@@ -96,6 +98,7 @@ pub struct RenamePersonRequest {
         (status = 400, description = "Malformed person id", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "People feature disabled", body = crate::interfaces::errors::ApiErrorBody),
     ),
+    security(("bearerAuth" = [])),
     tag = "people"
 )]
 pub async fn rename_person(
@@ -136,6 +139,7 @@ pub struct MergePeopleRequest {
         (status = 400, description = "Malformed cluster id(s)", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "People feature disabled", body = crate::interfaces::errors::ApiErrorBody),
     ),
+    security(("bearerAuth" = [])),
     tag = "people"
 )]
 pub async fn merge_people(
@@ -163,6 +167,7 @@ pub async fn merge_people(
         (status = 200, description = "Recluster complete", body = serde_json::Value),
         (status = 404, description = "People feature disabled", body = crate::interfaces::errors::ApiErrorBody),
     ),
+    security(("bearerAuth" = [])),
     tag = "people"
 )]
 pub async fn recluster(State(state): State<Arc<AppState>>, auth_user: AuthUser) -> Response {
@@ -183,6 +188,7 @@ pub async fn recluster(State(state): State<Arc<AppState>>, auth_user: AuthUser) 
         (status = 204, description = "All face data erased"),
         (status = 404, description = "People feature disabled", body = crate::interfaces::errors::ApiErrorBody),
     ),
+    security(("bearerAuth" = [])),
     tag = "people"
 )]
 pub async fn delete_all(State(state): State<Arc<AppState>>, auth_user: AuthUser) -> Response {
@@ -205,6 +211,7 @@ pub async fn delete_all(State(state): State<Arc<AppState>>, auth_user: AuthUser)
         (status = 400, description = "Malformed file id", body = crate::interfaces::errors::ApiErrorBody),
         (status = 404, description = "People feature disabled", body = crate::interfaces::errors::ApiErrorBody),
     ),
+    security(("bearerAuth" = [])),
     tag = "people"
 )]
 pub async fn faces_for_file(
