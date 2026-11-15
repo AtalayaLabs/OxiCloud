@@ -951,6 +951,75 @@ The lint catches silence; the test catches lies. Neither substitutes for
 the rule in `src/AGENTS.md`, which is what makes a contributor consider
 the axes before writing either.
 
+## Declaring session elevation
+
+`docs/plan/admin-elevation.md` owns elevation and already decided how it
+is **enforced**: a layer, keyed on HTTP method.
+
+```
+non-safe method (POST/PUT/PATCH/DELETE) under /api/admin/*  →  elevation required
+```
+
+Chosen so a new admin mutation is covered the moment it is mounted,
+without anyone remembering — the same failure this plan exists to stop.
+
+What that leaves open, and what belongs here, is how a route **declares**
+it. Two reasons the declaration is not redundant with the layer:
+
+1. **`src/AGENTS.md` forbids relying on the verb alone**: "A method check
+   is not an authorization check… `GET /api/wopi/editor-url` returns a
+   WOPI token usable for POST, `GET /api/s/{token}` writes via
+   `register_shared_link_access`, `GET /api/auth/device/verify` is an
+   oracle on live device codes. Never gate on verb alone." All those
+   examples sit outside `/api/admin`, and a sweep of the 48 admin GETs
+   found none that mutates — so the method rule is sound *today* and
+   silently wrong the day someone adds `GET /api/admin/.../generate-key`.
+2. The spec must be truthful per operation, and `#[utoipa::path]` is
+   already per `(verb, path)` — so the declaration site is naturally
+   verb-scoped, which a prefix layer is not.
+
+**Declaration: a pseudo-scope in the existing `security` array.**
+
+```rust
+security(("bearerAuth" = ["role:admin", "elevated"])),
+```
+
+Consistent with the convention `src/AGENTS.md` already sets for roles
+("OpenAPI has no field for a minimum role… use a pseudo-scope
+`["role:admin"]`"). The `oxicloud:` prefix is what keeps this
+unambiguous: `oxicloud:files:rw` is a client-requestable scope,
+`role:admin` and `elevated` are declarations of caller state that **no
+client may request**. A client cannot ask to be elevated; it re-auths
+through `POST /api/auth/elevate` and the server stamps
+`auth.sessions.elevated_at`.
+
+**The layer is the default, the declaration is the override.** The
+exhaustiveness test checks both directions, and the second is the one
+that matters:
+
+- an operation declaring `elevated` must be covered — catches a
+  declaration that enforces nothing;
+- **an operation the method rule covers must declare `elevated`** —
+  catches the spec drifting from the gate, which is exactly what
+  `src/AGENTS.md` means by "declaring is not enforcing".
+
+A mutating GET under `/api/admin` then resolves cleanly instead of
+silently: it declares `elevated`, the method rule does not cover it, the
+test fails, and the fix is an explicit per-route entry. "Never gate on
+verb alone" is satisfied without giving up automatic coverage.
+
+**Two consumers today**, so `Gate::Elevated` is not speculative:
+
+| needs elevation | because |
+|---|---|
+| non-safe methods under `/api/admin/*` | holding the role is not enough to *change* things (`admin-elevation.md` § Goal) |
+| mutations in the `security` scope | § `security` — scope says the key was issued for it, elevation says a human proved themselves recently |
+
+The second is why `security:rw` is necessary and not sufficient: a
+long-lived interactive session that has drifted away from its keyboard
+should not be able to change the password, and the scope alone cannot
+express "recently".
+
 ## Test plan
 
 - Unit: the decision half (`decide_scope`) per variant, including the
@@ -1015,6 +1084,13 @@ field into an enforced one:
   nothing fails. Nine routes sat unassigned in an earlier draft of this
   plan — four of them escalation paths — and stayed that way until a
   reviewer thought to ask.
+- Unit: the elevation cross-check, **both directions** — an operation
+  declaring `elevated` is covered by the method rule, AND every
+  operation the method rule covers declares it. The second direction is
+  the one that catches drift; without it the spec can claim elevation
+  that nothing enforces, which is precisely what `src/AGENTS.md` means
+  by "declaring is not enforcing". A mutating GET under `/api/admin`
+  must fail this test rather than pass quietly.
 
 ## When
 
