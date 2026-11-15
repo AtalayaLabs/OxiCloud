@@ -147,15 +147,40 @@ html:root .top-bar {
     border-bottom: 0;
 }
 
-/* Keep the shared header/sidebar frame behind the content surface. */
+/* Paint the rounded corner without clipping the scrolling content or menus.
+ * The corner stays square on mobile, where the sidebar is a drawer. */
 html:root .main-content {
     background-color: var(--color-sidebar-bg-from);
 }
 
 html:root .content-area {
     background-color: var(--color-bg-page);
-    /* No asymmetric rounded clip on this scroller: macOS compositors can
-     * lose virtualized content and menu layers behind it (issue #894). */
+}
+
+@media (width > 768px) {
+    /* TODO: Remove this temporary painted-corner workaround (including the RTL
+     * override below) and restore border-start-start-radius once Chromium's
+     * macOS rendering bug is fixed and verified in supported Chrome versions:
+     * https://issues.chromium.org/issues/560371172
+     */
+    html:root .content-area {
+        --slate-corner-origin: bottom right;
+
+        background-image: radial-gradient(
+            circle at var(--slate-corner-origin),
+            transparent calc(var(--radius-4xl) - 1px),
+            var(--color-sidebar-bg-from) var(--radius-4xl)
+        );
+        background-position: left top;
+        background-size: var(--radius-4xl) var(--radius-4xl);
+        background-repeat: no-repeat;
+    }
+
+    html:root[dir="rtl"] .content-area {
+        --slate-corner-origin: bottom left;
+
+        background-position: right top;
+    }
 }
 
 /* One surface per card: the glyph/preview no longer has its own tinted box.
