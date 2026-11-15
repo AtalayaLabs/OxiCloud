@@ -5,13 +5,15 @@ Branch: `feat/scope-and-session-elevation`. **Trigger: PR #853**
 scope half (§ Credential scopes) has its own trigger: the device flow
 already collects and displays scopes it does not enforce.
 
-Status: **DRAFT** — amended 2026-11-15 to split Gate from Scope and to
-make credential scopes resource-based rather than protocol-based, and to
-split `account` from `security` the way Google separates those tabs. The
-design questions raised in review are all resolved: no row in the
-scope→route table is unassigned, and the two judgement calls
-(`/remote.php/dav/avatars` under `account`, `/api/drives/{id}/members`
-reachable with `files:rw`) are ratified with their reasoning recorded
+Status: **DRAFT** — amended 2026-11-15 to split Gate from Scope, make
+credential scopes resource-based rather than protocol-based, and split
+`account` from `security` the way Google separates those tabs. The design
+questions raised in review are all resolved: every one of the 235 API
+operations is classified with zero orphans, and the judgement calls are
+ratified with their reasoning recorded rather than left open.
+Deliverables now include a `src/AGENTS.md` rule and a new architecture
+document — see the two § Required sections. Awaiting approval to
+implement.
 rather than left open. Awaiting approval to implement.
 
 ## Goal
@@ -1143,6 +1145,93 @@ Three consequences worth settling before implementation:
    `DELETE /api/recent/clear` is deliberately **not** on the list: it
    discards a convenience index, not content. The line is "can the user
    get the bytes back", not "does the word delete appear".
+
+## Required: documentation
+
+Not optional follow-up. Two of the three axes have no architecture doc
+today, and the plan is not done while the only description of them is a
+plan file — plans record *why a change was made*, architecture docs
+record *how the system works now*, and a reader debugging a 403 needs
+the second.
+
+### New: `docs/architecture/authorization-axes.md`
+
+One page covering all three axes and how a request is decided, with
+ReBAC remaining the deep dive for Grant.
+
+A new file rather than an extension of `rebac-authorization.md`, because
+that document is focused and already disclaims this material. Its
+§ What ReBAC does *not* cover says of global roles: "They live **outside
+ReBAC** because they're cross-cutting concerns, not per-resource
+permissions." That bullet *is* the Gate axis — correctly reasoned and
+homeless. The new page is where it lands.
+
+Contents, no more:
+
+- the three axes and their one-line questions (Gate / Scope / Grant),
+  plus the intersection rule;
+- the worked example (§ Worked example: sharing a file) — the fastest
+  way to make the three concrete;
+- the scope vocabulary table with its routes;
+- where each axis is enforced (router / router+spec / service) and why
+  Grant is delegated;
+- elevation, its three consumer classes, and the irreversibility
+  criterion;
+- links out: ReBAC for Grant detail, `auth-model.md` for how a
+  credential is obtained, `admin-elevation.md` for the elevation
+  mechanism.
+
+### Edits to existing docs — links, not copies
+
+| document | change |
+|---|---|
+| `docs/architecture/rebac-authorization.md` | § What ReBAC does *not* cover — the "global roles in the JWT" bullet points at the new page instead of trailing off; § File map gains the policy module |
+| `docs/architecture/auth-model.md` | scopes are minted where credentials are, so the app-password and device-flow material states what scope set each gets; § Related documents gains the link |
+| `docs/architecture/index.md` | one entry beside the existing ReBAC line |
+| `src/AGENTS.md` | the three-axis rule — see § Required: amend `src/AGENTS.md` |
+
+Duplication is the failure mode to avoid: the scope vocabulary must
+appear in exactly one place. Everything else references it, because a
+second copy is a second thing to forget when `mail` stops being
+reserved.
+
+### User-facing
+
+`docs/guide/dav-client-setup.md`, `webdav.md` and `caldav-carddav.md`
+all walk a user through creating an app password. Once scopes exist,
+those pages need to say **which scopes each client needs** — DAVx⁵ wants
+calendar and contacts, rclone wants files, the NC desktop client wants
+files plus account — or users will tick everything and the feature
+achieves nothing. Follow `feedback_enduser_docs` style: what to click,
+not what the server does.
+
+The consent screen copy is documentation too, and the plan's § Defaults
+already constrains it: render the *resolved* access ("Files — read and
+write"), never the raw token.
+
+### Already automatic
+
+The published API reference needs no manual work. Scopes are declared in
+`security(("bearerAuth" = [...]))`, so `resources/gen/openapi.json`
+carries them, the Swagger page renders them, and `openapi-spec-drift`
+keeps them honest. That is the second reason the declaration lives in
+the annotation rather than a side table.
+
+### Deliberately nothing
+
+`docs/config/env.md` needs no entry: this design adds **no** operator
+knob. The scope vocabulary is compiled in, the ceilings are per
+credential type in code, and the one tunable in the area — the elevation
+TTL — belongs to `admin-elevation.md`. If a reviewer finds themselves
+writing an `OXICLOUD_SCOPE_*` variable, something has gone wrong with
+§ Non-goals.
+
+### Acceptance
+
+A reader who lands on `docs/architecture/index.md` asking "why was my
+request refused?" reaches the three axes in one hop, and from there the
+specific axis in two. If answering that needs a plan file, the
+documentation is not done.
 
 ## Test plan
 
