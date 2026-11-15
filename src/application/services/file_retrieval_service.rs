@@ -104,7 +104,7 @@ impl FileRetrievalService {
     /// Test-only constructor: authorization engine without the cache/transcode
     /// tiers. The external-mount read methods only consult `authz` + the
     /// provider, so this is sufficient to exercise their authorization.
-    #[cfg(all(test, integration_tests))]
+    #[cfg(all(test, feature = "integration_tests"))]
     pub(crate) fn new_with_authz_for_test(
         file_read: Arc<FileBlobReadRepository>,
         authz: Arc<PgAclEngine>,

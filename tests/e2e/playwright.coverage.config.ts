@@ -72,10 +72,9 @@ const SHARED_WORKER_SPECS = /message-bus-.*\.spec\.ts/;
  * and demonstrably usable, else `cargo run`.
  *
  * `cargo run` is a 5-minute rebuild whenever the last cargo invocation used a
- * different feature set — `cargo clippy --all-features` and
- * `just gen-openapi` (`--features dev_tools`) both do, so in practice an
- * ordinary dev loop pays that cost on nearly every e2e run even though
- * `target/debug/oxicloud` is sitting right there.
+ * different feature set. The `just` recipes now share one set (`dev`), but
+ * anything run by hand with other flags still does, and `target/debug/oxicloud`
+ * is usually sitting right there.
  *
  * Reuse is only safe if the binary is actually equivalent to what `cargo run`
  * would have produced, so BOTH guards must pass. Either failing falls back to
@@ -86,7 +85,7 @@ const SHARED_WORKER_SPECS = /message-bus-.*\.spec\.ts/;
  *     and than `Cargo.toml`/`Cargo.lock`. Without this a forgotten rebuild
  *     makes the suite grade the previous commit — green on code that no
  *     longer exists, which is worse than no run at all.
- *  2. **Built with `--features plugins`.** This config sets
+ *  2. **Built with plugins** (`--features dev` or `plugins`). This config sets
  *     `OXICLOUD_ENABLE_PLUGINS=true` and the admin Plugins tab specs install
  *     the hello fixture. The feature set is not recorded anywhere on disk
  *     (`--version` doesn't report it), so probe for linked wasmtime symbols:
@@ -170,7 +169,7 @@ function serverCommand(): string {
     return `bash "${startScript}" "${workspace}/target/${process.env.BUILD_TARGET}/oxicloud"`;
   }
 
-  const cargo = `bash "${startScript}" cargo run --features plugins`;
+  const cargo = `bash "${startScript}" cargo run --features dev`;
   if (process.env.E2E_BUILD === 'cargo') return cargo;
 
   const bin = path.join(workspace, 'target', 'debug', 'oxicloud');

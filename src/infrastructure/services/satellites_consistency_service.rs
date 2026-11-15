@@ -1113,7 +1113,7 @@ mod tests {
     }
 }
 
-// Gated on `--cfg integration_tests` (see `just test-integration`).
+// Gated on `--features integration_tests` (see `just test-integration`).
 // Requires a test PG on 5433 with `oxicloud_test`, schema applied via
 // `tests/common/init-test-schema.sh`:
 //   just test-integration --  satellites_consistency_service
@@ -1124,7 +1124,7 @@ mod tests {
 // landing after its source was reaped — is not reproducible on demand.
 // So it is seeded directly, the same approach
 // `drives_consistency_service` takes for drift.
-#[cfg(integration_tests)]
+#[cfg(feature = "integration_tests")]
 #[allow(dead_code, unused_imports)]
 mod integration_tests {
     use super::*;

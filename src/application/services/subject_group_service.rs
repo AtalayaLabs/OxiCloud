@@ -635,10 +635,10 @@ fn map_repo_err(e: SubjectGroupRepositoryError) -> DomainError {
 //
 // How to run:
 //   bash tests/common/spawn-db.sh
-//   RUSTFLAGS='--cfg integration_tests' cargo test \
+//   cargo test --features integration_tests \
 //       -p oxicloud --lib subject_group_service::integration_tests
 // ────────────────────────────────────────────────────────────────────────────
-#[cfg(integration_tests)]
+#[cfg(feature = "integration_tests")]
 #[allow(dead_code)]
 mod integration_tests {
     use super::*;

@@ -134,9 +134,9 @@ impl ExternalMountRepositoryPort for ExternalMountPgRepository {
 }
 
 // Gated on `test` too: the module uses the `testcontainers` dev-dependency,
-// which is only linked into test targets — a plain `--cfg integration_tests`
+// which is only linked into test targets — a plain `--features integration_tests`
 // lib build (e.g. clippy's lib pass) must not try to compile it.
-#[cfg(all(test, integration_tests))]
+#[cfg(all(test, feature = "integration_tests"))]
 mod integration_tests {
     use super::*;
     use crate::mount_it_support::{fresh_db, insert_mount, provision_folder};

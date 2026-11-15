@@ -82,20 +82,29 @@ This project is split into two parts:
 ## Backend Build & Dev Commands
 
 ```bash
-cargo build                          # Dev build
-cargo build --release                # Optimized release build
-cargo run                            # Run server (port 8086)
-cargo test --workspace               # Run all tests (~208)
-cargo test <test_name>               # Run a single test by name
-cargo test --features test_utils     # Run tests that use mockall mocks
-cargo clippy -- -D warnings          # Lint (zero warnings policy)
-cargo fmt --all --check              # Format check
-cargo fmt --all                      # Auto-format
-RUST_LOG=debug cargo run             # Run with debug logging
-cargo run --bin generate-openapi     # Regenerate resources/gen/openapi.json
+cargo build --features dev --bin oxicloud          # Dev build
+cargo build --release                              # Optimized release build
+cargo run --features dev                           # Run server (port 8086)
+cargo test --features dev --lib --bins --tests     # Run all unit tests (incl. mockall mocks)
+cargo test --features dev --lib <test_name>        # Run a single test by name
+cargo clippy --all-features --all-targets -- -D warnings  # Lint (zero warnings policy)
+cargo fmt --all --check                            # Format check
+cargo fmt --all                                    # Auto-format
+RUST_LOG=debug cargo run --features dev            # Run with debug logging
+cargo run --features dev --bin generate-openapi    # Regenerate resources/gen/openapi.json
 ```
 
 A `justfile` is available for common tasks (`just --list` to see all). Key recipes: `just check` (fmt + clippy), `just test`, `just openapi`.
+
+**Keep one feature set locally: `--features dev`** (= `plugins` + `dev_tools` +
+`test_utils`). Every feature of this package — even an empty marker — is part
+of the lib's build fingerprint, so switching feature sets recompiles the whole
+~250k-line lib. All `just` recipes and `tests/*/run.sh` debug builds use `dev`.
+**Never put `--cfg` or other flags in `RUSTFLAGS`** for a local recipe: RUSTFLAGS
+is in every dependency's fingerprint, so changing it rebuilds all ~700 crates.
+Use a cargo feature, or `CARGO_BUILD_WARNINGS=deny` in place of `-Dwarnings`.
+Skip `examples/` in test runs (`--lib --bins --tests`): a bare `cargo test`
+links all ~80 `bench_*` examples without running them.
 
 Requires **Rust 1.93+** (edition 2024) and **PostgreSQL 13+** (with `pg_trgm` and `ltree` extensions).
 
@@ -112,14 +121,14 @@ cargo clippy --all-features --all-targets -- -D warnings     # Lint (must pass w
 
 CI enforces both — commits that fail either check will not merge.
 
-`just check` now passes `--cfg integration_tests`, so the
-`#[cfg(integration_tests)]` modules are compiled and linted here rather than
-only in CI. Use the recipe — a bare
-`cargo clippy --all-features --all-targets -- -D warnings` leaves those
-modules out of the build entirely, and a warning in one then reaches nobody
-until CI fails.
+DB integration test modules are gated on the `integration_tests` cargo
+feature (`#[cfg(feature = "integration_tests")]`), which `--all-features`
+turns on, so the clippy line above compiles and lints them. Do not gate on
+a bare `#[cfg(integration_tests)]`: it is no longer set anywhere, the module
+would silently drop out of every build, and `unexpected_cfgs` fails clippy
+on it for exactly that reason.
 
-Every new `#[cfg(integration_tests)]` module needs `#[allow(dead_code)]` on
+Every new `#[cfg(feature = "integration_tests")]` module needs `#[allow(dead_code)]` on
 it, and all the existing ones have it: CI's `cargo test --tests` builds the
 lib as a plain DEPENDENCY of the `tests/` binaries, where no harness collects
 the `#[tokio::test]` functions, so their fixture helpers look unused and
@@ -133,8 +142,8 @@ is slower and a red CI run after a public push wastes maintainer attention:
 
 ```bash
 just check               # cargo fmt --check + cargo clippy -D warnings
-just test                # cargo test --workspace
-just test-integration    # cargo test --tests with integration cfg
+just test                # cargo test --features dev --lib --bins --tests
+just test-integration    # same + --features integration_tests, against PG on 5433
 just api-test            # Hurl API + WebDAV scenarios
 ```
 
@@ -213,7 +222,7 @@ Tests are primarily `#[cfg(test)]` modules within source files (~36 files have i
 
 ### DB integration tests share one database
 
-`#[cfg(integration_tests)]` modules all run against the single Postgres on
+`#[cfg(feature = "integration_tests")]` modules all run against the single Postgres on
 5433, across several test binaries, concurrently. Three rules follow, and
 ignoring them produces failures that look like bugs in the code under test:
 

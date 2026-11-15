@@ -311,7 +311,7 @@ struct EnvelopeRow {
     ksf_parallelism: Option<i32>,
 }
 
-#[cfg(integration_tests)]
+#[cfg(feature = "integration_tests")]
 #[allow(dead_code)]
 mod integration_tests {
     use super::*;

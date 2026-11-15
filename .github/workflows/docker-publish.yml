@@ -114,7 +114,7 @@ jobs:
         env:
           PGPASSWORD: postgres
 
-      - run: cargo test --workspace
+      - run: cargo test --workspace --lib --bins --tests
 
   # Build and push multi-arch image
   build-and-push:

@@ -1520,7 +1520,7 @@ mod tests {
 // is reachable from a unit test, and the job rewrites `mime_type`
 // corpus-wide by default — so "it compiles" is a long way from "it is
 // safe to trigger".
-#[cfg(integration_tests)]
+#[cfg(feature = "integration_tests")]
 #[allow(dead_code, unused_imports)]
 mod integration_tests {
     use super::*;

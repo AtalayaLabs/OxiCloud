@@ -454,7 +454,7 @@ fn row_from(r: sqlx::postgres::PgRow) -> Result<FileChangeRow, DomainError> {
 // row would then fail every later run for an unrelated reason. Every assertion
 // filters on this test's own ids — never a count over the whole table, which
 // other suites write to concurrently.
-#[cfg(all(test, integration_tests))]
+#[cfg(all(test, feature = "integration_tests"))]
 mod recent_changes_read_tests {
     use super::*;
     use crate::integration_test_support::{ensure_clean_test_db, test_db_url};

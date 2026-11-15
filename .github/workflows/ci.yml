@@ -166,8 +166,10 @@ jobs:
           # keeps CI and local in lockstep.
           fetch-depth: 0
           fetch-tags: true
-      # Rust for `just asyncapi` — the JSON spec is built by
-      # `cargo run --features dev_tools --bin generate-asyncapi`.
+      # Rust for the AsyncAPI generator. CI builds `--features dev_tools`
+      # alone; `just gen-asyncapi-schema` uses `--features dev`, the local
+      # set. Same spec either way — `dev` only adds plugins and the test
+      # helper bins.
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # Node for `just gen-asyncapi` — Modelina projects the spec into
@@ -182,7 +184,7 @@ jobs:
         working-directory: frontend
         run: npm ci
       - name: Regenerate AsyncAPI spec
-        # `just asyncapi` = `cargo run --features dev_tools --bin generate-asyncapi`
+        # Local equivalent: `just gen-asyncapi-schema` (with `--features dev`).
         run: cargo run --features dev_tools --bin generate-asyncapi
       - name: Regenerate TS DTOs (Modelina)
         working-directory: frontend
@@ -252,7 +254,7 @@ jobs:
         working-directory: frontend
         run: npm ci
       - name: Regenerate OpenAPI spec
-        # `just gen-openapi-schema` = `cargo run --features dev_tools --bin generate-openapi`.
+        # Local equivalent: `just gen-openapi-schema` (with `--features dev`).
         run: cargo run --features dev_tools --bin generate-openapi
       - name: Regenerate TS SDK (openapi-ts)
         working-directory: frontend
@@ -588,7 +590,7 @@ jobs:
       - name: Run plugin runtime tests
         # Quote: the trailing `::` confuses GitHub's YAML parser (mapping
         # values not allowed) and aborts the whole workflow at load time.
-        run: 'cargo test --features plugins plugins::'
+        run: 'cargo test --features plugins --lib plugins::'
 
   rust-test:
     name: Server Unit and Functionnal Tests
@@ -613,9 +615,11 @@ jobs:
       # Free ~26 GB of preinstalled tools the runner image ships with
       # (Android SDK ~12 GB, Haskell/GHC ~5 GB, .NET ~2 GB, swap +
       # docker images by the action's defaults). `cargo test
-      # --all-features --workspace` on this repo blows past the
-      # ubuntu-latest ~14 GB free budget otherwise (PR #520 died on
-      # the `bench_owner_cache` example link step with ENOSPC).
+      # --all-features --workspace` on this repo blew past the
+      # ubuntu-latest ~14 GB free budget (PR #520 died on the
+      # `bench_owner_cache` example link step with ENOSPC). The test steps
+      # below no longer link the ~80 examples (`--lib --bins --tests`;
+      # clippy's `--all-targets` still checks them), but keep the headroom.
       # `tool-cache: false` is load-bearing — wiping it breaks
       # `setup-rust`/`setup-node`/etc.
       - uses: jlumbroso/free-disk-space@main
@@ -666,16 +670,29 @@ jobs:
           PGPASSWORD: postgres
           PGDATABASE: oxicloud_test
 
+      # Every feature EXCEPT `integration_tests`: the DB-free unit tests,
+      # including `config.rs`'s `DATABASE_URL`-mutating env tests, which are
+      # compiled out under that feature because they race the integration
+      # tests' `DATABASE_URL` reads. Keep this list = all features minus
+      # `integration_tests`; the next step's `--all-features` covers anything
+      # added later.
+      #
+      # `--lib --bins --tests`: a bare `cargo test` also compiles and links
+      # all ~80 `examples/bench_*` binaries without running them. The crate
+      # has no doctests (see `just test`).
       - name: Run tests
-        run: cargo test --all-features --workspace
+        run: cargo test --workspace --features dev,load_seed_bin,faces-onnx,bench,bundled-assets --lib --bins --tests
         env:
           DATABASE_URL: "postgres://postgres:postgres@localhost/oxicloud_test"
 
+      # Differs from the step above only by the `integration_tests` FEATURE,
+      # so just this crate recompiles. It used to be
+      # `RUSTFLAGS="-Dwarnings --cfg integration_tests"`, and changing
+      # RUSTFLAGS rebuilt all ~700 dependencies a second time in this job.
       - name: Run integration tests
         run: cargo test --all-features --workspace --tests
         env:
           DATABASE_URL: "postgres://postgres:postgres@localhost/oxicloud_test"
-          RUSTFLAGS: "-Dwarnings --cfg integration_tests"
 
   rust-audit:
     name: Security Audit

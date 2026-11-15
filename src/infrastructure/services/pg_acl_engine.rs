@@ -393,11 +393,11 @@ impl PgAclEngine {
     /// authz queries.
     ///
     /// Visible under both `cfg(test)` (the standard unit-test build) and
-    /// `cfg(integration_tests)` (the gated-by-RUSTFLAGS integration
+    /// `cfg(feature = "integration_tests")` (the `--features integration_tests`
     /// build). The `SubjectGroupService` integration tests construct the
     /// service with a stub engine, since they only exercise the engine's
     /// in-memory cache invalidation calls — never its SQL paths.
-    #[cfg(any(test, integration_tests))]
+    #[cfg(any(test, feature = "integration_tests"))]
     pub fn new_stub() -> Self {
         let pool = sqlx::pool::PoolOptions::<sqlx::Postgres>::new()
             .max_connections(1)

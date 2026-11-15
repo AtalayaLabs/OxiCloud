@@ -472,10 +472,10 @@ impl FileBlobReadRepository {
 
     /// Creates a stub instance for testing — never hits PG.
     /// Available in both standard unit-test (`cfg(test)`) and integration
-    /// (`cfg(integration_tests)`) builds; `PgAclEngine::new_stub` chains
+    /// (`cfg(feature = "integration_tests")`) builds; `PgAclEngine::new_stub` chains
     /// into this stub and is needed from the integration-test module of
     /// `subject_group_service`.
-    #[cfg(any(test, integration_tests))]
+    #[cfg(any(test, feature = "integration_tests"))]
     pub fn new_stub() -> Self {
         use crate::infrastructure::services::blob_handler::BlobHandler;
         Self {

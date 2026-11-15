@@ -232,15 +232,27 @@ rustix = { version = "1", features = ["fs"] }
 [features]
 default = []
 test_utils = ["mockall", "dep:tokio-tungstenite"]
+# DB-backed integration test modules (`#[cfg(feature = "integration_tests")]`),
+# run against the test Postgres on 5433 by `just test-integration` and CI.
+# A cargo feature rather than `RUSTFLAGS='--cfg integration_tests'`: RUSTFLAGS
+# is part of EVERY crate's fingerprint, so flipping it rebuilt all ~700
+# dependencies; a feature only rebuilds this crate. Also on under
+# `--all-features`, so `just check` lints these modules without extra flags.
 integration_tests = []
+# The ONE feature set every local dev recipe uses (`just build`, `run`, `test`,
+# the OpenAPI/AsyncAPI generators). Every feature of this package is part of
+# the lib's build fingerprint — even an empty marker like `dev_tools` — so
+# recipes that each picked their own set recompiled the whole lib whenever you
+# switched between them (e.g. every `just fe-*` recipe ran the generators with
+# `--features dev_tools` after `just build` had used `--features plugins`).
+dev = ["plugins", "dev_tools", "test_utils"]
 # WASM plugin runtime (Extism). Opt-in: bundles wasmtime, a large engine most
 # deployments won't use. Activation also requires OXICLOUD_ENABLE_PLUGINS=true.
 plugins = ["dep:extism", "dep:file-rotate"]
 # Empty marker feature that gates the `load-seed` binary so it isn't built
 # by default (and skipped in prod Docker builds). Kept separate from
-# test_utils so enabling it doesn't change the oxicloud dependency graph —
-# this lets one `cargo build` produce both `oxicloud` and `load-seed`
-# without recompiling oxicloud with mockall in scope.
+# test_utils so enabling it doesn't pull mockall into the build. (Any
+# feature change still recompiles the oxicloud lib itself — see `dev`.)
 load_seed_bin = []
 # Real ONNX-backed face analyzer (detector + embedder) for the People feature.
 # Opt-in: pulls `ort` (ONNX Runtime, load-dynamic — dlopen's libonnxruntime at
@@ -256,8 +268,8 @@ bench = []
 # Empty marker feature that gates the `generate-openapi` binary out of the
 # default release build set. `just openapi` flips it when the SPA needs a
 # regenerated openapi.json; end-user release builds never do. Kept separate
-# from `test_utils` for the same reason `load_seed_bin` is — enabling
-# `dev_tools` on the CLI must not perturb the oxicloud dependency graph.
+# from `test_utils` for the same reason `load_seed_bin` is. Local recipes
+# enable it through `dev`, so the generators reuse the dev lib build.
 dev_tools = []
 # Bake the SvelteKit build output (`static-dist/` at repo root) into the
 # binary at compile time via `rust-embed`. Opt-in and off by default — the
@@ -291,7 +303,7 @@ criterion = "0.5"
 # rather than in `[dependencies]` so the shipped binary stops carrying it.
 lru = "0.16.4"
 # Ephemeral service containers for integration tests (gated by
-# `--cfg integration_tests`). `testcontainers-modules` re-exports the
+# `--features integration_tests`). `testcontainers-modules` re-exports the
 # `testcontainers` runner, so the postgres image + runner come from one dep.
 testcontainers-modules = { version = "0.13", features = ["postgres"] }
 # Round-11 L1 harness only (bench_log_writer): the non-blocking writer was
@@ -300,7 +312,10 @@ testcontainers-modules = { version = "0.13", features = ["postgres"] }
 tracing-appender = "0.2"
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(integration_tests)'] }
+# No custom cfgs are declared: `integration_tests` is a cargo feature now, so a
+# leftover `#[cfg(integration_tests)]` trips `unexpected_cfgs` (and fails
+# clippy's `-D warnings`) instead of silently compiling the module out.
+unexpected_cfgs = "warn"
 
 [lints.clippy]
 # Rust 1.99.0 added `clippy::double_must_use`, which fires on every
@@ -1078,7 +1093,14 @@ opt-level = 3
 strip = true
 
 [profile.dev]
-opt-level = 1
+# This crate at opt-level 0, every dependency at 2. Dependencies compile once
+# and stay cached, so paying for optimisation there is nearly free — and it is
+# where the hot code is (blake3, image/fast_image_resize, argon2, sqlx, tantivy),
+# so tests and `cargo run` stay fast. This crate (~250k lines) is what an edit
+# recompiles, and optimisation is the expensive part of that: skipping it makes
+# each incremental rebuild cheaper and needs less peak RAM. Was `opt-level = 1`
+# for everything.
+opt-level = 0
 # `line-tables-only` keeps file:line in panic backtraces (what you
 # actually need on a long-running server) while dropping the rest of
 # DWARF, which is worthless without a debugger. On this crate that
@@ -1103,6 +1125,9 @@ split-debuginfo = "unpacked"
 # `cargo clean -p oxicloud --profile dev` clears the incremental cache
 # without wiping compiled deps.
 incremental = true
+
+[profile.dev.package."*"]
+opt-level = 2
 
 [profile.bench]
 lto = "fat"

@@ -272,7 +272,7 @@ impl RecoverableJobHandler for DrivesConsistencyCheck {
 
 // ─── Integration tests — real PG round-trip ─────────────────────────────────
 //
-// Gated on `--cfg integration_tests` (see `just test-integration`).
+// Gated on `--features integration_tests` (see `just test-integration`).
 // Requires a running test PG on 5433 with `oxicloud_test` DB, schema
 // applied via `tests/common/init-test-schema.sh`. Runs:
 //   just test-integration --  drives_consistency_service
@@ -285,7 +285,7 @@ impl RecoverableJobHandler for DrivesConsistencyCheck {
 //     on the `oxicloud::consistency` tracing target. Captured via a
 //     scoped subscriber.
 
-#[cfg(integration_tests)]
+#[cfg(feature = "integration_tests")]
 #[allow(dead_code, unused_imports)] // items are exercised by #[tokio::test]
 // fns; cargo check --lib doesn't see the
 // test entry-point call graph.

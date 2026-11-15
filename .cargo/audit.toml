@@ -363,7 +363,7 @@ ignore = [
     # (RUSTSEC-2025-0134). Transitive via
     # `testcontainers 0.25.2 → bollard 0.19.4 → rustls-pemfile 2.2.0`
     # on the DEV-dependency tree only (testcontainers is pulled by
-    # `--cfg integration_tests`). Never compiled into the production
+    # `--features integration_tests`). Never compiled into the production
     # binary. The crate is deprecated in favour of `rustls-pki-types`
     # which bollard has not yet adopted.
     #
@@ -379,7 +379,7 @@ ignore = [
 
     # astral-tokio-tar 0.5.6 — tar extraction advisories, transitive via
     # testcontainers → testcontainers-modules, a DEV-dependency used only by
-    # the `--cfg integration_tests` harness to spin up throwaway Postgres
+    # the `--features integration_tests` harness to spin up throwaway Postgres
     # containers. Never compiled into the production binary and never fed
     # attacker-controlled tar input — the only archives extracted are the
     # official Postgres images the test harness pulls. testcontainers 0.25.2
