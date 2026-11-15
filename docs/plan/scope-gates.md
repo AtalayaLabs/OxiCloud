@@ -36,7 +36,7 @@ pub enum Gate {
     NotAnonymous,            // this credential maps to an auth.users row
     DpopBound,               // session carries a DPoP thumbprint
     // NOT a v1 variant — no session-elevation state exists in the
-    // schema yet. Designed in `docs/plan/admin-elevation.md` (admin
+    // schema yet. Designed in `docs/plan/session-elevation.md` (admin
     // sudo mode: holding the role is not enough to MUTATE), which adds
     // `auth.sessions.elevated_at` and needs `sid` on `CurrentUser`.
     // Listed here so the enum's session-bound half is visibly load-
@@ -160,7 +160,7 @@ down: `JwtClaims.sid` (RFC 8417 §4.1) carries `auth.sessions.id`
 precisely so the auth middleware can act per-session without a DB round
 trip. So surfacing it onto `CurrentUser` is a thread-through, not a new
 concept — and `Gate::Elevated` needs it anyway
-(`docs/plan/admin-elevation.md`). Left out of v1 only to keep the two
+(`docs/plan/session-elevation.md`). Left out of v1 only to keep the two
 changes separable.
 
 Follow the precedent already in that file: `CurrentUser::role`'s typed
@@ -605,7 +605,7 @@ three counts:
 **`Gate::Elevated` is the second factor, and this is its first real
 consumer.** Holding `security:rw` is necessary and not sufficient: a
 mutation also needs a recently re-authenticated session, the admin
-sudo-mode state designed in `docs/plan/admin-elevation.md`. Scope answers
+sudo-mode state designed in `docs/plan/session-elevation.md`. Scope answers
 "was this key issued for security changes"; elevation answers "did a
 human prove themselves in the last few minutes". The commented-out
 `Elevated` variant in the enum above stops being hypothetical here.
@@ -1013,7 +1013,7 @@ the axes before writing either.
 
 ## Declaring session elevation
 
-`docs/plan/admin-elevation.md` owns elevation and already decided how it
+`docs/plan/session-elevation.md` owns elevation and already decided how it
 is **enforced**: a layer, keyed on HTTP method.
 
 ```
@@ -1102,7 +1102,7 @@ without confusion: `oxicloud:files:rw` and `oxicloud:calendar:ro` in one
 requirement means a credential carrying both — exactly what a `ScopeSet`
 is. Conjunction is the right default for every entry.
 
-**Elevation is not an admin feature.** `admin-elevation.md` is named for
+**Elevation is not an admin feature.** `session-elevation.md` is named for
 its first consumer, and the name is now too narrow: elevation is a
 property of any session, and an ordinary user needs it for the same
 reason an admin does. Three consumer classes, so `Gate::Elevated` is not
@@ -1110,14 +1110,14 @@ speculative:
 
 | needs elevation | audience | because |
 |---|---|---|
-| non-safe methods under `/api/admin/*` | admins | holding the role is not enough to *change* things (`admin-elevation.md` § Goal) |
+| non-safe methods under `/api/admin/*` | admins | holding the role is not enough to *change* things (`session-elevation.md` § Goal) |
 | mutations in the `security` scope | **any user** | scope says the key was issued for it, elevation says a human proved themselves recently |
 | irreversible deletions | **any user** | no undo path exists afterwards, so a stolen session gets one shot at permanent damage |
 
 Three consequences worth settling before implementation:
 
 1. **`POST /api/auth/elevate` is for any authenticated user**, not just
-   admins. `admin-elevation.md` § Elevating mirrors `OXICLOUD_AUTH_METHODS`
+   admins. `session-elevation.md` § Elevating mirrors `OXICLOUD_AUTH_METHODS`
    with a branch per method, which already generalises — but the plan's
    framing is admin-only and should be widened, or renamed.
 2. **The method-based layer cannot cover classes 2 and 3.** It is keyed
@@ -1177,7 +1177,7 @@ Contents, no more:
 - elevation, its three consumer classes, and the irreversibility
   criterion;
 - links out: ReBAC for Grant detail, `auth-model.md` for how a
-  credential is obtained, `admin-elevation.md` for the elevation
+  credential is obtained, `session-elevation.md` for the elevation
   mechanism.
 
 ### Edits to existing docs — links, not copies
@@ -1221,7 +1221,7 @@ the annotation rather than a side table.
 `docs/config/env.md` needs no entry: this design adds **no** operator
 knob. The scope vocabulary is compiled in, the ceilings are per
 credential type in code, and the one tunable in the area — the elevation
-TTL — belongs to `admin-elevation.md`. If a reviewer finds themselves
+TTL — belongs to `session-elevation.md`. If a reviewer finds themselves
 writing an `OXICLOUD_SCOPE_*` variable, something has gone wrong with
 § Non-goals.
 
@@ -1308,7 +1308,7 @@ field into an enforced one:
   succeeds after `POST /api/auth/elevate`, and is refused again once the
   TTL lapses. Without this the whole feature can ship admin-only while
   every admin pin stays green — which is how it is framed in
-  `admin-elevation.md` today.
+  `session-elevation.md` today.
 - Unit: `require_all` is **conjunction** — a caller holding `elevated`
   but not `Admin` is REFUSED on `[Admin, Elevated]`, and so is one
   holding `Admin` but not `elevated`. Pin both halves: a disjunctive

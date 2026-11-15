@@ -1,4 +1,4 @@
-# Admin session elevation (sudo mode)
+# Session elevation (sudo mode)
 
 Branch: not started. Depends on `docs/plan/scope-gates.md` for
 `Scope::Elevated`, but can ship standalone with a bespoke layer first.
@@ -7,10 +7,29 @@ Status: **DRAFT**
 
 ## Goal
 
-Holding the admin role is not enough to **mutate** from the admin panel.
-A destructive admin action requires the session to have recently proved
-possession of a strong credential — a short-lived elevation, like
-GitHub's sudo mode or Django's admin re-auth.
+A session can be valid without being *presently operated* by the person
+who opened it — an unlocked laptop, a stolen access token, an XSS
+payload riding a live cookie. Elevation closes that window: certain
+actions require the session to have recently proved possession of a
+strong credential, like GitHub's sudo mode or Django's admin re-auth.
+
+**Not admin-only**, despite this document's original name. Three
+consumer classes, enumerated in `scope-gates.md` § Declaring session
+elevation:
+
+- non-safe methods under `/api/admin/*` — holding the admin role is not
+  enough to *mutate* from the admin panel;
+- mutations in the `oxicloud:security` scope, for **any user** — the
+  scope says the key was issued for it, elevation says a human proved
+  themselves recently;
+- **irreversible deletions**, for any user — emptying trash, erasing
+  face data, deleting a shared drive. No undo path exists afterwards, so
+  a stolen session gets one shot at permanent damage.
+
+`POST /api/auth/elevate` is therefore available to any authenticated
+user, not only admins. § Elevating already branches per
+`OXICLOUD_AUTH_METHODS`, so the mechanism generalises unchanged; only
+this document's framing was narrow.
 
 Three separate facts, today conflated into one:
 
