@@ -171,11 +171,31 @@ All three axes, on one request:
 
 | axis | check | where |
 |---|---|---|
-| Gate | none today — `/api/grants` is not internal-only, because acting on resources shared with you is the point (§ Rejected: default-deny) | — |
+| Gate | `Gate::NotAnonymous` — enforced today by `anonymous_allowlist_layer` | router layer |
 | Scope | `oxicloud:sharing:rw` | router layer / extractor |
 | Grant | `authz.require(Subject::User(caller), Permission::Share, resource)` — owners short-circuit | `grant_handler.rs` |
 
-Neither of the last two substitutes for the other, and that is the
+The gate is `NotAnonymous`, **not** `Internal` — and the difference is
+easy to blur. An external user has an `auth.users` row and legitimately
+re-shares what was shared with them (§ Rejected: default-deny). An
+anonymous public-link visitor has no user row at all: `UserRole::Anonymous`
+"is never stored in `auth.users`… it exists only on a session and its
+JWT". So there is no subject to record as `granted_by`, and permitting it
+would turn a read-only link into an access-granting capability — anyone
+holding the URL could mint persistent grants for third parties.
+
+That is already refused twice over today: `/api/grants` is not on the
+`anonymous_allowlist` (a 7-route, GET-only list covering folder and file
+reads, thumbnails and metadata — deny-by-default outside it), and the
+layer rejects non-GET regardless. The allowlist's own tests assert the
+refusal for neighbours like `/api/users/{id}`, `/api/groups/search` and
+`/api/auth/app-passwords`.
+
+So this row folds in rather than appearing: per § Fold in,
+`anonymous_allowlist_layer` becomes `gate_layer(Gate::NotAnonymous)`
+and keeps its allowlist.
+
+Neither the scope nor the grant substitutes for the other, and that is the
 design working rather than redundancy:
 
 - `sharing:rw` on a file the caller cannot `Share` → denied by the
