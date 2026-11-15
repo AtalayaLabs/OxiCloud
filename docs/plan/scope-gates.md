@@ -68,7 +68,28 @@ pub enum Access { ReadOnly, ReadWrite }
 
 /// The set a credential carries. `Scope` is one entry, `ScopeSet` is the
 /// whole grant — keeping them distinct avoids "scope" meaning both.
-pub struct ScopeSet(BTreeMap<Scope, Access>);
+///
+/// Two bitmasks rather than a map, because unlike a gate this is checked
+/// on hot paths with no DB round trip to hide behind — see § Checking
+/// cost. Eight scopes fit a `u8` with room spare; `rw` implies `ro` by
+/// construction rather than by a branch at every callsite.
+pub struct ScopeSet {
+    readable: u8,   // bit per Scope
+    writable: u8,   // subset of `readable`
+}
+
+impl ScopeSet {
+    fn allows(&self, s: Scope, a: Access) -> bool {
+        let m = match a { Access::ReadOnly => self.readable, Access::ReadWrite => self.writable };
+        m & s.bit() != 0
+    }
+    /// Maintains the `writable ⊆ readable` invariant on insert, so no
+    /// caller has to remember that write implies read.
+    fn grant(&mut self, s: Scope, a: Access) {
+        self.readable |= s.bit();
+        if a == Access::ReadWrite { self.writable |= s.bit(); }
+    }
+}
 
 pub trait ScopePolicy {
     /// Takes the CALLER CONTEXT, not a bare user id — see § What a scope
@@ -817,7 +838,7 @@ handlers only.
 - `calendar_service.rs` — the `TODO(#853)` on `create_calendar`
   resolves by *deleting* it, not by adding copy number three.
 
-## Lookup cost
+## Lookup and checking cost
 
 `require_internal_user` calls `auth.get_user_flags(caller_id).await` —
 a DB lookup per request. The live-read decision above means that cost is
@@ -830,15 +851,50 @@ So the rule is placement, not caching:
 
 - Ownerless creates and the DAV / admin subtrees are **cold** paths. One
   lookup there is free in practice. Keep the token and the layers there.
-- Do **not** spread scope checks onto the hot paths — listing,
+- Do **not** spread GATE checks onto the hot paths — listing,
   thumbnails, auth (AGENTS.md § Performance). Those are grant questions
-  anyway, answered by `authz.require` against a resource, and a scope
-  gate on them would be both a per-request query and the wrong check.
+  anyway, answered by `authz.require` against a resource, and a gate
+  there would be both a per-request query and the wrong check.
 
-If a scope check ever does become necessary on a hot path, the answer is
+If a gate check ever does become necessary on a hot path, the answer is
 a short-TTL cache in the policy keyed by user id — not a claim on the
 token. A cache can be invalidated on upgrade/demotion; a minted token
 cannot.
+
+This paragraph is about **gates only**, and said "scope" before the two
+axes were separated. Scopes resolve the other way round on purpose: they
+ARE a claim on the token, because unlike `is_external` a scope cannot
+change under its credential (§ Freezing at mint), so there is nothing to
+invalidate and a hot-path check is free.
+
+### Checking cost: gates and scopes are not alike
+
+The two axes have opposite cost profiles, and representing them the same
+way gets one of them wrong.
+
+| | gate | scope |
+|---|---|---|
+| source | `auth.users`, re-read live | JWT claim, frozen at mint |
+| per check | a DB round trip | pure CPU |
+| paths | cold by design (§ Lookup cost) | **hot** — every `/webdav` request, every `/api/files` listing |
+
+A gate check is dominated by its query, so the set representation is
+irrelevant: iterating a three-element slice costs nanoseconds against a
+round trip measured in microseconds at best. That is why `require_all`
+takes `&[Gate]` — clarity is the only axis in play.
+
+A scope check has no query to hide behind. It runs on paths AGENTS.md
+names as hot (listing, thumbnails, auth), on every DAV request a sync
+client makes, so a map lookup per check is real work for no reason.
+Hence the two `u8` masks: one `&` and a compare, with `writable ⊆
+readable` held as an invariant so `rw` implying `ro` is not a branch at
+every callsite.
+
+The parse stays string-shaped — `oxicloud:files:rw` is what rides on the
+wire and appears on a consent screen — and is converted once at token
+validation. Masks are an internal representation, never a wire format:
+bit positions would make the vocabulary order-dependent, so adding a
+scope could silently reinterpret an existing credential.
 
 ## Rejected: default-deny across all of `/api`
 
@@ -1133,6 +1189,16 @@ field into an enforced one:
   holding `Admin` but not `elevated`. Pin both halves: a disjunctive
   implementation passes the first silently and hands admin mutations to
   any user who re-authenticated.
+- Unit: the `ScopeSet` mask invariant — `grant(s, ReadWrite)` sets BOTH
+  bits, so `allows(s, ReadOnly)` is true afterwards; `grant(s,
+  ReadOnly)` sets only `readable`. Pin it at the type, not per
+  callsite: `rw` implying `ro` is the kind of invariant that holds in
+  seven places and not the eighth.
+- Unit: masks never reach the wire. Round-trip
+  `"oxicloud:files:rw oxicloud:calendar:ro"` → `ScopeSet` → string and
+  assert equality, so bit positions stay an internal detail. If an
+  ordinal ever leaked into a token, adding a scope would silently
+  reinterpret every credential already issued.
 
 ## When
 
