@@ -38,7 +38,7 @@ pub enum Gate {
 /// What the CREDENTIAL was issued for. Client-requestable, frozen at
 /// mint, and a SEPARATE type from `Gate` on purpose — § Three axes.
 pub enum Resource {
-    Files, Calendar, Contacts, Photos, Music, Profile, Sharing,
+    Files, Calendar, Contacts, Photos, Music, Account, Sharing,
     // Reserved — parser REJECTS it until a mailbox exists. § `mail` is reserved.
     // Mail,
 }
@@ -175,14 +175,14 @@ The tempting vocabulary is the protocol list: `webdav`, `caldav`,
 `carddav`, `api`, `nextcloud`. Rejected, because in this codebase every
 door maps to exactly one resource:
 
-| scope | routes it opens (non-exhaustive) |
+| scope (shown without the `oxicloud:` prefix) | routes it opens (non-exhaustive) |
 |---|---|
 | `files` | `/webdav`, `/remote.php/dav/files`, `/wopi`, `/api/files`, `/api/folders`, `/api/uploads`, `/api/batch`, `/api/trash`, `/api/favorites`, `/api/recent`, `/api/dedup` |
 | `calendar` | `/caldav`, `/.well-known/caldav`, `/api/calendars` (#853) |
 | `contacts` | `/carddav`, `/.well-known/carddav`, `/api/address-books`, `/api/contacts` |
 | `photos` | `/api/photos`, `/api/people` |
 | `music` | `/api/playlists` |
-| `profile` | `/api/users` (self only), `/remote.php/dav/avatars` |
+| `account` | `/api/users` (self only), `/remote.php/dav/avatars` |
 | `sharing` | `/api/grants`, `/api/shares`, `/api/s`, OCS sharing |
 | `mail` | **reserved — see below** |
 
@@ -206,7 +206,7 @@ Deliberately absent, and each for its own reason:
   caller can already see; same filtering argument as search.
 - `/api/groups`, `/api/drives`, `/api/notifications` — unresolved. Group
   and drive *membership* management has real blast radius and may want
-  `sharing`, or its own scope; notifications are probably `profile`.
+  `sharing`, or its own scope; notifications are probably `account`.
   Resolve before implementation rather than defaulting them into
   `files`.
 
@@ -296,18 +296,98 @@ to credential scopes, and the distinction matters or someone will later
 So scopes ride in the JWT claim, and the DAV doors stay free of a
 lookup.
 
+### Wire format: namespaced, both delimiters
+
+OxiCloud resource scopes are **prefixed `oxicloud:`**:
+
+```
+oxicloud:files:rw oxicloud:calendar:ro
+```
+
+The prefix is not decoration. `POST /api/auth/device/authorize`
+implements RFC 8628, which inherits RFC 6749's `scope` parameter — so
+OxiCloud is **already an OAuth 2.0 authorization server** for that
+grant, and its scope values already live in the OAuth scope namespace.
+`openid`, `profile`, `email`, `address`, `phone` and `offline_access`
+are reserved there (OIDC Core §5.4), and OxiCloud already *requests*
+`"openid profile email"` as an OIDC client (`config.oidc.scopes`).
+
+An unprefixed `profile` scope would therefore have collided head-on:
+same word, opposite semantics — OIDC `profile` delivers read-only
+identity claims, ours would grant *write* access to `/api/users`. Worse,
+a client sending the textbook `scope=openid profile email` would hit the
+reject-unknown rule as: `openid` rejected, `email` rejected, `profile`
+**accepted with the wrong meaning**. A partial parse that silently
+mis-resolves the one token that matched is worse than a clean failure.
+
+Prefixing removes OxiCloud's vocabulary from the reserved space
+permanently, so a mixed request stays unambiguous
+(`openid profile email oxicloud:files:rw`) and future OIDC evolution
+cannot collide with it. Accordingly the resource formerly called
+`profile` is **`account`** — unreserved even unprefixed, so the name is
+safe in logs, docs and UI copy where the prefix is dropped.
+
+A token without the `oxicloud:` prefix is not an OxiCloud resource and
+is **rejected**, until and unless OxiCloud becomes an OIDC provider and
+a separate layer claims the standard names.
+
+**Delimiters: accept space AND comma.** RFC 6749 §3.3 specifies
+space-delimited; `DeviceAuthorizeRequestDto` documents and parses
+comma-separated (`"webdav,caldav,carddav"`). That is a live conformance
+bug — a conformant client sending `scope=webdav caldav` yields one token
+`"webdav caldav"` — currently invisible only because nothing reads the
+field. Splitting on both fixes conformance without breaking existing
+rows or any client already sending commas.
+
 ### Defaults
 
-- **App password**: `files,calendar,contacts,profile` (all `:rw`).
-  Not `files` alone — `app_password_handler` describes these as
-  credentials for "DAV / NC-Basic clients (DAVx⁵, Thunderbird, rclone,
-  NC desktop)", and the NC desktop client needs `/remote.php/dav/files`
-  plus avatars, while DAVx⁵ needs calendars and contacts.
-- **Device flow**: whatever the client asks for, intersected with the
-  above. Existing rows default to `webdav,caldav,carddav`, which maps to
-  `files,calendar,contacts` — note it omits `profile`, so enabling
-  enforcement must widen existing rows rather than only adding a check.
-- **Interactive web session**: all resources, `:rw`.
+**Access defaults to `:rw` when unqualified.** Forced rather than
+chosen: existing `device_codes.scopes` rows carry no qualifier and those
+credentials have full write access today, so defaulting to `:ro` would
+retroactively break every sync client in the wild. It also matches
+convention — Google's bare `drive` is full access, `drive.readonly` is
+the explicit narrowing.
+
+The cost is consent clarity: a user approving "files" may not read that
+as including deletion. That belongs in the UI, not the parser — **the
+consent screen renders the resolved access** ("Files — read and write"),
+never the raw token.
+
+**An omitted scope does NOT mean every scope.** That is the fail-open
+shape, and it is the bug this section exists to fix: scope ignored ⇒
+full access. RFC 6749 §3.3 requires an omitted `scope` to resolve to a
+*pre-defined* default or fail the request, and OxiCloud already has one
+— serde's `default_scopes()` supplies `webdav,caldav,carddav` when the
+field is absent, so today's documented behaviour is already a subset.
+
+So the rule is per credential type, with every grant bounded by that
+type's ceiling:
+
+```
+effective = (requested ?? type_default) ∩ type_maximum
+```
+
+Both halves bounded, so neither an omitted scope nor a greedy request
+can escalate.
+
+| credential | default when omitted | maximum |
+|---|---|---|
+| App password | `files,calendar,contacts,account` (`:rw`) | same |
+| Device flow | `files,calendar,contacts` (`:rw`) — today's `webdav,caldav,carddav`, namespaced | `files,calendar,contacts,account` |
+| Interactive web session | n/a — never requests scopes | all resources `:rw` |
+
+App password is not `files` alone: `app_password_handler` describes
+these as credentials for "DAV / NC-Basic clients (DAVx⁵, Thunderbird,
+rclone, NC desktop)", and NC desktop needs `/remote.php/dav/files` plus
+avatars while DAVx⁵ needs calendars and contacts.
+
+The device-flow default omits `account`, so enabling enforcement must
+**widen existing rows** rather than only adding a check — otherwise a
+device credential that reads avatars today starts failing.
+
+`scope=` present-but-empty is **malformed** and rejected, not treated as
+"use the default". Silently defaulting hides a client bug, and a
+zero-scope credential would be useless anyway.
 
 ### Never in a client-requestable scope
 
@@ -498,10 +578,20 @@ The credential-scope half needs its own pins, because unlike the gate
 refactor it is **not** behaviour-preserving — it turns an unenforced
 field into an enforced one:
 
-- Unit: the `protocol:access` parser. Unqualified → `ReadWrite`; the
-  legacy `webdav,caldav,carddav` string → `{Files, Calendar, Contacts}`
-  all `:rw`; an unknown resource name is **rejected**, not ignored
-  (a typo'd scope must not silently widen).
+- Unit: the scope parser. Unqualified → `ReadWrite`; the legacy
+  `webdav,caldav,carddav` string → `{Files, Calendar, Contacts}` all
+  `:rw`; an unknown resource name is **rejected**, not ignored (a typo'd
+  scope must not silently widen).
+- Unit: namespace and delimiters — `oxicloud:files:rw` parses;
+  space- and comma-separated lists both parse and agree; an unprefixed
+  token is rejected, **including the standards-reserved `openid`,
+  `profile` and `email`**, so a mixed OIDC request can never partially
+  resolve; `scope=` present-but-empty is malformed, not defaulted.
+- Unit: `effective = (requested ?? type_default) ∩ type_maximum` — a
+  device-flow request for `account` is clamped, and an omitted scope
+  yields the type default rather than every resource. This is the
+  fail-open pin: if it ever passes by granting everything, the feature
+  is decorative.
 - Unit: `Access::ReadWrite` implies `ReadOnly`, and the DAV safe-method
   split — `PROPFIND` passes `:ro`, `PROPPATCH` does not.
 - Hurl, new file: a credential scoped `files:rw` is refused on
