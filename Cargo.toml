@@ -37,7 +37,7 @@ axum = { version = "0.8.8", features = ["multipart", "http1", "http2", "tokio", 
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "io-util", "net", "time", "sync", "fs", "process", "signal"] }
 tokio-util = { version = "0.7.18", features = ["io", "codec", "compat"] }
 tokio-stream = { version = "0.1.18", features = ["fs", "sync"] }
-# Only pulled in by the `test_utils` feature (rt-hurl-helper bin). Not
+# Only pulled in by the `test_utils` feature (the Hurl helper bins). Not
 # shipped in release; pinned to the same 0.28 axum 0.8.8 already brings
 # transitively so we don't duplicate the crate graph.
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "handshake"], optional = true }
@@ -111,7 +111,6 @@ uuid = { version = "1.23.3", features = ["v4", "v7", "serde"] }
 thiserror = "2.0.18"
 arc-swap = "1.9"
 
-mockall = { version = "0.14.0", optional = true }
 sqlx = { version = "0.8.6", features = ["postgres", "runtime-tokio", "tls-rustls-ring-native-roots", "chrono", "uuid", "json", "migrate"] }
 jsonwebtoken = { version = "10.4.0", features = ["rust_crypto"] }
 argon2 = "0.5.3"
@@ -231,7 +230,11 @@ rustix = { version = "1", features = ["fs"] }
 
 [features]
 default = []
-test_utils = ["mockall", "dep:tokio-tungstenite"]
+# Gates the Hurl helper bins (rt-hurl-helper, opaque-hurl-helper, …) that
+# `just api-test` needs. Mocks are NOT here: `#[cfg_attr(test, automock)]`
+# generates them for the lib's own unit tests only, so the dev server binary
+# (`--features dev`) carries none.
+test_utils = ["dep:tokio-tungstenite"]
 # DB-backed integration test modules (`#[cfg(feature = "integration_tests")]`),
 # run against the test Postgres on 5433 by `just test-integration` and CI.
 # A cargo feature rather than `RUSTFLAGS='--cfg integration_tests'`: RUSTFLAGS
@@ -251,8 +254,8 @@ dev = ["plugins", "dev_tools", "test_utils"]
 plugins = ["dep:extism", "dep:file-rotate"]
 # Empty marker feature that gates the `load-seed` binary so it isn't built
 # by default (and skipped in prod Docker builds). Kept separate from
-# test_utils so enabling it doesn't pull mockall into the build. (Any
-# feature change still recompiles the oxicloud lib itself — see `dev`.)
+# test_utils so enabling it doesn't pull the Hurl helpers' deps into the build.
+# (Any feature change still recompiles the oxicloud lib itself — see `dev`.)
 load_seed_bin = []
 # Real ONNX-backed face analyzer (detector + embedder) for the People feature.
 # Opt-in: pulls `ort` (ONNX Runtime, load-dynamic — dlopen's libonnxruntime at
@@ -293,6 +296,10 @@ bundled-assets = ["dep:rust-embed"]
 
 [dev-dependencies]
 criterion = "0.5"
+# Mock generation for trait-boundary unit tests:
+# `#[cfg_attr(test, mockall::automock)]` on the port traits. A dev-dependency
+# so mocks exist only in `cargo test` builds of the lib, never in a binary.
+mockall = "0.14.0"
 # `examples/bench_blob_cache_index.rs` ONLY — the benchmark that compares the
 # old `Mutex<LruCache>` blob-cache index against the moka byte-weigher that
 # replaced it. Nothing under `src/` has used `lru` since that swap (the

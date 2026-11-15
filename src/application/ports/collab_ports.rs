@@ -66,7 +66,7 @@ pub struct StoredDocSession {
 ///
 /// Reads are used on session attach (load-or-seed); writes are the
 /// service's snapshot-compaction and flush-metadata updates.
-#[cfg_attr(feature = "test_utils", mockall::automock)]
+#[cfg_attr(test, mockall::automock)]
 #[async_trait]
 pub trait DocSessionRepository: Send + Sync + 'static {
     /// Load the persisted CRDT state for `file_id`. Returns `None`
@@ -128,7 +128,7 @@ pub trait DocSessionRepository: Send + Sync + 'static {
 /// AuthZ layer — the concrete impl passes it through so the read is
 /// audited as "collab-service on behalf of user X". C1's unit tests
 /// use a stub that ignores it.
-#[cfg_attr(feature = "test_utils", mockall::automock)]
+#[cfg_attr(test, mockall::automock)]
 #[async_trait]
 pub trait DocContentReader: Send + Sync + 'static {
     async fn read_content(&self, caller_id: Uuid, file_id: Uuid) -> Result<Vec<u8>, DomainError>;
@@ -174,7 +174,7 @@ pub trait DocContentReader: Send + Sync + 'static {
 /// flush would then write CRDT text derived from the PRE-write content
 /// straight over the new blob, with no error and no audit trail.
 /// Eviction narrows the window; the precondition closes it.
-#[cfg_attr(feature = "test_utils", mockall::automock)]
+#[cfg_attr(test, mockall::automock)]
 #[async_trait]
 pub trait DocContentWriter: Send + Sync + 'static {
     async fn write_content(
@@ -204,7 +204,7 @@ pub trait DocContentWriter: Send + Sync + 'static {
 /// Semantics match `AuthorizationEngine::require`: `Ok(())` = granted;
 /// `Err(_)` = denied for any reason (missing role, DB blip, hidden
 /// resource — the same anti-enumeration collapse).
-#[cfg_attr(feature = "test_utils", mockall::automock)]
+#[cfg_attr(test, mockall::automock)]
 #[async_trait]
 pub trait CollabAuthzGate: Send + Sync + 'static {
     async fn require(

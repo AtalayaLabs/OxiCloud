@@ -105,7 +105,7 @@ require-warnings-deny:
 test: require-warnings-deny
     CARGO_BUILD_WARNINGS=deny cargo test --workspace --features dev {{test_targets}}
 
-# Mocks (`test_utils`) are part of `dev`, so `test` already runs them.
+# Mocks are generated under `cfg(test)`, so `test` already runs them.
 test-mocks: test
 
 # Source-based line coverage (HTML + summary) via cargo-llvm-cov.

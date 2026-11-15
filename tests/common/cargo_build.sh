@@ -38,8 +38,10 @@
 # Debug builds converge on `dev` (plugins + dev_tools + test_utils, see
 # Cargo.toml) — the set every `just` recipe uses, so `just build`/`test`/
 # the OpenAPI generators and these harnesses share one lib build. It is
-# runtime-identical to `plugins`: `test_utils` only adds mockall mocks and
-# `dev_tools` only unlocks generator bins.
+# runtime-identical to `plugins`: `test_utils` and `dev_tools` only unlock
+# extra bins (the Hurl helpers, the spec generators). Callers pass
+# `--bin oxicloud` (or `--bin <helper>`) so a server build doesn't also link
+# every one of those against the lib.
 #
 # Release builds stay on `plugins` because that is what CI's `build` job
 # ships (`cargo build --release --features plugins`) as the artifact the

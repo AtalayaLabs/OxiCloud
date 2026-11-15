@@ -80,7 +80,7 @@ pub struct StoredKsf {
 ///
 /// Concrete impl lives in
 /// [`crate::infrastructure::repositories::pg::opaque_pg_repository`].
-#[cfg_attr(feature = "test_utils", mockall::automock)]
+#[cfg_attr(test, mockall::automock)]
 #[async_trait]
 pub trait OpaqueRepositoryPort: Send + Sync + 'static {
     /// Write (or overwrite) the OPAQUE registration for `user_id`.

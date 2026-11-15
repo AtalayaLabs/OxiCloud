@@ -85,7 +85,7 @@ This project is split into two parts:
 cargo build --features dev --bin oxicloud          # Dev build
 cargo build --release                              # Optimized release build
 cargo run --features dev                           # Run server (port 8086)
-cargo test --features dev --lib --bins --tests     # Run all unit tests (incl. mockall mocks)
+cargo test --features dev --lib --bins --tests     # Run all unit tests
 cargo test --features dev --lib <test_name>        # Run a single test by name
 cargo clippy --all-features --all-targets -- -D warnings  # Lint (zero warnings policy)
 cargo fmt --all --check                            # Format check
@@ -218,7 +218,7 @@ The server exposes multiple protocol interfaces simultaneously:
 
 ### Test organization
 
-Tests are primarily `#[cfg(test)]` modules within source files (~36 files have inline tests). Dedicated test files exist at `*_test.rs` alongside their source. The `test_utils` feature flag enables `mockall` mock generation for trait-heavy testing. `tests/` holds the out-of-process suites (Hurl API, Playwright e2e, CalDAV, nextcloudcmd, WebDAV litmus, load) and shared scripts in `tests/common/`.
+Tests are primarily `#[cfg(test)]` modules within source files (~36 files have inline tests). Dedicated test files exist at `*_test.rs` alongside their source. Port traits get `mockall` mocks via `#[cfg_attr(test, mockall::automock)]` (`mockall` is a dev-dependency, so mocks exist only in test builds). The `test_utils` feature gates the Hurl helper bins used by `just api-test`. `tests/` holds the out-of-process suites (Hurl API, Playwright e2e, CalDAV, nextcloudcmd, WebDAV litmus, load) and shared scripts in `tests/common/`.
 
 ### DB integration tests share one database
 
