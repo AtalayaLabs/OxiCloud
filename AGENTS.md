@@ -74,10 +74,8 @@ This project is split into two parts:
 - `/src` — OxiCloud Backend server in **Rust**
 - `/frontend` — OxiCloud Frontend: a **SvelteKit (Svelte 5) + TypeScript** single-page app built with Vite
 
-> The original vanilla-JS/CSS frontend still lives in `/static` and is retained
-> during the migration, but new frontend work goes in `/frontend`. Vite builds
-> the SvelteKit app to `static-dist/`, which the Rust web layer serves in
-> release.
+> Vite builds the SvelteKit app to `static-dist/`, which the Rust web layer
+> serves in release. The legacy vanilla-JS `/static` frontend has been removed.
 
 # Backend part
 
@@ -174,22 +172,23 @@ Hexagonal / Clean Architecture with four layers. Dependencies point inward only.
 
 - **DI via `AppState`**: All services are `Arc`-wrapped and assembled in `common/di.rs`. `AppState` is wrapped in `Arc` and passed as Axum state. Many services are `Option<Arc<T>>` because they depend on features being enabled (auth, WOPI, trash, etc.).
 
-- **Content-addressable storage**: Files use BLAKE3 blob dedup. `storage.file_blobs` stores content; `storage.file_metadata` references blobs with ref-counting. See `file_blob_write_repository.rs` and `file_blob_read_repository.rs`.
+- **Content-addressable storage**: Files use BLAKE3 blob dedup. `storage.blobs` stores content (ref-counted, chunked via `storage.chunk_manifests`); `storage.files` references blobs. See `file_blob_write_repository.rs` and `file_blob_read_repository.rs`.
 
 - **ltree paths**: Folder hierarchy uses PostgreSQL `ltree` for efficient subtree queries (recursive copies, moves, searches).
 
 - **Dual DB pools**: `DbPools` in `infrastructure/db.rs` separates user-facing queries from maintenance/background tasks to prevent starvation.
 
-- **Feature flags**: Major features (auth, trash, search, sharing, quotas) are toggled via `OXICLOUD_ENABLE_*` env vars in `FeaturesConfig`.
+- **Feature flags**: Major features (trash, search, file sharing, WebDAV, CalDAV/CardDAV, NextCloud, photos, music, external mounts, …) are toggled via `OXICLOUD_ENABLE_*` env vars in `FeaturesConfig`.
 
 - **UUID columns**: All ID columns use native PostgreSQL `UUID` type. SQL queries must use `::uuid` casts when passing string parameters to UUID columns.
 
 ### Database schemas
 
-- `auth` schema: `users`, `sessions`, `app_passwords`, `device_codes`, `admin_settings`
-- `storage` schema: `folders`, `file_metadata`, `file_blobs`, `trash`, `shares`, `favorites`, `recent_items`, `nextcloud_object_ids`
+- `auth` schema: `users`, `sessions`, `app_passwords`, `device_codes`, `magic_link_tokens`, `admin_settings`, `subject_groups`, `user_favorites`, `user_recent_files`
+- `storage` schema: `folders`, `files`, `blobs`, `chunk_manifests`, `drives`, `role_grants`, `shares`, `external_mounts`, `nextcloud_object_ids`, … — trash is an `is_trashed` flag on files/folders, read via the `storage.trash_items` view
 - `caldav` schema: `calendars`, `calendar_events` (VEVENT), `calendar_todos` (VTODO — both object kinds share the calendar collection; `ical_data` blob is authoritative, columns are the filter index)
-- `carddav` schema: `address_books`, `contacts`, `contact_groups`, `contact_group_members`
+- `carddav` schema: `address_books`, `contacts`, `contact_groups`, `group_memberships`
+- also: `audio`, `faces`, `jobs`, `notif`, `collab` schemas
 
 Schema definition: `migrations/` (sqlx migrations, applied on startup)
 
@@ -206,7 +205,7 @@ The server exposes multiple protocol interfaces simultaneously:
 
 ### Test organization
 
-Tests are primarily `#[cfg(test)]` modules within source files (~36 files have inline tests). Dedicated test files exist at `*_test.rs` alongside their source. The `test_utils` feature flag enables `mockall` mock generation for trait-heavy testing. No separate `tests/` directory.
+Tests are primarily `#[cfg(test)]` modules within source files (~36 files have inline tests). Dedicated test files exist at `*_test.rs` alongside their source. The `test_utils` feature flag enables `mockall` mock generation for trait-heavy testing. `tests/` holds the out-of-process suites (Hurl API, Playwright e2e, CalDAV, nextcloudcmd, WebDAV litmus, load) and shared scripts in `tests/common/`.
 
 ### DB integration tests share one database
 
@@ -325,8 +324,7 @@ Canonical examples to mirror: `authz.denied` in `application/ports/authorization
 The frontend is a **SvelteKit** single-page app (Svelte 5 + TypeScript, Vite,
 `adapter-static`) under `frontend/`. Vite builds it to `static-dist/`, which the
 Rust web layer serves in release (unmatched client routes fall back to the SPA
-shell); `PROFILE=dev` serves the unbuilt source. The legacy vanilla frontend in
-`static/` is retained for now but is **not** where new work goes.
+shell); `PROFILE=dev` serves the unbuilt source.
 
 ## Frontend Build & Dev Commands
 
