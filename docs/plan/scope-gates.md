@@ -257,7 +257,7 @@ door maps to exactly one area:
 | `contacts` | `/carddav`, `/.well-known/carddav`, `/api/address-books`, `/api/contacts` |
 | `photos` | `/api/photos`, `/api/people` |
 | `music` | `/api/playlists` |
-| `account` | `/api/auth/me`, `/api/auth/me/profile`, `/api/auth/me/image`, `/api/notifications`, `/remote.php/dav/avatars` |
+| `account` | `/api/auth/me`, `/api/auth/me/profile`, `/api/auth/me/image` — **enumerated, never the `/api/auth/*` prefix** (§ Never in a client-requestable scope), `/api/notifications`, `/remote.php/dav/avatars` |
 | `sharing` | `/api/grants`, `/api/shares`, `/api/s`, OCS sharing, and recipient lookup: `/api/users/{id}`, `/api/groups/search` |
 | `mail` | **reserved — see below** |
 
@@ -526,6 +526,37 @@ another credential can mint an unscoped one, and every restriction above
 evaporates in one request. It is not a resource to be scoped `:ro`; it
 is excluded from the vocabulary entirely, like `Admin`.
 
+**Account-security mutations are excluded on the same grounds**, and
+they are the trap, because they look like settings:
+
+| route | what it really does |
+|---|---|
+| `/api/auth/change-password` | replaces the credential everyone else authenticates with |
+| `/api/auth/oidc/link/start`, `/oidc/unlink` | adds or removes an identity provider that can log in as this user |
+| `/api/auth/upgrade-to-internal` | changes what the principal IS (external → internal) |
+| `/api/auth/dpop/bind` | binds a key to the session |
+
+Each of these sits under `/api/auth/*` alongside `/me` and `/me/profile`,
+so **anyone mapping that prefix to a scope lands them in `account:rw`** —
+and "change my own password" reads like a profile setting. It is not.
+Linking an IdP is the worst of them: an attacker who links their own
+Google account keeps access after the stolen credential is revoked, which
+defeats revocation itself.
+
+So `account` covers `/api/auth/me`, `/me/profile` and `/me/image` by
+enumeration, never by prefix. The rest of `/api/auth/*` splits three
+ways: login flows are public (no credential exists yet), the four rows
+above are interactive-session-only, and `/api/auth/logout` is harmless —
+any credential may end its own session.
+
+Remaining unassigned routes, all deliberately scopeless rather than
+overlooked: `/api/rt/ticket` (DPoP-gated ticket issuance for the message
+bus, filtered like `/api/rt/ws`), `/ocs/v1.php|v2.php/cloud/user` (NC
+user-metadata probe — `account:ro` in effect, reached by NC clients that
+already hold `account`), `/index.php/204` (NC connectivity probe), and
+the ops surface `/health`, `/ready`, `/metrics`, `/version`,
+`/openapi.json`. None takes a credential-scoped decision.
+
 ## Why
 
 ### Grant vs scope (AGENTS.md § Authorization)
@@ -751,6 +782,12 @@ field into an enforced one:
   the refusal AND an allowed caller succeeding, per AGENTS.md, so a
   gate that refuses everyone cannot pass.
 - Hurl: the escalation pin — a scoped credential is refused on
+- Hurl: the account-security pins — a scoped credential is refused on
+  `POST /api/auth/change-password`, `/api/auth/oidc/link/start`,
+  `/api/auth/oidc/unlink` and `/api/auth/upgrade-to-internal`. These
+  live next to `/me` under the same prefix, so a prefix-mapping mistake
+  would silently grant them to every `account:rw` credential, and the
+  IdP-link one survives revocation of the credential that used it.
   `POST /api/auth/app-passwords`. This is the one that matters most; if
   it ever goes green-by-passing, the whole feature is decorative.
 - Migration: existing `device_codes` rows keep working. Pin the legacy
