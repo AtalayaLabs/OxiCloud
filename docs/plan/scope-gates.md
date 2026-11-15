@@ -1101,17 +1101,48 @@ without confusion: `oxicloud:files:rw` and `oxicloud:calendar:ro` in one
 requirement means a credential carrying both — exactly what a `ScopeSet`
 is. Conjunction is the right default for every entry.
 
-**Two consumers today**, so `Gate::Elevated` is not speculative:
+**Elevation is not an admin feature.** `admin-elevation.md` is named for
+its first consumer, and the name is now too narrow: elevation is a
+property of any session, and an ordinary user needs it for the same
+reason an admin does. Three consumer classes, so `Gate::Elevated` is not
+speculative:
 
-| needs elevation | because |
-|---|---|
-| non-safe methods under `/api/admin/*` | holding the role is not enough to *change* things (`admin-elevation.md` § Goal) |
-| mutations in the `security` scope | § `security` — scope says the key was issued for it, elevation says a human proved themselves recently |
+| needs elevation | audience | because |
+|---|---|---|
+| non-safe methods under `/api/admin/*` | admins | holding the role is not enough to *change* things (`admin-elevation.md` § Goal) |
+| mutations in the `security` scope | **any user** | scope says the key was issued for it, elevation says a human proved themselves recently |
+| irreversible deletions | **any user** | no undo path exists afterwards, so a stolen session gets one shot at permanent damage |
 
-The second is why `security:rw` is necessary and not sufficient: a
-long-lived interactive session that has drifted away from its keyboard
-should not be able to change the password, and the scope alone cannot
-express "recently".
+Three consequences worth settling before implementation:
+
+1. **`POST /api/auth/elevate` is for any authenticated user**, not just
+   admins. `admin-elevation.md` § Elevating mirrors `OXICLOUD_AUTH_METHODS`
+   with a branch per method, which already generalises — but the plan's
+   framing is admin-only and should be widened, or renamed.
+2. **The method-based layer cannot cover classes 2 and 3.** It is keyed
+   on `/api/admin/*`; `security` routes live under `/api/auth/*` and the
+   deletions are scattered across `/api/trash`, `/api/people`,
+   `/api/recent`. Those rely on the per-operation declaration
+   (§ Declaring session elevation), which is why the declaration is not
+   redundant with the layer.
+3. **"Important deletion" needs a criterion**, or it decays into
+   "whatever felt frightening on the day". The usable one is
+   **irreversible, not merely destructive**: the action destroys data
+   that no undo path can recover.
+
+   `DELETE /api/files/{id}` does *not* qualify — it moves to trash, and
+   trash *is* the undo path. These do:
+
+   | route | why |
+   |---|---|
+   | `DELETE /api/trash/empty`, `/api/trash/drive/{id}` | destroys the undo path itself, in bulk |
+   | `DELETE /api/trash/{id}` | permanent deletion of one item |
+   | `DELETE /api/people/data` | erases all face-recognition data for the caller |
+   | `DELETE /api/drives/{id}` | destroys a shared drive and everyone's access to it |
+
+   `DELETE /api/recent/clear` is deliberately **not** on the list: it
+   discards a convenience index, not content. The line is "can the user
+   get the bytes back", not "does the word delete appear".
 
 ## Test plan
 
@@ -1184,6 +1215,12 @@ field into an enforced one:
   that nothing enforces, which is precisely what `src/AGENTS.md` means
   by "declaring is not enforcing". A mutating GET under `/api/admin`
   must fail this test rather than pass quietly.
+- Hurl: elevation for a **non-admin**. A plain user with a fresh session
+  is refused `DELETE /api/trash/empty` and `POST /api/auth/change-password`,
+  succeeds after `POST /api/auth/elevate`, and is refused again once the
+  TTL lapses. Without this the whole feature can ship admin-only while
+  every admin pin stays green — which is how it is framed in
+  `admin-elevation.md` today.
 - Unit: `require_all` is **conjunction** — a caller holding `elevated`
   but not `Admin` is REFUSED on `[Admin, Elevated]`, and so is one
   holding `Admin` but not `elevated`. Pin both halves: a disjunctive
