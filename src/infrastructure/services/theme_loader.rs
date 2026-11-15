@@ -192,16 +192,25 @@ mod tests {
         symlink("/etc/passwd", &css).unwrap();
         assert_eq!(loader(dir.path()).load().unwrap().themes.len(), 1);
         std::fs::remove_file(&css).unwrap();
-        rustix::fs::mknodat(
-            rustix::fs::CWD,
-            &css,
-            rustix::fs::FileType::Fifo,
-            rustix::fs::Mode::RUSR,
-            0,
-        )
-        .unwrap();
-        assert_eq!(loader(dir.path()).load().unwrap().themes.len(), 1);
-        std::fs::remove_file(&css).unwrap();
+        // The FIFO leg is Linux-only. `rustix::fs::mknodat` is declared
+        // `#[cfg(not(any(apple, …)))]`, so referencing it on macOS is a
+        // COMPILE error, not a skipped assertion — it took the whole
+        // `cargo test --lib` binary down for every contributor on a Mac
+        // while CI (ubuntu) stayed green. The symlink and oversized-file
+        // legs around it are portable and still run everywhere.
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+        {
+            rustix::fs::mknodat(
+                rustix::fs::CWD,
+                &css,
+                rustix::fs::FileType::Fifo,
+                rustix::fs::Mode::RUSR,
+                0,
+            )
+            .unwrap();
+            assert_eq!(loader(dir.path()).load().unwrap().themes.len(), 1);
+            std::fs::remove_file(&css).unwrap();
+        }
         std::fs::write(css, vec![b' '; MAX_FILE as usize + 1]).unwrap();
         assert_eq!(loader(dir.path()).load().unwrap().themes.len(), 1);
     }
