@@ -103,8 +103,8 @@ used **only** to put shares into the recipient's tree.
 
 ### Mode
 
-`OXICLOUD_LINKS_MODE` = `off` | `auto` (default `off`), replacing
-`OXICLOUD_ENABLE_SHARE_MOUNTS`. `manual` is reserved for user-placed links.
+`OXICLOUD_LINKS_MODE` = `off` | `auto` (default `off`). `manual` is reserved
+for user-placed links.
 
 | Mode | `@shared/<uuid>` | shares appear as links |
 |---|---|---|
@@ -291,7 +291,6 @@ unavailable rather than hide it, so the name conflict is explicable
 
 ## Changes against the P0 code
 
-- `OXICLOUD_ENABLE_SHARE_MOUNTS` → `OXICLOUD_LINKS_MODE`.
 - Link creation and deletion leave `grant_handler.rs` (which calls
   reconcile after grant and revoke today and swallows its failure). Triggers
   on `role_grants` and `subject_group_members` fill `storage.link_events`;
@@ -452,7 +451,6 @@ Rulings made while implementing; where they differ from the text above, they win
 | `OXICLOUD_SHARE_MOUNT_FOLDER` | folder under the personal root where links land (default `Shares`, empty = root) |
 | `OXICLOUD_LINKS_SETTLE_INTERVAL_MS` | cadence of `links_settle` (default `2000`, min `200`) |
 | `OXICLOUD_LINKS_EXPIRY_SWEEP_SECS` | cadence of `links_expiry_sweep` (default `600`, positive integer) |
-| `OXICLOUD_ENABLE_SHARE_MOUNTS` | retired; ignored with a warning at boot |
 | `links_settle` | drains `storage.link_events` and settles the named pairs; runs in every mode |
 | `links_expiry_sweep` | queues events for grants that expired since the last sweep |
 | `links_backfill` | on-demand; queues every current grant, records `links.mode_applied`; requires `auto` |

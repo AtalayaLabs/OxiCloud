@@ -4493,9 +4493,6 @@ impl AppConfig {
             config.features.enable_external_mounts = val;
         }
 
-        if env::var_os("OXICLOUD_ENABLE_SHARE_MOUNTS").is_some() {
-            tracing::warn!("OXICLOUD_ENABLE_SHARE_MOUNTS is retired; set OXICLOUD_LINKS_MODE=auto");
-        }
         config.features.links_mode = links_mode_from_env_value(
             env::var("OXICLOUD_LINKS_MODE").ok().as_deref(),
             config.features.links_mode,

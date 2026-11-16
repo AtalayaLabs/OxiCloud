@@ -194,7 +194,6 @@ pub const KNOWN: &[(&str, &str)] = &[
     ("features", "OXICLOUD_ENABLE_CONTENT_SEARCH"),
     ("features", "OXICLOUD_ENABLE_EXTERNAL_MOUNTS"),
     ("features", "OXICLOUD_LINKS_MODE"),
-    ("features", "OXICLOUD_ENABLE_SHARE_MOUNTS"),
     ("features", "OXICLOUD_SHARE_MOUNT_FOLDER"),
     ("features", "OXICLOUD_LINKS_SETTLE_INTERVAL_MS"),
     ("features", "OXICLOUD_LINKS_EXPIRY_SWEEP_SECS"),

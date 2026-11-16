@@ -12,8 +12,7 @@
 > when links are created (grant creation and group join only, atomically, no
 > reconcile), the feature flag (`OXICLOUD_LINKS_MODE=off|auto`), and
 > `/webdav/@shared/<uuid>/` is added as a path to every share.
-> Implemented; `OXICLOUD_ENABLE_SHARE_MOUNTS` is retired and ignored (see
-> `links.md` § Implementation notes and known limits).
+> Implemented (see `links.md` § Implementation notes and known limits).
 
 ## Context
 
@@ -454,8 +453,7 @@ therefore out of scope.
 
 ### Config
 
-- `OXICLOUD_ENABLE_SHARE_MOUNTS` (default `false`; retired, replaced by `OXICLOUD_LINKS_MODE`) — feature flag, same
-  convention as `OXICLOUD_ENABLE_EXTERNAL_MOUNTS`. Off: no reconcile, mount
+- `OXICLOUD_LINKS_MODE` (`off` | `auto`, default `off`) — feature flag. Off: no reconcile, mount
   rows filtered from listings, `resolve` treats mounts as absent. The change
   touches listing, both WebDAV surfaces, trash, copy, move, search and zip,
   so it ships opt-in for at least one release and flips to on once it has
@@ -492,7 +490,7 @@ Reports only; repair is the backfill job (`links.md` § Mode changes), run expli
 3. The periodic job is cursor-paged over users; it never reports success for
    a user it skipped.
 
-Rollback: set `OXICLOUD_LINKS_MODE=off` (the default; was `OXICLOUD_ENABLE_SHARE_MOUNTS=false`). Rows stay, are filtered
+Rollback: set `OXICLOUD_LINKS_MODE=off` (the default). Rows stay, are filtered
 everywhere, and can be dropped later with the column.
 
 ## Testing
