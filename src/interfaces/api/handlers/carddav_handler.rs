@@ -92,7 +92,7 @@ async fn handle_carddav_methods(
     req: Request<Body>,
 ) -> Result<Response<Body>, AppError> {
     let uri = req.uri().clone();
-    let path = extract_carddav_path(uri.path());
+    let path = extract_carddav_path(uri.path())?;
     reject_path_traversal(&path)?;
     handle_carddav_methods_inner(state, req, path).await
 }
@@ -120,8 +120,12 @@ async fn handle_carddav_methods_inner(
     }
 }
 
-/// Extract the CardDAV path from the full URI path, percent-decoding the result.
-fn extract_carddav_path(uri_path: &str) -> String {
+/// Extract the CardDAV path from the full URI path, percent-decoding each
+/// segment so that names with special characters match stored values.
+///
+/// Security: rejects paths where any segment decodes to contain `/` or `\`, which
+/// would violate storage constraints (issue #315).
+fn extract_carddav_path(uri_path: &str) -> Result<String, crate::interfaces::errors::AppError> {
     let encoded = if let Some(pos) = uri_path.find("/carddav/") {
         let after = &uri_path[pos + 9..];
         after.trim_end_matches('/')
@@ -130,9 +134,9 @@ fn extract_carddav_path(uri_path: &str) -> String {
     } else {
         uri_path.trim_start_matches('/').trim_end_matches('/')
     };
-    percent_encoding::percent_decode_str(encoded)
-        .decode_utf8_lossy()
-        .into_owned()
+    crate::interfaces::api::handlers::dav_paths::decode_and_validate_path(encoded).map_err(|_| {
+        crate::interfaces::errors::AppError::bad_request("Invalid or unsafe path in URL")
+    })
 }
 
 /// Reject paths that contain path-traversal segments (`.` or `..`).

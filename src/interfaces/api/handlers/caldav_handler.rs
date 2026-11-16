@@ -22,7 +22,6 @@ use axum::{
     response::Response,
 };
 use bytes::{Buf, Bytes};
-use percent_encoding::percent_decode_str;
 use quick_xml::Writer;
 use std::fmt::Write;
 use std::sync::Arc;
@@ -465,7 +464,7 @@ async fn handle_caldav_methods(
     req: Request<Body>,
 ) -> Result<Response<Body>, AppError> {
     let uri = req.uri().clone();
-    let path = extract_caldav_path(uri.path());
+    let path = extract_caldav_path(uri.path())?;
     reject_path_traversal(&path)?;
     handle_caldav_methods_inner(state, req, path).await
 }
@@ -493,8 +492,12 @@ async fn handle_caldav_methods_inner(
     }
 }
 
-/// Extract the CalDAV path from the full URI path, percent-decoding the result.
-fn extract_caldav_path(uri_path: &str) -> String {
+/// Extract the CalDAV path from the full URI path, percent-decoding each
+/// segment so that names with special characters match stored values.
+///
+/// Security: rejects paths where any segment decodes to contain `/` or `\`, which
+/// would violate storage constraints (issue #315).
+fn extract_caldav_path(uri_path: &str) -> Result<String, AppError> {
     let encoded = if let Some(pos) = uri_path.find("/caldav/") {
         let after = &uri_path[pos + 8..];
         after.trim_end_matches('/')
@@ -503,7 +506,8 @@ fn extract_caldav_path(uri_path: &str) -> String {
     } else {
         uri_path.trim_start_matches('/').trim_end_matches('/')
     };
-    percent_decode_str(encoded).decode_utf8_lossy().into_owned()
+    crate::interfaces::api::handlers::dav_paths::decode_and_validate_path(encoded)
+        .map_err(|_| AppError::bad_request("Invalid or unsafe path in URL"))
 }
 
 /// Reject paths that contain path-traversal segments (`.` or `..`).

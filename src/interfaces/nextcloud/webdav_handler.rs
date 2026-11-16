@@ -1752,7 +1752,11 @@ pub fn extract_nc_subpath_from_dest(dest: &str, username: &str) -> Option<String
     } else {
         dest
     };
-    let decoded = urlencoding::decode(path).ok()?;
+
+    // Decode segment-by-segment to reject paths where a segment decodes to
+    // contain '/' or '\' (issue #315). Use the shared validator.
+    let decoded =
+        crate::interfaces::api::handlers::dav_paths::decode_and_validate_path(path).ok()?;
     let decoded = decoded.trim_end_matches('/');
     decoded
         .strip_prefix(prefix.trim_end_matches('/'))
@@ -2793,6 +2797,23 @@ mod tests {
             "alice",
         );
         assert_eq!(result.as_deref(), Some("My Folder/file.txt"));
+    }
+
+    // #315: a Destination with `%2F` inside a name used to decode to a
+    // nested path, so MOVE/COPY silently landed in a sub-folder. Must be
+    // refused (None → 400 "Invalid Destination URL" at the caller).
+    #[test]
+    fn test_extract_encoded_slash_in_name_rejected() {
+        for dest in [
+            "/remote.php/dav/files/alice/a%2Fb.txt",
+            "/remote.php/dav/files/alice/dir/a%2fb.txt",
+            "/remote.php/dav/files/alice/a%5Cb.txt",
+        ] {
+            assert!(
+                extract_nc_subpath_from_dest(dest, "alice").is_none(),
+                "{dest}"
+            );
+        }
     }
 
     #[test]
