@@ -4539,6 +4539,11 @@ pub struct AppState {
 // All AppState construction is done via struct literal in build_app_state().
 
 impl AppState {
+    /// NC drive picker and `user~<drive>` logins; links replace them in `auto` mode.
+    pub fn nc_drive_markers(&self) -> bool {
+        self.core.config.features.links_mode == crate::common::config::LinksMode::Off
+    }
+
     /// Drive-aware RFC 4331 quota resolution — shared by the native and
     /// NextCloud-compatible WebDAV PROPFIND handlers so both surfaces
     /// report the same numbers for the same drive.

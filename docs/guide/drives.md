@@ -186,14 +186,21 @@ For sync, always target one specific drive: either bare
 ## Drives in Nextcloud clients
 
 Nextcloud desktop, Android, and iOS clients connect to your account
-and sync your **Personal drive**. Adding the account
+and sync one drive at a time. When you add your account, it
+connects to your **Personal drive** by default. Adding the account
 in the app "just works" without any extra configuration.
 
-A Nextcloud client always syncs your Personal drive; a Nextcloud
-account has no drive choice. With `OXICLOUD_LINKS_MODE=auto`, the
-Shared drives you are a member of appear as folders under `Shares/`
-in that Personal drive, and sync with it. Shares you receive from
-others appear there too.
+How Shared drives reach a Nextcloud client depends on
+`OXICLOUD_LINKS_MODE`:
+
+- `off` (default): add a **second account** in the app pointing at
+  OxiCloud. At sign-in, pick the drive you want that account to
+  sync. Each drive you want to keep in sync becomes one Nextcloud
+  account entry.
+- `auto`: there is no drive choice. The Shared drives you are a
+  member of, and shares you receive, appear as folders under
+  `Shares/` in your Personal drive and sync with it. Accounts added
+  for another drive (`user~<drive>`) stop signing in.
 
 ## Quick recipes
 
@@ -247,5 +254,7 @@ Connect to `.../webdav/@drive/`. The drives you can reach appear as
 folders; pick one and go.
 
 **Sync a Shared drive with the Nextcloud desktop app.**
-With `OXICLOUD_LINKS_MODE=auto`, the Shared drive appears under
-`Shares/` in your Personal drive and syncs with the account.
+With `OXICLOUD_LINKS_MODE=off`, add a second account in the app,
+pointing at the same OxiCloud server, and pick the Shared drive at
+sign-in. With `auto`, the Shared drive appears under `Shares/` in
+your Personal drive and syncs with the account.

@@ -449,3 +449,22 @@ GET {{base_url}}/remote.php/dav/files/lk_bob/Shares/Reports/q1.txt
 lk_bob: {{nc_password}}
 
 HTTP 404
+
+
+# The links replace the drive picker: a `user~<drive>` login is refused in auto mode.
+PROPFIND {{base_url}}/remote.php/dav/files/{{tilde_user}}/
+Depth: 0
+[Options]
+variable: tilde_user=lk_bob~{{bob_home}}
+[BasicAuth]
+{{tilde_user}}: {{nc_password}}
+
+HTTP 401
+
+POST {{base_url}}/login/v2/flow/no-such-flow/drive
+Content-Type: application/x-www-form-urlencoded
+```
+drive={{bob_home}}
+```
+
+HTTP 404

@@ -307,7 +307,7 @@ unavailable rather than hide it, so the name conflict is explicable
 - I1 trigger checks `drives.default_for_user = <recipient>`, not
   `kind = 'personal'`.
 - The NC login-flow drive picker and the `user~<drive uuid>` composite
-  username are removed (separate PR; independent of the mode).
+  username are off in `auto` and kept in `off`.
 - Folder rename notifies recipients whose link name differs.
 - `POST /api/mounts` → `POST /api/links` (same body, same use: restore a
   declined share).
@@ -343,12 +343,13 @@ Decided (2026-11-01):
   personal drives (raised by the maintainer on #791) is not this plan's
   question; links never land in them. Closes `share-mounts.md` open
   question 5.
-- **The NC login-flow drive picker is retired**, in every mode
+- **The NC login-flow drive picker is retired in `auto`**
   (`login_v2_handler.rs`, `drive_picker.html`, the composite
-  `user~<drive uuid>` account). NC login always yields the default personal
-  drive; shared drives reach NC clients through links in `auto`. In `off`
-  they are not reachable over NC-compat DAV, which is the state before the
-  picker POC. Native WebDAV keeps `@drive`.
+  `user~<drive uuid>` account). There NC login always yields the default
+  personal drive and shared drives reach NC clients through links; a
+  `user~<drive>` login gets 401 and the picker submit 404. In `off` the
+  picker and composite accounts work as before, so an operator who never
+  enables links loses nothing. Native WebDAV keeps `@drive` in both.
 - **Owner renames the target: the link keeps its name, the recipient is
   told.** As in NextCloud, a rename in the owner's drive never touches a
   recipient's tree. Recipients whose link name differs from the target's

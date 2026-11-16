@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="light dark">
+    <title>Choose a drive - OxiCloud</title>
+    <link rel="icon" type="image/svg+xml" href="{{ base }}/logo/logo-plain.svg">
+    <link rel="stylesheet" href="{{ base }}/askama-common.css">
+  </head>
+  <body>
+    <div class="auth-container">
+      <div class="auth-panel">
+        <div class="auth-logo">
+          <div class="auth-logo-icon">
+            <svg viewBox="0 0 500 500">
+              <path d="M345 310c32 0 58-26 58-58s-26-58-58-58c-6.2 0-12 0.9-17.5 2.7C318 166 289 143 255 143c-34.3 0-63.1 22.6-73 53.7C176.9 195.7 171 195 165 195c-32 0-58 26-58 58s26 58 58 58h180z" fill="#fff"/>
+            </svg>
+          </div>
+          <div class="auth-logo-text">OxiCloud</div>
+        </div>
+
+        <h2 class="auth-title">Choose a drive</h2>
+        <p class="auth-subtitle">
+          Your account has access to several drives. Pick the one this Nextcloud client should sync.
+        </p>
+
+        <form class="auth-form" method="POST" action="{{ form_action }}">
+          {%- for drive in drives %}
+          <label class="auth-drive-option">
+            <input
+              type="radio"
+              name="drive"
+              value="{{ drive.id }}"
+              {%- if loop.first %} checked{% endif %}
+              required>
+            <span class="auth-drive-name">{{ drive.name }}</span>
+            {%- if loop.first %}
+            <span class="auth-drive-badge">Home</span>
+            {%- endif %}
+          </label>
+          {%- endfor %}
+
+          <button type="submit" class="auth-button">Continue</button>
+        </form>
+      </div>
+    </div>
+  </body>
+</html>
