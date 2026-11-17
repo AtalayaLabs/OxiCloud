@@ -662,6 +662,7 @@ HURL_FILES=( \
   "$API_DIR/nc_webdav_quota_properties.hurl" \
   "$API_DIR/webdav_patch.hurl" \
   "$API_DIR/nc_webdav_patch.hurl" \
+  "$API_DIR/webdav_encoded_slash.hurl" \
   "$API_DIR/webdav_patch_consistency.hurl" \
   "$API_DIR/nc_webdav_patch_consistency.hurl" \
   "$API_DIR/nc_webdav_put_gaps.hurl" \

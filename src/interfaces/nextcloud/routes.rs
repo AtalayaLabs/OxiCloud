@@ -213,12 +213,22 @@ pub fn nextcloud_routes_with_state(state: Arc<AppState>) -> Router<Arc<AppState>
 
 // ──────────────── Handler glue ────────────────
 
+/// #315: axum's `Path` percent-decodes the whole wildcard, so `a%2Fb` arrives
+/// here as the nested path `a/b`. Check the RAW path with the shared DAV
+/// decoder and refuse a segment that decodes to `/` or `\`.
+fn reject_encoded_separators(uri: &axum::http::Uri) -> Result<(), Response> {
+    crate::interfaces::api::handlers::dav_paths::decode_and_validate_path(uri.path())
+        .map(|_| ())
+        .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid or unsafe path in URL").into_response())
+}
+
 async fn handle_dav_files(
     State(state): State<Arc<AppState>>,
     Path((_url_user, subpath)): Path<(String, String)>,
     session: SharedNcSession,
     req: Request<Body>,
 ) -> Result<Response, Response> {
+    reject_encoded_separators(req.uri())?;
     webdav_handler::handle_nc_webdav(state, req, session, subpath)
         .await
         .map_err(|e| e.into_response())
@@ -241,6 +251,7 @@ async fn handle_dav_uploads(
     session: SharedNcSession,
     req: Request<Body>,
 ) -> Result<Response, Response> {
+    reject_encoded_separators(req.uri())?;
     uploads_handler::handle_nc_uploads(state, req, session, upload_id, rest)
         .await
         .map_err(|e| e.into_response())
@@ -258,7 +269,14 @@ async fn handle_dav_uploads_root(
 }
 
 /// Legacy /remote.php/webdav/* — redirect to /remote.php/dav/files/{user}/*
-async fn handle_legacy_webdav(Path(subpath): Path<String>, user_ext: AuthUser) -> Response {
+async fn handle_legacy_webdav(
+    Path(subpath): Path<String>,
+    uri: axum::http::Uri,
+    user_ext: AuthUser,
+) -> Response {
+    if let Err(r) = reject_encoded_separators(&uri) {
+        return r;
+    }
     let location = format!(
         "{}/remote.php/dav/files/{}/{}",
         crate::common::config::server_base_path(),
@@ -291,6 +309,7 @@ async fn handle_dav_trashbin(
     session: SharedNcSession,
     req: Request<Body>,
 ) -> Result<Response, Response> {
+    reject_encoded_separators(req.uri())?;
     trashbin_handler::handle_nc_trashbin(state, req, session, subpath)
         .await
         .map_err(|e| e.into_response())
@@ -335,4 +354,28 @@ async fn handle_nc_not_found() -> Response {
         .status(StatusCode::NOT_FOUND)
         .body(Body::empty())
         .unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // #315: axum `Path` hands the NC handlers an already-decoded subpath,
+    // so `a%2Fb` arrived as `a/b`. The guard must see the RAW uri.
+    #[test]
+    fn reject_encoded_separators_on_raw_nc_path() {
+        for raw in [
+            "/remote.php/dav/files/alice/a%2Fb",
+            "/remote.php/dav/trashbin/alice/x%2fy",
+            "/remote.php/webdav/a%5Cb",
+        ] {
+            let uri: axum::http::Uri = raw.parse().unwrap();
+            let r = reject_encoded_separators(&uri).unwrap_err();
+            assert_eq!(r.status(), StatusCode::BAD_REQUEST, "{raw}");
+        }
+        let ok: axum::http::Uri = "/remote.php/dav/files/alice/My%20Docs/a.txt"
+            .parse()
+            .unwrap();
+        assert!(reject_encoded_separators(&ok).is_ok());
+    }
 }

@@ -201,9 +201,12 @@ fn reject_path_traversal(path: &str) -> Result<(), AppError> {
 }
 
 /// Extract the resource path from the request URI, stripping the `/webdav/` prefix
-/// and percent-decoding the result so that folder/file names with spaces and
+/// and percent-decoding each path segment so that folder/file names with spaces and
 /// special characters match the values stored in the database.
-fn extract_webdav_path(uri: &axum::http::Uri) -> String {
+///
+/// Security: rejects paths where any segment decodes to contain `/` or `\`, which
+/// would violate storage constraints (issue #315).
+fn extract_webdav_path(uri: &axum::http::Uri) -> Result<String, AppError> {
     let raw = uri.path();
     let encoded = if let Some(rest) = raw.strip_prefix("/webdav/") {
         rest.trim_end_matches('/')
@@ -214,8 +217,10 @@ fn extract_webdav_path(uri: &axum::http::Uri) -> String {
         let trimmed = raw.strip_prefix('/').unwrap_or(raw);
         trimmed.trim_end_matches('/')
     };
-    // Decode percent-encoded characters (e.g. %20 → space)
-    percent_decode_str(encoded).decode_utf8_lossy().into_owned()
+
+    // Use the shared safe decoder that validates segment boundaries
+    crate::interfaces::api::handlers::dav_paths::decode_and_validate_path(encoded)
+        .map_err(|_| AppError::bad_request("Invalid or unsafe path in URL"))
 }
 
 async fn handle_webdav_methods_root(
@@ -229,7 +234,7 @@ async fn handle_webdav_methods(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     req: Request<Body>,
 ) -> Result<Response<Body>, AppError> {
-    let path = extract_webdav_path(req.uri());
+    let path = extract_webdav_path(req.uri())?;
     reject_path_traversal(&path)?;
     handle_webdav_dispatch(state, req, path).await
 }
@@ -519,7 +524,7 @@ async fn handle_propfind(
     // req.into_body() consumes the request. The `path` parameter already has
     // the home-folder prefix prepended (e.g. `admin/docs`) so it's correct for
     // DB lookups but wrong for WebDAV hrefs (clients see `/webdav/docs`).
-    let client_path = extract_webdav_path(req.uri());
+    let client_path = extract_webdav_path(req.uri())?;
 
     // ── 3. Parse PROPFIND XML body ───────────────────────────────
     let body_bytes = {
@@ -869,7 +874,7 @@ async fn handle_proppatch(
 ) -> Result<Response<Body>, AppError> {
     let user = extract_user(&req)?;
     // Client-facing path for href construction (without home folder prefix).
-    let client_path = extract_webdav_path(req.uri());
+    let client_path = extract_webdav_path(req.uri())?;
     // Scope the URL → (drive_id, db_path). The synthetic drive-listing
     // pseudo-root has no DB row to anchor dead properties on; treat
     // it as an empty target and reject the PROPPATCH itself below.
@@ -2756,7 +2761,8 @@ async fn handle_move(
     let destination_path = if let Some(webdav_prefix) = destination.find("/webdav/") {
         let after_prefix = &destination[webdav_prefix + 8..];
         let trimmed = after_prefix.trim_end_matches('/');
-        percent_decode_str(trimmed).decode_utf8_lossy().into_owned()
+        crate::interfaces::api::handlers::dav_paths::decode_and_validate_path(trimmed)
+            .map_err(|_| AppError::bad_request("Invalid or unsafe path in destination URL"))?
     } else {
         return Err(AppError::bad_request("Invalid destination URL"));
     };
@@ -3055,7 +3061,8 @@ async fn handle_copy(
     let destination_path = if let Some(webdav_prefix) = destination.find("/webdav/") {
         let after_prefix = &destination[webdav_prefix + 8..];
         let trimmed = after_prefix.trim_end_matches('/');
-        percent_decode_str(trimmed).decode_utf8_lossy().into_owned()
+        crate::interfaces::api::handlers::dav_paths::decode_and_validate_path(trimmed)
+            .map_err(|_| AppError::bad_request("Invalid or unsafe path in destination URL"))?
     } else {
         return Err(AppError::bad_request("Invalid destination URL"));
     };
@@ -3595,6 +3602,19 @@ async fn handle_unlock(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // #315: `/webdav/a%2Fb` was decoded before splitting and resolved as
+    // the nested path `a/b`. The request path must be refused instead;
+    // ordinary escapes still decode.
+    #[test]
+    fn extract_webdav_path_rejects_encoded_separator() {
+        for raw in ["/webdav/a%2Fb", "/webdav/dir/a%2fb", "/webdav/a%5Cb"] {
+            let uri: axum::http::Uri = raw.parse().unwrap();
+            assert!(extract_webdav_path(&uri).is_err(), "{raw}");
+        }
+        let uri: axum::http::Uri = "/webdav/My%20Folder/caf%C3%A9.txt".parse().unwrap();
+        assert_eq!(extract_webdav_path(&uri).unwrap(), "My Folder/café.txt");
+    }
 
     // ── RFC 4918 §10.4 If: header parser + evaluator ────────────────
 
