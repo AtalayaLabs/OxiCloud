@@ -6107,12 +6107,12 @@ fn base64_url_encode(input: &[u8]) -> String {
 // out the substrate.
 //
 // Runs against the real test DB (same `oxicloud_test` guard as the
-// other integration_tests modules). Gated on `all(test, integration_tests)`
-// so the module compiles ONLY during `cargo test --cfg integration_tests`:
+// other integration_tests modules). Gated on `all(test, feature = "integration_tests")`
+// so the module compiles ONLY during `cargo test --features integration_tests`:
 // a plain library build strips it, keeping `#[test]`-only imports from
 // tripping the unused-imports lint. Mirrors the pattern in
 // `folder_service::cascade_hook_integration_tests`.
-#[cfg(all(test, integration_tests))]
+#[cfg(all(test, feature = "integration_tests"))]
 mod phase4_gate_integration_tests {
     use super::*;
     use crate::application::ports::opaque_ports::OpaqueRepositoryPort;

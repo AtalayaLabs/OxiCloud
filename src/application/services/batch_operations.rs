@@ -1223,7 +1223,7 @@ impl BatchOperationService {
 // threading the new arguments — out of scope for the subject-groups test
 // work, but tracked here so the next maintainer notices.
 // `cfg(any())` is always-false; re-enable by switching back to
-// `cfg(integration_tests)` after the constructor migration is fixed.
+// `cfg(feature = "integration_tests")` after the constructor migration is fixed.
 #[cfg(any())]
 mod tests {
     #[allow(unused_imports)]

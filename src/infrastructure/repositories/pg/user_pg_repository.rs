@@ -1845,7 +1845,7 @@ impl UserStoragePort for UserPgRepository {
     }
 }
 
-#[cfg(integration_tests)]
+#[cfg(feature = "integration_tests")]
 #[allow(dead_code)]
 mod integration_tests {
     use super::*;

@@ -370,8 +370,8 @@ if (( NEED_BUILD )); then
   # — there is NO `--profile debug` flag (it would error). Only the
   # release path needs an explicit flag.
   case "$BUILD_TARGET" in
-    debug)   cargo_build_logged "OxiCloud server (debug)"             || die "cargo build failed" ;;
-    release) cargo_build_logged "OxiCloud server (release)" --release || die "cargo build --release failed" ;;
+    debug)   cargo_build_logged "OxiCloud server (debug)"             --bin oxicloud || die "cargo build failed" ;;
+    release) cargo_build_logged "OxiCloud server (release)" --release --bin oxicloud || die "cargo build --release failed" ;;
     *)       die "Unsupported BUILD_TARGET='$BUILD_TARGET' (expected 'debug' or 'release')" ;;
   esac
 fi

@@ -549,13 +549,13 @@ impl SubjectGroupRepository for SubjectGroupPgRepository {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Integration tests — DB-dependent. Gated on `--cfg integration_tests` so
+// Integration tests — DB-dependent. Gated on `--features integration_tests` so
 // they don't break the default `cargo test` run.
 //
 // How to run:
 //   bash tests/common/spawn-db.sh                          # one-time
 //   sqlx migrate run --database-url $TEST_DB               # if needed
-//   RUSTFLAGS='--cfg integration_tests' cargo test \
+//   cargo test --features integration_tests \
 //       -p oxicloud --lib subject_group_pg_repository::integration_tests
 //
 // `TEST_DB` defaults to `postgres://oxicloud_test:oxicloud_test@localhost:5433/
@@ -565,7 +565,7 @@ impl SubjectGroupRepository for SubjectGroupPgRepository {
 // concurrent runs and re-runs don't collide on the CITEXT unique constraint.
 // Cleanup is by-id at the end of each test.
 // ────────────────────────────────────────────────────────────────────────────
-#[cfg(integration_tests)]
+#[cfg(feature = "integration_tests")]
 #[allow(dead_code)]
 mod integration_tests {
     use super::*;

@@ -1,10 +1,11 @@
 default:
     @just --list
 
-# Dev build. Carries `--features plugins` so the binary it produces is the
-# one the e2e suite can reuse: `playwright.coverage.config.ts` boots
-# `target/debug/oxicloud` when it is fresh AND plugins-linked, and otherwise
-# falls back to `cargo run --features plugins` — a 5-minute rebuild on every
+# Dev build. Carries `--features dev` (= plugins + dev_tools + test_utils, see
+# Cargo.toml) so the binary it produces is the one the e2e suite can reuse:
+# `playwright.coverage.config.ts` boots `target/debug/oxicloud` when it is
+# fresh AND plugins-linked, and otherwise falls back to
+# `cargo run --features dev` — a 5-minute rebuild on every
 # e2e run. One flag here spends ~0 extra seconds (you were going to pay the
 # wasmtime compile on the first e2e run anyway) and saves it every time after.
 #
@@ -19,17 +20,20 @@ default:
 # switching is a one-time cost, not a rebuild each way. The binary PATH is
 # what is shared: a bare `cargo run` overwrites the plugins binary with a
 # non-plugins one, the e2e config's wasmtime probe then rejects it, and the
-# next `just front-test` falls back to a full `cargo run --features plugins`.
+# next `just front-test` falls back to a full `cargo run --features dev`.
 # One `just dev` session would otherwise silently undo this optimisation.
 #
 # `dev` also wants the feature on its own merits: without it the admin
 # Plugins tab is dead in the local dev server, so it cannot be exercised.
 #
-# NOT aligned, on purpose: `test` / `test-mocks` build test harnesses rather
-# than this binary (and `test-plugins` covers the plugins path separately),
-# and the `dev_tools` generators build a different bin entirely.
+# ALIGNED, on purpose: `test`, `test-mocks`, `test-integration` and the
+# `dev_tools` generators use the same `dev` set. Every feature of this
+# package is part of the lib's fingerprint, so a recipe with its own set
+# recompiles the whole ~250k-line lib each time you switch to it — that is
+# what made every `just fe-*` recipe (which runs the generators) rebuild
+# Rust after a `just build`.
 build:
-    cargo build --features plugins
+    cargo build --features dev --bin oxicloud
 
 release:
     # Build the SvelteKit SPA into static-dist/ (build.rs no longer bundles),
@@ -38,7 +42,7 @@ release:
     cargo build --release
 
 run:
-    cargo run --features plugins
+    cargo run --features dev
 
 # ── Docker image builds ──────────────────────────────────────────────────────
 # Build the runtime image locally with BuildKit cargo cache mounts so repeat
@@ -67,13 +71,42 @@ docker-build-e2e tag="oxicloud-e2e:latest":
         .
 
 run-debug:
-    RUST_LOG=debug cargo run --features plugins
+    RUST_LOG=debug cargo run --features dev
 
-test:
-    cargo test --workspace
+# `--lib --bins --tests` instead of a bare `cargo test`: a bare run also
+# COMPILES AND LINKS all ~80 `examples/bench_*` binaries (each one a full
+# link against the lib) without running anything in them. `just check`
+# (clippy `--all-targets`) still type-checks the examples. This also skips
+# doctests — the crate has none (every fenced block in doc comments is
+# tagged `text` / `ignore` / a non-Rust language); add `--doc` if that changes.
+#
+# `CARGO_BUILD_WARNINGS=deny` fails on warnings like CI's `-Dwarnings`, but
+# without touching RUSTFLAGS — RUSTFLAGS is part of every dependency's
+# fingerprint, so setting it here would rebuild all of them.
+test_targets := "--lib --bins --tests"
 
-test-mocks:
-    cargo test --features test_utils
+# Older cargo silently ignores `CARGO_BUILD_WARNINGS`, so `test` would pass
+# with warnings CI then rejects. Probe the running cargo on a throwaway crate
+# (~1 s) rather than trusting a version number.
+[private]
+require-warnings-deny:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    d=$(mktemp -d); trap 'rm -rf "$d"' EXIT
+    mkdir "$d/src"
+    printf '[package]\nname = "probe"\nversion = "0.0.0"\nedition = "2021"\n' > "$d/Cargo.toml"
+    echo 'fn main() { let unused = 0; }' > "$d/src/main.rs"
+    if CARGO_BUILD_WARNINGS=deny CARGO_TARGET_DIR="$d/target" \
+        cargo check -q --offline --manifest-path "$d/Cargo.toml" 2>/dev/null; then
+        echo "error: $(cargo --version) ignores CARGO_BUILD_WARNINGS=deny, so warnings would not fail this run the way they fail CI. Update the toolchain: rustup update" >&2
+        exit 1
+    fi
+
+test: require-warnings-deny
+    CARGO_BUILD_WARNINGS=deny cargo test --workspace --features dev {{test_targets}}
+
+# Mocks are generated under `cfg(test)`, so `test` already runs them.
+test-mocks: test
 
 # Source-based line coverage (HTML + summary) via cargo-llvm-cov.
 # Requires `cargo install cargo-llvm-cov` and llvm-tools (rustup component
@@ -85,9 +118,9 @@ coverage filter='':
 
 # Coverage including the testcontainers integration tests (needs docker).
 coverage-integration filter='mount':
-    RUSTFLAGS='--cfg integration_tests' cargo llvm-cov --lib --summary-only -- {{filter}}
+    cargo llvm-cov --features integration_tests --lib --summary-only -- {{filter}}
 
-# DB-dependent integration tests gated on `--cfg integration_tests`.
+# DB-dependent integration tests gated on `--features integration_tests`.
 # Spins up the test postgres on port 5433 first. Requires one row in
 # auth.users on the test DB (start the server against it once to seed).
 #
@@ -96,18 +129,18 @@ coverage-integration filter='mount':
 # of this file would otherwise leak in) cannot point the tests at the
 # real dev DB. The test pool helpers also refuse non-`oxicloud_test`
 # URLs as defence in depth.
-test-integration filter='':
+test-integration filter='': require-warnings-deny
     bash tests/common/spawn-db.sh
     PGHOST=localhost PGPORT=5433 PGUSER=oxicloud_test PGPASSWORD=oxicloud_test \
       PGDATABASE=oxicloud_test \
       bash tests/common/init-test-schema.sh
     DATABASE_URL='postgres://oxicloud_test:oxicloud_test@localhost:5433/oxicloud_test' \
-      RUSTFLAGS='-Dwarnings --cfg integration_tests' \
-      cargo test --workspace --tests {{filter}}
+      CARGO_BUILD_WARNINGS=deny \
+      cargo test --workspace --features dev,integration_tests --tests {{filter}}
     bash tests/common/stop-db.sh
 
 test-one name:
-    cargo test {{name}}
+    cargo test --features dev {{test_targets}} {{name}}
 
 fmt:
     cargo fmt --all
@@ -120,16 +153,14 @@ lint:
 
 check:
     cargo fmt --all --check
-    # `--cfg integration_tests` so the `#[cfg(integration_tests)]` modules are
-    # actually COMPILED here. Without it they do not exist for this command,
-    # and a warning inside one reaches nobody until CI — which builds them
-    # with `-Dwarnings` (`ci.yml`) and fails. That gap sent a red run on
+    # `--all-features` includes `integration_tests`, so the
+    # `#[cfg(feature = "integration_tests")]` modules are COMPILED and linted
+    # here. Without them a warning inside one reaches nobody until CI, which
+    # builds them with `-Dwarnings` — that gap sent a red run on
     # `feat/refresh-token-grace` (2026-11-14) after four green local recipes.
-    #
-    # Cost of the flag: it is part of the build fingerprint, so this clippy
-    # cache is separate from the one `cargo test` / `cargo run` use, and
-    # alternating between them rebuilds the crate.
-    RUSTFLAGS='--cfg integration_tests' cargo clippy --all-features --all-targets -- -D warnings
+    # (This used to need `RUSTFLAGS='--cfg integration_tests'`, which made
+    # every switch between this recipe and `test`/`build` rebuild all deps.)
+    cargo clippy --all-features --all-targets -- -D warnings
 
 
 # Verify every new sqlx migration this branch introduces has a
@@ -204,8 +235,11 @@ wasm-test:
     cd wasm/oxicloud-hash; cargo test --release
 
 # Run the host plugin-runtime tests (compiles the Extism/wasmtime runtime).
+# Every test with "plugin" in its path — the `plugins::` module plus the
+# plugin wiring elsewhere (admin endpoints, lifecycle hooks, DI). `just test`
+# runs them too, since `dev` includes `plugins`.
 test-plugins:
-    cargo test --features plugins
+    cargo test --features dev {{test_targets}} plugin
 
 # Rebuild the committed plugin .wasm fixtures from wasm/oxicloud-plugin-hello/.
 # Requires the wasm32 target (devenv provides it; else `rustup target add
@@ -229,7 +263,7 @@ audit:
 
 # Regenerate `resources/gen/asyncapi.json`
 gen-openapi-schema:
-    cargo run --features dev_tools --bin generate-openapi
+    cargo run --features dev --bin generate-openapi
 
 # ─── The three OpenAPI gates ────────────────────────────────────────────
 #
@@ -429,7 +463,7 @@ check-openapi: check-openapi-lint check-openapi-breaking
 # and `error_code` constants in `application/ports/message_bus_ports.rs`
 # so the spec stays in sync with the wire by construction.
 gen-asyncapi-schema:
-    cargo run --features dev_tools --bin generate-asyncapi
+    cargo run --features dev --bin generate-asyncapi
 
 # Regenerate frontend TypeScript DTOs from `resources/gen/asyncapi.json`
 # via `@asyncapi/modelina`. Chained to `asyncapi` so the JSON spec is
@@ -586,7 +620,7 @@ test-caldav:
         echo "XXX python3 not found — skipping CalDAV client-driven tests"
         exit 0
     fi
-    cargo build --features plugins
+    cargo build --features dev --bin oxicloud
     ./tests/caldav/run-pycaldav.sh
 
 # Sync-convergence suite: the real Nextcloud desktop sync engine
@@ -595,7 +629,7 @@ test-caldav:
 # local and server trees must end byte-identical. Same fresh-binary rule
 # as test-caldav. Extra args go to pytest, e.g. `just test-nextcloudcmd -k churn`.
 test-nextcloudcmd *ARGS:
-    cargo build
+    cargo build --features dev --bin oxicloud
     ./tests/nextcloudcmd/run.sh {{ARGS}}
 
 # Manual, human-run: launches OxiCloud with OIDC as the ONLY login method
@@ -697,7 +731,7 @@ docs-specs: gen-openapi gen-asyncapi docs-install
 dev:
     #!/usr/bin/env bash
     set -euo pipefail
-    cargo run --features plugins &
+    cargo run --features dev &
     backend=$!
     trap 'kill $backend 2>/dev/null' EXIT INT TERM
     cd frontend && npm run dev

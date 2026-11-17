@@ -1461,12 +1461,9 @@ impl BlobHandler {
 
     /// Creates a stub instance for testing — never hits PG or the filesystem.
     ///
-    /// Gated for both build modes integration tests are reachable from:
-    /// the raw `cfg(integration_tests)` flag used by CI / justfile
-    /// (`RUSTFLAGS='--cfg integration_tests'`) and the
-    /// `feature = "integration_tests"` form for callers that flip the
-    /// cargo feature instead. Standard `cfg(test)` keeps unit-test use.
-    #[cfg(any(test, integration_tests, feature = "integration_tests"))]
+    /// Gated for unit tests (`cfg(test)`) and for the DB integration build
+    /// (`--features integration_tests`, used by CI and `just test-integration`).
+    #[cfg(any(test, feature = "integration_tests"))]
     /// Like [`Self::new_stub`] but on a **real** pool, for integration
     /// tests that need `remove_reference` to actually run.
     ///
@@ -1475,7 +1472,7 @@ impl BlobHandler {
     /// executes it. Kept beside it so the two cannot drift in what they
     /// register — a registry difference would change the reap predicate
     /// and make a test prove the wrong thing.
-    #[cfg(any(test, integration_tests))]
+    #[cfg(any(test, feature = "integration_tests"))]
     pub fn new_for_test(pool: Arc<sqlx::PgPool>) -> Self {
         use crate::infrastructure::services::local_blob_backend::LocalBlobBackend;
         let registry = Arc::new(Self::default_reference_registry(pool.clone()));
@@ -5326,7 +5323,7 @@ mod tests {
 // ─────────────────────────────────────────────────────────────────────────────
 // Integration tests for the legacy re-chunk migration — require the test
 // database (run via `just test-integration`, which spawns it and applies
-// migrations). Gated on `--cfg integration_tests` like the other PG suites.
+// migrations). Gated on `--features integration_tests` like the other PG suites.
 //
 // Each test seeds its own synthetic "legacy" state (a whole-file blob row in
 // `storage.blobs` + file rows pointing at it, no manifest) with unique
@@ -5334,7 +5331,7 @@ mod tests {
 // state for ITS hash only — concurrent test sweeps may migrate each other's
 // blobs first, which is fine (and exercises the idempotency paths).
 // ─────────────────────────────────────────────────────────────────────────────
-#[cfg(integration_tests)]
+#[cfg(feature = "integration_tests")]
 #[allow(dead_code)]
 mod rechunk_integration_tests {
     use super::*;
@@ -5782,9 +5779,9 @@ mod rechunk_integration_tests {
 /// module scope so the next suite finds it.
 ///
 /// `allow(dead_code)`: gated on a cfg flag rather than on `test`, so a plain
-/// build with `--cfg integration_tests` compiles it while `#[tokio::test]`
+/// build with `--features integration_tests` compiles it while `#[tokio::test]`
 /// drops every caller.
-#[cfg(integration_tests)]
+#[cfg(feature = "integration_tests")]
 #[allow(dead_code)]
 static GC_TEST_SERIALIZER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -5793,7 +5790,7 @@ static GC_TEST_SERIALIZER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_ne
 // verification rules the chunk-negotiation protocol stands on. Same gating
 // and DB conventions as the re-chunk suite above.
 // ─────────────────────────────────────────────────────────────────────────────
-#[cfg(integration_tests)]
+#[cfg(feature = "integration_tests")]
 #[allow(dead_code)]
 mod delta_upload_integration_tests {
     use super::*;
@@ -6510,14 +6507,14 @@ mod delta_upload_integration_tests {
 //     used to provide, and dropping it must not have traded one failure for
 //     the other.
 //
-// See `docs/plan/derived-blobs.md`. Gated on `--cfg integration_tests` like
+// See `docs/plan/derived-blobs.md`. Gated on `--features integration_tests` like
 // the other PG suites.
 // ─────────────────────────────────────────────────────────────────────────────
 // `allow(dead_code)`: the module is gated on a cfg flag, not on `test`, so a
-// plain `cargo build --cfg integration_tests` compiles the helpers while
+// plain `cargo build --features integration_tests` compiles the helpers while
 // `#[tokio::test]` drops their only callers. Same reason the rechunk suite
 // above carries it.
-#[cfg(integration_tests)]
+#[cfg(feature = "integration_tests")]
 #[allow(dead_code)]
 mod gc_reference_authority_integration_tests {
     use super::*;

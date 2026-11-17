@@ -166,9 +166,14 @@ jobs:
           # keeps CI and local in lockstep.
           fetch-depth: 0
           fetch-tags: true
-      # Rust for `just asyncapi` — the JSON spec is built by
-      # `cargo run --features dev_tools --bin generate-asyncapi`.
+      # Rust for the AsyncAPI generator. CI builds `--features dev_tools`
+      # alone; `just gen-asyncapi-schema` uses `--features dev`, the local
+      # set. Same spec either way — `dev` only adds plugins and the test
+      # helper bins.
       - uses: dtolnay/rust-toolchain@stable
+      # Saves from PRs too, unlike the backend jobs (see rust-clippy):
+      # this job only runs when its path filter matches, which is rare
+      # on main, so a main-only cache would almost never exist.
       - uses: Swatinem/rust-cache@v2
       # Node for `just gen-asyncapi` — Modelina projects the spec into
       # the FE `src/lib/api/generated/asyncapi/` folder.
@@ -182,7 +187,7 @@ jobs:
         working-directory: frontend
         run: npm ci
       - name: Regenerate AsyncAPI spec
-        # `just asyncapi` = `cargo run --features dev_tools --bin generate-asyncapi`
+        # Local equivalent: `just gen-asyncapi-schema` (with `--features dev`).
         run: cargo run --features dev_tools --bin generate-asyncapi
       - name: Regenerate TS DTOs (Modelina)
         working-directory: frontend
@@ -236,6 +241,9 @@ jobs:
       # Rust toolchain for `cargo run --bin generate-openapi` (writes
       # resources/gen/openapi.json).
       - uses: dtolnay/rust-toolchain@stable
+      # Saves from PRs too, unlike the backend jobs (see rust-clippy):
+      # this job only runs when its path filter matches, which is rare
+      # on main, so a main-only cache would almost never exist.
       - uses: Swatinem/rust-cache@v2
       # Node toolchain for `npm run gen:openapi` (projects the spec
       # into `frontend/src/lib/api/generated/openapi/` via @hey-api/
@@ -252,7 +260,7 @@ jobs:
         working-directory: frontend
         run: npm ci
       - name: Regenerate OpenAPI spec
-        # `just gen-openapi-schema` = `cargo run --features dev_tools --bin generate-openapi`.
+        # Local equivalent: `just gen-openapi-schema` (with `--features dev`).
         run: cargo run --features dev_tools --bin generate-openapi
       - name: Regenerate TS SDK (openapi-ts)
         working-directory: frontend
@@ -485,6 +493,14 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Save only from main. PRs can read main's caches but not each
+          # other's, so a cache saved from a PR helps only that PR's own
+          # re-runs — while each one counts against the repo's 10 GB cache
+          # budget and evicts main's, which every PR restores from. Applies
+          # to jobs that run on most main pushes (backend filter, `build`);
+          # narrowly path-filtered jobs keep saving from PRs.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # `--all-features` includes `bundled-assets`, whose build.rs guard
       # requires `static-dist/index.html` at compile time (rust-embed
@@ -524,6 +540,9 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
+          # Saves from PRs too, unlike the backend jobs (see rust-clippy):
+          # this job only runs when its path filter matches, which is rare
+          # on main, so a main-only cache would almost never exist.
           workspaces: wasm/oxicloud-hash
       - run: cargo fmt --all --check
       - run: cargo clippy --all-features --release -- -D warnings
@@ -544,6 +563,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
+          # Saves from PRs too, unlike the backend jobs (see rust-clippy):
+          # this job only runs when its path filter matches, which is rare
+          # on main, so a main-only cache would almost never exist.
           workspaces: wasm/oxicloud-hash
       - run: cargo test --release
 
@@ -566,6 +588,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.96.1
         with:
           targets: wasm32-unknown-unknown
+      # Saves from PRs too, unlike the backend jobs (see rust-clippy):
+      # this job only runs when its path filter matches, which is rare
+      # on main, so a main-only cache would almost never exist.
       - uses: Swatinem/rust-cache@v2
       - name: Rebuild committed wasm fixtures
         run: bash scripts/build-plugin-hello.sh
@@ -588,7 +613,7 @@ jobs:
       - name: Run plugin runtime tests
         # Quote: the trailing `::` confuses GitHub's YAML parser (mapping
         # values not allowed) and aborts the whole workflow at load time.
-        run: 'cargo test --features plugins plugins::'
+        run: 'cargo test --features plugins --lib plugins::'
 
   rust-test:
     name: Server Unit and Functionnal Tests
@@ -613,9 +638,11 @@ jobs:
       # Free ~26 GB of preinstalled tools the runner image ships with
       # (Android SDK ~12 GB, Haskell/GHC ~5 GB, .NET ~2 GB, swap +
       # docker images by the action's defaults). `cargo test
-      # --all-features --workspace` on this repo blows past the
-      # ubuntu-latest ~14 GB free budget otherwise (PR #520 died on
-      # the `bench_owner_cache` example link step with ENOSPC).
+      # --all-features --workspace` on this repo blew past the
+      # ubuntu-latest ~14 GB free budget (PR #520 died on the
+      # `bench_owner_cache` example link step with ENOSPC). The test steps
+      # below no longer link the ~80 examples (`--lib --bins --tests`;
+      # clippy's `--all-targets` still checks them), but keep the headroom.
       # `tool-cache: false` is load-bearing — wiping it breaks
       # `setup-rust`/`setup-node`/etc.
       - uses: jlumbroso/free-disk-space@main
@@ -629,6 +656,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Save from main only — see rust-clippy's cache step.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # ffprobe (shipped by the ffmpeg package) for the container-probe
       # integration tests, which resolve audio-vs-video for the four
@@ -666,16 +696,29 @@ jobs:
           PGPASSWORD: postgres
           PGDATABASE: oxicloud_test
 
+      # Every feature EXCEPT `integration_tests`: the DB-free unit tests,
+      # including `config.rs`'s `DATABASE_URL`-mutating env tests, which are
+      # compiled out under that feature because they race the integration
+      # tests' `DATABASE_URL` reads. Keep this list = all features minus
+      # `integration_tests`; the next step's `--all-features` covers anything
+      # added later.
+      #
+      # `--lib --bins --tests`: a bare `cargo test` also compiles and links
+      # all ~80 `examples/bench_*` binaries without running them. The crate
+      # has no doctests (see `just test`).
       - name: Run tests
-        run: cargo test --all-features --workspace
+        run: cargo test --workspace --features dev,load_seed_bin,faces-onnx,bench,bundled-assets --lib --bins --tests
         env:
           DATABASE_URL: "postgres://postgres:postgres@localhost/oxicloud_test"
 
+      # Differs from the step above only by the `integration_tests` FEATURE,
+      # so just this crate recompiles. It used to be
+      # `RUSTFLAGS="-Dwarnings --cfg integration_tests"`, and changing
+      # RUSTFLAGS rebuilt all ~700 dependencies a second time in this job.
       - name: Run integration tests
         run: cargo test --all-features --workspace --tests
         env:
           DATABASE_URL: "postgres://postgres:postgres@localhost/oxicloud_test"
-          RUSTFLAGS: "-Dwarnings --cfg integration_tests"
 
   rust-audit:
     name: Security Audit
@@ -706,9 +749,17 @@ jobs:
     # build-side alone is sufficient to make the Noble consumers
     # (litmus, OIDC, e2e jobs on lines 836/874/912) keep working.
     runs-on: ubuntu-22.04
-    if: github.event_name == 'pull_request'
+    # Also runs on pushes to main that touch the backend, ONLY to warm the
+    # cache below: PRs can restore caches saved on main but not each
+    # other's, and this job used to run on PRs alone — so every new PR
+    # started from a cold dependency build. On main it skips the SPA and
+    # the artifact upload, and just builds and saves the cache.
+    needs: changes
+    if: |
+      github.event_name == 'pull_request' ||
+      (github.ref == 'refs/heads/main' && needs.changes.outputs.backend == 'true')
     steps:
-      # `cargo build --release --features plugins` is the heaviest
+      # `cargo build --profile ci --features plugins` is the heaviest
       # link step in the workflow — release-profile linking emits
       # large intermediate objects + plugins drags Wasmtime in.
       # Preemptive cleanup keeps it well inside the runner disk
@@ -738,23 +789,34 @@ jobs:
           # don't poison each other. Bump the suffix if the ABI needs
           # another forced invalidation.
           prefix-key: "v1-ubuntu-22.04"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # The SPA isn't needed for the cache-warming run on main.
       - name: Setup Node
+        if: github.event_name == 'pull_request'
         uses: actions/setup-node@v4
         with:
           node-version: 26.3.0
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - name: Build SPA (Vite -> static-dist/)
+        if: github.event_name == 'pull_request'
         working-directory: frontend
         run: npm ci && npm run build
       # --features plugins so the e2e Playwright job (which sets
       # OXICLOUD_ENABLE_PLUGINS) can exercise the admin Plugins tab. The api/webdav
       # and unit jobs reuse this binary but leave plugins disabled at runtime.
-      - run: cargo build --release --features plugins
+      #
+      # `--profile ci` (Cargo.toml): `release` without LTO and with 16
+      # codegen units — same code and opt-level, far less build time. The
+      # artifact keeps its name and single-file layout, so consumers still
+      # download it to `target/release/oxicloud` and run with
+      # `BUILD_TARGET=release`.
+      - run: cargo build --profile ci --features plugins
       - uses: actions/upload-artifact@v4
+        if: github.event_name == 'pull_request'
         with:
           name: oxicloud-release
-          path: target/release/oxicloud
+          path: target/ci/oxicloud
           retention-days: 1
 
   api-test:
@@ -869,8 +931,9 @@ jobs:
     #
     # Doesn't reuse the `build` job's artifact because that binary is
     # compiled with `--features plugins`, not `--features bundled-assets`
-    # — different feature set = different target. `Swatinem/rust-cache`
-    # still shares dependency compilation between the two jobs.
+    # — different feature set = different target. (The two jobs do NOT
+    # share a cache: rust-cache keys by job. This job is PR-only, so it
+    # keeps saving from PRs — with `save-if: main` it would never save.)
     name: Bundled-assets binary — embed + SPA-serve integration
     needs: changes
     if: |

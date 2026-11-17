@@ -2,8 +2,8 @@
 //!
 //! Concrete impl of [`DocSessionRepository`](crate::application::ports::collab_ports::DocSessionRepository).
 //! The service (`CollabSessionService`) exercises this through the trait
-//! for testability; unit tests use `MockDocSessionRepository` from the
-//! `test_utils` feature.
+//! for testability; unit tests can use `MockDocSessionRepository`
+//! (generated under `cfg(test)`).
 //!
 //! Migration: `migrations/20261027000000_collab_doc_sessions.sql`.
 

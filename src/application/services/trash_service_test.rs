@@ -825,7 +825,7 @@ impl FolderRepository for MockFolderRepository {
     }
 }
 
-#[cfg(integration_tests)]
+#[cfg(feature = "integration_tests")]
 mod tests {
     #[allow(unused_imports)]
     use super::*;

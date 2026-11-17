@@ -19,7 +19,7 @@
 # run under `set -euo pipefail`; this returns non-zero rather than
 # calling `die`, because each script defines its own.
 #
-# ── Why `--features plugins` is injected below ────────────────────────
+# ── Why `--features dev` / `--features plugins` is injected below ─────
 #
 # Every build of this binary — the harnesses here, `just build`,
 # `just run`, `just dev`, and `tests/e2e/playwright.coverage.config.ts`
@@ -35,11 +35,18 @@
 # `target/debug/oxicloud` unless `hasPluginsFeature()` passes, so it
 # rebuilt after EVERY api-test run.
 #
-# `plugins` is the set to converge on because it is also what CI's
-# `build` job ships (`cargo build --release --features plugins`) as the
-# artifact the `api-test` job consumes — so the harnesses now exercise
-# the binary shape CI actually tests, which is worth more than the
-# minutes saved.
+# Debug builds converge on `dev` (plugins + dev_tools + test_utils, see
+# Cargo.toml) — the set every `just` recipe uses, so `just build`/`test`/
+# the OpenAPI generators and these harnesses share one lib build. It is
+# runtime-identical to `plugins`: `test_utils` and `dev_tools` only unlock
+# extra bins (the Hurl helpers, the spec generators). Callers pass
+# `--bin oxicloud` (or `--bin <helper>`) so a server build doesn't also link
+# every one of those against the lib.
+#
+# Release builds stay on `plugins` because that is what CI's `build` job
+# ships (`cargo build --profile ci --features plugins` — `release` minus
+# LTO, see Cargo.toml) as the artifact the `api-test` job consumes — so a
+# local `--release` run exercises the binary shape CI actually tests.
 #
 # THIS IS A WHOLE-FAMILY INVARIANT, not a local choice. The harnesses
 # that don't source this file spell the same flag out at their own
@@ -57,11 +64,11 @@
 # binary on purpose and run rarely.
 #
 # Helper bins keep their own `--features test_utils`, which cargo
-# unions with this one. That set (`{plugins, test_utils}`) is a third
-# fingerprint, so building a helper does still invalidate the server —
-# but each helper is guarded by `[[ ! -x "$BIN" ]]`, so it happens
-# once per tree rather than once per run. Moving the helpers into
-# their own workspace crates is the real fix and is tracked separately.
+# unions with this one. In debug `dev` already contains `test_utils`, so
+# helpers and server share one build. In release the union
+# (`{plugins, test_utils}`) is a second fingerprint — but each helper is
+# guarded by `[[ ! -x "$BIN" ]]`, so it rebuilds once per tree rather than
+# once per run.
 
 # Where the build output goes. Under `target/` so it is already
 # gitignored and lands beside what it describes.
@@ -86,7 +93,9 @@ cargo_build_logged() {
   # but the redirect below happens first.
   mkdir -p "$(dirname "$log")"
   printf '\033[1;36m[build]\033[0m %s — output: %s\n' "$what" "$log"
-  if ! (cd "$REPO_ROOT" && cargo build --features plugins "$@" >"$log" 2>&1); then
+  local features=dev
+  case " $* " in *" --release "*) features=plugins ;; esac
+  if ! (cd "$REPO_ROOT" && cargo build --features "$features" "$@" >"$log" 2>&1); then
     printf '\033[1;31m[build FAIL]\033[0m %s — last 20 lines of %s:\n' "$what" "$log" >&2
     tail -n 20 "$log" >&2
     return 1

@@ -709,7 +709,7 @@ mod tests {
     }
 }
 
-#[cfg(all(test, integration_tests))]
+#[cfg(all(test, feature = "integration_tests"))]
 mod integration_tests {
     use super::*;
     use crate::infrastructure::repositories::pg::SettingsPgRepository;

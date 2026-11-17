@@ -2177,7 +2177,7 @@ mod mount_listing_tests {
     }
 }
 
-#[cfg(all(test, integration_tests))]
+#[cfg(all(test, feature = "integration_tests"))]
 mod mount_authz_integration {
     use super::*;
     use crate::application::dtos::folder_dto::{FolderOrderBy, ListResourcesOptions};
@@ -2865,10 +2865,10 @@ mod mount_authz_integration {
 //
 // How to run:
 //   bash tests/common/spawn-db.sh
-//   RUSTFLAGS='--cfg integration_tests' cargo test \
+//   cargo test --features integration_tests \
 //       -p oxicloud --lib folder_service::cascade_hook_integration_tests
 // ────────────────────────────────────────────────────────────────────────────
-#[cfg(integration_tests)]
+#[cfg(feature = "integration_tests")]
 #[allow(dead_code)]
 mod cascade_hook_integration_tests {
     use super::*;

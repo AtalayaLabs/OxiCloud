@@ -85,9 +85,9 @@ if [[ -x "$OXICLOUD_BIN" ]]; then
 else
   log "Building and starting OxiCloud server on port $SERVER_PORT..."
   cd "$REPO_ROOT"
-  # `--features plugins` to share one artifact with every other build of this
+  # `--features dev` to share one artifact with every other build of this
   # binary — see `tests/common/cargo_build.sh`.
-  cargo run --features plugins -- --config "$COMMON/server.env" &
+  cargo run --features dev -- --config "$COMMON/server.env" &
 fi
 SERVER_PID=$!
 log "Waiting for server at $base_url..."

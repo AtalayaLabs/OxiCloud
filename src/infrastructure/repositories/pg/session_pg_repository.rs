@@ -854,9 +854,9 @@ impl SessionStoragePort for SessionPgRepository {
     }
 }
 
-#[cfg(integration_tests)]
-// Same as every other `integration_tests` module in this repo. With the cfg
-// set, CI's `cargo test --tests` builds the lib as a plain DEPENDENCY of the
+#[cfg(feature = "integration_tests")]
+// Same as every other `integration_tests` module in this repo. With the feature
+// on, CI's `cargo test --tests` builds the lib as a plain DEPENDENCY of the
 // `tests/` binaries — no test harness, so the `#[tokio::test]` functions are
 // not collected and the fixture helpers below look unused. `-D warnings` then
 // turns that into a build failure, while a local run whose lib build is

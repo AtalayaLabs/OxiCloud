@@ -1,6 +1,6 @@
 //! Shared testcontainers harness for external-mount integration tests.
 //!
-//! Compiled only under `#[cfg(all(test, integration_tests))]` (the
+//! Compiled only under `#[cfg(all(test, feature = "integration_tests"))]` (the
 //! `testcontainers` dev-dependency is linked into test targets only). Each
 //! `fresh_db()` spins up an ephemeral Postgres, applies every migration, and
 //! returns a pool — so the DB-backed tests are self-contained and need only

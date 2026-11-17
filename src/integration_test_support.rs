@@ -1,6 +1,6 @@
-//! Shared helpers for `#[cfg(integration_tests)]` test modules.
+//! Shared helpers for `#[cfg(feature = "integration_tests")]` test modules.
 //!
-//! Compiled only when the build is invoked with `--cfg integration_tests`.
+//! Compiled only when the build is invoked with `--features integration_tests`.
 //! The module exists so the OnceCell that guards pre-suite cleanup is
 //! singleton across the whole lib test binary — without it, each test
 //! file would have its own cell and module-B's first test could nuke
