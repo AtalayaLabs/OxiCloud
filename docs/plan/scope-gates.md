@@ -31,7 +31,10 @@ pub enum Gate {
     Admin,                   // role.at_least(Admin) — Owner satisfies it too
     Owner,                   // role.at_least(Owner): the instance owner
                              // (UserRole::Owner, NOT storage.grant_role)
-    PasswordChangeSettled,   // no force_password_change_at_next_login
+    /// SUPERSEDED by `authn-pipeline.md`: the forced-reset state becomes
+    /// a scope narrowed to `{security}` at mint, so this never needs to
+    /// be asked per call. Listed for the fold-in table only.
+    PasswordChangeSettled,
     // ── derived from HOW the caller authenticated ──
     /// Applied by DEFAULT to every route. A static Basic-auth app
     /// password is refused unless the mount declares the opt-in below.
@@ -833,7 +836,7 @@ you must remember to write does. So the value is two narrower things:
 |---|---|
 | `require_internal_user_layer` | `gate_layer(Gate::Internal)` |
 | admin middleware on `/api/admin/*` | `gate_layer(Gate::Admin)` |
-| `require_no_password_change_pending_layer` | `gate_layer(Gate::PasswordChangeSettled)` |
+| `require_no_password_change_pending_layer` | **deleted**, not folded — `authn-pipeline.md` narrows the scope at mint instead, so the five mount points go away |
 | `require_dpop_layer` | `gate_layer(Gate::DpopBound)` |
 | hand-rolled owner check in `transfer_ownership` | `Gate::Owner` |
 | `anonymous_allowlist_layer` | `gate_layer(Gate::NotAnonymous)` + keeps its allowlist — and is the mechanism § Authentication by default would promote to the root |
@@ -1216,6 +1219,24 @@ Two notes for whoever picks that up:
   adopters." Until that line changes, every contributor is being told to
   preserve what this direction intends to drop.
 
+
+## Companion: the login phase
+
+This document owns the **per-call** axes. The login phase — what happens
+between a credential being verified and a session existing — is
+`docs/plan/authn-pipeline.md`, and the two meet at three points:
+
+- **Scope is minted there, enforced here.** The login phase derives a
+  `ScopeSet` from `(method, credential) ∩ ceiling` and may narrow it
+  further for a restricted account; this document only ever reads it.
+- **`Gate::PasswordChangeSettled` is deleted by it.** The forced-reset
+  state becomes a scope narrowed to `{security}` at mint, so
+  `require_no_password_change_pending_layer` and its five mount points
+  go away rather than folding into a gate.
+- **§ Maximise deny-by-default's fail-open fix is a dependency of it.**
+  That pipeline collapses per-call account state to one question against
+  one cached read, so a fail-open arm on that read is the whole account
+  gate failing open at once.
 ## Non-goals
 
 - Not a general policy engine. Target is ~10k users and five variants;
