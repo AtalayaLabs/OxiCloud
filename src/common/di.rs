@@ -1868,6 +1868,11 @@ impl AppServiceFactory {
                 // Same registry instance GC reaps from — see
                 // BlobHandler::reference_registry.
                 core.blob_handler.reference_registry(),
+                // Job registry, for the `blob_orphan_stalled` grace: the
+                // threshold is derived from the live GC cadence, so it
+                // must be read after `set_schedule` has applied
+                // OXICLOUD_JOBS_SCHEDULED. Held weakly — see the field doc.
+                &core.job_registry,
             ),
         )
         .register_recoverable_job(&core.job_registry, &job_store_provider_dyn)

@@ -350,6 +350,40 @@ impl JobRegistry {
         guard.get(name).map(|e| e.handler.parameters())
     }
 
+    /// The interval `name` is scheduled at. `None` = no such job;
+    /// `Some(None)` = registered but on-demand only, so the supervisor
+    /// never dispatches it.
+    ///
+    /// Reads the EFFECTIVE value, i.e. after DI has applied
+    /// `OXICLOUD_JOBS_SCHEDULED` via [`Self::set_schedule`], not whatever
+    /// the registration site hardcoded. That distinction is the whole
+    /// point: callers use this to derive a timing tolerance from how
+    /// often some other job actually runs, and a tolerance computed from
+    /// the hardcoded default would be wrong on exactly the installs that
+    /// tuned the schedule.
+    ///
+    /// Present caller: `blobs_consistency`'s `blob_orphan_stalled` grace,
+    /// which must exceed the worst-case wait for the next GC-bearing
+    /// sweep or it reports every freshly-orphaned blob as stalled.
+    ///
+    /// Note `Some(None)` does not imply "never runs" — a job can be
+    /// driven by another job calling it inline (`dedup_gc` is invoked by
+    /// `trash_cleanup`'s tail step and is deliberately registered
+    /// on-demand so the two don't double the work). Callers reasoning
+    /// about cadence have to know which job actually drives the work.
+    pub async fn schedule_of(&self, name: &str) -> Option<Option<Duration>> {
+        // Clone the Arc out and release the async read guard before
+        // taking the sync state mutex — same ordering as `snapshot`,
+        // which never holds both.
+        let entry = { self.entries.read().await.get(name).cloned() }?;
+        let interval = entry
+            .state
+            .lock()
+            .expect("JobState mutex poisoned")
+            .interval;
+        Some(interval)
+    }
+
     /// Serialisable snapshot for `GET /api/admin/jobs`. Each entry
     /// captures the operator-visible state: interval (null for on-
     /// demand), next scheduled dispatch (null for on-demand), when
