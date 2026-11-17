@@ -343,23 +343,49 @@ last-seen and IP columns the admin panel already renders. The
 `device_codes` table then means what its name says — in-flight
 authorizations — and pending-cancel stays a separate, smaller action.
 
-**Self-service session revocation does not exist.** `/api/admin/sessions`
-is `Gate::Admin`, so "log out my other devices" is unavailable to a user
-who is not an administrator. `scope-gates.md` reserves it under the
-`security` scope; it needs the same durable-record treatment, not a
-second mechanism.
+#### The connected-device list, and two IP columns
 
-**The general rule**, since this is the third instance of the same
-mistake:
+Almost everything the list needs is already on the session row, because
+`approve()` stashes it:
 
-> A "revoke" action must target the record that actually grants access,
-> and must use the revocation mechanism above rather than deleting a
-> row and hoping.
+| column | renders as | note |
+|---|---|---|
+| `origin = 'device'` | the filter | `SessionOrigin::Device` |
+| `user_agent` | client name | written as `device:{client_name}`, so the prefix doubles as a marker |
+| `last_seen_at` | genuine liveness | already maintained by the last-seen tracker, keyed on `claims.sid` |
+| `created_at`, `expires_at` | connected since / valid until | |
+| `revoked`, `dpop_jkt` | state, binding | |
 
-App-password revocation is the one that gets this right today, and is
-worth copying: it deletes the `app_passwords` row *and* explicitly
-invalidates the verification cache, "so a revoked password never
-survives in cache regardless of TTL".
+So the listing itself is a query change, and it turns a list of things
+that are *not* connected into a list of things that are.
+
+**One small migration, though: two IP columns rather than one.**
+`ip_address` today is commented "approver's browser IP" — where the
+human authorised the device, not where the device is. Overloading or
+relabelling one column loses information that is worth keeping
+separately:
+
+| column | written | means |
+|---|---|---|
+| `ip_approved` | once, at `approve()` | where a human authorised this device. Immutable, forensic — "who let this in" |
+| `ip_seen` | on the existing last-seen write | where the credential is actually being used |
+
+**A mismatch between them is itself a signal**, which is the reason to
+keep both rather than pick one: a device approved from a home address
+and now seen from elsewhere is exactly the shape of a stolen refresh
+token, and no single column can express it.
+
+`ip_seen` is close to free. The last-seen tracker already writes that
+row on a batched 10 s interval (`main.rs` ~200,
+`with_interval(Duration::from_secs(10))`, with a flush on shutdown), so
+the IP rides an UPDATE that is already happening — same row, same
+statement, no extra round trip. Note the corollary: `ip_seen` is
+accurate to within the flush interval, not instantaneous, and the
+display should not imply otherwise.
+
+This applies to every session origin, not only devices — a browser
+session gains the same pair, and the admin panel's IP column becomes
+unambiguous for all of them.
 
 ### True revocation, at no per-call cost
 
@@ -608,6 +634,53 @@ answer "which phases does a refresh run" from that page alone. If
 either only exists in this plan file, the next contributor adding a
 login path has no way to know what their path must check or when.
 
+
+### Hurl is mandatory for everything observable at the wire
+
+This is security work, so the acceptance bar is not "a unit test exists".
+Every behaviour a client can observe gets a Hurl pin under `tests/api/`,
+and per AGENTS.md each pin asserts **the refusal and an allowed caller
+succeeding** — a gate that refuses everyone passes a refusal-only test.
+
+Mandatory Hurl coverage, by subject:
+
+| subject | pin |
+|---|---|
+| the audit matrix inverted | OPAQUE, app-password, device and refresh each refused for an unverified email where classic login is refused — these four are the current bypasses |
+| admission reject | an inactive account gets no session from **any** path, and the response shape is identical across paths (anti-enumeration) |
+| admission narrow | a forced-reset login yields a `{security}`-scoped session: the discharge endpoint works, everything else 403s |
+| forced-reset discharge | login → elevate → change → **new** session is full-scope. The deadlock pin |
+| refresh re-derivation | narrowed stays narrowed while the obligation stands, widens once discharged, and a device-origin session never widens past its ceiling |
+| true revocation | after revoke, the **access token** stops working — not merely the refresh |
+| device list + revoke | approve → appears in the list → revoke → access token dead. Three legs, all failing today |
+| the two IP columns | approve from one address, use the credential from another, and assert the list shows both distinctly — the mismatch is the signal, so a pin that only checks one column misses the point |
+| scope enforcement | `scope-gates.md` § Test plan owns these; they belong to the same suite |
+
+### Where Hurl is the wrong layer
+
+AGENTS.md: "the test goes in the lowest layer that would have failed …
+the lower a test lives, the faster it runs and the more precisely it
+names the invariant." So do **not** push these up into Hurl, where they
+would be slower and vaguer:
+
+- the scope-string parser, delimiters and the reject-unknown rule;
+- `require_all` conjunction and the per-axis reduction;
+- the `ScopeSet` mask invariant (`rw` implies `ro`);
+- `admit()`'s per-condition arms, including the exemptions;
+- the subsumption lattice and the DB constraint under it.
+
+Each of those is a pure function. A Hurl test can only observe their
+*consequence*, so it would pass for the wrong reason the moment the
+plumbing changed.
+
+### Operational notes for whoever writes them
+
+- `tests/api/run.sh` takes selectors; the suite runs against the test
+  Postgres on **5433**, which is shared — so a pin that leaks fixtures
+  breaks a sibling, and every file needs its teardown.
+- Login sets a cookie, so a session captured in one request persists;
+  assert the credential being tested rather than inheriting one.
+- Do not start the suite casually. It is the shared-database one.
 ## Non-goals
 
 - Does not change `authz.require` or any grant check — that is the third
