@@ -96,6 +96,10 @@ restricted account could be granted more than its credential allows.
 
 ### Which phases run, and when
 
+Canonical home once § Required: documentation is discharged is
+`docs/architecture/auth-model.md` § Phases; the copy below is the
+draft it is cut from.
+
 | entry point | 1 creds | 2 scope | 3 admit | 4 mint | notes |
 |---|---|---|---|---|---|
 | initial login — password, OPAQUE, magic-link, OIDC | ✓ | ✓ | ✓ | ✓ | the reference path |
@@ -512,6 +516,20 @@ it is where someone debugging a login already is:
 | new § Admission | the four stages, reject-vs-narrow, and the tightening invariant |
 | § Audit events | the five new `auth.*` events |
 | § Related documents | `scope-gates.md` for the per-call axes, and the architecture page it produces |
+
+**The when-each-runs table is the acceptance artefact**, and its
+canonical home is that page — not this one. Copy it verbatim, including
+the marks that carry meaning rather than decoration: app password
+`4 mint ✗` (no session exists), device approval `3 admit ✓ of the
+approver`, anonymous share `3 skipped`. A paraphrase loses exactly
+those three, which are the non-obvious rows.
+
+Once it lives in `auth-model.md`, **this plan's copy is the stale one**.
+Plans record why a change was made and get archived; architecture docs
+record how the system works and are maintained. So the plan should then
+point at the page rather than restate it — the same single-source rule
+`scope-gates.md` § Required: documentation applies to the scope
+vocabulary.
 
 **Cross-link from `docs/architecture/authorization-axes.md`** (the page
 `scope-gates.md` § Required: documentation creates): scope is *minted*
