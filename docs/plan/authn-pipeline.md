@@ -73,6 +73,75 @@ Which path applies which:
    factored out "so the OPAQUE login handler" could reuse it — reusing
    the minting and leaving the gate behind. A ninth path will repeat it.
 
+## The phases, and when each runs
+
+```
+  credential                                            session
+      │                                                    ▲
+      ▼                                                    │
+ ┌─────────┐    ┌─────────┐    ┌───────────┐    ┌──────────┴──┐
+ │ 1 creds │ ─► │ 2 scope │ ─► │ 3 admit   │ ─► │ 4 mint      │
+ │ verify  │    │ ceiling │    │ reject or │    │ session +   │
+ │         │    │         │    │ narrow    │    │ tokens      │
+ └─────────┘    └─────────┘    └───────────┘    └─────────────┘
+   who?          how wide        may they?        issue it
+                 at most?        how wide now?
+
+ reject at 3  ⇒  no session row is ever created
+```
+
+The ordering is load-bearing: **scope before admission**, so admission
+can only narrow what the credential kind already bounded. Reversed, a
+restricted account could be granted more than its credential allows.
+
+### Which phases run, and when
+
+| entry point | 1 creds | 2 scope | 3 admit | 4 mint | notes |
+|---|---|---|---|---|---|
+| initial login — password, OPAQUE, magic-link, OIDC | ✓ | ✓ | ✓ | ✓ | the reference path |
+| device approval | ✓ (approver's session) | ✓ | ✓ **of the approver** | ✓ | the minted token belongs to the approver; admission must run against them, which today it does not |
+| **refresh** | ✓ (refresh token) | ✓ **re-derived** | ✓ **re-run** | ✓ (rotation) | the re-verification ceremony — see below |
+| **app password** | ✓ | ✓ | ✓ | ✗ | **no session exists**; every request is the login phase |
+| anonymous share link | ✓ (link token) | ✓ from the share grant | **skipped** | ✓ | no `auth.users` row, so nothing to admit |
+| obligation discharge | — | — | — | — | not a phase: an ordinary authenticated call inside the narrowed scope, followed by a refresh to re-admit |
+| **per call** | — | — | — | — | no phases: one cached read + scope test + grant |
+
+### Refresh re-derives from `sessions.origin`, not from "it is a refresh"
+
+The ceiling must come from the **credential that minted the session**,
+not from the refresh itself. Otherwise refreshing a device-flow session
+would widen it to the interactive ceiling — a privilege escalation
+reached by waiting an hour.
+
+The column already exists: `auth.sessions.origin`
+(`20261013000000_sessions_origin.sql`), typed
+`SessionOrigin { Password, Opaque, MagicLink, Oidc, Device, Unknown }`.
+So refresh computes
+
+```
+scope = ceiling_of(session.origin) ∩ admit(current account state)
+```
+
+and never reads the presented token's scope. `Unknown` — rows predating
+that migration — must resolve to the **narrowest** ceiling, not the
+widest; it is the `_ =>` arm, and § Dependency applies.
+
+### App passwords have no login phase because every request is one
+
+`verify_basic_auth` returns `(user_id, username, email, role)` and
+creates no session row; there is no `AppPassword` variant in
+`SessionOrigin` and there should not be one. Stages 1-3 therefore run on
+**every request**, which has two consequences:
+
+- it is the credential that most needs `admit()`, because the gap found
+  in § The audit is executed thousands of times rather than once;
+- admission must sit behind the existing 30 s result cache, caching the
+  `AdmittedCaller` rather than only the flags. Re-running Argon2id and
+  three account checks per request is not an option — the cache is why
+  this path is affordable at all, and its documented bound ("expiry and
+  deactivation are bounded by the TTL") becomes the bound on admission
+  too.
+
 ## Login phase
 
 ### Stage 1 — credentials
@@ -329,11 +398,148 @@ transitions need stable `event` / `reason` keys, inside the existing
   method is added without either revoking sessions or appearing in the
   per-call read. Table-driven, so the rule above has an executable form.
 
+## Adding a new restriction — the recipe
+
+The point of one admission function is that a new account condition is a
+*decision*, not a search for somewhere to put a check. Answer six
+questions; each has a default, and the defaults are the safe ones.
+
+### 1. Login phase, or per call?
+
+```
+Can the condition change mid-session?
+├─ no  → LOGIN PHASE. Evaluate in `admit()`. Costs nothing per request.
+└─ yes → Must the change take effect before the session ends?
+         ├─ no  → LOGIN PHASE, and it binds at the next refresh
+         │        ceremony (≤ access-token lifetime, ~1 h).
+         └─ yes → PER CALL, and it goes in `UserFlags` —
+                  never in a new middleware layer.
+```
+
+Only two conditions have ever needed "yes/yes": deactivation and role
+change. Both already ride the one cached read. **A new per-call
+condition that cannot be answered from `UserFlags` is a design smell**:
+it means a second per-request lookup, which is what § Goal exists to
+avoid.
+
+**Never add a middleware layer for an account condition.** That is how
+`force_password_change` ended up at five mount points and
+`auth_middleware` at nine — and how the tenth mount silently escapes.
+
+### 2. Reject, or narrow?
+
+| choose | when | example |
+|---|---|---|
+| **reject** | no useful session exists under the condition | inactive, deleted |
+| **narrow** | the user can discharge it themselves | forced reset, terms acceptance |
+
+Narrowing is preferred wherever discharge is possible: the session is
+real, the discharge endpoint is an ordinary authenticated route, and the
+client gets something it can act within. Rejecting forces you to invent
+a half-authenticated principal — see § Mandatory actions.
+
+If you narrow, you **must** name the scope that discharges it. A
+narrowing that excludes its own discharge path bricks the account.
+
+### 3. Does setting it tighten? Then prove the invariant.
+
+> Every state change that tightens must either revoke sessions or be in
+> the per-call read.
+
+Pick one and say which in the commit. Setting a restriction without
+doing either leaves every existing session at its old width — the
+restriction applies to future logins only, which is almost never what
+was meant.
+
+### 4. Who is exempt, and say it out loud.
+
+Exemptions are legitimate — admins skip email verification so an
+operator cannot lock themselves out of their own instance — but they
+belong as an **arm inside `admit()`**, where a reviewer sees them beside
+the rule. The current bug is the opposite shape: the rule lives in one
+path and the "exemption" is its absence from seven others.
+
+### 5. Which credentials does it bind?
+
+Interactive sessions can show a dialog; an app password and a device
+token cannot. So a restriction that narrows scope will, for a DAV
+client, simply break sync with no explanation. Decide per restriction
+whether it binds every credential or only interactive ones, and expect
+"accept new terms" and "confirm your data" to answer differently.
+
+### 6. The tests are fixed, not negotiable
+
+- **The path matrix.** Assert the new condition on *every* authn entry
+  point — classic, OPAQUE, magic-link, OIDC, app password, device,
+  NC login v2, refresh. This is the pin that the audit above would have
+  caught: eight paths, one enforcement.
+- **Refresh re-evaluates it.** Otherwise the condition is bypassable by
+  waiting an hour.
+- **Discharge works, and does not deadlock** — if you narrowed.
+
+### Worked example: "accept the new terms"
+
+1. *Login phase* — a published terms version cannot change inside a
+   request. Binds at the next refresh.
+2. *Narrow*, not reject — the user can accept. Discharge scope:
+   whichever scope holds `POST /api/terms/accept`.
+3. *Tightens on publish* — so publishing either calls
+   `revoke_all_user_sessions` (immediate, heavy-handed) or accepts ≈1 h
+   latency. A legal requirement probably picks the former; record which.
+4. *Exempt*: nobody. Note that this differs from email verification, and
+   why.
+5. *Binds*: all credentials if legally required — which means accepting
+   that rclone stops syncing until a human clicks, so say so in the
+   release note rather than discovering it in an issue.
+6. *Tests*: the eight-path matrix, refresh re-evaluation, accept →
+   refresh → full scope.
+
+## Required: documentation
+
+As with `scope-gates.md`, this does not land as code alone. The audit
+matrix in particular is the thing a future reader needs: "why did my
+OPAQUE login succeed for a disabled account" is answerable from it and
+from nothing else.
+
+**Extend `docs/architecture/auth-model.md`** rather than adding a file.
+It already owns § Identity model, § Login paths and § Audit events, so
+it is where someone debugging a login already is:
+
+| section | change |
+|---|---|
+| § Login paths | gains the per-path admission matrix — which path applies which account check. Replaces the current prose, which describes how each path authenticates but not what it then verifies |
+| new § Phases | **the diagram and the when-each-runs table** from § The phases, and the `sessions.origin` rule for refresh. A reader must see credentials → session at a glance and be able to answer "what does refresh re-check" without reading code. Not redundant with the matrix above: the matrix says what each path checks, this says *when* it is checked |
+| new § Admission | the four stages, reject-vs-narrow, and the tightening invariant |
+| § Audit events | the five new `auth.*` events |
+| § Related documents | `scope-gates.md` for the per-call axes, and the architecture page it produces |
+
+**Cross-link from `docs/architecture/authorization-axes.md`** (the page
+`scope-gates.md` § Required: documentation creates): scope is *minted*
+in the login phase and *enforced* per call, and a reader arriving at
+either page should find the other in one hop.
+
+**`src/AGENTS.md` § New auth surfaces** already says "Any new endpoint
+that mints or consumes credentials/tokens must consult one of the
+`is_*_login_allowed()` helpers, not the raw allowlist." That is the
+right place for the companion rule:
+
+> A credential path must obtain an `AdmittedCaller` from `admit()` and
+> pass it to the session mint. Taking a bare `user_id` is the bypass
+> that let OPAQUE skip every account check; the signature is what
+> prevents it, so do not add a `user_id`-taking variant back.
+
+Acceptance, two things: the per-path matrix is in the architecture doc
+and current, and a reader can trace **credentials → session** plus
+answer "which phases does a refresh run" from that page alone. If
+either only exists in this plan file, the next contributor adding a
+login path has no way to know what their path must check or when.
+
 ## Non-goals
 
 - Does not change `authz.require` or any grant check — that is the third
   axis, owned by ReBAC.
-- Does not implement obligations. The section exists so the first
+- Does not implement obligations, nor the terms-acceptance example in
+  § Adding a new restriction. Those sections exist so the first
   restricted state is built in a shape the second can reuse.
 - Does not add an operator knob. The admission rules are policy, not
   configuration.
