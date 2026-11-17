@@ -39,6 +39,32 @@ it('runs a navigation command', async () => {
 	await waitFor(() => expect(goto).toHaveBeenCalledWith('/files'));
 });
 
+// #924: the debounced search had no latest-wins guard — with `rac`
+// answering after `race-xyz`, the input read `race-xyz` while the list
+// showed `rac`'s hits. Resolve the two searches out of order and require
+// only the newest query's folder to be listed.
+it('a slow earlier search cannot replace the results of a newer one', async () => {
+	const pending: Array<(v: unknown) => void> = [];
+	m(searchResources).mockImplementation(() => new Promise((r) => pending.push(r)));
+	const hit = (name: string) => ({
+		items: [{ resource_type: 'folder', resource: { id: name, name } }],
+		query_time_ms: 0
+	});
+	render(CommandPalette);
+	await openPalette();
+	const input = await screen.findByTestId('command-palette-input');
+	await fireEvent.input(input, { target: { value: 'rac' } });
+	await waitFor(() => expect(pending).toHaveLength(1));
+	await fireEvent.input(input, { target: { value: 'race-xyz' } });
+	await waitFor(() => expect(pending).toHaveLength(2));
+	pending[1](hit('newest-hit'));
+	await screen.findByText('newest-hit');
+	pending[0](hit('stale-hit'));
+	await new Promise((r) => setTimeout(r, 0));
+	expect(screen.queryByText('stale-hit')).toBeNull();
+	expect(screen.getByText('newest-hit')).toBeTruthy();
+});
+
 it('searches files as the query is typed', async () => {
 	render(CommandPalette);
 	await openPalette();

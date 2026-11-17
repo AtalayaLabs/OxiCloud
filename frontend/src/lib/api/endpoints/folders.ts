@@ -153,6 +153,8 @@ export async function fetchFolderPage(
 		cursor?: string;
 		limit?: number;
 		forceRefresh?: boolean;
+		/** Abort the request when navigating to a different folder. */
+		signal?: AbortSignal;
 	} = {}
 ): Promise<FolderPage> {
 	const params = new URLSearchParams({
@@ -164,7 +166,8 @@ export async function fetchFolderPage(
 	if (opts.forceRefresh) params.set('force_refresh', 'true');
 	const res = await apiFetch(`/api/folders/${folderId}/resources?${params.toString()}`, {
 		credentials: 'same-origin',
-		cache: 'no-store'
+		cache: 'no-store',
+		signal: opts.signal
 	});
 	if (res.status === 403) throw Object.assign(new Error('Forbidden'), { status: 403 });
 	if (!res.ok) throw await apiErrorFromResponse(res);

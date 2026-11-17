@@ -185,6 +185,8 @@ interface GrantsPageOpts<Axis extends string = string> {
 	limit?: number;
 	reverse?: boolean;
 	resourceTypes?: ItemType[];
+	/** Abort the request when the sort order changes. */
+	signal?: AbortSignal;
 }
 
 export type SharedWithMePageOpts = GrantsPageOpts<IncomingGrantOrderBy>;
@@ -209,7 +211,7 @@ export async function fetchSharedWithMe(
 ): Promise<ResourcePage<IncomingGrantItem>> {
 	const res = await apiFetch(
 		`/api/grants/incoming/resources?${params({ resourceTypes: ['file', 'folder'], ...opts })}`,
-		{ credentials: 'same-origin' }
+		{ credentials: 'same-origin', signal: opts.signal }
 	);
 	if (!res.ok) throw await apiErrorFromResponse(res);
 	return (await res.json()) as ResourcePage<IncomingGrantItem>;
@@ -219,7 +221,8 @@ export async function fetchMyShares(
 	opts: MySharesPageOpts = {}
 ): Promise<ResourcePage<OutgoingGrantItem>> {
 	const res = await apiFetch(`/api/grants/outgoing/resources?${params(opts)}`, {
-		credentials: 'same-origin'
+		credentials: 'same-origin',
+		signal: opts.signal
 	});
 	if (!res.ok) throw await apiErrorFromResponse(res);
 	return (await res.json()) as ResourcePage<OutgoingGrantItem>;
