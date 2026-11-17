@@ -468,3 +468,37 @@ drive={{bob_home}}
 ```
 
 HTTP 404
+
+
+# NC clients mark a link as a received share: `nc:mount-type` shared and `S`/`M` in
+# `oc:permissions` on the link row itself; a folder inside it stays plain.
+PROPFIND {{base_url}}/remote.php/dav/files/lk_bob/Reports2026/
+Depth: 0
+[BasicAuth]
+lk_bob: {{nc_password}}
+
+HTTP 207
+[Asserts]
+xpath "string(//*[local-name()='mount-type'])" == "shared"
+xpath "string(//*[local-name()='permissions'])" contains "S"
+xpath "string(//*[local-name()='permissions'])" contains "M"
+
+PROPFIND {{base_url}}/remote.php/dav/files/lk_bob/
+Depth: 1
+[BasicAuth]
+lk_bob: {{nc_password}}
+
+HTTP 207
+[Asserts]
+xpath "string(//*[local-name()='response'][*[local-name()='href' and text()='/remote.php/dav/files/lk_bob/Reports2026/']]//*[local-name()='mount-type'])" == "shared"
+xpath "string(//*[local-name()='response'][*[local-name()='href' and text()='/remote.php/dav/files/lk_bob/']]//*[local-name()='mount-type'])" == ""
+xpath "string(//*[local-name()='response'][*[local-name()='href' and text()='/remote.php/dav/files/lk_bob/']]//*[local-name()='permissions'])" not contains "S"
+
+PROPFIND {{base_url}}/remote.php/dav/files/lk_bob/Reports2026/
+Depth: 1
+[BasicAuth]
+lk_bob: {{nc_password}}
+
+HTTP 207
+[Asserts]
+xpath "string(//*[local-name()='response'][*[local-name()='href' and text()='/remote.php/dav/files/lk_bob/Reports2026/Sub/']]//*[local-name()='mount-type'])" == ""

@@ -371,6 +371,7 @@ async fn handle_propfind(
         ResolvedResource::Folder(mut folder) => {
             if let Some(name) = link_name {
                 folder.name = name;
+                folder.mount = Some(link_mount_of(&folder));
             }
             // Mount ids (`ext:` children, mount-root UUID) authorise against
             // the mount-root folder — parsing them as UUIDs 404'd every path
@@ -495,6 +496,20 @@ async fn nc_resolve_or_fallback(
         return Some(ResolvedResource::File(file));
     }
     None
+}
+
+/// The link marker for a link row answered by its target `folder`.
+fn link_mount_of(folder: &FolderDto) -> crate::application::dtos::folder_dto::MountDto {
+    crate::application::dtos::folder_dto::MountDto {
+        kind: if folder.parent_id.is_none() {
+            "shared_drive"
+        } else {
+            "shared_folder"
+        }
+        .to_owned(),
+        target_id: Uuid::parse_str(&folder.id).ok(),
+        target_drive_id: Some(folder.drive_id),
+    }
 }
 
 /// `subpath` under the chroot, walked through a link when it crosses one.
@@ -1922,9 +1937,10 @@ fn build_nc_streaming_propfind(
                 }
             },
         );
-        let (mut first_folders, folder_etags) =
+        let (first_folders, folder_etags) =
             first.map_err(|e| std::io::Error::other(e.to_string()))?;
         folder_etags.apply(&mut folder);
+        let mut first_folders = first_folders.map(|page| (page, folder_etags));
 
         let mut buf = Vec::with_capacity(4096);
         {
@@ -1933,7 +1949,7 @@ fn build_nc_streaming_propfind(
             let href = nc_collection_href(&username, &subpath);
             let fid = nc_id_of(&folder_id_map, &folder.id);
             let oc_id = fid.map(|id| format_oc_id(id, file_id_svc));
-            write_folder_response(&mut xml, &folder, &href, (fid, oc_id.as_deref()), &username, &folder_favs, quota, &folder_dead)
+            write_folder_response(&mut xml, &folder, &href, (fid, oc_id.as_deref()), &username, &folder_favs, quota, &folder_dead, folder.mount.as_ref().is_some_and(|m| m.target_id.is_some()))
                 .map_err(std::io::Error::other)?;
         }
         yield Bytes::from(buf);
@@ -2057,8 +2073,8 @@ fn build_nc_streaming_propfind(
             // COUNT(*) OVER() + LIMIT/OFFSET walk (benches/FOLDER-KEYSET.md).
             let mut after_folder: Option<String> = None;
             loop {
-                let batch = match first_folders.take() {
-                    Some(batch) => batch,
+                let (batch, batch_etags) = match first_folders.take() {
+                    Some(first) => first,
                     None => {
                         folder_service
                             .list_folders_batch_with_link_etags(
@@ -2070,7 +2086,6 @@ fn build_nc_streaming_propfind(
                             )
                             .await
                             .map_err(|e| std::io::Error::other(e.to_string()))?
-                            .0
                     }
                 };
                 if batch.is_empty() {
@@ -2118,7 +2133,7 @@ fn build_nc_streaming_propfind(
                             }
                             None => None,
                         };
-                        write_folder_response(&mut xml, sf, &href, (fid, oc_id), &username, &favs, quota, dead)
+                        write_folder_response(&mut xml, sf, &href, (fid, oc_id), &username, &favs, quota, dead, batch_etags.is_link(&sf.id))
                             .map_err(std::io::Error::other)?;
                     }
                 }
@@ -2167,6 +2182,7 @@ pub fn write_folder_response<W: std::io::Write>(
     favorite_ids: &HashSet<String>,
     quota: Option<(i64, Option<i64>)>,
     dead_props: &[(QualifiedName, Option<String>)],
+    is_link: bool,
 ) -> Result<(), String> {
     let (file_id, oc_id) = oc_ids;
     xml.write_event(Event::Start(BytesStart::new("d:response")))
@@ -2216,7 +2232,9 @@ pub fn write_folder_response<W: std::io::Write>(
     if let Some(oid) = oc_id {
         write_text_element(xml, "oc:id", oid)?;
     }
-    write_text_element(xml, "oc:permissions", "RGDNVCK")?;
+    // `S`hared and `M`ounted mark a link as a received share, as Nextcloud does.
+    let permissions = if is_link { "SRMGDNVCK" } else { "RGDNVCK" };
+    write_text_element(xml, "oc:permissions", permissions)?;
     // Numeric share-permissions bitmask: Read=1 + Update=2 + Create=4 + Delete=8 + Share=16 = 31
     write_text_element(xml, "ocs:share-permissions", "31")?;
     write_text_element(xml, "oc:size", "0")?;
@@ -2243,7 +2261,7 @@ pub fn write_folder_response<W: std::io::Write>(
     write_text_element(xml, "oc:owner-display-name", owner)?;
     write_text_element(xml, "nc:has-preview", "false")?;
     write_text_element(xml, "nc:is-encrypted", "0")?;
-    write_text_element(xml, "nc:mount-type", "")?;
+    write_text_element(xml, "nc:mount-type", if is_link { "shared" } else { "" })?;
 
     let is_fav = if favorite_ids.contains(&folder.id) {
         "1"

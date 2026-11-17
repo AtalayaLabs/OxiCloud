@@ -56,6 +56,14 @@ impl From<MountRow> for ResolvedMount {
 pub struct LinkEtags(HashMap<Uuid, LinkTargetMtime>);
 
 impl LinkEtags {
+    /// Whether `folder_id` is a link row the caller can read.
+    pub fn is_link(&self, folder_id: &str) -> bool {
+        Uuid::parse_str(folder_id)
+            .ok()
+            .and_then(|id| self.0.get(&id))
+            .is_some_and(|l| l.target_id.is_some())
+    }
+
     pub fn apply(&self, folder: &mut FolderDto) {
         let Some(l) = Uuid::parse_str(&folder.id)
             .ok()

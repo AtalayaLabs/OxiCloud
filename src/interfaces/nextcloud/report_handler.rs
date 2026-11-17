@@ -258,6 +258,7 @@ async fn handle_filter_files(
                 // meaningful here (see `AppState::resolve_webdav_quota`).
                 None,
                 dead,
+                folder.mount.as_ref().is_some_and(|m| m.target_id.is_some()),
             )
             .map_err(|e| AppError::internal_error(format!("XML write error: {}", e)))?;
         }
@@ -430,6 +431,7 @@ async fn handle_search(
                 // meaningful here (see `AppState::resolve_webdav_quota`).
                 None,
                 dead,
+                folder.mount.as_ref().is_some_and(|m| m.target_id.is_some()),
             )
             .map_err(|e| AppError::internal_error(format!("XML write error: {}", e)))?;
         }
