@@ -310,6 +310,57 @@ So revoking leaves the access token working for its remaining lifetime,
 and the admin panel's `DELETE /api/admin/sessions/{id}` is "stop this
 session renewing", not "stop this session".
 
+
+### Revocation must target the record that grants access
+
+The admin panel's `DELETE /api/admin/sessions/{id}` is the revoke-one
+case above, and `Gate::Elevated` already covers it — it is a non-safe
+method under `/api/admin/*` (`scope-gates.md` § Declaring session
+elevation). Two neighbours are less well served.
+
+**Device revocation is broken at the data source.** Four facts that only
+bite in combination:
+
+1. `approve()` creates a `Session::new(…)` — the durable record of a
+   connected device, with `origin = Device`.
+2. `poll()` deletes the `auth.device_codes` row once the tokens are
+   collected, deliberately: "prevents plain-text tokens from lingering
+   in the database".
+3. `list_user_devices` reads `FROM auth.device_codes WHERE user_id = $1`,
+   unfiltered by status.
+4. `revoke_device` deletes a `device_codes` row.
+
+So `GET /api/auth/device/devices` lists **uncollected authorizations**,
+not connected devices, and `DELETE /api/auth/device/devices/{id}` can
+only cancel a pending one. A device that has actually connected is
+absent from its own list and unrevokable from it. Its only record is the
+session row — admin-only, and today that stops renewal rather than
+access.
+
+The fix follows the data: device listing and revocation belong on
+`auth.sessions WHERE origin = 'device'`, which also supplies the
+last-seen and IP columns the admin panel already renders. The
+`device_codes` table then means what its name says — in-flight
+authorizations — and pending-cancel stays a separate, smaller action.
+
+**Self-service session revocation does not exist.** `/api/admin/sessions`
+is `Gate::Admin`, so "log out my other devices" is unavailable to a user
+who is not an administrator. `scope-gates.md` reserves it under the
+`security` scope; it needs the same durable-record treatment, not a
+second mechanism.
+
+**The general rule**, since this is the third instance of the same
+mistake:
+
+> A "revoke" action must target the record that actually grants access,
+> and must use the revocation mechanism above rather than deleting a
+> row and hoping.
+
+App-password revocation is the one that gets this right today, and is
+worth copying: it deletes the `app_passwords` row *and* explicitly
+invalidates the verification cache, "so a revoked password never
+survives in cache regardless of TTL".
+
 ### True revocation, at no per-call cost
 
 `UserFlags` is already read per call and already cached, with eager
@@ -398,6 +449,11 @@ transitions need stable `event` / `reason` keys, inside the existing
 - Hurl: true revocation — after `DELETE /api/admin/sessions/{id}` the
   **access token** stops working, not merely the refresh. This fails
   today, which is the point.
+- Hurl: device revocation reaches the device. Approve a device, confirm
+  it appears in `GET /api/auth/device/devices`, revoke it, and confirm
+  its **access token** stops working. All three legs fail today — the
+  device is absent from its own list once connected, so the test cannot
+  even reach the revoke step.
 - Unit: the tightening inventory — a test that fails if a state-changing
   method is added without either revoking sessions or appearing in the
   per-call read. Table-driven, so the rule above has an executable form.
