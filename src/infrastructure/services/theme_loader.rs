@@ -22,8 +22,8 @@ fn invalid(message: impl Into<String>) -> DomainError {
     DomainError::validation_error(message)
 }
 
-fn read_theme(directory: &File, id: &str) -> Result<PreparedTheme, DomainError> {
-    let file = open_child(directory, "index.css", false)
+fn read_theme(directory: &fsx::Dir, id: &str) -> Result<PreparedTheme, DomainError> {
+    let file = fsx::open_child_file(directory, "index.css")
         .map_err(|e| invalid(format!("{id}/index.css: {e}")))?;
     if !file
         .metadata()
@@ -56,7 +56,7 @@ impl ThemeCatalogueLoader for ThemeLoader {
             });
         }
         let mut diagnostics = Vec::new();
-        let root = match open_directory(&self.config.path) {
+        let root = match fsx::open_root(&self.config.path) {
             Ok(root) => root,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound && !self.config.path_explicit => {
                 return Ok(ThemeCatalogue {
@@ -71,19 +71,11 @@ impl ThemeCatalogueLoader for ThemeLoader {
                 ));
             }
         };
-        // Enumerate the anchored descriptor, not a path that could be replaced.
-        let mut entries = rustix::fs::Dir::read_from(&root)
-            .map_err(|e| DomainError::internal_error("Theme", e.to_string()))?;
         let mut names = BTreeSet::new();
         let mut count = 0;
-        for entry in &mut entries {
-            let entry = entry.map_err(|e| DomainError::internal_error("Theme", e.to_string()))?;
-            let raw = entry.file_name().to_bytes();
-            if raw == b"." || raw == b".." {
-                continue;
-            }
-            if entry.file_type() == rustix::fs::FileType::RegularFile {
-                continue;
+        fsx::for_each_entry(&root, |raw, is_regular_file| {
+            if raw == b"." || raw == b".." || is_regular_file {
+                return Ok(());
             }
             count += 1;
             if count > MAX_THEMES {
@@ -93,14 +85,15 @@ impl ThemeCatalogueLoader for ThemeLoader {
                 .map(str::to_owned)
                 .unwrap_or_default();
             names.insert(name);
-        }
+            Ok(())
+        })?;
         for name in names {
             let result = (|| {
                 ThemeId::parse(&name)?;
                 if name == "default" {
                     return Err(invalid("Reserved theme identifier"));
                 }
-                let dir = open_child(&root, &name, true)
+                let dir = fsx::open_child_dir(&root, &name)
                     .map_err(|e| invalid(format!("Theme directory unavailable: {e}")))?;
                 read_theme(&dir, &name)
             })();
@@ -123,20 +116,10 @@ impl ThemeCatalogueLoader for ThemeLoader {
         })
     }
 }
-fn open_child(parent: &File, name: &str, directory: bool) -> std::io::Result<File> {
-    use rustix::fs::{Mode, OFlags, openat};
-    let mut flags = OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK;
-    if directory {
-        flags |= OFlags::DIRECTORY;
-    }
-    Ok(File::from(openat(parent, name, flags, Mode::empty())?))
-}
-fn open_directory(path: &Path) -> std::io::Result<File> {
-    use rustix::fs::{Mode, OFlags, open};
-
-    // `..` stays forbidden. An operator-configured root should NAME a
-    // place, not navigate to one, and a value containing `..` is harder
-    // to audit than the path it resolves to.
+/// `..` stays forbidden. An operator-configured root should NAME a place,
+/// not navigate to one, and a value containing `..` is harder to audit
+/// than the path it resolves to.
+fn refuse_parent_traversal(path: &Path) -> std::io::Result<()> {
     if path
         .components()
         .any(|part| matches!(part, Component::ParentDir))
@@ -145,33 +128,185 @@ fn open_directory(path: &Path) -> std::io::Result<File> {
             "Parent traversal in theme root is forbidden",
         ));
     }
+    Ok(())
+}
 
-    // Open the configured root directly instead of walking its
-    // components with `NOFOLLOW`.
-    //
-    // The walk refused a symlink in ANY ancestor, which is not portable:
-    // on macOS `/var` is itself a symlink (`/var -> private/var`) and
-    // `TMPDIR` lives under it, so every path below `/var` — including
-    // every `tempfile::tempdir()` — failed with ENOTDIR before the root
-    // was ever reached. Linux `/tmp` is a real directory, so CI never saw
-    // it. Nor is there a portable primitive for the strict policy:
-    // `openat2(RESOLVE_NO_SYMLINKS)` is Linux 5.6+, `O_RESOLVE_BENEATH`
-    // is FreeBSD, macOS has neither. `O_DIRECTORY` is POSIX-2008 and
-    // works everywhere we run, still yielding ENOTDIR when the path is
-    // genuinely not a directory.
-    //
-    // The guard that matters is untouched. The root is operator
-    // configuration — deliberately chosen, trusted input — whereas the
-    // theme directories and `index.css` files UNDER it are whatever
-    // happened to land in a shared folder, and those still go through
-    // `open_child` with `NOFOLLOW`. A symlinked theme or a symlinked CSS
-    // file is refused exactly as before; a symlinked ancestor of the
-    // operator's own root no longer takes the whole feature down.
-    Ok(File::from(open(
-        path,
-        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::DIRECTORY,
-        Mode::empty(),
-    )?))
+/// Platform file access for the loader. Both halves give the same three
+/// guarantees: entries are enumerated from the opened root, a theme
+/// directory or `index.css` that is a symlink is refused, and nothing but
+/// a directory / regular file is ever read.
+#[cfg(unix)]
+mod fsx {
+    use super::{DomainError, File, Path, refuse_parent_traversal};
+    use rustix::fs::{FileType, Mode, OFlags, open, openat};
+
+    /// An open directory descriptor: every child is opened relative to it.
+    pub struct Dir(File);
+
+    fn open_child(parent: &Dir, name: &str, directory: bool) -> std::io::Result<File> {
+        let mut flags = OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK;
+        if directory {
+            flags |= OFlags::DIRECTORY;
+        }
+        Ok(File::from(openat(&parent.0, name, flags, Mode::empty())?))
+    }
+    pub fn open_child_file(parent: &Dir, name: &str) -> std::io::Result<File> {
+        open_child(parent, name, false)
+    }
+    pub fn open_child_dir(parent: &Dir, name: &str) -> std::io::Result<Dir> {
+        open_child(parent, name, true).map(Dir)
+    }
+
+    /// Enumerate the anchored descriptor, not a path that could be replaced.
+    pub fn for_each_entry(
+        dir: &Dir,
+        mut visit: impl FnMut(&[u8], bool) -> Result<(), DomainError>,
+    ) -> Result<(), DomainError> {
+        let mut entries = rustix::fs::Dir::read_from(&dir.0)
+            .map_err(|e| DomainError::internal_error("Theme", e.to_string()))?;
+        for entry in &mut entries {
+            let entry = entry.map_err(|e| DomainError::internal_error("Theme", e.to_string()))?;
+            visit(
+                entry.file_name().to_bytes(),
+                entry.file_type() == FileType::RegularFile,
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn open_root(path: &Path) -> std::io::Result<Dir> {
+        refuse_parent_traversal(path)?;
+        // Open the configured root directly instead of walking its
+        // components with `NOFOLLOW`.
+        //
+        // The walk refused a symlink in ANY ancestor, which is not portable:
+        // on macOS `/var` is itself a symlink (`/var -> private/var`) and
+        // `TMPDIR` lives under it, so every path below `/var` — including
+        // every `tempfile::tempdir()` — failed with ENOTDIR before the root
+        // was ever reached. Linux `/tmp` is a real directory, so CI never saw
+        // it. Nor is there a portable primitive for the strict policy:
+        // `openat2(RESOLVE_NO_SYMLINKS)` is Linux 5.6+, `O_RESOLVE_BENEATH`
+        // is FreeBSD, macOS has neither. `O_DIRECTORY` is POSIX-2008 and
+        // works everywhere we run, still yielding ENOTDIR when the path is
+        // genuinely not a directory.
+        //
+        // The guard that matters is untouched. The root is operator
+        // configuration — deliberately chosen, trusted input — whereas the
+        // theme directories and `index.css` files UNDER it are whatever
+        // happened to land in a shared folder, and those still go through
+        // `open_child` with `NOFOLLOW`. A symlinked theme or a symlinked CSS
+        // file is refused exactly as before; a symlinked ancestor of the
+        // operator's own root no longer takes the whole feature down.
+        Ok(Dir(File::from(open(
+            path,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::DIRECTORY,
+            Mode::empty(),
+        )?)))
+    }
+}
+
+/// Windows has no `openat`, so the anchor is a handle instead of a
+/// descriptor: every directory is held open WITHOUT `FILE_SHARE_DELETE`,
+/// which makes NTFS refuse to rename, replace or delete it (or any
+/// ancestor) while the loader reads below it. Children are opened by path
+/// under that pinned directory.
+///
+/// Symlinks AND junctions are reparse points. `FILE_FLAG_OPEN_REPARSE_POINT`
+/// opens the link itself instead of its target, and the attribute is then
+/// checked on the opened handle — no check-then-open gap. FIFOs have no
+/// filesystem namespace on Windows (named pipes live under `\\.\pipe\`),
+/// so there is no `NONBLOCK` equivalent to carry over.
+#[cfg(windows)]
+mod fsx {
+    use super::{DomainError, File, Path, refuse_parent_traversal};
+    use std::{
+        fs::OpenOptions,
+        io,
+        os::windows::fs::{MetadataExt, OpenOptionsExt},
+        path::PathBuf,
+    };
+
+    // winnt.h / winbase.h values; std exposes the hooks but not the names.
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000; // required to open a directory
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+
+    /// A pinned directory: the handle keeps the path from being swapped.
+    pub struct Dir {
+        _handle: File,
+        path: PathBuf,
+    }
+
+    fn open(path: &Path, directory: bool, follow: bool) -> io::Result<File> {
+        let mut flags = if directory {
+            FILE_FLAG_BACKUP_SEMANTICS
+        } else {
+            0
+        };
+        if !follow {
+            flags |= FILE_FLAG_OPEN_REPARSE_POINT;
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(flags)
+            .open(path)?;
+        let meta = file.metadata()?;
+        if !follow && meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(io::Error::other("symbolic link or junction refused"));
+        }
+        if directory && !meta.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotADirectory,
+                "not a directory",
+            ));
+        }
+        Ok(file)
+    }
+    pub fn open_child_file(parent: &Dir, name: &str) -> io::Result<File> {
+        open(&parent.path.join(name), false, false)
+    }
+    pub fn open_child_dir(parent: &Dir, name: &str) -> io::Result<Dir> {
+        let path = parent.path.join(name);
+        Ok(Dir {
+            _handle: open(&path, true, false)?,
+            path,
+        })
+    }
+
+    pub fn for_each_entry(
+        dir: &Dir,
+        mut visit: impl FnMut(&[u8], bool) -> Result<(), DomainError>,
+    ) -> Result<(), DomainError> {
+        let entries = std::fs::read_dir(&dir.path)
+            .map_err(|e| DomainError::internal_error("Theme", e.to_string()))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| DomainError::internal_error("Theme", e.to_string()))?;
+            let kind = entry
+                .file_type()
+                .map_err(|e| DomainError::internal_error("Theme", e.to_string()))?;
+            // A non-UTF-8 name becomes "" and fails `ThemeId::parse`,
+            // exactly like the POSIX path's `unwrap_or_default`.
+            let name = entry.file_name();
+            visit(
+                name.to_str().map(str::as_bytes).unwrap_or_default(),
+                kind.is_file() && !kind.is_symlink(),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Like the POSIX root: operator configuration, so a symlinked root
+    /// (or ancestor) is followed; only the entries below it are untrusted.
+    pub fn open_root(path: &Path) -> io::Result<Dir> {
+        refuse_parent_traversal(path)?;
+        Ok(Dir {
+            _handle: open(path, true, true)?,
+            path: path.to_owned(),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -202,6 +337,10 @@ mod tests {
         assert_eq!(catalogue.themes["sober"].css.as_ref(), css.as_bytes());
         assert_eq!(catalogue.themes.len(), 2);
     }
+    // POSIX-only: `std::os::unix::fs::symlink` and `rustix::fs::mknodat`
+    // do not exist on Windows. The Windows counterpart is
+    // `a_junctioned_theme_directory_is_excluded` below.
+    #[cfg(unix)]
     #[test]
     fn symlinks_special_files_and_oversized_files_are_excluded() {
         use std::os::unix::fs::symlink;
@@ -233,6 +372,7 @@ mod tests {
         std::fs::write(css, vec![b' '; MAX_FILE as usize + 1]).unwrap();
         assert_eq!(loader(dir.path()).load().unwrap().themes.len(), 1);
     }
+    #[cfg(unix)]
     #[test]
     fn catalogue_limits_utf8_and_root_symlinks_fail_loudly() {
         use std::os::unix::fs::symlink;
@@ -248,6 +388,49 @@ mod tests {
         symlink(dir.path(), &root_link).unwrap();
         assert!(loader(&root_link).load().is_err());
     }
+    #[test]
+    fn oversized_and_non_utf8_css_are_excluded_and_the_catalogue_is_capped() {
+        // Portable half of the two POSIX-only tests above, so the size,
+        // encoding and count limits are also pinned on Windows.
+        let (dir, _) = fixture(":root {}");
+        let css = dir.path().join("sober/index.css");
+        std::fs::write(&css, vec![b' '; MAX_FILE as usize + 1]).unwrap();
+        assert_eq!(loader(dir.path()).load().unwrap().themes.len(), 1);
+        std::fs::write(&css, [0xff]).unwrap();
+        assert_eq!(loader(dir.path()).load().unwrap().diagnostics.len(), 1);
+        let many = tempfile::tempdir().unwrap();
+        for i in 0..65 {
+            std::fs::create_dir(many.path().join(format!("theme-{i}"))).unwrap();
+        }
+        assert!(loader(many.path()).load().is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_junctioned_theme_directory_is_excluded() {
+        // Regression pin for the Windows loader: a theme directory that is
+        // a reparse point must be refused like a symlink on POSIX
+        // (`NOFOLLOW`), or a junction dropped into a shared themes folder
+        // would make the loader serve CSS from anywhere on the host.
+        // Junctions need no privilege (unlike `symlink_dir`), so this runs
+        // on every Windows machine.
+        let (dir, _) = fixture(":root {}");
+        let target = dir.path().join("sober");
+        let link = dir.path().join("linked");
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&target)
+            .output()
+            .unwrap()
+            .status;
+        assert!(status.success(), "mklink /J failed");
+        let catalogue = loader(dir.path()).load().unwrap();
+        assert!(catalogue.themes.contains_key("sober"));
+        assert!(!catalogue.themes.contains_key("linked"));
+        assert_eq!(catalogue.diagnostics[0].theme_id.as_deref(), Some("linked"));
+    }
+
     #[test]
     fn only_index_css_is_loaded_without_parsing_or_reading_siblings() {
         // Regression pin: the loader must serve index.css unchanged, even when
