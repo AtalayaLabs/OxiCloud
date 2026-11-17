@@ -121,6 +121,46 @@ for (const theme of themes) {
         await applyTheme(page, theme, mode);
       });
 
+      test('menus remain reachable over the scrolling content', async ({ page }) => {
+        await library(page);
+        await expectThemeLoaded(page, theme);
+
+        // Issue #894: exercise real hit targets above and inside the scroller,
+        // including after scrolling. This checks interactions, but does not
+        // reproduce the reported platform-specific painting artifacts.
+        for (const width of [1440, 390]) {
+          await page.setViewportSize({ width, height: 844 });
+          for (const index of [0, 119]) {
+            await page.locator('.content-area').evaluate((el, end) => {
+              el.scrollTop = end ? el.scrollHeight : 0;
+            }, index > 0);
+            const item = page.getByTestId(fileName(index));
+            await expect(item).toBeVisible();
+            await item.click({ button: 'right' });
+            const menu = page.getByRole('menu');
+            await expect(menu).toBeVisible();
+            const actions = menu.getByRole('menuitem');
+            for (const action of await actions.all()) {
+              if (await action.isEnabled()) await action.click({ trial: true });
+            }
+            await expectReadable(actions.first());
+            await page.keyboard.press('ArrowDown');
+            await expect(actions.nth(1)).toBeFocused();
+            await page.keyboard.press('Escape');
+            await expect(menu).toBeHidden();
+
+            if (width > 768) {
+              await page.getByTestId('appshell-user-menu-btn').click();
+              const profile = page.getByTestId('appshell-user-menu-profile-item');
+              await expectReadable(profile);
+              await profile.click({ trial: true });
+              await page.getByTestId('appshell-user-menu-btn').click();
+              await expect(profile).toBeHidden();
+            }
+          }
+        }
+      });
+
       test('library keeps selection, controls and virtual scrolling usable', async ({ page }) => {
         await page.setViewportSize({ width: 1440, height: 1000 });
         await library(page);
