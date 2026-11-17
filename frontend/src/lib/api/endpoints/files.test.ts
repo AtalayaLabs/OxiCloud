@@ -8,7 +8,7 @@ vi.mock('$lib/api/client', async () => {
 		...actual,
 		apiFetch: vi.fn(),
 		apiJson: vi.fn(),
-		withBase: (p: string) => p
+		withBase: vi.fn((p: string) => p)
 	};
 });
 vi.mock('$lib/api/csrf', () => ({ getCsrfHeaders: () => ({}) }));
@@ -25,13 +25,14 @@ vi.mock('$lib/auth/dpop-proof', async () => {
 		buildDpopProof: vi.fn(async () => dpopState.proof)
 	};
 });
-import { apiFetch } from '$lib/api/client';
+import { apiFetch, withBase } from '$lib/api/client';
 import {
 	uploadFile,
 	renameFile,
 	moveFile,
 	deleteFile,
 	fileDownloadUrl,
+	batchDownloadUrl,
 	fileInlineUrl,
 	uploadFileWithProgress
 } from './files';
@@ -41,6 +42,14 @@ describe('files endpoint URL builders', () => {
 		expect(fileDownloadUrl('id1')).toContain('id1');
 		expect(fileDownloadUrl('id1')).toContain('/api/files/');
 		expect(fileInlineUrl('id1')).toContain('id1');
+	});
+
+	it('builds a base-path-aware batch download URL', () => {
+		vi.mocked(withBase).mockImplementation((path) => `/oxi${path}`);
+		expect(batchDownloadUrl(['file-1', 'file-2'], ['folder-1'])).toBe(
+			'/oxi/api/batch/download?file_ids=file-1%2Cfile-2&folder_ids=folder-1'
+		);
+		vi.mocked(withBase).mockImplementation((path) => path);
 	});
 });
 describe('files endpoint mutations', () => {

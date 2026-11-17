@@ -5,10 +5,17 @@ vi.mock('$lib/api/client', () => ({
 	apiJson: vi.fn(),
 	withBase: (p: string) => p
 }));
+vi.mock('$lib/utils/appPath', () => ({
+	withBase: vi.fn((path: string) => path),
+	appPath: (path: string) => path,
+	resolveDynamic: (path: string) => path
+}));
 
 import { apiFetch, apiJson } from '$lib/api/client';
+import { withBase } from '$lib/utils/appPath';
 import type { FolderItem } from '$lib/api/types';
 import { fetchFolderListing, getFolder, type FolderListing } from './folders';
+import { folderZipUrl } from './folders';
 import {
 	cacheFolder,
 	getCachedFolder,
@@ -36,6 +43,7 @@ const emptyListing = (): FolderListing => ({
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	vi.mocked(withBase).mockImplementation((path) => path);
 	invalidateFolderCache();
 });
 
@@ -82,6 +90,16 @@ describe('fetchFolderListing (cursor-paginated /resources)', () => {
 	it('throws a 403 carrying its status', async () => {
 		vi.mocked(apiFetch).mockResolvedValue(fakeRes({ status: 403 }));
 		await expect(fetchFolderListing('f1')).rejects.toMatchObject({ status: 403 });
+	});
+});
+
+describe('folderZipUrl', () => {
+	it('includes a deployment base path and encodes an optional share id', () => {
+		vi.mocked(withBase).mockImplementation((path) => `/oxi${path}`);
+		expect(folderZipUrl('folder-1', 'share:1')).toBe(
+			'/oxi/api/folders/folder-1/download?format=zip&share=share%3A1'
+		);
+		vi.mocked(withBase).mockImplementation((path) => path);
 	});
 });
 

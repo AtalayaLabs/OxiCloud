@@ -212,6 +212,14 @@ export function fileDownloadUrl(fileId: string, shareId?: string | null): string
 	return shareId ? `${base}?share=${encodeURIComponent(shareId)}` : base;
 }
 
+/** GET twin of the batch-download endpoint, used by links and drag-out. */
+export function batchDownloadUrl(fileIds: string[], folderIds: string[]): string {
+	const params = new URLSearchParams();
+	if (fileIds.length) params.set('file_ids', fileIds.join(','));
+	if (folderIds.length) params.set('folder_ids', folderIds.join(','));
+	return withBase(`/api/batch/download?${params.toString()}`);
+}
+
 export function fileInlineUrl(fileId: string, shareId?: string | null): string {
 	const base = withBase(`/api/files/${fileId}?inline=true`);
 	return shareId ? `${base}&share=${encodeURIComponent(shareId)}` : base;

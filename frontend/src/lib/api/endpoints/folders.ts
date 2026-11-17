@@ -1,6 +1,7 @@
 /** Folder endpoints — ported from filesModel.js + fileOperations.js. */
 import { apiErrorFromResponse, apiFetch, apiJson } from '$lib/api/client';
 import { getCsrfHeaders } from '$lib/api/csrf';
+import { withBase } from '$lib/utils/appPath';
 import { rememberFolderName } from '$lib/utils/folderCache';
 import type { FileItem, FolderAncestorsResponse, FolderItem, ItemType } from '$lib/api/types';
 import type { FolderOrderBy } from '$lib/api/generated/openapi/types.gen';
@@ -266,6 +267,6 @@ export async function deleteFolder(folderId: string): Promise<void> {
 }
 
 export function folderZipUrl(folderId: string, shareId?: string | null): string {
-	const base = `/api/folders/${folderId}/download?format=zip`;
+	const base = withBase(`/api/folders/${folderId}/download?format=zip`);
 	return shareId ? `${base}&share=${encodeURIComponent(shareId)}` : base;
 }
