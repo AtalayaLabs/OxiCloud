@@ -46,7 +46,7 @@ fn display_name_for(code: &str) -> Option<&'static str> {
         "ja" => Some("日本語"),
         "ko" => Some("한국어"),
         "zh" => Some("中文"),
-        "zh-tw" => Some("繁體中文"),
+        "zh-TW" => Some("繁體中文"),
         "ar" => Some("العربية"),
         "fa" => Some("فارسی"),
         "hi" => Some("हिन्दी"),
