@@ -187,7 +187,12 @@ impl ContactGroupRepository for ContactGroupPgRepository {
     }
 
     async fn count_contacts_in_group(&self, group_id: &Uuid) -> ContactRepositoryResult<i64> {
-        sqlx::query_scalar("SELECT COUNT(*) FROM carddav.group_memberships WHERE group_id = $1")
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM carddav.group_memberships gm \
+             JOIN carddav.contact_groups g ON g.id = gm.group_id \
+             JOIN carddav.contacts c ON c.id = gm.contact_id AND c.address_book_id = g.address_book_id \
+             WHERE gm.group_id = $1",
+        )
             .bind(group_id)
             .fetch_one(self.pool.as_ref())
             .await
@@ -212,6 +217,10 @@ impl ContactGroupRepository for ContactGroupPgRepository {
                 c.birthday, c.anniversary, c.etag, c.created_at, c.updated_at
             FROM carddav.contacts c
             INNER JOIN carddav.group_memberships gm ON c.id = gm.contact_id
+            -- #911: hide memberships that cross address books (rows
+            -- written before the service gate existed).
+            INNER JOIN carddav.contact_groups g
+                ON g.id = gm.group_id AND g.address_book_id = c.address_book_id
             WHERE gm.group_id = $1
             ORDER BY c.full_name, c.first_name, c.last_name
             "#,
@@ -283,7 +292,7 @@ impl ContactGroupRepository for ContactGroupPgRepository {
         contact_id: &Uuid,
     ) -> ContactRepositoryResult<Vec<ContactGroup>> {
         let rows = sqlx::query(
-            "SELECT g.id, g.address_book_id, g.name, g.created_at, g.updated_at FROM carddav.contact_groups g INNER JOIN carddav.group_memberships gm ON g.id = gm.group_id WHERE gm.contact_id = $1 ORDER BY g.name"
+            "SELECT g.id, g.address_book_id, g.name, g.created_at, g.updated_at FROM carddav.contact_groups g INNER JOIN carddav.group_memberships gm ON g.id = gm.group_id INNER JOIN carddav.contacts c ON c.id = gm.contact_id AND c.address_book_id = g.address_book_id WHERE gm.contact_id = $1 ORDER BY g.name"
         )
         .bind(contact_id)
         .fetch_all(self.pool.as_ref())
