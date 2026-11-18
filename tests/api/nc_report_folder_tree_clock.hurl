@@ -122,12 +122,17 @@ HTTP 201
 # ─────────────────────────────────────────────────────────────
 # Step 3 — PROPFIND the folder. This path has always been right;
 #          capture its answer as the reference.
+#
+# `delay: 1100ms`: the PUT's ancestor bump is flushed async (500 ms); landing
+# between PROPFIND and REPORT it made them differ by 1 s (flaky on #903).
 # ─────────────────────────────────────────────────────────────
 PROPFIND {{base_url}}/remote.php/dav/files/{{username}}/treeclock-probe
 Depth: 0
 Content-Type: application/xml; charset=utf-8
 [BasicAuth]
 {{nc_username}}: {{nc_password}}
+[Options]
+delay: 1100ms
 ```
 <?xml version="1.0" encoding="utf-8"?>
 <D:propfind xmlns:D="DAV:">
