@@ -21,6 +21,32 @@ pub(crate) fn decode_and_validate_path(encoded_path: &str) -> Result<String, &'s
         .map(|v| v.join("/"))
 }
 
+/// Refuse a same-drive MOVE/COPY whose source and destination overlap
+/// (#906): to itself → 403 (RFC 4918 §9.8.5), into its own subtree or onto
+/// its own ancestor → 409. Must run before any `Overwrite: T` delete.
+pub(crate) fn move_copy_overlap_error(
+    src: &str,
+    dst: &str,
+) -> Option<crate::interfaces::errors::AppError> {
+    use crate::interfaces::errors::AppError;
+    let (src, dst) = (src.trim_matches('/'), dst.trim_matches('/'));
+    let inside = |inner: &str, outer: &str| {
+        outer.is_empty()
+            || inner
+                .strip_prefix(outer)
+                .is_some_and(|r| r.starts_with('/'))
+    };
+    if src == dst {
+        Some(AppError::forbidden(
+            "Source and destination are the same resource",
+        ))
+    } else if inside(dst, src) || inside(src, dst) {
+        Some(AppError::conflict("Source and destination overlap"))
+    } else {
+        None
+    }
+}
+
 /// Keep collection/member hrefs in the alias the client used. Discovery may
 /// lead clients through `/{username}/{collection_id}/`; dropping that prefix
 /// makes a successfully uploaded member disappear from a URL-based sync view.
@@ -56,6 +82,56 @@ fn collection_href_with_base(
             format!("{first}/{}", segments.next().unwrap_or(collection_id))
         };
     format!("{base}/{protocol}/{collection_path}/")
+}
+
+#[cfg(test)]
+mod move_copy_overlap_tests {
+    //! #906: `MOVE /f/sub → /f` with `Overwrite: T` wiped `/f` before failing.
+    use super::move_copy_overlap_error;
+    use axum::http::StatusCode;
+
+    fn status(src: &str, dst: &str) -> Option<StatusCode> {
+        move_copy_overlap_error(src, dst).map(|e| e.status_code)
+    }
+
+    #[test]
+    fn same_resource_is_forbidden_even_with_trailing_slash() {
+        assert_eq!(
+            status("Personal/f", "Personal/f"),
+            Some(StatusCode::FORBIDDEN)
+        );
+        assert_eq!(
+            status("Personal/f/", "Personal/f"),
+            Some(StatusCode::FORBIDDEN)
+        );
+    }
+
+    #[test]
+    fn destination_inside_source_conflicts() {
+        assert_eq!(
+            status("Personal/a", "Personal/a/b"),
+            Some(StatusCode::CONFLICT)
+        );
+    }
+
+    #[test]
+    fn destination_is_ancestor_of_source_conflicts() {
+        assert_eq!(
+            status("Personal/f/sub", "Personal/f"),
+            Some(StatusCode::CONFLICT)
+        );
+        assert_eq!(
+            status("Personal/f/sub", "Personal"),
+            Some(StatusCode::CONFLICT)
+        );
+    }
+
+    #[test]
+    fn sibling_with_common_prefix_is_allowed() {
+        assert_eq!(status("Personal/a", "Personal/ab"), None);
+        assert_eq!(status("Personal/ab", "Personal/a"), None);
+        assert_eq!(status("Personal/a.txt", "Personal/b.txt"), None);
+    }
 }
 
 #[cfg(test)]
