@@ -68,13 +68,11 @@ impl IngestedBlob {
 
 /// Hand back the blob reference taken by a successful ingest when the upload
 /// is rejected after the fact (quota exceeded, checksum mismatch, …).
+///
+/// Only BEFORE handing [`IngestedBlob::stored`] to the upload service, which
+/// owns the reference from then on (#916).
 pub async fn discard_ingested(dedup: &BlobHandler, blob: &IngestedBlob) {
-    if let Err(e) = dedup.remove_reference(&blob.hash).await {
-        tracing::warn!(
-            "Failed to release blob reference of rejected upload {}: {e}",
-            &blob.hash[..blob.hash.len().min(12)]
-        );
-    }
+    dedup.release_uncommitted(&blob.hash).await;
 }
 
 /// Shared mutable tee for computing a client-requested checksum during the
