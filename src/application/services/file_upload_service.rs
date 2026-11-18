@@ -483,6 +483,112 @@ impl FileUploadService {
     }
 }
 
+/// Where `update_file_streaming_with_perms` writes, once its checks pass.
+enum StreamingTarget {
+    Overwrite(crate::domain::entities::file::File),
+    Create {
+        parent_id: Option<String>,
+        filename: String,
+    },
+}
+
+impl FileUploadService {
+    /// Every check `update_file_streaming_with_perms` runs before it
+    /// hands the blob to the write port: existence probe, AuthZ, parent
+    /// lookup. Split out so a refusal here can release the reference.
+    async fn resolve_streaming_target(
+        &self,
+        path: &str,
+        drive_id: Uuid,
+        caller_id: Uuid,
+    ) -> Result<StreamingTarget, DomainError> {
+        let Some(authz) = &self.authorization else {
+            return Err(DomainError::internal_error(
+                "FileUpload",
+                "update_file_streaming_with_perms called without authorization engine wired",
+            ));
+        };
+
+        // Try to find the existing file first
+        if let Some(file_read) = &self.file_read
+            && let Some(file) = file_read.find_file_by_path(path, drive_id).await?
+        {
+            // Overwrite branch — caller must have `Update` on the
+            // target file. Denial routes through `require` → 404
+            // (anti-enum, matches read-side shape). Before the D7
+            // audit this whole branch ran unchecked; Viewer members
+            // of shared drives could PUT freely.
+            let file_uuid = Uuid::parse_str(file.id()).map_err(|_| {
+                DomainError::internal_error("FileUpload", "invalid file id from repository")
+            })?;
+            authz
+                .require(
+                    Subject::User(caller_id),
+                    Permission::Update,
+                    Resource::File(file_uuid),
+                )
+                .await?;
+            return Ok(StreamingTarget::Overwrite(file));
+        }
+
+        // File doesn't exist — create it via streaming upload
+        let path_normalized = path.trim_start_matches('/').trim_end_matches('/');
+        let (_, filename) = if let Some(idx) = path_normalized.rfind('/') {
+            (&path_normalized[..idx], &path_normalized[idx + 1..])
+        } else {
+            ("", path_normalized)
+        };
+
+        // get_parent_folder_id expects the full file path — it strips the
+        // last segment (filename) internally to find the parent folder.
+        // `drive_id` scopes the parent lookup to the same drive as the
+        // incoming write (post-D0 `storage.folders.path` repeats across
+        // drives).
+        let parent_id = if path_normalized.contains('/') {
+            if let Some(file_read) = &self.file_read {
+                file_read
+                    .get_parent_folder_id(path_normalized, drive_id)
+                    .await
+                    .ok()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Create branch — caller must have `Create` on the parent
+        // scope. Two cases:
+        //   * `parent_id.is_some()` → caller needs Create on the
+        //     parent Folder resource.
+        //   * `parent_id.is_none()` → the write lands at the drive
+        //     root (either the path was single-segment, or the
+        //     parent-folder lookup failed). We require Create on
+        //     the Drive itself — bundled with owner/editor/contributor
+        //     role_grants, refused for viewer/commenter.
+        let create_resource = match &parent_id {
+            Some(pid) => {
+                let uuid = Uuid::parse_str(pid).map_err(|_| {
+                    DomainError::internal_error("FileUpload", "invalid parent folder id")
+                })?;
+                Resource::Folder(uuid)
+            }
+            None => Resource::Drive(drive_id),
+        };
+        authz
+            .require(
+                Subject::User(caller_id),
+                Permission::Create,
+                create_resource,
+            )
+            .await?;
+        Ok(StreamingTarget::Create {
+            parent_id,
+            filename: filename.to_string(),
+        })
+    }
+}
+
 impl FileUploadUseCase for FileUploadService {
     /// Register a new file row pointing at an already-ingested blob.
     async fn upload_file_streaming(
@@ -618,144 +724,85 @@ impl FileUploadUseCase for FileUploadService {
         caller_id: Uuid,
         expected_hash: Option<&str>,
     ) -> Result<FileDto, DomainError> {
-        let Some(authz) = &self.authorization else {
-            return Err(DomainError::internal_error(
-                "FileUpload",
-                "update_file_streaming_with_perms called without authorization engine wired",
-            ));
-        };
-
-        // Try to find the existing file first
-        if let Some(file_read) = &self.file_read
-            && let Some(file) = file_read.find_file_by_path(path, drive_id).await?
+        // #916: owns the blob reference on every path; a refusal before the
+        // write releases it here, so callers must not release it again.
+        let target = match self
+            .resolve_streaming_target(path, drive_id, caller_id)
+            .await
         {
-            // Overwrite branch — caller must have `Update` on the
-            // target file. Denial routes through `require` → 404
-            // (anti-enum, matches read-side shape). Before the D7
-            // audit this whole branch ran unchecked; Viewer members
-            // of shared drives could PUT freely.
-            let file_uuid = Uuid::parse_str(file.id()).map_err(|_| {
-                DomainError::internal_error("FileUpload", "invalid file id from repository")
-            })?;
-            authz
-                .require(
-                    Subject::User(caller_id),
-                    Permission::Update,
-                    Resource::File(file_uuid),
-                )
-                .await?;
+            Ok(t) => t,
+            Err(e) => {
+                self.file_write.release_uncommitted_blob(&blob.hash).await;
+                return Err(e);
+            }
+        };
 
-            let old_size = file.size();
-            let file_id = file.id().to_string();
-            let (new_hash, updated_at) = self
-                .file_write
-                .update_file_content_with_blob(
-                    &file_id,
-                    &blob.hash,
+        let (parent_id, filename) = match target {
+            StreamingTarget::Overwrite(file) => {
+                let old_size = file.size();
+                let file_id = file.id().to_string();
+                let (new_hash, updated_at) = self
+                    .file_write
+                    .update_file_content_with_blob(
+                        &file_id,
+                        &blob.hash,
+                        blob.size,
+                        modified_at,
+                        caller_id,
+                        expected_hash,
+                    )
+                    .await?;
+                // Invalidate content cache — file content has changed.
+                if let Some(cc) = &self.content_cache {
+                    cc.invalidate(&file_id).await;
+                }
+                // Rebuild the fresh DTO from the entity already in hand plus the
+                // values the UPDATE just returned — a re-read would only fetch
+                // what we already know, at one extra round-trip per overwrite
+                // (WebDAV sync clients overwrite constantly).
+                let parts = file.into_parts();
+                let updated = crate::domain::entities::file::File::with_timestamps_and_blob_hash(
+                    parts.id,
+                    parts.name,
+                    parts.storage_path,
                     blob.size,
-                    modified_at,
-                    caller_id,
-                    expected_hash,
+                    parts.mime_type,
+                    parts.folder_id,
+                    parts.created_at,
+                    updated_at as u64,
+                    new_hash,
                 )
-                .await?;
-            // Invalidate content cache — file content has changed.
-            if let Some(cc) = &self.content_cache {
-                cc.invalidate(&file_id).await;
-            }
-            // Rebuild the fresh DTO from the entity already in hand plus the
-            // values the UPDATE just returned — a re-read would only fetch
-            // what we already know, at one extra round-trip per overwrite
-            // (WebDAV sync clients overwrite constantly).
-            let parts = file.into_parts();
-            let updated = crate::domain::entities::file::File::with_timestamps_and_blob_hash(
-                parts.id,
-                parts.name,
-                parts.storage_path,
-                blob.size,
-                parts.mime_type,
-                parts.folder_id,
-                parts.created_at,
-                updated_at as u64,
-                new_hash,
-            )
-            .map_err(|e| {
-                DomainError::internal_error("FileUpload", format!("rebuild entity: {e}"))
-            })?;
-            let dto = FileDto::from(updated);
-            self.apply_storage_usage_delta(
-                blob.size as i64 - old_size as i64,
-                &dto.folder_id,
-                caller_id,
-            );
-            if let Some(hook) = &self.file_lifecycle_hook {
-                hook.on_file_updated(
-                    &file_id,
-                    &dto.content_hash,
-                    content_type,
-                    WriteSource::External,
-                );
-            }
-            self.notify_file_accessed(caller_id, &file_id);
-            return Ok(dto);
-        }
-
-        // File doesn't exist — create it via streaming upload
-        let path_normalized = path.trim_start_matches('/').trim_end_matches('/');
-        let (_, filename) = if let Some(idx) = path_normalized.rfind('/') {
-            (&path_normalized[..idx], &path_normalized[idx + 1..])
-        } else {
-            ("", path_normalized)
-        };
-
-        // get_parent_folder_id expects the full file path — it strips the
-        // last segment (filename) internally to find the parent folder.
-        // `drive_id` scopes the parent lookup to the same drive as the
-        // incoming write (post-D0 `storage.folders.path` repeats across
-        // drives).
-        let parent_id = if path_normalized.contains('/') {
-            if let Some(file_read) = &self.file_read {
-                file_read
-                    .get_parent_folder_id(path_normalized, drive_id)
-                    .await
-                    .ok()
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        // Create branch — caller must have `Create` on the parent
-        // scope. Two cases:
-        //   * `parent_id.is_some()` → caller needs Create on the
-        //     parent Folder resource.
-        //   * `parent_id.is_none()` → the write lands at the drive
-        //     root (either the path was single-segment, or the
-        //     parent-folder lookup failed). We require Create on
-        //     the Drive itself — bundled with owner/editor/contributor
-        //     role_grants, refused for viewer/commenter.
-        let create_resource = match &parent_id {
-            Some(pid) => {
-                let uuid = Uuid::parse_str(pid).map_err(|_| {
-                    DomainError::internal_error("FileUpload", "invalid parent folder id")
+                .map_err(|e| {
+                    DomainError::internal_error("FileUpload", format!("rebuild entity: {e}"))
                 })?;
-                Resource::Folder(uuid)
+                let dto = FileDto::from(updated);
+                self.apply_storage_usage_delta(
+                    blob.size as i64 - old_size as i64,
+                    &dto.folder_id,
+                    caller_id,
+                );
+                if let Some(hook) = &self.file_lifecycle_hook {
+                    hook.on_file_updated(
+                        &file_id,
+                        &dto.content_hash,
+                        content_type,
+                        WriteSource::External,
+                    );
+                }
+                self.notify_file_accessed(caller_id, &file_id);
+                return Ok(dto);
             }
-            None => Resource::Drive(drive_id),
+            StreamingTarget::Create {
+                parent_id,
+                filename,
+            } => (parent_id, filename),
         };
-        authz
-            .require(
-                Subject::User(caller_id),
-                Permission::Create,
-                create_resource,
-            )
-            .await?;
 
         let is_new_blob = blob.is_new_blob;
         let created = self
             .file_write
             .save_file_with_blob(
-                filename.to_string(),
+                filename,
                 parent_id,
                 content_type.to_string(),
                 &blob.hash,

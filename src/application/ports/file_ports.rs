@@ -92,7 +92,8 @@ pub trait FileUploadUseCase: Send + Sync + 'static {
     /// Replace the content of the file at `path` with an already-ingested
     /// blob, or create the file when it doesn't exist (WebDAV/WOPI PUT).
     ///
-    /// Takes ownership of the blob's reference (released on failure).
+    /// Takes ownership of the blob's reference: released on every failure,
+    /// AuthZ refusals included. Callers must not release it again (#916).
     ///
     /// `drive_id` scopes both the existence probe (`find_file_by_path`)
     /// and the parent-folder resolution (`get_parent_folder_id`) — the
