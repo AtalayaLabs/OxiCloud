@@ -18,15 +18,15 @@
 # an EQUALITY between the two methods on the same folder, which is the
 # actual contract and cannot pass by coincidence once the two diverge.
 #
-# To make them diverge if the fix regresses, the folder is RENAMED after
-# its child is created. A rename bumps the folder row's `modified_at` and
+# To make them diverge if the fix regresses, an EMPTY folder is RENAMED
+# after crossing a whole-second boundary. A rename bumps `modified_at` and
 # must NOT bump the subtree rollup — so after it:
 #
-#   tree_modified_at  = when the child landed   ← both must report this
+#   tree_modified_at  = when the folder was created ← both must report this
 #   modified_at       = when the rename happened
 #
 # Before the fix, REPORT reported the rename instant and PROPFIND the
-# child instant, so the equality below failed. The ETag is derived from
+# creation instant, so the equality below failed. The ETag is derived from
 # the same rollup, so it is asserted equal too — it is the load-bearing
 # half, the one sync clients actually act on.
 #
@@ -63,23 +63,38 @@ ap_id: jsonpath "$.id"
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 1 — A folder with a child, so the subtree clock has a value
-#          distinct from anything the folder row will carry.
+# Step 1 — An empty folder, with no pending subtree-clock writes.
+# Regression: uploading a child enqueues an async tree-ETag bump. If it
+# drains between PROPFIND and REPORT, both renderers are correct but the
+# equality fails by a second (#853). A rename only bumps strict ancestors,
+# so this empty folder's own tree clock stays fixed throughout both reads.
 # ─────────────────────────────────────────────────────────────
 MKCOL {{base_url}}/remote.php/dav/files/{{username}}/treeclock-before
 [BasicAuth]
 {{nc_username}}: {{nc_password}}
 
-HTTP *
+HTTP 201
 
 
-PUT {{base_url}}/remote.php/dav/files/{{username}}/treeclock-before/child.txt
-Content-Type: text/plain
+PROPFIND {{base_url}}/remote.php/dav/files/{{username}}/treeclock-before
+Depth: 0
+Content-Type: application/xml; charset=utf-8
 [BasicAuth]
 {{nc_username}}: {{nc_password}}
-file,fixtures/hello.txt;
+```
+<?xml version="1.0" encoding="utf-8"?>
+<D:propfind xmlns:D="DAV:">
+  <D:prop><D:getlastmodified/><D:getetag/></D:prop>
+</D:propfind>
+```
 
-HTTP *
+HTTP 207
+[Captures]
+created_mtime: xpath "string((//*[local-name()='getlastmodified'])[1])"
+created_etag: xpath "string((//*[local-name()='getetag'])[1])"
+[Asserts]
+xpath "string((//*[local-name()='getlastmodified'])[1])" != ""
+xpath "string((//*[local-name()='getetag'])[1])" != ""
 
 
 # ─────────────────────────────────────────────────────────────
@@ -90,13 +105,18 @@ HTTP *
 # no content beneath it changed. A renderer that falls back to
 # `modified_at` now reports a different instant from one that uses the
 # rollup — which is exactly the divergence being guarded.
+# The delay separates fixture timestamps; it is NOT a wait for the async
+# flusher. Two seconds also cover PostgreSQL's epoch-to-bigint rounding,
+# so falling back to the rename clock cannot pass by same-second luck.
 # ─────────────────────────────────────────────────────────────
 MOVE {{base_url}}/remote.php/dav/files/{{username}}/treeclock-before
 Destination: {{base_url}}/remote.php/dav/files/{{username}}/treeclock-probe
 [BasicAuth]
 {{nc_username}}: {{nc_password}}
+[Options]
+delay: 2100ms
 
-HTTP *
+HTTP 201
 
 
 # ─────────────────────────────────────────────────────────────
@@ -126,6 +146,10 @@ propfind_etag: xpath "string((//*[local-name()='getetag'])[1])"
 # Guard the capture itself: an empty string would make the equality
 # below pass vacuously.
 xpath "string((//*[local-name()='getlastmodified'])[1])" != ""
+# Pin that renaming the fixture did not change its own subtree clock.
+# Without this, equal but incorrectly rename-derived renderers could pass.
+xpath "string((//*[local-name()='getlastmodified'])[1])" == "{{created_mtime}}"
+xpath "string((//*[local-name()='getetag'])[1])" == "{{created_etag}}"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -158,7 +182,7 @@ xpath "string(//*[local-name()='response'][contains(string(*[local-name()='href'
 
 # ⚠ THE INVARIANT. The subtree clock REPORT reports must equal the one
 # PROPFIND reports, for the same folder. Before the fix this read the
-# rename instant from step 2 while PROPFIND read the child instant from
+# rename instant from step 2 while PROPFIND read the creation instant from
 # step 1, so the two differed.
 xpath "string(//*[local-name()='response'][contains(string(*[local-name()='href']), 'treeclock-probe')]//*[local-name()='getlastmodified'])" == "{{propfind_mtime}}"
 

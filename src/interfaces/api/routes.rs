@@ -760,6 +760,44 @@ pub fn create_api_routes(app_state: &Arc<AppState>) -> Router<Arc<AppState>> {
         tracing::info!("Contacts REST API routes initialized");
     }
 
+    // JSON calendar API for the SPA. CalDAV stays the sync surface at
+    // /caldav; this is the same CalendarService behind JWT auth so the
+    // frontend does not have to parse XML and iCalendar in the browser.
+    //
+    // Gated on `features.enable_calendars` the same way `/api/contacts`
+    // is gated on `enable_contacts`: with the flag off the whole
+    // `/api/calendars` prefix stays unmounted, so a non-SPA client gets
+    // a 404 rather than a surface the SPA merely hides. The flag is NOT
+    // `enable_caldav` — that governs the sync protocol, this governs
+    // the browse UI, and either can be wanted without the other.
+    if app_state.core.config.features.enable_calendars
+        && let Some(calendar_service) = app_state.calendar_use_case.clone()
+    {
+        use crate::interfaces::api::handlers::calendar_handler::{self, CalendarApiState};
+
+        let calendar_router = Router::new()
+            .route(
+                "/",
+                get(calendar_handler::list_calendars).post(calendar_handler::create_calendar),
+            )
+            .route(
+                "/{calendar_id}",
+                put(calendar_handler::update_calendar).delete(calendar_handler::delete_calendar),
+            )
+            .route(
+                "/{calendar_id}/events",
+                get(calendar_handler::list_events).post(calendar_handler::create_event),
+            )
+            .route(
+                "/{calendar_id}/events/{event_id}",
+                put(calendar_handler::update_event).delete(calendar_handler::delete_event),
+            )
+            .with_state(CalendarApiState { calendar_service });
+
+        router = router.nest("/calendars", calendar_router);
+        tracing::info!("Calendar REST API routes initialized");
+    }
+
     // NOTE: WebDAV routes are mounted at top-level (/webdav) in main.rs
     // for client compatibility, NOT under /api.
 

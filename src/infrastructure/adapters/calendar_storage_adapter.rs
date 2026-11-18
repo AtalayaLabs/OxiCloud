@@ -393,6 +393,38 @@ impl CalendarStoragePort for CalendarStorageAdapter {
             events.push(CalendarEventDto::from(created));
         }
 
+        // A replacement master without an RRULE no longer has a series,
+        // so any surviving row carrying a RECURRENCE-ID for the same UID
+        // is an orphaned override. This runs AFTER the replacement loop:
+        // cleaning up before it would hide the pre-existing master from
+        // the `existing` lookup, make `any_inserted` true, and turn a
+        // plain CalDAV overwrite into a 201 instead of a 204.
+        if allow_replace {
+            let mut cleared_uids: Vec<String> = events
+                .iter()
+                .filter(|event| event.recurrence_id.is_none() && event.rrule.is_none())
+                .map(|event| event.ical_uid.clone())
+                .collect();
+            cleared_uids.sort_unstable();
+            cleared_uids.dedup();
+            for uid in cleared_uids {
+                let keep: Vec<Uuid> = events
+                    .iter()
+                    .filter(|event| event.ical_uid == uid)
+                    .filter_map(|event| Uuid::parse_str(&event.id).ok())
+                    .collect();
+                let rows = self
+                    .event_repository
+                    .find_events_by_ical_uids(&calendar_id, std::slice::from_ref(&uid))
+                    .await?;
+                for row in rows {
+                    if !keep.contains(row.id()) {
+                        self.event_repository.delete_event(row.id()).await?;
+                    }
+                }
+            }
+        }
+
         for todo in parsed_todos {
             let ical_uid = todo.ical_uid().to_string();
 

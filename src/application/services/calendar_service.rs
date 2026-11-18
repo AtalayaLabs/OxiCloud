@@ -379,7 +379,26 @@ impl CalendarUseCase for CalendarService {
         // deleting the calendar itself, which only its Owner may (#776).
         self.require_calendar_perm(&calendar_id, user_id, Permission::Update)
             .await?;
-        self.calendar_storage.delete_event(event_id).await
+
+        let event = self.calendar_storage.get_event(event_id).await?;
+        if event.recurrence_id.is_some() {
+            // Deleting one override removes only that occurrence; the
+            // master and the rest of the series stay.
+            return self.calendar_storage.delete_event(event_id).await;
+        }
+
+        // A master owns the whole recurrence set: every row carrying a
+        // RECURRENCE-ID for the same UID is an override of it. Deleting
+        // only the master used to leave those rows behind, and the SPA
+        // renders an override without its master as a standalone event.
+        let rows = self
+            .calendar_storage
+            .find_events_by_ical_uids(&event.calendar_id, std::slice::from_ref(&event.ical_uid))
+            .await?;
+        for row in rows {
+            self.calendar_storage.delete_event(&row.id).await?;
+        }
+        Ok(())
     }
 
     async fn get_event(
