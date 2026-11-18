@@ -578,6 +578,10 @@ test-api:
     set -x
     set -euo pipefail
     ./tests/api/run.sh
+    # Re-run the API harness with a nested mount for the public-share routing
+    # regression. This selector is intentionally isolated because it changes
+    # the server's base path and recreates its test database.
+    ./tests/api/run.sh public_share_base_path
     ./tests/webdav/run.sh
     ./tests/webdav-drive-root/run.sh
     ./tests/oidc/run.sh
