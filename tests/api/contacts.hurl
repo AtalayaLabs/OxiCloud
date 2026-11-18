@@ -896,3 +896,111 @@ HTTP *
 [Asserts]
 status >= 200
 status < 300
+
+
+# Step 33–38 — Regression pin for #911 (contact group IDOR).
+# `add_contact_to_group` gated only the group's book, never the
+# contact: Bob could pull any contact UUID into a group of his own
+# book (204) and read it in full via the group listing. A membership
+# may only link a contact of the group's own book; anything else is
+# 404 (anti-enum). Step 37 is the allowed pin, so a gate that refuses
+# every add does not pass.
+POST {{base_url}}/api/address-books
+Authorization: Bearer {{token}}
+Content-Type: application/json
+{ "name": "IDOR 911 Alice Book" }
+
+HTTP 201
+[Captures]
+idor_alice_book: jsonpath "$.id"
+
+
+POST {{base_url}}/api/address-books/{{idor_alice_book}}/contacts
+Authorization: Bearer {{token}}
+Content-Type: application/json
+{ "full_name": "Secret Person 911" }
+
+HTTP 201
+[Captures]
+idor_secret_contact: jsonpath "$.id"
+
+
+# Step 34 — Bob's own book, group and contact.
+POST {{base_url}}/api/address-books
+Authorization: Bearer {{bob_token}}
+Content-Type: application/json
+{ "name": "IDOR 911 Bob Book" }
+
+HTTP 201
+[Captures]
+idor_bob_book: jsonpath "$.id"
+
+
+POST {{base_url}}/api/address-books/{{idor_bob_book}}/groups
+Authorization: Bearer {{bob_token}}
+Content-Type: application/json
+{ "name": "G911" }
+
+HTTP 201
+[Captures]
+idor_bob_group: jsonpath "$.id"
+
+
+POST {{base_url}}/api/address-books/{{idor_bob_book}}/contacts
+Authorization: Bearer {{bob_token}}
+Content-Type: application/json
+{ "full_name": "Bob Own 911" }
+
+HTTP 201
+[Captures]
+idor_bob_contact: jsonpath "$.id"
+
+
+# Step 35 — Bob adds Alice's contact to his group: 404, not 204.
+POST {{base_url}}/api/address-books/{{idor_bob_book}}/groups/{{idor_bob_group}}/contacts
+Authorization: Bearer {{bob_token}}
+Content-Type: application/json
+{ "contact_id": "{{idor_secret_contact}}" }
+
+HTTP 404
+
+
+# Step 36 — The listing does not carry Alice's contact.
+GET {{base_url}}/api/address-books/{{idor_bob_book}}/groups/{{idor_bob_group}}/contacts
+Authorization: Bearer {{bob_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$" count == 0
+body not contains "Secret Person 911"
+
+
+# Step 37 — Allowed pin: Bob's own contact goes in and is listed.
+POST {{base_url}}/api/address-books/{{idor_bob_book}}/groups/{{idor_bob_group}}/contacts
+Authorization: Bearer {{bob_token}}
+Content-Type: application/json
+{ "contact_id": "{{idor_bob_contact}}" }
+
+HTTP 204
+
+
+GET {{base_url}}/api/address-books/{{idor_bob_book}}/groups/{{idor_bob_group}}/contacts
+Authorization: Bearer {{bob_token}}
+
+HTTP 200
+[Asserts]
+jsonpath "$" count == 1
+jsonpath "$[0].id" == "{{idor_bob_contact}}"
+
+
+# Step 38 — Cleanup.
+DELETE {{base_url}}/api/address-books/{{idor_bob_book}}
+Authorization: Bearer {{bob_token}}
+
+HTTP *
+
+
+DELETE {{base_url}}/api/address-books/{{idor_alice_book}}
+Authorization: Bearer {{token}}
+
+HTTP *

@@ -46,8 +46,6 @@ pub trait ContactRepository: Send + Sync + 'static {
         offset: i64,
     ) -> ContactRepositoryResult<Vec<Contact>>;
     async fn get_contacts_by_email(&self, email: &str) -> ContactRepositoryResult<Vec<Contact>>;
-    async fn get_contacts_by_group(&self, group_id: &Uuid)
-    -> ContactRepositoryResult<Vec<Contact>>;
     /// Trigram-indexed substring search over the contact's name, nickname,
     /// organisation, e-mail and phone fields, bounded by `LIMIT`/`OFFSET`
     /// so a REST search never materialises an entire address book.
