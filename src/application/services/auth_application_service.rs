@@ -176,6 +176,35 @@ fn should_auto_redirect_to_oidc(
         && !magic_link_login_allowed
 }
 
+/// Scope rule for directory-wide user search (OCS sharees): only when the
+/// operator exposes system users, and never for external callers.
+fn sharee_directory_visible(expose_system_users: bool, caller_is_external: bool) -> bool {
+    expose_system_users && !caller_is_external
+}
+
+#[cfg(test)]
+mod sharee_directory_visible_tests {
+    //! #914: sharee search leaked usernames despite the flag / to externals.
+    //! Hurl runs with the flag on, so the refusals are pinned here.
+    use super::sharee_directory_visible;
+
+    #[test]
+    fn hidden_when_system_users_not_exposed() {
+        assert!(!sharee_directory_visible(false, false));
+        assert!(!sharee_directory_visible(false, true));
+    }
+
+    #[test]
+    fn hidden_from_external_callers() {
+        assert!(!sharee_directory_visible(true, true));
+    }
+
+    #[test]
+    fn visible_to_internal_callers_when_exposed() {
+        assert!(sharee_directory_visible(true, false));
+    }
+}
+
 #[cfg(test)]
 mod cap_quota_tests {
     use super::cap_quota_to_available;
@@ -4633,11 +4662,30 @@ impl AuthApplicationService {
     /// up-to-512 KiB avatar `image`) per matched row, per keystroke
     /// (benches/ROUND12.md §1). NULL usernames (email-only signups) are
     /// filtered app-side, exactly like the wide flow's post-limit filter.
+    ///
+    /// Refused scope returns an empty list: NC clients expect a well-formed
+    /// OCS response, not an error (#914).
     pub async fn search_sharee_usernames(
         &self,
+        caller_id: Uuid,
         query: &str,
         limit: i64,
+        expose_system_users: bool,
     ) -> Result<Vec<String>, DomainError> {
+        let caller_is_external = self.get_user_flags(caller_id).await?.is_external;
+        if !sharee_directory_visible(expose_system_users, caller_is_external) {
+            if caller_is_external {
+                tracing::info!(
+                    target: "audit",
+                    event = "sharee_search.rejected",
+                    reason = "external_caller",
+                    caller_id = %caller_id,
+                    "👮🏻‍♂️ sharee search rejected: external user '{}' cannot enumerate the user directory",
+                    caller_id,
+                );
+            }
+            return Ok(Vec::new());
+        }
         let names = self
             .user_storage
             .search_usernames(query, limit, false)
