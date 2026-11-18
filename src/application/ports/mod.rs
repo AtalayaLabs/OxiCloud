@@ -19,6 +19,7 @@ pub mod file_lifecycle;
 pub mod file_ports;
 pub mod folder_ports;
 pub mod inbound;
+pub mod list_cleanup;
 pub mod message_bus_ports;
 pub mod music_ports;
 pub mod notification_sink_ports;

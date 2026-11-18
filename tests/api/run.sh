@@ -538,6 +538,9 @@ HURL_FILES=( \
   "$API_DIR/trash.hurl" \
   "$API_DIR/trash_resources.hurl" \
   "$API_DIR/recent.hurl" \
+  # Issue #913 regression — favorites/recent cleanup on grant loss.
+  # Creates its own fixture users and files, teardown included.
+  "$API_DIR/favorites_recent_grant_loss_cleanup.hurl" \
   # Order-independent: creates its own fixture users and folder and
   # deletes both at the end, which it has to — the access pins need two
   # principals, and a leaked user would show up in another file's

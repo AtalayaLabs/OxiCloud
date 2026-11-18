@@ -2218,6 +2218,63 @@ impl AppServiceFactory {
             recent_service = Some(recent_service_eager.clone());
             apps.recent_service = Some(recent_service_eager.clone());
 
+            // List cleanup drain — reads `auth.cleanup_queue`
+            // (populated by the `role_grants` DELETE trigger from
+            // migration 20261118000000) and, for each queued user,
+            // runs every registered `ListCleanup` port so any row
+            // whose target the user can no longer read gets dropped.
+            // Closes issue #913.
+            //
+            // New user-scoped lists plug in by implementing
+            // `application::ports::list_cleanup::ListCleanup` and
+            // pushing an Arc here — the drain job needs no changes.
+            //
+            // Unconditionally registered: the drain is O(queue size)
+            // which is O(revokes since last tick); an idle instance
+            // is a no-op tick.
+            let cleanup_lists: Vec<Arc<dyn crate::application::ports::list_cleanup::ListCleanup>> = vec![
+                favorites_service
+                    .clone()
+                    .expect("favorites_service built above"),
+                recent_service.clone().expect("recent_service built above"),
+            ];
+            let _ = Arc::new(
+                crate::infrastructure::services::list_cleanup_service::ListCleanupService::new(
+                    maintenance_pool.clone(),
+                    cleanup_lists.clone(),
+                    // Hard-coded 60s drain cadence for now — see
+                    // issue #913 discussion; promoted to a
+                    // FeaturesConfig knob only if operators ask.
+                    60,
+                ),
+            )
+            .register(&core.job_registry)
+            .await;
+
+            // List consistency detector — read-only scan over the
+            // two list tables, picks up drift the trigger cannot
+            // see (direct-SQL revokes, pre-trigger rows). Named
+            // `list_consistency` so `is_batch_child` in
+            // `consistency_batch_service.rs` picks it up
+            // automatically; `?repair=true` enqueues users into
+            // `auth.cleanup_queue`, so the actual DELETE still
+            // flows through the drain job above.
+            //
+            // No own interval — registered with `None` so the
+            // weekly `consistency_batch` is the single scheduler,
+            // matching the sibling detectors. The admin UI shows
+            // "via consistency_batch — every 7 d" only when the
+            // job itself has no interval (admin_handler sets
+            // `scheduled_via` on that condition).
+            let _ = Arc::new(
+                crate::infrastructure::services::list_consistency_service::ListConsistencyService::new(
+                    maintenance_pool.clone(),
+                    cleanup_lists,
+                ),
+            )
+            .register(&core.job_registry)
+            .await;
+
             // `enable_photos` is the parent gate: Places and People are
             // photo-library sub-features (map tab + People tab), so an
             // operator who disables the photo library at the top level

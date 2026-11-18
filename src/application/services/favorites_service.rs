@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::application::dtos::cursor::PageCursor;
 use crate::application::dtos::favorites_dto::{
     BatchFavoritesResult, BatchFavoritesStats, FavoriteItemDto, FavoriteResourceRow,
-    FavoritesCursor, FavoritesOrderBy,
+    FavoritesCursor, FavoritesOrderBy, ItemKind,
 };
 use crate::application::ports::authorization_ports::AuthorizationEngine;
 use crate::application::ports::favorites_ports::{FavoritesRepositoryPort, FavoritesUseCase};
@@ -250,6 +250,11 @@ impl FavoritesService {
     /// No authz needed — favorites are strictly user-scoped; the repository
     /// enforces `WHERE user_id = $1` so users can only see their own entries.
     ///
+    /// Stale rows (favorites of resources the caller has lost access to)
+    /// are swept by [`Self::cleanup_user_orphans`], which
+    /// `grant_handler::revoke_grant` calls on every revoke. The listing
+    /// itself trusts the stored set.
+    ///
     /// Returns `(rows, next_cursor_encoded)`.
     pub async fn list_resources_paged(
         &self,
@@ -321,5 +326,104 @@ fn build_favorites_cursor(
         sort_int,
         sort_ts,
         reverse,
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// `ListCleanup` port — issue #913.
+//
+// Called by `ListCleanupService` (the drain job) once per queued
+// user. Iterates the user's favorites and deletes those whose
+// target is no longer readable via SOME grant path; the ACL
+// engine's `check` is the single source of truth for that.
+//
+// Idempotent by construction — re-running against the current
+// ACL state produces the same result — so the drain can safely
+// retry on next tick after a transient infrastructure error.
+//
+// Cost: O(favorites_count × ACL check). The engine's drive-role
+// cache keeps the per-row check cheap for a typical user
+// carrying tens-to-hundreds of favorites.
+// ─────────────────────────────────────────────────────────────
+#[async_trait::async_trait]
+impl crate::application::ports::list_cleanup::ListCleanup for FavoritesService {
+    fn list_name(&self) -> &'static str {
+        "favorites"
+    }
+
+    async fn cleanup_user_orphans(&self, user_id: Uuid) -> Result<u64> {
+        let rows = self.repo.get_favorites(user_id).await?;
+        let mut removed = 0u64;
+        for fav in rows {
+            let resource = match resource_for(fav.item_type, &fav.item_id) {
+                Some(r) => r,
+                None => continue, // stray non-UUID row — ignore silently
+            };
+            if self
+                .authorization
+                .check(Subject::User(user_id), Permission::Read, resource)
+                .await?
+            {
+                continue;
+            }
+            let item_type = item_type_str(fav.item_type);
+            if self
+                .repo
+                .remove_favorite(user_id, &fav.item_id, item_type)
+                .await?
+            {
+                removed += 1;
+                info!(
+                    target: "audit",
+                    event = "favorite.orphan_removed",
+                    reason = "grant_revoked",
+                    caller_id = %user_id,
+                    resource_type = item_type,
+                    resource_id = %fav.item_id,
+                    "👮🏻‍♂️ favorite removed after access loss",
+                );
+            }
+        }
+        Ok(removed)
+    }
+
+    async fn count_user_orphans(&self, user_id: Uuid) -> Result<u64> {
+        let rows = self.repo.get_favorites(user_id).await?;
+        let mut count = 0u64;
+        for fav in rows {
+            let resource = match resource_for(fav.item_type, &fav.item_id) {
+                Some(r) => r,
+                None => continue,
+            };
+            if !self
+                .authorization
+                .check(Subject::User(user_id), Permission::Read, resource)
+                .await?
+            {
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+}
+
+/// `ItemKind` + stringified `item_id` → the `Resource` we re-check
+/// against the ACL engine. Private helper shared by the two sweep
+/// variants; a stray non-UUID row returns `None` so both paths
+/// skip it silently (the row is malformed, not an orphan).
+fn resource_for(kind: ItemKind, item_id: &str) -> Option<Resource> {
+    let id = Uuid::parse_str(item_id).ok()?;
+    Some(match kind {
+        ItemKind::File => Resource::File(id),
+        ItemKind::Folder => Resource::Folder(id),
+    })
+}
+
+/// DB/wire spelling for an `ItemKind` — matches the
+/// `item_type` CHECK on `auth.user_favorites`.
+fn item_type_str(kind: ItemKind) -> &'static str {
+    match kind {
+        ItemKind::File => "file",
+        ItemKind::Folder => "folder",
     }
 }

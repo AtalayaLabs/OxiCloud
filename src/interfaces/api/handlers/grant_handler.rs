@@ -592,6 +592,28 @@ pub async fn revoke_grant(
         "🗑️ grant revoked",
     );
 
+    // Favorites + Recent cleanup — issue #913.
+    //
+    // The `role_grants` DELETE above has already fired the
+    // `role_grants_enqueue_cleanup` trigger (migration
+    // 20261118000000_favorites_recent_cleanup_queue), which pushed
+    // the affected user(s) — expanded transitively for a group
+    // subject — into `auth.cleanup_queue`. The `ListCleanupService`
+    // drains that queue on its scheduled cadence and, for each
+    // queued user, runs every registered `ListCleanup` port
+    // (favorites + recent today), removing rows the user can no
+    // longer read.
+    //
+    // Nothing to do on this path: the trigger covers API revoke,
+    // post-grace purge (`GrantCleanupService`) and direct-SQL revokes
+    // in one place, and the drain job carries the per-user work off
+    // the hot path (no inline fan-out for large group grants).
+    //
+    // The bounded stale window (listing still shows the row until
+    // the next drain tick) is an accepted trade-off for the KISS
+    // single mechanism; see
+    // `migrations/20261118000000_favorites_recent_cleanup_queue.sql`.
+
     // Message-bus eviction cascade — the revoke committed, so any WS
     // session that had the affected user auto-subscribed to
     // `user:{u}:authz` gets an AuthzChanged event and drops any live
