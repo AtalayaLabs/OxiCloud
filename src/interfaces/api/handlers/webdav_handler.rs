@@ -1803,6 +1803,7 @@ async fn handle_put(
     // defence-in-depth existence-proof (see project_webdav_authz_second_audit).
     let mut file_existed = false;
     let mut current_etag: Option<String> = None;
+    let mut current_content_hash: Option<String> = None;
     if let Some(resolver) = &state.path_resolver {
         match resolver.resolve_path_in_drive(&path, drive_id).await {
             Ok(ResolvedResource::File(f)) => {
@@ -1818,6 +1819,7 @@ async fn handle_put(
                     .await?;
                 file_existed = true;
                 current_etag = Some(f.etag.clone());
+                current_content_hash = Some(f.content_hash.clone());
             }
             Ok(ResolvedResource::Folder(_)) => {
                 return Err(AppError::bad_request("Cannot PUT to a directory"));
@@ -1895,6 +1897,17 @@ async fn handle_put(
         return Err(AppError::precondition_failed("If-Match — ETag mismatch"));
     }
 
+    // Preserve the pre-ingest content snapshot for a specific If-Match
+    // validator. The repository checks it in the same transaction as the
+    // row swap, so concurrent writers cannot both pass the earlier ETag test.
+    // `If-Match: *` only asserts existence; unconditional PUT remains
+    // last-write-wins.
+    let expected_hash = if if_match.as_deref().is_some_and(|value| value != "*") {
+        current_content_hash.as_deref()
+    } else {
+        None
+    };
+
     // ── Streaming ingest ──────────────────────────────────────────────
     let filename = crate::common::mime_detect::filename_from_path(&path).to_string();
     let ingested = upload_ingest::ingest_body_to_cas(
@@ -1940,7 +1953,7 @@ async fn handle_put(
             &content_type,
             None,
             user.id,
-            None,
+            expected_hash,
         )
         .await;
 

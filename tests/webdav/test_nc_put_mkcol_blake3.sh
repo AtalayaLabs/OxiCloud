@@ -16,11 +16,10 @@
 #
 # Pinned behaviour notes (not bugs, but worth catching if any
 # change in either direction):
-#   F5 / F6 — NC PUT does NOT process If-None-Match / If-Match
-#             today. Both succeed with 201/204 instead of the
-#             strict-RFC-4918 412. If a later commit adds
-#             conditional support, the assertions here will
-#             trip and you can update them deliberately.
+#   F5 / F6 — NC PUT enforces sequential If-None-Match / If-Match
+#             preconditions; `test_if_match_atomic_put.sh` also pins
+#             the concurrent If-Match compare-and-swap on both DAV
+#             surfaces.
 #   F1     — NC PUT returns ETag + oc-etag + oc-fileid headers.
 #             The NC desktop client needs OC-FileId on the write
 #             response (F2, docs/plan/nc-sync-client-findings.md);
