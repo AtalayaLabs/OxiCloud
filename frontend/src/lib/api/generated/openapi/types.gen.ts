@@ -14615,13 +14615,21 @@ export type SetupAdminData = {
 
 export type SetupAdminErrors = {
     /**
-     * System already initialized
+     * Invalid username, email or password
+     */
+    400: ApiErrorBody;
+    /**
+     * System already initialized, or password login disabled (SSO-only installs bootstrap via OIDC)
      */
     403: ApiErrorBody;
     /**
-     * Auth service not configured
+     * Username or email already exists
      */
-    503: ApiErrorBody;
+    409: ApiErrorBody;
+    /**
+     * Auth service not configured or database error
+     */
+    500: ApiErrorBody;
 };
 
 export type SetupAdminError = SetupAdminErrors[keyof SetupAdminErrors];

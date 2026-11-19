@@ -145,6 +145,31 @@ it('enters setup mode on a fresh install', async () => {
 	await screen.findByTestId('login-setup-form');
 });
 
+// #112: SSO-only fresh install showed the setup form, which minted a
+// password admin that could never sign in.
+it('skips setup on a fresh SSO-only install', async () => {
+	serverConfig.initialized = false;
+	setAuthMatrix({
+		password: { enabled: false },
+		magic_link: { enabled: false },
+		oidc: {
+			enabled: true,
+			auto_redirect: false,
+			providers: [
+				{
+					issuer: 'https://idp.test/',
+					provider_name: 'Acme SSO',
+					authorize_endpoint: 'https://idp.test/auth'
+				}
+			]
+		}
+	});
+	render(LoginPage);
+	await screen.findByTestId('login-oidc-btn');
+	expect(screen.queryByTestId('login-setup-form')).toBeNull();
+	expect(screen.queryByTestId('login-to-setup-btn')).toBeNull();
+});
+
 it('sends a magic link when the password field is left empty', async () => {
 	// Unified form: the same identifier input drives both flows. Filling
 	// the identifier and leaving password empty makes `submitAsMagicLink`
@@ -392,8 +417,9 @@ it('does not auto-redirect after the IdP already returned an error (loop guard)'
 
 it('does not auto-redirect during first-run setup', async () => {
 	serverConfig.initialized = false;
+	// Password stays on: SSO-only installs skip setup entirely (#112).
 	setAuthMatrix({
-		password: { enabled: false },
+		password: { enabled: true },
 		oidc: {
 			enabled: true,
 			auto_redirect: false,

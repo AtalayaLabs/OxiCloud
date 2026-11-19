@@ -1356,6 +1356,27 @@ impl AuthApplicationService {
         ))))
     }
 
+    /// Setup mints a password account; without password login it could
+    /// never sign in. SSO-only installs bootstrap the admin via
+    /// OXICLOUD_OIDC_ADMIN_GROUPS or the CLI instead (#112).
+    pub fn ensure_setup_allowed(&self, username: &str) -> Result<(), DomainError> {
+        if self.is_password_login_allowed() {
+            return Ok(());
+        }
+        tracing::info!(
+            target: "audit",
+            event = "setup.rejected",
+            reason = "password_login_disabled",
+            attempted_username = %username,
+            "👮🏻‍♂️ setup rejected: password login disabled by policy",
+        );
+        Err(DomainError::new(
+            ErrorKind::AccessDenied,
+            "Auth",
+            "Password login is disabled; sign in with SSO to bootstrap the first admin",
+        ))
+    }
+
     /// Create the first user during initial system setup — the server
     /// **owner**.
     ///
@@ -1387,6 +1408,8 @@ impl AuthApplicationService {
         email: String,
         password: String,
     ) -> Result<PublicUserDto, DomainError> {
+        self.ensure_setup_allowed(&username)?;
+
         // Validate username
         if username.len() < 3 || username.len() > 254 {
             return Err(DomainError::new(

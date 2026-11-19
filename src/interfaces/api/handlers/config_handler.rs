@@ -366,25 +366,13 @@ pub async fn get_config(State(state): State<Arc<AppState>>) -> Json<ServerConfig
     let magic_link_login_enabled = allowed.contains(&crate::common::config::AuthMethod::MagicLink);
     let oidc_method_enabled = allowed.contains(&crate::common::config::AuthMethod::Oidc);
 
-    // First-run initialization probe — ported from the retired
-    // `/api/auth/status` handler. The DB flag is the authoritative
-    // source; the `admin_count > 0` fallback covers legacy
-    // deployments where the flag wasn't backfilled but at least
-    // one admin exists. The FE login page gates the setup wizard
-    // on this: `false` → render the setup form, `true` → render
-    // the login form. Defaults to `true` on service-missing so a
-    // misconfigured instance doesn't trap users in setup mode.
-    let initialized = {
-        let db_initialized = match state.admin_settings_service.as_ref() {
-            Some(admin_svc) => admin_svc.is_system_initialized().await,
-            None => false,
-        };
-        let admin_count = match auth_app.as_ref() {
-            Some(auth) => auth.count_admin_users().await.unwrap_or(0),
-            None => 0,
-        };
-        db_initialized || admin_count > 0
-    };
+    // First-run initialization probe; the FE login page gates the setup
+    // wizard on it. Same rule `/api/setup` enforces.
+    let initialized = state.is_system_initialized().await.unwrap_or_else(|e| {
+        tracing::error!("setup status probe failed: {e}");
+        // Fail closed: a read error is not proof that no admin exists.
+        true
+    });
     let require_verified_email = auth_app
         .as_ref()
         .map(|a| a.require_verified_email())

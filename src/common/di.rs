@@ -3391,7 +3391,23 @@ impl AppServiceFactory {
             .await;
 
             // 9b-2. Log whether system needs first-time admin setup
-            if !admin_svc.is_system_initialized().await {
+            let initialized = app_state.is_system_initialized().await.unwrap_or_else(|e| {
+                tracing::error!("setup status probe failed: {e}");
+                // Fail closed: a read error is not proof that no admin exists.
+                true
+            });
+            let password_allowed = app_state
+                .auth_service
+                .as_ref()
+                .is_some_and(|a| a.auth_application_service.is_password_login_allowed());
+            if !initialized && !password_allowed {
+                tracing::warn!(
+                    "SYSTEM NOT INITIALIZED — password login is off, so /api/setup is closed. \
+                     Bootstrap the first admin by signing in via OIDC with a group listed in \
+                     OXICLOUD_OIDC_ADMIN_GROUPS, or run `oxicloud user promote-to-owner` \
+                     for an existing user."
+                );
+            } else if !initialized {
                 tracing::warn!("╔══════════════════════════════════════════════════════════╗");
                 tracing::warn!("║  SYSTEM NOT INITIALIZED — first admin setup required     ║");
                 tracing::warn!("║                                                          ║");
@@ -4481,6 +4497,26 @@ pub struct AppState {
 // All AppState construction is done via struct literal in build_app_state().
 
 impl AppState {
+    /// True once a first admin exists. The flag is set by `/api/setup`; an
+    /// admin or owner bootstrapped another way (OIDC admin group, CLI) counts
+    /// too and pins the flag, so removing every admin later can't reopen
+    /// `/api/setup` (#112).
+    pub async fn is_system_initialized(&self) -> Result<bool, DomainError> {
+        if let Some(admin_svc) = &self.admin_settings_service
+            && admin_svc.is_system_initialized().await
+        {
+            return Ok(true);
+        }
+        let has_admin = match &self.auth_service {
+            Some(auth) => auth.auth_application_service.count_admin_users().await? > 0,
+            None => false,
+        };
+        if has_admin && let Some(admin_svc) = &self.admin_settings_service {
+            admin_svc.try_claim_initialization(Uuid::nil()).await?;
+        }
+        Ok(has_admin)
+    }
+
     /// Drive-aware RFC 4331 quota resolution — shared by the native and
     /// NextCloud-compatible WebDAV PROPFIND handlers so both surfaces
     /// report the same numbers for the same drive.
