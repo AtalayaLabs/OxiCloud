@@ -1316,9 +1316,25 @@ pub struct BackchannelLogoutForm {
     pub logout_token: String,
 }
 
+fn setup_already_initialized(username: &str) -> AppError {
+    tracing::info!(
+        target: "audit",
+        event = "setup.rejected",
+        reason = "already_initialized",
+        attempted_username = %username,
+        "👮🏻‍♂️ setup rejected: system already initialized",
+    );
+    AppError::new(
+        StatusCode::FORBIDDEN,
+        "System is already initialized. Use the admin panel to manage users.",
+        "SystemAlreadyInitialized",
+    )
+}
+
 /// One-time endpoint to create the first admin user.
 ///
-/// Available only when the system is not yet initialized (no admin exists).
+/// Available only when the system is not yet initialized (no admin exists)
+/// and password login is allowed.
 /// Once the admin is created the endpoint permanently returns 403.
 /// Uses an atomic "claim" operation so concurrent requests cannot both succeed.
 #[utoipa::path(
@@ -1327,8 +1343,10 @@ pub struct BackchannelLogoutForm {
     request_body = SetupAdminDto,
     responses(
         (status = 201, description = "First admin created and system initialized", body = PublicUserDto),
-        (status = 403, description = "System already initialized", body = crate::interfaces::errors::ApiErrorBody),
-        (status = 503, description = "Auth service not configured", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 400, description = "Invalid username, email or password", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 403, description = "System already initialized, or password login disabled (SSO-only installs bootstrap via OIDC)", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 409, description = "Username or email already exists", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 500, description = "Auth service not configured or database error", body = crate::interfaces::errors::ApiErrorBody),
     ),
     // Public — first-run bootstrap. There is no admin yet to authenticate
     // as; the 403 arm is what closes it once one exists.
@@ -1354,18 +1372,17 @@ pub async fn setup_admin(
         .ok_or_else(|| AppError::internal_error("Admin settings service not configured"))?;
 
     // 3. Quick pre-check: if the system is already initialized, reject early
-    //    (avoids Argon2 work on obviously-late requests)
-    if admin_svc.is_system_initialized().await {
-        tracing::warn!(
-            "Setup admin rejected: system already initialized (user: {})",
-            dto.username
-        );
-        return Err(AppError::new(
-            StatusCode::FORBIDDEN,
-            "System is already initialized. Use the admin panel to manage users.",
-            "SystemAlreadyInitialized",
-        ));
+    //    (avoids Argon2 work on obviously-late requests). Also closed once
+    //    an admin was bootstrapped via OIDC or the CLI (#112).
+    if state.is_system_initialized().await? {
+        return Err(setup_already_initialized(&dto.username));
     }
+
+    // 3b. Refuse before claiming when policy forbids a password admin, so a
+    //     rejected request never touches the claim (#112).
+    auth_service
+        .auth_application_service
+        .ensure_setup_allowed(&dto.username)?;
 
     // 4. ATOMIC: claim initialization, only one concurrent request can win.
     //    We use Uuid::nil() as a placeholder because the admin user
@@ -1379,15 +1396,7 @@ pub async fn setup_admin(
         })?;
 
     if !claimed {
-        tracing::warn!(
-            "Setup admin rejected: another request already claimed initialization (user: {})",
-            dto.username
-        );
-        return Err(AppError::new(
-            StatusCode::FORBIDDEN,
-            "System is already initialized. Use the admin panel to manage users.",
-            "SystemAlreadyInitialized",
-        ));
+        return Err(setup_already_initialized(&dto.username));
     }
 
     // 5. Create the first admin user (we hold the exclusive claim).

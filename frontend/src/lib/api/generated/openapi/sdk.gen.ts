@@ -3198,7 +3198,8 @@ export const suggestFiles = <ThrowOnError extends boolean = false>(options: Opti
 /**
  * One-time endpoint to create the first admin user.
  *
- * Available only when the system is not yet initialized (no admin exists).
+ * Available only when the system is not yet initialized (no admin exists)
+ * and password login is allowed.
  * Once the admin is created the endpoint permanently returns 403.
  * Uses an atomic "claim" operation so concurrent requests cannot both succeed.
  */

@@ -45,6 +45,21 @@ jsonpath "$.auth.magic_link.enabled" == false
 jsonpath "$.auth.oidc.auto_redirect" == true
 
 
+# Step 1b — #112: setup used to mint a password Owner here that could
+# never sign in (password login off). SSO-only bootstraps via OIDC.
+POST {{base_url}}/api/setup
+Content-Type: application/json
+{
+  "username": "sso-setup-probe",
+  "email": "sso-setup-probe@example.test",
+  "password": "sso-setup-probe-pass"
+}
+
+HTTP 403
+[Asserts]
+jsonpath "$.error_type" == "AccessDenied"
+
+
 # ─────────────────────────────────────────────────────────────
 # Step 2 — /login returns 302 to /api/auth/oidc/authorize.
 #          location: false so we assert on the header rather than
@@ -124,6 +139,8 @@ Content-Type: application/json
 { "code": "{{oidc_code}}" }
 
 HTTP 200
+[Captures]
+csrf_token: cookie "oxicloud_csrf"
 [Asserts]
 jsonpath "$.user.full.user.username" == "oidc_user"
 # Group-to-role mapping worked — this is now the admin (and the only
@@ -152,6 +169,7 @@ jsonpath "$.full.user.username" == "oidc_user"
 #          to it — see AppShell.svelte::onLogout.
 # ─────────────────────────────────────────────────────────────
 POST {{base_url}}/api/auth/logout
+X-CSRF-Token: {{csrf_token}}
 Content-Type: application/json
 {}
 
