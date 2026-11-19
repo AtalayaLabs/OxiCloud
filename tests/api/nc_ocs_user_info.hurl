@@ -150,6 +150,34 @@ jsonpath "$.ocs.data.users"             exists
 
 
 # ─────────────────────────────────────────────────────────────
+# C6 — allowed path for the #914 gate: sharee search still finds
+#      another internal user (refusals are unit-pinned).
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/admin/users
+Authorization: Bearer {{jwt}}
+Content-Type: application/json
+{
+  "username": "sharee-peer",
+  "password": "ShareePeerPass1!",
+  "email":    "sharee-peer@example.com",
+  "role":     "user"
+}
+
+# 201 on a fresh DB, 409 when a previous run already created it.
+HTTP *
+[Asserts]
+status toString matches /^(201|409)$/
+
+GET {{base_url}}/ocs/v2.php/apps/files_sharing/api/v1/sharees?format=json&search=sharee-pe&itemType=file
+[BasicAuth]
+{{nc_username}}: {{nc_password}}
+
+HTTP 200
+[Asserts]
+jsonpath "$.ocs.data.users[0].value.shareWith" == "sharee-peer"
+
+
+# ─────────────────────────────────────────────────────────────
 # Teardown — Revoke the app password we minted (captured `ap_id`
 #            from the create response, no list+lookup needed).
 #            Keeps the test surface clean across re-runs.
