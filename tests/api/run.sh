@@ -83,11 +83,23 @@ for arg in "$@"; do
   esac
 done
 
+# This focused scenario runs the same API harness with the server mounted under
+# a path prefix. Keep it opt-in: the ordinary API suite assumes the root mount.
+BASE_PATH_SHARE_TEST=0
+for sel in "${SELECTORS[@]}"; do
+  if [[ "$sel" == public_share_base_path ]]; then
+    (( ${#SELECTORS[@]} == 1 )) || die "public_share_base_path must run by itself"
+    BASE_PATH_SHARE_TEST=1
+    export OXICLOUD_BASE_PATH=/oxi
+    base_url="${base_url}${OXICLOUD_BASE_PATH}"
+  fi
+done
+
 # Phases invoked outside the hurl file list — the helper binaries and the
 # shell-driven checks. Needed up here so `--list` and the selector validation
 # below know about names that are not backed by a `$API_DIR/...` file: `dpop`
 # builds `target/…/dpop-hurl-helper` and appears nowhere else in this script.
-SELECTABLE_PHASES=(opaque dpop)
+SELECTABLE_PHASES=(opaque dpop public_share_base_path)
 
 # The set of names a selector may match.
 #
@@ -720,6 +732,10 @@ HURL_FILES=( \
   "$API_DIR/backend_consistency_azure.hurl"
 )
 
+if (( BASE_PATH_SHARE_TEST )); then
+  HURL_FILES+=("$API_DIR/public_share_base_path.hurl")
+fi
+
 # The shell-driven scenarios, in the order they must run. Listed here purely so
 # `--list` can show them and selectors can pick them; each is still invoked at
 # its own point below, because several depend on where they sit relative to the
@@ -760,6 +776,7 @@ fi
 seed_mount_fixtures
 
 hurl --variables-file "$API_DIR/test.env" --file-root "$REPO_ROOT/tests" --test --jobs 1 \
+  --variable "base_url=$base_url" \
   --variable "mount_rest_root=$MOUNT_FIXTURE_ROOT/rest" \
   --variable "mount_webdav_root=$MOUNT_FIXTURE_ROOT/webdav" \
   --variable "mount_mtime_file=$MOUNT_FIXTURE_MTIME_FILE" \
