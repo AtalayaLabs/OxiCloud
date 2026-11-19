@@ -44,13 +44,13 @@ run_race() {
             --data-binary "@$INITIAL" "$url")
         [[ "$(awk 'NR==1 {print $2}' <<<"$headers" | tr -d '\r')" == 201 ]] \
             || fail "$surface setup PUT did not create $name"
-        headers=$(nc_curl -D - -o /dev/null -X HEAD "$url")
+        headers=$(nc_curl -D - -o /dev/null -I "$url")
     else
         headers=$(dav_curl -D - -o /dev/null -X PUT -H "Content-Type: application/octet-stream" \
             --data-binary "@$INITIAL" "$url")
         [[ "$(awk 'NR==1 {print $2}' <<<"$headers" | tr -d '\r')" == 201 ]] \
             || fail "$surface setup PUT did not create $name"
-        headers=$(dav_curl -D - -o /dev/null -X HEAD "$url")
+        headers=$(dav_curl -D - -o /dev/null -I "$url")
     fi
     etag=$(etag_from_headers <<<"$headers")
     [[ -n "$etag" ]] || fail "$surface did not return an ETag for $name"
