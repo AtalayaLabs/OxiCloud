@@ -197,14 +197,28 @@ jobs:
         # source (or Modelina config) without regenerating, or hand-
         # edited the generated files. Either is a bug; the message
         # below points at the fix.
+        #
+        # Same `info.version` filter as the OpenAPI job below: build.rs
+        # derives the spec version from `git describe`, so the number
+        # is build metadata rather than schema. Byte-compare the DTO
+        # tree unchanged — nothing there carries the version (verified
+        # by grep).
         run: |
-          if ! git diff --exit-code \
-                 resources/gen/asyncapi.json \
-                 frontend/src/lib/api/generated/asyncapi/; then
+          schema_drift=0
+          if ! diff -u \
+                 <(git show HEAD:resources/gen/asyncapi.json | jq --sort-keys 'del(.info.version)') \
+                 <(jq --sort-keys 'del(.info.version)' resources/gen/asyncapi.json); then
+            schema_drift=1
+          fi
+          dto_drift=0
+          if ! git diff --exit-code frontend/src/lib/api/generated/asyncapi/; then
+            dto_drift=1
+          fi
+          if [ $schema_drift -ne 0 ] || [ $dto_drift -ne 0 ]; then
             echo ""
             echo "::error::AsyncAPI spec/DTO drift: the committed files differ from the fresh"
-            echo "::error::generator output. Run \`just gen-asyncapi\` locally — that recipe"
-            echo "::error::re-runs both stages (Rust spec + TS DTOs) — and commit the result."
+            echo "::error::generator output (ignoring info.version). Run \`just gen-asyncapi\`"
+            echo "::error::locally — that recipe re-runs both stages — and commit the result."
             exit 1
           fi
 
@@ -270,14 +284,30 @@ jobs:
         # attribute (handler added, schema changed, path renamed),
         # bumped `@hey-api/openapi-ts`, hand-edited the generated
         # SDK, or regenerated one half without the other.
+        #
+        # The spec half is filtered through `jq 'del(.info.version)'`
+        # because `build.rs` feeds `git describe`'s nearest-tag output
+        # into `info.version` — that number is build metadata, not
+        # schema, and CI should fail on SCHEMA drift alone. The SDK
+        # tree stays on raw `git diff --exit-code`: nothing under
+        # `frontend/src/lib/api/generated/openapi/` embeds the spec
+        # version (verified by grep).
         run: |
-          if ! git diff --exit-code \
-                 resources/gen/openapi.json \
-                 frontend/src/lib/api/generated/openapi/; then
+          schema_drift=0
+          if ! diff -u \
+                 <(git show HEAD:resources/gen/openapi.json | jq --sort-keys 'del(.info.version)') \
+                 <(jq --sort-keys 'del(.info.version)' resources/gen/openapi.json); then
+            schema_drift=1
+          fi
+          sdk_drift=0
+          if ! git diff --exit-code frontend/src/lib/api/generated/openapi/; then
+            sdk_drift=1
+          fi
+          if [ $schema_drift -ne 0 ] || [ $sdk_drift -ne 0 ]; then
             echo ""
             echo "::error::OpenAPI spec/SDK drift: committed files differ from the fresh"
-            echo "::error::generator output. Run \`just gen-openapi\` locally — that recipe"
-            echo "::error::re-runs both stages (Rust spec + TS SDK) — and commit the result."
+            echo "::error::generator output (ignoring info.version). Run \`just gen-openapi\`"
+            echo "::error::locally — that recipe re-runs both stages — and commit the result."
             exit 1
           fi
       # Semantic lint — the only one of the three OpenAPI gates that asks
