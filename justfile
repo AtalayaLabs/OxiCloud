@@ -322,19 +322,36 @@ gen-openapi-schema:
 check-openapi-gen: gen-openapi-schema
     #!/usr/bin/env bash
     set -euo pipefail
-    if ! git diff --exit-code \
-            resources/gen/openapi.json \
-            frontend/src/lib/api/generated; then
+    # Split the drift check into two halves so `.info.version` churn
+    # (build.rs feeds `git describe`'s nearest-tag output into it, so
+    # the value depends on the clone's history / tag state) doesn't
+    # false-positive on schema-clean regenerations. SCHEMA drift is
+    # the signal; `info.version` is build metadata.
+    #
+    #   1. openapi.json: structural diff via jq, ignoring `.info.version`.
+    #   2. SDK tree: raw `git diff --exit-code` — nothing there embeds
+    #      the version (verified by grep), so a plain byte diff is
+    #      still the right gate.
+    schema_drift=0
+    if ! diff -u \
+            <(git show HEAD:resources/gen/openapi.json | jq --sort-keys 'del(.info.version)') \
+            <(jq --sort-keys 'del(.info.version)' resources/gen/openapi.json); then
+        schema_drift=1
+    fi
+    sdk_drift=0
+    if ! git diff --exit-code frontend/src/lib/api/generated; then
+        sdk_drift=1
+    fi
+    if [ $schema_drift -ne 0 ] || [ $sdk_drift -ne 0 ]; then
         echo ""
-        echo "❌ OpenAPI spec drift: committed openapi.json differs from the fresh"
-        echo "   generator output. Someone edited a #[utoipa::path] attribute"
-        echo "   (added a handler, changed a schema, renamed a path) without"
-        echo "   regenerating. Fix:"
+        echo "❌ OpenAPI drift: committed files differ from the fresh generator output."
+        echo "   Someone edited a #[utoipa::path] attribute (added a handler, changed"
+        echo "   a schema, renamed a path) without regenerating. Fix:"
         echo "     git add resources/gen/openapi.json frontend/src/lib/api/generated/"
         echo "     git commit -m 'chore(openapi): regenerate spec'"
         exit 1
     fi
-    echo "✅ OpenAPI spec: committed file matches generator output"
+    echo "✅ OpenAPI spec: committed files match generator output (ignoring info.version)"
 
 # Gate 3 of 3 — COMPATIBILITY. See the block above for how this differs
 # from `check-openapi-gen` and `check-openapi-lint`.
@@ -492,9 +509,21 @@ gen-asyncapi: gen-asyncapi-schema
 check-asyncapi-gen: gen-asyncapi
     #!/usr/bin/env bash
     set -euo pipefail
-    if ! git diff --exit-code \
-             resources/gen/asyncapi.json \
-             frontend/src/lib/api/generated/asyncapi/; then
+    # Split as in `check-openapi-gen` — ignore `.info.version` on the
+    # spec file (build.rs derives it from `git describe`, so dev and
+    # CI can produce different values for a schema-clean regeneration),
+    # byte-compare the DTO tree (nothing there carries the version).
+    schema_drift=0
+    if ! diff -u \
+             <(git show HEAD:resources/gen/asyncapi.json | jq --sort-keys 'del(.info.version)') \
+             <(jq --sort-keys 'del(.info.version)' resources/gen/asyncapi.json); then
+        schema_drift=1
+    fi
+    dto_drift=0
+    if ! git diff --exit-code frontend/src/lib/api/generated/asyncapi/; then
+        dto_drift=1
+    fi
+    if [ $schema_drift -ne 0 ] || [ $dto_drift -ne 0 ]; then
         echo ""
         echo "❌ message-bus spec drift: committed files differ from the fresh"
         echo "   generator output. Fix:"
@@ -502,7 +531,7 @@ check-asyncapi-gen: gen-asyncapi
         echo "     git commit -m 'chore(bus): regenerate spec + DTOs'"
         exit 1
     fi
-    echo "✅ message-bus spec: committed files match generator output"
+    echo "✅ message-bus spec: committed files match generator output (ignoring info.version)"
 
 # Regenerate the backend OpenAPI document and the typed frontend client.
 # The generated directory is disposable: never edit its contents by hand.
