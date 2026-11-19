@@ -1359,10 +1359,10 @@
     "running": "En cours d'exécution…",
     "maintenance": "Entretien",
     "maintenance_hint": "Analysez à nouveau les fichiers existants pour remplir les métadonnées. Réexécution en toute sécurité ; traite toute la bibliothèque et peut prendre un certain temps.",
-    "encryption": "Cryptage",
+    "encryption": "Chiffrement",
     "encryption_hint": "Générez une clé AES-256 pour le chiffrement des objets blob au repos, puis définissez-la sur OXICLOUD_STORAGE_ENCRYPTION_KEY dans votre environnement de serveur.",
     "gen_key": "Générer une clé",
-    "gen_key_warning": "Conservez cette clé en toute sécurité. En cas de perte, les données cryptées sont irrémédiablement perdues.",
+    "gen_key_warning": "Conservez cette clé en lieu sûr. En cas de perte, les données chiffrées seront irrémédiablement perdues.",
     "mounts": {
       "tab": "Montages externes",
       "help": "Monter un dossier de l'hôte comme dossier dans votre disque. Les fichiers restent sur l'hôte et sont lus en direct ; les suppressions ici sont définitives.",
