@@ -14354,7 +14354,7 @@
           "auth"
         ],
         "summary": "One-time endpoint to create the first admin user.",
-        "description": "Available only when the system is not yet initialized (no admin exists).\nOnce the admin is created the endpoint permanently returns 403.\nUses an atomic \"claim\" operation so concurrent requests cannot both succeed.",
+        "description": "Available only when the system is not yet initialized (no admin exists)\nand password login is allowed.\nOnce the admin is created the endpoint permanently returns 403.\nUses an atomic \"claim\" operation so concurrent requests cannot both succeed.",
         "operationId": "setup_admin",
         "requestBody": {
           "content": {
@@ -14377,8 +14377,8 @@
               }
             }
           },
-          "403": {
-            "description": "System already initialized",
+          "400": {
+            "description": "Invalid username, email or password",
             "content": {
               "application/json": {
                 "schema": {
@@ -14387,8 +14387,28 @@
               }
             }
           },
-          "503": {
-            "description": "Auth service not configured",
+          "403": {
+            "description": "System already initialized, or password login disabled (SSO-only installs bootstrap via OIDC)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Username or email already exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Auth service not configured or database error",
             "content": {
               "application/json": {
                 "schema": {

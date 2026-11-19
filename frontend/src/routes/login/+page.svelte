@@ -560,7 +560,8 @@
 		// — the auth-method matrix + initialized flag now live on
 		// `serverConfig.auth` and `serverConfig.initialized`, hydrated at
 		// SPA boot by `serverConfig.load()`.
-		setupAvailable = !serverConfig.initialized;
+		// Setup mints a password account, so SSO-only installs skip it (#112).
+		setupAvailable = !serverConfig.initialized && passwordLoginEnabled;
 		if (setupAvailable) mode = 'setup';
 
 		// Auto-redirect to the IdP in standalone-OIDC posture is enforced

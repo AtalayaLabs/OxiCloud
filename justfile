@@ -675,6 +675,8 @@ front-design:
 #                                     --config server-with-oidc.env so the
 #                                     api and webdav suites stay on the
 #                                     OIDC-off config.
+#   * tests/oidc/run-sso-only.sh    — SSO-only posture + first-admin
+#                                     bootstrap (#112), own ports 8090/1081.
 #   * tests/oidc/run-manual-sso-only.sh — NOT part of this chain (see
 #                                     `oidc-manual-sso-only` below): a
 #                                http://localhost:8090/files/1bf4713c-891e-46fb-acf0-b10231fe32c8     human-run check that OIDC-as-only-
@@ -693,6 +695,7 @@ test-api:
     ./tests/webdav/run.sh
     ./tests/webdav-drive-root/run.sh
     ./tests/oidc/run.sh
+    ./tests/oidc/run-sso-only.sh
     if which litmus >/dev/null 2>/dev/null
     then
         ./tests/webdav/run-litmus.sh

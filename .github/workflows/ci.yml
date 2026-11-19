@@ -934,6 +934,13 @@ jobs:
         env:
           BUILD_TARGET: release
 
+      # SSO-only posture (AUTH_METHODS=oidc) and its first-admin
+      # bootstrap; Phase C pins #112 (/api/setup closed after OIDC bootstrap).
+      - name: Run SSO-only OIDC tests
+        run: bash tests/oidc/run-sso-only.sh
+        env:
+          BUILD_TARGET: release
+
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:

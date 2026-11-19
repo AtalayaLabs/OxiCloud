@@ -18,6 +18,10 @@
 #             → full OIDC dance + RP-initiated logout assertions
 #             Driven by sso-only.hurl.
 #
+#   Phase C — Phase B config + OXICLOUD_AUTH_METHODS=password,oidc
+#             → the OIDC-bootstrapped admin keeps /api/setup closed (#112)
+#             Driven by sso-bootstrap-closes-setup.hurl.
+#
 # Phase order matters: A runs first because it doesn't touch DB state
 # (no admin bootstrap). B runs second and does the admin bootstrap via
 # JIT provisioning. Restarting OxiCloud between phases is cheap
@@ -76,11 +80,14 @@ SERVER_PID=""
 
 start_oxicloud() {
   local env_file="$1"
+  shift
   set -a
   # shellcheck disable=SC1090
   source "$env_file"
+  # Extra KEY=VALUE overrides; exported env wins over --config.
+  for kv in "$@"; do export "$kv"; done
   OXICLOUD_SERVER_PORT=$SERVER_PORT
-  OXICLOUD_STORAGE_PATH="$REPO_ROOT/tests/oidc/storage-sso-only"
+  OXICLOUD_STORAGE_PATH="$REPO_ROOT/tests/oidc/storage"
   set +a
   log "Starting OxiCloud (config: $(basename "$env_file"))..."
   "$OXICLOUD_BIN" --config "$env_file" &
@@ -134,7 +141,7 @@ wait_for_http "$oidc_issuer/.well-known/openid-configuration" 30
 log "fake-idp is ready (logs: /tmp/fake-idp-sso-only.log)"
 
 # ── 3. Wipe storage once ───────────────────────────────────────────────────
-export OXICLOUD_STORAGE_PATH="$REPO_ROOT/tests/oidc/storage-sso-only"
+export OXICLOUD_STORAGE_PATH="$REPO_ROOT/tests/oidc/storage"
 # shellcheck source=../common/wipe-storage.sh
 source "$COMMON/wipe-storage.sh"
 wipe_storage "$OXICLOUD_STORAGE_PATH"
@@ -192,6 +199,20 @@ hurl --variables-file "$OIDC_DIR/sso-only.env" \
      --test --jobs 1 \
      "$OIDC_DIR/sso-only.hurl"
 log "Phase B passed."
+stop_oxicloud
+
+# ══════════════════════════════════════════════════════════════════════════
+# Phase C — same DB, password login switched on (#112)
+# ══════════════════════════════════════════════════════════════════════════
+log ""
+log "════════════ Phase C: OIDC-bootstrapped, password ON ════════════"
+start_oxicloud "$COMMON/server-with-oidc-only.env" OXICLOUD_AUTH_METHODS=password,oidc
+log "Running sso-bootstrap-closes-setup.hurl..."
+hurl --variables-file "$OIDC_DIR/sso-only.env" \
+     --file-root "$REPO_ROOT/tests" \
+     --test --jobs 1 \
+     "$OIDC_DIR/sso-bootstrap-closes-setup.hurl"
+log "Phase C passed."
 
 log ""
-log "SSO-only tests (both phases) passed."
+log "SSO-only tests (all phases) passed."
