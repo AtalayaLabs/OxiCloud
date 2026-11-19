@@ -173,9 +173,10 @@ impl FileBlobWriteRepository {
     /// held (same statement, same transaction — no gap a concurrent
     /// writer can land in). A mismatch leaves the row untouched and is
     /// reported back via the `matched` flag rather than silently
-    /// overwriting a sibling PATCH's content. `None` preserves the old
-    /// blind-overwrite behaviour for PUT/WOPI/chunked-upload finalize,
-    /// where last-write-wins is the intended HTTP semantics.
+    /// overwriting content written since the caller's snapshot. `None`
+    /// preserves blind-overwrite behavior for unconditional PUT/WOPI/
+    /// chunked-upload finalize; conditional PUT and PATCH pass a snapshot
+    /// hash so stale writes fail with a precondition error.
     async fn swap_blob_hash(
         &self,
         file_id: &str,

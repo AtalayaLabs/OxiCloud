@@ -891,6 +891,11 @@ async fn handle_put(
         .get("If")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
+    let if_match = req
+        .headers()
+        .get(header::IF_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().to_string());
 
     // ── Conditional preconditions (RFC 7232 §3.1 / §3.2) ─────────────
     // Evaluated BEFORE body ingestion so a rejected PUT doesn't waste
@@ -911,10 +916,7 @@ async fn handle_put(
     {
         return Ok(precondition_failed_response());
     }
-    if let Some(value) = req
-        .headers()
-        .get(header::IF_MATCH)
-        .and_then(|v| v.to_str().ok())
+    if let Some(value) = if_match.as_deref()
         && if_match_precondition_fails(value, current_etag)
     {
         return Ok(precondition_failed_response());
@@ -994,6 +996,14 @@ async fn handle_put(
     // Distinguish create (201) vs update (204) for the response status,
     // using the lookup already done above for the precondition check.
     let existed = existing.is_some();
+    // Carry a specific validator's pre-body snapshot into the row-swap CAS.
+    // `If-Match: *` only asserts that the resource exists, and unconditional
+    // PUT remains last-write-wins.
+    let expected_hash = if if_match.as_deref().is_some_and(|value| value != "*") {
+        existing.as_ref().map(|file| file.content_hash.as_str())
+    } else {
+        None
+    };
 
     // ── Quota enforcement ─────────────────────────────────────────────
     if let Some(storage_svc) = state.storage_usage_service.as_ref()
@@ -1032,7 +1042,7 @@ async fn handle_put(
             &content_type,
             oc_mtime,
             session.user.id,
-            None,
+            expected_hash,
         )
         .await
         .map_err(AppError::from)?;
