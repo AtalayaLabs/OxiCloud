@@ -65,7 +65,7 @@ impl AdminSettingsService {
             ("OXICLOUD_OIDC_PROVIDER_NAME", "provider_name"),
         ];
         for (env_key, field_name) in &vars {
-            if std::env::var(env_key).is_ok() {
+            if crate::common::config::env_or_file_is_set(env_key) {
                 out.push(field_name.to_string());
             }
         }
@@ -84,7 +84,8 @@ impl AdminSettingsService {
         if std::env::var("OXICLOUD_OIDC_CLIENT_ID").is_ok() {
             config.client_id = e.client_id.clone();
         }
-        if std::env::var("OXICLOUD_OIDC_CLIENT_SECRET").is_ok() {
+        // #556: `_FILE` pins the secret too, else the DB value silently wins.
+        if crate::common::config::env_or_file_is_set("OXICLOUD_OIDC_CLIENT_SECRET") {
             config.client_secret = e.client_secret.clone();
         }
         if std::env::var("OXICLOUD_OIDC_SCOPES").is_ok() {
@@ -167,9 +168,7 @@ impl AdminSettingsService {
             .get("oidc.client_secret")
             .map(|s| !s.is_empty())
             .unwrap_or(false)
-            || std::env::var("OXICLOUD_OIDC_CLIENT_SECRET")
-                .map(|s| !s.is_empty())
-                .unwrap_or(false);
+            || !self.env_oidc_config.client_secret.is_empty();
 
         // Load effective config with env var overrides applied
         let effective = self.load_effective_oidc_config().await?;
@@ -514,6 +513,29 @@ mod tests {
             auth,
             "http://127.0.0.1".to_string(),
         )
+    }
+
+    // #556: with only OXICLOUD_OIDC_CLIENT_SECRET_FILE set, the env secret
+    // was not treated as an override, so an empty DB value replaced it and
+    // OIDC broke for Docker-secrets deployments.
+    #[tokio::test(flavor = "current_thread")]
+    async fn client_secret_file_counts_as_env_override() {
+        let _g = crate::common::config::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        // SAFETY: ENV_TEST_LOCK serialises every test touching these keys.
+        unsafe {
+            std::env::remove_var("OXICLOUD_OIDC_CLIENT_SECRET");
+            std::env::set_var("OXICLOUD_OIDC_CLIENT_SECRET_FILE", "/run/secrets/x");
+        }
+        let mut svc = service();
+        svc.env_oidc_config.client_secret = "from-file".into();
+        let mut cfg = OidcConfig::default();
+        svc.apply_env_overrides(&mut cfg);
+        let overrides = svc.get_env_overrides();
+        unsafe { std::env::remove_var("OXICLOUD_OIDC_CLIENT_SECRET_FILE") };
+        assert_eq!(cfg.client_secret, "from-file");
+        assert!(overrides.contains(&"client_secret".to_string()));
     }
 
     #[tokio::test(flavor = "current_thread")]
