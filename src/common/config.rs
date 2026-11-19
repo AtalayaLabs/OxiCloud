@@ -1214,9 +1214,11 @@ fn parse_named_entry(name: &str) -> Result<NamedStorageEntry, String> {
                 bucket,
                 region: env::var(format!("OXICLOUD_STORAGE_{name}_S3_REGION"))
                     .unwrap_or_else(|_| "us-east-1".to_string()),
-                access_key: env::var(format!("OXICLOUD_STORAGE_{name}_S3_ACCESS_KEY"))
+                access_key: env_or_file(&format!("OXICLOUD_STORAGE_{name}_S3_ACCESS_KEY"))
+                    .unwrap_or_else(|e| panic!("{}", e))
                     .unwrap_or_default(),
-                secret_key: env::var(format!("OXICLOUD_STORAGE_{name}_S3_SECRET_KEY"))
+                secret_key: env_or_file(&format!("OXICLOUD_STORAGE_{name}_S3_SECRET_KEY"))
+                    .unwrap_or_else(|e| panic!("{}", e))
                     .unwrap_or_default(),
                 force_path_style: env::var(format!("OXICLOUD_STORAGE_{name}_S3_FORCE_PATH_STYLE"))
                     .map(|v| v.parse::<bool>().unwrap_or(false))
@@ -1242,10 +1244,12 @@ fn parse_named_entry(name: &str) -> Result<NamedStorageEntry, String> {
             azure = Some(AzureStorageConfig {
                 account_name: env::var(format!("OXICLOUD_STORAGE_{name}_AZURE_ACCOUNT_NAME"))
                     .unwrap_or_default(),
-                account_key: env::var(format!("OXICLOUD_STORAGE_{name}_AZURE_ACCOUNT_KEY"))
+                account_key: env_or_file(&format!("OXICLOUD_STORAGE_{name}_AZURE_ACCOUNT_KEY"))
+                    .unwrap_or_else(|e| panic!("{}", e))
                     .unwrap_or_default(),
                 container,
-                sas_token: env::var(format!("OXICLOUD_STORAGE_{name}_AZURE_SAS_TOKEN")).ok(),
+                sas_token: env_or_file(&format!("OXICLOUD_STORAGE_{name}_AZURE_SAS_TOKEN"))
+                    .unwrap_or_else(|e| panic!("{}", e)),
                 endpoint_url: env::var(format!("OXICLOUD_STORAGE_{name}_AZURE_ENDPOINT_URL")).ok(),
             });
         }
@@ -1255,8 +1259,8 @@ fn parse_named_entry(name: &str) -> Result<NamedStorageEntry, String> {
     // shape (`aes-256-gcm:<K>` or bare `<K>`) and future shapes
     // (2-pair rotation, `none:` head, …). See
     // `docs/plan/storage-key-rotation.md`.
-    let encryption = match env::var(format!("OXICLOUD_STORAGE_{name}_ENCRYPTION_KEY")) {
-        Ok(raw) if !raw.trim().is_empty() => Some(parse_encryption_pair_list(name, &raw)?),
+    let encryption = match env_or_file(&format!("OXICLOUD_STORAGE_{name}_ENCRYPTION_KEY"))? {
+        Some(raw) if !raw.trim().is_empty() => Some(parse_encryption_pair_list(name, &raw)?),
         _ => None,
     };
 
@@ -1306,8 +1310,12 @@ fn synthesize_default_from_legacy_vars() -> Result<NamedStorageEntry, String> {
                 endpoint_url: env::var("OXICLOUD_S3_ENDPOINT_URL").ok(),
                 bucket,
                 region: env::var("OXICLOUD_S3_REGION").unwrap_or_else(|_| "us-east-1".to_string()),
-                access_key: env::var("OXICLOUD_S3_ACCESS_KEY").unwrap_or_default(),
-                secret_key: env::var("OXICLOUD_S3_SECRET_KEY").unwrap_or_default(),
+                access_key: env_or_file("OXICLOUD_S3_ACCESS_KEY")
+                    .unwrap_or_else(|e| panic!("{}", e))
+                    .unwrap_or_default(),
+                secret_key: env_or_file("OXICLOUD_S3_SECRET_KEY")
+                    .unwrap_or_else(|e| panic!("{}", e))
+                    .unwrap_or_default(),
                 force_path_style: env::var("OXICLOUD_S3_FORCE_PATH_STYLE")
                     .map(|v| v.parse::<bool>().unwrap_or(false))
                     .unwrap_or(false),
@@ -1324,9 +1332,12 @@ fn synthesize_default_from_legacy_vars() -> Result<NamedStorageEntry, String> {
             }
             azure = Some(AzureStorageConfig {
                 account_name: env::var("OXICLOUD_AZURE_ACCOUNT_NAME").unwrap_or_default(),
-                account_key: env::var("OXICLOUD_AZURE_ACCOUNT_KEY").unwrap_or_default(),
+                account_key: env_or_file("OXICLOUD_AZURE_ACCOUNT_KEY")
+                    .unwrap_or_else(|e| panic!("{}", e))
+                    .unwrap_or_default(),
                 container,
-                sas_token: env::var("OXICLOUD_AZURE_SAS_TOKEN").ok(),
+                sas_token: env_or_file("OXICLOUD_AZURE_SAS_TOKEN")
+                    .unwrap_or_else(|e| panic!("{}", e)),
                 endpoint_url: env::var("OXICLOUD_AZURE_ENDPOINT_URL").ok(),
             });
         }
@@ -1340,8 +1351,8 @@ fn synthesize_default_from_legacy_vars() -> Result<NamedStorageEntry, String> {
     //
     // The legacy flat surface has no cipher variable, so no
     // agreement check is needed here.
-    let encryption = match env::var("OXICLOUD_STORAGE_ENCRYPTION_KEY") {
-        Ok(k) if !k.trim().is_empty() => Some(parse_encryption_pair_list("default", &k)?),
+    let encryption = match env_or_file("OXICLOUD_STORAGE_ENCRYPTION_KEY")? {
+        Some(k) if !k.trim().is_empty() => Some(parse_encryption_pair_list("default", &k)?),
         _ => None,
     };
 
@@ -2116,8 +2127,11 @@ impl OidcConfig {
         if let Ok(v) = env::var("OXICLOUD_OIDC_CLIENT_ID") {
             cfg.client_id = v;
         }
-        if let Ok(v) = env::var("OXICLOUD_OIDC_CLIENT_SECRET") {
-            cfg.client_secret = v;
+        // Supports OXICLOUD_OIDC_CLIENT_SECRET or OXICLOUD_OIDC_CLIENT_SECRET_FILE (Docker Secrets style)
+        match env_or_file("OXICLOUD_OIDC_CLIENT_SECRET") {
+            Err(e) => panic!("{}", e),
+            Ok(Some(v)) => cfg.client_secret = v,
+            _ => {}
         }
         if let Ok(v) = env::var("OXICLOUD_OIDC_REDIRECT_URI") {
             cfg.redirect_uri = v;
@@ -3681,6 +3695,55 @@ fn non_empty_url(var: Result<String, env::VarError>) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
+/// Docker-secrets style `*_FILE` env var support.
+///
+/// Implements the semantics:
+/// - If `NAME_FILE` is set → read file, return contents (trailing `\r\n`/`\n` stripped)
+/// - If `NAME` is set (and `NAME_FILE` is not) → return the value
+/// - If both `NAME` and `NAME_FILE` are set → error (conflict)
+/// - If neither is set → return None
+/// - If `NAME_FILE` points to a missing/unreadable file → error
+///
+/// Returns `Ok(Some(value))` on success, `Ok(None)` if neither var is set,
+/// or `Err(msg)` on conflict or file I/O failure.
+fn env_or_file(name: &str) -> Result<Option<String>, String> {
+    env_or_file_with(name, |k| env::var(k).ok())
+}
+
+/// True when `name` or its Docker-secrets twin `name_FILE` is set. Use this,
+/// not a bare `env::var(name).is_ok()`, wherever "is this setting pinned by
+/// the environment?" decides precedence (#556).
+pub fn env_or_file_is_set(name: &str) -> bool {
+    env::var(name).is_ok() || env::var(format!("{name}_FILE")).is_ok()
+}
+
+/// Serialises tests that mutate process env (edition 2024: `set_var` is
+/// `unsafe` because concurrent readers race).
+#[cfg(test)]
+pub(crate) static ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// [`env_or_file`] over an injectable lookup, so tests need no `set_var`.
+fn env_or_file_with(
+    name: &str,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<Option<String>, String> {
+    let file_var = format!("{name}_FILE");
+    match (lookup(name), lookup(&file_var)) {
+        (Some(_), Some(_)) => Err(format!(
+            "FATAL: both {name} and {file_var} are set; set only one."
+        )),
+        (Some(value), None) => Ok(Some(value)),
+        (None, Some(path)) => std::fs::read_to_string(&path)
+            // Strip exactly one trailing line ending; secrets may contain spaces.
+            .map(|c| {
+                let c = c.strip_suffix('\n').unwrap_or(&c);
+                Some(c.strip_suffix('\r').unwrap_or(c).to_string())
+            })
+            .map_err(|e| format!("FATAL: {file_var} points to '{path}' but cannot read it: {e}")),
+        (None, None) => Ok(None),
+    }
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -3929,11 +3992,13 @@ impl AppConfig {
         //      warning naming the replacement.
         //   3. Neither set → `config.database.connection_string` keeps
         //      its Default; the pool connect error later is the cue.
-        match (
-            env::var("OXICLOUD_DB_CONNECTION_STRING"),
-            env::var("DATABASE_URL"),
-        ) {
-            (Ok(primary), Ok(_)) => {
+        // Supports OXICLOUD_DB_CONNECTION_STRING / OXICLOUD_DB_CONNECTION_STRING_FILE (Docker Secrets style)
+        let primary = env_or_file("OXICLOUD_DB_CONNECTION_STRING");
+        let fallback = env::var("DATABASE_URL");
+
+        match (primary, fallback) {
+            (Err(e), _) => panic!("{}", e),
+            (Ok(Some(primary)), Ok(_)) => {
                 tracing::warn!(
                     target: "audit",
                     event = "config.deprecated_env_var",
@@ -3942,10 +4007,10 @@ impl AppConfig {
                 );
                 config.database.connection_string = primary;
             }
-            (Ok(primary), Err(_)) => {
+            (Ok(Some(primary)), Err(_)) => {
                 config.database.connection_string = primary;
             }
-            (Err(_), Ok(fallback)) => {
+            (Ok(None), Ok(fallback)) => {
                 tracing::warn!(
                     target: "audit",
                     event = "config.deprecated_env_var",
@@ -3954,7 +4019,7 @@ impl AppConfig {
                 );
                 config.database.connection_string = fallback;
             }
-            (Err(_), Err(_)) => {
+            (Ok(None), Err(_)) => {
                 // Neither set — leave the default. If the deployment never
                 // reaches a real Postgres, the pool connect will fail with
                 // the default string in the error message, naming the
@@ -4005,31 +4070,33 @@ impl AppConfig {
         }
 
         // Auth configuration
-        if let Some(jwt_secret) = env::var("OXICLOUD_JWT_SECRET")
-            .ok()
-            .filter(|s| !s.is_empty())
-        {
-            // SECURITY: Validate JWT secret minimum entropy (RFC 7518 §3.2
-            // recommends ≥256 bits for HS256). Panic on dangerously short
-            // secrets, warn on sub-optimal ones.
-            let len = jwt_secret.len();
-            if len < 16 {
-                panic!(
-                    "FATAL: OXICLOUD_JWT_SECRET is dangerously short ({} bytes). \
-                     Minimum: 32 bytes (256 bits) for HS256. \
-                     Generate a secure secret with: openssl rand -hex 32",
-                    len
-                );
-            } else if len < 32 {
-                tracing::warn!("==========================================================");
-                tracing::warn!(
-                    "OXICLOUD_JWT_SECRET is only {} bytes — recommended minimum is 32 (256 bits).",
-                    len
-                );
-                tracing::warn!("Generate a stronger secret with: openssl rand -hex 32");
-                tracing::warn!("==========================================================");
+        // Supports OXICLOUD_JWT_SECRET or OXICLOUD_JWT_SECRET_FILE (Docker Secrets style)
+        match env_or_file("OXICLOUD_JWT_SECRET") {
+            Err(e) => panic!("{}", e),
+            Ok(Some(jwt_secret)) if !jwt_secret.is_empty() => {
+                // SECURITY: Validate JWT secret minimum entropy (RFC 7518 §3.2
+                // recommends ≥256 bits for HS256). Panic on dangerously short
+                // secrets, warn on sub-optimal ones.
+                let len = jwt_secret.len();
+                if len < 16 {
+                    panic!(
+                        "FATAL: OXICLOUD_JWT_SECRET is dangerously short ({} bytes). \
+                         Minimum: 32 bytes (256 bits) for HS256. \
+                         Generate a secure secret with: openssl rand -hex 32",
+                        len
+                    );
+                } else if len < 32 {
+                    tracing::warn!("==========================================================");
+                    tracing::warn!(
+                        "OXICLOUD_JWT_SECRET is only {} bytes — recommended minimum is 32 (256 bits).",
+                        len
+                    );
+                    tracing::warn!("Generate a stronger secret with: openssl rand -hex 32");
+                    tracing::warn!("==========================================================");
+                }
+                config.auth.jwt_secret = jwt_secret;
             }
-            config.auth.jwt_secret = jwt_secret;
+            _ => {} // None or empty — use default
         }
 
         // SECURITY: Auto-persist JWT secret to storage so it survives restarts.
@@ -4847,8 +4914,12 @@ impl AppConfig {
                 endpoint_url: env::var("OXICLOUD_S3_ENDPOINT_URL").ok(),
                 bucket,
                 region: env::var("OXICLOUD_S3_REGION").unwrap_or_else(|_| "us-east-1".to_string()),
-                access_key: env::var("OXICLOUD_S3_ACCESS_KEY").unwrap_or_default(),
-                secret_key: env::var("OXICLOUD_S3_SECRET_KEY").unwrap_or_default(),
+                access_key: env_or_file("OXICLOUD_S3_ACCESS_KEY")
+                    .unwrap_or_else(|e| panic!("{}", e))
+                    .unwrap_or_default(),
+                secret_key: env_or_file("OXICLOUD_S3_SECRET_KEY")
+                    .unwrap_or_else(|e| panic!("{}", e))
+                    .unwrap_or_default(),
                 force_path_style: env::var("OXICLOUD_S3_FORCE_PATH_STYLE")
                     .map(|v| v.parse::<bool>().unwrap_or(false))
                     .unwrap_or(false),
@@ -4865,9 +4936,12 @@ impl AppConfig {
             }
             config.storage.azure = Some(AzureStorageConfig {
                 account_name: env::var("OXICLOUD_AZURE_ACCOUNT_NAME").unwrap_or_default(),
-                account_key: env::var("OXICLOUD_AZURE_ACCOUNT_KEY").unwrap_or_default(),
+                account_key: env_or_file("OXICLOUD_AZURE_ACCOUNT_KEY")
+                    .unwrap_or_else(|e| panic!("{}", e))
+                    .unwrap_or_default(),
                 container,
-                sas_token: env::var("OXICLOUD_AZURE_SAS_TOKEN").ok(),
+                sas_token: env_or_file("OXICLOUD_AZURE_SAS_TOKEN")
+                    .unwrap_or_else(|e| panic!("{}", e)),
                 endpoint_url: env::var("OXICLOUD_AZURE_ENDPOINT_URL").ok(),
             });
         }
@@ -4899,7 +4973,9 @@ impl AppConfig {
         if let Ok(v) = env::var("OXICLOUD_STORAGE_ENCRYPTION_ENABLED") {
             config.storage.encryption.enabled = v.parse::<bool>().unwrap_or(false);
         }
-        if let Ok(v) = env::var("OXICLOUD_STORAGE_ENCRYPTION_KEY") {
+        if let Some(v) =
+            env_or_file("OXICLOUD_STORAGE_ENCRYPTION_KEY").unwrap_or_else(|e| panic!("{}", e))
+        {
             config.storage.encryption.key_base64 = Some(v);
         }
 
@@ -4961,8 +5037,11 @@ impl AppConfig {
         if let Ok(v) = env::var("OXICLOUD_OIDC_CLIENT_ID") {
             config.oidc.client_id = v;
         }
-        if let Ok(v) = env::var("OXICLOUD_OIDC_CLIENT_SECRET") {
-            config.oidc.client_secret = v;
+        // Supports OXICLOUD_OIDC_CLIENT_SECRET or OXICLOUD_OIDC_CLIENT_SECRET_FILE (Docker Secrets style)
+        match env_or_file("OXICLOUD_OIDC_CLIENT_SECRET") {
+            Err(e) => panic!("{}", e),
+            Ok(Some(v)) => config.oidc.client_secret = v,
+            _ => {}
         }
         if let Ok(v) = env::var("OXICLOUD_OIDC_REDIRECT_URI") {
             config.oidc.redirect_uri = v;
@@ -5008,8 +5087,11 @@ impl AppConfig {
         if let Ok(v) = env::var("OXICLOUD_WOPI_DISCOVERY_URL") {
             config.wopi.discovery_url = v;
         }
-        if let Ok(v) = env::var("OXICLOUD_WOPI_SECRET") {
-            config.wopi.secret = v;
+        // Supports OXICLOUD_WOPI_SECRET or OXICLOUD_WOPI_SECRET_FILE (Docker Secrets style)
+        match env_or_file("OXICLOUD_WOPI_SECRET") {
+            Err(e) => panic!("{}", e),
+            Ok(Some(v)) => config.wopi.secret = v,
+            _ => {}
         }
         if let Ok(v) = env::var("OXICLOUD_WOPI_TOKEN_TTL_SECS")
             && let Ok(val) = v.parse::<i64>()
@@ -5115,8 +5197,11 @@ impl AppConfig {
         if let Ok(v) = env::var("OXICLOUD_SMTP_USER") {
             config.smtp.user = v;
         }
-        if let Ok(v) = env::var("OXICLOUD_SMTP_PASS") {
-            config.smtp.pass = v;
+        // Supports OXICLOUD_SMTP_PASS or OXICLOUD_SMTP_PASS_FILE (Docker Secrets style)
+        match env_or_file("OXICLOUD_SMTP_PASS") {
+            Err(e) => panic!("{}", e),
+            Ok(Some(v)) => config.smtp.pass = v,
+            _ => {}
         }
         if let Ok(v) = env::var("OXICLOUD_SMTP_FROM") {
             config.smtp.from = v;
@@ -5893,6 +5978,7 @@ mod tests {
             "OXICLOUD_STORAGE_s3_prod_S3_REGION",
             "OXICLOUD_STORAGE_s3_prod_S3_ACCESS_KEY",
             "OXICLOUD_STORAGE_s3_prod_S3_SECRET_KEY",
+            "OXICLOUD_STORAGE_s3_prod_S3_SECRET_KEY_FILE",
             "OXICLOUD_STORAGE_s3_prod_S3_FORCE_PATH_STYLE",
             "OXICLOUD_STORAGE_s3_prod_ENCRYPTION_KEY",
             "OXICLOUD_STORAGE_foo_BACKEND",
@@ -6033,6 +6119,28 @@ mod tests {
             assert_eq!(pairs.len(), 1);
             assert_eq!(pairs[0].cipher, CipherKind::AesGcm256);
             assert_eq!(pairs[0].key_material, Some([0u8; 32]));
+        }
+
+        // #556: the per-entry S3 secret must be readable from a Docker
+        // secret file. Pins that parse_named_entry routes through
+        // env_or_file instead of a bare env::var.
+        #[test]
+        fn per_entry_s3_secret_read_from_file() {
+            let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+            wipe_env();
+            let f = std::env::temp_dir().join(format!("oxicloud_556_s3_{}", std::process::id()));
+            std::fs::write(&f, "from-file-secret\n").unwrap();
+            set("OXICLOUD_STORAGE_ENTRIES", "s3_prod");
+            set("OXICLOUD_STORAGE_s3_prod_BACKEND", "s3");
+            set("OXICLOUD_STORAGE_s3_prod_S3_BUCKET", "b");
+            set(
+                "OXICLOUD_STORAGE_s3_prod_S3_SECRET_KEY_FILE",
+                f.to_str().unwrap(),
+            );
+            let entries = parse_storage_entries().unwrap();
+            wipe_env();
+            let s3 = entries[0].s3.as_ref().expect("s3 config");
+            assert_eq!(s3.secret_key, "from-file-secret");
         }
 
         // ── Cell (Yes, Yes) — fail fast on conflict
@@ -6722,5 +6830,127 @@ mod themes_config_tests {
             );
         }
         assert!(ThemesConfig::parse(Some("".into())).is_err());
+    }
+}
+
+#[cfg(test)]
+mod env_file_tests {
+    //! #556: Docker-secrets `*_FILE` support. Lookup is injected, so no
+    //! process-env mutation (edition 2024 `set_var` is unsafe and racy).
+    use super::env_or_file_with;
+    use std::collections::HashMap;
+
+    fn run(vars: &[(&str, &str)], name: &str) -> Result<Option<String>, String> {
+        let m: HashMap<String, String> = vars
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        env_or_file_with(name, |k| m.get(k).cloned())
+    }
+
+    fn secret_file(tag: &str, content: &str) -> String {
+        let p = std::env::temp_dir().join(format!("oxicloud_556_{tag}_{}", std::process::id()));
+        std::fs::write(&p, content).unwrap();
+        p.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn plain_var_only() {
+        assert_eq!(run(&[("S", "v")], "S").unwrap(), Some("v".into()));
+    }
+
+    #[test]
+    fn neither_set_is_none() {
+        assert_eq!(run(&[], "S").unwrap(), None);
+    }
+
+    #[test]
+    fn file_only_strips_one_line_ending() {
+        for (tag, content) in [("lf", "v\n"), ("crlf", "v\r\n"), ("none", "v")] {
+            let p = secret_file(tag, content);
+            assert_eq!(
+                run(&[("S_FILE", &p)], "S").unwrap(),
+                Some("v".into()),
+                "{tag}"
+            );
+        }
+    }
+
+    #[test]
+    fn file_keeps_spaces_and_inner_newlines() {
+        let p = secret_file("ws", "  a b \nc\n\n");
+        assert_eq!(
+            run(&[("S_FILE", &p)], "S").unwrap(),
+            Some("  a b \nc\n".into())
+        );
+    }
+
+    #[test]
+    fn both_set_is_error() {
+        let p = secret_file("both", "f");
+        let e = run(&[("S", "v"), ("S_FILE", &p)], "S").unwrap_err();
+        assert!(e.contains("S_FILE"), "{e}");
+    }
+
+    #[test]
+    fn missing_file_errors_without_leaking() {
+        let e = run(&[("S_FILE", "/nonexistent/oxicloud/secret")], "S").unwrap_err();
+        assert!(
+            e.contains("S_FILE") && e.contains("/nonexistent/oxicloud/secret"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn templated_storage_var() {
+        let p = secret_file("tpl", "k\n");
+        let n = "OXICLOUD_STORAGE_prod_S3_SECRET_KEY";
+        let f = format!("{n}_FILE");
+        assert_eq!(
+            run(&[(f.as_str(), p.as_str())], n).unwrap(),
+            Some("k".into())
+        );
+    }
+}
+
+#[cfg(test)]
+mod env_file_wiring_tests {
+    //! #556: the secret readers actually route through `env_or_file`.
+    use super::*;
+
+    #[test]
+    fn oidc_client_secret_from_file_and_is_set() {
+        let _g = ENV_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let f = std::env::temp_dir().join(format!("oxicloud_556_oidc_{}", std::process::id()));
+        std::fs::write(&f, "oidc-from-file\n").unwrap();
+        // SAFETY: ENV_TEST_LOCK serialises every test touching these keys.
+        unsafe {
+            env::remove_var("OXICLOUD_OIDC_CLIENT_SECRET");
+            env::set_var("OXICLOUD_OIDC_CLIENT_SECRET_FILE", &f);
+        }
+        let cfg = OidcConfig::from_env();
+        let pinned = env_or_file_is_set("OXICLOUD_OIDC_CLIENT_SECRET");
+        unsafe { env::remove_var("OXICLOUD_OIDC_CLIENT_SECRET_FILE") };
+        assert_eq!(cfg.client_secret, "oidc-from-file");
+        assert!(pinned, "_FILE alone must count as env-pinned");
+        assert!(!env_or_file_is_set("OXICLOUD_OIDC_CLIENT_SECRET"));
+    }
+
+    // The storage encryption key was read with a bare env::var, so a
+    // Docker secret for the most sensitive value was silently ignored.
+    #[test]
+    fn storage_encryption_key_from_file() {
+        let _g = ENV_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let f = std::env::temp_dir().join(format!("oxicloud_556_enc_{}", std::process::id()));
+        std::fs::write(&f, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n").unwrap();
+        // SAFETY: ENV_TEST_LOCK serialises every test touching these keys.
+        unsafe {
+            env::remove_var("OXICLOUD_STORAGE_BACKEND");
+            env::remove_var("OXICLOUD_STORAGE_ENCRYPTION_KEY");
+            env::set_var("OXICLOUD_STORAGE_ENCRYPTION_KEY_FILE", &f);
+        }
+        let entry = synthesize_default_from_legacy_vars();
+        unsafe { env::remove_var("OXICLOUD_STORAGE_ENCRYPTION_KEY_FILE") };
+        assert!(entry.unwrap().encryption.is_some());
     }
 }

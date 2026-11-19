@@ -81,8 +81,7 @@ impl StorageSettingsService {
     }
 
     /// Apply environment variable overrides on top of a config.
-    fn apply_env_overrides(&self, config: &mut StorageConfig) {
-        let e = &self.env_storage_config;
+    fn apply_env_overrides(e: &StorageConfig, config: &mut StorageConfig) {
         if std::env::var("OXICLOUD_STORAGE_BACKEND").is_ok() {
             config.backend = e.backend.clone();
         }
@@ -105,10 +104,10 @@ impl StorageSettingsService {
             if std::env::var("OXICLOUD_S3_REGION").is_ok() {
                 s3.region = env_s3.region.clone();
             }
-            if std::env::var("OXICLOUD_S3_ACCESS_KEY").is_ok() {
+            if crate::common::config::env_or_file_is_set("OXICLOUD_S3_ACCESS_KEY") {
                 s3.access_key = env_s3.access_key.clone();
             }
-            if std::env::var("OXICLOUD_S3_SECRET_KEY").is_ok() {
+            if crate::common::config::env_or_file_is_set("OXICLOUD_S3_SECRET_KEY") {
                 s3.secret_key = env_s3.secret_key.clone();
             }
             if std::env::var("OXICLOUD_S3_FORCE_PATH_STYLE").is_ok() {
@@ -251,7 +250,7 @@ impl StorageSettingsService {
             ..self.env_storage_config.clone()
         };
 
-        self.apply_env_overrides(&mut config);
+        Self::apply_env_overrides(&self.env_storage_config, &mut config);
         Ok(config)
     }
 
@@ -872,5 +871,45 @@ fn entry_location_hint(entry: &NamedStorageEntry) -> Option<String> {
                 .trim_end_matches('/');
             format!("{host}/{}", az.container)
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // #556: with only OXICLOUD_S3_SECRET_KEY_FILE set, the env key was not
+    // treated as pinned, so the DB copy from the admin panel replaced it.
+    #[test]
+    fn s3_key_file_counts_as_env_override() {
+        let _g = crate::common::config::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        // SAFETY: ENV_TEST_LOCK serialises every test touching these keys.
+        unsafe {
+            std::env::remove_var("OXICLOUD_S3_SECRET_KEY");
+            std::env::set_var("OXICLOUD_S3_SECRET_KEY_FILE", "/run/secrets/s3");
+        }
+        let env = StorageConfig {
+            s3: Some(S3StorageConfig {
+                endpoint_url: None,
+                bucket: "b".into(),
+                region: "us-east-1".into(),
+                access_key: String::new(),
+                secret_key: "from-file".into(),
+                force_path_style: false,
+            }),
+            ..StorageConfig::default()
+        };
+        let mut db = StorageConfig {
+            s3: Some(S3StorageConfig {
+                secret_key: "from-db".into(),
+                ..env.s3.clone().unwrap()
+            }),
+            ..StorageConfig::default()
+        };
+        StorageSettingsService::apply_env_overrides(&env, &mut db);
+        unsafe { std::env::remove_var("OXICLOUD_S3_SECRET_KEY_FILE") };
+        assert_eq!(db.s3.unwrap().secret_key, "from-file");
     }
 }
