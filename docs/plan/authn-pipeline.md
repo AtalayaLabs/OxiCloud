@@ -424,22 +424,47 @@ grant, stage 3 is skipped, and the resulting principal fails
 the explicit arm, someone calls `admit()` on it and gets a `NotFound`
 resolved by whichever fail-open arm they land on.
 
-## Dependency: the two fail-open arms
+## Relationship to the two fail-open arms
 
-Collapsing per-call account state to a single question makes one
-existing bug load-bearing. `src/AGENTS.md`:
+`src/AGENTS.md` calls these bugs:
 
 > **An auth helper's `_ =>` arm must DENY.** Two fail-open gates exist
 > and are bugs, not patterns to copy: `require_internal_user` admits the
 > caller on *any* `get_user_flags` error, and `decide_live_role`
 > resurrects the claim role on a transient DB error.
 
-Today several checks sit in different places, which partly masks it.
-Under this design there is **one** per-call account check reading **one**
-cache — so a fail-open arm there is the entire per-call account gate
-failing open at once. `scope-gates.md` § Maximise deny-by-default
-already decided the fold fixes these; this is why it is not optional.
+The code states a defence, and it is more considered than that:
 
+> a *transient* lookup failure fails OPEN with the claim role (a DB blip
+> must not lock every authenticated user out, **and login/refresh
+> already enforce `active` at the canonical layer**). A *missing* row
+> (`NotFound`) is a definitive revocation and fails CLOSED.
+
+**That defence rests on a premise this audit found to be false.**
+OPAQUE's `ke3` never checks `active`, and neither does device approval —
+so "the canonical layer" does not enforce it canonically, and the
+per-call arm is covering for a gap it was told did not exist.
+
+Which reverses the dependency as first drafted here. This pipeline does
+not wait on those arms being fixed; **it is what makes their
+justification true.** Once `admit()` guarantees that every path enforces
+`active` before a session exists, failing open on a transient lookup is
+a defensible availability trade — defence in depth with a canonical
+layer that is actually canonical — rather than the only gate quietly
+holding the line.
+
+So the order matters more than the verdict:
+
+- **Fix the login phase first.** Tightening the per-call arm while
+  OPAQUE still admits deactivated accounts tightens the wrong end: DB
+  blips start denying legitimate users, and the actual hole stays open.
+- **Then re-decide the arms**, with the premise true. The answer may
+  well be to leave them, which is less work and less availability risk
+  than `scope-gates.md` § Maximise deny-by-default assumed when it said
+  the fold should fix them. That section should be read as "decide
+  deliberately", not "deny unconditionally".
+
+`NotFound` failing closed is correct either way and is not in question.
 ## Audit events
 
 Per AGENTS.md, every denial emits a line before returning. The new
@@ -681,6 +706,47 @@ plumbing changed.
 - Login sets a cookie, so a session captured in one request persists;
   assert the credential being tested rather than inheriting one.
 - Do not start the suite casually. It is the shared-database one.
+
+## Implementation order
+
+This document first, and specifically the half of it that has **no scope
+dependency** — because that half closes five of the seven live defects
+and needs nothing from `scope-gates.md`.
+
+The pipeline splits cleanly:
+
+| part | needs scopes? | contents |
+|---|---|---|
+| **A** | no | `admit()` with the *reject* arm only, `AdmittedCaller` required by the session mint, true revocation, the connected-device list and its two IP columns |
+| **B** | yes | narrowing (forced reset → `{security}`), obligations |
+
+Part A closes defects 3-7: OPAQUE logging in deactivated accounts, email
+verification reaching one path in eight, refresh undoing it, revoke
+meaning "cannot renew", and device revocation being unreachable. It also
+makes the fail-open premise true (§ Relationship to the two fail-open
+arms), which is why it comes before any decision about those arms.
+
+Suggested sequence:
+
+1. **Pipeline part A.** Highest live-defect density, contained — one new
+   function plus a signature change at five or six call sites. No
+   routing restructure, no migration beyond the two IP columns.
+2. **Re-decide the fail-open arms**, premise now true. Possibly a no-op,
+   which is the cheapest good outcome.
+3. **`scope-gates.md` PR 1** — the gates fold. Behaviour-preserving, so
+   its acceptance criterion is existing pins green *unchanged*.
+4. **`scope-gates.md` PR 2** — credential scopes. First
+   non-behaviour-preserving step; carries the lockout risk and needs the
+   grandfathering table.
+5. **Pipeline part B** — narrowing and obligations, which need the
+   `ScopeSet` from step 4.
+6. **`scope-gates.md` PR 3** — authentication-by-default. Restructures
+   how auth is mounted, so it goes last and alone.
+
+Why not scopes first: every scope decision is reversible in a way an
+open account check is not. A wrong ceiling locks a user out and is
+visible within minutes; OPAQUE admitting a deactivated account has been
+silently true for as long as OPAQUE has existed.
 ## Non-goals
 
 - Does not change `authz.require` or any grant check — that is the third
