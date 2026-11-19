@@ -323,7 +323,9 @@ pub async fn get_oidc_settings(
     responses(
         (status = 200, body = Object, description = "OIDC settings saved"),
         (status = 401, description = "Unauthorized", body = crate::interfaces::errors::ApiErrorBody),
-        (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody)
+        (status = 403, description = "Admin required", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 409, description = "A changed field is pinned by an OXICLOUD_OIDC_* env var", body = crate::interfaces::errors::ApiErrorBody),
+        (status = 500, description = "Saving failed", body = crate::interfaces::errors::ApiErrorBody)
     ),
     security(("bearerAuth" = [])),
     tag = "admin"
@@ -340,9 +342,7 @@ pub async fn save_oidc_settings(
         .as_ref()
         .ok_or_else(|| AppError::internal_error("Admin settings service not available"))?;
 
-    svc.save_oidc_settings(dto, user_id)
-        .await
-        .map_err(|e| AppError::internal_error(format!("Failed to save settings: {}", e)))?;
+    svc.save_oidc_settings(dto, user_id).await?;
 
     Ok((
         StatusCode::OK,
