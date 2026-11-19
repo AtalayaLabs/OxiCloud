@@ -6,7 +6,7 @@
     "license": {
       "name": "MIT"
     },
-    "version": "0.10.0"
+    "version": "0.10.1"
   },
   "paths": {
     "/api/address-books": {
@@ -3331,6 +3331,26 @@
           },
           "403": {
             "description": "Admin required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A changed field is pinned by an OXICLOUD_OIDC_* env var",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Saving failed",
             "content": {
               "application/json": {
                 "schema": {

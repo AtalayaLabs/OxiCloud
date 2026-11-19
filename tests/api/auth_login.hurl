@@ -94,7 +94,7 @@ HTTP 403
 # `auth_config_discovery.hurl`; this case re-pins the exact VALUES
 # a server booted from `tests/common/server.env` is expected to
 # publish:
-#   OXICLOUD_OIDC_ENABLED=false       → auth.oidc.enabled: false
+#   OXICLOUD_OIDC_ENABLED unset       → auth.oidc.enabled: false
 #   OXICLOUD_SMTP_MOCK=true           → auth.magic_link.enabled: true
 #   default OXICLOUD_AUTH_METHODS     → auth.password.enabled: true
 #   default (not set)                 → auth.require_verified_email: false

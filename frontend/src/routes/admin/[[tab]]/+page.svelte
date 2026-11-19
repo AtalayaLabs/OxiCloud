@@ -2690,8 +2690,13 @@
 							type="checkbox"
 							data-testid="admin-oidc-enabled-checkbox"
 							bind:checked={oidc.enabled}
+							disabled={isEnvLocked(oidc.env_overrides, 'enabled')}
 						/>
-						<span>{t('admin.oidc_enabled', 'Enable OIDC login')}</span>
+						<span
+							>{t('admin.oidc_enabled', 'Enable OIDC login')}{@render envBadge(
+								isEnvLocked(oidc.env_overrides, 'enabled')
+							)}</span
+						>
 					</label>
 					<div class="admin-form__issuer">
 						<label
@@ -2813,16 +2818,27 @@
 							type="checkbox"
 							data-testid="admin-oidc-auto-provision-checkbox"
 							bind:checked={oidc.auto_provision}
+							disabled={isEnvLocked(oidc.env_overrides, 'auto_provision')}
 						/>
-						<span>{t('admin.oidc_auto_provision', 'Auto-provision users on first login')}</span>
+						<span
+							>{t(
+								'admin.oidc_auto_provision',
+								'Auto-provision users on first login'
+							)}{@render envBadge(isEnvLocked(oidc.env_overrides, 'auto_provision'))}</span
+						>
 					</label>
 					<label class="admin-check">
 						<input
 							type="checkbox"
 							data-testid="admin-oidc-disable-pw-checkbox"
 							bind:checked={oidc.disable_password_login}
+							disabled={isEnvLocked(oidc.env_overrides, 'disable_password_login')}
 						/>
-						<span>{t('admin.oidc_disable_pw', 'Disable password login (OIDC only)')}</span>
+						<span
+							>{t('admin.oidc_disable_pw', 'Disable password login (OIDC only)')}{@render envBadge(
+								isEnvLocked(oidc.env_overrides, 'disable_password_login')
+							)}</span
+						>
 					</label>
 					{#if oidc.callback_url}
 						<p class="muted callback-row">

@@ -392,6 +392,32 @@ it('saves OIDC settings from the OIDC form', async () => {
 	await waitFor(() => expect(admin.saveOidc).toHaveBeenCalled());
 });
 
+// #251: the enable toggle stayed editable under OXICLOUD_OIDC_ENABLED, so a
+// save "succeeded" while the env value silently won.
+it('locks OIDC checkboxes pinned by an env var', async () => {
+	m(admin.getOidcSettings).mockResolvedValue({
+		enabled: false,
+		issuer_url: '',
+		client_id: '',
+		scopes: null,
+		auto_provision: false,
+		admin_groups: null,
+		disable_password_login: false,
+		provider_name: null,
+		callback_url: 'http://localhost/callback',
+		client_secret_set: false,
+		env_overrides: ['enabled']
+	});
+	setTab('oidc');
+	render(AdminPage);
+	const enabled = (await screen.findByTestId('admin-oidc-enabled-checkbox')) as HTMLInputElement;
+	expect(enabled.disabled).toBe(true);
+	const autoProvision = screen.getByTestId(
+		'admin-oidc-auto-provision-checkbox'
+	) as HTMLInputElement;
+	expect(autoProvision.disabled).toBe(false);
+});
+
 it('sends an SMTP test email', async () => {
 	m(admin.sendSmtpTest).mockResolvedValue({ ok: true } as never);
 	setTab('notification');
