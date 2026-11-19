@@ -1055,6 +1055,28 @@ impl ContactUseCase for ContactService {
         self.require_address_book_perm(group.address_book_id(), &user_id, Permission::Update)
             .await?;
 
+        // #911: the group's book grant says nothing about the contact.
+        // Without this, any contact UUID could be pulled into the caller's
+        // group and read back in full through the group listing. A
+        // membership may only link a contact of the group's own book.
+        let in_same_book = self
+            .contact_storage
+            .get_contact_by_id(&contact_id)
+            .await?
+            .is_some_and(|c| c.address_book_id() == group.address_book_id());
+        if !in_same_book {
+            tracing::info!(
+                target: "audit",
+                event = "contact_group.membership_rejected",
+                reason = "contact_not_in_group_book",
+                caller_id = %user_id,
+                group_id = %group_id,
+                contact_id = %contact_id,
+                "👮🏻‍♂️ contact group add rejected: contact is not in the group's address book",
+            );
+            return Err(DomainError::not_found("Contact", "not found"));
+        }
+
         // Add contact to group
         self.contact_storage
             .add_contact_to_group(&group_id, &contact_id)

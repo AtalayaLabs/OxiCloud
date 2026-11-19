@@ -431,36 +431,6 @@ impl ContactRepository for ContactPgRepository {
         Ok(contacts)
     }
 
-    async fn get_contacts_by_group(
-        &self,
-        group_id: &Uuid,
-    ) -> ContactRepositoryResult<Vec<Contact>> {
-        let rows = sqlx::query(
-            r#"
-            SELECT 
-                c.id, c.address_book_id, c.uid, c.full_name, c.first_name, c.last_name, c.nickname,
-                c.email, c.phone, c.address, c.organization, c.title, c.notes, c.photo_url,
-                c.birthday, c.anniversary, c.etag, c.created_at, c.updated_at
-            FROM carddav.contacts c
-            INNER JOIN carddav.group_memberships m ON c.id = m.contact_id
-            WHERE m.group_id = $1
-            ORDER BY c.full_name, c.first_name, c.last_name
-            "#,
-        )
-        .bind(group_id)
-        .fetch_all(&*self.pool)
-        .await
-        .map_err(|e| {
-            DomainError::database_error(format!("Failed to get contacts by group: {}", e))
-        })?;
-
-        let mut contacts = Vec::with_capacity(rows.len());
-        for row in &rows {
-            contacts.push(Self::row_to_contact_lite(row)?);
-        }
-        Ok(contacts)
-    }
-
     async fn search_contacts(
         &self,
         address_book_id: &Uuid,
