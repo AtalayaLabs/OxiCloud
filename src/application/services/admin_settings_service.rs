@@ -11,6 +11,26 @@ use crate::domain::repositories::settings_repository::SettingsRepository;
 use crate::infrastructure::repositories::pg::SettingsPgRepository;
 use crate::infrastructure::services::oidc_service::OidcService;
 
+/// Env var → admin-panel field it pins.
+const OIDC_ENV_FIELDS: [(&str, &str); 10] = [
+    ("OXICLOUD_OIDC_ENABLED", "enabled"),
+    ("OXICLOUD_OIDC_ISSUER_URL", "issuer_url"),
+    ("OXICLOUD_OIDC_CLIENT_ID", "client_id"),
+    ("OXICLOUD_OIDC_CLIENT_SECRET", "client_secret"),
+    ("OXICLOUD_OIDC_SCOPES", "scopes"),
+    ("OXICLOUD_OIDC_AUTO_PROVISION", "auto_provision"),
+    (
+        "OXICLOUD_OIDC_AUTO_LINK_EMAIL_MATCH",
+        "auto_link_email_match",
+    ),
+    ("OXICLOUD_OIDC_ADMIN_GROUPS", "admin_groups"),
+    (
+        "OXICLOUD_OIDC_DISABLE_PASSWORD_LOGIN",
+        "disable_password_login",
+    ),
+    ("OXICLOUD_OIDC_PROVIDER_NAME", "provider_name"),
+];
+
 /// Admin settings service — manages platform configuration in the database.
 ///
 /// Configuration priority: **env vars > DB settings > defaults**.
@@ -45,31 +65,11 @@ impl AdminSettingsService {
 
     /// Detect which OIDC fields are overridden by environment variables
     fn get_env_overrides(&self) -> Vec<String> {
-        let mut out = Vec::new();
-        let vars = [
-            ("OXICLOUD_OIDC_ENABLED", "enabled"),
-            ("OXICLOUD_OIDC_ISSUER_URL", "issuer_url"),
-            ("OXICLOUD_OIDC_CLIENT_ID", "client_id"),
-            ("OXICLOUD_OIDC_CLIENT_SECRET", "client_secret"),
-            ("OXICLOUD_OIDC_SCOPES", "scopes"),
-            ("OXICLOUD_OIDC_AUTO_PROVISION", "auto_provision"),
-            (
-                "OXICLOUD_OIDC_AUTO_LINK_EMAIL_MATCH",
-                "auto_link_email_match",
-            ),
-            ("OXICLOUD_OIDC_ADMIN_GROUPS", "admin_groups"),
-            (
-                "OXICLOUD_OIDC_DISABLE_PASSWORD_LOGIN",
-                "disable_password_login",
-            ),
-            ("OXICLOUD_OIDC_PROVIDER_NAME", "provider_name"),
-        ];
-        for (env_key, field_name) in &vars {
-            if std::env::var(env_key).is_ok() {
-                out.push(field_name.to_string());
-            }
-        }
-        out
+        OIDC_ENV_FIELDS
+            .iter()
+            .filter(|(env_key, _)| std::env::var(env_key).is_ok())
+            .map(|(_, field_name)| field_name.to_string())
+            .collect()
     }
 
     /// Apply environment variable overrides on top of a config
@@ -189,12 +189,52 @@ impl AdminSettingsService {
         })
     }
 
+    /// First env var that pins a field `dto` tries to change. The env value
+    /// always wins, so saving it would succeed and change nothing (#251).
+    fn env_locked_conflict(&self, dto: &SaveOidcSettingsDto) -> Option<&'static str> {
+        let e = &self.env_oidc_config;
+        let locked = self.get_env_overrides();
+        let text =
+            |v: &Option<String>, env: &str| v.as_deref().is_some_and(|v| v.trim() != env.trim());
+        let differs = |field: &str| match field {
+            "enabled" => dto.enabled != e.enabled,
+            "issuer_url" => dto.issuer_url.trim() != e.issuer_url.trim(),
+            "client_id" => dto.client_id.trim() != e.client_id.trim(),
+            "client_secret" => dto
+                .client_secret
+                .as_deref()
+                .is_some_and(|s| !s.is_empty() && s != e.client_secret),
+            "scopes" => text(&dto.scopes, &e.scopes),
+            "auto_provision" => dto.auto_provision.is_some_and(|v| v != e.auto_provision),
+            "admin_groups" => text(&dto.admin_groups, &e.admin_groups),
+            "disable_password_login" => dto
+                .disable_password_login
+                .is_some_and(|v| v != e.disable_password_login),
+            "provider_name" => text(&dto.provider_name, &e.provider_name),
+            // Not in the save DTO, so a save cannot change it.
+            _ => false,
+        };
+        OIDC_ENV_FIELDS
+            .iter()
+            .find(|(_, field)| locked.iter().any(|l| l == field) && differs(field))
+            .map(|(var, _)| *var)
+    }
+
     /// Save OIDC settings to DB and hot-reload the OIDC service.
     pub async fn save_oidc_settings(
         &self,
         dto: SaveOidcSettingsDto,
         updated_by: Uuid,
     ) -> Result<(), DomainError> {
+        if let Some(var) = self.env_locked_conflict(&dto) {
+            return Err(DomainError::new(
+                ErrorKind::Conflict,
+                "OidcSettings",
+                format!(
+                    "{var} is set in the server environment and overrides this setting; change it there"
+                ),
+            ));
+        }
         let cat = "oidc";
         let by = Some(updated_by);
 
