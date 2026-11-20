@@ -80,19 +80,23 @@ fn decide_internal_user(
             "Forbidden",
         )),
         Ok(_) => Ok(()),
-        // A caller with NO user row lands here. The arm used to be a blanket
-        // `_ => Ok(())`, i.e. fail-OPEN: any lookup failure — including
-        // `NotFound` — admitted the caller. This is the only middleware
-        // guarding `/webdav`, `/caldav` and `/carddav`, so a principal
-        // without an `auth.users` row (an anonymous share session) walked
-        // straight through the "internal users only" gate.
+        // These three arms were once a blanket `_ => Ok(())`, on the only
+        // middleware guarding `/webdav`, `/caldav` and `/carddav` — so any
+        // lookup failure admitted the caller, and a principal with no
+        // `auth.users` row (an anonymous share session) walked straight
+        // through the "internal users only" gate.
         //
-        // `NotFound` is now a denial. Other errors (a DB blip) stay open
-        // deliberately: this gate is a *restriction* on external users, not
-        // the authentication check, and failing every DAV request closed
-        // during a transient database hiccup trades one outage for a worse
-        // one. The authentication decision above it is what must fail
-        // closed, and does.
+        // `NotFound` is a denial: a definitive answer, and the only error
+        // this gate may act on. The rest split on whether a retry could
+        // change the answer, because admitting and denying BOTH answer a
+        // question the lookup could not. 503 says "ask again", which is
+        // what is true; 403 would make an SPA show a permissions error or
+        // bounce to login instead of retrying.
+        //
+        // Failing closed costs little availability here: during a database
+        // outage the request was going to fail at its next query anyway,
+        // so admitting only let a caller into a system that could not
+        // serve them.
         Err(e) if matches!(e.kind, ErrorKind::NotFound) => {
             tracing::info!(
                 target: "audit",
@@ -107,7 +111,39 @@ fn decide_internal_user(
                 "Forbidden",
             ))
         }
-        Err(_) => Ok(()),
+        Err(e) if e.is_transient() => {
+            tracing::warn!(
+                target: "audit",
+                event = "authz.evaluation_failed",
+                reason = "transient_backend",
+                caller_id = %caller_id,
+                error = %e,
+                "👮🏻‍♂️ internal-user gate could not evaluate — answered 503, neither admitted nor denied",
+            );
+            Err(AppError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Temporarily unable to verify your account; please retry",
+                "ServiceUnavailable",
+            ))
+        }
+        // Not transient and not `NotFound`: a decode failure, a schema
+        // mismatch — a bug rather than a blip, so retrying will not help
+        // and saying "retry" would be a lie. 500 and an audit line.
+        Err(e) => {
+            tracing::error!(
+                target: "audit",
+                event = "authz.evaluation_failed",
+                reason = "lookup_failed",
+                caller_id = %caller_id,
+                error = %e,
+                "👮🏻‍♂️ internal-user gate could not evaluate — permanent lookup failure",
+            );
+            Err(AppError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Unable to verify your account",
+                "InternalError",
+            ))
+        }
     }
 }
 
@@ -534,13 +570,52 @@ mod tests {
         );
     }
 
-    /// Deliberately still open. This gate is a restriction on external
-    /// users, not the authentication decision — failing every DAV request
-    /// closed during a database hiccup trades one outage for a worse one.
-    /// The authentication check above it is what fails closed.
+    /// Replaces `internal_user_gate_stays_open_on_a_transient_error`,
+    /// which pinned the fail-open arm. Admitting and denying both *answer*
+    /// a question the lookup could not; 503 says "ask again", which is
+    /// what is true. 403 would be the other wrong answer — it makes an
+    /// SPA show a permissions error or bounce to login instead of
+    /// retrying.
     #[test]
-    fn internal_user_gate_stays_open_on_a_transient_error() {
-        let err = DomainError::new(ErrorKind::InternalError, "User", "connection reset");
-        assert!(decide_internal_user(Err(err), Uuid::nil()).is_ok());
+    fn internal_user_gate_answers_503_on_a_transient_error() {
+        let err = DomainError::transient_backend("Database", "connection reset");
+        let e = decide_internal_user(Err(err), Uuid::nil())
+            .expect_err("a transient lookup failure must not admit");
+        assert_eq!(e.status_code, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// A permanent lookup failure is 500, not 503. Telling a client to
+    /// retry a decode failure or a schema mismatch is a lie it acts on,
+    /// and `DomainError::is_transient` defaults to "not retryable" for
+    /// exactly this reason.
+    #[test]
+    fn internal_user_gate_answers_500_on_a_permanent_error() {
+        let err = DomainError::new(ErrorKind::InternalError, "User", "column missing");
+        let e = decide_internal_user(Err(err), Uuid::nil())
+            .expect_err("a permanent lookup failure must not admit");
+        assert_eq!(e.status_code, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    /// The property that matters more than either status code, and the
+    /// one a future refactor is most likely to undo: **no error admits.**
+    /// The arm these replace was `Err(_) => Ok(())` on the only
+    /// middleware guarding `/webdav`, `/caldav` and `/carddav`, so any
+    /// lookup failure walked straight through the gate.
+    #[test]
+    fn internal_user_gate_never_admits_on_any_error() {
+        for kind in [
+            ErrorKind::NotFound,
+            ErrorKind::InternalError,
+            ErrorKind::TransientBackend,
+            ErrorKind::Timeout,
+            ErrorKind::DatabaseError,
+            ErrorKind::AccessDenied,
+        ] {
+            let err = DomainError::new(kind, "User", "lookup failed");
+            assert!(
+                decide_internal_user(Err(err), Uuid::nil()).is_err(),
+                "{kind:?} must not admit the caller",
+            );
+        }
     }
 }
