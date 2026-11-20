@@ -1158,37 +1158,68 @@ no behaviour. It is PR 3, or its own RFC, and the `Gate` enum carries
 the pair from the start so the later change is a wiring exercise rather
 than a redesign.
 
-### The conflict worth deciding, not smuggling
+### The two fail-open arms: decide, never smuggle
 
 PR 1's acceptance criterion is that it be **behaviour-preserving**. Taken
-literally, the fold preserves two documented fail-open gates and gives
-them an authoritative single home — which legitimises them. `src/AGENTS.md`
-is unambiguous that it should not:
+literally, the fold preserves two fail-open arms and gives them an
+authoritative single home — which legitimises them without anyone having
+decided to. `src/AGENTS.md` calls them bugs:
 
 > **An auth helper's `_ =>` arm must DENY.** Two fail-open gates exist
 > and are bugs, not patterns to copy: `require_internal_user`
 > (`middleware/user.rs:64-71`) admits the caller on *any*
 > `get_user_flags` error, and `decide_live_role` (`:169-176`) resurrects
-> the claim role on a transient DB error. **The first is the only
-> middleware guarding all three DAV surfaces.**
+> the claim role on a transient DB error.
 
-And § Why 1 of this plan cites exactly that arm as the policy deserving
-"one reviewable home" — so the fold either fixes it or enshrines it.
+**But read the code's own defence in full before concluding anything**,
+because an earlier draft of this section quoted only its first clause
+and argued against half an argument:
 
-The tradeoff is real and the original author documented it: denying on a
-transient DB error means a Postgres hiccup locks every DAV user out, so
-fail-open was a resilience choice. But AGENTS.md § Design axes puts
-security and resilience *both* in the absolute bucket and this is the
-only gate on three protocol surfaces, which is why the file already
-calls it a bug rather than a trade.
+> a *transient* lookup failure fails OPEN with the claim role (a DB blip
+> must not lock every authenticated user out, **and login/refresh
+> already enforce `active` at the canonical layer**). A *missing* row
+> (`NotFound`) is a definitive revocation and fails CLOSED.
 
-So: **the fold fixes it**, as an explicit behaviour change in PR 1 with
-its own pin, never as a silent consequence of refactoring. Blunt the
-availability cost the way § Lookup and checking cost already allows — a
-short-TTL cache in the policy, which absorbs a blip without resurrecting
-a stale answer indefinitely. If that is judged too risky to pair with
-the refactor, it becomes PR 1b, but it does not get preserved by
-default.
+That second clause is the load-bearing one. It says the arm is defence
+in depth *over* a canonical check — not the primary gate. Which changes
+what the arm is: **a compensating control for a gap elsewhere, not a
+defect in itself.**
+
+And the gap is real. `authn-pipeline.md` § The audit found that OPAQUE's
+`ke3` never checks `active`, and neither does device approval — so the
+canonical layer is not canonical, and this arm has been covering for a
+hole it was told did not exist.
+
+**Hence the ordering, which matters more than the verdict.** Fixing the
+arm while the gap stands produces the one indefensible outcome: DB blips
+begin denying legitimate users (availability cost paid in full) while
+OPAQUE still admits deactivated accounts (security benefit not gained).
+Strictly worse than doing nothing. So:
+
+1. **Close the gap first** — `authn-pipeline.md` part A, which makes the
+   premise true.
+2. **Then decide these arms**, with two facts an earlier draft lacked.
+
+The first fact is that the premise now holds, so failing open is
+genuinely defence in depth rather than the last line.
+
+The second is that the blip exposure is **bounded, and smaller than
+"every DAV user"**. `get_user_flags` is already moka-cached at
+`USER_FLAGS_CACHE_TTL` (30 s) through `try_get_with`, with single-flight
+coalescing and errors never cached. During an outage, entries still
+within TTL are served from cache; only requests whose entry expired
+reach the database, and concurrent misses for one user collapse into one
+lookup. The cost of failing closed is therefore roughly
+*blip ÷ 30 s* of active users, not all of them — which weakens the
+availability argument for fail-open *and* means the "add a short-TTL
+cache" mitigation an earlier draft proposed already exists.
+
+So the verdict is deliberately **not** taken here, and this section no
+longer claims the fold fixes them. What it does require is that the fold
+**must not preserve them silently**: whichever way it goes, the decision
+appears in the PR with a pin, never as an unremarked consequence of
+moving code. `NotFound` failing closed is correct either way and is not
+in question.
 
 ## Direction: app passwords are terminal
 
@@ -1233,10 +1264,14 @@ between a credential being verified and a session existing — is
   state becomes a scope narrowed to `{security}` at mint, so
   `require_no_password_change_pending_layer` and its five mount points
   go away rather than folding into a gate.
-- **§ Maximise deny-by-default's fail-open fix is a dependency of it.**
-  That pipeline collapses per-call account state to one question against
-  one cached read, so a fail-open arm on that read is the whole account
-  gate failing open at once.
+- **The two fail-open arms are decided *after* it, not before.** The
+  arms are a compensating control for a gap in the login phase — their
+  own defence says "login/refresh already enforce `active` at the
+  canonical layer", and that premise is false today. So the pipeline
+  makes the premise true, and only then is the verdict on the arms a
+  real choice. Fixing them first pays the availability cost and gains
+  no security. See § The two fail-open arms: decide, never smuggle.
+
 ## Non-goals
 
 - Not a general policy engine. Target is ~10k users and five variants;
