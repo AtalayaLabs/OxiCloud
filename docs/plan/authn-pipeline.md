@@ -285,131 +285,90 @@ mechanism `set_force_password_change` already uses.
 > Every state change that **tightens** must either revoke sessions or be
 > in the per-call read.
 
-Satisfied today by accident rather than by design, and written nowhere —
-so the next `force_*` flag will get it wrong:
+Satisfied today by accident, and written nowhere — so the next `force_*`
+flag will get it wrong:
 
 | change | revokes sessions? |
 |---|---|
 | `change_password` | ✓ |
 | `set_force_password_change` | ✓ (`:4413`) |
-| deactivation (`set_user_active`) | ✗ — relies on per-call `LiveRole`, and the flags cache is invalidated (`:4577`) |
+| deactivation (`set_user_active`) | ✗ — relies on per-call `LiveRole`; flags cache invalidated (`:4577`) |
 | OIDC backchannel logout | ✓ — a third revocation source |
 | email change | n/a — not user-mutable |
 | **new obligation published** | **must choose**, per § Mandatory actions |
 
 ### There is no true revocation today
 
-`revoke_all_user_sessions` runs
-`UPDATE auth.sessions SET revoked = true WHERE user_id = $1`. The
-session row carries the **refresh token**, so revocation prevents
-*renewal*. `auth_middleware` reads `claims.sid` only to feed the
-last-seen tracker — explicitly "no I/O on this hot path" — and never
-checks whether the session is revoked.
+`revoke_all_user_sessions` sets `revoked = true` on the session row, and
+that row carries the **refresh token** — so it prevents *renewal*.
+`auth_middleware` reads `claims.sid` only to feed the last-seen tracker
+("no I/O on this hot path") and never checks whether the session is
+revoked. The access token therefore keeps working for its remaining
+lifetime, and `DELETE /api/admin/sessions/{id}` means "stop this session
+renewing", not "stop this session".
 
-So revoking leaves the access token working for its remaining lifetime,
-and the admin panel's `DELETE /api/admin/sessions/{id}` is "stop this
-session renewing", not "stop this session".
+### Device revocation is broken at the data source
 
+Four facts that only bite in combination:
 
-### Revocation must target the record that grants access
-
-The admin panel's `DELETE /api/admin/sessions/{id}` is the revoke-one
-case above, and `Gate::Elevated` already covers it — it is a non-safe
-method under `/api/admin/*` (`scope-gates.md` § Declaring session
-elevation). Two neighbours are less well served.
-
-**Device revocation is broken at the data source.** Four facts that only
-bite in combination:
-
-1. `approve()` creates a `Session::new(…)` — the durable record of a
-   connected device, with `origin = Device`.
-2. `poll()` deletes the `auth.device_codes` row once the tokens are
-   collected, deliberately: "prevents plain-text tokens from lingering
-   in the database".
-3. `list_user_devices` reads `FROM auth.device_codes WHERE user_id = $1`,
-   unfiltered by status.
+1. `approve()` creates a `Session::new(…)` with `origin = Device` — the
+   durable record of a connected device.
+2. `poll()` deletes the `auth.device_codes` row once tokens are
+   collected, deliberately: "prevents plain-text tokens from lingering".
+3. `list_user_devices` reads `FROM auth.device_codes`, unfiltered.
 4. `revoke_device` deletes a `device_codes` row.
 
 So `GET /api/auth/device/devices` lists **uncollected authorizations**,
-not connected devices, and `DELETE /api/auth/device/devices/{id}` can
-only cancel a pending one. A device that has actually connected is
-absent from its own list and unrevokable from it. Its only record is the
-session row — admin-only, and today that stops renewal rather than
-access.
+and `DELETE …/{id}` can only cancel a pending one. A device that has
+actually connected is absent from its own list and unrevokable from it.
 
-The fix follows the data: device listing and revocation belong on
-`auth.sessions WHERE origin = 'device'`, which also supplies the
-last-seen and IP columns the admin panel already renders. The
-`device_codes` table then means what its name says — in-flight
-authorizations — and pending-cancel stays a separate, smaller action.
+The fix follows the data: list and revoke from
+`auth.sessions WHERE origin = 'device'`. `device_codes` then means what
+its name says — in-flight authorizations — and pending-cancel is a
+separate, smaller action.
 
-#### The connected-device list, and two IP columns
+**The list needs no new columns**: `user_agent` carries
+`device:{client_name}`, and `last_seen_at`, `created_at`, `expires_at`,
+`revoked` and `dpop_jkt` are all on the row. It is a query change that
+turns a list of things which are *not* connected into a list of things
+that are.
 
-Almost everything the list needs is already on the session row, because
-`approve()` stashes it:
-
-| column | renders as | note |
-|---|---|---|
-| `origin = 'device'` | the filter | `SessionOrigin::Device` |
-| `user_agent` | client name | written as `device:{client_name}`, so the prefix doubles as a marker |
-| `last_seen_at` | genuine liveness | already maintained by the last-seen tracker, keyed on `claims.sid` |
-| `created_at`, `expires_at` | connected since / valid until | |
-| `revoked`, `dpop_jkt` | state, binding | |
-
-So the listing itself is a query change, and it turns a list of things
-that are *not* connected into a list of things that are.
-
-**One small migration, though: two IP columns rather than one.**
-`ip_address` today is commented "approver's browser IP" — where the
-human authorised the device, not where the device is. Overloading or
-relabelling one column loses information that is worth keeping
-separately:
+**But two IP columns rather than one.** `ip_address` is commented
+"approver's browser IP" — where the human authorised, not where the
+device is:
 
 | column | written | means |
 |---|---|---|
-| `ip_approved` | once, at `approve()` | where a human authorised this device. Immutable, forensic — "who let this in" |
-| `ip_seen` | on the existing last-seen write | where the credential is actually being used |
+| `ip_approved` | once, at `approve()` | where a human authorised this device — immutable, forensic |
+| `ip_seen` | on the existing last-seen write | where the credential is actually used |
 
-**A mismatch between them is itself a signal**, which is the reason to
-keep both rather than pick one: a device approved from a home address
-and now seen from elsewhere is exactly the shape of a stolen refresh
-token, and no single column can express it.
-
-`ip_seen` is close to free. The last-seen tracker already writes that
-row on a batched 10 s interval (`main.rs` ~200,
-`with_interval(Duration::from_secs(10))`, with a flush on shutdown), so
-the IP rides an UPDATE that is already happening — same row, same
-statement, no extra round trip. Note the corollary: `ip_seen` is
-accurate to within the flush interval, not instantaneous, and the
-display should not imply otherwise.
-
-This applies to every session origin, not only devices — a browser
-session gains the same pair, and the admin panel's IP column becomes
-unambiguous for all of them.
+A mismatch between them is itself a theft signal, which no single column
+can express. `ip_seen` is nearly free — the tracker already writes that
+row on a batched 10 s interval (`main.rs` ~200), so the IP rides an
+UPDATE that is already happening; the corollary is that it is accurate
+to within that interval, and the display should not imply otherwise.
+Applies to every origin, so the admin panel's IP column becomes
+unambiguous for browser sessions too.
 
 ### True revocation, at no per-call cost
 
-`UserFlags` is already read per call and already cached, with eager
-invalidation on mutation. Both forms ride that read:
+`UserFlags` is already read per call and cached with eager invalidation.
+Both forms ride that read:
 
-- **Revoke-all** — add `sessions_valid_from: TIMESTAMPTZ` to the user
-  row. Revoking sets it to `now()`; the middleware rejects any token
-  whose `iat` precedes it. One comparison, no new query.
+- **Revoke-all** — `sessions_valid_from: TIMESTAMPTZ` on the user row.
+  Revoking sets it to `now()`; the middleware rejects any token whose
+  `iat` precedes it. One comparison, no new query.
 - **Revoke-one** — a bounded `revoked_sids` set in the same cached row.
-  Bounded because a revoked `sid` only needs remembering until its
-  access token would have expired anyway (~1 h), so the set self-prunes.
-  `sid` is already on `JwtClaims`, present "precisely so the auth
-  middleware can act per-session without a DB round trip".
+  Bounded because a revoked `sid` need only be remembered until its
+  access token would have expired (~1 h), so it self-prunes. `sid` is
+  already on `JwtClaims` "precisely so the auth middleware can act
+  per-session without a DB round trip".
 
-Latency is the flags-cache TTL (30 s) unless the revoking call
-invalidates eagerly — and that path already exists
-(`user_flags_cache.invalidate`), so revocation becomes immediate by
-calling it.
-
-This keeps the per-call budget flat: one cached read, now answering
-"still admitted, and is *this session* still valid" instead of only the
-former.
-
+Latency is the 30 s cache TTL unless the revoking call invalidates
+eagerly — `user_flags_cache.invalidate` already exists, so calling it
+makes revocation immediate. The per-call budget stays flat: one cached
+read, now answering "still admitted, **and is this session still
+valid**".
 ## Anonymous sessions do not pass through `admit()`
 
 A public-link session has no `auth.users` row — `share_service.rs` ~476,
@@ -637,7 +596,6 @@ and current, and a reader can trace **credentials → session** plus
 answer "which phases does a refresh run" from that page alone. If
 either only exists in this plan file, the next contributor adding a
 login path has no way to know what their path must check or when.
-
 
 ### Hurl is mandatory for everything observable at the wire
 
