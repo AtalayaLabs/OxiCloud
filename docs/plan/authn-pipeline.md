@@ -424,47 +424,26 @@ grant, stage 3 is skipped, and the resulting principal fails
 the explicit arm, someone calls `admit()` on it and gets a `NotFound`
 resolved by whichever fail-open arm they land on.
 
-## Relationship to the two fail-open arms
+## The two fail-open arms
 
-`src/AGENTS.md` calls these bugs:
+`require_internal_user` admits on any `get_user_flags` error;
+`decide_live_role` resurrects the claim role on a transient one. The
+resolution is in `scope-gates.md` § The two fail-open arms, and it is
+short: a transient lookup failure is a server fault, so answer **503**
+rather than yes or no. `NotFound` stays a definitive deny.
 
-> **An auth helper's `_ =>` arm must DENY.** Two fail-open gates exist
-> and are bugs, not patterns to copy: `require_internal_user` admits the
-> caller on *any* `get_user_flags` error, and `decide_live_role`
-> resurrects the claim role on a transient DB error.
+Two consequences for this document:
 
-The code states a defence, and it is more considered than that:
+- **It needs a transient error kind.** `ErrorKind` has no such variant
+  and `Timeout` maps to 408, which means the client was slow. Part A
+  adds it, since part A is where `admit()` makes the first
+  distinction between "this account is refused" and "I cannot tell".
+- **The arms' stated defence was "login/refresh already enforce `active`
+  at the canonical layer", and § The audit found that false** — OPAQUE's
+  `ke3` never checks it, nor does device approval. Part A makes the
+  premise true. That is worth knowing but no longer changes the
+  ordering, because 503 is right either way.
 
-> a *transient* lookup failure fails OPEN with the claim role (a DB blip
-> must not lock every authenticated user out, **and login/refresh
-> already enforce `active` at the canonical layer**). A *missing* row
-> (`NotFound`) is a definitive revocation and fails CLOSED.
-
-**That defence rests on a premise this audit found to be false.**
-OPAQUE's `ke3` never checks `active`, and neither does device approval —
-so "the canonical layer" does not enforce it canonically, and the
-per-call arm is covering for a gap it was told did not exist.
-
-Which reverses the dependency as first drafted here. This pipeline does
-not wait on those arms being fixed; **it is what makes their
-justification true.** Once `admit()` guarantees that every path enforces
-`active` before a session exists, failing open on a transient lookup is
-a defensible availability trade — defence in depth with a canonical
-layer that is actually canonical — rather than the only gate quietly
-holding the line.
-
-So the order matters more than the verdict:
-
-- **Fix the login phase first.** Tightening the per-call arm while
-  OPAQUE still admits deactivated accounts tightens the wrong end: DB
-  blips start denying legitimate users, and the actual hole stays open.
-- **Then re-decide the arms**, with the premise true. The answer may
-  well be to leave them, which is less work and less availability risk
-  than `scope-gates.md` § Maximise deny-by-default assumed when it said
-  the fold should fix them. That section should be read as "decide
-  deliberately", not "deny unconditionally".
-
-`NotFound` failing closed is correct either way and is not in question.
 ## Audit events
 
 Per AGENTS.md, every denial emits a line before returning. The new
@@ -722,17 +701,15 @@ The pipeline splits cleanly:
 
 Part A closes defects 3-7: OPAQUE logging in deactivated accounts, email
 verification reaching one path in eight, refresh undoing it, revoke
-meaning "cannot renew", and device revocation being unreachable. It also
-makes the fail-open premise true (§ Relationship to the two fail-open
-arms), which is why it comes before any decision about those arms.
+meaning "cannot renew", and device revocation being unreachable.
 
 Suggested sequence:
 
 1. **Pipeline part A.** Highest live-defect density, contained — one new
    function plus a signature change at five or six call sites. No
    routing restructure, no migration beyond the two IP columns.
-2. **Re-decide the fail-open arms**, premise now true. Possibly a no-op,
-   which is the cheapest good outcome.
+2. **The two fail-open arms → 503**, which part A needs anyway for its
+   transient error kind. Folds into part A rather than being a step.
 3. **`scope-gates.md` PR 1** — the gates fold. Behaviour-preserving, so
    its acceptance criterion is existing pins green *unchanged*.
 4. **`scope-gates.md` PR 2** — credential scopes. First

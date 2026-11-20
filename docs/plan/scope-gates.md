@@ -1158,68 +1158,38 @@ no behaviour. It is PR 3, or its own RFC, and the `Gate` enum carries
 the pair from the start so the later change is a wiring exercise rather
 than a redesign.
 
-### The two fail-open arms: decide, never smuggle
+### The two fail-open arms: answer 503, not yes or no
 
-PR 1's acceptance criterion is that it be **behaviour-preserving**. Taken
-literally, the fold preserves two fail-open arms and gives them an
-authoritative single home — which legitimises them without anyone having
-decided to. `src/AGENTS.md` calls them bugs:
+`require_internal_user` admits the caller on any `get_user_flags` error;
+`decide_live_role` resurrects the claim role on a transient one.
+`src/AGENTS.md` calls both bugs. An earlier draft of this section spent
+a page weighing security against availability — fail open and lock
+nobody out, or fail closed and deny on a DB blip.
 
-> **An auth helper's `_ =>` arm must DENY.** Two fail-open gates exist
-> and are bugs, not patterns to copy: `require_internal_user`
-> (`middleware/user.rs:64-71`) admits the caller on *any*
-> `get_user_flags` error, and `decide_live_role` (`:169-176`) resurrects
-> the claim role on a transient DB error.
+That was a false choice. **Both answer the authorization question when
+the server does not know the answer.** A transient lookup failure is a
+server fault, so the honest response is neither yes nor no:
 
-**But read the code's own defence in full before concluding anything**,
-because an earlier draft of this section quoted only its first clause
-and argued against half an argument:
+| case | today | should be |
+|---|---|---|
+| `NotFound` — definitive revocation | deny | deny — correct already |
+| transient failure | admit (fail open) | **503, retryable** |
 
-> a *transient* lookup failure fails OPEN with the claim role (a DB blip
-> must not lock every authenticated user out, **and login/refresh
-> already enforce `active` at the canonical layer**). A *missing* row
-> (`NotFound`) is a definitive revocation and fails CLOSED.
+A 403 would be the other wrong answer: it tells the client "you are not
+allowed", so the SPA shows a permissions error or bounces to login
+rather than retrying. 503 says "ask again", which is what is true.
 
-That second clause is the load-bearing one. It says the arm is defence
-in depth *over* a canonical check — not the primary gate. Which changes
-what the arm is: **a compensating control for a gap elsewhere, not a
-defect in itself.**
+The availability objection then disappears, because during a database
+outage the request was going to fail anyway at the next query —
+fail-open admits a caller into a system that cannot serve them, one
+status code less honestly.
 
-And the gap is real. `authn-pipeline.md` § The audit found that OPAQUE's
-`ke3` never checks `active`, and neither does device approval — so the
-canonical layer is not canonical, and this arm has been covering for a
-hole it was told did not exist.
-
-**Hence the ordering, which matters more than the verdict.** Fixing the
-arm while the gap stands produces the one indefensible outcome: DB blips
-begin denying legitimate users (availability cost paid in full) while
-OPAQUE still admits deactivated accounts (security benefit not gained).
-Strictly worse than doing nothing. So:
-
-1. **Close the gap first** — `authn-pipeline.md` part A, which makes the
-   premise true.
-2. **Then decide these arms**, with two facts an earlier draft lacked.
-
-The first fact is that the premise now holds, so failing open is
-genuinely defence in depth rather than the last line.
-
-The second is that the blip exposure is **bounded, and smaller than
-"every DAV user"**. `get_user_flags` is already moka-cached at
-`USER_FLAGS_CACHE_TTL` (30 s) through `try_get_with`, with single-flight
-coalescing and errors never cached. During an outage, entries still
-within TTL are served from cache; only requests whose entry expired
-reach the database, and concurrent misses for one user collapse into one
-lookup. The cost of failing closed is therefore roughly
-*blip ÷ 30 s* of active users, not all of them — which weakens the
-availability argument for fail-open *and* means the "add a short-TTL
-cache" mitigation an earlier draft proposed already exists.
-
-So the verdict is deliberately **not** taken here, and this section no
-longer claims the fold fixes them. What it does require is that the fold
-**must not preserve them silently**: whichever way it goes, the decision
-appears in the PR with a pin, never as an unremarked consequence of
-moving code. `NotFound` failing closed is correct either way and is not
-in question.
+One gap: there is no transient error class. `ErrorKind` has
+`NotFound | AlreadyExists | InvalidInput | AccessDenied | Timeout`, and
+`Timeout` maps to `408 Request Timeout` (`interfaces/errors.rs` ~236) —
+which means "the client was slow", not "my database is down". So this
+needs a transient kind mapping to 503, which is a small addition with a
+clear consumer, and `authn-pipeline.md` part A is where it lands.
 
 ## Direction: app passwords are terminal
 
@@ -1264,13 +1234,10 @@ between a credential being verified and a session existing — is
   state becomes a scope narrowed to `{security}` at mint, so
   `require_no_password_change_pending_layer` and its five mount points
   go away rather than folding into a gate.
-- **The two fail-open arms are decided *after* it, not before.** The
-  arms are a compensating control for a gap in the login phase — their
-  own defence says "login/refresh already enforce `active` at the
-  canonical layer", and that premise is false today. So the pipeline
-  makes the premise true, and only then is the verdict on the arms a
-  real choice. Fixing them first pays the availability cost and gains
-  no security. See § The two fail-open arms: decide, never smuggle.
+- **The two fail-open arms fold into it.** Their resolution is 503 on a
+  transient failure (§ The two fail-open arms), which needs a transient
+  error kind — and part A is where `admit()` first has to distinguish
+  "this account is refused" from "I cannot tell".
 
 ## Non-goals
 
