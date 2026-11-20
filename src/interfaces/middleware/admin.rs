@@ -16,7 +16,7 @@ use crate::common::di::AppState;
 use crate::domain::entities::user::UserRole;
 use crate::interfaces::api::cookie_auth::{ACCESS_COOKIE, extract_cookie_value};
 use crate::interfaces::errors::AppError;
-use crate::interfaces::middleware::user::{LiveRole, resolve_live_role};
+use crate::interfaces::middleware::user::{LiveRole, indeterminate_app_error, resolve_live_role};
 
 /// Validate the request's JWT (from the `Authorization: Bearer …` header
 /// or the access-token cookie) and require `claims.role == "admin"`.
@@ -79,6 +79,11 @@ pub async fn require_admin(
             ))
         }
         LiveRole::Revoked => Err(AppError::unauthorized("Account is no longer active")),
+        // Unknown role, so the admin question has no answer. Fails
+        // closed — but as 503/500, not 403: an admin told "forbidden"
+        // during a database blip would reasonably conclude their access
+        // was taken away.
+        LiveRole::Indeterminate { retryable } => Err(indeterminate_app_error(retryable)),
     }
 }
 
@@ -143,5 +148,9 @@ pub async fn require_authenticated(
             Ok((user_id, role))
         }
         LiveRole::Revoked => Err(AppError::unauthorized("Account is no longer active")),
+        // Same reasoning as `require_admin` above: unknown is not
+        // revoked, so this must not render as 401 and send the SPA to
+        // the login screen over a blip.
+        LiveRole::Indeterminate { retryable } => Err(indeterminate_app_error(retryable)),
     }
 }

@@ -264,6 +264,18 @@ pub enum AuthError {
 
     #[error("Authentication service unavailable")]
     AuthServiceUnavailable,
+
+    /// The live-role re-check could not read the user record, so the
+    /// caller's role is unknown. Distinct from [`Self::AccountInactive`]
+    /// on purpose: that one is a 401 and means "your account is gone",
+    /// which during a database blip would log out every session instead
+    /// of asking them to retry. See [`LiveRole::Indeterminate`].
+    ///
+    /// Also distinct from [`Self::AuthServiceUnavailable`], which is a
+    /// misconfiguration (no auth service wired at all) and stays a 500 —
+    /// retrying it will never help.
+    #[error("Unable to verify account state")]
+    LiveRoleIndeterminate { retryable: bool },
 }
 
 impl IntoResponse for AuthError {
@@ -294,6 +306,9 @@ impl IntoResponse for AuthError {
                 crate::interfaces::errors::AppError::internal_error(
                     "Authentication service unavailable",
                 )
+            }
+            AuthError::LiveRoleIndeterminate { retryable } => {
+                crate::interfaces::middleware::user::indeterminate_app_error(retryable)
             }
         };
         app.into_response()
@@ -388,6 +403,13 @@ pub async fn auth_middleware(
                             {
                                 LiveRole::Active(role) => role,
                                 LiveRole::Revoked => return Err(AuthError::AccountInactive),
+                                // Unknown, not inactive. `AccountInactive`
+                                // is a 401, which would tell a Bearer
+                                // client its token is dead and send it to
+                                // re-authenticate over a blip.
+                                LiveRole::Indeterminate { retryable } => {
+                                    return Err(AuthError::LiveRoleIndeterminate { retryable });
+                                }
                             };
                             // `username`/`email` are `Arc<str>` refcount
                             // bumps out of the cached claims; `role` is an
@@ -551,6 +573,16 @@ pub async fn auth_middleware(
                             }
                             LiveRole::Revoked => {
                                 // Fall through to the unauthenticated 401 / login redirect.
+                            }
+                            // Must NOT fall through. Falling through means
+                            // 401 and a redirect to /login — so a database
+                            // blip would log out every browser session at
+                            // once, which is the mass-lockout the old
+                            // fail-open arm was there to avoid. Answer
+                            // 503 and let the SPA retry with the cookie it
+                            // already has.
+                            LiveRole::Indeterminate { retryable } => {
+                                return Err(AuthError::LiveRoleIndeterminate { retryable });
                             }
                         }
                     }

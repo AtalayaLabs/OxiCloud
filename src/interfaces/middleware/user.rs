@@ -120,11 +120,7 @@ fn decide_internal_user(
                 error = %e,
                 "👮🏻‍♂️ internal-user gate could not evaluate — answered 503, neither admitted nor denied",
             );
-            Err(AppError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Temporarily unable to verify your account; please retry",
-                "ServiceUnavailable",
-            ))
+            Err(indeterminate_app_error(true))
         }
         // Not transient and not `NotFound`: a decode failure, a schema
         // mismatch — a bug rather than a blip, so retrying will not help
@@ -138,11 +134,7 @@ fn decide_internal_user(
                 error = %e,
                 "👮🏻‍♂️ internal-user gate could not evaluate — permanent lookup failure",
             );
-            Err(AppError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Unable to verify your account",
-                "InternalError",
-            ))
+            Err(indeterminate_app_error(false))
         }
     }
 }
@@ -192,6 +184,43 @@ pub enum LiveRole {
     /// The account is deactivated or deleted: the request must be rejected
     /// even though its token is still cryptographically valid.
     Revoked,
+    /// The live record could not be read, so the caller's role is
+    /// **unknown** — which is not the same as revoked, and the
+    /// distinction is load-bearing at two call sites. The cookie branch
+    /// of the auth middleware turns `Revoked` into a 401 and a redirect
+    /// to `/login`; folding "cannot tell" into it would log every
+    /// browser user out during a database blip. The old behaviour here
+    /// was the opposite mistake — fail OPEN on the frozen JWT claim
+    /// role, so a demoted admin kept admin power for as long as the
+    /// lookup kept failing.
+    ///
+    /// `retryable` separates a blip (answer 503, ask again) from a
+    /// permanent lookup failure (answer 500). Telling a client to retry
+    /// a schema mismatch is a lie it acts on, which is why this is a
+    /// field rather than one collapsed "unavailable" case.
+    Indeterminate { retryable: bool },
+}
+
+/// The HTTP answer for a [`LiveRole::Indeterminate`] outcome.
+///
+/// One home for the choice, because four call sites face it and a
+/// status code picked four times gets picked differently the fourth
+/// time. `503` carries `Retry-After` semantics for the SPA's fetch
+/// interceptor; `500` tells it not to bother.
+pub fn indeterminate_app_error(retryable: bool) -> AppError {
+    if retryable {
+        AppError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Temporarily unable to verify your account; please retry",
+            "ServiceUnavailable",
+        )
+    } else {
+        AppError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Unable to verify your account",
+            "InternalError",
+        )
+    }
 }
 
 /// Re-validate a caller carried by a still-valid token against the live
@@ -222,7 +251,7 @@ pub async fn resolve_live_role(
     if let Some(live) = anonymous_live_role(claim_role) {
         return live;
     }
-    decide_live_role(auth.get_user_flags(user_id).await, user_id, claim_role)
+    decide_live_role(auth.get_user_flags(user_id).await, user_id)
 }
 
 /// `Some` when the claim is an anonymous public-share session, which must
@@ -248,12 +277,16 @@ fn anonymous_live_role(claim_role: &str) -> Option<LiveRole> {
 }
 
 /// Pure decision core of [`resolve_live_role`], split out so the
-/// allow/revoke/fail-open policy is unit-testable without a service or DB.
-fn decide_live_role(
-    flags: Result<UserFlags, DomainError>,
-    user_id: Uuid,
-    claim_role: &str,
-) -> LiveRole {
+/// allow/revoke/indeterminate policy is unit-testable without a service
+/// or DB.
+///
+/// Takes no claim role: the live record is the only authority here. The
+/// parameter used to exist solely to be returned when the lookup failed
+/// — the fail-open path — and removing it is what makes a frozen claim
+/// unable to influence the outcome at all. `resolve_live_role` still
+/// reads the claim, but only to spot an anonymous share session that has
+/// no user row to re-check.
+fn decide_live_role(flags: Result<UserFlags, DomainError>, user_id: Uuid) -> LiveRole {
     match flags {
         Ok(flags) if flags.active => LiveRole::Active(SmolStr::new_static(flags.role.as_str())),
         Ok(_) => {
@@ -265,15 +298,27 @@ fn decide_live_role(
             audit_token_revoked(user_id, "deleted");
             LiveRole::Revoked
         }
-        // Transient lookup failure (DB blip): fail open on the claim role so
-        // a momentary outage doesn't 401 every authenticated user at once.
+        // The lookup failed, so the role is unknown. This arm used to
+        // fail OPEN on `claim_role` — the frozen JWT claim — which meant a
+        // demoted admin kept admin power for as long as the lookup kept
+        // failing, and the one thing this re-check exists to catch was
+        // the one thing it stopped catching under load.
+        //
+        // Reporting "unknown" rather than guessing lets each caller answer
+        // honestly: 503 for a blip, 500 for a permanent failure, and — at
+        // the cookie branch — neither of those is a 401, so a blip no
+        // longer logs every browser session out.
         Err(e) => {
+            let retryable = e.is_transient();
             tracing::warn!(
-                user_id = %user_id,
+                target: "audit",
+                event = "auth.live_role_indeterminate",
+                reason = if retryable { "transient_backend" } else { "lookup_failed" },
+                caller_id = %user_id,
                 error = %e,
-                "live-user re-check failed transiently; allowing request on the JWT claim role (fail-open)"
+                "👮🏻‍♂️ live-role re-check could not evaluate — neither honoured nor revoked",
             );
-            LiveRole::Active(SmolStr::new(claim_role))
+            LiveRole::Indeterminate { retryable }
         }
     }
 }
@@ -486,7 +531,7 @@ mod tests {
 
     #[test]
     fn active_admin_yields_current_admin_role() {
-        let live = decide_live_role(Ok(flags(UserRole::Admin, true)), Uuid::nil(), "user");
+        let live = decide_live_role(Ok(flags(UserRole::Admin, true)), Uuid::nil());
         // The live record wins over the (stale) claim — a freshly promoted
         // user is admin even though their token still says "user".
         assert_eq!(live, LiveRole::Active(SmolStr::new_static("admin")));
@@ -495,29 +540,93 @@ mod tests {
     #[test]
     fn active_user_yields_current_user_role() {
         // A demoted admin: token claim still "admin", live record "user".
-        let live = decide_live_role(Ok(flags(UserRole::User, true)), Uuid::nil(), "admin");
+        let live = decide_live_role(Ok(flags(UserRole::User, true)), Uuid::nil());
         assert_eq!(live, LiveRole::Active(SmolStr::new_static("user")));
     }
 
     #[test]
     fn deactivated_account_is_revoked() {
-        let live = decide_live_role(Ok(flags(UserRole::Admin, false)), Uuid::nil(), "admin");
+        let live = decide_live_role(Ok(flags(UserRole::Admin, false)), Uuid::nil());
         assert_eq!(live, LiveRole::Revoked);
     }
 
     #[test]
     fn deleted_account_not_found_is_revoked() {
         let err = DomainError::new(ErrorKind::NotFound, "User", "no such user");
-        let live = decide_live_role(Err(err), Uuid::nil(), "admin");
+        let live = decide_live_role(Err(err), Uuid::nil());
         assert_eq!(live, LiveRole::Revoked);
     }
 
+    /// Replaces `transient_error_fails_open_on_claim_role`, which pinned
+    /// the fail-open arm: a failed lookup returned `Active(claim_role)`,
+    /// so a demoted admin kept admin power for as long as the lookup kept
+    /// failing — the one thing this re-check exists to catch.
     #[test]
-    fn transient_error_fails_open_on_claim_role() {
-        // A DB blip must not lock everyone out: allow on the claim role.
-        let err = DomainError::new(ErrorKind::InternalError, "User", "connection reset");
-        let live = decide_live_role(Err(err), Uuid::nil(), "admin");
-        assert_eq!(live, LiveRole::Active(SmolStr::new_static("admin")));
+    fn transient_error_is_indeterminate_and_retryable() {
+        let err = DomainError::transient_backend("Database", "connection reset");
+        assert_eq!(
+            decide_live_role(Err(err), Uuid::nil()),
+            LiveRole::Indeterminate { retryable: true },
+        );
+    }
+
+    /// A permanent failure is still indeterminate, but not retryable, so
+    /// callers answer 500 rather than inviting a retry that cannot help.
+    #[test]
+    fn permanent_error_is_indeterminate_and_not_retryable() {
+        let err = DomainError::new(ErrorKind::InternalError, "User", "column missing");
+        assert_eq!(
+            decide_live_role(Err(err), Uuid::nil()),
+            LiveRole::Indeterminate { retryable: false },
+        );
+    }
+
+    /// The property the whole variant exists for: a failed lookup never
+    /// yields a ROLE. `Active(claim_role)` was the fail-open, and
+    /// `Revoked` would be the opposite mistake — the cookie branch turns
+    /// `Revoked` into a 401 and a redirect to `/login`, so collapsing
+    /// "cannot tell" into it would log out every browser session during a
+    /// blip.
+    #[test]
+    fn a_failed_lookup_never_yields_a_role_nor_a_revocation() {
+        for kind in [
+            ErrorKind::InternalError,
+            ErrorKind::TransientBackend,
+            ErrorKind::Timeout,
+            ErrorKind::DatabaseError,
+            ErrorKind::AccessDenied,
+        ] {
+            let live = decide_live_role(Err(DomainError::new(kind, "User", "x")), Uuid::nil());
+            assert!(
+                matches!(live, LiveRole::Indeterminate { .. }),
+                "{kind:?} must be indeterminate, got {live:?}",
+            );
+        }
+    }
+
+    /// `NotFound` stays a revocation — the account is genuinely gone, and
+    /// that IS the definitive answer the cookie branch should turn into a
+    /// 401. Pinned next to the above so the boundary between them is
+    /// visible in one place.
+    #[test]
+    fn not_found_stays_a_revocation_not_indeterminate() {
+        let err = DomainError::new(ErrorKind::NotFound, "User", "no such user");
+        assert_eq!(decide_live_role(Err(err), Uuid::nil()), LiveRole::Revoked);
+    }
+
+    /// The status split, pinned on the shared helper the four call sites
+    /// use — so a change there cannot quietly turn a blip into a 500 or a
+    /// permanent fault into "please retry".
+    #[test]
+    fn indeterminate_renders_503_when_retryable_and_500_otherwise() {
+        assert_eq!(
+            indeterminate_app_error(true).status_code,
+            StatusCode::SERVICE_UNAVAILABLE,
+        );
+        assert_eq!(
+            indeterminate_app_error(false).status_code,
+            StatusCode::INTERNAL_SERVER_ERROR,
+        );
     }
 
     /// An anonymous session skips the live re-check — there is no user row

@@ -417,6 +417,25 @@ async fn handle_session(mut socket: WebSocket, caller_id: Uuid, state: Arc<AppSt
                     drop(socket);
                     return;
                 }
+                // The role is unknown, and this socket is already
+                // upgraded — there is no status code left to send, so the
+                // honest options are "close" or "continue with a role we
+                // did not verify". Closing wins: the client's reconnect
+                // path exists and will retry, whereas continuing would
+                // hand an unverified role to the admin-topic gate for the
+                // life of the connection.
+                crate::interfaces::middleware::user::LiveRole::Indeterminate { retryable } => {
+                    tracing::warn!(
+                        target: "audit",
+                        event = "message_bus.session_rejected",
+                        reason = "live_role_indeterminate",
+                        retryable,
+                        caller_id = %caller_id,
+                        "👮🏻‍♂️ WS session closed — could not verify account state; client should reconnect",
+                    );
+                    drop(socket);
+                    return;
+                }
             }
         }
         None => "user".to_string(),
