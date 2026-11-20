@@ -45,6 +45,11 @@ pub struct DeviceAuthService {
     session_storage: Arc<SessionPgRepository>,
     /// Base URL of the server (e.g. "https://cloud.example.com")
     base_url: String,
+    /// `OXICLOUD_REQUIRE_VERIFIED_EMAIL`, snapshotted like
+    /// `AuthApplicationService` does. Needed because approving a device
+    /// code mints a session, so this door owes the same account checks
+    /// as every other one.
+    require_verified_email: bool,
 }
 
 impl DeviceAuthService {
@@ -54,6 +59,7 @@ impl DeviceAuthService {
         user_storage: Arc<UserPgRepository>,
         session_storage: Arc<SessionPgRepository>,
         base_url: String,
+        require_verified_email: bool,
     ) -> Self {
         Self {
             device_code_storage,
@@ -61,6 +67,7 @@ impl DeviceAuthService {
             user_storage,
             session_storage,
             base_url,
+            require_verified_email,
         }
     }
 
@@ -183,6 +190,20 @@ impl DeviceAuthService {
 
         // Fetch user to generate tokens
         let user = self.user_storage.get_user_by_id(user_id).await?;
+
+        // Account checks. This door ran none of them: approving a device
+        // code minted a session for a deactivated account, or one with an
+        // unverified address under `OXICLOUD_REQUIRE_VERIFIED_EMAIL`,
+        // because it went from the user row straight to `Session::new`.
+        //
+        // The same function the password and OPAQUE doors use — this
+        // service holds no `AuthApplicationService`, and a second copy of
+        // the rule here is exactly how the door came to skip it.
+        crate::application::services::auth_application_service::check_account_admission(
+            &user,
+            self.require_verified_email,
+            "device",
+        )?;
 
         // Generate internal JWT access token + refresh token. Device-
         // authorization sessions (RFC 8628) are for CLI / TV / device

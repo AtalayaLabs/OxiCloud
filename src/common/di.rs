@@ -2571,6 +2571,9 @@ impl AppServiceFactory {
                 hasher,
                 user_repo,
                 self.config.base_url(),
+                // Every Basic-auth request IS a login, so this door owes
+                // the same account checks as the session-minting ones.
+                self.config.auth.require_verified_email,
             ));
             tracing::info!("App Password service initialized (shared)");
             Some(svc)
@@ -3419,6 +3422,10 @@ impl AppServiceFactory {
                     user_repo,
                     session_repo,
                     base_url,
+                    // Approving a device code mints a session, so this
+                    // door owes the same account checks as the password
+                    // and OPAQUE ones.
+                    self.config.auth.require_verified_email,
                 ));
                 app_state.device_auth_service = Some(device_auth_svc);
                 tracing::info!("Device Authorization Grant (RFC 8628) service initialized");
