@@ -49,15 +49,17 @@ Which path applies which:
 | OIDC | ✓ `:5795` | own logic from IdP claims | ✗ |
 | **app password** | ✓ (≤30 s cache) | **✗** | ✗ |
 | **device approve/poll** | **✗** | **✗** | ✗ |
-| NC login v2 | ✓ `verify_credentials` | ✗ | ✗ |
+| NC login v2 | ✓ `verify_credentials`, but **pre-credential** | ✗ | ✗ |
 | **refresh** | ✓ `:2346` | **✗** | ✗ |
+| **refresh grace replay** | ✓ hand-copied | **✗** | ✗ |
 | **per call** | ✓ `LiveRole` | **✗** | layer-dependent |
 
 ### Findings
 
-1. **Email verification is enforced on 1 of 8 paths and never per
-   call.** OPAQUE, app passwords, the device flow, NC login v2 and
-   refresh all bypass `require_verified_email`.
+1. **Email verification is enforced on 2 of 9 paths and never per
+   call** — `login()` and, by its own claim logic, OIDC. OPAQUE, app
+   passwords, the device flow, NC login v2, refresh and the grace
+   replay all bypass `require_verified_email`.
 2. **`refresh` undoes the one path that does check.** It re-mints
    without re-evaluating, so a session established once outlives the
    requirement indefinitely.
@@ -71,7 +73,52 @@ Which path applies which:
 5. **The cause is structural, not a missing `if`.** The gate lives
    *inside* `login()`, while `mint_session_for_authenticated_user` was
    factored out "so the OPAQUE login handler" could reuse it — reusing
-   the minting and leaving the gate behind. A ninth path will repeat it.
+   the minting and leaving the gate behind. A tenth path will repeat it.
+6. **The grace replay is a door nobody counts.** `try_grace_replay`
+   re-issues an access token without rotating, and hand-rolls
+   `is_active` under the comment "the user has to pass the same gates a
+   normal refresh applies" — so it verifies one of the two gates it
+   claims to mirror. Only a sweep of every `generate_access_token`
+   caller finds it; it is reachable by anyone holding a
+   just-superseded refresh token.
+7. **NC login v2 checks `active` before the password verify**, and
+   answers "Account deactivated" to a caller who has proven nothing —
+   so a prober learns the username exists AND is deactivated.
+   `ensure_user_is_active`'s own doc calls that the weaker posture. The
+   flow ends by handing the client an app password, so it owes a
+   session mint's checks.
+
+### Resolved
+
+`check_account_admission` is the single definition; `ensure_admissible`
+reaches it inside the service, and the two services holding no
+`AuthApplicationService` (device, app password) call it directly. Every
+door calls the **composed** check, never the individual ones — asking
+them one at a time per door is how they drifted, and a rule added later
+would otherwise land in `admit` and miss `refresh`.
+
+`AdmittedCaller` makes it unforgeable where it can:
+`mint_session_for_authenticated_user` takes one in place of a `User`,
+and only `admit` can build one, so a door reaching the shared mint
+without the checks does not compile. Four paths still build their own
+`Session::new` (`redeem_magic_link`, `refresh_token`, `oidc_callback`,
+device `approve`) and so are covered by the call rather than the type.
+Funnelling those into one mint is the remaining structural step.
+
+Two carve-outs are deliberate and pinned:
+
+- **Admins are exempt from the email rule.** It is enforced at login,
+  so an admin with an unverified address would have no way left to log
+  in and fix it.
+- **`login` keeps a separate early `active` check** before the
+  OPAQUE-migrated branch, so a deactivated migrated user is told
+  "deactivated" rather than "use the OPAQUE endpoint". App-password
+  verify keeps its early check too, as a pre-filter that saves an
+  Argon2 hash and leaks nothing.
+
+No lockout risk from uniform enforcement:
+`OXICLOUD_REQUIRE_VERIFIED_EMAIL` already exists and defaults to
+`false`.
 
 ## The phases, and when each runs
 
@@ -207,7 +254,7 @@ mint_session_for_authenticated_user(caller: AdmittedCaller, …)
 ```
 
 `AdmittedCaller` is constructible only by `admit()`. OPAQUE's current
-code stops compiling, and a ninth path cannot repeat finding 5. Rank 1
+code stops compiling, and a tenth path cannot repeat finding 5. Rank 1
 of `scope-gates.md` § Maximise deny-by-default — won't compile — rather
 than rank 5, a check a reviewer must notice.
 
@@ -425,9 +472,9 @@ transitions need stable `event` / `reason` keys, inside the existing
   bypass a compile error, and this pins that nobody re-introduces a
   `user_id`-taking variant.
 - Hurl: the audit matrix inverted — OPAQUE login, app-password auth,
-  device token and refresh each **refused** for an unverified email
-  where classic login is refused. These four are the current bypasses,
-  so they are the regression pins.
+  device token, NC login v2, refresh and the grace replay each
+  **refused** for an unverified email where classic login is refused.
+  These six are the current bypasses, so they are the regression pins.
 - Hurl: forced-reset discharge end to end — login with the flag set
   yields a `{security}`-scoped session, elevation succeeds with the
   current password, the change succeeds, and the *new* session is
@@ -520,8 +567,8 @@ whether it binds every credential or only interactive ones, and expect
 
 - **The path matrix.** Assert the new condition on *every* authn entry
   point — classic, OPAQUE, magic-link, OIDC, app password, device,
-  NC login v2, refresh. This is the pin that the audit above would have
-  caught: eight paths, one enforcement.
+  NC login v2, refresh, grace replay. This is the pin that the audit
+  above would have caught: nine doors, one enforcement.
 - **Refresh re-evaluates it.** Otherwise the condition is bypassable by
   waiting an hour.
 - **Discharge works, and does not deadlock** — if you narrowed.
@@ -608,7 +655,7 @@ Mandatory Hurl coverage, by subject:
 
 | subject | pin |
 |---|---|
-| the audit matrix inverted | OPAQUE, app-password, device and refresh each refused for an unverified email where classic login is refused — these four are the current bypasses |
+| the audit matrix inverted | OPAQUE, app-password, device, NC login v2, refresh and the grace replay each refused for an unverified email where classic login is refused — these six are the current bypasses |
 | admission reject | an inactive account gets no session from **any** path, and the response shape is identical across paths (anti-enumeration) |
 | admission narrow | a forced-reset login yields a `{security}`-scoped session: the discharge endpoint works, everything else 403s |
 | forced-reset discharge | login → elevate → change → **new** session is full-scope. The deadlock pin |
@@ -658,7 +705,7 @@ The pipeline splits cleanly:
 | **B** | yes | narrowing (forced reset → `{security}`), obligations |
 
 Part A closes defects 3-7: OPAQUE logging in deactivated accounts, email
-verification reaching one path in eight, refresh undoing it, revoke
+verification reaching two paths in nine, refresh undoing it, revoke
 meaning "cannot renew", and device revocation being unreachable.
 
 Suggested sequence:
@@ -666,16 +713,20 @@ Suggested sequence:
 1. **Pipeline part A.** Highest live-defect density, contained — one new
    function plus a signature change at five or six call sites. No
    routing restructure, no migration beyond the two IP columns.
-2. **The two fail-open arms → 503**, which part A needs anyway for its
-   transient error kind. Folds into part A rather than being a step.
-3. **`scope-gates.md` PR 1** — the gates fold. Behaviour-preserving, so
+
+   Landed so far: the two fail-open arms (`ed427185e`, `a15455f14`) and
+   the admission check on all nine doors (`2f9101138`). Still open —
+   true revocation, and the device list with its two IP columns, which
+   is the only part needing a migration. The Hurl pins for the
+   wire-observable halves are owed with it.
+2. **`scope-gates.md` PR 1** — the gates fold. Behaviour-preserving, so
    its acceptance criterion is existing pins green *unchanged*.
-4. **`scope-gates.md` PR 2** — credential scopes. First
+3. **`scope-gates.md` PR 2** — credential scopes. First
    non-behaviour-preserving step; carries the lockout risk and needs the
    grandfathering table.
-5. **Pipeline part B** — narrowing and obligations, which need the
-   `ScopeSet` from step 4.
-6. **`scope-gates.md` PR 3** — authentication-by-default. Restructures
+4. **Pipeline part B** — narrowing and obligations, which need the
+   `ScopeSet` from step 3.
+5. **`scope-gates.md` PR 3** — authentication-by-default. Restructures
    how auth is mounted, so it goes last and alone.
 
 Why not scopes first: every scope decision is reversible in a way an
