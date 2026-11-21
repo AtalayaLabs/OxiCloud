@@ -403,7 +403,7 @@ async fn handle_session(mut socket: WebSocket, caller_id: Uuid, state: Arc<AppSt
                 // land, because those read the user row. Threading the
                 // `iat` down from the upgrade would close it; tracked in
                 // `docs/plan/authn-pipeline.md`.
-                None,
+                crate::interfaces::middleware::user::PresentedToken::default(),
             )
             .await
             {

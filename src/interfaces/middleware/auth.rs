@@ -15,7 +15,7 @@ use crate::application::ports::auth_ports::TokenServicePort;
 use crate::domain::entities::user::UserRole;
 use crate::domain::services::authorization::Subject;
 use crate::infrastructure::services::share_ring;
-use crate::interfaces::middleware::user::{LiveRole, resolve_live_role};
+use crate::interfaces::middleware::user::{LiveRole, PresentedToken, resolve_live_role};
 
 /// Marker inserted into request extensions when the user was authenticated
 /// via the `oxicloud_access` HttpOnly cookie rather than a Bearer/Basic header.
@@ -398,7 +398,10 @@ pub async fn auth_middleware(
                                 auth_service.auth_application_service.as_ref(),
                                 user_id,
                                 &claims.role,
-                                Some(claims.iat),
+                                PresentedToken {
+                                    issued_at: Some(claims.iat),
+                                    session_id: claims.sid,
+                                },
                             )
                             .await
                             {
@@ -549,7 +552,14 @@ pub async fn auth_middleware(
                                 auth_svc.auth_application_service.as_ref(),
                                 user_id,
                                 &role,
-                                None,
+                                // An app password is not a JWT: no `iat`,
+                                // no `sid`. So neither revocation form
+                                // reaches it — it is revoked by DELETING
+                                // it, which the 300 s verification cache
+                                // bounds. `active` and the live role,
+                                // which is what this call is for, apply
+                                // regardless.
+                                crate::interfaces::middleware::user::PresentedToken::default(),
                             )
                             .await
                             {
@@ -648,7 +658,10 @@ pub async fn auth_middleware(
                             auth_service.auth_application_service.as_ref(),
                             user_id,
                             &claims.role,
-                            Some(claims.iat),
+                            PresentedToken {
+                                issued_at: Some(claims.iat),
+                                session_id: claims.sid,
+                            },
                         )
                         .await
                         {

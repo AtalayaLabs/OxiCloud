@@ -2922,7 +2922,11 @@ impl AuthApplicationService {
         let id_token_hint = session.oidc_id_token().map(str::to_string);
 
         // Revoke session
+        let logged_out_user = session.user_id();
         self.session_storage.revoke_session(session.id()).await?;
+        // …and drop the cached flags, so the revoked `sid` is in the set
+        // on the very next request rather than within the TTL.
+        self.invalidate_user_flags(logged_out_user).await;
 
         // Lifecycle: notify hooks. One extra DB roundtrip per logout
         // (user load) is acceptable — logout is rare. Failure to load
@@ -3072,6 +3076,18 @@ impl AuthApplicationService {
     /// exposure is bounded by the access-token TTL. Returning an error
     /// here would tell the user their logout failed when most of it
     /// landed.
+    /// Drop a user's cached flags so a just-written revocation is seen on
+    /// their next request instead of within the 30 s TTL.
+    ///
+    /// Needed by the PER-SESSION paths, which write only
+    /// `auth.sessions.revoked_at` and so have no cutoff to stamp. Without
+    /// it, `DELETE /api/admin/sessions/{id}` would still take effect, but
+    /// up to half a minute later — and an operator revoking a session is
+    /// usually responding to something.
+    async fn invalidate_user_flags(&self, user_id: Uuid) {
+        self.user_flags_cache.invalidate(&user_id).await;
+    }
+
     async fn stamp_revocation_cutoff(&self, user_id: Uuid) {
         if let Err(e) = self.user_storage.set_sessions_valid_from_now(user_id).await {
             tracing::error!(
@@ -3517,6 +3533,12 @@ impl AuthApplicationService {
                 self.session_storage
                     .revoke_other_user_sessions(user_id, keep)
                     .await?;
+                // The other devices' sids are now in the revoked set; drop
+                // the cache so their next request reads it. This is what
+                // closes the window the cutoff could not touch here —
+                // their access tokens stop working now, while the
+                // caller's kept session is untouched.
+                self.invalidate_user_flags(user_id).await;
             }
             None => {
                 self.session_storage
@@ -4614,6 +4636,11 @@ impl AuthApplicationService {
             .ok()
             .map(|s| s.user_id());
         self.session_storage.revoke_session(session_id).await?;
+        if let Some(uid) = target_user_id {
+            // So the admin panel's button stops the session NOW, not
+            // within the flags-cache TTL.
+            self.invalidate_user_flags(uid).await;
+        }
         tracing::info!(
             target: "audit",
             event = "admin.session_revoked",

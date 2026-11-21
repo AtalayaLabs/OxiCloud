@@ -12,6 +12,25 @@ use crate::domain::repositories::user_repository::{
 use crate::infrastructure::repositories::pg::pg_error;
 use crate::infrastructure::repositories::pg::transaction_utils::with_transaction;
 
+/// How far back `get_user_flags` carries revoked session ids.
+///
+/// A session revoked longer ago than this cannot have a live access
+/// token, so remembering its id would only grow a cache entry that sits
+/// on every authenticated request. The window must therefore be at
+/// least the access-token lifetime — were it shorter, a revoked
+/// session's token would start being ACCEPTED again the moment its id
+/// aged out of the set, which is worse than never having had the check.
+///
+/// 24 h against a 1 h default leaves a wide margin, and the set stays
+/// tiny in practice: it holds only the sessions ONE user revoked in the
+/// last day, which is normally none. `AuthConfig::validate` warns if the
+/// configured access-token lifetime ever approaches this.
+///
+/// A constant rather than a parameter because `UserPgRepository` is
+/// constructed in eleven places, most of which have nothing to do with
+/// authentication and no business knowing a token lifetime.
+const REVOKED_SID_WINDOW_SECS: i64 = 86_400;
+
 // Implement From<sqlx::Error> for UserRepositoryError to allow automatic conversions
 impl From<sqlx::Error> for UserRepositoryError {
     fn from(err: sqlx::Error) -> Self {
@@ -128,16 +147,27 @@ impl UserPgRepository {
     pub async fn get_user_flags(&self, id: Uuid) -> UserRepositoryResult<UserFlags> {
         let row = sqlx::query(
             r#"
-            SELECT role::text as role_text,
-                   is_external,
-                   active,
-                   force_password_change_at_next_login,
-                   sessions_valid_from
-              FROM auth.users
-             WHERE id = $1
+            SELECT u.role::text as role_text,
+                   u.is_external,
+                   u.active,
+                   u.force_password_change_at_next_login,
+                   u.sessions_valid_from,
+                   COALESCE(
+                       ARRAY(
+                           SELECT s.id
+                             FROM auth.sessions s
+                            WHERE s.user_id = u.id
+                              AND s.revoked
+                              AND s.revoked_at > NOW() - make_interval(secs => $2::double precision)
+                       ),
+                       '{}'
+                   ) AS revoked_session_ids
+              FROM auth.users u
+             WHERE u.id = $1
             "#,
         )
         .bind(id)
+        .bind(REVOKED_SID_WINDOW_SECS as f64)
         .fetch_one(&*self.pool)
         .await
         .map_err(Self::map_sqlx_error)?;
@@ -150,6 +180,7 @@ impl UserPgRepository {
             active: row.get("active"),
             force_password_change: row.get("force_password_change_at_next_login"),
             sessions_valid_from: row.get("sessions_valid_from"),
+            revoked_session_ids: row.get::<Vec<Uuid>, _>("revoked_session_ids").into(),
         })
     }
 

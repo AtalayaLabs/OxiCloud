@@ -299,7 +299,7 @@ mod tests {
     struct Caller(UserFlags);
     impl AdminCallerPort for Caller {
         async fn admin_caller_flags(&self, _: Uuid) -> Result<UserFlags, DomainError> {
-            Ok(self.0)
+            Ok(self.0.clone())
         }
     }
     fn admin() -> Caller {
@@ -309,6 +309,7 @@ mod tests {
             active: true,
             force_password_change: false,
             sessions_valid_from: None,
+            revoked_session_ids: [].into(),
         })
     }
     fn catalogue() -> ThemeCatalogue {

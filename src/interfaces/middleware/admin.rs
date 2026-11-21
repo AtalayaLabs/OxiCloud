@@ -16,7 +16,9 @@ use crate::common::di::AppState;
 use crate::domain::entities::user::UserRole;
 use crate::interfaces::api::cookie_auth::{ACCESS_COOKIE, extract_cookie_value};
 use crate::interfaces::errors::AppError;
-use crate::interfaces::middleware::user::{LiveRole, indeterminate_app_error, resolve_live_role};
+use crate::interfaces::middleware::user::{
+    LiveRole, PresentedToken, indeterminate_app_error, resolve_live_role,
+};
 
 /// Validate the request's JWT (from the `Authorization: Bearer …` header
 /// or the access-token cookie) and require `claims.role == "admin"`.
@@ -56,7 +58,10 @@ pub async fn require_admin(
         auth.auth_application_service.as_ref(),
         user_id,
         &claims.role,
-        Some(claims.iat),
+        PresentedToken {
+            issued_at: Some(claims.iat),
+            session_id: claims.sid,
+        },
     )
     .await
     {
@@ -123,7 +128,10 @@ pub async fn require_authenticated(
         auth.auth_application_service.as_ref(),
         user_id,
         &claims.role,
-        Some(claims.iat),
+        PresentedToken {
+            issued_at: Some(claims.iat),
+            session_id: claims.sid,
+        },
     )
     .await
     {

@@ -253,12 +253,44 @@ pub async fn resolve_live_role(
     auth: &AuthApplicationService,
     user_id: Uuid,
     claim_role: &str,
-    token_issued_at: Option<i64>,
+    token: PresentedToken,
 ) -> LiveRole {
     if let Some(live) = anonymous_live_role(claim_role) {
         return live;
     }
-    decide_live_role(auth.get_user_flags(user_id).await, user_id, token_issued_at)
+    decide_live_role(auth.get_user_flags(user_id).await, user_id, token)
+}
+
+/// What the presented credential says about itself, for the two
+/// revocation checks that need more than a user id.
+///
+/// One struct rather than two more positional parameters, because both
+/// fields are optional and `resolve_live_role(a, b, c, None, None)` at a
+/// call site says nothing about which `None` is which. Both absent —
+/// `PresentedToken::default()` — is the honest answer for a credential
+/// that is not a JWT at all: an app password over Basic auth, or the
+/// WebSocket handler, which is handed a `caller_id` and nothing else.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PresentedToken {
+    /// The JWT `iat`, for the user-wide revocation cutoff.
+    pub issued_at: Option<i64>,
+    /// The JWT `sid` (`auth.sessions.id`), for per-session revocation.
+    pub session_id: Option<Uuid>,
+}
+
+/// Whether this specific session has been revoked.
+///
+/// The per-session counterpart to [`revoked_by_cutoff`]. Both halves
+/// must be present: no `sid` means the credential cannot be attributed
+/// to a session, which is a blind spot rather than an all-clear — and
+/// the reason `logout`'s single-session revocation does not reach an app
+/// password, which carries no `sid`.
+///
+/// `revoked_session_ids` holds only sessions revoked recently enough to
+/// still have a live token, so this is a scan of a handful of entries,
+/// usually none.
+fn session_revoked(revoked_session_ids: &[Uuid], session_id: Option<Uuid>) -> bool {
+    session_id.is_some_and(|sid| revoked_session_ids.contains(&sid))
 }
 
 /// Whether a token predates the user's revocation cutoff.
@@ -321,23 +353,37 @@ fn anonymous_live_role(claim_role: &str) -> Option<LiveRole> {
 fn decide_live_role(
     flags: Result<UserFlags, DomainError>,
     user_id: Uuid,
-    token_issued_at: Option<i64>,
+    token: PresentedToken,
 ) -> LiveRole {
     match flags {
-        // A token issued before the user's revocation cutoff IS revoked,
-        // so it answers here rather than through a separate mechanism —
-        // every caller already handles `Revoked`. This is what makes
-        // revocation take effect now: `auth.sessions.revoked` sits on the
-        // row holding the REFRESH token, so flipping it only stops
-        // renewal while the access token lives out its hour.
+        // Both revocation forms answer HERE, as `Revoked`, rather than
+        // through a mechanism of their own — every caller already handles
+        // that variant, so neither needed new plumbing at five call
+        // sites. What they have in common: `auth.sessions.revoked` sits
+        // on the row holding the REFRESH token, so flipping it stops
+        // renewal while the access token lives out its hour. These two
+        // are what make a revocation take effect now.
         //
-        // `token_issued_at: None` means the caller had no `iat` to offer
-        // (the WebSocket path, which receives only a `caller_id`), and
-        // the cutoff cannot be applied — see `resolve_live_role`.
+        // User-wide: every token issued before the cutoff.
+        //
+        // `issued_at: None` means the caller had no `iat` to offer — an
+        // app password, or the WebSocket handler — so the cutoff cannot
+        // be applied. See `PresentedToken`.
         Ok(flags)
-            if flags.active && revoked_by_cutoff(flags.sessions_valid_from, token_issued_at) =>
+            if flags.active && revoked_by_cutoff(flags.sessions_valid_from, token.issued_at) =>
         {
             audit_token_revoked(user_id, "issued_before_revocation_cutoff");
+            LiveRole::Revoked
+        }
+        // Per-session: this one session, named by `sid`. What
+        // `DELETE /api/admin/sessions/{id}` and `logout` mean, and what
+        // `change_password` needs in order to kill the other devices
+        // while keeping the caller's own session alive — a single
+        // user-wide cutoff cannot say "all except this one".
+        Ok(flags)
+            if flags.active && session_revoked(&flags.revoked_session_ids, token.session_id) =>
+        {
+            audit_token_revoked(user_id, "session_revoked");
             LiveRole::Revoked
         }
         Ok(flags) if flags.active => LiveRole::Active(SmolStr::new_static(flags.role.as_str())),
@@ -579,12 +625,17 @@ mod tests {
             active,
             force_password_change: false,
             sessions_valid_from: None,
+            revoked_session_ids: [].into(),
         }
     }
 
     #[test]
     fn active_admin_yields_current_admin_role() {
-        let live = decide_live_role(Ok(flags(UserRole::Admin, true)), Uuid::nil(), None);
+        let live = decide_live_role(
+            Ok(flags(UserRole::Admin, true)),
+            Uuid::nil(),
+            PresentedToken::default(),
+        );
         // The live record wins over the (stale) claim — a freshly promoted
         // user is admin even though their token still says "user".
         assert_eq!(live, LiveRole::Active(SmolStr::new_static("admin")));
@@ -593,20 +644,28 @@ mod tests {
     #[test]
     fn active_user_yields_current_user_role() {
         // A demoted admin: token claim still "admin", live record "user".
-        let live = decide_live_role(Ok(flags(UserRole::User, true)), Uuid::nil(), None);
+        let live = decide_live_role(
+            Ok(flags(UserRole::User, true)),
+            Uuid::nil(),
+            PresentedToken::default(),
+        );
         assert_eq!(live, LiveRole::Active(SmolStr::new_static("user")));
     }
 
     #[test]
     fn deactivated_account_is_revoked() {
-        let live = decide_live_role(Ok(flags(UserRole::Admin, false)), Uuid::nil(), None);
+        let live = decide_live_role(
+            Ok(flags(UserRole::Admin, false)),
+            Uuid::nil(),
+            PresentedToken::default(),
+        );
         assert_eq!(live, LiveRole::Revoked);
     }
 
     #[test]
     fn deleted_account_not_found_is_revoked() {
         let err = DomainError::new(ErrorKind::NotFound, "User", "no such user");
-        let live = decide_live_role(Err(err), Uuid::nil(), None);
+        let live = decide_live_role(Err(err), Uuid::nil(), PresentedToken::default());
         assert_eq!(live, LiveRole::Revoked);
     }
 
@@ -618,7 +677,7 @@ mod tests {
     fn transient_error_is_indeterminate_and_retryable() {
         let err = DomainError::transient_backend("Database", "connection reset");
         assert_eq!(
-            decide_live_role(Err(err), Uuid::nil(), None),
+            decide_live_role(Err(err), Uuid::nil(), PresentedToken::default()),
             LiveRole::Indeterminate { retryable: true },
         );
     }
@@ -629,7 +688,7 @@ mod tests {
     fn permanent_error_is_indeterminate_and_not_retryable() {
         let err = DomainError::new(ErrorKind::InternalError, "User", "column missing");
         assert_eq!(
-            decide_live_role(Err(err), Uuid::nil(), None),
+            decide_live_role(Err(err), Uuid::nil(), PresentedToken::default()),
             LiveRole::Indeterminate { retryable: false },
         );
     }
@@ -649,8 +708,11 @@ mod tests {
             ErrorKind::DatabaseError,
             ErrorKind::AccessDenied,
         ] {
-            let live =
-                decide_live_role(Err(DomainError::new(kind, "User", "x")), Uuid::nil(), None);
+            let live = decide_live_role(
+                Err(DomainError::new(kind, "User", "x")),
+                Uuid::nil(),
+                PresentedToken::default(),
+            );
             assert!(
                 matches!(live, LiveRole::Indeterminate { .. }),
                 "{kind:?} must be indeterminate, got {live:?}",
@@ -666,7 +728,7 @@ mod tests {
     fn not_found_stays_a_revocation_not_indeterminate() {
         let err = DomainError::new(ErrorKind::NotFound, "User", "no such user");
         assert_eq!(
-            decide_live_role(Err(err), Uuid::nil(), None),
+            decide_live_role(Err(err), Uuid::nil(), PresentedToken::default()),
             LiveRole::Revoked
         );
     }
@@ -804,7 +866,10 @@ mod tests {
             decide_live_role(
                 Ok(flags_with_cutoff(Some(cutoff))),
                 Uuid::nil(),
-                Some(minted_an_hour_earlier),
+                PresentedToken {
+                    issued_at: Some(minted_an_hour_earlier),
+                    ..Default::default()
+                },
             ),
             LiveRole::Revoked,
         );
@@ -822,7 +887,10 @@ mod tests {
             decide_live_role(
                 Ok(flags_with_cutoff(Some(cutoff))),
                 Uuid::nil(),
-                Some(minted_after),
+                PresentedToken {
+                    issued_at: Some(minted_after),
+                    ..Default::default()
+                },
             ),
             LiveRole::Active(SmolStr::new_static("admin")),
         );
@@ -837,7 +905,10 @@ mod tests {
             decide_live_role(
                 Ok(flags_with_cutoff(None)),
                 Uuid::nil(),
-                Some(chrono::Utc::now().timestamp() - 86_400),
+                PresentedToken {
+                    issued_at: Some(chrono::Utc::now().timestamp() - 86_400),
+                    ..Default::default()
+                },
             ),
             LiveRole::Active(SmolStr::new_static("admin")),
         );
@@ -853,7 +924,7 @@ mod tests {
             decide_live_role(
                 Ok(flags_with_cutoff(Some(chrono::Utc::now()))),
                 Uuid::nil(),
-                None,
+                PresentedToken::default(),
             ),
             LiveRole::Active(SmolStr::new_static("admin")),
         );
@@ -872,7 +943,10 @@ mod tests {
             decide_live_role(
                 Ok(flags),
                 Uuid::nil(),
-                Some(chrono::Utc::now().timestamp() + 60),
+                PresentedToken {
+                    issued_at: Some(chrono::Utc::now().timestamp() + 60),
+                    ..Default::default()
+                },
             ),
             LiveRole::Revoked,
         );
@@ -891,9 +965,123 @@ mod tests {
             decide_live_role(
                 Ok(flags_with_cutoff(Some(cutoff))),
                 Uuid::nil(),
-                Some(cutoff.timestamp()),
+                PresentedToken {
+                    issued_at: Some(cutoff.timestamp()),
+                    ..Default::default()
+                },
             ),
             LiveRole::Active(SmolStr::new_static("admin")),
+        );
+    }
+
+    fn flags_with_revoked(revoked: &[Uuid]) -> UserFlags {
+        UserFlags {
+            revoked_session_ids: revoked.into(),
+            ..flags(UserRole::Admin, true)
+        }
+    }
+
+    /// Per-session revocation: the defect was that `DELETE
+    /// /api/admin/sessions/{id}` flipped `auth.sessions.revoked`, which
+    /// is the row holding the REFRESH token — so it stopped renewal and
+    /// left the access token working for the rest of its hour. The admin
+    /// panel's button meant "stop this session renewing", not "stop this
+    /// session".
+    #[test]
+    fn a_token_for_a_revoked_session_is_refused() {
+        let sid = Uuid::new_v4();
+        assert_eq!(
+            decide_live_role(
+                Ok(flags_with_revoked(&[sid])),
+                Uuid::nil(),
+                PresentedToken {
+                    session_id: Some(sid),
+                    ..Default::default()
+                },
+            ),
+            LiveRole::Revoked,
+        );
+    }
+
+    /// The half that makes it per-SESSION rather than per-user, and the
+    /// one `change_password` depends on: killing every other device must
+    /// leave the caller's own session working, or the SPA cannot finish
+    /// the OPAQUE envelope re-registration it is mid-way through.
+    #[test]
+    fn a_sibling_session_is_unaffected_by_another_being_revoked() {
+        let revoked = Uuid::new_v4();
+        let mine = Uuid::new_v4();
+        assert_eq!(
+            decide_live_role(
+                Ok(flags_with_revoked(&[revoked])),
+                Uuid::nil(),
+                PresentedToken {
+                    session_id: Some(mine),
+                    ..Default::default()
+                },
+            ),
+            LiveRole::Active(SmolStr::new_static("admin")),
+        );
+    }
+
+    /// A credential with no `sid` cannot be attributed to a session, so
+    /// per-session revocation cannot reach it. Pinned so the blind spot
+    /// is a stated property: an app password is revoked by DELETING it,
+    /// not by revoking a session, and the WebSocket handler has no claims
+    /// at all.
+    #[test]
+    fn a_credential_without_a_session_id_is_not_caught_by_session_revocation() {
+        assert_eq!(
+            decide_live_role(
+                Ok(flags_with_revoked(&[Uuid::new_v4()])),
+                Uuid::nil(),
+                PresentedToken::default(),
+            ),
+            LiveRole::Active(SmolStr::new_static("admin")),
+        );
+    }
+
+    /// The common case is an empty set — nothing revoked recently — and
+    /// it must not cost a false refusal.
+    #[test]
+    fn an_empty_revoked_set_refuses_nothing() {
+        assert_eq!(
+            decide_live_role(
+                Ok(flags_with_revoked(&[])),
+                Uuid::nil(),
+                PresentedToken {
+                    session_id: Some(Uuid::new_v4()),
+                    ..Default::default()
+                },
+            ),
+            LiveRole::Active(SmolStr::new_static("admin")),
+        );
+    }
+
+    /// The two forms are independent: a session-revoked token is refused
+    /// even where the user-wide cutoff would have honoured it. Without
+    /// this, an implementation that only ever consulted the cutoff would
+    /// pass every other test here.
+    #[test]
+    fn session_revocation_applies_independently_of_the_user_cutoff() {
+        let sid = Uuid::new_v4();
+        let flags = UserFlags {
+            sessions_valid_from: Some(chrono::Utc::now() - chrono::Duration::hours(2)),
+            revoked_session_ids: [sid].into(),
+            ..flags(UserRole::Admin, true)
+        };
+        assert_eq!(
+            decide_live_role(
+                Ok(flags),
+                Uuid::nil(),
+                PresentedToken {
+                    // AFTER the cutoff, so that check honours it…
+                    issued_at: Some(chrono::Utc::now().timestamp()),
+                    // …but this session is revoked.
+                    session_id: Some(sid),
+                },
+            ),
+            LiveRole::Revoked,
         );
     }
 }
