@@ -909,14 +909,85 @@ jsonpath "$.full.user.username" == "oidc_user"
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 13c — IdP-driven logout. The fake IdP's control endpoint
-#            mints a spec-compliant logout_token (RS256-signed,
-#            correct iss/aud, events claim, sub, jti, fresh iat)
-#            and POSTs it to OxiCloud as
-#            application/x-www-form-urlencoded per BCL §2.5.
-#            OxiCloud MUST accept it and revoke every session
-#            belonging to the OIDC subject — a 200 response with
-#            oxicloud_status=200 in the forwarding echo proves it.
+# Step 13c — `sid` + `sub` logout token: the PER-SESSION branch.
+#            This is the shape real IdPs normally send — Keycloak,
+#            Entra and Okta all include `sid` when the session was
+#            established with one, and the fake IdP sets
+#            `backchannel_logout_session_required: true` to match.
+#            It was completely uncovered: every other step here
+#            sends `{}`, which the control endpoint defaults to
+#            sub-only, so only the revoke-ALL branch was exercised.
+#
+#            The sid here deliberately matches NO session, which
+#            makes this the no-fallback pin. `backchannel_logout`
+#            branches on sid presence FIRST:
+#
+#              if let Some(sid) = claims.sid  → revoke_sessions_by_oidc_sid
+#              else if let Some(sub)          → revoke_user_sessions_by_federation_subject
+#
+#            so a present-but-unmatched sid must revoke NOTHING,
+#            not degrade into subject-wide revocation. /me staying
+#            200 below is the whole point: it fails loudly if
+#            someone ever "simplifies" those arms into a fallback
+#            chain, which would silently turn a single-device
+#            logout into a sign-out-everywhere.
+#
+#            The token is still well-formed, so OxiCloud accepts
+#            it (oxicloud_status 200) — "accepted and matched zero
+#            sessions" is the correct outcome, not an error.
+#
+#            NOT covered here: a MATCHING sid revoking exactly its
+#            own session while the user's others survive. Two
+#            fixture gaps block it, both IdP-side. First, the sid
+#            is minted inside node-oidc-provider and OxiCloud
+#            deliberately never exposes it — `dto_never_leaks_oidc_sid`
+#            in `session_dto.rs` pins that the wire shape must not
+#            carry it, not even a prefix — so the test has no way
+#            to learn a real one; the control endpoint would need
+#            to report the sid it issued. Second, the three
+#            sessions this file builds share one OP session (one
+#            cookie jar at the IdP), so they share one `oidc_sid`
+#            and a sid-scoped revoke would be indistinguishable
+#            from a subject-wide one anyway. Demonstrating scoping
+#            needs two sessions from two distinct OP sessions,
+#            which `/control/set-sub` can already force by clearing
+#            the OP session cookies.
+# ─────────────────────────────────────────────────────────────
+POST {{oidc_issuer}}/control/backchannel-logout
+Content-Type: application/json
+{
+  "sid": "00000000-0000-0000-0000-00000000dead"
+}
+
+HTTP 200
+[Asserts]
+jsonpath "$.oxicloud_status" == 200
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 13c-bis — …and the session is UNTOUCHED. The sid matched
+#            nothing, so nothing was revoked. A 401 here would
+#            mean the sid branch fell through to the subject
+#            branch.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/auth/me
+
+HTTP 200
+[Asserts]
+jsonpath "$.full.user.username" == "oidc_user"
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 13c-ter — IdP-driven logout, `sub` only: the revoke-ALL
+#            branch. The fake IdP's control endpoint mints a
+#            spec-compliant logout_token (RS256-signed, correct
+#            iss/aud, events claim, sub, jti, fresh iat) and POSTs
+#            it to OxiCloud as application/x-www-form-urlencoded
+#            per BCL §2.5. Empty body `{}` → the control endpoint
+#            defaults to sub-only, so OxiCloud MUST revoke every
+#            session belonging to the OIDC subject — a 200 with
+#            oxicloud_status=200 in the forwarding echo proves the
+#            token was accepted.
 # ─────────────────────────────────────────────────────────────
 POST {{oidc_issuer}}/control/backchannel-logout
 Content-Type: application/json
