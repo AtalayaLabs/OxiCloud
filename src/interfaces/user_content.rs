@@ -36,15 +36,18 @@
 /// to sniff into something executable.
 pub fn is_scriptable_document(mime: &str) -> bool {
     let m = normalize(mime);
-    m.is_empty()
+    if m.is_empty()
         || m == "text/html"
         || m == "text/html-sandboxed"
-        || m == "application/xhtml+xml"
         || m.starts_with("image/svg")
-        || m == "text/xml"
-        || m == "application/xml"
-        || m == "application/xslt+xml"
         || m == "text/xsl"
+    {
+        return true;
+    }
+    // Browsers can execute script in XML documents (RSS/Atom/MathML/RDF,
+    // XHTML, generic *+xml / */xml). A denylist of a few XML types is how
+    // application/rss+xml slipped through as inline-able media.
+    m.ends_with("+xml") || m.ends_with("/xml")
 }
 
 /// `Some("attachment")` when a protocol handler that would otherwise
@@ -68,6 +71,21 @@ pub fn is_scriptable_document(mime: &str) -> bool {
 /// stopping here.
 pub fn dav_disposition(mime: &str) -> Option<&'static str> {
     is_scriptable_document(mime).then_some("attachment")
+}
+
+/// Headers a DAV GET (full or 206) must carry so the security-header
+/// middleware treats the body as user content and applies [`csp_for`].
+///
+/// Ranged responses used to return early from `range_response` without
+/// `Content-Disposition`, so an HTML/XML 206 had no CSP at all.
+pub fn apply_dav_user_content_headers(
+    mut builder: axum::http::response::Builder,
+    mime: &str,
+) -> axum::http::response::Builder {
+    if let Some(d) = dav_disposition(mime) {
+        builder = builder.header(axum::http::header::CONTENT_DISPOSITION, d);
+    }
+    builder
 }
 
 /// Strip any `; charset=…` parameter and fold case, so
@@ -139,7 +157,8 @@ pub const CSP_USER_CONTENT_SANDBOXED: &str = "default-src 'none'; \
 /// browsers OxiCloud targets, collapsing both constants into one is a
 /// strict improvement — delete this and route everything through the
 /// sandboxed policy.
-pub const CSP_USER_CONTENT_MEDIA: &str = "base-uri 'none'; \
+pub const CSP_USER_CONTENT_MEDIA: &str = "script-src 'none'; \
+     base-uri 'none'; \
      form-action 'none'; \
      frame-ancestors 'none'";
 
@@ -272,5 +291,30 @@ mod tests {
         // displaying, which is the whole reason the two differ.
         assert!(!CSP_USER_CONTENT_MEDIA.contains("default-src"));
         assert!(!CSP_USER_CONTENT_MEDIA.contains("sandbox"));
+        // Defence in depth: even an inert type must not run script if a
+        // browser were to treat the body as a document.
+        assert!(CSP_USER_CONTENT_MEDIA.contains("script-src 'none'"));
+    }
+
+    #[test]
+    fn xml_document_types_are_scriptable() {
+        for m in [
+            "application/rss+xml",
+            "application/atom+xml",
+            "application/mathml+xml",
+            "application/rdf+xml",
+            "application/xhtml+xml",
+            "application/xslt+xml",
+            "text/xml",
+            "application/xml",
+            "application/foo+xml",
+        ] {
+            assert!(
+                is_scriptable_document(m),
+                "{m} must be treated as a scriptable document"
+            );
+            assert_eq!(dav_disposition(m), Some("attachment"));
+            assert_eq!(csp_for(m), CSP_USER_CONTENT_SANDBOXED);
+        }
     }
 }

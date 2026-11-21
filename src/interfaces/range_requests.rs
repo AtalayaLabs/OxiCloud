@@ -82,7 +82,7 @@ pub async fn range_response(
                 RangeContent::Bytes(b) => Body::from(b),
                 RangeContent::Stream(s) => Body::from_stream(Box::into_pin(s)),
             };
-            Some(
+            let builder = crate::interfaces::user_content::apply_dav_user_content_headers(
                 Response::builder()
                     .status(StatusCode::PARTIAL_CONTENT)
                     .header(header::CONTENT_TYPE, &*file.mime_type)
@@ -92,10 +92,10 @@ pub async fn range_response(
                         format!("bytes {}-{}/{}", start, end, file.size),
                     )
                     .header(header::ACCEPT_RANGES, "bytes")
-                    .header(header::ETAG, etag)
-                    .body(body)
-                    .unwrap(),
-            )
+                    .header(header::ETAG, etag),
+                &file.mime_type,
+            );
+            Some(builder.body(body).unwrap())
         }
         Err(err) => {
             tracing::error!("Error creating range stream: {}", err);
