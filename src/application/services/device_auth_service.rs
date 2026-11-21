@@ -231,11 +231,15 @@ impl DeviceAuthService {
         // The same function the password and OPAQUE doors use — this
         // service holds no `AuthApplicationService`, and a second copy of
         // the rule here is exactly how the door came to skip it.
-        crate::application::services::auth_application_service::check_account_admission(
-            &user,
+        // `admit` because this door MINTS a session; the proof is what
+        // `Session::new` requires, so the check cannot be skipped here
+        // without failing to compile.
+        let admitted = crate::application::services::auth_application_service::admit(
+            user,
             self.require_verified_email,
             "device",
         )?;
+        let user = admitted.user();
 
         // Generate internal JWT access token + refresh token. Device-
         // authorization sessions (RFC 8628) are for CLI / TV / device
@@ -249,7 +253,7 @@ impl DeviceAuthService {
         // (`docs/plan/sessions.md`).
         let refresh_token = self.token_service.generate_refresh_token();
         let session = Session::new(
-            user_id,
+            &admitted,
             refresh_token.clone(),
             client_ip, // created_ip — approver's browser IP
             Some(format!("device:{}", dc.client_name())), // user_agent
@@ -259,7 +263,7 @@ impl DeviceAuthService {
         );
         let access_token =
             self.token_service
-                .generate_access_token(&user, Some(session.id()), None)?;
+                .generate_access_token(user, Some(session.id()), None)?;
         self.session_storage.create_session(session).await?;
 
         // Store tokens on the device code entity

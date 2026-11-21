@@ -115,9 +115,28 @@ pub struct Session {
 }
 
 impl Session {
+    /// Create a session for an ADMITTED account.
+    ///
+    /// `admitted` is not decoration and not merely where the `user_id`
+    /// comes from — it is the enforcement. An [`AdmittedCaller`] can
+    /// only be obtained from `check_account_admission`, so a login door
+    /// that forgets the account checks cannot reach this constructor:
+    /// it fails to compile instead of minting a session for a
+    /// deactivated account. That is precisely the bypass OPAQUE shipped
+    /// with, and the device flow after it.
+    ///
+    /// Taking `user_id` FROM the proof rather than as its own argument
+    /// is the other half: it makes "admitted user A, session for user
+    /// B" unrepresentable rather than merely unlikely.
+    ///
+    /// [`Self::from_raw`] deliberately requires no proof — rehydrating
+    /// a row that already exists is not admitting anyone, and demanding
+    /// one there would mean re-running login checks to read a session.
+    ///
+    /// [`AdmittedCaller`]: crate::domain::entities::admitted_caller::AdmittedCaller
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        user_id: Uuid,
+        admitted: &crate::domain::entities::admitted_caller::AdmittedCaller,
         refresh_token: String,
         created_ip: Option<String>,
         user_agent: Option<String>,
@@ -132,7 +151,7 @@ impl Session {
         let now = Utc::now();
         Self {
             id: Uuid::new_v4(),
-            user_id,
+            user_id: admitted.user_id(),
             refresh_token,
             expires_at: now + Duration::days(expires_in_days),
             created_ip,
@@ -296,10 +315,29 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A session needs an `AdmittedCaller`, so a test needs one too.
+    /// `admitted_for_test` is `#[cfg(test)]`-only — see its doc for why
+    /// it is deliberately not behind `test_utils`.
+    fn admitted() -> crate::domain::entities::admitted_caller::AdmittedCaller {
+        let user = crate::domain::entities::user::User::new(
+            "session-fixture@example.com".to_string(),
+            Some("session-fixture".to_string()),
+            Some("hash".to_string()),
+            None,
+            None,
+            None,
+            crate::domain::entities::user::UserRole::User,
+            0,
+            false,
+        )
+        .expect("fixture user");
+        crate::domain::entities::admitted_caller::AdmittedCaller::admitted_for_test(user)
+    }
+
 
     fn fresh_session() -> Session {
         Session::new(
-            Uuid::new_v4(),
+            &admitted(),
             "refresh-token".to_string(),
             None,
             None,

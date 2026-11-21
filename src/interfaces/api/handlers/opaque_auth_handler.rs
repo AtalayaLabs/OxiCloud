@@ -799,7 +799,12 @@ pub async fn login_ke3(
     // the caller has already proven the passphrase, so "your account is
     // deactivated" tells an attacker nothing they could not learn from
     // `login`, which answers the same way after a password verify.
-    let admitted = auth.admit(user, "opaque").map_err(AppError::from)?;
+    let admitted = crate::application::services::auth_application_service::admit(
+        user,
+        auth.require_verified_email(),
+        "opaque",
+    )
+    .map_err(AppError::from)?;
 
     // Mint the session BEFORE stamping opaque_migrated_at — if the
     // session mint fails (rare, but not impossible under DB failure),

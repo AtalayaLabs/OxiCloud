@@ -928,9 +928,32 @@ mod integration_tests {
         .expect("seed user");
     }
 
+    /// `Session::new` requires an `AdmittedCaller`, so the integration
+    /// fixtures need one for the seeded user. `admitted_for_test` is
+    /// `#[cfg(test)]`-only by design.
+    fn admitted_fixture(
+        user_id: Uuid,
+    ) -> crate::domain::entities::admitted_caller::AdmittedCaller {
+        let now = chrono::Utc::now();
+        let user = crate::domain::entities::user::User::from_data(
+            user_id,
+            Some("session-fixture".to_string()),
+            "session-fixture@example.com".to_string(),
+            Some("hash".to_string()),
+            crate::domain::entities::user::UserRole::User,
+            0,
+            0,
+            now,
+            now,
+            None,
+            true,
+        );
+        crate::domain::entities::admitted_caller::AdmittedCaller::admitted_for_test(user)
+    }
+
     async fn insert_session(repo: &SessionPgRepository, user_id: Uuid, family_id: Uuid) -> Session {
         let session = Session::new(
-            user_id,
+            &admitted_fixture(user_id),
             format!("rt-{}", Uuid::new_v4()),
             None,
             None,

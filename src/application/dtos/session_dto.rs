@@ -204,11 +204,30 @@ impl SessionSummaryDto {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A session needs an `AdmittedCaller`, so a test needs one too.
+    /// `admitted_for_test` is `#[cfg(test)]`-only — see its doc for why
+    /// it is deliberately not behind `test_utils`.
+    fn admitted() -> crate::domain::entities::admitted_caller::AdmittedCaller {
+        let user = crate::domain::entities::user::User::new(
+            "session-fixture@example.com".to_string(),
+            Some("session-fixture".to_string()),
+            Some("hash".to_string()),
+            None,
+            None,
+            None,
+            crate::domain::entities::user::UserRole::User,
+            0,
+            false,
+        )
+        .expect("fixture user");
+        crate::domain::entities::admitted_caller::AdmittedCaller::admitted_for_test(user)
+    }
+
     use chrono::Duration;
 
     fn base(revoked: bool, jkt: Option<&str>) -> Session {
         let mut s = Session::new(
-            Uuid::new_v4(),
+            &admitted(),
             "refresh-token".to_string(),
             Some("192.0.2.1".to_string()),
             Some("Mozilla/5.0".to_string()),

@@ -11,6 +11,7 @@ use crate::application::ports::user_lifecycle::{DeletionMode, LogoutReason};
 use crate::application::services::user_lifecycle_service::UserLifecycleService;
 use crate::common::config::{AuthMethod, AuthPolicy, DefaultQuotas, OidcConfig};
 use crate::common::errors::{DomainError, ErrorKind};
+use crate::domain::entities::admitted_caller::AdmittedCaller;
 use crate::domain::entities::magic_link_token::{MagicLinkResourceKind, MagicLinkStatus};
 use crate::domain::entities::session::Session;
 use crate::domain::entities::user::{User, UserFlags, UserRole};
@@ -885,53 +886,6 @@ pub struct AuthApplicationService {
 /// long a role / external / active change can take to be observed by the
 /// per-request guards when it bypasses the eager invalidation paths.
 const USER_FLAGS_CACHE_TTL: Duration = Duration::from_secs(30);
-
-/// Proof that an account passed every per-login account check.
-///
-/// The private fields are the whole mechanism. No other module can build
-/// one, so [`AuthApplicationService::admit`] is the only source — and
-/// anything that demands one cannot be reached without the checks having
-/// run. [`AuthApplicationService::mint_session_for_authenticated_user`]
-/// demands one, which is what turns "did this door remember to check the
-/// account?" from a question for a reviewer into a compile error.
-///
-/// It is NOT proof of a verified credential. The caller must already
-/// have authenticated the principal; this carries the separate answer to
-/// *may this account have a session at all?*
-#[derive(Debug)]
-pub struct AdmittedCaller {
-    user: User,
-    /// Which door admitted them — `"password"`, `"opaque"`, `"device"`,
-    /// … Carried so the mint's audit line can name it without every
-    /// caller passing it a second time.
-    origin: &'static str,
-}
-
-impl AdmittedCaller {
-    pub fn user(&self) -> &User {
-        &self.user
-    }
-
-    /// Which door admitted this caller. Audit-only.
-    pub fn origin(&self) -> &'static str {
-        self.origin
-    }
-}
-
-/// The deactivated-account gate.
-///
-/// Fires AFTER the credential has been verified, never before: a
-/// deactivated account hit with a wrong password still collapses to the
-/// generic "Invalid credentials" response, so the deactivation state is
-/// revealed only to callers who already proved possession. Gating
-/// pre-credential would leak "this account exists AND is deactivated" to
-/// anyone guessing passwords.
-///
-/// A free function rather than a method because
-/// [`crate::application::services::device_auth_service::DeviceAuthService`]
-/// needs the same rule and holds no [`AuthApplicationService`] — and the
-/// device door skipping this check is precisely what a second copy of
-/// the rule would have produced.
 pub fn check_user_is_active(user: &User, origin: &'static str) -> Result<(), DomainError> {
     if user.is_active() {
         return Ok(());
@@ -1010,6 +964,28 @@ pub fn check_account_admission(
 ) -> Result<(), DomainError> {
     check_user_is_active(user, origin)?;
     check_email_verified(user, require_verified_email, origin)
+}
+
+/// [`check_account_admission`] plus the proof that it passed.
+///
+/// The ONLY way to obtain an [`AdmittedCaller`], and therefore the only
+/// way to reach `Session::new` — which is how a login door that forgets
+/// the account checks becomes a compile error instead of a bypass.
+///
+/// A separate function from `check_account_admission` rather than a
+/// synonym for it: that one answers "may this account have a session"
+/// and is what the doors which mint NO session call (an app-password
+/// request, the NextCloud login flow). This one answers the same
+/// question and hands back the capability, for the doors that do. Same
+/// rule, one implementation — **a new account rule goes in
+/// `check_account_admission`**, never here.
+pub fn admit(
+    user: User,
+    require_verified_email: bool,
+    origin: &'static str,
+) -> Result<AdmittedCaller, DomainError> {
+    check_account_admission(&user, require_verified_email, origin)?;
+    Ok(AdmittedCaller::new(user, origin))
 }
 
 #[async_trait::async_trait]
@@ -1704,29 +1680,6 @@ impl AuthApplicationService {
         Ok(PublicUserDto::new(created_user, false))
     }
 
-    /// [`check_account_admission`] plus the [`AdmittedCaller`] token, for
-    /// the doors that mint through
-    /// [`Self::mint_session_for_authenticated_user`].
-    ///
-    /// It adds the token and nothing else — **a new account rule belongs
-    /// in [`check_account_admission`]**, or the six doors that call that
-    /// function directly will not get it.
-    ///
-    /// Before the single check existed the rules were scattered: `login`
-    /// and `oidc_callback` ran both, `redeem_magic_link` ran only the active
-    /// check, and OPAQUE `login/ke3`, the device-flow approval and
-    /// `refresh_token` ran neither. Each door was written by someone
-    /// reading a different neighbour, which is the failure mode a single
-    /// function removes.
-    ///
-    /// Credential verification is NOT part of this — the caller must
-    /// already have proven identity. This answers the next question:
-    /// *may this account have a session at all?*
-    pub fn admit(&self, user: User, origin: &'static str) -> Result<AdmittedCaller, DomainError> {
-        check_account_admission(&user, self.require_verified_email, origin)?;
-        Ok(AdmittedCaller { user, origin })
-    }
-
     pub async fn login(
         &self,
         dto: LoginDto,
@@ -1975,7 +1928,7 @@ impl AuthApplicationService {
         // OPAQUE-migrated branch so a deactivated migrated user is told
         // "deactivated" rather than "use the OPAQUE endpoint". `admit`
         // re-reads it, which is a pure field read and costs nothing.
-        let admitted = self.admit(user, "password")?;
+        let admitted = admit(user, self.require_verified_email, "password")?;
 
         // Mint the session — factored so the OPAQUE login handler
         // can reuse the exact same shape after a successful OPAQUE
@@ -2025,24 +1978,24 @@ impl AuthApplicationService {
         // call this without having run them. OPAQUE `login/ke3` reached
         // here with a bare `User` and minted sessions for deactivated
         // accounts; that is now unrepresentable rather than unnoticed.
-        let AdmittedCaller {
-            mut user,
-            origin: admitted_via,
-        } = admitted;
+        // Read through the accessors rather than destructuring: the
+        // fields are private so that `check_account_admission` stays the
+        // only way to make one of these.
+        let admitted_via = admitted.origin();
         // Success paths stay out of the audit channel (every login would
         // flood it); a debug line is enough to answer "which door minted
         // this session?" when tracing one.
         tracing::debug!(
             target: "oxicloud::authz",
             admitted_via,
-            user_id = %user.id(),
+            user_id = %admitted.user_id(),
             "minting session for an admitted caller",
         );
         // Lifecycle: dispatch login BEFORE register_login() so hooks
         // observing `last_login_at().is_none()` see "first ever login"
         // correctly. See tip #1 in user_lifecycle.rs.
         if let Some(lc) = &self.user_lifecycle {
-            lc.dispatch_login(&user).await;
+            lc.dispatch_login(admitted.user()).await;
         }
 
         // Update last login (in-memory only — the DTO below carries it).
@@ -2052,6 +2005,19 @@ impl AuthApplicationService {
         // in between. Dropping it removes one transaction + a 17-column
         // rewrite (incl. the up-to-512 KiB avatar) per password login
         // (benches/ROUND12.md §2, 4.45x).
+        // Session FIRST, while the proof can still be borrowed; the user
+        // is taken out of it afterwards for the parts that mutate.
+        let refresh_token = self.token_service.generate_refresh_token();
+        let mut session = Session::new(
+            &admitted,
+            refresh_token.clone(),
+            client_ip,
+            user_agent,
+            self.token_service.refresh_token_expiry_days(),
+            Uuid::new_v4(),
+            origin,
+        );
+        let mut user = admitted.into_user();
         user.register_login();
 
         // Validate DPoP thumbprint FIRST — the same validated value
@@ -2087,16 +2053,6 @@ impl AuthApplicationService {
         // binding is set at INSERT time and immutable thereafter (see
         // `docs/plan/dpop.md` — a mutable bind would let an attacker
         // downgrade a bound session by re-binding to their own key).
-        let refresh_token = self.token_service.generate_refresh_token();
-        let mut session = Session::new(
-            user.id(),
-            refresh_token.clone(),
-            client_ip,
-            user_agent,
-            self.token_service.refresh_token_expiry_days(),
-            Uuid::new_v4(),
-            origin,
-        );
 
         // Generate tokens using the injected token service. The
         // access token carries the `cnf.jkt` binding when present,
@@ -2464,7 +2420,10 @@ impl AuthApplicationService {
         // verification and `mark_email_verified` ran just above. It is
         // still the composed call rather than the single check, so a
         // rule added later cannot miss this door.
-        check_account_admission(&user, self.require_verified_email, "magic_link")?;
+        // `admit` rather than `check_account_admission`: this door MINTS,
+        // so it needs the proof that `Session::new` now demands.
+        let admitted = admit(user, self.require_verified_email, "magic_link")?;
+        let user = admitted.user();
 
         // Magic-link redemption is a GET redirect — no way to
         // thread `dpop_jkt` into a GET body. Session is minted
@@ -2475,7 +2434,7 @@ impl AuthApplicationService {
         // path above for the rationale.
         let refresh_token = self.token_service.generate_refresh_token();
         let session = Session::new(
-            user.id(),
+            &admitted,
             refresh_token.clone(),
             client_ip,
             user_agent,
@@ -2485,7 +2444,7 @@ impl AuthApplicationService {
         );
         let access_token =
             self.token_service
-                .generate_access_token(&user, Some(session.id()), None)?;
+                .generate_access_token(user, Some(session.id()), None)?;
         // Snapshot fields still needed for logging + DTO before
         // `session` and `user` are consumed by the storage call and
         // the DTO builder below.
@@ -2804,7 +2763,11 @@ impl AuthApplicationService {
         // was turned on could refresh indefinitely and outlive the
         // requirement. Both kinds render 403, so the wire shape is
         // unchanged; what is new is the audit line and the email half.
-        check_account_admission(&user, self.require_verified_email, "refresh")?;
+        // `admit` rather than `check_account_admission`: a refresh MINTS a
+        // new session row, so it needs the proof `Session::new` demands.
+        // A refresh is a re-admission, not a formality.
+        let admitted = admit(user, self.require_verified_email, "refresh")?;
+        let user = admitted.user();
 
         // Rotate the session first so the new row's id is available
         // to the token mint below — the `sid` claim tracks the
@@ -2827,7 +2790,7 @@ impl AuthApplicationService {
         // mode enforces per-session binding.
         let new_refresh_token = self.token_service.generate_refresh_token();
         let mut new_session = Session::new(
-            user.id(),
+            &admitted,
             new_refresh_token.clone(),
             // `created_ip` is INHERITED, not re-captured from this refresh
             // — the same reasoning the `origin` argument below gives, and
@@ -2879,7 +2842,7 @@ impl AuthApplicationService {
         // and `cnf.jkt` inherits from the parent so DPoP proof
         // enforcement (Gate 9) still holds across the rotation.
         let access_token = self.token_service.generate_access_token(
-            &user,
+            user,
             Some(new_session.id()),
             session.dpop_jkt(),
         )?;
@@ -6334,10 +6297,22 @@ impl AuthApplicationService {
         // redirect to bind it (see Gate 3). Token accordingly ships
         // without `cnf.jkt`. Session constructed first so its id
         // feeds the token's `sid` claim.
+        //
+        // IdP-side credentials are validated by now; this gates the mint
+        // on LOCAL account state. JIT provisioning above creates fresh
+        // users as active, so it is load-bearing for returning federated
+        // users an admin has since deactivated.
+        //
+        // It used to sit AFTER the session was built — harmless, since
+        // nothing was persisted yet, but the proof `Session::new` now
+        // requires cannot be produced later than the thing that needs it.
+        // The type moved the check to where it belonged.
+        let admitted = admit(user, self.require_verified_email, "oidc")?;
+        let user = admitted.user();
         let refresh_token = self.token_service.generate_refresh_token();
 
         let mut session = Session::new(
-            user.id(),
+            &admitted,
             refresh_token.clone(),
             client_ip,
             user_agent,
@@ -6354,17 +6329,11 @@ impl AuthApplicationService {
         if let Some(sid) = claims.sid.as_ref() {
             session = session.with_oidc_sid(sid.clone());
         }
-        // IdP-side credentials validated — gate session mint on local
-        // `is_active`. JIT provisioning above creates fresh users as
-        // active, so the check is only load-bearing for returning
-        // federated users whom an admin has since deactivated. Same
-        // enforcement point as the password + magic-link paths.
-        check_account_admission(&user, self.require_verified_email, "oidc")?;
         // Mint AFTER session is fully configured so `sid` claim
         // aligns with the row about to be inserted.
         let access_token =
             self.token_service
-                .generate_access_token(&user, Some(session.id()), None)?;
+                .generate_access_token(user, Some(session.id()), None)?;
         // Build the SelfUserDto before `session` is consumed by the
         // storage call — the builder reads `session.dpop_jkt()`
         // (None here since OIDC callbacks land unbound and the SPA
