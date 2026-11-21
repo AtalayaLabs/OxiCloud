@@ -19,6 +19,7 @@ commits is worse than no status at all.
 | `AdmittedCaller` required by the shared mint | **done** | `2f9101138` |
 | Revocation — user-wide `iat` cutoff | **done** | `fe12a4739` |
 | Revocation — per-session (`revoked_at`) | **done** | `ae956005b` |
+| `auth-model.md` documentation — phases, admission, revocation | **done** | see § Required: documentation |
 | Connected-device list + `ip_approved` / `ip_seen` | **open** | — |
 | Scope narrowing, obligations (part B) | **not started** | needs `scope-gates.md` |
 
@@ -180,9 +181,10 @@ restricted account could be granted more than its credential allows.
 
 ### Which phases run, and when
 
-Canonical home once § Required: documentation is discharged is
-`docs/architecture/auth-model.md` § Phases; the copy below is the
-draft it is cut from.
+**Canonical home: `docs/architecture/auth-model.md` § Phases.** That
+page is the one a reader debugging a login reaches for, and it is kept
+current against the code; the copy below is the draft it was cut from
+and will drift. Prefer the architecture page.
 
 | entry point | 1 creds | 2 scope | 3 admit | 4 mint | notes |
 |---|---|---|---|---|---|
@@ -223,12 +225,25 @@ creates no session row; there is no `AppPassword` variant in
 
 - it is the credential that most needs `admit()`, because the gap found
   in § The audit is executed thousands of times rather than once;
-- admission must sit behind the existing 30 s result cache, caching the
-  `AdmittedCaller` rather than only the flags. Re-running Argon2id and
-  three account checks per request is not an option — the cache is why
-  this path is affordable at all, and its documented bound ("expiry and
-  deactivation are bounded by the TTL") becomes the bound on admission
-  too.
+- the caching question is the whole design, and this draft got the
+  answer WRONG. It proposed caching the `AdmittedCaller` alongside the
+  credential result, so "deactivation is bounded by the TTL" would have
+  become the bound on admission too.
+
+  **That is the bug, not the fix.** The cache is keyed on
+  `blake3(username + ":" + password)` and lives 300 s, not 30; its
+  account check runs only on a MISS, which a client that just
+  authenticated never produces. Caching admission beside it means a
+  disabled account keeps the whole DAV surface for five minutes — which
+  is exactly what was found on this path once a wire test existed
+  (`102af56b3`).
+
+  What shipped instead: the credential cache holds ONLY
+  credential→identity, and the live account state is read per request
+  from the `UserFlags` cache, which is eagerly invalidated on
+  deactivation and role change. Argon2id is still skipped — that is the
+  cache's real job — while the refusal is immediate. Cost is one moka
+  hit, the same one every Bearer request already pays.
 
 ## Login phase
 
@@ -711,7 +726,19 @@ the marks that carry meaning rather than decoration: app password
 approver`, anonymous share `3 skipped`. A paraphrase loses exactly
 those three, which are the non-obvious rows.
 
-Once it lives in `auth-model.md`, **this plan's copy is the stale one**.
+**Discharged.** `auth-model.md` now carries § Phases (with the diagram
+and the when-each-runs table), § Admission (the stages, reject-vs-narrow,
+and the tightening invariant), § Revocation (both mechanisms and what
+they do not reach), the per-door admission matrix under § Login paths,
+and the five new events under § Audit events. This plan's copies are now
+the stale ones.
+
+Two corrections went in with it, because the page described behaviour
+that had since changed: § Anti-enumeration claimed `/api/auth/login`
+answers uniformly for a deactivated account, which is true only for a
+WRONG password — the Gap-3 pin in `admin_user_ops.hurl` asserts a
+distinct `AccountDeactivated` for the right one; and NC Login Flow v2's
+303-to-generic-page behaviour was undocumented.
 Plans record why a change was made and get archived; architecture docs
 record how the system works and are maintained. So the plan should then
 point at the page rather than restate it — the same single-source rule
