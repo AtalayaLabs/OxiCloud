@@ -1012,6 +1012,15 @@ pub fn check_account_admission(
     check_email_verified(user, require_verified_email, origin)
 }
 
+#[async_trait::async_trait]
+impl crate::application::ports::authorization_ports::UserFlagsInvalidatorPort
+    for AuthApplicationService
+{
+    async fn invalidate_user_flags(&self, user_id: Uuid) {
+        self.user_flags_cache.invalidate(&user_id).await;
+    }
+}
+
 impl crate::application::ports::authorization_ports::AdminCallerPort for AuthApplicationService {
     async fn admin_caller_flags(&self, id: Uuid) -> Result<UserFlags, DomainError> {
         self.get_user_flags(id).await

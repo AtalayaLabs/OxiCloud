@@ -18267,39 +18267,56 @@
       },
       "DeviceInfoDto": {
         "type": "object",
-        "description": "DTO for listing authorized devices in the user's profile.",
+        "description": "One CONNECTED device, projected from its session row.\n\nTwo fields of the `device_codes`-era shape are gone, and their\nabsence is the point:\n\n* `scopes` — recorded on the `device_codes` row, which `poll()`\n  deletes once the tokens are collected, so a connected device's\n  approved scopes are not retrievable. They are also not enforced\n  yet (`scope-gates.md`); the field returns when a session carries a\n  `ScopeSet` and the value is real.\n* `authorized_at` — would duplicate `created_at`, since the session\n  row IS created at the moment of approval. The device's own earlier\n  request time lived on the deleted row.",
         "required": [
           "id",
           "client_name",
-          "scopes",
           "status",
           "created_at",
-          "expires_at"
+          "expires_at",
+          "last_seen_at",
+          "is_bound"
         ],
         "properties": {
-          "authorized_at": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "client_name": {
             "type": "string"
           },
           "created_at": {
-            "type": "string"
+            "type": "string",
+            "description": "When the device was AUTHORISED — the approval moment."
+          },
+          "created_ip": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the human approved it from. The device never reaches the\napproval endpoint, so this is the approver's browser."
           },
           "expires_at": {
             "type": "string"
           },
           "id": {
-            "type": "string"
+            "type": "string",
+            "description": "The SESSION id — what `DELETE /api/auth/device/devices/{id}`\ntakes. Previously a `device_codes` id, which named a row that no\nlonger existed for any device that had actually connected."
           },
-          "scopes": {
-            "type": "string"
+          "is_bound": {
+            "type": "boolean",
+            "description": "Whether the session is DPoP-bound. Device-flow sessions are\nunbound by design (CLI and TV clients have no WebCrypto), so a\n`true` here would be surprising and worth surfacing."
+          },
+          "last_seen_at": {
+            "type": "string",
+            "description": "Genuine liveness, maintained per request. This is the field that\nmakes the list answer \"is this thing still talking to me?\",\nwhich the old one could not."
+          },
+          "last_seen_ip": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the device is actually being used from, to within the\nlast-seen flush interval. A mismatch against `created_ip` is\nworth an operator's attention."
           },
           "status": {
-            "type": "string"
+            "type": "string",
+            "description": "`active`, or `expired` for a row past `expires_at` that nobody\nrevoked. Revoked sessions are not listed at all."
           }
         }
       },
