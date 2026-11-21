@@ -24,8 +24,10 @@
 # Coverage:
 #   1. Fixture user with two concurrent sessions
 #   2. logout kills ITS OWN access token immediately
-#   3. change-password kills the OTHER device, keeps the caller's
-#   4. admin reset kills everything via the user-wide cutoff
+#   3. change-password kills the OTHER device, keeps the caller's,
+#      and leaves ANOTHER USER's session alone
+#   4. admin reset kills everything for that user via the user-wide
+#      cutoff — and still nobody else's
 #   5. Teardown
 #
 # Not covered here: an app password or a WebSocket session, which
@@ -183,6 +185,20 @@ Authorization: Bearer {{access_c}}
 
 HTTP 200
 
+# ANOTHER USER: untouched. `revoke_other_user_sessions(user_id, keep)`
+# and the cutoff are both scoped to one user_id, so a password change
+# must not reach anyone else's sessions.
+#
+# This was previously only implicit — step 6 drives the admin reset with
+# this same token, so a cross-user leak would already have failed the
+# file. But it would have failed as a 401 on an admin endpoint, which
+# reads like a permissions regression and sends the next person to the
+# wrong layer. Asserted here so the failure names itself.
+GET {{base_url}}/api/auth/me
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
+
 
 # ─────────────────────────────────────────────────────────────
 # 6 — ADMIN PASSWORD RESET: the user-wide cutoff.
@@ -206,6 +222,16 @@ GET {{base_url}}/api/auth/me
 Authorization: Bearer {{access_c}}
 
 HTTP 401
+
+# And again, ANOTHER USER is untouched. The cutoff is a per-user
+# watermark (`auth.users.sessions_valid_from`), not a global one — if it
+# were ever read from the wrong row, or applied globally, an admin
+# resetting one password would sign out the whole instance. That is the
+# kind of blast radius worth one explicit assertion.
+GET {{base_url}}/api/auth/me
+Authorization: Bearer {{admin_token}}
+
+HTTP 200
 
 
 # ─────────────────────────────────────────────────────────────
