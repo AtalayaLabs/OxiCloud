@@ -20,13 +20,15 @@ commits is worse than no status at all.
 | Revocation — user-wide `iat` cutoff | **done** | `fe12a4739` |
 | Revocation — per-session (`revoked_at`) | **done** | `ae956005b` |
 | `auth-model.md` documentation — phases, admission, revocation | **done** | see § Required: documentation |
-| Connected-device list + `ip_approved` / `ip_seen` | **open** | — |
+| Session IP pair — `created_ip` / `last_seen_ip` | **done** | `b299f184f` `5a31e1f29` |
+| Connected-device list reading `auth.sessions` | **open** | — |
 | Scope narrowing, obligations (part B) | **not started** | needs `scope-gates.md` |
 
 Verified at the wire, not only in unit tests: the deactivated-account
 refusal on every door (`e3ead258c` `52b2179a9`, OPAQUE's in
 `opaque-hurl-helper` at `4355aec71`) and both revocation forms
-(`6a857cc20`).
+(`6a857cc20`), and the session IP pair with spoofed addresses
+(`b953ec174`).
 
 Two defects the RUNS found, which neither `cargo` nor clippy could see —
 the reason the wire pins were worth writing:
