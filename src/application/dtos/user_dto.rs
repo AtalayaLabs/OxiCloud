@@ -634,6 +634,31 @@ pub struct CurrentUser {
     /// hot path (see `docs/plan/dpop.md` Gate 9).
     #[serde(skip)]
     pub dpop_jkt: Option<String>,
+
+    /// What the credential said about itself: the JWT `sid` and `iat`.
+    ///
+    /// Here rather than only in request extensions because a `Gate` is
+    /// handed `&CurrentUser` and nothing else (`docs/plan/scope-gates.md`
+    /// — `require(gate, caller: &CurrentUser)`), so `Gate::Elevated`
+    /// cannot reach extensions to find the session it must check
+    /// `auth.sessions.elevated_at` on. Carrying the pair on the caller is
+    /// the single channel both a gate and a handler can read.
+    ///
+    /// The whole [`PresentedToken`] rather than a bare `sid`: both claims
+    /// come from the same credential, `resolve_live_role` needs them
+    /// together, and a second encoding of the same fact is how the two
+    /// drift apart.
+    ///
+    /// `PresentedToken::default()` for a credential that is not a JWT —
+    /// an app password over Basic auth, a NextCloud login-v2 session —
+    /// which carries neither claim. That default is a declared blind spot,
+    /// not a clean bill of health.
+    ///
+    /// `#[serde(skip)]` for the same reason as `dpop_jkt`: this type is a
+    /// serialized DTO with an OpenAPI schema, and internal request state
+    /// must not change the wire shape.
+    #[serde(skip)]
+    pub token: crate::domain::entities::presented_token::PresentedToken,
 }
 
 impl CurrentUser {

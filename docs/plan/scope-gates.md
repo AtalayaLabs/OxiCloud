@@ -71,8 +71,10 @@ pub enum Gate {
     // ── from the SESSION / credential ──
     DpopBound,
     // Not v1: no elevation state in the schema yet. Designed in
-    // `session-elevation.md`, which adds `auth.sessions.elevated_at`
-    // and needs `sid` on `CurrentUser`. Lands with no reshaping.
+    // `session-elevation.md`, which adds `auth.sessions.elevated_at`.
+    // The `CurrentUser` half of its prerequisite is DONE — the caller
+    // carries `token: PresentedToken`, so this gate reads
+    // `caller.token.session_id`. Lands with no reshaping.
     // Elevated,
 }
 
@@ -145,11 +147,30 @@ every gate to be user-bound.
 
 `CurrentUser` (`dtos/user_dto.rs:621`) carries `id`, `username`,
 `email`, `role` (**from the JWT claim**, hence stale-prone, hence
-`decide_live_role`) and `dpop_jkt`. The session id is **not** on it, but
-`JwtClaims.sid` carries `auth.sessions.id` one layer down, precisely so
-the middleware can act per-session without a DB round trip — so
-surfacing it is a thread-through, not a new concept. Left out of v1 only
-to keep the changes separable.
+`decide_live_role`), `dpop_jkt` — and now `token: PresentedToken`, the
+`sid` and `iat` the credential presented. **This question is closed; the
+field is in.** `Gate::Elevated` can read `caller.token.session_id`
+without reshaping `require`.
+
+It carries the whole `PresentedToken` rather than a bare `sid` because
+both claims come from the same credential and `resolve_live_role` needs
+them together; a second encoding of the same fact is how two channels
+drift apart. Which is why the field replaced a request-extension publish
+that had briefly served the same purpose: `CurrentUserId` is itself
+derived from `extensions.get::<Arc<CurrentUser>>()`, so the caller struct
+was already reachable everywhere the extension was, and one channel beats
+two.
+
+Extensions could not have served a `Gate` in any case — `require(gate,
+caller: &CurrentUser)` passes the caller and nothing else, by design, so
+a gate has no route to the request. That constraint is what decided the
+question: the fact has to be on the caller.
+
+`#[serde(skip)]`, like `dpop_jkt` — this is a serialized DTO with an
+OpenAPI schema, and internal request state must not reach the wire.
+Verified by regenerating `resources/gen/openapi.json`: no diff. CI diffs
+that file, so the skip is guarded by the artifact rather than by a unit
+test.
 
 Follow the precedent in that file: `CurrentUser::role` resolves an
 unrecognised value to `Anonymous`, "the least privileged answer". Same

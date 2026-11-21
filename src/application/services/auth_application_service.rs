@@ -2555,6 +2555,9 @@ impl AuthApplicationService {
 
         Ok(crate::application::dtos::user_dto::CurrentUser {
             id: user.id(),
+            // This door mints an app password, not a JWT — no claims to
+            // record.
+            token: crate::domain::entities::presented_token::PresentedToken::default(),
             username: std::sync::Arc::from(user.username().unwrap_or("")),
             email: std::sync::Arc::from(user.email()),
             role: smol_str::SmolStr::new_static(user.role().as_str()),
