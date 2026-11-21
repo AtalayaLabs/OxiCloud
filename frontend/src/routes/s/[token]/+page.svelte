@@ -33,6 +33,7 @@
 	import ResourceList from '$lib/components/ResourceList.svelte';
 	import { fileDownloadUrl, getFile } from '$lib/api/endpoints/files';
 	import { fetchFolderPage, folderZipUrl } from '$lib/api/endpoints/folders';
+	import { latestRequest } from '$lib/utils/latestRequest';
 	import { getShareMeta, verifySharePassword, type ShareMeta } from '$lib/api/endpoints/share';
 	import type { FileItem, FolderItem } from '$lib/api/types';
 	import { t } from '$lib/i18n/index.svelte';
@@ -63,6 +64,10 @@
 	let pwInput = $state('');
 	let pwError = $state('');
 	let pwBusy = $state(false);
+
+	// Latest-wins for folder navigation (#924): a slow folder A must not
+	// overwrite the list and `#folder=` of a later folder B.
+	const folderLoads = latestRequest();
 
 	const isMedia = (f: FileItem) =>
 		f.mime_type.startsWith('image/') || f.mime_type.startsWith('video/');
@@ -132,11 +137,13 @@
 	}
 
 	async function loadFolder(id: string, pushHistory = false) {
+		const ctl = folderLoads.next();
 		listLoading = true;
 		listError = null;
 		lightboxIndex = -1;
 		try {
-			const pageData = await fetchFolderPage(id);
+			const pageData = await fetchFolderPage(id, { signal: ctl.signal });
+			if (!folderLoads.isCurrent(ctl)) return;
 			items = pageData.items;
 			nextCursor = pageData.nextCursor;
 			folderId = id;
@@ -152,23 +159,29 @@
 				history.pushState({ folderId: id }, '', `${url.pathname}${url.search}${hash}`);
 			}
 		} catch {
+			if (!folderLoads.isCurrent(ctl)) return;
 			listError = t('share.error', 'Something went wrong. Please try again.');
 		} finally {
-			listLoading = false;
+			if (folderLoads.isCurrent(ctl)) listLoading = false;
 		}
 	}
 
 	async function loadMore() {
 		if (!nextCursor || !folderId || listLoading) return;
+		const ctl = folderLoads.next();
 		listLoading = true;
 		try {
-			const pageData = await fetchFolderPage(folderId, { cursor: nextCursor });
+			const pageData = await fetchFolderPage(folderId, {
+				cursor: nextCursor,
+				signal: ctl.signal
+			});
+			if (!folderLoads.isCurrent(ctl)) return;
 			items = [...items, ...pageData.items];
 			nextCursor = pageData.nextCursor;
 		} catch {
 			/* keep what we have — the visitor can retry by scrolling again */
 		} finally {
-			listLoading = false;
+			if (folderLoads.isCurrent(ctl)) listLoading = false;
 		}
 	}
 

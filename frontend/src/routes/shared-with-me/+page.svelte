@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { errorMessage } from '$lib/utils/errors';
+	import { latestRequest } from '$lib/utils/latestRequest';
 	import { SvelteMap } from 'svelte/reactivity';
 	import { primeContextPage } from '$lib/utils/listContext';
 	import { goto } from '$app/navigation';
@@ -53,6 +54,10 @@
 	let reversed = $state(false);
 
 	const sharers = useOwnerCache(resolveOwnerName);
+
+	// Latest-wins (#924): a slow load for the previous sort must not
+	// replace (or append to) the list of the current one.
+	const listLoads = latestRequest();
 
 	// Drive resources also surface in `/api/grants/incoming/resources`
 	// since the role_grants rewrite, but they don't belong in the
@@ -110,14 +115,17 @@
 	}
 
 	async function load(reset = false, orderBy: IncomingGrantOrderBy = 'granted_at', rev = reversed) {
+		const ctl = listLoads.next();
 		loading = true;
 		error = null;
 		try {
 			const page = await fetchSharedWithMe({
 				cursor: reset ? undefined : cursor,
 				orderBy,
-				reverse: rev
+				reverse: rev,
+				signal: ctl.signal
 			});
+			if (!listLoads.isCurrent(ctl)) return;
 			raw = reset ? page.items : [...raw, ...page.items];
 			primeContextPage(contextMap, reset, page.items, (it) =>
 				it.resource_type === 'drive'
@@ -129,9 +137,10 @@
 			// show real names instead of UUIDs.
 			void sharers.resolve(page.items.map((i) => i.granted_by).filter((id): id is string => !!id));
 		} catch (e) {
+			if (!listLoads.isCurrent(ctl)) return;
 			error = errorMessage(e);
 		} finally {
-			loading = false;
+			if (listLoads.isCurrent(ctl)) loading = false;
 		}
 	}
 

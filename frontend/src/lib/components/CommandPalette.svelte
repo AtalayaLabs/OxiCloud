@@ -9,6 +9,7 @@
 	import { confirmDialog } from '$lib/stores/dialogs.svelte';
 	import { session } from '$lib/stores/session.svelte';
 	import { isAtLeastAdmin } from '$lib/utils/roles';
+	import { latestRequest } from '$lib/utils/latestRequest';
 	import { theme } from '$lib/stores/theme.svelte';
 
 	interface Command {
@@ -34,6 +35,8 @@
 	let panelEl = $state<HTMLElement | null>(null);
 	let fileMatches = $state<Command[]>([]);
 	let searchTimer: ReturnType<typeof setTimeout> | null = null;
+	// Latest-wins (#924): results for `rac` must not land after `race-xyz`.
+	const searches = latestRequest();
 	// Element focused before the palette opened, restored on close.
 	let prevFocus: HTMLElement | null = null;
 
@@ -195,14 +198,19 @@
 
 	function runFileSearch() {
 		if (searchTimer) clearTimeout(searchTimer);
+		// Any keystroke makes the in-flight search stale, even before the
+		// debounce fires (or when the query drops below two characters).
+		searches.cancel();
 		const q = query.trim();
 		if (q.length < 2) {
 			fileMatches = [];
 			return;
 		}
 		searchTimer = setTimeout(async () => {
+			const ctl = searches.next();
 			try {
-				const r = await searchResources(q, { recursive: true, limit: 8 });
+				const r = await searchResources(q, { recursive: true, limit: 8, signal: ctl.signal });
+				if (!searches.isCurrent(ctl)) return;
 				// Wire items are ordered folders-first-then-files, but demux
 				// explicitly so the palette keeps the two-section layout even
 				// when file hits dominate the result set.
@@ -231,6 +239,7 @@
 					}));
 				fileMatches = [...folders, ...files];
 			} catch {
+				if (!searches.isCurrent(ctl)) return;
 				fileMatches = [];
 			}
 		}, 250);
