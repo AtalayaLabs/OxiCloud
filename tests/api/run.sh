@@ -878,6 +878,48 @@ DPOP_HELPER_PASSWORD="$password" \
   "$DPOP_HELPER_BIN" || die "DPoP wire-protocol test failed"
 fi
 
+# ── 8. Second server pass — the verified-email policy ──────────────────
+# The only phase that needs a DIFFERENT server config, so it is the only
+# one that restarts the server.
+#
+# `OXICLOUD_REQUIRE_VERIFIED_EMAIL=true` cannot be on for the rest of the
+# suite: 14 scenarios create users through `POST /api/auth/register`, which
+# does NOT stamp `email_verified_at`, and those users then log in. With the
+# flag on they would all be refused. So the policy gets its own pass
+# instead of its own config file.
+#
+# The override is a per-command env prefix on the launch line below:
+#   * nothing ambient is read, so a developer's exported OXICLOUD_* cannot
+#     reach a test server — the failure mode would be a test run pointed at
+#     a sandbox database or storage path;
+#   * `--config` still does both of its jobs, including suppressing the
+#     repo-root `.env` probe;
+#   * it needs no new CLI flag, because the binary's precedence is already
+#     defaults < file < environment (`load_config_file`).
+#
+# Postgres is NOT restarted: the admin that `setup.hurl` seeded is still
+# there, which is what the scenario authenticates with.
+#
+# Selector name: the scenario's own, `auth_email_verified_required`.
+if selected auth_email_verified_required; then
+  log "Restarting OxiCloud with OXICLOUD_REQUIRE_VERIFIED_EMAIL=true..."
+  if [[ -n "$SERVER_PID" ]]; then
+    kill "$SERVER_PID" 2>/dev/null || true
+    wait "$SERVER_PID" 2>/dev/null || true
+  fi
+  OXICLOUD_REQUIRE_VERIFIED_EMAIL=true \
+    "$OXICLOUD_BIN" --config "$COMMON/server.env" &
+  # Reassign so the EXIT trap kills THIS server. Without it the trap would
+  # kill a dead pid and leave the second server holding the port.
+  SERVER_PID=$!
+  wait_for_http "$base_url/ready" 120
+  log "Server ready with the verified-email policy ON."
+
+  hurl --variables-file "$API_DIR/test.env" --file-root "$REPO_ROOT/tests" --test --jobs 1 \
+    "$API_DIR/auth_email_verified_required.hurl" \
+    || die "verified-email policy pass failed"
+fi
+
 if (( ${#SELECTORS[@]} > 0 )); then
   log "Selected scenarios passed (${SELECTORS[*]}). This was a SELECTIVE run — \
 run the full suite before treating it as green."
