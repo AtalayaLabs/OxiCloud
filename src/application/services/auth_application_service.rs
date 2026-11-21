@@ -4649,6 +4649,25 @@ impl AuthApplicationService {
         offset: i64,
     ) -> Result<Vec<crate::application::dtos::session_dto::SessionSummaryDto>, DomainError> {
         self.require_admin_caller(authorization, caller.id).await?;
+        self.list_sessions_scoped(caller, user_id_filter, include_revoked, limit, offset)
+            .await
+    }
+
+    /// The listing itself, with the scope already decided by the caller.
+    ///
+    /// Shared by the admin surface above and `list_own_sessions` below so
+    /// the two cannot drift: the only difference between them is WHO may
+    /// ask and for whose rows, which is settled before this runs. A second
+    /// copy of the pagination and DTO mapping is how one surface would
+    /// quietly keep rendering a field the other had learned not to.
+    async fn list_sessions_scoped(
+        &self,
+        caller: crate::application::dtos::session_dto::SessionCaller<'_>,
+        user_id_filter: Option<Uuid>,
+        include_revoked: bool,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<crate::application::dtos::session_dto::SessionSummaryDto>, DomainError> {
         let sessions = self
             .session_storage
             .list_sessions_paginated(user_id_filter, include_revoked, limit, offset)
@@ -4662,6 +4681,29 @@ impl AuthApplicationService {
                 )
             })
             .collect())
+    }
+
+    /// A user's own sessions — the self-service half of
+    /// `/api/admin/sessions`.
+    ///
+    /// Takes no `AuthorizationEngine`, and that is the design rather than
+    /// an omission: the scope is not a grant to check but a filter that
+    /// cannot be widened. The caller's own id IS the filter, so there is
+    /// no resource to name and no way to express "someone else's" —
+    /// deny-by-default by construction, in the spirit of
+    /// `src/AGENTS.md` § Grant vs scope.
+    pub async fn list_own_sessions(
+        &self,
+        caller: crate::application::dtos::session_dto::SessionCaller<'_>,
+        include_revoked: bool,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<crate::application::dtos::session_dto::SessionSummaryDto>, DomainError> {
+        // Read the id before the move — `SessionCaller` is not `Copy`
+        // (it holds a borrowed thumbprint).
+        let own_id = caller.id;
+        self.list_sessions_scoped(caller, Some(own_id), include_revoked, limit, offset)
+            .await
     }
 
     /// Admin-driven session revocation. Sets `revoked = true` — the
@@ -4686,12 +4728,8 @@ impl AuthApplicationService {
             .await
             .ok()
             .map(|s| s.user_id());
-        self.session_storage.revoke_session(session_id).await?;
-        if let Some(uid) = target_user_id {
-            // So the admin panel's button stops the session NOW, not
-            // within the flags-cache TTL.
-            self.invalidate_user_flags(uid).await;
-        }
+        self.revoke_session_and_invalidate(session_id, target_user_id)
+            .await?;
         tracing::info!(
             target: "audit",
             event = "admin.session_revoked",
@@ -4701,6 +4739,88 @@ impl AuthApplicationService {
             "👮🏻‍♂️ Admin revoked session",
         );
         metrics::counter!("oxicloud_admin_session_revoked_total").increment(1);
+        Ok(())
+    }
+
+    /// Revoke the row and drop the owner's cached flags.
+    ///
+    /// Shared by the admin and self-service revokes because the cache drop
+    /// is the half that is easy to omit and invisible when omitted: without
+    /// it the row is revoked but the session keeps answering until the
+    /// `user_flags_cache` TTL rolls over, so a button that reports success
+    /// does nothing for up to 30 s. That was the OIDC backchannel bug
+    /// (`0228c1433`), and one copy of this means a third revoke surface
+    /// cannot reintroduce it.
+    ///
+    /// `target_user_id` is passed in rather than re-read: both callers have
+    /// already resolved it for their audit line, and re-reading a row that
+    /// was just revoked is a second round trip for the same answer.
+    async fn revoke_session_and_invalidate(
+        &self,
+        session_id: Uuid,
+        target_user_id: Option<Uuid>,
+    ) -> Result<(), DomainError> {
+        self.session_storage.revoke_session(session_id).await?;
+        if let Some(uid) = target_user_id {
+            self.invalidate_user_flags(uid).await;
+        }
+        Ok(())
+    }
+
+    /// Revoke one of the caller's OWN sessions — the self-service half of
+    /// `admin_revoke_session_with_perms`.
+    ///
+    /// A session that does not exist and one that belongs to somebody else
+    /// are the SAME answer: `NotFound`. Session ids are unguessable, but
+    /// distinguishing the two would turn this endpoint into an oracle for
+    /// "is this id a live session", so the refusal is uniform and the audit
+    /// line carries the truth — the canonical anti-enumeration shape from
+    /// `src/AGENTS.md`.
+    ///
+    /// Revoking the CURRENT session is allowed, and deliberately so: it is
+    /// a logout that happens to be spelled as a revoke, and refusing it
+    /// would mean a user looking at their session list cannot act on the
+    /// row they most want to act on. The FE flags that row (`is_current`)
+    /// so the choice is informed rather than surprising.
+    pub async fn revoke_own_session(
+        &self,
+        caller: crate::application::dtos::session_dto::SessionCaller<'_>,
+        session_id: Uuid,
+    ) -> Result<(), DomainError> {
+        let owner_id = self
+            .session_storage
+            .get_session_by_id(session_id)
+            .await
+            .ok()
+            .map(|s| s.user_id());
+
+        if owner_id != Some(caller.id) {
+            tracing::info!(
+                target: "audit",
+                event = "session.revocation_rejected",
+                reason = if owner_id.is_none() {
+                    "session_not_found"
+                } else {
+                    "session_belongs_to_another_user"
+                },
+                caller_id = %caller.id,
+                session_id = %session_id,
+                owner_id = owner_id.map(|u| u.to_string()).unwrap_or_default(),
+                "👮🏻‍♂️ self-service session revoke refused",
+            );
+            return Err(DomainError::not_found("Session", session_id.to_string()));
+        }
+
+        self.revoke_session_and_invalidate(session_id, owner_id)
+            .await?;
+        tracing::info!(
+            target: "audit",
+            event = "session.revoked_by_owner",
+            caller_id = %caller.id,
+            session_id = %session_id,
+            "👮🏻‍♂️ user revoked one of their own sessions",
+        );
+        metrics::counter!("oxicloud_own_session_revoked_total").increment(1);
         Ok(())
     }
 

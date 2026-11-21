@@ -509,6 +509,7 @@ HURL_FILES=( \
   # access token, change-password kills the other devices but keeps the
   # caller, and an admin reset kills everything via the user-wide cutoff.
   "$API_DIR/auth_session_revocation.hurl" \
+  "$API_DIR/auth_own_sessions.hurl" \
   # created_ip vs last_seen_ip. Spoofs addresses via X-Forwarded-For,
   # which only works because server.env sets TRUST_PROXY_CIDR=0.0.0.0/0.
   # Retries rather than sleeps: the last-seen write is batched on a 30 s

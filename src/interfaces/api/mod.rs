@@ -91,6 +91,8 @@ use crate::interfaces::middleware::server_status::{HeaderPayload, ProgressHeader
         handlers::auth_handler::get_current_user,
         handlers::auth_handler::change_password,
         handlers::auth_handler::logout,
+        handlers::auth_handler::list_own_sessions,
+        handlers::auth_handler::revoke_own_session,
         handlers::auth_handler::setup_admin,
         handlers::auth_handler::oidc_authorize,
         handlers::server_status_handler::get_server_status,

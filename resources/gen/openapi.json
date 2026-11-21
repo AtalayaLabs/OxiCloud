@@ -6572,6 +6572,111 @@
         "security": []
       }
     },
+    "/api/auth/sessions": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "GET /api/auth/sessions — the caller's own sessions.",
+        "description": "The self-service half of `GET /api/admin/sessions`, and the same rows\nthrough the same DTO — `SessionSummaryDto` already withholds what a\nuser must not see (`dto_never_leaks_oidc_sid` pins that the IdP\ncorrelation handle stays out of the wire shape, not even a prefix), so\nno second projection is needed and none is introduced.",
+        "operationId": "list_own_sessions",
+        "responses": {
+          "200": {
+            "description": "The caller's sessions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/auth/sessions/{id}": {
+      "delete": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "DELETE /api/auth/sessions/{id} — revoke one of the caller's own\nsessions.",
+        "description": "404 both when the session does not exist and when it belongs to\nsomeone else: see `revoke_own_session`, which decides that and audits\nthe real reason.",
+        "operationId": "revoke_own_session",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Session UUID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Session revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid UUID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such session for this caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
     "/api/auth/upgrade-to-internal": {
       "post": {
         "tags": [
