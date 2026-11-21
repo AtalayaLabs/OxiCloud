@@ -505,6 +505,10 @@ HURL_FILES=( \
   # one borrowing the same endpoint. Its fixture is its own user, so it
   # cannot deactivate an account a later scenario logs in with.
   "$API_DIR/auth_doors_deactivated_account.hurl" \
+  # Revocation takes effect NOW, not at renewal: logout kills its own
+  # access token, change-password kills the other devices but keeps the
+  # caller, and an admin reset kills everything via the user-wide cutoff.
+  "$API_DIR/auth_session_revocation.hurl" \
   "$API_DIR/auth_profile_image.hurl" \
   "$API_DIR/registration.hurl" \
   # Registers mixed-case usernames and asserts they land lowercased, so it
