@@ -621,7 +621,7 @@ async fn opaque_login_ke3(
     let ke1: Ke1Resp = http
         .post(format!("{base}/api/auth/opaque/login/ke1"))
         .json(&json!({
-            "identifier": username,
+            "userIdentifier": username,
             "startLoginRequest": B64.encode(client_login.message.serialize()),
         }))
         .send()
