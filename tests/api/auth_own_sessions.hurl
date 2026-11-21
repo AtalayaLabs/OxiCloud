@@ -158,12 +158,29 @@ Authorization: Bearer {{bob_current}}
 
 HTTP 200
 [Captures]
-bob_doomed_session: jsonpath "$.sessions[?(@.is_current == false)].id"
+# Index, not an `is_current` filter. Rows come back
+# `ORDER BY created_at DESC`, so [0] is the second login (the session
+# this request is riding) and [1] is the first — the one to revoke.
+#
+# A filter would be the clearer expression of intent, but with both
+# rows non-current it would match TWO elements and the capture would
+# take an array instead of an id. If the ordering ever flips, step 7's
+# two assertions fail immediately rather than this passing for the
+# wrong reason.
+bob_doomed_session: jsonpath "$.sessions[1].id"
 [Asserts]
 jsonpath "$.sessions" count == 2
 jsonpath "$.sessions[*].user_id" includes "{{bob_id}}"
 body not contains "{{alice_id}}"
 body not contains "{{alice_session_id}}"
+# The row this request is riding is flagged, so a UI can warn before
+# the user revokes the session the click came from. True here for a
+# plain PASSWORD login, which is the point: `is_current` used to
+# require both sides DPoP-bound and was therefore always false for
+# clients without WebCrypto — see
+# `is_current_matches_on_session_id_without_dpop`.
+jsonpath "$.sessions[0].is_current" == true
+jsonpath "$.sessions[1].is_current" == false
 
 
 # ─────────────────────────────────────────────────────────────
@@ -270,9 +287,12 @@ Authorization: Bearer {{bob_current}}
 
 HTTP 200
 [Captures]
-bob_current_session: jsonpath "$.sessions[?(@.is_current == true)].id"
+bob_current_session: jsonpath "$.sessions[0].id"
 [Asserts]
+# Exactly one row left, so [0] IS the current session — no filter
+# needed, and the count assertion is what makes the index safe.
 jsonpath "$.sessions" count == 1
+jsonpath "$.sessions[0].is_current" == true
 
 
 DELETE {{base_url}}/api/auth/sessions/{{bob_current_session}}

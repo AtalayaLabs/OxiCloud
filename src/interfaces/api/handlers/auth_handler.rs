@@ -1133,6 +1133,7 @@ pub async fn list_own_sessions(
     let caller = crate::application::dtos::session_dto::SessionCaller {
         id: auth_user.id,
         dpop_jkt: auth_user.dpop_jkt.as_deref(),
+        session_id: auth_user.token.session_id,
     };
 
     let sessions = auth
@@ -1181,6 +1182,7 @@ pub async fn revoke_own_session(
     let caller = crate::application::dtos::session_dto::SessionCaller {
         id: auth_user.id,
         dpop_jkt: auth_user.dpop_jkt.as_deref(),
+        session_id: auth_user.token.session_id,
     };
     auth.auth_application_service
         .revoke_own_session(caller, session_id)

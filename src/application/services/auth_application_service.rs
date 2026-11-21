@@ -4678,6 +4678,7 @@ impl AuthApplicationService {
                 crate::application::dtos::session_dto::SessionSummaryDto::from_session(
                     s,
                     caller.dpop_jkt,
+                    caller.session_id,
                 )
             })
             .collect())

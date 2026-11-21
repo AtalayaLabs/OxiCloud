@@ -58,6 +58,27 @@ pub struct SessionCaller<'a> {
     /// logged in via an unbound path (legacy password without DPoP,
     /// pre-bind OIDC redirect, etc.).
     pub dpop_jkt: Option<&'a str>,
+    /// The caller's OWN session id, from the JWT `sid` claim
+    /// (`CurrentUser::token`).
+    ///
+    /// The primary input to [`SessionSummaryDto::is_current`], with
+    /// `dpop_jkt` as the fallback. Identity beats correlation: a session
+    /// id names exactly one row, whereas a thumbprint identifies a KEY —
+    /// and two sessions bound to the same key would both light up.
+    ///
+    /// Added because the thumbprint alone made the highlight unavailable
+    /// to most callers: it needs BOTH sides bound, so every non-DPoP
+    /// session (password login without WebCrypto, NextCloud clients,
+    /// CLI tools, pre-bind OIDC redirects) saw no "this is you" row at
+    /// all. Tolerable on the admin panel, where the stakes are an
+    /// administrator's own branch; not tolerable on
+    /// `GET /api/auth/sessions`, where the flag is what stands between a
+    /// user and revoking the laptop they are holding.
+    ///
+    /// `None` for a credential that is not a JWT — an app password over
+    /// Basic auth carries no `sid` — in which case the fallback applies
+    /// and, failing that, no row highlights.
+    pub session_id: Option<Uuid>,
 }
 
 /// Wire shape for `GET /api/admin/sessions`. Contains everything the
@@ -147,7 +168,7 @@ pub struct SessionSummaryDto {
 
 impl From<Session> for SessionSummaryDto {
     fn from(s: Session) -> Self {
-        Self::from_session(s, None)
+        Self::from_session(s, None, None)
     }
 }
 
@@ -157,14 +178,27 @@ impl SessionSummaryDto {
     /// the panel highlight the caller's own row; pass `None` when
     /// the caller is unbound (no jkt = no correlation) or from
     /// non-admin contexts.
-    pub fn from_session(s: Session, caller_jkt: Option<&str>) -> Self {
+    pub fn from_session(
+        s: Session,
+        caller_jkt: Option<&str>,
+        caller_session_id: Option<Uuid>,
+    ) -> Self {
         let is_revoked = s.is_revoked();
         let is_expired = s.is_expired();
         let is_active = !is_revoked && !is_expired;
         let jkt = s.dpop_jkt().map(|s| s.to_owned());
         let dpop_jkt_prefix = jkt.as_ref().map(|t| t.chars().take(8).collect::<String>());
-        let is_current = match (jkt.as_deref(), caller_jkt) {
-            (Some(row), Some(caller)) => row == caller,
+        // Session id first, thumbprint second.
+        //
+        // The id is an identity match — it names exactly this row. The
+        // thumbprint is a correlation: it identifies a KEY, so two
+        // sessions bound to the same key would both claim to be current.
+        // The fallback stays because a DPoP-bound caller whose token
+        // predates `sid` still correlates, and losing the highlight for
+        // them would be a regression.
+        let is_current = match (caller_session_id, jkt.as_deref(), caller_jkt) {
+            (Some(caller_sid), _, _) => s.id() == caller_sid,
+            (None, Some(row), Some(caller)) => row == caller,
             _ => false,
         };
         // Presence check gated on lifecycle — a revoked or expired
@@ -262,6 +296,55 @@ mod tests {
             Utc::now(),
             None,
         )
+    }
+
+    #[test]
+    fn is_current_matches_on_session_id_without_dpop() {
+        // The regression this closes: `is_current` needed BOTH sides
+        // DPoP-bound, so every non-DPoP session — password login without
+        // WebCrypto, NextCloud clients, CLI tools, pre-bind OIDC
+        // redirects — saw no "this is you" row at all. Tolerable on the
+        // admin panel; not on `GET /api/auth/sessions`, where that flag
+        // is what stands between a user and revoking the laptop they are
+        // holding.
+        //
+        // Caught by `auth_own_sessions.hurl` asserting `is_current ==
+        // true` for a plain password login and getting `false`.
+        let s = base(false, None);
+        let own_id = s.id();
+
+        let dto = SessionSummaryDto::from_session(s, None, Some(own_id));
+        assert!(
+            dto.is_current,
+            "a caller holding this very session must see it flagged, DPoP or not",
+        );
+    }
+
+    #[test]
+    fn is_current_is_false_for_another_session_even_with_a_matching_key() {
+        // Session id BEATS thumbprint rather than supplementing it. A
+        // thumbprint identifies a KEY, so two sessions bound to the same
+        // key both used to light up — two "this is you" rows, and a user
+        // who revokes the wrong one. An id names exactly one row.
+        let other = base(false, Some("same-key"));
+        let unrelated_id = Uuid::new_v4();
+
+        let dto = SessionSummaryDto::from_session(other, Some("same-key"), Some(unrelated_id));
+        assert!(
+            !dto.is_current,
+            "the key matched but the session did not — identity must win",
+        );
+    }
+
+    #[test]
+    fn is_current_falls_back_to_dpop_when_the_token_carries_no_sid() {
+        // The fallback is not dead code: a DPoP-bound caller whose token
+        // predates `sid` still correlates, and dropping that would be a
+        // regression for exactly the callers the feature was built for.
+        let s = base(false, Some("bound-key"));
+
+        let dto = SessionSummaryDto::from_session(s, Some("bound-key"), None);
+        assert!(dto.is_current, "thumbprint match must still flag the row");
     }
 
     #[test]

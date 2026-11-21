@@ -1932,6 +1932,7 @@ pub async fn list_sessions(
     let caller = crate::application::dtos::session_dto::SessionCaller {
         id: auth_user.id,
         dpop_jkt: auth_user.dpop_jkt.as_deref(),
+        session_id: auth_user.token.session_id,
     };
 
     let sessions = auth
@@ -1991,6 +1992,7 @@ pub async fn revoke_session(
     let caller = crate::application::dtos::session_dto::SessionCaller {
         id: auth_user.id,
         dpop_jkt: auth_user.dpop_jkt.as_deref(),
+        session_id: auth_user.token.session_id,
     };
     auth.auth_application_service
         .admin_revoke_session_with_perms(state.authorization.as_ref(), caller, session_id)
