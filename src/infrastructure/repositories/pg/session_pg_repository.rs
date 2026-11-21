@@ -83,7 +83,7 @@ impl SessionRepository for SessionPgRepository {
                         INSERT INTO auth.sessions (
                             id, user_id, refresh_token, expires_at,
                             created_ip, user_agent, created_at, revoked, family_id,
-                            oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at, last_seen_ip
+                            oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at
                         ) VALUES (
                             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
                         )
@@ -717,7 +717,7 @@ impl SessionStoragePort for SessionPgRepository {
                         INSERT INTO auth.sessions (
                             id, user_id, refresh_token, expires_at,
                             created_ip, user_agent, created_at, revoked, family_id,
-                            oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at, last_seen_ip
+                            oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at
                         ) VALUES (
                             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
                         )
