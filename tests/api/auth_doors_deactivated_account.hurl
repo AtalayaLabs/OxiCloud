@@ -24,7 +24,8 @@
 #   3. Refresh — rotates, then refused
 #   4. NC Login Flow v2 — grants, then refused; AND the
 #      anti-enumeration half (wrong password reveals nothing)
-#   5. Teardown
+#   5. Device-flow approve — refused (see 13b on which layer)
+#   6. Teardown
 #
 # Covered elsewhere, deliberately not duplicated here:
 #   * Classic `POST /api/auth/login` — `admin_user_ops.hurl`
@@ -33,13 +34,15 @@
 #     handshake needs real OPRF blinding, which cannot sit in a
 #     .hurl body.
 #
-# NOT coverable as a black-box HTTP test, by design:
-#   * Device-flow `approve()`. Approving requires the user's own
-#     session, and the per-call live-role check rejects a
-#     deactivated caller in middleware BEFORE `approve()` runs.
-#     So a wire test here would pass even with the service check
-#     removed — it would assert the middleware, not the door.
-#     Belongs at the service layer.
+# Covered, but read what it proves (13b):
+#   * Device-flow `approve()`. The outcome is asserted — a
+#     disabled account cannot approve a device — but middleware
+#     refuses the caller before `approve()` runs, so the row
+#     would still pass with that door's own check deleted. The
+#     status is pinned precisely so a change in WHICH layer
+#     refuses shows up here.
+#
+# NOT coverable as a black-box HTTP test:
 #   * The unverified-email half of all of the above. It needs a
 #     server started with `OXICLOUD_REQUIRE_VERIFIED_EMAIL=true`
 #     and a pre-seeded unverified user that already holds a
@@ -289,6 +292,51 @@ user={{username}}&password=NotTheAdminPassword9!
 HTTP 303
 [Asserts]
 header "Location" == "{{refused_location}}"
+
+
+# ─────────────────────────────────────────────────────────────
+# 13b — DEVICE-FLOW door: a deactivated user cannot approve a
+#       pending device authorization.
+#
+#       Read the STATUS, not just the refusal — it names which
+#       gate fired, and the two are at different layers:
+#
+#         401 → the per-call live-role check rejected the caller
+#               in `auth_middleware`, before the handler ran.
+#               This is what happens today.
+#         403 → `approve()`'s own `check_account_admission` ran
+#               and refused (AccountDeactivated → FORBIDDEN).
+#
+#       Either is correct for the user; the distinction matters
+#       for what this pin proves. At 401 it asserts the OUTCOME
+#       ("a disabled account cannot approve a device") but NOT
+#       the service check — that would still pass with
+#       `approve()`'s check deleted, because middleware beats it.
+#       The service check is pinned at its own layer instead.
+#
+#       If this row ever flips to 403, middleware stopped
+#       catching it first and `approve()`'s check became
+#       load-bearing — worth knowing either way, which is why
+#       the status is asserted rather than "any 4xx".
+#
+#       The pending code is created BEFORE deactivation because
+#       `/device/authorize` is unauthenticated: it is the device
+#       asking, not the user, so it stays available regardless.
+# ─────────────────────────────────────────────────────────────
+POST {{base_url}}/api/auth/device/authorize
+Content-Type: application/json
+{ "client_name": "doors-deactivated probe device" }
+
+HTTP 200
+[Captures]
+probe_user_code: jsonpath "$.user_code"
+
+POST {{base_url}}/api/auth/device/verify
+Authorization: Bearer {{fixture_token}}
+Content-Type: application/json
+{ "user_code": "{{probe_user_code}}", "action": "approve" }
+
+HTTP 401
 
 
 # ─────────────────────────────────────────────────────────────
