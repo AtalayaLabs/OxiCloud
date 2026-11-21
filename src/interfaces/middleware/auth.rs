@@ -476,6 +476,107 @@ pub async fn auth_middleware(
                                 "App password authentication successful for user: {}",
                                 uname
                             );
+
+                            // Re-check the LIVE user record, exactly as the
+                            // Bearer and cookie branches do.
+                            //
+                            // This branch had no live check at all, and the
+                            // verification it trusts is cached for
+                            // `BASIC_AUTH_CACHE_TTL_SECS` (300 s) keyed on
+                            // the username+password hash — so a deactivated
+                            // account kept full WebDAV / CalDAV / CardDAV
+                            // access for up to five minutes after an admin
+                            // disabled it, and a demoted admin kept the
+                            // cached `role` just as long. Caught by
+                            // `tests/api/auth_doors_deactivated_account.hurl`,
+                            // where a PROPFIND answered 207 after
+                            // deactivation.
+                            //
+                            // The account check inside `verify_basic_auth`
+                            // cannot close this: it runs on a cache MISS,
+                            // which is precisely what a client that just
+                            // authenticated does not produce. This read is
+                            // the `UserFlags` moka entry every Bearer
+                            // request already pays for, and deactivation
+                            // invalidates it eagerly, so the refusal is
+                            // immediate rather than TTL-bounded.
+                            //
+                            // `None` for the issued-at: Basic auth carries
+                            // no JWT, so the revocation cutoff cannot apply
+                            // here — an app password is revoked by deleting
+                            // it, not by `sessions_valid_from`.
+                            //
+                            // ⚠️  HOT PATH — read before adding anything here.
+                            //
+                            // This runs on EVERY WebDAV / NextCloud / CalDAV
+                            // / CardDAV request, and those clients are far
+                            // chattier than the SPA: a sync pass is one
+                            // PROPFIND per folder, and desktop clients poll
+                            // continuously. Whatever sits in this branch is
+                            // multiplied by that traffic.
+                            //
+                            // What makes the check affordable:
+                            //   * `get_user_flags` is a moka hit in the
+                            //     common case — no DB round trip at all.
+                            //   * On a miss it is ONE single-row lookup by
+                            //     primary key of five small columns (no
+                            //     `image`), and `try_get_with` coalesces
+                            //     concurrent misses for the same user into a
+                            //     single query — so twenty parallel
+                            //     PROPFINDs on a cold entry cost one.
+                            //   * The miss rate is therefore ~one tiny query
+                            //     per active user per `USER_FLAGS_CACHE_TTL`
+                            //     (30 s), which is the same cost every
+                            //     Bearer request has always paid.
+                            //
+                            // So: do NOT add an uncached read, a second
+                            // query, or anything per-request that touches
+                            // the database here. If a new account property
+                            // must be enforced, put it on `UserFlags` so it
+                            // rides the existing cached read — that is
+                            // precisely why `sessions_valid_from` was added
+                            // as a column there rather than as its own
+                            // lookup.
+                            // Deny-by-default if there is no auth service to
+                            // ask: without it the account state cannot be
+                            // verified, and an unverifiable account must not
+                            // be admitted. `AuthServiceUnavailable` is a 500
+                            // because it is a misconfiguration, not a blip.
+                            let Some(auth_svc) = state.auth_service.as_ref() else {
+                                return Err(AuthError::AuthServiceUnavailable);
+                            };
+                            let role = match crate::interfaces::middleware::user::resolve_live_role(
+                                auth_svc.auth_application_service.as_ref(),
+                                user_id,
+                                &role,
+                                None,
+                            )
+                            .await
+                            {
+                                crate::interfaces::middleware::user::LiveRole::Active(r) => r,
+                                crate::interfaces::middleware::user::LiveRole::Revoked => {
+                                    tracing::info!(
+                                        target: "audit",
+                                        event = "auth.login_rejected",
+                                        reason = "account_not_live",
+                                        origin = "app_password",
+                                        caller_id = %user_id,
+                                        "👮🏻‍♂️ app-password request refused — account is no longer active",
+                                    );
+                                    if is_dav_path(request.uri().path()) {
+                                        return Ok(dav_basic_auth_challenge(
+                                            "Invalid username or app password",
+                                        ));
+                                    }
+                                    return Err(AuthError::AccountInactive);
+                                }
+                                crate::interfaces::middleware::user::LiveRole::Indeterminate {
+                                    retryable,
+                                } => {
+                                    return Err(AuthError::LiveRoleIndeterminate { retryable });
+                                }
+                            };
+
                             // App-password sessions are always unbound —
                             // they belong to NC clients / CLI / mobile
                             // tools without WebCrypto. DPoP middleware
