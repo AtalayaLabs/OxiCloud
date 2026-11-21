@@ -647,11 +647,13 @@ export interface AdminSessionsPage {
 	sessions: SessionSummary[];
 	limit: number;
 	offset: number;
-	/** Access-token TTL in seconds — from `OXICLOUD_ACCESS_TOKEN_EXPIRY_SECS`
-	 *  server-side. The panel surfaces this in a "revoke takes effect within
-	 *  {N} seconds" notice because revoking flips the DB row (breaks refresh)
-	 *  but any in-flight JWT stays valid until its `exp`. */
-	access_token_expiry_secs: number;
+	/* `access_token_expiry_secs` was here, feeding a "revoke takes effect
+	 * within {N} seconds" notice. Per-session revocation removed the delay:
+	 * the server stamps `revoked_at`, carries the revoked sids on the cached
+	 * user flags and drops that cache on revoke, so the access token is
+	 * refused on the next request. The field is gone from the response —
+	 * advertising a delay that no longer exists would have an operator
+	 * responding to a compromise wait for nothing. */
 }
 
 // ── /api/config — public server-configuration discovery ────────────────────

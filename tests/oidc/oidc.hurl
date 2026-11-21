@@ -320,16 +320,20 @@ jsonpath "$.full.user.username" == "oidc_user"
 #           NEVER leaks the raw IdP `sid`. The oidc_user was JIT-
 #           provisioned admin by its `groups` claim (see Step 6),
 #           so /api/admin/sessions is reachable with the current
-#           cookies. Also asserts `access_token_expiry_secs` is
-#           served so the SPA can render the revoke-lag notice.
+#           cookies.
 #
 #           Regressions this pins:
 #             * origin column drops back to "unknown" on refresh
 #               (would break the panel filter for OIDC-only view);
 #             * DTO reintroduces `oidc_sid` (the anti-leak fix from
-#               dto_never_leaks_oidc_sid in session_dto.rs);
-#             * handler stops publishing the TTL (would silently
-#               kill the revoke-lag notice on the admin page).
+#               dto_never_leaks_oidc_sid in session_dto.rs).
+#
+#           This step also used to pin `access_token_expiry_secs`,
+#           which fed a "revoke takes effect within N seconds" notice
+#           on the admin page. Both the notice and the field are gone:
+#           per-session revocation made the lag it described untrue,
+#           so the pin was protecting a promise the server had stopped
+#           needing to make.
 # ─────────────────────────────────────────────────────────────
 GET {{base_url}}/api/admin/sessions?limit=25
 
@@ -343,9 +347,10 @@ HTTP 200
 # elsewhere in the SessionSummaryDto shape, which by construction it
 # doesn't.
 body contains "\"origin\":\"oidc\""
-# TTL surfaces for the SPA's revoke-lag notice.
-jsonpath "$.access_token_expiry_secs" isInteger
-jsonpath "$.access_token_expiry_secs" > 0
+# And the field that fed the revoke-lag notice is GONE, not merely
+# unused — a client that still reads it should find nothing rather
+# than a number implying a delay that no longer exists.
+body not contains "access_token_expiry_secs"
 # The raw IdP sid must never appear in the wire shape — not the key,
 # not even a prefix (see dto_never_leaks_oidc_sid unit test).
 body not contains "oidc_sid"
