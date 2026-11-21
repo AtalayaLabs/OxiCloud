@@ -18,6 +18,7 @@
 	} from '$lib/api/endpoints/folders';
 	import { invalidateFolderCache, rememberFolderName } from '$lib/utils/folderCache';
 	import {
+		batchDownloadUrl,
 		deleteFile,
 		fileDownloadUrl,
 		moveFile,
@@ -25,6 +26,7 @@
 		uploadFileWithProgress
 	} from '$lib/api/endpoints/files';
 	import { folderZipUrl } from '$lib/api/endpoints/folders';
+	import { downloadUrlPayload } from '$lib/utils/downloadUrl';
 	import {
 		instantUploadOwned,
 		resolveOwnedHashes,
@@ -1517,7 +1519,7 @@
 			if (dl) {
 				e.dataTransfer.setData(
 					'DownloadURL',
-					`application/octet-stream:${dl.name}:${location.origin}${dl.url}`
+					downloadUrlPayload(dl.name, `${location.origin}${dl.url}`)
 				);
 			}
 		}
@@ -1536,13 +1538,7 @@
 		// (DownloadURL can only point at a GET URL); file_ids/folder_ids are CSV.
 		const fileIds = items.filter((i) => i.kind === 'file').map((i) => i.id);
 		const folderIds = items.filter((i) => i.kind === 'folder').map((i) => i.id);
-		// Transient query-string builder for a one-off download URL — not reactive
-		// state, so a plain URLSearchParams is correct here.
-		// eslint-disable-next-line svelte/prefer-svelte-reactivity
-		const params = new URLSearchParams();
-		if (fileIds.length) params.set('file_ids', fileIds.join(','));
-		if (folderIds.length) params.set('folder_ids', folderIds.join(','));
-		return { name: batchZipName(), url: `/api/batch/download?${params.toString()}` };
+		return { name: batchZipName(), url: batchDownloadUrl(fileIds, folderIds) };
 	}
 
 	/**
