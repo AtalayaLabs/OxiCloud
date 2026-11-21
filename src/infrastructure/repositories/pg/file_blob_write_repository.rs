@@ -45,6 +45,12 @@ impl FileBlobWriteRepository {
         }
     }
 
+    /// Release an ingest's blob reference that the caller refused before
+    /// reaching a write method (those release on their own failures).
+    pub async fn release_uncommitted_blob(&self, blob_hash: &str) {
+        self.dedup.release_uncommitted(blob_hash).await;
+    }
+
     /// Creates a stub instance for testing — never hits PG.
     #[cfg(test)]
     pub fn new_stub() -> Self {
