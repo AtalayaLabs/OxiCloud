@@ -813,9 +813,16 @@ selected storage_cleanup_check && bash "$API_DIR/storage_cleanup_check.sh"
 
 # ── 5. Message bus — WebSocket smoke test ───────────────────────────────
 # Runs BEFORE the OPAQUE helper so its user registration + login uses
-# the legacy password path (opaque_substrate.hurl migrates the admin
-# account, but by running first this check is unaffected by whatever
-# order later scenarios touch the auth substrate). Four scenarios:
+# the legacy password path — the helper performs a real handshake as the
+# admin and MIGRATES that account, after which the legacy door refuses it
+# (`reason="opaque_migrated_use_opaque"`). By running first this check is
+# unaffected by whatever order later scenarios touch the auth substrate.
+#
+# (The migrator is the helper. `opaque_substrate.hurl` only pins error
+# shapes — every `register/finish` in it asserts 4xx — so it completes no
+# registration; an earlier version of this comment blamed it, and the
+# verified-email phase in section 8 was debugged against that wrong
+# attribution.) Four scenarios:
 # positive delivery, topic isolation, AuthZ denial on subscribe,
 # anti-enumeration parity. See `tests/api/rt_bus_check.sh` and
 # `docs/plan/message-bus.md`.
@@ -898,12 +905,19 @@ fi
 #     defaults < file < environment (`load_config_file`).
 #
 # Postgres is NOT restarted, so the admin that `setup.hurl` seeded is still
-# there — but its CREDENTIAL is not what it was. `opaque_substrate.hurl`
-# migrates that account to OPAQUE earlier in the run, and a migrated user is
-# refused on the legacy password door (`auth.login_rejected`,
-# reason `opaque_migrated_use_opaque`) — which is this scenario's Step 0 and
-# the precondition for everything after it. Running the whole suite therefore
-# failed where running this scenario alone passed.
+# there — but its CREDENTIAL is not what it was. The OPAQUE helper in
+# section 6 runs the real handshake as `$username`, which MIGRATES the admin
+# account, and a migrated user is refused on the legacy password door
+# (`auth.login_rejected`, reason `opaque_migrated_use_opaque`) — which is this
+# scenario's Step 0 and the precondition for everything after it. Running the
+# whole suite therefore failed where running this scenario alone passed.
+#
+# It is the HELPER, not `opaque_substrate.hurl`. That file only pins error
+# shapes — every one of its `register/finish` calls asserts 4xx — so it
+# completes no registration and migrates nobody. The ordering is what makes
+# this phase the only casualty: the helper runs after the main Hurl batch
+# (hence `auth_session_revocation.hurl`, which also logs the admin in with a
+# password, is unaffected) and before this pass.
 #
 # Hence `OXICLOUD_AUTH_OPAQUE_MODE=off` for this pass. With OPAQUE off,
 # `opaque_repo_for_auth` is not wired at all (`common/di.rs`: built only when
