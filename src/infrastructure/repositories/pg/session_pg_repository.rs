@@ -931,9 +931,7 @@ mod integration_tests {
     /// `Session::new` requires an `AdmittedCaller`, so the integration
     /// fixtures need one for the seeded user. `admitted_for_test` is
     /// `#[cfg(test)]`-only by design.
-    fn admitted_fixture(
-        user_id: Uuid,
-    ) -> crate::domain::entities::admitted_caller::AdmittedCaller {
+    fn admitted_fixture(user_id: Uuid) -> crate::domain::entities::admitted_caller::AdmittedCaller {
         let now = chrono::Utc::now();
         let user = crate::domain::entities::user::User::from_data(
             user_id,

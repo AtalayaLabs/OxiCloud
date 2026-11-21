@@ -549,18 +549,35 @@ mod account_admission_tests {
 
     /// The carve-out, pinned because it is the kind of exemption a
     /// later "tighten everything" change deletes without realising: the
-    /// rule is enforced AT LOGIN, so an admin whose own address is
-    /// unverified would have no way left to log in and verify it.
+    /// rule is enforced AT LOGIN, so the exempt account is the one that
+    /// could otherwise never log in to fix its own address.
     #[test]
-    fn admins_are_exempt_from_the_email_requirement() {
-        for role in [UserRole::Admin, UserRole::Owner] {
-            let u = user(role);
-            assert!(!u.is_email_verified());
-            assert!(
-                check_email_verified(&u, true, "test").is_ok(),
-                "{role:?} must not be locked out by an unverified address",
-            );
-        }
+    fn the_owner_is_exempt_from_the_email_requirement() {
+        let u = user(UserRole::Owner);
+        assert!(!u.is_email_verified());
+        assert!(
+            check_email_verified(&u, true, "test").is_ok(),
+            "the Owner must not be locked out by an unverified address",
+        );
+    }
+
+    /// The other half, and the one that is easy to get wrong: the
+    /// exemption is NOT `at_least(Admin)`.
+    ///
+    /// One unlockable account is all the instance needs to recover, and
+    /// there is exactly one Owner. Admins are plural and replaceable, so
+    /// exempting every one of them widens the hole for no extra
+    /// recovery. Written as a test because `at_least(Admin)` is the
+    /// natural thing to reach for and reads as correct.
+    #[test]
+    fn admins_are_not_exempt() {
+        let u = user(UserRole::Admin);
+        assert!(!u.is_email_verified());
+        assert!(
+            check_email_verified(&u, true, "test").is_err(),
+            "an admin with an unverified address must be refused — the \
+             exemption is Owner-only, not at_least(Admin)",
+        );
     }
 
     /// Order matters for the audit trail, not the outcome: a caller who
@@ -911,16 +928,25 @@ pub fn check_user_is_active(user: &User, origin: &'static str) -> Result<(), Dom
 /// The verified-email requirement, when `OXICLOUD_REQUIRE_VERIFIED_EMAIL`
 /// is on.
 ///
-/// Admins are exempt, deliberately: the rule is enforced at login, so an
-/// admin whose own address is unverified would have no way left to log in
-/// and fix it.
+/// **Only the Owner is exempt, not admins.** The exemption exists so
+/// the instance cannot lock itself out: the rule is enforced at login, so
+/// someone whose own address is unverified would have no way left to log
+/// in and fix it. One unlockable account is all that takes, and there is
+/// exactly one Owner.
+///
+/// Admins are plural and replaceable, so a standing exemption for every
+/// one of them widens the hole for no extra recovery: an admin with an
+/// unverified address verifies it like anybody else, and the Owner can
+/// always reach them. Admin-created accounts are stamped verified at
+/// creation ("admin fiat counts"), so the admins this refuses are the
+/// ones promoted from a self-registered account — exactly the case where
+/// an unverified address is worth questioning.
 pub fn check_email_verified(
     user: &User,
     require_verified_email: bool,
     origin: &'static str,
 ) -> Result<(), DomainError> {
-    if !require_verified_email || user.role().at_least(UserRole::Admin) || user.is_email_verified()
-    {
+    if !require_verified_email || user.role() == UserRole::Owner || user.is_email_verified() {
         return Ok(());
     }
     tracing::info!(

@@ -16,7 +16,7 @@ has shipped is worse than no status at all.
 |---|---|---|
 | Fail-open arms answer 503 | **done** | `ed427185e` `a15455f14` |
 | One admission check, all nine doors | **done** | `2f9101138` `c2d6045cc` |
-| `AdmittedCaller` required by the shared mint | **done** | `2f9101138` |
+| `AdmittedCaller` required by `Session::new` — every door | **done** | `2f9101138` `ab109e66a` |
 | Revocation — user-wide `iat` cutoff | **done** | `fe12a4739` |
 | Revocation — per-session (`revoked_at`) | **done** | `ae956005b` |
 | `auth-model.md` documentation — phases, admission, revocation | **done** | see § Required: documentation |
@@ -44,12 +44,11 @@ the reason the wire pins were worth writing:
   (`9add3034b`). That surface accepts no Bearer credential, so nothing
   else would have caught it.
 
-Four things are deliberately NOT done, each with its reason recorded
+Three things are deliberately NOT done, each with its reason recorded
 where it matters rather than here: the unverified-email wire pins (§
 Test plan), the device-flow service check (middleware refuses first, §
-Test plan), the four own-`Session::new` paths not yet funnelled through
-one mint (§ Resolved), and the WebSocket path's blind spot on the
-cutoff (§ Revocation).
+Test plan), and the WebSocket path's blind spot on the cutoff
+(§ Revocation).
 
 ## Goal
 
@@ -140,19 +139,36 @@ door calls the **composed** check, never the individual ones — asking
 them one at a time per door is how they drifted, and a rule added later
 would otherwise land in `admit` and miss `refresh`.
 
-`AdmittedCaller` makes it unforgeable where it can:
-`mint_session_for_authenticated_user` takes one in place of a `User`,
-and only `admit` can build one, so a door reaching the shared mint
-without the checks does not compile. Four paths still build their own
-`Session::new` (`redeem_magic_link`, `refresh_token`, `oidc_callback`,
-device `approve`) and so are covered by the call rather than the type.
-Funnelling those into one mint is the remaining structural step.
+`AdmittedCaller` makes it unforgeable at the **entity**, which is what
+closes finding 5 for good: `Session::new` requires one, its fields are
+private with no public constructor, and only `admit` produces it. So
+every session row in the codebase — present and future — comes from an
+admitted account, and a tenth door that forgets the checks does not
+compile rather than shipping a bypass. `user_id` comes from the proof
+rather than beside it, so "admitted user A, session for user B" is
+unrepresentable too.
+
+That is the strongest rank in `scope-gates.md` § Maximise
+deny-by-default — *won't compile* — and it is there because the weaker
+ranks demonstrably failed on this exact surface twice: OPAQUE reached
+the mint with a bare `User`, and the device flow did the same
+afterwards. Both read as correct code.
+
+Introducing the type found a latent ordering bug immediately:
+`oidc_callback` ran its admission check AFTER constructing the session.
+Harmless, since nothing was persisted yet — but a proof cannot be
+produced later than the thing that needs it.
+
+`Session::from_raw` deliberately requires no proof: rehydrating an
+existing row is not admitting anyone, and demanding one there would mean
+re-running login checks in order to READ a session.
 
 Two carve-outs are deliberate and pinned:
 
-- **Admins are exempt from the email rule.** It is enforced at login,
-  so an admin with an unverified address would have no way left to log
-  in and fix it.
+- **Only the Owner is exempt from the email rule** — not `at_least(Admin)`.
+  It is enforced at login, so the exempt account is the one that could
+  otherwise never log in to fix its own address; one such account is
+  enough, and there is exactly one Owner.
 - **`login` keeps a separate early `active` check** before the
   OPAQUE-migrated branch, so a deactivated migrated user is told
   "deactivated" rather than "use the OPAQUE endpoint". App-password

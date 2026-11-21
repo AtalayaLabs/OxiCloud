@@ -109,7 +109,7 @@ Every door now calls one function, `check_account_admission`, so this table has 
 | NextCloud Login Flow v2 | ✓ | ✓ | runs AFTER the password verify; the flow ends by handing out an app password, so it owes a session mint's checks |
 | Anonymous share session | n/a | n/a | no `auth.users` row exists; there is nothing to admit |
 
-**Admins are exempt from the verified-email requirement.** The rule is enforced at login, so an admin whose own address is unverified would have no way left to log in and fix it.
+**Only the Owner is exempt from the verified-email requirement — not admins.** The exemption exists so the instance cannot lock itself out: the rule is enforced at login, so an account whose own address is unverified would have no way left to log in and fix it. One unlockable account is all that takes, and there is exactly one Owner. Admins are plural and replaceable, so exempting all of them would widen the hole for no extra recovery. Admin-created accounts are stamped verified at creation ("admin fiat counts"), so the admins this refuses are those promoted from a self-registered account — the case where an unverified address is worth questioning.
 
 **The verified-email column is conditional on `OXICLOUD_REQUIRE_VERIFIED_EMAIL`** (default `false`). With it off, the column is vacuous everywhere.
 
@@ -181,7 +181,33 @@ A refresh re-reads the account and applies the same `check_account_admission` as
 
 One function, `check_account_admission`, is the only place a per-login account rule lives. Every door calls it by that name; there is deliberately no per-service wrapper or convenience alias, because a rule added to a wrapper reaches only the doors using the wrapper — which is how the checks came to differ in the first place.
 
-`AuthApplicationService::admit` is the one caller that adds anything, and what it adds is a token rather than a rule: it returns an `AdmittedCaller`, which `mint_session_for_authenticated_user` *requires*. So reaching the shared mint without having run the checks does not compile. Four paths still build their own `Session::new` (magic-link, refresh, OIDC, device approval) and are protected by the call rather than by the type; funnelling them through one mint is pending.
+### A session cannot be built without proof of admission
+
+The rule being in one place stops the checks *differing* between doors. It does not stop a new door from skipping them. That is enforced by the type system instead:
+
+```rust
+// domain/entities/session.rs
+pub fn new(
+    admitted: &AdmittedCaller,   // ← the enforcement
+    refresh_token: String,
+    …
+) -> Self
+```
+
+`AdmittedCaller` has private fields and no public constructor, so the only way to obtain one is `admit`, which runs `check_account_admission` first. Therefore:
+
+- **every session row in the codebase comes from an admitted account** — not by convention, but because nothing else compiles;
+- a future login door that forgets the account checks is a **compile error**, not a bypass waiting to be found;
+- `user_id` is taken *from* the proof rather than passed alongside it, so "admitted user A, session for user B" is unrepresentable rather than merely unlikely.
+
+This is deny-by-default in the strongest form available — the rank the project's own ordering puts first: *won't compile* beats *won't start* beats *fails closed* beats *merely visible*. It exists because the weaker forms demonstrably failed here: OPAQUE reached the mint with a bare `User` and issued sessions for deactivated accounts, and the device flow did the same afterwards. Both were correct-looking code that no reviewer caught.
+
+Two deliberate boundaries:
+
+- **`Session::from_raw` requires no proof.** Rehydrating a row that already exists is not admitting anyone, and demanding one there would mean re-running login checks in order to *read* a session.
+- **`check_account_admission` and `admit` are not synonyms.** The first answers "may this account have a session" and is what the doors that mint *no* session call — an app-password request, the NextCloud login flow. The second answers the same question and hands back the capability. One rule, two return types; a new account rule goes in the first only.
+
+When the type was introduced it immediately found a latent ordering bug: `oidc_callback` ran its admission check *after* building the session object. Harmless, since nothing was persisted yet — but a proof cannot be produced later than the thing that needs it, so the check moved to where it always belonged.
 
 **Order is part of the contract.** `active` is asked first, so a caller who is both deactivated and unverified is audited as `account_deactivated` — the more fundamental reason — rather than sending an operator to look at the mail flow.
 
@@ -409,4 +435,4 @@ The instance-scoped equivalents are already deployed via `OXICLOUD_AUTH_METHODS`
 - [Share Integration](/architecture/share-integration) — how share-link flow relates to the email-invite flow.
 - [Environment Variables](/config/env) — the full set of `OXICLOUD_*` knobs referenced in this page.
 - `docs/plan/scope-gates.md` — the **per-call** axes (Gate / Scope / Grant), and the credential scopes that phase 2 of § Phases is waiting on. This page owns what happens up to a session existing; that one owns what the session may then reach.
-- `docs/plan/authn-pipeline.md` — the design behind § Phases and § Admission, including the per-path audit that found the gaps, and the parts still pending (the connected-device list, funnelling the four remaining `Session::new` paths, the WebSocket cutoff blind spot).
+- `docs/plan/authn-pipeline.md` — the design behind § Phases and § Admission, including the per-path audit that found the gaps, and the one part still pending (the WebSocket cutoff blind spot).

@@ -334,7 +334,6 @@ mod tests {
         crate::domain::entities::admitted_caller::AdmittedCaller::admitted_for_test(user)
     }
 
-
     fn fresh_session() -> Session {
         Session::new(
             &admitted(),
