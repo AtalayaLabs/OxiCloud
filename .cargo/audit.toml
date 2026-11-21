@@ -300,6 +300,95 @@ ignore = [
     "RUSTSEC-2026-0423",
     "RUSTSEC-2026-0424",
 
+    # wasmtime 49.0.4 / wasmtime-wasi 49.0.4 — eight advisories published
+    # 2026-11-16 plus RUSTSEC-2026-0587 published 2026-11-19. Same crate,
+    # same `extism 1.41.0` chain, same absent upgrade path as the four
+    # entries above: fixed releases are wasmtime >=49.0.6 (49.0.7 for
+    # -0587) or >=50.0.2, but extism 1.41 pins `wasmtime-* = "=49.0.4"`
+    # exactly — `cargo update -p wasmtime` is a no-op, and extism has
+    # not shipped a point release yet (`cargo search extism` still at
+    # 1.41.0).
+    #
+    # Build-feature gating applies for every entry: `plugins` is OPT-IN
+    # and absent from `default`, so the CI release binary does not link
+    # wasmtime at all; runtime activation needs
+    # OXICLOUD_ENABLE_PLUGINS=true; plugin binaries are admin-supplied,
+    # not attacker input. Per-advisory exposure on top:
+    #
+    #   RUSTSEC-2026-0566 — wasmtime-wasi: unbounded host memory growth
+    #     via empty writes to `AsyncWriteStream`. Not reachable:
+    #     `plugins/runtime.rs::compile` builds every plugin with
+    #     `.with_wasi(false)`, so WASI streams are not instantiated in
+    #     the plugin sandbox at all.
+    #
+    #   RUSTSEC-2026-0567 — abort in wasmtime builds WITHOUT the
+    #     `threads` cargo feature. Extism's default wasmtime build
+    #     enables `threads`; the vulnerable `cfg(not(feature=...))`
+    #     branch has no compilation path in this tree.
+    #
+    #   RUSTSEC-2026-0568 (4.7 medium) — stale GC heap base pointer in
+    #     compiled code lets a Wasm guest abort the host process. DoS
+    #     (abort) only, bounded by `catch_unwind` at the plugin
+    #     invocation boundary; no RCE, no sandbox escape. Admin-
+    #     supplied plugin binaries, not attacker-controlled Wasm.
+    #
+    #   RUSTSEC-2026-0569 — panic in `Caller::get_module_export` when a
+    #     host function isn't called from WebAssembly. Our host-side
+    #     code never invokes this API — extism manages plugin exports
+    #     via its own plugin-handle wrapper, not `Caller::`. Even if
+    #     reached, bounded by `catch_unwind`.
+    #
+    #   RUSTSEC-2026-0570 (2.2 low) — abort in wasmtime builds WITHOUT
+    #     the `gc` cargo feature. Same cfg-gated class as -0567;
+    #     extism's wasmtime build enables `gc` by default, so the
+    #     vulnerable branch is not compiled.
+    #
+    #   RUSTSEC-2026-0571 — wasmtime-wasi-http: empty-body writes can
+    #     result in unbounded heap usage with HTTP/2. Not reachable:
+    #     plugins run with `.disallow_all_hosts()` (no outbound
+    #     network) and the wasmtime-wasi-http module is not wired into
+    #     `plugins/runtime.rs` at all.
+    #
+    #   RUSTSEC-2026-0572 (3.1 low) — panic when a component cancels a
+    #     stream or future copy on the wrong end. Component Model only,
+    #     same unreachability as the four 2026-10-29 entries above:
+    #     extism uses core WebAssembly, no `wasmtime::component::*`
+    #     usage in our plugin runtime.
+    #
+    #   RUSTSEC-2026-0573 — process abort when a GC heap's reservation
+    #     isn't a multiple of the page size. Admin-supplied plugins,
+    #     not attacker input; DoS only (abort), bounded by
+    #     `catch_unwind`.
+    #
+    #   RUSTSEC-2026-0587 (7.5 high) — WASI filesystem sandbox escape
+    #     on Windows through a drive-prefixed path component. Not
+    #     applicable in OxiCloud's target environment:
+    #       * OxiCloud targets Linux servers; Windows is not a shipped
+    #         deployment target, and the vulnerability is Windows-only
+    #         (drive-letter path parsing).
+    #       * `plugins/runtime.rs::compile` builds every plugin with
+    #         `.with_wasi(false)` and declares no `allowed_paths`, so
+    #         plugins have no WASI filesystem to escape from on any OS.
+    #     The high-severity grade reflects the WASI-filesystem assumption
+    #     the advisory makes about typical consumers; neither assumption
+    #     holds here.
+    #
+    # Un-ignore trigger: extism releases a version on wasmtime
+    # >=49.0.7 (check with `cargo tree -i wasmtime --features plugins`).
+    # Longer-term same note as earlier wasmtime blocks: the plugin
+    # system itself may be retired — nobody runs it in production —
+    # at which point extism + wasmtime + a dozen allow-list entries
+    # become removable in one sweep.
+    "RUSTSEC-2026-0566",
+    "RUSTSEC-2026-0567",
+    "RUSTSEC-2026-0568",
+    "RUSTSEC-2026-0569",
+    "RUSTSEC-2026-0570",
+    "RUSTSEC-2026-0571",
+    "RUSTSEC-2026-0572",
+    "RUSTSEC-2026-0573",
+    "RUSTSEC-2026-0587",
+
     # zstd 0.13.3 / zstd-safe 7.3.0 — three advisories on the same
     # wasmtime chain. Same gating story as the five wasmtime entries
     # above: `plugins` is an opt-in build feature + runtime gate
