@@ -499,7 +499,13 @@ async fn handle_session(
     // `SessionOut::EvictFolders` signals instead of pushing an
     // `rt.event` notification the client can see — client-visible
     // effect is the `rt.revoked` per evicted sub.
-    install_subscription(Topic::UserAuthz(caller_id), &mut subs, &out_tx, &state);
+    install_subscription(
+        Topic::UserAuthz(caller_id),
+        caller_id,
+        &mut subs,
+        &out_tx,
+        &state,
+    );
 
     // Auto-subscribe to the caller's private notifications topic —
     // same identity-scoped invariant as `:authz`. Events on this
@@ -510,6 +516,7 @@ async fn handle_session(
     // on the next `GET /api/notifications`.
     install_subscription(
         Topic::UserNotifications(caller_id),
+        caller_id,
         &mut subs,
         &out_tx,
         &state,
@@ -1294,7 +1301,7 @@ async fn handle_subscribe(
     // AuthZ passed — install the subscription and spawn a reader task
     // that forwards bus events to the outbound channel as `rt.event`
     // notifications.
-    install_subscription(topic, subs, out_tx, state);
+    install_subscription(topic, caller_id, subs, out_tx, state);
 
     // Collab subscribes carry an extra `capabilities` object so the FE
     // can render read-only affordances without a second round trip.
@@ -1350,6 +1357,12 @@ fn handle_unsubscribe(id: Value, params: Value, subs: &mut HashMap<String, Sub>)
 ///   visible `rt.event` notification and pushed as `SessionOut::Frame`.
 fn install_subscription(
     topic: Topic,
+    // Threaded through to the collab forwarder so its attach runs as the
+    // real subscriber. It used to attach as `Uuid::nil()` — a magic value
+    // standing in for "skip authz", which is the pattern `AdmittedCaller`
+    // replaced on the session path. A sentinel cannot be audited, cannot
+    // be denied, and reads as a real user id to anything downstream.
+    caller_id: Uuid,
     subs: &mut HashMap<String, Sub>,
     out_tx: &mpsc::Sender<SessionOut>,
     state: &Arc<AppState>,
@@ -1367,7 +1380,7 @@ fn install_subscription(
     // decision, not a runtime one; the operator sees it in the
     // `collab.service_enabled` audit line (or its absence).
     if let Topic::Collab(file_id) = topic {
-        let reader = spawn_collab_forwarder(file_id, out_tx.clone(), state);
+        let reader = spawn_collab_forwarder(file_id, caller_id, out_tx.clone(), state);
         subs.insert(topic_wire, Sub { reader });
         return;
     }
@@ -1450,6 +1463,7 @@ fn install_subscription(
 /// subscribe ack'd but delivered nothing.
 fn spawn_collab_forwarder(
     file_id: Uuid,
+    caller_id: Uuid,
     out_tx: mpsc::Sender<SessionOut>,
     state: &Arc<AppState>,
 ) -> JoinHandle<()> {
@@ -1472,7 +1486,10 @@ fn spawn_collab_forwarder(
         // subscribe was already ack'd so the client sees a healthy
         // topic that just never delivers — the same shape as the
         // "feature off" case, and the audit line explains which.
-        let session = match collab.attach_file(Uuid::nil(), file_id).await {
+        // The REAL subscriber, not a sentinel. `handle_subscribe` has
+        // already checked Read on this resource, so the gate inside
+        // `attach_file` passes — the point is that it is now asked.
+        let session = match collab.attach_file(caller_id, file_id).await {
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!(

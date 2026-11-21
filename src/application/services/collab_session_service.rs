@@ -1156,6 +1156,24 @@ impl CollabSessionService {
         caller_id: Uuid,
         file_id: Uuid,
     ) -> Result<CollabSession, CollabError> {
+        // Read is required to attach AT ALL, because this is the chokepoint
+        // every collab path funnels through and the only place that can
+        // make the guarantee hold for a door nobody has written yet.
+        //
+        // Not redundant with the per-frame checks in `handle_binary_frame`:
+        // those answer "may this caller send a frame of this KIND" (Update
+        // for an update, Read for a sync), while this answers "may a
+        // session for this file be materialised for this caller at all".
+        // The AWARENESS hole was exactly that gap — the frame-kind question
+        // was unasked on one arm, and nothing underneath re-asked it.
+        //
+        // The fast path below makes the gate load-bearing rather than
+        // decorative: it hands back a LIVE session handle without reading
+        // the file, so an ungated call needed no seed path to leak. An
+        // ungated caller could take the handle of a session someone else
+        // legitimately opened.
+        self.require_perm(caller_id, file_id, Permission::Read, "read")
+            .await?;
         // Fast path: session already spawned — clone the handle.
         if let Some(existing) = self.sessions.get(&file_id) {
             return Ok(existing.clone());
@@ -2236,6 +2254,71 @@ mod tests {
         // sees the seed (empty) text, not "unauthorized write".
         let session = svc.attach_file(Uuid::nil(), file_id).await.unwrap();
         assert_eq!(session.get_text().await.unwrap(), "");
+    }
+
+    #[tokio::test]
+    async fn attach_file_itself_requires_read() {
+        // The chokepoint gate. Every collab path funnels through
+        // `attach_file`, so gating it is what makes the guarantee hold for
+        // a door nobody has written yet — the per-frame checks only cover
+        // the doors that remember to ask.
+        //
+        // It also closed a sentinel: the subscribe forwarder used to
+        // attach as `Uuid::nil()`, a magic value meaning "skip authz",
+        // which is the pattern `AdmittedCaller` replaced on the session
+        // path. A sentinel cannot be denied or audited and reads as a real
+        // user id downstream. The forwarder now attaches as the real
+        // subscriber.
+        let svc = service_with_seed_and_gate("secret", CollabLimits::default(), Arc::new(DenyAll));
+        let file_id = Uuid::new_v4();
+
+        match svc.attach_file(Uuid::nil(), file_id).await {
+            Err(CollabError::AuthzDenied {
+                permission: "read",
+                file_id: fid,
+            }) if fid == file_id => {}
+            Err(other) => panic!("expected AuthzDenied{{permission:\"read\"}}, got {other:?}"),
+            // `CollabSession` has no `Debug`, so the Ok arm cannot print the
+            // value — the fact that it is Ok is the whole failure anyway.
+            Ok(_) => panic!("attach succeeded against a deny-all gate"),
+        }
+        assert!(
+            svc.sessions.is_empty(),
+            "a refused attach still spawned an actor",
+        );
+    }
+
+    #[tokio::test]
+    async fn attach_file_fast_path_is_gated_too() {
+        // The fast path returns a LIVE handle without reading the file, so
+        // an ungated caller needed no seed path to leak: it could take the
+        // handle of a session someone else legitimately opened. Attach once
+        // through a permissive gate, then prove a denied caller cannot pick
+        // up the session that now exists.
+        let svc = service_with_seed("secret", CollabLimits::default());
+        let file_id = Uuid::new_v4();
+        svc.attach_file(Uuid::new_v4(), file_id)
+            .await
+            .expect("permissive gate attaches");
+        assert_eq!(svc.sessions.len(), 1, "fixture: a session is now live");
+
+        let denied =
+            service_with_seed_and_gate("secret", CollabLimits::default(), Arc::new(DenyAll));
+        // Same file id, a service whose gate refuses. Spawn one live
+        // session there too so the fast path is the branch under test
+        // rather than the seed path.
+        denied
+            .sessions
+            .insert(file_id, svc.sessions.get(&file_id).unwrap().clone());
+        match denied.attach_file(Uuid::nil(), file_id).await {
+            Err(CollabError::AuthzDenied {
+                permission: "read", ..
+            }) => {}
+            Err(other) => panic!("expected AuthzDenied{{permission:\"read\"}}, got {other:?}"),
+            // `CollabSession` has no `Debug`, so the Ok arm cannot print
+            // the value — that it is Ok at all is the failure.
+            Ok(_) => panic!("fast path handed a live session to a denied caller"),
+        }
     }
 
     #[tokio::test]
