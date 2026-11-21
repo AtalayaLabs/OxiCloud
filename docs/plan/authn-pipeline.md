@@ -407,15 +407,46 @@ Both forms ride that read:
   `iat` precedes it. One comparison, no new query.
 - **Revoke-one** — a bounded `revoked_sids` set in the same cached row.
   Bounded because a revoked `sid` need only be remembered until its
-  access token would have expired (~1 h), so it self-prunes. `sid` is
-  already on `JwtClaims` "precisely so the auth middleware can act
-  per-session without a DB round trip".
+  access token would have expired (~1 h). `sid` is already on
+  `JwtClaims` "precisely so the auth middleware can act per-session
+  without a DB round trip".
+
+  **It does not self-prune yet: `auth.sessions` has no `revoked_at`.**
+  The column is a bare `revoked BOOLEAN`, so there is nothing to bound
+  the set BY. Filtering on `expires_at` instead bounds it by the REFRESH
+  expiry (7 days default), not the access-token hour — and that set is
+  carried inside a hot-path cache entry, so a user cycling sessions
+  across several devices could put hundreds of UUIDs there.
+
+  So revoke-one needs `ALTER TABLE auth.sessions ADD COLUMN revoked_at
+  TIMESTAMPTZ` first, after which the plan's design works as written and
+  the set is a handful of rows. Revoke-all needed no such column, which
+  is why it shipped first (`fe12a4739`).
 
 Latency is the 30 s cache TTL unless the revoking call invalidates
 eagerly — `user_flags_cache.invalidate` already exists, so calling it
 makes revocation immediate. The per-call budget stays flat: one cached
 read, now answering "still admitted, **and is this session still
 valid**".
+
+#### Why revoke-one is the only way to close the password-change window
+
+`change_password` keeps the caller's session alive on purpose, so the
+SPA can finish the OPAQUE envelope re-registration on the cookie it
+already holds. A cutoff is one `iat` watermark for the whole user, so
+stamping it there would invalidate the kept session too.
+
+The tempting escape hatch does not exist. `/api/auth/refresh` carries no
+`auth_middleware`, so a cutoff cannot block a refresh — which suggests
+stamping it anyway and letting the SPA turn the caller's 401 into a
+transparent refresh-and-retry. But `/api/auth/opaque/` sits on the
+`AUTH_PRIMITIVES` bypass list in `frontend/src/lib/api/transport.ts`,
+where a 401 is deliberately genuine and never retried, so the sync would
+hard-fail and leave the envelope on the OLD password.
+
+Hence the residual window — the other devices cannot renew, but their
+already-issued access tokens work until they expire — closes only with
+per-session revocation, and therefore only after `revoked_at`.
 ## Anonymous sessions do not pass through `admit()`
 
 A public-link session has no `auth.users` row — `share_service.rs` ~476,
