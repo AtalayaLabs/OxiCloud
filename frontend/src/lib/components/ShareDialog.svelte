@@ -34,7 +34,7 @@
 	import { getFile } from '$lib/api/endpoints/files';
 	import { resolve } from '$app/paths';
 	import type { ItemType, ShareItem } from '$lib/api/types';
-	import type { GrantResourceType } from '$lib/api/endpoints/grants';
+	import type { GrantTargetType } from '$lib/api/endpoints/grants';
 	import Icon from '$lib/icons/Icon.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import UserVignette from '$lib/components/UserVignette.svelte';
@@ -46,7 +46,7 @@
 	interface Target {
 		id: string;
 		name: string;
-		kind: GrantResourceType;
+		kind: GrantTargetType;
 	}
 
 	interface Props {
@@ -763,12 +763,13 @@
 	const peopleCount = $derived(members.length);
 	const linkCount = $derived(shares.length + inheritedLinks.length);
 
+	const isLinkable = (kind: GrantTargetType): kind is ItemType =>
+		kind === 'file' || kind === 'folder';
+
 	async function loadShares() {
-		// The share-link API only supports file/folder items; the Link tab
-		// is hidden for drives (`allowLinks=false`) so this path is
-		// unreachable, but narrow the type here so TypeScript doesn't
-		// surface the widened `GrantResourceType` from `item.kind`.
-		if (!item || item.kind === 'drive') return;
+		// The share-link API only supports file/folder items; drives and
+		// calendars have no links and no Link tab (`allowLinks=false`).
+		if (!item || !isLinkable(item.kind)) return;
 		linkLoading = true;
 		try {
 			shares = await listSharesForItem(item.id, item.kind);
@@ -780,15 +781,15 @@
 	}
 
 	async function createLink() {
-		if (!item || item.kind === 'drive') return;
+		if (!item || !isLinkable(item.kind)) return;
 		// Belt to the UI's braces: the button is disabled while a reason
 		// stands, but a keyboard submit or a policy that changed under an
 		// open dialog would otherwise reach the server and come back 405.
 		if (linkBlockedReason) return;
 		// Capture the narrowed `item` + its narrowed kind into locals so
-		// TypeScript's narrowing (`kind !== 'drive'`) survives the
+		// TypeScript's narrowing (`isLinkable`) survives the
 		// arrow-function closure handed to `run()`. The non-null `item!`
-		// alone would re-widen `kind` back to `GrantResourceType` and
+		// alone would re-widen `kind` back to `GrantTargetType` and
 		// mis-type the `createShare` argument as including 'drive'.
 		const target = item;
 		const targetKind: ItemType = item.kind;

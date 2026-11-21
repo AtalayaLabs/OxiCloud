@@ -152,6 +152,7 @@
     "new_calendar": "New calendar",
     "calendar_name": "Calendar name",
     "rename_calendar": "Rename calendar",
+    "share_calendar": "Share calendar",
     "delete_calendar": "Delete calendar",
     "confirm_delete_calendar": "Delete “{{name}}” and every event in it?",
     "calendar_created": "Calendar created",

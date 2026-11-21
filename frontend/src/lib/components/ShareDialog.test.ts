@@ -693,3 +693,35 @@ it('walks from the parent folder when sharing a file', async () => {
 	// walk returns is inherited and none of it is filtered out.
 	await waitFor(() => expect(getFolderAncestorsWithGrants).toHaveBeenCalledWith('parent-of-f1'));
 });
+
+// A calendar is shared by grants alone: it has no public links and no
+// folder ancestry, so the dialog must not ask the file-only endpoints.
+const calendarItem = { id: 'cal1', name: 'Tábor', kind: 'calendar' as const };
+
+it('loads a calendar by its grants only', async () => {
+	render(ShareDialog, { props: { open: true, item: calendarItem, allowLinks: false } });
+	await screen.findByTestId('share-dialog-search-input');
+	await waitFor(() => expect(fetchGrantsForResource).toHaveBeenCalledWith('calendar', 'cal1'));
+	expect(listSharesForItem).not.toHaveBeenCalled();
+	expect(getFolderAncestorsWithGrants).not.toHaveBeenCalled();
+	expect(screen.queryByTestId('share-dialog-link-tab')).toBeNull();
+});
+
+it('grants a calendar with the chosen role', async () => {
+	m(createGrant).mockResolvedValue({ notification: { outcomes: [] } });
+	render(ShareDialog, { props: { open: true, item: calendarItem, allowLinks: false } });
+	await screen.findByTestId('share-dialog-search-input');
+	await pickRecipient('g1', 'Vedouci', 'group');
+
+	await fireEvent.click(await screen.findByTestId('share-dialog-role-editor-btn'));
+	await fireEvent.click(screen.getByTestId('share-dialog-add-btn'));
+
+	await waitFor(() =>
+		expect(createGrant).toHaveBeenCalledWith(
+			{ type: 'group', id: 'g1' },
+			{ type: 'calendar', id: 'cal1' },
+			'editor',
+			null
+		)
+	);
+});

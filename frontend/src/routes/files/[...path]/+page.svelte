@@ -2913,7 +2913,7 @@
 			// `target.kind` narrows the FIELD but leaves `target` itself
 			// typed as-is. Naming the fields is what carries the narrowed
 			// `kind` through.
-			if (target.kind === 'drive') return;
+			if (target.kind !== 'file' && target.kind !== 'folder') return;
 			actionTarget = { id: target.id, name: target.name, kind: target.kind };
 		}}
 	/>
