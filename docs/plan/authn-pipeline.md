@@ -28,7 +28,8 @@ Verified at the wire, not only in unit tests: the deactivated-account
 refusal on every door (`e3ead258c` `52b2179a9`, OPAQUE's in
 `opaque-hurl-helper` at `4355aec71`) and both revocation forms
 (`6a857cc20`), and the session IP pair with spoofed addresses
-(`b953ec174`). The device list and its revoke are covered by the
+(`b953ec174`), and the verified-email policy in its own server pass
+(`9abe7b742`, `301606a5d`). The device list and its revoke are covered by the
 pre-existing `device_auth_flow.hurl`, updated to assert the new fields
 and that a device which COLLECTED its tokens is still listed — its
 absence was the defect.
@@ -44,11 +45,11 @@ the reason the wire pins were worth writing:
   (`9add3034b`). That surface accepts no Bearer credential, so nothing
   else would have caught it.
 
-Three things are deliberately NOT done, each with its reason recorded
-where it matters rather than here: the unverified-email wire pins (§
-Test plan), the device-flow service check (middleware refuses first, §
-Test plan), and the WebSocket path's blind spot on the cutoff
-(§ Revocation).
+Two things are deliberately NOT done, each with its reason recorded
+where it matters rather than here: the device-flow service check
+(middleware refuses first, so a wire test would assert the wrong layer,
+§ Test plan) and the WebSocket path's blind spot on the revocation
+cutoff (§ Revocation).
 
 ## Goal
 
@@ -600,12 +601,40 @@ transitions need stable `event` / `reason` keys, inside the existing
     every login door now refuses them. The only reachable state is a
     credential issued BEFORE the flag was turned on.
 
-  **Deliberately not covered.** It would need a second server started
-  with the flag on and its own config file (`--config` beats shell env),
-  and the happy-path refusals are the bar here, not exhaustive coverage.
-  The *rule* is pinned by unit tests — the admin exemption, the
-  policy-off default, the check ordering — and every door shares that
-  one function, so what is untested is the wiring, not the policy.
+  **Covered** — `tests/api/auth_email_verified_required.hurl`, green, in
+  its own server pass (`run.sh` phase 8).
+
+  This section previously said it was not worth building, on the
+  reasoning that it needed a second server with its own config file. Two
+  parts of that were wrong. `--config` does NOT beat the environment —
+  `load_config_file` uses `dotenvy::from_filename`, and the precedence is
+  defaults < file < environment — so no second file is needed; and the
+  pass costs about twenty lines because `run.sh` already restarts nothing
+  else and can reuse the same postgres.
+
+  The override is a per-command env prefix at the launch line:
+
+  ```sh
+  OXICLOUD_REQUIRE_VERIFIED_EMAIL=true "$OXICLOUD_BIN" --config server.env &
+  ```
+
+  Explicitly NOT a blanket passthrough of the caller's `OXICLOUD_*`,
+  which was the first design and would have let a developer's exported
+  `OXICLOUD_DATABASE_URL` or `OXICLOUD_STORAGE_PATH` aim a test run at
+  their sandbox. An explicit prefix reads nothing ambient, and `--config`
+  keeps suppressing the repo-root `.env` probe.
+
+  The scenario asserts the refusal AND both exemptions, since a policy
+  that refused everyone would satisfy the refusal alone: the Owner logs
+  in (first, because without it an operator enabling the flag would have
+  bricked the instance), an admin-created account logs in (verified by
+  fiat), a self-registered one is refused with `EmailNotVerified`, and a
+  magic link then makes the same password login work.
+
+  One product observation came out of writing it, recorded in the file:
+  the refused login auto-sends a verification link but attaches no
+  binding cookie, so that link is always a cross-browser redemption —
+  even in the browser that just attempted the login.
 - Hurl: forced-reset discharge end to end — login with the flag set
   yields a `{security}`-scoped session, elevation succeeds with the
   current password, the change succeeds, and the *new* session is
@@ -798,7 +827,7 @@ Mandatory Hurl coverage, by subject:
 
 | subject | pin |
 |---|---|
-| the audit matrix inverted | OPAQUE, app-password, device, NC login v2, refresh and the grace replay each refused for an unverified email where classic login is refused — these six are the current bypasses |
+| the audit matrix inverted | the verified-email half is covered for classic login in its own server pass (`auth_email_verified_required.hurl`); the per-door variants would each need the same pass and are not built |
 | admission reject | an inactive account gets no session from **any** path, and the response shape is identical across paths (anti-enumeration) |
 | admission narrow | a forced-reset login yields a `{security}`-scoped session: the discharge endpoint works, everything else 403s |
 | forced-reset discharge | login → elevate → change → **new** session is full-scope. The deadlock pin |
