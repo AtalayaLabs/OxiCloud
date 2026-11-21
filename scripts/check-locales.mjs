@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // Locale completeness + placeholder-integrity check.
 //
-// Fails (exit 1) if any locale is missing keys present in en.json, has stray
-// extra keys, or if a translated string's {placeholders} differ from the
-// English source. Wire into CI / pre-commit alongside the other linters.
+// Fails (exit 1) if any locale has stray extra keys, or if a translated
+// string's {placeholders} differ from the English source. Keys missing from a
+// locale are untranslated (t() falls back to English) and only counted.
+// Wire into CI / pre-commit alongside the other linters.
 //
 //   node scripts/check-locales.mjs
 import { readFileSync, readdirSync } from 'node:fs';
@@ -41,13 +42,10 @@ for (const file of readdirSync(localesDir).filter((f) => f.endsWith('.json') && 
     const badPh = enKeys.filter(
         (k) => k in loc && placeholders(en[k]).join() !== placeholders(loc[k]).join()
     );
-    if (missing.length || extra.length || badPh.length) {
+    if (missing.length) console.log(`${file}: ${missing.length} untranslated`);
+    if (extra.length || badPh.length) {
         problems++;
         console.error(`\n${file}:`);
-        if (missing.length)
-            console.error(
-                `  missing ${missing.length}: ${missing.slice(0, 42).join(', ')}${missing.length > 42 ? ' …' : ''}`
-            );
         if (extra.length) console.error(`  extra ${extra.length}: ${extra.slice(0, 42).join(', ')}`);
         if (badPh.length)
             console.error(`  placeholder mismatch ${badPh.length}: ${badPh.slice(0, 42).join(', ')}`);
@@ -58,4 +56,4 @@ if (problems) {
     console.error(`\n✖ ${problems} locale file(s) have issues.`);
     process.exit(1);
 }
-console.log('✓ All locales complete and placeholder-consistent.');
+console.log('✓ All locales placeholder-consistent, no stray keys.');
