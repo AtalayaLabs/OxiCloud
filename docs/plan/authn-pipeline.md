@@ -22,6 +22,7 @@ has shipped is worse than no status at all.
 | `auth-model.md` documentation — phases, admission, revocation | **done** | see § Required: documentation |
 | Session IP pair — `created_ip` / `last_seen_ip` | **done** | `b299f184f` `5a31e1f29` |
 | Connected-device list + revoke reading `auth.sessions` | **done** | `5c3da3ac7` |
+| WebSocket revocation — both upgrade paths + open-socket re-check | **done** | `75c806b5a` |
 | Scope narrowing, obligations (part B) | **not started** | needs `scope-gates.md` |
 
 Verified at the wire, not only in unit tests: the deactivated-account
@@ -45,11 +46,15 @@ the reason the wire pins were worth writing:
   (`9add3034b`). That surface accepts no Bearer credential, so nothing
   else would have caught it.
 
-Two things are deliberately NOT done, each with its reason recorded
-where it matters rather than here: the device-flow service check
-(middleware refuses first, so a wire test would assert the wrong layer,
-§ Test plan) and the WebSocket path's blind spot on the revocation
-cutoff (§ Revocation).
+One thing is deliberately NOT done: the device-flow service check,
+because middleware refuses a deactivated caller first and a wire test
+there would assert the wrong layer (§ Test plan).
+
+The WebSocket blind spot is CLOSED — both upgrade paths carry the claims,
+and open sockets are re-checked on the keepalive tick. An eviction signal
+was considered and deferred: the bus is in-process, so it would silently
+fail across nodes. See `docs/architecture/auth-model.md` § Revocation for
+the upgrade path.
 
 ## Goal
 

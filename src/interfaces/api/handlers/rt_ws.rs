@@ -413,7 +413,10 @@ async fn handle_session(
     // account is revoked, treat as non-admin — fail-closed for
     // admin gates. Passing "user" as the claim role is fail-open
     // for `resolve_live_role`'s non-admin fallback path.
-    let caller_role: String = match state.auth_service.as_ref() {
+    // `mut` because the keepalive tick refreshes it: a demotion used to
+    // be invisible to an open socket, which kept admin-topic access for
+    // the life of the connection.
+    let mut caller_role: String = match state.auth_service.as_ref() {
         Some(auth) => {
             match crate::interfaces::middleware::user::resolve_live_role(
                 auth.auth_application_service.as_ref(),
@@ -630,6 +633,53 @@ async fn handle_session(
             }
 
             _ = keepalive.tick() => {
+                // Re-check the account on the SAME timer as the ping.
+                //
+                // `resolve_live_role` otherwise runs once, at connect, so a
+                // revoke refused new upgrades and left live sockets running
+                // until the client happened to drop. Piggybacking costs no
+                // new per-connection interval, and the 30 s default already
+                // matches `USER_FLAGS_CACHE_TTL` — so a tick is a cache hit
+                // in the common case and adds no misses the TTL was not
+                // already causing.
+                //
+                // The role is REFRESHED, not just checked: a demotion was
+                // invisible to an open socket, which kept admin-topic access
+                // for the life of the connection.
+                if let Some(auth) = state.auth_service.as_ref() {
+                    match crate::interfaces::middleware::user::resolve_live_role(
+                        auth.auth_application_service.as_ref(),
+                        caller_id,
+                        &caller_role,
+                        presented,
+                    )
+                    .await
+                    {
+                        crate::interfaces::middleware::user::LiveRole::Active(role) => {
+                            caller_role = role.to_string();
+                        }
+                        crate::interfaces::middleware::user::LiveRole::Revoked => {
+                            tracing::info!(
+                                target: "audit",
+                                event = "message_bus.session_rejected",
+                                reason = "revoked_while_open",
+                                caller_id = %caller_id,
+                                "👮🏻‍♂️ WS session closed — account or session revoked after the socket opened",
+                            );
+                            break;
+                        }
+                        // Could not evaluate. The socket STAYS: dropping every
+                        // open connection on a database blip is a worse
+                        // outcome than a bounded delay in noticing a
+                        // revocation, and the next tick retries in 30 s. Same
+                        // reasoning as answering 503 rather than 403 on the
+                        // HTTP path — we do not act on an answer we do not
+                        // have.
+                        crate::interfaces::middleware::user::LiveRole::Indeterminate {
+                            ..
+                        } => {}
+                    }
+                }
                 // RFC 6455 Ping control frame. 0-byte payload is
                 // spec-legal and the smallest wire footprint. Client
                 // auto-Pongs; nothing to observe here on that.

@@ -261,8 +261,21 @@ Latency is the flags-cache TTL (30 s) in principle, but every revoking path inva
 
 **What revocation does not reach.** A credential with no `sid` cannot be attributed to a session, and one with no `iat` cannot be compared to the cutoff:
 
-- an **app password** has neither — it is revoked by **deleting** it;
-- a **WebSocket session** is handed only a `caller_id`, so an open socket notices deactivation and deletion but not a revoke-all.
+- an **app password** has neither — it is revoked by **deleting** it.
+
+A WebSocket session used to be in that list, for a different reason: the upgrade received only a `caller_id`. Both upgrade paths now carry the claims — the bearer path validates the JWT there anyway, and the ticket path records them at issue time, since `POST /api/rt/ticket` runs under the full middleware and knows the session the upgrade cannot see.
+
+### Open sockets are re-checked on the keepalive tick
+
+A connect-time check alone would mean a revoke refused new upgrades and left live sockets running until the client happened to drop. So the account is re-checked on the **same 30 s timer as the protocol Ping**: no new per-connection interval, and the default already matches `USER_FLAGS_CACHE_TTL`, so a tick is a cache hit in the common case.
+
+It refreshes the role as well as checking it — a demotion previously stayed invisible to an open socket, which kept admin-topic access for the connection's life.
+
+An **indeterminate** result keeps the socket open. Dropping every connection on a database blip is worse than a bounded delay in noticing a revocation, and the next tick retries 30 s later — the same reasoning as answering 503 rather than 403 on the HTTP path: don't act on an answer you don't have.
+
+**Why polling rather than a signal.** An eviction signal from the revoke path would be immediate and free when idle, and the plumbing exists (`EvictFolders` / `EvictCollab` already ride the outbound channel as internal control frames). It was not chosen because the message bus is **in-process** today — `BusReplicator` is the multi-instance seam and a day-1 noop — so on any deployment that grows a second node a signal would silently fail to reach sockets on other nodes, and the failure mode is "revocation didn't take effect". Polling is node-independent by construction.
+
+The upgrade path, when `BusReplicator` becomes real or 30 s proves too slow for an incident: keep this poll as a backstop and add the signal for immediacy. The poll is the half that survives a missed signal, so it is not wasted work.
 
 ## Device-bound magic-link redemption
 
