@@ -3536,13 +3536,23 @@ impl AuthApplicationService {
         // leave the envelope bound to the OLD password, which is the
         // lockout the comment above describes.
         //
-        // The cost is real and bounded: in the keep-one case the OTHER
-        // devices' access tokens stay usable until they expire (default
-        // 1 h) even though their sessions can no longer renew. Closing
-        // that needs per-session revocation — a `revoked_at` on
-        // `auth.sessions` plus a bounded revoked-sid set — or re-minting
-        // the caller's tokens here and returning them, which changes this
-        // method's signature and the SPA that calls it.
+        // And the obvious escape hatch does NOT exist, which is worth
+        // writing down because it looks like it should. `/api/auth/refresh`
+        // carries no `auth_middleware`, so one might stamp the cutoff here
+        // and let the SPA's interceptor turn the caller's 401 into a
+        // transparent refresh-and-retry. It cannot: `/api/auth/opaque/` is
+        // on the `AUTH_PRIMITIVES` bypass list in
+        // `frontend/src/lib/api/transport.ts`, where a 401 is deliberately
+        // treated as genuine ("bad credentials") and never retried. So the
+        // envelope sync would hard-fail and stay bound to the OLD
+        // password.
+        //
+        // The cost is therefore real and bounded: in the keep-one case the
+        // OTHER devices' access tokens stay usable until they expire
+        // (default 1 h) even though their sessions can no longer renew.
+        // Closing it needs per-session revocation — a `revoked_at` on
+        // `auth.sessions` plus a bounded revoked-sid set — not a wider
+        // cutoff.
 
         // Lifecycle: PasswordChanged logout — fired once per logical
         // revoke-all call. PR 4 may refine to per-session firing.
