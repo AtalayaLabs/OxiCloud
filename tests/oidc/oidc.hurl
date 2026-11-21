@@ -928,22 +928,45 @@ jsonpath "$.oxicloud_status" == 200
 
 
 # ─────────────────────────────────────────────────────────────
-# Step 13d — Refresh MUST fail. This is the load-bearing "BCL
-#            actually kicked the user" proof.
+# Step 13d — The ACCESS token must stop working too, not just the
+#            refresh path. Asserted before the refresh below so it
+#            isolates what BCL itself did: Step 13e's 403 also
+#            triggers reuse-detection and revokes the session
+#            family, which would otherwise confound this.
 #
-#            Note on why we assert on /refresh and NOT /api/auth/me:
-#            OxiCloud access tokens are stateless JWTs — the auth
-#            middleware validates signature + expiry in-memory and
-#            does NOT consult `sessions.revoked` on every request.
-#            BCL flipped `sessions.revoked=true` (see audit log
-#            `oidc.backchannel_logout_by_sub` — 3 sessions revoked)
-#            which kills the refresh path immediately, but the
-#            still-valid in-memory access token would let /me
-#            return 200 until its natural expiry (~1 h default).
-#            That is the standard JWT trade-off: BCL fully evicts
-#            within one access-token TTL. The refresh 401 below is
-#            what proves the eviction landed; once the access
-#            token expires the user can't mint a new one.
+#            This assertion was previously documented as
+#            impossible, and the note is worth keeping because the
+#            reasoning was sound at the time: "access tokens are
+#            stateless JWTs — the auth middleware validates
+#            signature + expiry in-memory and does NOT consult
+#            `sessions.revoked` on every request … the still-valid
+#            in-memory access token would let /me return 200 until
+#            its natural expiry (~1 h default). That is the
+#            standard JWT trade-off: BCL fully evicts within one
+#            access-token TTL."
+#
+#            The middleware now DOES consult it. Per-session
+#            revocation stamps `auth.sessions.revoked_at` and
+#            carries the revoked sids on the cached `UserFlags`, so
+#            `decide_live_role` refuses a revoked session's access
+#            token on the next request — and `backchannel_logout`
+#            drops the flags cache so "next request" means now
+#            rather than within the 30 s TTL.
+#
+#            401, not 403: `LiveRole::Revoked` on the cookie branch
+#            falls through to the unauthenticated arm so a browser
+#            gets the login redirect.
+# ─────────────────────────────────────────────────────────────
+GET {{base_url}}/api/auth/me
+
+HTTP 401
+
+
+# ─────────────────────────────────────────────────────────────
+# Step 13e — Refresh MUST fail. The original load-bearing "BCL
+#            actually kicked the user" proof; still valuable
+#            because it pins the renewal path independently of the
+#            access-token check above.
 # ─────────────────────────────────────────────────────────────
 POST {{base_url}}/api/auth/refresh
 Content-Type: application/json

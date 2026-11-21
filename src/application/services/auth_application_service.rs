@@ -3058,13 +3058,36 @@ impl AuthApplicationService {
             ));
         };
 
-        // Dispatch lifecycle hooks per unique affected user. Best-effort;
-        // hook failures don't undo the revocation (which already committed).
         // Deduped because sid-based revocation could theoretically match
         // multiple sessions for the same user if the IdP re-issued sids.
+        //
+        // Hoisted OUT of the `user_lifecycle` branch below, and it must
+        // stay out: the cache drop that follows is what makes the IdP's
+        // revocation take effect, and nesting it under an optional hook
+        // dispatcher would silently condition a security outcome on
+        // whether a deployment configured lifecycle hooks.
+        let unique: std::collections::HashSet<Uuid> = affected_user_ids.iter().copied().collect();
+
+        // The revocation stamped `revoked_at`, so the affected sessions are
+        // in the bounded revoked-sid set and their already-issued access
+        // tokens stop working — but only once a request reads the set.
+        // Without this drop that happens on the `user_flags_cache` TTL, so
+        // the IdP would say "this session is over" and we would keep
+        // honouring it for up to 30 s. Same posture as `change_password`,
+        // which drops the cache for exactly this reason.
+        //
+        // NOT a revocation cutoff. The cutoff is one user-wide `iat`
+        // watermark, so it cannot express "the one session the IdP named"
+        // — and in the `sid` branch that is precisely the scope. The
+        // per-session set covers both branches, which is why neither needs
+        // one.
+        for uid in &unique {
+            self.invalidate_user_flags(*uid).await;
+        }
+
+        // Dispatch lifecycle hooks per unique affected user. Best-effort;
+        // hook failures don't undo the revocation (which already committed).
         if let Some(lc) = &self.user_lifecycle {
-            let unique: std::collections::HashSet<Uuid> =
-                affected_user_ids.iter().copied().collect();
             for uid in unique {
                 if let Ok(user) = self.user_storage.get_user_by_id(uid).await {
                     lc.dispatch_logout(user, LogoutReason::IdpNotification);
