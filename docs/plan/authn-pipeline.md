@@ -506,6 +506,34 @@ transitions need stable `event` / `reason` keys, inside the existing
   device token, NC login v2, refresh and the grace replay each
   **refused** for an unverified email where classic login is refused.
   These six are the current bypasses, so they are the regression pins.
+
+  **Split them by which half you are pinning.** The deactivated-account
+  half needs nothing special and is a plain regression pin per door
+  (OPAQUE's lives in `opaque-hurl-helper`, because OPRF blinding cannot
+  sit in a `.hurl` body).
+
+  The unverified-email half **cannot run in the current suite**, and the
+  reason is structural rather than a missing fixture:
+
+  - `OXICLOUD_REQUIRE_VERIFIED_EMAIL` is start-up config, not a runtime
+    setting, so one server cannot have it off for the rest of the suite
+    and on for this scenario. `/api/config` exposes it, so a test can
+    read the policy but not change it.
+  - Admin-created users get `email_verified_at = NOW()` ("admin fiat
+    counts"), so the fixture cannot come from `POST /api/admin/users`.
+  - And with the flag ON, an unverified user can never acquire a
+    credential to test with: the OPAQUE register endpoints sit behind
+    `auth_middleware`, app passwords are minted from a session, and
+    every login door now refuses them. The only reachable state is a
+    credential issued BEFORE the flag was turned on.
+
+  So this half needs its own phase — a server started with the flag on,
+  against a pre-seeded unverified user who already holds an envelope and
+  an app password — which is also the scenario an operator actually
+  hits: enabling the policy on a live instance. Until then the *rule* is
+  pinned by unit tests (the admin exemption, the policy-off default, the
+  check ordering) and every door shares that one function, so what is
+  untested is the wiring, not the policy.
 - Hurl: forced-reset discharge end to end — login with the flag set
   yields a `{security}`-scoped session, elevation succeeds with the
   current password, the change succeeds, and the *new* session is
