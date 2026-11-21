@@ -615,6 +615,9 @@ async fn populate_integrity_blob_sizes<'a>(
 /// Hardcoded, each new table would have had its manifests reaped on the next
 /// sweep despite a correct `ref_count`.
 ///
+/// `$2` is the grace window in seconds: an upload in flight holds an
+/// unreferenced manifest until its files row commits (#917).
+///
 /// Pinned by `gc_reference_authority_integration_tests`.
 ///
 /// # Panics
@@ -728,6 +731,7 @@ fn manifest_reap_sql(registry: &BlobReferenceRegistry) -> String {
      SELECT ctid
        FROM storage.chunk_manifests m
       WHERE {orphaned}
+        AND m.referenced_at < now() - ($2::int * interval '1 second')
       LIMIT $1
  )
  RETURNING file_hash, chunk_hashes, total_size"
@@ -3846,8 +3850,8 @@ impl BlobHandler {
 
     /// Garbage collect orphaned manifests and blobs.
     ///
-    /// Phase 1: Delete manifests with ref_count = 0 (or no referencing file),
-    /// then decrement chunk ref_counts for their chunks.
+    /// Phase 1: Delete unreferenced manifests past the grace window, then
+    /// decrement chunk ref_counts for their chunks.
     /// Phase 2: Delete blobs (chunks + legacy) that are unreferenced
     /// (ref_count = 0), no longer listed by any manifest or file, and have
     /// been orphaned for at least [`GC_ORPHAN_GRACE_SECS`](Self::GC_ORPHAN_GRACE_SECS).
@@ -3883,7 +3887,7 @@ impl BlobHandler {
         // delete paths: the single-file service path removes the
         // storage.files row, and so do the bulk paths (user cascade,
         // empty_trash) — whichever decrements ref_count along the way is
-        // irrelevant here.
+        // irrelevant here. `referenced_at` grace: see `manifest_reap_sql`.
         //
         // ref_count is deliberately NOT part of this. It used to be, as
         // `ref_count <= 0 OR <unreferenced>`, which meant a counter that
@@ -3903,6 +3907,7 @@ impl BlobHandler {
             // prepared-statement caching, and a byte-for-byte golden test.
             let batch: Vec<(String, Vec<String>, i64)> = sqlx::query_as(&self.manifest_reap_sql)
                 .bind(BATCH_SIZE)
+                .bind(grace_secs as i32)
                 .fetch_all(self.maintenance_pool.as_ref())
                 .await
                 .map_err(|e| DomainError::internal_error("Dedup", format!("GC manifests: {e}")))?;
@@ -4802,6 +4807,7 @@ mod tests {
       WHERE NOT (EXISTS (SELECT 1 FROM storage.files cnt_f WHERE cnt_f.blob_hash = m.file_hash)
         OR EXISTS (SELECT 1 FROM storage.content_derived_blobs cnt_d WHERE cnt_d.blob_hash = m.file_hash)
         OR EXISTS (SELECT 1 FROM storage.file_attached_blobs cnt_a WHERE cnt_a.blob_hash = m.file_hash))
+        AND m.referenced_at < now() - ($2::int * interval '1 second')
       LIMIT $1
  )
  RETURNING file_hash, chunk_hashes, total_size"#;
@@ -6284,10 +6290,10 @@ mod delta_upload_integration_tests {
         sqlx::query(
             "INSERT INTO storage.chunk_manifests
                  (file_hash, chunk_hashes, chunk_sizes, total_size,
-                  chunk_count, content_type, ref_count)
+                  chunk_count, content_type, ref_count, referenced_at)
              VALUES
-                 ($1, $2, $3, 3, 3, 'application/octet-stream', 0),
-                 ($4, $5, $6, 2, 2, 'application/octet-stream', 0)",
+                 ($1, $2, $3, 3, 3, 'application/octet-stream', 0, now() - interval '2 hours'),
+                 ($4, $5, $6, 2, 2, 'application/octet-stream', 0, now() - interval '2 hours')",
         )
         .bind(&orphan_a)
         .bind(vec![shared.clone(), shared.clone(), unique_a.clone()])
@@ -6656,6 +6662,92 @@ mod gc_reference_authority_integration_tests {
         assert_eq!(updated, 1, "expected exactly one manifest for {file_hash}");
     }
 
+    /// Push `referenced_at` past the phase-1 grace window.
+    async fn age_manifest(pool: &PgPool, file_hash: &str) {
+        let updated = sqlx::query(
+            "UPDATE storage.chunk_manifests
+                SET referenced_at = now() - interval '2 hours'
+              WHERE file_hash = $1",
+        )
+        .bind(file_hash)
+        .execute(pool)
+        .await
+        .expect("age the manifest")
+        .rows_affected();
+        assert_eq!(updated, 1, "expected exactly one manifest for {file_hash}");
+    }
+
+    async fn store(svc: &BlobHandler, data: &[u8]) -> String {
+        let source = stream::iter(vec![Ok::<_, std::io::Error>(Bytes::copy_from_slice(data))]);
+        svc.store_from_stream(source, Some("application/octet-stream".into()))
+            .await
+            .expect("store")
+            .hash()
+            .to_string()
+    }
+
+    async fn manifest_chunks(pool: &PgPool, file_hash: &str) -> Vec<String> {
+        sqlx::query_scalar(
+            "SELECT UNNEST(chunk_hashes) FROM storage.chunk_manifests WHERE file_hash = $1",
+        )
+        .bind(file_hash)
+        .fetch_all(pool)
+        .await
+        .expect("chunks")
+    }
+
+    /// #917: GC between `attach_manifest` and the files-row insert reaped the
+    /// new manifest; the upload reported success for unreadable content.
+    #[tokio::test]
+    async fn gc_spares_the_manifest_of_an_upload_in_flight() {
+        let _gc_test_guard = GC_TEST_SERIALIZER.lock().await;
+        let pool = test_pool().await;
+        let dir = TempDir::new().expect("tempdir");
+        let svc = local_svc(&pool, &dir).await;
+
+        // Stored, no files row yet.
+        let file_hash = store(&svc, &content(2 * 1024 * 1024)).await;
+        let chunks = manifest_chunks(&pool, &file_hash).await;
+
+        svc.garbage_collect().await.expect("gc");
+        let survived = manifest_exists(&pool, &file_hash).await;
+        let readable = svc.read_blob_stream(&file_hash).await.is_ok();
+        cleanup(&pool, &file_hash, Uuid::nil(), &chunks).await;
+
+        assert!(
+            survived,
+            "GC reaped the manifest of an upload whose file row had not \
+             committed yet — phase 1 must honour the referenced_at grace"
+        );
+        assert!(readable, "in-flight upload content unreadable after GC");
+    }
+
+    /// #917, dedup hit: re-uploading content of an old unreferenced manifest
+    /// bumps it; the bump must restart the grace (trigger).
+    #[tokio::test]
+    async fn gc_spares_an_old_manifest_just_re_referenced_by_an_upload() {
+        let _gc_test_guard = GC_TEST_SERIALIZER.lock().await;
+        let pool = test_pool().await;
+        let dir = TempDir::new().expect("tempdir");
+        let svc = local_svc(&pool, &dir).await;
+
+        let data = content(2 * 1024 * 1024);
+        let file_hash = store(&svc, &data).await;
+        let chunks = manifest_chunks(&pool, &file_hash).await;
+        age_manifest(&pool, &file_hash).await;
+        assert_eq!(store(&svc, &data).await, file_hash);
+
+        svc.garbage_collect().await.expect("gc");
+        let survived = manifest_exists(&pool, &file_hash).await;
+        cleanup(&pool, &file_hash, Uuid::nil(), &chunks).await;
+
+        assert!(
+            survived,
+            "a ref bump on an aged manifest must restart its grace — the \
+             referenced_at trigger did not fire"
+        );
+    }
+
     async fn cleanup(pool: &PgPool, file_hash: &str, file_id: Uuid, chunks: &[String]) {
         let _ = sqlx::query("DELETE FROM storage.files WHERE id = $1")
             .bind(file_id)
@@ -6718,10 +6810,9 @@ mod gc_reference_authority_integration_tests {
                 .expect("inflate the refcount")
                 .rows_affected();
         assert_eq!(bumped, 1, "expected exactly one manifest for {file_hash}");
+        age_manifest(&pool, &file_hash).await;
 
-        // Plain GC, NOT `garbage_collect_force`. Phase 1 has no time filter —
-        // the manifest predicate is purely "is it referenced" — so the grace
-        // window is irrelevant to what these tests assert. Forcing it would
+        // Plain GC, NOT `garbage_collect_force`. Forcing it would
         // bypass the CHUNK-level grace for the whole shared test database and
         // reap sibling tests' just-uploaded orphans; that is exactly how this
         // suite first broke `claim_and_pin_respect_ownership_and_orphans`.
@@ -6759,6 +6850,7 @@ mod gc_reference_authority_integration_tests {
             seed_referenced_cdc_blob(&svc, &pool, drive_id, &data, "spare").await;
 
         force_zero_manifest_refcount(&pool, &file_hash).await;
+        age_manifest(&pool, &file_hash).await;
 
         // The file row is still there — this is the whole premise, so assert
         // it rather than trusting that nothing else reaped it concurrently.
