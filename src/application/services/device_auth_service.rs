@@ -219,7 +219,7 @@ impl DeviceAuthService {
         let session = Session::new(
             user_id,
             refresh_token.clone(),
-            client_ip, // ip_address — approver's browser IP
+            client_ip, // created_ip — approver's browser IP
             Some(format!("device:{}", dc.client_name())), // user_agent
             self.token_service.refresh_token_expiry_days(),
             Uuid::new_v4(),

@@ -5528,6 +5528,13 @@ export type SessionOrigin = 'password' | 'opaque' | 'magic_link' | 'oidc' | 'dev
 export type SessionSummaryDto = {
     created_at: string;
     /**
+     * IP the session was CREATED from: the login IP, or for
+     * `origin = device` the approver's browser IP. Inherited across
+     * rotation, so it stays the family's authorisation point rather
+     * than drifting to "where it last refreshed".
+     */
+    created_ip?: string | null;
+    /**
      * First 8 chars of the DPoP thumbprint when bound, `None` otherwise.
      * Enough to distinguish two bindings of the same user across
      * devices at a glance; not enough to leak the full jkt.
@@ -5535,7 +5542,6 @@ export type SessionSummaryDto = {
     dpop_jkt_prefix?: string | null;
     expires_at: string;
     id: string;
-    ip_address?: string | null;
     /**
      * Whether this row is currently usable — `!revoked && expires_at > now()`.
      * Kept server-side so the SPA doesn't drift if the browser clock is off.
@@ -5593,6 +5599,16 @@ export type SessionSummaryDto = {
      * "last seen X ago" column off this field.
      */
     last_seen_at: string;
+    /**
+     * IP the session was last USED from, to within the last-seen
+     * flush interval. `None` until it serves a request.
+     *
+     * Rendered beside `created_ip` because **the mismatch is the
+     * signal**: a session authorised from one address and now used
+     * from another is the shape of a stolen credential, which neither
+     * column shows alone.
+     */
+    last_seen_ip?: string | null;
     /**
      * How the session was minted — see [`SessionOrigin`]. Set at
      * INSERT time by the login handler and carried over on refresh

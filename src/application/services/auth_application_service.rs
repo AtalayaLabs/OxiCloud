@@ -2721,10 +2721,21 @@ impl AuthApplicationService {
         }))
     }
 
+    /// `_client_ip` is accepted and deliberately not stored. A rotated
+    /// session INHERITS `created_ip` from its parent, so that column keeps
+    /// meaning "where this session family was authorised" rather than
+    /// drifting to "where it last refreshed" — see the `Session::new` call
+    /// below. The refresh request's own address is not lost: the ordinary
+    /// per-request stamp records it as `last_seen_ip`, which is exactly what it
+    /// is.
+    ///
+    /// The parameter stays in the signature because callers have it and a
+    /// future use (rate limiting, geo-anomaly alerting) wants it here
+    /// rather than threaded in again.
     pub async fn refresh_token(
         &self,
         dto: RefreshTokenDto,
-        client_ip: Option<String>,
+        _client_ip: Option<String>,
         user_agent: Option<String>,
     ) -> Result<AuthResponseDto, DomainError> {
         // Get valid session
@@ -2809,7 +2820,23 @@ impl AuthApplicationService {
         let mut new_session = Session::new(
             user.id(),
             new_refresh_token.clone(),
-            client_ip,
+            // `created_ip` is INHERITED, not re-captured from this refresh
+            // — the same reasoning the `origin` argument below gives, and
+            // for a sharper reason.
+            //
+            // Re-capturing would make the column mean "IP at the last
+            // rotation", which for a client refreshing hourly is a moving
+            // value, and it would destroy the pair's whole purpose: a
+            // mismatch between `created_ip` and `last_seen_ip` is the
+            // stolen-credential signal, and a thief who refreshes once
+            // would overwrite the honest value with their own. Inheriting
+            // keeps "where this session family was authorised" stable for
+            // the family's life, which is the question an operator reading
+            // the device list is actually asking.
+            //
+            // `client_ip` of the refresh request is not discarded: it is
+            // observed as `last_seen_ip` by the ordinary per-request stamp.
+            session.created_ip().map(str::to_owned),
             user_agent,
             self.token_service.refresh_token_expiry_days(),
             session.family_id(),

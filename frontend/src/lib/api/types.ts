@@ -634,7 +634,7 @@ export interface Finding {
  * other users' sessions can't exfiltrate the full binding fingerprint.
  */
 // Authoritative on the generated SDK — Phase 3 Group D. The three
-// nullable fields (`ip_address`, `user_agent`, `dpop_jkt_prefix`)
+// nullable fields (`created_ip`, `last_seen_ip`, `user_agent`, `dpop_jkt_prefix`)
 // widen from `: string | null` to `?: string | null`; `origin`
 // moves from an inline 6-string union to the generated `SessionOrigin`
 // alias (same 6 values). Local import so `AdminSessionsPage` below

@@ -331,6 +331,24 @@ pub async fn auth_middleware(
     mut request: Request,
     next: Next,
 ) -> Result<Response, AuthError> {
+    // Where this request is coming FROM, for `auth.sessions.last_seen_ip`.
+    //
+    // One small allocation per request, which is a deliberate reversal of
+    // the borrow-only treatment `client_ip_display` exists for
+    // (benches/ROUND13.md §H2): the tracker has to OWN the value across
+    // its flush window, so a borrow cannot work. It buys the
+    // created-from / used-from mismatch that is the credential-theft
+    // signal — and it is one ~16-byte `String` next to a JWT validation
+    // and a cache read, not next to nothing.
+    //
+    // Computed before the credential arms because three of them stamp,
+    // and recomputing per arm would be the actual waste. `None` when no
+    // address can be resolved, which leaves the column untouched rather
+    // than clearing it.
+    let observed_ip: Option<String> =
+        Some(super::trusted_proxy::client_ip_display(&request, false).to_string())
+            .filter(|s| !s.is_empty() && s != "-");
+
     // Borrow the Authorization header straight from the request instead of
     // taking axum's `HeaderMap` extractor, which clones the whole map (~2
     // allocs) on every authenticated request purely to read it
@@ -438,7 +456,7 @@ pub async fn auth_middleware(
                             if let (Some(sid), Some(tracker)) =
                                 (claims.sid, state.last_seen_tracker.as_ref())
                             {
-                                tracker.stamp(sid);
+                                tracker.stamp(sid, observed_ip.clone());
                             }
                             return Ok(next.run(request).await);
                         }
@@ -683,7 +701,7 @@ pub async fn auth_middleware(
                                 if let (Some(sid), Some(tracker)) =
                                     (claims.sid, state.last_seen_tracker.as_ref())
                                 {
-                                    tracker.stamp(sid);
+                                    tracker.stamp(sid, observed_ip.clone());
                                 }
                                 return Ok(next.run(request).await);
                             }

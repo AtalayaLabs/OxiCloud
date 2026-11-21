@@ -67,7 +67,12 @@ pub struct Session {
     user_id: Uuid,
     refresh_token: String,
     expires_at: DateTime<Utc>,
-    ip_address: Option<String>,
+    created_ip: Option<String>,
+    /// IP the session was last USED from, maintained by
+    /// `LastSeenTracker` on its batched flush. `None` until the session
+    /// serves a request. A mismatch against `created_ip` is the
+    /// credential-theft signal the pair exists for.
+    last_seen_ip: Option<String>,
     user_agent: Option<String>,
     created_at: DateTime<Utc>,
     revoked: bool,
@@ -114,7 +119,7 @@ impl Session {
     pub fn new(
         user_id: Uuid,
         refresh_token: String,
-        ip_address: Option<String>,
+        created_ip: Option<String>,
         user_agent: Option<String>,
         expires_in_days: i64,
         family_id: Uuid,
@@ -130,7 +135,11 @@ impl Session {
             user_id,
             refresh_token,
             expires_at: now + Duration::days(expires_in_days),
-            ip_address,
+            created_ip,
+            // A brand-new session has served no request yet, so there is
+            // nothing observed to record. The first per-request stamp
+            // fills it.
+            last_seen_ip: None,
             user_agent,
             created_at: now,
             revoked: false,
@@ -182,7 +191,7 @@ impl Session {
         user_id: Uuid,
         refresh_token: String,
         expires_at: DateTime<Utc>,
-        ip_address: Option<String>,
+        created_ip: Option<String>,
         user_agent: Option<String>,
         created_at: DateTime<Utc>,
         revoked: bool,
@@ -192,13 +201,15 @@ impl Session {
         dpop_jkt: Option<String>,
         origin: SessionOrigin,
         last_seen_at: DateTime<Utc>,
+        last_seen_ip: Option<String>,
     ) -> Self {
         Self {
             id,
             user_id,
             refresh_token,
             expires_at,
-            ip_address,
+            created_ip,
+            last_seen_ip,
             user_agent,
             created_at,
             revoked,
@@ -228,8 +239,13 @@ impl Session {
         self.expires_at
     }
 
-    pub fn ip_address(&self) -> Option<&str> {
-        self.ip_address.as_deref()
+    pub fn created_ip(&self) -> Option<&str> {
+        self.created_ip.as_deref()
+    }
+
+    /// Where the session was last USED from — see the field.
+    pub fn last_seen_ip(&self) -> Option<&str> {
+        self.last_seen_ip.as_deref()
     }
 
     pub fn user_agent(&self) -> Option<&str> {
@@ -329,6 +345,7 @@ mod tests {
             Some("thumbprint-xyz".to_string()),
             SessionOrigin::Unknown,
             Utc::now(),
+            None,
         );
         assert_eq!(s.dpop_jkt(), Some("thumbprint-xyz"));
     }

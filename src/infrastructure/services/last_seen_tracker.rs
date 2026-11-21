@@ -63,10 +63,15 @@ const FLUSH_INTERVAL: Duration = Duration::from_secs(30);
 /// handle to it — the task holds the `Arc<Self>` and observes the
 /// runtime shutting down naturally.
 pub struct LastSeenTracker {
-    /// (session_id → last observed time). DashMap's sharded locking
-    /// parallelises writes across distinct session_ids — different
-    /// users' requests never contend.
-    seen: DashMap<Uuid, DateTime<Utc>>,
+    /// (session_id → last observed time and IP). DashMap's sharded
+    /// locking parallelises writes across distinct session_ids —
+    /// different users' requests never contend.
+    ///
+    /// The IP rides along rather than taking a tracker of its own: it
+    /// is observed at the same moment, written to the same row, and
+    /// carrying it here costs one `Option<String>` per ACTIVE session
+    /// per flush window rather than per request.
+    seen: DashMap<Uuid, (DateTime<Utc>, Option<String>)>,
     /// Maintenance pool — the tracker is a background writer and
     /// must not compete with request-serving connections.
     pool: Arc<PgPool>,
@@ -92,13 +97,21 @@ impl LastSeenTracker {
         this
     }
 
-    /// Record that `session_id` was observed serving a request
-    /// right now. Overwrites any prior stamp for the same session
+    /// Record that `session_id` was observed serving a request right
+    /// now, from `ip`. Overwrites any prior stamp for the same session
     /// in the current window — the flusher uses the latest value.
     ///
+    /// `ip` is where the credential is being USED, which is not
+    /// necessarily where the session was created: for a device-flow
+    /// session `created_ip` holds the APPROVER's browser IP, and a
+    /// mismatch between the two is a credential-theft signal. `None`
+    /// leaves the column untouched rather than clearing it, so a
+    /// request behind a proxy that yields no IP cannot erase a good
+    /// observation.
+    ///
     /// O(1) DashMap upsert. No I/O. Never fails.
-    pub fn stamp(&self, session_id: Uuid) {
-        self.seen.insert(session_id, Utc::now());
+    pub fn stamp(&self, session_id: Uuid, ip: Option<String>) {
+        self.seen.insert(session_id, (Utc::now(), ip));
     }
 
     /// Has `session_id` served a request since the last flush?
@@ -140,21 +153,30 @@ impl LastSeenTracker {
         // latest wins per key already).
         let mut ids: Vec<Uuid> = Vec::with_capacity(self.seen.len());
         let mut seen_at: Vec<DateTime<Utc>> = Vec::with_capacity(self.seen.len());
+        let mut seen_ip: Vec<Option<String>> = Vec::with_capacity(self.seen.len());
         for entry in self.seen.iter() {
             ids.push(*entry.key());
-            seen_at.push(*entry.value());
+            let (at, ip) = entry.value();
+            seen_at.push(*at);
+            seen_ip.push(ip.clone());
         }
 
         let result = sqlx::query(
             r#"
             UPDATE auth.sessions AS s
-               SET last_seen_at = greatest(s.last_seen_at, t.seen_at)
-              FROM UNNEST($1::uuid[], $2::timestamptz[]) AS t(id, seen_at)
+               SET last_seen_at = greatest(s.last_seen_at, t.seen_at),
+                   -- COALESCE so a request that yielded no IP cannot
+                   -- erase a good observation: `None` leaves the column
+                   -- as it was.
+                   last_seen_ip = COALESCE(t.seen_ip, s.last_seen_ip)
+              FROM UNNEST($1::uuid[], $2::timestamptz[], $3::text[])
+                   AS t(id, seen_at, seen_ip)
              WHERE s.id = t.id
             "#,
         )
         .bind(&ids)
         .bind(&seen_at)
+        .bind(&seen_ip)
         .execute(&*self.pool)
         .await?;
 
@@ -165,8 +187,13 @@ impl LastSeenTracker {
         // timestamp gets kept for the next flush.
         let flushed: std::collections::HashMap<Uuid, DateTime<Utc>> =
             ids.iter().copied().zip(seen_at.iter().copied()).collect();
+        // Compared on the TIMESTAMP only. The IP rides along but is not
+        // part of the identity of a stamp: a re-stamp from a new address
+        // inside the same flush window carries a newer timestamp too, so
+        // the timestamp alone already decides whether this entry was the
+        // one we drained.
         self.seen
-            .retain(|k, v| flushed.get(k).is_none_or(|ts| ts != v));
+            .retain(|k, v| flushed.get(k).is_none_or(|ts| *ts != v.0));
 
         let updated = result.rows_affected() as usize;
         tracing::debug!(

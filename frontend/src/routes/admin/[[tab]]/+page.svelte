@@ -1140,12 +1140,6 @@
 	let sessionsFilterUserId = $state<string>('');
 	let sessionsIncludeRevoked = $state(false);
 	let sessionRevokingId = $state<string | null>(null);
-	// Access-token TTL served alongside the sessions page — drives the
-	// "revoke takes effect within {N} seconds" warning. Revoke flips the
-	// DB row (breaks the refresh path), but a JWT already in flight
-	// stays valid until its `exp`. Populated on the first load, reused
-	// for every render — the value is server-config, not per-request.
-	let sessionsAccessTokenExpirySecs = $state<number | null>(null);
 
 	async function loadSessions() {
 		sessionsLoading = true;
@@ -1157,7 +1151,6 @@
 				limit: PAGE_SIZE
 			});
 			sessions = page.sessions;
-			sessionsAccessTokenExpirySecs = page.access_token_expiry_secs;
 		} catch (e) {
 			sessionsError = errorMessage(e);
 		} finally {
@@ -4345,25 +4338,6 @@
 		{#if sessionsError}
 			<EmptyState icon="exclamation-circle" title={sessionsError} error />
 		{:else}
-			{#if sessionsAccessTokenExpirySecs !== null}
-				<!-- Revoke-lag notice: revoke breaks the refresh path
-				     immediately, but a JWT already in flight stays valid
-				     until its `exp` (see docs/plan/dpop.md — access tokens
-				     are opaque to revocation between refreshes). Server
-				     publishes the current TTL so this text is honest
-				     rather than a hardcoded guess. -->
-				<Banner
-					severity="info"
-					icon="clock"
-					body={t(
-						'admin.sessions.revoke_lag_notice',
-						{ secs: sessionsAccessTokenExpirySecs },
-						'Revoking a session breaks its refresh path immediately, but any JWT already in the browser stays valid for up to {{secs}} seconds until the next refresh attempt.'
-					)}
-					role="status"
-					testid="admin-sessions-revoke-lag-notice"
-				/>
-			{/if}
 			<div class="admin-table admin-table--cards admin-table--sessions">
 				<table data-testid="admin-sessions-table">
 					<thead>
@@ -4409,9 +4383,25 @@
 										new Date(s.expires_at)
 									)}</td
 								>
-								<td class="admin-mono" data-label={t('admin.sessions.col_ip', 'IP')}
-									>{s.ip_address ?? '—'}</td
-								>
+								<td class="admin-mono" data-label={t('admin.sessions.col_ip', 'IP')}>
+									{s.created_ip ?? '—'}
+									<!-- Both addresses, and only when they differ: the
+									     MISMATCH is the signal. A session authorised from
+									     one address and now used from another is the shape
+									     of a stolen credential, which neither column shows
+									     alone. Equal addresses stay quiet so the common
+									     case does not look like an alert. -->
+									{#if s.last_seen_ip && s.last_seen_ip !== s.created_ip}
+										<span
+											class="session-ip-roamed"
+											title={t(
+												'admin.sessions.ip_roamed_hint',
+												'Last used from a different address than it was created from. Normal for a roaming client; worth a look on a long-lived session.'
+											)}
+											data-testid={`admin-sessions-ip-roamed-${s.id}`}>→ {s.last_seen_ip}</span
+										>
+									{/if}
+								</td>
 								<td
 									class="admin-truncate"
 									data-label={t('admin.sessions.col_user_agent', 'User agent')}
@@ -5617,6 +5607,17 @@
 	   muscle memory. */
 	.current-session td:first-child {
 		border-left: 3px solid var(--color-accent);
+	}
+
+	/* The used-from address, shown only when it differs from the
+	   created-from one. Warning-coloured rather than danger: a roaming
+	   phone trips this constantly and legitimately, so it is a "look at
+	   this", not a "something is wrong". */
+	.session-ip-roamed {
+		display: inline-block;
+		margin-left: 0.35rem;
+		color: var(--color-warning-text);
+		white-space: nowrap;
 	}
 
 	.col-center {

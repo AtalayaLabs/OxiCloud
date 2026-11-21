@@ -80,7 +80,19 @@ pub struct SessionSummaryDto {
     /// capped at the access-token TTL. The admin table renders a
     /// "last seen X ago" column off this field.
     pub last_seen_at: DateTime<Utc>,
-    pub ip_address: Option<String>,
+    /// IP the session was CREATED from: the login IP, or for
+    /// `origin = device` the approver's browser IP. Inherited across
+    /// rotation, so it stays the family's authorisation point rather
+    /// than drifting to "where it last refreshed".
+    pub created_ip: Option<String>,
+    /// IP the session was last USED from, to within the last-seen
+    /// flush interval. `None` until it serves a request.
+    ///
+    /// Rendered beside `created_ip` because **the mismatch is the
+    /// signal**: a session authorised from one address and now used
+    /// from another is the shape of a stolen credential, which neither
+    /// column shows alone.
+    pub last_seen_ip: Option<String>,
     pub user_agent: Option<String>,
     /// `true` iff the session is DPoP-bound. Rendered as a lock icon
     /// in the admin table. Complements the auth-badges surface.
@@ -117,7 +129,7 @@ pub struct SessionSummaryDto {
     // sid identifies the row's upstream session and stays server-side
     // (used by Back-Channel Logout matching). Exposing even a prefix
     // earns no operator utility over what `id` / `created_at` /
-    // `ip_address` / `user_agent` already give. `origin` below answers
+    // `created_ip` / `user_agent` already give. `origin` below answers
     // "how did this session start?" cleanly.
     /// How the session was minted — see [`SessionOrigin`]. Set at
     /// INSERT time by the login handler and carried over on refresh
@@ -175,7 +187,8 @@ impl SessionSummaryDto {
             created_at: s.created_at(),
             expires_at: s.expires_at(),
             last_seen_at: s.last_seen_at(),
-            ip_address: s.ip_address().map(str::to_owned),
+            created_ip: s.created_ip().map(str::to_owned),
+            last_seen_ip: s.last_seen_ip().map(str::to_owned),
             user_agent: s.user_agent().map(str::to_owned),
             is_bound: jkt.is_some(),
             dpop_jkt_prefix,
@@ -228,6 +241,7 @@ mod tests {
             None,
             crate::domain::entities::session::SessionOrigin::Oidc,
             Utc::now(),
+            None,
         )
     }
 
@@ -355,6 +369,7 @@ mod tests {
             None,
             SessionOrigin::Password,
             stale,
+            None,
         );
         let dto = SessionSummaryDto::from(s);
         assert!(!dto.is_online, "1h-idle session must not be online");
@@ -398,6 +413,7 @@ mod tests {
             None,
             SessionOrigin::Password,
             Utc::now(), // last_seen_at fresh
+            None,
         );
         let dto = SessionSummaryDto::from(s);
         assert!(!dto.is_active, "expired session is not active");
@@ -436,6 +452,7 @@ mod tests {
             None,
             crate::domain::entities::session::SessionOrigin::Unknown,
             past,
+            None,
         );
         let dto = SessionSummaryDto::from(s);
         assert!(!dto.is_active);
@@ -460,7 +477,8 @@ mod wire_shape_tests {
             created_at: epoch_to_datetime(1_700_000_000),
             expires_at: epoch_to_datetime(1_700_086_400),
             last_seen_at: epoch_to_datetime(1_700_000_300),
-            ip_address: Some("192.0.2.1".to_string()),
+            created_ip: Some("192.0.2.1".to_string()),
+            last_seen_ip: Some("192.0.2.9".to_string()),
             user_agent: Some("Mozilla/5.0".to_string()),
             is_bound: false,
             dpop_jkt_prefix: None,

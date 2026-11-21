@@ -54,7 +54,7 @@ impl SessionPgRepository {
             row.get("user_id"),
             row.get("refresh_token"),
             row.get("expires_at"),
-            row.get("ip_address"),
+            row.get("created_ip"),
             row.get("user_agent"),
             row.get("created_at"),
             row.get("revoked"),
@@ -64,6 +64,7 @@ impl SessionPgRepository {
             row.get("dpop_jkt"),
             crate::domain::entities::session::SessionOrigin::from_wire(row.get("origin")),
             row.get("last_seen_at"),
+            row.get("last_seen_ip"),
         )
     }
 }
@@ -81,8 +82,8 @@ impl SessionRepository for SessionPgRepository {
                     r#"
                         INSERT INTO auth.sessions (
                             id, user_id, refresh_token, expires_at,
-                            ip_address, user_agent, created_at, revoked, family_id,
-                            oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at
+                            created_ip, user_agent, created_at, revoked, family_id,
+                            oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at, last_seen_ip
                         ) VALUES (
                             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
                         )
@@ -92,7 +93,7 @@ impl SessionRepository for SessionPgRepository {
                 .bind(session_clone.user_id())
                 .bind(session_clone.refresh_token())
                 .bind(session_clone.expires_at())
-                .bind(session_clone.ip_address())
+                .bind(session_clone.created_ip())
                 .bind(session_clone.user_agent())
                 .bind(session_clone.created_at())
                 .bind(session_clone.is_revoked())
@@ -154,8 +155,8 @@ impl SessionRepository for SessionPgRepository {
             r#"
             SELECT
                 id, user_id, refresh_token, expires_at,
-                ip_address, user_agent, created_at, revoked, family_id,
-                oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at
+                created_ip, user_agent, created_at, revoked, family_id,
+                oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at, last_seen_ip
             FROM auth.sessions
             WHERE id = $1
             "#,
@@ -170,7 +171,7 @@ impl SessionRepository for SessionPgRepository {
             row.get("user_id"),
             row.get("refresh_token"),
             row.get("expires_at"),
-            row.get("ip_address"),
+            row.get("created_ip"),
             row.get("user_agent"),
             row.get("created_at"),
             row.get("revoked"),
@@ -180,6 +181,7 @@ impl SessionRepository for SessionPgRepository {
             row.get("dpop_jkt"),
             crate::domain::entities::session::SessionOrigin::from_wire(row.get("origin")),
             row.get("last_seen_at"),
+            row.get("last_seen_ip"),
         ))
     }
 
@@ -193,8 +195,8 @@ impl SessionRepository for SessionPgRepository {
             r#"
             SELECT
                 id, user_id, refresh_token, expires_at,
-                ip_address, user_agent, created_at, revoked, family_id,
-                oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at
+                created_ip, user_agent, created_at, revoked, family_id,
+                oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at, last_seen_ip
             FROM auth.sessions
             WHERE refresh_token = $1
             "#,
@@ -209,7 +211,7 @@ impl SessionRepository for SessionPgRepository {
             row.get("user_id"),
             row.get("refresh_token"),
             row.get("expires_at"),
-            row.get("ip_address"),
+            row.get("created_ip"),
             row.get("user_agent"),
             row.get("created_at"),
             row.get("revoked"),
@@ -219,6 +221,7 @@ impl SessionRepository for SessionPgRepository {
             row.get("dpop_jkt"),
             crate::domain::entities::session::SessionOrigin::from_wire(row.get("origin")),
             row.get("last_seen_at"),
+            row.get("last_seen_ip"),
         ))
     }
 
@@ -231,8 +234,8 @@ impl SessionRepository for SessionPgRepository {
             r#"
             SELECT
                 id, user_id, refresh_token, expires_at,
-                ip_address, user_agent, created_at, revoked, family_id,
-                oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at
+                created_ip, user_agent, created_at, revoked, family_id,
+                oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at, last_seen_ip
             FROM auth.sessions
             WHERE user_id = $1
             ORDER BY created_at DESC
@@ -251,7 +254,7 @@ impl SessionRepository for SessionPgRepository {
                     row.get("user_id"),
                     row.get("refresh_token"),
                     row.get("expires_at"),
-                    row.get("ip_address"),
+                    row.get("created_ip"),
                     row.get("user_agent"),
                     row.get("created_at"),
                     row.get("revoked"),
@@ -261,6 +264,7 @@ impl SessionRepository for SessionPgRepository {
                     row.get("dpop_jkt"),
                     crate::domain::entities::session::SessionOrigin::from_wire(row.get("origin")),
                     row.get("last_seen_at"),
+                    row.get("last_seen_ip"),
                 )
             })
             .collect();
@@ -281,8 +285,8 @@ impl SessionRepository for SessionPgRepository {
             r#"
             SELECT
                 id, user_id, refresh_token, expires_at,
-                ip_address, user_agent, created_at, revoked, family_id,
-                oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at
+                created_ip, user_agent, created_at, revoked, family_id,
+                oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at, last_seen_ip
             FROM auth.sessions
             WHERE family_id = $1 AND created_at > $2
             ORDER BY created_at ASC
@@ -318,8 +322,8 @@ impl SessionRepository for SessionPgRepository {
             r#"
             SELECT
                 id, user_id, refresh_token, expires_at,
-                ip_address, user_agent, created_at, revoked, family_id,
-                oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at
+                created_ip, user_agent, created_at, revoked, family_id,
+                oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at, last_seen_ip
             FROM auth.sessions
             WHERE ($1::uuid IS NULL OR user_id = $1)
               AND ($2 OR (revoked = false AND expires_at > NOW()))
@@ -343,7 +347,7 @@ impl SessionRepository for SessionPgRepository {
                     row.get("user_id"),
                     row.get("refresh_token"),
                     row.get("expires_at"),
-                    row.get("ip_address"),
+                    row.get("created_ip"),
                     row.get("user_agent"),
                     row.get("created_at"),
                     row.get("revoked"),
@@ -353,6 +357,7 @@ impl SessionRepository for SessionPgRepository {
                     row.get("dpop_jkt"),
                     crate::domain::entities::session::SessionOrigin::from_wire(row.get("origin")),
                     row.get("last_seen_at"),
+                    row.get("last_seen_ip"),
                 )
             })
             .collect();
@@ -711,8 +716,8 @@ impl SessionStoragePort for SessionPgRepository {
                     r#"
                         INSERT INTO auth.sessions (
                             id, user_id, refresh_token, expires_at,
-                            ip_address, user_agent, created_at, revoked, family_id,
-                            oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at
+                            created_ip, user_agent, created_at, revoked, family_id,
+                            oidc_id_token, oidc_sid, dpop_jkt, origin, last_seen_at, last_seen_ip
                         ) VALUES (
                             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
                         )
@@ -722,7 +727,7 @@ impl SessionStoragePort for SessionPgRepository {
                 .bind(session_clone.user_id())
                 .bind(session_clone.refresh_token())
                 .bind(session_clone.expires_at())
-                .bind(session_clone.ip_address())
+                .bind(session_clone.created_ip())
                 .bind(session_clone.user_agent())
                 .bind(session_clone.created_at())
                 .bind(session_clone.is_revoked())

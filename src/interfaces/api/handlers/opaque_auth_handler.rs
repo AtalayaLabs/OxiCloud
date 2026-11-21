@@ -774,7 +774,7 @@ pub async fn login_ke3(
         invalid_credentials()
     })?;
 
-    // Capture client IP + User-Agent so `sessions.ip_address` /
+    // Capture client IP + User-Agent so `sessions.created_ip` /
     // `user_agent` land populated instead of NULL (admin panel would
     // otherwise render "—"). Both are per-session and only refresh
     // on rotation, matching the login pattern.

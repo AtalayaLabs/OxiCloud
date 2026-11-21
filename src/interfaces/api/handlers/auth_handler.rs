@@ -637,7 +637,7 @@ pub async fn refresh_token(
     };
 
     // Refresh rotates the session row — capture current IP + UA so the
-    // NEW row's `ip_address`/`user_agent` reflect the latest observed
+    // NEW row's `created_ip`/`user_agent` reflect the latest observed
     // client (see `sessions.rotate_session`). Old row keeps its own
     // capture from creation time.
     let client_ip = client_ip_from_parts(&headers, Some(peer), false);

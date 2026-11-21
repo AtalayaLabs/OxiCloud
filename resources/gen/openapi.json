@@ -22833,6 +22833,13 @@
             "type": "string",
             "format": "date-time"
           },
+          "created_ip": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "IP the session was CREATED from: the login IP, or for\n`origin = device` the approver's browser IP. Inherited across\nrotation, so it stays the family's authorisation point rather\nthan drifting to \"where it last refreshed\"."
+          },
           "dpop_jkt_prefix": {
             "type": [
               "string",
@@ -22847,12 +22854,6 @@
           "id": {
             "type": "string",
             "format": "uuid"
-          },
-          "ip_address": {
-            "type": [
-              "string",
-              "null"
-            ]
           },
           "is_active": {
             "type": "boolean",
@@ -22878,6 +22879,13 @@
             "type": "string",
             "format": "date-time",
             "description": "Wall-clock time this session was last observed serving an\nauthenticated request. Moved forward per request by the\nin-process [`LastSeenTracker`](crate::infrastructure::services::last_seen_tracker)\nvia a batched UPDATE every 30 s — so this value trails the\ntrue \"last seen\" by at most one flush interval on a running\nserver. On DB read it always converges after a graceful\nshutdown flush. Distinct from `created_at`: that only moves\non session rotation (silent refresh), so its resolution is\ncapped at the access-token TTL. The admin table renders a\n\"last seen X ago\" column off this field."
+          },
+          "last_seen_ip": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "IP the session was last USED from, to within the last-seen\nflush interval. `None` until it serves a request.\n\nRendered beside `created_ip` because **the mismatch is the\nsignal**: a session authorised from one address and now used\nfrom another is the shape of a stolen credential, which neither\ncolumn shows alone."
           },
           "origin": {
             "$ref": "#/components/schemas/SessionOrigin",

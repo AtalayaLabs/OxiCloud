@@ -1466,7 +1466,6 @@
       "empty": "Keine Sitzungen entsprechen dem aktuellen Filter.",
       "revoke_self_confirm": "⚠️  Dies ist IHRE aktuelle Sitzung. Wenn Sie sie widerrufen, werden Sie sofort abgemeldet und müssen sich neu anmelden. Fortfahren?",
       "revoke_confirm": "Diese Sitzung widerrufen? Die nächste Anfrage von diesem Browser erhält 401.",
-      "revoke_lag_notice": "Das Widerrufen einer Sitzung unterbricht den Refresh-Pfad sofort, aber ein bereits im Browser vorhandenes JWT bleibt bis zu {{secs}} Sekunden gültig, bis der nächste Refresh-Versuch erfolgt.",
       "origin": {
         "password": "Passwort",
         "opaque": "OPAQUE",
