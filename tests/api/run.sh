@@ -897,8 +897,30 @@ fi
 #   * it needs no new CLI flag, because the binary's precedence is already
 #     defaults < file < environment (`load_config_file`).
 #
-# Postgres is NOT restarted: the admin that `setup.hurl` seeded is still
-# there, which is what the scenario authenticates with.
+# Postgres is NOT restarted, so the admin that `setup.hurl` seeded is still
+# there — but its CREDENTIAL is not what it was. `opaque_substrate.hurl`
+# migrates that account to OPAQUE earlier in the run, and a migrated user is
+# refused on the legacy password door (`auth.login_rejected`,
+# reason `opaque_migrated_use_opaque`) — which is this scenario's Step 0 and
+# the precondition for everything after it. Running the whole suite therefore
+# failed where running this scenario alone passed.
+#
+# Hence `OXICLOUD_AUTH_OPAQUE_MODE=off` for this pass. With OPAQUE off,
+# `opaque_repo_for_auth` is not wired at all (`common/di.rs`: built only when
+# `effective_mode(...) != OpaqueMode::Off`), so the `is_migrated` lookup never
+# runs and the password door answers for the seeded admin again.
+#
+# That is isolation, not papering over: the scenario under test is the
+# verified-email policy, and it should not depend on whether some earlier
+# scenario happened to migrate the account it logs in with. The OPAQUE door's
+# own account-state refusals are covered where they can actually be driven —
+# `opaque-hurl-helper`, which speaks the real ciphersuite (Hurl cannot).
+#
+# The alternative was to run this pass BEFORE `opaque_substrate.hurl`, which
+# is the convention section 5 follows for `rt_bus_check`. Rejected here: that
+# file runs inside the main Hurl batch, so this phase would have to move ahead
+# of the batch and then restart the server a second time to put the flag back,
+# for no gain over turning off the one subsystem that interferes.
 #
 # Selector name: the scenario's own, `auth_email_verified_required`.
 if selected auth_email_verified_required; then
@@ -908,6 +930,7 @@ if selected auth_email_verified_required; then
     wait "$SERVER_PID" 2>/dev/null || true
   fi
   OXICLOUD_REQUIRE_VERIFIED_EMAIL=true \
+  OXICLOUD_AUTH_OPAQUE_MODE=off \
     "$OXICLOUD_BIN" --config "$COMMON/server.env" &
   # Reassign so the EXIT trap kills THIS server. Without it the trap would
   # kill a dead pid and leave the second server holding the port.
