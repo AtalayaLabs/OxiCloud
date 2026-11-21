@@ -1855,15 +1855,60 @@ export type DeviceAuthorizeResponseDto = {
 };
 
 /**
- * DTO for listing authorized devices in the user's profile.
+ * One CONNECTED device, projected from its session row.
+ *
+ * Two fields of the `device_codes`-era shape are gone, and their
+ * absence is the point:
+ *
+ * * `scopes` — recorded on the `device_codes` row, which `poll()`
+ * deletes once the tokens are collected, so a connected device's
+ * approved scopes are not retrievable. They are also not enforced
+ * yet (`scope-gates.md`); the field returns when a session carries a
+ * `ScopeSet` and the value is real.
+ * * `authorized_at` — would duplicate `created_at`, since the session
+ * row IS created at the moment of approval. The device's own earlier
+ * request time lived on the deleted row.
  */
 export type DeviceInfoDto = {
-    authorized_at?: string | null;
     client_name: string;
+    /**
+     * When the device was AUTHORISED — the approval moment.
+     */
     created_at: string;
+    /**
+     * Where the human approved it from. The device never reaches the
+     * approval endpoint, so this is the approver's browser.
+     */
+    created_ip?: string | null;
     expires_at: string;
+    /**
+     * The SESSION id — what `DELETE /api/auth/device/devices/{id}`
+     * takes. Previously a `device_codes` id, which named a row that no
+     * longer existed for any device that had actually connected.
+     */
     id: string;
-    scopes: string;
+    /**
+     * Whether the session is DPoP-bound. Device-flow sessions are
+     * unbound by design (CLI and TV clients have no WebCrypto), so a
+     * `true` here would be surprising and worth surfacing.
+     */
+    is_bound: boolean;
+    /**
+     * Genuine liveness, maintained per request. This is the field that
+     * makes the list answer "is this thing still talking to me?",
+     * which the old one could not.
+     */
+    last_seen_at: string;
+    /**
+     * Where the device is actually being used from, to within the
+     * last-seen flush interval. A mismatch against `created_ip` is
+     * worth an operator's attention.
+     */
+    last_seen_ip?: string | null;
+    /**
+     * `active`, or `expired` for a row past `expires_at` that nobody
+     * revoked. Revoked sessions are not listed at all.
+     */
     status: string;
 };
 
@@ -10282,6 +10327,73 @@ export type RegisterResponses = {
 };
 
 export type RegisterResponse = RegisterResponses[keyof RegisterResponses];
+
+export type ListOwnSessionsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/auth/sessions';
+};
+
+export type ListOwnSessionsErrors = {
+    /**
+     * Not authenticated
+     */
+    401: ApiErrorBody;
+};
+
+export type ListOwnSessionsError = ListOwnSessionsErrors[keyof ListOwnSessionsErrors];
+
+export type ListOwnSessionsResponses = {
+    /**
+     * The caller's sessions
+     */
+    200: {
+        [key: string]: unknown;
+    };
+};
+
+export type ListOwnSessionsResponse = ListOwnSessionsResponses[keyof ListOwnSessionsResponses];
+
+export type RevokeOwnSessionData = {
+    body?: never;
+    path: {
+        /**
+         * Session UUID
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/api/auth/sessions/{id}';
+};
+
+export type RevokeOwnSessionErrors = {
+    /**
+     * Invalid UUID
+     */
+    400: ApiErrorBody;
+    /**
+     * Not authenticated
+     */
+    401: ApiErrorBody;
+    /**
+     * No such session for this caller
+     */
+    404: ApiErrorBody;
+};
+
+export type RevokeOwnSessionError = RevokeOwnSessionErrors[keyof RevokeOwnSessionErrors];
+
+export type RevokeOwnSessionResponses = {
+    /**
+     * Session revoked
+     */
+    200: {
+        [key: string]: unknown;
+    };
+};
+
+export type RevokeOwnSessionResponse = RevokeOwnSessionResponses[keyof RevokeOwnSessionResponses];
 
 export type UpgradeToInternalData = {
     body: UpgradeToInternalDto;

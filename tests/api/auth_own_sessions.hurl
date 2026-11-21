@@ -170,7 +170,7 @@ HTTP 200
 bob_doomed_session: jsonpath "$.sessions[1].id"
 [Asserts]
 jsonpath "$.sessions" count == 2
-jsonpath "$.sessions[*].user_id" includes "{{bob_id}}"
+jsonpath "$.sessions[*].user_id" contains "{{bob_id}}"
 body not contains "{{alice_id}}"
 body not contains "{{alice_session_id}}"
 # The row this request is riding is flagged, so a UI can warn before

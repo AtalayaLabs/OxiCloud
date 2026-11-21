@@ -448,6 +448,6 @@ jsonpath "$[?(@.name=='content_rescan')].parameters[?(@.name=='rederive')].defau
 # nor adding a fourth one can slip through: the panel renders exactly
 # these as its <select>, and the backend 400s on anything else.
 jsonpath "$[?(@.name=='content_rescan')].parameters[?(@.name=='rederive')].allowed" count == 3
-jsonpath "$[?(@.name=='content_rescan')].parameters[?(@.name=='rederive')].allowed" includes "changed"
-jsonpath "$[?(@.name=='content_rescan')].parameters[?(@.name=='rederive')].allowed" includes "always"
-jsonpath "$[?(@.name=='content_rescan')].parameters[?(@.name=='rederive')].allowed" includes "never"
+jsonpath "$[?(@.name=='content_rescan')].parameters[?(@.name=='rederive')].allowed" contains "changed"
+jsonpath "$[?(@.name=='content_rescan')].parameters[?(@.name=='rederive')].allowed" contains "always"
+jsonpath "$[?(@.name=='content_rescan')].parameters[?(@.name=='rederive')].allowed" contains "never"
