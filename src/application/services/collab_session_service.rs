@@ -1357,11 +1357,17 @@ impl CollabSessionService {
                 Ok(None)
             }
             kind::AWARENESS => {
-                // Presence-only; not persisted, not applied to the
-                // CRDT, and does not leak doc bytes. Subscribe-time
-                // Read gate is sufficient — a viewer's cursor is
-                // legitimate. Fan out to every other subscribed
-                // socket so peers render each other's cursors.
+                // Presence-only: not persisted, not applied to the
+                // CRDT, and carries no doc bytes. It is still gated on
+                // Read because the WS handler accepts binary frames
+                // without requiring a prior subscribe, so an awareness
+                // frame can arrive for a file the caller never passed
+                // the subscribe-time Read gate on. Without this check a
+                // caller with a valid JWT but no grant could seed a
+                // session from arbitrary file content and broadcast
+                // presence into other users live sessions.
+                self.require_perm(caller_id, file_id, Permission::Read, "read")
+                    .await?;
                 let session = self.attach_file(caller_id, file_id).await?;
                 session.apply_awareness(frame.payload).await?;
                 Ok(None)
