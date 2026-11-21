@@ -731,6 +731,11 @@
 	// Migration
 	let migration = $state<MigrationStatus | null>(null);
 	let migrationTimer: ReturnType<typeof setInterval> | null = null;
+	// Cleared by the tab effect's cleanup (#924): a poll still in flight
+	// when the admin leaves the Storage tab (or the page) must not re-arm
+	// the interval on completion. Plain `let`, not `$state` — it gates a
+	// timer, nothing renders it.
+	let migrationPollAllowed = false;
 
 	function stopMigrationPoll() {
 		if (migrationTimer) {
@@ -777,10 +782,11 @@
 
 			// Keep polling while the migration is active OR while
 			// we're within the grace window waiting for a
-			// user-triggered run to appear.
+			// user-triggered run to appear — but never after the Storage
+			// tab's cleanup ran.
 			const withinGrace =
 				!sawActive && pendingSince != null && performance.now() - pendingSince < PENDING_GRACE_MS;
-			if (active || withinGrace) {
+			if ((active || withinGrace) && migrationPollAllowed) {
 				if (!migrationTimer) migrationTimer = setInterval(loadMigration, 5000);
 			} else {
 				// Not active and (either we've already seen it run OR
@@ -2259,8 +2265,12 @@
 
 	// Stop polling when leaving the storage tab / unmounting.
 	$effect(() => {
-		if (tab !== 'storage') stopMigrationPoll();
-		return () => stopMigrationPoll();
+		migrationPollAllowed = tab === 'storage';
+		if (!migrationPollAllowed) stopMigrationPoll();
+		return () => {
+			migrationPollAllowed = false;
+			stopMigrationPoll();
+		};
 	});
 
 	// Tear down the live log stream when leaving plugins / unmounting.

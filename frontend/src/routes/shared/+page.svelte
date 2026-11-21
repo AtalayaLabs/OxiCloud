@@ -1,5 +1,6 @@
 <script lang="ts">
 	import EmptyState from '$lib/components/EmptyState.svelte';
+	import { latestRequest } from '$lib/utils/latestRequest';
 	import { errorMessage, errorToast } from '$lib/utils/errors';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
@@ -55,6 +56,7 @@
 	let error = $state<string | null>(null);
 	let groupBy = $state<GroupBy>('items');
 	let reversed = $state(false);
+	const listLoads = latestRequest();
 
 	// ── Kind filter ─────────────────────────────────────────────────────────
 	// Client-side filter over `raw`. The backend endpoint
@@ -262,6 +264,7 @@
 
 	// ── Data loading ────────────────────────────────────────────────────────
 	async function load(reset = false) {
+		const ctl = listLoads.next();
 		loading = true;
 		error = null;
 		try {
@@ -270,14 +273,17 @@
 			const page = await fetchMyShares({
 				cursor: reset ? undefined : cursor,
 				orderBy: order,
-				reverse: reversed
+				reverse: reversed,
+				signal: ctl.signal
 			});
+			if (!listLoads.isCurrent(ctl)) return;
 			raw = reset ? page.items : [...raw, ...page.items];
 			cursor = page.next_cursor;
 		} catch (e) {
+			if (!listLoads.isCurrent(ctl)) return;
 			error = errorMessage(e);
 		} finally {
-			loading = false;
+			if (listLoads.isCurrent(ctl)) loading = false;
 		}
 	}
 

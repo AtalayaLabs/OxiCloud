@@ -129,6 +129,24 @@ it('renders the resource glyph with the list-row icon classes', async () => {
 	expect(glyph?.classList.contains('file-icon--folder')).toBe(true);
 });
 
+// #924: flipping the sort while the first page was in flight let the late,
+// stale page overwrite the newer one.
+it('drops a stale page that resolves after a newer load', async () => {
+	let resolveStale!: (v: unknown) => void;
+	const fresh = { ...grantItem(), resource: { ...grantItem().resource, id: 'r2' } };
+	m(fetchMyShares)
+		.mockImplementationOnce(() => new Promise((r) => (resolveStale = r)))
+		.mockResolvedValueOnce({ items: [fresh], next_cursor: null });
+	render(SharedPage);
+	await waitFor(() => expect(fetchMyShares).toHaveBeenCalledTimes(1));
+	await fireEvent.click(screen.getByTestId('list-toolbar-sort-direction-btn'));
+	await screen.findByTestId('shared-lane-open-r2');
+	resolveStale({ items: [grantItem()], next_cursor: null });
+	await new Promise((r) => setTimeout(r, 0));
+	expect(screen.queryByTestId('shared-lane-open-r1')).toBeNull();
+	expect(screen.getByTestId('shared-lane-open-r2')).toBeTruthy();
+});
+
 it('surfaces a load error without crashing', async () => {
 	m(fetchMyShares).mockRejectedValue(new Error('boom'));
 	render(SharedPage);

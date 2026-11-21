@@ -288,6 +288,41 @@ it('loads storage + migration when the storage tab is opened', async () => {
 	await waitFor(() => expect(admin.getMigration).toHaveBeenCalled());
 });
 
+// #924: a migration poll still in flight when the admin left the Storage
+// tab re-armed `setInterval` on completion — after the tab's cleanup had
+// already run — so polling (every 5 s) continued on other pages. The
+// control below proves the same setup DOES arm the poll while mounted, so
+// the unmount pin cannot pass by never polling at all.
+function runningMigration() {
+	return { status: 'running', total_blobs: 2, migrated_blobs: 1, migrated_bytes: 1 };
+}
+const migrationPolls = (spy: { mock: { calls: unknown[][] } }) =>
+	spy.mock.calls.filter((c) => c[1] === 5000).length;
+
+it('a poll in flight while leaving the storage tab does not re-arm the timer', async () => {
+	let resolve!: (v: unknown) => void;
+	m(admin.getMigration).mockReturnValueOnce(new Promise((r) => (resolve = r)));
+	const spy = vi.spyOn(globalThis, 'setInterval');
+	setTab('storage');
+	const { unmount } = render(AdminPage);
+	await waitFor(() => expect(admin.getMigration).toHaveBeenCalled());
+	unmount();
+	resolve(runningMigration());
+	await new Promise((r) => setTimeout(r, 0));
+	expect(migrationPolls(spy)).toBe(0);
+	spy.mockRestore();
+});
+
+it('control: the same running migration arms the poll while mounted', async () => {
+	m(admin.getMigration).mockResolvedValueOnce(runningMigration());
+	const spy = vi.spyOn(globalThis, 'setInterval');
+	setTab('storage');
+	const { unmount } = render(AdminPage);
+	await waitFor(() => expect(migrationPolls(spy)).toBe(1));
+	unmount();
+	spy.mockRestore();
+});
+
 it('loads both transports when the Notifications tab is opened', async () => {
 	setTab('notification');
 	render(AdminPage);
