@@ -1357,11 +1357,26 @@ impl CollabSessionService {
                 Ok(None)
             }
             kind::AWARENESS => {
-                // Presence-only; not persisted, not applied to the
-                // CRDT, and does not leak doc bytes. Subscribe-time
-                // Read gate is sufficient — a viewer's cursor is
-                // legitimate. Fan out to every other subscribed
-                // socket so peers render each other's cursors.
+                // Presence-only: not persisted, not applied to the CRDT,
+                // and carries no doc bytes. Still gated on Read, because
+                // "the subscribe-time gate is sufficient" — what this
+                // comment used to say — is false: the WS handler
+                // dispatches binary frames with
+                // `handle_binary_frame(caller_id, frame)` and never
+                // consults the socket's subscription set, so a frame can
+                // arrive for a `file_id` the caller never subscribed to
+                // and never passed a Read gate on.
+                //
+                // Without the check, a caller with a valid JWT but no
+                // grant could make `attach_file` below seed a session
+                // from a file they cannot read, and broadcast their
+                // presence into the live sessions of users who can.
+                //
+                // The sibling arms already do this — `UPDATE` requires
+                // `Update`, `SYNC` requires `Read`. This one was the odd
+                // one out.
+                self.require_perm(caller_id, file_id, Permission::Read, "read")
+                    .await?;
                 let session = self.attach_file(caller_id, file_id).await?;
                 session.apply_awareness(frame.payload).await?;
                 Ok(None)
@@ -2224,6 +2239,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn awareness_frame_denied_when_gate_rejects_read() {
+        // The AWARENESS arm carried NO permission check, on the reasoning
+        // that the subscribe-time Read gate covered it. It did not: the WS
+        // handler dispatches binary frames as
+        // `handle_binary_frame(caller_id, frame)` and never consults the
+        // socket's subscription set, so a frame naming any `file_id` is
+        // routed whether or not that socket ever subscribed.
+        //
+        // The hole: a caller with a valid JWT but no grant sends an
+        // awareness frame for a file they cannot read. `attach_file` takes
+        // the slow path and SEEDS A SESSION FROM THAT FILE'S CONTENT, and
+        // the sender's presence fans out into the live sessions of users
+        // who legitimately hold the file. Presence frames carry no doc
+        // bytes, which is what made the arm look safe — the leak is the
+        // materialisation and the fan-out, not the payload.
+        //
+        // Pinned at the service layer because that is where the gate
+        // lives; reaching it over the wire would need the binary frame
+        // format and would assert the same thing less precisely. Its two
+        // sibling arms were always gated (`UPDATE` → `Update`, `SYNC` →
+        // `Read`), so this pin also fixes AWARENESS as the arm that must
+        // not drift back to being the odd one out.
+        let svc = service_with_seed_and_gate("secret", CollabLimits::default(), Arc::new(DenyAll));
+        let file_id = Uuid::new_v4();
+
+        let frame = BinaryFrame {
+            kind: kind::AWARENESS,
+            file_id,
+            payload: vec![0xAA, 0xBB, 0xCC],
+        };
+        match svc.handle_binary_frame(Uuid::nil(), frame).await {
+            Err(CollabError::AuthzDenied {
+                permission: "read",
+                file_id: fid,
+            }) if fid == file_id => {}
+            other => {
+                panic!("expected AuthzDenied{{permission:\"read\", file_id}}, got {other:?}")
+            }
+        }
+
+        // The refusal must land BEFORE `attach_file`. Asserting on the
+        // error alone would still pass if the session had been spawned and
+        // seeded first, which is the half that actually leaks.
+        assert!(
+            svc.sessions.is_empty(),
+            "refused awareness frame still materialised a session from file content",
+        );
+    }
+
+    #[tokio::test]
     async fn sync_frame_denied_when_gate_rejects_read() {
         // DenyAll gate ⇒ even Read is refused. A caller with a valid
         // socket but no Read grant must NOT be able to pull doc content
@@ -2251,23 +2316,16 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn awareness_frame_bypasses_the_gate() {
-        // AWARENESS is presence-only (cursor position, user handle);
-        // it neither mutates state nor leaks content. Subscribe-time
-        // Read is sufficient — deny-all here proves the per-frame gate
-        // isn't consulted on 0x02.
-        let svc = service_with_seed_and_gate("", CollabLimits::default(), Arc::new(DenyAll));
-        let file_id = Uuid::new_v4();
-
-        let frame = BinaryFrame {
-            kind: kind::AWARENESS,
-            file_id,
-            payload: vec![0xAA, 0xBB, 0xCC],
-        };
-        let reply = svc.handle_binary_frame(Uuid::nil(), frame).await.unwrap();
-        assert_eq!(reply, None, "awareness has no per-socket reply");
-    }
+    // `awareness_frame_bypasses_the_gate` lived here and asserted the
+    // bypass as intended behaviour — "deny-all here proves the per-frame
+    // gate isn't consulted on 0x02" — on the same false premise as the
+    // arm's comment, that subscribe-time Read covers it. It does not:
+    // nothing requires a subscribe before a binary frame is dispatched.
+    //
+    // Removed rather than inverted, because
+    // `awareness_frame_denied_when_gate_rejects_read` above is its
+    // inverse and `handle_binary_frame_awareness_is_a_no_op_on_server_state`
+    // already covers the reply shape it also asserted.
 
     // ── Debounced flush-to-blob (C7 slice 2) ───────────────────────────
     //
@@ -2656,10 +2714,12 @@ mod tests {
         // End-to-end through `handle_binary_frame` — the WS handler's
         // real entry point — so we assert the AWARENESS branch calls
         // `apply_awareness` and the broadcast lands on peer receivers.
-        // DenyAll gate proves that awareness is NOT gated on Update
-        // (only subscribe-time Read is, and we don't exercise it here
-        // because the actor is already attached).
-        let svc = service_with_seed_and_gate("", CollabLimits::default(), Arc::new(DenyAll));
+        // `ReadOnly` keeps this test's actual claim — awareness is NOT
+        // gated on Update, so a viewer's cursor is legitimate — while
+        // satisfying the Read gate the arm now applies. It used `DenyAll`
+        // when the arm was ungated entirely; that gate would now refuse
+        // at the door and the test would assert nothing about broadcast.
+        let svc = service_with_seed_and_gate("", CollabLimits::default(), Arc::new(ReadOnly));
         let file_id = Uuid::new_v4();
         let session = svc.attach_file(Uuid::nil(), file_id).await.unwrap();
         let mut rx = session.subscribe_updates().await.unwrap();
