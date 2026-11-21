@@ -22,7 +22,9 @@ has shipped is worse than no status at all.
 | `auth-model.md` documentation — phases, admission, revocation | **done** | see § Required: documentation |
 | Session IP pair — `created_ip` / `last_seen_ip` | **done** | `b299f184f` `5a31e1f29` |
 | Connected-device list + revoke reading `auth.sessions` | **done** | `5c3da3ac7` |
-| WebSocket revocation — both upgrade paths + open-socket re-check | **done** | `75c806b5a` |
+| WebSocket revocation — both upgrade paths + open-socket re-check | **done** | `75c806b5a` `57a506a85` |
+| `CurrentUser` carries the presented token (`sid` + `iat`) | **done** | `9a42e4299` |
+| OIDC backchannel logout applies immediately | **done** | `0228c1433` |
 | Scope narrowing, obligations (part B) | **not started** | needs `scope-gates.md` |
 
 Verified at the wire, not only in unit tests: the deactivated-account
@@ -34,6 +36,29 @@ refusal on every door (`e3ead258c` `52b2179a9`, OPAQUE's in
 pre-existing `device_auth_flow.hurl`, updated to assert the new fields
 and that a device which COLLECTED its tokens is still listed — its
 absence was the defect.
+
+**OIDC backchannel logout is verified by scope, not just by effect**
+(`c6342486d`, green). `tests/oidc/run.sh` builds three live sessions and
+pins which ones each branch may touch: a `sid` logout kills the session
+it names and leaves the same subject's OTHER session alive, a sub-only
+logout then kills that one too, and a second user's session survives
+both. Two self-checks keep the fixture honest — the two sids are asserted
+to differ (a reused OP session would collapse them and every scoping
+assertion would pass while proving nothing) and the captured sid is
+asserted to be a string (the control endpoint returns null before any
+login, so a failed capture would silently take the sub-only branch).
+Getting a matching sid needed the mock IdP to record the claim off its
+own token-endpoint response, because the sid is minted inside
+node-oidc-provider and OxiCloud never echoes it — `dto_never_leaks_oidc_sid`
+pins that the session DTO must not carry it, not even a prefix.
+
+That run also retired a note in the same suite that had documented the
+old limitation as permanent: "the still-valid in-memory access token
+would let /me return 200 until its natural expiry (~1 h default) … BCL
+fully evicts within one access-token TTL". True when written, false once
+per-session revocation landed. The note is quoted in place rather than
+deleted, so a reader learns the premise changed rather than just finding
+a new assertion.
 
 Two defects the RUNS found, which neither `cargo` nor clippy could see —
 the reason the wire pins were worth writing:
