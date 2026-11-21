@@ -197,6 +197,7 @@ pub async fn rt_ws_handler(
         }
     };
     let caller_id = auth.caller_id;
+    let presented = auth.token;
     // If the caller reached us via the ticket path, echo the exact
     // subprotocol they sent back on the 101 response — RFC 6455 §4.2.2
     // requires this or the client fails the connection.
@@ -204,13 +205,20 @@ pub async fn rt_ws_handler(
         Some(sub) => ws.protocols([sub]),
         None => ws,
     };
-    ws.on_upgrade(move |socket| handle_session(socket, caller_id, state))
+    ws.on_upgrade(move |socket| handle_session(socket, caller_id, presented, state))
 }
 
 /// Successful upgrade credentials — the resolved caller and (when the
 /// ticket path was used) the subprotocol to echo on the 101 response.
+use crate::domain::entities::presented_token::PresentedToken;
+
 struct UpgradeAuth {
     caller_id: Uuid,
+    /// What the credential says about itself, so `handle_session` can
+    /// apply the revocation checks. Both upgrade paths can supply it:
+    /// the bearer path validates the JWT right here, and the ticket path
+    /// carries it from the issuing request.
+    token: PresentedToken,
     accepted_subprotocol: Option<String>,
 }
 
@@ -231,11 +239,16 @@ async fn authenticate_upgrade(
         let Ok(ticket_uuid) = Uuid::parse_str(ticket_str) else {
             return Err("bad_ticket_uuid");
         };
-        let Some(caller_id) = state.rt_ticket_store.redeem(ticket_uuid) else {
+        // The ticket carries the claims of the session that asked for it,
+        // recorded at issue time by `POST /api/rt/ticket` — which runs
+        // under the full middleware and therefore knows them, whereas this
+        // upgrade does not.
+        let Some((caller_id, token)) = state.rt_ticket_store.redeem(ticket_uuid) else {
             return Err("ticket_invalid");
         };
         return Ok(UpgradeAuth {
             caller_id,
+            token,
             accepted_subprotocol: Some(ticket_sub),
         });
     }
@@ -263,6 +276,11 @@ async fn authenticate_upgrade(
         }
         return Ok(UpgradeAuth {
             caller_id: claims.sub_id,
+            // This path validated the JWT a few lines up, so the claims are
+            // in hand — they were simply being discarded.
+            token: crate::domain::entities::presented_token::PresentedToken::from_claims(
+                claims.iat, claims.sid,
+            ),
             accepted_subprotocol: None,
         });
     }
@@ -367,7 +385,12 @@ impl Drop for SessionCountGuard {
     }
 }
 
-async fn handle_session(mut socket: WebSocket, caller_id: Uuid, state: Arc<AppState>) {
+async fn handle_session(
+    mut socket: WebSocket,
+    caller_id: Uuid,
+    presented: PresentedToken,
+    state: Arc<AppState>,
+) {
     // Live-session counter — incremented here, decremented on ANY
     // exit path via the `Drop` guard below (clean close, error,
     // panic unwind, task abort). Feeds the admin dashboard's
@@ -396,14 +419,19 @@ async fn handle_session(mut socket: WebSocket, caller_id: Uuid, state: Arc<AppSt
                 auth.auth_application_service.as_ref(),
                 caller_id,
                 "user",
-                // No claims here — `handle_session` is handed a
-                // `caller_id` and nothing else, so the revocation cutoff
-                // cannot be applied and a revoke-all does NOT close an
-                // already-open socket. Deactivation and deletion still
-                // land, because those read the user row. Threading the
-                // `iat` down from the upgrade would close it; tracked in
-                // `docs/plan/authn-pipeline.md`.
-                crate::interfaces::middleware::user::PresentedToken::default(),
+                // Both revocation forms now apply AT UPGRADE, on both
+                // paths. The bearer path validated the JWT and had the
+                // claims all along; the ticket path carries them from the
+                // issuing request, which runs under the full middleware
+                // and knows the session this upgrade cannot see.
+                //
+                // Still NOT closed: an ALREADY-OPEN socket is never
+                // re-checked — this runs once. A revoke refuses new
+                // upgrades and leaves live sockets until they drop.
+                // Closing that needs a periodic re-check or an eviction
+                // signal, not more claims. See
+                // `docs/plan/authn-pipeline.md` § Revocation.
+                presented,
             )
             .await
             {

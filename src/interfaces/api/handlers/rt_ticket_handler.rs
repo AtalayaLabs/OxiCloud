@@ -63,8 +63,24 @@ pub struct RtTicketResponse {
 pub async fn issue_rt_ticket(
     CurrentUserId(caller_id): CurrentUserId,
     State(state): State<Arc<AppState>>,
+    // Read from request extensions rather than from a `CurrentUser`
+    // field, because `CurrentUser` does not carry `sid` — threading it
+    // through there is a wider change with more consumers. The auth
+    // middleware publishes this pair on every JWT-authenticated request.
+    //
+    // It must be recorded on the ticket: this endpoint runs under the
+    // full middleware chain and therefore KNOWS the session, while the
+    // WebSocket upgrade that redeems the ticket does not. Without it the
+    // upgrade gets a bare user id and neither revocation check can be
+    // evaluated — on the path browsers actually use.
+    //
+    // `Option` because the extension is absent for credentials that are
+    // not JWTs (an app password over Basic auth). Defaulting is honest
+    // there: those carry no `sid` or `iat` to record.
+    presented: Option<axum::Extension<crate::domain::entities::presented_token::PresentedToken>>,
 ) -> Json<RtTicketResponse> {
-    let ticket = state.rt_ticket_store.issue(caller_id);
+    let token = presented.map(|axum::Extension(t)| t).unwrap_or_default();
+    let ticket = state.rt_ticket_store.issue(caller_id, token);
     let ticket_str = ticket.to_string();
     tracing::debug!(
         target: "oxicloud::message_bus",

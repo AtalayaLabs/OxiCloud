@@ -33,6 +33,7 @@ use uuid::Uuid;
 
 use crate::application::services::auth_application_service::AuthApplicationService;
 use crate::common::di::AppState;
+use crate::domain::entities::presented_token::PresentedToken;
 use crate::domain::entities::user::{UserFlags, UserRole};
 use crate::domain::errors::{DomainError, ErrorKind};
 use crate::interfaces::errors::AppError;
@@ -259,23 +260,6 @@ pub async fn resolve_live_role(
         return live;
     }
     decide_live_role(auth.get_user_flags(user_id).await, user_id, token)
-}
-
-/// What the presented credential says about itself, for the two
-/// revocation checks that need more than a user id.
-///
-/// One struct rather than two more positional parameters, because both
-/// fields are optional and `resolve_live_role(a, b, c, None, None)` at a
-/// call site says nothing about which `None` is which. Both absent —
-/// `PresentedToken::default()` — is the honest answer for a credential
-/// that is not a JWT at all: an app password over Basic auth, or the
-/// WebSocket handler, which is handed a `caller_id` and nothing else.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct PresentedToken {
-    /// The JWT `iat`, for the user-wide revocation cutoff.
-    pub issued_at: Option<i64>,
-    /// The JWT `sid` (`auth.sessions.id`), for per-session revocation.
-    pub session_id: Option<Uuid>,
 }
 
 /// Whether this specific session has been revoked.

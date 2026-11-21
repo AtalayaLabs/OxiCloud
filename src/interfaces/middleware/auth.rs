@@ -12,10 +12,11 @@ use crate::common::di::AppState;
 // Re-export CurrentUser from application layer for use in handlers
 pub use crate::application::dtos::user_dto::CurrentUser;
 use crate::application::ports::auth_ports::TokenServicePort;
+use crate::domain::entities::presented_token::PresentedToken;
 use crate::domain::entities::user::UserRole;
 use crate::domain::services::authorization::Subject;
 use crate::infrastructure::services::share_ring;
-use crate::interfaces::middleware::user::{LiveRole, PresentedToken, resolve_live_role};
+use crate::interfaces::middleware::user::{LiveRole, resolve_live_role};
 
 /// Marker inserted into request extensions when the user was authenticated
 /// via the `oxicloud_access` HttpOnly cookie rather than a Bearer/Basic header.
@@ -412,14 +413,23 @@ pub async fn auth_middleware(
                             // deletion and demotion take effect within the flags-cache
                             // TTL instead of waiting for token expiry. The returned
                             // role is authoritative — never the frozen JWT claim.
+                            // Published into extensions as well as used here, because
+                            // `CurrentUser` does not carry `sid` and a handler
+                            // that needs it has no other source. `POST
+                            // /api/rt/ticket` is the case: it records the pair on
+                            // the ticket so the WebSocket upgrade that follows can
+                            // still apply the revocation checks, which it could not
+                            // when a ticket carried only a user id.
+                            let presented = PresentedToken {
+                                issued_at: Some(claims.iat),
+                                session_id: claims.sid,
+                            };
+                            request.extensions_mut().insert(presented);
                             let role = match resolve_live_role(
                                 auth_service.auth_application_service.as_ref(),
                                 user_id,
                                 &claims.role,
-                                PresentedToken {
-                                    issued_at: Some(claims.iat),
-                                    session_id: claims.sid,
-                                },
+                                presented,
                             )
                             .await
                             {
@@ -577,7 +587,7 @@ pub async fn auth_middleware(
                                 // bounds. `active` and the live role,
                                 // which is what this call is for, apply
                                 // regardless.
-                                crate::interfaces::middleware::user::PresentedToken::default(),
+                                crate::domain::entities::presented_token::PresentedToken::default(),
                             )
                             .await
                             {
@@ -672,14 +682,18 @@ pub async fn auth_middleware(
                         // revocation we fall through (rather than erroring) so the
                         // browser receives the standard 401 and redirects to
                         // /login, exactly like an invalid or expired cookie.
+                        // Same as the Bearer branch: published for handlers that
+                        // need `sid`, which `CurrentUser` does not carry.
+                        let presented = PresentedToken {
+                            issued_at: Some(claims.iat),
+                            session_id: claims.sid,
+                        };
+                        request.extensions_mut().insert(presented);
                         match resolve_live_role(
                             auth_service.auth_application_service.as_ref(),
                             user_id,
                             &claims.role,
-                            PresentedToken {
-                                issued_at: Some(claims.iat),
-                                session_id: claims.sid,
-                            },
+                            presented,
                         )
                         .await
                         {
