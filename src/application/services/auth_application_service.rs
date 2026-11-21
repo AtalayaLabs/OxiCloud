@@ -988,8 +988,21 @@ pub fn check_email_verified(
 }
 
 /// Both per-login account checks, in the order a login door should ask
-/// them. The single implementation every door shares — see
-/// [`AuthApplicationService::admit`] for why there is only one.
+/// them.
+///
+/// **A new account rule goes HERE, and only here.** Every one of the
+/// nine doors calls this function by this name — there is deliberately
+/// no per-service wrapper or convenience alias to add it to by mistake,
+/// because a rule added to a wrapper reaches only the doors that use the
+/// wrapper, which is how the scattered checks this replaced came about.
+/// [`AuthApplicationService::admit`] is the one caller that does
+/// anything extra, and what it adds is the [`AdmittedCaller`] token, not
+/// a rule.
+///
+/// Order is part of the contract: `active` is asked first, so a caller
+/// who is both deactivated and unverified is audited as
+/// `account_deactivated` — the more fundamental reason — rather than
+/// sending an operator to look at the mail flow.
 pub fn check_account_admission(
     user: &User,
     require_verified_email: bool,
@@ -1682,41 +1695,16 @@ impl AuthApplicationService {
         Ok(PublicUserDto::new(created_user, false))
     }
 
-    /// Centralised deactivated-account gate — called by every path
-    /// that is about to mint a session on behalf of an authenticated
-    /// user (password login, magic-link redemption, OIDC callback).
+    /// [`check_account_admission`] plus the [`AdmittedCaller`] token, for
+    /// the doors that mint through
+    /// [`Self::mint_session_for_authenticated_user`].
     ///
-    /// Fires AFTER the credential has been verified, never before: a
-    /// deactivated account hit with a wrong password still collapses
-    /// to the generic `AccessDenied` + "Invalid credentials" response,
-    /// so the deactivation state is only revealed to callers who have
-    /// already proved possession of the credential. The alternative —
-    /// gating pre-credential — leaks "this account exists AND is
-    /// deactivated" to anyone guessing passwords, which is a weaker
-    /// anti-enum posture.
+    /// It adds the token and nothing else — **a new account rule belongs
+    /// in [`check_account_admission`]**, or the six doors that call that
+    /// function directly will not get it.
     ///
-    /// `origin` labels the login door for the audit record so
-    /// operators can tell which path the deactivated attempt came
-    /// through without having to join against the request-scope span.
-    fn ensure_user_is_active(&self, user: &User, origin: &'static str) -> Result<(), DomainError> {
-        check_user_is_active(user, origin)
-    }
-
-    /// **Every** per-login account check, as one call.
-    ///
-    /// Doors call this rather than the individual checks, so a rule added
-    /// to [`check_account_admission`] reaches all of them at once. Asking
-    /// the checks one by one at each door is how `refresh_token` came to
-    /// verify `is_active` but not the email, and how the device door came
-    /// to verify neither.
-    fn ensure_admissible(&self, user: &User, origin: &'static str) -> Result<(), DomainError> {
-        check_account_admission(user, self.require_verified_email, origin)
-    }
-
-    /// Every per-login account check, in one place, for every door.
-    ///
-    /// Before this existed the checks were scattered: `login` and
-    /// `oidc_callback` ran both, `redeem_magic_link` ran only the active
+    /// Before the single check existed the rules were scattered: `login`
+    /// and `oidc_callback` ran both, `redeem_magic_link` ran only the active
     /// check, and OPAQUE `login/ke3`, the device-flow approval and
     /// `refresh_token` ran neither. Each door was written by someone
     /// reading a different neighbour, which is the failure mode a single
@@ -1726,7 +1714,7 @@ impl AuthApplicationService {
     /// already have proven identity. This answers the next question:
     /// *may this account have a session at all?*
     pub fn admit(&self, user: User, origin: &'static str) -> Result<AdmittedCaller, DomainError> {
-        self.ensure_admissible(&user, origin)?;
+        check_account_admission(&user, self.require_verified_email, origin)?;
         Ok(AdmittedCaller { user, origin })
     }
 
@@ -1785,7 +1773,7 @@ impl AuthApplicationService {
         // the password verify. That leaked "this account exists AND is
         // deactivated" to any password-guesser. The check now fires
         // AFTER a successful credential match via
-        // `ensure_user_is_active` — see below — so a wrong-password
+        // `check_user_is_active` — see its doc — so a wrong-password
         // attempt on a deactivated account still collapses to the
         // generic "Invalid credentials" response.
 
@@ -1898,7 +1886,7 @@ impl AuthApplicationService {
         // of the right password; a wrong-password attempt above still
         // collapses to the generic 401, keeping the deactivation
         // invisible to guessers.
-        self.ensure_user_is_active(&user, "password")?;
+        check_user_is_active(&user, "password")?;
 
         // Phase 4 gate: legacy password login is refused for users who
         // have completed at least one OPAQUE handshake
@@ -2460,14 +2448,14 @@ impl AuthApplicationService {
         // Credentials matched (token redemption is the credential here)
         // — run the full account admission so a magic link minted before
         // deactivation can't be redeemed afterwards. See
-        // `ensure_user_is_active` for why the check lives after the
+        // `check_user_is_active` for why the check lives after the
         // credential path, not before.
         //
         // The email half is vacuous here, since redeeming a link IS
         // verification and `mark_email_verified` ran just above. It is
         // still the composed call rather than the single check, so a
         // rule added later cannot miss this door.
-        self.ensure_admissible(&user, "magic_link")?;
+        check_account_admission(&user, self.require_verified_email, "magic_link")?;
 
         // Magic-link redemption is a GET redirect — no way to
         // thread `dpop_jkt` into a GET body. Session is minted
@@ -2562,14 +2550,14 @@ impl AuthApplicationService {
         // Account admission, AFTER the password verify. It used to run
         // before, returning "Account deactivated" to a caller who had
         // proven nothing — which tells an unauthenticated prober that the
-        // username exists and is deactivated. `ensure_user_is_active`
+        // username exists and is deactivated. `check_user_is_active`
         // documents why that ordering is the weaker anti-enumeration
         // posture; this door is the one that had it.
         //
         // And via the composed call, because the NextCloud Login Flow v2
         // ends by handing the client an app password: a long-lived
         // credential, so it owes the same checks as a session mint.
-        self.ensure_admissible(&user, "nextcloud_login_v2")?;
+        check_account_admission(&user, self.require_verified_email, "nextcloud_login_v2")?;
 
         Ok(crate::application::dtos::user_dto::CurrentUser {
             id: user.id(),
@@ -2702,7 +2690,7 @@ impl AuthApplicationService {
         // very comment, and so verified one of the two gates it claimed
         // to mirror.
         let user = self.user_storage.get_user_by_id(parent.user_id()).await?;
-        self.ensure_admissible(&user, "refresh_grace")?;
+        check_account_admission(&user, self.require_verified_email, "refresh_grace")?;
 
         let access_token =
             self.token_service
@@ -2796,7 +2784,7 @@ impl AuthApplicationService {
         // was turned on could refresh indefinitely and outlive the
         // requirement. Both kinds render 403, so the wire shape is
         // unchanged; what is new is the audit line and the email half.
-        self.ensure_admissible(&user, "refresh")?;
+        check_account_admission(&user, self.require_verified_email, "refresh")?;
 
         // Rotate the session first so the new row's id is available
         // to the token mint below — the `sid` claim tracks the
@@ -6238,7 +6226,7 @@ impl AuthApplicationService {
         // active, so the check is only load-bearing for returning
         // federated users whom an admin has since deactivated. Same
         // enforcement point as the password + magic-link paths.
-        self.ensure_admissible(&user, "oidc")?;
+        check_account_admission(&user, self.require_verified_email, "oidc")?;
         // Mint AFTER session is fully configured so `sid` claim
         // aligns with the row about to be inserted.
         let access_token =

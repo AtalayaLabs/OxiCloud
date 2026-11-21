@@ -531,7 +531,7 @@ pub async fn login(
                 // administrator") instead of the generic "Invalid
                 // credentials" we return for bad passwords. 403 matches
                 // the other post-credential-match policy refusals
-                // above. See `AuthApplicationService::ensure_user_is_active`
+                // above. See `auth_application_service::check_user_is_active`
                 // for the ordering that keeps a wrong-password attempt
                 // on a deactivated account indistinguishable from a
                 // wrong-password attempt on an active one.
