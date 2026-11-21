@@ -243,15 +243,47 @@ pub fn indeterminate_app_error(retryable: bool) -> AppError {
 /// every authenticated user out, and login/refresh already enforce `active`
 /// at the canonical layer). A *missing* row (`NotFound`) is a definitive
 /// revocation and fails CLOSED.
+/// `token_issued_at` is the JWT's `iat`, used to apply the user's
+/// revocation cutoff. Pass `None` only where no claims are available —
+/// the WebSocket session is the one such caller, and it therefore does
+/// NOT notice a revoke-all for the life of the connection. Its eviction
+/// runs through the authz reader instead; closing that gap is tracked in
+/// `docs/plan/authn-pipeline.md`.
 pub async fn resolve_live_role(
     auth: &AuthApplicationService,
     user_id: Uuid,
     claim_role: &str,
+    token_issued_at: Option<i64>,
 ) -> LiveRole {
     if let Some(live) = anonymous_live_role(claim_role) {
         return live;
     }
-    decide_live_role(auth.get_user_flags(user_id).await, user_id)
+    decide_live_role(auth.get_user_flags(user_id).await, user_id, token_issued_at)
+}
+
+/// Whether a token predates the user's revocation cutoff.
+///
+/// Both halves must be present for the answer to be yes, and the
+/// asymmetry is deliberate: `None` cutoff means nothing was ever
+/// revoked, while `None` issued-at means the caller could not tell us
+/// when the token was minted. Neither is grounds for rejecting, but the
+/// second is a blind spot rather than an all-clear — the only caller
+/// that passes `None` is the WebSocket session, which is handed a
+/// `caller_id` and no claims.
+///
+/// Comparison is on the JWT's own `iat` (seconds since the epoch, per
+/// RFC 7519 §4.1.6) against a `TIMESTAMPTZ`, so a revoke and a mint
+/// inside the same second resolve as "not revoked". That is the right
+/// direction to round: a token minted in the same second as the revoke
+/// was almost certainly minted by the re-login that followed it.
+fn revoked_by_cutoff(
+    sessions_valid_from: Option<chrono::DateTime<chrono::Utc>>,
+    token_issued_at: Option<i64>,
+) -> bool {
+    match (sessions_valid_from, token_issued_at) {
+        (Some(cutoff), Some(iat)) => iat < cutoff.timestamp(),
+        _ => false,
+    }
 }
 
 /// `Some` when the claim is an anonymous public-share session, which must
@@ -286,8 +318,28 @@ fn anonymous_live_role(claim_role: &str) -> Option<LiveRole> {
 /// unable to influence the outcome at all. `resolve_live_role` still
 /// reads the claim, but only to spot an anonymous share session that has
 /// no user row to re-check.
-fn decide_live_role(flags: Result<UserFlags, DomainError>, user_id: Uuid) -> LiveRole {
+fn decide_live_role(
+    flags: Result<UserFlags, DomainError>,
+    user_id: Uuid,
+    token_issued_at: Option<i64>,
+) -> LiveRole {
     match flags {
+        // A token issued before the user's revocation cutoff IS revoked,
+        // so it answers here rather than through a separate mechanism —
+        // every caller already handles `Revoked`. This is what makes
+        // revocation take effect now: `auth.sessions.revoked` sits on the
+        // row holding the REFRESH token, so flipping it only stops
+        // renewal while the access token lives out its hour.
+        //
+        // `token_issued_at: None` means the caller had no `iat` to offer
+        // (the WebSocket path, which receives only a `caller_id`), and
+        // the cutoff cannot be applied — see `resolve_live_role`.
+        Ok(flags)
+            if flags.active && revoked_by_cutoff(flags.sessions_valid_from, token_issued_at) =>
+        {
+            audit_token_revoked(user_id, "issued_before_revocation_cutoff");
+            LiveRole::Revoked
+        }
         Ok(flags) if flags.active => LiveRole::Active(SmolStr::new_static(flags.role.as_str())),
         Ok(_) => {
             audit_token_revoked(user_id, "deactivated");
@@ -526,12 +578,13 @@ mod tests {
             is_external: false,
             active,
             force_password_change: false,
+            sessions_valid_from: None,
         }
     }
 
     #[test]
     fn active_admin_yields_current_admin_role() {
-        let live = decide_live_role(Ok(flags(UserRole::Admin, true)), Uuid::nil());
+        let live = decide_live_role(Ok(flags(UserRole::Admin, true)), Uuid::nil(), None);
         // The live record wins over the (stale) claim — a freshly promoted
         // user is admin even though their token still says "user".
         assert_eq!(live, LiveRole::Active(SmolStr::new_static("admin")));
@@ -540,20 +593,20 @@ mod tests {
     #[test]
     fn active_user_yields_current_user_role() {
         // A demoted admin: token claim still "admin", live record "user".
-        let live = decide_live_role(Ok(flags(UserRole::User, true)), Uuid::nil());
+        let live = decide_live_role(Ok(flags(UserRole::User, true)), Uuid::nil(), None);
         assert_eq!(live, LiveRole::Active(SmolStr::new_static("user")));
     }
 
     #[test]
     fn deactivated_account_is_revoked() {
-        let live = decide_live_role(Ok(flags(UserRole::Admin, false)), Uuid::nil());
+        let live = decide_live_role(Ok(flags(UserRole::Admin, false)), Uuid::nil(), None);
         assert_eq!(live, LiveRole::Revoked);
     }
 
     #[test]
     fn deleted_account_not_found_is_revoked() {
         let err = DomainError::new(ErrorKind::NotFound, "User", "no such user");
-        let live = decide_live_role(Err(err), Uuid::nil());
+        let live = decide_live_role(Err(err), Uuid::nil(), None);
         assert_eq!(live, LiveRole::Revoked);
     }
 
@@ -565,7 +618,7 @@ mod tests {
     fn transient_error_is_indeterminate_and_retryable() {
         let err = DomainError::transient_backend("Database", "connection reset");
         assert_eq!(
-            decide_live_role(Err(err), Uuid::nil()),
+            decide_live_role(Err(err), Uuid::nil(), None),
             LiveRole::Indeterminate { retryable: true },
         );
     }
@@ -576,7 +629,7 @@ mod tests {
     fn permanent_error_is_indeterminate_and_not_retryable() {
         let err = DomainError::new(ErrorKind::InternalError, "User", "column missing");
         assert_eq!(
-            decide_live_role(Err(err), Uuid::nil()),
+            decide_live_role(Err(err), Uuid::nil(), None),
             LiveRole::Indeterminate { retryable: false },
         );
     }
@@ -596,7 +649,8 @@ mod tests {
             ErrorKind::DatabaseError,
             ErrorKind::AccessDenied,
         ] {
-            let live = decide_live_role(Err(DomainError::new(kind, "User", "x")), Uuid::nil());
+            let live =
+                decide_live_role(Err(DomainError::new(kind, "User", "x")), Uuid::nil(), None);
             assert!(
                 matches!(live, LiveRole::Indeterminate { .. }),
                 "{kind:?} must be indeterminate, got {live:?}",
@@ -611,7 +665,10 @@ mod tests {
     #[test]
     fn not_found_stays_a_revocation_not_indeterminate() {
         let err = DomainError::new(ErrorKind::NotFound, "User", "no such user");
-        assert_eq!(decide_live_role(Err(err), Uuid::nil()), LiveRole::Revoked);
+        assert_eq!(
+            decide_live_role(Err(err), Uuid::nil(), None),
+            LiveRole::Revoked
+        );
     }
 
     /// The status split, pinned on the shared helper the four call sites
@@ -726,5 +783,117 @@ mod tests {
                 "{kind:?} must not admit the caller",
             );
         }
+    }
+
+    fn flags_with_cutoff(cutoff: Option<chrono::DateTime<chrono::Utc>>) -> UserFlags {
+        UserFlags {
+            sessions_valid_from: cutoff,
+            ..flags(UserRole::Admin, true)
+        }
+    }
+
+    /// The defect this closes: revoking set `auth.sessions.revoked`, but
+    /// that row holds the REFRESH token — so revocation meant "cannot
+    /// renew" while every access token already minted stayed good for
+    /// the rest of its hour.
+    #[test]
+    fn a_token_issued_before_the_cutoff_is_revoked() {
+        let cutoff = chrono::Utc::now();
+        let minted_an_hour_earlier = (cutoff - chrono::Duration::hours(1)).timestamp();
+        assert_eq!(
+            decide_live_role(
+                Ok(flags_with_cutoff(Some(cutoff))),
+                Uuid::nil(),
+                Some(minted_an_hour_earlier),
+            ),
+            LiveRole::Revoked,
+        );
+    }
+
+    /// The other half, and the one that would make this unusable if it
+    /// were wrong: the token the user gets from logging in again must
+    /// work. Were this reversed, a revoke-all would lock the account out
+    /// permanently rather than once.
+    #[test]
+    fn a_token_issued_after_the_cutoff_is_honoured() {
+        let cutoff = chrono::Utc::now();
+        let minted_after = (cutoff + chrono::Duration::seconds(5)).timestamp();
+        assert_eq!(
+            decide_live_role(
+                Ok(flags_with_cutoff(Some(cutoff))),
+                Uuid::nil(),
+                Some(minted_after),
+            ),
+            LiveRole::Active(SmolStr::new_static("admin")),
+        );
+    }
+
+    /// `NULL` cutoff is the state of every row the migration touches, so
+    /// this pins that deploying it revokes nothing. A `DEFAULT NOW()`
+    /// would have logged out every user on the instance.
+    #[test]
+    fn no_cutoff_revokes_nothing() {
+        assert_eq!(
+            decide_live_role(
+                Ok(flags_with_cutoff(None)),
+                Uuid::nil(),
+                Some(chrono::Utc::now().timestamp() - 86_400),
+            ),
+            LiveRole::Active(SmolStr::new_static("admin")),
+        );
+    }
+
+    /// A caller with no `iat` to offer — the WebSocket session — cannot
+    /// have the cutoff applied. Pinned so the blind spot is a stated
+    /// property rather than something a reader discovers: an open socket
+    /// does NOT notice a revoke-all.
+    #[test]
+    fn an_absent_issued_at_cannot_apply_the_cutoff() {
+        assert_eq!(
+            decide_live_role(
+                Ok(flags_with_cutoff(Some(chrono::Utc::now()))),
+                Uuid::nil(),
+                None,
+            ),
+            LiveRole::Active(SmolStr::new_static("admin")),
+        );
+    }
+
+    /// Deactivation still wins over an honoured token: the two checks are
+    /// independent, and `active` is the one the WS path still gets.
+    #[test]
+    fn deactivation_outranks_a_post_cutoff_token() {
+        let flags = UserFlags {
+            active: false,
+            sessions_valid_from: None,
+            ..flags(UserRole::Admin, true)
+        };
+        assert_eq!(
+            decide_live_role(
+                Ok(flags),
+                Uuid::nil(),
+                Some(chrono::Utc::now().timestamp() + 60),
+            ),
+            LiveRole::Revoked,
+        );
+    }
+
+    /// Second-granularity rounding, stated as a contract rather than
+    /// left to discovery: `iat` is whole seconds (RFC 7519 §4.1.6) while
+    /// the cutoff is a `TIMESTAMPTZ`, so a token minted in the same
+    /// second as the revoke is HONOURED. That is the right direction —
+    /// such a token was almost certainly minted by the re-login that
+    /// followed the revoke.
+    #[test]
+    fn a_token_minted_in_the_same_second_as_the_revoke_is_honoured() {
+        let cutoff = chrono::Utc::now();
+        assert_eq!(
+            decide_live_role(
+                Ok(flags_with_cutoff(Some(cutoff))),
+                Uuid::nil(),
+                Some(cutoff.timestamp()),
+            ),
+            LiveRole::Active(SmolStr::new_static("admin")),
+        );
     }
 }

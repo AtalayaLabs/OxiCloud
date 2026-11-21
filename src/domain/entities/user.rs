@@ -219,6 +219,15 @@ pub struct UserFlags {
     /// `admin_reset_password` (flip to TRUE) and `change_password`
     /// (flip to FALSE) so the gate lifts within one round-trip.
     pub force_password_change: bool,
+    /// Mirrors `auth.users.sessions_valid_from`. Tokens issued before
+    /// this instant are rejected; `None` means nothing has been revoked.
+    ///
+    /// This is what makes revocation take effect NOW rather than at the
+    /// next refresh: the session row carries the refresh token, so
+    /// flipping `revoked` on it only stops renewal. Carried here because
+    /// these flags are already read and cached per request, so the check
+    /// is one timestamp comparison rather than a query.
+    pub sessions_valid_from: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Debug, Clone)]

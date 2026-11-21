@@ -3050,7 +3050,41 @@ impl AuthApplicationService {
             .revoke_all_user_sessions(user_id)
             .await?;
 
+        // …and stop the access tokens those sessions already handed out.
+        // Without this, "sign out everywhere" only stopped RENEWAL: the
+        // revoked row holds the refresh token, while every access token
+        // minted from it stayed valid for the rest of its hour.
+        self.stamp_revocation_cutoff(user_id).await;
+
         Ok(revoked_count)
+    }
+
+    /// Stamp the revocation cutoff and drop the cached flags so it is
+    /// observed on the next request rather than within the cache TTL.
+    ///
+    /// Only for revoke-ALL. The cutoff is a single `iat` watermark, so it
+    /// cannot express "every session except this one" — see
+    /// `change_password`, which keeps the caller's session alive on
+    /// purpose.
+    ///
+    /// Failure is logged, not propagated: the sessions are already
+    /// revoked, so the caller's operation succeeded and the remaining
+    /// exposure is bounded by the access-token TTL. Returning an error
+    /// here would tell the user their logout failed when most of it
+    /// landed.
+    async fn stamp_revocation_cutoff(&self, user_id: Uuid) {
+        if let Err(e) = self.user_storage.set_sessions_valid_from_now(user_id).await {
+            tracing::error!(
+                target: "audit",
+                event = "auth.revocation_cutoff_failed",
+                reason = "write_failed",
+                user_id = %user_id,
+                error = %e,
+                "👮🏻‍♂️ sessions revoked but the cutoff was not stamped — access tokens stay valid until they expire",
+            );
+            return;
+        }
+        self.user_flags_cache.invalidate(&user_id).await;
     }
 
     /// External → internal account upgrade.
@@ -3488,8 +3522,27 @@ impl AuthApplicationService {
                 self.session_storage
                     .revoke_all_user_sessions(user_id)
                     .await?;
+                // Full revocation, so the cutoff applies.
+                self.stamp_revocation_cutoff(user_id).await;
             }
         }
+
+        // NOTE the asymmetry above. The `Some(keep)` branch gets NO
+        // cutoff, and must not: the cutoff is one `iat` watermark for the
+        // whole user, so stamping it would invalidate the kept session's
+        // access token too — and that session is kept precisely so the
+        // SPA can finish the OPAQUE envelope re-registration on the cookie
+        // it already holds. Stamping would 401 `syncOpaqueEnvelope` and
+        // leave the envelope bound to the OLD password, which is the
+        // lockout the comment above describes.
+        //
+        // The cost is real and bounded: in the keep-one case the OTHER
+        // devices' access tokens stay usable until they expire (default
+        // 1 h) even though their sessions can no longer renew. Closing
+        // that needs per-session revocation — a `revoked_at` on
+        // `auth.sessions` plus a bounded revoked-sid set — or re-minting
+        // the caller's tokens here and returning them, which changes this
+        // method's signature and the SPA that calls it.
 
         // Lifecycle: PasswordChanged logout — fired once per logical
         // revoke-all call. PR 4 may refine to per-session firing.
@@ -4849,6 +4902,13 @@ impl AuthApplicationService {
         self.session_storage
             .revoke_all_user_sessions(user_id)
             .await?;
+
+        // And stamp the cutoff, so "must re-login" is true immediately
+        // rather than once each access token expires. This one matters
+        // most of the three: an admin resetting a password is often
+        // responding to a compromise, and an attacker holding a live
+        // access token kept using it for the rest of the hour.
+        self.stamp_revocation_cutoff(user_id).await;
 
         // Evict the cached UserFlags row so the next authenticated
         // request from this user (on their next session) sees the

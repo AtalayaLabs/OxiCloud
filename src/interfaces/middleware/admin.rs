@@ -56,6 +56,7 @@ pub async fn require_admin(
         auth.auth_application_service.as_ref(),
         user_id,
         &claims.role,
+        Some(claims.iat),
     )
     .await
     {
@@ -122,6 +123,7 @@ pub async fn require_authenticated(
         auth.auth_application_service.as_ref(),
         user_id,
         &claims.role,
+        Some(claims.iat),
     )
     .await
     {

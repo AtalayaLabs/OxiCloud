@@ -398,6 +398,7 @@ pub async fn auth_middleware(
                                 auth_service.auth_application_service.as_ref(),
                                 user_id,
                                 &claims.role,
+                                Some(claims.iat),
                             )
                             .await
                             {
@@ -546,6 +547,7 @@ pub async fn auth_middleware(
                             auth_service.auth_application_service.as_ref(),
                             user_id,
                             &claims.role,
+                            Some(claims.iat),
                         )
                         .await
                         {

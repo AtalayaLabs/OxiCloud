@@ -396,6 +396,14 @@ async fn handle_session(mut socket: WebSocket, caller_id: Uuid, state: Arc<AppSt
                 auth.auth_application_service.as_ref(),
                 caller_id,
                 "user",
+                // No claims here — `handle_session` is handed a
+                // `caller_id` and nothing else, so the revocation cutoff
+                // cannot be applied and a revoke-all does NOT close an
+                // already-open socket. Deactivation and deletion still
+                // land, because those read the user row. Threading the
+                // `iat` down from the upgrade would close it; tracked in
+                // `docs/plan/authn-pipeline.md`.
+                None,
             )
             .await
             {

@@ -308,6 +308,7 @@ mod tests {
             is_external: false,
             active: true,
             force_password_change: false,
+            sessions_valid_from: None,
         })
     }
     fn catalogue() -> ThemeCatalogue {

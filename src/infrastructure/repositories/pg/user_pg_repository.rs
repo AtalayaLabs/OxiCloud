@@ -131,7 +131,8 @@ impl UserPgRepository {
             SELECT role::text as role_text,
                    is_external,
                    active,
-                   force_password_change_at_next_login
+                   force_password_change_at_next_login,
+                   sessions_valid_from
               FROM auth.users
              WHERE id = $1
             "#,
@@ -148,6 +149,7 @@ impl UserPgRepository {
             is_external: row.get("is_external"),
             active: row.get("active"),
             force_password_change: row.get("force_password_change_at_next_login"),
+            sessions_valid_from: row.get("sessions_valid_from"),
         })
     }
 
@@ -212,6 +214,32 @@ impl UserPgRepository {
     /// Deliberately does NOT gate on the current value — flipping FALSE
     /// to FALSE is a no-op at the row level. That keeps the caller from
     /// needing a read-modify-write.
+    /// Stamp the revocation cutoff: every token already issued to this
+    /// user stops being accepted, now, rather than at its next refresh.
+    ///
+    /// `NOW()` comes from the DATABASE clock, not the app's. The value is
+    /// compared against a JWT `iat` minted from the app clock, so the two
+    /// must not drift apart — and the DB clock is the one every node
+    /// agrees on. Taking it from the app would let a node whose clock
+    /// runs fast revoke tokens a peer is still minting.
+    ///
+    /// Callers must invalidate the user's `UserFlags` cache entry
+    /// afterwards, or the cutoff is not observed until the TTL rolls.
+    pub async fn set_sessions_valid_from_now(&self, id: Uuid) -> UserRepositoryResult<()> {
+        sqlx::query(
+            r#"
+            UPDATE auth.users
+               SET sessions_valid_from = NOW()
+             WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .execute(&*self.pool)
+        .await
+        .map_err(Self::map_sqlx_error)?;
+        Ok(())
+    }
+
     pub async fn clear_force_password_change(&self, id: Uuid) -> UserRepositoryResult<()> {
         sqlx::query(
             r#"
