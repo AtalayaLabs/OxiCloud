@@ -103,7 +103,12 @@ Content-Type: application/json
 
 HTTP 403
 [Asserts]
-jsonpath "$.error_type" == "AccessDenied"
+# `EmailNotVerified`, not the service's underlying `AccessDenied`: the
+# handler remaps it to a distinguished `error_type` so the SPA can show
+# "verify your address" instead of "bad credentials". Pinning the generic
+# kind here would let that remap be dropped without anything failing, and
+# the user would be told their password was wrong.
+jsonpath "$.error_type" == "EmailNotVerified"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -115,6 +120,27 @@ jsonpath "$.error_type" == "AccessDenied"
 #     would permanently exclude every already-registered
 #     unverified user. The mock SMTP (`OXICLOUD_SMTP_MOCK=true`)
 #     captures the mail so the link can be followed here.
+#
+#     NOTE on what this does NOT exercise. The refused login in
+#     step 2 ALSO auto-sends a verification link — the handler
+#     reasons that a caller who proved the password can safely be
+#     mailed one, bypassing the anti-enum-fronted
+#     `magic-link/send`. But it generates the browser-binding
+#     challenge, mails it, and returns a plain error with NO
+#     `oxicloud_magic_request` cookie on the response. So the
+#     auto-sent link can only ever be redeemed as a
+#     CROSS-BROWSER redemption, which takes the confirmation
+#     prompt rather than a clean 302 — even for the very browser
+#     that just attempted the login.
+#
+#     That is why this step calls `magic-link/send` explicitly
+#     (permitted here by
+#     `OXICLOUD_AUTH_POLICIES=permit_magic_link_for_password_users`):
+#     it sets the cookie, so the redemption below is the
+#     same-browser path. Whether the auto-send should set the
+#     cookie too is a product question, not a test one — but a
+#     reader comparing this file to the handler deserves to know
+#     the two links differ.
 # ─────────────────────────────────────────────────────────────
 POST {{base_url}}/api/auth/magic-link/send
 Content-Type: application/json
