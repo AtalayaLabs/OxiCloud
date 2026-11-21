@@ -5,8 +5,45 @@ Branch: `feat/scope-and-session-elevation`. Companion to
 Grant). This document owns the **login phase**: what happens between a
 credential being verified and a session existing.
 
-Status: **DRAFT** — audit complete, design agreed in review, nothing
-implemented.
+## Status
+
+**Part A is implemented and green against a live server**; part B has
+not started. Keep this table current — it is the first thing a reader
+checks, and a plan that still says "nothing implemented" after nine
+commits is worse than no status at all.
+
+| item | status | commits |
+|---|---|---|
+| Fail-open arms answer 503 | **done** | `ed427185e` `a15455f14` |
+| One admission check, all nine doors | **done** | `2f9101138` `c2d6045cc` |
+| `AdmittedCaller` required by the shared mint | **done** | `2f9101138` |
+| Revocation — user-wide `iat` cutoff | **done** | `fe12a4739` |
+| Revocation — per-session (`revoked_at`) | **done** | `ae956005b` |
+| Connected-device list + `ip_approved` / `ip_seen` | **open** | — |
+| Scope narrowing, obligations (part B) | **not started** | needs `scope-gates.md` |
+
+Verified at the wire, not only in unit tests: the deactivated-account
+refusal on every door (`e3ead258c` `52b2179a9`, OPAQUE's in
+`opaque-hurl-helper` at `4355aec71`) and both revocation forms
+(`6a857cc20`).
+
+Two defects the RUNS found, which neither `cargo` nor clippy could see —
+the reason the wire pins were worth writing:
+
+- the Basic-auth path had **no** live account check and served a 300 s
+  cached verification, so a deactivated account kept WebDAV for up to
+  five minutes (`102af56b3`);
+- the NextCloud surface has its **own** middleware, which ignored
+  `active`, used a cached role and failed open on a lookup error
+  (`9add3034b`). That surface accepts no Bearer credential, so nothing
+  else would have caught it.
+
+Four things are deliberately NOT done, each with its reason recorded
+where it matters rather than here: the unverified-email wire pins (§
+Test plan), the device-flow service check (middleware refuses first, §
+Test plan), the four own-`Session::new` paths not yet funnelled through
+one mint (§ Resolved), and the WebSocket path's blind spot on the
+cutoff (§ Revocation).
 
 ## Goal
 
@@ -772,27 +809,9 @@ Suggested sequence:
    function plus a signature change at five or six call sites. No
    routing restructure, no migration beyond the two IP columns.
 
-   Landed, and green against a live server:
+   Current state is in § Status at the top — one home for it, so the
+   two cannot disagree.
 
-   - the two fail-open arms → 503 (`ed427185e`, `a15455f14`)
-   - the admission check on all nine doors (`2f9101138`), with the
-     synonyms collapsed to one name (`c2d6045cc`)
-   - **true revocation, both forms** — the user-wide `iat` cutoff
-     (`fe12a4739`) and per-session via `auth.sessions.revoked_at`
-     (`ae956005b`). So `logout` stops its own access token,
-     `change_password` stops the other devices while keeping the
-     caller's, and an admin reset stops everything.
-   - Hurl pins: the deactivated-account refusal across every door
-     (`e3ead258c`, `52b2179a9`, OPAQUE's in `opaque-hurl-helper` at
-     `4355aec71`) and both revocation forms (`6a857cc20`).
-
-   Two fixes the runs themselves found, neither visible to `cargo`: the
-   Basic-auth path had **no** live account check and served a 300 s
-   cached verification (`102af56b3`), and the NextCloud surface has its
-   own middleware which ignored `active`, used a cached role and failed
-   open (`9add3034b`).
-
-   Still open: the connected-device list with its two IP columns.
 2. **`scope-gates.md` PR 1** — the gates fold. Behaviour-preserving, so
    its acceptance criterion is existing pins green *unchanged*.
 3. **`scope-gates.md` PR 2** — credential scopes. First

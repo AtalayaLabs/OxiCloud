@@ -12,8 +12,31 @@ questions raised in review are all resolved: every one of the 235 API
 operations is classified with zero orphans, and the judgement calls are
 ratified with their reasoning recorded rather than left open.
 Deliverables now include a `src/AGENTS.md` rule and a new architecture
-document — see the two § Required sections. Awaiting approval to
-implement.
+document — see the two § Required sections.
+
+## Status
+
+**Nothing here is implemented.** Keep this current as that changes.
+
+| item | status |
+|---|---|
+| Gates fold — `Gate`, `ScopePolicy`, the three consumers | **not started** |
+| Credential scopes — `Scope`, `ScopeSet`, the 235-operation map | **not started** |
+| Authentication by default (`NotAnonymous` inverted) | **not started** |
+| `src/AGENTS.md` rule + `authorization-axes.md` | **not started** |
+
+What HAS landed on this branch is the companion document's work —
+`authn-pipeline.md` part A, which shares the branch and touches the same
+middleware. See its § Status. Two consequences worth knowing before
+starting here:
+
+- **The two fail-open arms are already resolved**, as 503 rather than as
+  a denial (§ The two fail-open arms). The gates fold inherits that
+  answer rather than deciding it.
+- **`resolve_live_role` now takes a `PresentedToken`** and `UserFlags`
+  carries `sessions_valid_from` and `revoked_session_ids`. The fold
+  touches those call sites, so expect them to look different from the
+  snippets here.
 
 ## Goal
 
