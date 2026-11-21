@@ -15,7 +15,7 @@ use crate::application::ports::auth_ports::TokenServicePort;
 use crate::domain::entities::user::UserRole;
 use crate::domain::services::authorization::Subject;
 use crate::infrastructure::services::share_ring;
-use crate::interfaces::middleware::user::{LiveRole, resolve_live_role};
+use crate::interfaces::middleware::user::{LiveRole, PresentedToken, resolve_live_role};
 
 /// Marker inserted into request extensions when the user was authenticated
 /// via the `oxicloud_access` HttpOnly cookie rather than a Bearer/Basic header.
@@ -264,6 +264,18 @@ pub enum AuthError {
 
     #[error("Authentication service unavailable")]
     AuthServiceUnavailable,
+
+    /// The live-role re-check could not read the user record, so the
+    /// caller's role is unknown. Distinct from [`Self::AccountInactive`]
+    /// on purpose: that one is a 401 and means "your account is gone",
+    /// which during a database blip would log out every session instead
+    /// of asking them to retry. See [`LiveRole::Indeterminate`].
+    ///
+    /// Also distinct from [`Self::AuthServiceUnavailable`], which is a
+    /// misconfiguration (no auth service wired at all) and stays a 500 —
+    /// retrying it will never help.
+    #[error("Unable to verify account state")]
+    LiveRoleIndeterminate { retryable: bool },
 }
 
 impl IntoResponse for AuthError {
@@ -294,6 +306,9 @@ impl IntoResponse for AuthError {
                 crate::interfaces::errors::AppError::internal_error(
                     "Authentication service unavailable",
                 )
+            }
+            AuthError::LiveRoleIndeterminate { retryable } => {
+                crate::interfaces::middleware::user::indeterminate_app_error(retryable)
             }
         };
         app.into_response()
@@ -383,11 +398,22 @@ pub async fn auth_middleware(
                                 auth_service.auth_application_service.as_ref(),
                                 user_id,
                                 &claims.role,
+                                PresentedToken {
+                                    issued_at: Some(claims.iat),
+                                    session_id: claims.sid,
+                                },
                             )
                             .await
                             {
                                 LiveRole::Active(role) => role,
                                 LiveRole::Revoked => return Err(AuthError::AccountInactive),
+                                // Unknown, not inactive. `AccountInactive`
+                                // is a 401, which would tell a Bearer
+                                // client its token is dead and send it to
+                                // re-authenticate over a blip.
+                                LiveRole::Indeterminate { retryable } => {
+                                    return Err(AuthError::LiveRoleIndeterminate { retryable });
+                                }
                             };
                             // `username`/`email` are `Arc<str>` refcount
                             // bumps out of the cached claims; `role` is an
@@ -453,6 +479,114 @@ pub async fn auth_middleware(
                                 "App password authentication successful for user: {}",
                                 uname
                             );
+
+                            // Re-check the LIVE user record, exactly as the
+                            // Bearer and cookie branches do.
+                            //
+                            // This branch had no live check at all, and the
+                            // verification it trusts is cached for
+                            // `BASIC_AUTH_CACHE_TTL_SECS` (300 s) keyed on
+                            // the username+password hash — so a deactivated
+                            // account kept full WebDAV / CalDAV / CardDAV
+                            // access for up to five minutes after an admin
+                            // disabled it, and a demoted admin kept the
+                            // cached `role` just as long. Caught by
+                            // `tests/api/auth_doors_deactivated_account.hurl`,
+                            // where a PROPFIND answered 207 after
+                            // deactivation.
+                            //
+                            // The account check inside `verify_basic_auth`
+                            // cannot close this: it runs on a cache MISS,
+                            // which is precisely what a client that just
+                            // authenticated does not produce. This read is
+                            // the `UserFlags` moka entry every Bearer
+                            // request already pays for, and deactivation
+                            // invalidates it eagerly, so the refusal is
+                            // immediate rather than TTL-bounded.
+                            //
+                            // `None` for the issued-at: Basic auth carries
+                            // no JWT, so the revocation cutoff cannot apply
+                            // here — an app password is revoked by deleting
+                            // it, not by `sessions_valid_from`.
+                            //
+                            // ⚠️  HOT PATH — read before adding anything here.
+                            //
+                            // This runs on EVERY WebDAV / NextCloud / CalDAV
+                            // / CardDAV request, and those clients are far
+                            // chattier than the SPA: a sync pass is one
+                            // PROPFIND per folder, and desktop clients poll
+                            // continuously. Whatever sits in this branch is
+                            // multiplied by that traffic.
+                            //
+                            // What makes the check affordable:
+                            //   * `get_user_flags` is a moka hit in the
+                            //     common case — no DB round trip at all.
+                            //   * On a miss it is ONE single-row lookup by
+                            //     primary key of five small columns (no
+                            //     `image`), and `try_get_with` coalesces
+                            //     concurrent misses for the same user into a
+                            //     single query — so twenty parallel
+                            //     PROPFINDs on a cold entry cost one.
+                            //   * The miss rate is therefore ~one tiny query
+                            //     per active user per `USER_FLAGS_CACHE_TTL`
+                            //     (30 s), which is the same cost every
+                            //     Bearer request has always paid.
+                            //
+                            // So: do NOT add an uncached read, a second
+                            // query, or anything per-request that touches
+                            // the database here. If a new account property
+                            // must be enforced, put it on `UserFlags` so it
+                            // rides the existing cached read — that is
+                            // precisely why `sessions_valid_from` was added
+                            // as a column there rather than as its own
+                            // lookup.
+                            // Deny-by-default if there is no auth service to
+                            // ask: without it the account state cannot be
+                            // verified, and an unverifiable account must not
+                            // be admitted. `AuthServiceUnavailable` is a 500
+                            // because it is a misconfiguration, not a blip.
+                            let Some(auth_svc) = state.auth_service.as_ref() else {
+                                return Err(AuthError::AuthServiceUnavailable);
+                            };
+                            let role = match crate::interfaces::middleware::user::resolve_live_role(
+                                auth_svc.auth_application_service.as_ref(),
+                                user_id,
+                                &role,
+                                // An app password is not a JWT: no `iat`,
+                                // no `sid`. So neither revocation form
+                                // reaches it — it is revoked by DELETING
+                                // it, which the 300 s verification cache
+                                // bounds. `active` and the live role,
+                                // which is what this call is for, apply
+                                // regardless.
+                                crate::interfaces::middleware::user::PresentedToken::default(),
+                            )
+                            .await
+                            {
+                                crate::interfaces::middleware::user::LiveRole::Active(r) => r,
+                                crate::interfaces::middleware::user::LiveRole::Revoked => {
+                                    tracing::info!(
+                                        target: "audit",
+                                        event = "auth.login_rejected",
+                                        reason = "account_not_live",
+                                        origin = "app_password",
+                                        caller_id = %user_id,
+                                        "👮🏻‍♂️ app-password request refused — account is no longer active",
+                                    );
+                                    if is_dav_path(request.uri().path()) {
+                                        return Ok(dav_basic_auth_challenge(
+                                            "Invalid username or app password",
+                                        ));
+                                    }
+                                    return Err(AuthError::AccountInactive);
+                                }
+                                crate::interfaces::middleware::user::LiveRole::Indeterminate {
+                                    retryable,
+                                } => {
+                                    return Err(AuthError::LiveRoleIndeterminate { retryable });
+                                }
+                            };
+
                             // App-password sessions are always unbound —
                             // they belong to NC clients / CLI / mobile
                             // tools without WebCrypto. DPoP middleware
@@ -524,6 +658,10 @@ pub async fn auth_middleware(
                             auth_service.auth_application_service.as_ref(),
                             user_id,
                             &claims.role,
+                            PresentedToken {
+                                issued_at: Some(claims.iat),
+                                session_id: claims.sid,
+                            },
                         )
                         .await
                         {
@@ -551,6 +689,16 @@ pub async fn auth_middleware(
                             }
                             LiveRole::Revoked => {
                                 // Fall through to the unauthenticated 401 / login redirect.
+                            }
+                            // Must NOT fall through. Falling through means
+                            // 401 and a redirect to /login — so a database
+                            // blip would log out every browser session at
+                            // once, which is the mass-lockout the old
+                            // fail-open arm was there to avoid. Answer
+                            // 503 and let the SPA retry with the cookie it
+                            // already has.
+                            LiveRole::Indeterminate { retryable } => {
+                                return Err(AuthError::LiveRoleIndeterminate { retryable });
                             }
                         }
                     }

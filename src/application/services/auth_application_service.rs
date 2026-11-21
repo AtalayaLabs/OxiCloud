@@ -487,6 +487,105 @@ mod classify_email_verification_tests {
     }
 }
 
+/// The per-login account checks every door shares.
+///
+/// These are pinned at the free functions rather than through `admit`
+/// because that is where the rules live and it needs no service, no
+/// config and no database — the lowest layer that would fail.
+#[cfg(test)]
+mod account_admission_tests {
+    use super::{check_account_admission, check_email_verified, check_user_is_active};
+    use crate::domain::entities::user::{User, UserRole};
+
+    fn user(role: UserRole) -> User {
+        User::new(
+            "someone@example.com".to_string(),
+            Some("someone".to_string()),
+            Some("hash".to_string()),
+            None,
+            None,
+            None,
+            role,
+            0,
+            false,
+        )
+        .expect("fixture user")
+    }
+
+    #[test]
+    fn an_active_user_passes() {
+        assert!(check_user_is_active(&user(UserRole::User), "test").is_ok());
+    }
+
+    #[test]
+    fn a_deactivated_user_is_refused() {
+        let mut u = user(UserRole::User);
+        u.deactivate();
+        assert!(check_user_is_active(&u, "test").is_err());
+    }
+
+    /// The default: without `OXICLOUD_REQUIRE_VERIFIED_EMAIL` an
+    /// unverified address is no obstacle, which is why switching every
+    /// door onto these checks locks nobody out of an existing install.
+    #[test]
+    fn an_unverified_email_passes_when_the_policy_is_off() {
+        let u = user(UserRole::User);
+        assert!(!u.is_email_verified(), "fixture should start unverified");
+        assert!(check_email_verified(&u, false, "test").is_ok());
+    }
+
+    #[test]
+    fn an_unverified_email_is_refused_when_the_policy_is_on() {
+        assert!(check_email_verified(&user(UserRole::User), true, "test").is_err());
+    }
+
+    #[test]
+    fn a_verified_email_passes_when_the_policy_is_on() {
+        let mut u = user(UserRole::User);
+        u.mark_email_verified();
+        assert!(check_email_verified(&u, true, "test").is_ok());
+    }
+
+    /// The carve-out, pinned because it is the kind of exemption a
+    /// later "tighten everything" change deletes without realising: the
+    /// rule is enforced AT LOGIN, so an admin whose own address is
+    /// unverified would have no way left to log in and verify it.
+    #[test]
+    fn admins_are_exempt_from_the_email_requirement() {
+        for role in [UserRole::Admin, UserRole::Owner] {
+            let u = user(role);
+            assert!(!u.is_email_verified());
+            assert!(
+                check_email_verified(&u, true, "test").is_ok(),
+                "{role:?} must not be locked out by an unverified address",
+            );
+        }
+    }
+
+    /// Order matters for the audit trail, not the outcome: a caller who
+    /// is both deactivated and unverified must be recorded as
+    /// `account_deactivated`, the more fundamental reason, rather than
+    /// sending an operator looking at the mail flow.
+    #[test]
+    fn the_active_check_runs_before_the_email_check() {
+        let mut u = user(UserRole::User);
+        u.deactivate();
+        let err = check_account_admission(&u, true, "test").expect_err("must refuse");
+        assert_eq!(
+            err.kind,
+            crate::common::errors::ErrorKind::AccountDeactivated,
+            "expected the deactivation reason, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn a_healthy_account_passes_both() {
+        let mut u = user(UserRole::User);
+        u.mark_email_verified();
+        assert!(check_account_admission(&u, true, "test").is_ok());
+    }
+}
+
 /// Result of a successful OIDC callback. The handler layer inspects this to
 /// decide whether to redirect to the regular frontend or complete a Nextcloud
 /// Login Flow v2 session.
@@ -786,6 +885,132 @@ pub struct AuthApplicationService {
 /// long a role / external / active change can take to be observed by the
 /// per-request guards when it bypasses the eager invalidation paths.
 const USER_FLAGS_CACHE_TTL: Duration = Duration::from_secs(30);
+
+/// Proof that an account passed every per-login account check.
+///
+/// The private fields are the whole mechanism. No other module can build
+/// one, so [`AuthApplicationService::admit`] is the only source — and
+/// anything that demands one cannot be reached without the checks having
+/// run. [`AuthApplicationService::mint_session_for_authenticated_user`]
+/// demands one, which is what turns "did this door remember to check the
+/// account?" from a question for a reviewer into a compile error.
+///
+/// It is NOT proof of a verified credential. The caller must already
+/// have authenticated the principal; this carries the separate answer to
+/// *may this account have a session at all?*
+#[derive(Debug)]
+pub struct AdmittedCaller {
+    user: User,
+    /// Which door admitted them — `"password"`, `"opaque"`, `"device"`,
+    /// … Carried so the mint's audit line can name it without every
+    /// caller passing it a second time.
+    origin: &'static str,
+}
+
+impl AdmittedCaller {
+    pub fn user(&self) -> &User {
+        &self.user
+    }
+
+    /// Which door admitted this caller. Audit-only.
+    pub fn origin(&self) -> &'static str {
+        self.origin
+    }
+}
+
+/// The deactivated-account gate.
+///
+/// Fires AFTER the credential has been verified, never before: a
+/// deactivated account hit with a wrong password still collapses to the
+/// generic "Invalid credentials" response, so the deactivation state is
+/// revealed only to callers who already proved possession. Gating
+/// pre-credential would leak "this account exists AND is deactivated" to
+/// anyone guessing passwords.
+///
+/// A free function rather than a method because
+/// [`crate::application::services::device_auth_service::DeviceAuthService`]
+/// needs the same rule and holds no [`AuthApplicationService`] — and the
+/// device door skipping this check is precisely what a second copy of
+/// the rule would have produced.
+pub fn check_user_is_active(user: &User, origin: &'static str) -> Result<(), DomainError> {
+    if user.is_active() {
+        return Ok(());
+    }
+    tracing::info!(
+        target: "audit",
+        event = "auth.login_rejected",
+        reason = "account_deactivated",
+        origin = origin,
+        user_id = %user.id(),
+        username = %user.display_for_audit(),
+        "🔐 login rejected: account deactivated for '{}' (via {})",
+        user.display_for_audit(),
+        origin,
+    );
+    Err(DomainError::new(
+        ErrorKind::AccountDeactivated,
+        "Auth",
+        "Account deactivated",
+    ))
+}
+
+/// The verified-email requirement, when `OXICLOUD_REQUIRE_VERIFIED_EMAIL`
+/// is on.
+///
+/// Admins are exempt, deliberately: the rule is enforced at login, so an
+/// admin whose own address is unverified would have no way left to log in
+/// and fix it.
+pub fn check_email_verified(
+    user: &User,
+    require_verified_email: bool,
+    origin: &'static str,
+) -> Result<(), DomainError> {
+    if !require_verified_email || user.role().at_least(UserRole::Admin) || user.is_email_verified()
+    {
+        return Ok(());
+    }
+    tracing::info!(
+        target: "audit",
+        event = "auth.login_rejected",
+        reason = "email_not_verified",
+        origin = origin,
+        user_id = %user.id(),
+        username = %user.display_for_audit(),
+        "🔐 login rejected: email not verified for '{}' (via {})",
+        user.display_for_audit(),
+        origin,
+    );
+    Err(DomainError::new(
+        ErrorKind::AccessDenied,
+        "Auth",
+        "Email not verified",
+    ))
+}
+
+/// Both per-login account checks, in the order a login door should ask
+/// them.
+///
+/// **A new account rule goes HERE, and only here.** Every one of the
+/// nine doors calls this function by this name — there is deliberately
+/// no per-service wrapper or convenience alias to add it to by mistake,
+/// because a rule added to a wrapper reaches only the doors that use the
+/// wrapper, which is how the scattered checks this replaced came about.
+/// [`AuthApplicationService::admit`] is the one caller that does
+/// anything extra, and what it adds is the [`AdmittedCaller`] token, not
+/// a rule.
+///
+/// Order is part of the contract: `active` is asked first, so a caller
+/// who is both deactivated and unverified is audited as
+/// `account_deactivated` — the more fundamental reason — rather than
+/// sending an operator to look at the mail flow.
+pub fn check_account_admission(
+    user: &User,
+    require_verified_email: bool,
+    origin: &'static str,
+) -> Result<(), DomainError> {
+    check_user_is_active(user, origin)?;
+    check_email_verified(user, require_verified_email, origin)
+}
 
 impl crate::application::ports::authorization_ports::AdminCallerPort for AuthApplicationService {
     async fn admin_caller_flags(&self, id: Uuid) -> Result<UserFlags, DomainError> {
@@ -1470,42 +1695,27 @@ impl AuthApplicationService {
         Ok(PublicUserDto::new(created_user, false))
     }
 
-    /// Centralised deactivated-account gate — called by every path
-    /// that is about to mint a session on behalf of an authenticated
-    /// user (password login, magic-link redemption, OIDC callback).
+    /// [`check_account_admission`] plus the [`AdmittedCaller`] token, for
+    /// the doors that mint through
+    /// [`Self::mint_session_for_authenticated_user`].
     ///
-    /// Fires AFTER the credential has been verified, never before: a
-    /// deactivated account hit with a wrong password still collapses
-    /// to the generic `AccessDenied` + "Invalid credentials" response,
-    /// so the deactivation state is only revealed to callers who have
-    /// already proved possession of the credential. The alternative —
-    /// gating pre-credential — leaks "this account exists AND is
-    /// deactivated" to anyone guessing passwords, which is a weaker
-    /// anti-enum posture.
+    /// It adds the token and nothing else — **a new account rule belongs
+    /// in [`check_account_admission`]**, or the six doors that call that
+    /// function directly will not get it.
     ///
-    /// `origin` labels the login door for the audit record so
-    /// operators can tell which path the deactivated attempt came
-    /// through without having to join against the request-scope span.
-    fn ensure_user_is_active(&self, user: &User, origin: &'static str) -> Result<(), DomainError> {
-        if user.is_active() {
-            return Ok(());
-        }
-        tracing::info!(
-            target: "audit",
-            event = "auth.login_rejected",
-            reason = "account_deactivated",
-            origin = origin,
-            user_id = %user.id(),
-            username = %user.display_for_audit(),
-            "🔐 login rejected: account deactivated for '{}' (via {})",
-            user.display_for_audit(),
-            origin,
-        );
-        Err(DomainError::new(
-            ErrorKind::AccountDeactivated,
-            "Auth",
-            "Account deactivated",
-        ))
+    /// Before the single check existed the rules were scattered: `login`
+    /// and `oidc_callback` ran both, `redeem_magic_link` ran only the active
+    /// check, and OPAQUE `login/ke3`, the device-flow approval and
+    /// `refresh_token` ran neither. Each door was written by someone
+    /// reading a different neighbour, which is the failure mode a single
+    /// function removes.
+    ///
+    /// Credential verification is NOT part of this — the caller must
+    /// already have proven identity. This answers the next question:
+    /// *may this account have a session at all?*
+    pub fn admit(&self, user: User, origin: &'static str) -> Result<AdmittedCaller, DomainError> {
+        check_account_admission(&user, self.require_verified_email, origin)?;
+        Ok(AdmittedCaller { user, origin })
     }
 
     pub async fn login(
@@ -1563,7 +1773,7 @@ impl AuthApplicationService {
         // the password verify. That leaked "this account exists AND is
         // deactivated" to any password-guesser. The check now fires
         // AFTER a successful credential match via
-        // `ensure_user_is_active` — see below — so a wrong-password
+        // `check_user_is_active` — see its doc — so a wrong-password
         // attempt on a deactivated account still collapses to the
         // generic "Invalid credentials" response.
 
@@ -1676,7 +1886,7 @@ impl AuthApplicationService {
         // of the right password; a wrong-password attempt above still
         // collapses to the generic 401, keeping the deactivation
         // invisible to guessers.
-        self.ensure_user_is_active(&user, "password")?;
+        check_user_is_active(&user, "password")?;
 
         // Phase 4 gate: legacy password login is refused for users who
         // have completed at least one OPAQUE handshake
@@ -1750,25 +1960,13 @@ impl AuthApplicationService {
         // the service returns the distinguished error and the handler
         // orchestrates the side effect. Keeps this method side-effect-
         // free on the audit path.
-        if self.require_verified_email
-            && !user.role().at_least(UserRole::Admin)
-            && !user.is_email_verified()
-        {
-            tracing::info!(
-                target: "audit",
-                event = "auth.login_rejected",
-                reason = "email_not_verified",
-                user_id = %user.id(),
-                username = %user.display_for_audit(),
-                "🔐 login rejected: email not verified for '{}' (password OK)",
-                user.display_for_audit(),
-            );
-            return Err(DomainError::new(
-                ErrorKind::AccessDenied,
-                "Auth",
-                "Email not verified",
-            ));
-        }
+        // The account checks now live in `admit`, which every door runs.
+        // The active check above stays where it is — it must fire after
+        // the password verify for anti-enumeration, and before the
+        // OPAQUE-migrated branch so a deactivated migrated user is told
+        // "deactivated" rather than "use the OPAQUE endpoint". `admit`
+        // re-reads it, which is a pure field read and costs nothing.
+        let admitted = self.admit(user, "password")?;
 
         // Mint the session — factored so the OPAQUE login handler
         // can reuse the exact same shape after a successful OPAQUE
@@ -1776,7 +1974,7 @@ impl AuthApplicationService {
         // so lifecycle + token + session-family semantics stay in
         // one place.
         self.mint_session_for_authenticated_user(
-            user,
+            admitted,
             dto.dpop_jkt,
             client_ip,
             user_agent,
@@ -1807,12 +2005,30 @@ impl AuthApplicationService {
     /// (after OPAQUE handshake).
     pub async fn mint_session_for_authenticated_user(
         &self,
-        mut user: crate::domain::entities::user::User,
+        admitted: AdmittedCaller,
         dpop_jkt: Option<String>,
         client_ip: Option<String>,
         user_agent: Option<String>,
         origin: crate::domain::entities::session::SessionOrigin,
     ) -> Result<AuthResponseDto, DomainError> {
+        // Takes an `AdmittedCaller`, not a `User`: the account checks
+        // cannot be skipped by a new door, because there is no way to
+        // call this without having run them. OPAQUE `login/ke3` reached
+        // here with a bare `User` and minted sessions for deactivated
+        // accounts; that is now unrepresentable rather than unnoticed.
+        let AdmittedCaller {
+            mut user,
+            origin: admitted_via,
+        } = admitted;
+        // Success paths stay out of the audit channel (every login would
+        // flood it); a debug line is enough to answer "which door minted
+        // this session?" when tracing one.
+        tracing::debug!(
+            target: "oxicloud::authz",
+            admitted_via,
+            user_id = %user.id(),
+            "minting session for an admitted caller",
+        );
         // Lifecycle: dispatch login BEFORE register_login() so hooks
         // observing `last_login_at().is_none()` see "first ever login"
         // correctly. See tip #1 in user_lifecycle.rs.
@@ -2230,11 +2446,16 @@ impl AuthApplicationService {
         self.user_storage.mark_email_verified(user.id()).await?;
 
         // Credentials matched (token redemption is the credential here)
-        // — gate the session mint on `is_active` so a magic link minted
-        // before deactivation can't be redeemed afterwards. See
-        // `ensure_user_is_active` for why the check lives after the
+        // — run the full account admission so a magic link minted before
+        // deactivation can't be redeemed afterwards. See
+        // `check_user_is_active` for why the check lives after the
         // credential path, not before.
-        self.ensure_user_is_active(&user, "magic_link")?;
+        //
+        // The email half is vacuous here, since redeeming a link IS
+        // verification and `mark_email_verified` ran just above. It is
+        // still the composed call rather than the single check, so a
+        // rule added later cannot miss this door.
+        check_account_admission(&user, self.require_verified_email, "magic_link")?;
 
         // Magic-link redemption is a GET redirect — no way to
         // thread `dpop_jkt` into a GET body. Session is minted
@@ -2309,14 +2530,6 @@ impl AuthApplicationService {
                 DomainError::new(ErrorKind::AccessDenied, "Auth", "Invalid credentials")
             })?;
 
-        if !user.is_active() {
-            return Err(DomainError::new(
-                ErrorKind::AccessDenied,
-                "Auth",
-                "Account deactivated",
-            ));
-        }
-
         let Some(hash) = user.password_hash() else {
             return Err(DomainError::new(
                 ErrorKind::AccessDenied,
@@ -2334,15 +2547,28 @@ impl AuthApplicationService {
             ));
         }
 
+        // Account admission, AFTER the password verify. It used to run
+        // before, returning "Account deactivated" to a caller who had
+        // proven nothing — which tells an unauthenticated prober that the
+        // username exists and is deactivated. `check_user_is_active`
+        // documents why that ordering is the weaker anti-enumeration
+        // posture; this door is the one that had it.
+        //
+        // And via the composed call, because the NextCloud Login Flow v2
+        // ends by handing the client an app password: a long-lived
+        // credential, so it owes the same checks as a session mint.
+        check_account_admission(&user, self.require_verified_email, "nextcloud_login_v2")?;
+
         Ok(crate::application::dtos::user_dto::CurrentUser {
             id: user.id(),
             username: std::sync::Arc::from(user.username().unwrap_or("")),
             email: std::sync::Arc::from(user.email()),
             role: smol_str::SmolStr::new_static(user.role().as_str()),
-            // `verify_credentials` is only called from paths that
-            // don't need per-session DPoP context (admin/setup
-            // flows); the DPoP middleware never reads CurrentUser
-            // populated by this method. Leaving None is safe.
+            // The one caller is the NextCloud Login Flow v2
+            // (`nextcloud/login_v2_handler.rs`), whose clients hold an
+            // app password and are exempt from DPoP; the middleware
+            // never reads a `CurrentUser` populated here. Leaving None
+            // is safe.
             dpop_jkt: None,
         })
     }
@@ -2458,15 +2684,13 @@ impl AuthApplicationService {
         }
 
         // The user has to pass the same gates a normal refresh applies —
-        // a deactivated account must not be re-admitted by a graced replay.
+        // a deactivated account must not be re-admitted by a graced
+        // replay. Via the SAME call `refresh_token` makes, not a copy of
+        // its checks: this arm used to hand-roll `is_active` under that
+        // very comment, and so verified one of the two gates it claimed
+        // to mirror.
         let user = self.user_storage.get_user_by_id(parent.user_id()).await?;
-        if !user.is_active() {
-            return Err(DomainError::new(
-                ErrorKind::AccessDenied,
-                "Auth",
-                "Account is deactivated",
-            ));
-        }
+        check_account_admission(&user, self.require_verified_email, "refresh_grace")?;
 
         let access_token =
             self.token_service
@@ -2553,14 +2777,14 @@ impl AuthApplicationService {
         // Get user
         let user = self.user_storage.get_user_by_id(session.user_id()).await?;
 
-        // Check if user is active
-        if !user.is_active() {
-            return Err(DomainError::new(
-                ErrorKind::AccessDenied,
-                "Auth",
-                "Account deactivated",
-            ));
-        }
+        // Re-run the account checks. A refresh is a re-admission, not a
+        // formality: this used to check `is_active` inline — with a
+        // hand-rolled error, no audit line, and no email check — so a
+        // session established before `OXICLOUD_REQUIRE_VERIFIED_EMAIL`
+        // was turned on could refresh indefinitely and outlive the
+        // requirement. Both kinds render 403, so the wire shape is
+        // unchanged; what is new is the audit line and the email half.
+        check_account_admission(&user, self.require_verified_email, "refresh")?;
 
         // Rotate the session first so the new row's id is available
         // to the token mint below — the `sid` claim tracks the
@@ -2698,7 +2922,11 @@ impl AuthApplicationService {
         let id_token_hint = session.oidc_id_token().map(str::to_string);
 
         // Revoke session
+        let logged_out_user = session.user_id();
         self.session_storage.revoke_session(session.id()).await?;
+        // …and drop the cached flags, so the revoked `sid` is in the set
+        // on the very next request rather than within the TTL.
+        self.invalidate_user_flags(logged_out_user).await;
 
         // Lifecycle: notify hooks. One extra DB roundtrip per logout
         // (user load) is acceptable — logout is rare. Failure to load
@@ -2826,7 +3054,53 @@ impl AuthApplicationService {
             .revoke_all_user_sessions(user_id)
             .await?;
 
+        // …and stop the access tokens those sessions already handed out.
+        // Without this, "sign out everywhere" only stopped RENEWAL: the
+        // revoked row holds the refresh token, while every access token
+        // minted from it stayed valid for the rest of its hour.
+        self.stamp_revocation_cutoff(user_id).await;
+
         Ok(revoked_count)
+    }
+
+    /// Stamp the revocation cutoff and drop the cached flags so it is
+    /// observed on the next request rather than within the cache TTL.
+    ///
+    /// Only for revoke-ALL. The cutoff is a single `iat` watermark, so it
+    /// cannot express "every session except this one" — see
+    /// `change_password`, which keeps the caller's session alive on
+    /// purpose.
+    ///
+    /// Failure is logged, not propagated: the sessions are already
+    /// revoked, so the caller's operation succeeded and the remaining
+    /// exposure is bounded by the access-token TTL. Returning an error
+    /// here would tell the user their logout failed when most of it
+    /// landed.
+    /// Drop a user's cached flags so a just-written revocation is seen on
+    /// their next request instead of within the 30 s TTL.
+    ///
+    /// Needed by the PER-SESSION paths, which write only
+    /// `auth.sessions.revoked_at` and so have no cutoff to stamp. Without
+    /// it, `DELETE /api/admin/sessions/{id}` would still take effect, but
+    /// up to half a minute later — and an operator revoking a session is
+    /// usually responding to something.
+    async fn invalidate_user_flags(&self, user_id: Uuid) {
+        self.user_flags_cache.invalidate(&user_id).await;
+    }
+
+    async fn stamp_revocation_cutoff(&self, user_id: Uuid) {
+        if let Err(e) = self.user_storage.set_sessions_valid_from_now(user_id).await {
+            tracing::error!(
+                target: "audit",
+                event = "auth.revocation_cutoff_failed",
+                reason = "write_failed",
+                user_id = %user_id,
+                error = %e,
+                "👮🏻‍♂️ sessions revoked but the cutoff was not stamped — access tokens stay valid until they expire",
+            );
+            return;
+        }
+        self.user_flags_cache.invalidate(&user_id).await;
     }
 
     /// External → internal account upgrade.
@@ -3259,13 +3533,48 @@ impl AuthApplicationService {
                 self.session_storage
                     .revoke_other_user_sessions(user_id, keep)
                     .await?;
+                // The other devices' sids are now in the revoked set; drop
+                // the cache so their next request reads it. This is what
+                // closes the window the cutoff could not touch here —
+                // their access tokens stop working now, while the
+                // caller's kept session is untouched.
+                self.invalidate_user_flags(user_id).await;
             }
             None => {
                 self.session_storage
                     .revoke_all_user_sessions(user_id)
                     .await?;
+                // Full revocation, so the cutoff applies.
+                self.stamp_revocation_cutoff(user_id).await;
             }
         }
+
+        // NOTE the asymmetry above. The `Some(keep)` branch gets NO
+        // cutoff, and must not: the cutoff is one `iat` watermark for the
+        // whole user, so stamping it would invalidate the kept session's
+        // access token too — and that session is kept precisely so the
+        // SPA can finish the OPAQUE envelope re-registration on the cookie
+        // it already holds. Stamping would 401 `syncOpaqueEnvelope` and
+        // leave the envelope bound to the OLD password, which is the
+        // lockout the comment above describes.
+        //
+        // And the obvious escape hatch does NOT exist, which is worth
+        // writing down because it looks like it should. `/api/auth/refresh`
+        // carries no `auth_middleware`, so one might stamp the cutoff here
+        // and let the SPA's interceptor turn the caller's 401 into a
+        // transparent refresh-and-retry. It cannot: `/api/auth/opaque/` is
+        // on the `AUTH_PRIMITIVES` bypass list in
+        // `frontend/src/lib/api/transport.ts`, where a 401 is deliberately
+        // treated as genuine ("bad credentials") and never retried. So the
+        // envelope sync would hard-fail and stay bound to the OLD
+        // password.
+        //
+        // The cost is therefore real and bounded: in the keep-one case the
+        // OTHER devices' access tokens stay usable until they expire
+        // (default 1 h) even though their sessions can no longer renew.
+        // Closing it needs per-session revocation — a `revoked_at` on
+        // `auth.sessions` plus a bounded revoked-sid set — not a wider
+        // cutoff.
 
         // Lifecycle: PasswordChanged logout — fired once per logical
         // revoke-all call. PR 4 may refine to per-session firing.
@@ -4327,6 +4636,11 @@ impl AuthApplicationService {
             .ok()
             .map(|s| s.user_id());
         self.session_storage.revoke_session(session_id).await?;
+        if let Some(uid) = target_user_id {
+            // So the admin panel's button stops the session NOW, not
+            // within the flags-cache TTL.
+            self.invalidate_user_flags(uid).await;
+        }
         tracing::info!(
             target: "audit",
             event = "admin.session_revoked",
@@ -4625,6 +4939,13 @@ impl AuthApplicationService {
         self.session_storage
             .revoke_all_user_sessions(user_id)
             .await?;
+
+        // And stamp the cutoff, so "must re-login" is true immediately
+        // rather than once each access token expires. This one matters
+        // most of the three: an admin resetting a password is often
+        // responding to a compromise, and an attacker holding a live
+        // access token kept using it for the rest of the hour.
+        self.stamp_revocation_cutoff(user_id).await;
 
         // Evict the cached UserFlags row so the next authenticated
         // request from this user (on their next session) sees the
@@ -6002,7 +6323,7 @@ impl AuthApplicationService {
         // active, so the check is only load-bearing for returning
         // federated users whom an admin has since deactivated. Same
         // enforcement point as the password + magic-link paths.
-        self.ensure_user_is_active(&user, "oidc")?;
+        check_account_admission(&user, self.require_verified_email, "oidc")?;
         // Mint AFTER session is fully configured so `sid` claim
         // aligns with the row about to be inserted.
         let access_token =

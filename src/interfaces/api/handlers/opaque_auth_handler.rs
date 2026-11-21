@@ -788,13 +788,26 @@ pub async fn login_ke3(
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
 
+    // Account checks. This path proved the passphrase and then minted a
+    // session for ANY account — deactivated, or with an unverified
+    // address under `OXICLOUD_REQUIRE_VERIFIED_EMAIL` — because it went
+    // straight from the user entity to the mint. The mint now demands an
+    // `AdmittedCaller`, so this is no longer something a reader has to
+    // notice.
+    //
+    // The real reason is returned rather than `invalid_credentials()`:
+    // the caller has already proven the passphrase, so "your account is
+    // deactivated" tells an attacker nothing they could not learn from
+    // `login`, which answers the same way after a password verify.
+    let admitted = auth.admit(user, "opaque").map_err(AppError::from)?;
+
     // Mint the session BEFORE stamping opaque_migrated_at — if the
     // session mint fails (rare, but not impossible under DB failure),
     // we don't want to have flipped the migration flag for a user
     // whose login didn't actually complete.
     let session = auth
         .mint_session_for_authenticated_user(
-            user,
+            admitted,
             dto.dpop_jkt,
             Some(client_ip),
             user_agent,

@@ -88,6 +88,9 @@ async fn main() {
         hasher.clone(),
         Arc::new(UserPgRepository::new(pool.clone())),
         "http://localhost".into(),
+        // require_verified_email — the bench measures the Argon2 herd,
+        // not the admission policy.
+        false,
     ));
     let (_ap_id, plain) = svc.create_nc(user_id, "bench").await.expect("create_nc");
 

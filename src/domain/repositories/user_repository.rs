@@ -19,6 +19,14 @@ pub enum UserRepositoryError {
     #[error("Timeout error: {0}")]
     Timeout(String),
 
+    /// The database could not answer, as opposed to answering "no row".
+    /// Kept distinct from [`Self::DatabaseError`] because a caller that
+    /// must act on the answer — an auth gate, a retry decorator — has to
+    /// tell "unknown" from "malformed" or it ends up guessing. Maps to
+    /// `ErrorKind::TransientBackend`, hence 503 rather than 500.
+    #[error("Transient database error: {0}")]
+    Transient(String),
+
     #[error("Operation not allowed: {0}")]
     OperationNotAllowed(String),
 }
@@ -56,6 +64,7 @@ impl From<UserRepositoryError> for DomainError {
             UserRepositoryError::DatabaseError(msg) => DomainError::internal_error("Database", msg),
             UserRepositoryError::ValidationError(msg) => DomainError::validation_error(msg),
             UserRepositoryError::Timeout(msg) => DomainError::timeout("Database", msg),
+            UserRepositoryError::Transient(msg) => DomainError::transient_backend("Database", msg),
             UserRepositoryError::OperationNotAllowed(msg) => {
                 DomainError::access_denied("User", msg)
             }

@@ -370,7 +370,7 @@ impl SessionRepository for SessionPgRepository {
                 let result = sqlx::query(
                     r#"
                         UPDATE auth.sessions
-                        SET revoked = true
+                        SET revoked = true, revoked_at = NOW()
                         WHERE id = $1
                         RETURNING user_id
                         "#,
@@ -406,7 +406,7 @@ impl SessionRepository for SessionPgRepository {
                 let result = sqlx::query(
                     r#"
                         UPDATE auth.sessions
-                        SET revoked = true
+                        SET revoked = true, revoked_at = NOW()
                         WHERE user_id = $1 AND revoked = false
                         "#,
                 )
@@ -445,7 +445,7 @@ impl SessionRepository for SessionPgRepository {
                 let result = sqlx::query(
                     r#"
                     UPDATE auth.sessions
-                       SET revoked = true
+                       SET revoked = true, revoked_at = NOW()
                      WHERE user_id  = $1
                        AND id      != $2
                        AND revoked  = false
@@ -477,7 +477,7 @@ impl SessionRepository for SessionPgRepository {
         let result = sqlx::query(
             r#"
             UPDATE auth.sessions
-            SET revoked = true
+            SET revoked = true, revoked_at = NOW()
             WHERE family_id = $1 AND revoked = false
             "#,
         )
@@ -506,7 +506,7 @@ impl SessionRepository for SessionPgRepository {
         let rows = sqlx::query(
             r#"
             UPDATE auth.sessions
-            SET revoked = true
+            SET revoked = true, revoked_at = NOW()
             WHERE oidc_sid = $1 AND NOT revoked
             RETURNING user_id
             "#,
@@ -567,7 +567,7 @@ impl SessionRepository for SessionPgRepository {
         let result = sqlx::query(
             r#"
             UPDATE auth.sessions
-            SET revoked = true
+            SET revoked = true, revoked_at = NOW()
             WHERE user_id = $1 AND NOT revoked
             "#,
         )
@@ -686,6 +686,21 @@ impl SessionStoragePort for SessionPgRepository {
         let session_clone = new_session.clone();
         with_transaction(&self.pool, "rotate_session", |tx| {
             Box::pin(async move {
+                // Deliberately does NOT stamp `revoked_at`, unlike every
+                // other `SET revoked = true` in this file.
+                //
+                // Rotation is SUPERSESSION, not revocation: the client
+                // asked for fresh tokens and got them. Stamping would put
+                // the parent `sid` into the revoked-sid set, and the
+                // parent's access token is what any request already
+                // in flight is carrying — so a client that refreshes
+                // while other requests are outstanding would see them
+                // fail. The old access token is meant to age out, not to
+                // die the instant its successor is issued.
+                //
+                // The refresh-grace replay (`try_grace_replay`) depends on
+                // the same thing: it re-issues against the parent inside a
+                // grace window, which a revocation stamp would forbid.
                 sqlx::query("UPDATE auth.sessions SET revoked = true WHERE id = $1")
                     .bind(old_session_id)
                     .execute(&mut **tx)

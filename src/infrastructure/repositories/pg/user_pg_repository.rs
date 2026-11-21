@@ -9,7 +9,27 @@ use crate::domain::entities::user::{User, UserFlags, UserRole};
 use crate::domain::repositories::user_repository::{
     StorageStats, UserRepository, UserRepositoryError, UserRepositoryResult,
 };
+use crate::infrastructure::repositories::pg::pg_error;
 use crate::infrastructure::repositories::pg::transaction_utils::with_transaction;
+
+/// How far back `get_user_flags` carries revoked session ids.
+///
+/// A session revoked longer ago than this cannot have a live access
+/// token, so remembering its id would only grow a cache entry that sits
+/// on every authenticated request. The window must therefore be at
+/// least the access-token lifetime — were it shorter, a revoked
+/// session's token would start being ACCEPTED again the moment its id
+/// aged out of the set, which is worse than never having had the check.
+///
+/// 24 h against a 1 h default leaves a wide margin, and the set stays
+/// tiny in practice: it holds only the sessions ONE user revoked in the
+/// last day, which is normally none. `AuthConfig::validate` warns if the
+/// configured access-token lifetime ever approaches this.
+///
+/// A constant rather than a parameter because `UserPgRepository` is
+/// constructed in eleven places, most of which have nothing to do with
+/// authentication and no business knowing a token lifetime.
+const REVOKED_SID_WINDOW_SECS: i64 = 86_400;
 
 // Implement From<sqlx::Error> for UserRepositoryError to allow automatic conversions
 impl From<sqlx::Error> for UserRepositoryError {
@@ -92,6 +112,16 @@ impl UserPgRepository {
 
     // Helper method to map SQL errors to domain errors
     pub fn map_sqlx_error(err: sqlx::Error) -> UserRepositoryError {
+        // Transience is asked FIRST, because the arms below are about
+        // what the database said and this one is about whether it said
+        // anything. A pool timeout or a dropped connection used to land
+        // in the catch-all and become an opaque 500, which left callers
+        // that have to act on the answer — the auth gates reading
+        // `get_user_flags` — unable to tell "no such user" from "no
+        // reply". See `pg_error::is_transient`.
+        if pg_error::is_transient(&err) {
+            return UserRepositoryError::Transient(format!("Database unavailable: {}", err));
+        }
         match err {
             sqlx::Error::RowNotFound => UserRepositoryError::NotFound("User not found".to_string()),
             sqlx::Error::Database(db_err) => {
@@ -117,15 +147,27 @@ impl UserPgRepository {
     pub async fn get_user_flags(&self, id: Uuid) -> UserRepositoryResult<UserFlags> {
         let row = sqlx::query(
             r#"
-            SELECT role::text as role_text,
-                   is_external,
-                   active,
-                   force_password_change_at_next_login
-              FROM auth.users
-             WHERE id = $1
+            SELECT u.role::text as role_text,
+                   u.is_external,
+                   u.active,
+                   u.force_password_change_at_next_login,
+                   u.sessions_valid_from,
+                   COALESCE(
+                       ARRAY(
+                           SELECT s.id
+                             FROM auth.sessions s
+                            WHERE s.user_id = u.id
+                              AND s.revoked
+                              AND s.revoked_at > NOW() - make_interval(secs => $2::double precision)
+                       ),
+                       '{}'
+                   ) AS revoked_session_ids
+              FROM auth.users u
+             WHERE u.id = $1
             "#,
         )
         .bind(id)
+        .bind(REVOKED_SID_WINDOW_SECS as f64)
         .fetch_one(&*self.pool)
         .await
         .map_err(Self::map_sqlx_error)?;
@@ -137,6 +179,8 @@ impl UserPgRepository {
             is_external: row.get("is_external"),
             active: row.get("active"),
             force_password_change: row.get("force_password_change_at_next_login"),
+            sessions_valid_from: row.get("sessions_valid_from"),
+            revoked_session_ids: row.get::<Vec<Uuid>, _>("revoked_session_ids").into(),
         })
     }
 
@@ -201,6 +245,32 @@ impl UserPgRepository {
     /// Deliberately does NOT gate on the current value — flipping FALSE
     /// to FALSE is a no-op at the row level. That keeps the caller from
     /// needing a read-modify-write.
+    /// Stamp the revocation cutoff: every token already issued to this
+    /// user stops being accepted, now, rather than at its next refresh.
+    ///
+    /// `NOW()` comes from the DATABASE clock, not the app's. The value is
+    /// compared against a JWT `iat` minted from the app clock, so the two
+    /// must not drift apart — and the DB clock is the one every node
+    /// agrees on. Taking it from the app would let a node whose clock
+    /// runs fast revoke tokens a peer is still minting.
+    ///
+    /// Callers must invalidate the user's `UserFlags` cache entry
+    /// afterwards, or the cutoff is not observed until the TTL rolls.
+    pub async fn set_sessions_valid_from_now(&self, id: Uuid) -> UserRepositoryResult<()> {
+        sqlx::query(
+            r#"
+            UPDATE auth.users
+               SET sessions_valid_from = NOW()
+             WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .execute(&*self.pool)
+        .await
+        .map_err(Self::map_sqlx_error)?;
+        Ok(())
+    }
+
     pub async fn clear_force_password_change(&self, id: Uuid) -> UserRepositoryResult<()> {
         sqlx::query(
             r#"
@@ -1842,6 +1912,63 @@ impl UserStoragePort for UserPgRepository {
         UserRepository::count_users(self)
             .await
             .map_err(DomainError::from)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::errors::ErrorKind;
+
+    /// Pins the whole chain in one place — `sqlx::Error` →
+    /// `UserRepositoryError` → `DomainError` → retryable — because a
+    /// break anywhere along it has the same symptom: an auth gate that
+    /// cannot tell "no such user" from "no reply", and so has to guess.
+    ///
+    /// `PoolTimedOut` stands in for the family. The SQLSTATE members
+    /// (`08006`, `57014`, …) are pinned in `pg_error`'s own tests, which
+    /// can exercise the codes without fabricating a driver error.
+    #[test]
+    fn a_pool_timeout_classifies_as_transient_end_to_end() {
+        let mapped = UserPgRepository::map_sqlx_error(sqlx::Error::PoolTimedOut);
+        assert!(
+            matches!(mapped, UserRepositoryError::Transient(_)),
+            "a pool timeout must not land in the catch-all DatabaseError arm, got {mapped:?}",
+        );
+
+        let domain = DomainError::from(mapped);
+        assert_eq!(domain.kind, ErrorKind::TransientBackend);
+        assert!(
+            domain.is_transient(),
+            "the gate and the retry decorator both read is_transient()",
+        );
+    }
+
+    /// Transience is asked BEFORE the arms that read what the database
+    /// said, and that order is the load-bearing part: `RowNotFound` is
+    /// the one error an auth gate may act on, so it must keep reaching
+    /// its own arm rather than being swept up as "unavailable".
+    #[test]
+    fn row_not_found_still_reaches_its_own_arm() {
+        let mapped = UserPgRepository::map_sqlx_error(sqlx::Error::RowNotFound);
+        assert!(
+            matches!(mapped, UserRepositoryError::NotFound(_)),
+            "RowNotFound must stay a definitive answer, got {mapped:?}",
+        );
+        assert_eq!(DomainError::from(mapped).kind, ErrorKind::NotFound);
+    }
+
+    /// The conservative direction, at this layer too: a closed pool is
+    /// shutdown, not a blip. Classifying it transient would make a
+    /// graceful shutdown look like an outage worth retrying through.
+    #[test]
+    fn pool_closed_is_a_permanent_database_error() {
+        let mapped = UserPgRepository::map_sqlx_error(sqlx::Error::PoolClosed);
+        assert!(
+            matches!(mapped, UserRepositoryError::DatabaseError(_)),
+            "shutdown is not a blip, got {mapped:?}",
+        );
+        assert!(!DomainError::from(mapped).is_transient());
     }
 }
 

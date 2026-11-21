@@ -417,10 +417,248 @@ async fn main() -> ExitCode {
         return fail(format!("OPAQUE JWT + WS: {msg}"));
     }
 
+    // ── The account checks this door used to skip entirely ─────────
+    if let Err(msg) =
+        opaque_refuses_a_deactivated_account(&http, base, &bearer, params.ciphersuite_version, &ksf)
+            .await
+    {
+        return fail(format!("OPAQUE deactivated-account refusal: {msg}"));
+    }
+
     eprintln!(
-        "opaque-hurl-helper: OK — register + login + /me + admin sessions origin=opaque + rt.ping over WS for '{username}'"
+        "opaque-hurl-helper: OK — register + login + /me + admin sessions origin=opaque + rt.ping over WS + deactivated-account refusal for '{username}'"
     );
     ExitCode::from(EXIT_OK)
+}
+
+/// The regression pin for the OPAQUE login door.
+///
+/// `login/ke3` used to go straight from the user entity to
+/// `mint_session_for_authenticated_user`, running NEITHER account check
+/// — so a correct passphrase minted a session for a deactivated
+/// account. Per-call `LiveRole::Revoked` killed the *next* request, but
+/// the login itself returned 200, which also confirmed the account
+/// exists. Closed by routing the door through
+/// `AuthApplicationService::admit`.
+///
+/// Both legs are asserted, per AGENTS.md: the refusal, AND the same
+/// fixture succeeding while active — a gate that refuses everyone would
+/// pass a refusal-only test.
+///
+/// Lives here rather than in a `.hurl` file because the handshake needs
+/// real OPRF blinding; see this binary's header.
+async fn opaque_refuses_a_deactivated_account(
+    http: &reqwest::Client,
+    base: &str,
+    admin_bearer: &str,
+    ciphersuite_version: i16,
+    ksf: &argon2::Argon2<'static>,
+) -> Result<(), String> {
+    use opaque_ke::{ClientRegistration, ClientRegistrationFinishParameters, RegistrationResponse};
+    use rand_core::OsRng;
+
+    const FIXTURE_USER: &str = "opaque-deactivated-probe";
+    const FIXTURE_PASS: &str = "OpaqueProbePass1!";
+
+    // 1. Admin creates the fixture. A fresh user each run, named so a
+    //    leaked row is obvious; `run.sh` tears the DB down between
+    //    invocations, and a stale row would collide on the 201 below
+    //    rather than passing silently.
+    let create = http
+        .post(format!("{base}/api/admin/users"))
+        .header("Authorization", admin_bearer)
+        .json(&json!({
+            "username": FIXTURE_USER,
+            "password": FIXTURE_PASS,
+            "email": "opaque-deactivated-probe@example.com",
+            "role": "user",
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("create fixture: {e}"))?;
+    if create.status() != 201 {
+        let status = create.status();
+        let body = create.text().await.unwrap_or_default();
+        return Err(format!("create fixture HTTP {status}: {body}"));
+    }
+    let fixture_id = create
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("parse fixture create: {e}"))?
+        .pointer("/user/id")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned)
+        .ok_or("fixture create response has no /user/id")?;
+
+    // 2. Register an OPAQUE envelope for the fixture WHILE ACTIVE.
+    //    This ordering is forced, not incidental: the register
+    //    endpoints sit behind `auth_middleware`, so an account that
+    //    cannot log in cannot acquire an envelope.
+    let fixture_bearer = {
+        let r = http
+            .post(format!("{base}/api/auth/login"))
+            .json(&json!({ "username": FIXTURE_USER, "password": FIXTURE_PASS }))
+            .send()
+            .await
+            .map_err(|e| format!("fixture legacy login: {e}"))?;
+        if !r.status().is_success() {
+            return Err(format!("fixture legacy login HTTP {}", r.status()));
+        }
+        let token = r
+            .json::<LegacyLoginResp>()
+            .await
+            .map_err(|e| format!("parse fixture login: {e}"))?
+            .access_token;
+        format!("Bearer {token}")
+    };
+
+    let mut rng = OsRng;
+    let client_reg = ClientRegistration::<OxiCloudSuite>::start(&mut rng, FIXTURE_PASS.as_bytes())
+        .map_err(|e| format!("fixture client_register.start: {e}"))?;
+    let reg_start: RegisterStartResp = http
+        .post(format!("{base}/api/auth/opaque/register/start"))
+        .header("Authorization", &fixture_bearer)
+        .json(&json!({
+            "registrationRequest": B64.encode(client_reg.message.serialize()),
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("fixture register/start: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("parse fixture register/start: {e}"))?;
+    let reg_response = RegistrationResponse::<OxiCloudSuite>::deserialize(
+        &decode_opaque_b64(&reg_start.registration_response)
+            .map_err(|e| format!("decode fixture reg response: {e}"))?,
+    )
+    .map_err(|e| format!("deserialize fixture reg response: {e}"))?;
+    let reg_finish = client_reg
+        .state
+        .finish(
+            &mut rng,
+            FIXTURE_PASS.as_bytes(),
+            reg_response,
+            ClientRegistrationFinishParameters::new(opaque_ke::Identifiers::default(), Some(ksf)),
+        )
+        .map_err(|e| format!("fixture client_register.finish: {e}"))?;
+    let r = http
+        .post(format!("{base}/api/auth/opaque/register/finish"))
+        .header("Authorization", &fixture_bearer)
+        .json(&json!({
+            "registrationRecord": B64.encode(reg_finish.message.serialize()),
+            "ciphersuiteVersion": ciphersuite_version,
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("fixture register/finish: {e}"))?;
+    if r.status() != 204 {
+        return Err(format!("fixture register/finish HTTP {}", r.status()));
+    }
+
+    // 3. The allowed leg first, so a gate that refuses everyone cannot
+    //    pass this test: the envelope works while the account is active.
+    let ke3 = opaque_login_ke3(http, base, FIXTURE_USER, FIXTURE_PASS, ksf).await?;
+    if ke3 != 200 {
+        return Err(format!(
+            "active fixture should log in over OPAQUE, got HTTP {ke3}"
+        ));
+    }
+
+    // 4. Deactivate, then the same handshake must be refused.
+    let r = http
+        .put(format!("{base}/api/admin/users/{fixture_id}/active"))
+        .header("Authorization", admin_bearer)
+        .json(&json!({ "active": false }))
+        .send()
+        .await
+        .map_err(|e| format!("deactivate fixture: {e}"))?;
+    if !r.status().is_success() {
+        return Err(format!("deactivate fixture HTTP {}", r.status()));
+    }
+
+    let ke3 = opaque_login_ke3(http, base, FIXTURE_USER, FIXTURE_PASS, ksf).await?;
+    if ke3 == 200 {
+        return Err(
+            "deactivated account completed an OPAQUE login — the door is bypassing admit()"
+                .to_string(),
+        );
+    }
+    if ke3 != 403 {
+        return Err(format!(
+            "deactivated account refused with HTTP {ke3}, expected 403 (AccountDeactivated maps to FORBIDDEN)"
+        ));
+    }
+
+    // 5. Teardown. The DB is torn down between `run.sh` runs, but a
+    //    leaked fixture makes the 201 above fail on a hand-run repeat
+    //    rather than silently reusing a deactivated row.
+    let _ = http
+        .delete(format!("{base}/api/admin/users/{fixture_id}"))
+        .header("Authorization", admin_bearer)
+        .send()
+        .await;
+    Ok(())
+}
+
+/// One full OPAQUE login handshake, returning the KE3 status code.
+///
+/// Factored out because the refusal pin needs to run it twice — once
+/// expecting 200 and once expecting a refusal — and the happy path above
+/// already proves the crypto; here only the status matters.
+async fn opaque_login_ke3(
+    http: &reqwest::Client,
+    base: &str,
+    username: &str,
+    password: &str,
+    ksf: &argon2::Argon2<'static>,
+) -> Result<u16, String> {
+    use opaque_ke::{ClientLogin, ClientLoginFinishParameters, CredentialResponse};
+    use rand_core::OsRng;
+
+    let mut rng = OsRng;
+    let client_login = ClientLogin::<OxiCloudSuite>::start(&mut rng, password.as_bytes())
+        .map_err(|e| format!("client_login.start: {e}"))?;
+    let ke1: Ke1Resp = http
+        .post(format!("{base}/api/auth/opaque/login/ke1"))
+        .json(&json!({
+            "userIdentifier": username,
+            "startLoginRequest": B64.encode(client_login.message.serialize()),
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("login/ke1: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("parse login/ke1: {e}"))?;
+
+    let cred_response = CredentialResponse::<OxiCloudSuite>::deserialize(
+        &decode_opaque_b64(&ke1.login_response)
+            .map_err(|e| format!("decode credential response: {e}"))?,
+    )
+    .map_err(|e| format!("deserialize credential response: {e}"))?;
+
+    // A deactivated account still has a VALID envelope, so the crypto
+    // finishes — the refusal is an account decision taken after the
+    // handshake, which is exactly why it was so easy to omit.
+    let login_finish = client_login
+        .state
+        .finish(
+            password.as_bytes(),
+            cred_response,
+            ClientLoginFinishParameters::new(None, opaque_ke::Identifiers::default(), Some(ksf)),
+        )
+        .map_err(|e| format!("client_login.finish: {e}"))?;
+
+    let r = http
+        .post(format!("{base}/api/auth/opaque/login/ke3"))
+        .json(&json!({
+            "exchangeId": ke1.exchange_id,
+            "finishLoginRequest": B64.encode(login_finish.message.serialize()),
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("login/ke3: {e}"))?;
+    Ok(r.status().as_u16())
 }
 
 async fn opaque_jwt_ws_smoke(base: &str, access_token: &str) -> Result<(), String> {
