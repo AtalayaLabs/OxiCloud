@@ -772,11 +772,27 @@ Suggested sequence:
    function plus a signature change at five or six call sites. No
    routing restructure, no migration beyond the two IP columns.
 
-   Landed so far: the two fail-open arms (`ed427185e`, `a15455f14`) and
-   the admission check on all nine doors (`2f9101138`). Still open —
-   true revocation, and the device list with its two IP columns, which
-   is the only part needing a migration. The Hurl pins for the
-   wire-observable halves are owed with it.
+   Landed, and green against a live server:
+
+   - the two fail-open arms → 503 (`ed427185e`, `a15455f14`)
+   - the admission check on all nine doors (`2f9101138`), with the
+     synonyms collapsed to one name (`c2d6045cc`)
+   - **true revocation, both forms** — the user-wide `iat` cutoff
+     (`fe12a4739`) and per-session via `auth.sessions.revoked_at`
+     (`ae956005b`). So `logout` stops its own access token,
+     `change_password` stops the other devices while keeping the
+     caller's, and an admin reset stops everything.
+   - Hurl pins: the deactivated-account refusal across every door
+     (`e3ead258c`, `52b2179a9`, OPAQUE's in `opaque-hurl-helper` at
+     `4355aec71`) and both revocation forms (`6a857cc20`).
+
+   Two fixes the runs themselves found, neither visible to `cargo`: the
+   Basic-auth path had **no** live account check and served a 300 s
+   cached verification (`102af56b3`), and the NextCloud surface has its
+   own middleware which ignored `active`, used a cached role and failed
+   open (`9add3034b`).
+
+   Still open: the connected-device list with its two IP columns.
 2. **`scope-gates.md` PR 1** — the gates fold. Behaviour-preserving, so
    its acceptance criterion is existing pins green *unchanged*.
 3. **`scope-gates.md` PR 2** — credential scopes. First
