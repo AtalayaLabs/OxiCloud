@@ -499,6 +499,12 @@ HURL_FILES=( \
   "$API_DIR/auth_magic_link_login.hurl" \
   "$API_DIR/auth_upgrade_to_internal.hurl" \
   "$API_DIR/app_passwords.hurl" \
+  # Cross-door gate pin: a deactivated account is refused by every
+  # surface that can grant a credential. Runs AFTER app_passwords.hurl
+  # so a failure there is attributed to that file rather than to this
+  # one borrowing the same endpoint. Its fixture is its own user, so it
+  # cannot deactivate an account a later scenario logs in with.
+  "$API_DIR/auth_doors_deactivated_account.hurl" \
   "$API_DIR/auth_profile_image.hurl" \
   "$API_DIR/registration.hurl" \
   # Registers mixed-case usernames and asserts they land lowercased, so it
