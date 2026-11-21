@@ -527,13 +527,12 @@ transitions need stable `event` / `reason` keys, inside the existing
     every login door now refuses them. The only reachable state is a
     credential issued BEFORE the flag was turned on.
 
-  So this half needs its own phase — a server started with the flag on,
-  against a pre-seeded unverified user who already holds an envelope and
-  an app password — which is also the scenario an operator actually
-  hits: enabling the policy on a live instance. Until then the *rule* is
-  pinned by unit tests (the admin exemption, the policy-off default, the
-  check ordering) and every door shares that one function, so what is
-  untested is the wiring, not the policy.
+  **Deliberately not covered.** It would need a second server started
+  with the flag on and its own config file (`--config` beats shell env),
+  and the happy-path refusals are the bar here, not exhaustive coverage.
+  The *rule* is pinned by unit tests — the admin exemption, the
+  policy-off default, the check ordering — and every door shares that
+  one function, so what is untested is the wiring, not the policy.
 - Hurl: forced-reset discharge end to end — login with the flag set
   yields a `{security}`-scoped session, elevation succeeds with the
   current password, the change succeeds, and the *new* session is
