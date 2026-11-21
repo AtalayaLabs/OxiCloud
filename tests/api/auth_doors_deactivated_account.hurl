@@ -98,7 +98,7 @@ Content-Type: application/json
 
 HTTP 200
 [Captures]
-fixture_token:   jsonpath "$.access_token"
+fixture_token: jsonpath "$.access_token"
 fixture_refresh: jsonpath "$.refresh_token"
 
 
@@ -123,9 +123,9 @@ fixture_app_id: jsonpath "$.id"
 #     would also pass against a credential that never worked.
 # ─────────────────────────────────────────────────────────────
 PROPFIND {{base_url}}/webdav/
+Depth: 0
 [BasicAuth]
 doors-deactivated: {{fixture_app_pw}}
-Depth: 0
 
 HTTP 207
 
@@ -167,9 +167,9 @@ HTTP 200
 # not learn that an account exists and is disabled.
 # ─────────────────────────────────────────────────────────────
 PROPFIND {{base_url}}/webdav/
+Depth: 0
 [BasicAuth]
 doors-deactivated: {{fixture_app_pw}}
-Depth: 0
 
 HTTP 401
 
